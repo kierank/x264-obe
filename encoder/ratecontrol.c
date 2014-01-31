@@ -707,7 +707,7 @@ void x264_ratecontrol_init_reconfigurable( x264_t *h, int b_init )
             return;
         }
 
-        if( h->param.b_avcintra_compat )
+        if( h->param.i_avcintra_class )
             h->sps->vui.hrd.b_cbr_hrd = 1;
 
         h->sps->vui.hrd.i_bit_rate_unscaled = vbv_max_bitrate;
