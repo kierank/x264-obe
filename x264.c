@@ -1,7 +1,7 @@
 /*****************************************************************************
  * x264: top-level x264cli functions
  *****************************************************************************
- * Copyright (C) 2003-2013 x264 project
+ * Copyright (C) 2003-2014 x264 project
  *
  * Authors: Loren Merritt <lorenm@u.washington.edu>
  *          Laurent Aimar <fenrir@via.ecp.fr>
@@ -420,9 +420,12 @@ static void print_csp_names( int longhelp )
     printf( INDENT );
     for( int i = X264_CSP_NONE+1; i < X264_CSP_CLI_MAX; i++ )
     {
-        printf( "%s", x264_cli_csps[i].name );
-        if( i+1 < X264_CSP_CLI_MAX )
-            printf( ", " );
+        if( x264_cli_csps[i].name )
+        {
+            printf( "%s", x264_cli_csps[i].name );
+            if( i+1 < X264_CSP_CLI_MAX )
+                printf( ", " );
+        }
     }
 #if HAVE_LAVF
     printf( "\n" );
@@ -885,7 +888,8 @@ static void help( x264_param_t *defaults, int longhelp )
     H0( "      --frames <integer>      Maximum number of frames to encode\n" );
     H0( "      --level <string>        Specify level (as defined by Annex A)\n" );
     H1( "      --bluray-compat         Enable compatibility hacks for Blu-ray support\n" );
-    H1( "      --avcintra-compat       Enable compatibility hacks for AVC-Intra support\n" );
+    H1( "      --avcintra-class <integer> Use compatibility hacks for AVC-Intra class\n"
+        "                                  - 50, 100, 200\n" );
     H1( "      --stitchable            Don't optimize headers based on video content\n"
         "                              Ensures ability to recombine a segmented encode\n" );
     H1( "\n" );
@@ -987,7 +991,7 @@ static struct option long_options[] =
     { "b-pyramid",   required_argument, NULL, 0 },
     { "open-gop",          no_argument, NULL, 0 },
     { "bluray-compat",     no_argument, NULL, 0 },
-    { "avcintra-compat",   no_argument, NULL, 0 },
+    { "avcintra-class", required_argument, NULL, 0 },
     { "min-keyint",  required_argument, NULL, 'i' },
     { "keyint",      required_argument, NULL, 'I' },
     { "intra-refresh",     no_argument, NULL, 0 },

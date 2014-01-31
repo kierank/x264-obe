@@ -1,7 +1,7 @@
 /*****************************************************************************
  * checkasm.c: assembly check tool
  *****************************************************************************
- * Copyright (C) 2003-2013 x264 project
+ * Copyright (C) 2003-2014 x264 project
  *
  * Authors: Loren Merritt <lorenm@u.washington.edu>
  *          Laurent Aimar <fenrir@via.ecp.fr>
@@ -1805,7 +1805,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         }
 
         h->param.rc.i_qp_min = 0;
-        h->param.rc.i_qp_max = QP_MAX;
+        h->param.rc.i_qp_max = QP_MAX_SPEC;
         x264_cqm_init( h );
         x264_quant_init( h, 0, &qf_c );
         x264_quant_init( h, cpu_ref, &qf_ref );
