@@ -136,6 +136,12 @@ void x264_idct4x4dc_mmx      ( int16_t d[16] );
 void x264_idct4x4dc_sse2     ( int32_t d[16] );
 #define x264_idct4x4dc_avx x264_template(idct4x4dc_avx)
 void x264_idct4x4dc_avx      ( int32_t d[16] );
+#define x264_dct2x4dc_mmx2 x264_template(dct2x4dc_mmx2)
+void x264_dct2x4dc_mmx2( dctcoef dct[8], dctcoef dct4x4[8][16] );
+#define x264_dct2x4dc_sse2 x264_template(dct2x4dc_sse2)
+void x264_dct2x4dc_sse2( dctcoef dct[8], dctcoef dct4x4[8][16] );
+#define x264_dct2x4dc_avx x264_template(dct2x4dc_avx)
+void x264_dct2x4dc_avx ( dctcoef dct[8], dctcoef dct4x4[8][16] );
 
 #define x264_sub8x8_dct8_mmx x264_template(sub8x8_dct8_mmx)
 void x264_sub8x8_dct8_mmx    ( int16_t dct   [64], uint8_t *pix1, uint8_t *pix2 );
