@@ -1244,7 +1244,7 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     }
 
     h->param.sc.max_preset = x264_clip3( h->param.sc.max_preset, 1, SC_PRESETS );
-    if( h->param.i_nal_hrd == X264_NAL_HRD_CBR )
+    if( h->param.i_nal_hrd == X264_NAL_HRD_CBR || h->param.i_nal_hrd == X264_NAL_HRD_FAKE_CBR )
         h->param.rc.b_filler = 1;
 
     /* ensure the booleans are 0 or 1 so they can be used in math */
