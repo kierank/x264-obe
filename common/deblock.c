@@ -360,12 +360,12 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
 
     h->mb.i_neighbour = 0;
     h->mb.i_mb_xy = mb_y * h->mb.i_mb_stride + mb_x;
-    h->mb.b_interlaced = PARAM_INTERLACED && h->mb.field[h->mb.i_mb_xy];
+    h->mb.b_interlaced = PARAM_FIELD_ENCODE || (PARAM_INTERLACED && h->mb.field[h->mb.i_mb_xy]);
     /* The previous threadslice may still be encoding the row above its start, so
      * don't read its field or slice_table: it's another slice either way. */
     int top_other_slice = !deblock_on_slice_edges
-                       && (h->i_threadslice_start >> MB_INTERLACED) == (mb_y >> MB_INTERLACED);
-    h->mb.i_mb_top_y = mb_y - (1 << MB_INTERLACED);
+                       && (h->i_threadslice_start >> MB_MBAFF_FIELD) == (mb_y >> MB_MBAFF_FIELD);
+    h->mb.i_mb_top_y = mb_y - (1 << MB_MBAFF_FIELD);
     h->mb.i_mb_top_xy = mb_x + h->mb.i_mb_stride*h->mb.i_mb_top_y;
     h->mb.i_mb_left_xy[1] =
     h->mb.i_mb_left_xy[0] = h->mb.i_mb_xy - 1;
@@ -391,14 +391,14 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
     if( mb_x > 0 && (deblock_on_slice_edges ||
         h->mb.slice_table[h->mb.i_mb_left_xy[0]] == h->mb.slice_table[h->mb.i_mb_xy]) )
         h->mb.i_neighbour |= MB_LEFT;
-    if( mb_y > MB_INTERLACED && (deblock_on_slice_edges
+    if( mb_y > MB_MBAFF_FIELD && (deblock_on_slice_edges
         || (!top_other_slice && h->mb.slice_table[h->mb.i_mb_top_xy] == h->mb.slice_table[h->mb.i_mb_xy])) )
         h->mb.i_neighbour |= MB_TOP;
 }
 
 void x264_frame_deblock_row( x264_t *h, int mb_y )
 {
-    int b_interlaced = SLICE_MBAFF;
+    int b_mbaff = SLICE_MBAFF;
     int a = h->sh.i_alpha_c0_offset - QP_BD_OFFSET;
     int b = h->sh.i_beta_offset - QP_BD_OFFSET;
     int qp_thresh = 15 - X264_MIN( a, b ) - X264_MAX( 0, h->pps->i_chroma_qp_index_offset );
@@ -408,7 +408,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
     int chroma_height = 16 >> CHROMA_V_SHIFT;
     intptr_t uvdiff = chroma444 ? h->fdec->plane[2] - h->fdec->plane[1] : 1;
 
-    for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x += (~b_interlaced | mb_y)&1, mb_y ^= b_interlaced )
+    for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x += (~b_mbaff | mb_y)&1, mb_y ^= b_mbaff )
     {
         x264_prefetch_fenc( h, h->fdec, mb_x, mb_y );
         x264_macroblock_cache_load_neighbours_deblock( h, mb_x, mb_y );
@@ -421,14 +421,14 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         pixel *pixy = h->fdec->plane[0] + 16*mb_y*stridey  + 16*mb_x;
         pixel *pixuv = h->fdec->plane[1] + chroma_height*mb_y*strideuv + 16*mb_x;
 
-        if( mb_y & MB_INTERLACED )
+        if( mb_y & MB_MBAFF_FIELD )
         {
             pixy -= 15*stridey;
             pixuv -= (chroma_height-1)*strideuv;
         }
 
-        int stride2y  = stridey << MB_INTERLACED;
-        int stride2uv = strideuv << MB_INTERLACED;
+        int stride2y  = stridey << MB_MBAFF_FIELD;
+        int stride2uv = strideuv << MB_MBAFF_FIELD;
         int qp = h->mb.qp[mb_xy];
         int qpc = h->chroma_qp_table[qp];
         int first_edge_only = (h->mb.partition[mb_xy] == D_16x16 && !h->mb.cbp[mb_xy] && !intra_cur) || qp <= qp_thresh;
@@ -496,7 +496,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
 
         if( h->mb.i_neighbour & MB_LEFT )
         {
-            if( b_interlaced && h->mb.field[h->mb.i_mb_left_xy[0]] != MB_INTERLACED )
+            if( b_mbaff && h->mb.field[h->mb.i_mb_left_xy[0]] != MB_INTERLACED )
             {
                 int luma_qp[2];
                 int chroma_qp[2];
@@ -582,7 +582,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
 
         if( h->mb.i_neighbour & MB_TOP )
         {
-            if( b_interlaced && !(mb_y&1) && !MB_INTERLACED && h->mb.field[h->mb.i_mb_top_xy] )
+            if( b_mbaff && !(mb_y&1) && !MB_INTERLACED && h->mb.field[h->mb.i_mb_top_xy] )
             {
                 int mbn_xy = mb_xy - 2 * h->mb.i_mb_stride;
 
@@ -621,7 +621,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                     RESET_EFFECTIVE_QP(h->mb.i_mb_top_xy);
                 }
 
-                if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[h->mb.i_mb_top_xy])) && intra_deblock )
+                if( (!b_mbaff || (!MB_INTERLACED && !h->mb.field[h->mb.i_mb_top_xy])) && intra_deblock && !SLICE_FIELD )
                 {
                     FILTER( _intra, 1, 0, qp_top, qpc_top, 1 );
                 }

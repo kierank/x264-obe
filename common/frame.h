@@ -145,6 +145,7 @@ typedef struct x264_frame
      * in rows of (mb_width + 15) & ~15; b_weight_csum: of this picture */
     int32_t *i_weight_csum;
     int     b_weight_csum;
+    int     b_ref_opp_field; /* set to one if field references field of opposite parity */
 
     /* hrd */
     x264_hrd_t hrd_timing;

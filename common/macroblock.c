@@ -57,8 +57,8 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     {
         int v_shift = CHROMA_V_SHIFT;
         // Chroma in 4:2:0 is offset if MCing from a field of opposite parity
-        if( v_shift & MB_INTERLACED & i_ref )
-            mvy += (h->mb.i_mb_y & 1)*4 - 2;
+        if( v_shift & MB_INTERLACED )
+            mvy += h->mb.i_mvy_offset[0][i_ref];
 
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
         int uv_dy = 2*mvy>>v_shift;
@@ -96,8 +96,8 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     else
     {
         int v_shift = CHROMA_V_SHIFT;
-        if( v_shift & MB_INTERLACED & i_ref )
-            mvy += (h->mb.i_mb_y & 1)*4 - 2;
+        if( v_shift & MB_INTERLACED )
+            mvy += h->mb.i_mvy_offset[1][i_ref];
 
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
         int uv_dy = 2*mvy>>v_shift;
@@ -143,10 +143,11 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
     else
     {
         int v_shift = CHROMA_V_SHIFT;
-        if( v_shift & MB_INTERLACED & i_ref0 )
-            mvy0 += (h->mb.i_mb_y & 1)*4 - 2;
-        if( v_shift & MB_INTERLACED & i_ref1 )
-            mvy1 += (h->mb.i_mb_y & 1)*4 - 2;
+        if( v_shift & MB_INTERLACED )
+        {
+            mvy0 += h->mb.i_mvy_offset[0][i_ref0];
+            mvy1 += h->mb.i_mvy_offset[1][i_ref1];
+        }
 
         int uv_dy0 = 2*mvy0>>v_shift;
         int uv_dy1 = 2*mvy1>>v_shift;
@@ -266,7 +267,7 @@ int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
     h->mb.i_b8_stride = h->mb.i_mb_width * 2;
     h->mb.i_b4_stride = h->mb.i_mb_width * 4;
 
-    h->mb.b_interlaced = PARAM_INTERLACED;
+    h->mb.b_interlaced = PARAM_INTERLACED || PARAM_FIELD_ENCODE;
 
     PREALLOC_INIT
 
@@ -534,6 +535,20 @@ void x264_macroblock_slice_init( x264_t *h )
             h->fdec->inv_ref_poc[field] = (256 + delta/2) / delta;
         }
 
+    int cur_bottom = (h->fdec->i_frame & 1) ^ !h->param.b_tff;
+    for( int i = 0; i < h->i_ref[0]; i++ )
+    {
+        int ref_bottom = (h->fref[0][i]->i_frame & 1) ^ !h->param.b_tff;
+        h->mb.i_mvy_offset[0][i] = SLICE_MBAFF ? i&1 ? (h->mb.i_mb_y & 1)*4 - 2 : 0
+                                   : cur_bottom && !ref_bottom ? +2 : !cur_bottom && ref_bottom ? -2 : 0;
+    }
+    if( h->sh.i_type == SLICE_TYPE_B )
+        for( int i = 0; i < h->i_ref[1]; i++ )
+        {
+            int ref_bottom = (h->fref[1][i]->i_frame & 1) ^ !h->param.b_tff;
+            h->mb.i_mvy_offset[1][i] = SLICE_MBAFF ? i&1 ? (h->mb.i_mb_y & 1)*4 - 2 : 0
+                                       : cur_bottom && !ref_bottom ? +2 : !cur_bottom && ref_bottom ? -2 : 0;
+        }
     x264_mvpred_ref16x16_init( h );
 
     h->mb.i_neighbour4[6] =
@@ -1381,8 +1396,8 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
     /* load skip */
     if( h->sh.i_type == SLICE_TYPE_B )
     {
-        h->mb.bipred_weight = h->mb.bipred_weight_buf[MB_INTERLACED][MB_INTERLACED&(mb_y&1)];
-        h->mb.dist_scale_factor = h->mb.dist_scale_factor_buf[MB_INTERLACED][MB_INTERLACED&(mb_y&1)];
+        h->mb.bipred_weight = h->mb.bipred_weight_buf[MB_MBAFF_FIELD][MB_MBAFF_FIELD&(mb_y&1)];
+        h->mb.dist_scale_factor = h->mb.dist_scale_factor_buf[MB_MBAFF_FIELD][MB_MBAFF_FIELD&(mb_y&1)];
         if( PARAM_CABAC )
         {
             uint8_t skipbp;

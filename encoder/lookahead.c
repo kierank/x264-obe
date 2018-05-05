@@ -59,8 +59,13 @@ static void x264_lookahead_shift( x264_sync_frame_list_t *dst, x264_sync_frame_l
 
 static void x264_lookahead_update_last_nonb( x264_t *h, x264_frame_t *new_nonb )
 {
-    if( h->lookahead->last_nonb )
+    if( PARAM_FIELD_ENCODE && h->lookahead->penultimate_nonb )
+        x264_frame_push_unused( h, h->lookahead->penultimate_nonb );
+
+    if( !PARAM_FIELD_ENCODE && h->lookahead->last_nonb )
         x264_frame_push_unused( h, h->lookahead->last_nonb );
+    if( PARAM_FIELD_ENCODE )
+        h->lookahead->penultimate_nonb = h->lookahead->last_nonb;
     h->lookahead->last_nonb = new_nonb;
     new_nonb->i_reference_count++;
 }
@@ -71,7 +76,7 @@ static void x264_lookahead_slicetype_decide( x264_t *h )
     x264_stack_align( x264_slicetype_decide, h );
 
     x264_lookahead_update_last_nonb( h, h->lookahead->next.list[0] );
-    int shift_frames = h->lookahead->next.list[0]->i_bframes + 1;
+    int shift_frames = h->lookahead->last_nonb->i_bframes + 1;
 
     /* For MB-tree and VBV lookahead, we have to perform propagation analysis on I-frames too.
      * No lock: only this thread changes next, and the minigop, which the analysis
@@ -190,6 +195,8 @@ void x264_lookahead_delete( x264_t *h )
     x264_sync_frame_list_delete( &h->lookahead->next );
     if( h->lookahead->last_nonb )
         x264_frame_push_unused( h, h->lookahead->last_nonb );
+    if( h->lookahead->penultimate_nonb )
+        x264_frame_push_unused( h, h->lookahead->penultimate_nonb );
     x264_sync_frame_list_delete( &h->lookahead->ofbuf );
     x264_free( h->lookahead );
 }
@@ -243,7 +250,7 @@ void x264_lookahead_get_frames( x264_t *h )
 
         x264_stack_align( x264_slicetype_decide, h );
         x264_lookahead_update_last_nonb( h, h->lookahead->next.list[0] );
-        int shift_frames = h->lookahead->next.list[0]->i_bframes + 1;
+        int shift_frames = h->lookahead->last_nonb->i_bframes + 1;
 
         /* For MB-tree and VBV lookahead, we have to perform propagation analysis on I-frames too. */
         if( h->lookahead->b_analyse_keyframe && IS_X264_TYPE_I( h->lookahead->last_nonb->i_type ) )
