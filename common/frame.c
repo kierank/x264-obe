@@ -391,6 +391,7 @@ int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
     dst->i_qpplus1  = src->i_qpplus1;
     dst->i_pts      = dst->i_reordered_pts = src->i_pts;
     dst->param      = src->param;
+    memcpy( dst->timecode, src->timecode, sizeof(dst->timecode) );
     dst->i_pic_struct = src->i_pic_struct;
     dst->extra_sei  = src->extra_sei;
     dst->opaque     = src->opaque;

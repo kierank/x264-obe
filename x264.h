@@ -41,7 +41,7 @@
 
 #include "x264_config.h"
 
-#define X264_BUILD 142
+#define X264_BUILD 143
 
 /* Application developers planning to link against a shared library version of
  * libx264 from a Microsoft Visual Studio or similar development environment
@@ -717,6 +717,28 @@ typedef struct
  * Payloads are written first in order of input, apart from in the case when HRD
  * is enabled where payloads are written after the Buffering Period SEI. */
 
+enum x264_timecode_e
+{
+    X264_TIMECODE_SECONDS = 1,
+    X264_TIMECODE_MINUTES = 1 << 1,
+    X264_TIMECODE_HOURS   = 1 << 2,
+    X264_TIMECODE_FULL    = X264_TIMECODE_SECONDS | X264_TIMECODE_MINUTES | X264_TIMECODE_HOURS,
+};
+
+typedef struct x264_timecode_t
+{
+    int b_valid;
+    uint8_t i_hours;   /* 0..23  */
+    uint8_t i_minutes; /* 0..59  */
+    uint8_t i_seconds; /* 0..59  */
+    uint8_t i_frame;   /* 0..255, Less than `ceil(time_scale / (2 * num_units_in_tick))` */
+    int b_drop;
+    int b_sync;
+    int b_discontinuity;
+    int i_counting_type;
+    int i_type;
+} x264_timecode_t;
+
 typedef struct
 {
     int payload_size;
@@ -836,6 +858,8 @@ typedef struct
     x264_image_properties_t prop;
     /* Out: HRD timing information. Output only when i_nal_hrd is set. */
     x264_hrd_t hrd_timing;
+    /* In: arbitary user timecode */
+    x264_timecode_t timecode[3];
     /* In: arbitrary user SEI (e.g subtitles, AFDs) */
     x264_sei_t extra_sei;
     /* private user data. copied from input to output frames. */
