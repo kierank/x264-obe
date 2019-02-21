@@ -13,36 +13,46 @@ GENERATED =
 all: default
 default:
 
-SRCS = common/mc.c common/predict.c common/pixel.c common/macroblock.c \
-       common/frame.c common/dct.c common/cpu.c common/cabac.c \
-       common/common.c common/osdep.c common/rectangle.c \
-       common/set.c common/quant.c common/deblock.c common/vlc.c \
-       common/mvpred.c common/bitstream.c \
-       encoder/analyse.c encoder/me.c encoder/ratecontrol.c \
-       encoder/set.c encoder/macroblock.c encoder/cabac.c \
-       encoder/speed.c \
-       encoder/cavlc.c encoder/encoder.c encoder/lookahead.c
+SRCS = common/osdep.c common/base.c common/cpu.c common/tables.c \
+       encoder/api.c
+
+SRCS_X = common/mc.c common/predict.c common/pixel.c common/macroblock.c \
+         common/frame.c common/dct.c common/cabac.c \
+         common/common.c common/rectangle.c \
+         common/set.c common/quant.c common/deblock.c common/vlc.c \
+         common/mvpred.c common/bitstream.c \
+         encoder/analyse.c encoder/me.c encoder/ratecontrol.c \
+         encoder/set.c encoder/macroblock.c encoder/cabac.c \
+         encoder/speed.c \
+         encoder/cavlc.c encoder/encoder.c encoder/lookahead.c
+
+SRCS_8 =
 
 SRCCLI = x264.c input/input.c input/timecode.c input/raw.c input/y4m.c \
          output/raw.c output/matroska.c output/matroska_ebml.c \
          output/flv.c output/flv_bytestream.c filters/filters.c \
          filters/video/video.c filters/video/source.c filters/video/internal.c \
-         filters/video/resize.c filters/video/cache.c filters/video/fix_vfr_pts.c \
-         filters/video/select_every.c filters/video/crop.c filters/video/depth.c
+         filters/video/resize.c filters/video/fix_vfr_pts.c \
+         filters/video/select_every.c filters/video/crop.c
+
+SRCCLI_X = filters/video/cache.c filters/video/depth.c
 
 SRCSO =
+
+SRCCHK_X = tools/checkasm.c
+
+SRCEXAMPLE = example.c
+
 OBJS =
+OBJASM =
 OBJSO =
 OBJCLI =
-
-OBJCHK = tools/checkasm.o
+OBJCHK =
+OBJCHK_8 =
+OBJCHK_10 =
+OBJEXAMPLE =
 
 CONFIG := $(shell cat config.h)
-
-# GPL-only files
-ifneq ($(findstring HAVE_GPL 1, $(CONFIG)),)
-SRCCLI +=
-endif
 
 # Optional module sources
 ifneq ($(findstring HAVE_AVS 1, $(CONFIG)),)
@@ -50,8 +60,8 @@ SRCCLI += input/avs.c
 endif
 
 ifneq ($(findstring HAVE_THREAD 1, $(CONFIG)),)
-SRCCLI += input/thread.c
-SRCS   += common/threadpool.c
+SRCS_X   += common/threadpool.c
+SRCCLI_X += input/thread.c
 endif
 
 ifneq ($(findstring HAVE_WIN32THREAD 1, $(CONFIG)),)
@@ -74,65 +84,116 @@ ifneq ($(findstring HAVE_LSMASH 1, $(CONFIG)),)
 SRCCLI += output/mp4_lsmash.c
 endif
 
-# MMX/SSE optims
 ifneq ($(AS),)
-X86SRC0 = const-a.asm cabac-a.asm dct-a.asm deblock-a.asm mc-a.asm \
-          mc-a2.asm pixel-a.asm predict-a.asm quant-a.asm \
-          cpu-a.asm dct-32.asm bitstream-a.asm
-ifneq ($(findstring HIGH_BIT_DEPTH, $(CONFIG)),)
-X86SRC0 += sad16-a.asm
-else
-X86SRC0 += sad-a.asm
-endif
-X86SRC = $(X86SRC0:%=common/x86/%)
 
-ifeq ($(ARCH),X86)
+# MMX/SSE optims
+SRCASM_X =
+ifeq ($(SYS_ARCH),X86)
 ARCH_X86 = yes
-ASMSRC   = $(X86SRC) common/x86/pixel-32.asm
-ASFLAGS += -DARCH_X86_64=0
+SRCASM_X += common/x86/dct-32.asm \
+            common/x86/pixel-32.asm
 endif
-
-ifeq ($(ARCH),X86_64)
+ifeq ($(SYS_ARCH),X86_64)
 ARCH_X86 = yes
-ASMSRC   = $(X86SRC:-32.asm=-64.asm) common/x86/trellis-64.asm
-ASFLAGS += -DARCH_X86_64=1
+SRCASM_X += common/x86/dct-64.asm \
+            common/x86/trellis-64.asm
 endif
 
 ifdef ARCH_X86
-ASFLAGS += -I$(SRCPATH)/common/x86/
-SRCS   += common/x86/mc-c.c common/x86/predict-c.c
-OBJASM  = $(ASMSRC:%.asm=%.o)
-$(OBJASM): common/x86/x86inc.asm common/x86/x86util.asm
-OBJCHK += tools/checkasm-a.o
+SRCASM_X += common/x86/bitstream-a.asm \
+            common/x86/const-a.asm \
+            common/x86/cabac-a.asm \
+            common/x86/dct-a.asm \
+            common/x86/deblock-a.asm \
+            common/x86/mc-a.asm \
+            common/x86/mc-a2.asm \
+            common/x86/pixel-a.asm \
+            common/x86/predict-a.asm \
+            common/x86/quant-a.asm
+SRCS_X   += common/x86/mc-c.c \
+            common/x86/predict-c.c
+
+OBJASM += common/x86/cpu-a.o
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+OBJASM += $(SRCASM_X:%.asm=%-8.o) common/x86/sad-a-8.o
 endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+OBJASM += $(SRCASM_X:%.asm=%-10.o) common/x86/sad16-a-10.o
+endif
+
+OBJCHK += tools/checkasm-a.o
 endif
 
 # AltiVec optims
-ifeq ($(ARCH),PPC)
-ifneq ($(AS),)
-SRCS += common/ppc/mc.c common/ppc/pixel.c common/ppc/dct.c \
-        common/ppc/quant.c common/ppc/deblock.c \
-        common/ppc/predict.c
-endif
+ifeq ($(SYS_ARCH),PPC)
+SRCS_X += common/ppc/dct.c \
+          common/ppc/deblock.c \
+          common/ppc/mc.c \
+          common/ppc/pixel.c \
+          common/ppc/predict.c \
+          common/ppc/quant.c
 endif
 
 # NEON optims
-ifeq ($(ARCH),ARM)
-ifneq ($(AS),)
-ASMSRC += common/arm/cpu-a.S common/arm/pixel-a.S common/arm/mc-a.S \
-          common/arm/dct-a.S common/arm/quant-a.S common/arm/deblock-a.S \
-          common/arm/predict-a.S
-SRCS   += common/arm/mc-c.c common/arm/predict-c.c
-OBJASM  = $(ASMSRC:%.S=%.o)
+ifeq ($(SYS_ARCH),ARM)
+SRCASM_X  = common/arm/bitstream-a.S \
+            common/arm/dct-a.S \
+            common/arm/deblock-a.S \
+            common/arm/mc-a.S \
+            common/arm/pixel-a.S \
+            common/arm/predict-a.S \
+            common/arm/quant-a.S
+SRCS_X   += common/arm/mc-c.c \
+            common/arm/predict-c.c
+
+OBJASM += common/arm/cpu-a.o
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+OBJASM += $(SRCASM_X:%.S=%-8.o)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+OBJASM += $(SRCASM_X:%.S=%-10.o)
+endif
+
+OBJCHK += tools/checkasm-arm.o
+endif
+
+# AArch64 NEON optims
+ifeq ($(SYS_ARCH),AARCH64)
+SRCASM_X  = common/aarch64/bitstream-a.S \
+            common/aarch64/cabac-a.S \
+            common/aarch64/dct-a.S \
+            common/aarch64/deblock-a.S \
+            common/aarch64/mc-a.S \
+            common/aarch64/pixel-a.S \
+            common/aarch64/predict-a.S \
+            common/aarch64/quant-a.S
+SRCS_X   += common/aarch64/asm-offsets.c \
+            common/aarch64/mc-c.c \
+            common/aarch64/predict-c.c
+
+OBJASM +=
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+OBJASM += $(SRCASM_X:%.S=%-8.o)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+OBJASM += $(SRCASM_X:%.S=%-10.o)
+endif
+
+OBJCHK += tools/checkasm-aarch64.o
+endif
+
+# MSA optims
+ifeq ($(SYS_ARCH),MIPS)
+ifneq ($(findstring HAVE_MSA 1, $(CONFIG)),)
+SRCS_X += common/mips/dct-c.c \
+          common/mips/deblock-c.c \
+          common/mips/mc-c.c \
+          common/mips/pixel-c.c \
+          common/mips/predict-c.c \
+          common/mips/quant-c.c
 endif
 endif
 
-# VIS optims
-ifeq ($(ARCH),UltraSPARC)
-ifeq ($(findstring HIGH_BIT_DEPTH, $(CONFIG)),)
-ASMSRC += common/sparc/pixel.asm
-OBJASM  = $(ASMSRC:%.asm=%.o)
-endif
 endif
 
 ifneq ($(HAVE_GETOPT_LONG),1)
@@ -149,16 +210,30 @@ endif
 
 ifeq ($(HAVE_OPENCL),yes)
 common/oclobj.h: common/opencl/x264-cl.h $(wildcard $(SRCPATH)/common/opencl/*.cl)
-	cat $^ | perl $(SRCPATH)/tools/cltostr.pl x264_opencl_source > $@
+	cat $^ | $(SRCPATH)/tools/cltostr.sh $@
 GENERATED += common/oclobj.h
-SRCS += common/opencl.c encoder/slicetype-cl.c
+SRCS_8 += common/opencl.c encoder/slicetype-cl.c
 endif
 
 OBJS   += $(SRCS:%.c=%.o)
 OBJCLI += $(SRCCLI:%.c=%.o)
 OBJSO  += $(SRCSO:%.c=%.o)
+OBJEXAMPLE += $(SRCEXAMPLE:%.c=%.o)
 
-.PHONY: all default fprofiled clean distclean install uninstall lib-static lib-shared cli install-lib-dev install-lib-static install-lib-shared install-cli
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+OBJS      += $(SRCS_X:%.c=%-8.o) $(SRCS_8:%.c=%-8.o)
+OBJCLI    += $(SRCCLI_X:%.c=%-8.o)
+OBJCHK_8  += $(SRCCHK_X:%.c=%-8.o)
+checkasm: checkasm8$(EXE)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+OBJS      += $(SRCS_X:%.c=%-10.o)
+OBJCLI    += $(SRCCLI_X:%.c=%-10.o)
+OBJCHK_10 += $(SRCCHK_X:%.c=%-10.o)
+checkasm: checkasm10$(EXE)
+endif
+
+.PHONY: all default fprofiled clean distclean install install-* uninstall cli lib-* checkasm etags
 
 cli: x264$(EXE)
 lib-static: $(LIBX264)
@@ -173,26 +248,59 @@ $(SONAME): $(GENERATED) .depend $(OBJS) $(OBJASM) $(OBJSO)
 	$(LD)$@ $(OBJS) $(OBJASM) $(OBJSO) $(SOFLAGS) $(LDFLAGS)
 
 ifneq ($(EXE),)
-.PHONY: x264 checkasm
+.PHONY: x264 checkasm8 checkasm10 example
 x264: x264$(EXE)
-checkasm: checkasm$(EXE)
+checkasm8: checkasm8$(EXE)
+checkasm10: checkasm10$(EXE)
+example: example$(EXE)
 endif
 
 x264$(EXE): $(GENERATED) .depend $(OBJCLI) $(CLI_LIBX264)
 	$(LD)$@ $(OBJCLI) $(CLI_LIBX264) $(LDFLAGSCLI) $(LDFLAGS)
 
-checkasm$(EXE): $(GENERATED) .depend $(OBJCHK) $(LIBX264)
-	$(LD)$@ $(OBJCHK) $(LIBX264) $(LDFLAGS)
+checkasm8$(EXE): $(GENERATED) .depend $(OBJCHK) $(OBJCHK_8) $(LIBX264)
+	$(LD)$@ $(OBJCHK) $(OBJCHK_8) $(LIBX264) $(LDFLAGS)
 
-$(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
+checkasm10$(EXE): $(GENERATED) .depend $(OBJCHK) $(OBJCHK_10) $(LIBX264)
+	$(LD)$@ $(OBJCHK) $(OBJCHK_10) $(LIBX264) $(LDFLAGS)
 
-%.o: %.asm
+example$(EXE): $(GENERATED) .depend $(OBJEXAMPLE) $(LIBX264)
+	$(LD)$@ $(OBJEXAMPLE) $(LIBX264) $(LDFLAGS)
+
+$(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10) $(OBJEXAMPLE): .depend
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< $(CC_O)
+
+%-8.o: %.c
+	$(CC) $(CFLAGS) -c $< $(CC_O) -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8
+
+%-10.o: %.c
+	$(CC) $(CFLAGS) -c $< $(CC_O) -DHIGH_BIT_DEPTH=1 -DBIT_DEPTH=10
+
+%.o: %.asm common/x86/x86inc.asm common/x86/x86util.asm
 	$(AS) $(ASFLAGS) -o $@ $<
 	-@ $(if $(STRIP), $(STRIP) -x $@) # delete local/anonymous symbols, so they don't show up in oprofile
+
+%-8.o: %.asm common/x86/x86inc.asm common/x86/x86util.asm
+	$(AS) $(ASFLAGS) -o $@ $< -DBIT_DEPTH=8 -Dprivate_prefix=x264_8
+	-@ $(if $(STRIP), $(STRIP) -x $@)
+
+%-10.o: %.asm common/x86/x86inc.asm common/x86/x86util.asm
+	$(AS) $(ASFLAGS) -o $@ $< -DBIT_DEPTH=10 -Dprivate_prefix=x264_10
+	-@ $(if $(STRIP), $(STRIP) -x $@)
 
 %.o: %.S
 	$(AS) $(ASFLAGS) -o $@ $<
 	-@ $(if $(STRIP), $(STRIP) -x $@) # delete local/anonymous symbols, so they don't show up in oprofile
+
+%-8.o: %.S
+	$(AS) $(ASFLAGS) -o $@ $< -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8
+	-@ $(if $(STRIP), $(STRIP) -x $@)
+
+%-10.o: %.S
+	$(AS) $(ASFLAGS) -o $@ $< -DHIGH_BIT_DEPTH=1 -DBIT_DEPTH=10
+	-@ $(if $(STRIP), $(STRIP) -x $@)
 
 %.dll.o: %.rc x264.h
 	$(RC) $(RCFLAGS)$@ -DDLL $<
@@ -202,7 +310,24 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
 
 .depend: config.mak
 	@rm -f .depend
-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%.o) $(DEPMM) 1>> .depend;)
+	@echo 'dependency file generation...'
+ifeq ($(COMPILER),CL)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO) $(SRCEXAMPLE)), $(SRCPATH)/tools/msvsdepend.sh "$(CC)" "$(CFLAGS)" "$(SRC)" "$(SRC:$(SRCPATH)/%.c=%.o)" 1>> .depend;)
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCS_8) $(SRCCLI_X) $(SRCCHK_X)), $(SRCPATH)/tools/msvsdepend.sh "$(CC)" "$(CFLAGS)" "$(SRC)" "$(SRC:$(SRCPATH)/%.c=%-8.o)" 1>> .depend;)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X) $(SRCCHK_X)), $(SRCPATH)/tools/msvsdepend.sh "$(CC)" "$(CFLAGS)" "$(SRC)" "$(SRC:$(SRCPATH)/%.c=%-10.o)" 1>> .depend;)
+endif
+else
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO) $(SRCEXAMPLE)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%.o) $(DEPMM) 1>> .depend;)
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCS_8) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
+endif
+endif
 
 config.mak:
 	./configure
@@ -212,7 +337,7 @@ ifneq ($(wildcard .depend),)
 include .depend
 endif
 
-SRC2 = $(SRCS) $(SRCCLI)
+OBJPROF = $(OBJS) $(OBJCLI)
 # These should cover most of the important codepaths
 OPT0 = --crf 30 -b1 -m1 -r1 --me dia --no-cabac --direct temporal --ssim --no-weightb
 OPT1 = --crf 16 -b2 -m3 -r3 --me hex --no-8x8dct --direct spatial --no-dct-decimate -t0  --slice-max-mbs 50
@@ -229,40 +354,46 @@ fprofiled:
 	@echo 'where infiles are anything that x264 understands,'
 	@echo 'i.e. YUV with resolution in the filename, y4m, or avisynth.'
 else
-fprofiled:
-	$(MAKE) clean
+fprofiled: clean
 	$(MAKE) x264$(EXE) CFLAGS="$(CFLAGS) $(PROF_GEN_CC)" LDFLAGS="$(LDFLAGS) $(PROF_GEN_LD)"
 	$(foreach V, $(VIDS), $(foreach I, 0 1 2 3 4 5 6 7, ./x264$(EXE) $(OPT$I) --threads 1 $(V) -o $(DEVNULL) ;))
-	rm -f $(SRC2:%.c=%.o)
+ifeq ($(COMPILER),CL)
+# Because Visual Studio timestamps the object files within the PGD, it fails to build if they change - only the executable should be deleted
+	rm -f x264$(EXE)
+else
+	rm -f $(OBJPROF)
+endif
 	$(MAKE) CFLAGS="$(CFLAGS) $(PROF_USE_CC)" LDFLAGS="$(LDFLAGS) $(PROF_USE_LD)"
-	rm -f $(SRC2:%.c=%.gcda) $(SRC2:%.c=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
+	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock *.pgd *.pgc
 endif
 
 clean:
-	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(SONAME) *.a *.lib *.exp *.pdb x264 x264.exe .depend TAGS
-	rm -f checkasm checkasm.exe $(OBJCHK) $(GENERATED) x264_lookahead.clbin
-	rm -f $(SRC2:%.c=%.gcda) $(SRC2:%.c=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
+	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(GENERATED) .depend TAGS
+	rm -f $(SONAME) *.a *.lib *.exp *.pdb x264$(EXE) x264_lookahead.clbin
+	rm -f checkasm8$(EXE) checkasm10$(EXE) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10)
+	rm -f example$(EXE) $(OBJEXAMPLE)
+	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock *.pgd *.pgc
 
 distclean: clean
 	rm -f config.mak x264_config.h config.h config.log x264.pc x264.def
+	rm -rf conftest*
 
 install-cli: cli
 	$(INSTALL) -d $(DESTDIR)$(bindir)
 	$(INSTALL) x264$(EXE) $(DESTDIR)$(bindir)
 
 install-lib-dev:
-	$(INSTALL) -d $(DESTDIR)$(includedir)
-	$(INSTALL) -d $(DESTDIR)$(libdir)
-	$(INSTALL) -d $(DESTDIR)$(libdir)/pkgconfig
-	$(INSTALL) -m 644 $(SRCPATH)/x264.h $(DESTDIR)$(includedir)
-	$(INSTALL) -m 644 x264_config.h $(DESTDIR)$(includedir)
+	$(INSTALL) -d $(DESTDIR)$(includedir) $(DESTDIR)$(libdir)/pkgconfig
+	$(INSTALL) -m 644 $(SRCPATH)/x264.h x264_config.h $(DESTDIR)$(includedir)
 	$(INSTALL) -m 644 x264.pc $(DESTDIR)$(libdir)/pkgconfig
 
 install-lib-static: lib-static install-lib-dev
+	$(INSTALL) -d $(DESTDIR)$(libdir)
 	$(INSTALL) -m 644 $(LIBX264) $(DESTDIR)$(libdir)
 	$(if $(RANLIB), $(RANLIB) $(DESTDIR)$(libdir)/$(LIBX264))
 
 install-lib-shared: lib-shared install-lib-dev
+	$(INSTALL) -d $(DESTDIR)$(libdir)
 ifneq ($(IMPLIBNAME),)
 	$(INSTALL) -d $(DESTDIR)$(bindir)
 	$(INSTALL) -m 755 $(SONAME) $(DESTDIR)$(bindir)
@@ -281,7 +412,5 @@ else ifneq ($(SONAME),)
 	rm -f $(DESTDIR)$(libdir)/$(SONAME) $(DESTDIR)$(libdir)/libx264.$(SOSUFFIX)
 endif
 
-etags: TAGS
-
-TAGS:
-	etags $(SRCS)
+etags TAGS:
+	etags $(SRCS) $(SRCS_X) $(SRCS_8)

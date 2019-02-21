@@ -1,9 +1,9 @@
 /*****************************************************************************
- * pixel.h: sparc pixel metrics
+ * bitstream.h: aarch64 bitstream functions
  *****************************************************************************
- * Copyright (C) 2005-2014 x264 project
+ * Copyright (C) 2017-2018 x264 project
  *
- * Authors: Phil Jensen <philj@csufresno.edu>
+ * Authors: Anton Mitrofanov <BugMaster@narod.ru>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,12 +23,10 @@
  * For more information, contact us at licensing@x264.com.
  *****************************************************************************/
 
-#ifndef X264_SPARC_PIXEL_H
-#define X264_SPARC_PIXEL_H
+#ifndef X264_AARCH64_BITSTREAM_H
+#define X264_AARCH64_BITSTREAM_H
 
-int x264_pixel_sad_8x8_vis  ( uint8_t *, intptr_t, uint8_t *, intptr_t );
-int x264_pixel_sad_8x16_vis ( uint8_t *, intptr_t, uint8_t *, intptr_t );
-int x264_pixel_sad_16x8_vis ( uint8_t *, intptr_t, uint8_t *, intptr_t );
-int x264_pixel_sad_16x16_vis( uint8_t *, intptr_t, uint8_t *, intptr_t );
+#define x264_nal_escape_neon x264_template(nal_escape_neon)
+uint8_t *x264_nal_escape_neon( uint8_t *dst, uint8_t *src, uint8_t *end );
 
 #endif
