@@ -1,9 +1,9 @@
 /*****************************************************************************
- * pixel.h: sparc pixel metrics
+ * mc.h: aarch64 motion compensation
  *****************************************************************************
- * Copyright (C) 2005-2014 x264 project
+ * Copyright (C) 2014-2017 x264 project
  *
- * Authors: Phil Jensen <philj@csufresno.edu>
+ * Authors: Janne Grunau <janne-x264@jannau.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,12 +23,9 @@
  * For more information, contact us at licensing@x264.com.
  *****************************************************************************/
 
-#ifndef X264_SPARC_PIXEL_H
-#define X264_SPARC_PIXEL_H
+#ifndef X264_AARCH64_MC_H
+#define X264_AARCH64_MC_H
 
-int x264_pixel_sad_8x8_vis  ( uint8_t *, intptr_t, uint8_t *, intptr_t );
-int x264_pixel_sad_8x16_vis ( uint8_t *, intptr_t, uint8_t *, intptr_t );
-int x264_pixel_sad_16x8_vis ( uint8_t *, intptr_t, uint8_t *, intptr_t );
-int x264_pixel_sad_16x16_vis( uint8_t *, intptr_t, uint8_t *, intptr_t );
+void x264_mc_init_aarch64( int cpu, x264_mc_functions_t *pf );
 
 #endif

@@ -1,7 +1,7 @@
 /*****************************************************************************
  * rdo.c: rate-distortion optimization
  *****************************************************************************
- * Copyright (C) 2005-2014 x264 project
+ * Copyright (C) 2005-2017 x264 project
  *
  * Authors: Loren Merritt <lorenm@u.washington.edu>
  *          Fiona Glaser <fiona@x264.com>
@@ -64,9 +64,8 @@ static uint16_t cabac_size_5ones[128];
 #include "cabac.c"
 
 #define COPY_CABAC h->mc.memcpy_aligned( &cabac_tmp.f8_bits_encoded, &h->cabac.f8_bits_encoded, \
-        sizeof(x264_cabac_t) - offsetof(x264_cabac_t,f8_bits_encoded) - (CHROMA444 ? 0 : (1024+12)-460) )
-#define COPY_CABAC_PART( pos, size )\
-        memcpy( &cb->state[pos], &h->cabac.state[pos], size )
+        sizeof(int) + (CHROMA444 ? 1024+12 : 460) )
+#define COPY_CABAC_PART( pos, size ) memcpy( &cb->state[pos], &h->cabac.state[pos], size )
 
 static ALWAYS_INLINE uint64_t cached_hadamard( x264_t *h, int size, int x, int y )
 {
@@ -180,13 +179,13 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     else
     {
         x264_macroblock_size_cavlc( h );
-        i_bits = ( h->out.bs.i_bits_encoded * i_lambda2 + 128 ) >> 8;
+        i_bits = ( (uint64_t)h->out.bs.i_bits_encoded * i_lambda2 + 128 ) >> 8;
     }
 
     h->mb.b_transform_8x8 = b_transform_bak;
     h->mb.i_type = type_bak;
 
-    return i_ssd + i_bits;
+    return X264_MIN( i_ssd + i_bits, COST_MAX );
 }
 
 /* partition RD functions use 8 bits more precision to avoid large rounding errors at low QPs */
@@ -261,7 +260,7 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i4, int i_pixel )
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 128 ) >> 8;
     }
     else
-        i_bits = x264_partition_size_cavlc( h, i8, i_pixel ) * i_lambda2;
+        i_bits = (uint64_t)x264_partition_size_cavlc( h, i8, i_pixel ) * i_lambda2;
 
     return (i_ssd<<8) + i_bits;
 }
@@ -297,7 +296,7 @@ static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode,
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 128 ) >> 8;
     }
     else
-        i_bits = x264_partition_i8x8_size_cavlc( h, i8, i_mode ) * i_lambda2;
+        i_bits = (uint64_t)x264_partition_i8x8_size_cavlc( h, i8, i_mode ) * i_lambda2;
 
     return (i_ssd<<8) + i_bits;
 }
@@ -331,7 +330,7 @@ static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode 
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 128 ) >> 8;
     }
     else
-        i_bits = x264_partition_i4x4_size_cavlc( h, i4, i_mode ) * i_lambda2;
+        i_bits = (uint64_t)x264_partition_i4x4_size_cavlc( h, i4, i_mode ) * i_lambda2;
 
     return (i_ssd<<8) + i_bits;
 }
@@ -357,7 +356,7 @@ static uint64_t x264_rd_cost_chroma( x264_t *h, int i_lambda2, int i_mode, int b
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 128 ) >> 8;
     }
     else
-        i_bits = x264_chroma_size_cavlc( h ) * i_lambda2;
+        i_bits = (uint64_t)x264_chroma_size_cavlc( h ) * i_lambda2;
 
     return (i_ssd<<8) + i_bits;
 }
@@ -634,8 +633,8 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
                          const uint8_t *zigzag, int ctx_block_cat, int lambda2, int b_ac,
                          int b_chroma, int dc, int num_coefs, int idx )
 {
-    ALIGNED_ARRAY_N( dctcoef, orig_coefs, [64] );
-    ALIGNED_ARRAY_N( dctcoef, quant_coefs, [64] );
+    ALIGNED_ARRAY_64( dctcoef, orig_coefs, [64] );
+    ALIGNED_ARRAY_64( dctcoef, quant_coefs, [64] );
     const uint32_t *coef_weight1 = num_coefs == 64 ? x264_dct8_weight_tab : x264_dct4_weight_tab;
     const uint32_t *coef_weight2 = num_coefs == 64 ? x264_dct8_weight2_tab : x264_dct4_weight2_tab;
     const int b_interlaced = MB_INTERLACED;
@@ -695,7 +694,7 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
         return !!dct[0];
     }
 
-#if HAVE_MMX && ARCH_X86_64
+#if HAVE_MMX && ARCH_X86_64 && !defined( __MACH__ )
 #define TRELLIS_ARGS unquant_mf, zigzag, lambda2, last_nnz, orig_coefs, quant_coefs, dct,\
                      cabac_state_sig, cabac_state_last, M64(cabac_state), M16(cabac_state+8)
     if( num_coefs == 16 && !dc )
@@ -863,7 +862,7 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
         return 0;
     }
 
-    if(0) // accessible only by goto, not fallthrough
+    if( 0 ) // accessible only by goto, not fallthrough
     {
         // node_ctx 1..7 (ctx0 ruled out because we never try both level0 and level2+ on the same coef)
         TRELLIS_LOOP(1);

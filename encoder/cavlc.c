@@ -1,7 +1,7 @@
 /*****************************************************************************
  * cavlc.c: cavlc bitstream writing
  *****************************************************************************
- * Copyright (C) 2003-2014 x264 project
+ * Copyright (C) 2003-2017 x264 project
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Loren Merritt <lorenm@u.washington.edu>
@@ -289,6 +289,7 @@ static ALWAYS_INLINE void x264_cavlc_macroblock_luma_residual( x264_t *h, int pl
                 x264_cavlc_block_residual( h, DCT_LUMA_4x4, i4+i8*4+p*16, h->dct.luma4x4[i4+i8*4+p*16] );
 }
 
+#if RDO_SKIP_BS
 static ALWAYS_INLINE void x264_cavlc_partition_luma_residual( x264_t *h, int i8, int p )
 {
     if( h->mb.b_transform_8x8 && h->mb.cache.non_zero_count[x264_scan8[i8*4]] )
@@ -299,6 +300,7 @@ static ALWAYS_INLINE void x264_cavlc_partition_luma_residual( x264_t *h, int i8,
         for( int i4 = 0; i4 < 4; i4++ )
             x264_cavlc_block_residual( h, DCT_LUMA_4x4, i4+i8*4+p*16, h->dct.luma4x4[i4+i8*4+p*16] );
 }
+#endif
 
 static void x264_cavlc_mb_header_i( x264_t *h, int i_mb_type, int i_mb_i_offset, int chroma )
 {
@@ -607,6 +609,8 @@ static int x264_partition_size_cavlc( x264_t *h, int i8, int i_pixel )
     int b_8x16 = h->mb.i_partition == D_8x16;
     int plane_count = CHROMA444 ? 3 : 1;
     int j;
+
+    h->out.bs.i_bits_encoded = 0;
 
     if( i_mb_type == P_8x8 )
     {

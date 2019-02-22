@@ -1,7 +1,7 @@
 /*****************************************************************************
  * select_every.c: select-every video filter
  *****************************************************************************
- * Copyright (C) 2010-2014 x264 project
+ * Copyright (C) 2010-2017 x264 project
  *
  * Authors: Steven Walters <kemuri9@gmail.com>
  *
@@ -51,7 +51,7 @@ static void help( int longhelp )
     printf( "            apply a selection pattern to input frames\n"
             "            step: the number of frames in the pattern\n"
             "            offsets: the offset into the step to select a frame\n"
-            "            see: http://avisynth.org/mediawiki/Select#SelectEvery\n" );
+            "            see: http://avisynth.nl/index.php/Select#SelectEvery\n" );
 }
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
@@ -67,16 +67,16 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         int val = x264_otoi( tok, -1 );
         if( p )
         {
-            FAIL_IF_ERROR( val <= 0, "invalid step `%s'\n", tok )
+            FAIL_IF_ERROR( val <= 0, "invalid step `%s'\n", tok );
             h->step_size = val;
             continue;
         }
-        FAIL_IF_ERROR( val < 0 || val >= h->step_size, "invalid offset `%s'\n", tok )
-        FAIL_IF_ERROR( h->pattern_len >= MAX_PATTERN_SIZE, "max pattern size %d reached\n", MAX_PATTERN_SIZE )
+        FAIL_IF_ERROR( val < 0 || val >= h->step_size, "invalid offset `%s'\n", tok );
+        FAIL_IF_ERROR( h->pattern_len >= MAX_PATTERN_SIZE, "max pattern size %d reached\n", MAX_PATTERN_SIZE );
         offsets[h->pattern_len++] = val;
     }
-    FAIL_IF_ERROR( !h->step_size, "no step size provided\n" )
-    FAIL_IF_ERROR( !h->pattern_len, "no offsets supplied\n" )
+    FAIL_IF_ERROR( !h->step_size, "no step size provided\n" );
+    FAIL_IF_ERROR( !h->pattern_len, "no offsets supplied\n" );
 
     h->pattern = malloc( h->pattern_len * sizeof(int) );
     if( !h->pattern )
