@@ -31,6 +31,7 @@
 #include "analyse.h"
 #include "ratecontrol.h"
 #include "macroblock.h"
+#include "speed.h"
 #include "me.h"
 #if HAVE_INTEL_DISPATCHER
 #include "extras/intel_dispatcher.h"

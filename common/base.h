@@ -49,6 +49,31 @@
 #include <limits.h>
 #include "x264.h"
 
+
+x264_t *x264_8_encoder_open( x264_param_t * );
+void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
+int  x264_8_encoder_reconfig( x264_t *, x264_param_t * );
+void x264_8_encoder_parameters( x264_t *, x264_param_t * );
+int  x264_8_encoder_headers( x264_t *, x264_nal_t **pp_nal, int *pi_nal );
+int  x264_8_encoder_encode( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out );
+void x264_8_encoder_close( x264_t * );
+int  x264_8_encoder_delayed_frames( x264_t * );
+int  x264_8_encoder_maximum_delayed_frames( x264_t * );
+void x264_8_encoder_intra_refresh( x264_t * );
+int  x264_8_encoder_invalidate_reference( x264_t *, int64_t pts );
+
+x264_t *x264_10_encoder_open( x264_param_t * );
+void x264_10_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
+int  x264_10_encoder_reconfig( x264_t *, x264_param_t * );
+void x264_10_encoder_parameters( x264_t *, x264_param_t * );
+int  x264_10_encoder_headers( x264_t *, x264_nal_t **pp_nal, int *pi_nal );
+int  x264_10_encoder_encode( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out );
+void x264_10_encoder_close( x264_t * );
+int  x264_10_encoder_delayed_frames( x264_t * );
+int  x264_10_encoder_maximum_delayed_frames( x264_t * );
+void x264_10_encoder_intra_refresh( x264_t * );
+int  x264_10_encoder_invalidate_reference( x264_t *, int64_t pts );
+
 /****************************************************************************
  * Macros
  ****************************************************************************/
