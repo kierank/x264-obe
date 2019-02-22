@@ -61,6 +61,7 @@ int  x264_8_encoder_delayed_frames( x264_t * );
 int  x264_8_encoder_maximum_delayed_frames( x264_t * );
 void x264_8_encoder_intra_refresh( x264_t * );
 int  x264_8_encoder_invalidate_reference( x264_t *, int64_t pts );
+void x264_8_speedcontrol_sync( x264_t *, float f_buffer_fill, int i_buffer_size, int buffer_complete );
 
 x264_t *x264_10_encoder_open( x264_param_t * );
 void x264_10_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
@@ -73,6 +74,7 @@ int  x264_10_encoder_delayed_frames( x264_t * );
 int  x264_10_encoder_maximum_delayed_frames( x264_t * );
 void x264_10_encoder_intra_refresh( x264_t * );
 int  x264_10_encoder_invalidate_reference( x264_t *, int64_t pts );
+void x264_10_speedcontrol_sync( x264_t *, float f_buffer_fill, int i_buffer_size, int buffer_complete );
 
 /****************************************************************************
  * Macros

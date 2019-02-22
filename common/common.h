@@ -45,6 +45,7 @@
 #define x264_encoder_maximum_delayed_frames x264_template(encoder_maximum_delayed_frames)
 #define x264_encoder_intra_refresh x264_template(encoder_intra_refresh)
 #define x264_encoder_invalidate_reference x264_template(encoder_invalidate_reference)
+#define x264_speedcontrol_sync x264_template(speedcontrol_sync)
 
 /* This undef allows to rename the external symbol and force link failure in case
  * of incompatible libraries. Then the define enables templating as above. */

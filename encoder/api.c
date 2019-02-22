@@ -48,6 +48,7 @@ typedef struct x264_api_t
     int  (*encoder_maximum_delayed_frames)( x264_t * );
     void (*encoder_intra_refresh)( x264_t * );
     int  (*encoder_invalidate_reference)( x264_t *, int64_t pts );
+    void (*speedcontrol_sync)( x264_t *, float f_buffer_fill, int i_buffer_size, int buffer_complete );
 } x264_api_t;
 
 static x264_api_t *encoder_open( x264_param_t *param )
@@ -68,6 +69,7 @@ static x264_api_t *encoder_open( x264_param_t *param )
         api->encoder_maximum_delayed_frames = x264_8_encoder_maximum_delayed_frames;
         api->encoder_intra_refresh = x264_8_encoder_intra_refresh;
         api->encoder_invalidate_reference = x264_8_encoder_invalidate_reference;
+        api->speedcontrol_sync = x264_8_speedcontrol_sync;
 
         api->x264 = x264_8_encoder_open( param );
     }
@@ -83,6 +85,7 @@ static x264_api_t *encoder_open( x264_param_t *param )
         api->encoder_maximum_delayed_frames = x264_10_encoder_maximum_delayed_frames;
         api->encoder_intra_refresh = x264_10_encoder_intra_refresh;
         api->encoder_invalidate_reference = x264_10_encoder_invalidate_reference;
+        api->speedcontrol_sync = x264_10_speedcontrol_sync;
 
         api->x264 = x264_10_encoder_open( param );
     }
@@ -174,3 +177,11 @@ int x264_encoder_invalidate_reference( x264_t *h, int64_t pts )
 
     return x264_stack_align( api->encoder_invalidate_reference, api->x264, pts );
 }
+
+void x264_speedcontrol_sync( x264_t *h, float f_buffer_fill, int i_buffer_size, int buffer_complete )
+{
+    x264_api_t *api = (x264_api_t *)h;
+
+    x264_stack_align( api->speedcontrol_sync, api->x264, f_buffer_fill, i_buffer_size, buffer_complete );
+}
+
