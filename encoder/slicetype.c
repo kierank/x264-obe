@@ -1731,7 +1731,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
         x264_vbv_lookahead( h, &a, frames, num_frames, keyframe );
 
     /* Restore frametypes for all frames that haven't actually been decided yet. */
-    for( int j = reset_start; j <= num_frames; j++ )
+    for( int j = reset_start + 1; j <= num_frames; j++ )
         frames[j]->i_type = frames[j]->i_forced_type;
 
 #if HAVE_OPENCL
