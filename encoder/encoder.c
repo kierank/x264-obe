@@ -5,7 +5,7 @@
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Loren Merritt <lorenm@u.washington.edu>
- *          Jason Garrett-Glaser <darkshikari@gmail.com>
+ *          Fiona Glaser <fiona@x264.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3737,6 +3737,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
 
     /* Set output picture properties */
     pic_out->i_type = h->fenc->i_type;
+
     pic_out->b_keyframe = h->fenc->b_keyframe;
     pic_out->i_pic_struct = h->fenc->i_pic_struct;
 
