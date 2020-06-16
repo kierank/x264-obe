@@ -81,7 +81,7 @@ static void x264_lookahead_slicetype_decide( x264_t *h )
     x264_stack_align( x264_slicetype_decide, h );
 
     x264_lookahead_update_last_nonb( h, h->lookahead->next.list[0] );
-    int shift_frames = h->lookahead->last_nonb->i_bframes + 1;
+    int shift_frames = h->lookahead->last_nonb ? h->lookahead->last_nonb->i_bframes + 1 : 1;
 
     /* For MB-tree and VBV lookahead, we have to perform propagation analysis on I-frames too.
      * No lock: only this thread changes next, and the minigop, which the analysis
@@ -255,7 +255,7 @@ void x264_lookahead_get_frames( x264_t *h )
 
         x264_stack_align( x264_slicetype_decide, h );
         x264_lookahead_update_last_nonb( h, h->lookahead->next.list[0] );
-        int shift_frames = h->lookahead->last_nonb->i_bframes + 1;
+        int shift_frames = h->lookahead->last_nonb ? h->lookahead->last_nonb->i_bframes + 1 : 1;
 
         /* For MB-tree and VBV lookahead, we have to perform propagation analysis on I-frames too. */
         if( h->lookahead->b_analyse_keyframe && IS_X264_TYPE_I( h->lookahead->last_nonb->i_type ) )

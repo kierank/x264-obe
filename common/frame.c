@@ -109,7 +109,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     frame->i_lines_lowres = frame->i_lines[0]/2;
     frame->i_stride_lowres = x264_align_stride( frame->i_width_lowres + 2*PADH, align, disalign<<1 );
 
-    for( int i = 0; i < h->param.i_bframe + 2; i++ )
+    for( int i = 0; i < h->param.i_bframe + 2 + PARAM_FIELD_ENCODE; i++ )
         for( int j = 0; j < h->param.i_bframe + 2; j++ )
             PREALLOC( frame->i_row_satds[i][j], i_lines/16 * sizeof(int) );
 
@@ -202,13 +202,13 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
                 PREALLOC( frame->buffer_lowres8, 4 * luma_plane_size );
 
             for( int j = 0; j <= !!h->param.i_bframe; j++ )
-                for( int i = 0; i <= h->param.i_bframe; i++ )
+                for( int i = 0; i <= h->param.i_bframe+2*PARAM_FIELD_ENCODE; i++ )
                 {
                     PREALLOC( frame->lowres_mvs[j][i], 2*i_mb_count*sizeof(int16_t) );
                     PREALLOC( frame->lowres_mv_costs[j][i], i_mb_count*sizeof(int) );
                 }
             PREALLOC( frame->i_propagate_cost, i_mb_count * sizeof(uint16_t) );
-            for( int j = 0; j <= h->param.i_bframe+1; j++ )
+            for( int j = 0; j <= h->param.i_bframe+1+PARAM_FIELD_ENCODE; j++ )
                 for( int i = 0; i <= h->param.i_bframe+1; i++ )
                     PREALLOC( frame->lowres_costs[j][i], i_mb_count * sizeof(uint16_t) );
         }
