@@ -756,7 +756,7 @@ struct x264_t
             uint8_t *l0_field;
             int32_t tscale[2][2][2][X264_REF_MAX*2]; /* [list][MB_INTERLACED][mb_y&1][ref] */
         } mvref;
-        int     i_mvy_offset[2][X264_REF_MAX];
+        int8_t     i_mvy_offset[2][X264_REF_MAX];
     } mb;
 
     /* rate control encoding only */
