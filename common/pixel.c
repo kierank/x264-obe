@@ -918,7 +918,6 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT7( satd_x4, _mmx2 );
         INIT4( hadamard_ac, _mmx2 );
         INIT8( ssd, _mmx2 );
-        INIT_ADS( _mmx2 );
 
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_mmx2;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_mmx2;
@@ -1078,6 +1077,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4_NAME( sad_aligned, sad, _avx2 );
         INIT4( sad_x3, _avx2 );
         INIT4( sad_x4, _avx2 );
+#if ARCH_X86 || !defined( __MACH__ )
+        INIT_ADS( _avx2 );
+#endif
         INIT4( satd, _avx2 );
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx2;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx2;
