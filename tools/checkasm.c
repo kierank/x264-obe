@@ -2499,7 +2499,26 @@ static int check_quant( int cpu_ref, int cpu_new )
     h->chroma_qp_table = i_chroma_qp_table + 12;
     h->param.analyse.b_transform_8x8 = 1;
 
-    for( int i_cqm = 0; i_cqm < 4; i_cqm++ )
+    static const uint8_t cqm_test4[16] =
+    {
+        6,4,6,4,
+        4,3,4,3,
+        6,4,6,4,
+        4,3,4,3
+    };
+    static const uint8_t cqm_test8[64] =
+    {
+        3,3,4,3,3,3,4,3,
+        3,3,4,3,3,3,4,3,
+        4,4,5,4,4,4,5,4,
+        3,3,4,3,3,3,4,3,
+        3,3,4,3,3,3,4,3,
+        3,3,4,3,3,3,4,3,
+        4,4,5,4,4,4,5,4,
+        3,3,4,3,3,3,4,3
+    };
+
+    for( int i_cqm = 0; i_cqm < 6; i_cqm++ )
     {
         if( i_cqm == 0 )
         {
@@ -2513,10 +2532,26 @@ static int check_quant( int cpu_ref, int cpu_new )
                 h->pps->scaling_list[i] = x264_cqm_jvt[i];
             h->param.i_cqm_preset = h->pps->i_cqm_preset = X264_CQM_JVT;
         }
+        else if( i_cqm == 2 )
+        {
+            for( int i = 0; i < 4; i++ )
+                h->pps->scaling_list[i] = cqm_test4;
+            for( int i = 4; i < 6; i++ )
+                h->pps->scaling_list[i] = x264_cqm_flat16;
+            h->param.i_cqm_preset = h->pps->i_cqm_preset = X264_CQM_CUSTOM;
+        }
+        else if( i_cqm == 3 )
+        {
+            for( int i = 0; i < 4; i++ )
+                h->pps->scaling_list[i] = x264_cqm_flat16;
+            for( int i = 4; i < 6; i++ )
+                h->pps->scaling_list[i] = cqm_test8;
+            h->param.i_cqm_preset = h->pps->i_cqm_preset = X264_CQM_CUSTOM;
+        }
         else
         {
             int max_scale = BIT_DEPTH < 10 ? 255 : 228;
-            if( i_cqm == 2 )
+            if( i_cqm == 4 )
                 for( int i = 0; i < 64; i++ )
                     cqm_buf[i] = 10 + rand() % (max_scale - 9);
             else
@@ -2542,8 +2577,8 @@ static int check_quant( int cpu_ref, int cpu_new )
             static const int scale1d[8] = {32,31,24,31,32,31,24,31}; \
             for( int i = 0; i < max; i++ ) \
             { \
-                unsigned int scale = (255*scale1d[(i>>3)&7]*scale1d[i&7])/16; \
-                dct1[i] = dct2[i] = (j>>(i>>6))&1 ? (rand()%(2*scale+1))-scale : 0; \
+                int scale = (PIXEL_MAX*scale1d[(i>>3)&7]*scale1d[i&7])/16; \
+                dct1[i] = dct2[i] = (j>>(i>>6))&1 ? (rand30()%(2*scale+1))-scale : 0; \
             } \
         }
 
@@ -2552,8 +2587,8 @@ static int check_quant( int cpu_ref, int cpu_new )
             static const int scale1d[4] = {4,6,4,6}; \
             for( int i = 0; i < max; i++ ) \
             { \
-                unsigned int scale = 255*scale1d[(i>>2)&3]*scale1d[i&3]; \
-                dct1[i] = dct2[i] = (j>>(i>>4))&1 ? (rand()%(2*scale+1))-scale : 0; \
+                int scale = PIXEL_MAX*scale1d[(i>>2)&3]*scale1d[i&3]; \
+                dct1[i] = dct2[i] = (j>>(i>>4))&1 ? (rand30()%(2*scale+1))-scale : 0; \
             } \
         }
 
