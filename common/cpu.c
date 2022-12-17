@@ -178,7 +178,11 @@ uint32_t x264_cpu_detect( void )
                 if( (xcr0&0xE0) == 0xE0 ) /* OPMASK/ZMM state */
                 {
                     if( (ebx&0xD0030000) == 0xD0030000 )
-                        cpu |= X264_CPU_AVX512;
+                    {
+                        x264_cpu_cpuid(7, &eax, &ebx, &ecx, &edx);
+                        if (((ebx&0x200000) == 0x200000) && ((ecx&0x5f42) == 0x5f42))
+                            cpu |= X264_CPU_AVX512;
+                    }
                 }
             }
         }
