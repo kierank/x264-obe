@@ -231,8 +231,9 @@ void x264_speedcontrol_frame( x264_t *h )
                 break;
             t0 = t1;
         }
-        // linear interpolation between states
-        set = i-1 + (target - t0) / (t1 - t0);
+        // exponential interpolation between states
+        set = i-1 + (log(target) - log(t0)) / (log(t1) - log(t0));
+        set = x264_clip3f( set, -5, (SC_PRESETS-1) + 5 );
         // Even if our time estimations in the SC_PRESETS array are off
         // this will push us towards our target fullness
         set += (20 * (filled-0.75));
