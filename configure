@@ -1183,7 +1183,7 @@ EOF
 
 if [ $compiler = ICL ]; then
     echo '%.o: %.c' >> config.mak
-    echo '  $(CC) $(CFLAGS) -c -Fo$@ $<' >> config.mak
+    echo '	$(CC) $(CFLAGS) -c -Fo$@ $<' >> config.mak
 fi
 
 if [ "$cli" = "yes" ]; then
