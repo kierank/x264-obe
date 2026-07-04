@@ -1896,9 +1896,6 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
         }
         if( do_search[1] ) fenc->lowres_mvs[1][p1-b-1][0][0] = 0;
 
-        if( b != p0 )
-            printf("\n do search %i %i %i \n", do_search[0], do_search[1], fenc->lowres_mvs[0][b-p0-1][0][0] );
-
         if( p1 != p0 )
             dist_scale_factor = ( ((b-p0) << 8) + ((p1-p0) >> 1) ) / (p1-p0);
 
@@ -2157,8 +2154,6 @@ static void x264_macroblock_tree( x264_t *h, x264_mb_analysis_t *a, x264_frame_t
     float average_duration = total_duration / (num_frames + 1);
 
     int i = num_frames;
-
-    printf("\n MBTREE num_frames %i \n", num_frames );
 
     if( b_intra )
         x264_slicetype_frame_cost( h, a, frames, 0, 0, 0, 0 );
@@ -3035,8 +3030,6 @@ void x264_slicetype_decide( x264_t *h )
                 p0 = 0;
         }
 
-        printf("\n SD %i %i %i \n", p0, p1, b );
-
         x264_slicetype_frame_cost( h, &a, frames, p0, p1, b, 0 );
 
         if( (p0 != p1 || bframes) && h->param.rc.i_vbv_buffer_size )
@@ -3134,11 +3127,8 @@ int x264_rc_analyse_slice( x264_t *h )
     /* We don't need to assign p0/p1 since we are not performing any real analysis here. */
     frames = &h->fenc - b;
 
-    printf("\n num %i ref %i p1 %i b %i \n", frames[p1]->i_frame, h->fenc->b_ref_opp_field, p1, b );
-
     /* cost should have been already calculated by x264_slicetype_decide */
     cost = frames[b]->i_cost_est[b-p0][p1-b];
-    printf("\n b-p0 %i p1-b %i \n", b-p0, p1-b );
     assert( cost >= 0 );
 
     if( h->param.rc.b_mb_tree && !h->param.rc.b_stat_read )
