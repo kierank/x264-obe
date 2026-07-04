@@ -37,6 +37,17 @@
                    &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
                    mvx, mvy, 4*width, 4*height, w );
 
+/* Chroma in 4:2:0 is offset if MCing from a field of opposite parity.
+ * For MBAFF the offset depends on the parity of the current macroblock row,
+ * so it must be evaluated per-MB; for PAFF (field pictures) it depends only on
+ * the current/reference field parity and is precomputed in slice_init. */
+static ALWAYS_INLINE int mb_chroma_mvy_offset( x264_t *h, int list, int i_ref )
+{
+    if( SLICE_MBAFF )
+        return (i_ref & 1) ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
+    return h->mb.i_mvy_offset[list][i_ref];
+}
+
 static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
 {
     int i8    = x264_scan8[0]+x+8*y;
@@ -56,9 +67,8 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     else
     {
         int v_shift = CHROMA_V_SHIFT;
-        // Chroma in 4:2:0 is offset if MCing from a field of opposite parity
         if( v_shift & MB_INTERLACED )
-            mvy += h->mb.i_mvy_offset[0][i_ref];
+            mvy += mb_chroma_mvy_offset( h, 0, i_ref );
 
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
         int uv_dy = 2*mvy>>v_shift;
@@ -97,7 +107,7 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     {
         int v_shift = CHROMA_V_SHIFT;
         if( v_shift & MB_INTERLACED )
-            mvy += h->mb.i_mvy_offset[1][i_ref];
+            mvy += mb_chroma_mvy_offset( h, 1, i_ref );
 
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
         int uv_dy = 2*mvy>>v_shift;
@@ -145,8 +155,8 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
         int v_shift = CHROMA_V_SHIFT;
         if( v_shift & MB_INTERLACED )
         {
-            mvy0 += h->mb.i_mvy_offset[0][i_ref0];
-            mvy1 += h->mb.i_mvy_offset[1][i_ref1];
+            mvy0 += mb_chroma_mvy_offset( h, 0, i_ref0 );
+            mvy1 += mb_chroma_mvy_offset( h, 1, i_ref1 );
         }
 
         int uv_dy0 = 2*mvy0>>v_shift;
@@ -535,19 +545,19 @@ void x264_macroblock_slice_init( x264_t *h )
             h->fdec->inv_ref_poc[field] = (256 + delta/2) / delta;
         }
 
+    /* Precompute the chroma MV offset for PAFF (field pictures). For MBAFF the
+     * offset is row-parity dependent and is computed per-MB in mb_chroma_mvy_offset. */
     int cur_bottom = (h->fdec->i_frame & 1) ^ !h->param.b_tff;
     for( int i = 0; i < h->i_ref[0]; i++ )
     {
         int ref_bottom = (h->fref[0][i]->i_frame & 1) ^ !h->param.b_tff;
-        h->mb.i_mvy_offset[0][i] = SLICE_MBAFF ? i&1 ? (h->mb.i_mb_y & 1)*4 - 2 : 0
-                                   : cur_bottom && !ref_bottom ? +2 : !cur_bottom && ref_bottom ? -2 : 0;
+        h->mb.i_mvy_offset[0][i] = cur_bottom && !ref_bottom ? +2 : !cur_bottom && ref_bottom ? -2 : 0;
     }
     if( h->sh.i_type == SLICE_TYPE_B )
         for( int i = 0; i < h->i_ref[1]; i++ )
         {
             int ref_bottom = (h->fref[1][i]->i_frame & 1) ^ !h->param.b_tff;
-            h->mb.i_mvy_offset[1][i] = SLICE_MBAFF ? i&1 ? (h->mb.i_mb_y & 1)*4 - 2 : 0
-                                       : cur_bottom && !ref_bottom ? +2 : !cur_bottom && ref_bottom ? -2 : 0;
+            h->mb.i_mvy_offset[1][i] = cur_bottom && !ref_bottom ? +2 : !cur_bottom && ref_bottom ? -2 : 0;
         }
     x264_mvpred_ref16x16_init( h );
 
