@@ -39,36 +39,63 @@
 
 #define CLIP_DURATION(f) x264_clip3f(f,MIN_FRAME_DURATION,MAX_FRAME_DURATION)
 
+#define x264_ratecontrol_new x264_template(ratecontrol_new)
 int  x264_ratecontrol_new   ( x264_t * );
+#define x264_ratecontrol_delete x264_template(ratecontrol_delete)
 void x264_ratecontrol_delete( x264_t * );
 
+#define x264_ratecontrol_init_reconfigurable x264_template(ratecontrol_init_reconfigurable)
 void x264_ratecontrol_init_reconfigurable( x264_t *h, int b_init );
+#define x264_encoder_reconfig_apply x264_template(encoder_reconfig_apply)
 int x264_encoder_reconfig_apply( x264_t *h, x264_param_t *param );
 
+#define x264_adaptive_quant_frame x264_template(adaptive_quant_frame)
 void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_offsets );
+#define x264_macroblock_tree_read x264_template(macroblock_tree_read)
 int  x264_macroblock_tree_read( x264_t *h, x264_frame_t *frame, float *quant_offsets );
+#define x264_reference_build_list_optimal x264_template(reference_build_list_optimal)
 int  x264_reference_build_list_optimal( x264_t *h );
+#define x264_thread_sync_ratecontrol x264_template(thread_sync_ratecontrol)
 void x264_thread_sync_ratecontrol( x264_t *cur, x264_t *prev, x264_t *next );
+#define x264_ratecontrol_start x264_template(ratecontrol_start)
 void x264_ratecontrol_start( x264_t *, int i_force_qp, int overhead );
+#define x264_ratecontrol_slice_type x264_template(ratecontrol_slice_type)
 int  x264_ratecontrol_slice_type( x264_t *, int i_frame );
+#define x264_ratecontrol_set_weights x264_template(ratecontrol_set_weights)
 void x264_ratecontrol_set_weights( x264_t *h, x264_frame_t *frm );
+#define x264_ratecontrol_mb x264_template(ratecontrol_mb)
 int  x264_ratecontrol_mb( x264_t *, int bits );
+#define x264_ratecontrol_qp x264_template(ratecontrol_qp)
 int  x264_ratecontrol_qp( x264_t * );
+#define x264_ratecontrol_mb_qp x264_template(ratecontrol_mb_qp)
 int  x264_ratecontrol_mb_qp( x264_t *h );
+#define x264_ratecontrol_end x264_template(ratecontrol_end)
 int  x264_ratecontrol_end( x264_t *, int bits, int *filler );
+#define x264_ratecontrol_summary x264_template(ratecontrol_summary)
 void x264_ratecontrol_summary( x264_t * );
+#define x264_ratecontrol_set_estimated_size x264_template(ratecontrol_set_estimated_size)
 void x264_ratecontrol_set_estimated_size( x264_t *, int bits );
+#define x264_ratecontrol_get_estimated_size x264_template(ratecontrol_get_estimated_size)
 int  x264_ratecontrol_get_estimated_size( x264_t const *);
+#define x264_rc_analyse_slice x264_template(rc_analyse_slice)
 int  x264_rc_analyse_slice( x264_t *h );
+#define x264_weighted_reference_duplicate x264_template(weighted_reference_duplicate)
 int x264_weighted_reference_duplicate( x264_t *h, int i_ref, const x264_weight_t *w );
+#define x264_threads_distribute_ratecontrol x264_template(threads_distribute_ratecontrol)
 void x264_threads_distribute_ratecontrol( x264_t *h );
+#define x264_threads_merge_ratecontrol x264_template(threads_merge_ratecontrol)
 void x264_threads_merge_ratecontrol( x264_t *h );
+#define x264_hrd_fullness x264_template(hrd_fullness)
 void x264_hrd_fullness( x264_t *h );
 
 // speedcontrol
+#define x264_speedcontrol_new x264_template(speedcontrol_new)
 void x264_speedcontrol_new( x264_t *h );
+#define x264_speedcontrol_delete x264_template(speedcontrol_delete)
 void x264_speedcontrol_delete( x264_t *h );
+#define x264_speedcontrol_frame x264_template(speedcontrol_frame)
 void x264_speedcontrol_frame( x264_t *h );
+#define x264_speedcontrol_frame_end x264_template(speedcontrol_frame_end)
 void x264_speedcontrol_frame_end( x264_t *h );
 
 #endif
