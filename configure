@@ -400,11 +400,10 @@ for opt do
             ;;
         --bit-depth=*)
             bit_depth="$optarg"
-            if [ "$bit_depth" -lt "8" -o "$bit_depth" -gt "10" ]; then
-                echo "Supplied bit depth must be in range [8,10]."
+            if [ "$bit_depth" != "8" -a "$bit_depth" != "10" -a "$bit_depth" != "all" ]; then
+                echo "Supplied bit depth must be 8, 10, or all."
                 exit 1
             fi
-            bit_depth=`expr $bit_depth + 0`
             ;;
         --chroma-format=*)
             chroma_format="$optarg"
