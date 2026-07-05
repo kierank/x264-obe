@@ -26,6 +26,13 @@
 #ifndef X264_MC_H
 #define X264_MC_H
 
+/* Defined for functions shared between mc.c and x86/mc-c.c that have no
+ * extern prototype in this fork (unlike upstream 2017+); without this they'd
+ * collide as duplicate external symbols across the two BIT_DEPTH object sets. */
+#define x264_plane_copy_c x264_template(plane_copy_c)
+#define x264_plane_copy_interleave_c x264_template(plane_copy_interleave_c)
+#define x264_plane_copy_deinterleave_v210_c x264_template(plane_copy_deinterleave_v210_c)
+
 struct x264_weight_t;
 typedef void (* weight_fn_t)( pixel *, intptr_t, pixel *,intptr_t, const struct x264_weight_t *, int );
 typedef struct x264_weight_t
@@ -40,6 +47,7 @@ typedef struct x264_weight_t
     weight_fn_t *weightfn;
 } ALIGNED_16( x264_weight_t );
 
+#define x264_weight_none x264_template(weight_none)
 extern const x264_weight_t x264_weight_none[3];
 
 #define SET_WEIGHT( w, b, s, d, o )\
@@ -130,6 +138,7 @@ typedef struct
                                    int bipred_weight, int mb_y, int len, int list );
 } x264_mc_functions_t;
 
+#define x264_mc_init x264_template(mc_init)
 void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent );
 
 #endif
