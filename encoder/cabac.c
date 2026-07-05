@@ -32,6 +32,13 @@
 #define RDO_SKIP_BS 0
 #endif
 
+/* Not declared in macroblock.h in this fork; still need unique symbols per
+ * BIT_DEPTH object set since these are non-static and cabac.c is also built
+ * as its own translation unit (see Makefile SRCS). */
+#define x264_cabac_block_residual_c x264_template(cabac_block_residual_c)
+#define x264_cabac_block_residual_8x8_rd_c x264_template(cabac_block_residual_8x8_rd_c)
+#define x264_cabac_block_residual_rd_c x264_template(cabac_block_residual_rd_c)
+
 static inline void x264_cabac_mb_type_intra( x264_t *h, x264_cabac_t *cb, int i_mb_type,
                     int ctx0, int ctx1, int ctx2, int ctx3, int ctx4, int ctx5 )
 {
