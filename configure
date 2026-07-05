@@ -30,7 +30,7 @@ Configuration options:
   --disable-thread         disable multithreaded encoding
   --enable-win32thread     use win32threads (windows only)
   --disable-interlaced     disable interlaced encoding support
-  --bit-depth=BIT_DEPTH    set output bit depth (8-10) [8]
+  --bit-depth=BIT_DEPTH    set output bit depth: 8, 10, or all (both, X86_64 only) [8]
   --chroma-format=FORMAT   output chroma format (420, 422, 444, all) [all]
 
 Advanced options:
@@ -1043,19 +1043,46 @@ if cc_check '' -Wshadow ; then
     CFLAGS="-Wshadow $CFLAGS"
 fi
 
-if [ "$bit_depth" -gt "8" ]; then
-    define HIGH_BIT_DEPTH
-    ASFLAGS="$ASFLAGS -DHIGH_BIT_DEPTH=1"
+# NOTE: unverified by compilation (no build toolchain available in the
+# environment that wrote this) -- 8-bit and 10-bit are now always built as
+# separate object sets (common/*.c and encoder/*.c compiled once per
+# selected depth, with BIT_DEPTH/private_prefix overridden per object) and
+# linked into a single binary/library; encoder/api.c dispatches between them
+# at runtime based on x264_param_t.i_bitdepth. This only works for
+# ARCH X86/X86_64 (the Makefile rules for the object-suffix compile passes
+# are only wired up for those architectures); other architectures keep the
+# old single-depth build and will fail to link since api.c unconditionally
+# expects whichever depth(s) are selected below to exist as -8/-10 objects.
+have_bitdepth8=no
+have_bitdepth10=no
+case "$bit_depth" in
+    8)   have_bitdepth8=yes ;;
+    10)  have_bitdepth10=yes ;;
+    all) have_bitdepth8=yes; have_bitdepth10=yes ;;
+esac
+
+if [ "$have_bitdepth8" = "yes" ]; then
+    define HAVE_BITDEPTH8
+fi
+if [ "$have_bitdepth10" = "yes" ]; then
+    define HAVE_BITDEPTH10
     opencl="no"
-else
-    ASFLAGS="$ASFLAGS -DHIGH_BIT_DEPTH=0"
+fi
+
+if [ "$have_bitdepth8" = "no" -a "$have_bitdepth10" = "no" ]; then
+    echo "No bit depth selected (this should not happen -- report a bug in configure)."
+    exit 1
+fi
+
+if [ "$ARCH" != "X86" -a "$ARCH" != "X86_64" ]; then
+    echo "This fork's bit-depth-unify backport only wired up object-suffix build rules for X86/X86_64."
+    echo "Building for $ARCH would produce a library that fails to link against encoder/api.c's dispatch."
+    exit 1
 fi
 
 if [ "$chroma_format" != "all" ]; then
     define CHROMA_FORMAT CHROMA_$chroma_format
 fi
-
-ASFLAGS="$ASFLAGS -DBIT_DEPTH=$bit_depth"
 
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
@@ -1137,8 +1164,18 @@ rm -f conftest*
 
 config_chroma_format="X264_CSP_I$chroma_format"
 [ "$config_chroma_format" == "X264_CSP_Iall" ] && config_chroma_format="0"
+# X264_BIT_DEPTH is consumed at compile time by application code (e.g. the
+# OBE broadcastencoder) that still picks its pixel format/shifts based on a
+# single fixed depth; it does NOT reflect what the library itself supports
+# now that api.c can dispatch to either depth at runtime via
+# x264_param_t.i_bitdepth. When --bit-depth=all is selected we still need a
+# single concrete value here for that legacy application code to compile
+# against, so default it to 8 (matches current production behavior; that
+# application code hasn't been updated to request 10-bit at runtime).
+x264_config_bit_depth=$bit_depth
+[ "$x264_config_bit_depth" = "all" ] && x264_config_bit_depth=8
 cat > x264_config.h << EOF
-#define X264_BIT_DEPTH     $bit_depth
+#define X264_BIT_DEPTH     $x264_config_bit_depth
 #define X264_GPL           $x264_gpl
 #define X264_INTERLACED    $x264_interlaced
 #define X264_CHROMA_FORMAT $config_chroma_format
