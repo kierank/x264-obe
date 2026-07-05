@@ -45,16 +45,21 @@ SRCCLI = x264.c input/input.c input/timecode.c input/raw.c input/y4m.c \
 # same binary; compiled once per selected depth into -8.o/-10.o below.
 SRCCLI_X = filters/video/cache.c filters/video/depth.c
 
-# NOTE: tools/checkasm.c and example.c were out of scope for this backport
-# (library-only) and are NOT updated for the dual object-suffix scheme
-# below; the `checkasm` target is left in place but is not expected to link.
+# SRCCHK_X: like SRCS_X, but for checkasm -- compiled once per depth so a
+# separate checkasm8/checkasm10 binary can each test that depth's internal
+# (non-public-API) functions directly. example.c is NOT updated (still out
+# of scope; the `example` target is not expected to link).
+SRCCHK_X = tools/checkasm.c
+
 SRCSO =
 OBJS =
 OBJASM =
 OBJSO =
 OBJCLI =
 
-OBJCHK = tools/checkasm.o
+OBJCHK =
+OBJCHK_8 =
+OBJCHK_10 =
 
 CONFIG := $(shell cat config.h)
 
@@ -182,15 +187,18 @@ OBJS   += $(SRCS:%.c=%.o)
 OBJCLI += $(SRCCLI:%.c=%.o)
 OBJSO  += $(SRCSO:%.c=%.o)
 
-# SRCS_X/SRCCLI_X are compiled once per selected bit depth into -8.o/-10.o
-# objects (see the %-8.o/%-10.o pattern rules below), mirroring OBJASM above.
+# SRCS_X/SRCCLI_X/SRCCHK_X are compiled once per selected bit depth into
+# -8.o/-10.o objects (see the %-8.o/%-10.o pattern rules below), mirroring
+# OBJASM above.
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-OBJS   += $(SRCS_X:%.c=%-8.o)
-OBJCLI += $(SRCCLI_X:%.c=%-8.o)
+OBJS     += $(SRCS_X:%.c=%-8.o)
+OBJCLI   += $(SRCCLI_X:%.c=%-8.o)
+OBJCHK_8 += $(SRCCHK_X:%.c=%-8.o)
 endif
 ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
-OBJS   += $(SRCS_X:%.c=%-10.o)
-OBJCLI += $(SRCCLI_X:%.c=%-10.o)
+OBJS      += $(SRCS_X:%.c=%-10.o)
+OBJCLI    += $(SRCCLI_X:%.c=%-10.o)
+OBJCHK_10 += $(SRCCHK_X:%.c=%-10.o)
 endif
 
 .PHONY: all default fprofiled clean distclean install uninstall lib-static lib-shared cli install-lib-dev install-lib-static install-lib-shared install-cli
@@ -208,18 +216,29 @@ $(SONAME): $(GENERATED) .depend $(OBJS) $(OBJASM) $(OBJSO)
 	$(LD)$@ $(OBJS) $(OBJASM) $(OBJSO) $(SOFLAGS) $(LDFLAGS)
 
 ifneq ($(EXE),)
-.PHONY: x264 checkasm
+.PHONY: x264 checkasm8 checkasm10
 x264: x264$(EXE)
-checkasm: checkasm$(EXE)
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+checkasm8: checkasm8$(EXE)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+checkasm10: checkasm10$(EXE)
+endif
 endif
 
 x264$(EXE): $(GENERATED) .depend $(OBJCLI) $(CLI_LIBX264)
 	$(LD)$@ $(OBJCLI) $(CLI_LIBX264) $(LDFLAGSCLI) $(LDFLAGS)
 
-checkasm$(EXE): $(GENERATED) .depend $(OBJCHK) $(LIBX264)
-	$(LD)$@ $(OBJCHK) $(LIBX264) $(LDFLAGS)
+# Each checkasm binary links the FULL library (both depths, when both are
+# selected) plus its own depth-specific checkasm-N.o, since that object is
+# what actually calls the x264_8_*/x264_10_* internal functions directly.
+checkasm8$(EXE): $(GENERATED) .depend $(OBJCHK) $(OBJCHK_8) $(LIBX264)
+	$(LD)$@ $(OBJCHK) $(OBJCHK_8) $(LIBX264) $(LDFLAGS)
 
-$(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
+checkasm10$(EXE): $(GENERATED) .depend $(OBJCHK) $(OBJCHK_10) $(LIBX264)
+	$(LD)$@ $(OBJCHK) $(OBJCHK_10) $(LIBX264) $(LDFLAGS)
+
+$(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10): .depend
 
 # Explicit .c rule (was previously left to make's builtin implicit rule);
 # needed now so it doesn't shadow/conflict with the %-8.o/%-10.o rules below.
@@ -266,10 +285,10 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
 	@rm -f .depend
 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%.o) $(DEPMM) 1>> .depend;)
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
 endif
 ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
 endif
 
 config.mak:
@@ -308,7 +327,7 @@ endif
 
 clean:
 	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(SONAME) *.a *.lib *.exp *.pdb x264 x264.exe .depend TAGS
-	rm -f checkasm checkasm.exe $(OBJCHK) $(GENERATED) x264_lookahead.clbin
+	rm -f checkasm8 checkasm8.exe checkasm10 checkasm10.exe $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10) $(GENERATED) x264_lookahead.clbin
 	rm -f $(SRC2:%.c=%.gcda) $(SRC2:%.c=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
 
 distclean: clean

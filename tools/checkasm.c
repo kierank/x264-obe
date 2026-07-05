@@ -27,7 +27,6 @@
 
 #include <ctype.h>
 #include "common/common.h"
-#include "common/cpu.h"
 
 // GCC doesn't align stack variables on ARM, so use .bss
 #if ARCH_ARM
