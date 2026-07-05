@@ -3,6 +3,7 @@
 #include <math.h>
 #include "common/common.h"
 #include "common/cpu.h"
+#include "ratecontrol.h"
 
 struct x264_speedcontrol_t
 {

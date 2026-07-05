@@ -72,6 +72,7 @@ typedef struct
 #define x264_dct_init x264_template(dct_init)
 void x264_dct_init( int cpu, x264_dct_function_t *dctf );
 void x264_dct_init_weights( void );
+#define x264_zigzag_init x264_template(zigzag_init)
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced );
 
 #endif

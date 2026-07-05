@@ -845,6 +845,8 @@ static void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, in
     }\
 }
 
+#define x264_mbtree_propagate_list_internal_ssse3 x264_template(mbtree_propagate_list_internal_ssse3)
+#define x264_mbtree_propagate_list_internal_avx x264_template(mbtree_propagate_list_internal_avx)
 PROPAGATE_LIST(ssse3)
 PROPAGATE_LIST(avx)
 #undef CLIP_ADD

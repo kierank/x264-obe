@@ -56,6 +56,8 @@ void x264_predict_16x16_h_avx2( uint16_t *src );
 void x264_predict_16x16_dc_mmx2( pixel *src );
 #define x264_predict_16x16_dc_sse2 x264_template(predict_16x16_dc_sse2)
 void x264_predict_16x16_dc_sse2( pixel *src );
+#define x264_predict_16x16_dc_avx2 x264_template(predict_16x16_dc_avx2)
+void x264_predict_16x16_dc_avx2( pixel *src );
 #define x264_predict_16x16_dc_core_mmx2 x264_template(predict_16x16_dc_core_mmx2)
 void x264_predict_16x16_dc_core_mmx2( pixel *src, int i_dc_left );
 #define x264_predict_16x16_dc_core_sse2 x264_template(predict_16x16_dc_core_sse2)

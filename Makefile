@@ -109,7 +109,7 @@ ASFLAGS += -DARCH_X86_64=1 -I$(SRCPATH)/common/x86/
 # must be assembled once per selected depth (BIT_DEPTH=N, private_prefix=x264_N)
 # to get uniquely-named symbols. Mirrors the equivalent common.h C templating.
 ASMSRC_X = common/x86/const-a.asm common/x86/cabac-a.asm \
-           common/x86/dct-64.asm common/x86/deblock-a.asm \
+           common/x86/dct-a.asm common/x86/dct-64.asm common/x86/deblock-a.asm \
            common/x86/mc-a.asm common/x86/mc-a2.asm \
            common/x86/pixel-a.asm common/x86/predict-a.asm \
            common/x86/quant-a.asm common/x86/bitstream-a.asm \

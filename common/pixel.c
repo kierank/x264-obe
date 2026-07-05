@@ -526,6 +526,12 @@ void x264_intra_##mbcmp##_x3_8x8##cpu( pixel *fenc, pixel edge[36], int res[3] )
     res[2] = x264_pixel_##mbcmp##_8x8##cpu( pix, FDEC_STRIDE, fenc, FENC_STRIDE );\
 }
 
+/* Plain (no cpu suffix) C reference implementations: pixel.c-internal only
+ * (assigned to pixf-> pointers below, never declared in any header), but
+ * still need unique symbols per BIT_DEPTH object set since they're
+ * non-static and this file is compiled once per selected depth. */
+#define x264_intra_sad_x3_8x8 x264_template(intra_sad_x3_8x8)
+#define x264_intra_sa8d_x3_8x8 x264_template(intra_sa8d_x3_8x8)
 INTRA_MBCMP_8x8( sad,, _c )
 INTRA_MBCMP_8x8(sa8d,, _c )
 #if HIGH_BIT_DEPTH && HAVE_MMX
@@ -549,6 +555,14 @@ void x264_intra_##mbcmp##_x3_##size##chroma##cpu( pixel *fenc, pixel *fdec, int 
     res[2] = x264_pixel_##mbcmp##_##size##cpu( fdec, FDEC_STRIDE, fenc, FENC_STRIDE );\
 }
 
+#define x264_intra_sad_x3_4x4 x264_template(intra_sad_x3_4x4)
+#define x264_intra_satd_x3_4x4 x264_template(intra_satd_x3_4x4)
+#define x264_intra_sad_x3_8x8c x264_template(intra_sad_x3_8x8c)
+#define x264_intra_satd_x3_8x8c x264_template(intra_satd_x3_8x8c)
+#define x264_intra_sad_x3_8x16c x264_template(intra_sad_x3_8x16c)
+#define x264_intra_satd_x3_8x16c x264_template(intra_satd_x3_8x16c)
+#define x264_intra_sad_x3_16x16 x264_template(intra_sad_x3_16x16)
+#define x264_intra_satd_x3_16x16 x264_template(intra_satd_x3_16x16)
 INTRA_MBCMP( sad,  4x4,   v, h, dc,  ,, _c )
 INTRA_MBCMP(satd,  4x4,   v, h, dc,  ,, _c )
 INTRA_MBCMP( sad,  8x8,  dc, h,  v, c,, _c )
@@ -557,6 +571,20 @@ INTRA_MBCMP( sad,  8x16, dc, h,  v, c,, _c )
 INTRA_MBCMP(satd,  8x16, dc, h,  v, c,, _c )
 INTRA_MBCMP( sad, 16x16,  v, h, dc,  ,, _c )
 INTRA_MBCMP(satd, 16x16,  v, h, dc,  ,, _c )
+
+/* Same as above: these _mmx2/_sse2/etc-suffixed 8x16c chroma combos are also
+ * defined here in C (not asm), so they also need unique symbols per
+ * BIT_DEPTH object set. All other suffixed intra_x3 names used below are
+ * genuine asm functions already templated via x86/pixel.h. */
+#define x264_intra_sad_x3_8x16c_mmx2 x264_template(intra_sad_x3_8x16c_mmx2)
+#define x264_intra_satd_x3_8x16c_mmx2 x264_template(intra_satd_x3_8x16c_mmx2)
+#define x264_intra_sad_x3_8x16c_sse2 x264_template(intra_sad_x3_8x16c_sse2)
+#define x264_intra_satd_x3_8x16c_sse2 x264_template(intra_satd_x3_8x16c_sse2)
+#define x264_intra_sad_x3_8x16c_ssse3 x264_template(intra_sad_x3_8x16c_ssse3)
+#define x264_intra_satd_x3_8x16c_ssse3 x264_template(intra_satd_x3_8x16c_ssse3)
+#define x264_intra_satd_x3_8x16c_sse4 x264_template(intra_satd_x3_8x16c_sse4)
+#define x264_intra_satd_x3_8x16c_avx x264_template(intra_satd_x3_8x16c_avx)
+#define x264_intra_satd_x3_8x16c_xop x264_template(intra_satd_x3_8x16c_xop)
 
 #if HAVE_MMX
 #if HIGH_BIT_DEPTH
