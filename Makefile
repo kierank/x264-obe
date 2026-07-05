@@ -33,6 +33,11 @@ SRCS_X = common/mc.c common/predict.c common/pixel.c common/macroblock.c \
          encoder/speed.c \
          encoder/cavlc.c encoder/encoder.c encoder/lookahead.c
 
+# SRCS_8: like SRCS_X, but compiled ONLY into the -8.o pass even when both
+# depths are selected (e.g. OpenCL: upstream self-gates it to BIT_DEPTH==8
+# via HAVE_OPENCL's define, see configure).
+SRCS_8 =
+
 SRCCLI = x264.c input/input.c input/timecode.c input/raw.c input/y4m.c \
          output/raw.c output/matroska.c output/matroska_ebml.c \
          output/flv.c output/flv_bytestream.c filters/filters.c \
@@ -108,7 +113,7 @@ ASFLAGS += -DARCH_X86_64=1 -I$(SRCPATH)/common/x86/
 # Templated: same source, different code per HIGH_BIT_DEPTH pass, so each
 # must be assembled once per selected depth (BIT_DEPTH=N, private_prefix=x264_N)
 # to get uniquely-named symbols. Mirrors the equivalent common.h C templating.
-ASMSRC_X = common/x86/const-a.asm common/x86/cabac-a.asm \
+SRCASM_X = common/x86/const-a.asm common/x86/cabac-a.asm \
            common/x86/dct-a.asm common/x86/dct-64.asm common/x86/deblock-a.asm \
            common/x86/mc-a.asm common/x86/mc-a2.asm \
            common/x86/pixel-a.asm common/x86/predict-a.asm \
@@ -126,10 +131,10 @@ OBJASM = common/x86/cpu-a.o
 # HIGH_BIT_DEPTH-branching source), so each is only ever assembled for its
 # own matching pass, not both.
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-OBJASM += $(ASMSRC_X:%.asm=%-8.o) common/x86/sad-a-8.o
+OBJASM += $(SRCASM_X:%.asm=%-8.o) common/x86/sad-a-8.o
 endif
 ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
-OBJASM += $(ASMSRC_X:%.asm=%-10.o) common/x86/sad16-a-10.o
+OBJASM += $(SRCASM_X:%.asm=%-10.o) common/x86/sad16-a-10.o
 endif
 
 $(OBJASM): common/x86/x86inc.asm common/x86/x86util.asm
@@ -180,7 +185,7 @@ ifeq ($(HAVE_OPENCL),yes)
 common/oclobj.h: common/opencl/x264-cl.h $(wildcard $(SRCPATH)/common/opencl/*.cl)
 	cat $^ | perl $(SRCPATH)/tools/cltostr.pl x264_opencl_source > $@
 GENERATED += common/oclobj.h
-SRCS += common/opencl.c encoder/slicetype-cl.c
+SRCS_8 += common/opencl.c encoder/slicetype-cl.c
 endif
 
 OBJS   += $(SRCS:%.c=%.o)
@@ -191,7 +196,7 @@ OBJSO  += $(SRCSO:%.c=%.o)
 # -8.o/-10.o objects (see the %-8.o/%-10.o pattern rules below), mirroring
 # OBJASM above.
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-OBJS     += $(SRCS_X:%.c=%-8.o)
+OBJS     += $(SRCS_X:%.c=%-8.o) $(SRCS_8:%.c=%-8.o)
 OBJCLI   += $(SRCCLI_X:%.c=%-8.o)
 OBJCHK_8 += $(SRCCHK_X:%.c=%-8.o)
 endif
@@ -258,7 +263,7 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10): .depend
 	$(AS) $(ASFLAGS) -o $@ $<
 	-@ $(if $(STRIP), $(STRIP) -x $@) # delete local/anonymous symbols, so they don't show up in oprofile
 
-# ASMSRC_X objects: same source, assembled once per selected bit depth.
+# SRCASM_X objects: same source, assembled once per selected bit depth.
 # private_prefix drives x86inc.asm's cglobal/mangle naming (see osdep.h's
 # %ifndef private_prefix default) so each pass's symbols come out as
 # x264_8_foo / x264_10_foo, matching what common.h's C-side templating
@@ -285,7 +290,7 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10): .depend
 	@rm -f .depend
 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%.o) $(DEPMM) 1>> .depend;)
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCS_8) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
 endif
 ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X) $(SRCCHK_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
@@ -371,4 +376,4 @@ endif
 etags: TAGS
 
 TAGS:
-	etags $(SRCS)
+	etags $(SRCS) $(SRCS_X) $(SRCS_8)

@@ -1066,6 +1066,11 @@ if [ "$have_bitdepth8" = "yes" ]; then
 fi
 if [ "$have_bitdepth10" = "yes" ]; then
     define HAVE_BITDEPTH10
+fi
+# Matches upstream: only a pure 10-bit-only build forces opencl off. An
+# "all" build keeps opencl available since it self-gates to the 8-bit pass
+# only (see HAVE_OPENCL's "(BIT_DEPTH==8)" define below).
+if [ "$bit_depth" = "10" ]; then
     opencl="no"
 fi
 
@@ -1103,10 +1108,13 @@ if [ "$opencl" = "yes" ]; then
     # cygwin can use opencl if it can use LoadLibrary
     if [ $SYS = WINDOWS ] || ([ $SYS = CYGWIN ] && cc_check windows.h "" "LoadLibraryW(0);") ; then
         opencl="yes"
-        define HAVE_OPENCL
+        # Self-gated to the 8-bit pass: opencl.c/slicetype-cl.c are compiled
+        # once, into SRCS_8 (see Makefile), so this must only evaluate true
+        # in that pass, not the 10-bit one.
+        define HAVE_OPENCL "(BIT_DEPTH==8)"
     elif [ "$SYS" = "LINUX" -o "$SYS" = "MACOSX" ] ; then
         opencl="yes"
-        define HAVE_OPENCL
+        define HAVE_OPENCL "(BIT_DEPTH==8)"
         libdl="-ldl"
     fi
     LDFLAGS="$LDFLAGS $libdl"
@@ -1114,7 +1122,7 @@ fi
 
 #define undefined vars as 0
 for var in $CONFIG_HAVE; do
-    grep -q "HAVE_$var 1" config.h || define HAVE_$var 0
+    grep -q "HAVE_$var " config.h || define HAVE_$var 0
 done
 
 if [ $compiler = ICL ]; then
