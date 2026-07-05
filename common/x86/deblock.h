@@ -74,6 +74,10 @@ void x264_deblock_h_chroma_422_intra_mmx2( pixel *pix, intptr_t stride, int alph
 void x264_deblock_h_chroma_422_intra_sse2( pixel *pix, intptr_t stride, int alpha, int beta );
 #define x264_deblock_h_chroma_422_intra_avx x264_template(deblock_h_chroma_422_intra_avx)
 void x264_deblock_h_chroma_422_intra_avx ( pixel *pix, intptr_t stride, int alpha, int beta );
+#define x264_deblock_strength_mmx2 x264_template(deblock_strength_mmx2)
+void x264_deblock_strength_mmx2 ( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X264_SCAN8_LUMA_SIZE],
+                                   int16_t mv[2][X264_SCAN8_LUMA_SIZE][2], uint8_t bs[2][8][4],
+                                   int mvy_limit, int bframe );
 #define x264_deblock_strength_sse2 x264_template(deblock_strength_sse2)
 void x264_deblock_strength_sse2  ( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X264_SCAN8_LUMA_SIZE],
                                    int16_t mv[2][X264_SCAN8_LUMA_SIZE][2], uint8_t bs[2][8][4],
