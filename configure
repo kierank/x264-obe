@@ -1074,8 +1074,8 @@ if [ "$have_bitdepth8" = "no" -a "$have_bitdepth10" = "no" ]; then
     exit 1
 fi
 
-if [ "$ARCH" != "X86" -a "$ARCH" != "X86_64" ]; then
-    echo "This fork's bit-depth-unify backport only wired up object-suffix build rules for X86/X86_64."
+if [ "$ARCH" != "X86_64" ]; then
+    echo "This fork's bit-depth-unify backport only wired up object-suffix build rules for X86_64."
     echo "Building for $ARCH would produce a library that fails to link against encoder/api.c's dispatch."
     exit 1
 fi

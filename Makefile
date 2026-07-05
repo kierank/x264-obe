@@ -13,15 +13,25 @@ GENERATED =
 all: default
 default:
 
-SRCS = common/mc.c common/predict.c common/pixel.c common/macroblock.c \
-       common/frame.c common/dct.c common/cpu.c common/cabac.c \
-       common/common.c common/osdep.c common/rectangle.c \
-       common/set.c common/quant.c common/deblock.c common/vlc.c \
-       common/mvpred.c common/bitstream.c \
-       encoder/analyse.c encoder/me.c encoder/ratecontrol.c \
-       encoder/set.c encoder/macroblock.c encoder/cabac.c \
-       encoder/speed.c \
-       encoder/cavlc.c encoder/encoder.c encoder/lookahead.c
+# SRCS: compiled exactly once regardless of which bit depth(s) are selected.
+# base.c/tables.c/api.c are new (bitdepth-unify backport); cpu.c and osdep.c
+# were already single-compile in the pre-backport Makefile and still are,
+# since common/cpu.h and common/osdep.h were never templated.
+SRCS = common/osdep.c common/base.c common/cpu.c common/tables.c \
+       encoder/api.c
+
+# SRCS_X: compiled once PER SELECTED BIT DEPTH (suffixed -8.o / -10.o below),
+# since every symbol here is templated via x264_template()/BIT_DEPTH and
+# would otherwise collide across the two depths' object files.
+SRCS_X = common/mc.c common/predict.c common/pixel.c common/macroblock.c \
+         common/frame.c common/dct.c common/cabac.c \
+         common/common.c common/rectangle.c \
+         common/set.c common/quant.c common/deblock.c common/vlc.c \
+         common/mvpred.c common/bitstream.c \
+         encoder/analyse.c encoder/me.c encoder/ratecontrol.c \
+         encoder/set.c encoder/macroblock.c encoder/cabac.c \
+         encoder/speed.c \
+         encoder/cavlc.c encoder/encoder.c encoder/lookahead.c
 
 SRCCLI = x264.c input/input.c input/timecode.c input/raw.c input/y4m.c \
          output/raw.c output/matroska.c output/matroska_ebml.c \
@@ -30,8 +40,13 @@ SRCCLI = x264.c input/input.c input/timecode.c input/raw.c input/y4m.c \
          filters/video/resize.c filters/video/cache.c filters/video/fix_vfr_pts.c \
          filters/video/select_every.c filters/video/crop.c filters/video/depth.c
 
+# NOTE: SRCCLI/OBJCLI/OBJCHK (the x264 CLI binary and checkasm) were out of
+# scope for this backport (library-only) and are NOT updated for the dual
+# object-suffix scheme below. `cli`/`checkasm` targets are left in place but
+# are not expected to link; only `lib-static`/`lib-shared` are covered.
 SRCSO =
 OBJS =
+OBJASM =
 OBJSO =
 OBJCLI =
 
@@ -51,7 +66,7 @@ endif
 
 ifneq ($(findstring HAVE_THREAD 1, $(CONFIG)),)
 SRCCLI += input/thread.c
-SRCS   += common/threadpool.c
+SRCS_X += common/threadpool.c
 endif
 
 ifneq ($(findstring HAVE_WIN32THREAD 1, $(CONFIG)),)
@@ -75,36 +90,41 @@ SRCCLI += output/mp4_lsmash.c
 endif
 
 # MMX/SSE optims
+# X86_64-only (configure refuses any other ARCH once bit-depth-unify is in
+# the tree, see configure's ARCH check next to HAVE_BITDEPTH8/10).
 ifneq ($(AS),)
-X86SRC0 = const-a.asm cabac-a.asm dct-a.asm deblock-a.asm mc-a.asm \
-          mc-a2.asm pixel-a.asm predict-a.asm quant-a.asm \
-          cpu-a.asm dct-32.asm bitstream-a.asm
-ifneq ($(findstring HIGH_BIT_DEPTH, $(CONFIG)),)
-X86SRC0 += sad16-a.asm
-else
-X86SRC0 += sad-a.asm
-endif
-X86SRC = $(X86SRC0:%=common/x86/%)
-
-ifeq ($(ARCH),X86)
 ARCH_X86 = yes
-ASMSRC   = $(X86SRC) common/x86/pixel-32.asm
-ASFLAGS += -DARCH_X86_64=0
+ASFLAGS += -DARCH_X86_64=1 -I$(SRCPATH)/common/x86/
+
+# Templated: same source, different code per HIGH_BIT_DEPTH pass, so each
+# must be assembled once per selected depth (BIT_DEPTH=N, private_prefix=x264_N)
+# to get uniquely-named symbols. Mirrors the equivalent common.h C templating.
+ASMSRC_X = common/x86/const-a.asm common/x86/cabac-a.asm \
+           common/x86/dct-64.asm common/x86/deblock-a.asm \
+           common/x86/mc-a.asm common/x86/mc-a2.asm \
+           common/x86/pixel-a.asm common/x86/predict-a.asm \
+           common/x86/quant-a.asm common/x86/bitstream-a.asm \
+           common/x86/trellis-64.asm
+SRCS_X  += common/x86/mc-c.c common/x86/predict-c.c
+
+# Not templated: cpu detection has no per-bitdepth variation (common/cpu.h
+# was never given the x264_template() treatment), so it keeps the plain
+# "x264" private_prefix and is assembled exactly once regardless of which
+# depth(s) are selected.
+OBJASM = common/x86/cpu-a.o
+
+# sad-a.asm / sad16-a.asm are two separate hardcoded-depth files (not one
+# HIGH_BIT_DEPTH-branching source), so each is only ever assembled for its
+# own matching pass, not both.
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+OBJASM += $(ASMSRC_X:%.asm=%-8.o) common/x86/sad-a-8.o
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+OBJASM += $(ASMSRC_X:%.asm=%-10.o) common/x86/sad16-a-10.o
 endif
 
-ifeq ($(ARCH),X86_64)
-ARCH_X86 = yes
-ASMSRC   = $(X86SRC:-32.asm=-64.asm) common/x86/trellis-64.asm
-ASFLAGS += -DARCH_X86_64=1
-endif
-
-ifdef ARCH_X86
-ASFLAGS += -I$(SRCPATH)/common/x86/
-SRCS   += common/x86/mc-c.c common/x86/predict-c.c
-OBJASM  = $(ASMSRC:%.asm=%.o)
 $(OBJASM): common/x86/x86inc.asm common/x86/x86util.asm
 OBJCHK += tools/checkasm-a.o
-endif
 endif
 
 # AltiVec optims
@@ -158,6 +178,15 @@ OBJS   += $(SRCS:%.c=%.o)
 OBJCLI += $(SRCCLI:%.c=%.o)
 OBJSO  += $(SRCSO:%.c=%.o)
 
+# SRCS_X is compiled once per selected bit depth into -8.o/-10.o objects
+# (see the %-8.o/%-10.o pattern rules below), mirroring OBJASM above.
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+OBJS += $(SRCS_X:%.c=%-8.o)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+OBJS += $(SRCS_X:%.c=%-10.o)
+endif
+
 .PHONY: all default fprofiled clean distclean install uninstall lib-static lib-shared cli install-lib-dev install-lib-static install-lib-shared install-cli
 
 cli: x264$(EXE)
@@ -186,9 +215,36 @@ checkasm$(EXE): $(GENERATED) .depend $(OBJCHK) $(LIBX264)
 
 $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
 
+# Explicit .c rule (was previously left to make's builtin implicit rule);
+# needed now so it doesn't shadow/conflict with the %-8.o/%-10.o rules below.
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# SRCS_X objects: same source, compiled once per selected bit depth with
+# BIT_DEPTH overridden so common.h's x264_template()/QP_MAX/PIXEL_MAX/etc
+# macros pick the right depth for that pass.
+%-8.o: %.c
+	$(CC) $(CFLAGS) -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -c -o $@ $<
+
+%-10.o: %.c
+	$(CC) $(CFLAGS) -DHIGH_BIT_DEPTH=1 -DBIT_DEPTH=10 -c -o $@ $<
+
 %.o: %.asm
 	$(AS) $(ASFLAGS) -o $@ $<
 	-@ $(if $(STRIP), $(STRIP) -x $@) # delete local/anonymous symbols, so they don't show up in oprofile
+
+# ASMSRC_X objects: same source, assembled once per selected bit depth.
+# private_prefix drives x86inc.asm's cglobal/mangle naming (see osdep.h's
+# %ifndef private_prefix default) so each pass's symbols come out as
+# x264_8_foo / x264_10_foo, matching what common.h's C-side templating
+# expects to link against.
+%-8.o: %.asm common/x86/x86inc.asm common/x86/x86util.asm
+	$(AS) $(ASFLAGS) -o $@ $< -DBIT_DEPTH=8 -Dprivate_prefix=x264_8
+	-@ $(if $(STRIP), $(STRIP) -x $@)
+
+%-10.o: %.asm common/x86/x86inc.asm common/x86/x86util.asm
+	$(AS) $(ASFLAGS) -o $@ $< -DBIT_DEPTH=10 -Dprivate_prefix=x264_10
+	-@ $(if $(STRIP), $(STRIP) -x $@)
 
 %.o: %.S
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -203,6 +259,12 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
 .depend: config.mak
 	@rm -f .depend
 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%.o) $(DEPMM) 1>> .depend;)
+ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
+endif
+ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
+endif
 
 config.mak:
 	./configure
