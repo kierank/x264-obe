@@ -37,13 +37,17 @@ SRCCLI = x264.c input/input.c input/timecode.c input/raw.c input/y4m.c \
          output/raw.c output/matroska.c output/matroska_ebml.c \
          output/flv.c output/flv_bytestream.c filters/filters.c \
          filters/video/video.c filters/video/source.c filters/video/internal.c \
-         filters/video/resize.c filters/video/cache.c filters/video/fix_vfr_pts.c \
-         filters/video/select_every.c filters/video/crop.c filters/video/depth.c
+         filters/video/resize.c filters/video/fix_vfr_pts.c \
+         filters/video/select_every.c filters/video/crop.c
 
-# NOTE: SRCCLI/OBJCLI/OBJCHK (the x264 CLI binary and checkasm) were out of
-# scope for this backport (library-only) and are NOT updated for the dual
-# object-suffix scheme below. `cli`/`checkasm` targets are left in place but
-# are not expected to link; only `lib-static`/`lib-shared` are covered.
+# SRCCLI_X: like SRCS_X, but for the CLI -- these register a depth-specific
+# filter/input name (e.g. "cache_8"/"cache_10") so both can coexist in the
+# same binary; compiled once per selected depth into -8.o/-10.o below.
+SRCCLI_X = filters/video/cache.c filters/video/depth.c
+
+# NOTE: tools/checkasm.c and example.c were out of scope for this backport
+# (library-only) and are NOT updated for the dual object-suffix scheme
+# below; the `checkasm` target is left in place but is not expected to link.
 SRCSO =
 OBJS =
 OBJASM =
@@ -65,8 +69,8 @@ SRCCLI += input/avs.c
 endif
 
 ifneq ($(findstring HAVE_THREAD 1, $(CONFIG)),)
-SRCCLI += input/thread.c
-SRCS_X += common/threadpool.c
+SRCCLI_X += input/thread.c
+SRCS_X   += common/threadpool.c
 endif
 
 ifneq ($(findstring HAVE_WIN32THREAD 1, $(CONFIG)),)
@@ -178,13 +182,15 @@ OBJS   += $(SRCS:%.c=%.o)
 OBJCLI += $(SRCCLI:%.c=%.o)
 OBJSO  += $(SRCSO:%.c=%.o)
 
-# SRCS_X is compiled once per selected bit depth into -8.o/-10.o objects
-# (see the %-8.o/%-10.o pattern rules below), mirroring OBJASM above.
+# SRCS_X/SRCCLI_X are compiled once per selected bit depth into -8.o/-10.o
+# objects (see the %-8.o/%-10.o pattern rules below), mirroring OBJASM above.
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-OBJS += $(SRCS_X:%.c=%-8.o)
+OBJS   += $(SRCS_X:%.c=%-8.o)
+OBJCLI += $(SRCCLI_X:%.c=%-8.o)
 endif
 ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
-OBJS += $(SRCS_X:%.c=%-10.o)
+OBJS   += $(SRCS_X:%.c=%-10.o)
+OBJCLI += $(SRCCLI_X:%.c=%-10.o)
 endif
 
 .PHONY: all default fprofiled clean distclean install uninstall lib-static lib-shared cli install-lib-dev install-lib-static install-lib-shared install-cli
@@ -260,10 +266,10 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
 	@rm -f .depend
 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%.o) $(DEPMM) 1>> .depend;)
 ifneq ($(findstring HAVE_BITDEPTH8 1, $(CONFIG)),)
-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-8.o) $(DEPMM) 1>> .depend;)
 endif
 ifneq ($(findstring HAVE_BITDEPTH10 1, $(CONFIG)),)
-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
+	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS_X) $(SRCCLI_X)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.c=%-10.o) $(DEPMM) 1>> .depend;)
 endif
 
 config.mak:

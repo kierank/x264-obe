@@ -24,7 +24,15 @@
  *****************************************************************************/
 
 #include "video.h"
-#define NAME "depth"
+#include "common/common.h"
+
+#define depth_filter x264_glue3(depth, BIT_DEPTH, filter)
+#if BIT_DEPTH == 8
+#define NAME "depth_8"
+#else
+#define NAME "depth_10"
+#endif
+
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, NAME, __VA_ARGS__ )
 
 cli_vid_filter_t depth_filter;
@@ -216,7 +224,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
             ret = 1;
     }
 
-    FAIL_IF_ERROR( bit_depth != BIT_DEPTH, "this build supports only bit depth %d\n", BIT_DEPTH )
+    FAIL_IF_ERROR( bit_depth != BIT_DEPTH, "this filter supports only bit depth %d\n", BIT_DEPTH )
     FAIL_IF_ERROR( ret, "unsupported bit depth conversion.\n" )
 
     /* only add the filter to the chain if it's needed */
