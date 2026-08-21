@@ -304,7 +304,10 @@ ifneq ($(wildcard .depend),)
 include .depend
 endif
 
-SRC2 = $(SRCS) $(SRCCLI)
+# Object list (not source list) for the PGO passes: OBJS/OBJCLI already carry
+# the per-bit-depth -8.o/-10.o objects, which a $(SRCS:%.c=%.o)-style mapping
+# would miss -- leaving profile-gen objects behind for the profile-use link.
+OBJPROF = $(OBJS) $(OBJCLI)
 # These should cover most of the important codepaths
 OPT0 = --crf 30 -b1 -m1 -r1 --me dia --no-cabac --direct temporal --ssim --no-weightb
 OPT1 = --crf 16 -b2 -m3 -r3 --me hex --no-8x8dct --direct spatial --no-dct-decimate -t0  --slice-max-mbs 50
@@ -325,15 +328,15 @@ fprofiled:
 	$(MAKE) clean
 	$(MAKE) x264$(EXE) CFLAGS="$(CFLAGS) $(PROF_GEN_CC)" LDFLAGS="$(LDFLAGS) $(PROF_GEN_LD)"
 	$(foreach V, $(VIDS), $(foreach I, 0 1 2 3 4 5 6 7, ./x264$(EXE) $(OPT$I) --threads 1 $(V) -o $(DEVNULL) ;))
-	rm -f $(SRC2:%.c=%.o)
+	rm -f $(OBJPROF)
 	$(MAKE) CFLAGS="$(CFLAGS) $(PROF_USE_CC)" LDFLAGS="$(LDFLAGS) $(PROF_USE_LD)"
-	rm -f $(SRC2:%.c=%.gcda) $(SRC2:%.c=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
+	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
 endif
 
 clean:
 	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(SONAME) *.a *.lib *.exp *.pdb x264 x264.exe .depend TAGS
 	rm -f checkasm8 checkasm8.exe checkasm10 checkasm10.exe $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10) $(GENERATED) x264_lookahead.clbin
-	rm -f $(SRC2:%.c=%.gcda) $(SRC2:%.c=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
+	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
 
 distclean: clean
 	rm -f config.mak x264_config.h config.h config.log x264.pc x264.def
