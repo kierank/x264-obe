@@ -30,7 +30,7 @@
 /* Based on the agreed standing that x264 does not need to utilize >64 logical cpus,
  * this API does not detect nor utilize more than 64 cpus for systems that have them. */
 
-#include "common.h"
+#include "base.h"
 #include <process.h>
 
 /* number of times to spin a thread about to block on a locked mutex before retrying and sleeping if still locked */
