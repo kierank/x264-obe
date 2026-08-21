@@ -248,16 +248,16 @@ $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10): .depend
 # Explicit .c rule (was previously left to make's builtin implicit rule);
 # needed now so it doesn't shadow/conflict with the %-8.o/%-10.o rules below.
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -c $(CC_O) $<
 
 # SRCS_X objects: same source, compiled once per selected bit depth with
 # BIT_DEPTH overridden so common.h's x264_template()/QP_MAX/PIXEL_MAX/etc
 # macros pick the right depth for that pass.
 %-8.o: %.c
-	$(CC) $(CFLAGS) -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -c -o $@ $<
+	$(CC) $(CFLAGS) -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -c $(CC_O) $<
 
 %-10.o: %.c
-	$(CC) $(CFLAGS) -DHIGH_BIT_DEPTH=1 -DBIT_DEPTH=10 -c -o $@ $<
+	$(CC) $(CFLAGS) -DHIGH_BIT_DEPTH=1 -DBIT_DEPTH=10 -c $(CC_O) $<
 
 %.o: %.asm
 	$(AS) $(ASFLAGS) -o $@ $<

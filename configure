@@ -1225,9 +1225,15 @@ PROF_USE_LD=$PROF_USE_LD
 HAVE_OPENCL=$opencl
 EOF
 
+# The C compile rules live in the Makefile now (one plain %.o plus the
+# %-8.o/%-10.o bit-depth passes), so the output-file flag has to be a
+# variable rather than a config.mak-supplied override of a single rule:
+# an override would only reach %.o and, being read before the Makefile's
+# own %.o pattern rule, would be replaced by it anyway.
 if [ $compiler = ICL ]; then
-    echo '%.o: %.c' >> config.mak
-    echo '  $(CC) $(CFLAGS) -c -Fo$@ $<' >> config.mak
+    echo 'CC_O=-Fo$@' >> config.mak
+else
+    echo 'CC_O=-o $@' >> config.mak
 fi
 
 if [ "$cli" = "yes" ]; then
