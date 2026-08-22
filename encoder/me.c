@@ -1272,7 +1272,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int b_chroma_me = b_chroma_full && !b_chroma_late && !b_chroma_cut;
     int chromapix = h->luma2chroma_pixel[i_pixel];
     int chroma_v_shift = CHROMA_V_SHIFT;
-    int mvy_offset = chroma_v_shift & MB_INTERLACED & m->i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
+    int mvy_offset = b_chroma_full && (chroma_v_shift & MB_INTERLACED) ? x264_mb_chroma_mvy_offset( h, m->i_list, m->i_ref ) : 0;
     /* chroma cost without storing the prediction: mbcmp_mcc takes every
      * chroma ME size, u and v widths 8 and 4, heights 4 to 16 */
     const int b_chroma_mcc = b_chroma_full && !CHROMA444 && h->pixf.mbcmp_mcc
@@ -1541,8 +1541,8 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
     pixel *pixv = &h->mb.pic.p_fdec[2][chroma_x + chroma_y*FDEC_STRIDE];
     int ref0 = h->mb.cache.ref[0][s8];
     int ref1 = h->mb.cache.ref[1][s8];
-    const int mv0y_offset = chroma_v_shift & MB_INTERLACED & ref0 ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
-    const int mv1y_offset = chroma_v_shift & MB_INTERLACED & ref1 ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
+    const int mv0y_offset = chroma_v_shift & MB_INTERLACED ? x264_mb_chroma_mvy_offset( h, 0, ref0 ) : 0;
+    const int mv1y_offset = chroma_v_shift & MB_INTERLACED ? x264_mb_chroma_mvy_offset( h, 1, ref1 ) : 0;
     intptr_t stride[3][2][9];
     int bm0x = m0->mv[0];
     int bm0y = m0->mv[1];
@@ -1743,7 +1743,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     const int bh = x264_pixel_size[m->i_pixel].h;
     const int i_pixel = m->i_pixel;
     int chroma_v_shift = CHROMA_V_SHIFT;
-    int mvy_offset = chroma_v_shift & MB_INTERLACED & m->i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
+    int mvy_offset = chroma_v_shift & MB_INTERLACED ? x264_mb_chroma_mvy_offset( h, i_list, m->i_ref ) : 0;
 
     uint64_t bcost = COST_MAX64;
     int bmx = m->mv[0];

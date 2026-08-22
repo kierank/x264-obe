@@ -59,6 +59,10 @@ typedef struct
      * qconv_cost (-1: none); x264_me_refine_qpel from that mv and cost changes nothing */
     int qconv_cost;
     uint32_t qconv_mv;
+    int      i_list;     /* which reference list i_ref indexes; set by LOAD_HPELS.
+                            Needed to pick the per-list chroma parity offset when
+                            coding field pictures.  Last: the asm mirrors the
+                            fields above (analyse-64.asm struc me). */
 } ALIGNED_64( x264_me_t );
 
 typedef struct
