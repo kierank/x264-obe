@@ -516,7 +516,7 @@ void x264_macroblock_slice_init( x264_t *h )
              * opposite parity) of frame ref i>>1. Edges between a frame and a
              * field mb don't compare refs (x264_macroblock_deblock_strength_mbaff);
              * the others are between frame mbs or same parity field mbs. */
-            for( int f = 0; f <= SLICE_MBAFF; f++ )
+            for( int f = 0; f <= (SLICE_MBAFF | PARAM_FIELD_ENCODE); f++ )
             {
                 h->mb.deblock_ref_table[f][0] = -2;
                 h->mb.deblock_ref_table[f][1] = -1;
@@ -526,7 +526,15 @@ void x264_macroblock_slice_init( x264_t *h )
              * than 32, so 6 bits is enough for uniqueness. */
             for( int i = 0; i < h->i_ref[0]; i++ )
                 h->mb.deblock_ref_table[0][i+2] = h->fref[0][i]->i_frame_num&63;
-            if( SLICE_MBAFF )
+            if( PARAM_FIELD_ENCODE )
+                /* Field pictures read [1] (MB_INTERLACED is 1, SLICE_MBAFF 0) and
+                 * each list entry is one reference field, so identify it by
+                 * frame_num plus field parity: the two fields of a frame share
+                 * a frame_num and must not collide, while a weightp duplicate
+                 * (a copy of its source picture) must match its source. */
+                for( int i = 0; i < h->i_ref[0]; i++ )
+                    h->mb.deblock_ref_table[1][i+2] = ((h->fref[0][i]->i_frame_num&63)<<1) + (h->fref[0][i]->i_frame&1);
+            else if( SLICE_MBAFF )
                 for( int i = 0; i < h->i_ref[0] << 1; i++ )
                     h->mb.deblock_ref_table[1][i+2] = ((h->fref[0][i>>1]->i_frame_num&63)<<1) + (i&1);
         }
