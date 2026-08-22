@@ -592,7 +592,7 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
     if( h->mb.mvref.b_tmvp )
     {
         int16_t (*l0mv)[2] = h->mb.mvref.l0_mv16x16;
-        int scale = h->mb.mvref.tscale[i_list][MB_INTERLACED][h->mb.i_mb_y&1][i_ref];
+        int scale = h->mb.mvref.tscale[i_list][MB_MBAFF_FIELD][h->mb.i_mb_y&1][i_ref];
         int b_tconv = h->mb.mvref.b_tconv;
 
 #define SET_TMVP( dx, dy ) \
