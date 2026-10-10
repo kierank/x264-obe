@@ -732,7 +732,10 @@ if [ $asm = auto -a \( $ARCH = X86 -o $ARCH = X86_64 \) ] ; then
         exit 1
     fi
     define HAVE_MMX
-    if [ $compiler = GNU ] && cc_check '' -mpreferred-stack-boundary=5 ; then
+    if [ $compiler = GNU ] && cc_check '' -mpreferred-stack-boundary=6 ; then
+        CFLAGS="$CFLAGS -mpreferred-stack-boundary=6"
+        stack_alignment=64
+    elif [ $compiler = GNU ] && cc_check '' -mpreferred-stack-boundary=5 ; then
         CFLAGS="$CFLAGS -mpreferred-stack-boundary=5"
         stack_alignment=32
     fi

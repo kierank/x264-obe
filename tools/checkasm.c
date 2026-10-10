@@ -164,6 +164,7 @@ static void print_bench(void)
                 continue;
             printf( "%s_%s%s: %"PRId64"\n", benchs[i].name,
 #if HAVE_MMX
+                    b->cpu&X264_CPU_AVX512 ? "avx512" :
                     b->cpu&X264_CPU_AVX2 && b->cpu&X264_CPU_FMA3 ? "avx2_fma3" :
                     b->cpu&X264_CPU_AVX2 ? "avx2" :
                     b->cpu&X264_CPU_FMA3 ? "fma3" :
@@ -193,7 +194,6 @@ static void print_bench(void)
                     b->cpu&X264_CPU_LZCNT ? "_lzcnt" :
                     b->cpu&X264_CPU_BMI2 ? "_bmi2" :
                     b->cpu&X264_CPU_BMI1 ? "_bmi1" :
-                    b->cpu&X264_CPU_SLOW_CTZ ? "_slow_ctz" :
                     b->cpu&X264_CPU_SLOW_ATOM ? "_atom" :
 #elif ARCH_ARM
                     b->cpu&X264_CPU_FAST_NEON_MRC ? "_fast_mrc" :
@@ -2641,8 +2641,6 @@ static int check_all_flags( void )
             ret |= add_flags( &cpu0, &cpu1, X264_CPU_LZCNT, "MMX_LZCNT" );
             cpu1 &= ~X264_CPU_LZCNT;
         }
-        ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_CTZ, "MMX SlowCTZ" );
-        cpu1 &= ~X264_CPU_SLOW_CTZ;
     }
     if( x264_cpu_detect() & X264_CPU_SSE )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_SSE, "SSE" );
@@ -2654,8 +2652,6 @@ static int check_all_flags( void )
         cpu1 &= ~X264_CPU_CACHELINE_64;
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_SHUFFLE, "SSE2 SlowShuffle" );
         cpu1 &= ~X264_CPU_SLOW_SHUFFLE;
-        ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_CTZ, "SSE2 SlowCTZ" );
-        cpu1 &= ~X264_CPU_SLOW_CTZ;
     }
     if( x264_cpu_detect() & X264_CPU_LZCNT )
     {
@@ -2674,8 +2670,6 @@ static int check_all_flags( void )
         cpu1 &= ~X264_CPU_CACHELINE_64;
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_SHUFFLE, "SSSE3 SlowShuffle" );
         cpu1 &= ~X264_CPU_SLOW_SHUFFLE;
-        ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_CTZ, "SSSE3 SlowCTZ" );
-        cpu1 &= ~X264_CPU_SLOW_CTZ;
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_ATOM, "SSSE3 SlowAtom" );
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_CACHELINE_64, "SSSE3 Cache64 SlowAtom" );
         cpu1 &= ~X264_CPU_CACHELINE_64;
@@ -2716,6 +2710,9 @@ static int check_all_flags( void )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3, "FMA3" );
         cpu1 &= ~X264_CPU_FMA3;
     }
+    /* everything AVX-512 machines have, as x264_cpu_names' AVX512 */
+    if( x264_cpu_detect() & X264_CPU_AVX512 )
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX512, "AVX512" );
 #elif ARCH_PPC
     if( x264_cpu_detect() & X264_CPU_ALTIVEC )
     {

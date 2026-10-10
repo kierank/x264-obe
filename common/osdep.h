@@ -1,3 +1,6 @@
+/* For AVX2 and AVX-512 */
+#if ARCH_X86 || ARCH_X86_64
+#define NATIVE_ALIGN 64
 /*****************************************************************************
  * osdep.h: platform-specific code
  *****************************************************************************
@@ -97,6 +100,7 @@ int x264_is_pipe( const char *path );
 #else
 #define DECLARE_ALIGNED( var, n ) var __attribute__((aligned(n)))
 #endif
+#define ALIGNED_64( var ) DECLARE_ALIGNED( var, 64 )
 #define ALIGNED_32( var ) DECLARE_ALIGNED( var, 32 )
 #define ALIGNED_16( var ) DECLARE_ALIGNED( var, 16 )
 #define ALIGNED_8( var )  DECLARE_ALIGNED( var, 8 )
@@ -136,7 +140,12 @@ int x264_is_pipe( const char *path );
 #define ALIGNED_ARRAY_32( ... ) EXPAND( ALIGNED_ARRAY_EMU( 31, __VA_ARGS__ ) )
 #endif
 
+#if STACK_ALIGNMENT >= 64
+#define ALIGNED_ARRAY_64( type, name, sub1, ... )\
+    ALIGNED_64( type name sub1 __VA_ARGS__ )
+#else
 #define ALIGNED_ARRAY_64( ... ) EXPAND( ALIGNED_ARRAY_EMU( 63, __VA_ARGS__ ) )
+#endif
 
 /* For AVX2 */
 #if ARCH_X86 || ARCH_X86_64
