@@ -30,7 +30,14 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
-SECTION_RODATA 32
+SECTION_RODATA 64
+
+%if HIGH_BIT_DEPTH
+v210_shuf_avx512: db  0, 0,34, 1,35,34, 4, 4,38, 5,39,38, 8, 8,42, 9, ; luma, chroma
+                  db 43,42,12,12,46,13,47,46,16,16,50,17,51,50,20,20,
+                  db 54,21,55,54,24,24,58,25,59,58,28,28,62,29,63,62
+                  times 16 db 0 ; pad to 64 bytes: the kernel loads a full zmm, keeps following data aligned
+%endif
 
 pw_1024: times 16 dw 1024
 filt_mul20: times 32 db 20
@@ -1333,17 +1340,32 @@ cglobal plane_copy_deinterleave_v210, 7,7,7
     neg    r6
     mov   src, r4
     mov org_w, r6
+%if cpuflag(avx512)
+    vpbroadcastd m2, [v210_mask]
+    vpbroadcastd m3, [v210_shuf_avx512]
+    psrlw        m3, 6                  ; dw 0, 4
+    mova         m4, [v210_shuf_avx512] ; luma
+    psrlw        m5, m4, 8              ; chroma
+%else
     mova   m2, [v210_mask]
     mova   m3, [v210_luma_shuf]
     mova   m4, [v210_chroma_shuf]
     mova   m5, [v210_mult] ; also functions as vpermd index for avx2
     pshufd m6, m5, q1102
+%endif
 
 ALIGN 16
 .loop:
     movu   m1, [r4]
     pandn  m0, m2, m1
     pand   m1, m2
+%if cpuflag(avx512)
+    psrld        m0, 10
+    vpsrlvw      m1, m3
+    mova         m6, m0
+    vpermt2w     m0, m4, m1
+    vpermt2w     m1, m5, m6
+%else
     pshufb m0, m3
     pshufb m1, m4
     pmulhrsw m0, m5 ; y0 y1 y2 y3 y4 y5 __ __
@@ -1351,6 +1373,7 @@ ALIGN 16
 %if mmsize == 32
     vpermd m0, m5, m0
     vpermd m1, m5, m1
+%endif
 %endif
     movu [r0+r6], m0
     movu [r2+r6], m1
@@ -1382,6 +1405,8 @@ PLANE_INTERLEAVE
 PLANE_DEINTERLEAVE
 PLANE_DEINTERLEAVE_V210
 INIT_YMM avx2
+PLANE_DEINTERLEAVE_V210
+INIT_ZMM avx512
 PLANE_DEINTERLEAVE_V210
 %else
 INIT_MMX mmx2
