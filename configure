@@ -561,7 +561,7 @@ stack_alignment=16
 case $host_cpu in
     i*86)
         ARCH="X86"
-        AS="yasm"
+        AS="${AS-nasm}"
         ASFLAGS="$ASFLAGS -O2"
         if [ $compiler = GNU ]; then
             if [[ "$asm" == auto && "$CFLAGS" != *-march* ]]; then
@@ -600,22 +600,22 @@ case $host_cpu in
         ;;
     x86_64)
         ARCH="X86_64"
-        AS="yasm"
+        AS="${AS-nasm}"
         [ $compiler = GNU ] && CFLAGS="-m64 $CFLAGS" && LDFLAGS="-m64 $LDFLAGS"
         if [ "$SYS" = MACOSX ]; then
-            ASFLAGS="$ASFLAGS -f macho64 -m amd64 -DPIC -DPREFIX"
+            ASFLAGS="$ASFLAGS -f macho64 -DPIC -DPREFIX"
             if cc_check '' "-arch x86_64"; then
                 CFLAGS="$CFLAGS -arch x86_64"
                 LDFLAGS="$LDFLAGS -arch x86_64"
             fi
         elif [ "$SYS" = WINDOWS -o "$SYS" = CYGWIN ]; then
-            ASFLAGS="$ASFLAGS -f win32 -m amd64"
+            ASFLAGS="$ASFLAGS -f win64"
             # only the GNU toolchain is inconsistent in prefixing function names with _
             [ $compiler = GNU ] && cc_check "" "-S" && grep -q "_main:" conftest && ASFLAGS="$ASFLAGS -DPREFIX"
             [ $compiler = GNU ] && LDFLAGS="$LDFLAGS -Wl,--nxcompat -Wl,--dynamicbase"
             [ $compiler = GNU ] && RCFLAGS="--target=pe-x86-64 $RCFLAGS"
         else
-            ASFLAGS="$ASFLAGS -f elf -m amd64"
+            ASFLAGS="$ASFLAGS -f elf64"
         fi
         ;;
     powerpc|powerpc64)
@@ -716,10 +716,10 @@ if [ $shared = yes -a \( $ARCH = "X86_64" -o $ARCH = "PPC" -o $ARCH = "ALPHA" -o
 fi
 
 if [ $asm = auto -a \( $ARCH = X86 -o $ARCH = X86_64 \) ] ; then
-    if ! as_check "vpmovzxwd ymm0, xmm0" ; then
+    if ! as_check "vmovdqa32 [eax]{k1}{z}, zmm0" ; then
         VER=`($AS --version || echo no assembler) 2>/dev/null | head -n 1`
         echo "Found $VER"
-        echo "Minimum version is yasm-1.2.0"
+        echo "Minimum version is nasm-2.13"
         echo "If you really want to compile without asm, configure with --disable-asm."
         exit 1
     fi
@@ -731,7 +731,6 @@ if [ $asm = auto -a \( $ARCH = X86 -o $ARCH = X86_64 \) ] ; then
         echo "If you really want to compile without asm, configure with --disable-asm."
         exit 1
     fi
-    ASFLAGS="$ASFLAGS -Worphan-labels"
     define HAVE_MMX
     if [ $compiler = GNU ] && cc_check '' -mpreferred-stack-boundary=5 ; then
         CFLAGS="$CFLAGS -mpreferred-stack-boundary=5"
