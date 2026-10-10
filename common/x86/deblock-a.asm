@@ -28,8 +28,12 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
-SECTION_RODATA 32
+SECTION_RODATA 64
 
+load_bytes_zmm_shuf: dd 0x50404032, 0x70606053, 0xd0c0c0b4, 0xf0e0e0d5
+                     dd 0x50404036, 0x70606057, 0xd0c0c0b8, 0xf0e0e0d9
+                     dd 0x50104001, 0x70306023, 0xd090c083, 0xf0b0e0a5
+                     dd 0x50104005, 0x70306027, 0xd090c087, 0xf0b0e0a9
 load_bytes_shuf: times 2 db 3,4,5,6,11,12,13,14,4,5,6,7,12,13,14,15
 insert_top_shuf: dd 0,1,4,5,7,2,3,6
 transpose_shuf: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
@@ -2588,4 +2592,63 @@ cglobal deblock_strength, 6,6,7
     vextracti128 [bs1], m5, 1
     pshufb   xm5, [transpose_shuf]
     mova   [bs0], xm5
+    RET
+
+%if UNIX64
+    DECLARE_REG_TMP 5
+%else
+    DECLARE_REG_TMP 4
+%endif
+
+%macro LOAD_BYTES_ZMM 1
+    vpermd m1, m6, [%1-12]
+    pshufb m1, m7 ; EF FG GH HI JK KL LM MN OP PQ QR RS TU UV VW WX
+%endmacro         ; AF BG CH DI FK GL HM IN KP LQ MR NS PU QV RW SX
+
+INIT_ZMM avx512
+cglobal deblock_strength, 5,5
+    mova            m6, [load_bytes_zmm_shuf]
+    shl            r4d, 8
+    add            r4d, 3 - (1<<8)
+    vpbroadcastw    m5, r4d
+    mov            r4d, 0x34cc34cc ; {1,-1} * 11001100b
+    kmovb           k1, r4d
+    vpbroadcastd    m4, r4d
+    movifnidn      t0d, r5m
+    psrld           m7, m6, 4
+    pxor           xm3, xm3
+
+.lists:
+    vbroadcasti64x2 m2,      [mv+32]
+    vinserti64x2    m0, m2,  [mv-32], 2
+    vbroadcasti64x2 m1,      [mv+ 0]
+    vinserti64x2    m0, m0,  [mv- 4], 0
+    vbroadcasti64x2 m1 {k1}, [mv+64]
+    vinserti64x2    m0, m0,  [mv+60], 1
+    psubw           m0, m1
+    vinserti64x2    m1, m1,  [mv+28], 0
+    vbroadcasti64x2 m2 {k1}, [mv+96]
+    vinserti64x2    m1, m1,  [mv+92], 1
+    psubw           m1, m2
+    packsswb        m0, m1
+    pabsb           m0, m0
+    psubusb         m0, m5
+
+    LOAD_BYTES_ZMM ref
+    pmaddubsw       m1, m4           ; E-F F-G G-H H-I ...
+    vpternlogd      m3, m0, m1, 0xfe ; m3 | m0 | m1
+    add             r1, 40
+    add             r2, 4*8*5
+    dec            t0d
+    jge .lists
+
+    LOAD_BYTES_ZMM nnz
+    mova           ym2, [pb_1]
+    vptestmw        k1, m1, m1
+    vptestmw        k2, m3, m3
+    vpaddb         ym0 {k1}{z}, ym2, ym2 ; nnz ? 2 : 0
+    vpmaxub        ym0 {k2}, ym2         ; mv  ? 1 : 0
+    vextracti128 [bs1], ym0, 1
+    pshufb         xm0, [transpose_shuf]
+    mova         [bs0], xm0
     RET
