@@ -1492,6 +1492,8 @@ INIT_XMM sse
 MEMZERO 8
 INIT_YMM avx
 MEMZERO 4
+INIT_ZMM avx512
+MEMZERO 2
 
 %if HIGH_BIT_DEPTH == 0
 ;-----------------------------------------------------------------------------

@@ -126,6 +126,7 @@
 #define x264_memcpy_aligned_sse x264_template(memcpy_aligned_sse)
 #define x264_memcpy_aligned_avx512 x264_template(memcpy_aligned_avx512)
 #define x264_memzero_aligned_avx x264_template(memzero_aligned_avx)
+#define x264_memzero_aligned_avx512 x264_template(memzero_aligned_avx512)
 #define x264_memzero_aligned_mmx x264_template(memzero_aligned_mmx)
 #define x264_memzero_aligned_sse x264_template(memzero_aligned_sse)
 #define x264_pixel_avg2_w10_avx2 x264_template(pixel_avg2_w10_avx2)
@@ -353,6 +354,7 @@ void *x264_memcpy_aligned_avx512( void *dst, const void *src, size_t n );
 void x264_memzero_aligned_mmx( void *dst, size_t n );
 void x264_memzero_aligned_sse( void *dst, size_t n );
 void x264_memzero_aligned_avx( void *dst, size_t n );
+void x264_memzero_aligned_avx512( void *dst, size_t n );
 void x264_integral_init4h_sse4( uint16_t *sum, uint8_t *pix, intptr_t stride );
 void x264_integral_init4h_avx2( uint16_t *sum, uint8_t *pix, intptr_t stride );
 void x264_integral_init8h_sse4( uint16_t *sum, uint8_t *pix, intptr_t stride );
@@ -1165,5 +1167,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( !(cpu&X264_CPU_AVX512) )
         return;
     pf->memcpy_aligned = x264_memcpy_aligned_avx512;
+    pf->memzero_aligned = x264_memzero_aligned_avx512;
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
 }
