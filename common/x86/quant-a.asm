@@ -32,7 +32,9 @@
 
 SECTION_RODATA 64
 
-%if HIGH_BIT_DEPTH == 0
+%if HIGH_BIT_DEPTH
+decimate_shuf_avx512: dd 0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+%else
 dequant_shuf_avx512: dw  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
                      dw 32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
 %endif
@@ -1506,6 +1508,221 @@ INIT_XMM ssse3
 DECIMATE8x8
 INIT_YMM avx2
 DECIMATE8x8
+
+%macro DECIMATE_MASK16_AVX512 0
+    mova      m0, [r0]
+%if HIGH_BIT_DEPTH
+    vptestmd  k0, m0, m0
+    pabsd     m0, m0
+    vpcmpud   k1, m0, [pd_1] {1to16}, 6
+%else
+    vptestmw  k0, m0, m0
+    pabsw     m0, m0
+    vpcmpuw   k1, m0, [pw_1], 6
+%endif
+%endmacro
+
+%macro SHRX 2
+%if cpuflag(bmi2)
+    shrx %1, %1, %2
+%else
+    shr  %1, %2b ; %2 has to be rcx/ecx
+%endif
+%endmacro
+
+%macro BLSR 2
+%if cpuflag(bmi1)
+    blsr   %1, %2
+%else
+    lea    %1, [%2-1]
+    and    %1, %2
+%endif
+%endmacro
+
+%macro DECIMATE4x4_AVX512 1
+cglobal decimate_score%1, 1,3
+    DECIMATE_MASK16_AVX512
+    xor   eax, eax
+    kmovw edx, k0
+%if %1 == 15
+    shr   edx, 1
+%else
+    test  edx, edx
+%endif
+    jz .ret
+    ktestw k1, k1
+    jnz .ret9
+%ifdef PIC
+    lea    r4, [decimate_mask_table4]
+    %define mask_table r4
+%else
+    %define mask_table decimate_mask_table4
+%endif
+    movzx ecx, dl
+    movzx eax, byte [mask_table + rcx]
+%if ARCH_X86_64
+    xor   edx, ecx
+    jz .ret
+%if cpuflag(lzcnt)
+    lzcnt ecx, ecx
+    lea    r5, [decimate_table4-32]
+    add    r5, rcx
+%else
+    bsr   ecx, ecx
+    lea    r5, [decimate_table4-1]
+    sub    r5, rcx
+%endif
+    %define table r5
+%else
+    cmp   edx, ecx
+    jz .ret
+    bsr   ecx, ecx
+    shr   edx, 1
+    SHRX  edx, ecx
+    %define table decimate_table4
+%endif
+    tzcnt ecx, edx
+    shr   edx, 1
+    SHRX  edx, ecx
+    add    al, byte [table + rcx]
+    add    al, byte [mask_table + rdx]
+.ret:
+    REP_RET
+.ret9:
+    mov   eax, 9
+    RET
+%endmacro
+
+%macro DECIMATE_MASK64_AVX512 0
+    mova            m0, [r0]
+%if HIGH_BIT_DEPTH
+    packssdw        m0, [r0+1*64]
+    mova            m1, [r0+2*64]
+    packssdw        m1, [r0+3*64]
+    packsswb        m0, m1
+    vbroadcasti32x4 m1, [pb_1]
+    pabsb           m2, m0
+    vpcmpub         k0, m2, m1, 6
+    ktestq          k0, k0
+    jnz .ret9
+    mova            m1, [decimate_shuf_avx512]
+    vpermd          m0, m1, m0
+    vptestmb        k1, m0, m0
+%else
+    mova            m1, [r0+64]
+    vbroadcasti32x4 m3, [pb_1]
+    packsswb        m2, m0, m1
+    pabsb           m2, m2
+    vpcmpub         k0, m2, m3, 6
+    ktestq          k0, k0
+    jnz .ret9
+    vptestmw        k1, m0, m0
+    vptestmw        k2, m1, m1
+%endif
+%endmacro
+
+%macro DECIMATE8x8_AVX512 0
+%if ARCH_X86_64
+cglobal decimate_score64, 1,5
+    DECIMATE_MASK64_AVX512
+    xor     eax, eax
+%if HIGH_BIT_DEPTH
+    kmovq    r1, k1
+    test     r1, r1
+    jz .ret
+%else
+    kortestd k1, k2
+    jz .ret
+    kunpckdq k1, k2, k1
+    kmovq    r1, k1
+%endif
+%ifdef PIC
+    lea r4, [decimate_table8]
+    %define table r4
+%else
+    %define table decimate_table8
+%endif
+    mov    al, -6
+.loop:
+    tzcnt rcx, r1
+    add    al, byte [table + rcx]
+    jge .ret9
+    shr    r1, 1
+    SHRX   r1, rcx
+%if cpuflag(bmi2)
+    test   r1, r1
+%endif
+    jnz .loop
+    add    al, 6
+.ret:
+    REP_RET
+.ret9:
+    mov   eax, 9
+    RET
+
+%else ; ARCH
+cglobal decimate_score64, 1,4
+    DECIMATE_MASK64_AVX512
+    xor     eax, eax
+%if HIGH_BIT_DEPTH
+    kshiftrq k2, k1, 32
+%endif
+    kmovd    r2, k1
+    kmovd    r3, k2
+    test     r2, r2
+    jz .tryret
+    mov    al, -6
+.loop:
+    tzcnt ecx, r2
+    add    al, byte [decimate_table8 + ecx]
+    jge .ret9
+    sub   ecx, 31 ; increase the shift count by one to shift away the lowest set bit as well
+    jz .run31     ; only bits 0-4 are used so we have to explicitly handle the case of 1<<31
+    shrd   r2, r3, cl
+    SHRX   r3, ecx
+%if notcpuflag(bmi2)
+    test   r2, r2
+%endif
+    jnz .loop
+    BLSR   r2, r3
+    jz .end
+.largerun:
+    tzcnt ecx, r3
+    shr    r3, 1
+    SHRX   r3, ecx
+.loop2:
+    tzcnt ecx, r3
+    add    al, byte [decimate_table8 + ecx]
+    jge .ret9
+    shr    r3, 1
+    SHRX   r3, ecx
+.run31:
+    test   r3, r3
+    jnz .loop2
+.end:
+    add    al, 6
+    RET
+.tryret:
+    BLSR   r2, r3
+    jz .ret
+    mov    al, -6
+    jmp .largerun
+.ret9:
+    mov   eax, 9
+.ret:
+    REP_RET
+%endif ; ARCH
+%endmacro
+
+%if HIGH_BIT_DEPTH
+INIT_ZMM avx512
+%else
+INIT_YMM avx512
+%endif
+DECIMATE4x4_AVX512 15
+DECIMATE4x4_AVX512 16
+INIT_ZMM avx512
+DECIMATE8x8_AVX512
 
 ;-----------------------------------------------------------------------------
 ; int coeff_last( dctcoef *dct )

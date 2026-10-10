@@ -147,12 +147,16 @@ int x264_decimate_score15_mmx2( dctcoef *dct );
 int x264_decimate_score15_sse2( dctcoef *dct );
 #define x264_decimate_score15_ssse3 x264_template(decimate_score15_ssse3)
 int x264_decimate_score15_ssse3( dctcoef *dct );
+#define x264_decimate_score15_avx512 x264_template(decimate_score15_avx512)
+int x264_decimate_score15_avx512( dctcoef *dct );
 #define x264_decimate_score16_mmx2 x264_template(decimate_score16_mmx2)
 int x264_decimate_score16_mmx2( dctcoef *dct );
 #define x264_decimate_score16_sse2 x264_template(decimate_score16_sse2)
 int x264_decimate_score16_sse2( dctcoef *dct );
 #define x264_decimate_score16_ssse3 x264_template(decimate_score16_ssse3)
 int x264_decimate_score16_ssse3( dctcoef *dct );
+#define x264_decimate_score16_avx512 x264_template(decimate_score16_avx512)
+int x264_decimate_score16_avx512( dctcoef *dct );
 #define x264_decimate_score64_mmx2 x264_template(decimate_score64_mmx2)
 int x264_decimate_score64_mmx2( dctcoef *dct );
 #define x264_decimate_score64_sse2 x264_template(decimate_score64_sse2)
@@ -161,6 +165,8 @@ int x264_decimate_score64_sse2( dctcoef *dct );
 int x264_decimate_score64_ssse3( dctcoef *dct );
 #define x264_decimate_score64_avx2 x264_template(decimate_score64_avx2)
 int x264_decimate_score64_avx2( int16_t *dct );
+#define x264_decimate_score64_avx512 x264_template(decimate_score64_avx512)
+int x264_decimate_score64_avx512( dctcoef *dct );
 #define x264_coeff_last4_mmx2 x264_template(coeff_last4_mmx2)
 int x264_coeff_last4_mmx2( dctcoef *dct );
 #define x264_coeff_last8_mmx2 x264_template(coeff_last8_mmx2)
