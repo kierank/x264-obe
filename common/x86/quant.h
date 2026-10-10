@@ -121,6 +121,8 @@ void x264_dequant_8x8_flat16_sse2( int16_t dct[64], int dequant_mf[6][64], int i
 void x264_dequant_4x4_flat16_avx2( int16_t dct[16], int dequant_mf[6][16], int i_qp );
 #define x264_dequant_8x8_flat16_avx2 x264_template(dequant_8x8_flat16_avx2)
 void x264_dequant_8x8_flat16_avx2( int16_t dct[64], int dequant_mf[6][64], int i_qp );
+#define x264_dequant_8x8_flat16_avx512 x264_template(dequant_8x8_flat16_avx512)
+void x264_dequant_8x8_flat16_avx512( int16_t dct[64], int dequant_mf[6][64], int i_qp );
 #define x264_optimize_chroma_2x2_dc_sse2 x264_template(optimize_chroma_2x2_dc_sse2)
 int x264_optimize_chroma_2x2_dc_sse2( dctcoef dct[4], int dequant_mf );
 #define x264_optimize_chroma_2x2_dc_ssse3 x264_template(optimize_chroma_2x2_dc_ssse3)
