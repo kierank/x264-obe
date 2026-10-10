@@ -2425,6 +2425,9 @@ DECL_CABAC(asm)
 #endif
 
 extern const uint8_t x264_count_cat_m1[14];
+#define x264_cabac_block_residual_c x264_template(cabac_block_residual_c)
+#define x264_cabac_block_residual_8x8_rd_c x264_template(cabac_block_residual_8x8_rd_c)
+#define x264_cabac_block_residual_rd_c x264_template(cabac_block_residual_rd_c)
 void x264_cabac_block_residual_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_8x8_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );

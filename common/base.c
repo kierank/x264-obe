@@ -355,6 +355,12 @@ void x264_param_default( x264_param_t *param )
     param->rc.i_zones = 0;
     param->rc.b_mb_tree = 1;
 
+    // speedcontrol
+    param->sc.f_speed = 0;
+    param->sc.i_buffer_size = 12;
+    param->sc.f_buffer_init = 0.75;
+    param->sc.max_preset = SC_PRESETS;
+
     /* Log */
     param->pf_log = x264_log_default;
     param->p_log_private = NULL;
@@ -433,6 +439,7 @@ static int param_apply_preset( x264_param_t *param, const char *preset )
         param->analyse.i_subpel_refine = 0;
         param->rc.i_aq_mode = 0;
         param->analyse.b_mixed_references = 0;
+        param->analyse.i_trellis = 0;
         param->i_bframe_adaptive = X264_B_ADAPT_NONE;
         param->rc.b_mb_tree = 0;
         param->analyse.i_weighted_pred = X264_WEIGHTP_NONE;
@@ -694,7 +701,8 @@ int x264_param_apply_profile( x264_param_t *param, const char *profile )
         x264_log_internal( X264_LOG_ERROR, "invalid profile: %s\n", profile );
         return -1;
     }
-    if( p < PROFILE_HIGH444_PREDICTIVE && ((param->rc.i_rc_method == X264_RC_CQP && param->rc.i_qp_constant <= 0) ||
+    /* qp -1 is the default, 23 at the encoder's bit depth */
+    if( p < PROFILE_HIGH444_PREDICTIVE && ((param->rc.i_rc_method == X264_RC_CQP && param->rc.i_qp_constant <= 0 && param->rc.i_qp_constant != -1) ||
         (param->rc.i_rc_method == X264_RC_CRF && (int)(param->rc.f_rf_constant + qp_bd_offset) <= 0)) )
     {
         x264_log_internal( X264_LOG_ERROR, "%s profile doesn't support lossless\n", profile );
@@ -1247,6 +1255,14 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->rc.f_complexity_blur = atof(value);
     OPT("zones")
         p->rc.psz_zones = strdup(value);
+    OPT("speed")
+        p->sc.f_speed = atof(value);
+    OPT("speed-bufsize")
+        p->sc.i_buffer_size = atoi(value);
+    OPT("speed-init")
+        p->sc.f_buffer_init = atof(value);
+    OPT("speed-alt-timer")
+        p->sc.b_alt_timer = atobool(value);
     OPT("crop-rect")
         b_error |= sscanf( value, "%u,%u,%u,%u", &p->crop_rect.i_left, &p->crop_rect.i_top,
                                                  &p->crop_rect.i_right, &p->crop_rect.i_bottom ) != 4;
