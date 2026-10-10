@@ -969,6 +969,11 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_interlaced->interleave_8x8_cavlc =
         pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx;
     }
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pf_interlaced->interleave_8x8_cavlc =
+        pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx512;
+    }
 #else
     if( cpu&X264_CPU_MMX )
     {
@@ -991,6 +996,11 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     {
         pf_interlaced->interleave_8x8_cavlc =
         pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx2;
+    }
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pf_interlaced->interleave_8x8_cavlc =
+        pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx512;
     }
 #endif // HIGH_BIT_DEPTH
 #endif

@@ -224,5 +224,7 @@ void x264_zigzag_interleave_8x8_cavlc_sse2( dctcoef *dst, dctcoef *src, uint8_t 
 void x264_zigzag_interleave_8x8_cavlc_avx ( dctcoef *dst, dctcoef *src, uint8_t *nnz );
 #define x264_zigzag_interleave_8x8_cavlc_avx2 x264_template(zigzag_interleave_8x8_cavlc_avx2)
 void x264_zigzag_interleave_8x8_cavlc_avx2( int16_t *dst, int16_t *src, uint8_t *nnz );
+#define x264_zigzag_interleave_8x8_cavlc_avx512 x264_template(zigzag_interleave_8x8_cavlc_avx512)
+void x264_zigzag_interleave_8x8_cavlc_avx512( dctcoef *dst, dctcoef *src, uint8_t *nnz );
 
 #endif
