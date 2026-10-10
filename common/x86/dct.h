@@ -110,8 +110,8 @@ void x264_add16x16_idct_dc_avx  ( pixel   *p_dst, dctcoef dct    [16] );
 #define x264_add16x16_idct_dc_avx2 x264_template(add16x16_idct_dc_avx2)
 void x264_add16x16_idct_dc_avx2 ( uint8_t *p_dst, int16_t dct    [16] );
 
-#define x264_dct4x4dc_mmx x264_template(dct4x4dc_mmx)
-void x264_dct4x4dc_mmx       ( int16_t d[16] );
+#define x264_dct4x4dc_mmx2 x264_template(dct4x4dc_mmx2)
+void x264_dct4x4dc_mmx2       ( int16_t d[16] );
 #define x264_dct4x4dc_sse2 x264_template(dct4x4dc_sse2)
 void x264_dct4x4dc_sse2      ( int32_t d[16] );
 #define x264_dct4x4dc_avx x264_template(dct4x4dc_avx)

@@ -1,6 +1,3 @@
-/* For AVX2 and AVX-512 */
-#if ARCH_X86 || ARCH_X86_64
-#define NATIVE_ALIGN 64
 /*****************************************************************************
  * osdep.h: platform-specific code
  *****************************************************************************
@@ -147,9 +144,9 @@ int x264_is_pipe( const char *path );
 #define ALIGNED_ARRAY_64( ... ) EXPAND( ALIGNED_ARRAY_EMU( 63, __VA_ARGS__ ) )
 #endif
 
-/* For AVX2 */
+/* For AVX2 and AVX-512 */
 #if ARCH_X86 || ARCH_X86_64
-#define NATIVE_ALIGN 32
+#define NATIVE_ALIGN 64
 #define ALIGNED_N ALIGNED_32
 #define ALIGNED_ARRAY_N ALIGNED_ARRAY_32
 #else
