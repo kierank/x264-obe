@@ -1063,6 +1063,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
         pixf->intra_sad_x3_8x8 = x264_intra_sad_x3_8x8_avx2;
     }
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512;
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512;
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1371,6 +1376,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
         INIT8( satd, _avx512 );
         pixf->sa8d[PIXEL_8x8] = x264_pixel_sa8d_8x8_avx512;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512;
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512;
     }
 #endif //HAVE_MMX
 
