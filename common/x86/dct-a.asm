@@ -538,6 +538,83 @@ ADD4x4_IDCT
 INIT_XMM avx
 ADD4x4_IDCT
 
+;-----------------------------------------------------------------------------
+; void add8x8_idct( pixel *p_dst, dctcoef dct[4][16] ), AVX2
+; Lane 0 holds block 0 or 1 and lane 1 the block below it (2 or 3), so each
+; instruction transforms two blocks. Packed rows of the left and right blocks
+; then interleave in-lane into [row r | row r+4], 8 contiguous pixels each.
+;-----------------------------------------------------------------------------
+%macro ADD8x8_IDCT_HBD_LOAD 2 ; reg, dct offset
+    mova         xm%1, [r1+%2]
+    vinserti128   m%1, m%1, [r1+%2+128], 1
+%endmacro
+
+; %1: dct offset of the upper block, %2-%5: rows, %6-%7: tmp
+; out: m%2 = rows 0,1 and m%4 = rows 2,3 as words, lane 1 = lower block
+%macro ADD8x8_IDCT_HBD_PASS 7
+    ADD8x8_IDCT_HBD_LOAD %2, %1+ 0
+    ADD8x8_IDCT_HBD_LOAD %3, %1+16
+    ADD8x8_IDCT_HBD_LOAD %4, %1+32
+    ADD8x8_IDCT_HBD_LOAD %5, %1+48
+    IDCT4_1D d,%2,%3,%4,%5,%6,%7
+    TRANSPOSE4x4D %2,%3,%4,%5,%6
+    vpbroadcastd  m%6, [pd_32]
+    paddd         m%2, m%6
+    IDCT4_1D d,%2,%3,%4,%5,%6,%7
+    psrad         m%2, 6
+    psrad         m%3, 6
+    psrad         m%4, 6
+    psrad         m%5, 6
+    packssdw      m%2, m%3
+    packssdw      m%4, m%5
+%endmacro
+
+; %1: words of rows %3 | %3+4, %2: tmp, m5: 0, m7: pw_pixel_max
+%macro ADD8x8_IDCT_HBD_STORE 3
+    mova         xm%2, [r0+%3*FDEC_STRIDEB]
+    vinserti128   m%2, m%2, [r0+(%3+4)*FDEC_STRIDEB], 1
+    paddsw        m%1, m%2
+    CLIPW         m%1, m5, m7
+    mova         [r0+%3*FDEC_STRIDEB], xm%1
+    vextracti128 [r0+(%3+4)*FDEC_STRIDEB], m%1, 1
+%endmacro
+
+%macro ADD8x8_IDCT_HBD 0
+    ADD8x8_IDCT_HBD_PASS  0, 0, 1, 2, 3, 4, 5 ; blocks 0, 2
+    ADD8x8_IDCT_HBD_PASS 64, 4, 5, 6, 7, 1, 3 ; blocks 1, 3
+    punpcklqdq    m1, m0, m4 ; rows 0 | 4
+    punpckhqdq    m0, m4     ; rows 1 | 5
+    punpcklqdq    m3, m2, m6 ; rows 2 | 6
+    punpckhqdq    m2, m6     ; rows 3 | 7
+    pxor          m5, m5
+    mova          m7, [pw_pixel_max]
+    ADD8x8_IDCT_HBD_STORE 1, 4, 0
+    ADD8x8_IDCT_HBD_STORE 0, 6, 1
+    ADD8x8_IDCT_HBD_STORE 3, 4, 2
+    ADD8x8_IDCT_HBD_STORE 2, 6, 3
+%endmacro
+
+INIT_YMM avx2
+cglobal add8x8_idct, 2,2,8
+    ADD8x8_IDCT_HBD
+    RET
+
+cglobal add16x16_idct, 2,2,8
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*FDEC_STRIDEB-8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    RET
+.add8x8:
+    ADD8x8_IDCT_HBD
+    ret
+
 %else ; !HIGH_BIT_DEPTH
 
 INIT_MMX mmx
@@ -1138,6 +1215,38 @@ INIT_XMM sse2
 ADD_IDCT_DC
 INIT_XMM avx
 ADD_IDCT_DC
+
+; One ymm per row: [dc0 x4, dc1 x4 | dc2 x4, dc3 x4]
+INIT_YMM avx2
+cglobal add16x16_idct_dc, 2,3,6
+    mov         r2d, 4
+    mova         m5, [pw_pixel_max]
+    pxor         m4, m4
+.loop:
+    mova        xm3, [r1]
+    paddd       xm3, [pd_32]
+    psrad       xm3, 6
+    packssdw    xm3, xm3       ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3
+    punpcklwd   xm3, xm3       ; dc0 dc0 dc1 dc1 dc2 dc2 dc3 dc3
+    vpermq       m3, m3, q1100 ; dc0 dc0 dc1 dc1 dc0 dc0 dc1 dc1 | dc2 dc2 dc3 dc3 dc2 dc2 dc3 dc3
+    punpckldq    m3, m3        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
+    paddsw       m0, m3, [r0+FDEC_STRIDEB*0]
+    paddsw       m1, m3, [r0+FDEC_STRIDEB*1]
+    paddsw       m2, m3, [r0+FDEC_STRIDEB*2]
+    paddsw       m3, [r0+FDEC_STRIDEB*3]
+    CLIPW        m0, m4, m5
+    CLIPW        m1, m4, m5
+    CLIPW        m2, m4, m5
+    CLIPW        m3, m4, m5
+    mova [r0+FDEC_STRIDEB*0], m0
+    mova [r0+FDEC_STRIDEB*1], m1
+    mova [r0+FDEC_STRIDEB*2], m2
+    mova [r0+FDEC_STRIDEB*3], m3
+    add          r1, 16
+    add          r0, 4*FDEC_STRIDEB
+    dec         r2d
+    jg .loop
+    RET
 
 %else ;!HIGH_BIT_DEPTH
 %macro ADD_DC 3
