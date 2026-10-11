@@ -669,6 +669,15 @@ void x264_frame_expand_border_lowres( x264_frame_t *frame )
         plane_expand_border( frame->lowres[i], frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres, PADH, PADV, 1, 1, 0 );
 }
 
+/* Lowres rows [y0,y1): side padding, and the padding above or below when the
+ * band is the first or last. */
+void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 )
+{
+    for( int i = 0; i < 4; i++ )
+        plane_expand_border( frame->lowres[i] + y0 * frame->i_stride_lowres, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                             PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+}
+
 void x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane )
 {
     int v_shift = CHROMA_V_SHIFT;
