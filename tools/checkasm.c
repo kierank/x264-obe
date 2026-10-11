@@ -2351,6 +2351,51 @@ static int check_deblock( int cpu_ref, int cpu_new )
     TEST_DEBLOCK( deblock_chroma_422_intra_mbaff, 0 );
     TEST_DEBLOCK( deblock_chroma_intra[1], 1 );
 
+    if( db_a.deblock_luma_mb && db_a.deblock_luma_mb != db_ref.deblock_luma_mb )
+    {
+        ALIGNED_ARRAY_16( uint8_t, bs, [2],[8][4] );
+        x264_deblock_edge_t e[3];
+        set_func_name( "deblock_luma_mb" );
+        used_asm = 1;
+        for( int i = 0; i < 200; i++ )
+        {
+            /* frame and field (2x) strides; the block has 4 rows above and 16 columns left */
+            intptr_t stride = 32 << (i&1);
+            intptr_t off = 4*stride + 16;
+            int edges = rand() & 0xff;
+            for( int j = 0; j < 1280; j++ )
+                pbuf3[j] = rand() & (i&2 ? 0xf : PIXEL_MAX);
+            memcpy( pbuf4, pbuf3, 1280 * sizeof(pixel) );
+            for( int j = 0; j < 2*8*4; j++ )
+                ((uint8_t*)bs)[j] = (rand()&3) ? rand()&3 : 0;
+            if( i&4 )
+                for( int j = 0; j < 2*8; j++ )
+                    if( !(rand()&3) )
+                        M32( (uint8_t*)bs + 4*j ) = 0;
+            for( int c = 0; c < 3; c++ )
+            {
+                int k = rand()%36;
+                e[c].tc0[0] = -(1 << (BIT_DEPTH-8));
+                for( int j = 1; j < 4; j++ )
+                    e[c].tc0[j] = tcs[k][j];
+                e[c].alpha = alphas[k];
+                e[c].beta = betas[k];
+                if( !alphas[k] || !betas[k] )
+                    edges &= c == 2 ? 0x11 : ~(c ? 0x10 : 0x01);
+            }
+            call_c1( db_c.deblock_luma_mb, pbuf3+off, stride, bs, e, edges );
+            call_a1( db_a.deblock_luma_mb, pbuf4+off, stride, bs, e, edges );
+            if( memcmp( pbuf3, pbuf4, 1280 * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "deblock_luma_mb (stride=%d, edges=%#x): [FAILED]\n", (int)stride, edges );
+                break;
+            }
+            call_c2( db_c.deblock_luma_mb, pbuf3+off, stride, bs, e, edges );
+            call_a2( db_a.deblock_luma_mb, pbuf4+off, stride, bs, e, edges );
+        }
+    }
+
     if( db_a.deblock_strength != db_ref.deblock_strength )
     {
         for( int i = 0; i < 100; i++ )

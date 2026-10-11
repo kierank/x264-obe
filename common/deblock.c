@@ -134,6 +134,22 @@ static void deblock_h_luma_c( pixel *pix, intptr_t stride, int alpha, int beta, 
 {
     deblock_luma_c( pix, 1, stride, alpha, beta, tc0 );
 }
+static void deblock_luma_mb_c( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges )
+{
+    for( int dir = 0; dir < 2; dir++ )
+        for( int edge = 0; edge < 4; edge++ )
+            if( (edges & (1 << (dir*4+edge))) && M32( bs[dir][edge] ) )
+            {
+                x264_deblock_edge_t *p = &e[edge ? 2 : dir];
+                int8_t tc[4];
+                for( int i = 0; i < 4; i++ )
+                    tc[i] = p->tc0[bs[dir][edge][i]];
+                if( dir )
+                    deblock_v_luma_c( pix + 4*edge*stride, stride, p->alpha, p->beta, tc );
+                else
+                    deblock_h_luma_c( pix + 4*edge, stride, p->alpha, p->beta, tc );
+            }
+}
 
 static ALWAYS_INLINE void deblock_edge_chroma_c( pixel *pix, intptr_t xstride, int alpha, int beta, int8_t tc )
 {
@@ -413,14 +429,43 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         int qpc = h->chroma_qp_table[qp];
         int first_edge_only = (h->mb.partition[mb_xy] == D_16x16 && !h->mb.cbp[mb_xy] && !intra_cur) || qp <= qp_thresh;
 
-        #define FILTER( intra, dir, edge, qp, chroma_qp )\
+        /* Luma in one deblock_luma_mb call after the chroma edges; the left edge may
+         * stay per edge (intra or MBAFF mixed), it runs first either way. */
+        int luma_mb = h->loopf.deblock_luma_mb && !first_edge_only && !intra_cur;
+        int mb_edges = 0;
+        x264_deblock_edge_t mb_e[3];
+        if( luma_mb && (h->mb.i_neighbour & MB_TOP) )
+        {
+            int top_xy = h->mb.i_mb_top_xy;
+            if( b_interlaced && !(mb_y&1) && !MB_INTERLACED && h->mb.field[top_xy] )
+                luma_mb = 0;
+            else if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[top_xy])) && IS_INTRA( h->mb.type[top_xy] ) )
+                luma_mb = 0;
+        }
+
+        #define MB_EDGE( c, qp, bits )\
+        do\
+        {\
+            int index_a = (qp) + a;\
+            int alpha = alpha_table(index_a) << (BIT_DEPTH-8);\
+            int beta  = beta_table((qp) + b) << (BIT_DEPTH-8);\
+            mb_e[c].alpha = alpha;\
+            mb_e[c].beta = beta;\
+            for( int i = 0; i < 4; i++ )\
+                mb_e[c].tc0[i] = tc0_table(index_a)[i] * (1 << (BIT_DEPTH-8));\
+            if( alpha && beta )\
+                mb_edges |= bits;\
+        } while(0)
+
+        #define FILTER( intra, dir, edge, qp, chroma_qp, luma )\
         do\
         {\
             if( !(edge & 1) || !transform_8x8 )\
             {\
-                deblock_edge##intra( h, pixy + 4*edge*(dir?stride2y:1),\
-                                     stride2y, bs[dir][edge], qp, a, b, 0,\
-                                     h->loopf.deblock_luma##intra[dir] );\
+                if( luma )\
+                    deblock_edge##intra( h, pixy + 4*edge*(dir?stride2y:1),\
+                                         stride2y, bs[dir][edge], qp, a, b, 0,\
+                                         h->loopf.deblock_luma##intra[dir] );\
                 if( CHROMA_FORMAT == CHROMA_444 )\
                 {\
                     deblock_edge##intra( h, pixuv          + 4*edge*(dir?stride2uv:1),\
@@ -515,16 +560,20 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                 }
 
                 if( intra_deblock )
-                    FILTER( _intra, 0, 0, qp_left, qpc_left );
+                    FILTER( _intra, 0, 0, qp_left, qpc_left, 1 );
                 else
-                    FILTER(       , 0, 0, qp_left, qpc_left );
+                {
+                    FILTER(       , 0, 0, qp_left, qpc_left, !luma_mb );
+                    if( luma_mb )
+                        MB_EDGE( 0, qp_left, 0x01 );
+                }
             }
         }
         if( !first_edge_only )
         {
-            FILTER( , 0, 1, qp, qpc );
-            FILTER( , 0, 2, qp, qpc );
-            FILTER( , 0, 3, qp, qpc );
+            FILTER( , 0, 1, qp, qpc, !luma_mb );
+            FILTER( , 0, 2, qp, qpc, !luma_mb );
+            FILTER( , 0, 3, qp, qpc, !luma_mb );
         }
 
         if( h->mb.i_neighbour & MB_TOP )
@@ -570,25 +619,35 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
 
                 if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[h->mb.i_mb_top_xy])) && intra_deblock )
                 {
-                    FILTER( _intra, 1, 0, qp_top, qpc_top );
+                    FILTER( _intra, 1, 0, qp_top, qpc_top, 1 );
                 }
                 else
                 {
                     if( intra_deblock )
                         M32( bs[1][0] ) = 0x03030303;
-                    FILTER(       , 1, 0, qp_top, qpc_top );
+                    FILTER(       , 1, 0, qp_top, qpc_top, !luma_mb );
+                    if( luma_mb )
+                        MB_EDGE( 1, qp_top, 0x10 );
                 }
             }
         }
 
         if( !first_edge_only )
         {
-            FILTER( , 1, 1, qp, qpc );
-            FILTER( , 1, 2, qp, qpc );
-            FILTER( , 1, 3, qp, qpc );
+            FILTER( , 1, 1, qp, qpc, !luma_mb );
+            FILTER( , 1, 2, qp, qpc, !luma_mb );
+            FILTER( , 1, 3, qp, qpc, !luma_mb );
+        }
+
+        if( luma_mb )
+        {
+            MB_EDGE( 2, qp, transform_8x8 ? 0x44 : 0xee );
+            if( mb_edges )
+                h->loopf.deblock_luma_mb( pixy, stride2y, bs, mb_e, mb_edges );
         }
 
         #undef FILTER
+        #undef MB_EDGE
     }
 }
 
@@ -671,10 +730,12 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
     pf->deblock_luma_intra_mbaff = deblock_h_luma_intra_mbaff_c;
     pf->deblock_chroma_420_intra_mbaff = deblock_h_chroma_intra_mbaff_c;
     pf->deblock_strength = deblock_strength_c;
+    pf->deblock_luma_mb = deblock_luma_mb_c;
 
 #if HAVE_MMX
     if( cpu&X264_CPU_MMX2 )
     {
+        pf->deblock_luma_mb = NULL;
 #if ARCH_X86
         pf->deblock_luma[1] = x264_deblock_v_luma_mmx2;
         pf->deblock_luma[0] = x264_deblock_h_luma_mmx2;
@@ -748,6 +809,9 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
         if( cpu&X264_CPU_AVX2 )
         {
             pf->deblock_strength = x264_deblock_strength_avx2;
+#if ARCH_X86_64
+            pf->deblock_luma_mb = x264_deblock_luma_mb_avx2;
+#endif
 #if HIGH_BIT_DEPTH && ARCH_X86_64
             pf->deblock_luma[1] = x264_deblock_v_luma_avx2;
             pf->deblock_luma[0] = x264_deblock_h_luma_avx2;
@@ -766,6 +830,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 #if HAVE_ALTIVEC
     if( cpu&X264_CPU_ALTIVEC )
     {
+        pf->deblock_luma_mb = NULL;
         pf->deblock_luma[1] = x264_deblock_v_luma_altivec;
         pf->deblock_luma[0] = x264_deblock_h_luma_altivec;
    }
@@ -774,6 +839,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 #if HAVE_ARMV6
    if( cpu&X264_CPU_NEON )
    {
+        pf->deblock_luma_mb = NULL;
         pf->deblock_luma[1] = x264_deblock_v_luma_neon;
         pf->deblock_luma[0] = x264_deblock_h_luma_neon;
         pf->deblock_chroma[1] = x264_deblock_v_chroma_neon;
