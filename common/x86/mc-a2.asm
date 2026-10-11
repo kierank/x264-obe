@@ -372,6 +372,63 @@ HPEL_FILTER
     pminsw     %1, m10
 %endmacro
 
+;-----------------------------------------------------------------------------
+; void hpel_filter_c( uint16_t *dst, int16_t *buf, intptr_t width );
+;-----------------------------------------------------------------------------
+%macro HPEL_C_HBD 0
+cglobal hpel_filter_c, 3,4,12
+    add          r2, r2
+    add          r0, r2
+    add          r1, r2
+    neg          r2
+    vpbroadcastd m6, [tap1]
+    vpbroadcastd m7, [tap2]
+    vpbroadcastd m8, [tap3]
+    vpbroadcastd m9, [depad]
+    vpbroadcastw m10, [pw_pixel_max]
+    pxor        m11, m11
+%if cpuflag(avx512)
+    mov         r3d, 0xaaaaaaaa
+    kmovd        k1, r3d
+%endif
+.loop:
+%if cpuflag(avxvnni)
+    mova         m0, m9                     ; even outputs
+    mova         m1, m9                     ; odd outputs
+    vpdpwssd     m0, m6, [r1+r2-4]
+    vpdpwssd     m1, m6, [r1+r2-2]
+    vpdpwssd     m0, m7, [r1+r2+0]
+    vpdpwssd     m1, m7, [r1+r2+2]
+    vpdpwssd     m0, m8, [r1+r2+4]
+    vpdpwssd     m1, m8, [r1+r2+6]
+%else
+    pmaddwd      m0, m6, [r1+r2-4]
+    pmaddwd      m1, m6, [r1+r2-2]
+    pmaddwd      m2, m7, [r1+r2+0]
+    pmaddwd      m3, m7, [r1+r2+2]
+    pmaddwd      m4, m8, [r1+r2+4]
+    pmaddwd      m5, m8, [r1+r2+6]
+    paddd        m0, m9
+    paddd        m1, m9
+    paddd        m2, m4
+    paddd        m3, m5
+    paddd        m0, m2                     ; even outputs
+    paddd        m1, m3                     ; odd outputs
+%endif
+    psrad        m0, 10
+    pslld        m1, 6                      ; odd >> 10 in the high word
+%if cpuflag(avx512)
+    vpblendmw    m0 {k1}, m0, m1
+%else
+    pblendw      m0, m1, 0xaa
+%endif
+    CLIPW        m0, m11, m10
+    mova    [r0+r2], m0
+    add          r2, mmsize
+    jl .loop
+    RET
+%endmacro ; HPEL_C_HBD
+
 %macro HPEL_FILTER_HBD 0
 ;-----------------------------------------------------------------------------
 ; void hpel_filter_v( uint16_t *dst, uint16_t *src, int16_t *buf, intptr_t stride, intptr_t width );
@@ -410,49 +467,7 @@ cglobal hpel_filter_v, 5,6,12
     jl .loop
     RET
 
-;-----------------------------------------------------------------------------
-; void hpel_filter_c( uint16_t *dst, int16_t *buf, intptr_t width );
-;-----------------------------------------------------------------------------
-cglobal hpel_filter_c, 3,3,12
-    add          r2, r2
-    add          r0, r2
-    add          r1, r2
-    neg          r2
-    vpbroadcastd m6, [tap1]
-    vpbroadcastd m7, [tap2]
-    vpbroadcastd m8, [tap3]
-    vpbroadcastd m9, [depad]
-    vpbroadcastw m10, [pw_pixel_max]
-    pxor        m11, m11
-%if mmsize == 64
-    mov         r3d, 0xaaaaaaaa
-    kmovd        k1, r3d
-%endif
-.loop:
-    pmaddwd      m0, m6, [r1+r2-4]
-    pmaddwd      m1, m6, [r1+r2-2]
-    pmaddwd      m2, m7, [r1+r2+0]
-    pmaddwd      m3, m7, [r1+r2+2]
-    pmaddwd      m4, m8, [r1+r2+4]
-    pmaddwd      m5, m8, [r1+r2+6]
-    paddd        m0, m9
-    paddd        m1, m9
-    paddd        m2, m4
-    paddd        m3, m5
-    paddd        m0, m2                     ; even outputs
-    paddd        m1, m3                     ; odd outputs
-    psrad        m0, 10
-    pslld        m1, 6                      ; odd >> 10 in the high word
-%if mmsize == 64
-    vpblendmw    m0 {k1}, m0, m1
-%else
-    pblendw      m0, m1, 0xaa
-%endif
-    CLIPW        m0, m11, m10
-    mova    [r0+r2], m0
-    add          r2, mmsize
-    jl .loop
-    RET
+HPEL_C_HBD
 
 ;-----------------------------------------------------------------------------
 ; void hpel_filter_h( uint16_t *dst, uint16_t *src, intptr_t width );
@@ -486,6 +501,15 @@ cglobal hpel_filter_h, 3,3,11
 
 INIT_YMM avx2
 HPEL_FILTER_HBD
+; c only: its sums are dwords. v and h filter in words, where vpdpwssd would double the vectors.
+%if HAVE_AVX_VNNI
+INIT_YMM avxvnni
+HPEL_C_HBD
+%endif
+%if HAVE_AVX512_VNNI
+INIT_YMM avx512vnni
+HPEL_C_HBD
+%endif
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0

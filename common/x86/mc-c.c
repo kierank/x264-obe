@@ -43,6 +43,8 @@
 #define x264_hpel_filter_avx x264_template(hpel_filter_avx)
 #define x264_hpel_filter_avx2 x264_template(hpel_filter_avx2)
 #define x264_hpel_filter_c_avx2 x264_template(hpel_filter_c_avx2)
+#define x264_hpel_filter_c_avxvnni x264_template(hpel_filter_c_avxvnni)
+#define x264_hpel_filter_c_avx512vnni x264_template(hpel_filter_c_avx512vnni)
 #define x264_hpel_filter_h_avx2 x264_template(hpel_filter_h_avx2)
 #define x264_hpel_filter_v_avx2 x264_template(hpel_filter_v_avx2)
 #define x264_hpel_filter_c_mmx2 x264_template(hpel_filter_c_mmx2)
@@ -732,6 +734,12 @@ HPEL(8, mmx2, mmx2, mmx2, mmx2)
 #if HIGH_BIT_DEPTH
 HPEL(16, sse2, sse2, sse2, sse2)
 HPEL(32, avx2, avx2, avx2, avx2)
+#if HAVE_AVX_VNNI
+HPEL(32, avxvnni, avx2, avxvnni, avx2)
+#endif
+#if HAVE_AVX512_VNNI
+HPEL(32, avx512vnni, avx2, avx512vnni, avx2)
+#endif
 #else // !HIGH_BIT_DEPTH
 HPEL(16, sse2_amd, mmx2, mmx2, sse2)
 #if ARCH_X86_64
@@ -1060,6 +1068,15 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
     }
+#if HAVE_AVX512_VNNI
+    if( cpu&X264_CPU_AVX512_VNNI )
+        pf->hpel_filter = x264_hpel_filter_avx512vnni;
+#endif
+#if HAVE_AVX_VNNI
+    /* same code as avx512vnni with shorter encodings, so preferred when both exist (Zen 5) */
+    if( cpu&X264_CPU_AVX_VNNI )
+        pf->hpel_filter = x264_hpel_filter_avxvnni;
+#endif
 #else // !HIGH_BIT_DEPTH
 
 #if ARCH_X86 // all x86_64 cpus with cacheline split issues use sse2 instead
