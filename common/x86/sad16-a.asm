@@ -744,15 +744,33 @@ SAD_X4_HBD_Y 16
 ; int pixel_sad_avg2_WxH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
 ; sad( fenc, (src1+src2+1)>>1 ), word sums (at most 16*1023 a lane)
 ;-----------------------------------------------------------------------------
-; %1 = row k: m1 = |fenc - avg| of one 16 pixel row (16 wide) or rows k, k+1 (8 wide)
-%macro SAD_AVG2_HBD_ROW 2 ; row, width
-%if %2 == 16
-    movu          m1, [r1]
-    pavgw         m1, [r2]
+; 16 wide, row k: rows k..k+3 share a pointer step (r4 = 3*stride), even rows
+; accumulate in m0 and odd rows in m2 (at most 8*1023 a lane each)
+%macro SAD_AVG2_HBD_ROW16 1 ; row
+    SAD_HBD_ROWOFF %1&3, r3, r4
+    movu          m1, [r1+sad_off]
+    pavgw         m1, [r2+sad_off]
     psubw         m1, [r0+%1*FENC_STRIDEB]
-    add           r1, r3
-    add           r2, r3
+%if %1 == 0
+    pabsw         m0, m1
+%elif %1 == 1
+    pabsw         m2, m1
 %else
+    pabsw         m1, m1
+%if %1 & 1
+    paddw         m2, m1
+%else
+    paddw         m0, m1
+%endif
+%endif
+%if (%1&3) == 3 && %1 < sad_avg2_h-1
+    lea           r1, [r1+8*r3]
+    lea           r2, [r2+8*r3]
+%endif
+%endmacro
+
+; 8 wide, row k: m1 = |fenc - avg| of rows k, k+1
+%macro SAD_AVG2_HBD_ROW8 1 ; row
     movu         xm1, [r1]
     vinserti128   m1, m1, [r1+r3], 1
     movu         xm2, [r2]
@@ -763,7 +781,6 @@ SAD_X4_HBD_Y 16
     psubw         m1, m2
     lea           r1, [r1+2*r3]
     lea           r2, [r2+2*r3]
-%endif
     pabsw         m1, m1
 %if %1
     paddw         m0, m1
@@ -773,13 +790,25 @@ SAD_X4_HBD_Y 16
 %endmacro
 
 %macro SAD_AVG2_HBD 2 ; width, height
+%assign sad_avg2_h %2
+%if %1 == 16
+cglobal pixel_sad_avg2_%1x%2, 4,5,4
+    lea           r4, [r3+2*r3]
+%assign sad_avg2_k 0
+%rep %2
+    SAD_AVG2_HBD_ROW16 sad_avg2_k
+%assign sad_avg2_k sad_avg2_k+1
+%endrep
+    paddw         m0, m2
+%else
 cglobal pixel_sad_avg2_%1x%2, 4,4,3
     FIX_STRIDES   r3
 %assign sad_avg2_k 0
-%rep %2*%1/16
-    SAD_AVG2_HBD_ROW sad_avg2_k, %1
-%assign sad_avg2_k sad_avg2_k+16*16/(%1*16)
+%rep %2/2
+    SAD_AVG2_HBD_ROW8 sad_avg2_k
+%assign sad_avg2_k sad_avg2_k+2
 %endrep
+%endif
     HADDW         m0, m1
     movd         eax, xm0
     RET
