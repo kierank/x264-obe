@@ -509,6 +509,25 @@ CABAC bmi2
     jmp .%1_end
 %endmacro
 
+; EXPERIMENT: rd loop heads at the start of a 64 byte window. The padding is
+; jumped over, so every arm runs the same instructions. -DRD_LOOP_SKEW=n
+; puts the heads n bytes past the boundary instead (layout twin),
+; -DRD_LOOP_ALIGN=0 removes the jump and the padding.
+%ifndef RD_LOOP_ALIGN
+    %define RD_LOOP_ALIGN 64
+%endif
+%ifndef RD_LOOP_SKEW
+    %define RD_LOOP_SKEW 0
+%endif
+%macro RD_LOOP_HEAD 1
+%if RD_LOOP_ALIGN
+    jmp %1
+    ALIGN RD_LOOP_ALIGN
+    times RD_LOOP_SKEW db 0xcc
+%endif
+%1:
+%endmacro
+
 %macro LOAD_DCTCOEF 1
 %if HIGH_BIT_DEPTH
     mov     %1, [dct+r6*4]
@@ -607,7 +626,7 @@ CABAC bmi2
 ; for( int i = last-1 ; i >= 0; i-- )
     dec     r6d
     jl .end
-.coeff_loop:
+    RD_LOOP_HEAD .coeff_loop
     LOAD_DCTCOEF r1d
 ; if( l[i] )
     movzx   r9d, byte [r5+r6]
@@ -732,7 +751,7 @@ CABAC bmi2
     btr      r4d, r6d
     test     r4d, r4d
     jz .end
-.level_loop:
+    RD_LOOP_HEAD .level_loop
     lzcnt    r6d, r4d
     xor      r6d, 31
     btr      r4d, r6d
@@ -875,7 +894,7 @@ CABAC bmi2
     mov      r1d, r6d
     dec      r1d
     jl .sig_end
-.sig_loop:
+    RD_LOOP_HEAD .sig_loop
     movzx    r2d, byte [r4+r1]
     movzx    r3d, byte [r5+r2]
     bt        r9, r1
@@ -894,7 +913,7 @@ CABAC bmi2
     test      r9, r9
     jz .end
 ; the nonzero coefficients below last, descending
-.coeff_loop:
+    RD_LOOP_HEAD .coeff_loop
 %if cpuflag(lzcnt)
     lzcnt     r6, r9
     xor      r6d, 63
