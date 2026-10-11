@@ -276,6 +276,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_function_t pixel_ref;
     x264_pixel_function_t pixel_asm;
     x264_predict_t predict_4x4[12];
+    x264_predict_t predict_8x8c[7];
     x264_predict8x8_t predict_8x8[12];
     x264_predict_8x8_filter_t predict_8x8_filter;
     ALIGNED_16( pixel edge[36] );
@@ -286,6 +287,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_init( cpu_ref, &pixel_ref );
     x264_pixel_init( cpu_new, &pixel_asm );
     x264_predict_4x4_init( 0, predict_4x4 );
+    x264_predict_8x8c_init( 0, predict_8x8c );
     x264_predict_8x8_init( 0, predict_8x8, &predict_8x8_filter );
     predict_8x8_filter( pbuf2+40, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
 
@@ -866,6 +868,73 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_INTRA_X9( intra_sad_x9_4x4, sad );
     TEST_INTRA8_X9( intra_sad_x9_8x8, sad );
     report( "intra sad_x9 :" );
+
+    ok = 1; used_asm = 0;
+    if( pixel_asm.intra_satd_lowres && pixel_asm.intra_satd_lowres != pixel_ref.intra_satd_lowres )
+    {
+        /* against slicetype's C path: neighbours copied to pix, x3, P, filter, DDL..HU */
+        ALIGNED_ARRAY_64( pixel, plane,[10*64] );
+        ALIGNED_ARRAY_64( pixel, fenc,[8*FENC_STRIDE] );
+        ALIGNED_ARRAY_64( pixel, pixbuf,[9*FDEC_STRIDE] );
+        ALIGNED_16( pixel edge8[36] );
+        intptr_t stride = 64;
+        pixel *src = plane + stride + 16;
+        pixel *pix = pixbuf + FDEC_STRIDE + 8;
+        int pixoff = 4 / sizeof(pixel);
+        used_asm = 1;
+        set_func_name( "intra_satd_lowres" );
+        /* k = 0: random; 1: random 0/max, every difference +-max; 2, 3: the neighbour
+         * segments lt, t0-3, t4-7, t8-15, l0-3, l4-7 each 0 or max by the bits of j,
+         * fenc random (2) or a 0/max checkerboard (3) */
+        for( int k = 0; k < 4 && ok; k++ )
+            for( int j = 0; j < 64 && ok; j++ )
+            {
+                for( int i = 0; i < 10*64; i++ )
+                    plane[i] = k == 1 ? -(pbuf1[i+3*j]&1) & PIXEL_MAX : pbuf2[i+7*j];
+                if( k >= 2 )
+                {
+                    src[-stride-1] = -(j&1) & PIXEL_MAX;
+                    for( int x = 0; x < 16; x++ )
+                        src[x-stride] = -((j >> (1 + X264_MIN( x>>2, 2 ))) & 1) & PIXEL_MAX;
+                    for( int y = 0; y < 8; y++ )
+                        src[y*stride-1] = -((j >> (4 + (y>>2))) & 1) & PIXEL_MAX;
+                }
+                for( int y = 0; y < 8; y++ )
+                    for( int x = 0; x < 8; x++ )
+                        fenc[y*FENC_STRIDE+x] = k == 1 ? PIXEL_MAX - src[y*stride+x]
+                                              : k == 3 ? -((x^y^j)&1) & PIXEL_MAX
+                                              : pbuf1[y*16+x+5*j];
+
+                int satds[3];
+                memcpy( pix-FDEC_STRIDE, src-stride, 16 * sizeof(pixel) );
+                for( int i = -1; i < 8; i++ )
+                    M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*stride-pixoff] );
+                pixel_c.intra_satd_x3_8x8c( fenc, pix, satds );
+                int res_c = X264_MIN3( satds[0], satds[1], satds[2] );
+                predict_8x8c[I_PRED_CHROMA_P]( pix );
+                res_c = X264_MIN( res_c, pixel_c.satd[PIXEL_8x8]( pix, FDEC_STRIDE, fenc, FENC_STRIDE ) );
+                predict_8x8_filter( pix, edge8, ALL_NEIGHBORS, ALL_NEIGHBORS );
+                for( int i = 3; i < 9; i++ )
+                {
+                    predict_8x8[i]( pix, edge8 );
+                    res_c = X264_MIN( res_c, pixel_c.satd[PIXEL_8x8]( pix, FDEC_STRIDE, fenc, FENC_STRIDE ) );
+                }
+
+                void *f = fenc;
+#if !HIGH_BIT_DEPTH
+                ALIGNED_ARRAY_64( int16_t, fenc_pre,[64] );
+                pixel_asm.satd_fenc_pre[1]( fenc_pre, fenc );
+                f = fenc_pre;
+#endif
+                int res_a = call_a( pixel_asm.intra_satd_lowres, f, src, stride );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "intra_satd_lowres k=%d j=%d: %d != %d [FAILED]\n", k, j, res_c, res_a );
+                }
+            }
+    }
+    report( "intra satd_lowres :" );
 
     ok = 1; used_asm = 0;
     if( pixel_asm.ssd_nv12_core != pixel_ref.ssd_nv12_core )

@@ -718,34 +718,42 @@ skip_motionest:
 lowres_intra_mb:
     if( !fenc->b_intra_calculated )
     {
-        ALIGNED_ARRAY_16( pixel, edge,[36] );
-        pixel *pix = &pix1[8+FDEC_STRIDE];
         pixel *src = &fenc->lowres[0][i_pel_offset];
         const int intra_penalty = 5 * a->i_lambda;
-        int satds[3];
-        int pixoff = 4 / sizeof(pixel);
+        void *lowres_fenc = HIGH_BIT_DEPTH ? (void*)h->mb.pic.p_fenc[0] : (void*)fenc_pre;
+        int i_icost;
 
-        /* Avoid store forwarding stalls by writing larger chunks */
-        memcpy( pix-FDEC_STRIDE, src-i_stride, 16 * sizeof(pixel) );
-        for( int i = -1; i < 8; i++ )
-            M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*i_stride-pixoff] );
-
-        h->pixf.intra_mbcmp_x3_8x8c( h->mb.pic.p_fenc[0], pix, satds );
-        int i_icost = X264_MIN3( satds[0], satds[1], satds[2] );
-
-        if( h->param.analyse.i_subpel_refine > 1 )
+        if( h->pixf.intra_mbcmp_lowres && lowres_fenc )
+            i_icost = h->pixf.intra_mbcmp_lowres( lowres_fenc, src, i_stride );
+        else
         {
-            h->predict_8x8c[I_PRED_CHROMA_P]( pix );
-            int satd = fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, FDEC_STRIDE )
-                                : h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
-            i_icost = X264_MIN( i_icost, satd );
-            h->predict_8x8_filter( pix, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
-            for( int i = 3; i < 9; i++ )
+            ALIGNED_ARRAY_16( pixel, edge,[36] );
+            pixel *pix = &pix1[8+FDEC_STRIDE];
+            int satds[3];
+            int pixoff = 4 / sizeof(pixel);
+
+            /* Avoid store forwarding stalls by writing larger chunks */
+            memcpy( pix-FDEC_STRIDE, src-i_stride, 16 * sizeof(pixel) );
+            for( int i = -1; i < 8; i++ )
+                M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*i_stride-pixoff] );
+
+            h->pixf.intra_mbcmp_x3_8x8c( h->mb.pic.p_fenc[0], pix, satds );
+            i_icost = X264_MIN3( satds[0], satds[1], satds[2] );
+
+            if( h->param.analyse.i_subpel_refine > 1 )
             {
-                h->predict_8x8[i]( pix, edge );
-                satd = fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, FDEC_STRIDE )
-                                : h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
+                h->predict_8x8c[I_PRED_CHROMA_P]( pix );
+                int satd = fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, FDEC_STRIDE )
+                                    : h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
                 i_icost = X264_MIN( i_icost, satd );
+                h->predict_8x8_filter( pix, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
+                for( int i = 3; i < 9; i++ )
+                {
+                    h->predict_8x8[i]( pix, edge );
+                    satd = fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, FDEC_STRIDE )
+                                    : h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
+                    i_icost = X264_MIN( i_icost, satd );
+                }
             }
         }
 

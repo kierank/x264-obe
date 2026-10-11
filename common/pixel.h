@@ -177,6 +177,12 @@ typedef struct
     int (*intra_mbcmp_x9_8x8)( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sa8d_x9_8x8) ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sad_x9_8x8)  ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
+    /* asm only, NULL otherwise: slicetype's lowres intra cost of the 8x8 at src, all
+     * its neighbours in the plane: the minimum satd of the 8x8c DC, H, V and P and the
+     * 8x8 DDL..HU predictions (predict_8x8_filter edge). fenc: satd_fenc_pre[1]'s
+     * (8-bit) or the fenc at FENC_STRIDE (high bit depth). */
+    int (*intra_satd_lowres) ( void *fenc, pixel *src, intptr_t i_stride );
+    int (*intra_mbcmp_lowres)( void *fenc, pixel *src, intptr_t i_stride ); /* intra_satd_lowres where mbcmp is satd, else NULL */
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)
