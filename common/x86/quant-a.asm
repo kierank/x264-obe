@@ -336,14 +336,54 @@ QUANT_DC 4, 4
 QUANT_AC 4, 4
 QUANT_AC 8, 8
 
+; dct, mf (2x), bias (2x), accumulator
+%macro QUANT_TWO_AC_AVX2 6
+    mova        m0, [%1   ]
+    mova        m1, [%1+32]
+    ABSD        m2, m0
+    ABSD        m3, m1
+    paddd       m2, %4
+    paddd       m3, %5
+    pmulld      m2, %2
+    pmulld      m3, %3
+    psrad       m2, 16
+    psrad       m3, 16
+    PSIGND      m2, m0
+    PSIGND      m3, m1
+    mova [%1   ], m2
+    mova [%1+32], m3
+    ACCUM      por, %6, 2, 0
+    por        m%6, m3
+%endmacro
+
 INIT_YMM avx2
+%if ARCH_X86_64
+cglobal quant_4x4x4, 3,3,10
+    mova      m6, [r1]
+    mova      m7, [r1+32]
+    mova      m8, [r2]
+    mova      m9, [r2+32]
+    %define quant444_mf0   m6
+    %define quant444_mf1   m7
+    %define quant444_bias0 m8
+    %define quant444_bias1 m9
+%else
 cglobal quant_4x4x4, 3,3,6
-    QUANT_TWO_AC r0,    r1, r2, 0, 4
-    QUANT_TWO_AC r0+64, r1, r2, 0, 5
+    %define quant444_mf0   [r1]
+    %define quant444_mf1   [r1+32]
+    %define quant444_bias0 [r2]
+    %define quant444_bias1 [r2+32]
+%endif
+    QUANT_TWO_AC_AVX2 r0,    quant444_mf0, quant444_mf1, quant444_bias0, quant444_bias1, 4
+    QUANT_TWO_AC_AVX2 r0+64, quant444_mf0, quant444_mf1, quant444_bias0, quant444_bias1, 5
     add       r0, 128
     packssdw  m4, m5
-    QUANT_TWO_AC r0,    r1, r2, 0, 5
-    QUANT_TWO_AC r0+64, r1, r2, 0, 1
+    QUANT_TWO_AC_AVX2 r0,    quant444_mf0, quant444_mf1, quant444_bias0, quant444_bias1, 5
+    QUANT_TWO_AC_AVX2 r0+64, quant444_mf0, quant444_mf1, quant444_bias0, quant444_bias1, 1
+    %undef quant444_mf0
+    %undef quant444_mf1
+    %undef quant444_bias0
+    %undef quant444_bias1
     packssdw  m5, m1
     packssdw  m4, m5
     pxor      m3, m3
