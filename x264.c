@@ -936,7 +936,17 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - 0: equal row counts\n"
         "                                  - 1: equal lowres cost of the frame being coded\n"
         "                                  - 2: equal measured row encode time of previous\n"
-        "                                       frames (nondeterministic output)\n" );
+        "                                       frames (nondeterministic output)\n"
+        "                                  - 3: as 1, but only when the even split is\n"
+        "                                       unbalanced, with hysteresis\n" );
+    H2( "      --slice-balance-thresh <float> Slice balance 3: re-split only when the\n"
+        "                              even split's predicted max/mean slice cost\n"
+        "                              exceeds this [%.2f]\n", defaults->f_slice_balance_thresh );
+    H2( "      --slice-balance-hyst <float> Slice balance 3: keep the last split of the same\n"
+        "                              slice type unless the new split lowers the\n"
+        "                              predicted max/mean by at least this [%.2f]\n", defaults->f_slice_balance_hyst );
+    H2( "      --slice-balance-base <float> Slice balance 3: content independent row cost,\n"
+        "                              as a fraction of the mean row cost [%.2f]\n", defaults->f_slice_balance_base );
     H2( "      --sliced-threads-rows <integer> Sliced threads: use as many threads as it\n"
         "                              takes for at most this many rows per thread\n"
         "                              (mb pair rows if interlaced); overrides --threads\n" );
@@ -1121,6 +1131,9 @@ static struct option long_options[] =
     { "sliced-threads",    no_argument, NULL, 0 },
     { "no-sliced-threads", no_argument, NULL, 0 },
     { "slice-balance",     required_argument, NULL, 0 },
+    { "slice-balance-thresh", required_argument, NULL, 0 },
+    { "slice-balance-hyst", required_argument, NULL, 0 },
+    { "slice-balance-base", required_argument, NULL, 0 },
     { "sliced-threads-rows", required_argument, NULL, 0 },
     { "slice-max-size",    required_argument, NULL, 0 },
     { "slice-max-mbs",     required_argument, NULL, 0 },

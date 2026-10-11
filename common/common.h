@@ -284,6 +284,8 @@ struct x264_t
      * [0, units] weight prefix sums, then (mode 2) last frame's row times and smoothed row times */
     int64_t         *slice_balance_buf;
     int64_t         i_slice_balance_last; /* mode 2: clock at the end of this thread's last row */
+    /* mode 3: last split used per slice type, [type][i_threads] = 0 if none; main thread only */
+    int             slice_balance_split[3][X264_THREAD_MAX+1];
     x264_threadpool_t *threadpool;
     x264_threadpool_t *lookaheadpool;
     x264_pthread_mutex_t mutex;

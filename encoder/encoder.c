@@ -915,7 +915,9 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         if( h->param.i_slice_max_mbs || h->param.i_slice_max_size )
             h->param.i_slice_count = 0;
     }
-    h->param.i_slice_balance = x264_clip3( h->param.i_slice_balance, 0, 2 );
+    h->param.i_slice_balance = x264_clip3( h->param.i_slice_balance, 0, 3 );
+    h->param.f_slice_balance_hyst = x264_clip3f( h->param.f_slice_balance_hyst, 0, 100 );
+    h->param.f_slice_balance_base = x264_clip3f( h->param.f_slice_balance_base, 0, 100 );
     if( !h->param.b_sliced_threads || h->param.i_threads == 1 || h->param.i_avcintra_class )
         h->param.i_slice_balance = 0;
     if( h->param.i_slice_count_max > 0 )
@@ -3132,15 +3134,17 @@ fail:
 
 /* Thread slice boundaries in rows (mb pair rows in MBAFF): slice i starts at
  * bounds[i], bounds[i_threads] is the height.  --slice-balance moves them so
- * each slice gets an equal share of the predicted coding time. */
-static void slice_balance_bounds( x264_t *h, int *bounds )
+ * each slice gets an equal share of the predicted coding time.  Returns the
+ * total predicted cost, with the unit cost prefix sums in slice_balance_buf,
+ * or 0 if the split is even for lack of costs. */
+static int64_t slice_balance_bounds( x264_t *h, int *bounds )
 {
     int n = h->param.i_threads;
     int units = h->mb.i_mb_height >> PARAM_INTERLACED;
     for( int i = 0; i <= n; i++ )
         bounds[i] = (units * i + h->param.i_slice_count/2) / n;
     if( !h->param.i_slice_balance )
-        return;
+        return 0;
 
     int64_t *prefix = h->slice_balance_buf;
     int64_t *smooth = prefix + 2 * (h->mb.i_mb_height + 1);
@@ -3154,7 +3158,7 @@ static void slice_balance_bounds( x264_t *h, int *bounds )
     if( !total )
     {
         if( x264_slice_balance_row_costs( h, prefix + 1 ) < 0 )
-            return;
+            return 0;
         for( int u = 0; u < units; u++ )
         {
             int64_t w = prefix[1 + (u << PARAM_INTERLACED)];
@@ -3164,14 +3168,16 @@ static void slice_balance_bounds( x264_t *h, int *bounds )
             total += w;
         }
         /* Part of a row's coding time doesn't depend on its content:
-         * model it as half the mean row cost. */
-        int64_t fixed = total / (2 * units);
+         * model it as half (mode 3: --slice-balance-base) the mean row cost. */
+        int64_t fixed = h->param.i_slice_balance == 3
+                      ? (int64_t)(total * (double)h->param.f_slice_balance_base) / units
+                      : total / (2 * units);
         for( int u = 0; u < units; u++ )
             prefix[u+1] += fixed;
         total += fixed * units;
     }
     if( total <= 0 )
-        return;
+        return 0;
 
     prefix[0] = 0;
     for( int u = 0; u < units; u++ )
@@ -3190,12 +3196,64 @@ static void slice_balance_bounds( x264_t *h, int *bounds )
             u--;
         bounds[i] = u;
     }
+    return total;
+}
+
+/* Predicted max/mean slice cost of a split */
+static double slice_balance_ratio( const int64_t *prefix, const int *bounds, int n )
+{
+    int64_t max = 0;
+    for( int i = 0; i < n; i++ )
+        max = X264_MAX( max, prefix[bounds[i+1]] - prefix[bounds[i]] );
+    return (double)max * n / prefix[bounds[n]];
+}
+
+/* --slice-balance 3: the even split unless its predicted max/mean slice cost is
+ * over --slice-balance-thresh, then the last split of the same slice type unless
+ * the new one lowers max/mean by at least --slice-balance-hyst. */
+static void slice_balance_guard( x264_t *h, int *bounds )
+{
+    int n = h->param.i_threads;
+    int units = h->mb.i_mb_height >> PARAM_INTERLACED;
+    int even[X264_THREAD_MAX+1];
+    for( int i = 0; i <= n; i++ )
+        even[i] = (units * i + h->param.i_slice_count/2) / n;
+    int *last = h->slice_balance_split[h->sh.i_type];
+    const int *chosen = even;
+    char type = "PBI"[h->sh.i_type];
+
+    double r_even = 0, r_chosen = 0;
+    if( slice_balance_bounds( h, bounds ) )
+    {
+        const int64_t *prefix = h->slice_balance_buf;
+        r_even = r_chosen = slice_balance_ratio( prefix, even, n );
+        if( r_even > h->param.f_slice_balance_thresh )
+        {
+            const int *keep = last[n] ? last : even;
+            double r_keep = slice_balance_ratio( prefix, keep, n );
+            double r_new = slice_balance_ratio( prefix, bounds, n );
+            chosen = r_new <= r_keep - h->param.f_slice_balance_hyst ? bounds : keep;
+            r_chosen = chosen == bounds ? r_new : r_keep;
+        }
+    }
+
+    if( chosen != bounds )
+        memcpy( bounds, chosen, (n+1) * sizeof(int) );
+    int b_resplit = !!memcmp( bounds, even, (n+1) * sizeof(int) );
+    int b_moved = last[n] ? !!memcmp( bounds, last, (n+1) * sizeof(int) ) : b_resplit;
+    /* even/chosen 0: no lowres costs */
+    x264_log( h, X264_LOG_DEBUG, "slice-balance: frame %d %c: even %.3f chosen %.3f re-split %d moved %d\n",
+              h->i_frame, type, r_even, r_chosen, b_resplit, b_moved );
+    memcpy( last, bounds, (n+1) * sizeof(int) );
 }
 
 static int x264_threaded_slices_write( x264_t *h )
 {
     int bounds[X264_THREAD_MAX+1];
-    slice_balance_bounds( h, bounds );
+    if( h->param.i_slice_balance == 3 )
+        slice_balance_guard( h, bounds );
+    else
+        slice_balance_bounds( h, bounds );
 
     /* set first/last mb and sync contexts */
     for( int i = 0; i < h->param.i_threads; i++ )

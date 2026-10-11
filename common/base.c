@@ -281,6 +281,9 @@ void x264_param_default( x264_param_t *param )
     param->i_lookahead_threads = X264_THREADS_AUTO;
     param->b_deterministic = 1;
     param->i_sync_lookahead = X264_SYNC_LOOKAHEAD_AUTO;
+    param->f_slice_balance_thresh = 1.15;
+    param->f_slice_balance_hyst = 0.05;
+    param->f_slice_balance_base = 0.5;
 
     /* Video properties */
     param->i_csp           = X264_CHROMA_FORMAT ? X264_CHROMA_FORMAT : X264_CSP_I420;
@@ -889,6 +892,12 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->b_sliced_threads = atobool(value);
     OPT("slice-balance")
         p->i_slice_balance = atoi(value);
+    OPT("slice-balance-thresh")
+        p->f_slice_balance_thresh = atof(value);
+    OPT("slice-balance-hyst")
+        p->f_slice_balance_hyst = atof(value);
+    OPT("slice-balance-base")
+        p->f_slice_balance_base = atof(value);
     OPT("sliced-threads-rows")
         p->i_sliced_threads_rows = atoi(value);
     OPT("sync-lookahead")
@@ -1365,6 +1374,9 @@ char *x264_param2string( x264_param_t *p, int b_res )
     s += sprintf( s, " sliced_threads=%d", p->b_sliced_threads );
     if( p->i_slice_balance )
         s += sprintf( s, " slice_balance=%d", p->i_slice_balance );
+    if( p->i_slice_balance == 3 )
+        s += sprintf( s, " slice_balance_thresh=%.2f slice_balance_hyst=%.2f slice_balance_base=%.2f",
+                      p->f_slice_balance_thresh, p->f_slice_balance_hyst, p->f_slice_balance_base );
     if( p->i_sliced_threads_rows )
         s += sprintf( s, " sliced_threads_rows=%d", p->i_sliced_threads_rows );
     if( p->i_slice_count )

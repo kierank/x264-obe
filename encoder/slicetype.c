@@ -2090,7 +2090,7 @@ int x264_rc_analyse_slice( x264_t *h )
 }
 
 /* Lowres cost of each mb row of the frame being coded, AQ weighted like the
- * row SATDs, for --slice-balance 1.  Returns -1 if there is no lowres cost. */
+ * row SATDs, for --slice-balance 1 and 3.  Returns -1 if there is no lowres cost. */
 int x264_slice_balance_row_costs( x264_t *h, int64_t *row_cost )
 {
     x264_frame_t *fenc = h->fenc;
