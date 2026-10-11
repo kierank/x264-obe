@@ -1632,6 +1632,13 @@ INIT_MMX mmx2
 PREFETCH_FENC 420
 PREFETCH_FENC 422
 
+%macro PREFETCH_REF_ROWS 1
+    prefetcht0  [r0+%1]
+    prefetcht0  [r0+r1+%1]
+    prefetcht0  [r0+r1*2+%1]
+    prefetcht0  [r0+r2+%1]
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; void prefetch_ref( pixel *pix, intptr_t stride, int parity )
 ;-----------------------------------------------------------------------------
@@ -1642,15 +1649,16 @@ cglobal prefetch_ref, 3,3
     and    r2d, r1d
     lea    r0,  [r0+r2*8+64*SIZEOF_PIXEL]
     lea    r2,  [r1*3]
-    prefetcht0  [r0]
-    prefetcht0  [r0+r1]
-    prefetcht0  [r0+r1*2]
-    prefetcht0  [r0+r2]
+    PREFETCH_REF_ROWS 0
+%if HIGH_BIT_DEPTH
+    ; a line is 2 mbs and each plane is prefetched every 4th mb: cover both lines
+    PREFETCH_REF_ROWS 64
+%endif
     lea    r0,  [r0+r1*4]
-    prefetcht0  [r0]
-    prefetcht0  [r0+r1]
-    prefetcht0  [r0+r1*2]
-    prefetcht0  [r0+r2]
+    PREFETCH_REF_ROWS 0
+%if HIGH_BIT_DEPTH
+    PREFETCH_REF_ROWS 64
+%endif
     RET
 
 
