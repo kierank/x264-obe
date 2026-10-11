@@ -102,6 +102,9 @@ static ALWAYS_INLINE uint16_t x264_cabac_mvd_sum_mmx2(uint8_t *mvdleft, uint8_t 
     static const uint64_t pb_32   = 0x2020202020202020ULL;
     static const uint64_t pb_33   = 0x2121212121212121ULL;
     int amvd;
+    /* 16-bit loads: a 32-bit movd from memory also reads the next mvd pair,
+     * which inside an MB can come from a different store than the pair itself,
+     * so store forwarding fails. Only the low 16 bits of amvd are used. */
     asm(
         "movd         %1, %%mm0 \n"
         "movd         %2, %%mm1 \n"
@@ -115,7 +118,7 @@ static ALWAYS_INLINE uint16_t x264_cabac_mvd_sum_mmx2(uint8_t *mvdleft, uint8_t 
         "psubb     %%mm1, %%mm2 \n"
         "movd      %%mm2, %0    \n"
         :"=r"(amvd)
-        :"m"(M16( mvdleft )),"m"(M16( mvdtop )),
+        :"r"((uint32_t)M16( mvdleft )),"r"((uint32_t)M16( mvdtop )),
          "m"(pb_2),"m"(pb_32),"m"(pb_33)
     );
     return amvd;
