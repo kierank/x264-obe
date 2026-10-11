@@ -172,17 +172,18 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
     if( p0 == p1 )
         goto lowres_intra_mb;
 
+    int mv_range = 2 * h->param.analyse.i_mv_range;
     // no need for h->mb.mv_min[]
-    h->mb.mv_limit_fpel[0][0] = -8*h->mb.i_mb_x - 4;
-    h->mb.mv_limit_fpel[1][0] = 8*( h->mb.i_mb_width - h->mb.i_mb_x - 1 ) + 4;
-    h->mb.mv_min_spel[0] = 4*( h->mb.mv_limit_fpel[0][0] - 8 );
-    h->mb.mv_max_spel[0] = 4*( h->mb.mv_limit_fpel[1][0] + 8 );
+    h->mb.mv_min_spel[0] = X264_MAX( 4*(-8*h->mb.i_mb_x - 12), -mv_range );
+    h->mb.mv_max_spel[0] = X264_MIN( 4*(8*(h->mb.i_mb_width - h->mb.i_mb_x - 1) + 12), mv_range-1 );
+    h->mb.mv_limit_fpel[0][0] = h->mb.mv_min_spel[0] >> 2;
+    h->mb.mv_limit_fpel[1][0] = h->mb.mv_max_spel[0] >> 2;
     if( h->mb.i_mb_x >= h->mb.i_mb_width - 2 )
     {
-        h->mb.mv_limit_fpel[0][1] = -8*h->mb.i_mb_y - 4;
-        h->mb.mv_limit_fpel[1][1] = 8*( h->mb.i_mb_height - h->mb.i_mb_y - 1 ) + 4;
-        h->mb.mv_min_spel[1] = 4*( h->mb.mv_limit_fpel[0][1] - 8 );
-        h->mb.mv_max_spel[1] = 4*( h->mb.mv_limit_fpel[1][1] + 8 );
+        h->mb.mv_min_spel[1] = X264_MAX( 4*(-8*h->mb.i_mb_y - 12), -mv_range );
+        h->mb.mv_max_spel[1] = X264_MIN( 4*(8*( h->mb.i_mb_height - h->mb.i_mb_y - 1) + 12), mv_range-1 );
+        h->mb.mv_limit_fpel[0][1] = h->mb.mv_min_spel[1] >> 2;
+        h->mb.mv_limit_fpel[1][1] = h->mb.mv_max_spel[1] >> 2;
     }
 
 #define LOAD_HPELS_LUMA(dst, src) \
@@ -239,7 +240,6 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
 
     if( b_bidir )
     {
-        int16_t *mvr = fref1->lowres_mvs[0][p1-p0-1][i_mb_xy];
         ALIGNED_ARRAY_8( int16_t, dmv,[2],[2] );
 
         m[1].i_pixel = PIXEL_8x8;
@@ -251,14 +251,20 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
         LOAD_HPELS_LUMA( m[1].p_fref, fref1->lowres8 );
         m[1].p_fref_w = m[1].p_fref[0];
 
-        dmv[0][0] = ( mvr[0] * dist_scale_factor + 128 ) >> 8;
-        dmv[0][1] = ( mvr[1] * dist_scale_factor + 128 ) >> 8;
-        dmv[1][0] = dmv[0][0] - mvr[0];
-        dmv[1][1] = dmv[0][1] - mvr[1];
-        CLIP_MV( dmv[0] );
-        CLIP_MV( dmv[1] );
-        if( h->param.analyse.i_subpel_refine <= 1 )
-            M64( dmv ) &= ~0x0001000100010001ULL; /* mv & ~1 */
+        if( fref1->lowres_mvs[0][p1-p0-1][0][0] != 0x7FFF )
+        {
+            int16_t *mvr = fref1->lowres_mvs[0][p1-p0-1][i_mb_xy];
+            dmv[0][0] = ( mvr[0] * dist_scale_factor + 128 ) >> 8;
+            dmv[0][1] = ( mvr[1] * dist_scale_factor + 128 ) >> 8;
+            dmv[1][0] = dmv[0][0] - mvr[0];
+            dmv[1][1] = dmv[0][1] - mvr[1];
+            CLIP_MV( dmv[0] );
+            CLIP_MV( dmv[1] );
+            if( h->param.analyse.i_subpel_refine <= 1 )
+                M64( dmv ) &= ~0x0001000100010001ULL; /* mv & ~1 */
+        }
+        else
+            M64( dmv ) = 0;
 
         TRY_BIDIR( dmv[0], dmv[1], 0 );
         if( M64( dmv ) )
