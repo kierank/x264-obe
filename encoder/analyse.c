@@ -1238,50 +1238,58 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
-    x264_me_t m;
+    /* search into the buffer not holding the best: ref 0 lands in me16x16, at most one copy */
+    x264_me_t m, *best = &a->l0.me16x16, *cur = best;
+    int i_prev_cost = 0;
     int i_mvc;
     ALIGNED_4( int16_t mvc[8][2] );
     int i_halfpel_thresh = INT_MAX;
     int *p_halfpel_thresh = (a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
 
     /* 16x16 Search on all ref frame */
-    m.i_pixel = PIXEL_16x16;
-    LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
+    best->i_pixel = PIXEL_16x16;
+    LOAD_FENC( best, h->mb.pic.p_fenc, 0, 0 );
+    if( h->mb.pic.i_fref[0] > 1 )
+    {
+        m.i_pixel = PIXEL_16x16;
+        LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
+    }
 
-    a->l0.me16x16.cost = INT_MAX;
     for( int i_ref = 0; i_ref < h->mb.pic.i_fref[0]; i_ref++ )
     {
-        m.i_ref_cost = REF_COST( 0, i_ref );
-        i_halfpel_thresh -= m.i_ref_cost;
+        cur->i_ref_cost = REF_COST( 0, i_ref );
+        i_halfpel_thresh -= cur->i_ref_cost;
 
         /* search with ref */
-        LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 0, 0 );
-        LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 0 );
+        LOAD_HPELS( cur, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 0, 0 );
+        LOAD_WPELS( cur, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 0 );
 
-        x264_mb_predict_mv_16x16( h, 0, i_ref, m.mvp );
+        x264_mb_predict_mv_16x16( h, 0, i_ref, cur->mvp );
 
         if( h->mb.ref_blind_dupe == i_ref )
         {
-            CP32( m.mv, a->l0.mvc[0][0] );
-            x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
+            /* refdupe starts from the previous search's cost */
+            cur->cost = i_prev_cost;
+            CP32( cur->mv, a->l0.mvc[0][0] );
+            x264_me_refine_qpel_refdupe( h, cur, p_halfpel_thresh );
         }
         else
         {
             x264_mb_predict_mv_ref16x16( h, 0, i_ref, mvc, &i_mvc );
-            x264_me_search_ref( h, &m, mvc, i_mvc, p_halfpel_thresh );
+            x264_me_search_ref( h, cur, mvc, i_mvc, p_halfpel_thresh );
         }
 
         /* save mv for predicting neighbors */
-        CP32( h->mb.mvr[0][i_ref][h->mb.i_mb_xy], m.mv );
-        CP32( a->l0.mvc[i_ref][0], m.mv );
+        CP32( h->mb.mvr[0][i_ref][h->mb.i_mb_xy], cur->mv );
+        CP32( a->l0.mvc[i_ref][0], cur->mv );
 
         /* early termination
          * SSD threshold would probably be better than SATD */
         if( i_ref == 0
             && a->b_try_skip
-            && m.cost-m.cost_mv < 300*a->i_lambda
-            &&  abs(m.mv[0]-h->mb.cache.pskip_mv[0])
-              + abs(m.mv[1]-h->mb.cache.pskip_mv[1]) <= 1
+            && cur->cost-cur->cost_mv < 300*a->i_lambda
+            &&  abs(cur->mv[0]-h->mb.cache.pskip_mv[0])
+              + abs(cur->mv[1]-h->mb.cache.pskip_mv[1]) <= 1
             && x264_macroblock_probe_pskip( h ) )
         {
             h->mb.i_type = P_SKIP;
@@ -1290,12 +1298,18 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
             return;
         }
 
-        m.cost += m.i_ref_cost;
-        i_halfpel_thresh += m.i_ref_cost;
+        cur->cost += cur->i_ref_cost;
+        i_halfpel_thresh += cur->i_ref_cost;
+        i_prev_cost = cur->cost;
 
-        if( m.cost < a->l0.me16x16.cost )
-            h->mc.memcpy_aligned( &a->l0.me16x16, &m, sizeof(x264_me_t) );
+        if( cur == best || cur->cost < best->cost )
+        {
+            best = cur;
+            cur = cur == &m ? &a->l0.me16x16 : &m;
+        }
     }
+    if( best != &a->l0.me16x16 )
+        h->mc.memcpy_aligned( &a->l0.me16x16, best, sizeof(x264_me_t) );
 
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, a->l0.me16x16.i_ref );
     assert( a->l0.me16x16.mv[1] <= h->mb.mv_max_spel[1] || h->i_thread_frames == 1 );
@@ -1350,42 +1364,54 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
     for( int i = 0; i < 4; i++ )
     {
-        x264_me_t *l0m = &a->l0.me8x8[i];
+        x264_me_t *l0m = &a->l0.me8x8[i], *best = l0m, *cur = l0m;
+        int i_prev_cost = 0;
         int x8 = i&1;
         int y8 = i>>1;
 
-        m.i_pixel = PIXEL_8x8;
-
-        LOAD_FENC( &m, p_fenc, 8*x8, 8*y8 );
-        l0m->cost = INT_MAX;
+        l0m->i_pixel = PIXEL_8x8;
+        LOAD_FENC( l0m, p_fenc, 8*x8, 8*y8 );
+        if( i_maxref > 0 || h->mb.ref_blind_dupe > 0 )
+        {
+            m.i_pixel = PIXEL_8x8;
+            LOAD_FENC( &m, p_fenc, 8*x8, 8*y8 );
+        }
         for( int i_ref = 0; i_ref <= i_maxref || i_ref == h->mb.ref_blind_dupe; )
         {
-            m.i_ref_cost = REF_COST( 0, i_ref );
+            cur->i_ref_cost = REF_COST( 0, i_ref );
 
-            LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 8*x8, 8*y8 );
-            LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 8*x8, 8*y8 );
+            LOAD_HPELS( cur, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 8*x8, 8*y8 );
+            LOAD_WPELS( cur, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 8*x8, 8*y8 );
 
             x264_macroblock_cache_ref( h, 2*x8, 2*y8, 2, 2, 0, i_ref );
-            x264_mb_predict_mv( h, 0, 4*i, 2, m.mvp );
+            x264_mb_predict_mv( h, 0, 4*i, 2, cur->mvp );
             if( h->mb.ref_blind_dupe == i_ref )
             {
-                CP32( m.mv, a->l0.mvc[0][i+1] );
-                x264_me_refine_qpel_refdupe( h, &m, NULL );
+                /* refdupe starts from the previous search's cost */
+                cur->cost = i_prev_cost;
+                CP32( cur->mv, a->l0.mvc[0][i+1] );
+                x264_me_refine_qpel_refdupe( h, cur, NULL );
             }
             else
-                x264_me_search( h, &m, a->l0.mvc[i_ref], i+1 );
+                x264_me_search( h, cur, a->l0.mvc[i_ref], i+1 );
 
-            m.cost += m.i_ref_cost;
+            cur->cost += cur->i_ref_cost;
+            i_prev_cost = cur->cost;
 
-            CP32( a->l0.mvc[i_ref][i+1], m.mv );
+            CP32( a->l0.mvc[i_ref][i+1], cur->mv );
 
-            if( m.cost < l0m->cost )
-                h->mc.memcpy_aligned( l0m, &m, sizeof(x264_me_t) );
+            if( cur == best || cur->cost < best->cost )
+            {
+                best = cur;
+                cur = cur == &m ? l0m : &m;
+            }
             if( i_ref == i_maxref && i_maxref < h->mb.ref_blind_dupe )
                 i_ref = h->mb.ref_blind_dupe;
             else
                 i_ref++;
         }
+        if( best != l0m )
+            h->mc.memcpy_aligned( l0m, best, sizeof(x264_me_t) );
         x264_macroblock_cache_mv_ptr( h, 2*x8, 2*y8, 2, 2, 0, l0m->mv );
         x264_macroblock_cache_ref( h, 2*x8, 2*y8, 2, 2, 0, l0m->i_ref );
 
@@ -1480,38 +1506,45 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
         const int ref8[2] = { minref, maxref };
         const int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
 
-        m.i_pixel = PIXEL_16x8;
-
-        LOAD_FENC( &m, p_fenc, 0, 8*i );
-        l0m->cost = INT_MAX;
+        l0m->i_pixel = PIXEL_16x8;
+        LOAD_FENC( l0m, p_fenc, 0, 8*i );
+        if( i_ref8s > 1 )
+        {
+            m.i_pixel = PIXEL_16x8;
+            LOAD_FENC( &m, p_fenc, 0, 8*i );
+        }
+        /* the first ref always wins, so search it straight into l0m */
         for( int j = 0; j < i_ref8s; j++ )
         {
+            x264_me_t *cur = j ? &m : l0m;
             const int i_ref = ref8[j];
-            m.i_ref_cost = REF_COST( 0, i_ref );
+            cur->i_ref_cost = REF_COST( 0, i_ref );
 
             /* if we skipped the 16x16 predictor, we wouldn't have to copy anything... */
             CP32( mvc[0], a->l0.mvc[i_ref][0] );
             CP32( mvc[1], a->l0.mvc[i_ref][2*i+1] );
             CP32( mvc[2], a->l0.mvc[i_ref][2*i+2] );
 
-            LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 0, 8*i );
-            LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 8*i );
+            LOAD_HPELS( cur, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 0, 8*i );
+            LOAD_WPELS( cur, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 8*i );
 
             x264_macroblock_cache_ref( h, 0, 2*i, 4, 2, 0, i_ref );
-            x264_mb_predict_mv( h, 0, 8*i, 4, m.mvp );
+            x264_mb_predict_mv( h, 0, 8*i, 4, cur->mvp );
             /* We can only take this shortcut if the first search was performed on ref0. */
             if( h->mb.ref_blind_dupe == i_ref && !ref8[0] )
             {
                 /* We can just leave the MV from the previous ref search. */
-                x264_me_refine_qpel_refdupe( h, &m, NULL );
+                CP32( cur->mv, l0m->mv );
+                cur->cost = l0m->cost;
+                x264_me_refine_qpel_refdupe( h, cur, NULL );
             }
             else
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search( h, cur, mvc, 3 );
 
-            m.cost += m.i_ref_cost;
+            cur->cost += cur->i_ref_cost;
 
-            if( m.cost < l0m->cost )
-                h->mc.memcpy_aligned( l0m, &m, sizeof(x264_me_t) );
+            if( j && cur->cost < l0m->cost )
+                h->mc.memcpy_aligned( l0m, cur, sizeof(x264_me_t) );
         }
 
         /* Early termination based on the current SATD score of partition[0]
@@ -1546,37 +1579,44 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
         const int ref8[2] = { minref, maxref };
         const int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
 
-        m.i_pixel = PIXEL_8x16;
-
-        LOAD_FENC( &m, p_fenc, 8*i, 0 );
-        l0m->cost = INT_MAX;
+        l0m->i_pixel = PIXEL_8x16;
+        LOAD_FENC( l0m, p_fenc, 8*i, 0 );
+        if( i_ref8s > 1 )
+        {
+            m.i_pixel = PIXEL_8x16;
+            LOAD_FENC( &m, p_fenc, 8*i, 0 );
+        }
+        /* the first ref always wins, so search it straight into l0m */
         for( int j = 0; j < i_ref8s; j++ )
         {
+            x264_me_t *cur = j ? &m : l0m;
             const int i_ref = ref8[j];
-            m.i_ref_cost = REF_COST( 0, i_ref );
+            cur->i_ref_cost = REF_COST( 0, i_ref );
 
             CP32( mvc[0], a->l0.mvc[i_ref][0] );
             CP32( mvc[1], a->l0.mvc[i_ref][i+1] );
             CP32( mvc[2], a->l0.mvc[i_ref][i+3] );
 
-            LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 8*i, 0 );
-            LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 8*i, 0 );
+            LOAD_HPELS( cur, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 8*i, 0 );
+            LOAD_WPELS( cur, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 8*i, 0 );
 
             x264_macroblock_cache_ref( h, 2*i, 0, 2, 4, 0, i_ref );
-            x264_mb_predict_mv( h, 0, 4*i, 2, m.mvp );
+            x264_mb_predict_mv( h, 0, 4*i, 2, cur->mvp );
             /* We can only take this shortcut if the first search was performed on ref0. */
             if( h->mb.ref_blind_dupe == i_ref && !ref8[0] )
             {
                 /* We can just leave the MV from the previous ref search. */
-                x264_me_refine_qpel_refdupe( h, &m, NULL );
+                CP32( cur->mv, l0m->mv );
+                cur->cost = l0m->cost;
+                x264_me_refine_qpel_refdupe( h, cur, NULL );
             }
             else
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search( h, cur, mvc, 3 );
 
-            m.cost += m.i_ref_cost;
+            cur->cost += cur->i_ref_cost;
 
-            if( m.cost < l0m->cost )
-                h->mc.memcpy_aligned( l0m, &m, sizeof(x264_me_t) );
+            if( j && cur->cost < l0m->cost )
+                h->mc.memcpy_aligned( l0m, cur, sizeof(x264_me_t) );
         }
 
         /* Early termination based on the current SATD score of partition[0]
@@ -1887,17 +1927,24 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
     int *p_halfpel_thresh[2] = {(a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh[0] : NULL,
                                 (a->b_early_terminate && h->mb.pic.i_fref[1]>1) ? &i_halfpel_thresh[1] : NULL};
 
+    /* per list, search into the buffer not holding the best: ref 0 lands in
+     * me16x16, at most one copy per pass */
     x264_me_t m;
-    m.i_pixel = PIXEL_16x16;
-
-    LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
+    a->l0.me16x16.i_pixel = a->l1.me16x16.i_pixel = PIXEL_16x16;
+    LOAD_FENC( &a->l0.me16x16, h->mb.pic.p_fenc, 0, 0 );
+    LOAD_FENC( &a->l1.me16x16, h->mb.pic.p_fenc, 0, 0 );
+    if( h->mb.pic.i_fref[0] > 1 || h->mb.pic.i_fref[1] > 1 )
+    {
+        m.i_pixel = PIXEL_16x16;
+        LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
+    }
 
     /* 16x16 Search on list 0 and list 1 */
-    a->l0.me16x16.cost = INT_MAX;
-    a->l1.me16x16.cost = INT_MAX;
     for( int l = 1; l >= 0; )
     {
         x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
+        /* a resumed list 1 already holds ref 0 */
+        x264_me_t *best = &lX->me16x16, *cur = list1_skipped && l == 1 ? &m : best;
 
         /* This loop is extremely munged in order to facilitate the following order of operations,
          * necessary for an efficient fast skip.
@@ -1915,23 +1962,26 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
                 break;
             }
 
-            m.i_ref_cost = REF_COST( l, i_ref );
+            cur->i_ref_cost = REF_COST( l, i_ref );
 
             /* search with ref */
-            LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 0 );
-            x264_mb_predict_mv_16x16( h, l, i_ref, m.mvp );
+            LOAD_HPELS( cur, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 0 );
+            x264_mb_predict_mv_16x16( h, l, i_ref, cur->mvp );
             x264_mb_predict_mv_ref16x16( h, l, i_ref, mvc, &i_mvc );
-            x264_me_search_ref( h, &m, mvc, i_mvc, p_halfpel_thresh[l] );
+            x264_me_search_ref( h, cur, mvc, i_mvc, p_halfpel_thresh[l] );
 
             /* add ref cost */
-            m.cost += m.i_ref_cost;
-
-            if( m.cost < lX->me16x16.cost )
-                h->mc.memcpy_aligned( &lX->me16x16, &m, sizeof(x264_me_t) );
+            cur->cost += cur->i_ref_cost;
 
             /* save mv for predicting neighbors */
-            CP32( lX->mvc[i_ref][0], m.mv );
-            CP32( h->mb.mvr[l][i_ref][h->mb.i_mb_xy], m.mv );
+            CP32( lX->mvc[i_ref][0], cur->mv );
+            CP32( h->mb.mvr[l][i_ref][h->mb.i_mb_xy], cur->mv );
+
+            if( cur == best || cur->cost < best->cost )
+            {
+                best = cur;
+                cur = cur == &m ? &lX->me16x16 : &m;
+            }
 
             /* Fast skip detection. */
             if( i_ref == 0 && try_skip )
@@ -1950,6 +2000,8 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
                 }
             }
         }
+        if( best != &lX->me16x16 )
+            h->mc.memcpy_aligned( &lX->me16x16, best, sizeof(x264_me_t) );
         if( list1_skipped && l == 1 && i_ref == h->mb.pic.i_fref[1] )
             break;
         if( list1_skipped && l == 0 )
@@ -2198,34 +2250,43 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
         intptr_t stride[2] = {8,8};
         pixel *src[2];
         x264_me_t m;
-        m.i_pixel = PIXEL_8x8;
-        LOAD_FENC( &m, h->mb.pic.p_fenc, 8*x8, 8*y8 );
+        if( i_maxref[0] > 0 || i_maxref[1] > 0 )
+        {
+            m.i_pixel = PIXEL_8x8;
+            LOAD_FENC( &m, h->mb.pic.p_fenc, 8*x8, 8*y8 );
+        }
 
         for( int l = 0; l < 2; l++ )
         {
             x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
+            /* search into the buffer not holding the best: ref 0 lands in me8x8[i] */
+            x264_me_t *best = &lX->me8x8[i], *cur = best;
+            best->i_pixel = PIXEL_8x8;
+            LOAD_FENC( best, h->mb.pic.p_fenc, 8*x8, 8*y8 );
 
-            lX->me8x8[i].cost = INT_MAX;
             for( int i_ref = 0; i_ref <= i_maxref[l]; i_ref++ )
             {
-                m.i_ref_cost = REF_COST( l, i_ref );
+                cur->i_ref_cost = REF_COST( l, i_ref );
 
-                LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 8*x8, 8*y8 );
+                LOAD_HPELS( cur, h->mb.pic.p_fref[l][i_ref], l, i_ref, 8*x8, 8*y8 );
 
                 x264_macroblock_cache_ref( h, x8*2, y8*2, 2, 2, l, i_ref );
-                x264_mb_predict_mv( h, l, 4*i, 2, m.mvp );
-                x264_me_search( h, &m, lX->mvc[i_ref], i+1 );
-                m.cost += m.i_ref_cost;
-
-                if( m.cost < lX->me8x8[i].cost )
-                {
-                    h->mc.memcpy_aligned( &lX->me8x8[i], &m, sizeof(x264_me_t) );
-                    a->i_satd8x8[l][i] = m.cost - ( m.cost_mv + m.i_ref_cost );
-                }
+                x264_mb_predict_mv( h, l, 4*i, 2, cur->mvp );
+                x264_me_search( h, cur, lX->mvc[i_ref], i+1 );
+                cur->cost += cur->i_ref_cost;
 
                 /* save mv for predicting other partitions within this MB */
-                CP32( lX->mvc[i_ref][i+1], m.mv );
+                CP32( lX->mvc[i_ref][i+1], cur->mv );
+
+                if( cur == best || cur->cost < best->cost )
+                {
+                    a->i_satd8x8[l][i] = cur->cost - ( cur->cost_mv + cur->i_ref_cost );
+                    best = cur;
+                    cur = cur == &m ? &lX->me8x8[i] : &m;
+                }
             }
+            if( best != &lX->me8x8[i] )
+                h->mc.memcpy_aligned( &lX->me8x8[i], best, sizeof(x264_me_t) );
         }
 
         /* BI mode */
@@ -2358,33 +2419,39 @@ static void x264_mb_analyse_inter_b16x8( x264_t *h, x264_mb_analysis_t *a, int i
         intptr_t stride[2] = {16,16};
         pixel *src[2];
         x264_me_t m;
-        m.i_pixel = PIXEL_16x8;
-        LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 8*i );
 
         for( int l = 0; l < 2; l++ )
         {
             x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
             int ref8[2] = { lX->me8x8[2*i].i_ref, lX->me8x8[2*i+1].i_ref };
             int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
-            lX->me16x8[i].cost = INT_MAX;
+            lX->me16x8[i].i_pixel = PIXEL_16x8;
+            LOAD_FENC( &lX->me16x8[i], h->mb.pic.p_fenc, 0, 8*i );
+            if( i_ref8s > 1 )
+            {
+                m.i_pixel = PIXEL_16x8;
+                LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 8*i );
+            }
+            /* the first ref always wins, so search it straight into me16x8[i] */
             for( int j = 0; j < i_ref8s; j++ )
             {
+                x264_me_t *cur = j ? &m : &lX->me16x8[i];
                 int i_ref = ref8[j];
-                m.i_ref_cost = REF_COST( l, i_ref );
+                cur->i_ref_cost = REF_COST( l, i_ref );
 
-                LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 8*i );
+                LOAD_HPELS( cur, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 8*i );
 
                 CP32( mvc[0], lX->mvc[i_ref][0] );
                 CP32( mvc[1], lX->mvc[i_ref][2*i+1] );
                 CP32( mvc[2], lX->mvc[i_ref][2*i+2] );
 
                 x264_macroblock_cache_ref( h, 0, 2*i, 4, 2, l, i_ref );
-                x264_mb_predict_mv( h, l, 8*i, 4, m.mvp );
-                x264_me_search( h, &m, mvc, 3 );
-                m.cost += m.i_ref_cost;
+                x264_mb_predict_mv( h, l, 8*i, 4, cur->mvp );
+                x264_me_search( h, cur, mvc, 3 );
+                cur->cost += cur->i_ref_cost;
 
-                if( m.cost < lX->me16x8[i].cost )
-                    h->mc.memcpy_aligned( &lX->me16x8[i], &m, sizeof(x264_me_t) );
+                if( j && cur->cost < lX->me16x8[i].cost )
+                    h->mc.memcpy_aligned( &lX->me16x8[i], cur, sizeof(x264_me_t) );
             }
         }
 
@@ -2452,33 +2519,39 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
         intptr_t stride[2] = {8,8};
         pixel *src[2];
         x264_me_t m;
-        m.i_pixel = PIXEL_8x16;
-        LOAD_FENC( &m, h->mb.pic.p_fenc, 8*i, 0 );
 
         for( int l = 0; l < 2; l++ )
         {
             x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
             int ref8[2] = { lX->me8x8[i].i_ref, lX->me8x8[i+2].i_ref };
             int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
-            lX->me8x16[i].cost = INT_MAX;
+            lX->me8x16[i].i_pixel = PIXEL_8x16;
+            LOAD_FENC( &lX->me8x16[i], h->mb.pic.p_fenc, 8*i, 0 );
+            if( i_ref8s > 1 )
+            {
+                m.i_pixel = PIXEL_8x16;
+                LOAD_FENC( &m, h->mb.pic.p_fenc, 8*i, 0 );
+            }
+            /* the first ref always wins, so search it straight into me8x16[i] */
             for( int j = 0; j < i_ref8s; j++ )
             {
+                x264_me_t *cur = j ? &m : &lX->me8x16[i];
                 int i_ref = ref8[j];
-                m.i_ref_cost = REF_COST( l, i_ref );
+                cur->i_ref_cost = REF_COST( l, i_ref );
 
-                LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 8*i, 0 );
+                LOAD_HPELS( cur, h->mb.pic.p_fref[l][i_ref], l, i_ref, 8*i, 0 );
 
                 CP32( mvc[0], lX->mvc[i_ref][0] );
                 CP32( mvc[1], lX->mvc[i_ref][i+1] );
                 CP32( mvc[2], lX->mvc[i_ref][i+3] );
 
                 x264_macroblock_cache_ref( h, 2*i, 0, 2, 4, l, i_ref );
-                x264_mb_predict_mv( h, l, 4*i, 2, m.mvp );
-                x264_me_search( h, &m, mvc, 3 );
-                m.cost += m.i_ref_cost;
+                x264_mb_predict_mv( h, l, 4*i, 2, cur->mvp );
+                x264_me_search( h, cur, mvc, 3 );
+                cur->cost += cur->i_ref_cost;
 
-                if( m.cost < lX->me8x16[i].cost )
-                    h->mc.memcpy_aligned( &lX->me8x16[i], &m, sizeof(x264_me_t) );
+                if( j && cur->cost < lX->me8x16[i].cost )
+                    h->mc.memcpy_aligned( &lX->me8x16[i], cur, sizeof(x264_me_t) );
             }
         }
 
