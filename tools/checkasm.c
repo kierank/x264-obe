@@ -2662,6 +2662,14 @@ static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
 DECL_CABAC(c)
 #if HAVE_MMX
 DECL_CABAC(asm)
+static void run_cabac_decision_bmi2( x264_t *h, uint8_t *dst )
+{
+    x264_cabac_t cb;
+    x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );
+    x264_cabac_encode_init( &cb, dst, dst+0xff0 );
+    for( int i = 0; i < 0x1000; i++ )
+        x264_cabac_encode_decision_bmi2( &cb, buf1[i]>>1, buf1[i]&1 );
+}
 #else
 #define run_cabac_decision_asm run_cabac_decision_c
 #define run_cabac_bypass_asm run_cabac_bypass_c
@@ -2797,6 +2805,20 @@ name##fail:
     CABAC_RESIDUAL( cabac_block_residual_rd, 0, DCT_LUMA_8x8-1, 1 )
     CABAC_RESIDUAL( cabac_block_residual_8x8_rd, DCT_LUMA_8x8, DCT_LUMA_8x8, 1 )
     report( "cabac residual rd:" );
+
+#if HAVE_MMX
+    if( (cpu_new & X264_CPU_BMI2) && !(cpu_ref & X264_CPU_BMI2) )
+    {
+        ok = 1; used_asm = 1;
+        x264_cabac_init( &h );
+        set_func_name( "cabac_encode_decision_bmi2" );
+        memcpy( buf4, buf3, 0x1000 );
+        call_c( run_cabac_decision_c, &h, buf3 );
+        call_a( run_cabac_decision_bmi2, &h, buf4 );
+        ok = !memcmp( buf3, buf4, 0x1000 );
+        report( "cabac decision bmi2:" );
+    }
+#endif
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;
