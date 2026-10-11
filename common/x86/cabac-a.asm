@@ -271,7 +271,11 @@ cabac_putbyte_%1:
     jmp mangle(private_prefix %+ _cabac_encode_decision_%1.update_queue_low)
 %endmacro
 
+; CABAC_RESIDUAL reuses the r7 = $$ PIC base set by cabac_encode_decision_asm:
+; with --enable-func-sections they must share its section
+%xdefine function_section mangle(private_prefix %+ _cabac_encode_decision_asm)
 CABAC asm
+%undef function_section
 CABAC bmi2
 
 ; %1 = label name
@@ -1046,10 +1050,12 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %endmacro
 
 %if ARCH_X86_64
+%xdefine function_section mangle(private_prefix %+ _cabac_encode_decision_asm)
 INIT_XMM sse2
 CABAC_RESIDUAL coeff_last_sse2
 INIT_XMM sse2,lzcnt
 CABAC_RESIDUAL coeff_last_sse2_lzcnt
+%undef function_section
 INIT_XMM avx2,bmi2
 CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt
 INIT_XMM avx512

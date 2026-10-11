@@ -712,6 +712,18 @@ BRANCH_INSTR jz, je, jnz, jne, jl, jle, jnl, jnle, jg, jge, jng, jnge, ja, jae, 
         CAT_XDEFINE cglobaled_, %2, 1
     %endif
     %xdefine current_function %2
+    %if FORMAT_ELF
+        %ifdef FUNCTION_SECTIONS
+            ; --enable-func-sections: one section per function so the linker can
+            ; order them, or a shared one for functions that must stay together
+            %ifdef function_section
+                SECTION .text. %+ function_section progbits alloc exec nowrite align=function_align
+            %else
+                SECTION .text. %+ %2 progbits alloc exec nowrite align=function_align
+            %endif
+            %define last_branch_adr $$-1 ; AUTO_REP_RET: no branch in this function yet
+        %endif
+    %endif
     %xdefine current_function_section __SECT__
     %if FORMAT_ELF
         global %2:function %%VISIBILITY

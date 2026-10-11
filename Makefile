@@ -243,6 +243,16 @@ checkasm8$(EXE): $(GENERATED) .depend $(OBJCHK) $(OBJCHK_8) $(LIBX264)
 checkasm10$(EXE): $(GENERATED) .depend $(OBJCHK) $(OBJCHK_10) $(LIBX264)
 	$(LD)$@ $(OBJCHK) $(OBJCHK_10) $(LIBX264) $(LDFLAGS)
 
+# --hot-order with gold or GNU ld: the linker file names the sections that
+# hold the ordered symbols in the objects actually built
+ifneq ($(HOT_ORDER_FILE),)
+$(HOT_ORDER_FILE): hot-order.syms $(OBJS) $(OBJASM) $(OBJCLI)
+	sh $(SRCPATH)/tools/hot-order.sh -m $(HOT_ORDER_FMT) hot-order.syms $(OBJS) $(OBJASM) $(OBJCLI) > $@.tmp
+	mv $@.tmp $@
+
+x264$(EXE) $(SONAME) checkasm8$(EXE) checkasm10$(EXE): $(HOT_ORDER_FILE)
+endif
+
 $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10): .depend
 
 # Explicit .c rule (was previously left to make's builtin implicit rule);
@@ -339,7 +349,7 @@ clean:
 	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
 
 distclean: clean
-	rm -f config.mak x264_config.h config.h config.log x264.pc x264.def
+	rm -f config.mak x264_config.h config.h config.log x264.pc x264.def hot-order.syms hot-order.gold hot-order.ld hot-order-insert.ld
 
 install-cli: cli
 	$(INSTALL) -d $(DESTDIR)$(bindir)

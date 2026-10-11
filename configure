@@ -39,6 +39,9 @@ Advanced options:
   --enable-gprof           add -pg
   --enable-strip           add -s
   --enable-pic             build position-independent code
+  --enable-func-sections   one ELF section per C and asm function
+  --hot-order=FILE         link the functions in FILE first, in order
+                           (implies --enable-func-sections; tools/hot-order.sh)
 
 Cross-compilation:
   --host=HOST              build programs to run on HOST
@@ -242,7 +245,7 @@ die() {
     exit 1
 }
 
-rm -f x264_config.h config.h config.mak config.log x264.pc x264.def conftest*
+rm -f x264_config.h config.h config.mak config.log x264.pc x264.def conftest* hot-order.syms hot-order.gold hot-order.ld hot-order-insert.ld
 
 SRCPATH="$(cd $(dirname $0); pwd)"
 [ "$SRCPATH" = "$(pwd)" ] && SRCPATH=.
@@ -279,6 +282,10 @@ bit_depth="8"
 chroma_format="all"
 compiler="GNU"
 opencl="yes"
+func_sections="no"
+hot_order=""
+hot_order_fmt=""
+hot_order_file=""
 
 CFLAGS="$CFLAGS -Wall -I. -I\$(SRCPATH)"
 LDFLAGS="$LDFLAGS"
@@ -384,6 +391,12 @@ for opt do
             ;;
         --enable-pic)
             pic="yes"
+            ;;
+        --enable-func-sections)
+            func_sections="yes"
+            ;;
+        --hot-order=*)
+            hot_order="$optarg"
             ;;
         --host=*)
             host="$optarg"
@@ -1122,6 +1135,64 @@ if [ "$opencl" = "yes" ]; then
     LDFLAGS="$LDFLAGS $libdl"
 fi
 
+if [ -n "$hot_order" ]; then
+    func_sections="yes"
+fi
+if [ "$func_sections" = "yes" ]; then
+    case $SYS in
+        WINDOWS|CYGWIN|MACOSX) die "--enable-func-sections needs an ELF target" ;;
+    esac
+    [ $compiler = GNU ] || die "--enable-func-sections needs gcc or clang"
+    cc_check '' -ffunction-sections || die "$CC does not support -ffunction-sections"
+    CFLAGS="$CFLAGS -ffunction-sections"
+    ASFLAGS="$ASFLAGS -DFUNCTION_SECTIONS"
+fi
+
+# lld/mold order by symbol. For gold and GNU ld the symbols are mapped to
+# the sections holding them: here by name, in the Makefile from the built
+# objects (asm groups, gcc's .text.hot./.text.startup. prefixes). Check the
+# linked result with tools/hot-order.sh -c.
+if [ -n "$hot_order" ]; then
+    [ -r "$hot_order" ] || die "--hot-order: cannot read $hot_order"
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$hot_order" > hot-order.syms
+    [ -s hot-order.syms ] || die "--hot-order: no symbols in $hot_order"
+    ld_version="$($CC $LDFLAGS -Wl,--version 2>/dev/null | head -n 1)"
+    log_msg "linker: $ld_version"
+    hot_order_ld=""
+    case "$ld_version" in
+        *LLD*)
+            hot_order_ld="-Wl,--symbol-ordering-file=$(pwd)/hot-order.syms -Wl,--no-warn-symbol-ordering"
+            ;;
+        mold*)
+            hot_order_ld="-Wl,--symbol-ordering-file=$(pwd)/hot-order.syms"
+            ;;
+        "GNU gold"*)
+            hot_order_fmt=gold
+            hot_order_file=hot-order.gold
+            ;;
+        "GNU ld"*)
+            # --section-ordering-file: binutils 2.43+
+            hot_order_fmt=ld
+            hot_order_file=hot-order.ld
+            sh $SRCPATH/tools/hot-order.sh -m ld hot-order.syms > hot-order.ld
+            if ! cc_check '' "-Wl,--section-ordering-file=$(pwd)/hot-order.ld"; then
+                # older binutils: own output section inserted ahead of .text
+                hot_order_fmt=insert
+                hot_order_file=hot-order-insert.ld
+            fi
+            ;;
+    esac
+    if [ -n "$hot_order_fmt" ]; then
+        sh $SRCPATH/tools/hot-order.sh -m $hot_order_fmt hot-order.syms > $hot_order_file
+        case $hot_order_fmt in
+            gold|ld) hot_order_ld="-Wl,--section-ordering-file=$(pwd)/$hot_order_file" ;;
+            insert)  hot_order_ld="-Wl,-T,$(pwd)/$hot_order_file" ;;
+        esac
+    fi
+    [ -n "$hot_order_ld" ] && cc_check '' "$hot_order_ld" || die "--hot-order: no ordering support found in linker: $ld_version"
+    LDFLAGS="$LDFLAGS $hot_order_ld"
+fi
+
 #define undefined vars as 0
 for var in $CONFIG_HAVE; do
     grep -q "HAVE_$var " config.h || define HAVE_$var 0
@@ -1225,6 +1296,8 @@ PROF_GEN_LD=$PROF_GEN_LD
 PROF_USE_CC=$PROF_USE_CC
 PROF_USE_LD=$PROF_USE_LD
 HAVE_OPENCL=$opencl
+HOT_ORDER_FMT=$hot_order_fmt
+HOT_ORDER_FILE=$hot_order_file
 EOF
 
 # The C compile rules live in the Makefile now (one plain %.o plus the
@@ -1340,6 +1413,8 @@ debug:         $debug
 gprof:         $gprof
 strip:         $strip
 PIC:           $pic
+func sections: $func_sections
+hot order:     ${hot_order:-no}
 bit depth:     $bit_depth
 chroma format: $chroma_format
 EOF

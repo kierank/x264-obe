@@ -575,6 +575,9 @@ cglobal %1, 4,15,9
     add  levels_usedd, (1+%1)*4
 %endmacro
 
+; the trellis_coef* helpers below use the caller's r0 = $$ PIC base: with
+; --enable-func-sections the whole file shares one section
+%xdefine function_section mangle(private_prefix %+ _trellis_cabac_4x4_sse2)
 INIT_XMM sse2
 TRELLIS trellis_cabac_4x4, 16, 0, 0
 TRELLIS trellis_cabac_8x8, 64, 0, 0
