@@ -33,6 +33,7 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#include "common/slicetrace.h"
 
 //#define DEBUG_MB_TYPE
 
@@ -1619,6 +1620,11 @@ x264_t *x264_encoder_open( x264_param_t *param )
 
     CHECKED_MALLOC( h->reconfig_h, sizeof(x264_t) );
 
+#if X264_SLICETRACE
+    x264_slicetrace_init( h->param.i_threads, h->param.i_lookahead_threads,
+                          h->mb.i_mb_width, h->mb.i_mb_height, h->param.b_sliced_threads );
+#endif
+
     if( h->param.i_threads > 1 &&
         x264_threadpool_init( &h->threadpool, h->param.i_threads, (void*)x264_encoder_thread_init, h ) )
         goto fail;
@@ -2653,6 +2659,8 @@ static intptr_t x264_slice_write( x264_t *h )
     b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv;
     bs_realign( &h->out.bs );
 
+    SLICETRACE( ST_SLICE_START, h->i_thread_idx, h->i_frame, h->sh.i_first_mb / h->mb.i_mb_width );
+
     /* Slice */
     x264_nal_start( h, h->i_nal_type, h->i_nal_ref_idc );
     h->out.nal[h->out.i_nal].i_first_mb = h->sh.i_first_mb;
@@ -2694,6 +2702,8 @@ static intptr_t x264_slice_write( x264_t *h )
 
         if( i_mb_x == 0 )
         {
+            SLICETRACE( ST_ROW_START, h->i_thread_idx, h->i_frame,
+                        i_mb_y | (h->mb.b_reencode_mb ? ST_ARG_REENCODE : 0) );
             if( x264_bitstream_check_buffer( h ) )
                 return -1;
             if( !(i_mb_y & SLICE_MBAFF) && h->param.rc.i_vbv_buffer_size )
@@ -2851,6 +2861,7 @@ cont:
 
         if( x264_ratecontrol_mb( h, mb_size ) < 0 )
         {
+            SLICETRACE( ST_VBV_REENCODE, h->i_thread_idx, h->i_frame, i_mb_y );
             x264_bitstream_restore( h, &bs_bak[BS_BAK_ROW_VBV], &i_skip, 1 );
             h->mb.b_reencode_mb = 1;
             i_mb_x = 0;
@@ -2971,6 +2982,8 @@ cont:
     if( x264_nal_end( h ) )
         return -1;
 
+    SLICETRACE( ST_SLICE_END, h->i_thread_idx, h->i_frame, h->sh.i_last_mb / h->mb.i_mb_width );
+
     if( h->sh.i_last_mb == (h->i_threadslice_end * h->mb.i_mb_width - 1) )
     {
         h->stat.frame.i_misc_bits = bs_pos( &h->out.bs )
@@ -2981,17 +2994,21 @@ cont:
 
         if( h->param.b_sliced_threads )
         {
+            SLICETRACE( ST_DEBLOCK_END, h->i_thread_idx, h->i_frame, 0 );
             /* Tell the main thread we're done. */
             x264_threadslice_cond_broadcast( h, 1 );
             /* Do hpel now */
             for( int mb_y = h->i_threadslice_start; mb_y <= h->i_threadslice_end; mb_y++ )
                 x264_fdec_filter_row( h, mb_y, 1 );
+            SLICETRACE( ST_PASS1_END, h->i_thread_idx, h->i_frame, 0 );
             x264_threadslice_cond_broadcast( h, 2 );
             /* Do the first row of hpel, now that the previous slice is done */
             if( h->i_thread_idx > 0 )
             {
                 x264_threadslice_cond_wait( h->thread[h->i_thread_idx-1], 2 );
+                SLICETRACE( ST_PASS2_WAIT_END, h->i_thread_idx, h->i_frame, 0 );
                 x264_fdec_filter_row( h, h->i_threadslice_start + (1 << SLICE_MBAFF), 2 );
+                SLICETRACE( ST_PASS2_END, h->i_thread_idx, h->i_frame, 0 );
             }
         }
 
@@ -3040,6 +3057,8 @@ static void *x264_slices_write( x264_t *h )
     int i_slice_num = 0;
     int last_thread_mb = h->sh.i_last_mb;
 
+    SLICETRACE( ST_SW_START, h->i_thread_idx, h->i_frame, h->i_threadslice_start );
+
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
@@ -3085,6 +3104,8 @@ static void *x264_slices_write( x264_t *h )
             h->sh.i_first_mb -= h->mb.i_mb_stride;
     }
 
+    SLICETRACE( ST_SW_END, h->i_thread_idx, h->i_frame, h->i_threadslice_end );
+
     return (void *)0;
 
 fail:
@@ -3096,6 +3117,8 @@ fail:
 
 static int x264_threaded_slices_write( x264_t *h )
 {
+    SLICETRACE( ST_TSW_START, ST_THREAD_MAIN, h->i_frame, 0 );
+
     /* set first/last mb and sync contexts */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
@@ -3112,6 +3135,8 @@ static int x264_threaded_slices_write( x264_t *h )
         t->sh.i_last_mb  =   t->i_threadslice_end * h->mb.i_mb_width - 1;
     }
 
+    SLICETRACE( ST_TSW_SYNC_END, ST_THREAD_MAIN, h->i_frame, 0 );
+
     x264_stack_align( x264_analyse_weight_frame, h, h->mb.i_mb_height*16 + 16 );
 
     x264_threads_distribute_ratecontrol( h );
@@ -3125,12 +3150,19 @@ static int x264_threaded_slices_write( x264_t *h )
     }
     /* dispatch */
     for( int i = 0; i < h->param.i_threads; i++ )
+    {
+        SLICETRACE( ST_DISPATCH, ST_THREAD_MAIN, h->i_frame, i );
         x264_threadpool_run( h->threadpool, (void*)x264_slices_write, h->thread[i] );
+    }
     /* wait */
     for( int i = 0; i < h->param.i_threads; i++ )
+    {
         x264_threadslice_cond_wait( h->thread[i], 1 );
+        SLICETRACE( ST_WAKE, ST_THREAD_MAIN, h->i_frame, i );
+    }
 
     x264_threads_merge_ratecontrol( h );
+    SLICETRACE( ST_MERGE_RC_END, ST_THREAD_MAIN, h->i_frame, 0 );
 
     for( int i = 1; i < h->param.i_threads; i++ )
     {
@@ -3149,6 +3181,8 @@ static int x264_threaded_slices_write( x264_t *h )
         h->stat.frame.f_ssim += t->stat.frame.f_ssim;
         h->stat.frame.i_ssim_cnt += t->stat.frame.i_ssim_cnt;
     }
+
+    SLICETRACE( ST_TSW_END, ST_THREAD_MAIN, h->i_frame, 0 );
 
     return 0;
 }
@@ -3205,6 +3239,8 @@ int     x264_encoder_encode( x264_t *h,
     int i_nal_type, i_nal_ref_idc, i_global_qp;
     int overhead = NALU_OVERHEAD;
 
+    SLICETRACE( ST_ENTRY, ST_THREAD_MAIN, h->i_frame + 1, pic_in != NULL );
+
 #if HAVE_OPENCL
     if( h->opencl.b_fatal_error )
         return -1;
@@ -3241,6 +3277,7 @@ int     x264_encoder_encode( x264_t *h,
 
         if( x264_frame_copy_picture( h, fenc, pic_in ) < 0 )
             return -1;
+        SLICETRACE( ST_COPY_END, ST_THREAD_MAIN, h->i_frame + 1, 0 );
 
         if( h->param.i_width != 16 * h->mb.i_mb_width ||
             h->param.i_height != 16 * h->mb.i_mb_height )
@@ -3285,12 +3322,14 @@ int     x264_encoder_encode( x264_t *h,
         }
         else
             x264_stack_align( x264_adaptive_quant_frame, h, fenc, pic_in->prop.quant_offsets );
+        SLICETRACE( ST_AQ_END, ST_THREAD_MAIN, h->i_frame + 1, 0 );
 
         if( pic_in->prop.quant_offsets_free )
             pic_in->prop.quant_offsets_free( pic_in->prop.quant_offsets );
 
         if( h->frames.b_have_lowres )
             x264_frame_init_lowres( h, fenc );
+        SLICETRACE( ST_LOWRES_END, ST_THREAD_MAIN, h->i_frame + 1, 0 );
 
         /* 2: Place the frame into the queue for its slice type decision */
         x264_lookahead_put_frame( h, fenc );
@@ -3313,8 +3352,10 @@ int     x264_encoder_encode( x264_t *h,
 
     h->i_frame++;
     /* 3: The picture is analyzed in the lookahead */
+    SLICETRACE( ST_LA_GET_START, ST_THREAD_MAIN, h->i_frame, !h->frames.current[0] );
     if( !h->frames.current[0] )
         x264_lookahead_get_frames( h );
+    SLICETRACE( ST_LA_GET_END, ST_THREAD_MAIN, h->i_frame, 0 );
 
     if( !h->frames.current[0] && x264_lookahead_is_empty( h ) )
         return x264_encoder_frame_end( thread_oldest, thread_current, pp_nal, pi_nal, pic_out );
@@ -3327,6 +3368,7 @@ int     x264_encoder_encode( x264_t *h,
     if( h->param.b_sliced_threads )
         if( x264_threadpool_wait_all( h ) < 0 )
             return -1;
+    SLICETRACE( ST_WAITALL_END, ST_THREAD_MAIN, h->i_frame, 0 );
 
     if( h->i_frame == h->i_thread_frames - 1 )
         h->i_reordered_pts_delay = h->fenc->i_reordered_pts;
@@ -3693,6 +3735,7 @@ int     x264_encoder_encode( x264_t *h,
 
     /* Init the rate control */
     /* FIXME: Include slice header bit cost. */
+    SLICETRACE( ST_RC_START, ST_THREAD_MAIN, h->i_frame, 0 );
     x264_ratecontrol_start( h, h->fenc->i_qpplus1, overhead*8 );
     i_global_qp = x264_ratecontrol_qp( h );
 
@@ -3746,6 +3789,8 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
 {
     char psz_message[80];
 
+    SLICETRACE( ST_FE_START, ST_THREAD_MAIN, h->i_frame, 0 );
+
     if( !h->param.b_sliced_threads && h->b_thread_active )
     {
         h->b_thread_active = 0;
@@ -3782,6 +3827,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     int frame_size = x264_encoder_encapsulate_nals( h, 0 );
     if( frame_size < 0 )
         return -1;
+    SLICETRACE( ST_FE_ENCAP_END, ST_THREAD_MAIN, h->i_frame, 0 );
 
     /* Set output picture properties */
     pic_out->i_type = h->fenc->i_type;
@@ -4006,6 +4052,8 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     if( h->param.psz_dump_yuv )
         x264_frame_dump( h );
     x264_emms();
+
+    SLICETRACE( ST_FE_END, ST_THREAD_MAIN, h->i_frame, 0 );
 
     return frame_size;
 }
@@ -4401,6 +4449,9 @@ void    x264_encoder_close  ( x264_t *h )
     }
 #if HAVE_OPENCL
     x264_opencl_close_library( ocl );
+#endif
+#if X264_SLICETRACE
+    x264_slicetrace_dump();
 #endif
 }
 

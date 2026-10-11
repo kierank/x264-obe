@@ -29,6 +29,7 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#include "common/slicetrace.h"
 
 // Indexed by pic_struct values
 static const uint8_t delta_tfi_divisor[10] = { 0, 2, 1, 1, 2, 2, 3, 3, 4, 6 };
@@ -829,12 +830,14 @@ typedef struct
 static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 {
     x264_t *h = s->h;
+    SLICETRACE( ST_LA_JOB_START, ST_THREAD_LA_JOB, s->frames[s->b]->i_frame, h->i_threadslice_start );
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     if( h->lowres8 )
     {
         x264_lowres8_slice_cost( h->lowres8, (void**)s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
                                  s->do_search, s->w, s->output_inter, s->output_intra,
                                  h->i_threadslice_start, h->i_threadslice_end );
+        SLICETRACE( ST_LA_JOB_END, ST_THREAD_LA_JOB, s->frames[s->b]->i_frame, h->i_threadslice_end );
         return;
     }
 #endif
@@ -855,6 +858,7 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
         for( h->mb.i_mb_x = start_x; h->mb.i_mb_x >= end_x; h->mb.i_mb_x-- )
             x264_slicetype_mb_cost( h, s->a, s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
                                     s->do_search, s->w, s->output_inter, s->output_intra );
+    SLICETRACE( ST_LA_JOB_END, ST_THREAD_LA_JOB, s->frames[s->b]->i_frame, h->i_threadslice_end );
 }
 
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
@@ -927,6 +931,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
             {
                 x264_slicetype_slice_t s[X264_LOOKAHEAD_THREAD_MAX];
 
+                SLICETRACE( ST_LA_FANOUT_START, ST_THREAD_LA, fenc->i_frame, ((b-p0) << 8) | (p1-b) );
                 for( int i = 0; i < h->param.i_lookahead_threads; i++ )
                 {
                     x264_t *t = h->lookahead_thread[i];
@@ -955,6 +960,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                 }
                 for( int i = 0; i < h->param.i_lookahead_threads; i++ )
                     x264_threadpool_wait( h->lookaheadpool, &s[i] );
+                SLICETRACE( ST_LA_FANOUT_END, ST_THREAD_LA, fenc->i_frame, 0 );
             }
             else
             {

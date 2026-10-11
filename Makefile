@@ -18,7 +18,7 @@ default:
 # were already single-compile in the pre-backport Makefile and still are,
 # since common/cpu.h and common/osdep.h were never templated.
 SRCS = common/osdep.c common/base.c common/cpu.c common/tables.c \
-       encoder/api.c
+       common/slicetrace.c encoder/api.c
 
 # SRCS_X: compiled once PER SELECTED BIT DEPTH (suffixed -8.o / -10.o below),
 # since every symbol here is templated via x264_template()/BIT_DEPTH and
