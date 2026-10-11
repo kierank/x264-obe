@@ -4483,13 +4483,13 @@ HADAMARD_AC_SSE2
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
-; 10-bit satd, ymm and zmm. Each 128-bit lane holds one row of an independent
+; 10-bit satd, ymm. Each 128-bit lane holds one row of an independent
 ; 8x4 unit, so the lane-local vertical-mode transform of SATD_8x4_SSE runs on
-; 2 (ymm) or 4 (zmm) units per pass. Every pass adds at most 2*8184 per word,
+; 2 units per pass (4 in the zmm intra_satd_x3). Every pass adds at most 2*8184 per word,
 ; so up to two passes fit signed words and up to four fit unsigned words.
 ;-----------------------------------------------------------------------------
 
-; m0-m3 = pix1-pix2 rows %1..%1+3 of the units at r0/r2 (lane 0) and r6/r7 (lane 1+)
+; m0-m3 = pix1-pix2 rows %1..%1+3 of the units at r0/r2 (lane 0) and r6/r7 (lane 1)
 %macro SATD_HBD_LOAD_X 0 ; 8 wide, ymm: lanes = rows i, i+4
     movu         xm0, [r0]
     vinserti128   m0, m0, [r6], 1
@@ -4524,42 +4524,12 @@ HADAMARD_AC_SSE2
     psubw         m3, [r2+r5]
 %endmacro
 
-%macro SATD_HBD_LOAD_Z 0 ; 16 wide, zmm: lanes = columns 0-7, 8-15 of rows i, i+4
-    movu          ym0, [r0]
-    vinserti32x8   m0, m0, [r6], 1
-    movu          ym4, [r2]
-    vinserti32x8   m4, m4, [r7], 1
-    movu          ym1, [r0+r1]
-    vinserti32x8   m1, m1, [r6+r1], 1
-    movu          ym5, [r2+r3]
-    vinserti32x8   m5, m5, [r7+r3], 1
-    psubw          m0, m4
-    psubw          m1, m5
-    movu          ym2, [r0+2*r1]
-    vinserti32x8   m2, m2, [r6+2*r1], 1
-    movu          ym4, [r2+2*r3]
-    vinserti32x8   m4, m4, [r7+2*r3], 1
-    movu          ym3, [r0+r4]
-    vinserti32x8   m3, m3, [r6+r4], 1
-    movu          ym5, [r2+r5]
-    vinserti32x8   m5, m5, [r7+r5], 1
-    psubw          m2, m4
-    psubw          m3, m5
-%endmacro
-
 %macro SATD_HBD_START 0
     FIX_STRIDES r1, r3
     lea       r4, [3*r1]
     lea       r5, [3*r3]
     lea       r6, [r0+4*r1]
     lea       r7, [r2+4*r3]
-%endmacro
-
-%macro SATD_HBD_NEXT4 0 ; advance all row pointers by 4 rows
-    lea       r0, [r0+4*r1]
-    lea       r2, [r2+4*r3]
-    lea       r6, [r6+4*r1]
-    lea       r7, [r7+4*r3]
 %endmacro
 
 %macro SATD_HBD_NEXT8 0 ; advance all row pointers by 8 rows
@@ -4623,21 +4593,6 @@ cglobal pixel_satd_16x16, 4,6,8
 %endrep
     SATD_HBD_END 1
 
-INIT_ZMM avx512
-cglobal pixel_satd_16x8, 4,8,8
-    SATD_HBD_START
-    SATD_HBD_LOAD_Z
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
-    SATD_HBD_END 0
-
-cglobal pixel_satd_16x16, 4,8,8
-    SATD_HBD_START
-    SATD_HBD_LOAD_Z
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
-    SATD_HBD_NEXT8
-    SATD_HBD_LOAD_Z
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
-    SATD_HBD_END 0
 %if ARCH_X86_64
 INIT_YMM avx2
 SA8D_SATD
