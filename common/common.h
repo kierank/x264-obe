@@ -680,6 +680,12 @@ struct x264_t
         int ref_blind_dupe; /* The index of the blind reference frame duplicate. */
         int8_t deblock_ref_table[X264_REF_MAX*2+2];
 #define deblock_ref_table(x) h->mb.deblock_ref_table[(x)+2]
+
+        /* 16x16 mvp of the current MB per list and ref, saved by analysis for
+         * mvd coding; bit i_ref of mvp16_valid[l] marks mvp16[l][i_ref] set.
+         * Cleared in cache_load. */
+        ALIGNED_4( int16_t mvp16[2][X264_REF_MAX*2][2] );
+        uint32_t mvp16_valid[2];
     } mb;
 
     /* rate control encoding only */

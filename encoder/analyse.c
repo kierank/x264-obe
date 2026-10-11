@@ -1259,6 +1259,8 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 0 );
 
         x264_mb_predict_mv_16x16( h, 0, i_ref, m.mvp );
+        CP32( h->mb.mvp16[0][i_ref], m.mvp );
+        h->mb.mvp16_valid[0] |= 1U << i_ref;
 
         if( h->mb.ref_blind_dupe == i_ref )
         {
@@ -1920,6 +1922,8 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
             /* search with ref */
             LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 0 );
             x264_mb_predict_mv_16x16( h, l, i_ref, m.mvp );
+            CP32( h->mb.mvp16[l][i_ref], m.mvp );
+            h->mb.mvp16_valid[l] |= 1U << i_ref;
             x264_mb_predict_mv_ref16x16( h, l, i_ref, mvc, &i_mvc );
             x264_me_search_ref( h, &m, mvc, i_mvc, p_halfpel_thresh[l] );
 

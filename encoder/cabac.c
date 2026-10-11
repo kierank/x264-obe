@@ -338,8 +338,13 @@ static NOINLINE uint16_t x264_cabac_mvd( x264_t *h, x264_cabac_t *cb, int i_list
     ALIGNED_4( int16_t mvp[2] );
     int mdx, mdy;
 
-    /* Calculate mvd */
-    x264_mb_predict_mv( h, i_list, idx, width, mvp );
+    /* Calculate mvd. For a 16x16 partition, x264_mb_predict_mv is
+     * x264_mb_predict_mv_16x16 of the cached ref, which analysis may have saved. */
+    int i_ref = h->mb.cache.ref[i_list][x264_scan8[0]];
+    if( idx == 0 && width == 4 && h->mb.i_partition == D_16x16 && i_ref >= 0 && (h->mb.mvp16_valid[i_list] >> i_ref & 1) )
+        CP32( mvp, h->mb.mvp16[i_list][i_ref] );
+    else
+        x264_mb_predict_mv( h, i_list, idx, width, mvp );
     mdx = h->mb.cache.mv[i_list][x264_scan8[idx]][0] - mvp[0];
     mdy = h->mb.cache.mv[i_list][x264_scan8[idx]][1] - mvp[1];
     uint16_t amvd = x264_cabac_mvd_sum(h->mb.cache.mvd[i_list][x264_scan8[idx] - 1],
