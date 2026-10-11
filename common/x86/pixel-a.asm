@@ -2052,7 +2052,7 @@ cglobal pixel_sa8d_16x16, 4,7
 ; m6, m11-15: tmp regs
 %macro SA8D_SATD_8x4 5
 %if %1
-    LOAD_DIFF_8x4P %2, %3, %4, %5, 6, 11, 7, r0, r2, 1
+    LOAD_DIFF_8x4P %2, %3, %4, %5, 6, 11, 7, r0, r2, 1, mmsize < 32
     HADAMARD   0, sumsub, %2, %3, 6
     HADAMARD   0, sumsub, %4, %5, 6
     SBUTTERFLY        wd, %2, %3, 6
@@ -2159,8 +2159,13 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
     SA8D_SATD_ACCUM 1, 0
     vextracti128 xm1, m0, 1
     vextracti128 xm2, m10, 1
+%if HIGH_BIT_DEPTH
+    paddd   xm0, xm1
+    paddd  xm10, xm2
+%else
     paddw   xm0, xm1
     paddw  xm10, xm2
+%endif
 %else
     lea      r6, [r2+8*SIZEOF_PIXEL]
     lea      r7, [r0+8*SIZEOF_PIXEL]
@@ -4585,6 +4590,10 @@ cglobal pixel_satd_8x16, 4,8,8
     SATD_HBD_LOAD_W
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
     SATD_HBD_END 0
+%if ARCH_X86_64
+INIT_YMM avx2
+SA8D_SATD
+%endif
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
