@@ -2709,10 +2709,18 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     cb[0].f8_bits_encoded = 0;\
                     cb[1].f8_bits_encoded = 0;\
                     if( !rd ) memcpy( bitstream[1], bitstream[0], 0x400 );\
+                    /* start mid-stream: arbitrary low/queue, sometimes bytes outstanding */\
+                    if( !rd )\
+                        for( int k = rand()&63; k > 0; k-- )\
+                        {\
+                            int bit = -(rand()&1);\
+                            x264_cabac_encode_bypass_c( &cb[0], bit );\
+                            x264_cabac_encode_bypass_c( &cb[1], bit );\
+                        }\
                     call_c1( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                     call_a1( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
                     ok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp(cb[0].state, cb[1].state, 1024);\
-                    if( !rd ) ok |= !memcmp( bitstream[1], bitstream[0], 0x400 ) && !memcmp( &cb[1], &cb[0], offsetof(x264_cabac_t, p_start) );\
+                    if( !rd ) ok &= !memcmp( bitstream[1], bitstream[0], 0x400 ) && !memcmp( &cb[1], &cb[0], offsetof(x264_cabac_t, p_start) );\
                     if( !ok )\
                     {\
                         fprintf( stderr, #name " :  [FAILED] ctx_block_cat %d", (int)ctx_block_cat );\
