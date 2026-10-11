@@ -522,6 +522,125 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel satd_pre :" );
 
+    ok = 1, used_asm = 0;
+    if( pixel_asm.satd_bi[PIXEL_16x16] && pixel_asm.satd_bi[PIXEL_16x16] != pixel_ref.satd_bi[PIXEL_16x16] )
+    {
+        /* size, x, y of every partition of a 16x16 fenc */
+        static const uint8_t bi_parts[9][3] = { {PIXEL_16x16, 0, 0}, {PIXEL_16x8, 0, 0}, {PIXEL_16x8, 0, 8},
+                                                {PIXEL_8x16, 0, 0}, {PIXEL_8x16, 8, 0}, {PIXEL_8x8, 0, 0},
+                                                {PIXEL_8x8, 8, 0}, {PIXEL_8x8, 0, 8}, {PIXEL_8x8, 8, 8} };
+        static const int8_t bi_weights[9] = { 32, -63, -1, 0, 1, 63, 64, 65, 127 };
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+#if !HIGH_BIT_DEPTH
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[512] );
+#endif
+        ALIGNED_16( pixel avg[16*16] );
+        ALIGNED_16( pixel ref0[16*16] );
+        ALIGNED_16( pixel ref1[16*16] );
+        used_asm = 1;
+        /* k = 0: random, every weight, every qpel fraction;
+         * k = 1: src0 = src1 = ~fenc, maxed differences;
+         * k = 2: src0 = ~src1 maxed, clipped at the extreme weights */
+        for( int k = 0; k < 3 && ok; k++ )
+            for( int j = 0; j < (k ? 0x1000 : 64) && ok; j += k ? 256 : 1 )
+            {
+                pixel *fenc = k == 1 ? pbuf3+j : k ? pbuf1+j : pbuf2+0xa00+j;
+                /* satd_bi: src0 (stride0), src1 (stride1) */
+                pixel *src0 = k ? pbuf4+j : pbuf2+j;
+                pixel *src1 = k == 2 ? pbuf3+j : k ? pbuf4+j : pbuf2+1280+(j^5);
+                intptr_t stride0 = k ? 16 : 64, stride1 = k ? 16 : 32;
+                /* satd_bi4: hpel planes and mvs of the two lists, get_ref's sources */
+                pixel *planes[2][4];
+                intptr_t pstride = k ? 16 : 64;
+                int mv[2][2];
+                for( int q = 0; q < 4; q++ )
+                {
+                    planes[0][q] = k ? pbuf4+j : pbuf1+2*64+2+q*600+j;
+                    planes[1][q] = k == 2 ? pbuf3+j : k ? pbuf4+j : pbuf1+3400+q*600+(j^9);
+                }
+                if( k )
+                {
+                    /* fractions 0 or 1: get_ref averages identical planes */
+                    mv[0][0] = (j>>8)&1;
+                    mv[0][1] = (j>>9)&1;
+                    mv[1][0] = (j>>10)&1;
+                    mv[1][1] = (j>>11)&1;
+                }
+                else
+                {
+                    mv[0][0] = 4*(j%3-1) + (j&3);
+                    mv[0][1] = 4*(j/3%3-1) + ((j>>2)&3);
+                    mv[1][0] = 4*(j/9%3-1) + ((j>>4)&3);
+                    mv[1][1] = 4*(j/27%3-1) + (((j>>1)^j)&3);
+                }
+#if !HIGH_BIT_DEPTH
+                set_func_name( "satd_fenc_pre_16x16" );
+                call_a( pixel_asm.satd_fenc_pre[0], fenc_pre, fenc );
+                set_func_name( "satd_fenc_pre_8x8" );
+                for( int b = 0; b < 4; b++ )
+                    call_a( pixel_asm.satd_fenc_pre[1], fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+#endif
+                for( int p = 0; p < 9 && ok; p++ )
+                {
+                    int i = bi_parts[p][0], x = bi_parts[p][1], y = bi_parts[p][2];
+                    int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                    pixel *f = fenc + x + y*FENC_STRIDE;
+#if HIGH_BIT_DEPTH
+                    x264_bi_fenc_t *bf = f;
+#else
+                    x264_bi_fenc_t *bf = i <= PIXEL_16x8 ? fenc_pre+16*y : fenc_pre+256+64*(2*(x>>3)+(y>>3));
+#endif
+                    pixel *s0 = src0 + x + y*stride0, *s1 = src1 + x + y*stride1;
+                    pixel *pl[2][4], *hp[2][2], *r[2];
+                    intptr_t rstride[2] = { 16, 16 };
+                    for( int l = 0; l < 2; l++ )
+                    {
+                        for( int q = 0; q < 4; q++ )
+                            pl[l][q] = planes[l][q] + x + y*pstride;
+                        r[l] = mc_c.get_ref( l ? ref1 : ref0, &rstride[l], pl[l], pstride, mv[l][0], mv[l][1], w, hgt, x264_weight_none );
+                        x264_mc_hpel_pair( hp[l], pl[l], pstride, mv[l][0], mv[l][1] );
+                    }
+                    for( int wi = 0; wi < (k ? 9 : 191) && ok; wi++ )
+                    {
+                        int weight = k ? bi_weights[wi] : wi - 63;
+                        int bench = weight == 32 || weight == 65;
+                        int res_c, res_asm;
+                        mc_c.avg[i]( avg, 16, s0, stride0, s1, stride1, weight );
+                        res_c = pixel_c.satd[i]( f, FENC_STRIDE, avg, 16 );
+                        if( bench )
+                        {
+                            set_func_name( "satd_bi%s_%s", weight == 32 ? "" : "w", pixel_names[i] );
+                            res_asm = call_a( pixel_asm.satd_bi[i], bf, s0, stride0, s1, stride1, weight );
+                        }
+                        else
+                            res_asm = pixel_asm.satd_bi[i]( bf, s0, stride0, s1, stride1, weight );
+                        if( res_c != res_asm )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "satd_bi[%d] %d,%d weight %d k %d: %d != %d [FAILED]\n", i, x, y, weight, k, res_c, res_asm );
+                        }
+                        mc_c.avg[i]( avg, 16, r[0], rstride[0], r[1], rstride[1], weight );
+                        res_c = pixel_c.satd[i]( f, FENC_STRIDE, avg, 16 );
+                        if( bench )
+                        {
+                            set_func_name( "satd_bi4%s_%s", weight == 32 ? "" : "w", pixel_names[i] );
+                            res_asm = call_a( pixel_asm.satd_bi4[i], bf, hp[0][0], hp[0][1], hp[1][0], hp[1][1], pstride, weight );
+                        }
+                        else
+                            res_asm = pixel_asm.satd_bi4[i]( bf, hp[0][0], hp[0][1], hp[1][0], hp[1][1], pstride, weight );
+                        if( res_c != res_asm )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "satd_bi4[%d] %d,%d mv %d,%d %d,%d weight %d k %d: %d != %d [FAILED]\n", i, x, y,
+                                     mv[0][0], mv[0][1], mv[1][0], mv[1][1], weight, k, res_c, res_asm );
+                        }
+                    }
+                }
+            }
+    }
+    report( "pixel satd_bi :" );
+
     TEST_PIXEL( sa8d, 1 );
 
     ok = 1, used_asm = 0;

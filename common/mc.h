@@ -143,4 +143,14 @@ typedef struct
 #define x264_mc_init x264_template(mc_init)
 void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent );
 
+/* the two hpel planes' sources whose pavg is get_ref's unweighted luma prediction
+ * at mv (the same one twice where it needs no average) */
+static ALWAYS_INLINE void x264_mc_hpel_pair( pixel *dst[2], pixel **src, intptr_t i_stride, int mvx, int mvy )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    intptr_t offset = (mvy>>2)*i_stride + (mvx>>2);
+    dst[0] = src[x264_hpel_ref0[qpel_idx]] + offset + ((mvy&3) == 3) * i_stride;
+    dst[1] = qpel_idx & 5 ? src[x264_hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3) : dst[0];
+}
+
 #endif

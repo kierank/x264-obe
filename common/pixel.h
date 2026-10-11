@@ -49,6 +49,19 @@ typedef void (*x264_pixel_satd_mcc_t) ( x264_mcc_fenc_t *fenc, int res[2], pixel
 /* satd against fenc_pre, fenc's first transform stage from satd_fenc_pre */
 typedef int  (*x264_pixel_cmp_pre_t) ( int16_t *fenc_pre, pixel *, intptr_t );
 typedef int  (*x264_pixel_cmp_avg2_pre_t) ( int16_t *fenc_pre, pixel *, pixel *, intptr_t );
+/* bipred cost: satd of mc.avg( src0, src1, weight ) without storing it, against the
+ * partition's fenc_pre (8-bit) or fenc (high bit depth, FENC_STRIDE); bi4 averages
+ * src0 = pavg( src0a, src0b ) and src1 = pavg( src1a, src1b ), get_ref's unweighted
+ * predictions from the hpel planes (see x264_mc_hpel_pair) */
+#if HIGH_BIT_DEPTH
+typedef pixel x264_bi_fenc_t;
+#else
+typedef int16_t x264_bi_fenc_t;
+#endif
+typedef int  (*x264_pixel_satd_bi_t) ( x264_bi_fenc_t *fenc, pixel *src0, intptr_t stride0,
+                                       pixel *src1, intptr_t stride1, int weight );
+typedef int  (*x264_pixel_satd_bi4_t) ( x264_bi_fenc_t *fenc, pixel *src0a, pixel *src0b,
+                                        pixel *src1a, pixel *src1b, intptr_t stride, int weight );
 
 enum
 {
@@ -111,6 +124,8 @@ typedef struct
     void (*satd_fenc_pre[2])( int16_t *fenc_pre, pixel *fenc );
     x264_pixel_cmp_pre_t satd_pre[4];
     x264_pixel_cmp_avg2_pre_t satd_avg2_pre[4];
+    x264_pixel_satd_bi_t  satd_bi[4];  /* asm only, NULL otherwise */
+    x264_pixel_satd_bi4_t satd_bi4[4];
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
@@ -119,6 +134,8 @@ typedef struct
     x264_pixel_satd_mcc_t mbcmp_mcc;     /* satd_mcc where mbcmp is satd, else NULL */
     x264_pixel_cmp_pre_t mbcmp_pre[4];   /* satd_pre where mbcmp is satd, else NULL */
     x264_pixel_cmp_avg2_pre_t mbcmp_avg2_pre[4];
+    x264_pixel_satd_bi_t  mbcmp_bi[4];  /* satd_bi where mbcmp is satd, else NULL */
+    x264_pixel_satd_bi4_t mbcmp_bi4[4];
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
