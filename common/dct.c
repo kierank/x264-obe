@@ -28,6 +28,7 @@
 #include "common.h"
 #if HAVE_MMX
 #   include "x86/dct.h"
+#   include "x86/quant.h"
 #endif
 #if ARCH_PPC
 #   include "ppc/dct.h"
@@ -896,6 +897,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->sub_4x4   = zigzag_sub_4x4_frame;
     pf_interlaced->sub_4x4ac  = zigzag_sub_4x4ac_field;
     pf_progressive->sub_4x4ac = zigzag_sub_4x4ac_frame;
+    pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field;
+    pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame;
+    pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac;
+    pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -995,6 +1000,15 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->scan_4x4 = x264_zigzag_scan_4x4_frame_neon;
 #endif
 #endif // HIGH_BIT_DEPTH
+#if HAVE_MMX && ARCH_X86_64
+    if( cpu&X264_CPU_AVX2 )
+    {
+        pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field_avx2;
+        pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx2;
+        pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx2;
+        pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
+    }
+#endif
 
     pf_interlaced->interleave_8x8_cavlc =
     pf_progressive->interleave_8x8_cavlc = zigzag_interleave_8x8_cavlc;
