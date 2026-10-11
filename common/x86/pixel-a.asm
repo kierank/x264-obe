@@ -7325,13 +7325,13 @@ ads_mvs_ssse3:
     paddw         m%1, m15
 %endmacro
 
-; prediction from H m7 (clobbered) and m13 -> m7, interleaved uv
-%macro MCC_SATD_V 0
-    pmullw        m15, m7, m10
-    pmullw         m7, m13, m11
-    paddw          m7, m15
-    paddw          m7, m12
-    psrlw          m7, 6
+; prediction from H m%2 (row above) and m%3 -> m%1, interleaved uv; clobbers m15
+%macro MCC_SATD_V 3
+    pmullw        m15, m%2, m10
+    pmullw        m%1, m%3, m11
+    paddw         m%1, m15
+    paddw         m%1, m12
+    psrlw         m%1, 6
 %endmacro
 
 ; satd of the interleaved uv differences in m0-m3 -> m6 (u even, v odd words);
@@ -7351,17 +7351,26 @@ ads_mvs_ssse3:
     paddw          m6, m2
 %endmacro
 
-; fenc row mcc_k from base %1, r4 = 3*stride
-%macro MCC_FENC_ROW 1
-%if mcc_k == 0
-    %define mcc_fenc %1
-%elif mcc_k == 1
-    %define mcc_fenc %1+r3
-%elif mcc_k == 2
-    %define mcc_fenc %1+r3*2
+; row %2 (0-4) from base %1 -> mcc_row, r4 = 3*stride
+%macro MCC_ROW 2
+%assign mcc_i %2
+%if mcc_i == 0
+    %define mcc_row %1
+%elif mcc_i == 1
+    %define mcc_row %1+r3
+%elif mcc_i == 2
+    %define mcc_row %1+r3*2
+%elif mcc_i == 3
+    %define mcc_row %1+r4
 %else
-    %define mcc_fenc %1+r4
+    %define mcc_row %1+r3*4
 %endif
+%endmacro
+
+; H registers of rows k (mcc_h0) and k+1 (mcc_h1): m7 and m13 alternately
+%macro MCC_HREGS 0
+%assign mcc_h0 7+6*(mcc_k&1)
+%assign mcc_h1 20-mcc_h0
 %endmacro
 
 INIT_YMM avx2
@@ -7400,25 +7409,25 @@ cglobal pixel_satd_mcc, 4,8,16
     je .w4
 
     MCC_SATD_H     7, r2
-    add           r2, r3
 .loop8:
 %assign mcc_k 0
 %rep 4
-    MCC_SATD_H    13, r2
-    add           r2, r3
-    MCC_SATD_V
-    MCC_FENC_ROW  r0
+    MCC_HREGS
+    MCC_ROW        r2, mcc_k+1
+    MCC_SATD_H     mcc_h1, mcc_row
+    MCC_SATD_V     mcc_k, mcc_h0, mcc_h1
+    MCC_ROW        r0, mcc_k
 %if HIGH_BIT_DEPTH
-    psubw         m %+ mcc_k, m7, [mcc_fenc]
+    psubw         m %+ mcc_k, [mcc_row]
 %else
-    vpmovzxbw     m15, [mcc_fenc]
-    psubw         m %+ mcc_k, m7, m15
+    vpmovzxbw     m15, [mcc_row]
+    psubw         m %+ mcc_k, m15
 %endif
-    mova           m7, m13
 %assign mcc_k mcc_k+1
 %endrep
     MCC_SATD_4x4
     lea           r0, [r0+r3*4]
+    lea           r2, [r2+r3*4]
     sub          r7d, 4
     jg .loop8
     jmp .end
@@ -7429,28 +7438,29 @@ cglobal pixel_satd_mcc, 4,8,16
     MCC_SATD_H     7, r2, r6          ; rows 0 | 4
 %assign mcc_k 0
 %rep 4
-    add           r2, r3
-    add           r6, r3
-    MCC_SATD_H    13, r2, r6          ; rows k+1 | k+5
-    MCC_SATD_V                        ; rows k | k+4
-    MCC_FENC_ROW  r0
+    MCC_HREGS
+    MCC_ROW        r6, mcc_k+1
+    %xdefine mcc_row4 mcc_row
+    MCC_ROW        r2, mcc_k+1
+    MCC_SATD_H     mcc_h1, mcc_row, mcc_row4 ; rows k+1 | k+5
+    MCC_SATD_V     mcc_k, mcc_h0, mcc_h1     ; rows k | k+4
+    MCC_ROW        r0, mcc_k
 %if HIGH_BIT_DEPTH
-    movu         xm15, [mcc_fenc]
-    MCC_FENC_ROW  r5
-    vinserti128   m15, m15, [mcc_fenc], 1
+    movu         xm15, [mcc_row]
+    MCC_ROW        r5, mcc_k
+    vinserti128   m15, m15, [mcc_row], 1
 %else
-    movq         xm15, [mcc_fenc]
-    MCC_FENC_ROW  r5
-    movhps       xm15, [mcc_fenc]
+    movq         xm15, [mcc_row]
+    MCC_ROW        r5, mcc_k
+    movhps       xm15, [mcc_row]
     vpmovzxbw     m15, xm15
 %endif
-    psubw         m %+ mcc_k, m7, m15
-    mova           m7, m13
+    psubw         m %+ mcc_k, m15
 %assign mcc_k mcc_k+1
 %endrep
     MCC_SATD_4x4
     lea           r0, [r0+r3*8]
-    lea           r2, [r2+r3*4]       ; row 4 -> row 8
+    lea           r2, [r2+r3*8]
     sub          r7d, 8
     jg .w4
 
