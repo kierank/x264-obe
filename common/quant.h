@@ -72,4 +72,13 @@ typedef struct
 #define x264_quant_init x264_template(quant_init)
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf );
 
+#define x264_quant_4x4x4_scan_frame x264_template(quant_4x4x4_scan_frame)
+int x264_quant_4x4x4_scan_frame   ( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp );
+#define x264_quant_4x4x4_scan_field x264_template(quant_4x4x4_scan_field)
+int x264_quant_4x4x4_scan_field   ( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp );
+#define x264_quant_4x4x4_scan_frame_ac x264_template(quant_4x4x4_scan_frame_ac)
+int x264_quant_4x4x4_scan_frame_ac( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp );
+#define x264_quant_4x4x4_scan_field_ac x264_template(quant_4x4x4_scan_field_ac)
+int x264_quant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp );
+
 #endif

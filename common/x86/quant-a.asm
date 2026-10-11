@@ -81,6 +81,23 @@ chroma_dc_dmf_mask_mmx: dw 0, 0,-1,-1, 0,-1,-1, 0
 chroma_dc_dct_mask:     dw 1, 1,-1,-1, 1, 1,-1,-1
 chroma_dc_dmf_mask:     dw 1, 1,-1,-1, 1,-1,-1, 1
 
+ALIGN 32
+%if HIGH_BIT_DEPTH
+qscan4_frame_i: dd 0, 4, 1, 2, 5, 6, 3, 7
+qscan4_frame_j: dd 6, 3, 7, 0, 0, 0, 4, 1
+qscan4_field:   dd 0, 1, 4, 2, 3, 5, 6, 7
+qscan4_bytes:   dd 0, 4, 1, 5, 2, 6, 3, 7
+%else
+qscan4_frame_a: SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
+                SHUFFLE_MASK_W 0x80, 0x80, 0x80, 2, 5, 6, 3, 7
+qscan4_frame_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
+                SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
+qscan4_field:   SHUFFLE_MASK_W 0, 1, 4, 2, 3, 5, 6, 7
+                SHUFFLE_MASK_W 0, 1, 2, 3, 4, 5, 6, 7
+%endif
+qscan4_acmask:  db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+                db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+
 %if HIGH_BIT_DEPTH==0
 dct_coef_shuffle:
 %macro DCT_COEF_SHUFFLE 8
@@ -2471,3 +2488,381 @@ INIT_XMM avx2, lzcnt
 COEFF_LEVELRUN_LUT 15
 COEFF_LEVELRUN_LUT 16
 %endif
+
+;-----------------------------------------------------------------------------
+; int quant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
+;                       int dequant_mf[6][16], int i_qp )
+;-----------------------------------------------------------------------------
+; quant_4x4x4, zigzag the nonzero blocks into level, dequant dct in place unless dequant_mf is NULL,
+; sum decimate_score16 (15 for ac) over the nonzero blocks. Returns nz | min(score,9) << 4.
+%if ARCH_X86_64
+
+; block, src[, src2]: store to level if the block is nonzero, else to dct (rewritten later)
+%macro QUANT_SCAN_STORE 2-3
+    bt        r6d, %1
+    sbb       r7, r7
+    and       r7, r1
+%if %0 == 3
+    mova [r0+r7+64*%1   ], %2
+    mova [r0+r7+64*%1+32], %3
+%else
+    mova [r0+r7+32*%1   ], %2
+%endif
+%endmacro
+
+; levels as bytes in scan order, blocks 0-1, blocks 2-3, zero, ac
+%macro QUANT_SCAN_SCORE 4
+%if %4
+    pand      %1, [qscan4_acmask]
+    pand      %2, [qscan4_acmask]
+%endif
+    pabsb     m10, %1
+    pabsb     m11, %2
+    por       m10, m11
+    psubusb   m10, [pb_1]
+    pcmpeqb   %1, %3
+    pcmpeqb   %2, %3
+    pmovmskb  r7d, %1
+    pmovmskb  r8d, %2
+    shl       r8, 32
+    or        r7, r8
+    not       r7
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below
+    lea       r1, [r7+r7]
+    lea       r2, [r7*4]
+    lea       r3, [r7*8]
+    or        r2, r1
+    or        r2, r3
+    lea       r3, [r2*8]
+    or        r3, r2
+%if %4
+    mov       r4, 0x0003000300030003
+    mov       r5, 0x000f000f000f000f
+    mov       r8, 0x007f007f007f007f
+%else
+    mov       r4, 0x0001000100010001
+    mov       r5, 0x0007000700070007
+    mov       r8, 0x003f003f003f003f
+%endif
+    or        r1, r4
+    or        r2, r5
+    or        r3, r8
+    and       r1, r7
+    and       r2, r7
+    and       r3, r7
+    popcnt    r1, r1
+    popcnt    r2, r2
+    popcnt    r3, r3
+    add       r1d, r2d
+    add       r1d, r3d
+    mov       r2d, 9
+    cmp       r1d, r2d
+    cmova     r1d, r2d
+    ptest     m10, m10
+    cmovnz    r1d, r2d
+    shl       r1d, 4
+    or        eax, r1d
+    RET
+%endmacro
+
+%macro QUANT_SCAN_DEQUANT_START 0
+    imul      r7d, r5d, 0x2b
+    shr       r7d, 8          ; i_qp / 6
+    lea       r8d, [r7*3]
+    add       r8d, r8d
+    sub       r5d, r8d        ; i_qp % 6
+    shl       r5d, 6
+    add       r4, r5
+%endmacro
+
+%if HIGH_BIT_DEPTH
+; dst, offset, mf, bias
+%macro QUANT_SCAN_ONE 4
+    pabsd     m8, [r0+%2]
+    paddd     m8, %4
+    pmulld    m8, %3
+    psrad     m8, 16
+    psignd    %1, m8, [r0+%2]
+%endmacro
+
+; field, block, A, B, packed dst
+%macro QUANT_SCAN_BLOCK 5
+%if %1
+    vpermd    m8, m10, %3
+    QUANT_SCAN_STORE %2, m8, %4
+    packssdw  %5, m8, %4
+%else
+    vpermd    m8, m10, %3
+    vpermd    m9, m11, %4
+    vpblendd  m8, m8, m9, 0xe0
+    vpermd    m9, m11, %3
+    vpermd    m12, m10, %4
+    vpblendd  m9, m9, m12, 0xf8
+    QUANT_SCAN_STORE %2, m8, m9
+    packssdw  %5, m8, m9
+%endif
+%endmacro
+
+%macro QUANT_4x4x4_SCAN 3 ; name, field, ac
+cglobal quant_4x4x4_scan_%1, 6,9,16
+    mova      m12, [r2]
+    mova      m13, [r2+32]
+    mova      m14, [r3]
+    mova      m15, [r3+32]
+    QUANT_SCAN_ONE m0,   0, m12, m14
+    QUANT_SCAN_ONE m1,  32, m13, m15
+    QUANT_SCAN_ONE m2,  64, m12, m14
+    QUANT_SCAN_ONE m3,  96, m13, m15
+    QUANT_SCAN_ONE m4, 128, m12, m14
+    QUANT_SCAN_ONE m5, 160, m13, m15
+    QUANT_SCAN_ONE m6, 192, m12, m14
+    QUANT_SCAN_ONE m7, 224, m13, m15
+    por       m8, m0, m1
+    por       m9, m2, m3
+    packssdw  m8, m9
+    por       m9, m4, m5
+    por       m10, m6, m7
+    packssdw  m9, m10
+    packssdw  m8, m9
+    pxor      m15, m15
+    pcmpeqd   m8, m15
+    movmskps  r6d, m8
+    mov       r7d, r6d
+    shr       r6d, 4
+    and       r6d, r7d
+    xor       r6d, 0xf
+    jz .store_q
+    sub       r1, r0
+%if %2
+    mova      m10, [qscan4_field]
+%else
+    mova      m10, [qscan4_frame_i]
+    mova      m11, [qscan4_frame_j]
+%endif
+    QUANT_SCAN_BLOCK %2, 0, m0, m1, m13
+    QUANT_SCAN_BLOCK %2, 1, m2, m3, m14
+    packsswb  m13, m14
+    QUANT_SCAN_BLOCK %2, 2, m4, m5, m14
+    QUANT_SCAN_BLOCK %2, 3, m6, m7, m8
+    packsswb  m14, m8
+    test      r4, r4
+    jz .store_q_score
+    QUANT_SCAN_DEQUANT_START
+    mova      m8, [r4]
+    mova      m9, [r4+32]
+    sub       r7d, 4
+    jl .rshift
+    movd     xm10, r7d
+    pmaddwd   m0, m8
+    pmaddwd   m1, m9
+    pmaddwd   m2, m8
+    pmaddwd   m3, m9
+    pmaddwd   m4, m8
+    pmaddwd   m5, m9
+    pmaddwd   m6, m8
+    pmaddwd   m7, m9
+    pslld     m0, xm10
+    pslld     m1, xm10
+    pslld     m2, xm10
+    pslld     m3, xm10
+    pslld     m4, xm10
+    pslld     m5, xm10
+    pslld     m6, xm10
+    pslld     m7, xm10
+.store_q_score:
+    mova [r0+  0], m0
+    mova [r0+ 32], m1
+    mova [r0+ 64], m2
+    mova [r0+ 96], m3
+    mova [r0+128], m4
+    mova [r0+160], m5
+    mova [r0+192], m6
+    mova [r0+224], m7
+    mova      m8, [qscan4_bytes]
+    vpermd    m13, m8, m13
+    vpermd    m14, m8, m14
+    QUANT_SCAN_SCORE m13, m14, m15, %3
+.rshift:
+    neg       r7d
+    movd     xm10, r7d
+    mova      m11, [pd_1]
+    pslld     m11, xm10
+    psrld     m11, 1
+    pmaddwd   m0, m8
+    pmaddwd   m1, m9
+    pmaddwd   m2, m8
+    pmaddwd   m3, m9
+    pmaddwd   m4, m8
+    pmaddwd   m5, m9
+    pmaddwd   m6, m8
+    pmaddwd   m7, m9
+    paddd     m0, m11
+    paddd     m1, m11
+    paddd     m2, m11
+    paddd     m3, m11
+    paddd     m4, m11
+    paddd     m5, m11
+    paddd     m6, m11
+    paddd     m7, m11
+    psrad     m0, xm10
+    psrad     m1, xm10
+    psrad     m2, xm10
+    psrad     m3, xm10
+    psrad     m4, xm10
+    psrad     m5, xm10
+    psrad     m6, xm10
+    psrad     m7, xm10
+    jmp .store_q_score
+.store_q:
+    mova [r0+  0], m0
+    mova [r0+ 32], m1
+    mova [r0+ 64], m2
+    mova [r0+ 96], m3
+    mova [r0+128], m4
+    mova [r0+160], m5
+    mova [r0+192], m6
+    mova [r0+224], m7
+    RET
+%endmacro
+
+%else ; !HIGH_BIT_DEPTH
+; dst, tmp
+%macro QUANT_SCAN_RSHIFT 2
+    pmullw    %2, %1, m8
+    pmulhw    m12, %1, m8
+    punpcklwd %1, %2, m12
+    punpckhwd %2, m12
+    paddd     %1, m10
+    paddd     %2, m10
+    psrad     %1, xm9
+    psrad     %2, xm9
+    packssdw  %1, %2
+%endmacro
+
+%macro QUANT_4x4x4_SCAN 3 ; name, field, ac
+cglobal quant_4x4x4_scan_%1, 6,9,16
+    mova      m14, [r2]
+    mova      m15, [r3]
+    pabsw     m8,  [r0+ 0]
+    pabsw     m9,  [r0+32]
+    pabsw     m10, [r0+64]
+    pabsw     m11, [r0+96]
+    paddusw   m8,  m15
+    paddusw   m9,  m15
+    paddusw   m10, m15
+    paddusw   m11, m15
+    pmulhuw   m8,  m14
+    pmulhuw   m9,  m14
+    pmulhuw   m10, m14
+    pmulhuw   m11, m14
+    psignw    m0, m8,  [r0+ 0]
+    psignw    m1, m9,  [r0+32]
+    psignw    m2, m10, [r0+64]
+    psignw    m3, m11, [r0+96]
+    packssdw  m8, m0, m1
+    packssdw  m9, m2, m3
+    packssdw  m8, m9
+    pxor      m13, m13
+    pcmpeqd   m8, m13
+    movmskps  r6d, m8
+    mov       r7d, r6d
+    shr       r6d, 4
+    and       r6d, r7d
+    xor       r6d, 0xf
+    jz .store_q
+%if %2
+    mova      m8, [qscan4_field]
+    pshufb    m4, m0, m8
+    pshufb    m5, m1, m8
+    pshufb    m6, m2, m8
+    pshufb    m7, m3, m8
+%else
+    mova      m10, [qscan4_frame_a]
+    mova      m11, [qscan4_frame_b]
+    vpermq    m8, m0, q1032
+    vpermq    m9, m1, q1032
+    pshufb    m4, m0, m10
+    pshufb    m5, m1, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m4, m8
+    por       m5, m9
+    vpermq    m8, m2, q1032
+    vpermq    m9, m3, q1032
+    pshufb    m6, m2, m10
+    pshufb    m7, m3, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m6, m8
+    por       m7, m9
+%endif
+    sub       r1, r0
+    QUANT_SCAN_STORE 0, m4
+    QUANT_SCAN_STORE 1, m5
+    QUANT_SCAN_STORE 2, m6
+    QUANT_SCAN_STORE 3, m7
+    test      r4, r4
+    jz .store_q_score
+    QUANT_SCAN_DEQUANT_START
+    mova      m8, [r4]
+    packssdw  m8, [r4+32]
+    vpermq    m8, m8, q3120
+    sub       r7d, 4
+    jl .rshift
+    movd     xm9, r7d
+    psllw     m8, xm9
+    pmullw    m0, m8
+    pmullw    m1, m8
+    pmullw    m2, m8
+    pmullw    m3, m8
+.store_q_score:
+    mova [r0+ 0], m0
+    mova [r0+32], m1
+    mova [r0+64], m2
+    mova [r0+96], m3
+    packsswb  m8, m4, m5
+    packsswb  m9, m6, m7
+    vpermq    m8, m8, q3120
+    vpermq    m9, m9, q3120
+    QUANT_SCAN_SCORE m8, m9, m13, %3
+.rshift:
+    neg       r7d
+    movd     xm9, r7d
+    ; dmf divisible by 1<<shift (flat): the shift is exact, multiply by dmf>>shift like dequant_4x4_flat16
+    pcmpeqw   m10, m10
+    mov       r8d, 16
+    sub       r8d, r7d
+    movd     xm11, r8d
+    psrlw     m10, xm11
+    ptest     m8, m10
+    jnz .rshift_round
+    psrlw     m8, xm9
+    pmullw    m0, m8
+    pmullw    m1, m8
+    pmullw    m2, m8
+    pmullw    m3, m8
+    jmp .store_q_score
+.rshift_round:
+    mova      m10, [pd_1]
+    pslld     m10, xm9
+    psrld     m10, 1
+    QUANT_SCAN_RSHIFT m0, m11
+    QUANT_SCAN_RSHIFT m1, m11
+    QUANT_SCAN_RSHIFT m2, m11
+    QUANT_SCAN_RSHIFT m3, m11
+    jmp .store_q_score
+.store_q:
+    mova [r0+ 0], m0
+    mova [r0+32], m1
+    mova [r0+64], m2
+    mova [r0+96], m3
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+INIT_YMM avx2
+QUANT_4x4x4_SCAN frame,    0, 0
+QUANT_4x4x4_SCAN field,    1, 0
+QUANT_4x4x4_SCAN frame_ac, 0, 1
+QUANT_4x4x4_SCAN field_ac, 1, 1
+%endif ; ARCH_X86_64
