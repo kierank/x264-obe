@@ -361,23 +361,45 @@ cglobal sub16x16_dct8, 3,3,10
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
     TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
-    mova    [r0-0x80+0x00], xm0
-    vextracti128 [r0+0x00], m0, 1
-    mova    [r0-0x80+0x10], xm1
-    vextracti128 [r0+0x10], m1, 1
-    mova    [r0-0x80+0x20], xm2
-    vextracti128 [r0+0x20], m2, 1
-    mova    [r0-0x80+0x30], xm3
-    vextracti128 [r0+0x30], m3, 1
-    mova    [r0-0x80+0x40], xm4
-    vextracti128 [r0+0x40], m4, 1
-    mova    [r0-0x80+0x50], xm5
-    vextracti128 [r0+0x50], m5, 1
-    mova    [r0-0x80+0x60], xm6
-    vextracti128 [r0+0x60], m6, 1
-    mova    [r0-0x80+0x70], xm7
-    vextracti128 [r0+0x70], m7, 1
+    ; one 32 byte store per row pair, so quant_8x8's 32 byte loads can forward
+%assign dct8_i 0
+%rep 4
+    %assign dct8_j dct8_i+1
+    vperm2i128   m8, m %+ dct8_i, m %+ dct8_j, 0x20
+    vperm2i128   m %+ dct8_i, m %+ dct8_i, m %+ dct8_j, 0x31
+    mova [r0-0x80+dct8_i*0x10], m8
+    mova [r0+dct8_i*0x10], m %+ dct8_i
+%assign dct8_i dct8_i+2
+%endrep
     ret
+
+;-----------------------------------------------------------------------------
+; void sub8x8_dct8( int16_t dct[8][8], uint8_t *pix1, uint8_t *pix2 ), AVX2
+; As the AVX version, but rows are joined in pairs for 32 byte stores, so
+; quant_8x8's 32 byte loads can forward from them.
+;-----------------------------------------------------------------------------
+cglobal sub8x8_dct8, 3,3,11
+    add       r2, 4*FDEC_STRIDE
+    mova     xm10, [hsub_mul]
+%assign dct8_i 0
+%rep 8
+    movq     xm8, [r2+(dct8_i-4)*FDEC_STRIDE]
+    movq     xm %+ dct8_i, [r1+dct8_i*FENC_STRIDE]
+    punpcklbw xm %+ dct8_i, xm8
+    pmaddubsw xm %+ dct8_i, xm10
+%assign dct8_i dct8_i+1
+%endrep
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+%assign dct8_i 0
+%rep 4
+    %assign dct8_j dct8_i+1
+    vinserti128  m %+ dct8_i, m %+ dct8_i, xm %+ dct8_j, 1
+    mova [r0+dct8_i*0x10], m %+ dct8_i
+%assign dct8_i dct8_i+2
+%endrep
+    RET
 
 ;-----------------------------------------------------------------------------
 ; void add8x8_idct8( uint8_t *p_dst, int16_t dct[8][8] )
