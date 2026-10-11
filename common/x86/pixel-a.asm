@@ -5292,6 +5292,92 @@ cglobal pixel_satd_avg2_8x8, 4,7,9
     pxor     m6, m6
     SATD_AVG2_8x8
     SATD_AVG2_END
+
+;-----------------------------------------------------------------------------
+; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
+; With the layout of the satd functions above, the first (pmaddubsw) stage of a
+; row is linear, so fenc's is computed once for the three modes, and V's and
+; DC's, being the same for every row, once for the block.
+;-----------------------------------------------------------------------------
+; word accumulator m%1 -> 4 dword sums in xm%1
+%macro INTRA_X3_FOLD 1
+    vextracti128 xm4, m%1, 1
+    paddw        xm%1, xm4
+    pmaddwd      xm%1, [pw_1]
+%endmacro
+
+cglobal intra_satd_x3_16x16, 3,5,16
+    ; DC = (sum of top + sum of left + 16) >> 5
+    movzx         r3d, byte [r1-1]
+%assign intra_x3_y 1
+%rep 15
+    movzx         r4d, byte [r1+intra_x3_y*FDEC_STRIDE-1]
+    add           r3d, r4d
+%assign intra_x3_y intra_x3_y+1
+%endrep
+    pxor          xm0, xm0
+    movu          xm1, [r1-FDEC_STRIDE]
+    psadbw        xm1, xm0
+    movhlps       xm0, xm1
+    paddw         xm1, xm0
+    movd          r4d, xm1
+    lea           r3d, [r3+r4+16]
+    shr           r3d, 5
+    mova           m7, [hmul_16p]
+    movd         xm13, r3d
+    vpbroadcastb  m13, xm13
+    pmaddubsw     m13, m7                  ; DC, first stage
+    vbroadcasti128 m12, [r1-FDEC_STRIDE]
+    pmaddubsw     m12, m7                  ; V, first stage
+    pxor          m14, m14
+    pxor          m15, m15
+    pxor           m6, m6
+%assign intra_x3_g 0
+%rep 4
+%assign intra_x3_k 0
+%rep 4
+    %assign intra_x3_f 8+intra_x3_k
+    vbroadcasti128 m %+ intra_x3_f, [r0+(4*intra_x3_g+intra_x3_k)*FENC_STRIDE]
+    pmaddubsw      m %+ intra_x3_f, m7
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    psubw          m0, m8, m12             ; V
+    psubw          m1, m9, m12
+    psubw          m2, m10, m12
+    psubw          m3, m11, m12
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 14
+%assign intra_x3_k 0
+%rep 4                                     ; H: the row's left neighbour
+    %assign intra_x3_f 8+intra_x3_k
+    vpbroadcastb   m %+ intra_x3_k, [r1+(4*intra_x3_g+intra_x3_k)*FDEC_STRIDE-1]
+    pmaddubsw      m %+ intra_x3_k, m7
+    psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 15
+    psubw          m0, m8, m13             ; DC
+    psubw          m1, m9, m13
+    psubw          m2, m10, m13
+    psubw          m3, m11, m13
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+%assign intra_x3_g intra_x3_g+1
+%endrep
+    INTRA_X3_FOLD 14
+    INTRA_X3_FOLD 15
+    INTRA_X3_FOLD 6
+    ; transpose-add the three 4 dword sums into res[0..2]
+    punpckldq     xm4, xm14, xm15
+    punpckhdq    xm14, xm15
+    paddd        xm14, xm4                 ; V0+V2 H0+H2 V1+V3 H1+H3
+    punpckhdq     xm5, xm6, xm6
+    punpckldq     xm6, xm6
+    paddd         xm6, xm5                 ; D0+D2 D0+D2 D1+D3 D1+D3
+    punpcklqdq    xm4, xm14, xm6
+    punpckhqdq   xm14, xm6
+    paddd        xm14, xm4                 ; V H D D
+    movq        [r2], xm14
+    pextrd    [r2+8], xm14, 2
+    RET
 %endif ; ARCH_X86_64
 
 cglobal pixel_sa8d_8x8_internal
