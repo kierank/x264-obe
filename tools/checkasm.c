@@ -2717,6 +2717,18 @@ static int check_cabac( int cpu_ref, int cpu_new )
                             x264_cabac_encode_bypass_c( &cb[0], bit );\
                             x264_cabac_encode_bypass_c( &cb[1], bit );\
                         }\
+                    /* low just below a byte boundary inside the interval, steered bypasses keep it there:\
+                     * bytes outstanding on entry, more 0xff bytes, then a carry or not through them */\
+                    if( !rd && (j&3) == 3 && cb[0].p > cb[0].p_start )\
+                    {\
+                        cb[0].i_low = cb[1].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);\
+                        for( int k = 8 + (rand()&31); k > 0; k-- )\
+                        {\
+                            int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));\
+                            x264_cabac_encode_bypass_c( &cb[0], bit );\
+                            x264_cabac_encode_bypass_c( &cb[1], bit );\
+                        }\
+                    }\
                     call_c1( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                     call_a1( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
                     ok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp(cb[0].state, cb[1].state, 1024);\
