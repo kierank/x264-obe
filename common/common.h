@@ -742,6 +742,7 @@ struct x264_t
     struct
     {
         int     i_alg_rdbound;
+        int     i_alg_mvpred;
     } exp;
 
     /* Buffers that are allocated per-thread even in sliced threads. */

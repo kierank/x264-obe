@@ -1257,7 +1257,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
     int i_mvc;
-    ALIGNED_4( int16_t mvc[8][2] );
+    ALIGNED_4( int16_t mvc[10][2] );
     int i_halfpel_thresh = INT_MAX;
     int *p_halfpel_thresh = (a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
 
@@ -1897,7 +1897,7 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
     pixel *src0, *src1;
     intptr_t stride0 = 16, stride1 = 16;
     int i_ref, i_mvc;
-    ALIGNED_4( int16_t mvc[9][2] );
+    ALIGNED_4( int16_t mvc[10][2] );
     int try_skip = a->b_try_skip;
     int list1_skipped = 0;
     int i_halfpel_thresh[2] = {INT_MAX, INT_MAX};

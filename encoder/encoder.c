@@ -1497,8 +1497,13 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * which x264_intra_rd would drop the mode anyway */
         const char *e = getenv( "X264_EXP_ALG_RDBOUND" );
         h->exp.i_alg_rdbound = e ? atoi( e ) : 0;
-        if( h->exp.i_alg_rdbound )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d\n", h->exp.i_alg_rdbound );
+        /* X264_EXP_ALG_MVPRED, a mask, MBAFF only: 1 field-scaled lowres predictor,
+         * 2 temporal predictors in the current MB's units, 4 the pair's top field MB
+         * as a predictor of the bottom one */
+        e = getenv( "X264_EXP_ALG_MVPRED" );
+        h->exp.i_alg_mvpred = e ? atoi( e ) : 0;
+        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d\n", h->exp.i_alg_rdbound, h->exp.i_alg_mvpred );
     }
 
     /* Init frames. */
