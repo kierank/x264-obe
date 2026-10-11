@@ -513,12 +513,18 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->quant_4x4 = x264_quant_4x4_sse4;
         pf->quant_4x4x4 = x264_quant_4x4x4_sse4;
         pf->quant_8x8 = x264_quant_8x8_sse4;
+#if ARCH_X86_64
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_sse4;
+#endif
     }
     if( cpu&X264_CPU_AVX )
     {
         pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx;
         pf->idct_dequant_2x4_dconly = x264_idct_dequant_2x4_dconly_avx;
         pf->denoise_dct = x264_denoise_dct_avx;
+#if ARCH_X86_64
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx;
+#endif
     }
     if( cpu&X264_CPU_XOP )
     {
@@ -539,6 +545,9 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->dequant_8x8 = x264_dequant_8x8_avx2;
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx2;
         pf->denoise_dct = x264_denoise_dct_avx2;
+#if ARCH_X86_64
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx2;
+#endif
     }
     if( cpu&X264_CPU_AVX512 )
     {
@@ -670,6 +679,9 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->quant_4x4 = x264_quant_4x4_sse4;
         pf->quant_8x8 = x264_quant_8x8_sse4;
         pf->optimize_chroma_2x2_dc = x264_optimize_chroma_2x2_dc_sse4;
+#if ARCH_X86_64
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_sse4;
+#endif
     }
 
     if( cpu&X264_CPU_AVX )
@@ -683,6 +695,9 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx;
         pf->idct_dequant_2x4_dconly = x264_idct_dequant_2x4_dconly_avx;
         pf->optimize_chroma_2x2_dc = x264_optimize_chroma_2x2_dc_avx;
+#if ARCH_X86_64
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx;
+#endif
         pf->denoise_dct = x264_denoise_dct_avx;
     }
 
@@ -711,6 +726,9 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         }
         pf->decimate_score64 = x264_decimate_score64_avx2;
         pf->denoise_dct = x264_denoise_dct_avx2;
+#if ARCH_X86_64
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx2;
+#endif
         if( cpu&X264_CPU_LZCNT )
         {
             pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx2_lzcnt;

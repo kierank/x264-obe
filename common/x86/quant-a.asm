@@ -81,6 +81,18 @@ chroma_dc_dmf_mask_mmx: dw 0, 0,-1,-1, 0,-1,-1, 0
 chroma_dc_dct_mask:     dw 1, 1,-1,-1, 1, 1,-1,-1
 chroma_dc_dmf_mask:     dw 1, 1,-1,-1, 1,-1,-1, 1
 
+; optimize_chroma_2x4_dc: idct sign of each input per output lane (0 2 1 3 6 4 7 5)
+align 32
+chroma422_dc_col: dd 1, 1, 1, 1, 1, 1, 1, 1
+                  dd 1, 1,-1,-1, 1, 1,-1,-1
+                  dd 1, 1, 1, 1,-1,-1,-1,-1
+                  dd 1, 1,-1,-1,-1,-1, 1, 1
+                  dd 1,-1, 1,-1, 1,-1, 1,-1
+                  dd 1,-1,-1, 1, 1,-1,-1, 1
+                  dd 1,-1, 1,-1,-1, 1,-1, 1
+                  dd 1,-1,-1, 1,-1, 1, 1,-1
+pd_2080: times 4 dd 2080
+
 %if HIGH_BIT_DEPTH==0
 dct_coef_shuffle:
 %macro DCT_COEF_SHUFFLE 8
@@ -1307,6 +1319,131 @@ OPTIMIZE_CHROMA_2x2_DC
 INIT_XMM avx
 OPTIMIZE_CHROMA_2x2_DC
 %endif ; !HIGH_BIT_DEPTH
+
+;-----------------------------------------------------------------------------
+; int optimize_chroma_2x4_dc( dctcoef dct[8], int dequant_mf )
+;-----------------------------------------------------------------------------
+; Every 2x4 idct output is a +-1 combination of the inputs, so each trial
+; updates idct(dct)*dmf + 2080 by dmf*column instead of recomputing it.
+; Lanes hold outputs 0 2 1 3 6 4 7 5.
+%macro OPTIMIZE_CHROMA_2x4_DC 0
+cglobal optimize_chroma_2x4_dc, 2,7,10, dct, dmf, idx, lvl, sgn, col, nz
+    movd      xm8, dmfd
+%if mmsize == 32
+    vpbroadcastd m8, xm8
+%else
+    pshufd     m8, m8, 0
+%endif
+%if HIGH_BIT_DEPTH
+    movu       m0, [dctq]
+    pmulld     m0, m8
+%if mmsize == 16
+    movu       m1, [dctq+16]
+    pmulld     m1, m8
+%endif
+%else
+    pmovsxwd   m0, [dctq]
+    pmaddwd    m0, m8            ; dmf < 1<<15: high words of m8 are 0
+%if mmsize == 16
+    pmovsxwd   m1, [dctq+8]
+    pmaddwd    m1, m8
+%endif
+%endif
+%if mmsize == 32
+    vextracti128 xm1, m0, 1
+%endif
+    psubd     xm2, xm0, xm1
+    paddd     xm0, xm1
+    shufps    xm1, xm0, xm2, q3131
+    shufps    xm0, xm2, q2020
+    psubd     xm2, xm0, xm1
+    paddd     xm0, xm1
+    shufps    xm1, xm0, xm2, q3131
+    shufps    xm0, xm2, q2020
+    paddd     xm0, [pd_2080]
+    psubd     xm2, xm0, xm1      ; 6 4 7 5
+    paddd     xm0, xm1           ; 0 2 1 3
+    pcmpeqb    m9, m9
+    pslld      m9, 12
+    xor       nzd, nzd
+%if mmsize == 32
+    vinserti128 m0, m0, xm2, 1
+    ptest      m0, m9
+%else
+    por        m6, m0, m2
+    ptest      m6, m9
+%endif
+    jz .ret                      ; if the DC coefficients already round to zero, terminate early
+    mova       m1, m0
+%if mmsize == 16
+    mova       m3, m2
+%endif
+    lea       colq, [chroma422_dc_col+7*32]
+    mov       idxd, 7
+.outer_loop:
+%if HIGH_BIT_DEPTH
+    mov       lvld, [dctq+4*idxq]
+%else
+    movsx     lvld, word [dctq+2*idxq]
+%endif
+    test      lvld, lvld
+    jz .next
+    movd      xm6, lvld
+%if mmsize == 32
+    vpbroadcastd m6, xm6
+%else
+    pshufd     m6, m6, 0
+%endif
+    psignd     m4, m8, m6        ; sign(level) * dmf
+%if mmsize == 16
+    psignd     m5, m4, [colq+16]
+%endif
+    psignd     m4, [colq]
+    mov       sgnd, lvld
+    sar       sgnd, 31
+    or        sgnd, 1
+.inner_loop:
+    psubd      m1, m4            ; coeff -= sign
+%if mmsize == 16
+    psubd      m3, m5
+    pxor       m6, m0, m1
+    pxor       m7, m2, m3
+    por        m6, m7
+%else
+    pxor       m6, m0, m1
+%endif
+    ptest      m6, m9
+    jz .round_coeff
+    paddd      m1, m4            ; coeff += sign
+%if mmsize == 16
+    paddd      m3, m5
+%endif
+    mov       nzd, 1
+.next:
+    sub       colq, 32
+    dec       idxd
+    jge .outer_loop
+.ret:
+    RET
+.round_coeff:
+    sub       lvld, sgnd
+%if HIGH_BIT_DEPTH
+    mov [dctq+4*idxq], lvld
+%else
+    mov [dctq+2*idxq], lvlw
+%endif
+    jnz .inner_loop
+    jmp .next
+%endmacro
+
+%if ARCH_X86_64
+INIT_XMM sse4
+OPTIMIZE_CHROMA_2x4_DC
+INIT_XMM avx
+OPTIMIZE_CHROMA_2x4_DC
+INIT_YMM avx2
+OPTIMIZE_CHROMA_2x4_DC
+%endif
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------

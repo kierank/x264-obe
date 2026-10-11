@@ -2329,7 +2329,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                     int max = X264_MIN( i, PIXEL_MAX*16 ); \
                     for( int j = 0; j < size; j++ ) \
                         dct1[j] = rand()%(max*2+1) - max; \
-                    for( int j = 0; i <= size; j += 4 ) \
+                    for( int j = 0; j < size; j += 4 ) \
                         qf_c.quant_2x2_dc( &dct1[j], h->quant4_mf[CQM_4IC][qpdc][0]>>1, h->quant4_bias[CQM_4IC][qpdc][0]>>1 ); \
                     memcpy( dct2, dct1, size*sizeof(dctcoef) ); \
                     res_c   = call_c1( qf_c.optname, dct1, dmf ); \
@@ -2343,6 +2343,26 @@ static int check_quant( int cpu_ref, int cpu_new )
                     call_a2( qf_a.optname, dct2, dmf ); \
                     if( i >= PIXEL_MAX*16 ) \
                         break; \
+                } \
+                for( int k = 0; k <= 3*size+8; k++ ) \
+                { \
+                    int res_c, res_asm; \
+                    memset( dct1, 0, size*sizeof(dctcoef) ); \
+                    if( k < 2*size ) \
+                        dct1[k>>1] = (k&1 ? -1 : 1) * (1 + rand()%3); \
+                    else if( k < 3*size ) \
+                        dct1[k-2*size] = (rand()&1 ? -1 : 1) * PIXEL_MAX*16; \
+                    else if( k > 3*size ) \
+                        for( int j = 0; j < size; j++ ) \
+                            dct1[j] = rand()%5 - 2; \
+                    memcpy( dct2, dct1, size*sizeof(dctcoef) ); \
+                    res_c   = call_c1( qf_c.optname, dct1, dmf ); \
+                    res_asm = call_a1( qf_a.optname, dct2, dmf ); \
+                    if( res_c != res_asm || memcmp( dct1, dct2, size*sizeof(dctcoef) ) ) \
+                    { \
+                        oks[2] = 0; \
+                        fprintf( stderr, #optname "(qp=%d, edge=%d, res_c=%d, res_asm=%d): [FAILED]\n", qp, k, res_c, res_asm ); \
+                    } \
                 } \
             } \
         }
