@@ -563,6 +563,23 @@ NOINLINE void x264_copy_column8( pixel *dst, pixel *src )
         dst[i*FDEC_STRIDE] = src[i*FDEC_STRIDE];
 }
 
+static void ALWAYS_INLINE x264_macroblock_load_left_chroma( pixel *dstu, pixel *dstv, pixel *src, int i_stride, int height )
+{
+    /* U and V are adjacent in the interleaved plane: one load per row. */
+    for( int j = 0; j < height; j++ )
+    {
+#if HIGH_BIT_DEPTH
+        x264_union32_t uv = { M32( &src[j*i_stride] ) };
+        dstu[j*FDEC_STRIDE] = uv.b[0];
+        dstv[j*FDEC_STRIDE] = uv.b[1];
+#else
+        x264_union16_t uv = { M16( &src[j*i_stride] ) };
+        dstu[j*FDEC_STRIDE] = uv.c[0];
+        dstv[j*FDEC_STRIDE] = uv.c[1];
+#endif
+    }
+}
+
 static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )
 {
     int mb_interlaced = b_mbaff && MB_INTERLACED;
@@ -598,14 +615,23 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     }
     if( b_mbaff || h->mb.b_reencode_mb )
     {
-        for( int j = 0; j < height; j++ )
-            if( b_chroma )
-            {
-                h->mb.pic.p_fdec[1][-1+j*FDEC_STRIDE] = plane_fdec[-2+j*i_stride2];
-                h->mb.pic.p_fdec[2][-1+j*FDEC_STRIDE] = plane_fdec[-1+j*i_stride2];
-            }
+        /* Local pointers: 8-bit pixel stores may alias h->mb.pic.p_fdec[]. */
+        if( b_chroma )
+        {
+            pixel *dstu = h->mb.pic.p_fdec[1]-1;
+            pixel *dstv = h->mb.pic.p_fdec[2]-1;
+            /* Constant heights so the copy unrolls. */
+            if( CHROMA_V_SHIFT )
+                x264_macroblock_load_left_chroma( dstu, dstv, plane_fdec-2, i_stride2, 8 );
             else
-                h->mb.pic.p_fdec[i][-1+j*FDEC_STRIDE] = plane_fdec[-1+j*i_stride2];
+                x264_macroblock_load_left_chroma( dstu, dstv, plane_fdec-2, i_stride2, 16 );
+        }
+        else
+        {
+            pixel *dst = h->mb.pic.p_fdec[i]-1;
+            for( int j = 0; j < 16; j++ )
+                dst[j*FDEC_STRIDE] = plane_fdec[-1+j*i_stride2];
+        }
     }
     pixel *plane_src, **filtered_src;
     for( int j = 0; j < h->mb.pic.i_fref[0]; j++ )
