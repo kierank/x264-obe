@@ -1491,6 +1491,15 @@ x264_t *x264_encoder_open( x264_param_t *param )
         if( PARAM_INTERLACED )
             x264_log( h, X264_LOG_INFO, "bd-exp: vsad bias %d fieldmul %d/16 chroma %d/16\n", h->mb.i_exp_vsad_bias, h->mb.i_exp_vsad_fieldmul, h->mb.i_exp_vsad_chroma );
     }
+    {
+        /* bd-alg knobs, all default 0 (= speed-next):
+         * X264_EXP_ALG_RDBOUND=1 ends intra analysis under mbrd at the bound past
+         * which x264_intra_rd would drop the mode anyway */
+        const char *e = getenv( "X264_EXP_ALG_RDBOUND" );
+        h->exp.i_alg_rdbound = e ? atoi( e ) : 0;
+        if( h->exp.i_alg_rdbound )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d\n", h->exp.i_alg_rdbound );
+    }
 
     /* Init frames. */
     if( h->param.i_bframe_adaptive == X264_B_ADAPT_TRELLIS && !h->param.rc.b_stat_read )

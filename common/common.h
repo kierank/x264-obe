@@ -737,6 +737,13 @@ struct x264_t
 
     uint8_t luma2chroma_pixel[7]; /* Subsampled pixel size */
 
+    /* bd-alg: X264_EXP_ALG_* knobs, read once in x264_encoder_open (0 = off).
+     * Outside the ranges the thread syncs copy, so each thread keeps its own. */
+    struct
+    {
+        int     i_alg_rdbound;
+    } exp;
+
     /* Buffers that are allocated per-thread even in sliced threads. */
     void *scratch_buffer; /* for any temporary storage that doesn't want repeated malloc */
     void *scratch_buffer2; /* if the first one's already in use */
