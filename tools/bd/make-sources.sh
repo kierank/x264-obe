@@ -12,9 +12,9 @@ LDV=https://media.xiph.org/ldv/pub/test_sequences/1080i
 DERF=https://media.xiph.org/video/derf/y4m
 for s in parkrun stockholm mobcal shields; do
     [ -f 1080i25_${s}_ter.yuv ] || curl -fL -o 1080i25_${s}_ter.yuv $LDV/1080i25_${s}_ter.yuv
-    # drop the grey frames: keep frames whose luma isn't flat mid-grey
+    # drop the grey frames: flat mid-grey has YMAX near 128, content has highlights
     ffmpeg -nostdin -loglevel error -f rawvideo -pix_fmt yuv420p -s 1920x1080 -r 25 -i 1080i25_${s}_ter.yuv \
-        -vf "signalstats,metadata=mode=select:key=lavfi.signalstats.YDIF:value=0:function=greater,setfield=tff" \
+        -vf "signalstats,metadata=mode=select:key=lavfi.signalstats.YMAX:value=160:function=greater,setfield=tff" \
         -frames:v 250 -fps_mode passthrough -y ${s}_1080i25.y4m
 done
 for s in crowd_run park_joy ducks_take_off in_to_tree old_town_cross; do
