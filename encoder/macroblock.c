@@ -258,7 +258,7 @@ static ALWAYS_INLINE int x264_mb_optimize_chroma_dc( x264_t *h, dctcoef *dct_dc,
 
 static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter, int i_qp, int chroma422 )
 {
-    int nz, nz_dc;
+    int nz, nz_dc = 0;
     int b_decimate = b_inter && h->mb.b_dct_decimate;
     int (*dequant_mf)[16] = h->dequant4_mf[CQM_4IC + b_inter];
     int i_qp_dc = i_qp + 3*chroma422;
