@@ -1259,7 +1259,9 @@ static int check_mc( int cpu_ref, int cpu_new )
 #define MC_TEST_CHROMA( w, h ) \
         if( mc_a.mc_chroma != mc_ref.mc_chroma ) \
         { \
-            set_func_name( "mc_chroma_%dx%d", w, h ); \
+            /* 1-D and copy cases are separate asm paths: bench them apart */ \
+            set_func_name( "mc_chroma_%dx%d%s", w, h, \
+                           !(dx&7) ? (!(dy&7) ? "_copy" : "_v") : (!(dy&7) ? "_h" : "") ); \
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
@@ -1299,12 +1301,16 @@ static int check_mc( int cpu_ref, int cpu_new )
     for( int dy = -1; dy < 9; dy++ )
         for( int dx = -128; dx < 128; dx++ )
         {
-            if( rand()&15 ) continue;
+            /* always test dx&7 == 0 or dy&7 == 0 */
+            if( (rand()&15) && (dx&7) && (dy&7) ) continue;
+            MC_TEST_CHROMA( 8, 16 );
             MC_TEST_CHROMA( 8, 8 );
             MC_TEST_CHROMA( 8, 4 );
+            MC_TEST_CHROMA( 4, 16 );
             MC_TEST_CHROMA( 4, 8 );
             MC_TEST_CHROMA( 4, 4 );
             MC_TEST_CHROMA( 4, 2 );
+            MC_TEST_CHROMA( 2, 8 );
             MC_TEST_CHROMA( 2, 4 );
             MC_TEST_CHROMA( 2, 2 );
         }

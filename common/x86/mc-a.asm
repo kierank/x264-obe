@@ -42,6 +42,10 @@ ch_shuf_adj: times 8 db 0
 chroma_deint_shuf: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
 chroma_deint_perm: dw  0, 2, 4, 6, 8,10,12,14, 16,18,20,22,24,26,28,30
                    dw  1, 3, 5, 7, 9,11,13,15, 17,19,21,23,25,27,29,31
+%if HIGH_BIT_DEPTH == 0
+mcc_deint_b: times 2 db 0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15
+mcc_deint_w: times 2 db 0,4,8,12,-1,-1,-1,-1,2,6,10,14,-1,-1,-1,-1
+%endif
 sq_1: times 1 dq 1
 
 SECTION .text
@@ -1996,6 +2000,12 @@ cglobal mc_chroma
     MC_CHROMA_START 10
     and       r5d, 7
     and       t2d, 7
+%if cpuflag(avx2) && ARCH_X86_64
+    mov       t0d, r5d
+    imul      t0d, t2d
+    test      t0d, t0d
+    jz .mc1d
+%endif
     mov       t0d, r5d
     shl       t0d, 8
     sub       t0d, r5d
@@ -2191,6 +2201,78 @@ cglobal mc_chroma
     sub       r5d, 2
     jg .loop8
     RET
+%if cpuflag(avx2) && ARCH_X86_64
+; dx or dy is 0: (8*(8-d)*A + 8*d*B + 32) >> 6, d = dx+dy, B = A one pel
+; right (dy == 0) or one row down (dx == 0). Same sum as the 2D filter.
+.mc1d:
+    lea       t0d, [r5+t2]
+    lea        t1, [r3+2]
+    lea        t2, [r3+r4]
+    test      r5d, r5d
+    cmovz      t1, t2
+    imul      t0d, 255*8
+    add       t0d, 64              ; bytes 8*(8-d), 8*d
+    movd      xm7, t0d
+    vpbroadcastw m7, xm7
+    mova       m8, [pw_512]
+    movifnidn  r0, r0mp
+    movifnidn  r1, r1mp
+    movifnidn r2d, r2m
+    movifnidn r5d, r8m
+    cmp dword r7m, 4
+    jg .mc1d_w8
+    mova       m6, [mcc_deint_w]
+.mc1d_w4:
+    movq      xm0, [r3]
+    vpbroadcastq m2, [r3+r4]
+    vpblendd   m0, m0, m2, 0xf0
+    movq      xm1, [t1]
+    vpbroadcastq m2, [t1+r4]
+    vpblendd   m1, m1, m2, 0xf0
+    punpcklbw  m0, m1
+    pmaddubsw  m0, m7
+    pmulhrsw   m0, m8
+    pshufb     m0, m6
+    vextracti128 xm1, m0, 1
+    movd     [r0], xm0
+    pextrd   [r1], xm0, 2
+    movd  [r0+r2], xm1
+    pextrd [r1+r2], xm1, 2
+    lea        r3, [r3+r4*2]
+    lea        t1, [t1+r4*2]
+    lea        r0, [r0+r2*2]
+    lea        r1, [r1+r2*2]
+    sub       r5d, 2
+    jg .mc1d_w4
+    RET
+.mc1d_w8:
+    mova       m6, [mcc_deint_b]
+.mc1d_loop8:
+    movu      xm0, [r3]
+    vinserti128 m0, m0, [r3+r4], 1
+    movu      xm1, [t1]
+    vinserti128 m1, m1, [t1+r4], 1
+    punpcklbw  m2, m0, m1
+    punpckhbw  m0, m1
+    pmaddubsw  m2, m7
+    pmaddubsw  m0, m7
+    pmulhrsw   m2, m8
+    pmulhrsw   m0, m8
+    packuswb   m2, m0
+    pshufb     m2, m6
+    vextracti128 xm0, m2, 1
+    movq     [r0], xm2
+    movhps   [r1], xm2
+    movq  [r0+r2], xm0
+    movhps [r1+r2], xm0
+    lea        r3, [r3+r4*2]
+    lea        t1, [t1+r4*2]
+    lea        r0, [r0+r2*2]
+    lea        r1, [r1+r2*2]
+    sub       r5d, 2
+    jg .mc1d_loop8
+    RET
+%endif
 %endmacro
 
 %if HIGH_BIT_DEPTH
@@ -2265,6 +2347,12 @@ cglobal mc_chroma
     add           r3, t0              ; src += (dx>>3) + (dy>>3) * src_stride
     and           r5d, 7
     and           t2d, 7
+%if mmsize == 32
+    mov           t0d, r5d
+    imul          t0d, t2d
+    test          t0d, t0d
+    jz .mc1d
+%endif
     mov           t0d, 8
     sub           t0d, r5d
     MCC_HBD_BCASTW 8, t0d            ; 8-dx
@@ -2385,6 +2473,80 @@ cglobal mc_chroma
     lea           r3, [r3+r4*2]
     sub           r5d, 2
     jg .loop8
+    RET
+%endif
+
+%if mmsize == 32
+; dx or dy is 0: A + ((d*(B-A) + 4) >> 3), d = dx+dy, B = A one pel right
+; (dy == 0) or one row down (dx == 0). Equals the 2D filter; d == 0 gives A.
+.mc1d:
+    lea           t0d, [r5+t2]
+    lea            t1, [r3+4]
+    lea            t2, [r3+r4]
+    test          r5d, r5d
+    cmovz          t1, t2
+    MCC_HBD_BCASTW 8, t0d             ; d
+    vpbroadcastw  m12, [pw_4]
+    VBROADCASTI128 m14, [chroma_deint_shuf]
+    movifnidn     r0, r0mp
+    movifnidn     r1, r1mp
+    movifnidn     r2, r2mp
+    FIX_STRIDES   r2
+    mov           r5d, r8m
+    cmp dword     r7m, 4
+    jg .mc1d_w8
+.mc1d_w4:
+    movu          xm0, [r3]
+    vinserti128    m0, m0, [r3+r4], 1
+    movu          xm1, [t1]
+    vinserti128    m1, m1, [t1+r4], 1
+    psubw          m1, m0
+    pmullw         m1, m8
+    paddw          m1, m12
+    psraw          m1, 3
+    paddw          m0, m1
+    pshufb         m0, m14             ; per row: u0-u3, v0-v3
+    vextracti128  xm1, m0, 1
+    movq        [r0], xm0
+    movhps      [r1], xm0
+    movq     [r0+r2], xm1
+    movhps   [r1+r2], xm1
+    lea           r0, [r0+r2*2]
+    lea           r1, [r1+r2*2]
+    lea           r3, [r3+r4*2]
+    lea           t1, [t1+r4*2]
+    sub           r5d, 2
+    jg .mc1d_w4
+    RET
+.mc1d_w8:
+    movu           m0, [r3]
+    movu           m1, [t1]
+    movu           m2, [r3+r4]
+    movu           m3, [t1+r4]
+    psubw          m1, m0
+    psubw          m3, m2
+    pmullw         m1, m8
+    pmullw         m3, m8
+    paddw          m1, m12
+    paddw          m3, m12
+    psraw          m1, 3
+    psraw          m3, 3
+    paddw          m0, m1
+    paddw          m2, m3
+    pshufb         m0, m14
+    pshufb         m2, m14
+    vpermq         m0, m0, q3120
+    vpermq         m2, m2, q3120
+    movu        [r0], xm0
+    vextracti128 [r1], m0, 1
+    movu     [r0+r2], xm2
+    vextracti128 [r1+r2], m2, 1
+    lea           r0, [r0+r2*2]
+    lea           r1, [r1+r2*2]
+    lea           r3, [r3+r4*2]
+    lea           t1, [t1+r4*2]
+    sub           r5d, 2
+    jg .mc1d_w8
     RET
 %endif
 %endmacro
