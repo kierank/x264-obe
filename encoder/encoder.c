@@ -1071,7 +1071,6 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     h->param.rc.f_aq_strength = x264_clip3f( h->param.rc.f_aq_strength, 0, 3 );
     if( h->param.rc.f_aq_strength == 0 )
         h->param.rc.i_aq_mode = 0;
-    h->param.rc.i_aq_mbaff = PARAM_INTERLACED ? x264_clip3( h->param.rc.i_aq_mbaff, 0, 2 ) : 0;
 
     if( h->param.i_log_level < X264_LOG_INFO )
     {

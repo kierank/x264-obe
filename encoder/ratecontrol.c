@@ -268,7 +268,7 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
      * sure no reordering goes on. */
     uint32_t var;
     x264_prefetch_fenc( h, frame, mb_x, mb_y );
-    if( h->mb.b_adaptive_mbaff && !h->param.rc.i_aq_mbaff )
+    if( h->mb.b_adaptive_mbaff )
     {
         /* We don't know the super-MB mode we're going to pick yet, so
          * simply try both and pick the lower of the two. */
@@ -291,16 +291,14 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
     }
     else
     {
-        /* --aq-mbaff 1/2: frame or field energy only */
-        int b_field = h->mb.b_adaptive_mbaff ? h->param.rc.i_aq_mbaff == 2 : PARAM_INTERLACED;
-        var  = ac_energy_plane( h, mb_x, mb_y, frame, 0, 0, b_field, 1 );
+        var  = ac_energy_plane( h, mb_x, mb_y, frame, 0, 0, PARAM_INTERLACED, 1 );
         if( CHROMA444 )
         {
-            var += ac_energy_plane( h, mb_x, mb_y, frame, 1, 0, b_field, 1 );
-            var += ac_energy_plane( h, mb_x, mb_y, frame, 2, 0, b_field, 1 );
+            var += ac_energy_plane( h, mb_x, mb_y, frame, 1, 0, PARAM_INTERLACED, 1 );
+            var += ac_energy_plane( h, mb_x, mb_y, frame, 2, 0, PARAM_INTERLACED, 1 );
         }
         else
-            var += ac_energy_plane( h, mb_x, mb_y, frame, 1, 1, b_field, 1 );
+            var += ac_energy_plane( h, mb_x, mb_y, frame, 1, 1, PARAM_INTERLACED, 1 );
     }
     x264_emms();
     return var;

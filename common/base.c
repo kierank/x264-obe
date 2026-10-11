@@ -1232,8 +1232,6 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->rc.i_aq_mode = atoi(value);
     OPT("aq-strength")
         p->rc.f_aq_strength = atof(value);
-    OPT("aq-mbaff")
-        p->rc.i_aq_mbaff = atoi(value);
     OPT("pass")
     {
         int pass = x264_clip3( atoi(value), 0, 3 );
@@ -1451,8 +1449,6 @@ char *x264_param2string( x264_param_t *p, int b_res )
         s += sprintf( s, " aq=%d", p->rc.i_aq_mode );
         if( p->rc.i_aq_mode )
             s += sprintf( s, ":%.2f", p->rc.f_aq_strength );
-        if( p->rc.i_aq_mbaff )
-            s += sprintf( s, " aq_mbaff=%d", p->rc.i_aq_mbaff );
         if( p->rc.psz_zones )
             s += sprintf( s, " zones=%s", p->rc.psz_zones );
         else if( p->rc.i_zones )
