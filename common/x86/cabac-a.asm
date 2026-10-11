@@ -761,6 +761,42 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 ; bypass and putbyte are inlined.
 ;-----------------------------------------------------------------------------
 
+; in: flags from the queue update; clobbers r1, r4-r6
+; the no-flush path falls through, the flush is a per-site stub after RET
+%macro PUTBYTE 0
+    jge .pb %+ pb_count
+.pbr %+ pb_count:
+    %assign pb_count pb_count+1
+%endmacro
+
+; one stub per site: no 0xff byte and nothing outstanding inline, else .putbyte_slow
+%macro PUTBYTE_STUBS 0
+%assign pb_i 0
+%rep pb_count
+.pb %+ pb_i:
+    lea     r4d, [queueq+10]
+    shrx    r1d, lowd, r4d          ; out
+    bzhi   lowd, lowd, r4d
+    sub  queued, 8
+    mov      r6, cbm
+    cmp     r1b, 0xff
+    je .pbs %+ pb_i
+    cmp dword [r6+cb.bytes_outstanding], 0
+    jne .pbs %+ pb_i
+    mov      r5, [r6+cb.p]
+    rorx    r4d, r1d, 8             ; carry
+    add  [r5-1], r4b
+    mov    [r5], r1b
+    inc      r5
+    mov [r6+cb.p], r5
+    jmp .pbr %+ pb_i
+.pbs %+ pb_i:
+    call .putbyte_slow
+    jmp .pbr %+ pb_i
+%assign pb_i pb_i+1
+%endrep
+%endmacro
+
 ; %1 = bin, %2 = state address (else the state is in r2d)
 ; in: r2d = state if no %2; out: r2d = next state
 ; clobbers r1, r4-r6
@@ -797,9 +833,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     shlx ranged, ranged, r5d
     shlx   lowd, lowd, r5d
     add  queued, r5d
-    jl %%end
-    call .putbyte
-%%end:
+    PUTBYTE
 %endmacro
 
 ; %1 = 8x8 mode, %2 = count_m1
@@ -871,6 +905,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     %define rangeq r9
     %define queued r10d
     %define queueq r10
+    %assign pb_count 0
 
     shl     r1d, 4
     lea     r12, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]
@@ -961,9 +996,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     shlx   lowd, lowd, r11d
     add    lowd, r1d
     add  queued, r11d
-    jl .ue_next
-    call .putbyte
-.ue_next:
+    PUTBYTE
     mov    r11d, 8
     test   r14d, r14d
     jg .ue_loop
@@ -976,9 +1009,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     and     r1d, ranged
     lea    lowd, [lowq*2+r1]
     inc  queued
-    jl .sign_end
-    call .putbyte
-.sign_end:
+    PUTBYTE
     dec    r13d
     jge .level_loop
     mov      r6, cbm
@@ -987,13 +1018,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     mov [r6+cb.queue], queued
     RET
 
-; in: queue >= 0; clobbers r1, r4-r6
-.putbyte:
-    lea     r4d, [queueq+10]
-    shrx    r1d, lowd, r4d          ; out
-    bzhi   lowd, lowd, r4d
-    sub  queued, 8
-    mov      r6, [rsp+gprsize]      ; cbm, above our return address
+; in: r1d = out, r6 = cb; clobbers r4-r6
+.putbyte_slow:
     cmp     r1b, 0xff
     je .postpone
     mov     r4d, [r6+cb.bytes_outstanding]
@@ -1015,6 +1041,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 .postpone:
     inc dword [r6+cb.bytes_outstanding]
     ret
+
+    PUTBYTE_STUBS
 %endmacro
 
 %if ARCH_X86_64
