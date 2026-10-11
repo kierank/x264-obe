@@ -1884,11 +1884,15 @@ DEBLOCK_LUMA_INTRA v8
 %endif ; !HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH
-; in: %1=p0, %2=q0, %3=p1, %4=q1, %5=mask, %6=tmp, %7=tmp
+; in: %1=p0, %2=q0, %3=p1, %4=q1, %5=mask, %6=tmp, %7=tmp, %8=pw_2 (optional)
 ; out: %1=p0', %2=q0'
-%macro CHROMA_DEBLOCK_P0_Q0_INTRA 7
+%macro CHROMA_DEBLOCK_P0_Q0_INTRA 7-8
+%if %0 == 8
+    paddw   %6, %8, %3
+%else
     mova    %6, [pw_2]
     paddw   %6, %3
+%endif
     paddw   %6, %4
     paddw   %7, %6, %2
     paddw   %6, %1
@@ -2165,6 +2169,175 @@ INIT_XMM sse2
 DEBLOCK_CHROMA
 INIT_XMM avx
 DEBLOCK_CHROMA
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 10-bit chroma, AVX2. h does 8 rows per pass with rows 0-3 in lane 0 and
+; rows 4-7 in lane 1, so each lane has the xmm layout (a row's u,v pair per
+; dword); v does the whole 16 word edge at once.
+;-----------------------------------------------------------------------------
+; in: %1=3*stride, %2=r0+4*stride
+; out: m0=p1, m1=p0, m2=q0, m3=q1
+%macro CHROMA_H_LOAD_AVX2 2
+    movu         xm0, [r0-8]           ; p1 p1 p0 p0 q0 q0 q1 q1
+    movu         xm1, [r0+r1-8]
+    movu         xm2, [r0+r1*2-8]
+    movu         xm3, [r0+%1-8]
+    vinserti128   m0, m0, [%2-8], 1
+    vinserti128   m1, m1, [%2+r1-8], 1
+    vinserti128   m2, m2, [%2+r1*2-8], 1
+    vinserti128   m3, m3, [%2+%1-8], 1
+    TRANSPOSE4x4D 0, 1, 2, 3, 7
+%endmacro
+
+; clobbers: m1, m2, m3
+%macro CHROMA_H_STORE_AVX2 2
+    SBUTTERFLY   dq, 1, 2, 3
+    movq         [r0-4], xm1
+    movhps       [r0+r1-4], xm1
+    movq         [r0+r1*2-4], xm2
+    movhps       [r0+%1-4], xm2
+    vextracti128 xm1, m1, 1
+    vextracti128 xm2, m2, 1
+    movq         [%2-4], xm1
+    movhps       [%2+r1-4], xm1
+    movq         [%2+r1*2-4], xm2
+    movhps       [%2+%1-4], xm2
+%endmacro
+
+; out: m4=alpha, m5=beta
+%macro CHROMA_AB_AVX2 0
+    movd         xm4, r2d
+    movd         xm5, r3d
+    vpbroadcastw  m4, xm4
+    vpbroadcastw  m5, xm5
+%endmacro
+
+INIT_YMM avx2
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_chroma, 5,5,8
+    add          r1, r1
+    CHROMA_AB_AVX2
+    lea          r2, [r1*3]
+    sub          r0, r1
+    sub          r0, r1
+    movu         m0, [r0]      ; p1
+    movu         m1, [r0+r1]   ; p0
+    movu         m2, [r0+r1*2] ; q0
+    movu         m3, [r0+r2]   ; q1
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m4
+    LOAD_TC      m6, r4
+    pxor         m4, m4
+    pmaxsw       m6, m4
+    pand         m7, m6
+    DEBLOCK_P0_Q0 m1, m2, m0, m3, m7, m5, m6
+    movu    [r0+r1], m1
+    movu  [r0+r1*2], m2
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma, 5,7,8
+    add          r1, r1
+    CHROMA_AB_AVX2
+    lea          r5, [r1*3]
+    lea          r6, [r0+r1*4]
+    CHROMA_H_LOAD_AVX2 r5, r6
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m4
+    LOAD_TC      m6, r4        ; tc0[i] covers 2 rows
+    pxor         m4, m4
+    pmaxsw       m6, m4
+    pand         m7, m6
+    DEBLOCK_P0_Q0 m1, m2, m0, m3, m7, m5, m6
+    CHROMA_H_STORE_AVX2 r5, r6
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422, 5,7,11
+    add          r1, r1
+    CHROMA_AB_AVX2
+    LOAD_TC      m8, r4        ; qword i = tc0[i]
+    pxor         m6, m6
+    pmaxsw       m8, m6
+    vpermq       m9, m8, q3322 ; rows 8-11 | 12-15
+    vpermq       m8, m8, q1100 ; rows 0-3 | 4-7
+    lea          r5, [r1*3]
+    lea          r6, [r0+r1*4]
+    mov          r4d, 2
+.loop:
+    CHROMA_H_LOAD_AVX2 r5, r6
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m10
+    pand         m7, m8
+    DEBLOCK_P0_Q0 m1, m2, m0, m3, m7, m6, m10
+    CHROMA_H_STORE_AVX2 r5, r6
+    lea          r0, [r0+r1*8]
+    lea          r6, [r6+r1*8]
+    mova         m8, m9
+    dec          r4d
+    jg .loop
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_chroma_intra, 4,4,8
+    add          r1, r1
+    CHROMA_AB_AVX2
+    lea          r2, [r1*3]
+    sub          r0, r1
+    sub          r0, r1
+    movu         m0, [r0]      ; p1
+    movu         m1, [r0+r1]   ; p0
+    movu         m2, [r0+r1*2] ; q0
+    movu         m3, [r0+r2]   ; q1
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m4
+    vpbroadcastd m4, [pw_2]
+    CHROMA_DEBLOCK_P0_Q0_INTRA m1, m2, m0, m3, m7, m5, m6, m4
+    movu    [r0+r1], m1
+    movu  [r0+r1*2], m2
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_intra, 4,6,8
+    add          r1, r1
+    CHROMA_AB_AVX2
+    lea          r4, [r1*3]
+    lea          r5, [r0+r1*4]
+    CHROMA_H_LOAD_AVX2 r4, r5
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m4
+    vpbroadcastd m4, [pw_2]
+    CHROMA_DEBLOCK_P0_Q0_INTRA m1, m2, m0, m3, m7, m5, m6, m4
+    CHROMA_H_STORE_AVX2 r4, r5
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422_intra, 4,6,10
+    add          r1, r1
+    CHROMA_AB_AVX2
+    vpbroadcastd m8, [pw_2]
+    lea          r4, [r1*3]
+    lea          r5, [r0+r1*4]
+    mov          r2d, 2
+.loop:
+    CHROMA_H_LOAD_AVX2 r4, r5
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m9
+    CHROMA_DEBLOCK_P0_Q0_INTRA m1, m2, m0, m3, m7, m6, m9, m8
+    CHROMA_H_STORE_AVX2 r4, r5
+    lea          r0, [r0+r1*8]
+    lea          r5, [r5+r1*8]
+    dec          r2d
+    jg .loop
+    RET
+%endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
