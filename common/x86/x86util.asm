@@ -536,6 +536,11 @@
     psll%1  m%4, 16
     pblendw m%4, m%3, q1111
     SWAP     %3, %5
+%elif cpuflag(avx2)
+    pblendw m%5, m%3, m%4, q2222 ; x0 y1
+    pblendw m%4, m%4, m%3, q2222 ; y0 x1
+    pshufb  m%4, [transd_rot16] ; x1 y0
+    SWAP     %3, %5
 %else
 %if avx_enabled
     pblendw m%5, m%3, m%4, q2222

@@ -34,6 +34,7 @@
 SECTION_RODATA 32
 var_shuf_avx512: db 0,-1, 1,-1, 2,-1, 3,-1, 4,-1, 5,-1, 6,-1, 7,-1
                  db 8,-1, 9,-1,10,-1,11,-1,12,-1,13,-1,14,-1,15,-1
+transd_rot16: times 2 db 2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13
 hmul_16p:  times 16 db 1
            times 8 db 1, -1
 hmul_8p:   times 8 db 1
