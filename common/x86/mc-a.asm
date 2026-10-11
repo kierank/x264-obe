@@ -249,6 +249,48 @@ INIT_XMM sse2
 AVG_WEIGHT 4,  8
 AVG_WEIGHT 8,  8
 AVG_WEIGHT 16, 8
+
+; packusdw clips negative sums to 0, pminuw clips the top
+%macro BIWEIGHT_AVX2 0 ; m0 = src1, m1 = src2 -> m0
+    punpckhwd    m2, m0, m1
+    punpcklwd    m0, m1
+    pmaddwd      m2, m3
+    pmaddwd      m0, m3
+    paddd        m2, m4
+    paddd        m0, m4
+    psrad        m2, 6
+    psrad        m0, 6
+    packusdw     m0, m2
+    pminuw       m0, m5
+%endmacro
+
+%macro BIWEIGHT_START_AVX2 0
+    movzx       t6d, word r6m
+    mov         t7d, 64
+    sub         t7d, t6d
+    shl         t7d, 16
+    add         t6d, t7d
+    movd        xm3, t6d
+    vpbroadcastd  m3, xm3
+    vpbroadcastd  m4, [pd_32]
+    mova          m5, [pw_pixel_max]
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_avg_weight_w16
+    BIWEIGHT_START_AVX2
+    AVG_START 6
+.height_loop:
+    movu          m0, [t2]
+    movu          m1, [t4]
+    BIWEIGHT_AVX2
+    movu        [t0], m0
+    movu          m0, [t2+t3*2]
+    movu          m1, [t4+t5*2]
+    BIWEIGHT_AVX2
+    movu  [t0+t1*2], m0
+    AVG_END
+
 %else ;!HIGH_BIT_DEPTH
 INIT_XMM sse2
 AVG_WEIGHT 8,  7
@@ -766,6 +808,11 @@ AVGH  8,  8
 AVGH  8,  4
 
 AVG_FUNC 16, movdqu, movdqa
+AVGH  16, 16
+AVGH  16,  8
+
+INIT_YMM avx2
+AVG_FUNC 16, movdqu, movdqu
 AVGH  16, 16
 AVGH  16,  8
 
