@@ -120,6 +120,10 @@ typedef struct
     int b_direct_available;
     int b_early_terminate;
 
+    /* luma cost above which x264_intra_rd() will drop the
+     * intra mode, COST_MAX when unknown */
+    int i_intra_rd_bound;
+
 } x264_mb_analysis_t;
 
 static const uint8_t i_mb_b_cost_table[X264_MBTYPE_MAX] =
@@ -307,6 +311,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
 
     a->b_fast_intra = 0;
     a->b_avoid_topright = 0;
+    a->i_intra_rd_bound = COST_MAX;
     h->mb.i_skip_intra =
         h->mb.b_lossless ? 0 :
         a->i_mbrd ? 2 :
@@ -744,6 +749,18 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         ALIGNED_ARRAY_32( pixel, edge,[36] );
         x264_pixel_cmp_t sa8d = (h->pixf.mbcmp[0] == h->pixf.satd[0]) ? h->pixf.sa8d[PIXEL_8x8] : h->pixf.mbcmp[PIXEL_8x8];
         int i_satd_thresh = a->i_mbrd ? COST_MAX : X264_MIN( i_satd_inter, a->i_satd_i16x16 );
+        /* Not heavily tuned */
+        static const uint8_t i8x8_thresh[11] = { 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6 };
+        /* Stop where x264_intra_rd() would drop i8x8. If i16x16
+         * is above the early return threshold, stop only above that too, so the
+         * extrapolated cost makes the same i4x4 decision as the full cost. */
+        if( a->i_mbrd && a->i_intra_rd_bound < COST_MAX )
+        {
+            int i_ret_thresh = (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2;
+            i_satd_thresh = a->i_intra_rd_bound;
+            if( a->i_satd_i16x16 > i_ret_thresh )
+                i_satd_thresh = X264_MAX( i_satd_thresh, i_ret_thresh );
+        }
 
         // FIXME some bias like in i4x4?
         int i_cost = lambda * 4; /* base predmode costs */
@@ -850,8 +867,6 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             a->i_satd_i8x8 = COST_MAX;
             i_cost = (i_cost * cost_div_fix8[idx]) >> 8;
         }
-        /* Not heavily tuned */
-        static const uint8_t i8x8_thresh[11] = { 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6 };
         if( a->b_early_terminate && X264_MIN(i_cost, a->i_satd_i16x16) > (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2 )
             return;
     }
@@ -865,6 +880,8 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
 
         if( a->b_early_terminate && a->i_mbrd )
             i_satd_thresh = i_satd_thresh * (10-a->b_fast_intra)/8;
+        if( a->i_mbrd && a->i_intra_rd_bound < COST_MAX )
+            i_satd_thresh = X264_MIN( i_satd_thresh, a->i_intra_rd_bound );
 
         if( h->sh.i_type == SLICE_TYPE_B )
             i_cost += lambda * i_mb_b_cost_table[I_4x4];
@@ -2957,6 +2974,15 @@ static inline void x264_mb_analyse_qp_rd( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+/* The luma cost above which x264_intra_rd( h, a, i_rd_thresh )
+ * drops an intra mode whose cost will get i_chroma added, or COST_MAX */
+static int x264_intra_rd_bound( x264_mb_analysis_t *a, int i_rd_thresh, int i_chroma )
+{
+    if( !a->i_mbrd || !a->b_early_terminate )
+        return COST_MAX;
+    return i_rd_thresh - i_chroma - 1;
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3223,6 +3249,9 @@ skip_analysis:
                 }
             }
 
+            /* x264_intra_rd() below gets i_satd_inter * 5/4 + 1,
+             * and x264_mb_analyse_transform_rd() can only lower i_satd_inter */
+            analysis.i_intra_rd_bound = x264_intra_rd_bound( &analysis, i_cost * 5/4 + 1, 0 );
             if( h->mb.b_chroma_me )
             {
                 if( CHROMA444 )
@@ -3233,6 +3262,7 @@ skip_analysis:
                 else
                 {
                     x264_mb_analyse_intra_chroma( h, &analysis );
+                    analysis.i_intra_rd_bound = x264_intra_rd_bound( &analysis, i_cost * 5/4 + 1, analysis.i_satd_chroma );
                     x264_mb_analyse_intra( h, &analysis, i_cost - analysis.i_satd_chroma );
                 }
                 analysis.i_satd_i16x16 += analysis.i_satd_chroma;
@@ -3240,7 +3270,10 @@ skip_analysis:
                 analysis.i_satd_i4x4   += analysis.i_satd_chroma;
             }
             else
+            {
                 x264_mb_analyse_intra( h, &analysis, i_cost );
+            }
+            analysis.i_intra_rd_bound = COST_MAX;
 
             i_satd_inter = i_cost;
             i_satd_intra = X264_MIN3( analysis.i_satd_i16x16,
@@ -3636,6 +3669,9 @@ skip_analysis:
                 h->mb.i_partition = i_partition;
             }
 
+            /* x264_intra_rd() below gets i_satd_inter * 17/16 + 1,
+             * and x264_mb_analyse_transform_rd() can only lower i_satd_inter */
+            analysis.i_intra_rd_bound = x264_intra_rd_bound( &analysis, i_satd_inter * 17/16 + 1, 0 );
             if( h->mb.b_chroma_me )
             {
                 if( CHROMA444 )
@@ -3646,6 +3682,7 @@ skip_analysis:
                 else
                 {
                     x264_mb_analyse_intra_chroma( h, &analysis );
+                    analysis.i_intra_rd_bound = x264_intra_rd_bound( &analysis, i_satd_inter * 17/16 + 1, analysis.i_satd_chroma );
                     x264_mb_analyse_intra( h, &analysis, i_satd_inter - analysis.i_satd_chroma );
                 }
                 analysis.i_satd_i16x16 += analysis.i_satd_chroma;
@@ -3653,7 +3690,10 @@ skip_analysis:
                 analysis.i_satd_i4x4   += analysis.i_satd_chroma;
             }
             else
+            {
                 x264_mb_analyse_intra( h, &analysis, i_satd_inter );
+            }
+            analysis.i_intra_rd_bound = COST_MAX;
 
             if( analysis.i_mbrd )
             {
