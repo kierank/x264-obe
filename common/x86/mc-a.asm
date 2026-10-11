@@ -2351,7 +2351,7 @@ cglobal mc_chroma
     jg .loop8
     RET
 %else
-    ; width 8: one row per ymm
+    ; width 8: one row per ymm, two rows per iteration
     movu           m0, [r3]
     movu           m3, [r3+4]
     pmullw         m0, m8
@@ -2361,19 +2361,29 @@ cglobal mc_chroma
 .loop8:
     movu           m1, [r3]
     movu           m3, [r3+4]
+    movu           m2, [r3+r4]
+    movu           m4, [r3+r4+4]
     pmullw         m1, m8
     pmullw         m3, m9
+    pmullw         m2, m8
+    pmullw         m4, m9
     paddw          m1, m3              ; H of row 1
+    paddw          m2, m4              ; H of row 2
     MCC_HBD_V      0, 1, 3, 3
+    MCC_HBD_V      1, 2, 4, 4
     pshufb         m0, m14             ; u0-u3 v0-v3 | u4-u7 v4-v7
+    pshufb         m1, m14
     vpermq         m0, m0, q3120       ; u0-u7 | v0-v7
+    vpermq         m1, m1, q3120
     movu        [r0], xm0
     vextracti128 [r1], m0, 1
-    mova           m0, m1              ; SWAP would only rename for the code after it
-    add           r0, r2
-    add           r1, r2
-    add           r3, r4
-    dec           r5d
+    movu     [r0+r2], xm1
+    vextracti128 [r1+r2], m1, 1
+    mova           m0, m2              ; SWAP would only rename for the code after it
+    lea           r0, [r0+r2*2]
+    lea           r1, [r1+r2*2]
+    lea           r3, [r3+r4*2]
+    sub           r5d, 2
     jg .loop8
     RET
 %endif
