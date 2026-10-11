@@ -80,6 +80,7 @@ tap2: times 4 dw 20, 20
 tap3: times 4 dw -5,  1
 pw_pad10_16: times 8 dw 10*PIXEL_MAX+16 ; vectors, so what follows stays 16 byte aligned
 pw_pad30_16: times 8 dw 30*PIXEL_MAX+16
+hpel_c_bias: dw 20*PIXEL_MAX+4, 0x7fff-PIXEL_MAX+5*(PIXEL_MAX+1)/8, 0x7fff-PIXEL_MAX, 0, 0, 0, 0, 0 ; v bias for the one-pass c, its clip
 
 pw_0xc000: times 8 dw 0xc000
 pw_31: times 8 dw 31
@@ -486,6 +487,136 @@ cglobal hpel_filter_h, 3,3,11
 
 INIT_YMM avx2
 HPEL_FILTER_HBD
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 10-bit hpel_filter in one pass, 16 pixel ymm chunks: v and h of chunk k+1,
+; then c of chunk k from v in registers (window v[x-2..x+3] by vperm2i128 and
+; palignr). v is kept as v - (20*PIXEL_MAX+4): the bias is 16 mod 32, so the
+; 32x bias in the c sum also rounds and c comes out offset by -5*(PIXEL_MAX+1)/8,
+; undone by the saturating clip. c of the first two and last three columns
+; window past the row (stale buf in the 3-pass), and c is written to a 32
+; pixel multiple (16 in the 3-pass): all left of -4 or right of width+4,
+; which the border expansion overwrites.
+;-----------------------------------------------------------------------------
+%macro HPEL_VH_HBD 2 ; offset, v out
+    mova         m6, [r3+r7+%1]             ; row 0
+    mova         %2, [r8+r7+%1]
+    paddw        %2, [r12+r7+%1]            ; a
+    mova         m4, [r9+r7+%1]
+    paddw        m4, [r11+r7+%1]            ; b
+    paddw        m5, m6, [r10+r7+%1]        ; c
+    HPEL_FILT_HBD %2, m4, m5
+    paddw        m4, %2, m12
+    psubusw      m4, m11
+    psrlw        m4, 5
+    pminsw       m4, m10
+    mova  [r1+r7+%1], m4
+    psubw        %2, m13
+    movu         m4, [r3+r7+%1-4]
+    paddw        m4, [r3+r7+%1+6]           ; a
+    movu         m5, [r3+r7+%1-2]
+    paddw        m5, [r3+r7+%1+4]           ; b
+    paddw        m6, [r3+r7+%1+2]           ; c
+    HPEL_FILT_HBD m4, m5, m6
+    paddw        m4, m12
+    psubusw      m4, m11
+    psrlw        m4, 5
+    pminsw       m4, m10
+    mova  [r0+r7+%1], m4
+%endmacro
+
+%macro HPEL_C_HBD 5 ; offset, v, left window [v(k-1).hi, v.lo] (clobbered), v(k+1), right window out
+    vperm2i128   %5, %2, %4, 0x21
+    palignr      m4, %2, %3, 12             ; v[x-2]
+    palignr      %3, %2, %3, 14             ; v[x-1]
+    pmaddwd      m4, m7
+    pmaddwd      %3, m7
+    pmaddwd      m5, %2, m8
+    paddd        m4, m5
+    palignr      m5, %5, %2, 4              ; v[x+2]
+    palignr      m6, %5, %2, 2              ; v[x+1]
+    pmaddwd      m5, m9
+    pmaddwd      m6, m8
+    paddd        m4, m5                     ; even outputs
+    paddd        %3, m6
+    palignr      m5, %5, %2, 6              ; v[x+3]
+    pmaddwd      m5, m9
+    paddd        %3, m5                     ; odd outputs
+    psrad        m4, 10
+    pslld        %3, 6                      ; odd >> 10 in the high word
+    pblendw      m4, %3, 0xaa
+    paddsw       m4, m14
+    psubusw      m4, m15
+    mova  [r2+r7+%1], m4
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void hpel_filter( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src,
+;                   intptr_t stride, int width, int height, int16_t *buf )
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal hpel_filter, 7,13,16
+    FIX_STRIDES  r4
+    mov         r7d, r3d
+    and         r7d, 31                     ; realign to 32 bytes, as the 3-pass wrapper
+    sub          r0, r7
+    sub          r1, r7
+    sub          r2, r7
+    sub          r3, r7
+    lea         r5d, [r5+r5+r7+63]
+    and         r5d, ~63                    ; bytes, 32 pixel multiple as the 3-pass
+    add          r0, r5
+    add          r1, r5
+    add          r2, r5
+    add          r3, r5
+    neg          r5
+    lea         r10, [r3+r4]
+    lea         r11, [r3+r4*2]
+    lea         r12, [r10+r4*2]
+    mov          r9, r3
+    sub          r9, r4
+    mov          r8, r9
+    sub          r8, r4
+    vpbroadcastd m7, [tap1]
+    vpbroadcastd m8, [tap2]
+    vpbroadcastd m9, [tap3]
+    vpbroadcastw m10, [pw_pixel_max]
+    vpbroadcastw m11, [pad10]
+    vpbroadcastw m12, [pw_pad10_16]
+    vpbroadcastw m13, [hpel_c_bias+0]
+    vpbroadcastw m14, [hpel_c_bias+2]
+    vpbroadcastw m15, [hpel_c_bias+4]
+.loopy:
+    mov          r7, r5
+    HPEL_VH_HBD   0, m0
+    vinserti128  m1, m0, xm0, 1              ; [-, v.lo]: the high lane is used
+    add          r7, 64
+    jge .tail
+.loopx:
+    HPEL_VH_HBD -32, m2
+    HPEL_C_HBD  -64, m0, m1, m2, m3
+    HPEL_VH_HBD   0, m0
+    HPEL_C_HBD  -32, m2, m3, m0, m1
+    add          r7, 64
+    jl .loopx
+.tail:
+    HPEL_VH_HBD -32, m2
+    HPEL_C_HBD  -64, m0, m1, m2, m3
+    HPEL_C_HBD  -32, m2, m3, m2, m1
+    add          r0, r4
+    add          r1, r4
+    add          r2, r4
+    add          r3, r4
+    add          r8, r4
+    add          r9, r4
+    add         r10, r4
+    add         r11, r4
+    add         r12, r4
+    dec         r6d
+    jg .loopy
+    RET
+%endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
