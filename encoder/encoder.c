@@ -109,6 +109,7 @@ typedef struct
     int b_sleeping;             /* worker blocked on cv_go */
     int b_waiting;              /* caller blocked on cv_done */
     intptr_t ret;
+    x264_t *snap;               /* frame state to copy before encoding */
 } x264_slice_worker_t;
 
 /* Each worker's flags on their own cache lines. */
@@ -122,7 +123,25 @@ typedef struct x264_slicepool_t
 {
     int i_workers;
     x264_slice_worker_pad_t *workers;
+    x264_t *snap;               /* thread 0 state for the frame, copied by workers 1.. */
 } x264_slicepool_t;
+
+/* Main thread, before dispatch: thread 0 changes once it encodes slice 0. */
+static void x264_slicepool_snapshot( x264_t *h )
+{
+    x264_t *snap = h->slicepool->snap;
+    snap->param = h->param;
+    memcpy( &snap->i_frame, &h->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
+}
+
+/* Worker, before encoding: sync context t to the frame. */
+static void x264_threadslice_sync( x264_t *t, x264_t *snap )
+{
+    t->param = snap->param;
+    memcpy( &t->i_frame, &snap->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
+    t->sh.i_first_mb = t->i_threadslice_start * t->mb.i_mb_width;
+    t->sh.i_last_mb  =   t->i_threadslice_end * t->mb.i_mb_width - 1;
+}
 
 static void *x264_slice_worker_thread( void *arg )
 {
@@ -156,7 +175,10 @@ static void *x264_slice_worker_thread( void *arg )
 
         intptr_t ret = 0;
         if( w->i_idx )
+        {
+            x264_threadslice_sync( w->h, w->snap );
             ret = (intptr_t)x264_stack_align( x264_slices_write, w->h );
+        }
         else
             x264_stack_align( x264_threadslice_filter, w->h );
 
@@ -221,6 +243,7 @@ static void x264_slicepool_delete( x264_slicepool_t *pool )
         x264_pthread_cond_destroy( &w->cv_done );
     }
     x264_free( pool->workers );
+    x264_free( pool->snap );
     x264_free( pool );
 }
 
@@ -229,11 +252,13 @@ static int x264_slicepool_init( x264_t *h )
     x264_slicepool_t *pool = NULL;
     CHECKED_MALLOCZERO( pool, sizeof(x264_slicepool_t) );
     CHECKED_MALLOCZERO( pool->workers, h->param.i_threads * sizeof(x264_slice_worker_pad_t) );
+    CHECKED_MALLOC( pool->snap, sizeof(x264_t) );
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         x264_slice_worker_t *w = &pool->workers[i].w;
         w->h = h->thread[i];
         w->i_idx = i;
+        w->snap = pool->snap;
         w->i_done = -1;
         if( x264_pthread_mutex_init( &w->mutex, NULL ) ||
             x264_pthread_cond_init( &w->cv_go, NULL ) ||
@@ -260,6 +285,7 @@ static inline void x264_slicepool_run( struct x264_slicepool_t *pool, int i ) {}
 static inline void x264_slicepool_set_ret( struct x264_slicepool_t *pool, int i, intptr_t ret ) {}
 static inline intptr_t x264_slicepool_wait( struct x264_slicepool_t *pool, int i ) { return 0; }
 static inline void x264_slicepool_delete( struct x264_slicepool_t *pool ) {}
+static inline void x264_slicepool_snapshot( x264_t *h ) {}
 #endif
 
 static int x264_slicepool_wait_all( x264_t *h )
@@ -3300,21 +3326,18 @@ fail:
 
 static int x264_threaded_slices_write( x264_t *h )
 {
-    /* set first/last mb and sync contexts */
+    /* set first/last mb */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         x264_t *t = h->thread[i];
-        if( i )
-        {
-            t->param = h->param;
-            memcpy( &t->i_frame, &h->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
-        }
         int height = h->mb.i_mb_height >> PARAM_INTERLACED;
         t->i_threadslice_start = ((height *  i    + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
         t->i_threadslice_end   = ((height * (i+1) + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
-        t->sh.i_first_mb = t->i_threadslice_start * h->mb.i_mb_width;
-        t->sh.i_last_mb  =   t->i_threadslice_end * h->mb.i_mb_width - 1;
     }
+    h->sh.i_first_mb = h->i_threadslice_start * h->mb.i_mb_width;
+    h->sh.i_last_mb  =   h->i_threadslice_end * h->mb.i_mb_width - 1;
+    /* workers 1.. sync their contexts from this */
+    x264_slicepool_snapshot( h );
 
     x264_stack_align( x264_analyse_weight_frame, h, h->mb.i_mb_height*16 + 16 );
 
