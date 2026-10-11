@@ -429,18 +429,12 @@ cglobal hpel_filter_c, 3,3,12
     kmovd        k1, r3d
 %endif
 .loop:
-    movu         m0, [r1+r2-4]
-    movu         m1, [r1+r2-2]
-    movu         m2, [r1+r2+0]
-    movu         m3, [r1+r2+2]
-    movu         m4, [r1+r2+4]
-    movu         m5, [r1+r2+6]
-    pmaddwd      m0, m6
-    pmaddwd      m1, m6
-    pmaddwd      m2, m7
-    pmaddwd      m3, m7
-    pmaddwd      m4, m8
-    pmaddwd      m5, m8
+    pmaddwd      m0, m6, [r1+r2-4]
+    pmaddwd      m1, m6, [r1+r2-2]
+    pmaddwd      m2, m7, [r1+r2+0]
+    pmaddwd      m3, m7, [r1+r2+2]
+    pmaddwd      m4, m8, [r1+r2+4]
+    pmaddwd      m5, m8, [r1+r2+6]
     paddd        m0, m9
     paddd        m1, m9
     paddd        m2, m4
