@@ -43,7 +43,12 @@
 #define x264_hpel_filter_avx x264_template(hpel_filter_avx)
 #define x264_hpel_filter_avx2 x264_template(hpel_filter_avx2)
 #define x264_hpel_filter_c_avx2 x264_template(hpel_filter_c_avx2)
+#define x264_hpel_filter_copy_avx x264_template(hpel_filter_copy_avx)
+#define x264_hpel_filter_copy_avx2 x264_template(hpel_filter_copy_avx2)
+#define x264_hpel_filter_copy_sse2 x264_template(hpel_filter_copy_sse2)
+#define x264_hpel_filter_copy_ssse3 x264_template(hpel_filter_copy_ssse3)
 #define x264_hpel_filter_h_avx2 x264_template(hpel_filter_h_avx2)
+#define x264_hpel_filter_h_copy_avx2 x264_template(hpel_filter_h_copy_avx2)
 #define x264_hpel_filter_v_avx2 x264_template(hpel_filter_v_avx2)
 #define x264_hpel_filter_c_mmx2 x264_template(hpel_filter_c_mmx2)
 #define x264_hpel_filter_c_sse2 x264_template(hpel_filter_c_sse2)
@@ -730,14 +735,44 @@ static void x264_hpel_filter_##cpu( pixel *dsth, pixel *dstv, pixel *dstc, pixel
     x264_sfence();\
 }
 
+#define HPEL_COPY(align, cpu, cpuv, cpuc, cpuh)\
+void x264_hpel_filter_h_copy_##cpuh( pixel *dst, pixel *src, intptr_t width, pixel *dstf );\
+static void x264_hpel_filter_copy_##cpu( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,\
+                                         intptr_t stride, int width, int height, int16_t *buf, pixel *dstf )\
+{\
+    intptr_t realign = ((intptr_t)src & (align-1)) / sizeof(pixel);\
+    src -= realign;\
+    dstv -= realign;\
+    dstc -= realign;\
+    dsth -= realign;\
+    dstf -= realign;\
+    width += realign;\
+    while( height-- )\
+    {\
+        x264_hpel_filter_v_##cpuv( dstv, src, buf+16, stride, width );\
+        x264_hpel_filter_c_##cpuc( dstc, buf+16, width );\
+        x264_hpel_filter_h_copy_##cpuh( dsth, src, width, dstf );\
+        dsth += stride;\
+        dstv += stride;\
+        dstc += stride;\
+        dstf += stride;\
+        src  += stride;\
+    }\
+    x264_sfence();\
+}
+
 HPEL(8, mmx2, mmx2, mmx2, mmx2)
 #if HIGH_BIT_DEPTH
 HPEL(16, sse2, sse2, sse2, sse2)
 #if ARCH_X86_64
 void x264_hpel_filter_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf );
+/* the field pass copy still uses the 3-pass kernels */
+void x264_hpel_filter_v_avx2( pixel *dst, pixel *src, int16_t *buf, intptr_t stride, intptr_t width );
+void x264_hpel_filter_c_avx2( pixel *dst, int16_t *buf, intptr_t width );
 #else
 HPEL(32, avx2, avx2, avx2, avx2)
 #endif
+HPEL_COPY(32, avx2, avx2, avx2, avx2)
 #else // !HIGH_BIT_DEPTH
 HPEL(16, sse2_amd, mmx2, mmx2, sse2)
 #if ARCH_X86_64
@@ -745,6 +780,10 @@ void x264_hpel_filter_sse2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_
 void x264_hpel_filter_ssse3( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf );
 void x264_hpel_filter_avx  ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf );
 void x264_hpel_filter_avx2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf );
+void x264_hpel_filter_copy_sse2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
+void x264_hpel_filter_copy_ssse3( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
+void x264_hpel_filter_copy_avx  ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
+void x264_hpel_filter_copy_avx2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
 #else
 HPEL(16, sse2, sse2, sse2, sse2)
 HPEL(16, ssse3, ssse3, ssse3, ssse3)
@@ -1061,6 +1100,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->mc_luma = mc_luma_avx2;
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx2;
         pf->hpel_filter = x264_hpel_filter_avx2;
+        pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
         pf->lowres8_convert = x264_lowres8_convert_avx2;
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
@@ -1120,6 +1160,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg[PIXEL_8x8]  = x264_pixel_avg_8x8_sse2;
         pf->avg[PIXEL_8x4]  = x264_pixel_avg_8x4_sse2;
         pf->hpel_filter = x264_hpel_filter_sse2;
+#if ARCH_X86_64
+        pf->hpel_filter_copy = x264_hpel_filter_copy_sse2;
+#endif
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_sse2;
         if( !(cpu&X264_CPU_STACK_MOD4) )
             pf->mc_chroma = x264_mc_chroma_sse2;
@@ -1167,8 +1210,13 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     {
 #if ARCH_X86_64
         if( !(cpu&X264_CPU_SLOW_ATOM) ) /* The 64-bit version is slower, but the 32-bit version is faster? */
-#endif
+        {
             pf->hpel_filter = x264_hpel_filter_ssse3;
+            pf->hpel_filter_copy = x264_hpel_filter_copy_ssse3;
+        }
+#else
+        pf->hpel_filter = x264_hpel_filter_ssse3;
+#endif
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_ssse3;
     }
     if( !(cpu&X264_CPU_STACK_MOD4) )
@@ -1205,6 +1253,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx;
     pf->integral_init8h = x264_integral_init8h_avx;
     pf->hpel_filter = x264_hpel_filter_avx;
+#if ARCH_X86_64
+    pf->hpel_filter_copy = x264_hpel_filter_copy_avx;
+#endif
 
     if( !(cpu&X264_CPU_STACK_MOD4) )
         pf->mc_chroma = x264_mc_chroma_avx;
@@ -1215,6 +1266,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX2 )
     {
         pf->hpel_filter = x264_hpel_filter_avx2;
+#if ARCH_X86_64
+        pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
+#endif
         pf->mc_chroma = x264_mc_chroma_avx2;
         pf->weight = x264_mc_weight_wtab_avx2;
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
