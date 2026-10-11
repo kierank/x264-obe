@@ -1300,7 +1300,8 @@ static void mbcmp_init( x264_t *h )
     else
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
     h->pixf.mbcmp_mcc = satd ? h->pixf.satd_mcc : NULL;
-    if( satd )
+    /* the once per mb fenc first stage only pays off with several satd per partition */
+    if( satd && h->param.analyse.i_subpel_refine >= 3 )
     {
         memcpy( h->pixf.mbcmp_pre, h->pixf.satd_pre, sizeof(h->pixf.mbcmp_pre) );
         memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
