@@ -267,6 +267,28 @@ typedef struct
     int i_ssim_cnt;
 } x264_frame_stat_t;
 
+/* bd-alg X264_EXP_CENSUS: 16x16 search start types, by candidate of
+ * x264_mb_predict_mv_ref16x16 */
+enum
+{
+    EXP_MVC_PMV, EXP_MVC_ZERO, EXP_MVC_BDIRECT, EXP_MVC_LOWRES,
+    EXP_MVC_LEFT, EXP_MVC_TOP, EXP_MVC_TOPLEFT, EXP_MVC_TOPRIGHT,
+    EXP_MVC_T00, EXP_MVC_T10, EXP_MVC_T01, EXP_MVC_PARTNER,
+    EXP_MVC_OTHER, EXP_MVC_COUNT
+};
+
+/* bd-alg X264_EXP_CENSUS counters, int64_t only (summed as an array) */
+typedef struct
+{
+    int64_t ctl;                    /* positive control: p16x16 analyses in MBAFF P slices */
+    int64_t ref16[2][2][2][3];      /* field MBs: [P,B][list][parity][16x16 ref 0, 1, >1] */
+    int64_t mixref[2][2][3];        /* field MBs at mixed-ref 8x8: [P,B][list][ALG_MIXREF narrows, widens, all] */
+    int64_t rdbound[8];             /* i8x8 under an RD bound, over it, ALG_RDBOUND stops at 0,1,2;
+                                     * i4x4 under an RD bound, over it, over it before the last block */
+    int64_t mvstart[2][EXP_MVC_COUNT]; /* 16x16 searches: [frame,field MB][start type] */
+    int64_t hpel8[2][2];            /* mixed-ref 8x8 searches past the first ref: [P,B][all, over 8/7 at hpel] */
+} x264_exp_census_t;
+
 struct x264_t
 {
     /* encoder parameters */
@@ -746,6 +768,11 @@ struct x264_t
         int     i_alg_mixref;
         int     i_alg_hpel8;
         int     i_alg_lowresme;
+        int     b_census;           /* X264_EXP_CENSUS */
+        int     b_census_me;        /* set around the 16x16 searches */
+        int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */
+        uint8_t mvc_type[16];       /* EXP_MVC_* of each x264_mb_predict_mv_ref16x16 candidate */
+        x264_exp_census_t census;
     } exp;
 
     /* Buffers that are allocated per-thread even in sliced threads. */

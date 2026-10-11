@@ -524,20 +524,26 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
      * for field MBs, 2 temporal predictors converted between frame and field
      * units, 4 the top field MB of the pair as a predictor of the bottom one */
     int alg_mvpred = SLICE_MBAFF ? h->exp.i_alg_mvpred : 0;
+    /* X264_EXP_CENSUS: record the EXP_MVC_* type of each candidate */
+    int b_census = h->exp.b_census;
 
-#define SET_MVP(mvp) \
+#define SET_MVP(mvp,type) \
     { \
         CP32( mvc[i], mvp ); \
+        if( b_census ) \
+            h->exp.mvc_type[i] = type; \
         i++; \
     }
 
-#define SET_IMVP(xy) \
+#define SET_IMVP(xy,type) \
     if( xy >= 0 ) \
     { \
         int shift = 1 + MB_INTERLACED - h->mb.field[xy]; \
         int16_t *mvp = h->mb.mvr[i_list][i_ref<<1>>shift][xy]; \
         mvc[i][0] = mvp[0]; \
         mvc[i][1] = mvp[1]<<1>>shift; \
+        if( b_census ) \
+            h->exp.mvc_type[i] = type; \
         i++; \
     }
 
@@ -545,7 +551,7 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
     if( h->sh.i_type == SLICE_TYPE_B
         && h->mb.cache.ref[i_list][x264_scan8[12]] == i_ref )
     {
-        SET_MVP( h->mb.cache.mv[i_list][x264_scan8[12]] );
+        SET_MVP( h->mb.cache.mv[i_list][x264_scan8[12]], EXP_MVC_BDIRECT );
     }
 
     if( i_ref == 0 && h->frames.b_have_lowres )
@@ -565,6 +571,8 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
                 }
                 else
                     M32( mvc[i] ) = (M32( lowres_mv[h->mb.i_mb_xy] )*2)&0xfffeffff;
+                if( b_census )
+                    h->exp.mvc_type[i] = EXP_MVC_LOWRES;
                 i++;
             }
         }
@@ -573,21 +581,21 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
     /* spatial predictors */
     if( SLICE_MBAFF )
     {
-        SET_IMVP( h->mb.i_mb_left_xy[0] );
-        SET_IMVP( h->mb.i_mb_top_xy );
-        SET_IMVP( h->mb.i_mb_topleft_xy );
-        SET_IMVP( h->mb.i_mb_topright_xy );
+        SET_IMVP( h->mb.i_mb_left_xy[0], EXP_MVC_LEFT );
+        SET_IMVP( h->mb.i_mb_top_xy, EXP_MVC_TOP );
+        SET_IMVP( h->mb.i_mb_topleft_xy, EXP_MVC_TOPLEFT );
+        SET_IMVP( h->mb.i_mb_topright_xy, EXP_MVC_TOPRIGHT );
         /* the top MB of the pair, analysed just before and in the same slice,
          * is a field MB too, its refs in the same parity-relative units */
         if( (alg_mvpred & 4) && MB_INTERLACED && (h->mb.i_mb_y & 1) )
-            SET_MVP( mvr[h->mb.i_mb_xy - h->mb.i_mb_stride] );
+            SET_MVP( mvr[h->mb.i_mb_xy - h->mb.i_mb_stride], EXP_MVC_PARTNER );
     }
     else
     {
-        SET_MVP( mvr[h->mb.i_mb_left_xy[0]] );
-        SET_MVP( mvr[h->mb.i_mb_top_xy] );
-        SET_MVP( mvr[h->mb.i_mb_topleft_xy] );
-        SET_MVP( mvr[h->mb.i_mb_topright_xy] );
+        SET_MVP( mvr[h->mb.i_mb_left_xy[0]], EXP_MVC_LEFT );
+        SET_MVP( mvr[h->mb.i_mb_top_xy], EXP_MVC_TOP );
+        SET_MVP( mvr[h->mb.i_mb_topleft_xy], EXP_MVC_TOPLEFT );
+        SET_MVP( mvr[h->mb.i_mb_topright_xy], EXP_MVC_TOPRIGHT );
     }
 #undef SET_IMVP
 #undef SET_MVP
@@ -606,7 +614,7 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         if( b_tconv )
             refpoc = h->fref[i_list][i_ref>>MB_INTERLACED]->i_poc + l0->i_delta_poc[field^(i_ref&MB_INTERLACED)];
 
-#define SET_TMVP( dx, dy ) \
+#define SET_TMVP( dx, dy, type ) \
         { \
             int mb_index = h->mb.i_mb_xy + dx + dy*h->mb.i_mb_stride; \
             int scale = (curpoc - refpoc) * l0->inv_ref_poc[MB_INTERLACED&field]; \
@@ -621,14 +629,16 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
                 mvc[i][0] = (l0->mv16x16[mb_index][0]*scale + 128) >> 8; \
                 mvc[i][1] = (l0->mv16x16[mb_index][1]*scale + 128) >> 8; \
             } \
+            if( b_census ) \
+                h->exp.mvc_type[i] = type; \
             i++; \
         }
 
-        SET_TMVP(0,0);
+        SET_TMVP( 0, 0, EXP_MVC_T00 );
         if( h->mb.i_mb_x < h->mb.i_mb_width-1 )
-            SET_TMVP(1,0);
+            SET_TMVP( 1, 0, EXP_MVC_T10 );
         if( h->mb.i_mb_y < h->mb.i_mb_height-1 )
-            SET_TMVP(0,1);
+            SET_TMVP( 0, 1, EXP_MVC_T01 );
 #undef SET_TMVP
     }
 

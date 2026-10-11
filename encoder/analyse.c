@@ -753,13 +753,19 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         static const uint8_t i8x8_thresh[11] = { 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6 };
         /* bd-alg ALG_RDBOUND: stop where x264_intra_rd() would drop i8x8. If i16x16
          * is above the early return threshold, stop only above that too, so the
-         * extrapolated cost makes the same i4x4 decision as the full cost. */
+         * extrapolated cost makes the same i4x4 decision as the full cost.
+         * X264_EXP_CENSUS: the first idx above each threshold. */
+        int i_rdb_thresh = COST_MAX;
+        int i_rdb_stop = -1;
+        int i_rdb_over = -1;
         if( a->i_mbrd && a->i_intra_rd_bound < COST_MAX )
         {
             int i_ret_thresh = (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2;
-            i_satd_thresh = a->i_intra_rd_bound;
+            i_rdb_thresh = a->i_intra_rd_bound;
             if( a->i_satd_i16x16 > i_ret_thresh )
-                i_satd_thresh = X264_MAX( i_satd_thresh, i_ret_thresh );
+                i_rdb_thresh = X264_MAX( i_rdb_thresh, i_ret_thresh );
+            if( h->exp.i_alg_rdbound )
+                i_satd_thresh = i_rdb_thresh;
         }
 
         // FIXME some bias like in i4x4?
@@ -788,6 +794,10 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 i_cost += i_best & 0xffff;
                 i_best >>= 16;
                 a->i_predict8x8[idx] = i_best;
+                if( i_cost > i_rdb_thresh && i_rdb_stop < 0 )
+                    i_rdb_stop = idx;
+                if( i_cost > a->i_intra_rd_bound && i_rdb_over < 0 )
+                    i_rdb_over = idx;
                 if( idx == 3 || i_cost > i_satd_thresh )
                     break;
                 x264_macroblock_cache_intra8x8_pred( h, 2*x, 2*y, i_best );
@@ -834,6 +844,10 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 }
                 i_cost += i_best + 3*lambda;
 
+                if( i_cost > i_rdb_thresh && i_rdb_stop < 0 )
+                    i_rdb_stop = idx;
+                if( i_cost > a->i_intra_rd_bound && i_rdb_over < 0 )
+                    i_rdb_over = idx;
                 if( idx == 3 || i_cost > i_satd_thresh )
                     break;
                 if( h->mb.b_lossless )
@@ -867,6 +881,14 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             a->i_satd_i8x8 = COST_MAX;
             i_cost = (i_cost * cost_div_fix8[idx]) >> 8;
         }
+        if( h->exp.b_census && a->i_intra_rd_bound < COST_MAX )
+        {
+            h->exp.census.rdbound[0]++;
+            if( i_rdb_over >= 0 )
+                h->exp.census.rdbound[1]++;
+            if( i_rdb_stop >= 0 && i_rdb_stop < 3 )
+                h->exp.census.rdbound[2+i_rdb_stop]++;
+        }
         if( a->b_early_terminate && X264_MIN(i_cost, a->i_satd_i16x16) > (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2 )
             return;
     }
@@ -880,7 +902,9 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
 
         if( a->b_early_terminate && a->i_mbrd )
             i_satd_thresh = i_satd_thresh * (10-a->b_fast_intra)/8;
-        if( a->i_mbrd && a->i_intra_rd_bound < COST_MAX )
+        /* bd-alg ALG_RDBOUND, see i8x8; X264_EXP_CENSUS: the first idx above it */
+        int i_rdb_over = -1;
+        if( h->exp.i_alg_rdbound && a->i_mbrd && a->i_intra_rd_bound < COST_MAX )
             i_satd_thresh = X264_MIN( i_satd_thresh, a->i_intra_rd_bound );
 
         if( h->sh.i_type == SLICE_TYPE_B )
@@ -906,6 +930,8 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 i_cost += i_best & 0xffff;
                 i_best >>= 16;
                 a->i_predict4x4[idx] = i_best;
+                if( i_cost > a->i_intra_rd_bound && i_rdb_over < 0 )
+                    i_rdb_over = idx;
                 if( i_cost > i_satd_thresh || idx == 15 )
                     break;
                 h->mb.cache.intra4x4_pred_mode[x264_scan8[idx]] = i_best;
@@ -959,6 +985,8 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 }
 
                 i_cost += i_best + 3 * lambda;
+                if( i_cost > a->i_intra_rd_bound && i_rdb_over < 0 )
+                    i_rdb_over = idx;
                 if( i_cost > i_satd_thresh || idx == 15 )
                     break;
                 if( h->mb.b_lossless )
@@ -987,6 +1015,14 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         }
         else
             a->i_satd_i4x4 = COST_MAX;
+        if( h->exp.b_census && a->i_intra_rd_bound < COST_MAX )
+        {
+            h->exp.census.rdbound[5]++;
+            if( i_rdb_over >= 0 )
+                h->exp.census.rdbound[6]++;
+            if( i_rdb_over >= 0 && i_rdb_over < 15 )
+                h->exp.census.rdbound[7]++;
+        }
     }
 }
 
@@ -1261,6 +1297,11 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     int i_halfpel_thresh = INT_MAX;
     int *p_halfpel_thresh = (a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
 
+    /* bd-alg X264_EXP_CENSUS positive control: every MB of an MBAFF P slice that
+     * is not skipped before this point */
+    if( h->exp.b_census && SLICE_MBAFF )
+        h->exp.census.ctl++;
+
     /* 16x16 Search on all ref frame */
     m.i_pixel = PIXEL_16x16;
     LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
@@ -1285,7 +1326,9 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         else
         {
             x264_mb_predict_mv_ref16x16( h, 0, i_ref, mvc, &i_mvc );
+            h->exp.b_census_me = h->exp.b_census;
             x264_me_search_ref( h, &m, mvc, i_mvc, p_halfpel_thresh );
+            h->exp.b_census_me = 0;
         }
 
         /* save mv for predicting neighbors */
@@ -1313,6 +1356,9 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         if( m.cost < a->l0.me16x16.cost )
             h->mc.memcpy_aligned( &a->l0.me16x16, &m, sizeof(x264_me_t) );
     }
+
+    if( h->exp.b_census && MB_INTERLACED )
+        h->exp.census.ref16[0][0][h->mb.i_mb_y&1][X264_MIN( a->l0.me16x16.i_ref, 2 )]++;
 
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, a->l0.me16x16.i_ref );
     assert( a->l0.me16x16.mv[1] <= h->mb.mv_max_spel[1] || h->i_thread_frames == 1 );
@@ -1363,6 +1409,20 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
             i_maxref = ref;\
     }
 
+    /* bd-alg X264_EXP_CENSUS: field MBs whose limit ALG_MIXREF narrows (16x16
+     * chose ref 1) or widens (ref 0, ref 1 nearer) */
+    if( h->exp.b_census && MB_INTERLACED )
+    {
+        h->exp.census.mixref[0][0][2]++;
+        if( a->b_early_terminate && i_maxref > 0 && h->mb.i_mb_type_top > 0 && h->mb.i_mb_type_left[0] > 0 )
+        {
+            if( a->l0.me16x16.i_ref == 1 )
+                h->exp.census.mixref[0][0][0]++;
+            else if( a->l0.me16x16.i_ref == 0 && x264_exp_field_ref1_nearer( h, 0 ) )
+                h->exp.census.mixref[0][0][1]++;
+        }
+    }
+
     /* early termination: if 16x16 chose ref 0, then evalute no refs older
      * than those used by the neighbors */
     if( a->b_early_terminate && (i_maxref > 0 && (a->l0.me16x16.i_ref == 0 || a->l0.me16x16.i_ref == h->mb.ref_blind_dupe ||
@@ -1393,6 +1453,8 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
          * refs that x264_mb_analyse_inter_p16x16 uses */
         int i_halfpel_thresh = INT_MAX;
         int *p_halfpel_thresh = (h->exp.i_alg_hpel8 && a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
+        /* X264_EXP_CENSUS: the same threshold, only counted against */
+        int *p_hpel_shadow = (h->exp.b_census && !p_halfpel_thresh && a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
 
         m.i_pixel = PIXEL_8x8;
 
@@ -1414,7 +1476,11 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
                 x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
             }
             else
+            {
+                h->exp.p_hpel_shadow = p_hpel_shadow;
                 x264_me_search_ref( h, &m, a->l0.mvc[i_ref], i+1, p_halfpel_thresh );
+                h->exp.p_hpel_shadow = NULL;
+            }
 
             m.cost += m.i_ref_cost;
             i_halfpel_thresh += m.i_ref_cost;
@@ -1963,7 +2029,9 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
             LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 0 );
             x264_mb_predict_mv_16x16( h, l, i_ref, m.mvp );
             x264_mb_predict_mv_ref16x16( h, l, i_ref, mvc, &i_mvc );
+            h->exp.b_census_me = h->exp.b_census;
             x264_me_search_ref( h, &m, mvc, i_mvc, p_halfpel_thresh[l] );
+            h->exp.b_census_me = 0;
 
             /* add ref cost */
             m.cost += m.i_ref_cost;
@@ -2099,6 +2167,12 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
     a->i_cost16x16bi   += a->i_lambda * i_mb_b_cost_table[B_BI_BI];
     a->l0.me16x16.cost += a->i_lambda * i_mb_b_cost_table[B_L0_L0];
     a->l1.me16x16.cost += a->i_lambda * i_mb_b_cost_table[B_L1_L1];
+
+    if( h->exp.b_census && MB_INTERLACED )
+    {
+        h->exp.census.ref16[1][0][h->mb.i_mb_y&1][X264_MIN( a->l0.me16x16.i_ref, 2 )]++;
+        h->exp.census.ref16[1][1][h->mb.i_mb_y&1][X264_MIN( a->l1.me16x16.i_ref, 2 )]++;
+    }
 }
 
 static inline void x264_mb_cache_mv_p8x8( x264_t *h, x264_mb_analysis_t *a, int i )
@@ -2215,6 +2289,18 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
     for( int l = 0; l < 2; l++ )
     {
         x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
+        /* bd-alg X264_EXP_CENSUS: as in x264_mb_analyse_inter_p8x8_mixed_ref */
+        if( h->exp.b_census && MB_INTERLACED )
+        {
+            h->exp.census.mixref[1][l][2]++;
+            if( i_maxref[l] > 0 && h->mb.i_mb_type_top > 0 && h->mb.i_mb_type_left[0] > 0 )
+            {
+                if( lX->me16x16.i_ref == 1 )
+                    h->exp.census.mixref[1][l][0]++;
+                else if( lX->me16x16.i_ref == 0 && x264_exp_field_ref1_nearer( h, l ) )
+                    h->exp.census.mixref[1][l][1]++;
+            }
+        }
         if( i_maxref[l] > 0 && (lX->me16x16.i_ref == 0 || (b_mixref_field && lX->me16x16.i_ref == 1)) &&
             h->mb.i_mb_type_top > 0 && h->mb.i_mb_type_left[0] > 0 )
         {
@@ -2254,6 +2340,7 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
             /* bd-alg ALG_HPEL8: as in x264_mb_analyse_inter_p8x8_mixed_ref */
             int i_halfpel_thresh = INT_MAX;
             int *p_halfpel_thresh = (h->exp.i_alg_hpel8 && a->b_early_terminate && h->mb.pic.i_fref[l]>1) ? &i_halfpel_thresh : NULL;
+            int *p_hpel_shadow = (h->exp.b_census && !p_halfpel_thresh && a->b_early_terminate && h->mb.pic.i_fref[l]>1) ? &i_halfpel_thresh : NULL;
 
             lX->me8x8[i].cost = INT_MAX;
             for( int i_ref = 0; i_ref <= i_maxref[l]; i_ref++ )
@@ -2265,7 +2352,9 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
                 x264_macroblock_cache_ref( h, x8*2, y8*2, 2, 2, l, i_ref );
                 x264_mb_predict_mv( h, l, 4*i, 2, m.mvp );
+                h->exp.p_hpel_shadow = p_hpel_shadow;
                 x264_me_search_ref( h, &m, lX->mvc[i_ref], i+1, p_halfpel_thresh );
+                h->exp.p_hpel_shadow = NULL;
                 m.cost += m.i_ref_cost;
                 i_halfpel_thresh += m.i_ref_cost;
 
@@ -2951,10 +3040,11 @@ static inline void x264_mb_analyse_qp_rd( x264_t *h, x264_mb_analysis_t *a )
 }
 
 /* bd-alg ALG_RDBOUND: the luma cost above which x264_intra_rd( h, a, i_rd_thresh )
- * drops an intra mode whose cost will get i_chroma added, or COST_MAX */
+ * drops an intra mode whose cost will get i_chroma added, or COST_MAX. Also set
+ * for X264_EXP_CENSUS alone, which only counts against it. */
 static int x264_exp_intra_rd_bound( x264_t *h, x264_mb_analysis_t *a, int i_rd_thresh, int i_chroma )
 {
-    if( !h->exp.i_alg_rdbound || !a->i_mbrd || !a->b_early_terminate )
+    if( !(h->exp.i_alg_rdbound || h->exp.b_census) || !a->i_mbrd || !a->b_early_terminate )
         return COST_MAX;
     return i_rd_thresh - i_chroma - 1;
 }

@@ -200,6 +200,44 @@ do\
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* bd-alg X264_EXP_CENSUS: count which candidate the 16x16 fullpel search starts
+ * from. (sx,sy) is the best predictor, qpel if b_qpel (x264_predictor_clip) or
+ * fullpel (x264_predictor_roundclip), pmv the packed mvp both compare with,
+ * b_zero whether the search starts at the zero vector instead. Attributed to
+ * the first candidate that clips to (sx,sy). Reads only. */
+static NOINLINE void x264_exp_census_mvstart( x264_t *h, int16_t (*mvc)[2], int i_mvc, uint32_t pmv,
+                                              int sx, int sy, int b_qpel, int b_zero )
+{
+    int type = EXP_MVC_OTHER;
+    if( b_zero )
+        type = pmv ? EXP_MVC_ZERO : EXP_MVC_PMV;
+    else if( pack16to32_mask( sx, sy ) == pmv )
+        type = EXP_MVC_PMV;
+    else
+    {
+        int shift = b_qpel ? 2 : 0;
+        int min_x = h->mb.mv_limit_fpel[0][0] * (1 << shift);
+        int min_y = h->mb.mv_limit_fpel[0][1] * (1 << shift);
+        int max_x = h->mb.mv_limit_fpel[1][0] * (1 << shift);
+        int max_y = h->mb.mv_limit_fpel[1][1] * (1 << shift);
+        for( int k = 0; k < i_mvc && k < 16; k++ )
+        {
+            int mx = b_qpel ? mvc[k][0] : (mvc[k][0] + 2) >> 2;
+            int my = b_qpel ? mvc[k][1] : (mvc[k][1] + 2) >> 2;
+            uint32_t mv = b_qpel ? M32( mvc[k] ) : pack16to32_mask( mx, my );
+            if( !mv || mv == pmv )
+                continue;
+            if( x264_clip3( mx, min_x, max_x ) == sx && x264_clip3( my, min_y, max_y ) == sy )
+            {
+                if( h->exp.mvc_type[k] < EXP_MVC_COUNT )
+                    type = h->exp.mvc_type[k];
+                break;
+            }
+        }
+    }
+    h->exp.census.mvstart[!!MB_INTERLACED][type]++;
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -293,6 +331,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             COPY3_IF_LT( bcost, pmv_cost, bmx, 0, bmy, 0 );
         }
+        if( h->exp.b_census_me )
+            x264_exp_census_mvstart( h, mvc, i_mvc, pmv, bpred_mx, bpred_my, 1,
+                                     !(bmx|bmy) && (FPEL(bpred_mx)|FPEL(bpred_my)) );
     }
     else
     {
@@ -336,6 +377,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         /* Same as above, except the condition is simpler. */
         if( pmv )
             COST_MV( 0, 0 );
+        if( h->exp.b_census_me )
+            x264_exp_census_mvstart( h, mvc, i_mvc, pmv, bmx, bmy, 0, !(bmx|bmy) );
     }
 
     switch( h->mb.i_me_method )
@@ -1024,6 +1067,19 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         }
         else if( bcost < *p_halfpel_thresh )
             *p_halfpel_thresh = bcost;
+    }
+    else if( h->exp.p_hpel_shadow )
+    {
+        /* bd-alg X264_EXP_CENSUS: the test above on the threshold ALG_HPEL8
+         * would pass, without stopping */
+        int *p_shadow = h->exp.p_hpel_shadow;
+        int b = h->sh.i_type == SLICE_TYPE_B;
+        if( *p_shadow < COST_MAX )
+            h->exp.census.hpel8[b][0]++;
+        if( (bcost*7)>>3 > *p_shadow )
+            h->exp.census.hpel8[b][1]++;
+        else if( bcost < *p_shadow )
+            *p_shadow = bcost;
     }
 
     /* quarterpel diamond search */

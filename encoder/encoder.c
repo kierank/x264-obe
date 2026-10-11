@@ -1514,9 +1514,17 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * of HEX and subme 4 when subme <= 2, 2 lowres subme 3 when subme > 2 */
         e = getenv( "X264_EXP_ALG_LOWRESME" );
         h->exp.i_alg_lowresme = e ? atoi( e ) : 0;
-        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d\n",
-                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme );
+        /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
+         * the counts at x264_encoder_close; does not change the output */
+        e = getenv( "X264_EXP_CENSUS" );
+        h->exp.b_census = e ? !!atoi( e ) : 0;
+        memset( &h->exp.census, 0, sizeof(h->exp.census) );
+        h->exp.b_census_me = 0;
+        h->exp.p_hpel_shadow = NULL;
+        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d census %d\n",
+                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme,
+                      h->exp.b_census );
     }
 
     /* Init frames. */
@@ -4066,6 +4074,56 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
         sprintf( intra, " %4.1f%%", i_mb_count[I_PCM]  / i_count );
 }
 
+/* bd-alg X264_EXP_CENSUS: sum the counters of the encoding threads, print them */
+static void x264_exp_census_print( x264_t *h )
+{
+    x264_exp_census_t c;
+    int64_t *sum = (int64_t*)&c;
+    int n = sizeof(c) / sizeof(int64_t);
+    memset( &c, 0, sizeof(c) );
+    for( int t = 0; t < h->param.i_threads; t++ )
+    {
+        const int64_t *add = (const int64_t*)&h->thread[t]->exp.census;
+        for( int k = 0; k < n; k++ )
+            sum[k] += add[k];
+    }
+
+    static const char * const slice_name[2] = { "P", "B" };
+    static const char * const mvc_name[EXP_MVC_COUNT] =
+    {
+        "pmv", "zero", "bdirect", "lowres", "left", "top", "topleft", "topright",
+        "tmv00", "tmv10", "tmv01", "partner", "other"
+    };
+    fprintf( stderr, "bd-alg census: %d-bit, %s, tff %d\n", BIT_DEPTH,
+             PARAM_INTERLACED ? "mbaff" : "progressive", h->param.b_tff );
+    fprintf( stderr, "bd-alg census: control p16x16-mbaff-p %"PRId64"\n", c.ctl );
+    for( int s = 0; s < 2; s++ )
+        for( int l = 0; l <= s; l++ )
+            for( int p = 0; p < 2; p++ )
+                fprintf( stderr, "bd-alg census: mixref ref16 %s l%d %s-field ref0 %"PRId64" ref1 %"PRId64" ref2+ %"PRId64"\n",
+                         slice_name[s], l, p ? "bottom" : "top",
+                         c.ref16[s][l][p][0], c.ref16[s][l][p][1], c.ref16[s][l][p][2] );
+    for( int s = 0; s < 2; s++ )
+        for( int l = 0; l <= s; l++ )
+            fprintf( stderr, "bd-alg census: mixref 8x8 %s l%d field-mbs %"PRId64" narrows %"PRId64" widens %"PRId64"\n",
+                     slice_name[s], l, c.mixref[s][l][2], c.mixref[s][l][0], c.mixref[s][l][1] );
+    fprintf( stderr, "bd-alg census: rdbound i8x8 %"PRId64" over %"PRId64" stop-at-0 %"PRId64" stop-at-1 %"PRId64" stop-at-2 %"PRId64"\n",
+             c.rdbound[0], c.rdbound[1], c.rdbound[2], c.rdbound[3], c.rdbound[4] );
+    fprintf( stderr, "bd-alg census: rdbound i4x4 %"PRId64" over %"PRId64" over-before-last %"PRId64"\n",
+             c.rdbound[5], c.rdbound[6], c.rdbound[7] );
+    for( int f = 0; f < 2; f++ )
+    {
+        char buf[512];
+        int len = 0;
+        for( int k = 0; k < EXP_MVC_COUNT; k++ )
+            len += snprintf( buf + len, sizeof(buf) - len, " %s %"PRId64, mvc_name[k], c.mvstart[f][k] );
+        fprintf( stderr, "bd-alg census: mvpred start %s-mb%s\n", f ? "field" : "frame", buf );
+    }
+    for( int s = 0; s < 2; s++ )
+        fprintf( stderr, "bd-alg census: hpel8 %s searches %"PRId64" over-7/8 %"PRId64"\n",
+                 slice_name[s], c.hpel8[s][0], c.hpel8[s][1] );
+}
+
 /****************************************************************************
  * x264_encoder_close:
  ****************************************************************************/
@@ -4091,6 +4149,8 @@ void    x264_encoder_close  ( x264_t *h )
         x264_threadpool_delete( h->threadpool );
     if( h->param.i_lookahead_threads > 1 )
         x264_threadpool_delete( h->lookaheadpool );
+    if( h->exp.b_census )
+        x264_exp_census_print( h );
     if( h->i_thread_frames > 1 )
     {
         for( int i = 0; i < h->i_thread_frames; i++ )
