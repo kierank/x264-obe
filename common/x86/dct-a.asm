@@ -275,6 +275,77 @@ cglobal sub4x4_dct, 3,3
     mova  [r0+48], m4 ; d03 - 2*d12
     mova  [r0+56], m5
     RET
+
+;-----------------------------------------------------------------------------
+; void sub8x8_dct( dctcoef dct[4][16], pixel *pix1, pixel *pix2 ), AVX2
+; Each lane holds one row of two 4x4 blocks (rows i and i+4 of the 8x8), so a
+; pass transforms all four blocks. The first pass and the s03 +- s12 rows of
+; the second fit words (at most 24552); 2*d03 + d12 and d03 - 2*d12 can reach
+; 36828 and are done in dwords.
+;-----------------------------------------------------------------------------
+%macro SUB8x8_DCT_HBD_LOAD 0
+%assign subdct_hbd_i 0
+%rep 4
+    movu         xm %+ subdct_hbd_i, [r1+subdct_hbd_i*FENC_STRIDEB]
+    vinserti128   m %+ subdct_hbd_i, m %+ subdct_hbd_i, [r1+(subdct_hbd_i+4)*FENC_STRIDEB], 1
+    movu         xm4, [r2+subdct_hbd_i*FDEC_STRIDEB]
+    vinserti128   m4, m4, [r2+(subdct_hbd_i+4)*FDEC_STRIDEB], 1
+    psubw         m %+ subdct_hbd_i, m4
+%assign subdct_hbd_i subdct_hbd_i+1
+%endrep
+%endmacro
+
+; %1: dwords of one output row, lane 0 = block 0 or 1, lane 1 = block 2 or 3
+%macro SUB8x8_DCT_HBD_STORE 2 ; reg, offset
+    mova         [r0+%2], xm%1
+    vextracti128 [r0+%2+128], m%1, 1
+%endmacro
+
+%macro SUB8x8_DCT_HBD 0
+    SUB8x8_DCT_HBD_LOAD
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    SUMSUB_BADC w, 3, 0, 2, 1   ; s03, d03, s12, d12
+    SUMSUB_BA   w, 2, 3, 4      ; s03 + s12, s03 - s12
+    DCT_UNPACK m2, m5, m4
+    DCT_UNPACK m3, m6, m4
+    SUB8x8_DCT_HBD_STORE 2,  0
+    SUB8x8_DCT_HBD_STORE 5, 64
+    SUB8x8_DCT_HBD_STORE 3, 32
+    SUB8x8_DCT_HBD_STORE 6, 96
+    DCT_UNPACK m0, m4, m2
+    DCT_UNPACK m1, m5, m3
+    SUMSUB2_AB  d, 0, 1, 6      ; 2*d03 + d12, d03 - 2*d12
+    SUMSUB2_AB  d, 4, 5, 7
+    SUB8x8_DCT_HBD_STORE 0, 16
+    SUB8x8_DCT_HBD_STORE 4, 80
+    SUB8x8_DCT_HBD_STORE 6, 48
+    SUB8x8_DCT_HBD_STORE 7, 112
+%endmacro
+
+INIT_YMM avx2
+cglobal sub8x8_dct, 3,3,8
+    SUB8x8_DCT_HBD
+    RET
+
+cglobal sub16x16_dct, 3,3,8
+    call .sub8x8
+    add  r0, 256
+    add  r1, 8*SIZEOF_PIXEL
+    add  r2, 8*SIZEOF_PIXEL
+    call .sub8x8
+    add  r0, 256
+    add  r1, 8*FENC_STRIDEB-8*SIZEOF_PIXEL
+    add  r2, 8*FDEC_STRIDEB-8*SIZEOF_PIXEL
+    call .sub8x8
+    add  r0, 256
+    add  r1, 8*SIZEOF_PIXEL
+    add  r2, 8*SIZEOF_PIXEL
+    call .sub8x8
+    RET
+.sub8x8:
+    SUB8x8_DCT_HBD
+    ret
 %else
 
 %macro SUB_DCT4 0
