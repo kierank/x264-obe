@@ -1461,29 +1461,36 @@ MC_COPY 16
 ;                     pixel *pix_uv, intptr_t stride_uv, int mb_x )
 ;-----------------------------------------------------------------------------
 
+; a 64 byte line holds 4 MBs (8-bit) or 2 MBs (high bit depth) of a luma or
+; interleaved chroma row, so each call prefetches 1/4 or 1/2 of the rows of
+; the line 4 MBs ahead
+%macro PREFETCH_ROWS 3 ; ptr, stride, rows
+%rep %3/2
+    prefetcht0  [%1]
+    prefetcht0  [%1+%2]
+    lea    %1,  [%1+%2*2]
+%endrep
+%endmacro
+
 %macro PREFETCH_FENC 1
 %if ARCH_X86_64
+%assign pf_mbs_per_line 4/SIZEOF_PIXEL
+%assign pf_rows_y 16/pf_mbs_per_line
+%ifidn %1, 422
+    %assign pf_rows_uv 16/pf_mbs_per_line
+%else
+    %assign pf_rows_uv 8/pf_mbs_per_line
+%endif
 cglobal prefetch_fenc_%1, 5,5
     FIX_STRIDES r1, r3
-    and    r4d, 3
+    and    r4d, pf_mbs_per_line-1
     mov    eax, r4d
     imul   r4d, r1d
-    lea    r0,  [r0+r4*4+64*SIZEOF_PIXEL]
-    prefetcht0  [r0]
-    prefetcht0  [r0+r1]
-    lea    r0,  [r0+r1*2]
-    prefetcht0  [r0]
-    prefetcht0  [r0+r1]
-
+    lea    r0,  [r0+r4*pf_rows_y+64*SIZEOF_PIXEL]
+    PREFETCH_ROWS r0, r1, pf_rows_y
     imul   eax, r3d
-    lea    r2,  [r2+rax*2+64*SIZEOF_PIXEL]
-    prefetcht0  [r2]
-    prefetcht0  [r2+r3]
-%ifidn %1, 422
-    lea    r2,  [r2+r3*2]
-    prefetcht0  [r2]
-    prefetcht0  [r2+r3]
-%endif
+    lea    r2,  [r2+rax*pf_rows_uv+64*SIZEOF_PIXEL]
+    PREFETCH_ROWS r2, r3, pf_rows_uv
     RET
 
 %else
