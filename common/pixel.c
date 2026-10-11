@@ -1062,6 +1062,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( cpu&X264_CPU_AVX2 )
     {
         INIT2( ssd, _avx2 );
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx2;
+        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx2;
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx2;
         INIT4( sad, _avx2 );
         INIT4_NAME( sad_aligned, sad, _avx2 );
         INIT4( sad_x3, _avx2 );
