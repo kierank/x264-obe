@@ -1507,14 +1507,19 @@ x264_t *x264_encoder_open( x264_param_t *param )
     x264_predict_8x16c_init( h->param.cpu, h->predict_8x16c );
     x264_predict_8x8_init( h->param.cpu, h->predict_8x8, &h->predict_8x8_filter );
     x264_predict_4x4_init( h->param.cpu, h->predict_4x4 );
-    x264_pixel_init( h->param.cpu, &h->pixf );
-    x264_dct_init( h->param.cpu, &h->dctf );
-    x264_zigzag_init( h->param.cpu, &h->zigzagf_progressive, &h->zigzagf_interlaced );
+    /* TEST ONLY: X264_AVX512_OFF = bitmask of init groups to run without AVX-512:
+     * 1 pixel, 2 dct, 4 zigzag, 8 mc, 16 quant, 32 bitstream/cabac */
+    int avx512_off = getenv( "X264_AVX512_OFF" ) ? atoi( getenv( "X264_AVX512_OFF" ) ) : 0;
+#define CPU_G(bit) ( avx512_off & (bit) ? h->param.cpu & ~X264_CPU_AVX512 : h->param.cpu )
+    x264_pixel_init( CPU_G(1), &h->pixf );
+    x264_dct_init( CPU_G(2), &h->dctf );
+    x264_zigzag_init( CPU_G(4), &h->zigzagf_progressive, &h->zigzagf_interlaced );
     memcpy( &h->zigzagf, PARAM_INTERLACED ? &h->zigzagf_interlaced : &h->zigzagf_progressive, sizeof(h->zigzagf) );
-    x264_mc_init( h->param.cpu, &h->mc, h->param.b_cpu_independent );
-    x264_quant_init( h, h->param.cpu, &h->quantf );
+    x264_mc_init( CPU_G(8), &h->mc, h->param.b_cpu_independent );
+    x264_quant_init( h, CPU_G(16), &h->quantf );
     x264_deblock_init( h->param.cpu, &h->loopf, PARAM_INTERLACED );
-    x264_bitstream_init( h->param.cpu, &h->bsf );
+    x264_bitstream_init( CPU_G(32), &h->bsf );
+#undef CPU_G
     if( h->param.b_cabac )
         x264_cabac_init( h );
     else
