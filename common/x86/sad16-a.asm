@@ -708,6 +708,113 @@ SAD_X3_HBD 16
 SAD_X4_HBD 8
 SAD_X4_HBD 16
 
+;=============================================================================
+; 10-bit SAD 8x8 and 8x16, AVX2: two 8 pixel rows per ymm.
+;=============================================================================
+%macro SAD_HBD_ROW2 3 ; dst (number), base, stride
+    movu          xm%1, [%2]
+    vinserti128    m%1, m%1, [%2+%3], 1
+%endmacro
+
+; ymm of word sums -> xmm of 4 dword sums
+%macro SAD_HBD_FOLDY 2 ; reg (number), tmp (number)
+    vextracti128   xm%2, m%1, 1
+    paddw          xm%1, xm%2
+    pmaddwd        xm%1, [pw_1]
+%endmacro
+
+%macro SAD_HBD_Y 1 ; height
+cglobal pixel_sad_8x%1, 4,4,3
+    FIX_STRIDES   r1, r3
+%assign sad_hbd_n 0
+%rep %1/2
+    SAD_HBD_ROW2   1, r0, r1
+    SAD_HBD_ROW2   2, r2, r3
+    SAD_HBD_ACC    0, m1, 2, sad_hbd_n==0
+%if sad_hbd_n < %1/2-1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+%endif
+%assign sad_hbd_n sad_hbd_n+1
+%endrep
+    SAD_HBD_FOLDY  0, 1
+    punpckhqdq    xm1, xm0, xm0
+    paddd         xm0, xm1
+    pshuflw       xm1, xm0, q1032
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
+%macro SAD_X3_HBD_Y 1
+cglobal pixel_sad_x3_8x%1, 6,6,8
+    FIX_STRIDES   r4
+%assign sad_hbd_n 0
+%rep %1/2
+    SAD_HBD_ROW2   3, r0, FENC_STRIDEB
+    SAD_HBD_ROW2   4, r1, r4
+    SAD_HBD_ROW2   5, r2, r4
+    SAD_HBD_ROW2   6, r3, r4
+    SAD_HBD_ACC    0, m3, 4, sad_hbd_n==0
+    SAD_HBD_ACC    1, m3, 5, sad_hbd_n==0
+    SAD_HBD_ACC    2, m3, 6, sad_hbd_n==0
+%if sad_hbd_n < %1/2-1
+    add           r0, 2*FENC_STRIDEB
+    lea           r1, [r1+r4*2]
+    lea           r2, [r2+r4*2]
+    lea           r3, [r3+r4*2]
+%endif
+%assign sad_hbd_n sad_hbd_n+1
+%endrep
+    SAD_HBD_FOLDY  0, 4
+    SAD_HBD_FOLDY  1, 5
+    SAD_HBD_FOLDY  2, 6
+    SAD_HBD_HSUM4  0, 1, 2, 2, 4, 5
+    movq     [r5+0], xm0
+    pextrd   [r5+8], xm0, 2
+    RET
+%endmacro
+
+%macro SAD_X4_HBD_Y 1
+cglobal pixel_sad_x4_8x%1, 7,7,10
+    FIX_STRIDES   r5
+%assign sad_hbd_n 0
+%rep %1/2
+    SAD_HBD_ROW2   4, r0, FENC_STRIDEB
+    SAD_HBD_ROW2   5, r1, r5
+    SAD_HBD_ROW2   6, r2, r5
+    SAD_HBD_ROW2   7, r3, r5
+    SAD_HBD_ROW2   8, r4, r5
+    SAD_HBD_ACC    0, m4, 5, sad_hbd_n==0
+    SAD_HBD_ACC    1, m4, 6, sad_hbd_n==0
+    SAD_HBD_ACC    2, m4, 7, sad_hbd_n==0
+    SAD_HBD_ACC    3, m4, 8, sad_hbd_n==0
+%if sad_hbd_n < %1/2-1
+    add           r0, 2*FENC_STRIDEB
+    lea           r1, [r1+r5*2]
+    lea           r2, [r2+r5*2]
+    lea           r3, [r3+r5*2]
+    lea           r4, [r4+r5*2]
+%endif
+%assign sad_hbd_n sad_hbd_n+1
+%endrep
+    SAD_HBD_FOLDY  0, 5
+    SAD_HBD_FOLDY  1, 6
+    SAD_HBD_FOLDY  2, 7
+    SAD_HBD_FOLDY  3, 8
+    SAD_HBD_HSUM4  0, 1, 2, 3, 5, 6
+    movu        [r6], xm0
+    RET
+%endmacro
+
+INIT_YMM avx2
+SAD_HBD_Y 8
+SAD_HBD_Y 16
+SAD_X3_HBD_Y 8
+SAD_X3_HBD_Y 16
+SAD_X4_HBD_Y 8
+SAD_X4_HBD_Y 16
+
 ;-----------------------------------------------------------------------------
 ; void intra_sad_x3_4x4( uint16_t *fenc, uint16_t *fdec, int res[3] );
 ;-----------------------------------------------------------------------------
