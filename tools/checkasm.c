@@ -1887,7 +1887,7 @@ static int check_deblock( int cpu_ref, int cpu_new )
     x264_deblock_function_t db_a;
     int ret = 0, ok = 1, used_asm = 0;
     int alphas[36], betas[36];
-    int8_t tcs[36][4];
+    int8_t tcs[36][4], tcs_c[36][4];
 
     x264_deblock_init( 0, &db_c, 0 );
     x264_deblock_init( cpu_ref, &db_ref, 0 );
@@ -1901,6 +1901,13 @@ static int check_deblock( int cpu_ref, int cpu_new )
         tcs[i][0] = tcs[i][3] = (c+6)/10 << (BIT_DEPTH-8);
         tcs[i][1] = (c+7)/15 << (BIT_DEPTH-8);
         tcs[i][2] = (c+9)/20 << (BIT_DEPTH-8);
+        memcpy( tcs_c[i], tcs[i], sizeof(tcs[i]) );
+        if( i%3 == 1 )
+        {
+            /* a bS=0 edge next to filtered ones: tc0 is -1 << (BIT_DEPTH-8), +1 for chroma */
+            tcs[i][i&3] = -(1 << (BIT_DEPTH-8));
+            tcs_c[i][i&3] = 1 - (1 << (BIT_DEPTH-8));
+        }
         a = a*9/10;
         c = c*9/10;
     }
@@ -1932,11 +1939,11 @@ static int check_deblock( int cpu_ref, int cpu_new )
 
     TEST_DEBLOCK( deblock_luma[0], 0, tcs[i] );
     TEST_DEBLOCK( deblock_luma[1], 1, tcs[i] );
-    TEST_DEBLOCK( deblock_h_chroma_420, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_h_chroma_422, 0, tcs[i] );
+    TEST_DEBLOCK( deblock_h_chroma_420, 0, tcs_c[i] );
+    TEST_DEBLOCK( deblock_h_chroma_422, 0, tcs_c[i] );
     TEST_DEBLOCK( deblock_chroma_420_mbaff, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_chroma_422_mbaff, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_chroma[1], 1, tcs[i] );
+    TEST_DEBLOCK( deblock_chroma_422_mbaff, 0, tcs_c[i] );
+    TEST_DEBLOCK( deblock_chroma[1], 1, tcs_c[i] );
     TEST_DEBLOCK( deblock_luma_intra[0], 0 );
     TEST_DEBLOCK( deblock_luma_intra[1], 1 );
     TEST_DEBLOCK( deblock_h_chroma_420_intra, 0 );
