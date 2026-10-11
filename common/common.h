@@ -582,6 +582,12 @@ struct x264_t
             ALIGNED_64( uint32_t fenc_satd_cache[32] );
             ALIGNED_16( uint64_t fenc_hadamard_cache[9] );
 
+            /* satd_fenc_pre of the luma fenc: [0,256) 16x16, then 8x8 b at 256+64*b,
+             * b = 2*(x/8) + y/8. i_fenc_pre: bit 4 the 16x16, bit b the 8x8; zeroed
+             * wherever the luma fenc is written */
+            ALIGNED_64( int16_t fenc_pre[512] );
+            int i_fenc_pre;
+
             int i4x4_cbp;
             int i8x8_cbp;
 

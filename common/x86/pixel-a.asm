@@ -5485,6 +5485,187 @@ cglobal pixel_satd_avg2_8x8, 4,7,9
     SATD_AVG2_END
 
 ;-----------------------------------------------------------------------------
+; void pixel_satd_fenc_pre_16x16( int16_t dst[256], uint8_t *fenc )
+; void pixel_satd_fenc_pre_8x8( int16_t dst[64], uint8_t *fenc )
+; int  pixel_satd_pre_WxH( int16_t *fenc_pre, uint8_t *pix, intptr_t stride )
+; int  pixel_satd_avg2_pre_WxH( int16_t *fenc_pre, uint8_t *src1, uint8_t *src2, intptr_t stride )
+; fenc_pre holds fenc's first (pmaddubsw) stage in the layout of the satd
+; functions above, a 32 byte register a row (16 wide) or a row pair k, k+4
+; (8 wide, 4 per 8x8, an 8x16 reading two 8x8 in a row). The stage is linear,
+; so the candidate's is computed and fenc_pre subtracted: every value of the
+; transform is negated and the satd is unchanged.
+;-----------------------------------------------------------------------------
+cglobal pixel_satd_fenc_pre_16x16, 2,2,2
+    mova     m1, [hmul_16p]
+%assign fpre_i 0
+%rep 16
+    vbroadcasti128 m0, [r1+fpre_i*FENC_STRIDE]
+    pmaddubsw      m0, m1
+    mova [r0+fpre_i*32], m0
+%assign fpre_i fpre_i+1
+%endrep
+    RET
+
+cglobal pixel_satd_fenc_pre_8x8, 2,2,3
+    mova     m2, [hmul_8p]
+%assign fpre_i 0
+%rep 4
+    LOAD_DUP_8x2P_AVX2 0, 1, [r1+fpre_i*FENC_STRIDE], [r1+(fpre_i+4)*FENC_STRIDE]
+    pmaddubsw      m0, m2
+    mova [r0+fpre_i*32], m0
+%assign fpre_i fpre_i+1
+%endrep
+%undef fpre_i
+    RET
+
+; four 16 pixel rows (r3 = 3*stride) less fenc_pre rows %1 to %1+3
+%macro SATD_PRE_16x4 2 ; fenc_pre row, swap/add
+    vbroadcasti128 m0, [r1]
+    vbroadcasti128 m1, [r1+r2]
+    vbroadcasti128 m2, [r1+2*r2]
+    vbroadcasti128 m3, [r1+r3]
+    pmaddubsw      m0, m7
+    pmaddubsw      m1, m7
+    pmaddubsw      m2, m7
+    pmaddubsw      m3, m7
+    psubw          m0, [r0+(%1+0)*32]
+    psubw          m1, [r0+(%1+1)*32]
+    psubw          m2, [r0+(%1+2)*32]
+    psubw          m3, [r0+(%1+3)*32]
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+%endmacro
+
+; rows k, k+4 (r1, r4 = r1+4*stride, %2 = k*stride) less fenc_pre's
+%macro SATD_PRE_SUMSUB8 3 ; dst (number), source offset, fenc_pre offset
+    LOAD_DUP_8x2P_AVX2 %1, 4, [r1+%2], [r4+%2]
+    pmaddubsw     m%1, m7
+    psubw         m%1, [r0+%3]
+%endmacro
+
+%macro SATD_PRE_8x8 2 ; fenc_pre offset, swap/add
+    SATD_PRE_SUMSUB8 0, 0,    %1
+    SATD_PRE_SUMSUB8 1, r2,   %1+32
+    SATD_PRE_SUMSUB8 2, 2*r2, %1+64
+    SATD_PRE_SUMSUB8 3, r3,   %1+96
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+%endmacro
+
+cglobal pixel_satd_pre_16x16, 3,4,8
+    mova     m7, [hmul_16p]
+    lea      r3, [3*r2]
+    SATD_PRE_16x4 0, swap
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 4, add
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 8, add
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 12, add
+    SATD_AVG2_END
+
+cglobal pixel_satd_pre_16x8, 3,4,8
+    mova     m7, [hmul_16p]
+    lea      r3, [3*r2]
+    SATD_PRE_16x4 0, swap
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 4, add
+    SATD_AVG2_END
+
+cglobal pixel_satd_pre_8x16, 3,5,8
+    mova     m7, [hmul_8p]
+    lea      r3, [3*r2]
+    lea      r4, [r1+4*r2]
+    SATD_PRE_8x8 0, swap
+    lea      r1, [r1+8*r2]
+    lea      r4, [r4+8*r2]
+    SATD_PRE_8x8 128, add
+    SATD_AVG2_END
+
+cglobal pixel_satd_pre_8x8, 3,5,8
+    mova     m7, [hmul_8p]
+    lea      r3, [3*r2]
+    lea      r4, [r1+4*r2]
+    SATD_PRE_8x8 0, swap
+    SATD_AVG2_END
+
+; 16 wide: row (%2 = k*stride) of pavgb( src1, src2 ) less fenc_pre's
+%macro SATD_AVG2_PRE_ROW16 3 ; dst (number), source offset, fenc_pre offset
+    vbroadcasti128 m%1, [r1+%2]
+    vbroadcasti128 m4, [r2+%2]
+    pavgb          m%1, m4
+    pmaddubsw      m%1, m7
+    psubw          m%1, [r0+%3]
+%endmacro
+
+%macro SATD_AVG2_PRE_16x4 2 ; fenc_pre row, swap/add
+    SATD_AVG2_PRE_ROW16 0, 0,    (%1+0)*32
+    SATD_AVG2_PRE_ROW16 1, r3,   (%1+1)*32
+    SATD_AVG2_PRE_ROW16 2, 2*r3, (%1+2)*32
+    SATD_AVG2_PRE_ROW16 3, r4,   (%1+3)*32
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+%endmacro
+
+; 8 wide: rows k, k+4 (r5/r6 = src1/src2 four rows down)
+%macro SATD_AVG2_PRE_SUMSUB8 3 ; dst (number), source offset, fenc_pre offset
+    LOAD_DUP_8x2P_AVX2 %1, 4, [r1+%2], [r5+%2]
+    LOAD_DUP_8x2P_AVX2 5, 4, [r2+%2], [r6+%2]
+    pavgb         m%1, m5
+    pmaddubsw     m%1, m7
+    psubw         m%1, [r0+%3]
+%endmacro
+
+%macro SATD_AVG2_PRE_8x8 2 ; fenc_pre offset, swap/add
+    SATD_AVG2_PRE_SUMSUB8 0, 0,    %1
+    SATD_AVG2_PRE_SUMSUB8 1, r3,   %1+32
+    SATD_AVG2_PRE_SUMSUB8 2, 2*r3, %1+64
+    SATD_AVG2_PRE_SUMSUB8 3, r4,   %1+96
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+%endmacro
+
+cglobal pixel_satd_avg2_pre_16x16, 4,5,8
+    mova     m7, [hmul_16p]
+    lea      r4, [3*r3]
+    SATD_AVG2_PRE_16x4 0, swap
+%assign fpre_i 4
+%rep 3
+    lea      r1, [r1+4*r3]
+    lea      r2, [r2+4*r3]
+    SATD_AVG2_PRE_16x4 fpre_i, add
+%assign fpre_i fpre_i+4
+%endrep
+%undef fpre_i
+    SATD_AVG2_END
+
+cglobal pixel_satd_avg2_pre_16x8, 4,5,8
+    mova     m7, [hmul_16p]
+    lea      r4, [3*r3]
+    SATD_AVG2_PRE_16x4 0, swap
+    lea      r1, [r1+4*r3]
+    lea      r2, [r2+4*r3]
+    SATD_AVG2_PRE_16x4 4, add
+    SATD_AVG2_END
+
+cglobal pixel_satd_avg2_pre_8x16, 4,7,8
+    mova     m7, [hmul_8p]
+    lea      r4, [3*r3]
+    lea      r5, [r1+4*r3]
+    lea      r6, [r2+4*r3]
+    SATD_AVG2_PRE_8x8 0, swap
+    lea      r1, [r1+8*r3]
+    lea      r2, [r2+8*r3]
+    lea      r5, [r5+8*r3]
+    lea      r6, [r6+8*r3]
+    SATD_AVG2_PRE_8x8 128, add
+    SATD_AVG2_END
+
+cglobal pixel_satd_avg2_pre_8x8, 4,7,8
+    mova     m7, [hmul_8p]
+    lea      r4, [3*r3]
+    lea      r5, [r1+4*r3]
+    lea      r6, [r2+4*r3]
+    SATD_AVG2_PRE_8x8 0, swap
+    SATD_AVG2_END
+
+;-----------------------------------------------------------------------------
 ; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
 ; With the layout of the satd functions above, the first (pmaddubsw) stage of a
 ; row is linear, so fenc's is computed once for the three modes, and V's and

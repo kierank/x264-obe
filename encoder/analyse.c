@@ -3219,6 +3219,7 @@ skip_analysis:
                 x264_macroblock_encode( h );
                 for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
                     h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE, 16 );
+                h->mb.pic.i_fenc_pre = 0;
                 if( !CHROMA444 )
                 {
                     int height = 16 >> CHROMA_V_SHIFT;
