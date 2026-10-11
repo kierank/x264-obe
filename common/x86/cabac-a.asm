@@ -28,8 +28,36 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
-SECTION_RODATA
+SECTION_RODATA 64
 
+; rd 4x4 sig/last map (avx512icl): entropy[state^bin] split in bytes, and
+; transition[state][bin] == rd_transition_xor[state^bin] ^ (state&1)
+rd_entropy_lo:      db 7, 189, 7, 169, 8, 150, 8, 131, 9, 112, 9, 92, 10, 73, 10, 54
+                    db 11, 35, 11, 15, 12, 252, 12, 233, 13, 214, 14, 194, 15, 175, 15, 156
+                    db 16, 137, 17, 117, 18, 98, 19, 79, 20, 60, 21, 40, 22, 21, 24, 2
+                    db 25, 239, 26, 219, 28, 200, 29, 181, 31, 162, 33, 142, 35, 123, 37, 104
+                    db 39, 85, 41, 65, 43, 46, 46, 27, 48, 8, 51, 244, 54, 225, 57, 206
+                    db 60, 187, 64, 167, 68, 148, 72, 129, 76, 110, 80, 90, 85, 71, 90, 52
+                    db 96, 33, 102, 13, 108, 250, 115, 231, 122, 212, 130, 192, 139, 173, 148, 154
+                    db 157, 135, 168, 115, 180, 96, 192, 77, 206, 58, 221, 39, 238, 19, 0, 0
+rd_entropy_hi:      db 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5
+                    db 0, 5, 0, 5, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4
+                    db 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4
+                    db 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3
+                    db 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 2, 0, 2, 0, 2
+                    db 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2
+                    db 0, 2, 0, 2, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1
+                    db 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1
+rd_transition_xor:  db 0, 0, 2, 50, 2, 50, 4, 52, 6, 52, 8, 52, 10, 54, 12, 54
+                    db 14, 54, 16, 56, 18, 56, 20, 56, 22, 58, 24, 58, 26, 60, 28, 60
+                    db 30, 60, 32, 62, 34, 62, 36, 64, 38, 66, 40, 66, 42, 66, 44, 68
+                    db 46, 68, 48, 70, 50, 72, 52, 72, 54, 74, 56, 74, 58, 76, 60, 78
+                    db 62, 78, 64, 80, 66, 82, 68, 82, 70, 84, 72, 84, 74, 88, 76, 88
+                    db 78, 90, 80, 90, 82, 94, 84, 94, 86, 96, 88, 96, 90, 100, 92, 100
+                    db 94, 102, 96, 104, 98, 104, 100, 108, 102, 108, 104, 110, 106, 112, 108, 114
+                    db 110, 116, 112, 118, 114, 118, 116, 122, 118, 122, 120, 124, 122, 126, 124, 127
+rd_lanes_4x4:       dw 0xffff, 0x7fff, 0xffff, 0x000f, 0x7fff, 0xffff, 0xffff
+                    dw 0x7fff, 0xffff, 0xffff, 0xffff, 0x7fff, 0xffff, 0xffff
 rd_nzmask_4x4:  dd 0xffff, 0, 0xffff, 1, 0xffff, 0, 0x000f, 0, 0xffff, 1, 0xffff, 0, 0xffff, 0
                 dd 0xffff, 1, 0xffff, 0, 0xffff, 0, 0xffff, 0, 0xffff, 1, 0xffff, 0, 0xffff, 0
 
@@ -99,6 +127,7 @@ cextern_common last_coeff_flag_offset_8x8
 cextern_common coeff_abs_level_m1_offset
 cextern_common count_cat_m1
 cextern cabac_encode_ue_bypass
+cextern pb_1
 
 %if ARCH_X86_64
     %define pointer resq
@@ -543,6 +572,109 @@ CABAC bmi2
     RET
 %endmacro
 
+
+; 4x4 blocks, avx512icl: the whole significance map at once. Each sig and
+; last context is used at most once per 4x4 block, and the sig, last and
+; level context ranges are disjoint, so the decisions are independent and
+; only f8_bits (an integer sum) depends on their order.
+%macro CABAC_RESIDUAL_RD_4x4_ICL 0
+%ifdef PIC
+    cglobal cabac_block_residual_rd_internal, 4,11,7,-16*SIZEOF_DCTCOEF
+    lea     r10, [$$]
+    %define GLOBAL +r10-$$
+%else
+    cglobal cabac_block_residual_rd_internal, 4,10,7,-16*SIZEOF_DCTCOEF
+    %define GLOBAL
+%endif
+    RD_TMP_REGS 5, 7, 9                                       ; r5/r7 are free once the map is written
+    %define dct rsp
+    kmovw    k1, [rd_lanes_4x4+r2*2 GLOBAL]
+%if HIGH_BIT_DEPTH
+    vmovdqu32 zm0 {k1}{z}, [r0]
+    vptestmd  k2, zm0, zm0
+    vpabsd    zm0, zm0
+    vmovdqu32 [rsp], zm0
+%else
+    vmovdqu16 ym0 {k1}{z}, [r0]
+    vptestmw  k2, ym0, ym0
+    vpabsw    ym0, ym0
+    vmovdqu16 [rsp], ym0
+%endif
+    shl      r1d, 4                                           ; MB_INTERLACED*16
+    add      r1d, r2d
+    movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx    r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+    movzx    r9d, byte [count_cat_m1+r2 GLOBAL]
+    mov      r0d, [r3+cb.bits_encoded]                        ; r0 = cabac.f8_bits_encoded
+    add       r3, cb.state
+    add       r5, r3
+    add       r7, r3
+    add       r8, r3
+    kmovd    r4d, k2                                          ; r4 = nonzero mask
+    lzcnt    r6d, r4d
+    xor      r6d, 31                                          ; r6 = last
+; sig flags for i <= last, except last == count_m1
+    cmp      r6d, r9d
+    mov      r1d, r6d
+    adc      r1d, 0
+    mov      r9d, -1
+    bzhi     r9d, r9d, r1d
+; last flags for the nonzero ones among them
+    mov      r1d, r4d
+    and      r1d, r9d
+    shl      r1d, 16
+    or       r1d, r9d
+    kmovd    k3, r1d                                          ; coded lanes: sig 0-15, last 16-31
+; bins: sig = l[i] != 0, last = i == last
+    lea      r1d, [r6+16]
+    mov      r9d, r4d
+    bts      r9d, r1d
+    kmovd    k4, r9d
+    vmovdqu8 xm1, [r5]
+    vinserti32x4 ym1, ym1, [r7], 1                            ; states
+    vpmovm2b ym2, k4
+    vpternlogd ym2, ym1, [pb_1], 0x6c                         ; state^bin
+    vmovdqu8 zm3, [rd_entropy_lo]
+    vpermt2b zm3 {k3}{z}, zm2, [rd_entropy_lo+64]
+    vmovdqu8 zm4, [rd_entropy_hi]
+    vpermt2b zm4 {k3}{z}, zm2, [rd_entropy_hi+64]
+    vmovdqu8 zm5, [rd_transition_xor]
+    vpermt2b zm5, zm2, [rd_transition_xor+64]
+    vpternlogd ym5, ym1, [pb_1], 0x78                         ; transition[state][bin]
+    vmovdqu8 ym1 {k3}, ym5
+    vmovdqu8 [r5], xm1
+    vextracti32x4 [r7], ym1, 1
+    vpxord   xm6, xm6, xm6
+    vpsadbw  ym3, ym3, ym6
+    vpsadbw  ym4, ym4, ym6
+    vpsllq   ym4, ym4, 8
+    vpaddq   ym3, ym3, ym4
+    vextracti32x4 xm4, ym3, 1
+    vpaddq   xm3, xm3, xm4
+    vpsrldq  xm4, xm3, 8
+    vpaddq   xm3, xm3, xm4
+    vmovd    r1d, xm3
+    add      r0d, r1d
+; levels: last, then the other nonzero coefficients in descending order
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_GT1 last, 1
+    btr      r4d, r6d
+    test     r4d, r4d
+    jz .end
+.level_loop:
+    lzcnt    r6d, r4d
+    xor      r6d, 31
+    btr      r4d, r6d
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_GT1 coeff, 0
+    test     r4d, r4d
+    jnz .level_loop
+.end:
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+%endmacro
+
 ;%1 = coeff_last table
 %macro CABAC_RESIDUAL_RD_8x8 1
     %define dct rsp
@@ -659,6 +791,8 @@ CABAC_RESIDUAL_RD_4x4
 CABAC_RESIDUAL_RD_8x8 coeff_last_sse2_lzcnt
 INIT_ZMM avx512
 CABAC_RESIDUAL_RD_8x8 coeff_last_avx512
+INIT_ZMM avx512icl
+CABAC_RESIDUAL_RD_4x4_ICL
 %endif
 
 ;-----------------------------------------------------------------------------
