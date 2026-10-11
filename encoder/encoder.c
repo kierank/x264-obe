@@ -1502,8 +1502,13 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * as a predictor of the bottom one */
         e = getenv( "X264_EXP_ALG_MVPRED" );
         h->exp.i_alg_mvpred = e ? atoi( e ) : 0;
-        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d\n", h->exp.i_alg_rdbound, h->exp.i_alg_mvpred );
+        /* X264_EXP_ALG_MIXREF=1: in field MBs the mixed-ref 8x8 ref limit also
+         * applies when 16x16 chose ref 1, from the chosen ref or the nearer field */
+        e = getenv( "X264_EXP_ALG_MIXREF" );
+        h->exp.i_alg_mixref = e ? atoi( e ) : 0;
+        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d\n",
+                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref );
     }
 
     /* Init frames. */

@@ -1332,11 +1332,27 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+/* bd-alg ALG_MIXREF: field ref 2k is the same parity field of frame k and 2k+1
+ * the opposite one (x264_macroblock_load_pic_pointers), so refs 0 and 1 are the
+ * two fields of the nearest frame, and which of them is nearer depends on the
+ * parity and the list. Returns whether ref 1 is, for the current field MB. */
+static int x264_exp_field_ref1_nearer( x264_t *h, int i_list )
+{
+    int parity = h->mb.i_mb_y & 1;
+    x264_frame_t *f = h->fref[i_list][0];
+    int curpoc = h->fdec->i_poc + h->fdec->i_delta_poc[parity];
+    return abs( curpoc - (f->i_poc + f->i_delta_poc[parity^1]) ) < abs( curpoc - (f->i_poc + f->i_delta_poc[parity]) );
+}
+
 static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
     pixel **p_fenc = h->mb.pic.p_fenc;
     int i_maxref = h->mb.pic.i_fref[0]-1;
+    /* bd-alg ALG_MIXREF: in a field MB the limit below also applies when 16x16
+     * chose ref 1, and starts from the chosen ref, or from 1 when ref 1 is the
+     * nearer field */
+    int b_mixref_field = h->exp.i_alg_mixref && MB_INTERLACED;
 
     h->mb.i_partition = D_8x8;
 
@@ -1349,10 +1365,13 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
     /* early termination: if 16x16 chose ref 0, then evalute no refs older
      * than those used by the neighbors */
-    if( a->b_early_terminate && (i_maxref > 0 && (a->l0.me16x16.i_ref == 0 || a->l0.me16x16.i_ref == h->mb.ref_blind_dupe) &&
+    if( a->b_early_terminate && (i_maxref > 0 && (a->l0.me16x16.i_ref == 0 || a->l0.me16x16.i_ref == h->mb.ref_blind_dupe ||
+        (b_mixref_field && a->l0.me16x16.i_ref == 1)) &&
         h->mb.i_mb_type_top > 0 && h->mb.i_mb_type_left[0] > 0) )
     {
         i_maxref = 0;
+        if( b_mixref_field )
+            i_maxref = x264_exp_field_ref1_nearer( h, 0 ) ? 1 : a->l0.me16x16.i_ref;
         CHECK_NEIGHBOUR(  -8 - 1 );
         CHECK_NEIGHBOUR(  -8 + 0 );
         CHECK_NEIGHBOUR(  -8 + 2 );
@@ -2185,13 +2204,17 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
             i_maxref[l] = ref;\
     }
 
+    /* bd-alg ALG_MIXREF: as in x264_mb_analyse_inter_p8x8_mixed_ref, per list */
+    int b_mixref_field = h->exp.i_alg_mixref && MB_INTERLACED;
     for( int l = 0; l < 2; l++ )
     {
         x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
-        if( i_maxref[l] > 0 && lX->me16x16.i_ref == 0 &&
+        if( i_maxref[l] > 0 && (lX->me16x16.i_ref == 0 || (b_mixref_field && lX->me16x16.i_ref == 1)) &&
             h->mb.i_mb_type_top > 0 && h->mb.i_mb_type_left[0] > 0 )
         {
             i_maxref[l] = 0;
+            if( b_mixref_field )
+                i_maxref[l] = x264_exp_field_ref1_nearer( h, l ) ? 1 : lX->me16x16.i_ref;
             CHECK_NEIGHBOUR(  -8 - 1 );
             CHECK_NEIGHBOUR(  -8 + 0 );
             CHECK_NEIGHBOUR(  -8 + 2 );
