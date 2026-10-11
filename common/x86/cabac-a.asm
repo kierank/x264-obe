@@ -869,52 +869,62 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     PUTBYTE
 %endmacro
 
-; %1 = 8x8 mode, %2 = count_m1
-%macro SIGMAP_BMI2 2
-%%loop:
+%macro LOAD_COEF_BMI2 0
 %if HIGH_BIT_DEPTH
     mov     r1d, [r14+r12*4]
 %else
     movsx   r1d, word [r14+r12*2]
 %endif
-    test    r1d, r1d
-    jz %%zero                       ; if( l[i] )
-    inc     r13d
-    mov [coeffs+r13*4], r1d         ; coeffs[++coeff_idx] = l[i];
-%if %1
+%endmacro
+
+; %1 = sig/last bin, %2 = 8x8 mode
+%macro SIG_BIN_BMI2 2
+%if %2
     movzx   r1d, byte [r0+r12]
-    CABAC_BIN 1, r3+r1              ; ctx_sig + sig_off, 1
+    CABAC_BIN %1, r3+r1             ; ctx_sig + sig_off
+%else
+    CABAC_BIN %1, r3+r12
+%endif
+%endmacro
+%macro LAST_BIN_BMI2 2
+%if %2
     movzx   r1d, byte [last_coeff_flag_offset_8x8+r12 GLOBAL]
-    %define sm_last r11+r1
+    CABAC_BIN %1, r11+r1            ; ctx_last + last_off
 %else
-    CABAC_BIN 1, r3+r12
-    %define sm_last r11+r12
+    CABAC_BIN %1, r11+r12
 %endif
-    cmp     r12d, lastm             ; if( i == last )
-    je %%is_last
-    CABAC_BIN 0, sm_last            ; ctx_last + last_off, 0
-    jmp %%next
-%%zero:
-%if %1
-    movzx   r1d, byte [r0+r12]
-    CABAC_BIN 0, r3+r1              ; ctx_sig + sig_off, 0
-%else
-    CABAC_BIN 0, r3+r12
-%endif
-%%next:
+%endmacro
+
+; %1 = 8x8 mode, %2 = last, %3 = count_m1; in: r12d = 0, r13d = -1
+; i < last: sig, and last = 0 if l[i]; i == last: sig = last = 1 unless count_m1
+%macro SIGMAP_BMI2 3
+    cmp     r12d, %2
+    je %%at_last
+%%loop:
+    LOAD_COEF_BMI2
+    test    r1d, r1d
+    jnz %%nonzero                   ; if( l[i] )
+    SIG_BIN_BMI2 0, %1
     inc     r12d
     cmp     r12d, %2
-    jne %%loop                      ; if( ++i == count_m1 )
-%if HIGH_BIT_DEPTH
-    mov     r1d, [r14+r12*4]
-%else
-    movsx   r1d, word [r14+r12*2]
-%endif
+    jne %%loop
+    jmp %%at_last
+%%nonzero:
     inc     r13d
-    mov [coeffs+r13*4], r1d         ; coeffs[++coeff_idx] = l[i]
-    jmp .level_loop_start
-%%is_last:
-    CABAC_BIN 1, sm_last            ; ctx_last + last_off, 1
+    mov [coeffs+r13*4], r1d         ; coeffs[++coeff_idx] = l[i];
+    SIG_BIN_BMI2 1, %1
+    LAST_BIN_BMI2 0, %1
+    inc     r12d
+    cmp     r12d, %2
+    jne %%loop
+%%at_last:
+    LOAD_COEF_BMI2
+    inc     r13d
+    mov [coeffs+r13*4], r1d
+    cmp     r12d, %3
+    je .level_loop_start
+    SIG_BIN_BMI2 1, %1
+    LAST_BIN_BMI2 1, %1
 %if %1 == 0
     jmp .level_loop_start
 %endif
@@ -1032,6 +1042,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     %define cbm    [rsp+0]
     %define levelm [rsp+8]
     %define lastm  [rsp+16]
+    %define countm [rsp+24]
     %define coeffs rsp+32
     %define lowd   r8d
     %define lowq   r8
@@ -1062,19 +1073,18 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     sub  queued, 24
     cmp    r13d, 63
     je .sigmap_8x8
-    COEFF_LAST_BMI2 0
-    mov   lastm, r0d
-    mov     r0d, r13d
+    COEFF_LAST_BMI2 0               ; r0d = last
+    mov  countm, r13d
     mov    r13d, -1                 ; coeff_idx
     xor    r12d, r12d               ; i
-    SIGMAP_BMI2 0, r0d
+    SIGMAP_BMI2 0, r0d, countm
 .sigmap_8x8:
     COEFF_LAST_BMI2 1
     mov   lastm, r0d
     mov      r0, r12
     mov    r13d, -1
     xor    r12d, r12d
-    SIGMAP_BMI2 1, 63
+    SIGMAP_BMI2 1, lastm, 63
 .level_loop_start:
     mov      r3, levelm
     xor    r12d, r12d               ; node_ctx
