@@ -736,6 +736,111 @@ SAD_X3_HBD_Y 16
 SAD_X4_HBD_Y 8
 SAD_X4_HBD_Y 16
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void pixel_sad_x3_pre_8xH( uint16_t *fenc_pre, uint16_t *pix0, uint16_t *pix1,
+;                            uint16_t *pix2, intptr_t stride, int scores[3] )
+; void pixel_sad_x4_pre_8xH( uint16_t *fenc_pre, uint16_t *pix0, uint16_t *pix1,
+;                            uint16_t *pix2, uint16_t *pix3, intptr_t stride, int scores[4] )
+; fenc_pre from satd_fenc_pre_8x8: fenc rows k, k+4 a register, an 8x16 two
+; 8x8 in a row. Each reference in the same layout, fenc a load-op.
+;-----------------------------------------------------------------------------
+; 4 rows from %1 and 4 more from %1 four rows down (%1 advanced to there):
+; |ref - fenc_pre| words into m%2. %5 = stride, %6 = 3*stride (pixels)
+%macro SAD_HBD_PRE_8x8 6 ; ref, acc (number), fenc_pre offset, first, stride, 3*stride
+    movu          xm4, [%1]
+    movu          xm5, [%1+2*%5]
+    movu          xm6, [%1+4*%5]
+    movu          xm7, [%1+2*%6]
+    lea            %1, [%1+8*%5]
+    vinserti128    m4, m4, [%1], 1
+    vinserti128    m5, m5, [%1+2*%5], 1
+    vinserti128    m6, m6, [%1+4*%5], 1
+    vinserti128    m7, m7, [%1+2*%6], 1
+    psubw          m4, [r0+%3]
+    psubw          m5, [r0+%3+32]
+    psubw          m6, [r0+%3+64]
+    psubw          m7, [r0+%3+96]
+    pabsw          m4, m4
+    pabsw          m5, m5
+    pabsw          m6, m6
+    pabsw          m7, m7
+%if %4
+    paddw         m%2, m4, m5
+    paddw          m6, m7
+    paddw         m%2, m6
+%else
+    paddw          m4, m5
+    paddw          m6, m7
+    paddw          m4, m6
+    paddw         m%2, m4
+%endif
+%endmacro
+
+; m0..m%1-1 = 16 words a reference (at most 8*1023, two lanes of rows): sums of 4
+; after two phaddw stay below 32768 -> xm0 = { sad0, sad1, sad2, sad3 (x4) or sad2 (x3) }
+%macro SAD_HBD_PRE_END 1 ; refs
+    phaddw         m0, m1
+%if %1 == 4
+    phaddw         m2, m3
+%else
+    phaddw         m2, m2
+%endif
+    phaddw         m0, m2
+    pmaddwd        m0, [pw_1]
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+%endmacro
+
+%macro SAD_X3_HBD_PRE 1
+cglobal pixel_sad_x3_pre_8x%1, 6,7,8
+    lea            r6, [r4+2*r4]
+    SAD_HBD_PRE_8x8 r1, 0, 0, 1, r4, r6
+    SAD_HBD_PRE_8x8 r2, 1, 0, 1, r4, r6
+    SAD_HBD_PRE_8x8 r3, 2, 0, 1, r4, r6
+%if %1 == 16
+    lea            r1, [r1+8*r4]
+    lea            r2, [r2+8*r4]
+    lea            r3, [r3+8*r4]
+    SAD_HBD_PRE_8x8 r1, 0, 128, 0, r4, r6
+    SAD_HBD_PRE_8x8 r2, 1, 128, 0, r4, r6
+    SAD_HBD_PRE_8x8 r3, 2, 128, 0, r4, r6
+%endif
+    SAD_HBD_PRE_END 3
+    movq      [r5+0], xm0
+    pextrd    [r5+8], xm0, 2
+    RET
+%endmacro
+
+%macro SAD_X4_HBD_PRE 1
+cglobal pixel_sad_x4_pre_8x%1, 6,7,8
+    lea            r6, [r5+2*r5]
+    SAD_HBD_PRE_8x8 r1, 0, 0, 1, r5, r6
+    SAD_HBD_PRE_8x8 r2, 1, 0, 1, r5, r6
+    SAD_HBD_PRE_8x8 r3, 2, 0, 1, r5, r6
+    SAD_HBD_PRE_8x8 r4, 3, 0, 1, r5, r6
+%if %1 == 16
+    lea            r1, [r1+8*r5]
+    lea            r2, [r2+8*r5]
+    lea            r3, [r3+8*r5]
+    lea            r4, [r4+8*r5]
+    SAD_HBD_PRE_8x8 r1, 0, 128, 0, r5, r6
+    SAD_HBD_PRE_8x8 r2, 1, 128, 0, r5, r6
+    SAD_HBD_PRE_8x8 r3, 2, 128, 0, r5, r6
+    SAD_HBD_PRE_8x8 r4, 3, 128, 0, r5, r6
+%endif
+    SAD_HBD_PRE_END 4
+    mov            r6, r6mp
+    movu         [r6], xm0
+    RET
+%endmacro
+
+SAD_X3_HBD_PRE 8
+SAD_X3_HBD_PRE 16
+SAD_X4_HBD_PRE 8
+SAD_X4_HBD_PRE 16
+%endif ; ARCH_X86_64
+
 ;=============================================================================
 ; 10-bit sad_x3/sad_x4 16x16 and 16x8, AVX2: one row per ymm, fenc - ref with
 ; the reference as the memory operand, 4 rows per pointer step.

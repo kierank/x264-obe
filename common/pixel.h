@@ -95,10 +95,15 @@ typedef struct
     x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; width 8 heights 4-16, width 4 heights 8-16 */
     /* asm only, NULL otherwise. satd_fenc_pre[0] fills 256 words from a 16x16 fenc
      * (FENC_STRIDE) for the 16 wide sizes, 16 words a row; [1] 64 from an 8x8 for the
-     * 8 wide ones, an 8x16 reading those of its two 8x8 consecutively. */
+     * 8 wide ones, an 8x16 reading those of its two 8x8 consecutively. High bit
+     * depth: no [0] or 16 wide sizes; [1] holds fenc's pixels (rows k, k+4). */
     void (*satd_fenc_pre[2])( int16_t *fenc_pre, pixel *fenc );
     x264_pixel_cmp_pre_t satd_pre[4];
     x264_pixel_cmp_avg2_pre_t satd_avg2_pre[4];
+    /* asm only, NULL otherwise. High bit depth 8 wide: sad_x3/sad_x4 with fenc the
+     * satd_fenc_pre[1] fenc_pre */
+    x264_pixel_cmp_x3_t sad_x3_pre[4];
+    x264_pixel_cmp_x4_t sad_x4_pre[4];
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
@@ -111,6 +116,8 @@ typedef struct
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
     x264_pixel_cmp_x4_t fpelcmp_x4[7];
+    x264_pixel_cmp_x3_t fpelcmp_x3_pre[4]; /* sad_x3_pre/sad_x4_pre where fpelcmp is sad, else NULL */
+    x264_pixel_cmp_x4_t fpelcmp_x4_pre[4];
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );

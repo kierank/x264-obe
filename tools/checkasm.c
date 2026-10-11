@@ -444,7 +444,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     report( "pixel satd_mcc :" );
 
     ok = 1, used_asm = 0;
-    if( pixel_asm.satd_pre[PIXEL_16x16] && pixel_asm.satd_pre[PIXEL_16x16] != pixel_ref.satd_pre[PIXEL_16x16] )
+    if( pixel_asm.satd_pre[PIXEL_8x8] && pixel_asm.satd_pre[PIXEL_8x8] != pixel_ref.satd_pre[PIXEL_8x8] )
     {
         /* size, x, y of every partition of a 16x16 fenc */
         static const uint8_t pre_parts[9][3] = { {PIXEL_16x16, 0, 0}, {PIXEL_16x8, 0, 0}, {PIXEL_16x8, 0, 8},
@@ -461,14 +461,19 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 pixel *src1 = k ? pbuf4+j : pbuf2+j;
                 pixel *src2 = k ? pbuf4+j : pbuf2+1280+(j^5);
                 intptr_t stride = k ? 16 : 64;
-                set_func_name( "satd_fenc_pre_16x16" );
-                call_a( pixel_asm.satd_fenc_pre[0], fenc_pre, fenc );
+                if( pixel_asm.satd_fenc_pre[0] ) /* 8-bit only */
+                {
+                    set_func_name( "satd_fenc_pre_16x16" );
+                    call_a( pixel_asm.satd_fenc_pre[0], fenc_pre, fenc );
+                }
                 set_func_name( "satd_fenc_pre_8x8" );
                 for( int b = 0; b < 4; b++ )
                     call_a( pixel_asm.satd_fenc_pre[1], fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
                 for( int p = 0; p < 9 && ok; p++ )
                 {
                     int i = pre_parts[p][0], x = pre_parts[p][1], y = pre_parts[p][2];
+                    if( !pixel_asm.satd_pre[i] ) /* the 16 wide sizes at high bit depth */
+                        continue;
                     int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
                     int16_t *pre = i <= PIXEL_16x8 ? fenc_pre+16*y : fenc_pre+256+64*(2*(x>>3)+(y>>3));
                     pixel *f = fenc + x + y*FENC_STRIDE;
@@ -497,6 +502,61 @@ static int check_pixel( int cpu_ref, int cpu_new )
             }
     }
     report( "pixel satd_pre :" );
+
+    ok = 1, used_asm = 0;
+    if( pixel_asm.sad_x4_pre[PIXEL_8x8] && pixel_asm.sad_x4_pre[PIXEL_8x8] != pixel_ref.sad_x4_pre[PIXEL_8x8] )
+    {
+        /* size, x, y of every 8 wide partition of a 16x16 fenc */
+        static const uint8_t pre_parts[6][3] = { {PIXEL_8x16, 0, 0}, {PIXEL_8x16, 8, 0}, {PIXEL_8x8, 0, 0},
+                                                 {PIXEL_8x8, 8, 0}, {PIXEL_8x8, 0, 8}, {PIXEL_8x8, 8, 8} };
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[256] );
+        used_asm = 1;
+        /* k = 0: random, k = 1: maxed (pbuf4), zero (pbuf3) and mixed (pbuf1) differences */
+        for( int k = 0; k < 2 && ok; k++ )
+            for( int j = 0; j < (k ? 0x1000 : 64) && ok; j += k ? 256 : 1 )
+            {
+                pixel *fenc = k ? pbuf3+j : pbuf1;
+                pixel *src[4] = { pbuf2+j, pbuf2+j+6, pbuf2+j+1, pbuf2+j+10 };
+                if( k )
+                    src[0] = pbuf4+j, src[1] = pbuf3+j, src[2] = pbuf1+j, src[3] = pbuf4+j;
+                intptr_t stride = k ? 16 : 64;
+                set_func_name( "satd_fenc_pre_8x8" );
+                for( int b = 0; b < 4; b++ )
+                    call_a( pixel_asm.satd_fenc_pre[1], fenc_pre+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+                for( int p = 0; p < 6 && ok; p++ )
+                {
+                    int i = pre_parts[p][0], x = pre_parts[p][1], y = pre_parts[p][2];
+                    pixel *pre = (pixel*)(fenc_pre+64*(2*(x>>3)+(y>>3)));
+                    pixel *f = fenc + x + y*FENC_STRIDE;
+                    pixel *s[4];
+                    ALIGNED_16( int res_c[4] );
+                    ALIGNED_16( int res_asm[4] );
+                    for( int r = 0; r < 4; r++ )
+                    {
+                        s[r] = src[r] + x + y*stride;
+                        res_c[r] = pixel_c.sad[i]( f, FENC_STRIDE, s[r], stride );
+                    }
+                    res_asm[3] = res_c[3];
+                    set_func_name( "sad_x3_pre_%s", pixel_names[i] );
+                    call_a( pixel_asm.sad_x3_pre[i], pre, s[0], s[1], s[2], stride, res_asm );
+                    if( memcmp( res_c, res_asm, 3*sizeof(int) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "sad_x3_pre[%d] %d,%d %s: %d,%d,%d != %d,%d,%d [FAILED]\n", i, x, y, k ? "max" : "random",
+                                 res_c[0], res_c[1], res_c[2], res_asm[0], res_asm[1], res_asm[2] );
+                    }
+                    set_func_name( "sad_x4_pre_%s", pixel_names[i] );
+                    call_a( pixel_asm.sad_x4_pre[i], pre, s[0], s[1], s[2], s[3], stride, res_asm );
+                    if( memcmp( res_c, res_asm, 4*sizeof(int) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "sad_x4_pre[%d] %d,%d %s: %d,%d,%d,%d != %d,%d,%d,%d [FAILED]\n", i, x, y, k ? "max" : "random",
+                                 res_c[0], res_c[1], res_c[2], res_c[3], res_asm[0], res_asm[1], res_asm[2], res_asm[3] );
+                    }
+                }
+            }
+    }
+    report( "pixel sad_x_pre :" );
 
     TEST_PIXEL( sa8d, 1 );
 

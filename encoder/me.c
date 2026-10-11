@@ -102,7 +102,7 @@ do\
 #define COST_MV_X3_DIR( m0x, m0y, m1x, m1y, m2x, m2y, costs )\
 {\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
-    h->pixf.fpelcmp_x3[i_pixel]( p_fenc,\
+    fpelcmp_x3( p_fenc_x,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
         pix_base + (m2x) + (m2y)*stride,\
@@ -115,7 +115,7 @@ do\
 #define COST_MV_X4_DIR( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, costs )\
 {\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
-    h->pixf.fpelcmp_x4[i_pixel]( p_fenc,\
+    fpelcmp_x4( p_fenc_x,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
         pix_base + (m2x) + (m2y)*stride,\
@@ -130,7 +130,7 @@ do\
 #define COST_MV_X4( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y )\
 {\
     pixel *pix_base = p_fref_w + omx + omy*stride;\
-    h->pixf.fpelcmp_x4[i_pixel]( p_fenc,\
+    fpelcmp_x4( p_fenc_x,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
         pix_base + (m2x) + (m2y)*stride,\
@@ -148,7 +148,7 @@ do\
 
 #define COST_MV_X3_ABS( m0x, m0y, m1x, m1y, m2x, m2y )\
 {\
-    h->pixf.fpelcmp_x3[i_pixel]( p_fenc,\
+    fpelcmp_x3( p_fenc_x,\
         p_fref_w + (m0x) + (m0y)*stride,\
         p_fref_w + (m1x) + (m1y)*stride,\
         p_fref_w + (m2x) + (m2y)*stride,\
@@ -212,6 +212,16 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     int omx, omy, pmx, pmy;
     pixel *p_fenc = m->p_fenc[0];
     pixel *p_fref_w = m->p_fref_w;
+    /* fenc of fpelcmp_x3/x4: fenc_pre where they take it (high bit depth 8 wide) */
+    x264_pixel_cmp_x3_t fpelcmp_x3 = h->pixf.fpelcmp_x3[i_pixel];
+    x264_pixel_cmp_x4_t fpelcmp_x4 = h->pixf.fpelcmp_x4[i_pixel];
+    pixel *p_fenc_x = p_fenc;
+    if( HIGH_BIT_DEPTH && i_pixel <= PIXEL_8x8 && h->pixf.fpelcmp_x4_pre[i_pixel] )
+    {
+        p_fenc_x = (pixel*)x264_me_fenc_pre8( h, i_pixel, p_fenc );
+        fpelcmp_x3 = h->pixf.fpelcmp_x3_pre[i_pixel];
+        fpelcmp_x4 = h->pixf.fpelcmp_x4_pre[i_pixel];
+    }
     ALIGNED_ARRAY_N( pixel, pix,[16*16] );
     ALIGNED_ARRAY_8( int16_t, mvc_temp,[16],[2] );
 
@@ -576,7 +586,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     pixel *pix_base = p_fref_w + omx + (omy-4*i)*stride;
                     int dy = i*stride;
 #define SADS(k,x0,y0,x1,y1,x2,y2,x3,y3)\
-                    h->pixf.fpelcmp_x4[i_pixel]( p_fenc,\
+                    fpelcmp_x4( p_fenc_x,\
                             pix_base x0*i+(y0-2*k+4)*dy,\
                             pix_base x1*i+(y1-2*k+4)*dy,\
                             pix_base x2*i+(y2-2*k+4)*dy,\

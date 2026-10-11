@@ -81,23 +81,12 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
-/* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
- * mbcmp_pre and mbcmp_avg2_pre, filled on first use in the mb; NULL without them */
-static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )
+/* fenc_pre of the 8 wide luma partition i_pixel (PIXEL_8x16 or PIXEL_8x8) at p_fenc
+ * (in h->mb.pic.p_fenc[0]), filled on first use in the mb */
+static inline int16_t *x264_me_fenc_pre8( x264_t *h, int i_pixel, pixel *p_fenc )
 {
-    if( i_pixel > PIXEL_8x8 || !h->pixf.mbcmp_pre[0] )
-        return NULL;
-    int off = p_fenc - h->mb.pic.p_fenc[0];
-    if( i_pixel <= PIXEL_16x8 )
-    {
-        if( !(h->mb.pic.i_fenc_pre & 16) )
-        {
-            h->pixf.satd_fenc_pre[0]( h->mb.pic.fenc_pre, h->mb.pic.p_fenc[0] );
-            h->mb.pic.i_fenc_pre |= 16;
-        }
-        return h->mb.pic.fenc_pre + off;
-    }
     /* 8x8 b = 2*(x/8) + y/8, an 8x16 the two of its column */
+    int off = p_fenc - h->mb.pic.p_fenc[0];
     int b = ((off&8) >> 2) + (off >> 7);
     for( int i = b; i <= b + (i_pixel == PIXEL_8x16); i++ )
         if( !(h->mb.pic.i_fenc_pre & (1 << i)) )
@@ -107,6 +96,24 @@ static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )
             h->mb.pic.i_fenc_pre |= 1 << i;
         }
     return h->mb.pic.fenc_pre + 256 + 64*b;
+}
+
+/* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
+ * mbcmp_pre and mbcmp_avg2_pre, filled on first use in the mb; NULL without them */
+static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )
+{
+    if( i_pixel > PIXEL_8x8 || !h->pixf.mbcmp_pre[i_pixel] )
+        return NULL;
+    if( i_pixel <= PIXEL_16x8 )
+    {
+        if( !(h->mb.pic.i_fenc_pre & 16) )
+        {
+            h->pixf.satd_fenc_pre[0]( h->mb.pic.fenc_pre, h->mb.pic.p_fenc[0] );
+            h->mb.pic.i_fenc_pre |= 16;
+        }
+        return h->mb.pic.fenc_pre + (p_fenc - h->mb.pic.p_fenc[0]);
+    }
+    return x264_me_fenc_pre8( h, i_pixel, p_fenc );
 }
 
 #define COPY1_IF_LT(x,y)\

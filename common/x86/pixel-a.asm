@@ -4664,14 +4664,19 @@ HADAMARD_AC_SSE2
     lea       r7, [r7+8*r3]
 %endmacro
 
-%macro SATD_HBD_END 1 ; 1: words may exceed 32767
-%if %1
+%macro SATD_HBD_END 1 ; 1: words may exceed 32767, 2: one pass (lanes add in signed words)
+%if %1 == 1
     HADDUWD   m6, m7
-%else
-    vpbroadcastd m7, [pw_1]
-    pmaddwd   m6, m7
-%endif
     HADDD     m6, m7
+%elif %1 == 2
+    vextracti128 xm7, m6, 1
+    paddw    xm6, xm7
+    pmaddwd  xm6, [pw_1]
+    HADDD    xm6, xm7
+%else
+    pmaddwd   m6, [pw_1]
+    HADDD     m6, m7
+%endif
     movd     eax, xm6
     RET
 %endmacro
@@ -4681,7 +4686,7 @@ cglobal pixel_satd_8x8, 4,8,8
     SATD_HBD_START
     SATD_HBD_LOAD_X
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
-    SATD_HBD_END 0
+    SATD_HBD_END 2
 
 cglobal pixel_satd_8x16, 4,8,8
     SATD_HBD_START
@@ -4785,7 +4790,7 @@ cglobal pixel_satd_avg2_8x8, 4,7,8
     SATD_AVG2_START_X
     SATD_AVG2_LOAD_X
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
-    SATD_HBD_END 0
+    SATD_HBD_END 2
 
 cglobal pixel_satd_avg2_8x16, 4,7,8
     SATD_AVG2_START_X
@@ -4823,6 +4828,99 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
 %endrep
     SATD_HBD_END 1
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void pixel_satd_fenc_pre_8x8( int16_t dst[64], uint16_t *fenc )
+; int  pixel_satd_pre_WxH( int16_t *fenc_pre, uint16_t *pix, intptr_t stride )
+; int  pixel_satd_avg2_pre_WxH( int16_t *fenc_pre, uint16_t *src1, uint16_t *src2, intptr_t stride )
+; 8 wide: fenc_pre holds fenc's rows k, k+4 a register, the lanes of
+; SATD_HBD_LOAD_X (4 per 8x8, an 8x16 reading two 8x8 in a row), so fenc is
+; one load-op a register. pix - fenc negates the transform: same satd.
+;-----------------------------------------------------------------------------
+cglobal pixel_satd_fenc_pre_8x8, 2,2,1
+%assign fpre_i 0
+%rep 4
+    movu         xm0, [r1+fpre_i*FENC_STRIDEB]
+    vinserti128   m0, m0, [r1+(fpre_i+4)*FENC_STRIDEB], 1
+    mova [r0+fpre_i*32], m0
+%assign fpre_i fpre_i+1
+%endrep
+%undef fpre_i
+    RET
+
+; m0-m3 as SATD_HBD_LOAD_X: rows k, k+4 of pix (r1, r4 = r1 four rows down,
+; r3 = 3*stride) less fenc_pre's
+%macro SATD_HBD_PRE_LOAD_X 1 ; fenc_pre offset
+    movu         xm0, [r1]
+    vinserti128   m0, m0, [r4], 1
+    movu         xm1, [r1+r2]
+    vinserti128   m1, m1, [r4+r2], 1
+    psubw         m0, [r0+%1]
+    psubw         m1, [r0+%1+32]
+    movu         xm2, [r1+2*r2]
+    vinserti128   m2, m2, [r4+2*r2], 1
+    movu         xm3, [r1+r3]
+    vinserti128   m3, m3, [r4+r3], 1
+    psubw         m2, [r0+%1+64]
+    psubw         m3, [r0+%1+96]
+%endmacro
+
+cglobal pixel_satd_pre_8x8, 3,5,8
+    FIX_STRIDES r2
+    lea       r3, [3*r2]
+    lea       r4, [r1+4*r2]
+    SATD_HBD_PRE_LOAD_X 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_END 2
+
+cglobal pixel_satd_pre_8x16, 3,5,8
+    FIX_STRIDES r2
+    lea       r3, [3*r2]
+    lea       r4, [r1+4*r2]
+    SATD_HBD_PRE_LOAD_X 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    lea       r1, [r1+8*r2]
+    lea       r4, [r4+8*r2]
+    SATD_HBD_PRE_LOAD_X 128
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+
+; row k, k+4 of pavgw( src1, src2 ) (r5/r6 = r1/r2 four rows down) less fenc_pre's
+%macro SATD_AVG2_PRE_ROW_X 3 ; dst (number), source offset, fenc_pre offset
+    movu         xm%1, [r1+%2]
+    vinserti128   m%1, m%1, [r5+%2], 1
+    movu         xm4, [r2+%2]
+    vinserti128   m4, m4, [r6+%2], 1
+    pavgw         m%1, m4
+    psubw         m%1, [r0+%3]
+%endmacro
+
+%macro SATD_AVG2_PRE_LOAD_X 1 ; fenc_pre offset
+    SATD_AVG2_PRE_ROW_X 0, 0,    %1
+    SATD_AVG2_PRE_ROW_X 1, r3,   %1+32
+    SATD_AVG2_PRE_ROW_X 2, 2*r3, %1+64
+    SATD_AVG2_PRE_ROW_X 3, r4,   %1+96
+%endmacro
+
+cglobal pixel_satd_avg2_pre_8x8, 4,7,8
+    SATD_AVG2_START_X
+    SATD_AVG2_PRE_LOAD_X 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_END 2
+
+cglobal pixel_satd_avg2_pre_8x16, 4,7,8
+    SATD_AVG2_START_X
+    SATD_AVG2_PRE_LOAD_X 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    lea       r1, [r1+8*r3]
+    lea       r2, [r2+8*r3]
+    lea       r5, [r5+8*r3]
+    lea       r6, [r6+8*r3]
+    SATD_AVG2_PRE_LOAD_X 128
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+%endif ; ARCH_X86_64
 
 %if ARCH_X86_64
 INIT_YMM avx2

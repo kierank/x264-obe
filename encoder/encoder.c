@@ -1324,6 +1324,16 @@ static void mbcmp_init( x264_t *h )
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );
     memcpy( h->pixf.fpelcmp_x4, satd ? h->pixf.satd_x4 : h->pixf.sad_x4, sizeof(h->pixf.fpelcmp_x4) );
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
+    if( satd )
+    {
+        memset( h->pixf.fpelcmp_x3_pre, 0, sizeof(h->pixf.fpelcmp_x3_pre) );
+        memset( h->pixf.fpelcmp_x4_pre, 0, sizeof(h->pixf.fpelcmp_x4_pre) );
+    }
+    else
+    {
+        memcpy( h->pixf.fpelcmp_x3_pre, h->pixf.sad_x3_pre, sizeof(h->pixf.fpelcmp_x3_pre) );
+        memcpy( h->pixf.fpelcmp_x4_pre, h->pixf.sad_x4_pre, sizeof(h->pixf.fpelcmp_x4_pre) );
+    }
 }
 
 static void chroma_dsp_init( x264_t *h )
