@@ -864,7 +864,6 @@ cglobal hpel_filter_h, 3,3,8
     ;In real use, the prefetch seems to be a slight win.
     ;+mmsize is picked somewhat arbitrarily here based on the fact that even one
     ;loop iteration is going to take longer than the prefetch.
-    prefetcht0 [r1+r2*2+mmsize]
 %if cpuflag(ssse3)
     mova m1, [r3]
     mova m2, [r3+r2]
