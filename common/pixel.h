@@ -35,6 +35,10 @@ typedef void (*x264_pixel_cmp_x3_t) ( pixel *, pixel *, pixel *, pixel *, intptr
 typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, int[4] );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
+/* chroma ME: satd of the u and v mc_chroma( src, src_stride, dx, dy, width, height )
+ * predictions against fenc's u (res[0]) and v (res[1] = fenc + 8), without storing them */
+typedef void (*x264_pixel_satd_mcc_t) ( pixel *fenc, int res[2], pixel *src, intptr_t i_src_stride,
+                                        int dx, int dy, int i_width, int i_height );
 
 enum
 {
@@ -84,11 +88,13 @@ typedef struct
     x264_pixel_cmp_t satd[8];
     x264_pixel_cmp_avg2_t satd_avg2[7]; /* asm only, NULL otherwise */
     x264_pixel_cmp_avg2_t sad_avg2[7];  /* asm only, NULL otherwise */
+    x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; width 8 heights 4-16, width 4 heights 8-16 */
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
     x264_pixel_cmp_t mbcmp_unaligned[8]; /* unaligned mbcmp for subpel */
     x264_pixel_cmp_avg2_t mbcmp_avg2[7]; /* mbcmp of a qpel average, NULL where get_ref + mbcmp is used */
+    x264_pixel_satd_mcc_t mbcmp_mcc;     /* satd_mcc where mbcmp is satd, else NULL */
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
