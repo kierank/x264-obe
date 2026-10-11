@@ -4625,7 +4625,12 @@ HADAMARD_AC_SSE2
 %if %2
     HADDUWD m%1, m4
 %else
+%if mmsize == 64
+    vpbroadcastd m4, [pw_1]
+    pmaddwd m%1, m4
+%else
     pmaddwd m%1, [pw_1]
+%endif
 %endif
 %if mmsize == 64
     vextracti32x8 ym4, m%1, 1
