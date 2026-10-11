@@ -299,6 +299,8 @@ typedef struct
     int64_t hexexit[5];             /* HEX searches (not lowres): [all, start cost below the ALG_HEXEXIT
                                      * threshold 250, 500, 1000, 2000] */
     int64_t hexmoved[4];            /* of those below each threshold, the first hexagon moved off the start */
+    int64_t rdthresh[3][3];         /* P mbrd candidates: [16x8/8x16/8x8, 16x16, intra][RD'd, ALG_RDTHRESH
+                                     * would leave them out, and of those the final choice] */
 } x264_exp_census_t;
 
 struct x264_t
@@ -789,6 +791,7 @@ struct x264_t
         int     i_alg_hexexit;
         int     b_lowres_ctx;       /* this context runs lowres searches (lookahead) */
         int     i_hex_census;       /* census: the smallest ALG_HEXEXIT threshold the HEX start is below */
+        int     i_alg_rdthresh;
         int     b_census;           /* X264_EXP_CENSUS */
         int     b_census_me;        /* set around the 16x16 searches */
         int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */

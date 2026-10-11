@@ -1541,6 +1541,10 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.i_alg_hexexit = e ? atoi( e ) : 0;
         h->exp.b_lowres_ctx = 0;
         h->exp.i_hex_census = 4;
+        /* X264_EXP_ALG_RDTHRESH=1: P mbrd thresholds 9/8 instead of 5/4 for the
+         * partition and intra RDs, 5/4 instead of 3/2 for the 16x16 RD */
+        e = getenv( "X264_EXP_ALG_RDTHRESH" );
+        h->exp.i_alg_rdthresh = e ? atoi( e ) : 0;
         /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
          * the counts at x264_encoder_close; does not change the output */
         e = getenv( "X264_EXP_CENSUS" );
@@ -1550,12 +1554,12 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.p_hpel_shadow = NULL;
         if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme ||
             h->exp.i_alg_fieldref || h->exp.i_alg_partgate || h->exp.i_alg_trdpre || h->exp.i_alg_chromame ||
-            h->exp.i_alg_hexexit || h->exp.b_census )
+            h->exp.i_alg_hexexit || h->exp.i_alg_rdthresh || h->exp.b_census )
             x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d partgate %d trdpre %d "
-                      "chromame %d hexexit %d census %d\n",
+                      "chromame %d hexexit %d rdthresh %d census %d\n",
                       h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme,
                       h->exp.i_alg_fieldref, h->exp.i_alg_partgate, h->exp.i_alg_trdpre, h->exp.i_alg_chromame,
-                      h->exp.i_alg_hexexit, h->exp.b_census );
+                      h->exp.i_alg_hexexit, h->exp.i_alg_rdthresh, h->exp.b_census );
     }
 
     /* Init frames. */
@@ -4177,6 +4181,10 @@ static void x264_exp_census_print( x264_t *h )
              "below-1000 %"PRId64" (moved %"PRId64") below-2000 %"PRId64" (moved %"PRId64")\n",
              c.hexexit[0], c.hexexit[1], c.hexmoved[0], c.hexexit[2], c.hexmoved[1],
              c.hexexit[3], c.hexmoved[2], c.hexexit[4], c.hexmoved[3] );
+    static const char * const rdt_name[3] = { "partitions", "16x16", "intra" };
+    for( int g = 0; g < 3; g++ )
+        fprintf( stderr, "bd-alg census: rdthresh P %s rd %"PRId64" cut %"PRId64" cut-but-chosen %"PRId64"\n",
+                 rdt_name[g], c.rdthresh[g][0], c.rdthresh[g][1], c.rdthresh[g][2] );
 }
 
 /****************************************************************************

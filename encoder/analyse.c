@@ -2776,12 +2776,79 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
     a->i_cost8x16bi += a->i_lambda * i_mb_b16x8_cost_table[a->i_mb_type8x16];
 }
 
+/* bd-alg ALG_RDTHRESH: the P RD thresholds, x*5/4 for the partitions and intra and
+ * x*3/2 for 16x16, or with the knob x*9/8 and x*5/4 */
+static ALWAYS_INLINE int x264_exp_p_rd_thresh( x264_t *h, int x )
+{
+    return h->exp.i_alg_rdthresh ? (int)((int64_t)x * 9/8) : x * 5/4;
+}
+
+static ALWAYS_INLINE int x264_exp_p_rd16_thresh( x264_t *h, int x )
+{
+    return h->exp.i_alg_rdthresh ? (int)((int64_t)x * 5/4) : x * 3/2;
+}
+
+/* bd-alg X264_EXP_CENSUS: the P candidates RD'd at 5/4 (3/2 for 16x16), bits 8-11
+ * (16x8, 8x16, 8x8, 16x16), and those ALG_RDTHRESH would leave out, bits 0-3 */
+static int x264_exp_rdthresh_band_p( x264_mb_analysis_t *a, int i_satd )
+{
+    int t54 = i_satd * 5/4 + 1;
+    int t98 = (int)((int64_t)i_satd * 9/8) + 1;
+    int costs[3] = { a->l0.i_cost16x8, a->l0.i_cost8x16, a->l0.i_cost8x8 };
+    int mask = 0;
+    for( int k = 0; k < 3; k++ )
+        if( costs[k] < t54 )
+            mask |= (0x100 | (costs[k] >= t98)) << k;
+    if( a->l0.i_rd16x16 == COST_MAX && a->l0.me16x16.cost <= i_satd * 3/2 )
+        mask |= (0x100 | (a->l0.me16x16.cost > (int)((int64_t)i_satd * 5/4))) << 3;
+    return mask;
+}
+
+/* ... the intra modes RD'd at 5/4, bits 12-14 (16x16, 4x4, 8x8), and those
+ * ALG_RDTHRESH would leave out, bits 4-6 */
+static int x264_exp_rdthresh_band_i( x264_mb_analysis_t *a, int i_satd_inter )
+{
+    int t54 = i_satd_inter * 5/4 + 1;
+    int t98 = (int)((int64_t)i_satd_inter * 9/8) + 1;
+    int costs[3] = { a->i_satd_i16x16, a->i_satd_i4x4, a->i_satd_i8x8 };
+    int mask = 0;
+    for( int k = 0; k < 3; k++ )
+        if( costs[k] < t54 )
+            mask |= (0x100 | (costs[k] >= t98)) << (4+k);
+    return mask;
+}
+
+/* ... counted by group (partitions, 16x16, intra): RD'd, left out by the knob,
+ * left out yet the final choice */
+static NOINLINE void x264_exp_census_rdthresh( x264_t *h, int mask, int i_type, int i_partition )
+{
+    const int won[7] =
+    {
+        i_type == P_L0 && i_partition == D_16x8,
+        i_type == P_L0 && i_partition == D_8x16,
+        i_type == P_8x8,
+        i_type == P_L0 && i_partition == D_16x16,
+        i_type == I_16x16, i_type == I_4x4, i_type == I_8x8
+    };
+    for( int k = 0; k < 7; k++ )
+    {
+        int g = k < 3 ? 0 : k == 3 ? 1 : 2;
+        if( mask & (0x100 << k) )
+            h->exp.census.rdthresh[g][0]++;
+        if( mask & (1 << k) )
+        {
+            h->exp.census.rdthresh[g][1]++;
+            h->exp.census.rdthresh[g][2] += won[k];
+        }
+    }
+}
+
 static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
 {
-    int thresh = a->b_early_terminate ? i_satd * 5/4 + 1 : COST_MAX;
+    int thresh = a->b_early_terminate ? x264_exp_p_rd_thresh( h, i_satd ) + 1 : COST_MAX;
 
     h->mb.i_type = P_L0;
-    if( a->l0.i_rd16x16 == COST_MAX && (!a->b_early_terminate || a->l0.me16x16.cost <= i_satd * 3/2) )
+    if( a->l0.i_rd16x16 == COST_MAX && (!a->b_early_terminate || a->l0.me16x16.cost <= x264_exp_p_rd16_thresh( h, i_satd )) )
     {
         h->mb.i_partition = D_16x16;
         x264_analyse_update_cache( h, a );
@@ -3553,9 +3620,10 @@ skip_analysis:
                 }
             }
 
-            /* bd-alg ALG_RDBOUND: x264_intra_rd() below gets i_satd_inter * 5/4 + 1,
-             * and x264_mb_analyse_transform_rd() can only lower i_satd_inter */
-            analysis.i_intra_rd_bound = x264_exp_intra_rd_bound( h, &analysis, i_cost * 5/4 + 1, 0 );
+            /* bd-alg ALG_RDBOUND: x264_intra_rd() below gets i_satd_inter * 5/4 + 1
+             * (9/8 with ALG_RDTHRESH), and x264_mb_analyse_transform_rd() can only
+             * lower i_satd_inter */
+            analysis.i_intra_rd_bound = x264_exp_intra_rd_bound( h, &analysis, x264_exp_p_rd_thresh( h, i_cost ) + 1, 0 );
             if( h->mb.b_chroma_me )
             {
                 if( CHROMA444 )
@@ -3566,7 +3634,7 @@ skip_analysis:
                 else
                 {
                     x264_mb_analyse_intra_chroma( h, &analysis );
-                    analysis.i_intra_rd_bound = x264_exp_intra_rd_bound( h, &analysis, i_cost * 5/4 + 1, analysis.i_satd_chroma );
+                    analysis.i_intra_rd_bound = x264_exp_intra_rd_bound( h, &analysis, x264_exp_p_rd_thresh( h, i_cost ) + 1, analysis.i_satd_chroma );
                     x264_mb_analyse_intra( h, &analysis, i_cost - analysis.i_satd_chroma );
                 }
                 analysis.i_satd_i16x16 += analysis.i_satd_chroma;
@@ -3584,8 +3652,14 @@ skip_analysis:
                                       analysis.i_satd_i8x8,
                                       analysis.i_satd_i4x4 );
 
+            /* bd-alg X264_EXP_CENSUS: the RDs ALG_RDTHRESH would leave out, taken
+             * before the RDs overwrite the SATD costs */
+            int i_rdt_mask = 0;
+            int b_rdt_census = h->exp.b_census && !h->exp.i_alg_rdthresh && analysis.b_early_terminate;
             if( analysis.i_mbrd )
             {
+                if( b_rdt_census )
+                    i_rdt_mask = x264_exp_rdthresh_band_p( &analysis, X264_MIN(i_satd_inter, i_satd_intra) );
                 x264_mb_analyse_p_rd( h, &analysis, X264_MIN(i_satd_inter, i_satd_intra) );
                 i_type = P_L0;
                 i_partition = D_16x16;
@@ -3597,13 +3671,19 @@ skip_analysis:
                 h->mb.i_partition = i_partition;
                 if( i_cost < COST_MAX )
                     x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
-                x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1 );
+                if( b_rdt_census )
+                    i_rdt_mask |= x264_exp_rdthresh_band_i( &analysis, i_satd_inter );
+                /* bd-alg ALG_RDTHRESH: 9/8 instead of 5/4 */
+                x264_intra_rd( h, &analysis, x264_exp_p_rd_thresh( h, i_satd_inter ) + 1 );
             }
 
             COPY2_IF_LT( i_cost, analysis.i_satd_i16x16, i_type, I_16x16 );
             COPY2_IF_LT( i_cost, analysis.i_satd_i8x8, i_type, I_8x8 );
             COPY2_IF_LT( i_cost, analysis.i_satd_i4x4, i_type, I_4x4 );
             COPY2_IF_LT( i_cost, analysis.i_satd_pcm, i_type, I_PCM );
+
+            if( b_rdt_census && analysis.i_mbrd )
+                x264_exp_census_rdthresh( h, i_rdt_mask, i_type, i_partition );
 
             h->mb.i_type = i_type;
 
