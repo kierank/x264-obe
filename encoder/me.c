@@ -927,11 +927,10 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int chromapix = h->luma2chroma_pixel[i_pixel];
     int chroma_v_shift = CHROMA_V_SHIFT;
     int mvy_offset = chroma_v_shift & MB_INTERLACED & m->i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
-    /* chroma cost without storing the prediction: mbcmp_mcc takes u and v
-     * widths 8 (height >= 4) and 4 (height >= 8) */
+    /* chroma cost without storing the prediction: mbcmp_mcc takes every
+     * chroma ME size, u and v widths 8 and 4, heights 4 to 16 */
     const int b_chroma_mcc = b_chroma_me && !CHROMA444 && h->pixf.mbcmp_mcc
-                          && !m->weight[1].weightfn && !m->weight[2].weightfn
-                          && (bh>>chroma_v_shift) >= (bw == 16 ? 4 : 8);
+                          && !m->weight[1].weightfn && !m->weight[2].weightfn;
     /* mbcmp_mcc takes fenc, high bit depth, as the interleaved uv plane (the source of
      * p_fenc[1] and p_fenc[2]) at the partition, which has the stride of the ref planes;
      * 8-bit, from mcc_fenc_pre */
@@ -942,7 +941,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         int off = m->p_fenc[1] - h->mb.pic.p_fenc[1];
         p_fenc_uv = h->mb.pic.p_fenc_plane[1] + 2*(off%FENC_STRIDE) + (off/FENC_STRIDE)*m->i_stride[1];
 #else
-        p_fenc_uv = x264_me_mcc_fenc_pre( h, m->p_fenc[1], bw );
+        p_fenc_uv = x264_me_mcc_fenc_pre( h, m->p_fenc[1], bw, bh>>chroma_v_shift );
 #endif
     }
 

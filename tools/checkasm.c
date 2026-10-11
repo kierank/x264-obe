@@ -394,15 +394,15 @@ static int check_pixel( int cpu_ref, int cpu_new )
     if( pixel_asm.satd_mcc && pixel_asm.satd_mcc != pixel_ref.satd_mcc )
     {
         /* width, height, satd size of the u and v blocks */
-        static const int mcc_sizes[5][3] = { {8, 16, PIXEL_8x16}, {8, 8, PIXEL_8x8}, {8, 4, PIXEL_8x4},
-                                             {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8} };
+        static const int mcc_sizes[6][3] = { {8, 16, PIXEL_8x16}, {8, 8, PIXEL_8x8}, {8, 4, PIXEL_8x4},
+                                             {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8}, {4, 4, PIXEL_4x4} };
         x264_mc_functions_t mc_c;
         x264_mc_init( 0, &mc_c, 0 );
         used_asm = 1;
 #if !HIGH_BIT_DEPTH
         ALIGNED_ARRAY_32( int16_t, mcc_pre,[512] );
 #endif
-        for( int s = 0; s < 5; s++ )
+        for( int s = 0; s < 6; s++ )
         {
             int w = mcc_sizes[s][0], hgt = mcc_sizes[s][1], size = mcc_sizes[s][2];
             ALIGNED_16( pixel dstu[16*16] );
@@ -428,8 +428,9 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, stride, hgt );
                     fenc_mcc = fenc;
 #else
-                    /* satd_mcc_fenc_pre of an mb's chroma fenc 8 or 16 high, the block at x, y */
-                    int ch = k || hgt == 16 || (j&1) ? 16 : 8;
+                    /* satd_mcc_fenc_pre of an mb's chroma fenc 8 or 16 high, the block at x, y;
+                     * 4x4 only at height 8 (4:2:0) */
+                    int ch = hgt == 4 ? 8 : k || hgt == 16 || (j&1) ? 16 : 8;
                     int x = w == 4 ? 4*((j>>1)&1) : 0;
                     int y = hgt * ((j>>2) % (ch/hgt));
                     mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, stride, ch );
@@ -440,14 +441,15 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         {
                             int e = 64*fenc_c[yy*FENC_STRIDE + (xx&1)*8 + (xx>>1)] - 32;
                             if( mcc_pre[16*yy+xx] != e ||
-                                mcc_pre[256 + 128*(xx>>3) + 64*(yy>>3) + 16*(yy&3) + 8*((yy>>2)&1) + (xx&7)] != e )
+                                mcc_pre[256 + 128*(xx>>3) + 64*(yy>>3) + 16*(yy&3) + 8*((yy>>2)&1) + (xx&7)] != e ||
+                                (ch == 8 && mcc_pre[128 + 32*(xx>>3) + 64*((yy>>2)&1) + 8*((yy>>1)&1) + 16*(yy&1) + (xx&7)] != e) )
                             {
                                 ok = 0;
                                 fprintf( stderr, "satd_mcc_fenc_pre height %d: row %d word %d [FAILED]\n", ch, yy, xx );
                                 break;
                             }
                         }
-                    fenc_mcc = mcc_pre + (w == 8 ? 16*y : 256 + 32*x + 8*y);
+                    fenc_mcc = mcc_pre + (w == 8 ? 16*y : hgt == 4 ? 128 + 8*x + 16*y : 256 + 32*x + 8*y);
 #endif
                     res_c[0] = pixel_c.satd[size]( fenc_c+x+y*FENC_STRIDE,   FENC_STRIDE, dstu, 16 );
                     res_c[1] = pixel_c.satd[size]( fenc_c+8+x+y*FENC_STRIDE, FENC_STRIDE, dstv, 16 );
