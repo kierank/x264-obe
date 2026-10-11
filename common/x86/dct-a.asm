@@ -417,10 +417,28 @@ cglobal sub4x4_dct, 3,3,6
 %endrep
 %endmacro
 
-; %1: dwords of one output row, lane 0 = block 0 or 1, lane 1 = block 2 or 3
-%macro SUB8x8_DCT_HBD_STORE 2 ; reg, offset
-    mova         [r0+%2], xm%1
-    vextracti128 [r0+%2+128], m%1, 1
+; %1, %2: dwords of output rows i and i+1, lane 0 = block 0 or 1, lane 1 = block 2 or 3
+; One 32 byte store per row pair, so quant's 32 byte loads can forward from it.
+%macro SUB8x8_DCT_HBD_STORE 4 ; row i, row i+1, tmp, offset
+    vperm2i128   m%3, m%1, m%2, 0x20
+    vperm2i128   m%1, m%1, m%2, 0x31
+    mova  [r0+%4    ], m%3
+    mova  [r0+%4+128], m%1
+%endmacro
+
+; %1: l = blocks 0 and 2, h = blocks 1 and 3
+%macro SUB8x8_DCT_HBD_HALF 2 ; punpck suffix, offset
+    punpck%1wd    m4, m2, m2    ; s03 + s12
+    punpck%1wd    m5, m0, m0    ; d03
+    punpck%1wd    m6, m1, m1    ; d12
+    psrad         m4, 16
+    psrad         m5, 16
+    psrad         m6, 16
+    SUMSUB2_AB    d, 5, 6, 7    ; 2*d03 + d12, d03 - 2*d12
+    SUB8x8_DCT_HBD_STORE 4, 5, 6, %2
+    punpck%1wd    m4, m3, m3    ; s03 - s12
+    psrad         m4, 16
+    SUB8x8_DCT_HBD_STORE 4, 7, 6, %2+32
 %endmacro
 
 %macro SUB8x8_DCT_HBD 0
@@ -429,20 +447,8 @@ cglobal sub4x4_dct, 3,3,6
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     SUMSUB_BADC w, 3, 0, 2, 1   ; s03, d03, s12, d12
     SUMSUB_BA   w, 2, 3, 4      ; s03 + s12, s03 - s12
-    DCT_UNPACK m2, m5, m4
-    DCT_UNPACK m3, m6, m4
-    SUB8x8_DCT_HBD_STORE 2,  0
-    SUB8x8_DCT_HBD_STORE 5, 64
-    SUB8x8_DCT_HBD_STORE 3, 32
-    SUB8x8_DCT_HBD_STORE 6, 96
-    DCT_UNPACK m0, m4, m2
-    DCT_UNPACK m1, m5, m3
-    SUMSUB2_AB  d, 0, 1, 6      ; 2*d03 + d12, d03 - 2*d12
-    SUMSUB2_AB  d, 4, 5, 7
-    SUB8x8_DCT_HBD_STORE 0, 16
-    SUB8x8_DCT_HBD_STORE 4, 80
-    SUB8x8_DCT_HBD_STORE 6, 48
-    SUB8x8_DCT_HBD_STORE 7, 112
+    SUB8x8_DCT_HBD_HALF l, 0
+    SUB8x8_DCT_HBD_HALF h, 64
 %endmacro
 
 INIT_YMM avx2
@@ -670,31 +676,22 @@ global current_function %+ .skip_prologue
     psubw    m%2, m%4
 %endmacro
 
-; 4x src, 1x tmp
-%macro STORE8_DCT_AVX2 5
-    SBUTTERFLY qdq, %1, %2, %5
-    SBUTTERFLY qdq, %3, %4, %5
-    mova [r0+  0], xm%1
-    mova [r0+ 16], xm%3
-    mova [r0+ 32], xm%2
-    mova [r0+ 48], xm%4
-    vextracti128 [r0+ 64], m%1, 1
-    vextracti128 [r0+ 80], m%3, 1
-    vextracti128 [r0+ 96], m%2, 1
-    vextracti128 [r0+112], m%4, 1
-%endmacro
-
-%macro STORE16_DCT_AVX2 5
-    SBUTTERFLY qdq, %1, %2, %5
-    SBUTTERFLY qdq, %3, %4, %5
-    mova [r0+ 0-128], xm%1
-    mova [r0+16-128], xm%3
-    mova [r0+32-128], xm%2
-    mova [r0+48-128], xm%4
-    vextracti128 [r0+ 0], m%1, 1
-    vextracti128 [r0+16], m%3, 1
-    vextracti128 [r0+32], m%2, 1
-    vextracti128 [r0+48], m%4, 1
+; 4x src row, 2x tmp, 2x offset
+; In: row i of blocks A|B in lane 0 and of C|D in lane 1.
+; Out: one 32 byte store per 4x4 block, so quant's 32 byte loads can forward from it.
+%macro STORE_DCT_AVX2 8
+    vperm2i128  m%5, m%1, m%3, 0x20 ; A0 B0 A2 B2
+    vperm2i128  m%6, m%2, m%4, 0x20 ; A1 B1 A3 B3
+    vperm2i128  m%1, m%1, m%3, 0x31 ; C0 D0 C2 D2
+    vperm2i128  m%2, m%2, m%4, 0x31 ; C1 D1 C3 D3
+    punpcklqdq  m%3, m%5, m%6       ; A
+    punpckhqdq  m%5, m%6            ; B
+    punpcklqdq  m%4, m%1, m%2       ; C
+    punpckhqdq  m%1, m%2            ; D
+    mova [r0+%7+ 0], m%3
+    mova [r0+%7+32], m%5
+    mova [r0+%8+ 0], m%4
+    mova [r0+%8+32], m%1
 %endmacro
 
 INIT_YMM avx2
@@ -706,7 +703,7 @@ cglobal sub8x8_dct, 3,3,7
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4
-    STORE8_DCT_AVX2 0, 1, 2, 3, 4
+    STORE_DCT_AVX2 0, 1, 2, 3, 4, 5, 0, 64
     RET
 
 INIT_YMM avx2
@@ -733,7 +730,7 @@ cglobal sub16x16_dct, 3,3,6
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4
-    STORE16_DCT_AVX2 0, 1, 2, 3, 4
+    STORE_DCT_AVX2 0, 1, 2, 3, 4, 5, -128, 0
     ret
 
 %macro DCT4x4_AVX512 0
