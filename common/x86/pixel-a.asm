@@ -132,7 +132,6 @@ sw_f0:     dq 0xfff0, 0
 pd_f0:     times 4 dd 0xffff0000
 
 pw_76543210: dw 0, 1, 2, 3, 4, 5, 6, 7
-mcc_deint_shuf: db 0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15
 
 ads_mvs_shuffle:
 %macro ADS_MVS_SHUFFLE 8
@@ -6586,14 +6585,15 @@ ads_mvs_ssse3:
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
-; void pixel_satd_mcc( pixel *fenc, int res[2], pixel *src, intptr_t src_stride,
+; void pixel_satd_mcc( pixel *fenc, int res[2], pixel *src, intptr_t stride,
 ;                      int dx, int dy, int width, int height )
 ; Chroma ME: satd of the u and v mc_chroma predictions against fenc's u
-; (res[0]) and v (res[1], 8 pixels after u) without storing them. The filter
-; is mc_chroma's in two exact passes, on words (8-bit pixels zero extended),
-; as the 10-bit AVX2 mc_chroma. Lane 0 holds u, lane 1 v: width 8 one
-; row per ymm, width 4 rows k and k+4 as satd_4x8. Width 8: height 4, 8 or 16;
-; width 4: height 8 or 16.
+; (res[0]) and v (res[1]) without storing them. fenc is the interleaved uv
+; fenc plane, with the stride of src. The filter is mc_chroma's in two exact
+; passes, on words (8-bit pixels zero extended), as the 10-bit AVX2 mc_chroma.
+; Rows stay interleaved: u in even words, v in odd words, so the 4x4 Hadamard
+; columns are dwords and u and v never mix. Width 8: one row per ymm; width 4:
+; rows k and k+4 per ymm. Width 8: height 4, 8 or 16; width 4: height 8 or 16.
 ;-----------------------------------------------------------------------------
 ; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15
 %macro MCC_SATD_H 2-3
@@ -6621,15 +6621,43 @@ ads_mvs_ssse3:
     paddw         m%1, m15
 %endmacro
 
-; prediction from H m7 (clobbered) and m13 -> m7 as [u | v]
+; prediction from H m7 (clobbered) and m13 -> m7, interleaved uv
 %macro MCC_SATD_V 0
     pmullw        m15, m7, m10
     pmullw         m7, m13, m11
     paddw          m7, m15
     paddw          m7, m12
     psrlw          m7, 6
-    pshufb         m7, m14
-    vpermq         m7, m7, q3120
+%endmacro
+
+; satd of the interleaved uv differences in m0-m3 -> m6 (u even, v odd words);
+; clobbers m4, m5. Same coefficients and pairings as HADAMARD4_2D_SSE amax:
+; vertical, then columns c0/c2, c1/c3 as dwords, then the amax stage.
+%macro MCC_SATD_4x4 0
+    SUMSUB_BADC    w, 0, 1, 2, 3, 4
+    SUMSUB_BADC    w, 0, 2, 1, 3, 4
+    SBUTTERFLY    dq, 0, 1, 4
+    SBUTTERFLY    dq, 2, 3, 4
+    SUMSUB_BADC    w, 0, 1, 2, 3, 4
+    SBUTTERFLY   qdq, 0, 1, 4
+    SBUTTERFLY   qdq, 2, 3, 4
+    HADAMARD   0, amax, 0, 1, 4, 5
+    HADAMARD   0, amax, 2, 3, 4, 5
+    paddw          m6, m0
+    paddw          m6, m2
+%endmacro
+
+; fenc row mcc_k from base %1, r4 = 3*stride
+%macro MCC_FENC_ROW 1
+%if mcc_k == 0
+    %define mcc_fenc %1
+%elif mcc_k == 1
+    %define mcc_fenc %1+r3
+%elif mcc_k == 2
+    %define mcc_fenc %1+r3*2
+%else
+    %define mcc_fenc %1+r4
+%endif
 %endmacro
 
 INIT_YMM avx2
@@ -6661,7 +6689,7 @@ cglobal pixel_satd_mcc, 4,8,16
     movd        xm11, r5d
     vpbroadcastw m11, xm11             ; dy
     vpbroadcastw m12, [pw_32]
-    vbroadcasti128 m14, [mcc_deint_shuf]
+    lea           r4, [r3*3]
     mov          r7d, r7m
     pxor          m6, m6
     cmp dword    r6m, 4
@@ -6675,64 +6703,62 @@ cglobal pixel_satd_mcc, 4,8,16
     MCC_SATD_H    13, r2
     add           r2, r3
     MCC_SATD_V
+    MCC_FENC_ROW  r0
 %if HIGH_BIT_DEPTH
-    psubw         m %+ mcc_k, m7, [r0+mcc_k*FENC_STRIDEB]
+    psubw         m %+ mcc_k, m7, [mcc_fenc]
 %else
-    vpmovzxbw     m15, [r0+mcc_k*FENC_STRIDE]
+    vpmovzxbw     m15, [mcc_fenc]
     psubw         m %+ mcc_k, m7, m15
 %endif
     mova           m7, m13
 %assign mcc_k mcc_k+1
 %endrep
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
-    add           r0, 4*FENC_STRIDEB
+    MCC_SATD_4x4
+    lea           r0, [r0+r3*4]
     sub          r7d, 4
     jg .loop8
     jmp .end
 
 .w4:
-    lea           r6, [r2+4*r3]
+    lea           r6, [r2+r3*4]
+    lea           r5, [r0+r3*4]
     MCC_SATD_H     7, r2, r6          ; rows 0 | 4
 %assign mcc_k 0
 %rep 4
     add           r2, r3
     add           r6, r3
     MCC_SATD_H    13, r2, r6          ; rows k+1 | k+5
-    MCC_SATD_V                        ; u k, u k+4 | v k, v k+4
+    MCC_SATD_V                        ; rows k | k+4
+    MCC_FENC_ROW  r0
 %if HIGH_BIT_DEPTH
-    vpbroadcastq  m15, [r0+mcc_k*FENC_STRIDEB]
-    vpbroadcastq   m5, [r0+(mcc_k+4)*FENC_STRIDEB]
-    vpblendd      m15, m15, m5, 0x0c
-    vpbroadcastq   m4, [r0+mcc_k*FENC_STRIDEB+16]
-    vpbroadcastq   m5, [r0+(mcc_k+4)*FENC_STRIDEB+16]
-    vpblendd       m4, m4, m5, 0xc0
-    vpblendd      m15, m15, m4, 0xf0
+    movu         xm15, [mcc_fenc]
+    MCC_FENC_ROW  r5
+    vinserti128   m15, m15, [mcc_fenc], 1
 %else
-    vpbroadcastd xm15, [r0+mcc_k*FENC_STRIDE]
-    vpbroadcastd  xm5, [r0+(mcc_k+4)*FENC_STRIDE]
-    vpblendd     xm15, xm15, xm5, 0x2
-    vpbroadcastd  xm4, [r0+mcc_k*FENC_STRIDE+8]
-    vpbroadcastd  xm5, [r0+(mcc_k+4)*FENC_STRIDE+8]
-    vpblendd      xm4, xm4, xm5, 0x8
-    vpblendd     xm15, xm15, xm4, 0xc
+    movq         xm15, [mcc_fenc]
+    MCC_FENC_ROW  r5
+    movhps       xm15, [mcc_fenc]
     vpmovzxbw     m15, xm15
 %endif
     psubw         m %+ mcc_k, m7, m15
     mova           m7, m13
 %assign mcc_k mcc_k+1
 %endrep
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
-    add           r0, 8*FENC_STRIDEB
-    lea           r2, [r2+4*r3]       ; row 4 -> row 8
+    MCC_SATD_4x4
+    lea           r0, [r0+r3*8]
+    lea           r2, [r2+r3*4]       ; row 4 -> row 8
     sub          r7d, 8
     jg .w4
 
 .end:
-    ; at most 4 passes per lane: unsigned words
-    HADDUWD       m6, m7
-    vextracti128 xm7, m6, 1
-    phaddd       xm6, xm7
-    phaddd       xm6, xm6
+    ; at most 4 passes, two words each: unsigned words
+    psrld          m7, m6, 16         ; v
+    pslld          m6, 16
+    psrld          m6, 16             ; u
+    phaddd         m6, m7
+    vextracti128  xm7, m6, 1
+    paddd         xm6, xm7
+    phaddd        xm6, xm6
     movq        [r1], xm6
     RET
 %endif ; ARCH_X86_64

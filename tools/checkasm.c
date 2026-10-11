@@ -403,16 +403,20 @@ static int check_pixel( int cpu_ref, int cpu_new )
             int w = mcc_sizes[s][0], hgt = mcc_sizes[s][1], size = mcc_sizes[s][2];
             ALIGNED_16( pixel dstu[16*16] );
             ALIGNED_16( pixel dstv[16*16] );
+            /* fenc is interleaved uv with the stride of src; the reference satd takes it deinterleaved */
+            ALIGNED_16( pixel fenc_c[16*FENC_STRIDE] );
             int res_c[2], res_asm[2];
             for( int j = 0; j < 64 && ok; j++ )
             {
                 int dx = (j*5) & 31, dy = (j*3+s) & 31;
                 pixel *src = pbuf2 + 64 + 2*j;
+                pixel *fenc = pbuf1 + 2*(j&7);
                 mc_c.mc_chroma( dstu, dstv, 16, src, 64, dx, dy, w, hgt );
-                res_c[0] = pixel_c.satd[size]( pbuf1,   FENC_STRIDE, dstu, 16 );
-                res_c[1] = pixel_c.satd[size]( pbuf1+8, FENC_STRIDE, dstv, 16 );
+                mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, 64, hgt );
+                res_c[0] = pixel_c.satd[size]( fenc_c,   FENC_STRIDE, dstu, 16 );
+                res_c[1] = pixel_c.satd[size]( fenc_c+8, FENC_STRIDE, dstv, 16 );
                 res_asm[0] = res_asm[1] = -1;
-                call_a( pixel_asm.satd_mcc, pbuf1, res_asm, src, (intptr_t)64, dx, dy, w, hgt );
+                call_a( pixel_asm.satd_mcc, fenc, res_asm, src, (intptr_t)64, dx, dy, w, hgt );
                 if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
                 {
                     ok = 0;
@@ -422,9 +426,11 @@ static int check_pixel( int cpu_ref, int cpu_new )
             }
             for( int j = 0; j < 0xc00 && ok; j += 256 )
             {
+                /* pbuf3 = ~pbuf4: every difference is +-PIXEL_MAX */
                 mc_c.mc_chroma( dstu, dstv, 16, pbuf4+j, 16, 0, 0, w, hgt );
-                res_c[0] = pixel_c.satd[size]( pbuf3+j,   FENC_STRIDE, dstu, 16 );
-                res_c[1] = pixel_c.satd[size]( pbuf3+j+8, FENC_STRIDE, dstv, 16 );
+                mc_c.load_deinterleave_chroma_fenc( fenc_c, pbuf3+j, 16, hgt );
+                res_c[0] = pixel_c.satd[size]( fenc_c,   FENC_STRIDE, dstu, 16 );
+                res_c[1] = pixel_c.satd[size]( fenc_c+8, FENC_STRIDE, dstv, 16 );
                 pixel_asm.satd_mcc( pbuf3+j, res_asm, pbuf4+j, 16, 0, 0, w, hgt );
                 if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
                 {

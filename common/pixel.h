@@ -35,9 +35,10 @@ typedef void (*x264_pixel_cmp_x3_t) ( pixel *, pixel *, pixel *, pixel *, intptr
 typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, int[4] );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
-/* chroma ME: satd of the u and v mc_chroma( src, src_stride, dx, dy, width, height )
- * predictions against fenc's u (res[0]) and v (res[1] = fenc + 8), without storing them */
-typedef void (*x264_pixel_satd_mcc_t) ( pixel *fenc, int res[2], pixel *src, intptr_t i_src_stride,
+/* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
+ * predictions against fenc's u (res[0]) and v (res[1]), without storing them;
+ * fenc is interleaved uv like src, with the same stride */
+typedef void (*x264_pixel_satd_mcc_t) ( pixel *fenc, int res[2], pixel *src, intptr_t i_stride,
                                         int dx, int dy, int i_width, int i_height );
 
 enum
