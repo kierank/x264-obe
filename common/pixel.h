@@ -88,7 +88,7 @@ typedef struct
     x264_pixel_cmp_t satd[8];
     x264_pixel_cmp_avg2_t satd_avg2[7]; /* asm only, NULL otherwise */
     x264_pixel_cmp_avg2_t sad_avg2[7];  /* asm only, NULL otherwise */
-    x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; width 8 heights 4-16, width 4 heights 8-16 */
+    x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; widths 4 and 8, heights 4-16 */
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
