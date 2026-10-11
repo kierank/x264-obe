@@ -2768,6 +2768,8 @@ extern const uint8_t x264_count_cat_m1[14];
 void x264_cabac_block_residual_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_8x8_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
+#define x264_rdo_init x264_template(rdo_init)
+void x264_rdo_init( void );
 
 static int check_cabac( int cpu_ref, int cpu_new )
 {
@@ -2782,6 +2784,9 @@ static int check_cabac( int cpu_ref, int cpu_new )
     x264_bitstream_init( cpu_new, &bs_a );
     x264_quant_init( &h, cpu_new, &h.quantf );
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
+    /* the rd functions read the unary tables and the context init states */
+    x264_rdo_init();
+    x264_cabac_init( &h );
 
 #define CABAC_RESIDUAL(name, cats, rd)\
 {\
@@ -2801,6 +2806,8 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     uint8_t bitstream[2][1<<16];\
                     static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};\
                     int ac = ctx_ac[ctx_block_cat];\
+                    /* mode 0: as before, 1: dense, 2: sparse with long zero runs, 3: large levels */\
+                    int mode = (j>>2)&3;\
                     int nz = 0;\
                     while( !nz )\
                     {\
@@ -2808,18 +2815,20 @@ static int check_cabac( int cpu_ref, int cpu_new )
                         {\
                             /* Very rough distribution that covers possible inputs */\
                             int rnd = rand();\
-                            int coef = !(rnd&3);\
+                            int coef = mode == 1 ? !!(rnd&7) : mode == 2 ? !(rnd&15) : !(rnd&3);\
                             coef += !(rnd&  15) * (rand()&0x0006);\
                             coef += !(rnd&  63) * (rand()&0x0008);\
                             coef += !(rnd& 255) * (rand()&0x00F0);\
                             coef += !(rnd&1023) * (rand()&0x7F00);\
+                            if( mode == 3 && coef && coef < 256 )\
+                                coef += rand()&31;\
                             nz |= dct[0][ac+k] = dct[1][ac+k] = coef * ((rand()&1) ? 1 : -1);\
                         }\
                     }\
                     h.mb.b_interlaced = i;\
                     x264_cabac_t cb[2];\
-                    x264_cabac_context_init( &h, &cb[0], SLICE_TYPE_P, 26, 0 );\
-                    x264_cabac_context_init( &h, &cb[1], SLICE_TYPE_P, 26, 0 );\
+                    x264_cabac_context_init( &h, &cb[0], (j&32) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>6)%3 );\
+                    memcpy( cb[1].state, cb[0].state, 1024 );\
                     x264_cabac_encode_init( &cb[0], bitstream[0], bitstream[0]+0xfff0 );\
                     x264_cabac_encode_init( &cb[1], bitstream[1], bitstream[1]+0xfff0 );\
                     cb[0].f8_bits_encoded = 0;\
