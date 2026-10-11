@@ -752,6 +752,10 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - 2: Auto-variance AQ (experimental)\n", defaults->rc.i_aq_mode );
     H1( "      --aq-strength <float>   Reduces blocking and blurring in flat and\n"
         "                              textured areas. [%.1f]\n", defaults->rc.f_aq_strength );
+    H2( "      --aq-mbaff <integer>    Adaptive MBAFF: AQ energy of each mb from [%d]\n"
+        "                                  - 0: the lower of frame and field\n"
+        "                                  - 1: frame only (faster)\n"
+        "                                  - 2: field only (faster)\n", defaults->rc.i_aq_mbaff );
     H1( "\n" );
     H0( "  -p, --pass <integer>        Enable multipass ratecontrol\n"
         "                                  - 1: First pass, creates stats file\n"
@@ -1090,6 +1094,7 @@ static struct option long_options[] =
     { "no-fast-pskip",     no_argument, NULL, 0 },
     { "no-dct-decimate",   no_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
+    { "aq-mbaff",    required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },
     { "deadzone-intra", required_argument, NULL, 0 },

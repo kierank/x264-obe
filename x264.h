@@ -41,7 +41,7 @@
 
 #include "x264_config.h"
 
-#define X264_BUILD 148
+#define X264_BUILD 149
 
 /* Application developers planning to link against a shared library version of
  * libx264 from a Microsoft Visual Studio or similar development environment
@@ -427,6 +427,7 @@ typedef struct x264_param_t
         int         b_mb_tree;      /* Macroblock-tree ratecontrol. */
         int         i_lookahead;
         int         b_lookahead_8bit; /* high bit depth: lowres analysis on 8-bit copies (changes output) */
+        int         i_aq_mbaff;     /* adaptive MBAFF: AQ energy from 0 = min of frame and field, 1 = frame, 2 = field (changes output) */
 
         /* 2pass */
         int         b_stat_write;   /* Enable stat writing in psz_stat_out */
