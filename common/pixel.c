@@ -1071,6 +1071,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( satd_x3, _avx2 );
         INIT4( satd_x4, _avx2 );
 #if ARCH_X86_64
+        pixf->sa8d[PIXEL_16x16] = x264_pixel_sa8d_16x16_avx2;
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
 #endif
         INIT2( hadamard_ac, _avx2 );

@@ -4601,6 +4601,37 @@ cglobal pixel_satd_8x16, 4,8,8
 INIT_YMM avx2
 SA8D_SATD
 HADAMARD_AC_SSE2
+
+; 16 pixel rows: lane 0 is pix[0], lane 1 is pix[8], the 8x8 transform is lane-local
+cglobal pixel_sa8d_16x8_internal
+    lea  r6, [r0+4*r1]
+    lea  r7, [r2+4*r3]
+    LOAD_DIFF_8x4P 0, 1, 2, 8, 5, 6, 7, r0, r2, 0, 0
+    LOAD_DIFF_8x4P 4, 5, 3, 9, 11, 6, 7, r6, r7, 0, 0
+    HADAMARD8_2D 0, 1, 2, 8, 4, 5, 3, 9, 6, amax
+    paddw m0, m1
+    paddw m0, m2
+    paddw m0, m8
+    SAVE_MM_PERMUTATION
+    ret
+
+cglobal pixel_sa8d_16x16, 4,8,12
+    FIX_STRIDES r1, r3
+    lea  r4, [3*r1]
+    lea  r5, [3*r3]
+    call pixel_sa8d_16x8_internal
+    lea  r0, [r0+8*r1]
+    lea  r2, [r2+8*r3]
+    HADDUWD m0, m1
+    mova m10, m0
+    call pixel_sa8d_16x8_internal
+    HADDUWD m0, m1
+    paddd m0, m10
+    HADDD m0, m1
+    movd eax, xm0
+    add  eax, 1
+    shr  eax, 1
+    RET
 %endif
 %if ARCH_X86_64
 
