@@ -1111,6 +1111,19 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
 #endif
     }
+#if HAVE_AVX512_VNNI
+    if( cpu&X264_CPU_AVX512_VNNI )
+    {
+        INIT2( ssd, _avx512vnni );
+    }
+#endif
+#if HAVE_AVX_VNNI
+    /* after avx512vnni: same operations, shorter encodings (cpus with both, Zen 5) */
+    if( cpu&X264_CPU_AVX_VNNI )
+    {
+        INIT2( ssd, _avxvnni );
+    }
+#endif
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX

@@ -211,7 +211,7 @@ cextern popcnt_table
 ; int pixel_ssd_WxH( uint16_t *, intptr_t, uint16_t *, intptr_t )
 ;-----------------------------------------------------------------------------
 %macro SSD_ONE 2
-cglobal pixel_ssd_%1x%2, 4,7,6
+cglobal pixel_ssd_%1x%2, 4,7,6+2*cpuflag(avxvnni)
     FIX_STRIDES r1, r3
 %if mmsize == %1*2
     %define offset0_1 r1
@@ -242,6 +242,11 @@ cglobal pixel_ssd_%1x%2, 4,7,6
     mov    r4d, %%n
 %endif
     pxor    m0, m0
+%if cpuflag(avxvnni) ; four accumulators: one vpdpwssd each per iteration
+    pxor    m5, m5
+    pxor    m6, m6
+    pxor    m7, m7
+%endif
 .loop:
     mova    m1, [r0]
     mova    m2, [r0+offset0_1]
@@ -255,6 +260,12 @@ cglobal pixel_ssd_%1x%2, 4,7,6
     lea     r0, [r0+r1*(%2/%%n)]
     lea     r2, [r2+r3*(%2/%%n)]
 %endif
+%if cpuflag(avxvnni)
+    vpdpwssd m0, m1, m1
+    vpdpwssd m5, m2, m2
+    vpdpwssd m6, m3, m3
+    vpdpwssd m7, m4, m4
+%else
     pmaddwd m1, m1
     pmaddwd m2, m2
     pmaddwd m3, m3
@@ -263,9 +274,15 @@ cglobal pixel_ssd_%1x%2, 4,7,6
     paddd   m3, m4
     paddd   m0, m1
     paddd   m0, m3
+%endif
 %if %%n > 1
     dec    r4d
     jg .loop
+%endif
+%if cpuflag(avxvnni)
+    paddd   m0, m5
+    paddd   m6, m7
+    paddd   m0, m6
 %endif
     HADDD   m0, m5
     movd   eax, xm0
@@ -323,6 +340,16 @@ cglobal pixel_ssd_8x%1, 4,7,5
 
 SSD_W8_HBD  8
 SSD_W8_HBD 16
+%if HAVE_AVX_VNNI
+INIT_YMM avxvnni
+SSD_ONE    16,  8
+SSD_ONE    16, 16
+%endif
+%if HAVE_AVX512_VNNI
+INIT_YMM avx512vnni
+SSD_ONE    16,  8
+SSD_ONE    16, 16
+%endif
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
