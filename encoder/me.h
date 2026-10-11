@@ -109,6 +109,18 @@ static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )
     return h->mb.pic.fenc_pre + 256 + 64*b;
 }
 
+/* fenc of mbcmp_bi and mbcmp_bi4 for the luma partition i_pixel at p_fenc, NULL without them */
+static inline x264_bi_fenc_t *x264_me_bi_fenc( x264_t *h, int i_pixel, pixel *p_fenc )
+{
+    if( i_pixel > PIXEL_8x8 || !h->pixf.mbcmp_bi[0] )
+        return NULL;
+#if HIGH_BIT_DEPTH
+    return p_fenc;
+#else
+    return x264_me_fenc_pre( h, i_pixel, p_fenc );
+#endif
+}
+
 #if !HIGH_BIT_DEPTH
 /* mbcmp_mcc's fenc for the chroma partition at p_fenc (in h->mb.pic.p_fenc[1]) of a
  * luma partition bw wide and chroma ch high, in mcc_fenc_pre, filled on first

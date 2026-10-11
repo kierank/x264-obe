@@ -175,6 +175,8 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
     h->mc.copy[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, &fenc->lowres8[0][i_pel_offset], i_stride, 8 );
     h->mb.pic.i_fenc_pre = 0;
     int16_t *fenc_pre = x264_me_fenc_pre( h, PIXEL_8x8, h->mb.pic.p_fenc[0] );
+    /* bipred cost without storing the average where mbcmp is satd */
+    x264_bi_fenc_t *bi_fenc = b_bidir && !w[0].weightfn ? x264_me_bi_fenc( h, PIXEL_8x8, h->mb.pic.p_fenc[0] ) : NULL;
 /* mbcmp of the lowres fenc against pix */
 #define LOWRES_MBCMP( pix, stride ) \
     (fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, stride ) \
@@ -215,25 +217,37 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
 #define TRY_BIDIR( mv0, mv1, penalty ) \
     { \
         int i_cost; \
-        if( h->param.analyse.i_subpel_refine <= 1 ) \
+        if( bi_fenc ) \
         { \
-            int hpel_idx1 = (((mv0)[0]&2)>>1) + ((mv0)[1]&2); \
-            int hpel_idx2 = (((mv1)[0]&2)>>1) + ((mv1)[1]&2); \
-            pixel *src1 = m[0].p_fref[hpel_idx1] + ((mv0)[0]>>2) + ((mv0)[1]>>2) * m[0].i_stride[0]; \
-            pixel *src2 = m[1].p_fref[hpel_idx2] + ((mv1)[0]>>2) + ((mv1)[1]>>2) * m[1].i_stride[0]; \
-            h->mc.avg[PIXEL_8x8]( pix1, 16, src1, m[0].i_stride[0], src2, m[1].i_stride[0], i_bipred_weight ); \
+            pixel *src0[2], *src1[2]; \
+            x264_mc_hpel_pair( src0, m[0].p_fref, i_stride, (mv0)[0], (mv0)[1] ); \
+            x264_mc_hpel_pair( src1, m[1].p_fref, i_stride, (mv1)[0], (mv1)[1] ); \
+            i_cost = h->pixf.mbcmp_bi4[PIXEL_8x8]( bi_fenc, src0[0], src0[1], src1[0], src1[1], \
+                                                   i_stride, i_bipred_weight ); \
         } \
         else \
         { \
-            intptr_t stride1 = 16, stride2 = 16; \
-            pixel *src1, *src2; \
-            src1 = h->mc.get_ref( pix1, &stride1, m[0].p_fref, m[0].i_stride[0], \
-                                  (mv0)[0], (mv0)[1], 8, 8, w ); \
-            src2 = h->mc.get_ref( pix2, &stride2, m[1].p_fref, m[1].i_stride[0], \
-                                  (mv1)[0], (mv1)[1], 8, 8, w ); \
-            h->mc.avg[PIXEL_8x8]( pix1, 16, src1, stride1, src2, stride2, i_bipred_weight ); \
+            if( h->param.analyse.i_subpel_refine <= 1 ) \
+            { \
+                int hpel_idx1 = (((mv0)[0]&2)>>1) + ((mv0)[1]&2); \
+                int hpel_idx2 = (((mv1)[0]&2)>>1) + ((mv1)[1]&2); \
+                pixel *src1 = m[0].p_fref[hpel_idx1] + ((mv0)[0]>>2) + ((mv0)[1]>>2) * m[0].i_stride[0]; \
+                pixel *src2 = m[1].p_fref[hpel_idx2] + ((mv1)[0]>>2) + ((mv1)[1]>>2) * m[1].i_stride[0]; \
+                h->mc.avg[PIXEL_8x8]( pix1, 16, src1, m[0].i_stride[0], src2, m[1].i_stride[0], i_bipred_weight ); \
+            } \
+            else \
+            { \
+                intptr_t stride1 = 16, stride2 = 16; \
+                pixel *src1, *src2; \
+                src1 = h->mc.get_ref( pix1, &stride1, m[0].p_fref, m[0].i_stride[0], \
+                                      (mv0)[0], (mv0)[1], 8, 8, w ); \
+                src2 = h->mc.get_ref( pix2, &stride2, m[1].p_fref, m[1].i_stride[0], \
+                                      (mv1)[0], (mv1)[1], 8, 8, w ); \
+                h->mc.avg[PIXEL_8x8]( pix1, 16, src1, stride1, src2, stride2, i_bipred_weight ); \
+            } \
+            i_cost = LOWRES_MBCMP( pix1, 16 ); \
         } \
-        i_cost = penalty * c->lambda + LOWRES_MBCMP( pix1, 16 ); \
+        i_cost += penalty * c->lambda; \
         COPY2_IF_LT( i_bcost, i_cost, list_used, 3 ); \
     }
 
@@ -280,8 +294,13 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
         if( M64( dmv ) )
         {
             int i_cost;
-            h->mc.avg[PIXEL_8x8]( pix1, 16, m[0].p_fref[0], m[0].i_stride[0], m[1].p_fref[0], m[1].i_stride[0], i_bipred_weight );
-            i_cost = LOWRES_MBCMP( pix1, 16 );
+            if( bi_fenc )
+                i_cost = h->pixf.mbcmp_bi[PIXEL_8x8]( bi_fenc, m[0].p_fref[0], i_stride, m[1].p_fref[0], i_stride, i_bipred_weight );
+            else
+            {
+                h->mc.avg[PIXEL_8x8]( pix1, 16, m[0].p_fref[0], m[0].i_stride[0], m[1].p_fref[0], m[1].i_stride[0], i_bipred_weight );
+                i_cost = LOWRES_MBCMP( pix1, 16 );
+            }
             COPY2_IF_LT( i_bcost, i_cost, list_used, 3 );
         }
     }
