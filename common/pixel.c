@@ -543,6 +543,7 @@ INTRA_MBCMP_8x8(sa8d,, _c )
 #define x264_predict_8x8_v_sse2 x264_predict_8x8_v_sse
 INTRA_MBCMP_8x8( sad, _mmx2,  _c )
 INTRA_MBCMP_8x8(sa8d, _sse2,  _sse2 )
+INTRA_MBCMP_8x8(sa8d, _avx,   _sse2 )
 #endif
 #if !HIGH_BIT_DEPTH && HAVE_ARMV6
 INTRA_MBCMP_8x8( sad, _neon, _neon )
@@ -1043,6 +1044,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4_avx;
         pixf->sa8d[PIXEL_16x16]= x264_pixel_sa8d_16x16_avx;
         pixf->sa8d[PIXEL_8x8]  = x264_pixel_sa8d_8x8_avx;
+        pixf->intra_sa8d_x3_8x8 = x264_intra_sa8d_x3_8x8_avx;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx;
