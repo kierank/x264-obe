@@ -6592,8 +6592,8 @@ ads_mvs_ssse3:
 ; (res[0]) and v (res[1], 8 pixels after u) without storing them. The filter
 ; is mc_chroma's in two exact passes, on words (8-bit pixels zero extended),
 ; as the 10-bit AVX2 mc_chroma. Lane 0 holds u, lane 1 v: width 8 one
-; row per ymm, width 4 rows k and k+4 as satd_4x8 (height 4: rows k+4 zero).
-; Width 8: height 4, 8 or 16; width 4: height 4, 8 or 16.
+; row per ymm, width 4 rows k and k+4 as satd_4x8. Width 8: height 4, 8 or 16;
+; width 4: height 8 or 16.
 ;-----------------------------------------------------------------------------
 ; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15
 %macro MCC_SATD_H 2-3
@@ -6615,22 +6615,6 @@ ads_mvs_ssse3:
 %else
     vpmovzxbw     m%1, [%2]
     vpmovzxbw     m15, [%2+2]
-%endif
-    pmullw        m%1, m8
-    pmullw        m15, m9
-    paddw         m%1, m15
-%endmacro
-
-; H of the one interleaved row at %2 into lane 0, lane 1 zero -> m%1; clobbers m15
-%macro MCC_SATD_H1 2
-%if HIGH_BIT_DEPTH
-    movu         xm%1, [%2]
-    movu         xm15, [%2+4]
-%else
-    movq         xm%1, [%2]
-    vpmovzxbw     m%1, xm%1
-    movq         xm15, [%2+2]
-    vpmovzxbw     m15, xm15
 %endif
     pmullw        m%1, m8
     pmullw        m15, m9
@@ -6707,9 +6691,6 @@ cglobal pixel_satd_mcc, 4,8,16
     jmp .end
 
 .w4:
-    cmp          r7d, 4
-    je .w4h4
-.w4loop:
     lea           r6, [r2+4*r3]
     MCC_SATD_H     7, r2, r6          ; rows 0 | 4
 %assign mcc_k 0
@@ -6744,34 +6725,7 @@ cglobal pixel_satd_mcc, 4,8,16
     add           r0, 8*FENC_STRIDEB
     lea           r2, [r2+4*r3]       ; row 4 -> row 8
     sub          r7d, 8
-    jg .w4loop
-    jmp .end
-
-.w4h4:
-    MCC_SATD_H1    7, r2
-%assign mcc_k 0
-%rep 4
-    add           r2, r3
-    MCC_SATD_H1   13, r2
-    MCC_SATD_V                        ; u k, 0 | v k, 0
-    pxor          xm5, xm5
-%if HIGH_BIT_DEPTH
-    vpbroadcastq  m15, [r0+mcc_k*FENC_STRIDEB]
-    vpbroadcastq   m4, [r0+mcc_k*FENC_STRIDEB+16]
-    vpblendd      m15, m15, m4, 0xf0
-    vpblendd      m15, m15, m5, 0xcc
-%else
-    vpbroadcastd xm15, [r0+mcc_k*FENC_STRIDE]
-    vpbroadcastd  xm4, [r0+mcc_k*FENC_STRIDE+8]
-    vpblendd     xm15, xm15, xm4, 0xc
-    vpblendd     xm15, xm15, xm5, 0xa
-    vpmovzxbw     m15, xm15
-%endif
-    psubw         m %+ mcc_k, m7, m15
-    mova           m7, m13
-%assign mcc_k mcc_k+1
-%endrep
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    jg .w4
 
 .end:
     ; at most 4 passes per lane: unsigned words
