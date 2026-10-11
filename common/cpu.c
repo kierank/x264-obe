@@ -69,7 +69,9 @@ const x264_cpu_name_t x264_cpu_names[] =
     {"AVX2",        AVX|X264_CPU_AVX2},
     {"FMA3",        AVX|X264_CPU_FMA3},
     {"AVX512",      AVX|X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX2|X264_CPU_AVX512},
-    {"AVX512ICL",   AVX|X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX2|X264_CPU_AVX512|X264_CPU_AVX512ICL},
+    {"AVXVNNI",     AVX|X264_CPU_AVX2|X264_CPU_AVX_VNNI},
+    {"AVX512VNNI",  AVX|X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX2|X264_CPU_AVX512|X264_CPU_AVX512_VNNI},
+    {"AVX512ICL",   AVX|X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX2|X264_CPU_AVX512|X264_CPU_AVX512_VNNI|X264_CPU_AVX512ICL},
 #undef AVX
 #undef SSE2
 #undef MMX2
@@ -82,6 +84,7 @@ const x264_cpu_name_t x264_cpu_names[] =
     {"SlowPshufb",      X264_CPU_SLOW_PSHUFB},
     {"SlowPalignr",     X264_CPU_SLOW_PALIGNR},
     {"SlowShuffle",     X264_CPU_SLOW_SHUFFLE},
+    {"SlowZMM",         X264_CPU_SLOW_ZMM},
     {"UnalignedStack",  X264_CPU_STACK_MOD4},
 #elif ARCH_PPC
     {"Altivec",         X264_CPU_ALTIVEC},
@@ -115,6 +118,7 @@ static void sigill_handler( int sig )
 #if HAVE_MMX
 int x264_cpu_cpuid_test( void );
 void x264_cpu_cpuid( uint32_t op, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx );
+void x264_cpu_cpuid_count( uint32_t op, uint32_t subleaf, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx );
 uint64_t x264_cpu_xgetbv( int xcr );
 
 uint32_t x264_cpu_detect( void )
@@ -168,6 +172,7 @@ uint32_t x264_cpu_detect( void )
     if( max_basic_cap >= 7 )
     {
         x264_cpu_cpuid( 7, &eax, &ebx, &ecx, &edx );
+        uint32_t max_leaf7_subleaf = eax;
 
         if( ebx&0x00000008 )
             cpu |= X264_CPU_BMI1;
@@ -182,11 +187,22 @@ uint32_t x264_cpu_detect( void )
             if( (xcr0&0xE0) == 0xE0 ) /* OPMASK/ZMM state */
             {
                 if( (ebx&0xD0030000) == 0xD0030000 )
+                {
                     cpu |= X264_CPU_AVX512;
+                    if( ecx&0x00000800 ) /* VNNI */
+                        cpu |= X264_CPU_AVX512_VNNI;
+                }
                 if( (ebx&0xD0230000) == 0xD0230000 && /* AVX-512 {F, CD, BW, DQ, VL} + IFMA */
                     (ecx&0x00005F42) == 0x00005F42 )  /* VBMI, VBMI2, GFNI, VAES, VPCLMULQDQ, VNNI, BITALG, VPOPCNTDQ */
                     cpu |= X264_CPU_AVX512ICL;
             }
+        }
+
+        if( (cpu&X264_CPU_AVX2) && max_leaf7_subleaf >= 1 )
+        {
+            x264_cpu_cpuid_count( 7, 1, &eax, &ebx, &ecx, &edx );
+            if( eax&0x00000010 ) /* AVX-VNNI */
+                cpu |= X264_CPU_AVX_VNNI;
         }
     }
 
@@ -235,6 +251,14 @@ uint32_t x264_cpu_detect( void )
             if( (cpu&X264_CPU_SSE2) && !(cpu&X264_CPU_SSE2_IS_FAST) )
                 cpu |= X264_CPU_SSE2_IS_SLOW; /* AMD CPUs come in two types: terrible at SSE and great at it */
         }
+    }
+
+    if( !strcmp((char*)vendor, "AuthenticAMD") && (cpu&X264_CPU_AVX512) )
+    {
+        x264_cpu_cpuid( 1, &eax, &ebx, &ecx, &edx );
+        int family = ((eax>>8)&0xf) + ((eax>>20)&0xff);
+        if( family == 0x19 )
+            cpu |= X264_CPU_SLOW_ZMM; /* Zen 4 splits 512-bit ops into two 256-bit halves */
     }
 
     if( !strcmp((char*)vendor, "GenuineIntel") )

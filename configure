@@ -292,7 +292,7 @@ EXE=""
 
 # list of all preprocessor HAVE values we can define
 CONFIG_HAVE="MALLOC_H ALTIVEC ALTIVEC_H MMX ARMV6 ARMV6T2 NEON BEOSTHREAD POSIXTHREAD WIN32THREAD THREAD LOG2F SWSCALE \
-             LAVF FFMS GPAC AVS GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH BITDEPTH8 BITDEPTH10"
+             LAVF FFMS GPAC AVS GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH BITDEPTH8 BITDEPTH10 AVX512_VNNI AVX_VNNI"
 
 # parse options
 
@@ -722,6 +722,15 @@ if [ $asm = auto -a \( $ARCH = X86 -o $ARCH = X86_64 \) ] ; then
         echo "Minimum version is nasm-2.13"
         echo "If you really want to compile without asm, configure with --disable-asm."
         exit 1
+    fi
+    # VNNI kernels are optional: an assembler without them omits them
+    if as_check "vpdpwssd zmm0, zmm1, zmm2" ; then
+        define HAVE_AVX512_VNNI
+        ASFLAGS="$ASFLAGS -DHAVE_AVX512_VNNI=1"
+    fi
+    if as_check "{vex} vpdpwssd ymm0, ymm1, ymm2" ; then
+        define HAVE_AVX_VNNI
+        ASFLAGS="$ASFLAGS -DHAVE_AVX_VNNI=1"
     fi
     if ! cc_check '' '' '__asm__("pabsw %xmm0, %xmm0");' ; then
         VER=`(${cross_prefix}as --version || echo no gnu as) 2>/dev/null | head -n 1`

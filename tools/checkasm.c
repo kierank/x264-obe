@@ -53,7 +53,7 @@ int quiet = 0;
 
 #define BENCH_RUNS 100  // tradeoff between accuracy and speed
 #define MAX_FUNCS 1000  // just has to be big enough to hold all the existing functions
-#define MAX_CPUS 30     // number of different combinations of cpu flags
+#define MAX_CPUS 34     // number of different combinations of cpu flags
 
 typedef struct
 {
@@ -164,7 +164,9 @@ static void print_bench(void)
             printf( "%s_%s%s: %"PRId64"\n", benchs[i].name,
 #if HAVE_MMX
                     b->cpu&X264_CPU_AVX512ICL ? "avx512icl" :
+                    b->cpu&X264_CPU_AVX512_VNNI ? "avx512vnni" :
                     b->cpu&X264_CPU_AVX512 ? "avx512" :
+                    b->cpu&X264_CPU_AVX_VNNI ? "avxvnni" :
                     b->cpu&X264_CPU_AVX2 && b->cpu&X264_CPU_FMA3 ? "avx2_fma3" :
                     b->cpu&X264_CPU_AVX2 ? "avx2" :
                     b->cpu&X264_CPU_FMA3 ? "fma3" :
@@ -2954,9 +2956,22 @@ static int check_all_flags( void )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3, "FMA3" );
         cpu1 &= ~X264_CPU_FMA3;
     }
+    if( x264_cpu_detect() & X264_CPU_AVX_VNNI )
+    {
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_AVX_VNNI, "AVX_VNNI" );
+        cpu1 &= ~X264_CPU_AVX_VNNI;
+    }
     /* everything AVX-512 machines have, as x264_cpu_names' AVX512 */
     if( x264_cpu_detect() & X264_CPU_AVX512 )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX512, "AVX512" );
+    if( x264_cpu_detect() & X264_CPU_SLOW_ZMM )
+    {
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_ZMM, "AVX512 SlowZMM" );
+        cpu1 &= ~X264_CPU_SLOW_ZMM;
+    }
+    /* AVX_VNNI was cleared above, so these levels test the EVEX kernels even on cpus with both */
+    if( x264_cpu_detect() & X264_CPU_AVX512_VNNI )
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_AVX512_VNNI, "AVX512_VNNI" );
     if( x264_cpu_detect() & X264_CPU_AVX512ICL )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_AVX512ICL, "AVX512ICL" );
 #elif ARCH_PPC

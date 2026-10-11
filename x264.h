@@ -134,6 +134,8 @@ typedef struct
 #define X264_CPU_AVX2               (1<<15)
 #define X264_CPU_AVX512             (1<<16) /* AVX-512 {F, CD, BW, DQ, VL}, requires OS support */
 #define X264_CPU_AVX512ICL          (1<<26) /* AVX-512 Ice Lake subset {VBMI, VBMI2, VNNI, BITALG, VPOPCNTDQ, GFNI, VAES, VPCLMULQDQ, IFMA} */
+#define X264_CPU_AVX512_VNNI        (1<<28) /* AVX-512 VNNI (EVEX vpdp*), requires AVX512 */
+#define X264_CPU_AVX_VNNI           (1<<29) /* AVX-VNNI (VEX vpdp*), requires AVX2 */
 /* x86 modifiers */
 #define X264_CPU_CACHELINE_32       (1<<17) /* avoid memory loads that span the border between two cachelines */
 #define X264_CPU_CACHELINE_64       (1<<18) /* 32/64 is the size of a cacheline in bytes */
@@ -148,6 +150,7 @@ typedef struct
                                              * new SLOW flags. */
 #define X264_CPU_SLOW_PSHUFB        (1<<24) /* such as on the Intel Atom */
 #define X264_CPU_SLOW_PALIGNR       (1<<25) /* such as on the AMD Bobcat */
+#define X264_CPU_SLOW_ZMM           (1<<27) /* 512-bit ops are split into two 256-bit halves, such as on AMD Zen 4 */
 
 /* PowerPC */
 #define X264_CPU_ALTIVEC         0x0000001

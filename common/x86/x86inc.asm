@@ -50,6 +50,14 @@
     %endif
 %endif
 
+; set by configure when the assembler can encode them
+%ifndef HAVE_AVX512_VNNI
+    %define HAVE_AVX512_VNNI 0
+%endif
+%ifndef HAVE_AVX_VNNI
+    %define HAVE_AVX_VNNI 0
+%endif
+
 %define WIN64  0
 %define UNIX64 0
 %if ARCH_X86_64
@@ -812,7 +820,10 @@ BRANCH_INSTR jz, je, jnz, jne, jl, jle, jnl, jnle, jg, jge, jng, jnge, ja, jae, 
 %assign cpuflags_bmi2     (1<<18)| cpuflags_bmi1
 %assign cpuflags_avx2     (1<<19)| cpuflags_fma3|cpuflags_bmi2
 %assign cpuflags_avx512   (1<<20)| cpuflags_avx2 ; F, CD, BW, DQ, VL
-%assign cpuflags_avx512icl (1<<25)| cpuflags_avx512 ; VBMI, VBMI2, VNNI, BITALG, VPOPCNTDQ, GFNI, VAES, VPCLMULQDQ
+; avxvnni: vpdp* available on xmm/ymm. avx512vnni includes it: same operations, EVEX-encoded.
+%assign cpuflags_avxvnni  (1<<26)| cpuflags_avx2
+%assign cpuflags_avx512vnni (1<<27)| cpuflags_avx512|cpuflags_avxvnni
+%assign cpuflags_avx512icl (1<<25)| cpuflags_avx512vnni ; VBMI, VBMI2, VNNI, BITALG, VPOPCNTDQ, GFNI, VAES, VPCLMULQDQ
 
 %assign cpuflags_cache32  (1<<21)
 %assign cpuflags_cache64  (1<<22)
@@ -842,6 +853,13 @@ BRANCH_INSTR jz, je, jnz, jne, jl, jle, jnl, jnle, jg, jge, jng, jnge, ja, jae, 
             %rotate 1
         %endrep
         %xdefine SUFFIX _ %+ cpuname
+
+        ; nasm 2.16.03 has {vex} but not VEX vpdp*; configure probes the assembler
+        %if cpuflag(avxvnni) && notcpuflag(avx512vnni) && HAVE_AVX_VNNI == 0
+            %fatal avxvnni functions need an assembler that encodes {vex} vpdpwssd (configure)
+        %elif cpuflag(avx512vnni) && notcpuflag(avx512icl) && HAVE_AVX512_VNNI == 0
+            %fatal avx512vnni functions need an assembler that encodes vpdpwssd (configure)
+        %endif
 
         %if cpuflag(avx)
             %assign avx_enabled 1
@@ -1728,3 +1746,23 @@ EVEX_INSTR vrcpps,         vrcp14ps,   1 ; EVEX versions have higher precision
 EVEX_INSTR vrcpss,         vrcp14ss,   1
 EVEX_INSTR vrsqrtps,       vrsqrt14ps, 1
 EVEX_INSTR vrsqrtss,       vrsqrt14ss, 1
+
+; vpdp* share their mnemonics between AVX-512 VNNI (EVEX) and AVX-VNNI (VEX), and nasm
+; encodes a bare one as EVEX, which faults on AVX-VNNI cpus without AVX-512. Emit {vex}
+; in avxvnni functions and refuse vpdp* in functions without VNNI.
+%macro VNNI_INSTR 1
+    %imacro %1 3-4 %1
+        %if cpuflag(avx512vnni)
+            %4 %1, %2, %3
+        %elif cpuflag(avxvnni)
+            {vex} %4 %1, %2, %3
+        %else
+            %error %4 needs an avxvnni or avx512vnni function
+        %endif
+    %endmacro
+%endmacro
+
+VNNI_INSTR vpdpbusd
+VNNI_INSTR vpdpbusds
+VNNI_INSTR vpdpwssd
+VNNI_INSTR vpdpwssds
