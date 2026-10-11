@@ -2100,6 +2100,8 @@ cglobal deblock_h_chroma_mbaff, 5,7,8
     punpcklbw m6, m6
     psraw m6, 8
     punpcklwd m6, m6
+    pxor      m4, m4
+    pmaxsw    m6, m4
     pand m7, m6
     DEBLOCK_P0_Q0 m1, m2, m0, m3, m7, m5, m6
     CHROMA_H_STORE r6
