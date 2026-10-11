@@ -444,6 +444,14 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
     h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
                                   i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
     x264_frame_expand_border_lowres( frame );
+#if HIGH_BIT_DEPTH
+    /* rc.b_lookahead_8bit: the 8-bit buffer has the same layout, so convert all
+     * four planes, padding included, in one go. The plane size is a multiple of
+     * 16 pixels, so the total is a multiple of 64. */
+    if( frame->buffer_lowres8 )
+        h->mc.lowres8_convert( frame->buffer_lowres8, frame->buffer_lowres[0],
+                               4 * (frame->lowres[1] - frame->lowres[0]) );
+#endif
 
     memset( frame->i_cost_est, -1, sizeof(frame->i_cost_est) );
 
@@ -455,6 +463,14 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
         for( int x = 0; x <= h->param.i_bframe; x++ )
             frame->lowres_mvs[y][x][0][0] = 0x7FFF;
 }
+
+#if HIGH_BIT_DEPTH
+static void lowres8_convert( uint8_t *dst, pixel *src, intptr_t n )
+{
+    for( intptr_t i = 0; i < n; i++ )
+        dst[i] = X264_MIN( (src[i] + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 );
+}
+#endif
 
 static void frame_init_lowres_core( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height )
@@ -622,6 +638,9 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->memcpy_aligned = memcpy;
     pf->memzero_aligned = memzero_aligned;
     pf->frame_init_lowres_core = frame_init_lowres_core;
+#if HIGH_BIT_DEPTH
+    pf->lowres8_convert = lowres8_convert;
+#endif
 
     pf->integral_init4h = integral_init4h;
     pf->integral_init8h = integral_init8h;

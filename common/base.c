@@ -1213,6 +1213,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->rc.f_rf_constant_max = atof(value);
     OPT("rc-lookahead")
         p->rc.i_lookahead = atoi(value);
+    OPT("lookahead-8bit")
+        p->rc.b_lookahead_8bit = atobool(value);
     OPT2("qpmin", "qp-min")
         p->rc.i_qp_min = atoi(value);
     OPT2("qpmax", "qp-max")
@@ -1401,6 +1403,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
 
     if( p->rc.b_mb_tree || p->rc.i_vbv_buffer_size )
         s += sprintf( s, " rc_lookahead=%d", p->rc.i_lookahead );
+    if( p->rc.b_lookahead_8bit )
+        s += sprintf( s, " lookahead_8bit=1" );
 
     s += sprintf( s, " rc=%s mbtree=%d", p->rc.i_rc_method == X264_RC_ABR ?
                                ( p->rc.b_stat_read ? "2pass" : p->rc.i_vbv_max_bitrate == p->rc.i_bitrate ? "cbr" : "abr" )

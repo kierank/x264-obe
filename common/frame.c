@@ -216,6 +216,8 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
             int luma_plane_size = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
 
             PREALLOC( frame->buffer_lowres[0], 4 * luma_plane_size * sizeof(pixel) );
+            if( h->param.rc.b_lookahead_8bit )
+                PREALLOC( frame->buffer_lowres8, 4 * luma_plane_size );
 
             for( int j = 0; j <= !!h->param.i_bframe; j++ )
                 for( int i = 0; i <= h->param.i_bframe; i++ )
@@ -285,6 +287,9 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
             int luma_plane_size = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
             for( int i = 0; i < 4; i++ )
                 frame->lowres[i] = frame->buffer_lowres[0] + (frame->i_stride_lowres * PADV + PADH) + i * luma_plane_size;
+            if( h->param.rc.b_lookahead_8bit )
+                for( int i = 0; i < 4; i++ )
+                    frame->lowres8[i] = frame->buffer_lowres8 + (frame->i_stride_lowres * PADV + PADH) + i * luma_plane_size;
 
             for( int j = 0; j <= !!h->param.i_bframe; j++ )
                 for( int i = 0; i <= h->param.i_bframe; i++ )

@@ -753,6 +753,10 @@ struct x264_t
 
     x264_lookahead_t *lookahead;
 
+    /* 8-bit lowres analysis context (encoder/lookahead8.h), created by
+     * x264_encoder_open for every x264_t that can run the lookahead */
+    void *lowres8;
+
 #if HAVE_OPENCL
     x264_opencl_t opencl;
 #endif
