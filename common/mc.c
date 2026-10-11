@@ -453,6 +453,57 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
                                4 * (frame->lowres[1] - frame->lowres[0]) );
 #endif
 
+    x264_frame_init_lowres_finish( h, frame );
+}
+
+/* x264_frame_init_lowres in bands, for sliced threads: _edge on luma rows
+ * [y0,y1) of every band, then after all of them _rows on MB rows
+ * [mb_y0,mb_y1) of every band, then _finish. */
+void x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 )
+{
+    pixel *src = frame->plane[0];
+    int i_stride = frame->i_stride[0];
+    int i_height = frame->i_lines[0];
+    int i_width  = frame->i_width[0];
+
+    for( int y = y0; y < y1; y++ )
+        src[i_width+y*i_stride] = src[i_width-1+y*i_stride];
+    if( y1 == i_height )
+        memcpy( src+i_stride*i_height, src+i_stride*(i_height-1), (i_width+1) * sizeof(pixel) );
+}
+
+void x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 )
+{
+    int i_stride = frame->i_stride[0];
+    int i_stride_lowres = frame->i_stride_lowres;
+    int y0 = 8 * mb_y0;
+    int y1 = 8 * mb_y1;
+    int offset = y0 * i_stride_lowres;
+
+    /* reads source rows 2*y0 to 2*y1 inclusive, so one row of the next band */
+    h->mc.frame_init_lowres_core( frame->plane[0] + 2*y0*i_stride,
+                                  frame->lowres[0] + offset, frame->lowres[1] + offset,
+                                  frame->lowres[2] + offset, frame->lowres[3] + offset,
+                                  i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+    x264_frame_expand_border_lowres_rows( frame, y0, y1 );
+#if HIGH_BIT_DEPTH
+    /* This band's rows of the four planes with their side padding, plus the
+     * padding above the first row or below the last one; offsets are whole
+     * rows, so every piece is a multiple of the stride alignment. */
+    if( frame->buffer_lowres8 )
+    {
+        intptr_t plane_size = frame->lowres[1] - frame->lowres[0];
+        intptr_t start = y0 ? (intptr_t)(PADV + y0) * i_stride_lowres : 0;
+        intptr_t end   = y1 < frame->i_lines_lowres ? (intptr_t)(PADV + y1) * i_stride_lowres : plane_size;
+        for( int i = 0; i < 4; i++ )
+            h->mc.lowres8_convert( frame->buffer_lowres8 + i*plane_size + start,
+                                   frame->buffer_lowres[0] + i*plane_size + start, end - start );
+    }
+#endif
+}
+
+void x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame )
+{
     memset( frame->i_cost_est, -1, sizeof(frame->i_cost_est) );
 
     for( int y = 0; y < h->param.i_bframe + 2; y++ )
