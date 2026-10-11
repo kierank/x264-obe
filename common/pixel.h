@@ -37,8 +37,14 @@ typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel 
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
  * predictions against fenc's u (res[0]) and v (res[1]), without storing them;
- * fenc is interleaved uv like src, with the same stride */
-typedef void (*x264_pixel_satd_mcc_t) ( pixel *fenc, int res[2], pixel *src, intptr_t i_stride,
+ * high bit depth: fenc is interleaved uv like src, with the same stride;
+ * 8-bit: fenc is the partition's part of satd_mcc_fenc_pre's output */
+#if HIGH_BIT_DEPTH
+typedef pixel x264_mcc_fenc_t;
+#else
+typedef int16_t x264_mcc_fenc_t;
+#endif
+typedef void (*x264_pixel_satd_mcc_t) ( x264_mcc_fenc_t *fenc, int res[2], pixel *src, intptr_t i_stride,
                                         int dx, int dy, int i_width, int i_height );
 /* satd against fenc_pre, fenc's first transform stage from satd_fenc_pre */
 typedef int  (*x264_pixel_cmp_pre_t) ( int16_t *fenc_pre, pixel *, intptr_t );
@@ -93,6 +99,11 @@ typedef struct
     x264_pixel_cmp_avg2_t satd_avg2[7]; /* asm only, NULL otherwise */
     x264_pixel_cmp_avg2_t sad_avg2[7];  /* asm only, NULL otherwise */
     x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; width 8 heights 4-16, width 4 heights 8-16 */
+    /* asm only, 8-bit only, NULL otherwise: satd_mcc's fenc, 64*fenc - 32 uv interleaved,
+     * from the chroma fenc (FENC_STRIDE, u then v, height 8 or 16) into 512 words. Width 8:
+     * row y at 16*y; width 4: chroma x 0 or 4, y 0 or 8 at 256 + 32*x + 8*y, rows y+k | y+k+4
+     * 16 words apart. */
+    void (*satd_mcc_fenc_pre)( int16_t *fenc_pre, pixel *fenc, int i_height );
     /* asm only, NULL otherwise. satd_fenc_pre[0] fills 256 words from a 16x16 fenc
      * (FENC_STRIDE) for the 16 wide sizes, 16 words a row; [1] 64 from an 8x8 for the
      * 8 wide ones, an 8x16 reading those of its two 8x8 consecutively. */

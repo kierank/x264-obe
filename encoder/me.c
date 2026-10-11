@@ -932,13 +932,18 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     const int b_chroma_mcc = b_chroma_me && !CHROMA444 && h->pixf.mbcmp_mcc
                           && !m->weight[1].weightfn && !m->weight[2].weightfn
                           && (bh>>chroma_v_shift) >= (bw == 16 ? 4 : 8);
-    /* mbcmp_mcc takes fenc as the interleaved uv plane (the source of p_fenc[1] and
-     * p_fenc[2]) at the partition, which has the stride of the ref planes */
-    pixel *p_fenc_uv = NULL;
+    /* mbcmp_mcc takes fenc, high bit depth, as the interleaved uv plane (the source of
+     * p_fenc[1] and p_fenc[2]) at the partition, which has the stride of the ref planes;
+     * 8-bit, from mcc_fenc_pre */
+    x264_mcc_fenc_t *p_fenc_uv = NULL;
     if( b_chroma_mcc )
     {
+#if HIGH_BIT_DEPTH
         int off = m->p_fenc[1] - h->mb.pic.p_fenc[1];
         p_fenc_uv = h->mb.pic.p_fenc_plane[1] + 2*(off%FENC_STRIDE) + (off/FENC_STRIDE)*m->i_stride[1];
+#else
+        p_fenc_uv = x264_me_mcc_fenc_pre( h, m->p_fenc[1], bw );
+#endif
     }
 
     ALIGNED_ARRAY_N( pixel, pix,[64*18] ); // really 17x17x2, but round up for alignment

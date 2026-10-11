@@ -109,6 +109,22 @@ static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )
     return h->mb.pic.fenc_pre + 256 + 64*b;
 }
 
+#if !HIGH_BIT_DEPTH
+/* mbcmp_mcc's fenc for the chroma partition at p_fenc (in h->mb.pic.p_fenc[1]) of a
+ * luma partition bw wide, in mcc_fenc_pre, filled on first use in the mb */
+static inline int16_t *x264_me_mcc_fenc_pre( x264_t *h, pixel *p_fenc, int bw )
+{
+    if( !(h->mb.pic.i_fenc_pre & 32) )
+    {
+        h->pixf.satd_mcc_fenc_pre( h->mb.pic.mcc_fenc_pre, h->mb.pic.p_fenc[1], 16 >> CHROMA_V_SHIFT );
+        h->mb.pic.i_fenc_pre |= 32;
+    }
+    int off = p_fenc - h->mb.pic.p_fenc[1];
+    int x = off % FENC_STRIDE, y = off / FENC_STRIDE;
+    return h->mb.pic.mcc_fenc_pre + (bw == 16 ? 16*y : 256 + 32*x + 8*y);
+}
+#endif
+
 #define COPY1_IF_LT(x,y)\
 if((y)<(x))\
     (x)=(y);

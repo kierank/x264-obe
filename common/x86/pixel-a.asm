@@ -7289,12 +7289,14 @@ ads_mvs_ssse3:
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
-; void pixel_satd_mcc( pixel *fenc, int res[2], pixel *src, intptr_t stride,
+; void pixel_satd_mcc( fenc, int res[2], pixel *src, intptr_t stride,
 ;                      int dx, int dy, int width, int height )
 ; Chroma ME: satd of the u and v mc_chroma predictions against fenc's u
-; (res[0]) and v (res[1]) without storing them. fenc is the interleaved uv
-; fenc plane, with the stride of src. The filter is mc_chroma's in two exact
-; passes, on words (8-bit pixels zero extended), as the 10-bit AVX2 mc_chroma.
+; (res[0]) and v (res[1]) without storing them. High bit depth: fenc is the
+; interleaved uv fenc plane, with the stride of src. 8-bit: fenc is int16_t
+; 64*fenc - 32 from pixel_satd_mcc_fenc_pre, 32 bytes per row (width 8) or
+; per rows k | k+4 (width 4). The filter is mc_chroma's in two exact passes,
+; on words (8-bit pixels zero extended), as the 10-bit AVX2 mc_chroma.
 ; Rows stay interleaved: u in even words, v in odd words, so the 4x4 Hadamard
 ; columns are dwords and u and v never mix. Width 8: one row per ymm; width 4:
 ; rows k and k+4 per ymm. Width 8: height 4, 8 or 16; width 4: height 8 or 16.
@@ -7325,13 +7327,19 @@ ads_mvs_ssse3:
     paddw         m%1, m15
 %endmacro
 
-; prediction from H m%2 (row above) and m%3 -> m%1, interleaved uv; clobbers m15
-%macro MCC_SATD_V 3
+; prediction from H m%2 (row above) and m%3 -> m%1, interleaved uv; clobbers m15.
+; With %4 = 64*fenc - 32: minus fenc, (V+32-64*fenc)>>6 = ((V+32)>>6) - fenc
+%macro MCC_SATD_V 3-4
     pmullw        m15, m%2, m10
     pmullw        m%1, m%3, m11
     paddw         m%1, m15
+%if %0 == 4
+    psubw         m%1, %4
+    psraw         m%1, 6
+%else
     paddw         m%1, m12
     psrlw         m%1, 6
+%endif
 %endmacro
 
 ; satd of the interleaved uv differences in m0-m3 -> m6 (u even, v odd words);
@@ -7401,7 +7409,9 @@ cglobal pixel_satd_mcc, 4,8,16
     vpbroadcastw m10, xm10             ; 8-dy
     movd        xm11, r5d
     vpbroadcastw m11, xm11             ; dy
+%if HIGH_BIT_DEPTH
     vpbroadcastw m12, [pw_32]
+%endif
     lea           r4, [r3*3]
     mov          r7d, r7m
     pxor          m6, m6
@@ -7415,18 +7425,21 @@ cglobal pixel_satd_mcc, 4,8,16
     MCC_HREGS
     MCC_ROW        r2, mcc_k+1
     MCC_SATD_H     mcc_h1, mcc_row
+%if HIGH_BIT_DEPTH
     MCC_SATD_V     mcc_k, mcc_h0, mcc_h1
     MCC_ROW        r0, mcc_k
-%if HIGH_BIT_DEPTH
     psubw         m %+ mcc_k, [mcc_row]
 %else
-    vpmovzxbw     m15, [mcc_row]
-    psubw         m %+ mcc_k, m15
+    MCC_SATD_V     mcc_k, mcc_h0, mcc_h1, [r0+32*mcc_k]
 %endif
 %assign mcc_k mcc_k+1
 %endrep
     MCC_SATD_4x4
+%if HIGH_BIT_DEPTH
     lea           r0, [r0+r3*4]
+%else
+    sub           r0, -128
+%endif
     lea           r2, [r2+r3*4]
     sub          r7d, 4
     jg .loop8
@@ -7434,7 +7447,9 @@ cglobal pixel_satd_mcc, 4,8,16
 
 .w4:
     lea           r6, [r2+r3*4]
+%if HIGH_BIT_DEPTH
     lea           r5, [r0+r3*4]
+%endif
     MCC_SATD_H     7, r2, r6          ; rows 0 | 4
 %assign mcc_k 0
 %rep 4
@@ -7443,23 +7458,24 @@ cglobal pixel_satd_mcc, 4,8,16
     %xdefine mcc_row4 mcc_row
     MCC_ROW        r2, mcc_k+1
     MCC_SATD_H     mcc_h1, mcc_row, mcc_row4 ; rows k+1 | k+5
+%if HIGH_BIT_DEPTH
     MCC_SATD_V     mcc_k, mcc_h0, mcc_h1     ; rows k | k+4
     MCC_ROW        r0, mcc_k
-%if HIGH_BIT_DEPTH
     movu         xm15, [mcc_row]
     MCC_ROW        r5, mcc_k
     vinserti128   m15, m15, [mcc_row], 1
-%else
-    movq         xm15, [mcc_row]
-    MCC_ROW        r5, mcc_k
-    movhps       xm15, [mcc_row]
-    vpmovzxbw     m15, xm15
-%endif
     psubw         m %+ mcc_k, m15
+%else
+    MCC_SATD_V     mcc_k, mcc_h0, mcc_h1, [r0+32*mcc_k]
+%endif
 %assign mcc_k mcc_k+1
 %endrep
     MCC_SATD_4x4
+%if HIGH_BIT_DEPTH
     lea           r0, [r0+r3*8]
+%else
+    sub           r0, -128
+%endif
     lea           r2, [r2+r3*8]
     sub          r7d, 8
     jg .w4
@@ -7475,4 +7491,46 @@ cglobal pixel_satd_mcc, 4,8,16
     phaddd        xm6, xm6
     movq        [r1], xm6
     RET
+
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void pixel_satd_mcc_fenc_pre( int16_t pre[512], uint8_t *fenc, int height )
+; satd_mcc's fenc: 64*fenc - 32 of the chroma fenc (u then v per row,
+; FENC_STRIDE, height 8 or 16), uv interleaved. Width 8: row y at 16*y.
+; Width 4: columns 4c to 4c+3 of rows 8g+k | 8g+k+4 at 256+128*c+64*g+16*k.
+;-----------------------------------------------------------------------------
+; rows 8*%1 to 8*%1+7
+%macro MCC_FENC_PRE 1
+%assign mcc_j 0
+%rep 4
+    movu          xm0, [r1+128*%1+16*mcc_j]
+    vinserti128    m0, m0, [r1+128*%1+16*mcc_j+64], 1 ; rows k | k+4
+    punpckhbw      m1, m0, m4         ; v
+    punpcklbw      m0, m4             ; u
+    psllw          m0, 6
+    psllw          m1, 6
+    psubw          m0, m5
+    psubw          m1, m5
+    punpckhwd      m2, m0, m1         ; columns 4-7
+    punpcklwd      m0, m1             ; columns 0-3
+    mova [r0+512+128*%1+32*mcc_j], m0
+    mova [r0+768+128*%1+32*mcc_j], m2
+    vperm2i128     m1, m0, m2, 0x20   ; row k
+    vperm2i128     m0, m0, m2, 0x31   ; row k+4
+    mova [r0+256*%1+32*mcc_j], m1
+    mova [r0+256*%1+32*mcc_j+128], m0
+%assign mcc_j mcc_j+1
+%endrep
+%endmacro
+
+cglobal pixel_satd_mcc_fenc_pre, 3,3,6
+    pxor           m4, m4
+    vpbroadcastw   m5, [pw_32]
+    MCC_FENC_PRE    0
+    cmp           r2d, 8
+    jle .end
+    MCC_FENC_PRE    1
+.end:
+    RET
+%endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
