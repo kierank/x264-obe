@@ -357,6 +357,8 @@ cextern pw_ppppmmmm
 cextern pw_ppmmppmm
 cextern pw_pmpmpmpm
 cextern pw_pmmpzzzz
+cextern pw_512
+cextern pw_pixel_max
 cextern pd_1
 cextern hsub_mul
 cextern popcnt_table
@@ -4765,6 +4767,122 @@ INTRA_X9
 HADAMARD_AC_SSE2
 
 
+;-----------------------------------------------------------------------------
+; int pixel_satd_bi_WxH( fenc, pixel *src0, intptr_t stride0, pixel *src1, intptr_t stride1, int weight )
+; int pixel_satd_bi4_WxH( fenc, pixel *src0a, pixel *src0b, pixel *src1a, pixel *src1b,
+;                         intptr_t stride, int weight )
+; satd of mc.avg( src0, src1, weight ) without storing it: pavg at weight 32, else
+; clip( (src0*w + src1*(64-w) + 32) >> 6 ), -64 < w < 128. bi4 averages
+; src0 = pavg( src0a, src0b ) and src1 = pavg( src1a, src1b ), get_ref's unweighted
+; predictions from the hpel planes. fenc: the fenc (FENC_STRIDE) at high bit depth,
+; satd_fenc_pre's fenc_pre at 8-bit.
+; Sources: bi_p<list><a|b> at row k, bi_q<list><a|b> at row k+4 (8 wide),
+; bi_s<list> the stride, bi_t<list> 3*stride.
+;-----------------------------------------------------------------------------
+; bi_o = offset of row %2 (0-3) in list %1's sources
+%macro BI_ROW_OFF 2
+%if %2 == 0
+    %define bi_o 0
+%elif %2 == 1
+    %define bi_o bi_s%1
+%elif %2 == 2
+    %define bi_o 2*bi_s%1
+%else
+    %define bi_o bi_t%1
+%endif
+%endmacro
+
+; advance the sources %1 rows
+%macro BI_NEXT 1
+    lea      bi_p0a, [bi_p0a+%1*bi_s0]
+    lea      bi_p1a, [bi_p1a+%1*bi_s1]
+%if bi_four
+    lea      bi_p0b, [bi_p0b+%1*bi_s0]
+    lea      bi_p1b, [bi_p1b+%1*bi_s1]
+%endif
+%if bi_wide == 0
+    lea      bi_q0a, [bi_q0a+%1*bi_s0]
+    lea      bi_q1a, [bi_q1a+%1*bi_s1]
+%if bi_four
+    lea      bi_q0b, [bi_q0b+%1*bi_s0]
+    lea      bi_q1b, [bi_q1b+%1*bi_s1]
+%endif
+%endif
+%endmacro
+
+; the satd pass of rows m0-m3 into m6
+%macro BI_SATD_PASS 1 ; 1 for the high bit depth transform
+%if bi_pass
+    SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6
+%else
+    SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%endmacro
+
+; the function: SATD_BI_BODY height, weighted after the weight dispatch
+%macro SATD_BI 3 ; width, height, bi4
+%assign bi_four %3
+%assign bi_wide %1 == 16
+%assign bi_big %1*%2 == 256
+%if bi_four
+%if bi_wide
+cglobal pixel_satd_bi4_%1x%2, 7,8,11
+%else
+cglobal pixel_satd_bi4_%1x%2, 7,12,11
+%endif
+    %define bi_p0a r1
+    %define bi_p0b r2
+    %define bi_p1a r3
+    %define bi_p1b r4
+    %define bi_s0  r5
+    %define bi_s1  r5
+    %define bi_t0  r7
+    %define bi_t1  r7
+    %define bi_q0a r8
+    %define bi_q0b r9
+    %define bi_q1a r10
+    %define bi_q1b r11
+    %define bi_wd  r6d
+    %define bi_wb  r6b
+    FIX_STRIDES r5
+    lea       r7, [3*r5]
+%if bi_wide == 0
+    lea       r8, [r1+4*r5]
+    lea       r9, [r2+4*r5]
+    lea      r10, [r3+4*r5]
+    lea      r11, [r4+4*r5]
+%endif
+%else
+%if bi_wide
+cglobal pixel_satd_bi_%1x%2, 6,8,11
+%else
+cglobal pixel_satd_bi_%1x%2, 6,10,11
+%endif
+    %define bi_p0a r1
+    %define bi_p1a r3
+    %define bi_s0  r2
+    %define bi_s1  r4
+    %define bi_t0  r6
+    %define bi_t1  r7
+    %define bi_q0a r8
+    %define bi_q1a r9
+    %define bi_wd  r5d
+    %define bi_wb  r5b
+    FIX_STRIDES r2, r4
+    lea       r6, [3*r2]
+    lea       r7, [3*r4]
+%if bi_wide == 0
+    lea       r8, [r1+4*r2]
+    lea       r9, [r3+4*r4]
+%endif
+%endif
+    cmp     bi_wd, 32
+    jne .weight
+    SATD_BI_BODY %2, 0
+.weight:
+    SATD_BI_BODY %2, 1
+%endmacro
+
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
 ; 10-bit satd, ymm. Each 128-bit lane holds one row of an independent
@@ -4982,6 +5100,95 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
 %endrep
     SATD_HBD_END 1
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; satd_bi/satd_bi4 (see SATD_BI) in the layout of the satd functions above. The
+; weighted average is src1 + pmulhrsw( (src0-src1)<<5, w<<4 ) clipped, the same
+; as mc.avg's for |src0-src1| < 1024 and -64 < w < 128.
+;-----------------------------------------------------------------------------
+; m%1 = list %2's source at bi_o: a row (16 wide) or rows k, k+4 (8 wide); m%3 tmp
+%macro BI_HBD_SRC 3
+%if bi_wide
+    movu          m%1, [bi_p%2a+bi_o]
+%if bi_four
+    pavgw         m%1, [bi_p%2b+bi_o]
+%endif
+%else
+    movu         xm%1, [bi_p%2a+bi_o]
+    vinserti128   m%1, m%1, [bi_q%2a+bi_o], 1
+%if bi_four
+    movu         xm%3, [bi_p%2b+bi_o]
+    vinserti128   m%3, m%3, [bi_q%2b+bi_o], 1
+    pavgw         m%1, m%3
+%endif
+%endif
+%endmacro
+
+; m%1 = the average less fenc, row %2 (16 wide) or rows %2, %2+4 (8 wide)
+%macro BI_HBD_ROW 2
+    BI_ROW_OFF 0, %2
+    BI_HBD_SRC %1, 0, 5
+    BI_ROW_OFF 1, %2
+    BI_HBD_SRC 4, 1, 5
+%if bi_weight
+    psubw         m%1, m4
+    psllw         m%1, 5
+    pmulhrsw      m%1, m8
+    paddw         m%1, m4
+    pmaxsw        m%1, m9
+    pminsw        m%1, m10
+%else
+    pavgw         m%1, m4
+%endif
+%if bi_wide
+    psubw         m%1, [r0+%2*FENC_STRIDEB]
+%else
+    movu          xm5, [r0+%2*FENC_STRIDEB]
+    vinserti128    m5, m5, [r0+(%2+4)*FENC_STRIDEB], 1
+    psubw         m%1, m5
+%endif
+%endmacro
+
+%macro SATD_BI_BODY 2 ; height, weighted
+%assign bi_weight %2
+%if bi_weight
+    shl          bi_wd, 4
+    movd           xm8, bi_wd
+    vpbroadcastw    m8, xm8
+    pxor            m9, m9
+    vbroadcasti128 m10, [pw_pixel_max]
+%endif
+%if bi_wide
+    %assign bi_rows 4
+%else
+    %assign bi_rows 8
+%endif
+%assign bi_pass 0
+%rep %1/bi_rows
+%if bi_pass
+    BI_NEXT bi_rows
+    add            r0, bi_rows*FENC_STRIDEB
+%endif
+    BI_HBD_ROW 0, 0
+    BI_HBD_ROW 1, 1
+    BI_HBD_ROW 2, 2
+    BI_HBD_ROW 3, 3
+    BI_SATD_PASS 1
+%assign bi_pass bi_pass+1
+%endrep
+    SATD_HBD_END bi_big
+%endmacro
+
+SATD_BI 16, 16, 0
+SATD_BI 16,  8, 0
+SATD_BI  8, 16, 0
+SATD_BI  8,  8, 0
+SATD_BI 16, 16, 1
+SATD_BI 16,  8, 1
+SATD_BI  8, 16, 1
+SATD_BI  8,  8, 1
+%endif ; ARCH_X86_64
 
 %if ARCH_X86_64
 INIT_YMM avx2
@@ -6474,6 +6681,148 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
     lea      r6, [r2+4*r3]
     SATD_AVG2_PRE_8x8 0, swap
     SATD_AVG2_END
+
+;-----------------------------------------------------------------------------
+; satd_bi/satd_bi4 (see SATD_BI) against fenc_pre, the rows as satd_pre's. The
+; weighted average is BIWEIGHT_SSSE3's: pmaddubsw by (w, 64-w), pmulhrsw by 512.
+;-----------------------------------------------------------------------------
+; 16 wide: rows %3, %3+1 of list %2 in the lanes of m%1; m4 tmp
+%macro BI_PRE_SRC16x2 3
+    BI_ROW_OFF %2, %3
+    %xdefine bi_o0 bi_o
+    BI_ROW_OFF %2, %3+1
+    movu          xm%1, [bi_p%2a+bi_o0]
+    vinserti128    m%1, m%1, [bi_p%2a+bi_o], 1
+%if bi_four
+    movu           xm4, [bi_p%2b+bi_o0]
+    vinserti128     m4, m4, [bi_p%2b+bi_o], 1
+    pavgb          m%1, m4
+%endif
+%endmacro
+
+; 16 wide, weighted: m%1, m%2 = rows %3, %3+1 less fenc_pre's (pass row bi_fr)
+%macro BI_PRE_W16x2 3
+    BI_PRE_SRC16x2 %1, 0, %3
+    BI_PRE_SRC16x2 %2, 1, %3
+    punpckhbw       m4, m%1, m%2
+    punpcklbw      m%1, m%2
+    pmaddubsw       m4, m8
+    pmaddubsw      m%1, m8
+    pmulhrsw        m4, m9
+    pmulhrsw       m%1, m9
+    packuswb       m%1, m4
+    vpermq         m%2, m%1, q3232
+    vpermq         m%1, m%1, q1010
+    pmaddubsw      m%1, m7
+    pmaddubsw      m%2, m7
+    psubw          m%1, [r0+(bi_fr+%3)*32]
+    psubw          m%2, [r0+(bi_fr+%3+1)*32]
+%endmacro
+
+; 16 wide, pavgb: m%1 = row %2 less fenc_pre's
+%macro BI_PRE_A16 2
+    BI_ROW_OFF 0, %2
+    vbroadcasti128 m%1, [bi_p0a+bi_o]
+%if bi_four
+    vbroadcasti128  m4, [bi_p0b+bi_o]
+    pavgb          m%1, m4
+%endif
+    BI_ROW_OFF 1, %2
+    vbroadcasti128  m4, [bi_p1a+bi_o]
+%if bi_four
+    vbroadcasti128  m5, [bi_p1b+bi_o]
+    pavgb           m4, m5
+%endif
+    pavgb          m%1, m4
+    pmaddubsw      m%1, m7
+    psubw          m%1, [r0+(bi_fr+%2)*32]
+%endmacro
+
+; 8 wide: list %2's rows %3, %3+4 as [k k | k+4 k+4] in m%1; m4, m10 tmp
+%macro BI_PRE_SRC8 3
+    BI_ROW_OFF %2, %3
+    LOAD_DUP_8x2P_AVX2 %1, 4, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
+%if bi_four
+    LOAD_DUP_8x2P_AVX2 10, 4, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
+    pavgb          m%1, m10
+%endif
+%endmacro
+
+; 8 wide: m%1 = rows %2, %2+4 less fenc_pre's (the 8x8's at byte bi_fp)
+%macro BI_PRE_8 2
+    BI_PRE_SRC8 %1, 0, %2
+    BI_PRE_SRC8  5, 1, %2
+%if bi_weight
+    punpcklbw      m%1, m5
+    pmaddubsw      m%1, m8
+    pmulhrsw       m%1, m9
+    packuswb       m%1, m%1
+%else
+    pavgb          m%1, m5
+%endif
+    pmaddubsw      m%1, m7
+    psubw          m%1, [r0+bi_fp+%2*32]
+%endmacro
+
+%macro SATD_BI_BODY 2 ; height, weighted
+%assign bi_weight %2
+%if bi_wide
+    mova            m7, [hmul_16p]
+%else
+    mova            m7, [hmul_8p]
+%endif
+%if bi_weight
+    movzx        bi_wd, bi_wb
+    imul         bi_wd, bi_wd, -255
+    add          bi_wd, 64<<8 ; w | (64-w)<<8 as in BIWEIGHT_START_SSSE3
+    movd           xm8, bi_wd
+    vpbroadcastw    m8, xm8
+    vpbroadcastd    m9, [pw_512]
+%endif
+%assign bi_pass 0
+%if bi_wide
+%rep %1/4
+%if bi_pass
+    BI_NEXT 4
+%endif
+%assign bi_fr 4*bi_pass
+%if bi_weight
+    BI_PRE_W16x2 0, 1, 0
+    BI_PRE_W16x2 2, 3, 2
+%else
+    BI_PRE_A16 0, 0
+    BI_PRE_A16 1, 1
+    BI_PRE_A16 2, 2
+    BI_PRE_A16 3, 3
+%endif
+    BI_SATD_PASS 0
+%assign bi_pass bi_pass+1
+%endrep
+%else
+%rep %1/8
+%if bi_pass
+    BI_NEXT 8
+%endif
+%assign bi_fp 128*bi_pass
+    BI_PRE_8 0, 0
+    BI_PRE_8 1, 1
+    BI_PRE_8 2, 2
+    BI_PRE_8 3, 3
+    BI_SATD_PASS 0
+%assign bi_pass bi_pass+1
+%endrep
+%endif
+    SATD_AVG2_END
+%endmacro
+
+SATD_BI 16, 16, 0
+SATD_BI 16,  8, 0
+SATD_BI  8, 16, 0
+SATD_BI  8,  8, 0
+SATD_BI 16, 16, 1
+SATD_BI 16,  8, 1
+SATD_BI  8, 16, 1
+SATD_BI  8,  8, 1
 
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
