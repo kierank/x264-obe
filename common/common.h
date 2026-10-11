@@ -261,6 +261,9 @@ typedef struct
     int i_mb_field[3];
     /* Adaptive direct mv pred */
     int i_direct_score[2];
+    /* bd-alg ALG_FIELDREF=4/5: field MB 16x16 decisions, those outside the arm's
+     * base refs (ints before i_ssd: x264_threaded_slices_write sums them) */
+    int i_exp_fieldref[2];
     /* Metrics */
     int64_t i_ssd[3];
     double f_ssim;
@@ -301,6 +304,8 @@ typedef struct
     int64_t hexmoved[4];            /* of those below each threshold, the first hexagon moved off the start */
     int64_t rdthresh[3][3];         /* P mbrd candidates: [16x8/8x16/8x8, 16x16, intra][RD'd, ALG_RDTHRESH
                                      * would leave them out, and of those the final choice] */
+    int64_t guard[2][4];            /* frame guard of ALG_FIELDREF=4/5 and ALG_CHROMAME&4: [P,B][frames,
+                                     * fired on the last frame's stats, on the lookahead jump, either] */
 } x264_exp_census_t;
 
 struct x264_t
@@ -792,6 +797,12 @@ struct x264_t
         int     b_lowres_ctx;       /* this context runs lowres searches (lookahead) */
         int     i_hex_census;       /* census: the smallest ALG_HEXEXIT threshold the HEX start is below */
         int     i_alg_rdthresh;
+        /* the frame guard (x264_exp_frame_guard) */
+        int     i_fieldref_pct;     /* X264_EXP_ALG_FIELDREF_PCT */
+        int     i_guard_jump;       /* X264_EXP_ALG_GUARD_JUMP */
+        int     fieldref_dec[2];    /* this MB's 16x16 decision per list: -1 none, 1 outside the base refs */
+        int     fieldref_last[2][2];/* h->thread[0] only: [P,B] the last finished frame's i_exp_fieldref */
+        int     guard_base[2];      /* h->thread[0] only: [P,B] running lowres inter/intra cost ratio */
         int     b_census;           /* X264_EXP_CENSUS */
         int     b_census_me;        /* set around the 16x16 searches */
         int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */

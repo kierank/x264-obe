@@ -1516,10 +1516,25 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.i_alg_lowresme = e ? atoi( e ) : 0;
         /* X264_EXP_ALG_FIELDREF, field MBs' 16x16 refs: 1 refs 0 and 1, older ones only
          * up to those the neighbours used, 2 no ref 1 when it is the further field,
-         * 3 at most 4 refs */
+         * 3 at most 4 refs; 4 and 5 are 1 and 2 with the frame guard
+         * (x264_exp_frame_guard), which sets i_fieldref_arm per frame */
         e = getenv( "X264_EXP_ALG_FIELDREF" );
         h->exp.i_alg_fieldref = e ? atoi( e ) : 0;
-        h->exp.i_fieldref_arm = h->exp.i_alg_fieldref >= 1 && h->exp.i_alg_fieldref <= 3 ? h->exp.i_alg_fieldref : 0;
+        h->exp.i_fieldref_arm = h->exp.i_alg_fieldref == 4 ? 1 :
+                                h->exp.i_alg_fieldref == 5 ? 2 :
+                                h->exp.i_alg_fieldref >= 1 && h->exp.i_alg_fieldref <= 3 ? h->exp.i_alg_fieldref : 0;
+        /* X264_EXP_ALG_FIELDREF_PCT (default 5): the guard searches all refs in a frame
+         * when over this % of the field MB 16x16 decisions of the last finished frame
+         * of its type chose a ref outside the arm's base set */
+        e = getenv( "X264_EXP_ALG_FIELDREF_PCT" );
+        h->exp.i_fieldref_pct = e ? atoi( e ) : 5;
+        /* X264_EXP_ALG_GUARD_JUMP (default 150, 0 off): ... and in a frame whose lowres
+         * inter/intra cost ratio is over this % of the running ratio of its type */
+        e = getenv( "X264_EXP_ALG_GUARD_JUMP" );
+        h->exp.i_guard_jump = e ? atoi( e ) : 150;
+        h->exp.fieldref_dec[0] = h->exp.fieldref_dec[1] = -1;
+        memset( h->exp.fieldref_last, 0, sizeof(h->exp.fieldref_last) );
+        memset( h->exp.guard_base, 0, sizeof(h->exp.guard_base) );
         /* X264_EXP_ALG_PARTGATE=T: no 8x8 (16x8, 8x16) analysis when the best 16x16 cost
          * less its MV cost is below T*lambda and no left/top MB used a sub-16x16 partition */
         e = getenv( "X264_EXP_ALG_PARTGATE" );
@@ -1530,7 +1545,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.i_alg_trdpre = e ? atoi( e ) : 0;
         /* X264_EXP_ALG_CHROMAME, a mask: 1 no chroma ME in 8x8 searches (chroma cost
          * added at the MV found), 2 the halfpel cut across refs on luma, chroma ME
-         * only for the refs past it */
+         * only for the refs past it, 4 full chroma ME in frames the frame guard's
+         * lookahead jump flags (x264_exp_frame_guard sets i_chromame per frame) */
         e = getenv( "X264_EXP_ALG_CHROMAME" );
         h->exp.i_alg_chromame = e ? atoi( e ) : 0;
         h->exp.i_chromame = h->exp.i_alg_chromame & 3;
@@ -2955,6 +2971,15 @@ cont:
 
         /* accumulate mb stats */
         h->stat.frame.i_mb_count[h->mb.i_type]++;
+        /* bd-alg ALG_FIELDREF=4/5: the frame guard's statistic, for the MB as coded
+         * (a re-encode restores stat.frame) */
+        if( (h->exp.i_alg_fieldref >= 4 || h->exp.b_census) && MB_INTERLACED )
+            for( int l = 0; l < 2; l++ )
+                if( h->exp.fieldref_dec[l] >= 0 )
+                {
+                    h->stat.frame.i_exp_fieldref[0]++;
+                    h->stat.frame.i_exp_fieldref[1] += h->exp.fieldref_dec[l];
+                }
 
         int b_intra = IS_INTRA( h->mb.i_type );
         int b_skip = IS_SKIP( h->mb.i_type );
@@ -3274,6 +3299,90 @@ int x264_encoder_invalidate_reference( x264_t *h, int64_t pts )
             h->fdec->b_corrupt = 1;
     }
     return 0;
+}
+
+/* bd-alg frame guard: the lowres inter/intra cost ratio of the frame, in 1/1000,
+ * from the costs x264_rc_analyse_slice uses (same p0, p1, b); -1 if unknown */
+static int x264_exp_lowres_ratio( x264_t *h )
+{
+    x264_frame_t *f = h->fenc;
+    int p1, b;
+    if( !h->frames.b_have_lowres || !f->b_intra_calculated )
+        return -1;
+    if( h->sh.i_type == SLICE_TYPE_P )
+        p1 = b = f->i_bframes + 1;
+    else if( h->sh.i_type == SLICE_TYPE_B )
+    {
+        p1 = (h->fref_nearest[1]->i_poc - h->fref_nearest[0]->i_poc)/2;
+        b  = (f->i_poc - h->fref_nearest[0]->i_poc)/2;
+    }
+    else
+        return -1;
+    if( b < 0 || p1 < b || p1 > X264_BFRAME_MAX+1 )
+        return -1;
+    int inter = f->i_cost_est[b][p1-b];
+    int intra = f->i_cost_est[0][0];
+    if( inter < 0 || intra <= 0 )
+        return -1;
+    return (int)X264_MIN( (int64_t)inter * 1000 / intra, 1000000 );
+}
+
+/* bd-alg frame guard, before the frame's slices, in the caller's thread: sets the
+ * ALG_FIELDREF arm and the ALG_CHROMAME mask of this frame.
+ * - stats (ALG_FIELDREF=4/5): over i_fieldref_pct % of the field MB 16x16 decisions
+ *   of the last finished frame of this type (x264_encoder_frame_end) chose a ref
+ *   outside the arm's base set;
+ * - lookahead jump (ALG_FIELDREF=4/5, ALG_CHROMAME&4): the frame's lowres
+ *   inter/intra cost ratio is over i_guard_jump % of the running ratio of its type
+ *   and over 0.1 (flash, fade, occlusion: a frame the previous ref predicts badly;
+ *   weightp, x264's fade detector, is off with interlacing). The running ratio
+ *   follows the frames the jump leaves alone, in coded order.
+ * Either one gives ALG_FIELDREF all refs, the jump gives ALG_CHROMAME full chroma
+ * ME. Under sliced threads the slice contexts get the result. */
+static void x264_exp_frame_guard( x264_t *h )
+{
+    int alg = h->exp.i_alg_fieldref;
+    int b_fr_guard = alg == 4 || alg == 5;
+    int b_cm_guard = h->exp.i_alg_chromame & 4;
+    int arm = alg == 4 ? 1 : alg == 5 ? 2 : alg >= 1 && alg <= 3 ? alg : 0;
+    int chromame = h->exp.i_alg_chromame & 3;
+    if( (b_fr_guard || b_cm_guard || h->exp.b_census) && h->sh.i_type != SLICE_TYPE_I )
+    {
+        x264_t *t0 = h->thread[0];
+        int s = h->sh.i_type == SLICE_TYPE_B;
+        int n = t0->exp.fieldref_last[s][0];
+        int k = t0->exp.fieldref_last[s][1];
+        int b_stat = n > 0 && (int64_t)k * 100 > (int64_t)n * h->exp.i_fieldref_pct;
+        int b_la = 0;
+        int r = x264_exp_lowres_ratio( h );
+        if( r >= 0 )
+        {
+            int base = t0->exp.guard_base[s];
+            b_la = base > 0 && h->exp.i_guard_jump > 0 && r > 100 &&
+                   (int64_t)r * 100 > (int64_t)base * h->exp.i_guard_jump;
+            if( !b_la )
+                t0->exp.guard_base[s] = base > 0 ? (3*base + r + 2) >> 2 : X264_MAX( r, 1 );
+        }
+        if( b_fr_guard && (b_stat || b_la) )
+            arm = 0;
+        if( b_cm_guard && b_la )
+            chromame = 0;
+        if( h->exp.b_census )
+        {
+            h->exp.census.guard[s][0]++;
+            h->exp.census.guard[s][1] += b_stat;
+            h->exp.census.guard[s][2] += b_la;
+            h->exp.census.guard[s][3] += b_stat || b_la;
+        }
+    }
+    h->exp.i_fieldref_arm = arm;
+    h->exp.i_chromame = chromame;
+    if( h->param.b_sliced_threads )
+        for( int i = 1; i < h->param.i_threads; i++ )
+        {
+            h->thread[i]->exp.i_fieldref_arm = arm;
+            h->thread[i]->exp.i_chromame = chromame;
+        }
 }
 
 /****************************************************************************
@@ -3813,6 +3922,9 @@ int     x264_encoder_encode( x264_t *h,
     if( i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE )
         h->i_frame_num++;
 
+    /* bd-alg: the ALG_FIELDREF arm and ALG_CHROMAME mask of this frame */
+    x264_exp_frame_guard( h );
+
     /* Write frame */
     h->i_threadslice_start = 0;
     h->i_threadslice_end = h->mb.i_mb_height;
@@ -3849,6 +3961,16 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     {
         pic_out->i_type = X264_TYPE_AUTO;
         return 0;
+    }
+
+    /* bd-alg ALG_FIELDREF=4/5: the finished frame's statistic, kept in h->thread[0]
+     * for x264_exp_frame_guard. Both run in the caller's thread, so the frame a
+     * guard reads is fixed by the frame count and the thread count, not by timing. */
+    if( h->sh.i_type != SLICE_TYPE_I && (h->exp.i_alg_fieldref >= 4 || h->exp.b_census) )
+    {
+        int s = h->sh.i_type == SLICE_TYPE_B;
+        h->thread[0]->exp.fieldref_last[s][0] = h->stat.frame.i_exp_fieldref[0];
+        h->thread[0]->exp.fieldref_last[s][1] = h->stat.frame.i_exp_fieldref[1];
     }
 
     x264_emms();
@@ -4185,6 +4307,9 @@ static void x264_exp_census_print( x264_t *h )
     for( int g = 0; g < 3; g++ )
         fprintf( stderr, "bd-alg census: rdthresh P %s rd %"PRId64" cut %"PRId64" cut-but-chosen %"PRId64"\n",
                  rdt_name[g], c.rdthresh[g][0], c.rdthresh[g][1], c.rdthresh[g][2] );
+    for( int s = 0; s < 2; s++ )
+        fprintf( stderr, "bd-alg census: guard %s frames %"PRId64" stats %"PRId64" lookahead-jump %"PRId64" either %"PRId64"\n",
+                 slice_name[s], c.guard[s][0], c.guard[s][1], c.guard[s][2], c.guard[s][3] );
 }
 
 /****************************************************************************

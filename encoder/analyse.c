@@ -1338,6 +1338,17 @@ static int x264_exp_fieldref_limit( x264_t *h, int l, int arm, int *p_skip1 )
     return i_maxref;
 }
 
+/* bd-alg ALG_FIELDREF=4/5: whether a field MB's 16x16 decision on list l is a
+ * ref outside the base set of the configured arm (2, 5: ref 1 when it is the
+ * further field; otherwise ref > 1), the frame guard's statistic */
+static int x264_exp_fieldref_outside( x264_t *h, int l, int i_ref )
+{
+    int alg = h->exp.i_alg_fieldref;
+    if( alg == 2 || alg == 5 )
+        return i_ref == 1 && !x264_exp_field_ref1_nearer( h, l );
+    return i_ref > 1;
+}
+
 /* bd-alg X264_EXP_CENSUS: the refs of list l each ALG_FIELDREF arm would search
  * in this field MB */
 static NOINLINE void x264_exp_census_fieldref( x264_t *h, int l )
@@ -1442,6 +1453,9 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 
     if( h->exp.b_census && MB_INTERLACED )
         h->exp.census.ref16[0][0][h->mb.i_mb_y&1][X264_MIN( a->l0.me16x16.i_ref, 2 )]++;
+    /* bd-alg ALG_FIELDREF=4/5: the frame guard's statistic, counted in x264_slice_write */
+    if( (h->exp.i_alg_fieldref >= 4 || h->exp.b_census) && MB_INTERLACED )
+        h->exp.fieldref_dec[0] = x264_exp_fieldref_outside( h, 0, a->l0.me16x16.i_ref );
 
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, a->l0.me16x16.i_ref );
     assert( a->l0.me16x16.mv[1] <= h->mb.mv_max_spel[1] || h->i_thread_frames == 1 );
@@ -2277,6 +2291,12 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
     {
         h->exp.census.ref16[1][0][h->mb.i_mb_y&1][X264_MIN( a->l0.me16x16.i_ref, 2 )]++;
         h->exp.census.ref16[1][1][h->mb.i_mb_y&1][X264_MIN( a->l1.me16x16.i_ref, 2 )]++;
+    }
+    /* bd-alg ALG_FIELDREF=4/5: as in x264_mb_analyse_inter_p16x16 */
+    if( (h->exp.i_alg_fieldref >= 4 || h->exp.b_census) && MB_INTERLACED )
+    {
+        h->exp.fieldref_dec[0] = x264_exp_fieldref_outside( h, 0, a->l0.me16x16.i_ref );
+        h->exp.fieldref_dec[1] = x264_exp_fieldref_outside( h, 1, a->l1.me16x16.i_ref );
     }
 }
 
@@ -3358,6 +3378,8 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
+    /* bd-alg ALG_FIELDREF=4/5: no 16x16 decision yet */
+    h->exp.fieldref_dec[0] = h->exp.fieldref_dec[1] = -1;
 
     /*--------------------------- Do the analysis ---------------------------*/
     if( h->sh.i_type == SLICE_TYPE_I )
