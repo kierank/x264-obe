@@ -69,13 +69,232 @@ static double x264_ssim( double ssim )
     return -10.0 * log10( inv_ssim );
 }
 
-static int x264_threadpool_wait_all( x264_t *h )
+/****************************************************************************
+ * Sliced threads: one persistent worker per thread slice, each woken on its
+ * own. Workers 1..N-1 encode their slice; slice 0 is encoded by the calling
+ * thread and worker 0 only runs its post-encode filter passes.
+ ****************************************************************************/
+static void *x264_slices_write( x264_t *h );
+static void x264_threadslice_filter( x264_t *h );
+
+#if HAVE_THREAD
+static void x264_encoder_thread_init( x264_t *h );
+
+#if defined(__ATOMIC_ACQUIRE)
+#define SLICE_LOAD(p)    __atomic_load_n( (p), __ATOMIC_ACQUIRE )
+#define SLICE_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
+#else
+#define SLICE_LOAD(p)    (*(volatile int *)(p))
+#define SLICE_STORE(p,v) (*(volatile int *)(p) = (v))
+#endif
+#if defined(__GNUC__) && (ARCH_X86 || ARCH_X86_64)
+#define SLICE_PAUSE()    __asm__ __volatile__( "pause" )
+#else
+#define SLICE_PAUSE()
+#endif
+/* Pauses before a worker sleeps: a few us. */
+#define SLICE_SPIN 256
+
+typedef struct
+{
+    x264_t *h;                  /* thread context this worker runs */
+    int i_idx;
+    x264_pthread_t handle;
+    x264_pthread_mutex_t mutex;
+    x264_pthread_cond_t cv_go;
+    x264_pthread_cond_t cv_done;
+    int i_go;                   /* last job dispatched; read unlocked while spinning */
+    int i_done;                 /* last job finished */
+    int b_exit;                 /* read unlocked while spinning */
+    int b_sleeping;             /* worker blocked on cv_go */
+    int b_waiting;              /* caller blocked on cv_done */
+    intptr_t ret;
+    x264_t *snap;               /* frame state to copy before encoding */
+} x264_slice_worker_t;
+
+/* Each worker's flags on their own cache lines. */
+typedef union
+{
+    x264_slice_worker_t w;
+    uint8_t pad[256];
+} x264_slice_worker_pad_t;
+
+typedef struct x264_slicepool_t
+{
+    int i_workers;
+    x264_slice_worker_pad_t *workers;
+    x264_t *snap;               /* thread 0 state for the frame, copied by workers 1.. */
+} x264_slicepool_t;
+
+/* Main thread, before dispatch: thread 0 changes once it encodes slice 0. */
+static void x264_slicepool_snapshot( x264_t *h )
+{
+    x264_t *snap = h->slicepool->snap;
+    snap->param = h->param;
+    memcpy( &snap->i_frame, &h->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
+}
+
+/* Worker, before encoding: sync context t to the frame. */
+static void x264_threadslice_sync( x264_t *t, x264_t *snap )
+{
+    t->param = snap->param;
+    memcpy( &t->i_frame, &snap->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
+    t->sh.i_first_mb = t->i_threadslice_start * t->mb.i_mb_width;
+    t->sh.i_last_mb  =   t->i_threadslice_end * t->mb.i_mb_width - 1;
+}
+
+static void *x264_slice_worker_thread( void *arg )
+{
+    x264_slice_worker_t *w = arg;
+    int gen = 0;
+
+    x264_encoder_thread_init( w->h );
+    x264_pthread_mutex_lock( &w->mutex );
+    w->i_done = 0;
+    if( w->b_waiting )
+        x264_pthread_cond_broadcast( &w->cv_done );
+    x264_pthread_mutex_unlock( &w->mutex );
+
+    for( ;; )
+    {
+        for( int spin = 0; spin < SLICE_SPIN && SLICE_LOAD( &w->i_go ) == gen && !SLICE_LOAD( &w->b_exit ); spin++ )
+            SLICE_PAUSE();
+        x264_pthread_mutex_lock( &w->mutex );
+        while( SLICE_LOAD( &w->i_go ) == gen && !SLICE_LOAD( &w->b_exit ) )
+        {
+            w->b_sleeping = 1;
+            x264_pthread_cond_wait( &w->cv_go, &w->mutex );
+            w->b_sleeping = 0;
+        }
+        int go = SLICE_LOAD( &w->i_go );
+        x264_pthread_mutex_unlock( &w->mutex );
+        /* exit only with nothing pending */
+        if( go == gen )
+            break;
+        gen = go;
+
+        intptr_t ret = 0;
+        if( w->i_idx )
+        {
+            x264_threadslice_sync( w->h, w->snap );
+            ret = (intptr_t)x264_stack_align( x264_slices_write, w->h );
+        }
+        else
+            x264_stack_align( x264_threadslice_filter, w->h );
+
+        x264_pthread_mutex_lock( &w->mutex );
+        w->ret = ret;
+        w->i_done = gen;
+        if( w->b_waiting )
+            x264_pthread_cond_broadcast( &w->cv_done );
+        x264_pthread_mutex_unlock( &w->mutex );
+    }
+    return NULL;
+}
+
+static void x264_slicepool_run( x264_slicepool_t *pool, int i )
+{
+    x264_slice_worker_t *w = &pool->workers[i].w;
+    x264_pthread_mutex_lock( &w->mutex );
+    SLICE_STORE( &w->i_go, w->i_go + 1 );
+    int b_wake = w->b_sleeping;
+    x264_pthread_mutex_unlock( &w->mutex );
+    /* a spinning worker needs no wakeup */
+    if( b_wake )
+        x264_pthread_cond_broadcast( &w->cv_go );
+}
+
+/* Result for job i when it isn't run. */
+static void x264_slicepool_set_ret( x264_slicepool_t *pool, int i, intptr_t ret )
+{
+    x264_slice_worker_t *w = &pool->workers[i].w;
+    x264_pthread_mutex_lock( &w->mutex );
+    w->ret = ret;
+    x264_pthread_mutex_unlock( &w->mutex );
+}
+
+static intptr_t x264_slicepool_wait( x264_slicepool_t *pool, int i )
+{
+    x264_slice_worker_t *w = &pool->workers[i].w;
+    x264_pthread_mutex_lock( &w->mutex );
+    while( w->i_done != w->i_go )
+    {
+        w->b_waiting = 1;
+        x264_pthread_cond_wait( &w->cv_done, &w->mutex );
+    }
+    w->b_waiting = 0;
+    intptr_t ret = w->ret;
+    x264_pthread_mutex_unlock( &w->mutex );
+    return ret;
+}
+
+static void x264_slicepool_delete( x264_slicepool_t *pool )
+{
+    for( int i = 0; i < pool->i_workers; i++ )
+    {
+        x264_slice_worker_t *w = &pool->workers[i].w;
+        x264_pthread_mutex_lock( &w->mutex );
+        SLICE_STORE( &w->b_exit, 1 );
+        x264_pthread_mutex_unlock( &w->mutex );
+        x264_pthread_cond_broadcast( &w->cv_go );
+        x264_pthread_join( w->handle, NULL );
+        x264_pthread_mutex_destroy( &w->mutex );
+        x264_pthread_cond_destroy( &w->cv_go );
+        x264_pthread_cond_destroy( &w->cv_done );
+    }
+    x264_free( pool->workers );
+    x264_free( pool->snap );
+    x264_free( pool );
+}
+
+static int x264_slicepool_init( x264_t *h )
+{
+    x264_slicepool_t *pool = NULL;
+    CHECKED_MALLOCZERO( pool, sizeof(x264_slicepool_t) );
+    CHECKED_MALLOCZERO( pool->workers, h->param.i_threads * sizeof(x264_slice_worker_pad_t) );
+    CHECKED_MALLOC( pool->snap, sizeof(x264_t) );
+    for( int i = 0; i < h->param.i_threads; i++ )
+    {
+        x264_slice_worker_t *w = &pool->workers[i].w;
+        w->h = h->thread[i];
+        w->i_idx = i;
+        w->snap = pool->snap;
+        w->i_done = -1;
+        if( x264_pthread_mutex_init( &w->mutex, NULL ) ||
+            x264_pthread_cond_init( &w->cv_go, NULL ) ||
+            x264_pthread_cond_init( &w->cv_done, NULL ) )
+            goto fail;
+        if( x264_pthread_create( &w->handle, NULL, x264_slice_worker_thread, w ) )
+            goto fail;
+        pool->i_workers++;
+        /* worker init done before the caller touches thread contexts again */
+        x264_slicepool_wait( pool, i );
+    }
+    h->slicepool = pool;
+    return 0;
+fail:
+    if( pool && pool->workers )
+        x264_slicepool_delete( pool );
+    else
+        x264_free( pool );
+    return -1;
+}
+#else
+static inline int x264_slicepool_init( x264_t *h ) { return -1; }
+static inline void x264_slicepool_run( struct x264_slicepool_t *pool, int i ) {}
+static inline void x264_slicepool_set_ret( struct x264_slicepool_t *pool, int i, intptr_t ret ) {}
+static inline intptr_t x264_slicepool_wait( struct x264_slicepool_t *pool, int i ) { return 0; }
+static inline void x264_slicepool_delete( struct x264_slicepool_t *pool ) {}
+static inline void x264_slicepool_snapshot( x264_t *h ) {}
+#endif
+
+static int x264_slicepool_wait_all( x264_t *h )
 {
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h->thread[i]->b_thread_active )
         {
             h->thread[i]->b_thread_active = 0;
-            if( (intptr_t)x264_threadpool_wait( h->threadpool, h->thread[i] ) < 0 )
+            if( x264_slicepool_wait( h->slicepool, i ) < 0 )
                 return -1;
         }
     return 0;
@@ -89,7 +308,7 @@ static void x264_frame_dump( x264_t *h )
 
     /* Wait for the threads to finish deblocking */
     if( h->param.b_sliced_threads )
-        x264_threadpool_wait_all( h );
+        x264_slicepool_wait_all( h );
 
     /* Write the frame in display order */
     int frame_size = FRAME_SIZE( h->param.i_height * h->param.i_width * sizeof(pixel) );
@@ -1619,7 +1838,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
 
     CHECKED_MALLOC( h->reconfig_h, sizeof(x264_t) );
 
-    if( h->param.i_threads > 1 &&
+    if( h->param.i_threads > 1 && !h->param.b_sliced_threads &&
         x264_threadpool_init( &h->threadpool, h->param.i_threads, (void*)x264_encoder_thread_init, h ) )
         goto fail;
     if( h->param.i_lookahead_threads > 1 &&
@@ -1692,6 +1911,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
             goto fail;
 
     if( x264_ratecontrol_new( h ) < 0 )
+        goto fail;
+
+    if( h->param.b_sliced_threads && x264_slicepool_init( h ) < 0 )
         goto fail;
 
     if( h->param.i_nal_hrd )
@@ -1998,6 +2220,93 @@ static int x264_encoder_encapsulate_nals( x264_t *h, int start )
     x264_emms();
 
     return nal_buffer - (h0->nal_buffer + previous_nal_size);
+}
+
+/* Sliced threads, no avc-intra or nalu_process: escape a thread slice's NALs
+ * into its own buffer, so the main thread only concatenates them. */
+static void x264_threadslice_escape_nals( x264_t *h )
+{
+    int start = h->i_threadslice_nal;
+    int raw = 0;
+    for( int i = start; i < h->out.i_nal; i++ )
+        raw += h->out.nal[i].i_payload;
+
+    /* worst-case escaping, startcode and header, nal_escape assembly padding */
+    int necessary_size = raw * 3/2 + (h->out.i_nal - start) * 6 + 64;
+    if( h->i_threadslice_buf_size < necessary_size )
+    {
+        necessary_size *= 2;
+        uint8_t *buf = x264_malloc( necessary_size );
+        if( !buf )
+            return;
+        x264_free( h->threadslice_buf );
+        h->threadslice_buf = buf;
+        h->i_threadslice_buf_size = necessary_size;
+    }
+
+    uint8_t *dst = h->threadslice_buf;
+    for( int i = start; i < h->out.i_nal; i++ )
+    {
+        /* long startcode on the frame's first NAL; x264_encoder_concat_nals fixes
+         * one from a later thread slice landing there */
+        h->out.nal[i].b_long_startcode = !i && !h->i_thread_idx;
+        x264_nal_encode( h, dst, &h->out.nal[i] );
+        dst += h->out.nal[i].i_payload;
+    }
+    h->i_threadslice_raw = raw;
+    h->b_threadslice_escaped = 1;
+}
+
+/* Same output as x264_encoder_encapsulate_nals( h, 0 ) when out.nal[i_nal_escaped..]
+ * were escaped by x264_threadslice_escape_nals. */
+static int x264_encoder_concat_nals( x264_t *h )
+{
+    x264_t *h0 = h->thread[0];
+    int i_escaped = h->i_nal_escaped;
+    int nal_size = h->i_nal_escaped_raw;
+    h->b_nal_escaped = 0;
+
+    for( int i = 0; i < i_escaped; i++ )
+        nal_size += h->out.nal[i].i_payload;
+
+    /* Same size as x264_encoder_encapsulate_nals, from the unescaped sizes. */
+    int necessary_size = nal_size * 3/2 + h->out.i_nal * 4 + 4 + 64;
+    for( int i = 0; i < h->out.i_nal; i++ )
+        necessary_size += h->out.nal[i].i_padding;
+    if( x264_check_encapsulated_buffer( h, h0, 0, 0, necessary_size ) )
+        return -1;
+
+    uint8_t *nal_buffer = h0->nal_buffer;
+
+    for( int i = 0; i < i_escaped; i++ )
+    {
+        h->out.nal[i].b_long_startcode = !i || h->out.nal[i].i_type == NAL_SPS || h->out.nal[i].i_type == NAL_PPS;
+        x264_nal_encode( h, nal_buffer, &h->out.nal[i] );
+        nal_buffer += h->out.nal[i].i_payload;
+    }
+
+    for( int i = i_escaped; i < h->out.i_nal; i++ )
+    {
+        x264_nal_t *nal = &h->out.nal[i];
+        uint8_t *src = nal->p_payload;
+        int size = nal->i_payload;
+        nal->p_payload = nal_buffer;
+        if( !i && !nal->b_long_startcode )
+        {
+            nal->b_long_startcode = 1;
+            if( h->param.b_annexb )
+            {
+                *nal_buffer++ = 0x00;
+                nal->i_payload++;
+            }
+        }
+        memcpy( nal_buffer, src, size );
+        nal_buffer += size;
+    }
+
+    x264_emms();
+
+    return nal_buffer - h0->nal_buffer;
 }
 
 /****************************************************************************
@@ -2627,6 +2936,21 @@ static ALWAYS_INLINE void x264_bitstream_restore( x264_t *h, x264_bs_bak_t *bak,
     }
 }
 
+/* Post-encode passes of a thread slice. */
+static void x264_threadslice_filter( x264_t *h )
+{
+    /* Do hpel now */
+    for( int mb_y = h->i_threadslice_start; mb_y <= h->i_threadslice_end; mb_y++ )
+        x264_fdec_filter_row( h, mb_y, 1 );
+    x264_threadslice_cond_broadcast( h, 2 );
+    /* Do the first row of hpel, now that the previous slice is done */
+    if( h->i_thread_idx > 0 )
+    {
+        x264_threadslice_cond_wait( h->thread[h->i_thread_idx-1], 2 );
+        x264_fdec_filter_row( h, h->i_threadslice_start + (1 << SLICE_MBAFF), 2 );
+    }
+}
+
 static intptr_t x264_slice_write( x264_t *h )
 {
     int i_skip;
@@ -2981,18 +3305,13 @@ cont:
 
         if( h->param.b_sliced_threads )
         {
+            if( !h->param.nalu_process && !h->param.i_avcintra_class )
+                x264_threadslice_escape_nals( h );
             /* Tell the main thread we're done. */
             x264_threadslice_cond_broadcast( h, 1 );
-            /* Do hpel now */
-            for( int mb_y = h->i_threadslice_start; mb_y <= h->i_threadslice_end; mb_y++ )
-                x264_fdec_filter_row( h, mb_y, 1 );
-            x264_threadslice_cond_broadcast( h, 2 );
-            /* Do the first row of hpel, now that the previous slice is done */
+            /* Slice 0 is encoded by the main thread; worker 0 filters it. */
             if( h->i_thread_idx > 0 )
-            {
-                x264_threadslice_cond_wait( h->thread[h->i_thread_idx-1], 2 );
-                x264_fdec_filter_row( h, h->i_threadslice_start + (1 << SLICE_MBAFF), 2 );
-            }
+                x264_threadslice_filter( h );
         }
 
         /* Free mb info after the last thread's done using it */
@@ -3043,6 +3362,11 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
+    if( h->param.b_sliced_threads )
+    {
+        h->i_threadslice_nal = h->out.i_nal;
+        h->b_threadslice_escaped = 0;
+    }
     while( h->sh.i_first_mb + SLICE_MBAFF*h->mb.i_mb_stride <= last_thread_mb )
     {
         h->sh.i_last_mb = last_thread_mb;
@@ -3096,21 +3420,18 @@ fail:
 
 static int x264_threaded_slices_write( x264_t *h )
 {
-    /* set first/last mb and sync contexts */
+    /* set first/last mb */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         x264_t *t = h->thread[i];
-        if( i )
-        {
-            t->param = h->param;
-            memcpy( &t->i_frame, &h->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
-        }
         int height = h->mb.i_mb_height >> PARAM_INTERLACED;
         t->i_threadslice_start = ((height *  i    + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
         t->i_threadslice_end   = ((height * (i+1) + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
-        t->sh.i_first_mb = t->i_threadslice_start * h->mb.i_mb_width;
-        t->sh.i_last_mb  =   t->i_threadslice_end * h->mb.i_mb_width - 1;
     }
+    h->sh.i_first_mb = h->i_threadslice_start * h->mb.i_mb_width;
+    h->sh.i_last_mb  =   h->i_threadslice_end * h->mb.i_mb_width - 1;
+    /* workers 1.. sync their contexts from this */
+    x264_slicepool_snapshot( h );
 
     x264_stack_align( x264_analyse_weight_frame, h, h->mb.i_mb_height*16 + 16 );
 
@@ -3124,13 +3445,37 @@ static int x264_threaded_slices_write( x264_t *h )
         x264_threadslice_cond_broadcast( h->thread[i], 0 );
     }
     /* dispatch */
-    for( int i = 0; i < h->param.i_threads; i++ )
-        x264_threadpool_run( h->threadpool, (void*)x264_slices_write, h->thread[i] );
+    for( int i = 1; i < h->param.i_threads; i++ )
+        x264_slicepool_run( h->slicepool, i );
+    /* encode slice 0 here, filter it on worker 0 */
+    intptr_t ret = (intptr_t)x264_slices_write( h );
+    if( ret )
+        x264_slicepool_set_ret( h->slicepool, 0, ret );
+    else
+        x264_slicepool_run( h->slicepool, 0 );
     /* wait */
     for( int i = 0; i < h->param.i_threads; i++ )
         x264_threadslice_cond_wait( h->thread[i], 1 );
 
     x264_threads_merge_ratecontrol( h );
+
+    h->b_nal_escaped = 0;
+    if( !h->param.nalu_process && !h->param.i_avcintra_class )
+    {
+        h->i_nal_escaped = h->i_threadslice_nal;
+        h->i_nal_escaped_raw = 0;
+        for( int i = 0; i < h->param.i_threads; i++ )
+        {
+            x264_t *t = h->thread[i];
+            /* a thread that failed before escaping */
+            if( !t->b_threadslice_escaped )
+                x264_threadslice_escape_nals( t );
+            if( !t->b_threadslice_escaped )
+                return -1;
+            h->i_nal_escaped_raw += t->i_threadslice_raw;
+        }
+        h->b_nal_escaped = 1;
+    }
 
     for( int i = 1; i < h->param.i_threads; i++ )
     {
@@ -3461,7 +3806,7 @@ int     x264_encoder_encode( x264_t *h,
 
     /* If applicable, wait for previous frame reconstruction to finish */
     if( h->param.b_sliced_threads )
-        if( x264_threadpool_wait_all( h ) < 0 )
+        if( x264_slicepool_wait_all( h ) < 0 )
             return -1;
 
     if( h->i_frame == h->i_thread_frames - 1 )
@@ -3915,7 +4260,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
         h->out.nal[idx] = nal_tmp;
     }
 
-    int frame_size = x264_encoder_encapsulate_nals( h, 0 );
+    int frame_size = h->b_nal_escaped ? x264_encoder_concat_nals( h ) : x264_encoder_encapsulate_nals( h, 0 );
     if( frame_size < 0 )
         return -1;
 
@@ -4177,8 +4522,12 @@ void    x264_encoder_close  ( x264_t *h )
 #endif
 
     if( h->param.b_sliced_threads )
-        x264_threadpool_wait_all( h );
-    if( h->param.i_threads > 1 )
+        x264_slicepool_wait_all( h );
+    /* joins workers still finishing a job */
+    if( h->slicepool )
+        x264_slicepool_delete( h->slicepool );
+    h->slicepool = NULL;
+    if( h->threadpool )
         x264_threadpool_delete( h->threadpool );
     if( h->param.i_lookahead_threads > 1 )
         x264_threadpool_delete( h->lookaheadpool );
@@ -4528,6 +4877,7 @@ void    x264_encoder_close  ( x264_t *h )
         x264_macroblock_thread_free( h->thread[i], 0 );
         x264_free( h->thread[i]->out.p_bitstream );
         x264_free( h->thread[i]->out.nal );
+        x264_free( h->thread[i]->threadslice_buf );
         x264_pthread_mutex_destroy( &h->thread[i]->mutex );
         x264_pthread_cond_destroy( &h->thread[i]->cv );
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
