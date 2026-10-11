@@ -1201,6 +1201,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight = x264_mc_weight_wtab_avx2;
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
         pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx2;
+        pf->avg[PIXEL_8x16]  = x264_pixel_avg_8x16_avx2;
+        pf->avg[PIXEL_8x8]   = x264_pixel_avg_8x8_avx2;
+        pf->avg[PIXEL_8x4]   = x264_pixel_avg_8x4_avx2;
         pf->integral_init8v = x264_integral_init8v_avx2;
         pf->integral_init4v = x264_integral_init4v_avx2;
         pf->integral_init8h = x264_integral_init8h_avx2;

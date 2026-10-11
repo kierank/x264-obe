@@ -335,6 +335,40 @@ cglobal pixel_avg_weight_w16
     vextracti128 [t0+t1], m0, 1
     AVG_END
 
+; rows 0/1 in lane 0 and rows 2/3 in lane 1, gathered with load-port broadcasts and vpblendd
+cglobal pixel_avg_weight_w8
+    BIWEIGHT_START
+    AVG_START 6
+.height_loop:
+    movq          xm0, [t2]
+    vpbroadcastq   m1, [t2+t3*2]
+    vpblendd       m0, m0, m1, 0xf0
+    movq          xm2, [t4]
+    vpbroadcastq   m1, [t4+t5*2]
+    vpblendd       m2, m2, m1, 0xf0
+    punpcklbw      m0, m2
+    movq          xm1, [t2+t3]
+    lea            t2, [t2+t3*2]
+    vpbroadcastq   m2, [t2+t3]
+    vpblendd       m1, m1, m2, 0xf0
+    movq          xm5, [t4+t5]
+    lea            t4, [t4+t5*2]
+    vpbroadcastq   m2, [t4+t5]
+    vpblendd       m5, m5, m2, 0xf0
+    punpcklbw      m1, m5
+    pmaddubsw      m0, m3
+    pmaddubsw      m1, m3
+    pmulhrsw       m0, m4
+    pmulhrsw       m1, m4
+    packuswb       m0, m1
+    vextracti128  xm1, m0, 1
+    movq         [t0], xm0
+    movhps    [t0+t1], xm0
+    lea            t0, [t0+t1*2]
+    movq         [t0], xm1
+    movhps    [t0+t1], xm1
+    AVG_END 4
+
 INIT_YMM avx512
 cglobal pixel_avg_weight_w8
     BIWEIGHT_START
@@ -874,6 +908,9 @@ INIT_XMM avx2
 AVG_FUNC 16, movdqu, movdqa
 AVGH 16, 16
 AVGH 16,  8
+AVGH  8, 16
+AVGH  8,  8
+AVGH  8,  4
 INIT_XMM avx512
 AVGH 16, 16
 AVGH 16,  8
