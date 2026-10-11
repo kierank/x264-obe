@@ -224,6 +224,10 @@ void x264_zigzag_scan_8x8_field_avx  ( int32_t level[64], int32_t dct[64] );
 void x264_zigzag_scan_8x8_field_sse4 ( int32_t level[64], int32_t dct[64] );
 #define x264_zigzag_scan_8x8_field_mmx2 x264_template(zigzag_scan_8x8_field_mmx2)
 void x264_zigzag_scan_8x8_field_mmx2 ( int16_t level[64], int16_t dct[64] );
+#define x264_zigzag_scan_8x8_field_ssse3 x264_template(zigzag_scan_8x8_field_ssse3)
+void x264_zigzag_scan_8x8_field_ssse3( int16_t level[64], int16_t dct[64] );
+#define x264_zigzag_scan_8x8_field_avx2 x264_template(zigzag_scan_8x8_field_avx2)
+void x264_zigzag_scan_8x8_field_avx2 ( int16_t level[64], int16_t dct[64] );
 #define x264_zigzag_scan_8x8_field_avx512 x264_template(zigzag_scan_8x8_field_avx512)
 void x264_zigzag_scan_8x8_field_avx512( dctcoef level[64], dctcoef dct[64] );
 #define x264_zigzag_sub_4x4_frame_avx x264_template(zigzag_sub_4x4_frame_avx)
