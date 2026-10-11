@@ -46,6 +46,7 @@ mask_ac4:  times 2 dw 0, -1, -1, -1, 0, -1, -1, -1
 mask_ac4b: times 2 dw 0, -1, 0, -1, -1, -1, -1, -1
 mask_ac8:  times 2 dw 0, -1, -1, -1, -1, -1, -1, -1
 intra_8x8c_dc_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
+intra_8x8c_dc_shufb: db 0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1, 2,2,2,2,3,3,3,3,2,2,2,2,3,3,3,3
 %if BIT_DEPTH == 10
 ssim_c1:   times 4 dd 6697.7856    ; .01*.01*1023*1023*64
 ssim_c2:   times 4 dd 3797644.4352 ; .03*.03*1023*1023*64*63
@@ -5375,6 +5376,100 @@ cglobal intra_satd_x3_16x16, 3,5,16
     punpcklqdq    xm4, xm14, xm6
     punpckhqdq   xm14, xm6
     paddd        xm14, xm4                 ; V H D D
+    movq        [r2], xm14
+    pextrd    [r2+8], xm14, 2
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_satd_x3_8x8c( uint8_t *fenc, uint8_t *fdec, int res[3] ) (DC, H, V)
+; 8 wide layout of pixel_satd_8x8: lanes = rows k, k+4, each row twice
+;-----------------------------------------------------------------------------
+%macro INTRA_X3_LEFT4 2 ; dst gpr, first row
+    movzx         %1, byte [r1+%2*FDEC_STRIDE-1]
+%assign intra_x3_y %2+1
+%rep 3
+    movzx         r4d, byte [r1+intra_x3_y*FDEC_STRIDE-1]
+    add           %1, r4d
+%assign intra_x3_y intra_x3_y+1
+%endrep
+%endmacro
+
+cglobal intra_satd_x3_8x8c, 3,7,16
+    movq          xm0, [r1-FDEC_STRIDE]
+    pxor          xm1, xm1
+    punpcklbw     xm0, xm1
+    pmaddwd       xm0, [pw_1]
+    phaddd        xm0, xm0                 ; s0 s1 (top 0-3, top 4-7)
+    movd          r3d, xm0
+    pextrd        r5d, xm0, 1
+    INTRA_X3_LEFT4 r6d, 0                  ; s2
+    lea           r3d, [r3+r6+4]
+    shr           r3d, 3                   ; dc0 = (s0 + s2 + 4) >> 3
+    lea           r6d, [r5+2]
+    shr           r6d, 2                   ; dc1 = (s1 + 2) >> 2
+    shl           r6d, 8
+    or            r3d, r6d
+    INTRA_X3_LEFT4 r6d, 4                  ; s3
+    lea           r4d, [r6+2]
+    shr           r4d, 2                   ; dc2 = (s3 + 2) >> 2
+    shl           r4d, 16
+    or            r3d, r4d
+    lea           r4d, [r5+r6+4]
+    shr           r4d, 3                   ; dc3 = (s1 + s3 + 4) >> 3
+    shl           r4d, 24
+    or            r3d, r4d
+    mova           m7, [hmul_8p]
+    movd         xm13, r3d
+    vpbroadcastd  m13, xm13
+    pshufb        m13, [intra_8x8c_dc_shufb]
+    pmaddubsw     m13, m7                  ; DC, first stage
+    vpbroadcastq  m12, [r1-FDEC_STRIDE]
+    pmaddubsw     m12, m7                  ; V, first stage
+%assign intra_x3_k 0
+%rep 4
+    %assign intra_x3_f 8+intra_x3_k
+    movq          xm %+ intra_x3_f, [r0+intra_x3_k*FENC_STRIDE]
+    vinserti128    m %+ intra_x3_f, m %+ intra_x3_f, [r0+(intra_x3_k+4)*FENC_STRIDE], 1
+    punpcklqdq     m %+ intra_x3_f, m %+ intra_x3_f
+    pmaddubsw      m %+ intra_x3_f, m7
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    pxor          m14, m14
+    pxor          m15, m15
+    pxor           m6, m6
+    psubw          m0, m8, m13             ; DC
+    psubw          m1, m9, m13
+    psubw          m2, m10, m13
+    psubw          m3, m11, m13
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 14
+%assign intra_x3_k 0
+%rep 4                                     ; H
+    %assign intra_x3_f 8+intra_x3_k
+    vpbroadcastb  xm %+ intra_x3_k, [r1+intra_x3_k*FDEC_STRIDE-1]
+    vpbroadcastb  xm4, [r1+(intra_x3_k+4)*FDEC_STRIDE-1]
+    vinserti128    m %+ intra_x3_k, m %+ intra_x3_k, xm4, 1
+    pmaddubsw      m %+ intra_x3_k, m7
+    psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 15
+    psubw          m0, m8, m12             ; V
+    psubw          m1, m9, m12
+    psubw          m2, m10, m12
+    psubw          m3, m11, m12
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+    INTRA_X3_FOLD 14
+    INTRA_X3_FOLD 15
+    INTRA_X3_FOLD 6
+    punpckldq     xm4, xm14, xm15
+    punpckhdq    xm14, xm15
+    paddd        xm14, xm4
+    punpckhdq     xm5, xm6, xm6
+    punpckldq     xm6, xm6
+    paddd         xm6, xm5
+    punpcklqdq    xm4, xm14, xm6
+    punpckhqdq   xm14, xm6
+    paddd        xm14, xm4                 ; DC H V V
     movq        [r2], xm14
     pextrd    [r2+8], xm14, 2
     RET
