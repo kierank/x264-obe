@@ -27,9 +27,10 @@
  * pass, so they are not templated and use no depth dependent types: frames are
  * x264_frame_t pointers, whose layout is the same at every depth.
  *
- * Costs are computed at 8-bit and scaled up by LOWRES8_COST_SHIFT, so that the
- * lowres costs, row SATDs and intra costs keep the magnitudes ratecontrol,
- * mbtree and slicetype decisions expect from the high bit depth analysis. */
+ * Costs are computed and stored at 8-bit scale, which is what slicetype_mb_cost()
+ * at high bit depth stores too (its costs are shifted down by BIT_DEPTH-8, as
+ * upstream "Fix high bit depth lookahead cost compensation algorithm").
+ * LOWRES8_COST_SHIFT maps high bit depth thresholds to 8-bit. */
 #define LOWRES8_COST_SHIFT 2
 
 /* One per x264_t that runs lowres analysis. stride/lines are the lowres plane
