@@ -532,8 +532,7 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
     { \
         int shift = 1 + MB_INTERLACED - h->mb.field[xy]; \
         int16_t *mvp = h->mb.mvr[i_list][i_ref<<1>>shift][xy]; \
-        mvc[i][0] = mvp[0]; \
-        mvc[i][1] = mvp[1]<<1>>shift; \
+        M32( mvc[i] ) = pack16to32_mask( mvp[0], mvp[1]<<1>>shift ); \
         i++; \
     }
 
@@ -590,8 +589,8 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         { \
             int mb_index = h->mb.i_mb_xy + dx + dy*h->mb.i_mb_stride; \
             int scale = (curpoc - refpoc) * l0->inv_ref_poc[MB_INTERLACED&field]; \
-            mvc[i][0] = (l0->mv16x16[mb_index][0]*scale + 128) >> 8; \
-            mvc[i][1] = (l0->mv16x16[mb_index][1]*scale + 128) >> 8; \
+            M32( mvc[i] ) = pack16to32_mask( (l0->mv16x16[mb_index][0]*scale + 128) >> 8, \
+                                             (l0->mv16x16[mb_index][1]*scale + 128) >> 8 ); \
             i++; \
         }
 

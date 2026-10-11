@@ -334,8 +334,9 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
             if( max_mv > 0 && h->mb.i_mb_x < h->fdec->i_pir_start_col )
                 h->mb.mv_max_spel[0] = X264_MIN( h->mb.mv_max_spel[0], max_mv );
         }
-        h->mb.mv_limit_fpel[0][0] = (h->mb.mv_min_spel[0]>>2) + i_fpel_border;
-        h->mb.mv_limit_fpel[1][0] = (h->mb.mv_max_spel[0]>>2) - i_fpel_border;
+        /* Built in locals and stored once: predictor_clip loads all four as 64 bits. */
+        int fpel_min_y = h->mb.mv_limit_fpel[0][1];
+        int fpel_max_y = h->mb.mv_limit_fpel[1][1];
         if( h->mb.i_mb_x == 0 && !(h->mb.i_mb_y & PARAM_INTERLACED) )
         {
             int mb_y = h->mb.i_mb_y >> SLICE_MBAFF;
@@ -383,8 +384,8 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 h->mb.mv_min_spel[1] = x264_clip3( h->mb.mv_min[1], -i_fmv_range, i_fmv_range );
                 h->mb.mv_max_spel[1] = CLIP_FMV( h->mb.mv_max[1] );
                 h->mb.mv_max_spel[1] = X264_MIN( h->mb.mv_max_spel[1], thread_mvy_range*4 );
-                h->mb.mv_limit_fpel[0][1] = (h->mb.mv_min_spel[1]>>2) + i_fpel_border;
-                h->mb.mv_limit_fpel[1][1] = (h->mb.mv_max_spel[1]>>2) - i_fpel_border;
+                fpel_min_y = (h->mb.mv_min_spel[1]>>2) + i_fpel_border;
+                fpel_max_y = (h->mb.mv_max_spel[1]>>2) - i_fpel_border;
             }
         }
         if( PARAM_INTERLACED )
@@ -394,9 +395,11 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
             h->mb.mv_max[1] = h->mb.mv_maxy_row[i];
             h->mb.mv_min_spel[1] = h->mb.mv_miny_spel_row[i];
             h->mb.mv_max_spel[1] = h->mb.mv_maxy_spel_row[i];
-            h->mb.mv_limit_fpel[0][1] = h->mb.mv_miny_fpel_row[i];
-            h->mb.mv_limit_fpel[1][1] = h->mb.mv_maxy_fpel_row[i];
+            fpel_min_y = h->mb.mv_miny_fpel_row[i];
+            fpel_max_y = h->mb.mv_maxy_fpel_row[i];
         }
+        M64( h->mb.mv_limit_fpel ) = pack32to64( pack16to32_mask( (h->mb.mv_min_spel[0]>>2) + i_fpel_border, fpel_min_y ),
+                                                 pack16to32_mask( (h->mb.mv_max_spel[0]>>2) - i_fpel_border, fpel_max_y ) );
 #undef CLIP_FMV
 
         a->l0.me16x16.cost =

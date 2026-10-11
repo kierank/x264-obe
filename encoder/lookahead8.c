@@ -189,15 +189,18 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
     // no need for h->mb.mv_min[]
     h->mb.mv_min_spel[0] = X264_MAX( 4*(-8*h->mb.i_mb_x - 12), -mv_range );
     h->mb.mv_max_spel[0] = X264_MIN( 4*(8*(h->mb.i_mb_width - h->mb.i_mb_x - 1) + 12), mv_range-1 );
-    h->mb.mv_limit_fpel[0][0] = h->mb.mv_min_spel[0] >> 2;
-    h->mb.mv_limit_fpel[1][0] = h->mb.mv_max_spel[0] >> 2;
+    /* Stored once: predictor_clip loads all four as 64 bits. */
+    int fpel_min_y = h->mb.mv_limit_fpel[0][1];
+    int fpel_max_y = h->mb.mv_limit_fpel[1][1];
     if( h->mb.i_mb_x >= h->mb.i_mb_width - 2 )
     {
         h->mb.mv_min_spel[1] = X264_MAX( 4*(-8*h->mb.i_mb_y - 12), -mv_range );
         h->mb.mv_max_spel[1] = X264_MIN( 4*(8*( h->mb.i_mb_height - h->mb.i_mb_y - 1) + 12), mv_range-1 );
-        h->mb.mv_limit_fpel[0][1] = h->mb.mv_min_spel[1] >> 2;
-        h->mb.mv_limit_fpel[1][1] = h->mb.mv_max_spel[1] >> 2;
+        fpel_min_y = h->mb.mv_min_spel[1] >> 2;
+        fpel_max_y = h->mb.mv_max_spel[1] >> 2;
     }
+    M64( h->mb.mv_limit_fpel ) = pack32to64( pack16to32_mask( h->mb.mv_min_spel[0] >> 2, fpel_min_y ),
+                                             pack16to32_mask( h->mb.mv_max_spel[0] >> 2, fpel_max_y ) );
 
 #define LOAD_HPELS_LUMA(dst, src) \
     { \
