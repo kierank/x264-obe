@@ -345,44 +345,48 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL( ssd, 1 );
     TEST_PIXEL( satd, 0 );
 
-    ok = 1, used_asm = 0;
-    for( int i = 0; i < ARRAY_ELEMS(pixel_asm.satd_avg2); i++ )
-    {
-        if( pixel_asm.satd_avg2[i] && pixel_asm.satd_avg2[i] != pixel_ref.satd_avg2[i] )
-        {
-            int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
-            ALIGNED_16( pixel avg[16*16] );
-            int res_c, res_asm;
-            set_func_name( "satd_avg2_%s", pixel_names[i] );
-            used_asm = 1;
-            for( int j = 0; j < 64 && ok; j++ )
-            {
-                pixel *src1 = pbuf2 + j;
-                pixel *src2 = pbuf2 + 1280 + (j^5);
-                for( int y = 0; y < hgt; y++ )
-                    for( int x = 0; x < w; x++ )
-                        avg[y*16+x] = (src1[y*64+x] + src2[y*64+x] + 1) >> 1;
-                res_c   = pixel_c.satd[i]( pbuf1, FENC_STRIDE, avg, 16 );
-                res_asm = call_a( pixel_asm.satd_avg2[i], pbuf1, src1, src2, (intptr_t)64 );
-                if( res_c != res_asm )
-                {
-                    ok = 0;
-                    fprintf( stderr, "satd_avg2[%d]: %d != %d [FAILED]\n", i, res_c, res_asm );
-                }
-            }
-            for( int j = 0; j < 0x1000 && ok; j += 256 )
-            {
-                res_c   = pixel_c.satd[i]( pbuf3+j, 16, pbuf4+j, 16 );
-                res_asm = pixel_asm.satd_avg2[i]( pbuf3+j, pbuf4+j, pbuf4+j, 16 );
-                if( res_c != res_asm )
-                {
-                    ok = 0;
-                    fprintf( stderr, "satd_avg2[%d]: overflow %d != %d\n", i, res_c, res_asm );
-                }
-            }
-        }
-    }
-    report( "pixel satd_avg2 :" );
+#define TEST_PIXEL_AVG2( name, cmp ) \
+    ok = 1, used_asm = 0; \
+    for( int i = 0; i < ARRAY_ELEMS(pixel_asm.name); i++ ) \
+    { \
+        if( pixel_asm.name[i] && pixel_asm.name[i] != pixel_ref.name[i] ) \
+        { \
+            int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h; \
+            ALIGNED_16( pixel avg[16*16] ); \
+            int res_c, res_asm; \
+            set_func_name( "%s_%s", #name, pixel_names[i] ); \
+            used_asm = 1; \
+            for( int j = 0; j < 64 && ok; j++ ) \
+            { \
+                pixel *src1 = pbuf2 + j; \
+                pixel *src2 = pbuf2 + 1280 + (j^5); \
+                for( int y = 0; y < hgt; y++ ) \
+                    for( int x = 0; x < w; x++ ) \
+                        avg[y*16+x] = (src1[y*64+x] + src2[y*64+x] + 1) >> 1; \
+                res_c   = pixel_c.cmp[i]( pbuf1, FENC_STRIDE, avg, 16 ); \
+                res_asm = call_a( pixel_asm.name[i], pbuf1, src1, src2, (intptr_t)64 ); \
+                if( res_c != res_asm ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, #name "[%d]: %d != %d [FAILED]\n", i, res_c, res_asm ); \
+                } \
+            } \
+            for( int j = 0; j < 0x1000 && ok; j += 256 ) \
+            { \
+                res_c   = pixel_c.cmp[i]( pbuf3+j, 16, pbuf4+j, 16 ); \
+                res_asm = pixel_asm.name[i]( pbuf3+j, pbuf4+j, pbuf4+j, 16 ); \
+                if( res_c != res_asm ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, #name "[%d]: overflow %d != %d\n", i, res_c, res_asm ); \
+                } \
+            } \
+        } \
+    } \
+    report( "pixel " #name " :" );
+
+    TEST_PIXEL_AVG2( satd_avg2, satd );
+    TEST_PIXEL_AVG2( sad_avg2, sad );
 
     TEST_PIXEL( sa8d, 1 );
 
