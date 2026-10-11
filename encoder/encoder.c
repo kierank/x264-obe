@@ -1506,9 +1506,13 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * applies when 16x16 chose ref 1, from the chosen ref or the nearer field */
         e = getenv( "X264_EXP_ALG_MIXREF" );
         h->exp.i_alg_mixref = e ? atoi( e ) : 0;
-        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d\n",
-                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref );
+        /* X264_EXP_ALG_HPEL8=1: halfpel early termination across refs in each
+         * mixed-ref 8x8 search, as the 16x16 search has */
+        e = getenv( "X264_EXP_ALG_HPEL8" );
+        h->exp.i_alg_hpel8 = e ? atoi( e ) : 0;
+        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d\n",
+                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8 );
     }
 
     /* Init frames. */

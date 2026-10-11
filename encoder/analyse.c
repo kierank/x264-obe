@@ -1389,6 +1389,10 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
         x264_me_t *l0m = &a->l0.me8x8[i];
         int x8 = i&1;
         int y8 = i>>1;
+        /* bd-alg ALG_HPEL8: each 8x8 gets the halfpel early termination across
+         * refs that x264_mb_analyse_inter_p16x16 uses */
+        int i_halfpel_thresh = INT_MAX;
+        int *p_halfpel_thresh = (h->exp.i_alg_hpel8 && a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
 
         m.i_pixel = PIXEL_8x8;
 
@@ -1397,6 +1401,7 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
         for( int i_ref = 0; i_ref <= i_maxref || i_ref == h->mb.ref_blind_dupe; )
         {
             m.i_ref_cost = REF_COST( 0, i_ref );
+            i_halfpel_thresh -= m.i_ref_cost;
 
             LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 8*x8, 8*y8 );
             LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 8*x8, 8*y8 );
@@ -1406,12 +1411,13 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
             if( h->mb.ref_blind_dupe == i_ref )
             {
                 CP32( m.mv, a->l0.mvc[0][i+1] );
-                x264_me_refine_qpel_refdupe( h, &m, NULL );
+                x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
             }
             else
-                x264_me_search( h, &m, a->l0.mvc[i_ref], i+1 );
+                x264_me_search_ref( h, &m, a->l0.mvc[i_ref], i+1, p_halfpel_thresh );
 
             m.cost += m.i_ref_cost;
+            i_halfpel_thresh += m.i_ref_cost;
 
             CP32( a->l0.mvc[i_ref][i+1], m.mv );
 
@@ -2245,17 +2251,23 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
         {
             x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
 
+            /* bd-alg ALG_HPEL8: as in x264_mb_analyse_inter_p8x8_mixed_ref */
+            int i_halfpel_thresh = INT_MAX;
+            int *p_halfpel_thresh = (h->exp.i_alg_hpel8 && a->b_early_terminate && h->mb.pic.i_fref[l]>1) ? &i_halfpel_thresh : NULL;
+
             lX->me8x8[i].cost = INT_MAX;
             for( int i_ref = 0; i_ref <= i_maxref[l]; i_ref++ )
             {
                 m.i_ref_cost = REF_COST( l, i_ref );
+                i_halfpel_thresh -= m.i_ref_cost;
 
                 LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 8*x8, 8*y8 );
 
                 x264_macroblock_cache_ref( h, x8*2, y8*2, 2, 2, l, i_ref );
                 x264_mb_predict_mv( h, l, 4*i, 2, m.mvp );
-                x264_me_search( h, &m, lX->mvc[i_ref], i+1 );
+                x264_me_search_ref( h, &m, lX->mvc[i_ref], i+1, p_halfpel_thresh );
                 m.cost += m.i_ref_cost;
+                i_halfpel_thresh += m.i_ref_cost;
 
                 if( m.cost < lX->me8x8[i].cost )
                 {
