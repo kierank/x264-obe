@@ -52,7 +52,6 @@ int quiet = 0;
 }
 
 #define BENCH_RUNS 100  // tradeoff between accuracy and speed
-#define BENCH_ALIGNS 16 // number of stack+heap data alignments (another accuracy vs speed tradeoff)
 #define MAX_FUNCS 1000  // just has to be big enough to hold all the existing functions
 #define MAX_CPUS 30     // number of different combinations of cpu flags
 
@@ -2738,8 +2737,6 @@ static int check_all_flags( void )
 
 int main(int argc, char *argv[])
 {
-    int ret = 0;
-
     if( argc > 1 && !strncmp( argv[1], "--bench", 7 ) )
     {
 #if !ARCH_X86 && !ARCH_X86_64 && !ARCH_PPC && !ARCH_ARM
@@ -2760,8 +2757,8 @@ int main(int argc, char *argv[])
     fprintf( stderr, "x264: using random seed %u\n", seed );
     srand( seed );
 
-    buf1 = x264_malloc( 0x1e00 + 0x2000*sizeof(pixel) + 32*BENCH_ALIGNS );
-    pbuf1 = x264_malloc( 0x1e00*sizeof(pixel) + 32*BENCH_ALIGNS );
+    buf1 = x264_malloc( 0x1e00 + 0x2000*sizeof(pixel) );
+    pbuf1 = x264_malloc( 0x1e00*sizeof(pixel) );
     if( !buf1 || !pbuf1 )
     {
         fprintf( stderr, "malloc failed, unable to initiate tests!\n" );
@@ -2782,21 +2779,7 @@ int main(int argc, char *argv[])
     }
     memset( buf1+0x1e00, 0, 0x2000*sizeof(pixel) );
 
-    /* 32-byte alignment is guaranteed whenever it's useful, but some functions also vary in speed depending on %64 */
-    if( do_bench )
-        for( int i = 0; i < BENCH_ALIGNS && !ret; i++ )
-        {
-            INIT_POINTER_OFFSETS;
-            ret |= x264_stack_pagealign( check_all_flags, i*32 );
-            buf1 += 32;
-            pbuf1 += 32;
-            quiet = 1;
-            fprintf( stderr, "%d/%d\r", i+1, BENCH_ALIGNS );
-        }
-    else
-        ret = x264_stack_pagealign( check_all_flags, 0 );
-
-    if( ret )
+    if( x264_stack_pagealign( check_all_flags, 0 ) )
     {
         fprintf( stderr, "x264: at least one test has failed. Go and fix that Right Now!\n" );
         return -1;
