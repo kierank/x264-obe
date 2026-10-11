@@ -77,8 +77,8 @@ depad: times 4 dd 32*20*PIXEL_MAX + 512
 tap1: times 4 dw  1, -5
 tap2: times 4 dw 20, 20
 tap3: times 4 dw -5,  1
-pw_pad10_16: dw 10*PIXEL_MAX+16
-pw_pad30_16: dw 30*PIXEL_MAX+16
+pw_pad10_16: times 8 dw 10*PIXEL_MAX+16 ; vectors, so what follows stays 16 byte aligned
+pw_pad30_16: times 8 dw 30*PIXEL_MAX+16
 
 pw_0xc000: times 8 dw 0xc000
 pw_31: times 8 dw 31
