@@ -520,8 +520,7 @@ cglobal %1, 4,15,9
     call trellis_coefn.entry%1b
     jmp .i_continue1
 %%.switch_coef0:
-    call trellis_coef0_%1
-    call trellis_coef1.entry%1b
+    call trellis_coef0_%1 ; continues with trellis_coef1.entry%1b
 
 .i_continue%1:
     dec iid
@@ -663,7 +662,7 @@ clocal trellis_coef0_%1
     mova [nodes_curq + node_cabac_state(4)], m1
 %endif
     ZERO_LEVEL_IDX %1, prev
-    ret
+    jmp trellis_coef1.entry%1b ; the other candidate, abs_level 1
 %endmacro ; TRELLIS_COEF0
 TRELLIS_COEF0 0
 TRELLIS_COEF0 1
