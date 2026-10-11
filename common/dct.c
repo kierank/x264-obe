@@ -898,6 +898,13 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->scan_8x8 = x264_zigzag_scan_8x8_frame_avx;
     }
 #endif // ARCH_X86_64
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pf_interlaced->scan_4x4  = x264_zigzag_scan_4x4_field_avx512;
+        pf_progressive->scan_4x4 = x264_zigzag_scan_4x4_frame_avx512;
+        pf_interlaced->scan_8x8  = x264_zigzag_scan_8x8_field_avx512;
+        pf_progressive->scan_8x8 = x264_zigzag_scan_8x8_frame_avx512;
+    }
 #endif // HAVE_MMX
 #else
 #if HAVE_MMX
@@ -971,6 +978,11 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     {
         pf_interlaced->interleave_8x8_cavlc =
         pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx;
+    }
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pf_interlaced->interleave_8x8_cavlc =
+        pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx512;
     }
 #else
     if( cpu&X264_CPU_MMX )
