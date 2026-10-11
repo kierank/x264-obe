@@ -758,10 +758,12 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
     score_field  = h->pixf.vsad( fenc,        stride*2, mbpair_height >> 1 );
     score_field += h->pixf.vsad( fenc+stride, stride*2, mbpair_height >> 1 );
 
+    int bias = h->mb.i_exp_vsad_bias;
+    score_field = score_field * h->mb.i_exp_vsad_fieldmul >> 4;
     if( mb_x > 0 )
-        score_field += 512 - h->mb.field[mb_xy        -1]*1024;
+        score_field += bias - h->mb.field[mb_xy        -1]*2*bias;
     if( mb_y > 0 )
-        score_field += 512 - h->mb.field[mb_xy-mb_stride]*1024;
+        score_field += bias - h->mb.field[mb_xy-mb_stride]*2*bias;
 
     return (score_field < score_frame);
 }

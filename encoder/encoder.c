@@ -1461,6 +1461,20 @@ x264_t *x264_encoder_open( x264_param_t *param )
      * vectors during prediction, resulting in hpel mvs.
      * The chosen solution is to make MBAFF non-adaptive in this case. */
     h->mb.b_adaptive_mbaff = PARAM_INTERLACED && h->param.analyse.i_subpel_refine;
+    {
+        /* bd-exp knobs: X264_EXP_VSAD_BIAS (default 512), X264_EXP_VSAD_DEPTH=1
+         * scales the bias by the pixel range, X264_EXP_VSAD_FIELDMUL (default 16)
+         * scales the field score by n/16 */
+        const char *e = getenv( "X264_EXP_VSAD_BIAS" );
+        h->mb.i_exp_vsad_bias = e ? atoi( e ) : 512;
+        e = getenv( "X264_EXP_VSAD_DEPTH" );
+        if( e && atoi( e ) )
+            h->mb.i_exp_vsad_bias <<= BIT_DEPTH - 8;
+        e = getenv( "X264_EXP_VSAD_FIELDMUL" );
+        h->mb.i_exp_vsad_fieldmul = e ? atoi( e ) : 16;
+        if( PARAM_INTERLACED )
+            x264_log( h, X264_LOG_INFO, "bd-exp: vsad bias %d fieldmul %d/16\n", h->mb.i_exp_vsad_bias, h->mb.i_exp_vsad_fieldmul );
+    }
 
     /* Init frames. */
     if( h->param.i_bframe_adaptive == X264_B_ADAPT_TRELLIS && !h->param.rc.b_stat_read )
