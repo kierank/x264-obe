@@ -43,6 +43,10 @@ typedef void (*x264_pixel_satd_mcc_t) ( pixel *fenc, int res[2], pixel *src, int
 /* satd against fenc_pre, fenc's first transform stage from satd_fenc_pre */
 typedef int  (*x264_pixel_cmp_pre_t) ( int16_t *fenc_pre, pixel *, intptr_t );
 typedef int  (*x264_pixel_cmp_avg2_pre_t) ( int16_t *fenc_pre, pixel *, pixel *, intptr_t );
+/* cmp_avg2 (cmp_avg2_pre) of N = 3, 4 candidates, the pairs pix[2*i], pix[2*i+1] sharing
+ * stride, to scores[i]; the x4c ones of the four pairs pix[0], pix[1+i] */
+typedef void (*x264_pixel_cmp_avg2_xn_t) ( pixel *fenc, pixel **pix, intptr_t, int *scores );
+typedef void (*x264_pixel_cmp_avg2_pre_xn_t) ( int16_t *fenc_pre, pixel **pix, intptr_t, int *scores );
 
 enum
 {
@@ -99,6 +103,11 @@ typedef struct
     void (*satd_fenc_pre[2])( int16_t *fenc_pre, pixel *fenc );
     x264_pixel_cmp_pre_t satd_pre[4];
     x264_pixel_cmp_avg2_pre_t satd_avg2_pre[4];
+    /* asm only, NULL otherwise: [0] 3 and [1] 4 candidates, x4c 8x8 only */
+    x264_pixel_cmp_avg2_xn_t satd_avg2_xn[2][4];
+    x264_pixel_cmp_avg2_xn_t satd_avg2_x4c[4];
+    x264_pixel_cmp_avg2_pre_xn_t satd_avg2_pre_xn[2][4];
+    x264_pixel_cmp_avg2_pre_xn_t satd_avg2_pre_x4c[4];
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */

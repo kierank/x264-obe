@@ -498,6 +498,88 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel satd_pre :" );
 
+    ok = 1, used_asm = 0;
+    {
+        /* size, x, y of every partition of a 16x16 fenc */
+        static const uint8_t xn_parts[9][3] = { {PIXEL_16x16, 0, 0}, {PIXEL_16x8, 0, 0}, {PIXEL_16x8, 0, 8},
+                                                {PIXEL_8x16, 0, 0}, {PIXEL_8x16, 8, 0}, {PIXEL_8x8, 0, 0},
+                                                {PIXEL_8x8, 8, 0}, {PIXEL_8x8, 0, 8}, {PIXEL_8x8, 8, 8} };
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[512] );
+        ALIGNED_16( pixel avg[16*16] );
+        /* v%3: 3, 4 candidates, x4c; v/3: satd_avg2_xn, satd_avg2_pre_xn */
+        for( int v = 0; v < 6 && ok; v++ )
+            for( int p = 0; p < 9 && ok; p++ )
+            {
+                int i = xn_parts[p][0], x = xn_parts[p][1], y = xn_parts[p][2];
+                int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                int pre = v >= 3, b_c = v%3 == 2, n = v%3 ? 4 : 3;
+                x264_pixel_cmp_avg2_xn_t f = NULL, f_ref = NULL;
+                x264_pixel_cmp_avg2_pre_xn_t f_pre = NULL, f_pre_ref = NULL;
+                if( pre )
+                {
+                    f_pre     = b_c ? pixel_asm.satd_avg2_pre_x4c[i] : pixel_asm.satd_avg2_pre_xn[n-3][i];
+                    f_pre_ref = b_c ? pixel_ref.satd_avg2_pre_x4c[i] : pixel_ref.satd_avg2_pre_xn[n-3][i];
+                    if( !f_pre || f_pre == f_pre_ref )
+                        continue;
+                }
+                else
+                {
+                    f     = b_c ? pixel_asm.satd_avg2_x4c[i] : pixel_asm.satd_avg2_xn[n-3][i];
+                    f_ref = b_c ? pixel_ref.satd_avg2_x4c[i] : pixel_ref.satd_avg2_xn[n-3][i];
+                    if( !f || f == f_ref )
+                        continue;
+                }
+                used_asm = 1;
+                set_func_name( "satd_avg2_%s%s_%s", pre ? "pre_" : "", b_c ? "x4c" : n == 4 ? "x4" : "x3", pixel_names[i] );
+                /* k = 0: random at unaligned offsets, k = 1: maxed differences (pbuf3 = ~pbuf4) */
+                for( int k = 0; k < 2 && ok; k++ )
+                    for( int j = 0; j < (k ? 0x1000 : 64) && ok; j += k ? 256 : 1 )
+                    {
+                        pixel *fenc = k ? pbuf3+j : pbuf1;
+                        intptr_t stride = k ? 16 : 64;
+                        intptr_t off = x + y*stride;
+                        pixel *pix[8], *pix_c[5], *src[4][2];
+                        int res_c[4], res_asm[4] = { -1, -1, -1, 0x7f7f7f7f };
+                        /* the last candidate a source alone, the x4c ones share the first source */
+                        for( int c = 0; c < 4; c++ )
+                        {
+                            src[c][0] = (k ? pbuf4+j : b_c ? pbuf2+j : pbuf2+j+7*c) + off;
+                            src[c][1] = c == n-1 ? src[c][0] : (k ? pbuf4+j : pbuf2+1280+(j^5)+3*c) + off;
+                            pix[2*c] = src[c][0];
+                            pix[2*c+1] = src[c][1];
+                            pix_c[1+c] = src[c][1];
+                        }
+                        pix_c[0] = src[0][0];
+                        for( int c = 0; c < n; c++ )
+                        {
+                            for( int yy = 0; yy < hgt; yy++ )
+                                for( int xx = 0; xx < w; xx++ )
+                                    avg[yy*16+xx] = (src[c][0][yy*stride+xx] + src[c][1][yy*stride+xx] + 1) >> 1;
+                            res_c[c] = pixel_c.satd[i]( fenc + x + y*FENC_STRIDE, FENC_STRIDE, avg, 16 );
+                        }
+                        if( pre )
+                        {
+                            pixel_asm.satd_fenc_pre[0]( fenc_pre, fenc );
+                            for( int b = 0; b < 4; b++ )
+                                pixel_asm.satd_fenc_pre[1]( fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+                            int16_t *f_fenc = i <= PIXEL_16x8 ? fenc_pre+16*y : fenc_pre+256+64*(2*(x>>3)+(y>>3));
+                            call_a( f_pre, f_fenc, b_c ? pix_c : pix, stride, res_asm );
+                        }
+                        else
+                            call_a( f, fenc + x + y*FENC_STRIDE, b_c ? pix_c : pix, stride, res_asm );
+                        if( memcmp( res_c, res_asm, n*sizeof(int) ) || (n == 3 && res_asm[3] != 0x7f7f7f7f) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "satd_avg2_%s%s[%d] %d,%d %s: %d,%d,%d,%d != %d,%d,%d,%d [FAILED]\n",
+                                     pre ? "pre_" : "", b_c ? "x4c" : n == 4 ? "x4" : "x3", i, x, y, k ? "overflow" : "random",
+                                     res_c[0], res_c[1], res_c[2], n == 4 ? res_c[3] : 0,
+                                     res_asm[0], res_asm[1], res_asm[2], res_asm[3] );
+                        }
+                    }
+            }
+    }
+    report( "pixel satd_avg2_xn :" );
+
     TEST_PIXEL( sa8d, 1 );
 
     ok = 1, used_asm = 0;

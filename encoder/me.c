@@ -868,13 +868,56 @@ static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, 
     return subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.mbcmp_avg2[i_pixel], h->pixf.mbcmp_unaligned[i_pixel] );
 }
 
+/* the qpel diamond of refine_subpel in COST_MV_SATD order */
+static const int8_t qpel_dia[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+
+/* subpel_luma_cost of the qpel diamond around (mx,my) but direction skip, in
+ * direction order, in one call: the source pairs of subpel_cmp, a source twice
+ * where it needs no average */
+static ALWAYS_INLINE void subpel_luma_cost_dia( x264_t *h, x264_me_t *m, int i_pixel, int mx, int my, int skip,
+                                                int16_t *fenc_pre, int luma[4] )
+{
+    intptr_t stride = m->i_stride[0];
+    pixel *src[8];
+    int n = 0;
+    for( int dir = 0; dir < 4; dir++ )
+        if( dir != skip )
+        {
+            int x = mx + qpel_dia[dir][0];
+            int y = my + qpel_dia[dir][1];
+            int qpel_idx = ((y&3)<<2) + (x&3);
+            intptr_t offset = (y>>2)*stride + (x>>2);
+            src[2*n] = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((y&3) == 3) * stride;
+            src[2*n+1] = qpel_idx & 5 ? m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((x&3) == 3) : src[2*n];
+            n++;
+        }
+    if( n == 4 && !((mx|my)&1) && (fenc_pre ? h->pixf.satd_avg2_pre_x4c[i_pixel] : h->pixf.satd_avg2_x4c[i_pixel]) )
+    {
+        /* around an hpel position every candidate averages it with another source */
+        pixel *src_c[5];
+        src_c[0] = m->p_fref[x264_hpel_ref0[((my&3)<<2) + (mx&3)]] + (my>>2)*stride + (mx>>2);
+        for( int i = 0; i < 4; i++ )
+            src_c[1+i] = src[2*i] == src_c[0] ? src[2*i+1] : src[2*i];
+        if( fenc_pre )
+            h->pixf.satd_avg2_pre_x4c[i_pixel]( fenc_pre, src_c, stride, luma );
+        else
+            h->pixf.satd_avg2_x4c[i_pixel]( m->p_fenc[0], src_c, stride, luma );
+    }
+    else if( fenc_pre )
+        h->pixf.satd_avg2_pre_xn[n-3][i_pixel]( fenc_pre, src, stride, luma );
+    else
+        h->pixf.satd_avg2_xn[n-3][i_pixel]( m->p_fenc[0], src, stride, luma );
+}
+
 #define COST_MV_SATD( mx, my, dir ) \
+    COST_MV_SATD_LUMA( mx, my, dir, subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my, fenc_pre ) )
+
+#define COST_MV_SATD_LUMA( mx, my, dir, luma ) \
 if( b_refine_qpel || (dir^1) != odir ) \
 { \
     intptr_t stride; \
     pixel *src; \
-    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my, fenc_pre ) \
-             + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
+    int cost = (luma) + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
     if( b_chroma_me && cost < bcost ) \
     { \
         if( CHROMA444 ) \
@@ -1025,6 +1068,10 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     /* quarterpel diamond search */
     if( h->mb.i_subpel_refine != 1 )
     {
+        /* an iteration's luma costs in one call, as they don't depend on the selection */
+        int b_luma_dia = i_pixel <= PIXEL_8x8 && !m->weight[0].weightfn
+                      && (fenc_pre ? !!h->pixf.satd_avg2_pre_xn[1][i_pixel]
+                                   : h->pixf.mbcmp_avg2[i_pixel] && h->pixf.satd_avg2_xn[1][i_pixel]);
         bdir = -1;
         for( int i = qpel_iters; i > 0; i-- )
         {
@@ -1032,10 +1079,22 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 break;
             odir = bdir;
             int omx = bmx, omy = bmy;
-            COST_MV_SATD( omx, omy - 1, 0 );
-            COST_MV_SATD( omx, omy + 1, 1 );
-            COST_MV_SATD( omx - 1, omy, 2 );
-            COST_MV_SATD( omx + 1, omy, 3 );
+            if( b_luma_dia )
+            {
+                int luma[4], k = 0;
+                subpel_luma_cost_dia( h, m, i_pixel, omx, omy, b_refine_qpel ? -1 : odir^1, fenc_pre, luma );
+                COST_MV_SATD_LUMA( omx, omy - 1, 0, luma[k++] );
+                COST_MV_SATD_LUMA( omx, omy + 1, 1, luma[k++] );
+                COST_MV_SATD_LUMA( omx - 1, omy, 2, luma[k++] );
+                COST_MV_SATD_LUMA( omx + 1, omy, 3, luma[k++] );
+            }
+            else
+            {
+                COST_MV_SATD( omx, omy - 1, 0 );
+                COST_MV_SATD( omx, omy + 1, 1 );
+                COST_MV_SATD( omx - 1, omy, 2 );
+                COST_MV_SATD( omx + 1, omy, 3 );
+            }
             if( (bmx == omx) & (bmy == omy) )
                 break;
         }
@@ -1273,6 +1332,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
 }
 
 #undef COST_MV_SATD
+#undef COST_MV_SATD_LUMA
 #define COST_MV_SATD( mx, my, dst, avoid_mvp ) \
 { \
     if( !avoid_mvp || !(mx == pmx && my == pmy) ) \

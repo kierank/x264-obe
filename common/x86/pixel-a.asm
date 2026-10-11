@@ -4606,6 +4606,93 @@ INTRA_X9
 HADAMARD_AC_SSE2
 
 
+;-----------------------------------------------------------------------------
+; satd_avg2 of the subpel diamond: N = 3 or 4 candidates, the averages of the
+; pairs pix[2*i], pix[2*i+1] sharing stride, in one call. r1 = pix, r2 = stride,
+; r3 = scores, r4/r5/r6 = 3/5/7*stride (rows 0-7 from the row 0 pointer),
+; r7/r8 = the candidate's pair.
+;-----------------------------------------------------------------------------
+%macro SATD_XN_START 0
+    lea       r4, [3*r2]
+    lea       r5, [5*r2]
+    lea       r6, [r4+4*r2]
+%endmacro
+
+%macro SATD_XN_PTRS 1 ; candidate
+    mov       r7, [r1+16*%1]
+    mov       r8, [r1+16*%1+8]
+%endmacro
+
+%macro SATD_XN_NEXT8 0
+    lea       r7, [r7+8*r2]
+    lea       r8, [r8+8*r2]
+%endmacro
+
+; the scores of the word accumulators m%2-m%5 (m%5 unused if N = 3) to [r3]
+; words: 0 signed, 1 unsigned, 2 (3) signed and eight (two) of them fit a signed word
+%macro SATD_XN_END 6 ; N, 4*accumulator, words
+%if %6 == 3
+    phaddw       m%2, m%3
+%if %1 == 4
+    phaddw       m%4, m%5
+%else
+    phaddw       m%4, m%4
+%endif
+    pmaddwd      m%2, [pw_1]
+    pmaddwd      m%4, [pw_1]
+    phaddd       m%2, m%4
+%elif %6 == 2
+    phaddw       m%2, m%3
+%if %1 == 4
+    phaddw       m%4, m%5
+%else
+    phaddw       m%4, m%4
+%endif
+    phaddw       m%2, m%4
+    pmaddwd      m%2, [pw_1]
+%else
+%if %6 == 1
+    pxor         xm5, xm5
+    SATD_XN_HADDUWD %2
+    SATD_XN_HADDUWD %3
+    SATD_XN_HADDUWD %4
+%if %1 == 4
+    SATD_XN_HADDUWD %5
+%endif
+%else
+    pmaddwd      m%2, [pw_1]
+    pmaddwd      m%3, [pw_1]
+    pmaddwd      m%4, [pw_1]
+%if %1 == 4
+    pmaddwd      m%5, [pw_1]
+%endif
+%endif
+    phaddd       m%2, m%3
+%if %1 == 4
+    phaddd       m%4, m%5
+%else
+    phaddd       m%4, m%4
+%endif
+    phaddd       m%2, m%4
+%endif
+    vextracti128 xm%3, m%2, 1
+    paddd        xm%2, xm%3
+%if %1 == 4
+    movu         [r3], xm%2
+%else
+    movq         [r3], xm%2
+    pextrd       [r3+8], xm%2, 2
+%endif
+    RET
+%endmacro
+
+%macro SATD_XN_HADDUWD 1 ; accumulator, m5 = 0
+    psrld         m4, m%1, 16
+    pblendw      m%1, m5, 0xaa
+    paddd        m%1, m4
+%endmacro
+
+
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
 ; 10-bit satd, ymm. Each 128-bit lane holds one row of an independent
@@ -4823,6 +4910,170 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
 %endrep
     SATD_HBD_END 1
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void pixel_satd_avg2_xN_WxH( uint16_t *fenc, uint16_t *pix[2*N], intptr_t stride, int scores[N] )
+; N = 3, 4: satd_avg2( fenc, pix[2*i], pix[2*i+1], stride ) for each i. The
+; 8 wide ones keep fenc's 8x8 block in m8-m11 for every candidate.
+;-----------------------------------------------------------------------------
+; 8 wide, lanes = rows k, k+4 (source offsets %2, %3) less fenc's (m%4)
+%macro SATD_XN_HBD_ROW8 4 ; dst (number), 2*source offset, fenc (number)
+    movu         xm%1, [r7+%2]
+    vinserti128   m%1, m%1, [r7+%3], 1
+    movu          xm4, [r8+%2]
+    vinserti128    m4, m4, [r8+%3], 1
+    pavgw         m%1, m4
+    psubw         m%1, m%4
+%endmacro
+
+%macro SATD_XN_HBD_FENC8 1 ; block: fenc rows 8*%1 to 8*%1+7 to m8-m11
+    movu         xm8, [r0+(8*%1+0)*FENC_STRIDEB]
+    vinserti128   m8, m8, [r0+(8*%1+4)*FENC_STRIDEB], 1
+    movu         xm9, [r0+(8*%1+1)*FENC_STRIDEB]
+    vinserti128   m9, m9, [r0+(8*%1+5)*FENC_STRIDEB], 1
+    movu        xm10, [r0+(8*%1+2)*FENC_STRIDEB]
+    vinserti128  m10, m10, [r0+(8*%1+6)*FENC_STRIDEB], 1
+    movu        xm11, [r0+(8*%1+3)*FENC_STRIDEB]
+    vinserti128  m11, m11, [r0+(8*%1+7)*FENC_STRIDEB], 1
+%endmacro
+
+%macro SATD_XN_HBD_8x8 3 ; candidate, block, accumulator
+    SATD_XN_PTRS %1
+%if %2
+    SATD_XN_NEXT8
+%endif
+    SATD_XN_HBD_ROW8 0, 0,    4*r2, 8
+    SATD_XN_HBD_ROW8 1, r2,   r5,   9
+    SATD_XN_HBD_ROW8 2, 2*r2, 2*r4, 10
+    SATD_XN_HBD_ROW8 3, r4,   r6,   11
+%if %2
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, %3
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, %3, swap
+%endif
+%endmacro
+
+; a pass adds at most 2*8184 a word: 8x8 sums two words before pmaddwd, 16x16
+; takes unsigned words
+%macro SATD_XN_HBD_8 2 ; N, height
+cglobal pixel_satd_avg2_x%1_8x%2, 4,9,16
+    FIX_STRIDES r2
+    SATD_XN_START
+%assign satd_xn_b 0
+%rep %2/8
+    SATD_XN_HBD_FENC8 satd_xn_b
+    SATD_XN_HBD_8x8 0, satd_xn_b, 12
+    SATD_XN_HBD_8x8 1, satd_xn_b, 13
+    SATD_XN_HBD_8x8 2, satd_xn_b, 14
+%if %1 == 4
+    SATD_XN_HBD_8x8 3, satd_xn_b, 15
+%endif
+%assign satd_xn_b satd_xn_b+1
+%endrep
+%undef satd_xn_b
+    SATD_XN_END %1, 12, 13, 14, 15, (%2 == 8) * 3
+%endmacro
+
+; 16 wide, lanes = columns 0-7, 8-15: row (source offset %2, fenc row %3) less fenc's
+%macro SATD_XN_HBD_ROW16 3 ; dst (number), source offset, fenc row
+    movu          m%1, [r7+%2]
+    pavgw         m%1, [r8+%2]
+    psubw         m%1, [r0+(%3)*FENC_STRIDEB]
+%endmacro
+
+%macro SATD_XN_HBD_16x8 3 ; fenc row, accumulator, swap/add
+    SATD_XN_HBD_ROW16 0, 0,    %1+0
+    SATD_XN_HBD_ROW16 1, r2,   %1+1
+    SATD_XN_HBD_ROW16 2, 2*r2, %1+2
+    SATD_XN_HBD_ROW16 3, r4,   %1+3
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, %2, %3
+    SATD_XN_HBD_ROW16 0, 4*r2, %1+4
+    SATD_XN_HBD_ROW16 1, r5,   %1+5
+    SATD_XN_HBD_ROW16 2, 2*r4, %1+6
+    SATD_XN_HBD_ROW16 3, r6,   %1+7
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, %2
+%endmacro
+
+%macro SATD_XN_HBD_CAND16 3 ; candidate, accumulator, height
+    SATD_XN_PTRS %1
+    SATD_XN_HBD_16x8 0, %2, swap
+%if %3 == 16
+    SATD_XN_NEXT8
+    SATD_XN_HBD_16x8 8, %2, add
+%endif
+%endmacro
+
+%macro SATD_XN_HBD_16 2 ; N, height
+cglobal pixel_satd_avg2_x%1_16x%2, 4,9,12
+    FIX_STRIDES r2
+    SATD_XN_START
+    SATD_XN_HBD_CAND16 0, 8, %2
+    SATD_XN_HBD_CAND16 1, 9, %2
+    SATD_XN_HBD_CAND16 2, 10, %2
+%if %1 == 4
+    SATD_XN_HBD_CAND16 3, 11, %2
+%endif
+    SATD_XN_END %1, 8, 9, 10, 11, %2/16
+%endmacro
+
+INIT_YMM avx2
+SATD_XN_HBD_8 3, 8
+SATD_XN_HBD_8 4, 8
+SATD_XN_HBD_8 3, 16
+SATD_XN_HBD_8 4, 16
+SATD_XN_HBD_16 3, 8
+SATD_XN_HBD_16 4, 8
+SATD_XN_HBD_16 3, 16
+SATD_XN_HBD_16 4, 16
+
+; void pixel_satd_avg2_x4c_8x8( uint16_t *fenc, uint16_t *pix[5], intptr_t stride, int scores[4] )
+; the same of the pairs pix[0], pix[1+i]: the diamond around an hpel position
+; averages it with each neighbour, so its rows are loaded once, to m12-m15.
+; Accumulators are paired as they finish, which leaves enough registers.
+%macro SATD_XN_HBD_C_ROW8 5 ; dst (number), 2*source offset, pix[0], fenc (numbers)
+    movu         xm%1, [r7+%2]
+    vinserti128   m%1, m%1, [r7+%3], 1
+    pavgw         m%1, m%4
+    psubw         m%1, m%5
+%endmacro
+
+%macro SATD_XN_HBD_C_CAND 2 ; candidate, accumulator
+    mov       r7, [r1+8+8*%1]
+    SATD_XN_HBD_C_ROW8 0, 0,    4*r2, 12, 8
+    SATD_XN_HBD_C_ROW8 1, r2,   r5,   13, 9
+    SATD_XN_HBD_C_ROW8 2, 2*r2, 2*r4, 14, 10
+    SATD_XN_HBD_C_ROW8 3, r4,   r6,   15, 11
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 4, %2, swap
+%endmacro
+
+cglobal pixel_satd_avg2_x4c_8x8, 4,8,16
+    FIX_STRIDES r2
+    SATD_XN_START
+    SATD_XN_HBD_FENC8 0
+    mov          r7, [r1]
+    movu        xm12, [r7]
+    vinserti128  m12, m12, [r7+4*r2], 1
+    movu        xm13, [r7+r2]
+    vinserti128  m13, m13, [r7+r5], 1
+    movu        xm14, [r7+2*r2]
+    vinserti128  m14, m14, [r7+2*r4], 1
+    movu        xm15, [r7+r4]
+    vinserti128  m15, m15, [r7+r6], 1
+    SATD_XN_HBD_C_CAND 0, 5
+    SATD_XN_HBD_C_CAND 1, 6
+    phaddw        m5, m6
+    SATD_XN_HBD_C_CAND 2, 6
+    SATD_XN_HBD_C_CAND 3, 7
+    phaddw        m6, m7
+    pmaddwd       m5, [pw_1]
+    pmaddwd       m6, [pw_1]
+    phaddd        m5, m6
+    vextracti128 xm6, m5, 1
+    paddd        xm5, xm6
+    movu        [r3], xm5
+    RET
+%endif ; ARCH_X86_64
 
 %if ARCH_X86_64
 INIT_YMM avx2
@@ -6054,6 +6305,128 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
     lea      r6, [r2+4*r3]
     SATD_AVG2_PRE_8x8 0, swap
     SATD_AVG2_END
+
+;-----------------------------------------------------------------------------
+; void pixel_satd_avg2_pre_xN_WxH( int16_t *fenc_pre, uint8_t *pix[2*N], intptr_t stride, int scores[N] )
+; N = 3, 4: satd_avg2_pre( fenc_pre, pix[2*i], pix[2*i+1], stride ) for each i
+; void pixel_satd_avg2_pre_x4c_8x8( int16_t *fenc_pre, uint8_t *pix[5], intptr_t stride, int scores[4] )
+; the same of the pairs pix[0], pix[1+i]: the diamond around an hpel position
+; averages it with each neighbour, so its rows are loaded once.
+;-----------------------------------------------------------------------------
+; 8 wide: rows k, k+4 (source offsets %2, %3) of the average less fenc_pre's
+%macro SATD_XN_PRE_SUMSUB8 4 ; dst (number), 2*source offset, fenc_pre offset
+    LOAD_DUP_8x2P_AVX2 %1, 4, [r7+%2], [r7+%3]
+    LOAD_DUP_8x2P_AVX2 5, 4, [r8+%2], [r8+%3]
+    pavgb         m%1, m5
+    pmaddubsw     m%1, m7
+    psubw         m%1, [r0+%4]
+%endmacro
+
+%macro SATD_XN_PRE_8x8 3 ; fenc_pre offset, accumulator, swap/add
+    SATD_XN_PRE_SUMSUB8 0, 0,    4*r2, %1
+    SATD_XN_PRE_SUMSUB8 1, r2,   r5,   %1+32
+    SATD_XN_PRE_SUMSUB8 2, 2*r2, 2*r4, %1+64
+    SATD_XN_PRE_SUMSUB8 3, r4,   r6,   %1+96
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %2, %3
+%endmacro
+
+%macro SATD_XN_PRE_CAND8 3 ; candidate, accumulator, height
+    SATD_XN_PTRS %1
+    SATD_XN_PRE_8x8 0, %2, swap
+%if %3 == 16
+    SATD_XN_NEXT8
+    SATD_XN_PRE_8x8 128, %2, add
+%endif
+%endmacro
+
+; 16 wide: row (source offset %2, fenc_pre row %3) of the average less fenc_pre's
+%macro SATD_XN_PRE_ROW16 3 ; dst (number), source offset, fenc_pre row
+    vbroadcasti128 m%1, [r7+%2]
+    vbroadcasti128 m4,  [r8+%2]
+    pavgb          m%1, m4
+    pmaddubsw      m%1, m7
+    psubw          m%1, [r0+32*(%3)]
+%endmacro
+
+%macro SATD_XN_PRE_16x8 3 ; fenc_pre row, accumulator, swap/add
+    SATD_XN_PRE_ROW16 0, 0,    %1+0
+    SATD_XN_PRE_ROW16 1, r2,   %1+1
+    SATD_XN_PRE_ROW16 2, 2*r2, %1+2
+    SATD_XN_PRE_ROW16 3, r4,   %1+3
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %2, %3
+    SATD_XN_PRE_ROW16 0, 4*r2, %1+4
+    SATD_XN_PRE_ROW16 1, r5,   %1+5
+    SATD_XN_PRE_ROW16 2, 2*r4, %1+6
+    SATD_XN_PRE_ROW16 3, r6,   %1+7
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %2
+%endmacro
+
+%macro SATD_XN_PRE_CAND16 3 ; candidate, accumulator, height
+    SATD_XN_PTRS %1
+    SATD_XN_PRE_16x8 0, %2, swap
+%if %3 == 16
+    SATD_XN_NEXT8
+    SATD_XN_PRE_16x8 8, %2, add
+%endif
+%endmacro
+
+; a pass adds at most 2*2040 a word: 8x8 sums eight words before pmaddwd, the others two
+%macro SATD_XN_PRE 3 ; N, width, height
+cglobal pixel_satd_avg2_pre_x%1_%2x%3, 4,9,12
+    mova     m7, [hmul_%2p]
+    SATD_XN_START
+    SATD_XN_PRE_CAND%2 0, 8, %3
+    SATD_XN_PRE_CAND%2 1, 9, %3
+    SATD_XN_PRE_CAND%2 2, 10, %3
+%if %1 == 4
+    SATD_XN_PRE_CAND%2 3, 11, %3
+%endif
+%if %2*%3 == 64
+    SATD_XN_END %1, 8, 9, 10, 11, 2
+%else
+    SATD_XN_END %1, 8, 9, 10, 11, 3
+%endif
+%endmacro
+
+SATD_XN_PRE 3, 8, 8
+SATD_XN_PRE 4, 8, 8
+SATD_XN_PRE 3, 8, 16
+SATD_XN_PRE 4, 8, 16
+SATD_XN_PRE 3, 16, 8
+SATD_XN_PRE 4, 16, 8
+SATD_XN_PRE 3, 16, 16
+SATD_XN_PRE 4, 16, 16
+
+; 8 wide: rows k, k+4 (source offsets %2, %3) averaged with pix[0]'s (m%4)
+%macro SATD_XN_PRE_C_SUMSUB8 5 ; dst (number), 2*source offset, pix[0] (number), fenc_pre offset
+    LOAD_DUP_8x2P_AVX2 %1, 4, [r7+%2], [r7+%3]
+    pavgb         m%1, m%4
+    pmaddubsw     m%1, m7
+    psubw         m%1, [r0+%5]
+%endmacro
+
+%macro SATD_XN_PRE_C_CAND 2 ; candidate, accumulator
+    mov       r7, [r1+8+8*%1]
+    SATD_XN_PRE_C_SUMSUB8 0, 0,    4*r2, 12, 0
+    SATD_XN_PRE_C_SUMSUB8 1, r2,   r5,   13, 32
+    SATD_XN_PRE_C_SUMSUB8 2, 2*r2, 2*r4, 14, 64
+    SATD_XN_PRE_C_SUMSUB8 3, r4,   r6,   15, 96
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %2, swap
+%endmacro
+
+cglobal pixel_satd_avg2_pre_x4c_8x8, 4,8,16
+    mova     m7, [hmul_8p]
+    SATD_XN_START
+    mov       r7, [r1]
+    LOAD_DUP_8x2P_AVX2 12, 4, [r7],      [r7+4*r2]
+    LOAD_DUP_8x2P_AVX2 13, 4, [r7+r2],   [r7+r5]
+    LOAD_DUP_8x2P_AVX2 14, 4, [r7+2*r2], [r7+2*r4]
+    LOAD_DUP_8x2P_AVX2 15, 4, [r7+r4],   [r7+r6]
+    SATD_XN_PRE_C_CAND 0, 8
+    SATD_XN_PRE_C_CAND 1, 9
+    SATD_XN_PRE_C_CAND 2, 10
+    SATD_XN_PRE_C_CAND 3, 11
+    SATD_XN_END 4, 8, 9, 10, 11, 2
 
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
