@@ -181,6 +181,10 @@ void x264_add16x16_idct8_sse2( pixel *dst, dctcoef dct[4][64] );
 void x264_add8x8_idct8_avx   ( pixel *dst, dctcoef dct   [64] );
 #define x264_add16x16_idct8_avx x264_template(add16x16_idct8_avx)
 void x264_add16x16_idct8_avx ( pixel *dst, dctcoef dct[4][64] );
+#define x264_add8x8_idct8_avx2 x264_template(add8x8_idct8_avx2)
+void x264_add8x8_idct8_avx2  ( pixel *dst, dctcoef dct   [64] );
+#define x264_add16x16_idct8_avx2 x264_template(add16x16_idct8_avx2)
+void x264_add16x16_idct8_avx2( pixel *dst, dctcoef dct[4][64] );
 
 #define x264_zigzag_scan_8x8_frame_xop x264_template(zigzag_scan_8x8_frame_xop)
 void x264_zigzag_scan_8x8_frame_xop  ( int16_t level[64], int16_t dct[64] );

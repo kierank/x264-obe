@@ -278,6 +278,55 @@ ADD8x8_IDCT8
 INIT_XMM avx
 ADD8x8_IDCT8
 
+;-----------------------------------------------------------------------------
+; void add8x8_idct8( uint16_t *p_dst, int32_t dct[64] ), AVX2
+; Each ymm holds a whole coefficient row, so both passes run once on 8
+; registers, with one 8x8 dword transpose (in-lane 4x4 + vperm2i128) between.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal add8x8_idct8, 2,2,11
+    add r1, 128
+    TAIL_CALL .skip_prologue, 0
+global current_function %+ .skip_prologue
+.skip_prologue:
+%assign idct8_hbd_i 0
+%rep 8
+    mova       m %+ idct8_hbd_i, [r1-128+idct8_hbd_i*32]
+%assign idct8_hbd_i idct8_hbd_i+1
+%endrep
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE4x4D 0,1,2,3,8
+    TRANSPOSE4x4D 4,5,6,7,8
+%assign idct8_hbd_i 0
+%rep 4
+    %assign idct8_hbd_j idct8_hbd_i+4
+    vperm2i128 m8, m %+ idct8_hbd_i, m %+ idct8_hbd_j, 0x20
+    vperm2i128 m %+ idct8_hbd_j, m %+ idct8_hbd_i, m %+ idct8_hbd_j, 0x31
+    SWAP idct8_hbd_i, 8
+%assign idct8_hbd_i idct8_hbd_i+1
+%endrep
+    vpbroadcastd m8, [pd_32]
+    paddd      m0, m8
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    pxor       m8, m8
+    mova       m9, [pw_pixel_max]
+%assign idct8_hbd_i 0
+%rep 4
+    %assign idct8_hbd_j idct8_hbd_i+1
+    psrad      m %+ idct8_hbd_i, 6
+    psrad      m %+ idct8_hbd_j, 6
+    packssdw   m %+ idct8_hbd_i, m %+ idct8_hbd_j
+    vpermq     m %+ idct8_hbd_i, m %+ idct8_hbd_i, q3120
+    mova      xm10, [r0+idct8_hbd_i*FDEC_STRIDEB]
+    vinserti128 m10, m10, [r0+idct8_hbd_j*FDEC_STRIDEB], 1
+    paddw      m %+ idct8_hbd_i, m10
+    CLIPW      m %+ idct8_hbd_i, m8, m9
+    mova       [r0+idct8_hbd_i*FDEC_STRIDEB], xm %+ idct8_hbd_i
+    vextracti128 [r0+idct8_hbd_j*FDEC_STRIDEB], m %+ idct8_hbd_i, 1
+%assign idct8_hbd_i idct8_hbd_i+2
+%endrep
+    ret
+
 %else ; !HIGH_BIT_DEPTH
 
 %macro DCT_SUB8 0
