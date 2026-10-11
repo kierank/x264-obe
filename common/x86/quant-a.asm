@@ -38,6 +38,8 @@ decimate_shuf_avx512: dd 0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 dequant_shuf_avx512: dw  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
                      dw 32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
 %endif
+pb_0to63: db  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+          db 32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
 
 %macro DQM4 3
     dw %1, %2, %1, %2, %2, %3, %2, %3
@@ -1907,6 +1909,60 @@ DECIMATE4x4_AVX512 15
 DECIMATE4x4_AVX512 16
 INIT_ZMM avx512
 DECIMATE8x8_AVX512
+
+; no loop over the nonzero coefficients: compress their positions, take the
+; runs between them, look up and sum all scores. decimate_table8 is never
+; negative, so the full sum >= 6 is the same as stopping once it reaches 6.
+%if ARCH_X86_64
+INIT_ZMM avx512icl
+cglobal decimate_score64, 1,2
+%if HIGH_BIT_DEPTH
+    mova            m0, [r0]
+    packssdw        m0, [r0+1*64]
+    mova            m1, [r0+2*64]
+    packssdw        m1, [r0+3*64]
+    packsswb        m0, m1
+    vbroadcasti32x4 m1, [pb_1]
+    pabsb           m2, m0
+    vpcmpub         k0, m2, m1, 6       ; |coef| > 1
+    mova            m1, [decimate_shuf_avx512]
+    vpermd          m0, m1, m0
+    vptestmb        k1, m0, m0
+%else
+    mova            m0, [r0]
+    mova            m1, [r0+64]
+    vbroadcasti32x4 m3, [pb_1]
+    packsswb        m2, m0, m1
+    pabsb           m2, m2
+    vpcmpub         k0, m2, m3, 6       ; |coef| > 1
+    vptestmw        k1, m0, m0
+    vptestmw        k2, m1, m1
+    kunpckdq        k1, k2, k1
+%endif
+    vpternlogd      m2, m2, m2, 0xff    ; -1
+    mova            m1, [pb_0to63]
+    vpcompressb     m0 {k1}{z}, m1      ; positions of the nonzero coefficients
+    vpcompressb     m4 {k1}{z}, m2      ; -1 in a lane per nonzero coefficient
+    kxnorq          k3, k3, k3
+    kshiftlq        k3, k3, 1
+    vpsubb          m3, m0, m2          ; pos+1
+    vpaddb          m1, m1, m2          ; i-1
+    vpermb          m3 {k3}{z}, m1, m3  ; pos+1 of the previous one, 0 for the first
+    vpsubb          m0, m0, m3          ; run of zeros before each
+    vpermb          m0, m0, [decimate_table8]
+    vpandd          m0, m0, m4
+    pxor           xm1, xm1
+    psadbw          m0, m1
+    vpmovqb        xm0, m0
+    psadbw         xm0, xm1
+    movd           eax, xm0
+    mov            r1d, 9
+    cmp            eax, 6
+    cmovge         eax, r1d
+    kortestq        k0, k0
+    cmovnz         eax, r1d
+    RET
+%endif
 
 ;-----------------------------------------------------------------------------
 ; int coeff_last( dctcoef *dct )

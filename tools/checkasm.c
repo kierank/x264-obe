@@ -2387,15 +2387,16 @@ static int check_quant( int cpu_ref, int cpu_new )
     { \
         set_func_name( #decname ); \
         used_asm = 1; \
-        for( int i = 0; i < 100; i++ ) \
+        for( int i = 0; i < 200; i++ ) \
         { \
             static const int distrib[16] = {1,1,1,1,1,1,1,1,1,1,1,1,2,3,4};\
-            static const int zerorate_lut[4] = {3,7,15,31};\
-            int zero_rate = zerorate_lut[i&3];\
+            /* i >= 100: +-1 only, 0 to all nonzero, so the run scores decide */\
+            static const int zerorate_lut[8] = {3,7,15,31,0,3,15,31};\
+            int zero_rate = zerorate_lut[(i&3) + (i >= 100)*4];\
             for( int idx = 0; idx < w*w; idx++ ) \
             { \
                 int sign = (rand()&1) ? -1 : 1; \
-                int abs_level = distrib[rand()&15]; \
+                int abs_level = i < 100 ? distrib[rand()&15] : 1; \
                 if( abs_level == 4 ) abs_level = rand()&0x3fff; \
                 int zero = !(rand()&zero_rate); \
                 dct1[idx] = zero * abs_level * sign; \
