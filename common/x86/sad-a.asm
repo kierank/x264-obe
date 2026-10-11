@@ -1845,6 +1845,79 @@ SAD_X_AVX2 3, 16,  8, 7
 SAD_X_AVX2 4, 16, 16, 8
 SAD_X_AVX2 4, 16,  8, 8
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_x3_min_16x16( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
+;                             intptr_t i_stride, uint64_t bias01, uint64_t bias2_best )
+; int pixel_sad_x4_min_16x16( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
+;                             uint8_t *pix3, intptr_t i_stride, uint64_t bias01,
+;                             uint64_t bias23, int best )
+; min( best, (sad_i << 6) + bias_i ), signed; bias01 = bias_0 | bias_1 << 32, etc.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; xm%1 = { b0 b1 b2 best }, xm%2 = best in all lanes
+%macro SAD_X3_MIN_ARGS 2
+    movq         xm%1, r5mp
+    vpbroadcastq xm%2, r6mp
+    vpblendd     xm%1, xm%1, xm%2, 1100b
+    pshufd       xm%2, xm%2, q1111
+%endmacro
+
+; xm%1 = { b0 b1 b2 b3 }, xm%2 = best in all lanes
+%macro SAD_X4_MIN_ARGS 2
+    movq         xm%1, r6mp
+    movhps       xm%1, r7mp
+    vpbroadcastd xm%2, r8m
+%endmacro
+
+; xm%1 = candidates, xm%2 = best in all lanes -> eax
+%macro SAD_X_MIN_TREE 3 ; c, best, tmp
+    pminsd       xm%2, xm%1
+    pshufd       xm%3, xm%1, q1032
+    pminsd       xm%1, xm%2, xm%3
+    psrlq        xm%3, xm%1, 32
+    pminsd       xm%1, xm%3
+    movd          eax, xm%1
+    RET
+%endmacro
+
+%macro SAD_X3_MIN_END_AVX2 0
+    SAD_X3_MIN_ARGS 4, 5
+    packssdw  m0, m1
+    packssdw  m2, m2
+    phaddd    m0, m2        ; 0 1 2 2 | 0 1 2 2
+    pslld     m0, 6
+    vextracti128 xm1, m0, 1
+    paddd    xm0, xm4       ; lane 3 is best + 64*sad_2
+    paddd    xm0, xm1
+    SAD_X_MIN_TREE 0, 5, 1
+%endmacro
+
+%macro SAD_X4_MIN_END_AVX2 0
+    SAD_X4_MIN_ARGS 4, 5
+    packssdw  m0, m1        ; 0 0 1 1 | 2 2 3 3
+    pslld     m0, 6
+    vextracti128 xm1, m0, 1
+    phaddd   xm0, xm1
+    paddd    xm0, xm4
+    SAD_X_MIN_TREE 0, 5, 1
+%endmacro
+
+%macro SAD_X_MIN_AVX2 4
+cglobal pixel_sad_x%1_min_%2x%3, 2+%1,7,%4
+%assign x 0
+%rep %3/4
+    SAD_X%1_4x%2P_AVX2 x, %3/4
+%assign x x+1
+%endrep
+    SAD_X%1_MIN_END_AVX2
+%endmacro
+
+SAD_X_MIN_AVX2 3, 16, 16, 7
+SAD_X_MIN_AVX2 3, 16,  8, 7
+SAD_X_MIN_AVX2 4, 16, 16, 8
+SAD_X_MIN_AVX2 4, 16,  8, 8
+%endif ; ARCH_X86_64
+
 ; 8 wide: ymm = { p row j, q row j | p row j+1, q row j+1 } against a vmovddup
 ; of fenc rows j, j+1. Lane 1 of p is a 16 byte load (reads 8 bytes past the
 ; row, as pixel_sad_8x8_avx2 does), q row j+1 a broadcast + blend.
@@ -1867,8 +1940,12 @@ SAD_X_AVX2 4, 16,  8, 8
 %endif
 %endmacro
 
-%macro SAD_X3_W8_AVX2 1 ; h
+%macro SAD_X3_W8_AVX2 1-2 0 ; h, min
+%if %2
+cglobal pixel_sad_x3_min_8x%1, 5,6,6
+%else
 cglobal pixel_sad_x3_8x%1, 5,6,6
+%endif
     lea            t0, [3*r4]
 %assign %%k 0
 %rep %1/2
@@ -1893,16 +1970,30 @@ cglobal pixel_sad_x3_8x%1, 5,6,6
 %endif
 %assign %%k %%k+2
 %endrep
+%if %2
+    SAD_X3_MIN_ARGS 2, 3
+    packssdw       m0, m1
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm2       ; lane 3 is best + 64*sad(fenc, 0)
+    paddd         xm0, xm1
+    SAD_X_MIN_TREE 0, 3, 1
+%else
     movifnidn      r5, r5mp
     packssdw       m0, m1         ; { s0 s1 s2 _ | s0 s1 s2 _ }
     vextracti128  xm1, m0, 1
     paddd         xm0, xm1
     mova         [r5], xm0
     RET
+%endif
 %endmacro
 
-%macro SAD_X4_W8_AVX2 1 ; h
+%macro SAD_X4_W8_AVX2 1-2 0 ; h, min
+%if %2
+cglobal pixel_sad_x4_min_8x%1, 6,7,6
+%else
 cglobal pixel_sad_x4_8x%1, 6,7,6
+%endif
     lea            r6, [3*r5]
 %assign %%k 0
 %rep %1/2
@@ -1927,12 +2018,22 @@ cglobal pixel_sad_x4_8x%1, 6,7,6
 %endif
 %assign %%k %%k+2
 %endrep
+%if %2
+    SAD_X4_MIN_ARGS 2, 3
+    packssdw       m0, m1
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm2
+    paddd         xm0, xm1
+    SAD_X_MIN_TREE 0, 3, 1
+%else
     mov            r0, r6mp
     packssdw       m0, m1         ; { s0 s1 s2 s3 | s0 s1 s2 s3 }
     vextracti128  xm1, m0, 1
     paddd         xm0, xm1
     mova         [r0], xm0
     RET
+%endif
 %endmacro
 
 SAD_X3_W8_AVX2 16
@@ -1941,6 +2042,12 @@ SAD_X3_W8_AVX2 4
 SAD_X4_W8_AVX2 16
 SAD_X4_W8_AVX2 8
 SAD_X4_W8_AVX2 4
+%if ARCH_X86_64
+SAD_X3_W8_AVX2 16, 1
+SAD_X3_W8_AVX2 8, 1
+SAD_X4_W8_AVX2 16, 1
+SAD_X4_W8_AVX2 8, 1
+%endif
 
 %macro SAD_X_W4_AVX512 2 ; x, h
 cglobal pixel_sad_x%1_4x%2, %1+2,%1+3

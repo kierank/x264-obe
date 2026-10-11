@@ -1328,6 +1328,11 @@ static void mbcmp_init( x264_t *h )
     memcpy( h->pixf.fpelcmp, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.fpelcmp) );
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );
     memcpy( h->pixf.fpelcmp_x4, satd ? h->pixf.satd_x4 : h->pixf.sad_x4, sizeof(h->pixf.fpelcmp_x4) );
+    for( int i = 0; i < 7; i++ )
+    {
+        h->pixf.fpelcmp_x3_min[i] = satd ? NULL : h->pixf.sad_x3_min[i];
+        h->pixf.fpelcmp_x4_min[i] = satd ? NULL : h->pixf.sad_x4_min[i];
+    }
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
 }
 
