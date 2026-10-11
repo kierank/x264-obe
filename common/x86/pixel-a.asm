@@ -4922,6 +4922,66 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
     add         rax, rdx
 %endif
     RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sa8d_8x8( uint16_t *, intptr_t, uint16_t *, intptr_t )
+; Same lane split as hadamard_ac_8x8. Differences reach 32*1023 before the
+; last stage, so the four max() results are widened before they are added.
+;-----------------------------------------------------------------------------
+cglobal pixel_sa8d_8x8, 4,6,8
+    FIX_STRIDES r1, r3
+    lea          r4, [r1*3]
+    lea          r5, [r3*3]
+    movu        xm0, [r0]
+    movu        xm4, [r2]
+    movu        xm1, [r0+r1]
+    movu        xm5, [r2+r3]
+    movu        xm2, [r0+r1*2]
+    movu        xm6, [r2+r3*2]
+    movu        xm3, [r0+r4]
+    movu        xm7, [r2+r5]
+    lea          r0, [r0+r1*4]
+    lea          r2, [r2+r3*4]
+    vinserti128  m0, m0, [r0], 1
+    vinserti128  m4, m4, [r2], 1
+    vinserti128  m1, m1, [r0+r1], 1
+    vinserti128  m5, m5, [r2+r3], 1
+    vinserti128  m2, m2, [r0+r1*2], 1
+    vinserti128  m6, m6, [r2+r3*2], 1
+    vinserti128  m3, m3, [r0+r4], 1
+    vinserti128  m7, m7, [r2+r5], 1
+    psubw        m0, m4
+    psubw        m1, m5
+    psubw        m2, m6
+    psubw        m3, m7
+    HADAMARD4_2D_SSE 0, 1, 2, 3, 4
+    HADAMARD 4, sumsub, 0, 1, 4
+    HADAMARD 4, sumsub, 2, 3, 4
+    mova         m7, [pw_1]
+    pabsw        m0, m0
+    pabsw        m1, m1
+    pabsw        m2, m2
+    pabsw        m3, m3
+    vextracti128 xm4, m0, 1
+    vextracti128 xm5, m1, 1
+    vextracti128 xm6, m2, 1
+    pmaxsw      xm0, xm4
+    pmaxsw      xm1, xm5
+    pmaxsw      xm2, xm6
+    vextracti128 xm4, m3, 1
+    pmaxsw      xm3, xm4
+    pmaddwd     xm0, xm7
+    pmaddwd     xm1, xm7
+    pmaddwd     xm2, xm7
+    pmaddwd     xm3, xm7
+    paddd       xm0, xm1
+    paddd       xm2, xm3
+    paddd       xm0, xm2
+    HADDD       xm0, xm1
+    movd        eax, xm0
+    add         eax, 1
+    shr         eax, 1
+    RET
 %if ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
