@@ -1018,8 +1018,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         if( (bcost*7)>>3 > *p_halfpel_thresh )
         {
             m->cost = bcost;
-            m->mv[0] = bmx;
-            m->mv[1] = bmy;
+            M32( m->mv ) = pack16to32_mask( bmx, bmy );
             // don't need cost_mv
             return;
         }
@@ -1070,8 +1069,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     }
 
     m->cost = bcost;
-    m->mv[0] = bmx;
-    m->mv[1] = bmy;
+    M32( m->mv ) = pack16to32_mask( bmx, bmy );
     m->cost_mv = p_cost_mvx[bmx] + p_cost_mvy[bmy];
 }
 
@@ -1257,10 +1255,8 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
         x264_macroblock_cache_mvd( h, 2*x, 2*y, bw>>2, bh>>2, 1, amvd );
     }
 
-    m0->mv[0] = bm0x;
-    m0->mv[1] = bm0y;
-    m1->mv[0] = bm1x;
-    m1->mv[1] = bm1y;
+    M32( m0->mv ) = pack16to32_mask( bm0x, bm0y );
+    M32( m1->mv ) = pack16to32_mask( bm1x, bm1y );
 }
 
 void x264_me_refine_bidir_satd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_weight )
@@ -1427,8 +1423,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     }
 
     m->cost = bcost;
-    m->mv[0] = bmx;
-    m->mv[1] = bmy;
+    M32( m->mv ) = pack16to32_mask( bmx, bmy );
     x264_macroblock_cache_mv ( h, block_idx_x[i4], block_idx_y[i4], bw>>2, bh>>2, i_list, pack16to32_mask(bmx, bmy) );
     amvd = pack8to16( X264_MIN(abs(bmx - m->mvp[0]),66), X264_MIN(abs(bmy - m->mvp[1]),66) );
     x264_macroblock_cache_mvd( h, block_idx_x[i4], block_idx_y[i4], bw>>2, bh>>2, i_list, amvd );

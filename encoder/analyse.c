@@ -1236,6 +1236,22 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
 
+/* The search results (cost_mv, cost, mv) were just stored: copy them at their own
+ * width so the loads forward, and only the fields before them, written before the
+ * search, in wide moves. volatile keeps the result loads from being merged. */
+static ALWAYS_INLINE void x264_me_copy( x264_me_t *dst, x264_me_t *src )
+{
+    const int n = offsetof( x264_me_t, cost_mv );
+    int i = 0;
+    for( ; i + 16 <= n; i += 16 )
+        CP128( (uint8_t*)dst + i, (uint8_t*)src + i );
+    for( ; i < n; i += 4 )
+        CP32( (uint8_t*)dst + i, (uint8_t*)src + i );
+    dst->cost_mv = ((volatile x264_me_t*)src)->cost_mv;
+    dst->cost = ((volatile x264_me_t*)src)->cost;
+    M32( dst->mv ) = ((volatile x264_union32_t*)src->mv)->i;
+}
+
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     /* search into the buffer not holding the best: ref 0 lands in me16x16, at most one copy */
@@ -1309,7 +1325,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         }
     }
     if( best != &a->l0.me16x16 )
-        h->mc.memcpy_aligned( &a->l0.me16x16, best, sizeof(x264_me_t) );
+        x264_me_copy( &a->l0.me16x16, best );
 
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, a->l0.me16x16.i_ref );
     assert( a->l0.me16x16.mv[1] <= h->mb.mv_max_spel[1] || h->i_thread_frames == 1 );
@@ -1411,7 +1427,7 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
                 i_ref++;
         }
         if( best != l0m )
-            h->mc.memcpy_aligned( l0m, best, sizeof(x264_me_t) );
+            x264_me_copy( l0m, best );
         x264_macroblock_cache_mv_ptr( h, 2*x8, 2*y8, 2, 2, 0, l0m->mv );
         x264_macroblock_cache_ref( h, 2*x8, 2*y8, 2, 2, 0, l0m->i_ref );
 
@@ -1544,7 +1560,7 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
             cur->cost += cur->i_ref_cost;
 
             if( j && cur->cost < l0m->cost )
-                h->mc.memcpy_aligned( l0m, cur, sizeof(x264_me_t) );
+                x264_me_copy( l0m, cur );
         }
 
         /* Early termination based on the current SATD score of partition[0]
@@ -1616,7 +1632,7 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
             cur->cost += cur->i_ref_cost;
 
             if( j && cur->cost < l0m->cost )
-                h->mc.memcpy_aligned( l0m, cur, sizeof(x264_me_t) );
+                x264_me_copy( l0m, cur );
         }
 
         /* Early termination based on the current SATD score of partition[0]
@@ -2001,7 +2017,7 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
             }
         }
         if( best != &lX->me16x16 )
-            h->mc.memcpy_aligned( &lX->me16x16, best, sizeof(x264_me_t) );
+            x264_me_copy( &lX->me16x16, best );
         if( list1_skipped && l == 1 && i_ref == h->mb.pic.i_fref[1] )
             break;
         if( list1_skipped && l == 0 )
@@ -2011,8 +2027,8 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
     }
 
     /* get cost of BI mode */
-    h->mc.memcpy_aligned( &a->l0.bi16x16, &a->l0.me16x16, sizeof(x264_me_t) );
-    h->mc.memcpy_aligned( &a->l1.bi16x16, &a->l1.me16x16, sizeof(x264_me_t) );
+    x264_me_copy( &a->l0.bi16x16, &a->l0.me16x16 );
+    x264_me_copy( &a->l1.bi16x16, &a->l1.me16x16 );
     int ref_costs = REF_COST( 0, a->l0.bi16x16.i_ref ) + REF_COST( 1, a->l1.bi16x16.i_ref );
     src0 = h->mc.get_ref( pix0, &stride0,
                           h->mb.pic.p_fref[0][a->l0.bi16x16.i_ref], h->mb.pic.i_stride[0],
@@ -2286,7 +2302,7 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
                 }
             }
             if( best != &lX->me8x8[i] )
-                h->mc.memcpy_aligned( &lX->me8x8[i], best, sizeof(x264_me_t) );
+                x264_me_copy( &lX->me8x8[i], best );
         }
 
         /* BI mode */
@@ -2451,7 +2467,7 @@ static void x264_mb_analyse_inter_b16x8( x264_t *h, x264_mb_analysis_t *a, int i
                 cur->cost += cur->i_ref_cost;
 
                 if( j && cur->cost < lX->me16x8[i].cost )
-                    h->mc.memcpy_aligned( &lX->me16x8[i], cur, sizeof(x264_me_t) );
+                    x264_me_copy( &lX->me16x8[i], cur );
             }
         }
 
@@ -2551,7 +2567,7 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
                 cur->cost += cur->i_ref_cost;
 
                 if( j && cur->cost < lX->me8x16[i].cost )
-                    h->mc.memcpy_aligned( &lX->me8x16[i], cur, sizeof(x264_me_t) );
+                    x264_me_copy( &lX->me8x16[i], cur );
             }
         }
 
