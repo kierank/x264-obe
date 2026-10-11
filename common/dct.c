@@ -550,6 +550,9 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->add8x8_idct8    = x264_add8x8_idct8_avx2;
         dctf->add16x16_idct8  = x264_add16x16_idct8_avx2;
 #endif
+        dctf->add8x8_idct     = x264_add8x8_idct_avx2;
+        dctf->add16x16_idct   = x264_add16x16_idct_avx2;
+        dctf->add16x16_idct_dc= x264_add16x16_idct_dc_avx2;
     }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
