@@ -78,7 +78,6 @@
 #define x264_mbtree_propagate_cost_sse2 x264_template(mbtree_propagate_cost_sse2)
 #define x264_mc_chroma_avx x264_template(mc_chroma_avx)
 #define x264_mc_chroma_avx2 x264_template(mc_chroma_avx2)
-#define x264_mc_chroma_avx512 x264_template(mc_chroma_avx512)
 #define x264_mc_chroma_mmx2 x264_template(mc_chroma_mmx2)
 #define x264_mc_chroma_sse2 x264_template(mc_chroma_sse2)
 #define x264_mc_chroma_ssse3 x264_template(mc_chroma_ssse3)
@@ -411,7 +410,6 @@ MC_CHROMA(ssse3)
 MC_CHROMA(ssse3_cache64)
 MC_CHROMA(avx)
 MC_CHROMA(avx2)
-MC_CHROMA(avx512)
 
 #define LOWRES(cpu)\
 void x264_frame_init_lowres_core_##cpu( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,\
@@ -1037,8 +1035,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512 )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
-        if( !(cpu&X264_CPU_STACK_MOD4) )
-            pf->mc_chroma = x264_mc_chroma_avx512;
     }
 #else // !HIGH_BIT_DEPTH
 
@@ -1190,7 +1186,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 
     if( cpu&X264_CPU_AVX512 )
     {
-        pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx512;
         pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx512;
         pf->avg[PIXEL_8x16]  = x264_pixel_avg_8x16_avx512;
         pf->avg[PIXEL_8x8]   = x264_pixel_avg_8x8_avx512;
