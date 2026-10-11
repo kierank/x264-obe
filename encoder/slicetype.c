@@ -28,6 +28,7 @@
 #include "common/common.h"
 #include "macroblock.h"
 #include "me.h"
+#include "lookahead8.h"
 
 // Indexed by pic_struct values
 static const uint8_t delta_tfi_divisor[10] = { 0, 2, 1, 1, 2, 2, 3, 3, 4, 6 };
@@ -480,6 +481,11 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
         if( weights[i].weightfn )
             h->mc.weight_cache( h, &weights[i] );
 
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( weights[0].weightfn && b_lookahead && h->lowres8 )
+        x264_lowres8_weight_plane( h->lowres8, fenc, ref, &weights[0] );
+    else
+#endif
     if( weights[0].weightfn && b_lookahead )
     {
         //scale lowres in lookahead for slicetype_frame_cost
@@ -801,6 +807,15 @@ typedef struct
 static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 {
     x264_t *h = s->h;
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( h->lowres8 )
+    {
+        x264_lowres8_slice_cost( h->lowres8, (void**)s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
+                                 s->do_search, s->w, s->output_inter, s->output_intra,
+                                 h->i_threadslice_start, h->i_threadslice_end );
+        return;
+    }
+#endif
 
     /* Lowres lookahead goes backwards because the MVs are used as predictors in the main encode.
      * This considerably improves MV prediction overall. */

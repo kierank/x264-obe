@@ -444,6 +444,22 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
     h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
                                   i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
     x264_frame_expand_border_lowres( frame );
+#if HIGH_BIT_DEPTH
+    /* rc.b_lookahead_8bit: the 8-bit planes have the same layout, so convert
+     * them padding included */
+    if( frame->buffer_lowres8 )
+    {
+        intptr_t offset = frame->i_stride_lowres * PADV + PADH;
+        int size = frame->i_stride_lowres * (frame->i_lines_lowres + 2*PADV);
+        for( int i = 0; i < 4; i++ )
+        {
+            pixel *s = frame->lowres[i] - offset;
+            uint8_t *d = frame->lowres8[i] - offset;
+            for( int j = 0; j < size; j++ )
+                d[j] = X264_MIN( (s[j] + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 );
+        }
+    }
+#endif
 
     memset( frame->i_cost_est, -1, sizeof(frame->i_cost_est) );
 

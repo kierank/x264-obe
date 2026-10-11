@@ -32,6 +32,7 @@
 #include "ratecontrol.h"
 #include "macroblock.h"
 #include "me.h"
+#include "lookahead8.h"
 
 //#define DEBUG_MB_TYPE
 
@@ -1481,6 +1482,11 @@ x264_t *x264_encoder_open( x264_param_t *param )
           || h->param.analyse.i_weighted_pred );
     h->frames.b_have_lowres |= h->param.rc.b_stat_read && h->param.rc.i_vbv_buffer_size > 0;
     h->frames.b_have_sub8x8_esa = !!(h->param.analyse.inter & X264_ANALYSE_PSUB8x8);
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    h->param.rc.b_lookahead_8bit &= h->frames.b_have_lowres && !h->mb.b_lossless;
+#else
+    h->param.rc.b_lookahead_8bit = 0;
+#endif
 
     h->frames.i_last_idr =
     h->frames.i_last_keyframe = - h->param.i_keyint_max;
@@ -1697,6 +1703,23 @@ x264_t *x264_encoder_open( x264_param_t *param )
                           h->sps->i_profile_idc == PROFILE_HIGH10 ? (h->sps->b_constraint_set3 == 1 ? "High 10 Intra" : "High 10") :
                           h->sps->i_profile_idc == PROFILE_HIGH422 ? (h->sps->b_constraint_set3 == 1 ? "High 4:2:2 Intra" : "High 4:2:2") :
                           h->sps->b_constraint_set3 == 1 ? "High 4:4:4 Intra" : "High 4:4:4 Predictive";
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    /* one 8-bit lowres context per x264_t that can run the lowres analysis:
+     * the encoding threads, the lookahead thread and the lookahead slice threads */
+    if( h->param.rc.b_lookahead_8bit )
+    {
+        int stride = h->thread[0]->fdec->i_stride_lowres;
+        int lines = h->thread[0]->fdec->i_lines_lowres;
+        for( int i = 0; i < h->param.i_threads + !!h->param.i_sync_lookahead; i++ )
+            if( !(h->thread[i]->lowres8 = x264_lowres8_init( &h->param, h->mb.i_mb_width, h->mb.i_mb_height, stride, lines )) )
+                goto fail;
+        if( h->param.i_lookahead_threads > 1 )
+            for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+                if( !(h->lookahead_thread[i]->lowres8 = x264_lowres8_init( &h->param, h->mb.i_mb_width, h->mb.i_mb_height, stride, lines )) )
+                    goto fail;
+    }
+#endif
+
     char level[4];
     snprintf( level, sizeof(level), "%d.%d", h->sps->i_level_idc/10, h->sps->i_level_idc%10 );
     if( h->sps->i_level_idc == 9 || ( h->sps->i_level_idc == 11 && h->sps->b_constraint_set3 &&
@@ -4313,7 +4336,12 @@ void    x264_encoder_close  ( x264_t *h )
 
     if( h->param.i_lookahead_threads > 1 )
         for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+        {
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+            x264_lowres8_free( h->lookahead_thread[i]->lowres8 );
+#endif
             x264_free( h->lookahead_thread[i] );
+        }
 
     for( int i = h->param.i_threads - 1; i >= 0; i-- )
     {
@@ -4343,6 +4371,9 @@ void    x264_encoder_close  ( x264_t *h )
         x264_free( h->thread[i]->out.nal );
         x264_pthread_mutex_destroy( &h->thread[i]->mutex );
         x264_pthread_cond_destroy( &h->thread[i]->cv );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+        x264_lowres8_free( h->thread[i]->lowres8 );
+#endif
         x264_free( h->thread[i] );
     }
 #if HAVE_OPENCL

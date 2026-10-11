@@ -38,6 +38,7 @@
  */
 #include "common/common.h"
 #include "analyse.h"
+#include "lookahead8.h"
 
 static void x264_lookahead_shift( x264_sync_frame_list_t *dst, x264_sync_frame_list_t *src, int count )
 {
@@ -173,6 +174,9 @@ void x264_lookahead_delete( x264_t *h )
         x264_pthread_join( h->lookahead->thread_handle, NULL );
         x264_macroblock_cache_free( h->thread[h->param.i_threads] );
         x264_macroblock_thread_free( h->thread[h->param.i_threads], 1 );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+        x264_lowres8_free( h->thread[h->param.i_threads]->lowres8 );
+#endif
         x264_free( h->thread[h->param.i_threads] );
     }
     x264_sync_frame_list_delete( &h->lookahead->ifbuf );
