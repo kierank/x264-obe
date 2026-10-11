@@ -1533,29 +1533,42 @@ void x264_macroblock_deblock_strength( x264_t *h )
     if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART && h->sh.i_type == SLICE_TYPE_P )
     {
         /* Handle reference frame duplicates */
-        int i8 = x264_scan8[0] - 8;
-        h->mb.cache.ref[0][i8+0] =
-        h->mb.cache.ref[0][i8+1] = deblock_ref_table(h->mb.cache.ref[0][i8+0]);
-        h->mb.cache.ref[0][i8+2] =
-        h->mb.cache.ref[0][i8+3] = deblock_ref_table(h->mb.cache.ref[0][i8+2]);
-
-        i8 = x264_scan8[0] - 1;
-        h->mb.cache.ref[0][i8+0*8] =
-        h->mb.cache.ref[0][i8+1*8] = deblock_ref_table(h->mb.cache.ref[0][i8+0*8]);
-        h->mb.cache.ref[0][i8+2*8] =
-        h->mb.cache.ref[0][i8+3*8] = deblock_ref_table(h->mb.cache.ref[0][i8+2*8]);
-
-        int ref0 = deblock_ref_table(h->mb.cache.ref[0][x264_scan8[ 0]]);
-        int ref1 = deblock_ref_table(h->mb.cache.ref[0][x264_scan8[ 4]]);
-        int ref2 = deblock_ref_table(h->mb.cache.ref[0][x264_scan8[ 8]]);
-        int ref3 = deblock_ref_table(h->mb.cache.ref[0][x264_scan8[12]]);
+        int8_t *ref = h->mb.cache.ref[0];
+        int top0  = deblock_ref_table(ref[x264_scan8[0]-8+0]);
+        int top2  = deblock_ref_table(ref[x264_scan8[0]-8+2]);
+        int left0 = deblock_ref_table(ref[x264_scan8[0]-1+0*8]);
+        int left2 = deblock_ref_table(ref[x264_scan8[0]-1+2*8]);
+        int ref0 = deblock_ref_table(ref[x264_scan8[ 0]]);
+        int ref1 = deblock_ref_table(ref[x264_scan8[ 4]]);
+        int ref2 = deblock_ref_table(ref[x264_scan8[ 8]]);
+        int ref3 = deblock_ref_table(ref[x264_scan8[12]]);
         uint32_t reftop = pack16to32( (uint8_t)ref0, (uint8_t)ref1 ) * 0x0101;
         uint32_t refbot = pack16to32( (uint8_t)ref2, (uint8_t)ref3 ) * 0x0101;
 
-        M32( &h->mb.cache.ref[0][x264_scan8[0]+8*0] ) = reftop;
-        M32( &h->mb.cache.ref[0][x264_scan8[0]+8*1] ) = reftop;
-        M32( &h->mb.cache.ref[0][x264_scan8[0]+8*2] ) = refbot;
-        M32( &h->mb.cache.ref[0][x264_scan8[0]+8*3] ) = refbot;
+        /* One store per deblock_strength load window, so the loads right after
+         * forward: the top row dword, then rows 1-2 and rows 3-4 as 16 bytes
+         * each from column 0 (the left neighbour is column 3). */
+        M32( &ref[x264_scan8[0]-8] ) = pack16to32( (uint8_t)top0, (uint8_t)top2 ) * 0x0101;
+#if HAVE_VECTOREXT && defined(__SSE__)
+        /* x86 is little-endian: column 3 is the top byte of the row's first dword */
+        int8_t *row = &ref[x264_scan8[0]-4];
+        v4si rows01 = { (M32( row+0*8 ) & 0xffffff) | (uint32_t)(uint8_t)left0 << 24, reftop,
+                        (M32( row+1*8 ) & 0xffffff) | (uint32_t)(uint8_t)left0 << 24, reftop };
+        v4si rows23 = { (M32( row+2*8 ) & 0xffffff) | (uint32_t)(uint8_t)left2 << 24, refbot,
+                        (M32( row+3*8 ) & 0xffffff) | (uint32_t)(uint8_t)left2 << 24, refbot };
+        _mm_storeu_ps( (float*)(row+0*8), (__m128)rows01 );
+        _mm_storeu_ps( (float*)(row+2*8), (__m128)rows23 );
+#else
+        ref[x264_scan8[0]-1+0*8] =
+        ref[x264_scan8[0]-1+1*8] = left0;
+        ref[x264_scan8[0]-1+2*8] =
+        ref[x264_scan8[0]-1+3*8] = left2;
+
+        M32( &ref[x264_scan8[0]+8*0] ) = reftop;
+        M32( &ref[x264_scan8[0]+8*1] ) = reftop;
+        M32( &ref[x264_scan8[0]+8*2] ) = refbot;
+        M32( &ref[x264_scan8[0]+8*3] ) = refbot;
+#endif
     }
 
     /* Munge NNZ for cavlc + 8x8dct */

@@ -3051,8 +3051,14 @@ DEBLOCK_STRENGTH_XMM
 INIT_XMM avx
 DEBLOCK_STRENGTH_XMM
 
-%macro LOAD_BYTES_YMM 1
+%macro LOAD_BYTES_YMM 1-2 0 ; src, split
+%if %2
+    ; two 16-byte loads, matching the two 16-byte stores of the WEIGHTP_SMART ref remap
+    movu        xm0, [%1-4]
+    vinserti128  m0, m0, [%1+12], 1     ; ___E FGHI ___J KLMN ___O PQRS ___T UVWX
+%else
     movu         m0, [%1-4]             ; ___E FGHI ___J KLMN ___O PQRS ___T UVWX
+%endif
     pshufb       m0, [load_bytes_shuf]  ; EFGH JKLM FGHI KLMN OPQR TUVW PQRS UVWX
     mova         m2, [insert_top_shuf]
     vpermq       m1, m0, q3131          ; FGHI KLMN PQRS UVWX x2
@@ -3072,7 +3078,7 @@ cglobal deblock_strength, 6,6,7
 
 .lists:
     ; Check refs
-    LOAD_BYTES_YMM ref
+    LOAD_BYTES_YMM ref, 1
     pxor      m0, m1
     por       m5, m0
 
