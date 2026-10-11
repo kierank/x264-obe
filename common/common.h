@@ -296,6 +296,9 @@ typedef struct
     int64_t trdpre_skip[2];         /* RDs ALG_TRDPRE skipped: [kept the measured size, took the other] */
     int64_t chromame[3];            /* subpel refines with chroma ME: [8x8 ones, halfpel cuts across refs,
                                      * refs those stop] */
+    int64_t hexexit[5];             /* HEX searches (not lowres): [all, start cost below the ALG_HEXEXIT
+                                     * threshold 250, 500, 1000, 2000] */
+    int64_t hexmoved[4];            /* of those below each threshold, the first hexagon moved off the start */
 } x264_exp_census_t;
 
 struct x264_t
@@ -783,6 +786,9 @@ struct x264_t
         int     i_alg_trdpre;
         int     i_alg_chromame;
         int     i_chromame;         /* the ALG_CHROMAME mask in effect for the current frame */
+        int     i_alg_hexexit;
+        int     b_lowres_ctx;       /* this context runs lowres searches (lookahead) */
+        int     i_hex_census;       /* census: the smallest ALG_HEXEXIT threshold the HEX start is below */
         int     b_census;           /* X264_EXP_CENSUS */
         int     b_census_me;        /* set around the 16x16 searches */
         int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */

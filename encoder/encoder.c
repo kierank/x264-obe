@@ -1534,6 +1534,13 @@ x264_t *x264_encoder_open( x264_param_t *param )
         e = getenv( "X264_EXP_ALG_CHROMAME" );
         h->exp.i_alg_chromame = e ? atoi( e ) : 0;
         h->exp.i_chromame = h->exp.i_alg_chromame & 3;
+        /* X264_EXP_ALG_HEXEXIT=T: HEX does only its square refine when the best
+         * predictor's cost is below T (a 16x16 at 8-bit; UMH uses 500), scaled for the
+         * partition size and the bit depth; not in the lowres search */
+        e = getenv( "X264_EXP_ALG_HEXEXIT" );
+        h->exp.i_alg_hexexit = e ? atoi( e ) : 0;
+        h->exp.b_lowres_ctx = 0;
+        h->exp.i_hex_census = 4;
         /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
          * the counts at x264_encoder_close; does not change the output */
         e = getenv( "X264_EXP_CENSUS" );
@@ -1542,10 +1549,13 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.b_census_me = 0;
         h->exp.p_hpel_shadow = NULL;
         if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme ||
-            h->exp.i_alg_fieldref || h->exp.i_alg_partgate || h->exp.i_alg_trdpre || h->exp.i_alg_chromame || h->exp.b_census )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d partgate %d trdpre %d chromame %d census %d\n",
+            h->exp.i_alg_fieldref || h->exp.i_alg_partgate || h->exp.i_alg_trdpre || h->exp.i_alg_chromame ||
+            h->exp.i_alg_hexexit || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d partgate %d trdpre %d "
+                      "chromame %d hexexit %d census %d\n",
                       h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme,
-                      h->exp.i_alg_fieldref, h->exp.i_alg_partgate, h->exp.i_alg_trdpre, h->exp.i_alg_chromame, h->exp.b_census );
+                      h->exp.i_alg_fieldref, h->exp.i_alg_partgate, h->exp.i_alg_trdpre, h->exp.i_alg_chromame,
+                      h->exp.i_alg_hexexit, h->exp.b_census );
     }
 
     /* Init frames. */
@@ -1720,6 +1730,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
         {
             CHECKED_MALLOC( h->lookahead_thread[i], sizeof(x264_t) );
             *h->lookahead_thread[i] = *h;
+            /* bd-alg: lowres searches only */
+            h->lookahead_thread[i]->exp.b_lowres_ctx = 1;
         }
     *h->reconfig_h = *h;
 
@@ -2733,6 +2745,9 @@ static intptr_t x264_slice_write( x264_t *h )
 
     /* Slice header */
     x264_macroblock_thread_init( h );
+    /* bd-alg: the main analysis from here, whatever lowres search ran on this
+     * context (x264_lowres_context_init sets it) */
+    h->exp.b_lowres_ctx = 0;
 
     /* Set the QP equal to the first QP in the slice for more accurate CABAC initialization. */
     h->mb.i_mb_xy = h->sh.i_first_mb;
@@ -4158,6 +4173,10 @@ static void x264_exp_census_print( x264_t *h )
              c.trdpre_skip[0], c.trdpre_skip[1] );
     fprintf( stderr, "bd-alg census: chromame 8x8-refines %"PRId64" hpel-cuts %"PRId64" stopped %"PRId64"\n",
              c.chromame[0], c.chromame[1], c.chromame[2] );
+    fprintf( stderr, "bd-alg census: hexexit searches %"PRId64" below-250 %"PRId64" (moved %"PRId64") below-500 %"PRId64" (moved %"PRId64") "
+             "below-1000 %"PRId64" (moved %"PRId64") below-2000 %"PRId64" (moved %"PRId64")\n",
+             c.hexexit[0], c.hexexit[1], c.hexmoved[0], c.hexexit[2], c.hexmoved[1],
+             c.hexexit[3], c.hexmoved[2], c.hexexit[4], c.hexmoved[3] );
 }
 
 /****************************************************************************

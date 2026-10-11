@@ -69,6 +69,8 @@ static void x264_lowres_context_init( x264_t *h, x264_mb_analysis_t *a )
     else if( (h->exp.i_alg_lowresme & 2) && h->param.analyse.i_subpel_refine > 2 )
         h->mb.i_subpel_refine = 3;
     h->mb.b_chroma_me = 0;
+    /* bd-alg: lowres searches on this context until x264_slice_write resets it */
+    h->exp.b_lowres_ctx = 1;
 }
 
 /* makes a non-h264 weight (i.e. fix7), into an h264 weight */
