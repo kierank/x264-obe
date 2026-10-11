@@ -30,6 +30,9 @@
 
 SECTION_RODATA
 
+rd_nzmask_4x4:  dd 0xffff, 0, 0xffff, 1, 0xffff, 0, 0x000f, 0, 0xffff, 1, 0xffff, 0, 0xffff, 0
+                dd 0xffff, 1, 0xffff, 0, 0xffff, 0, 0xffff, 0, 0xffff, 1, 0xffff, 0, 0xffff, 0
+
 coeff_abs_level1_ctx:       db 1, 2, 3, 4, 0, 0, 0, 0
 coeff_abs_levelgt1_ctx:     db 5, 5, 5, 5, 6, 7, 8, 9
 coeff_abs_level_transition: db 1, 2, 3, 3, 4, 5, 6, 7
@@ -274,24 +277,35 @@ cabac_putbyte_%1:
 CABAC asm
 CABAC bmi2
 
+; temporaries of COEFF_ABS_LEVEL_GT1 and the rd sig/last code
+%macro RD_TMP_REGS 3 ; t0, t1, ctx
+    %xdefine lt0  r%1
+    %xdefine lt0d r%1d
+    %xdefine lt1  r%2
+    %xdefine lt1d r%2d
+    %xdefine lt1b r%2b
+    %xdefine lctx  r%3
+    %xdefine lctxd r%3d
+%endmacro
+
 ; %1 = label name
 ; %2 = node_ctx init?
 %macro COEFF_ABS_LEVEL_GT1 2
 %if %2
     %define ctx 1
 %else
-    movzx  r11d, byte [coeff_abs_level1_ctx+r2 GLOBAL]
-    %define ctx r11
+    movzx  lctxd, byte [coeff_abs_level1_ctx+r2 GLOBAL]
+    %define ctx lctx
 %endif
-    movzx   r9d, byte [r8+ctx]
+    movzx   lt0d, byte [r8+ctx]
 ; if( coeff_abs > 1 )
     cmp     r1d, 1
     jg .%1_gt1
 ; x264_cabac_encode_decision( cb, ctx_level+ctx, 0 )
-    movzx  r10d, byte [cabac_transition+r9*2 GLOBAL]
-    movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
-    lea     r0d, [r0+r9+256]
-    mov [r8+ctx], r10b
+    movzx   lt1d, byte [cabac_transition+lt0*2 GLOBAL]
+    movzx   lt0d, word [cabac_entropy+lt0*2 GLOBAL]
+    lea     r0d, [r0+lt0+256]
+    mov [r8+ctx], lt1b
 %if %2
     mov     r2d, 1
 %else
@@ -301,50 +315,50 @@ CABAC bmi2
 
 .%1_gt1:
 ; x264_cabac_encode_decision( cb, ctx_level+ctx, 1 )
-    movzx  r10d, byte [cabac_transition+r9*2+1 GLOBAL]
-    xor     r9d, 1
-    movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
-    mov [r8+ctx], r10b
-    add     r0d, r9d
+    movzx   lt1d, byte [cabac_transition+lt0*2+1 GLOBAL]
+    xor     lt0d, 1
+    movzx   lt0d, word [cabac_entropy+lt0*2 GLOBAL]
+    mov [r8+ctx], lt1b
+    add     r0d, lt0d
 %if %2
     %define ctx 5
 %else
-    movzx  r11d, byte [coeff_abs_levelgt1_ctx+r2 GLOBAL]
-    %define ctx r11
+    movzx  lctxd, byte [coeff_abs_levelgt1_ctx+r2 GLOBAL]
+    %define ctx lctx
 %endif
 ; if( coeff_abs < 15 )
     cmp     r1d, 15
     jge .%1_escape
     shl     r1d, 7
 ; x264_cabac_transition_unary[coeff_abs-1][cb->state[ctx_level+ctx]]
-    movzx   r9d, byte [r8+ctx]
-    add     r9d, r1d
-    movzx  r10d, byte [cabac_transition_unary-128+r9 GLOBAL]
+    movzx   lt0d, byte [r8+ctx]
+    add     lt0d, r1d
+    movzx   lt1d, byte [cabac_transition_unary-128+lt0 GLOBAL]
 ; x264_cabac_size_unary[coeff_abs-1][cb->state[ctx_level+ctx]]
-    movzx   r9d, word [cabac_size_unary-256+r9*2 GLOBAL]
-    mov [r8+ctx], r10b
-    add     r0d, r9d
+    movzx   lt0d, word [cabac_size_unary-256+lt0*2 GLOBAL]
+    mov [r8+ctx], lt1b
+    add     r0d, lt0d
     jmp .%1_gt1_end
 
 .%1_escape:
 ; x264_cabac_transition_unary[14][cb->state[ctx_level+ctx]]
-    movzx   r9d, byte [r8+ctx]
-    movzx  r10d, byte [cabac_transition_unary+128*14+r9 GLOBAL]
+    movzx   lt0d, byte [r8+ctx]
+    movzx   lt1d, byte [cabac_transition_unary+128*14+lt0 GLOBAL]
 ; x264_cabac_size_unary[14][cb->state[ctx_level+ctx]]
-    movzx   r9d, word [cabac_size_unary+256*14+r9*2 GLOBAL]
-    add     r0d, r9d
-    mov [r8+ctx], r10b
+    movzx   lt0d, word [cabac_size_unary+256*14+lt0*2 GLOBAL]
+    add     r0d, lt0d
+    mov [r8+ctx], lt1b
     sub     r1d, 14
 %if cpuflag(lzcnt)
-    lzcnt   r9d, r1d
-    xor     r9d, 0x1f
+    lzcnt   lt0d, r1d
+    xor     lt0d, 0x1f
 %else
-    bsr     r9d, r1d
+    bsr     lt0d, r1d
 %endif
 ; bs_size_ue_big(coeff_abs-15)<<8
-    shl     r9d, 9
+    shl     lt0d, 9
 ; (ilog2(coeff_abs-14)+1) << 8
-    lea     r0d, [r0+r9+256]
+    lea     r0d, [r0+lt0+256]
 .%1_gt1_end:
 %if %2
     mov     r2d, 4
@@ -409,92 +423,84 @@ CABAC bmi2
 ;                                                   int ctx_block_cat, x264_cabac_t *cb );
 ;-----------------------------------------------------------------------------
 
-;%1 = 8x8 mode
-%macro CABAC_RESIDUAL_RD 2
-%if %1
-    %define func cabac_block_residual_8x8_rd_internal
-    %define maxcoeffs 64
-    %define dct rsp
-%else
-    %define func cabac_block_residual_rd_internal
-    %define maxcoeffs 16
-    %define dct r4
-%endif
-
+; 4x4 blocks: a leaf. last comes from the nonzero mask of the abs() copy.
+%macro CABAC_RESIDUAL_RD_4x4 0
+    %assign rd4_stack (17*SIZEOF_DCTCOEF+15) & ~15 ; the aligned block, one coefficient further down
 %ifdef PIC
-    cglobal func, 4,13,6,-maxcoeffs*SIZEOF_DCTCOEF
-    lea     r12, [$$]
-    %define GLOBAL +r12-$$
+    cglobal cabac_block_residual_rd_internal, 4,12,6,-rd4_stack
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
 %else
-    cglobal func, 4,12,6,-maxcoeffs*SIZEOF_DCTCOEF
+    cglobal cabac_block_residual_rd_internal, 4,11,6,-rd4_stack
     %define GLOBAL
 %endif
-
-    shl     r1d, 4                                            ; MB_INTERLACED*16
-%if %1
-    lea      r4, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]     ; r12 = sig offset 8x8
-%endif
-    add     r1d, r2d
-    movzx   r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
-    movzx   r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
-    movzx   r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
-
-; abs() all the coefficients; copy them to the stack to avoid
-; changing the originals.
-; overreading is okay; it's all valid aligned data anyways.
-%if %1
-    ABS_DCTCOEFS r0, 64
+    RD_TMP_REGS 9, 4, 10
+    %define dct rsp+SIZEOF_DCTCOEF
+; AC blocks start one coefficient into an aligned block of 16. abs() the
+; whole aligned block onto the stack so that l[0] lands at dct.
+    mov      r4, r0
+    and     r4d, SIZEOF_DCTCOEF
+    neg      r4
+%if HIGH_BIT_DEPTH
+    ABSD     m0, [r0+r4+0*mmsize], m4
+    ABSD     m1, [r0+r4+1*mmsize], m5
+    ABSD     m2, [r0+r4+2*mmsize], m4
+    ABSD     m3, [r0+r4+3*mmsize], m5
+    movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
+    movu [rsp+r4+SIZEOF_DCTCOEF+1*mmsize], m1
+    movu [rsp+r4+SIZEOF_DCTCOEF+2*mmsize], m2
+    movu [rsp+r4+SIZEOF_DCTCOEF+3*mmsize], m3
+    packssdw m0, m1
+    packssdw m2, m3
+    packsswb m0, m2
 %else
-    mov      r4, r0                                           ; r4 = dct
-    and      r4, ~SIZEOF_DCTCOEF                              ; handle AC coefficient case
-    ABS_DCTCOEFS r4, 16
-    xor      r4, r0                                           ; calculate our new dct pointer
-    add      r4, rsp                                          ; restore AC coefficient offset
+    ABSW     m0, [r0+r4+0*mmsize], m2
+    ABSW     m1, [r0+r4+1*mmsize], m2
+    movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
+    movu [rsp+r4+SIZEOF_DCTCOEF+1*mmsize], m1
+    packsswb m0, m1
 %endif
-; for improved OOE performance, run coeff_last on the original coefficients.
-    call [%2+gprsize*r2 GLOBAL]                               ; coeff_last[ctx_block_cat]( dct )
-; we know on 64-bit that the SSE2 versions of this function only
-; overwrite r0, r1, and rax (r6). last64 overwrites r2 too, but we
-; don't need r2 in 8x8 mode.
-    mov     r0d, [r3+cb.bits_encoded]                         ; r0 = cabac.f8_bits_encoded
-; pre-add some values to simplify addressing
-    add      r3, cb.state
-    add      r5, r3
-    add      r7, r3
-    add      r8, r3                                           ; precalculate cabac state pointers
+    pxor     m1, m1
+    pcmpeqb  m0, m1
+    pmovmskb r9d, m0
+    not      r9d
+    and      r9d, [rd_nzmask_4x4+r2*8 GLOBAL]                 ; lanes of the block, bit 0 = aligned block start
+%if cpuflag(lzcnt)
+    lzcnt    r6d, r9d
+    xor      r6d, 31
+%else
+    bsr      r6d, r9d
+%endif
+    sub      r6d, [rd_nzmask_4x4+r2*8+4 GLOBAL]               ; r6 = last
+    shl      r1d, 4                                           ; MB_INTERLACED*16
+    add      r1d, r2d
+    movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx    r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+    mov      r0d, [r3+cb.bits_encoded]                        ; r0 = cabac.f8_bits_encoded
+    add       r3, cb.state
+    add       r5, r3
+    add       r7, r3
+    add       r8, r3                                          ; precalculate cabac state pointers
 
 ; if( last != count_cat_m1[ctx_block_cat] )
-%if %1
-    cmp     r6b, 63
-%else
-    cmp     r6b, [count_cat_m1+r2 GLOBAL]
-%endif
+    cmp      r6b, [count_cat_m1+r2 GLOBAL]
     je .skip_last_sigmap
-
-; in 8x8 mode we have to do a bit of extra calculation for ctx_sig/last,
-; so we'll use r11 for this.
-%if %1
-    %define siglast_ctx r11
-%else
-    %define siglast_ctx r6
-%endif
 
 ; x264_cabac_encode_decision( cb, ctx_sig + last, 1 )
 ; x264_cabac_encode_decision( cb, ctx_last + last, 1 )
-    SIG_OFFSET %1
-    movzx   r1d, byte [r5+siglast_ctx]
+    movzx   r1d, byte [r5+r6]
     movzx   r9d, byte [cabac_transition+1+r1*2 GLOBAL]
     xor     r1d, 1
     movzx   r1d, word [cabac_entropy+r1*2 GLOBAL]
-    mov [r5+siglast_ctx], r9b
+    mov [r5+r6], r9b
     add     r0d, r1d
 
-    LAST_OFFSET %1
-    movzx   r1d, byte [r7+siglast_ctx]
+    movzx   r1d, byte [r7+r6]
     movzx   r9d, byte [cabac_transition+1+r1*2 GLOBAL]
     xor     r1d, 1
     movzx   r1d, word [cabac_entropy+r1*2 GLOBAL]
-    mov [r7+siglast_ctx], r9b
+    mov [r7+r6], r9b
     add     r0d, r1d
 .skip_last_sigmap:
     LOAD_DCTCOEF r1d
@@ -505,14 +511,113 @@ CABAC bmi2
 .coeff_loop:
     LOAD_DCTCOEF r1d
 ; if( l[i] )
-    SIG_OFFSET %1
-    movzx   r9d, byte [r5+siglast_ctx]
+    movzx   r9d, byte [r5+r6]
+    test    r1d, r1d
+    jnz .coeff_nonzero
+; x264_cabac_encode_decision( cb, ctx_sig + i, 0 )
+    movzx   r4d, byte [cabac_transition+r9*2 GLOBAL]
+    movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
+    mov [r5+r6], r4b
+    add     r0d, r9d
+    dec     r6d
+    jge .coeff_loop
+    jmp .end
+.coeff_nonzero:
+; x264_cabac_encode_decision( cb, ctx_sig + i, 1 )
+    movzx   r4d, byte [cabac_transition+r9*2+1 GLOBAL]
+    xor     r9d, 1
+    movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
+    mov [r5+r6], r4b
+    add     r0d, r9d
+; x264_cabac_encode_decision( cb, ctx_last + i, 0 );
+    movzx   r9d, byte [r7+r6]
+    movzx   r4d, byte [cabac_transition+r9*2 GLOBAL]
+    movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
+    mov [r7+r6], r4b
+    add     r0d, r9d
+    COEFF_ABS_LEVEL_GT1 coeff, 0
+    dec     r6d
+    jge .coeff_loop
+.end:
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+%endmacro
+
+;%1 = coeff_last table
+%macro CABAC_RESIDUAL_RD_8x8 1
+    %define dct rsp
+%ifdef PIC
+    cglobal cabac_block_residual_8x8_rd_internal, 4,13,6,-64*SIZEOF_DCTCOEF
+    lea     r12, [$$]
+    %define GLOBAL +r12-$$
+%else
+    cglobal cabac_block_residual_8x8_rd_internal, 4,12,6,-64*SIZEOF_DCTCOEF
+    %define GLOBAL
+%endif
+    RD_TMP_REGS 9, 10, 11
+
+    shl     r1d, 4                                            ; MB_INTERLACED*16
+    lea      r4, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]     ; r12 = sig offset 8x8
+    add     r1d, r2d
+    movzx   r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx   r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx   r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+
+; abs() all the coefficients; copy them to the stack to avoid
+; changing the originals.
+    ABS_DCTCOEFS r0, 64
+; for improved OOE performance, run coeff_last on the original coefficients.
+    call [%1+gprsize*r2 GLOBAL]                               ; coeff_last[ctx_block_cat]( dct )
+; we know on 64-bit that the SSE2 versions of this function only
+; overwrite r0, r1, and rax (r6). last64 overwrites r2 too, but we
+; don't need r2 in 8x8 mode.
+    mov     r0d, [r3+cb.bits_encoded]                         ; r0 = cabac.f8_bits_encoded
+; pre-add some values to simplify addressing
+    add      r3, cb.state
+    add      r5, r3
+    add      r7, r3
+    add      r8, r3                                           ; precalculate cabac state pointers
+
+; if( last != 63 )
+    cmp     r6b, 63
+    je .skip_last_sigmap
+
+; in 8x8 mode we have to do a bit of extra calculation for ctx_sig/last,
+; so we'll use r11 for this.
+; x264_cabac_encode_decision( cb, ctx_sig + last, 1 )
+; x264_cabac_encode_decision( cb, ctx_last + last, 1 )
+    SIG_OFFSET 1
+    movzx   r1d, byte [r5+r11]
+    movzx   r9d, byte [cabac_transition+1+r1*2 GLOBAL]
+    xor     r1d, 1
+    movzx   r1d, word [cabac_entropy+r1*2 GLOBAL]
+    mov [r5+r11], r9b
+    add     r0d, r1d
+
+    LAST_OFFSET 1
+    movzx   r1d, byte [r7+r11]
+    movzx   r9d, byte [cabac_transition+1+r1*2 GLOBAL]
+    xor     r1d, 1
+    movzx   r1d, word [cabac_entropy+r1*2 GLOBAL]
+    mov [r7+r11], r9b
+    add     r0d, r1d
+.skip_last_sigmap:
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_GT1 last, 1
+; for( int i = last-1 ; i >= 0; i-- )
+    dec     r6d
+    jl .end
+.coeff_loop:
+    LOAD_DCTCOEF r1d
+; if( l[i] )
+    SIG_OFFSET 1
+    movzx   r9d, byte [r5+r11]
     test    r1d, r1d
     jnz .coeff_nonzero
 ; x264_cabac_encode_decision( cb, ctx_sig + i, 0 )
     movzx  r10d, byte [cabac_transition+r9*2 GLOBAL]
     movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
-    mov [r5+siglast_ctx], r10b
+    mov [r5+r11], r10b
     add     r0d, r9d
     dec     r6d
     jge .coeff_loop
@@ -522,14 +627,14 @@ CABAC bmi2
     movzx  r10d, byte [cabac_transition+r9*2+1 GLOBAL]
     xor     r9d, 1
     movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
-    mov [r5+siglast_ctx], r10b
+    mov [r5+r11], r10b
     add     r0d, r9d
 ; x264_cabac_encode_decision( cb, ctx_last + i, 0 );
-    LAST_OFFSET %1
-    movzx   r9d, byte [r7+siglast_ctx]
+    LAST_OFFSET 1
+    movzx   r9d, byte [r7+r11]
     movzx  r10d, byte [cabac_transition+r9*2 GLOBAL]
     movzx   r9d, word [cabac_entropy+r9*2 GLOBAL]
-    mov [r7+siglast_ctx], r10b
+    mov [r7+r11], r10b
     add     r0d, r9d
     COEFF_ABS_LEVEL_GT1 coeff, 0
     dec     r6d
@@ -541,25 +646,19 @@ CABAC bmi2
 
 %if ARCH_X86_64
 INIT_XMM sse2
-CABAC_RESIDUAL_RD 0, coeff_last_sse2
-CABAC_RESIDUAL_RD 1, coeff_last_sse2
+CABAC_RESIDUAL_RD_4x4
+CABAC_RESIDUAL_RD_8x8 coeff_last_sse2
 INIT_XMM sse2,lzcnt
-CABAC_RESIDUAL_RD 0, coeff_last_sse2_lzcnt
-CABAC_RESIDUAL_RD 1, coeff_last_sse2_lzcnt
+CABAC_RESIDUAL_RD_4x4
+CABAC_RESIDUAL_RD_8x8 coeff_last_sse2_lzcnt
 INIT_XMM ssse3
-CABAC_RESIDUAL_RD 0, coeff_last_sse2
-CABAC_RESIDUAL_RD 1, coeff_last_sse2
+CABAC_RESIDUAL_RD_4x4
+CABAC_RESIDUAL_RD_8x8 coeff_last_sse2
 INIT_XMM ssse3,lzcnt
-CABAC_RESIDUAL_RD 0, coeff_last_sse2_lzcnt
-CABAC_RESIDUAL_RD 1, coeff_last_sse2_lzcnt
-%if HIGH_BIT_DEPTH
+CABAC_RESIDUAL_RD_4x4
+CABAC_RESIDUAL_RD_8x8 coeff_last_sse2_lzcnt
 INIT_ZMM avx512
-%else
-INIT_YMM avx512
-%endif
-CABAC_RESIDUAL_RD 0, coeff_last_avx512
-INIT_ZMM avx512
-CABAC_RESIDUAL_RD 1, coeff_last_avx512
+CABAC_RESIDUAL_RD_8x8 coeff_last_avx512
 %endif
 
 ;-----------------------------------------------------------------------------
