@@ -539,6 +539,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
     }
     if( cpu&X264_CPU_AVX2 )
     {
+        dctf->sub4x4_dct      = x264_sub4x4_dct_avx2;
         dctf->sub8x8_dct      = x264_sub8x8_dct_avx2;
         dctf->sub16x16_dct    = x264_sub16x16_dct_avx2;
     }

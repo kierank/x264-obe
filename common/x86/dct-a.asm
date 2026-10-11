@@ -46,6 +46,7 @@ cavlc_shuf_avx512: dd 0x00018820, 0x000398a4, 0x0005a928, 0x0007b9ac ; bits 0-4:
                    dd 0x0009ca30, 0x000bdab4, 0x000deb38, 0x000ffbbc ; bits 5-9:   interleave2
                    dd 0x00010c01, 0x00031c85, 0x00052d09, 0x00073d8d ; bits 10-14: interleave3
                    dd 0x00094e11, 0x000b5e95, 0x000d6f19, 0x000f7f9d ; bits 15-19: interleave4
+sub4x4_hbd_shift:  dd 0, 0, 0, 0, 1, 1, 1, 1
 %else
 dct_avx512:        dd 0x10000000, 0x00021104, 0x3206314c, 0x60042048 ; bits    0-4:   dct8x8_fenc    bits    5-9:   dct8x8_fdec
                    dd 0x98008a10, 0x20029b14, 0xba06bb5c, 0x4004aa58 ; bits    10-13: dct16x16_fenc  bits    14-18: dct16x16_fdec
@@ -274,6 +275,55 @@ cglobal sub4x4_dct, 3,3
     mova  [r0+24], m2
     mova  [r0+48], m4 ; d03 - 2*d12
     mova  [r0+56], m5
+    RET
+
+;-----------------------------------------------------------------------------
+; void sub4x4_dct( dctcoef dct[16], pixel *pix1, pixel *pix2 ), AVX2
+; Vertical pass in words, then the columns are paired as [s03|d03] and [s12|d12]
+; so that the horizontal pass writes two output rows per ymm, in dwords.
+; Two 32 byte stores, so quant's 32 byte loads can forward from them.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal sub4x4_dct, 3,3,6
+    movq       xm0, [r1+0*FENC_STRIDEB]
+    movq       xm4, [r2+0*FDEC_STRIDEB]
+    movq       xm1, [r1+1*FENC_STRIDEB]
+    movq       xm5, [r2+1*FDEC_STRIDEB]
+    psubw      xm0, xm4
+    movq       xm2, [r1+2*FENC_STRIDEB]
+    movq       xm4, [r2+2*FDEC_STRIDEB]
+    psubw      xm1, xm5
+    movq       xm3, [r1+3*FENC_STRIDEB]
+    movq       xm5, [r2+3*FDEC_STRIDEB]
+    psubw      xm2, xm4
+    psubw      xm3, xm5
+    paddw      xm4, xm0, xm3      ; s03
+    psubw      xm0, xm3           ; d03
+    paddw      xm5, xm1, xm2      ; s12
+    psubw      xm1, xm2           ; d12
+    paddw      xm2, xm4, xm5      ; f0 = s03 + s12
+    psubw      xm4, xm5           ; f2 = s03 - s12
+    paddw      xm3, xm0, xm0
+    paddw      xm3, xm1           ; f1 = 2*d03 + d12
+    psubw      xm0, xm1
+    psubw      xm0, xm1           ; f3 = d03 - 2*d12
+    punpcklwd  xm2, xm3
+    punpcklwd  xm4, xm0
+    punpckhdq  xm1, xm2, xm4      ; c2 | c3
+    punpckldq  xm2, xm4           ; c0 | c1
+    pshufd     xm1, xm1, q1032    ; c3 | c2
+    paddw      xm0, xm2, xm1      ; s03 | s12
+    psubw      xm2, xm1           ; d03 | d12
+    punpcklqdq xm1, xm0, xm2      ; s03 | d03
+    punpckhqdq xm0, xm2           ; s12 | d12
+    pmovsxwd    m1, xm1
+    pmovsxwd    m0, xm0
+    vpsllvd     m2, m1, [sub4x4_hbd_shift]
+    vpsllvd     m3, m0, [sub4x4_hbd_shift]
+    paddd       m2, m0            ; s03 + s12   | 2*d03 + d12
+    psubd       m1, m3            ; s03 - s12   | d03 - 2*d12
+    movu   [r0+ 0], m2
+    movu   [r0+32], m1
     RET
 
 ;-----------------------------------------------------------------------------
