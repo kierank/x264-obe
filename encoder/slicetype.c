@@ -59,6 +59,15 @@ static void x264_lowres_context_init( x264_t *h, x264_mb_analysis_t *a )
         h->mb.i_me_method = X264_ME_DIA;
         h->mb.i_subpel_refine = 2;
     }
+    /* bd-alg ALG_LOWRESME, a mask: 1 DIA and subme 2 when subme <= 2,
+     * 2 subme 3 when subme > 2; x264_lowres8_init() does the same */
+    if( (h->exp.i_alg_lowresme & 1) && h->param.analyse.i_subpel_refine <= 2 )
+    {
+        h->mb.i_me_method = X264_ME_DIA;
+        h->mb.i_subpel_refine = 2;
+    }
+    else if( (h->exp.i_alg_lowresme & 2) && h->param.analyse.i_subpel_refine > 2 )
+        h->mb.i_subpel_refine = 3;
     h->mb.b_chroma_me = 0;
 }
 

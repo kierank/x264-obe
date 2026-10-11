@@ -745,6 +745,7 @@ struct x264_t
         int     i_alg_mvpred;
         int     i_alg_mixref;
         int     i_alg_hpel8;
+        int     i_alg_lowresme;
     } exp;
 
     /* Buffers that are allocated per-thread even in sliced threads. */

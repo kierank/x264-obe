@@ -1510,9 +1510,13 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * mixed-ref 8x8 search, as the 16x16 search has */
         e = getenv( "X264_EXP_ALG_HPEL8" );
         h->exp.i_alg_hpel8 = e ? atoi( e ) : 0;
-        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d\n",
-                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8 );
+        /* X264_EXP_ALG_LOWRESME, a mask: 1 lowres ME with DIA and subme 2 instead
+         * of HEX and subme 4 when subme <= 2, 2 lowres subme 3 when subme > 2 */
+        e = getenv( "X264_EXP_ALG_LOWRESME" );
+        h->exp.i_alg_lowresme = e ? atoi( e ) : 0;
+        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d\n",
+                      h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme );
     }
 
     /* Init frames. */

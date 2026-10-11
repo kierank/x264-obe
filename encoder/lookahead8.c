@@ -84,6 +84,18 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         h->mb.i_me_method = X264_ME_DIA;
         h->mb.i_subpel_refine = 2;
     }
+    {
+        /* bd-alg X264_EXP_ALG_LOWRESME, as in x264_lowres_context_init() */
+        const char *e = getenv( "X264_EXP_ALG_LOWRESME" );
+        h->exp.i_alg_lowresme = e ? atoi( e ) : 0;
+        if( (h->exp.i_alg_lowresme & 1) && param->analyse.i_subpel_refine <= 2 )
+        {
+            h->mb.i_me_method = X264_ME_DIA;
+            h->mb.i_subpel_refine = 2;
+        }
+        else if( (h->exp.i_alg_lowresme & 2) && param->analyse.i_subpel_refine > 2 )
+            h->mb.i_subpel_refine = 3;
+    }
     h->mb.b_chroma_me = 0;
 
     float *logs = x264_analyse_prepare_costs( h );
