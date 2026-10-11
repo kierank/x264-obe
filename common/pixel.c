@@ -1409,9 +1409,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT5( sad_x4, _avx2 );
         INIT4( satd, _avx2 );
         INIT2( hadamard_ac, _avx2 );
+        pixf->hadamard_ac[PIXEL_8x8] = x264_pixel_hadamard_ac_8x8_avx2;
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx2;
         INIT_ADS( _avx2 );
         pixf->sa8d[PIXEL_8x8]  = x264_pixel_sa8d_8x8_avx2;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx2;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx2;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx2;
         pixf->var2[PIXEL_8x16]  = x264_pixel_var2_8x16_avx2;
         pixf->var2[PIXEL_8x8]   = x264_pixel_var2_8x8_avx2;
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx2;
@@ -1420,6 +1425,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
 #if ARCH_X86_64
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
+        pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
