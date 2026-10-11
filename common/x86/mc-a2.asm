@@ -813,6 +813,7 @@ INIT_XMM avx
 HPEL_C
 HPEL_V 0
 HPEL_H
+%endif ; !ARCH_X86_64
 INIT_YMM avx2
 HPEL_V 8
 HPEL_C
@@ -852,7 +853,6 @@ cglobal hpel_filter_h, 3,3,8
     add       r2, mmsize
     jl .loop
     RET
-%endif
 
 %if ARCH_X86_64
 %macro DO_FILT_V 5
