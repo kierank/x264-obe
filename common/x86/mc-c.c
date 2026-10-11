@@ -129,6 +129,7 @@
 #define x264_mc_weight_w8_ssse3 x264_template(mc_weight_w8_ssse3)
 #define x264_memcpy_aligned_mmx x264_template(memcpy_aligned_mmx)
 #define x264_memcpy_aligned_sse x264_template(memcpy_aligned_sse)
+#define x264_memcpy_aligned_avx x264_template(memcpy_aligned_avx)
 #define x264_memcpy_aligned_avx512 x264_template(memcpy_aligned_avx512)
 #define x264_memzero_aligned_avx x264_template(memzero_aligned_avx)
 #define x264_memzero_aligned_avx512 x264_template(memzero_aligned_avx512)
@@ -382,6 +383,7 @@ void x264_load_deinterleave_chroma_fdec_avx2( uint16_t *dst, uint16_t *src, intp
 void x264_load_deinterleave_chroma_fdec_avx512( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
 void *x264_memcpy_aligned_mmx( void *dst, const void *src, size_t n );
 void *x264_memcpy_aligned_sse( void *dst, const void *src, size_t n );
+void *x264_memcpy_aligned_avx( void *dst, const void *src, size_t n );
 void *x264_memcpy_aligned_avx512( void *dst, const void *src, size_t n );
 void x264_memzero_aligned_mmx( void *dst, size_t n );
 void x264_memzero_aligned_sse( void *dst, size_t n );
@@ -1223,6 +1225,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 
     if( !(cpu&X264_CPU_AVX2) )
         return;
+    pf->memcpy_aligned = x264_memcpy_aligned_avx;
     pf->get_ref = get_ref_avx2;
 
     if( cpu&X264_CPU_FMA3 )
