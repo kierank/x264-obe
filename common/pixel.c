@@ -1089,6 +1089,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x3_8x16c = x264_intra_satd_x3_8x16c_avx2;
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
+        pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
+        pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
