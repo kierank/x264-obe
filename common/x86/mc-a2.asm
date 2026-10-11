@@ -487,8 +487,6 @@ cglobal hpel_filter_h, 3,3,11
 
 INIT_YMM avx2
 HPEL_FILTER_HBD
-INIT_ZMM avx512
-HPEL_FILTER_HBD
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0

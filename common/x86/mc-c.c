@@ -40,13 +40,9 @@
 #define x264_frame_init_lowres_core_xop x264_template(frame_init_lowres_core_xop)
 #define x264_hpel_filter_avx x264_template(hpel_filter_avx)
 #define x264_hpel_filter_avx2 x264_template(hpel_filter_avx2)
-#define x264_hpel_filter_avx512 x264_template(hpel_filter_avx512)
 #define x264_hpel_filter_c_avx2 x264_template(hpel_filter_c_avx2)
-#define x264_hpel_filter_c_avx512 x264_template(hpel_filter_c_avx512)
 #define x264_hpel_filter_h_avx2 x264_template(hpel_filter_h_avx2)
-#define x264_hpel_filter_h_avx512 x264_template(hpel_filter_h_avx512)
 #define x264_hpel_filter_v_avx2 x264_template(hpel_filter_v_avx2)
-#define x264_hpel_filter_v_avx512 x264_template(hpel_filter_v_avx512)
 #define x264_hpel_filter_c_mmx2 x264_template(hpel_filter_c_mmx2)
 #define x264_hpel_filter_c_sse2 x264_template(hpel_filter_c_sse2)
 #define x264_hpel_filter_h_mmx2 x264_template(hpel_filter_h_mmx2)
@@ -724,7 +720,6 @@ HPEL(8, mmx2, mmx2, mmx2, mmx2)
 #if HIGH_BIT_DEPTH
 HPEL(16, sse2, sse2, sse2, sse2)
 HPEL(32, avx2, avx2, avx2, avx2)
-HPEL(64, avx512, avx512, avx512, avx512)
 #else // !HIGH_BIT_DEPTH
 HPEL(16, sse2_amd, mmx2, mmx2, sse2)
 #if ARCH_X86_64
@@ -1066,7 +1061,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512 )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
-        pf->hpel_filter = x264_hpel_filter_avx512;
         if( !(cpu&X264_CPU_STACK_MOD4) )
             pf->mc_chroma = x264_mc_chroma_avx512;
     }
