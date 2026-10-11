@@ -179,38 +179,47 @@
 #define x264_pixel_avg2_w8_mmx2 x264_template(pixel_avg2_w8_mmx2)
 #define x264_pixel_avg2_w8_sse2 x264_template(pixel_avg2_w8_sse2)
 #define x264_pixel_avg_16x16_avx2 x264_template(pixel_avg_16x16_avx2)
+#define x264_pixel_avg_16x16_avx512 x264_template(pixel_avg_16x16_avx512)
 #define x264_pixel_avg_16x16_mmx2 x264_template(pixel_avg_16x16_mmx2)
 #define x264_pixel_avg_16x16_sse2 x264_template(pixel_avg_16x16_sse2)
 #define x264_pixel_avg_16x16_ssse3 x264_template(pixel_avg_16x16_ssse3)
 #define x264_pixel_avg_16x8_avx2 x264_template(pixel_avg_16x8_avx2)
+#define x264_pixel_avg_16x8_avx512 x264_template(pixel_avg_16x8_avx512)
 #define x264_pixel_avg_16x8_mmx2 x264_template(pixel_avg_16x8_mmx2)
 #define x264_pixel_avg_16x8_sse2 x264_template(pixel_avg_16x8_sse2)
 #define x264_pixel_avg_16x8_ssse3 x264_template(pixel_avg_16x8_ssse3)
 #define x264_pixel_avg_4x16_avx2 x264_template(pixel_avg_4x16_avx2)
+#define x264_pixel_avg_4x16_avx512 x264_template(pixel_avg_4x16_avx512)
 #define x264_pixel_avg_4x16_mmx2 x264_template(pixel_avg_4x16_mmx2)
 #define x264_pixel_avg_4x16_sse2 x264_template(pixel_avg_4x16_sse2)
 #define x264_pixel_avg_4x16_ssse3 x264_template(pixel_avg_4x16_ssse3)
 #define x264_pixel_avg_4x2_avx2 x264_template(pixel_avg_4x2_avx2)
+#define x264_pixel_avg_4x2_avx512 x264_template(pixel_avg_4x2_avx512)
 #define x264_pixel_avg_4x2_mmx2 x264_template(pixel_avg_4x2_mmx2)
 #define x264_pixel_avg_4x2_sse2 x264_template(pixel_avg_4x2_sse2)
 #define x264_pixel_avg_4x2_ssse3 x264_template(pixel_avg_4x2_ssse3)
 #define x264_pixel_avg_4x4_avx2 x264_template(pixel_avg_4x4_avx2)
+#define x264_pixel_avg_4x4_avx512 x264_template(pixel_avg_4x4_avx512)
 #define x264_pixel_avg_4x4_mmx2 x264_template(pixel_avg_4x4_mmx2)
 #define x264_pixel_avg_4x4_sse2 x264_template(pixel_avg_4x4_sse2)
 #define x264_pixel_avg_4x4_ssse3 x264_template(pixel_avg_4x4_ssse3)
 #define x264_pixel_avg_4x8_avx2 x264_template(pixel_avg_4x8_avx2)
+#define x264_pixel_avg_4x8_avx512 x264_template(pixel_avg_4x8_avx512)
 #define x264_pixel_avg_4x8_mmx2 x264_template(pixel_avg_4x8_mmx2)
 #define x264_pixel_avg_4x8_sse2 x264_template(pixel_avg_4x8_sse2)
 #define x264_pixel_avg_4x8_ssse3 x264_template(pixel_avg_4x8_ssse3)
 #define x264_pixel_avg_8x16_avx2 x264_template(pixel_avg_8x16_avx2)
+#define x264_pixel_avg_8x16_avx512 x264_template(pixel_avg_8x16_avx512)
 #define x264_pixel_avg_8x16_mmx2 x264_template(pixel_avg_8x16_mmx2)
 #define x264_pixel_avg_8x16_sse2 x264_template(pixel_avg_8x16_sse2)
 #define x264_pixel_avg_8x16_ssse3 x264_template(pixel_avg_8x16_ssse3)
 #define x264_pixel_avg_8x4_avx2 x264_template(pixel_avg_8x4_avx2)
+#define x264_pixel_avg_8x4_avx512 x264_template(pixel_avg_8x4_avx512)
 #define x264_pixel_avg_8x4_mmx2 x264_template(pixel_avg_8x4_mmx2)
 #define x264_pixel_avg_8x4_sse2 x264_template(pixel_avg_8x4_sse2)
 #define x264_pixel_avg_8x4_ssse3 x264_template(pixel_avg_8x4_ssse3)
 #define x264_pixel_avg_8x8_avx2 x264_template(pixel_avg_8x8_avx2)
+#define x264_pixel_avg_8x8_avx512 x264_template(pixel_avg_8x8_avx512)
 #define x264_pixel_avg_8x8_mmx2 x264_template(pixel_avg_8x8_mmx2)
 #define x264_pixel_avg_8x8_sse2 x264_template(pixel_avg_8x8_sse2)
 #define x264_pixel_avg_8x8_ssse3 x264_template(pixel_avg_8x8_ssse3)
@@ -241,7 +250,8 @@
     void func##_mmx2 args;\
     void func##_sse2 args;\
     void func##_ssse3 args;\
-    void func##_avx2 args;
+    void func##_avx2 args;\
+    void func##_avx512 args;
 
 DECL_SUF( x264_pixel_avg_16x16, ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
 DECL_SUF( x264_pixel_avg_16x8,  ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
@@ -1178,6 +1188,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init8h = x264_integral_init8h_avx2;
         pf->integral_init4h = x264_integral_init4h_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
+    }
+
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx512;
+        pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx512;
     }
 #endif // HIGH_BIT_DEPTH
 
