@@ -750,6 +750,15 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_h_chroma_422_intra = x264_deblock_h_chroma_422_intra_avx2;
 #endif
         }
+#if !HIGH_BIT_DEPTH && ARCH_X86_64
+        if( cpu&X264_CPU_AVX512 )
+        {
+            pf->deblock_luma[1] = x264_deblock_v_luma_avx512;
+            pf->deblock_luma[0] = x264_deblock_h_luma_avx512;
+            pf->deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx512;
+            pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx512;
+        }
+#endif
     }
 #endif
 

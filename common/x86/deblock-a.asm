@@ -1391,11 +1391,12 @@ cglobal deblock_v_luma, 5,5,10
     mova    [r4+2*r1], m1
     mova    [r0], m2
     RET
+%endmacro
 
 ;-----------------------------------------------------------------------------
 ; void deblock_h_luma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
 ;-----------------------------------------------------------------------------
-
+%macro DEBLOCK_H_LUMA 0
 %if cpuflag(avx)
 INIT_XMM cpuname
 %else
@@ -1469,8 +1470,87 @@ cglobal deblock_h_luma, 5,9,0,0x60+16*WIN64
 
 INIT_XMM sse2
 DEBLOCK_LUMA
+DEBLOCK_H_LUMA
 INIT_XMM avx
 DEBLOCK_LUMA
+DEBLOCK_H_LUMA
+
+; out: %1 = |%2-%3|, clobbers %4
+%macro ABSDIFFB 4
+    psubusb  %1, %2, %3
+    psubusb  %4, %3, %2
+    por      %1, %4
+%endmacro
+
+; AVX-512: ymm rows pair the p side (low lane) with the q side (high lane),
+; so the symmetric parts of the filter run once for both sides; the masks
+; are compares into k registers.
+INIT_YMM avx512
+cglobal deblock_v_luma, 5,5,13
+    vpbroadcastd  m8, [r4]             ; tc0
+    lea           r4, [r1*3]
+    neg           r4
+    add           r4, r0               ; pix-3*stride
+    mova         xm0, [r4+r1]          ; p1
+    mova         xm1, [r4+2*r1]        ; p0
+    mova         xm2, [r0]             ; q0
+    mova         xm3, [r0+r1]          ; q1
+    mova         xm9, [r4]             ; p2
+    vinserti128   m9, m9, [r0+2*r1], 1 ; p2 q2
+    vinserti128   m0, m0, xm3, 1       ; p1 q1
+    vinserti128   m1, m1, xm2, 1       ; p0 q0
+    vinserti128   m2, m2, xm1, 1       ; q0 p0
+    vpbroadcastb  m4, r2d              ; alpha
+    vpbroadcastb  m5, r3d              ; beta
+    pshufb        m8, [pb_unpackbd1]
+    pxor         xm11, xm11
+    vpcmpb        k1, m8, m11, 5       ; tc0 >= 0
+    ABSDIFFB      m6, m1, m2, m7
+    vpcmpub       k1 {k1}, m6, m4, 1   ; |p0-q0| < alpha
+    ABSDIFFB      m6, m0, m1, m7
+    vpcmpub       k1 {k1}, m6, m5, 1   ; |p1-p0| < beta, |q1-q0| < beta
+    kshiftrd      k2, k1, 16
+    kandd         k1, k1, k2
+    kunpckwd      k1, k1, k1           ; filter mask in both lanes
+    ABSDIFFB      m6, m9, m1, m7
+    vpcmpub       k2 {k1}, m6, m5, 1   ; ap, aq
+    pavgb         m6, m1, m2           ; (p0+q0+1)>>1
+    pavgb         m7, m9, m6
+    vpternlogd    m9, m6, [pb_1], 0x28 ; (p2^avg)&1
+    psubusb       m7, m9               ; (p2+((p0+q0+1)>>1))>>1
+    psubusb       m9, m0, m8           ; p1-tc0
+    paddusb      m10, m0, m8           ; p1+tc0
+    pmaxub        m7, m9
+    kshiftrd      k3, k2, 16
+    vpaddb       xm8 {k2}, xm8, [pb_1] ; tc++
+    vpaddb       xm8 {k3}, xm8, [pb_1]
+
+    pxor         xm6, xm1, xm2         ; p0^q0
+    pand         xm6, [pb_1]           ; (p0^q0)&1
+    vpternlogd   xm3, xm3, xm3, 0x55   ; ~q1
+    pavgb        xm3, xm0              ; (p1 - q1 + 256)>>1
+    pavgb        xm3, [pb_3]           ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    vpternlogd  xm12, xm1, xm1, 0x55   ; ~p0
+    pavgb       xm12, xm2              ; (q0 - p0 + 256)>>1
+    pavgb        xm3, xm6
+    paddusb      xm3, xm12             ; d+128+33
+    mova         xm6, [pb_a1]
+    psubusb      xm6, xm3
+    psubusb      xm3, [pb_a1]
+    vpminub      xm6 {k1}{z}, xm6, xm8
+    vpminub      xm3 {k1}{z}, xm3, xm8
+    psubusb      xm1, xm6
+    psubusb      xm2, xm3
+    paddusb      xm1, xm3
+    paddusb      xm2, xm6
+    vpminub       m0 {k2}, m7, m10     ; p1' q1'
+    mova    [r4+r1], xm0
+    vextracti128 [r0+r1], m0, 1
+    mova  [r4+2*r1], xm1
+    mova        [r0], xm2
+    RET
+
+DEBLOCK_H_LUMA
 
 %else
 
@@ -1801,39 +1881,7 @@ INIT_XMM cpuname
 INIT_MMX cpuname
 %endif
 %if ARCH_X86_64
-;-----------------------------------------------------------------------------
-; void deblock_h_luma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
-;-----------------------------------------------------------------------------
-cglobal deblock_h_luma_intra, 4,9,0,0x80
-    lea    r8, [r1*3]
-    lea    r6, [r0-4]
-    lea    r5, [r0-4+r8]
-%if WIN64
-    %define pix_tmp rsp+0x20 ; shadow space
-%else
-    %define pix_tmp rsp
-%endif
-
-    ; transpose 8x16 -> tmp space
-    TRANSPOSE8x8_MEM  PASS8ROWS(r6, r5, r1, r8), PASS8ROWS(pix_tmp, pix_tmp+0x30, 0x10, 0x30)
-    lea    r6, [r6+r1*8]
-    lea    r5, [r5+r1*8]
-    TRANSPOSE8x8_MEM  PASS8ROWS(r6, r5, r1, r8), PASS8ROWS(pix_tmp+8, pix_tmp+0x38, 0x10, 0x30)
-
-    mov    r7, r1
-    lea    r0, [pix_tmp+0x40]
-    mov    r1, 0x10
-    call   deblock_v_luma_intra
-
-    ; transpose 16x6 -> original space (but we can't write only 6 pixels, so really 16x8)
-    lea    r5, [r6+r8]
-    TRANSPOSE8x8_MEM  PASS8ROWS(pix_tmp+8, pix_tmp+0x38, 0x10, 0x30), PASS8ROWS(r6, r5, r7, r8)
-    shl    r7, 3
-    sub    r6, r7
-    sub    r5, r7
-    shr    r7, 3
-    TRANSPOSE8x8_MEM  PASS8ROWS(pix_tmp, pix_tmp+0x30, 0x10, 0x30), PASS8ROWS(r6, r5, r7, r8)
-    RET
+    DEBLOCK_H_LUMA_INTRA_64
 %else
 cglobal deblock_h_luma_intra, 2,4,8,0x80
     lea    r3,  [r1*3]
@@ -1873,6 +1921,42 @@ cglobal deblock_h_luma_intra, 2,4,8,0x80
 %endif ; ARCH_X86_64
 %endmacro ; DEBLOCK_LUMA_INTRA
 
+%macro DEBLOCK_H_LUMA_INTRA_64 0
+;-----------------------------------------------------------------------------
+; void deblock_h_luma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_luma_intra, 4,9,0,0x80
+    lea    r8, [r1*3]
+    lea    r6, [r0-4]
+    lea    r5, [r0-4+r8]
+%if WIN64
+    %define pix_tmp rsp+0x20 ; shadow space
+%else
+    %define pix_tmp rsp
+%endif
+
+    ; transpose 8x16 -> tmp space
+    TRANSPOSE8x8_MEM  PASS8ROWS(r6, r5, r1, r8), PASS8ROWS(pix_tmp, pix_tmp+0x30, 0x10, 0x30)
+    lea    r6, [r6+r1*8]
+    lea    r5, [r5+r1*8]
+    TRANSPOSE8x8_MEM  PASS8ROWS(r6, r5, r1, r8), PASS8ROWS(pix_tmp+8, pix_tmp+0x38, 0x10, 0x30)
+
+    mov    r7, r1
+    lea    r0, [pix_tmp+0x40]
+    mov    r1, 0x10
+    call   deblock_v_luma_intra
+
+    ; transpose 16x6 -> original space (but we can't write only 6 pixels, so really 16x8)
+    lea    r5, [r6+r8]
+    TRANSPOSE8x8_MEM  PASS8ROWS(pix_tmp+8, pix_tmp+0x38, 0x10, 0x30), PASS8ROWS(r6, r5, r7, r8)
+    shl    r7, 3
+    sub    r6, r7
+    sub    r5, r7
+    shr    r7, 3
+    TRANSPOSE8x8_MEM  PASS8ROWS(pix_tmp, pix_tmp+0x30, 0x10, 0x30), PASS8ROWS(r6, r5, r7, r8)
+    RET
+%endmacro
+
 INIT_XMM sse2
 DEBLOCK_LUMA_INTRA v
 INIT_XMM avx
@@ -1880,6 +1964,94 @@ DEBLOCK_LUMA_INTRA v
 %if ARCH_X86_64 == 0
 INIT_MMX mmx2
 DEBLOCK_LUMA_INTRA v8
+%else
+; AVX-512: p side in the low lane, q side in the high lane, as deblock_v_luma
+INIT_YMM avx512
+cglobal deblock_v_luma_intra, 4,6,14
+    lea           r4, [r1*4]
+    lea           r5, [r1*3]
+    neg           r4
+    add           r4, r0               ; pix-4*stride
+    mova         xm0, [r4+2*r1]        ; p1
+    mova         xm1, [r4+r5]          ; p0
+    mova         xm2, [r0]             ; q0
+    mova         xm3, [r0+r1]          ; q1
+    mova         xm9, [r4+r1]          ; p2
+    vinserti128   m9, m9, [r0+2*r1], 1 ; p2 q2
+    vinserti128   m0, m0, xm3, 1       ; p1 q1
+    vinserti128   m3, m3, xm0, 1       ; q1 p1
+    vinserti128   m1, m1, xm2, 1       ; p0 q0
+    vinserti128   m2, m2, xm1, 1       ; q0 p0
+    vpbroadcastb  m4, r2d              ; alpha
+    vpbroadcastb  m5, r3d              ; beta
+    shr          r2d, 2
+    add          r2d, 2
+    vpbroadcastb  m6, r2d              ; (alpha>>2)+2
+    pxor        xm11, xm11
+    ABSDIFFB      m7, m1, m2, m8       ; |p0-q0|
+    vpcmpub       k1, m7, m4, 1
+    ABSDIFFB      m8, m0, m1, m12
+    vpcmpub       k1 {k1}, m8, m5, 1   ; |p1-p0| < beta, |q1-q0| < beta
+    kshiftrd      k2, k1, 16
+    kandd         k1, k1, k2
+    kunpckwd      k1, k1, k1           ; filter mask in both lanes
+    vpcmpub       k2 {k1}, m7, m6, 1   ; |p0-q0| < (alpha>>2)+2
+    ABSDIFFB      m8, m9, m1, m12
+    vpcmpub       k2 {k2}, m8, m5, 1   ; and |p2-p0| < beta, |q2-q0| < beta
+
+    pavgb         m4, m9, m0
+    pavgb         m5, m1, m2
+    pavgb         m4, m5               ; ((p2+p1+1)/2 + (p0+q0+1)/2 + 1)/2
+    paddb         m6, m9, m0
+    paddb         m8, m1, m2
+    paddb         m8, m6               ; p2+p1+p0+q0
+    psrlw         m6, m8, 1
+    pavgb         m6, m11
+    vpternlogd    m6, m4, [pb_1], 0x28
+    psubb         m4, m6               ; p1' = (p2+p1+p0+q0+2)/4
+
+    pavgb        m12, m9, m3
+    psubb         m6, m9, m3
+    paddb         m7, m8, m8
+    psubb         m7, m6               ; p2+2*p1+2*p0+2*q0+q1
+    pand          m6, [pb_1]
+    psubb        m12, m6
+    pavgb        m12, m0
+    pavgb        m12, m5               ; (((p2+q1)/2 + p1+1)/2 + (p0+q0+1)/2 + 1)/2
+    psrlw         m7, 2
+    pavgb         m7, m11
+    vpternlogd    m7, m12, [pb_1], 0x28
+
+    pxor          m6, m1, m3
+    pavgb        m13, m1, m3
+    pand          m6, [pb_1]
+    psubb        m13, m6
+    vpavgb        m1 {k1}, m13, m0     ; p0' = (2*p1+p0+q1+2)/4
+    vpsubb        m1 {k2}, m12, m7     ; p0' = (p2+2*p1+2*p0+2*q0+q1+4)/8
+    vmovdqu8      m0 {k2}, m4
+
+    mova        xm10, [r4]             ; p3
+    vinserti128  m10, m10, [r0+r5], 1  ; p3 q3
+    paddb         m6, m10, m9
+    pavgb        m10, m9
+    pavgb        m10, m4               ; (p3+p2+1)/2 + (p2+p1+p0+q0+2)/4
+    paddb         m6, m6
+    paddb         m6, m8               ; 2*p3+3*p2+p1+p0+q0
+    psrlw         m6, 2
+    pavgb         m6, m11
+    vpternlogd    m6, m10, [pb_1], 0x28
+    vpsubb        m9 {k2}, m10, m6     ; p2' = (2*p3+3*p2+p1+p0+q0+4)/8
+
+    mova    [r4+r1], xm9
+    vextracti128 [r0+2*r1], m9, 1
+    mova  [r4+2*r1], xm0
+    vextracti128 [r0+r1], m0, 1
+    mova     [r4+r5], xm1
+    vextracti128 [r0], m1, 1
+    RET
+
+INIT_XMM avx512
+DEBLOCK_H_LUMA_INTRA_64
 %endif
 %endif ; !HIGH_BIT_DEPTH
 

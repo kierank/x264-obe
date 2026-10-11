@@ -38,6 +38,10 @@ void x264_deblock_h_luma_avx2( pixel *pix, intptr_t stride, int alpha, int beta,
 void x264_deblock_h_luma_sse2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_h_luma_avx x264_template(deblock_h_luma_avx)
 void x264_deblock_h_luma_avx ( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
+#define x264_deblock_v_luma_avx512 x264_template(deblock_v_luma_avx512)
+void x264_deblock_v_luma_avx512( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
+#define x264_deblock_h_luma_avx512 x264_template(deblock_h_luma_avx512)
+void x264_deblock_h_luma_avx512( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_v_chroma_sse2 x264_template(deblock_v_chroma_sse2)
 void x264_deblock_v_chroma_sse2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_v_chroma_avx x264_template(deblock_v_chroma_avx)
@@ -70,6 +74,10 @@ void x264_deblock_v_luma_intra_avx ( pixel *pix, intptr_t stride, int alpha, int
 void x264_deblock_h_luma_intra_sse2( pixel *pix, intptr_t stride, int alpha, int beta );
 #define x264_deblock_h_luma_intra_avx x264_template(deblock_h_luma_intra_avx)
 void x264_deblock_h_luma_intra_avx ( pixel *pix, intptr_t stride, int alpha, int beta );
+#define x264_deblock_v_luma_intra_avx512 x264_template(deblock_v_luma_intra_avx512)
+void x264_deblock_v_luma_intra_avx512( uint8_t *pix, intptr_t stride, int alpha, int beta );
+#define x264_deblock_h_luma_intra_avx512 x264_template(deblock_h_luma_intra_avx512)
+void x264_deblock_h_luma_intra_avx512( uint8_t *pix, intptr_t stride, int alpha, int beta );
 #define x264_deblock_v_chroma_intra_sse2 x264_template(deblock_v_chroma_intra_sse2)
 void x264_deblock_v_chroma_intra_sse2( pixel *pix, intptr_t stride, int alpha, int beta );
 #define x264_deblock_v_chroma_intra_avx x264_template(deblock_v_chroma_intra_avx)
