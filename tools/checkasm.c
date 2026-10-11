@@ -396,50 +396,69 @@ static int check_pixel( int cpu_ref, int cpu_new )
                                              {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8} };
         x264_mc_functions_t mc_c;
         x264_mc_init( 0, &mc_c, 0 );
-        set_func_name( "satd_mcc" );
         used_asm = 1;
+#if !HIGH_BIT_DEPTH
+        ALIGNED_ARRAY_32( int16_t, mcc_pre,[512] );
+#endif
         for( int s = 0; s < 5; s++ )
         {
             int w = mcc_sizes[s][0], hgt = mcc_sizes[s][1], size = mcc_sizes[s][2];
             ALIGNED_16( pixel dstu[16*16] );
             ALIGNED_16( pixel dstv[16*16] );
-            /* fenc is interleaved uv with the stride of src; the reference satd takes it deinterleaved */
+            /* the reference satd takes fenc deinterleaved */
             ALIGNED_16( pixel fenc_c[16*FENC_STRIDE] );
             int res_c[2], res_asm[2];
-            for( int j = 0; j < 64 && ok; j++ )
-            {
-                /* every fraction pair, varied integer parts */
-                int dx = (j&7) | ((j*5)&24), dy = (j>>3) | ((j*3+s)&24);
-                pixel *src = pbuf2 + 64 + 2*j;
-                pixel *fenc = pbuf1 + 2*(j&7);
-                mc_c.mc_chroma( dstu, dstv, 16, src, 64, dx, dy, w, hgt );
-                mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, 64, hgt );
-                res_c[0] = pixel_c.satd[size]( fenc_c,   FENC_STRIDE, dstu, 16 );
-                res_c[1] = pixel_c.satd[size]( fenc_c+8, FENC_STRIDE, dstv, 16 );
-                res_asm[0] = res_asm[1] = -1;
-                call_a( pixel_asm.satd_mcc, fenc, res_asm, src, (intptr_t)64, dx, dy, w, hgt );
-                if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
+            /* k = 0: random, every fraction pair, varied integer parts;
+             * k = 1: dx = dy = 0, pbuf3 = ~pbuf4: every difference is +-PIXEL_MAX */
+            for( int k = 0; k < 2; k++ )
+                for( int j = 0; j < (k ? 0xc00 : 64) && ok; j += k ? 256 : 1 )
                 {
-                    ok = 0;
-                    fprintf( stderr, "satd_mcc %dx%d dx %d dy %d: %d,%d != %d,%d [FAILED]\n",
-                             w, hgt, dx, dy, res_c[0], res_c[1], res_asm[0], res_asm[1] );
+                    int dx = k ? 0 : (j&7) | ((j*5)&24);
+                    int dy = k ? 0 : (j>>3) | ((j*3+s)&24);
+                    pixel *src = k ? pbuf4+j : pbuf2 + 64 + 2*j;
+                    pixel *fenc = k ? pbuf3+j : pbuf1 + 2*(j&7);
+                    intptr_t stride = k ? 16 : 64;
+                    x264_mcc_fenc_t *fenc_mcc;
+                    mc_c.mc_chroma( dstu, dstv, 16, src, stride, dx, dy, w, hgt );
+#if HIGH_BIT_DEPTH
+                    /* fenc is interleaved uv with the stride of src */
+                    int x = 0, y = 0;
+                    mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, stride, hgt );
+                    fenc_mcc = fenc;
+#else
+                    /* satd_mcc_fenc_pre of an mb's chroma fenc 8 or 16 high, the block at x, y */
+                    int ch = k || hgt == 16 || (j&1) ? 16 : 8;
+                    int x = w == 4 ? 4*((j>>1)&1) : 0;
+                    int y = hgt * ((j>>2) % (ch/hgt));
+                    mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, stride, ch );
+                    set_func_name( "satd_mcc_fenc_pre" );
+                    call_a( pixel_asm.satd_mcc_fenc_pre, mcc_pre, fenc_c, ch );
+                    for( int yy = 0; yy < ch && ok; yy++ )
+                        for( int xx = 0; xx < 16; xx++ )
+                        {
+                            int e = 64*fenc_c[yy*FENC_STRIDE + (xx&1)*8 + (xx>>1)] - 32;
+                            if( mcc_pre[16*yy+xx] != e ||
+                                mcc_pre[256 + 128*(xx>>3) + 64*(yy>>3) + 16*(yy&3) + 8*((yy>>2)&1) + (xx&7)] != e )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "satd_mcc_fenc_pre height %d: row %d word %d [FAILED]\n", ch, yy, xx );
+                                break;
+                            }
+                        }
+                    fenc_mcc = mcc_pre + (w == 8 ? 16*y : 256 + 32*x + 8*y);
+#endif
+                    res_c[0] = pixel_c.satd[size]( fenc_c+x+y*FENC_STRIDE,   FENC_STRIDE, dstu, 16 );
+                    res_c[1] = pixel_c.satd[size]( fenc_c+8+x+y*FENC_STRIDE, FENC_STRIDE, dstv, 16 );
+                    res_asm[0] = res_asm[1] = -1;
+                    set_func_name( "satd_mcc" );
+                    call_a( pixel_asm.satd_mcc, fenc_mcc, res_asm, src, stride, dx, dy, w, hgt );
+                    if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "satd_mcc %dx%d at %d,%d dx %d dy %d%s: %d,%d != %d,%d [FAILED]\n",
+                                 w, hgt, x, y, dx, dy, k ? " overflow" : "", res_c[0], res_c[1], res_asm[0], res_asm[1] );
+                    }
                 }
-            }
-            for( int j = 0; j < 0xc00 && ok; j += 256 )
-            {
-                /* pbuf3 = ~pbuf4: every difference is +-PIXEL_MAX */
-                mc_c.mc_chroma( dstu, dstv, 16, pbuf4+j, 16, 0, 0, w, hgt );
-                mc_c.load_deinterleave_chroma_fenc( fenc_c, pbuf3+j, 16, hgt );
-                res_c[0] = pixel_c.satd[size]( fenc_c,   FENC_STRIDE, dstu, 16 );
-                res_c[1] = pixel_c.satd[size]( fenc_c+8, FENC_STRIDE, dstv, 16 );
-                pixel_asm.satd_mcc( pbuf3+j, res_asm, pbuf4+j, 16, 0, 0, w, hgt );
-                if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
-                {
-                    ok = 0;
-                    fprintf( stderr, "satd_mcc %dx%d: overflow %d,%d != %d,%d\n",
-                             w, hgt, res_c[0], res_c[1], res_asm[0], res_asm[1] );
-                }
-            }
         }
     }
     report( "pixel satd_mcc :" );
