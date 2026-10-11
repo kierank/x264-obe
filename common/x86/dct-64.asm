@@ -188,6 +188,38 @@ SUB8x8_DCT8
 INIT_XMM avx
 SUB8x8_DCT8
 
+;-----------------------------------------------------------------------------
+; void sub8x8_dct8( int32_t dct[64], uint16_t *pix1, uint16_t *pix2 ), AVX2
+; Word pass on xmm rows (upper lanes zero), then one 8x8 word transpose and
+; sign extension, so the dword pass works on whole 8 coefficient rows and
+; each row is one 32 byte store, which quant_8x8's 32 byte loads forward.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal sub8x8_dct8, 3,3,10
+    TAIL_CALL .skip_prologue, 0
+global current_function %+ .skip_prologue
+.skip_prologue:
+%assign dct8_hbd_i 0
+%rep 8
+    movu      xm %+ dct8_hbd_i, [r1+dct8_hbd_i*FENC_STRIDEB]
+    psubw     xm %+ dct8_hbd_i, [r2+dct8_hbd_i*FDEC_STRIDEB]
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
+%assign dct8_hbd_i 0
+%rep 8
+    pmovsxwd   m %+ dct8_hbd_i, xm %+ dct8_hbd_i
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    DCT8_1D d, 0,1,2,3,4,5,6,7, 8,9
+%assign dct8_hbd_i 0
+%rep 8
+    mova [r0+dct8_hbd_i*32], m %+ dct8_hbd_i
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    ret
+
 %macro ADD8x8_IDCT8 0
 cglobal add8x8_idct8, 2,2,16
     add r1, 128
@@ -245,6 +277,55 @@ INIT_XMM sse2
 ADD8x8_IDCT8
 INIT_XMM avx
 ADD8x8_IDCT8
+
+;-----------------------------------------------------------------------------
+; void add8x8_idct8( uint16_t *p_dst, int32_t dct[64] ), AVX2
+; Each ymm holds a whole coefficient row, so both passes run once on 8
+; registers, with one 8x8 dword transpose (in-lane 4x4 + vperm2i128) between.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal add8x8_idct8, 2,2,11
+    add r1, 128
+    TAIL_CALL .skip_prologue, 0
+global current_function %+ .skip_prologue
+.skip_prologue:
+%assign idct8_hbd_i 0
+%rep 8
+    mova       m %+ idct8_hbd_i, [r1-128+idct8_hbd_i*32]
+%assign idct8_hbd_i idct8_hbd_i+1
+%endrep
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE4x4D 0,1,2,3,8
+    TRANSPOSE4x4D 4,5,6,7,8
+%assign idct8_hbd_i 0
+%rep 4
+    %assign idct8_hbd_j idct8_hbd_i+4
+    vperm2i128 m8, m %+ idct8_hbd_i, m %+ idct8_hbd_j, 0x20
+    vperm2i128 m %+ idct8_hbd_j, m %+ idct8_hbd_i, m %+ idct8_hbd_j, 0x31
+    SWAP idct8_hbd_i, 8
+%assign idct8_hbd_i idct8_hbd_i+1
+%endrep
+    vpbroadcastd m8, [pd_32]
+    paddd      m0, m8
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    pxor       m8, m8
+    mova       m9, [pw_pixel_max]
+%assign idct8_hbd_i 0
+%rep 4
+    %assign idct8_hbd_j idct8_hbd_i+1
+    psrad      m %+ idct8_hbd_i, 6
+    psrad      m %+ idct8_hbd_j, 6
+    packssdw   m %+ idct8_hbd_i, m %+ idct8_hbd_j
+    vpermq     m %+ idct8_hbd_i, m %+ idct8_hbd_i, q3120
+    mova      xm10, [r0+idct8_hbd_i*FDEC_STRIDEB]
+    vinserti128 m10, m10, [r0+idct8_hbd_j*FDEC_STRIDEB], 1
+    paddw      m %+ idct8_hbd_i, m10
+    CLIPW      m %+ idct8_hbd_i, m8, m9
+    mova       [r0+idct8_hbd_i*FDEC_STRIDEB], xm %+ idct8_hbd_i
+    vextracti128 [r0+idct8_hbd_j*FDEC_STRIDEB], m %+ idct8_hbd_i, 1
+%assign idct8_hbd_i idct8_hbd_i+2
+%endrep
+    ret
 
 %else ; !HIGH_BIT_DEPTH
 
@@ -329,23 +410,45 @@ cglobal sub16x16_dct8, 3,3,10
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
     TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
-    mova    [r0-0x80+0x00], xm0
-    vextracti128 [r0+0x00], m0, 1
-    mova    [r0-0x80+0x10], xm1
-    vextracti128 [r0+0x10], m1, 1
-    mova    [r0-0x80+0x20], xm2
-    vextracti128 [r0+0x20], m2, 1
-    mova    [r0-0x80+0x30], xm3
-    vextracti128 [r0+0x30], m3, 1
-    mova    [r0-0x80+0x40], xm4
-    vextracti128 [r0+0x40], m4, 1
-    mova    [r0-0x80+0x50], xm5
-    vextracti128 [r0+0x50], m5, 1
-    mova    [r0-0x80+0x60], xm6
-    vextracti128 [r0+0x60], m6, 1
-    mova    [r0-0x80+0x70], xm7
-    vextracti128 [r0+0x70], m7, 1
+    ; one 32 byte store per row pair, so quant_8x8's 32 byte loads can forward
+%assign dct8_i 0
+%rep 4
+    %assign dct8_j dct8_i+1
+    vperm2i128   m8, m %+ dct8_i, m %+ dct8_j, 0x20
+    vperm2i128   m %+ dct8_i, m %+ dct8_i, m %+ dct8_j, 0x31
+    mova [r0-0x80+dct8_i*0x10], m8
+    mova [r0+dct8_i*0x10], m %+ dct8_i
+%assign dct8_i dct8_i+2
+%endrep
     ret
+
+;-----------------------------------------------------------------------------
+; void sub8x8_dct8( int16_t dct[8][8], uint8_t *pix1, uint8_t *pix2 ), AVX2
+; As the AVX version, but rows are joined in pairs for 32 byte stores, so
+; quant_8x8's 32 byte loads can forward from them.
+;-----------------------------------------------------------------------------
+cglobal sub8x8_dct8, 3,3,11
+    add       r2, 4*FDEC_STRIDE
+    mova     xm10, [hsub_mul]
+%assign dct8_i 0
+%rep 8
+    movq     xm8, [r2+(dct8_i-4)*FDEC_STRIDE]
+    movq     xm %+ dct8_i, [r1+dct8_i*FENC_STRIDE]
+    punpcklbw xm %+ dct8_i, xm8
+    pmaddubsw xm %+ dct8_i, xm10
+%assign dct8_i dct8_i+1
+%endrep
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+%assign dct8_i 0
+%rep 4
+    %assign dct8_j dct8_i+1
+    vinserti128  m %+ dct8_i, m %+ dct8_i, xm %+ dct8_j, 1
+    mova [r0+dct8_i*0x10], m %+ dct8_i
+%assign dct8_i dct8_i+2
+%endrep
+    RET
 
 ;-----------------------------------------------------------------------------
 ; void add8x8_idct8( uint8_t *p_dst, int16_t dct[8][8] )

@@ -136,11 +136,14 @@ cextern pd_ffff
     paddw  %4, %6
 %endmacro
 
+; (a-b)/4-b+c spans [-33150, 33150] for 8-bit pixels: saturate. It only
+; saturates when c >= 21038 or c <= -4719, where the exact result clips to 255
+; or 0 either way, so the output equals the 6-tap filter for all inputs.
 %macro FILT_H 3
     psubw  %1, %2  ; a-b
     psraw  %1, 2   ; (a-b)/4
     psubw  %1, %2  ; (a-b)/4-b
-    paddw  %1, %3  ; (a-b)/4-b+c
+    paddsw %1, %3  ; (a-b)/4-b+c
     psraw  %1, 2   ; ((a-b)/4-b+c)/4
     paddw  %1, %3  ; ((a-b)/4-b+c)/4+c = (a-5*b+20*c)/16
 %endmacro
@@ -152,8 +155,8 @@ cextern pd_ffff
     psraw  %4, 2
     psubw  %1, %2
     psubw  %4, %5
-    paddw  %1, %3
-    paddw  %4, %6
+    paddsw %1, %3
+    paddsw %4, %6
     psraw  %1, 2
     psraw  %4, 2
     paddw  %1, %3
@@ -426,18 +429,12 @@ cglobal hpel_filter_c, 3,3,12
     kmovd        k1, r3d
 %endif
 .loop:
-    movu         m0, [r1+r2-4]
-    movu         m1, [r1+r2-2]
-    movu         m2, [r1+r2+0]
-    movu         m3, [r1+r2+2]
-    movu         m4, [r1+r2+4]
-    movu         m5, [r1+r2+6]
-    pmaddwd      m0, m6
-    pmaddwd      m1, m6
-    pmaddwd      m2, m7
-    pmaddwd      m3, m7
-    pmaddwd      m4, m8
-    pmaddwd      m5, m8
+    pmaddwd      m0, m6, [r1+r2-4]
+    pmaddwd      m1, m6, [r1+r2-2]
+    pmaddwd      m2, m7, [r1+r2+0]
+    pmaddwd      m3, m7, [r1+r2+2]
+    pmaddwd      m4, m8, [r1+r2+4]
+    pmaddwd      m5, m8, [r1+r2+6]
     paddd        m0, m9
     paddd        m1, m9
     paddd        m2, m4
@@ -1857,6 +1854,32 @@ INIT_MMX mmx
 MEMCPY
 INIT_XMM sse
 MEMCPY
+
+INIT_YMM avx
+cglobal memcpy_aligned, 3,3
+    test r2d, 16
+    jz .copy32
+    mova xm0, [r1+r2-16]
+    mova [r0+r2-16], xm0
+    sub  r2d, 16
+.copy32:
+    test r2d, 32
+    jz .copy64start
+    mova  m0, [r1+r2-32]
+    mova [r0+r2-32], m0
+    sub  r2d, 32
+.copy64start:
+    test r2d, r2d
+    jz .ret
+.copy64:
+    mova  m0, [r1+r2-32]
+    mova  m1, [r1+r2-64]
+    mova [r0+r2-32], m0
+    mova [r0+r2-64], m1
+    sub  r2d, 64
+    jg .copy64
+.ret:
+    RET
 
 INIT_ZMM avx512
 cglobal memcpy_aligned, 3,4

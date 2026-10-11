@@ -32,6 +32,7 @@ SECTION .text
 cextern pw_1
 cextern pw_4
 cextern pw_8
+cextern pd_ffff
 
 ;=============================================================================
 ; SAD MMX
@@ -202,9 +203,49 @@ SAD 16, 16
 SAD 16,  8
 SAD  8, 16
 SAD  8,  8
+
+; 16 wide, AVX2: one row per ymm, 4 rows per pointer step, rows summed in
+; pairs before the accumulator (at most 16*1023 a lane)
+%macro SAD_HBD_16 1 ; height
+cglobal pixel_sad_16x%1, 4,6,5
+    lea            r4, [r1+2*r1]
+    lea            r5, [r3+2*r3]
+%assign sad_hbd_k 0
+%rep %1/4
+    movu           m1, [r2]
+    movu           m2, [r2+2*r3]
+    movu           m3, [r2+4*r3]
+    movu           m4, [r2+2*r5]
+    psubw          m1, [r0]
+    psubw          m2, [r0+2*r1]
+    psubw          m3, [r0+4*r1]
+    psubw          m4, [r0+2*r4]
+    pabsw          m1, m1
+    pabsw          m2, m2
+    pabsw          m3, m3
+    pabsw          m4, m4
+    paddw          m1, m2
+    paddw          m3, m4
+%if sad_hbd_k == 0
+    paddw          m0, m1, m3
+%else
+    paddw          m1, m3
+    paddw          m0, m1
+%endif
+%if sad_hbd_k < %1-4
+    lea            r0, [r0+8*r1]
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_hbd_k sad_hbd_k+4
+%endrep
+    HADDW          m0, m1
+    movd          eax, xm0
+    RET
+%endmacro
+
 INIT_YMM avx2
-SAD 16, 16
-SAD 16,  8
+SAD_HBD_16 16
+SAD_HBD_16  8
 
 ;=============================================================================
 ; SAD x3/x4
@@ -519,70 +560,49 @@ SAD_X 4, 16,  8
 SAD_X 4,  8, 16
 SAD_X 4,  8,  8
 SAD_X 4,  8,  4
-INIT_YMM avx2
-%define XMM_REGS 7
-SAD_X 3, 16, 16
-SAD_X 3, 16,  8
-%define XMM_REGS 9
-SAD_X 4, 16, 16
-SAD_X 4, 16,  8
 
-; xmm %1..%4 of 4 dword sums each -> %1 = { sum %1, sum %2, sum %3, sum %4 }; %5, %6 tmp
-%macro SAD_HBD_HSUM4 6
-    punpckldq     xm%5, xm%1, xm%2
-    punpckhdq     xm%1, xm%2
-    paddd         xm%1, xm%5
-    punpckldq     xm%6, xm%3, xm%4
-    punpckhdq     xm%3, xm%4
-    paddd         xm%3, xm%6
-    punpcklqdq    xm%5, xm%1, xm%3
-    punpckhqdq    xm%1, xm%3
-    paddd         xm%1, xm%5
-%endmacro
-
-; %1 = dst/acc (number), %2 = fenc reg, %3 = tmp (number), %4 = first?
-%macro SAD_HBD_ACC 4
-%if %4
-    psubw          m%1, m%3, %2
-    pabsw          m%1, m%1
+;=============================================================================
+; 10-bit SAD 8x8 and 8x16, AVX2: one 8 pixel row per xmm, the other source as
+; the memory operand, so no row waits on a vinserti128 and the end has no lane
+; fold. Even rows accumulate in xm0, odd rows in xm1 (at most 8*1023 a word).
+;=============================================================================
+; row %1 of a 4 row group, bytes: sad_off = %1*%2 (%3 = 3*%2)
+%macro SAD_HBD_XOFF 3 ; j, stride, 3*stride
+%if %1 == 0
+    %xdefine sad_off 0
+%elif %1 == 1
+    %xdefine sad_off %2
+%elif %1 == 2
+    %xdefine sad_off 2*%2
 %else
-    psubw          m%3, %2
-    pabsw          m%3, m%3
-    paddw          m%1, m%3
+    %xdefine sad_off %3
 %endif
 %endmacro
 
-;=============================================================================
-; 10-bit SAD 8x8 and 8x16, AVX2: two 8 pixel rows per ymm.
-;=============================================================================
-%macro SAD_HBD_ROW2 3 ; dst (number), base, stride
-    movu          xm%1, [%2]
-    vinserti128    m%1, m%1, [%2+%3], 1
-%endmacro
-
-; ymm of word sums -> xmm of 4 dword sums
-%macro SAD_HBD_FOLDY 2 ; reg (number), tmp (number)
-    vextracti128   xm%2, m%1, 1
-    paddw          xm%1, xm%2
-    pmaddwd        xm%1, [pw_1]
-%endmacro
-
-%macro SAD_HBD_Y 1 ; height
-cglobal pixel_sad_8x%1, 4,4,3
-    FIX_STRIDES   r1, r3
-%assign sad_hbd_n 0
-%rep %1/2
-    SAD_HBD_ROW2   1, r0, r1
-    SAD_HBD_ROW2   2, r2, r3
-    SAD_HBD_ACC    0, m1, 2, sad_hbd_n==0
-%if sad_hbd_n < %1/2-1
-    lea           r0, [r0+r1*2]
-    lea           r2, [r2+r3*2]
+; |xm2| into the row %1 accumulator (xm0 even, xm1 odd)
+%macro SAD_HBD_XACC 1 ; row
+%if %1 == 0
+    pabsw         xm0, xm2
+%elif %1 == 1
+    pabsw         xm1, xm2
+%else
+    pabsw         xm2, xm2
+%if %1 & 1
+    paddw         xm1, xm2
+%else
+    paddw         xm0, xm2
 %endif
-%assign sad_hbd_n sad_hbd_n+1
-%endrep
-    SAD_HBD_FOLDY  0, 1
+%endif
+%endmacro
+
+; xm0 + xm1 (words, at most 16*1023) -> eax: two word folds, then the words
+; of each dword added as dwords (pand pd_ffff + psrld 16), then a dword fold
+%macro SAD_HBD_XEND 0
+    paddw         xm0, xm1
     punpckhqdq    xm1, xm0, xm0
+    paddw         xm0, xm1
+    psrld         xm1, xm0, 16
+    pand          xm0, [pd_ffff]
     paddd         xm0, xm1
     pshuflw       xm1, xm0, q1032
     paddd         xm0, xm1
@@ -590,122 +610,340 @@ cglobal pixel_sad_8x%1, 4,4,3
     RET
 %endmacro
 
-%macro SAD_X3_HBD_Y 1
-cglobal pixel_sad_x3_8x%1, 6,6,8
-    FIX_STRIDES   r4
-%assign sad_hbd_n 0
-%rep %1/2
-    SAD_HBD_ROW2   3, r0, FENC_STRIDEB
-    SAD_HBD_ROW2   4, r1, r4
-    SAD_HBD_ROW2   5, r2, r4
-    SAD_HBD_ROW2   6, r3, r4
-    SAD_HBD_ACC    0, m3, 4, sad_hbd_n==0
-    SAD_HBD_ACC    1, m3, 5, sad_hbd_n==0
-    SAD_HBD_ACC    2, m3, 6, sad_hbd_n==0
-%if sad_hbd_n < %1/2-1
-    add           r0, 2*FENC_STRIDEB
-    lea           r1, [r1+r4*2]
-    lea           r2, [r2+r4*2]
-    lea           r3, [r3+r4*2]
+%macro SAD_HBD_Y 1 ; height
+cglobal pixel_sad_8x%1, 4,6,3
+    FIX_STRIDES   r1, r3
+    lea           r4, [r1+2*r1]
+    lea           r5, [r3+2*r3]
+%assign sad_hbd_k 0
+%rep %1
+    SAD_HBD_XOFF  sad_hbd_k&3, r3, r5
+    movu          xm2, [r2+sad_off]
+    SAD_HBD_XOFF  sad_hbd_k&3, r1, r4
+    psubw         xm2, [r0+sad_off]
+    SAD_HBD_XACC  sad_hbd_k
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %1-1
+    lea           r0, [r0+4*r1]
+    lea           r2, [r2+4*r3]
 %endif
-%assign sad_hbd_n sad_hbd_n+1
+%assign sad_hbd_k sad_hbd_k+1
 %endrep
-    SAD_HBD_FOLDY  0, 4
-    SAD_HBD_FOLDY  1, 5
-    SAD_HBD_FOLDY  2, 6
-    SAD_HBD_HSUM4  0, 1, 2, 2, 4, 5
-    movq     [r5+0], xm0
-    pextrd   [r5+8], xm0, 2
+    SAD_HBD_XEND
+%endmacro
+
+; row j of a 4 row group: sad_off = j*stride in bytes, %2 = stride, %3 = 3*stride (pixels)
+%macro SAD_HBD_ROWOFF 3 ; j, stride, stride3
+%if %1 == 0
+    %xdefine sad_off 0
+%elif %1 == 1
+    %xdefine sad_off 2*%2
+%elif %1 == 2
+    %xdefine sad_off 4*%2
+%else
+    %xdefine sad_off 2*%3
+%endif
+%endmacro
+
+; m0 = { ref1 | ref2 }, m%2 = { ref3 | ref4 } (4 or 8 sums a lane; words, at most
+; 16*1023, if %1, else dwords) -> xm%3 = { sad1, sad2, sad3, sad4 },
+; xm%2 = { sad2, sad4, _, _ }, xm0 = { sad1, sad3, _, _ }
+%macro SAD_HBD_X_END 3 ; pmaddwd?, b (number), tmp (number)
+%if %1
+    pmaddwd        m0, [pw_1]
+    pmaddwd       m%2, [pw_1]
+%endif
+    punpckldq     m%3, m0, m%2
+    punpckhdq      m0, m%2
+    paddd          m0, m%3
+    punpckhqdq    m%2, m0, m0
+    paddd          m0, m%2        ; { sad1, sad3 | sad2, sad4 }
+    vextracti128 xm%2, m0, 1
+    punpckldq    xm%3, xm0, xm%2
+%endmacro
+
+%macro SAD_X3_HBD_Y 1
+cglobal pixel_sad_x3_8x%1, 6,7,6
+    lea            r6, [r4+2*r4]
+%assign sad_hbd_k 0
+%rep %1/2
+    SAD_HBD_ROWOFF sad_hbd_k&3, r4, r6
+    %xdefine sad_off0 sad_off
+    SAD_HBD_ROWOFF (sad_hbd_k+1)&3, r4, r6
+    vbroadcasti128 m2, [r0+sad_hbd_k*FENC_STRIDEB]
+    vbroadcasti128 m3, [r0+(sad_hbd_k+1)*FENC_STRIDEB]
+    movu          xm4, [r1+sad_off0]
+    vinserti128    m4, m4, [r2+sad_off0], 1
+    movu          xm5, [r1+sad_off]
+    vinserti128    m5, m5, [r2+sad_off], 1
+%if sad_hbd_k == 0
+    psubw          m0, m4, m2
+    pabsw          m0, m0
+%else
+    psubw          m4, m2
+    pabsw          m4, m4
+    paddw          m0, m4
+%endif
+    psubw          m5, m3
+    pabsw          m5, m5
+    paddw          m0, m5
+    vpblendd       m2, m2, m3, 0xf0
+    movu          xm4, [r3+sad_off0]
+    vinserti128    m4, m4, [r3+sad_off], 1
+%if sad_hbd_k == 0
+    psubw          m1, m4, m2
+    pabsw          m1, m1
+%else
+    psubw          m4, m2
+    pabsw          m4, m4
+    paddw          m1, m4
+%endif
+%if (sad_hbd_k&3) == 2 && sad_hbd_k < %1-2
+    lea            r1, [r1+8*r4]
+    lea            r2, [r2+8*r4]
+    lea            r3, [r3+8*r4]
+%endif
+%assign sad_hbd_k sad_hbd_k+2
+%endrep
+    SAD_HBD_X_END  1, 1, 2
+    paddd         xm0, xm1
+    movq      [r5+0], xm2
+    pextrd    [r5+8], xm0, 1
     RET
 %endmacro
 
 %macro SAD_X4_HBD_Y 1
-cglobal pixel_sad_x4_8x%1, 7,7,10
-    FIX_STRIDES   r5
-%assign sad_hbd_n 0
-%rep %1/2
-    SAD_HBD_ROW2   4, r0, FENC_STRIDEB
-    SAD_HBD_ROW2   5, r1, r5
-    SAD_HBD_ROW2   6, r2, r5
-    SAD_HBD_ROW2   7, r3, r5
-    SAD_HBD_ROW2   8, r4, r5
-    SAD_HBD_ACC    0, m4, 5, sad_hbd_n==0
-    SAD_HBD_ACC    1, m4, 6, sad_hbd_n==0
-    SAD_HBD_ACC    2, m4, 7, sad_hbd_n==0
-    SAD_HBD_ACC    3, m4, 8, sad_hbd_n==0
-%if sad_hbd_n < %1/2-1
-    add           r0, 2*FENC_STRIDEB
-    lea           r1, [r1+r5*2]
-    lea           r2, [r2+r5*2]
-    lea           r3, [r3+r5*2]
-    lea           r4, [r4+r5*2]
+cglobal pixel_sad_x4_8x%1, 6,7,5
+    lea            r6, [r5+2*r5]
+%assign sad_hbd_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_hbd_k&3, r5, r6
+    vbroadcasti128 m2, [r0+sad_hbd_k*FENC_STRIDEB]
+    movu          xm3, [r1+sad_off]
+    vinserti128    m3, m3, [r2+sad_off], 1
+    movu          xm4, [r3+sad_off]
+    vinserti128    m4, m4, [r4+sad_off], 1
+%if sad_hbd_k == 0
+    psubw          m0, m3, m2
+    psubw          m1, m4, m2
+    pabsw          m0, m0
+    pabsw          m1, m1
+%else
+    psubw          m3, m2
+    psubw          m4, m2
+    pabsw          m3, m3
+    pabsw          m4, m4
+    paddw          m0, m3
+    paddw          m1, m4
 %endif
-%assign sad_hbd_n sad_hbd_n+1
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %1-1
+    lea            r1, [r1+8*r5]
+    lea            r2, [r2+8*r5]
+    lea            r3, [r3+8*r5]
+    lea            r4, [r4+8*r5]
+%endif
+%assign sad_hbd_k sad_hbd_k+1
 %endrep
-    SAD_HBD_FOLDY  0, 5
-    SAD_HBD_FOLDY  1, 6
-    SAD_HBD_FOLDY  2, 7
-    SAD_HBD_FOLDY  3, 8
-    SAD_HBD_HSUM4  0, 1, 2, 3, 5, 6
-    movu        [r6], xm0
+    SAD_HBD_X_END  1, 1, 2
+    mov            r6, r6mp
+    movu         [r6], xm2
     RET
 %endmacro
 
-INIT_YMM avx2
+INIT_XMM avx2
 SAD_HBD_Y 8
 SAD_HBD_Y 16
+INIT_YMM avx2
 SAD_X3_HBD_Y 8
 SAD_X3_HBD_Y 16
 SAD_X4_HBD_Y 8
 SAD_X4_HBD_Y 16
 
+;=============================================================================
+; 10-bit sad_x3/sad_x4 16x16 and 16x8, AVX2: one row per ymm, fenc - ref with
+; the reference as the memory operand, 4 rows per pointer step.
+;=============================================================================
+; m0..m%1-1 = 16 word sums each (at most 16*1023 a lane) -> 8 dword sums each
+; folded to m0 = { sad1 | sad2 } and, for x4, m1 = { sad3 | sad4 } (4 dwords a lane)
+%macro SAD_X_HBD16_FOLD 1 ; refs
+    pmaddwd        m0, [pw_1]
+    pmaddwd        m1, [pw_1]
+    pmaddwd        m2, [pw_1]
+%if %1 == 4
+    pmaddwd        m3, [pw_1]
+%endif
+    vperm2i128     m%1, m0, m1, q0301
+    vinserti128    m0, m0, xm1, 1
+    paddd          m0, m%1
+%if %1 == 4
+    vperm2i128     m4, m2, m3, q0301
+    vinserti128    m2, m2, xm3, 1
+    paddd          m1, m2, m4
+%endif
+%endmacro
+
+%macro SAD_X3_HBD16 1 ; height
+cglobal pixel_sad_x3_16x%1, 6,7,6
+    lea            r6, [r4+2*r4]
+%assign sad_hbd_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_hbd_k&3, r4, r6
+    mova           m3, [r0+sad_hbd_k*FENC_STRIDEB]
+%if sad_hbd_k == 0
+    psubw          m0, m3, [r1]
+    psubw          m1, m3, [r2]
+    psubw          m2, m3, [r3]
+    pabsw          m0, m0
+    pabsw          m1, m1
+    pabsw          m2, m2
+%else
+    psubw          m4, m3, [r1+sad_off]
+    psubw          m5, m3, [r2+sad_off]
+    psubw          m3, [r3+sad_off]
+    pabsw          m4, m4
+    pabsw          m5, m5
+    pabsw          m3, m3
+    paddw          m0, m4
+    paddw          m1, m5
+    paddw          m2, m3
+%endif
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %1-1
+    lea            r1, [r1+8*r4]
+    lea            r2, [r2+8*r4]
+    lea            r3, [r3+8*r4]
+%endif
+%assign sad_hbd_k sad_hbd_k+1
+%endrep
+    SAD_X_HBD16_FOLD 3
+    SAD_HBD_X_END  0, 2, 3
+    paddd         xm0, xm2
+    movq      [r5+0], xm3
+    pextrd    [r5+8], xm0, 1
+    RET
+%endmacro
+
+%macro SAD_X4_HBD16 1 ; height
+cglobal pixel_sad_x4_16x%1, 6,7,8
+    lea            r6, [r5+2*r5]
+%assign sad_hbd_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_hbd_k&3, r5, r6
+    mova           m4, [r0+sad_hbd_k*FENC_STRIDEB]
+%if sad_hbd_k == 0
+    psubw          m0, m4, [r1]
+    psubw          m1, m4, [r2]
+    psubw          m2, m4, [r3]
+    psubw          m3, m4, [r4]
+    pabsw          m0, m0
+    pabsw          m1, m1
+    pabsw          m2, m2
+    pabsw          m3, m3
+%else
+    psubw          m5, m4, [r1+sad_off]
+    psubw          m6, m4, [r2+sad_off]
+    psubw          m7, m4, [r3+sad_off]
+    psubw          m4, [r4+sad_off]
+    pabsw          m5, m5
+    pabsw          m6, m6
+    pabsw          m7, m7
+    pabsw          m4, m4
+    paddw          m0, m5
+    paddw          m1, m6
+    paddw          m2, m7
+    paddw          m3, m4
+%endif
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %1-1
+    lea            r1, [r1+8*r5]
+    lea            r2, [r2+8*r5]
+    lea            r3, [r3+8*r5]
+    lea            r4, [r4+8*r5]
+%endif
+%assign sad_hbd_k sad_hbd_k+1
+%endrep
+    SAD_X_HBD16_FOLD 4
+    SAD_HBD_X_END  0, 1, 2
+    mov            r6, r6mp
+    movu         [r6], xm2
+    RET
+%endmacro
+
+SAD_X3_HBD16 16
+SAD_X3_HBD16  8
+SAD_X4_HBD16 16
+SAD_X4_HBD16  8
+
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_avg2_WxH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
 ; sad( fenc, (src1+src2+1)>>1 ), word sums (at most 16*1023 a lane)
 ;-----------------------------------------------------------------------------
-; %1 = row k: m1 = |fenc - avg| of one 16 pixel row (16 wide) or rows k, k+1 (8 wide)
-%macro SAD_AVG2_HBD_ROW 2 ; row, width
-%if %2 == 16
-    movu          m1, [r1]
-    pavgw         m1, [r2]
+; 16 wide, row k: rows k..k+3 share a pointer step (r4 = 3*stride), even rows
+; accumulate in m0 and odd rows in m2 (at most 8*1023 a lane each)
+%macro SAD_AVG2_HBD_ROW16 1 ; row
+    SAD_HBD_ROWOFF %1&3, r3, r4
+    movu          m1, [r1+sad_off]
+    pavgw         m1, [r2+sad_off]
     psubw         m1, [r0+%1*FENC_STRIDEB]
-    add           r1, r3
-    add           r2, r3
+%if %1 == 0
+    pabsw         m0, m1
+%elif %1 == 1
+    pabsw         m2, m1
 %else
-    movu         xm1, [r1]
-    vinserti128   m1, m1, [r1+r3], 1
-    movu         xm2, [r2]
-    vinserti128   m2, m2, [r2+r3], 1
-    pavgw         m1, m2
-    movu         xm2, [r0+%1*FENC_STRIDEB]
-    vinserti128   m2, m2, [r0+(%1+1)*FENC_STRIDEB], 1
-    psubw         m1, m2
-    lea           r1, [r1+2*r3]
-    lea           r2, [r2+2*r3]
-%endif
     pabsw         m1, m1
-%if %1
-    paddw         m0, m1
+%if %1 & 1
+    paddw         m2, m1
 %else
-    SWAP 0, 1
+    paddw         m0, m1
+%endif
+%endif
+%if (%1&3) == 3 && %1 < sad_avg2_h-1
+    lea           r1, [r1+8*r3]
+    lea           r2, [r2+8*r3]
+%endif
+%endmacro
+
+; 8 wide, row k: one row per xmm (as pixel_sad_8x8), src2 and fenc as memory
+; operands, even/odd row accumulators xm0/xm1
+%macro SAD_AVG2_HBD_ROW8 1 ; row
+    SAD_HBD_XOFF  %1&3, r3, r4
+    movu          xm2, [r1+sad_off]
+    pavgw         xm2, [r2+sad_off]
+    psubw         xm2, [r0+%1*FENC_STRIDEB]
+    SAD_HBD_XACC  %1
+%if (%1&3) == 3 && %1 < sad_avg2_h-1
+    lea           r1, [r1+4*r3]
+    lea           r2, [r2+4*r3]
 %endif
 %endmacro
 
 %macro SAD_AVG2_HBD 2 ; width, height
-cglobal pixel_sad_avg2_%1x%2, 4,4,3
-    FIX_STRIDES   r3
+%assign sad_avg2_h %2
+%if %1 == 16
+cglobal pixel_sad_avg2_%1x%2, 4,5,4
+    lea           r4, [r3+2*r3]
 %assign sad_avg2_k 0
-%rep %2*%1/16
-    SAD_AVG2_HBD_ROW sad_avg2_k, %1
-%assign sad_avg2_k sad_avg2_k+16*16/(%1*16)
+%rep %2
+    SAD_AVG2_HBD_ROW16 sad_avg2_k
+%assign sad_avg2_k sad_avg2_k+1
 %endrep
+    paddw         m0, m2
     HADDW         m0, m1
     movd         eax, xm0
     RET
+%else
+cglobal pixel_sad_avg2_%1x%2, 4,5,3
+    FIX_STRIDES   r3
+    lea           r4, [r3+2*r3]
+%assign sad_avg2_k 0
+%rep %2
+    SAD_AVG2_HBD_ROW8 sad_avg2_k
+%assign sad_avg2_k sad_avg2_k+1
+%endrep
+    SAD_HBD_XEND
+%endif
 %endmacro
 
 SAD_AVG2_HBD 16, 16
 SAD_AVG2_HBD 16,  8
+INIT_XMM avx2
 SAD_AVG2_HBD  8, 16
 SAD_AVG2_HBD  8,  8
 

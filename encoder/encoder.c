@@ -1299,6 +1299,17 @@ static void mbcmp_init( x264_t *h )
         memcpy( h->pixf.mbcmp_avg2, h->pixf.satd_avg2, sizeof(h->pixf.mbcmp_avg2) );
     else
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
+    h->pixf.mbcmp_mcc = satd ? h->pixf.satd_mcc : NULL;
+    if( satd )
+    {
+        memcpy( h->pixf.mbcmp_pre, h->pixf.satd_pre, sizeof(h->pixf.mbcmp_pre) );
+        memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
+    }
+    else
+    {
+        memset( h->pixf.mbcmp_pre, 0, sizeof(h->pixf.mbcmp_pre) );
+        memset( h->pixf.mbcmp_avg2_pre, 0, sizeof(h->pixf.mbcmp_avg2_pre) );
+    }
     h->pixf.intra_mbcmp_x3_16x16 = satd ? h->pixf.intra_satd_x3_16x16 : h->pixf.intra_sad_x3_16x16;
     h->pixf.intra_mbcmp_x3_8x16c = satd ? h->pixf.intra_satd_x3_8x16c : h->pixf.intra_sad_x3_8x16c;
     h->pixf.intra_mbcmp_x3_8x8c  = satd ? h->pixf.intra_satd_x3_8x8c  : h->pixf.intra_sad_x3_8x8c;
@@ -1308,6 +1319,7 @@ static void mbcmp_init( x264_t *h )
                                : satd ? h->pixf.intra_satd_x9_4x4 : h->pixf.intra_sad_x9_4x4;
     h->pixf.intra_mbcmp_x9_8x8 = h->param.b_cpu_independent || h->mb.b_lossless ? NULL
                                : satd ? h->pixf.intra_sa8d_x9_8x8 : h->pixf.intra_sad_x9_8x8;
+    h->pixf.intra_mbcmp_lowres = satd ? h->pixf.intra_satd_lowres : NULL;
     satd &= h->param.analyse.i_me_method == X264_ME_TESA;
     memcpy( h->pixf.fpelcmp, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.fpelcmp) );
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );
@@ -1462,16 +1474,17 @@ x264_t *x264_encoder_open( x264_param_t *param )
      * The chosen solution is to make MBAFF non-adaptive in this case. */
     h->mb.b_adaptive_mbaff = PARAM_INTERLACED && h->param.analyse.i_subpel_refine;
     {
-        /* bd-exp knobs: X264_EXP_VSAD_BIAS (default 512), X264_EXP_VSAD_DEPTH=1
-         * scales the bias by the pixel range, X264_EXP_VSAD_FIELDMUL (default 16)
-         * scales the field score by n/16 */
+        /* bd-exp knobs, defaults = speed-next fda06989: X264_EXP_VSAD_BIAS (default 1024),
+         * X264_EXP_VSAD_DEPTH (default 1) scales the bias by the pixel range,
+         * X264_EXP_VSAD_FIELDMUL (default 14) scales the field score by n/16.
+         * The decision before fda06989 is BIAS=512 DEPTH=0 FIELDMUL=16. */
         const char *e = getenv( "X264_EXP_VSAD_BIAS" );
-        h->mb.i_exp_vsad_bias = e ? atoi( e ) : 512;
+        h->mb.i_exp_vsad_bias = e ? atoi( e ) : 1024;
         e = getenv( "X264_EXP_VSAD_DEPTH" );
-        if( e && atoi( e ) )
+        if( e ? atoi( e ) : 1 )
             h->mb.i_exp_vsad_bias <<= BIT_DEPTH - 8;
         e = getenv( "X264_EXP_VSAD_FIELDMUL" );
-        h->mb.i_exp_vsad_fieldmul = e ? atoi( e ) : 16;
+        h->mb.i_exp_vsad_fieldmul = e ? atoi( e ) : 14;
         /* X264_EXP_VSAD_CHROMA (default 0): weight/16 of the chroma vsad added to both scores */
         e = getenv( "X264_EXP_VSAD_CHROMA" );
         h->mb.i_exp_vsad_chroma = e ? atoi( e ) : 0;
@@ -2357,8 +2370,10 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 
     /* FIXME: Prediction requires different borders for interlaced/progressive mc,
      * but the actual image data is equivalent. For now, maintain this
-     * consistency by copying deblocked pixels between planes. */
-    if( PARAM_INTERLACED && (!h->param.b_sliced_threads || pass == 1) )
+     * consistency by copying deblocked pixels between planes.
+     * plane_fld is only read through references (field mc, its borders and
+     * hpel), so frames that aren't kept as references don't need it. */
+    if( PARAM_INTERLACED && h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
         for( int p = 0; p < h->fdec->i_plane; p++ )
             for( int i = minpix_y>>(CHROMA_V_SHIFT && p); i < maxpix_y>>(CHROMA_V_SHIFT && p); i++ )
                 memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
@@ -3485,6 +3500,7 @@ int     x264_encoder_encode( x264_t *h,
         x264_nal_start( h, NAL_AUD, NAL_PRIORITY_DISPOSABLE );
         bs_write( &h->out.bs, 3, pic_type );
         bs_rbsp_trailing( &h->out.bs );
+        bs_flush( &h->out.bs );
         if( x264_nal_end( h ) )
             return -1;
         overhead += h->out.nal[h->out.i_nal-1].i_payload + NALU_OVERHEAD;
@@ -4184,14 +4200,14 @@ void    x264_encoder_close  ( x264_t *h )
         int64_t i_i8x8 = SUM3b( h->stat.i_mb_count, I_8x8 );
         int64_t i_intra = i_i8x8 + SUM3b( h->stat.i_mb_count, I_4x4 )
                                  + SUM3b( h->stat.i_mb_count, I_16x16 );
-        int64_t i_all_intra = i_intra + SUM3b( h->stat.i_mb_count, I_PCM);
+        int64_t i_all_intra = i_intra + SUM3b( h->stat.i_mb_count, I_PCM );
         int64_t i_skip = SUM3b( h->stat.i_mb_count, P_SKIP )
                        + SUM3b( h->stat.i_mb_count, B_SKIP );
         const int i_count = h->stat.i_frame_count[SLICE_TYPE_I] +
                             h->stat.i_frame_count[SLICE_TYPE_P] +
                             h->stat.i_frame_count[SLICE_TYPE_B];
         int64_t i_mb_count = (int64_t)i_count * h->mb.i_mb_count;
-        int64_t i_inter = i_mb_count - i_skip - i_intra;
+        int64_t i_inter = i_mb_count - i_skip - i_all_intra;
         const double duration = h->stat.f_frame_duration[SLICE_TYPE_I] +
                                 h->stat.f_frame_duration[SLICE_TYPE_P] +
                                 h->stat.f_frame_duration[SLICE_TYPE_B];
@@ -4206,7 +4222,7 @@ void    x264_encoder_close  ( x264_t *h )
             if( i_skip )
                 fieldstats += sprintf( fieldstats, " skip:%.1f%%", h->stat.i_mb_field[2] * 100.0 / i_skip );
             x264_log( h, X264_LOG_INFO, "field mbs: intra: %.1f%%%s\n",
-                      h->stat.i_mb_field[0] * 100.0 / i_intra, buf );
+                      h->stat.i_mb_field[0] * 100.0 / i_all_intra, buf );
         }
 
         if( h->pps->b_transform_8x8_mode )
@@ -4214,7 +4230,7 @@ void    x264_encoder_close  ( x264_t *h )
             buf[0] = 0;
             if( h->stat.i_mb_count_8x8dct[0] )
                 sprintf( buf, " inter:%.1f%%", 100. * h->stat.i_mb_count_8x8dct[1] / h->stat.i_mb_count_8x8dct[0] );
-            x264_log( h, X264_LOG_INFO, "8x8 transform intra:%.1f%%%s\n", 100. * i_i8x8 / i_intra, buf );
+            x264_log( h, X264_LOG_INFO, "8x8 transform intra:%.1f%%%s\n", 100. * i_i8x8 / X264_MAX( i_intra, 1 ), buf );
         }
 
         if( (h->param.analyse.i_direct_mv_pred == X264_DIRECT_PRED_AUTO ||

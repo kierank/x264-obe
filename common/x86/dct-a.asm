@@ -47,6 +47,9 @@ cavlc_shuf_avx512: dd 0x00018820, 0x000398a4, 0x0005a928, 0x0007b9ac ; bits 0-4:
                    dd 0x00010c01, 0x00031c85, 0x00052d09, 0x00073d8d ; bits 10-14: interleave3
                    dd 0x00094e11, 0x000b5e95, 0x000d6f19, 0x000f7f9d ; bits 15-19: interleave4
 sub4x4_hbd_shift:  dd 0, 0, 0, 0, 1, 1, 1, 1
+; zigzag_scan_4x4_frame avx2: out0 = I(in0-7) | J(in8-15), out1 = J(in0-7) | I(in8-15)
+scan4x4_frame_avx2: dd 0, 4, 1, 2, 5, 6, 3, 7 ; I
+                    dd 6, 3, 7, 0, 0, 0, 4, 1 ; J
 %else
 dct_avx512:        dd 0x10000000, 0x00021104, 0x3206314c, 0x60042048 ; bits    0-4:   dct8x8_fenc    bits    5-9:   dct8x8_fdec
                    dd 0x98008a10, 0x20029b14, 0xba06bb5c, 0x4004aa58 ; bits    10-13: dct16x16_fenc  bits    14-18: dct16x16_fdec
@@ -102,6 +105,25 @@ pb_scan8field3b: SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   1,   8,   2
 pb_scan8field4a: SHUFFLE_MASK_W    4,   5,   6,   7,  11,0x80,0x80,0x80
 pb_scan8field6 : SHUFFLE_MASK_W    4,   5,   6,   7,  11,0x80,0x80,  12
 pb_scan8field7 : SHUFFLE_MASK_W    5,   6,   7,  11,0x80,0x80,  12,  13
+
+%if HIGH_BIT_DEPTH == 0
+; zigzag_scan_8x8_field rows 1-6 then row 0; ymm loads take rows r and r+1
+align 32
+pb_scan8field_u: SHUFFLE_MASK_W 0x80,   6,   0,   1,   2,   7,0x80,0x80
+                 SHUFFLE_MASK_W    5,   0,   1,   2,   6,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    1,   2,   3,   7,0x80,0x80,0x80,0x80
+pb_scan8field_v: SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,0x80,   0,   7
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   5,   6,   0
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,   4,   5,   0,   1
+pb_scan8field_u0: SHUFFLE_MASK_W    0,   1,   2,0x80,0x80,0x80,0x80,0x80
+pb_scan8field_v0: SHUFFLE_MASK_W 0x80,0x80,0x80,   5,   6,   0,   1,   7
+%endif
 
 SECTION .text
 
@@ -244,6 +266,78 @@ cglobal idct4x4dc, 1,1
     RET
 %endif ; HIGH_BIT_DEPTH
 
+;-----------------------------------------------------------------------------
+; void dct2x4dc( dctcoef dct[8], dctcoef dct4x4[8][16] )
+;-----------------------------------------------------------------------------
+%if WIN64
+    DECLARE_REG_TMP 6 ; Avoid some REX prefixes to reduce code size
+%else
+    DECLARE_REG_TMP 2
+%endif
+
+%macro INSERT_COEFF 3 ; dst, src, imm
+    %if %3
+        %if HIGH_BIT_DEPTH
+            %if cpuflag(sse4)
+                pinsrd %1, %2, %3
+            %elif %3 == 2
+                movd       m2, %2
+            %elif %3 == 1
+                punpckldq  %1, %2
+            %else
+                punpckldq  m2, %2
+                punpcklqdq %1, m2
+            %endif
+        %else
+            %if %3 == 2
+                punpckldq  %1, %2
+            %else
+                pinsrw %1, %2, %3
+            %endif
+        %endif
+    %else
+        movd %1, %2
+    %endif
+    %if HIGH_BIT_DEPTH
+        mov %2, t0d
+    %else
+        mov %2, t0w
+    %endif
+%endmacro
+
+%macro DCT2x4DC 2
+cglobal dct2x4dc, 2,3
+    xor          t0d, t0d
+    INSERT_COEFF  m0, [r1+0*16*SIZEOF_DCTCOEF], 0
+    INSERT_COEFF  m0, [r1+1*16*SIZEOF_DCTCOEF], 2
+    add           r1, 4*16*SIZEOF_DCTCOEF
+    INSERT_COEFF  m0, [r1-2*16*SIZEOF_DCTCOEF], 1
+    INSERT_COEFF  m0, [r1-1*16*SIZEOF_DCTCOEF], 3
+    INSERT_COEFF  m1, [r1+0*16*SIZEOF_DCTCOEF], 0
+    INSERT_COEFF  m1, [r1+1*16*SIZEOF_DCTCOEF], 2
+    INSERT_COEFF  m1, [r1+2*16*SIZEOF_DCTCOEF], 1
+    INSERT_COEFF  m1, [r1+3*16*SIZEOF_DCTCOEF], 3
+    SUMSUB_BA     %1, 1, 0, 2
+    SBUTTERFLY    %2, 1, 0, 2
+    SUMSUB_BA     %1, 0, 1, 2
+    SBUTTERFLY    %2, 0, 1, 2
+    SUMSUB_BA     %1, 1, 0, 2
+    pshuf%1       m0, m0, q1032
+    mova        [r0], m1
+    mova [r0+mmsize], m0
+    RET
+%endmacro
+
+%if HIGH_BIT_DEPTH
+INIT_XMM sse2
+DCT2x4DC d, dq
+INIT_XMM avx
+DCT2x4DC d, dq
+%else
+INIT_MMX mmx2
+DCT2x4DC w, wd
+%endif
+
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
 ; void sub4x4_dct( dctcoef dct[4][4], pixel *pix1, pixel *pix2 )
@@ -345,10 +439,28 @@ cglobal sub4x4_dct, 3,3,6
 %endrep
 %endmacro
 
-; %1: dwords of one output row, lane 0 = block 0 or 1, lane 1 = block 2 or 3
-%macro SUB8x8_DCT_HBD_STORE 2 ; reg, offset
-    mova         [r0+%2], xm%1
-    vextracti128 [r0+%2+128], m%1, 1
+; %1, %2: dwords of output rows i and i+1, lane 0 = block 0 or 1, lane 1 = block 2 or 3
+; One 32 byte store per row pair, so quant's 32 byte loads can forward from it.
+%macro SUB8x8_DCT_HBD_STORE 4 ; row i, row i+1, tmp, offset
+    vperm2i128   m%3, m%1, m%2, 0x20
+    vperm2i128   m%1, m%1, m%2, 0x31
+    mova  [r0+%4    ], m%3
+    mova  [r0+%4+128], m%1
+%endmacro
+
+; %1: l = blocks 0 and 2, h = blocks 1 and 3
+%macro SUB8x8_DCT_HBD_HALF 2 ; punpck suffix, offset
+    punpck%1wd    m4, m2, m2    ; s03 + s12
+    punpck%1wd    m5, m0, m0    ; d03
+    punpck%1wd    m6, m1, m1    ; d12
+    psrad         m4, 16
+    psrad         m5, 16
+    psrad         m6, 16
+    SUMSUB2_AB    d, 5, 6, 7    ; 2*d03 + d12, d03 - 2*d12
+    SUB8x8_DCT_HBD_STORE 4, 5, 6, %2
+    punpck%1wd    m4, m3, m3    ; s03 - s12
+    psrad         m4, 16
+    SUB8x8_DCT_HBD_STORE 4, 7, 6, %2+32
 %endmacro
 
 %macro SUB8x8_DCT_HBD 0
@@ -357,20 +469,8 @@ cglobal sub4x4_dct, 3,3,6
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     SUMSUB_BADC w, 3, 0, 2, 1   ; s03, d03, s12, d12
     SUMSUB_BA   w, 2, 3, 4      ; s03 + s12, s03 - s12
-    DCT_UNPACK m2, m5, m4
-    DCT_UNPACK m3, m6, m4
-    SUB8x8_DCT_HBD_STORE 2,  0
-    SUB8x8_DCT_HBD_STORE 5, 64
-    SUB8x8_DCT_HBD_STORE 3, 32
-    SUB8x8_DCT_HBD_STORE 6, 96
-    DCT_UNPACK m0, m4, m2
-    DCT_UNPACK m1, m5, m3
-    SUMSUB2_AB  d, 0, 1, 6      ; 2*d03 + d12, d03 - 2*d12
-    SUMSUB2_AB  d, 4, 5, 7
-    SUB8x8_DCT_HBD_STORE 0, 16
-    SUB8x8_DCT_HBD_STORE 4, 80
-    SUB8x8_DCT_HBD_STORE 6, 48
-    SUB8x8_DCT_HBD_STORE 7, 112
+    SUB8x8_DCT_HBD_HALF l, 0
+    SUB8x8_DCT_HBD_HALF h, 64
 %endmacro
 
 INIT_YMM avx2
@@ -459,6 +559,83 @@ INIT_XMM sse2
 ADD4x4_IDCT
 INIT_XMM avx
 ADD4x4_IDCT
+
+;-----------------------------------------------------------------------------
+; void add8x8_idct( pixel *p_dst, dctcoef dct[4][16] ), AVX2
+; Lane 0 holds block 0 or 1 and lane 1 the block below it (2 or 3), so each
+; instruction transforms two blocks. Packed rows of the left and right blocks
+; then interleave in-lane into [row r | row r+4], 8 contiguous pixels each.
+;-----------------------------------------------------------------------------
+%macro ADD8x8_IDCT_HBD_LOAD 2 ; reg, dct offset
+    mova         xm%1, [r1+%2]
+    vinserti128   m%1, m%1, [r1+%2+128], 1
+%endmacro
+
+; %1: dct offset of the upper block, %2-%5: rows, %6-%7: tmp
+; out: m%2 = rows 0,1 and m%4 = rows 2,3 as words, lane 1 = lower block
+%macro ADD8x8_IDCT_HBD_PASS 7
+    ADD8x8_IDCT_HBD_LOAD %2, %1+ 0
+    ADD8x8_IDCT_HBD_LOAD %3, %1+16
+    ADD8x8_IDCT_HBD_LOAD %4, %1+32
+    ADD8x8_IDCT_HBD_LOAD %5, %1+48
+    IDCT4_1D d,%2,%3,%4,%5,%6,%7
+    TRANSPOSE4x4D %2,%3,%4,%5,%6
+    vpbroadcastd  m%6, [pd_32]
+    paddd         m%2, m%6
+    IDCT4_1D d,%2,%3,%4,%5,%6,%7
+    psrad         m%2, 6
+    psrad         m%3, 6
+    psrad         m%4, 6
+    psrad         m%5, 6
+    packssdw      m%2, m%3
+    packssdw      m%4, m%5
+%endmacro
+
+; %1: words of rows %3 | %3+4, %2: tmp, m5: 0, m7: pw_pixel_max
+%macro ADD8x8_IDCT_HBD_STORE 3
+    mova         xm%2, [r0+%3*FDEC_STRIDEB]
+    vinserti128   m%2, m%2, [r0+(%3+4)*FDEC_STRIDEB], 1
+    paddsw        m%1, m%2
+    CLIPW         m%1, m5, m7
+    mova         [r0+%3*FDEC_STRIDEB], xm%1
+    vextracti128 [r0+(%3+4)*FDEC_STRIDEB], m%1, 1
+%endmacro
+
+%macro ADD8x8_IDCT_HBD 0
+    ADD8x8_IDCT_HBD_PASS  0, 0, 1, 2, 3, 4, 5 ; blocks 0, 2
+    ADD8x8_IDCT_HBD_PASS 64, 4, 5, 6, 7, 1, 3 ; blocks 1, 3
+    punpcklqdq    m1, m0, m4 ; rows 0 | 4
+    punpckhqdq    m0, m4     ; rows 1 | 5
+    punpcklqdq    m3, m2, m6 ; rows 2 | 6
+    punpckhqdq    m2, m6     ; rows 3 | 7
+    pxor          m5, m5
+    mova          m7, [pw_pixel_max]
+    ADD8x8_IDCT_HBD_STORE 1, 4, 0
+    ADD8x8_IDCT_HBD_STORE 0, 6, 1
+    ADD8x8_IDCT_HBD_STORE 3, 4, 2
+    ADD8x8_IDCT_HBD_STORE 2, 6, 3
+%endmacro
+
+INIT_YMM avx2
+cglobal add8x8_idct, 2,2,8
+    ADD8x8_IDCT_HBD
+    RET
+
+cglobal add16x16_idct, 2,2,8
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*FDEC_STRIDEB-8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    RET
+.add8x8:
+    ADD8x8_IDCT_HBD
+    ret
 
 %else ; !HIGH_BIT_DEPTH
 
@@ -598,31 +775,22 @@ global current_function %+ .skip_prologue
     psubw    m%2, m%4
 %endmacro
 
-; 4x src, 1x tmp
-%macro STORE8_DCT_AVX2 5
-    SBUTTERFLY qdq, %1, %2, %5
-    SBUTTERFLY qdq, %3, %4, %5
-    mova [r0+  0], xm%1
-    mova [r0+ 16], xm%3
-    mova [r0+ 32], xm%2
-    mova [r0+ 48], xm%4
-    vextracti128 [r0+ 64], m%1, 1
-    vextracti128 [r0+ 80], m%3, 1
-    vextracti128 [r0+ 96], m%2, 1
-    vextracti128 [r0+112], m%4, 1
-%endmacro
-
-%macro STORE16_DCT_AVX2 5
-    SBUTTERFLY qdq, %1, %2, %5
-    SBUTTERFLY qdq, %3, %4, %5
-    mova [r0+ 0-128], xm%1
-    mova [r0+16-128], xm%3
-    mova [r0+32-128], xm%2
-    mova [r0+48-128], xm%4
-    vextracti128 [r0+ 0], m%1, 1
-    vextracti128 [r0+16], m%3, 1
-    vextracti128 [r0+32], m%2, 1
-    vextracti128 [r0+48], m%4, 1
+; 4x src row, 2x tmp, 2x offset
+; In: row i of blocks A|B in lane 0 and of C|D in lane 1.
+; Out: one 32 byte store per 4x4 block, so quant's 32 byte loads can forward from it.
+%macro STORE_DCT_AVX2 8
+    vperm2i128  m%5, m%1, m%3, 0x20 ; A0 B0 A2 B2
+    vperm2i128  m%6, m%2, m%4, 0x20 ; A1 B1 A3 B3
+    vperm2i128  m%1, m%1, m%3, 0x31 ; C0 D0 C2 D2
+    vperm2i128  m%2, m%2, m%4, 0x31 ; C1 D1 C3 D3
+    punpcklqdq  m%3, m%5, m%6       ; A
+    punpckhqdq  m%5, m%6            ; B
+    punpcklqdq  m%4, m%1, m%2       ; C
+    punpckhqdq  m%1, m%2            ; D
+    mova [r0+%7+ 0], m%3
+    mova [r0+%7+32], m%5
+    mova [r0+%8+ 0], m%4
+    mova [r0+%8+32], m%1
 %endmacro
 
 INIT_YMM avx2
@@ -634,7 +802,7 @@ cglobal sub8x8_dct, 3,3,7
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4
-    STORE8_DCT_AVX2 0, 1, 2, 3, 4
+    STORE_DCT_AVX2 0, 1, 2, 3, 4, 5, 0, 64
     RET
 
 INIT_YMM avx2
@@ -661,7 +829,7 @@ cglobal sub16x16_dct, 3,3,6
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4
-    STORE16_DCT_AVX2 0, 1, 2, 3, 4
+    STORE_DCT_AVX2 0, 1, 2, 3, 4, 5, -128, 0
     ret
 
 %macro DCT4x4_AVX512 0
@@ -954,6 +1122,13 @@ cextern sub8x8_dct8_avx.skip_prologue
 SUB_NxN_DCT  sub16x16_dct8_sse2, sub8x8_dct8_sse2, 256, 16, 0, 0, 14
 SUB_NxN_DCT  sub16x16_dct8_sse4, sub8x8_dct8_sse4, 256, 16, 0, 0, 14
 SUB_NxN_DCT  sub16x16_dct8_avx,  sub8x8_dct8_avx,  256, 16, 0, 0, 14
+%if ARCH_X86_64
+INIT_YMM
+cextern add8x8_idct8_avx2.skip_prologue
+ADD_NxN_IDCT add16x16_idct8_avx2, add8x8_idct8_avx2, 256, 16, 0, 0, 11
+cextern sub8x8_dct8_avx2.skip_prologue
+SUB_NxN_DCT  sub16x16_dct8_avx2, sub8x8_dct8_avx2, 256, 16, 0, 0, 10
+%endif
 %else ; !HIGH_BIT_DEPTH
 %if ARCH_X86_64 == 0
 INIT_MMX
@@ -1062,6 +1237,38 @@ INIT_XMM sse2
 ADD_IDCT_DC
 INIT_XMM avx
 ADD_IDCT_DC
+
+; One ymm per row: [dc0 x4, dc1 x4 | dc2 x4, dc3 x4]
+INIT_YMM avx2
+cglobal add16x16_idct_dc, 2,3,6
+    mov         r2d, 4
+    mova         m5, [pw_pixel_max]
+    pxor         m4, m4
+.loop:
+    mova        xm3, [r1]
+    paddd       xm3, [pd_32]
+    psrad       xm3, 6
+    packssdw    xm3, xm3       ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3
+    punpcklwd   xm3, xm3       ; dc0 dc0 dc1 dc1 dc2 dc2 dc3 dc3
+    vpermq       m3, m3, q1100 ; dc0 dc0 dc1 dc1 dc0 dc0 dc1 dc1 | dc2 dc2 dc3 dc3 dc2 dc2 dc3 dc3
+    punpckldq    m3, m3        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
+    paddsw       m0, m3, [r0+FDEC_STRIDEB*0]
+    paddsw       m1, m3, [r0+FDEC_STRIDEB*1]
+    paddsw       m2, m3, [r0+FDEC_STRIDEB*2]
+    paddsw       m3, [r0+FDEC_STRIDEB*3]
+    CLIPW        m0, m4, m5
+    CLIPW        m1, m4, m5
+    CLIPW        m2, m4, m5
+    CLIPW        m3, m4, m5
+    mova [r0+FDEC_STRIDEB*0], m0
+    mova [r0+FDEC_STRIDEB*1], m1
+    mova [r0+FDEC_STRIDEB*2], m2
+    mova [r0+FDEC_STRIDEB*3], m3
+    add          r1, 16
+    add          r0, 4*FDEC_STRIDEB
+    dec         r2d
+    jg .loop
+    RET
 
 %else ;!HIGH_BIT_DEPTH
 %macro ADD_DC 3
@@ -1714,6 +1921,20 @@ INIT_XMM sse2
 SCAN_4x4  4, dq, qdq, dq
 INIT_XMM avx
 SCAN_4x4  4, dq, qdq, dq
+
+INIT_YMM avx2
+cglobal zigzag_scan_4x4_frame, 2,2,4
+    mova      m0, [scan4x4_frame_avx2]
+    mova      m1, [scan4x4_frame_avx2+32]
+    vpermd    m2, m0, [r1]
+    vpermd    m3, m1, [r1+32]
+    vpblendd  m2, m2, m3, 0xe0      ;  0  4  1  2  5  8 12  9
+    vpermd    m1, m1, [r1]
+    vpermd    m0, m0, [r1+32]
+    vpblendd  m0, m1, m0, 0xf8      ;  6  3  7 10 13 14 11 15
+    movu [r0+ 0], m2
+    movu [r0+32], m0
+    RET
 %else
 INIT_MMX mmx
 SCAN_4x4 16, q , dq , wd
@@ -1888,6 +2109,57 @@ SCAN_8x8 d, dq, qdq, dq, 4
 INIT_MMX mmx2
 SCAN_8x8 w, wd, dq , q , 16
 %endif
+
+%if HIGH_BIT_DEPTH == 0
+; Output rows 1-6 are each a pshufb of two unaligned 8-coef windows of the
+; input (u, v); the windows of rows r and r+1 are 8 coefs apart, so a ymm
+; does two rows. out[8] (in[16]) is in neither window of row 1.
+%macro SCAN_8x8_FIELD_ROWS 3 ; first row, u, v
+%assign %%i 0
+%rep 32/mmsize
+    movu       m0, [r1+(%2+8*%%i)*2]
+    movu       m1, [r1+(%3+8*%%i)*2]
+    pshufb     m0, [pb_scan8field_u+(%1+%%i-1)*16]
+    pshufb     m1, [pb_scan8field_v+(%1+%%i-1)*16]
+    por        m0, m1
+%if mmsize == 32
+    movu [r0+(%1+%%i)*16], m0
+%else
+    mova [r0+(%1+%%i)*16], m0
+%endif
+%assign %%i %%i+1
+%endrep
+%endmacro
+
+%macro SCAN_8x8_FIELD 0
+cglobal zigzag_scan_8x8_field, 2,3,2
+    mova      xm0, [r1+  0]             ; in 0-7
+    movu      xm1, [r1+  6]             ; in 3-10
+    pshufb    xm1, [pb_scan8field_v0]
+%if cpuflag(avx)
+    pblendw   xm0, xm1, 0xf8
+%else
+    pshufb    xm0, [pb_scan8field_u0]
+    por       xm0, xm1
+%endif
+    mova [r0+  0], xm0
+    SCAN_8x8_FIELD_ROWS 1,  5, 17
+    SCAN_8x8_FIELD_ROWS 3, 20, 33
+    SCAN_8x8_FIELD_ROWS 5, 36, 44
+    movzx     r2d, word [r1+32]
+    mov  [r0+ 16], r2w
+    mova      xm0, [r1+112]
+    mov       r2d, [r1+108]
+    mova [r0+112], xm0
+    mov  [r0+112], r2d
+    RET
+%endmacro
+
+INIT_XMM ssse3
+SCAN_8x8_FIELD
+INIT_YMM avx2
+SCAN_8x8_FIELD
+%endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; void zigzag_sub_4x4_frame( int16_t level[16], const uint8_t *src, uint8_t *dst )

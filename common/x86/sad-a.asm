@@ -452,29 +452,28 @@ cglobal pixel_sad_16x16, 4,4,6
     psadbw        m%1, [r0+%2*FENC_STRIDE]
 %endmacro
 
-; 8 wide, four rows a ymm as [k,k+2|k+1,k+3]: %1 = dst (number), %2 = row k
-%macro SAD_AVG2_W8_ROW4 2
-%if %2
+; 8 wide, rows k, k+1 and k+2, k+3 a ymm each, loaded as 16 wide (8 bytes past
+; the block, inside the planes' PADH): qword 1 of each lane is junk, dropped at the end
+%macro SAD_AVG2_W8_ROW4 3 ; 2*dst (numbers), row k; r4 = 3*stride
+%if %3
     lea           r1, [r1+4*r3]
     lea           r2, [r2+4*r3]
 %endif
-    movq         xm%1, [r1]
-    movhps       xm%1, [r1+2*r3]
-    movq         xm4, [r1+r3]
-    movhps       xm4, [r1+r4]
-    vinserti128   m%1, m%1, xm4, 1
-    movq         xm4, [r2]
-    movhps       xm4, [r2+2*r3]
-    movq         xm5, [r2+r3]
-    movhps       xm5, [r2+r4]
-    vinserti128   m4, m4, xm5, 1
+    movu         xm%1, [r1]
+    vinserti128   m%1, m%1, [r1+r3], 1
+    movu         xm4, [r2]
+    vinserti128   m4, m4, [r2+r3], 1
     pavgb         m%1, m4
-    movu          m4, [r0+%2*FENC_STRIDE]      ; k, -, k+1, -
-    punpcklqdq    m4, [r0+(%2+2)*FENC_STRIDE]  ; k, k+2 | k+1, k+3
-    psadbw        m%1, m4
+    psadbw        m%1, [r0+%3*FENC_STRIDE]
+    movu         xm%2, [r1+2*r3]
+    vinserti128   m%2, m%2, [r1+r4], 1
+    movu         xm4, [r2+2*r3]
+    vinserti128   m4, m4, [r2+r4], 1
+    pavgb         m%2, m4
+    psadbw        m%2, [r0+(%3+2)*FENC_STRIDE]
 %endmacro
 
-%macro SAD_AVG2_END 1 ; number of accumulators
+%macro SAD_AVG2_END 1-2 16 ; number of accumulators, width
 %if %1 > 1
     paddd         m0, m1
 %endif
@@ -484,8 +483,10 @@ cglobal pixel_sad_16x16, 4,4,6
 %endif
     vextracti128 xm1, m0, 1
     paddd        xm0, xm1
+%if %2 == 16
     punpckhqdq   xm1, xm0, xm0
     paddd        xm0, xm1
+%endif
     movd         eax, xm0
     RET
 %endmacro
@@ -511,19 +512,51 @@ cglobal pixel_sad_avg2_16x8, 4,4,5
     SAD_AVG2_W16_ROW2 3, 6
     SAD_AVG2_END 4
 
-cglobal pixel_sad_avg2_8x16, 4,5,6
+cglobal pixel_sad_avg2_8x16, 4,5,5
     lea           r4, [3*r3]
-    SAD_AVG2_W8_ROW4 0, 0
-    SAD_AVG2_W8_ROW4 1, 4
-    SAD_AVG2_W8_ROW4 2, 8
-    SAD_AVG2_W8_ROW4 3, 12
-    SAD_AVG2_END 4
+    SAD_AVG2_W8_ROW4 0, 1, 0
+    SAD_AVG2_W8_ROW4 2, 3, 4
+    paddd         m0, m2
+    paddd         m1, m3
+    SAD_AVG2_W8_ROW4 2, 3, 8
+    paddd         m0, m2
+    paddd         m1, m3
+    SAD_AVG2_W8_ROW4 2, 3, 12
+    SAD_AVG2_END 4, 8
 
-cglobal pixel_sad_avg2_8x8, 4,5,6
+cglobal pixel_sad_avg2_8x8, 4,5,5
     lea           r4, [3*r3]
-    SAD_AVG2_W8_ROW4 0, 0
-    SAD_AVG2_W8_ROW4 1, 4
-    SAD_AVG2_END 2
+    SAD_AVG2_W8_ROW4 0, 1, 0
+    SAD_AVG2_W8_ROW4 2, 3, 4
+    SAD_AVG2_END 4, 8
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_8x16( uint8_t *, intptr_t, uint8_t *, intptr_t )
+; The 16 wide loads: fenc rows k, k+1 are one 32 byte load at FENC_STRIDE,
+; the ref rows are read 8 bytes past the block and qword 1 of each lane is
+; dropped. The stride check is before the prologue, so the fallback is a plain
+; tail call on every ABI.
+;-----------------------------------------------------------------------------
+%macro SAD_W8_AVX2_START 2 ; h, xmm regs
+    cmp        r1mp, FENC_STRIDE
+    jne pixel_sad_8x%1_mmx2
+    PROLOGUE 4,4,%2
+    lea           r1, [3*r3]
+%endmacro
+
+cglobal pixel_sad_8x8
+    SAD_W8_AVX2_START 8, 4
+    SAD_W16_AVX2_8ROWS
+    SAD_AVG2_END 4, 8
+
+cglobal pixel_sad_8x16
+    SAD_W8_AVX2_START 16, 6
+    SAD_W16_AVX2_8ROWS
+    lea           r2, [r2+4*r3]
+    SAD_W16_AVX2_ACC4 4*32, 0, 1
+    lea           r2, [r2+4*r3]
+    SAD_W16_AVX2_ACC4 6*32, 2, 3
+    SAD_AVG2_END 4, 8
 
 ;-----------------------------------------------------------------------------
 ; void pixel_vsad( pixel *src, intptr_t stride );
@@ -1811,6 +1844,103 @@ SAD_X_AVX2 3, 16, 16, 7
 SAD_X_AVX2 3, 16,  8, 7
 SAD_X_AVX2 4, 16, 16, 8
 SAD_X_AVX2 4, 16,  8, 8
+
+; 8 wide: ymm = { p row j, q row j | p row j+1, q row j+1 } against a vmovddup
+; of fenc rows j, j+1. Lane 1 of p is a 16 byte load (reads 8 bytes past the
+; row, as pixel_sad_8x8_avx2 does), q row j+1 a broadcast + blend.
+%macro SAD_X_W8_PAIR_AVX2 6 ; dst, tmp, p, q, row j offset, row j+1 offset
+    movq          xm%1, [%3+%5]
+    movhps        xm%1, [%4+%5]
+    vinserti128    m%1, m%1, [%3+%6], 1
+    vpbroadcastq   m%2, [%4+%6]
+    vpblendd       m%1, m%1, m%2, 0xc0
+%endmacro
+
+; rows of a 4 row group: 0, stride, 2*stride, 3*stride
+%macro SAD_X_W8_ROWOFF 3 ; row pair, stride, 3*stride
+%if %1 & 2
+    %xdefine sad_o0 2*%2
+    %xdefine sad_o1 %3
+%else
+    %xdefine sad_o0 0
+    %xdefine sad_o1 %2
+%endif
+%endmacro
+
+%macro SAD_X3_W8_AVX2 1 ; h
+cglobal pixel_sad_x3_8x%1, 5,6,6
+    lea            t0, [3*r4]
+%assign %%k 0
+%rep %1/2
+    SAD_X_W8_ROWOFF %%k, r4, t0
+    vmovddup       m3, [r0+%%k*FENC_STRIDE]
+    SAD_X_W8_PAIR_AVX2 2, 4, r1, r2, sad_o0, sad_o1
+    movq          xm5, [r3+sad_o0]
+    vinserti128    m5, m5, [r3+sad_o1], 1
+%if %%k == 0
+    psadbw         m0, m2, m3
+    psadbw         m1, m5, m3
+%else
+    psadbw         m2, m3
+    psadbw         m5, m3
+    paddd          m0, m2
+    paddd          m1, m5
+%endif
+%if (%%k & 3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r4]
+    lea            r2, [r2+4*r4]
+    lea            r3, [r3+4*r4]
+%endif
+%assign %%k %%k+2
+%endrep
+    movifnidn      r5, r5mp
+    packssdw       m0, m1         ; { s0 s1 s2 _ | s0 s1 s2 _ }
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    mova         [r5], xm0
+    RET
+%endmacro
+
+%macro SAD_X4_W8_AVX2 1 ; h
+cglobal pixel_sad_x4_8x%1, 6,7,6
+    lea            r6, [3*r5]
+%assign %%k 0
+%rep %1/2
+    SAD_X_W8_ROWOFF %%k, r5, r6
+    vmovddup       m4, [r0+%%k*FENC_STRIDE]
+    SAD_X_W8_PAIR_AVX2 2, 5, r1, r2, sad_o0, sad_o1
+    SAD_X_W8_PAIR_AVX2 3, 5, r3, r4, sad_o0, sad_o1
+%if %%k == 0
+    psadbw         m0, m2, m4
+    psadbw         m1, m3, m4
+%else
+    psadbw         m2, m4
+    psadbw         m3, m4
+    paddd          m0, m2
+    paddd          m1, m3
+%endif
+%if (%%k & 3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r5]
+    lea            r2, [r2+4*r5]
+    lea            r3, [r3+4*r5]
+    lea            r4, [r4+4*r5]
+%endif
+%assign %%k %%k+2
+%endrep
+    mov            r0, r6mp
+    packssdw       m0, m1         ; { s0 s1 s2 s3 | s0 s1 s2 s3 }
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    mova         [r0], xm0
+    RET
+%endmacro
+
+SAD_X3_W8_AVX2 16
+SAD_X3_W8_AVX2 8
+SAD_X3_W8_AVX2 4
+SAD_X4_W8_AVX2 16
+SAD_X4_W8_AVX2 8
+SAD_X4_W8_AVX2 4
 
 %macro SAD_X_W4_AVX512 2 ; x, h
 cglobal pixel_sad_x%1_4x%2, %1+2,%1+3

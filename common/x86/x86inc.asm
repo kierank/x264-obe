@@ -332,19 +332,6 @@ DECLARE_REG_TMP_SIZE 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
 %define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
 %define high_mm_regs (16*cpuflag(avx512))
 
-; AVX-512 functions use zmm16-31 (see AVX512_MM_PERMUTATION), which vzeroupper
-; doesn't clear. Left non-zero after a return they slow down the vector code
-; that runs afterwards on Zen 4 (1.5% of a 10-bit x264 encode), so zero them.
-%macro ZERO_HIGH_MM_REGS 0
-    %if ARCH_X86_64 && cpuflag(avx512)
-        %assign %%i 16
-        %rep 16
-            vpxord xmm %+ %%i, xmm %+ %%i, xmm %+ %%i
-            %assign %%i %%i+1
-        %endrep
-    %endif
-%endmacro
-
 %macro ALLOC_STACK 1-2 0 ; stack_size, n_xmm_regs (for win64 only)
     %ifnum %1
         %if %1 != 0
@@ -519,7 +506,7 @@ DECLARE_REG 14, R13, 120
     %assign xmm_regs_used 0
 %endmacro
 
-%define has_epilogue regs_used > 7 || stack_size > 0 || vzeroupper_required || xmm_regs_used > 6+high_mm_regs || cpuflag(avx512)
+%define has_epilogue regs_used > 7 || stack_size > 0 || vzeroupper_required || xmm_regs_used > 6+high_mm_regs
 
 %macro RET 0
     WIN64_RESTORE_XMM_INTERNAL
@@ -527,7 +514,6 @@ DECLARE_REG 14, R13, 120
     %if vzeroupper_required
         vzeroupper
     %endif
-    ZERO_HIGH_MM_REGS
     AUTO_REP_RET
 %endmacro
 
@@ -562,7 +548,7 @@ DECLARE_REG 14, R13, 72
     DEFINE_ARGS_INTERNAL %0, %4, %5
 %endmacro
 
-%define has_epilogue regs_used > 9 || stack_size > 0 || vzeroupper_required || cpuflag(avx512)
+%define has_epilogue regs_used > 9 || stack_size > 0 || vzeroupper_required
 
 %macro RET 0
     %if stack_size_padded > 0
@@ -576,7 +562,6 @@ DECLARE_REG 14, R13, 72
     %if vzeroupper_required
         vzeroupper
     %endif
-    ZERO_HIGH_MM_REGS
     AUTO_REP_RET
 %endmacro
 

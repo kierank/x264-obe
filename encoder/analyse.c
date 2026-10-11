@@ -348,8 +348,8 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 for( int i = (h->sh.i_type == SLICE_TYPE_B); i >= 0; i-- )
                     for( int j = 0; j < h->i_ref[i]; j++ )
                     {
-                        x264_frame_cond_wait( h->fref[i][j]->orig, thresh );
-                        thread_mvy_range = X264_MIN( thread_mvy_range, h->fref[i][j]->orig->i_lines_completed - pix_y );
+                        int completed = x264_frame_cond_wait( h->fref[i][j]->orig, thresh );
+                        thread_mvy_range = X264_MIN( thread_mvy_range, completed - pix_y );
                     }
 
                 if( h->param.b_deterministic )
@@ -444,7 +444,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 IS_INTRA( h->mb.i_mb_type_topleft ) ||
                 IS_INTRA( h->mb.i_mb_type_topright ) ||
                 (h->sh.i_type == SLICE_TYPE_P && IS_INTRA( h->fref[0][0]->mb_type[h->mb.i_mb_xy] )) ||
-                (h->mb.i_mb_xy - h->sh.i_first_mb < 3*(h->stat.frame.i_mb_count[I_4x4] + h->stat.frame.i_mb_count[I_8x8] + h->stat.frame.i_mb_count[I_16x16])) ) )
+                (h->mb.i_mb_xy - h->sh.i_first_mb < 3*(h->stat.frame.i_mb_count[I_4x4] + h->stat.frame.i_mb_count[I_8x8] + h->stat.frame.i_mb_count[I_16x16] + h->stat.frame.i_mb_count[I_PCM])) ) )
             { /* intra is likely */ }
             else
             {
@@ -3219,6 +3219,7 @@ skip_analysis:
                 x264_macroblock_encode( h );
                 for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
                     h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE, 16 );
+                h->mb.pic.i_fenc_pre = 0;
                 if( !CHROMA444 )
                 {
                     int height = 16 >> CHROMA_V_SHIFT;
@@ -3857,7 +3858,7 @@ static void x264_analyse_update_cache( x264_t *h, x264_mb_analysis_t *a  )
             int ref = h->mb.cache.ref[l][x264_scan8[0]];
             if( ref < 0 )
                 continue;
-            completed = h->fref[l][ ref >> MB_INTERLACED ]->orig->i_lines_completed;
+            completed = x264_frame_cond_wait( h->fref[l][ ref >> MB_INTERLACED ]->orig, -1 );
             if( (h->mb.cache.mv[l][x264_scan8[15]][1] >> (2 - MB_INTERLACED)) + h->mb.i_mb_y*16 > completed )
             {
                 x264_log( h, X264_LOG_WARNING, "internal error (MV out of thread range)\n");

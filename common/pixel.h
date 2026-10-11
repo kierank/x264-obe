@@ -35,6 +35,20 @@ typedef void (*x264_pixel_cmp_x3_t) ( pixel *, pixel *, pixel *, pixel *, intptr
 typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, int[4] );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
+/* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
+ * predictions against fenc's u (res[0]) and v (res[1]), without storing them;
+ * high bit depth: fenc is interleaved uv like src, with the same stride;
+ * 8-bit: fenc is the partition's part of satd_mcc_fenc_pre's output */
+#if HIGH_BIT_DEPTH
+typedef pixel x264_mcc_fenc_t;
+#else
+typedef int16_t x264_mcc_fenc_t;
+#endif
+typedef void (*x264_pixel_satd_mcc_t) ( x264_mcc_fenc_t *fenc, int res[2], pixel *src, intptr_t i_stride,
+                                        int dx, int dy, int i_width, int i_height );
+/* satd against fenc_pre, fenc's first transform stage from satd_fenc_pre */
+typedef int  (*x264_pixel_cmp_pre_t) ( int16_t *fenc_pre, pixel *, intptr_t );
+typedef int  (*x264_pixel_cmp_avg2_pre_t) ( int16_t *fenc_pre, pixel *, pixel *, intptr_t );
 
 enum
 {
@@ -84,11 +98,27 @@ typedef struct
     x264_pixel_cmp_t satd[8];
     x264_pixel_cmp_avg2_t satd_avg2[7]; /* asm only, NULL otherwise */
     x264_pixel_cmp_avg2_t sad_avg2[7];  /* asm only, NULL otherwise */
+    x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; widths 8 and 4, heights 4-16 */
+    /* asm only, 8-bit only, NULL otherwise: satd_mcc's fenc, 64*fenc - 32 uv interleaved,
+     * from the chroma fenc (FENC_STRIDE, u then v, height 8 or 16) into 512 words. Width 8:
+     * row y at 16*y; width 4: chroma x 0 or 4, y 0 or 8 at 256 + 32*x + 8*y, rows y+k | y+k+4
+     * 16 words apart; 4x4, height 8 only: x, y 0 or 4 at 128 + 8*x + 16*y, rows y | y+2
+     * then y+1 | y+3. */
+    void (*satd_mcc_fenc_pre)( int16_t *fenc_pre, pixel *fenc, int i_height );
+    /* asm only, NULL otherwise. satd_fenc_pre[0] fills 256 words from a 16x16 fenc
+     * (FENC_STRIDE) for the 16 wide sizes, 16 words a row; [1] 64 from an 8x8 for the
+     * 8 wide ones, an 8x16 reading those of its two 8x8 consecutively. */
+    void (*satd_fenc_pre[2])( int16_t *fenc_pre, pixel *fenc );
+    x264_pixel_cmp_pre_t satd_pre[4];
+    x264_pixel_cmp_avg2_pre_t satd_avg2_pre[4];
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
     x264_pixel_cmp_t mbcmp_unaligned[8]; /* unaligned mbcmp for subpel */
     x264_pixel_cmp_avg2_t mbcmp_avg2[7]; /* mbcmp of a qpel average, NULL where get_ref + mbcmp is used */
+    x264_pixel_satd_mcc_t mbcmp_mcc;     /* satd_mcc where mbcmp is satd, else NULL */
+    x264_pixel_cmp_pre_t mbcmp_pre[4];   /* satd_pre where mbcmp is satd, else NULL */
+    x264_pixel_cmp_avg2_pre_t mbcmp_avg2_pre[4];
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
@@ -148,6 +178,12 @@ typedef struct
     int (*intra_mbcmp_x9_8x8)( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sa8d_x9_8x8) ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sad_x9_8x8)  ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
+    /* asm only, NULL otherwise: slicetype's lowres intra cost of the 8x8 at src, all
+     * its neighbours in the plane: the minimum satd of the 8x8c DC, H, V and P and the
+     * 8x8 DDL..HU predictions (predict_8x8_filter edge). fenc: satd_fenc_pre[1]'s
+     * (8-bit) or the fenc at FENC_STRIDE (high bit depth). */
+    int (*intra_satd_lowres) ( void *fenc, pixel *src, intptr_t i_stride );
+    int (*intra_mbcmp_lowres)( void *fenc, pixel *src, intptr_t i_stride ); /* intra_satd_lowres where mbcmp is satd, else NULL */
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)

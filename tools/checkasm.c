@@ -276,6 +276,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_function_t pixel_ref;
     x264_pixel_function_t pixel_asm;
     x264_predict_t predict_4x4[12];
+    x264_predict_t predict_8x8c[7];
     x264_predict8x8_t predict_8x8[12];
     x264_predict_8x8_filter_t predict_8x8_filter;
     ALIGNED_16( pixel edge[36] );
@@ -286,6 +287,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_init( cpu_ref, &pixel_ref );
     x264_pixel_init( cpu_new, &pixel_asm );
     x264_predict_4x4_init( 0, predict_4x4 );
+    x264_predict_8x8c_init( 0, predict_8x8c );
     x264_predict_8x8_init( 0, predict_8x8, &predict_8x8_filter );
     predict_8x8_filter( pbuf2+40, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
 
@@ -387,6 +389,138 @@ static int check_pixel( int cpu_ref, int cpu_new )
 
     TEST_PIXEL_AVG2( satd_avg2, satd );
     TEST_PIXEL_AVG2( sad_avg2, sad );
+
+    ok = 1, used_asm = 0;
+    if( pixel_asm.satd_mcc && pixel_asm.satd_mcc != pixel_ref.satd_mcc )
+    {
+        /* width, height, satd size of the u and v blocks */
+        static const int mcc_sizes[6][3] = { {8, 16, PIXEL_8x16}, {8, 8, PIXEL_8x8}, {8, 4, PIXEL_8x4},
+                                             {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8}, {4, 4, PIXEL_4x4} };
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+        used_asm = 1;
+#if !HIGH_BIT_DEPTH
+        ALIGNED_ARRAY_32( int16_t, mcc_pre,[512] );
+#endif
+        for( int s = 0; s < 6; s++ )
+        {
+            int w = mcc_sizes[s][0], hgt = mcc_sizes[s][1], size = mcc_sizes[s][2];
+            ALIGNED_16( pixel dstu[16*16] );
+            ALIGNED_16( pixel dstv[16*16] );
+            /* the reference satd takes fenc deinterleaved */
+            ALIGNED_16( pixel fenc_c[16*FENC_STRIDE] );
+            int res_c[2], res_asm[2];
+            /* k = 0: random, every fraction pair, varied integer parts;
+             * k = 1: dx = dy = 0, pbuf3 = ~pbuf4: every difference is +-PIXEL_MAX */
+            for( int k = 0; k < 2; k++ )
+                for( int j = 0; j < (k ? 0xc00 : 64) && ok; j += k ? 256 : 1 )
+                {
+                    int dx = k ? 0 : (j&7) | ((j*5)&24);
+                    int dy = k ? 0 : (j>>3) | ((j*3+s)&24);
+                    pixel *src = k ? pbuf4+j : pbuf2 + 64 + 2*j;
+                    pixel *fenc = k ? pbuf3+j : pbuf1 + 2*(j&7);
+                    intptr_t stride = k ? 16 : 64;
+                    x264_mcc_fenc_t *fenc_mcc;
+                    mc_c.mc_chroma( dstu, dstv, 16, src, stride, dx, dy, w, hgt );
+#if HIGH_BIT_DEPTH
+                    /* fenc is interleaved uv with the stride of src */
+                    int x = 0, y = 0;
+                    mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, stride, hgt );
+                    fenc_mcc = fenc;
+#else
+                    /* satd_mcc_fenc_pre of an mb's chroma fenc 8 or 16 high, the block at x, y;
+                     * 4x4 only at height 8 (4:2:0) */
+                    int ch = hgt == 4 ? 8 : k || hgt == 16 || (j&1) ? 16 : 8;
+                    int x = w == 4 ? 4*((j>>1)&1) : 0;
+                    int y = hgt * ((j>>2) % (ch/hgt));
+                    mc_c.load_deinterleave_chroma_fenc( fenc_c, fenc, stride, ch );
+                    set_func_name( "satd_mcc_fenc_pre" );
+                    call_a( pixel_asm.satd_mcc_fenc_pre, mcc_pre, fenc_c, ch );
+                    for( int yy = 0; yy < ch && ok; yy++ )
+                        for( int xx = 0; xx < 16; xx++ )
+                        {
+                            int e = 64*fenc_c[yy*FENC_STRIDE + (xx&1)*8 + (xx>>1)] - 32;
+                            if( mcc_pre[16*yy+xx] != e ||
+                                mcc_pre[256 + 128*(xx>>3) + 64*(yy>>3) + 16*(yy&3) + 8*((yy>>2)&1) + (xx&7)] != e ||
+                                (ch == 8 && mcc_pre[128 + 32*(xx>>3) + 64*((yy>>2)&1) + 8*((yy>>1)&1) + 16*(yy&1) + (xx&7)] != e) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "satd_mcc_fenc_pre height %d: row %d word %d [FAILED]\n", ch, yy, xx );
+                                break;
+                            }
+                        }
+                    fenc_mcc = mcc_pre + (w == 8 ? 16*y : hgt == 4 ? 128 + 8*x + 16*y : 256 + 32*x + 8*y);
+#endif
+                    res_c[0] = pixel_c.satd[size]( fenc_c+x+y*FENC_STRIDE,   FENC_STRIDE, dstu, 16 );
+                    res_c[1] = pixel_c.satd[size]( fenc_c+8+x+y*FENC_STRIDE, FENC_STRIDE, dstv, 16 );
+                    res_asm[0] = res_asm[1] = -1;
+                    set_func_name( "satd_mcc" );
+                    call_a( pixel_asm.satd_mcc, fenc_mcc, res_asm, src, stride, dx, dy, w, hgt );
+                    if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "satd_mcc %dx%d at %d,%d dx %d dy %d%s: %d,%d != %d,%d [FAILED]\n",
+                                 w, hgt, x, y, dx, dy, k ? " overflow" : "", res_c[0], res_c[1], res_asm[0], res_asm[1] );
+                    }
+                }
+        }
+    }
+    report( "pixel satd_mcc :" );
+
+    ok = 1, used_asm = 0;
+    if( pixel_asm.satd_pre[PIXEL_16x16] && pixel_asm.satd_pre[PIXEL_16x16] != pixel_ref.satd_pre[PIXEL_16x16] )
+    {
+        /* size, x, y of every partition of a 16x16 fenc */
+        static const uint8_t pre_parts[9][3] = { {PIXEL_16x16, 0, 0}, {PIXEL_16x8, 0, 0}, {PIXEL_16x8, 0, 8},
+                                                 {PIXEL_8x16, 0, 0}, {PIXEL_8x16, 8, 0}, {PIXEL_8x8, 0, 0},
+                                                 {PIXEL_8x8, 8, 0}, {PIXEL_8x8, 0, 8}, {PIXEL_8x8, 8, 8} };
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[512] );
+        ALIGNED_16( pixel avg[16*16] );
+        used_asm = 1;
+        /* k = 0: random, k = 1: maxed differences (pbuf3 = ~pbuf4) */
+        for( int k = 0; k < 2 && ok; k++ )
+            for( int j = 0; j < (k ? 0x1000 : 64) && ok; j += k ? 256 : 1 )
+            {
+                pixel *fenc = k ? pbuf3+j : pbuf1;
+                pixel *src1 = k ? pbuf4+j : pbuf2+j;
+                pixel *src2 = k ? pbuf4+j : pbuf2+1280+(j^5);
+                intptr_t stride = k ? 16 : 64;
+                set_func_name( "satd_fenc_pre_16x16" );
+                call_a( pixel_asm.satd_fenc_pre[0], fenc_pre, fenc );
+                set_func_name( "satd_fenc_pre_8x8" );
+                for( int b = 0; b < 4; b++ )
+                    call_a( pixel_asm.satd_fenc_pre[1], fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+                for( int p = 0; p < 9 && ok; p++ )
+                {
+                    int i = pre_parts[p][0], x = pre_parts[p][1], y = pre_parts[p][2];
+                    int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                    int16_t *pre = i <= PIXEL_16x8 ? fenc_pre+16*y : fenc_pre+256+64*(2*(x>>3)+(y>>3));
+                    pixel *f = fenc + x + y*FENC_STRIDE;
+                    pixel *s1 = src1 + x + y*stride, *s2 = src2 + x + y*stride;
+                    int res_c, res_asm;
+                    set_func_name( "satd_pre_%s", pixel_names[i] );
+                    res_c   = pixel_c.satd[i]( f, FENC_STRIDE, s1, stride );
+                    res_asm = call_a( pixel_asm.satd_pre[i], pre, s1, stride );
+                    if( res_c != res_asm )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "satd_pre[%d] %d,%d %s: %d != %d [FAILED]\n", i, x, y, k ? "overflow" : "random", res_c, res_asm );
+                    }
+                    for( int yy = 0; yy < hgt; yy++ )
+                        for( int xx = 0; xx < w; xx++ )
+                            avg[yy*16+xx] = (s1[yy*stride+xx] + s2[yy*stride+xx] + 1) >> 1;
+                    set_func_name( "satd_avg2_pre_%s", pixel_names[i] );
+                    res_c   = pixel_c.satd[i]( f, FENC_STRIDE, avg, 16 );
+                    res_asm = call_a( pixel_asm.satd_avg2_pre[i], pre, s1, s2, stride );
+                    if( res_c != res_asm )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "satd_avg2_pre[%d] %d,%d %s: %d != %d [FAILED]\n", i, x, y, k ? "overflow" : "random", res_c, res_asm );
+                    }
+                }
+            }
+    }
+    report( "pixel satd_pre :" );
 
     TEST_PIXEL( sa8d, 1 );
 
@@ -736,6 +870,73 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_INTRA_X9( intra_sad_x9_4x4, sad );
     TEST_INTRA8_X9( intra_sad_x9_8x8, sad );
     report( "intra sad_x9 :" );
+
+    ok = 1; used_asm = 0;
+    if( pixel_asm.intra_satd_lowres && pixel_asm.intra_satd_lowres != pixel_ref.intra_satd_lowres )
+    {
+        /* against slicetype's C path: neighbours copied to pix, x3, P, filter, DDL..HU */
+        ALIGNED_ARRAY_64( pixel, plane,[10*64] );
+        ALIGNED_ARRAY_64( pixel, fenc,[8*FENC_STRIDE] );
+        ALIGNED_ARRAY_64( pixel, pixbuf,[9*FDEC_STRIDE] );
+        ALIGNED_16( pixel edge8[36] );
+        intptr_t stride = 64;
+        pixel *src = plane + stride + 16;
+        pixel *pix = pixbuf + FDEC_STRIDE + 8;
+        int pixoff = 4 / sizeof(pixel);
+        used_asm = 1;
+        set_func_name( "intra_satd_lowres" );
+        /* k = 0: random; 1: random 0/max, every difference +-max; 2, 3: the neighbour
+         * segments lt, t0-3, t4-7, t8-15, l0-3, l4-7 each 0 or max by the bits of j,
+         * fenc random (2) or a 0/max checkerboard (3) */
+        for( int k = 0; k < 4 && ok; k++ )
+            for( int j = 0; j < 64 && ok; j++ )
+            {
+                for( int i = 0; i < 10*64; i++ )
+                    plane[i] = k == 1 ? -(pbuf1[i+3*j]&1) & PIXEL_MAX : pbuf2[i+7*j];
+                if( k >= 2 )
+                {
+                    src[-stride-1] = -(j&1) & PIXEL_MAX;
+                    for( int x = 0; x < 16; x++ )
+                        src[x-stride] = -((j >> (1 + X264_MIN( x>>2, 2 ))) & 1) & PIXEL_MAX;
+                    for( int y = 0; y < 8; y++ )
+                        src[y*stride-1] = -((j >> (4 + (y>>2))) & 1) & PIXEL_MAX;
+                }
+                for( int y = 0; y < 8; y++ )
+                    for( int x = 0; x < 8; x++ )
+                        fenc[y*FENC_STRIDE+x] = k == 1 ? PIXEL_MAX - src[y*stride+x]
+                                              : k == 3 ? -((x^y^j)&1) & PIXEL_MAX
+                                              : pbuf1[y*16+x+5*j];
+
+                int satds[3];
+                memcpy( pix-FDEC_STRIDE, src-stride, 16 * sizeof(pixel) );
+                for( int i = -1; i < 8; i++ )
+                    M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*stride-pixoff] );
+                pixel_c.intra_satd_x3_8x8c( fenc, pix, satds );
+                int res_c = X264_MIN3( satds[0], satds[1], satds[2] );
+                predict_8x8c[I_PRED_CHROMA_P]( pix );
+                res_c = X264_MIN( res_c, pixel_c.satd[PIXEL_8x8]( pix, FDEC_STRIDE, fenc, FENC_STRIDE ) );
+                predict_8x8_filter( pix, edge8, ALL_NEIGHBORS, ALL_NEIGHBORS );
+                for( int i = 3; i < 9; i++ )
+                {
+                    predict_8x8[i]( pix, edge8 );
+                    res_c = X264_MIN( res_c, pixel_c.satd[PIXEL_8x8]( pix, FDEC_STRIDE, fenc, FENC_STRIDE ) );
+                }
+
+                void *f = fenc;
+#if !HIGH_BIT_DEPTH
+                ALIGNED_ARRAY_64( int16_t, fenc_pre,[64] );
+                pixel_asm.satd_fenc_pre[1]( fenc_pre, fenc );
+                f = fenc_pre;
+#endif
+                int res_a = call_a( pixel_asm.intra_satd_lowres, f, src, stride );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "intra_satd_lowres k=%d j=%d: %d != %d [FAILED]\n", k, j, res_c, res_a );
+                }
+            }
+    }
+    report( "intra satd_lowres :" );
 
     ok = 1; used_asm = 0;
     if( pixel_asm.ssd_nv12_core != pixel_ref.ssd_nv12_core )
@@ -1588,6 +1789,33 @@ static int check_mc( int cpu_ref, int cpu_new )
                     printf( "\n" );
                     break;
                 }
+        /* columns N P N N P N of vertical patterns (0,max,0 | max,0,max), period 3:
+         * the extremes of the vertical 6-tap, which overflowed the 16-bit
+         * intermediate of the centre filter */
+        for( int phase = 0; phase < 12 && ok; phase++ )
+        {
+            ALIGNED_ARRAY_32( pixel, stripe,[16*64] );
+            pixel *srcp = stripe+8+2*64;
+            for( int y = 0; y < 16; y++ )
+                for( int x = 0; x < 64; x++ )
+                {
+                    int p = "010010"[(x+phase)%6] - '0'; /* 0 = N, 1 = P */
+                    int hi = (y%3 == 1) ^ p ^ (phase >= 6);
+                    stripe[y*64+x] = hi ? PIXEL_MAX : 0;
+                }
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0], dstc[1], dstc[2], srcp, 64, 48, 10, tmp );
+            mc_a.hpel_filter( dsta[0], dsta[1], dsta[2], srcp, 64, 48, 10, tmp );
+            for( int i = 0; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+j*64+2, dsta[i]+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter differs at plane %c line %d (stripe pattern %d)\n", "hvc"[i], j, phase );
+                        break;
+                    }
+        }
         report( "hpel filter :" );
     }
 
@@ -1811,7 +2039,7 @@ static int check_deblock( int cpu_ref, int cpu_new )
     x264_deblock_function_t db_a;
     int ret = 0, ok = 1, used_asm = 0;
     int alphas[36], betas[36];
-    int8_t tcs[36][4];
+    int8_t tcs[36][4], tcs_c[36][4];
 
     x264_deblock_init( 0, &db_c, 0 );
     x264_deblock_init( cpu_ref, &db_ref, 0 );
@@ -1825,6 +2053,13 @@ static int check_deblock( int cpu_ref, int cpu_new )
         tcs[i][0] = tcs[i][3] = (c+6)/10 << (BIT_DEPTH-8);
         tcs[i][1] = (c+7)/15 << (BIT_DEPTH-8);
         tcs[i][2] = (c+9)/20 << (BIT_DEPTH-8);
+        memcpy( tcs_c[i], tcs[i], sizeof(tcs[i]) );
+        if( i%3 == 1 )
+        {
+            /* a bS=0 edge next to filtered ones: tc0 is -1 << (BIT_DEPTH-8), +1 for chroma */
+            tcs[i][i&3] = -(1 << (BIT_DEPTH-8));
+            tcs_c[i][i&3] = 1 - (1 << (BIT_DEPTH-8));
+        }
         a = a*9/10;
         c = c*9/10;
     }
@@ -1856,13 +2091,15 @@ static int check_deblock( int cpu_ref, int cpu_new )
 
     TEST_DEBLOCK( deblock_luma[0], 0, tcs[i] );
     TEST_DEBLOCK( deblock_luma[1], 1, tcs[i] );
-    TEST_DEBLOCK( deblock_h_chroma_420, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_h_chroma_422, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_chroma_420_mbaff, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_chroma_422_mbaff, 0, tcs[i] );
-    TEST_DEBLOCK( deblock_chroma[1], 1, tcs[i] );
+    TEST_DEBLOCK( deblock_luma_mbaff, 0, tcs[i] );
+    TEST_DEBLOCK( deblock_h_chroma_420, 0, tcs_c[i] );
+    TEST_DEBLOCK( deblock_h_chroma_422, 0, tcs_c[i] );
+    TEST_DEBLOCK( deblock_chroma_420_mbaff, 0, tcs_c[i] );
+    TEST_DEBLOCK( deblock_chroma_422_mbaff, 0, tcs_c[i] );
+    TEST_DEBLOCK( deblock_chroma[1], 1, tcs_c[i] );
     TEST_DEBLOCK( deblock_luma_intra[0], 0 );
     TEST_DEBLOCK( deblock_luma_intra[1], 1 );
+    TEST_DEBLOCK( deblock_luma_intra_mbaff, 0 );
     TEST_DEBLOCK( deblock_h_chroma_420_intra, 0 );
     TEST_DEBLOCK( deblock_h_chroma_422_intra, 0 );
     TEST_DEBLOCK( deblock_chroma_420_intra_mbaff, 0 );
@@ -2106,7 +2343,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         {
             set_func_name( "idct_dequant_2x4_dc_%s", i_cqm?"cqm":"flat" );
             used_asms[1] = 1;
-            for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- )
+            for( int qp = h->chroma_qp_table[h->param.rc.i_qp_max]; qp >= h->chroma_qp_table[h->param.rc.i_qp_min]; qp-- )
             {
                 for( int i = 0; i < 8; i++ )
                     dct1[i] = rand()%(PIXEL_MAX*16*2+1) - PIXEL_MAX*16;
@@ -2126,9 +2363,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
         if( qf_a.idct_dequant_2x4_dconly != qf_ref.idct_dequant_2x4_dconly )
         {
-            set_func_name( "idct_dequant_2x4_dc_%s", i_cqm?"cqm":"flat" );
+            set_func_name( "idct_dequant_2x4_dconly_%s", i_cqm?"cqm":"flat" );
             used_asms[1] = 1;
-            for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- )
+            for( int qp = h->chroma_qp_table[h->param.rc.i_qp_max]; qp >= h->chroma_qp_table[h->param.rc.i_qp_min]; qp-- )
             {
                 for( int i = 0; i < 8; i++ )
                     dct1[i] = rand()%(PIXEL_MAX*16*2+1) - PIXEL_MAX*16;
@@ -2165,7 +2402,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                     int max = X264_MIN( i, PIXEL_MAX*16 ); \
                     for( int j = 0; j < size; j++ ) \
                         dct1[j] = rand()%(max*2+1) - max; \
-                    for( int j = 0; i <= size; j += 4 ) \
+                    for( int j = 0; j < size; j += 4 ) \
                         qf_c.quant_2x2_dc( &dct1[j], h->quant4_mf[CQM_4IC][qpdc][0]>>1, h->quant4_bias[CQM_4IC][qpdc][0]>>1 ); \
                     memcpy( dct2, dct1, size*sizeof(dctcoef) ); \
                     res_c   = call_c1( qf_c.optname, dct1, dmf ); \
@@ -2179,6 +2416,26 @@ static int check_quant( int cpu_ref, int cpu_new )
                     call_a2( qf_a.optname, dct2, dmf ); \
                     if( i >= PIXEL_MAX*16 ) \
                         break; \
+                } \
+                for( int k = 0; k <= 3*size+8; k++ ) \
+                { \
+                    int res_c, res_asm; \
+                    memset( dct1, 0, size*sizeof(dctcoef) ); \
+                    if( k < 2*size ) \
+                        dct1[k>>1] = (k&1 ? -1 : 1) * (1 + rand()%3); \
+                    else if( k < 3*size ) \
+                        dct1[k-2*size] = (rand()&1 ? -1 : 1) * PIXEL_MAX*16; \
+                    else if( k > 3*size ) \
+                        for( int j = 0; j < size; j++ ) \
+                            dct1[j] = rand()%5 - 2; \
+                    memcpy( dct2, dct1, size*sizeof(dctcoef) ); \
+                    res_c   = call_c1( qf_c.optname, dct1, dmf ); \
+                    res_asm = call_a1( qf_a.optname, dct2, dmf ); \
+                    if( res_c != res_asm || memcmp( dct1, dct2, size*sizeof(dctcoef) ) ) \
+                    { \
+                        oks[2] = 0; \
+                        fprintf( stderr, #optname "(qp=%d, edge=%d, res_c=%d, res_asm=%d): [FAILED]\n", qp, k, res_c, res_asm ); \
+                    } \
                 } \
             } \
         }
@@ -2565,10 +2822,30 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     cb[0].f8_bits_encoded = 0;\
                     cb[1].f8_bits_encoded = 0;\
                     if( !rd ) memcpy( bitstream[1], bitstream[0], 0x400 );\
+                    /* start mid-stream: arbitrary low/queue, sometimes bytes outstanding */\
+                    if( !rd )\
+                        for( int k = rand()&63; k > 0; k-- )\
+                        {\
+                            int bit = -(rand()&1);\
+                            x264_cabac_encode_bypass_c( &cb[0], bit );\
+                            x264_cabac_encode_bypass_c( &cb[1], bit );\
+                        }\
+                    /* low just below a byte boundary inside the interval, steered bypasses keep it there:\
+                     * bytes outstanding on entry, more 0xff bytes, then a carry or not through them */\
+                    if( !rd && (j&3) == 3 && cb[0].p > cb[0].p_start )\
+                    {\
+                        cb[0].i_low = cb[1].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);\
+                        for( int k = 8 + (rand()&31); k > 0; k-- )\
+                        {\
+                            int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));\
+                            x264_cabac_encode_bypass_c( &cb[0], bit );\
+                            x264_cabac_encode_bypass_c( &cb[1], bit );\
+                        }\
+                    }\
                     call_c1( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                     call_a1( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
                     ok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp(cb[0].state, cb[1].state, 1024);\
-                    if( !rd ) ok |= !memcmp( bitstream[1], bitstream[0], 0x400 ) && !memcmp( &cb[1], &cb[0], offsetof(x264_cabac_t, p_start) );\
+                    if( !rd ) ok &= !memcmp( bitstream[1], bitstream[0], 0x400 ) && !memcmp( &cb[1], &cb[0], offsetof(x264_cabac_t, p_start) );\
                     if( !ok )\
                     {\
                         fprintf( stderr, #name " :  [FAILED] ctx_block_cat %d", (int)ctx_block_cat );\

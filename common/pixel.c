@@ -773,6 +773,10 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
         score_field += cfield * cw >> 4;
     }
 
+    /* vsad underrates field coding of interlaced content: weight the field
+     * score by 14/16. The neighbour bias scales with the pixel range like the
+     * scores (it was 512 at every depth). bd-exp: both are knobs, defaults
+     * 14 and 1024 << (BIT_DEPTH - 8). */
     int bias = h->mb.i_exp_vsad_bias;
     score_field = score_field * h->mb.i_exp_vsad_fieldmul >> 4;
     if( mb_x > 0 )
@@ -1099,15 +1103,21 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
 #endif
         INIT2( hadamard_ac, _avx2 );
+        pixf->hadamard_ac[PIXEL_8x8] = x264_pixel_hadamard_ac_8x8_avx2;
+        pixf->sa8d[PIXEL_8x8] = x264_pixel_sa8d_8x8_avx2;
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x3_8x16c = x264_intra_satd_x3_8x16c_avx2;
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
+        pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
+        pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
+        pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
         pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx2;
+        pixf->satd_mcc = x264_pixel_satd_mcc_avx2;
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx2;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
         pixf->sad_avg2[PIXEL_8x16]  = x264_pixel_sad_avg2_8x16_avx2;
@@ -1410,8 +1420,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
-        INIT2( sad_x3, _avx2 );
-        INIT2( sad_x4, _avx2 );
+        pixf->sad[PIXEL_8x16] = pixf->sad_aligned[PIXEL_8x16] = x264_pixel_sad_8x16_avx2;
+        pixf->sad[PIXEL_8x8]  = pixf->sad_aligned[PIXEL_8x8]  = x264_pixel_sad_8x8_avx2;
+        INIT5( sad_x3, _avx2 );
+        INIT5( sad_x4, _avx2 );
         INIT4( satd, _avx2 );
         INIT2( hadamard_ac, _avx2 );
         INIT_ADS( _avx2 );
@@ -1429,12 +1441,27 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
         pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx2;
+        pixf->satd_mcc = x264_pixel_satd_mcc_avx2;
+        pixf->satd_mcc_fenc_pre = x264_pixel_satd_mcc_fenc_pre_avx2;
+        pixf->satd_fenc_pre[0] = x264_pixel_satd_fenc_pre_16x16_avx2;
+        pixf->satd_fenc_pre[1] = x264_pixel_satd_fenc_pre_8x8_avx2;
+        pixf->satd_pre[PIXEL_16x16] = x264_pixel_satd_pre_16x16_avx2;
+        pixf->satd_pre[PIXEL_16x8]  = x264_pixel_satd_pre_16x8_avx2;
+        pixf->satd_pre[PIXEL_8x16]  = x264_pixel_satd_pre_8x16_avx2;
+        pixf->satd_pre[PIXEL_8x8]   = x264_pixel_satd_pre_8x8_avx2;
+        pixf->satd_avg2_pre[PIXEL_16x16] = x264_pixel_satd_avg2_pre_16x16_avx2;
+        pixf->satd_avg2_pre[PIXEL_16x8]  = x264_pixel_satd_avg2_pre_16x8_avx2;
+        pixf->satd_avg2_pre[PIXEL_8x16]  = x264_pixel_satd_avg2_pre_8x16_avx2;
+        pixf->satd_avg2_pre[PIXEL_8x8]   = x264_pixel_satd_avg2_pre_8x8_avx2;
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx2;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
         pixf->sad_avg2[PIXEL_8x16]  = x264_pixel_sad_avg2_8x16_avx2;
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
+        pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
+        pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
+        pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
 #endif
     }
 

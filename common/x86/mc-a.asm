@@ -249,6 +249,61 @@ INIT_XMM sse2
 AVG_WEIGHT 4,  8
 AVG_WEIGHT 8,  8
 AVG_WEIGHT 16, 8
+
+; packusdw clips negative sums to 0, pminuw clips the top
+%macro BIWEIGHT_AVX2 0 ; m0 = src1, m1 = src2 -> m0
+    punpckhwd    m2, m0, m1
+    punpcklwd    m0, m1
+    pmaddwd      m2, m3
+    pmaddwd      m0, m3
+    paddd        m2, m4
+    paddd        m0, m4
+    psrad        m2, 6
+    psrad        m0, 6
+    packusdw     m0, m2
+    pminuw       m0, m5
+%endmacro
+
+%macro BIWEIGHT_START_AVX2 0
+    movzx       t6d, word r6m
+    mov         t7d, 64
+    sub         t7d, t6d
+    shl         t7d, 16
+    add         t6d, t7d
+    movd        xm3, t6d
+    vpbroadcastd  m3, xm3
+    vpbroadcastd  m4, [pd_32]
+    mova          m5, [pw_pixel_max]
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_avg_weight_w16
+    BIWEIGHT_START_AVX2
+    AVG_START 6
+.height_loop:
+    movu          m0, [t2]
+    movu          m1, [t4]
+    BIWEIGHT_AVX2
+    movu        [t0], m0
+    movu          m0, [t2+t3*2]
+    movu          m1, [t4+t5*2]
+    BIWEIGHT_AVX2
+    movu  [t0+t1*2], m0
+    AVG_END
+
+cglobal pixel_avg_weight_w8
+    BIWEIGHT_START_AVX2
+    AVG_START 6
+.height_loop:
+    movu         xm0, [t2]
+    movu         xm1, [t4]
+    vinserti128   m0, m0, [t2+t3*2], 1
+    vinserti128   m1, m1, [t4+t5*2], 1
+    BIWEIGHT_AVX2
+    movu        [t0], xm0
+    vextracti128 [t0+t1*2], m0, 1
+    AVG_END
+
 %else ;!HIGH_BIT_DEPTH
 INIT_XMM sse2
 AVG_WEIGHT 8,  7
@@ -279,6 +334,40 @@ cglobal pixel_avg_weight_w16
     mova    [t0], xm0
     vextracti128 [t0+t1], m0, 1
     AVG_END
+
+; rows 0/1 in lane 0 and rows 2/3 in lane 1, gathered with load-port broadcasts and vpblendd
+cglobal pixel_avg_weight_w8
+    BIWEIGHT_START
+    AVG_START 6
+.height_loop:
+    movq          xm0, [t2]
+    vpbroadcastq   m1, [t2+t3*2]
+    vpblendd       m0, m0, m1, 0xf0
+    movq          xm2, [t4]
+    vpbroadcastq   m1, [t4+t5*2]
+    vpblendd       m2, m2, m1, 0xf0
+    punpcklbw      m0, m2
+    movq          xm1, [t2+t3]
+    lea            t2, [t2+t3*2]
+    vpbroadcastq   m2, [t2+t3]
+    vpblendd       m1, m1, m2, 0xf0
+    movq          xm5, [t4+t5]
+    lea            t4, [t4+t5*2]
+    vpbroadcastq   m2, [t4+t5]
+    vpblendd       m5, m5, m2, 0xf0
+    punpcklbw      m1, m5
+    pmaddubsw      m0, m3
+    pmaddubsw      m1, m3
+    pmulhrsw       m0, m4
+    pmulhrsw       m1, m4
+    packuswb       m0, m1
+    vextracti128  xm1, m0, 1
+    movq         [t0], xm0
+    movhps    [t0+t1], xm0
+    lea            t0, [t0+t1*2]
+    movq         [t0], xm1
+    movhps    [t0+t1], xm1
+    AVG_END 4
 
 INIT_YMM avx512
 cglobal pixel_avg_weight_w8
@@ -697,7 +786,7 @@ cglobal pixel_avg_%1x%2
     mov eax, %2
     cmp dword r6m, 32
     jne pixel_avg_weight_w%1 %+ SUFFIX
-%if cpuflag(avx2) && %1 == 16 ; all AVX2 machines can do fast 16-byte unaligned loads
+%if cpuflag(avx2) && %1*SIZEOF_PIXEL >= 16 ; all AVX2 machines can do fast 16-byte unaligned loads
     jmp pixel_avg_w%1_avx2
 %else
 %if mmsize == 16 && %1 == 16
@@ -769,6 +858,16 @@ AVG_FUNC 16, movdqu, movdqa
 AVGH  16, 16
 AVGH  16,  8
 
+INIT_XMM avx2
+AVG_FUNC 8, movdqu, movdqu
+INIT_YMM avx2
+AVG_FUNC 16, movdqu, movdqu
+AVGH  16, 16
+AVGH  16,  8
+AVGH   8, 16
+AVGH   8,  8
+AVGH   8,  4
+
 %else ;!HIGH_BIT_DEPTH
 
 INIT_MMX mmx2
@@ -809,6 +908,9 @@ INIT_XMM avx2
 AVG_FUNC 16, movdqu, movdqa
 AVGH 16, 16
 AVGH 16,  8
+AVGH  8, 16
+AVGH  8,  8
+AVGH  8,  4
 INIT_XMM avx512
 AVGH 16, 16
 AVGH 16,  8
@@ -1461,29 +1563,36 @@ MC_COPY 16
 ;                     pixel *pix_uv, intptr_t stride_uv, int mb_x )
 ;-----------------------------------------------------------------------------
 
+; a 64 byte line holds 4 MBs (8-bit) or 2 MBs (high bit depth) of a luma or
+; interleaved chroma row, so each call prefetches 1/4 or 1/2 of the rows of
+; the line 4 MBs ahead
+%macro PREFETCH_ROWS 3 ; ptr, stride, rows
+%rep %3/2
+    prefetcht0  [%1]
+    prefetcht0  [%1+%2]
+    lea    %1,  [%1+%2*2]
+%endrep
+%endmacro
+
 %macro PREFETCH_FENC 1
 %if ARCH_X86_64
+%assign pf_mbs_per_line 4/SIZEOF_PIXEL
+%assign pf_rows_y 16/pf_mbs_per_line
+%ifidn %1, 422
+    %assign pf_rows_uv 16/pf_mbs_per_line
+%else
+    %assign pf_rows_uv 8/pf_mbs_per_line
+%endif
 cglobal prefetch_fenc_%1, 5,5
     FIX_STRIDES r1, r3
-    and    r4d, 3
+    and    r4d, pf_mbs_per_line-1
     mov    eax, r4d
     imul   r4d, r1d
-    lea    r0,  [r0+r4*4+64*SIZEOF_PIXEL]
-    prefetcht0  [r0]
-    prefetcht0  [r0+r1]
-    lea    r0,  [r0+r1*2]
-    prefetcht0  [r0]
-    prefetcht0  [r0+r1]
-
+    lea    r0,  [r0+r4*pf_rows_y+64*SIZEOF_PIXEL]
+    PREFETCH_ROWS r0, r1, pf_rows_y
     imul   eax, r3d
-    lea    r2,  [r2+rax*2+64*SIZEOF_PIXEL]
-    prefetcht0  [r2]
-    prefetcht0  [r2+r3]
-%ifidn %1, 422
-    lea    r2,  [r2+r3*2]
-    prefetcht0  [r2]
-    prefetcht0  [r2+r3]
-%endif
+    lea    r2,  [r2+rax*pf_rows_uv+64*SIZEOF_PIXEL]
+    PREFETCH_ROWS r2, r3, pf_rows_uv
     RET
 
 %else

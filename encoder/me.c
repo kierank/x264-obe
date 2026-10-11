@@ -842,8 +842,29 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my ); \
 }
 
-static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my )
+static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my,
+                                            int16_t *fenc_pre )
 {
+    if( fenc_pre )
+    {
+        /* subpel_cmp against fenc_pre */
+        intptr_t stride = m->i_stride[0];
+        pixel *src;
+        if( !m->weight[0].weightfn )
+        {
+            int qpel_idx = ((my&3)<<2) + (mx&3);
+            intptr_t offset = (my>>2)*stride + (mx>>2);
+            src = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+            if( qpel_idx & 5 )
+                return h->pixf.mbcmp_avg2_pre[i_pixel]( fenc_pre, src, m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3), stride );
+        }
+        else
+        {
+            stride = 16;
+            src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] );
+        }
+        return h->pixf.mbcmp_pre[i_pixel]( fenc_pre, src, stride );
+    }
     return subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.mbcmp_avg2[i_pixel], h->pixf.mbcmp_unaligned[i_pixel] );
 }
 
@@ -852,7 +873,7 @@ if( b_refine_qpel || (dir^1) != odir ) \
 { \
     intptr_t stride; \
     pixel *src; \
-    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my ) \
+    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my, fenc_pre ) \
              + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
     if( b_chroma_me && cost < bcost ) \
     { \
@@ -867,6 +888,15 @@ if( b_refine_qpel || (dir^1) != odir ) \
                 src = h->mc.get_ref( pix, &stride, &m->p_fref[8], m->i_stride[2], mx, my, bw, bh, &m->weight[2] ); \
                 cost += h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[2], FENC_STRIDE, src, stride ); \
             } \
+        } \
+        else if( b_chroma_mcc ) \
+        { \
+            int mcc[2]; \
+            h->pixf.mbcmp_mcc( p_fenc_uv, mcc, m->p_fref[4], m->i_stride[1], \
+                               mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+            cost += mcc[0]; \
+            if( cost < bcost ) \
+                cost += mcc[1]; \
         } \
         else \
         { \
@@ -897,6 +927,23 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int chromapix = h->luma2chroma_pixel[i_pixel];
     int chroma_v_shift = CHROMA_V_SHIFT;
     int mvy_offset = chroma_v_shift & MB_INTERLACED & m->i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
+    /* chroma cost without storing the prediction: mbcmp_mcc takes every
+     * chroma ME size, u and v widths 8 and 4, heights 4 to 16 */
+    const int b_chroma_mcc = b_chroma_me && !CHROMA444 && h->pixf.mbcmp_mcc
+                          && !m->weight[1].weightfn && !m->weight[2].weightfn;
+    /* mbcmp_mcc takes fenc, high bit depth, as the interleaved uv plane (the source of
+     * p_fenc[1] and p_fenc[2]) at the partition, which has the stride of the ref planes;
+     * 8-bit, from mcc_fenc_pre */
+    x264_mcc_fenc_t *p_fenc_uv = NULL;
+    if( b_chroma_mcc )
+    {
+#if HIGH_BIT_DEPTH
+        int off = m->p_fenc[1] - h->mb.pic.p_fenc[1];
+        p_fenc_uv = h->mb.pic.p_fenc_plane[1] + 2*(off%FENC_STRIDE) + (off/FENC_STRIDE)*m->i_stride[1];
+#else
+        p_fenc_uv = x264_me_mcc_fenc_pre( h, m->p_fenc[1], bw, bh>>chroma_v_shift );
+#endif
+    }
 
     ALIGNED_ARRAY_N( pixel, pix,[64*18] ); // really 17x17x2, but round up for alignment
     ALIGNED_ARRAY_16( int, costs,[4] );
@@ -905,6 +952,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int bmy = m->mv[1];
     int bcost = m->cost;
     int odir = -1, bdir;
+    int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
 
     /* halfpel diamond search */
     if( hpel_iters )
@@ -924,8 +972,19 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             int omx = bmx, omy = bmy;
             intptr_t stride = 64; // candidates are either all hpel or all qpel, so one stride is enough
             pixel *src0, *src1, *src2, *src3;
-            src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
-            src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
+            if( !((omx|omy)&1) && !m->weight[0].weightfn )
+            {
+                /* hpel candidates without weighting: get_ref would only pick a
+                 * filtered plane, so skip the calls */
+                stride = m->i_stride[0];
+                src0 = m->p_fref[x264_hpel_ref0[(((omy-2)&3)<<2) + (omx&3)]] + ((omy-2)>>2)*stride + (omx>>2);
+                src2 = m->p_fref[x264_hpel_ref0[((omy&3)<<2) + ((omx-2)&3)]] + (omy>>2)*stride + ((omx-2)>>2);
+            }
+            else
+            {
+                src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
+                src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
+            }
             src1 = src0 + stride;
             src3 = src2 + 1;
             h->pixf.fpelcmp_x4[i_pixel]( m->p_fenc[0], src0, src1, src2, src3, stride, costs );
@@ -1116,6 +1175,7 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
     const uint16_t *p_cost_m1y = m1->p_cost_mv - m1->mvp[1];
 
     h->mc.memzero_aligned( visited, sizeof(uint8_t[8][8][8]) );
+    int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m0->p_fenc[0] );
 
     for( int pass = 0; pass < 8; pass++ )
     {
@@ -1144,7 +1204,8 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
                 int i1 = 4 + 3*dia4d[j][2] + dia4d[j][3];
                 visited[(m0x)&7][(m0y)&7][(m1x)&7] |= (1<<((m1y)&7));
                 h->mc.avg[i_pixel]( pix, FDEC_STRIDE, src[0][0][i0], stride[0][0][i0], src[0][1][i1], stride[0][1][i1], i_weight );
-                int cost = h->pixf.mbcmp[i_pixel]( m0->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE )
+                int cost = (fenc_pre ? h->pixf.mbcmp_pre[i_pixel]( fenc_pre, pix, FDEC_STRIDE )
+                                     : h->pixf.mbcmp[i_pixel]( m0->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE ))
                          + p_cost_m0x[m0x] + p_cost_m0y[m0y] + p_cost_m1x[m1x] + p_cost_m1y[m1y];
                 if( rd )
                 {
