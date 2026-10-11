@@ -5259,15 +5259,15 @@ cglobal pixel_satd_8x8, 4,6,8
 ; only the reference rows change, to pavgb of the two sources.
 ;-----------------------------------------------------------------------------
 ; 16 wide: rows %5, %6 (fenc offsets) and %7, %8 (source offsets), each row in both lanes
-%macro SATD_AVG2_SUMSUB16x2 8 ; 2*dst, 2*tmp, 2*fenc offset, 2*src offset
+%macro SATD_AVG2_SUMSUB16x2 8 ; 2*dst, 2*tmp, 2*fenc offset, 2*src offset; m8 = tmp
     vbroadcasti128 m%1, [r0+%5]
     vbroadcasti128 m%2, [r0+%6]
-    movu          xm%3, [r1+%7]
-    pavgb         xm%3, [r2+%7]
-    movu          xm%4, [r1+%8]
-    pavgb         xm%4, [r2+%8]
-    vinserti128    m%3, m%3, xm%3, 1
-    vinserti128    m%4, m%4, xm%4, 1
+    vbroadcasti128 m%3, [r1+%7]
+    vbroadcasti128 m8,  [r2+%7]
+    pavgb          m%3, m8
+    vbroadcasti128 m%4, [r1+%8]
+    vbroadcasti128 m8,  [r2+%8]
+    pavgb          m%4, m8
     DIFF_SUMSUB_SSSE3 %1, %3, %2, %4, 7
 %endmacro
 
@@ -5304,7 +5304,7 @@ cglobal pixel_satd_8x8, 4,6,8
     SATD_END_SSE2 xm0
 %endmacro
 
-cglobal pixel_satd_avg2_16x16, 4,5,8
+cglobal pixel_satd_avg2_16x16, 4,5,9
     mova     m7, [hmul_16p]
     lea      r4, [3*r3]
     pxor     m6, m6
@@ -5317,7 +5317,7 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
 %endrep
     SATD_AVG2_END
 
-cglobal pixel_satd_avg2_16x8, 4,5,8
+cglobal pixel_satd_avg2_16x8, 4,5,9
     mova     m7, [hmul_16p]
     lea      r4, [3*r3]
     pxor     m6, m6
