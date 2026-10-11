@@ -54,6 +54,10 @@ void x264_cabac_context_init( x264_t *h, x264_cabac_t *cb, int i_slice_type, int
     memcpy( cb->state, cabac_contexts[i_slice_type == SLICE_TYPE_I ? 0 : i_model + 1][i_qp], CHROMA444 ? 1024 : 460 );
 }
 
+#if HAVE_MMX
+int x264_cabac_bmi2;
+#endif
+
 void x264_cabac_encode_init_core( x264_cabac_t *cb )
 {
     cb->i_low   = 0;
