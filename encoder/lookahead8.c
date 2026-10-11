@@ -58,6 +58,10 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
     memcpy( h->pixf.mbcmp, satd ? h->pixf.satd : h->pixf.sad_aligned, sizeof(h->pixf.mbcmp) );
     memcpy( h->pixf.mbcmp_unaligned, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.mbcmp_unaligned) );
     h->pixf.intra_mbcmp_x3_8x8c = satd ? h->pixf.intra_satd_x3_8x8c : h->pixf.intra_sad_x3_8x8c;
+    if( satd )
+        memcpy( h->pixf.mbcmp_avg2, h->pixf.satd_avg2, sizeof(h->pixf.mbcmp_avg2) );
+    else
+        memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
     satd &= param->analyse.i_me_method == X264_ME_TESA;
     memcpy( h->pixf.fpelcmp, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.fpelcmp) );
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );
