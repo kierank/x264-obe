@@ -1344,6 +1344,9 @@ static int check_mc( int cpu_ref, int cpu_new )
         {
             set_func_name( "load_deinterleave_chroma_fenc" );
             used_asm = 1;
+            /* the functions leave parts of each row unwritten: start both outputs equal */
+            memset( pbuf3, 0x5a, 64*height * sizeof(pixel) );
+            memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
             call_c( mc_c.load_deinterleave_chroma_fenc, pbuf3, pbuf1, (intptr_t)64, height );
             call_a( mc_a.load_deinterleave_chroma_fenc, pbuf4, pbuf1, (intptr_t)64, height );
             if( memcmp( pbuf3, pbuf4, FENC_STRIDE*height ) )
@@ -1357,6 +1360,9 @@ static int check_mc( int cpu_ref, int cpu_new )
         {
             set_func_name( "load_deinterleave_chroma_fdec" );
             used_asm = 1;
+            /* the functions leave parts of each row unwritten: start both outputs equal */
+            memset( pbuf3, 0x5a, 64*height * sizeof(pixel) );
+            memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
             call_c( mc_c.load_deinterleave_chroma_fdec, pbuf3, pbuf1, (intptr_t)64, height );
             call_a( mc_a.load_deinterleave_chroma_fdec, pbuf4, pbuf1, (intptr_t)64, height );
             if( memcmp( pbuf3, pbuf4, FDEC_STRIDE*height ) )
