@@ -1221,6 +1221,31 @@ cglobal load_deinterleave_chroma_fdec, 4,4
     RET
 %endmacro ; PLANE_DEINTERLEAVE
 
+%macro LOAD_DEINTERLEAVE_CHROMA_FENC_AVX512 0
+cglobal load_deinterleave_chroma_fenc, 4,5
+    vbroadcasti128 m0, [deinterleave_shuf]
+    lea            r4, [r2*3]
+.loop:
+    mova          xm1, [r1]         ; 0
+    vinserti128   ym1, [r1+r2], 1   ; 1
+    mova          xm2, [r1+r2*4]    ; 4
+    vinserti32x4   m1, [r1+r2*2], 2 ; 2
+    vinserti32x4   m2, [r1+r4*2], 2 ; 6
+    vinserti32x4   m1, [r1+r4], 3   ; 3
+    lea            r1, [r1+r2*4]
+    vinserti32x4   m2, [r1+r2], 1   ; 5
+    vinserti32x4   m2, [r1+r4], 3   ; 7
+    lea            r1, [r1+r2*4]
+    pshufb         m1, m0
+    pshufb         m2, m0
+    mova         [r0], m1
+    mova  [r0+mmsize], m2
+    add            r0, 2*mmsize
+    sub           r3d, mmsize/8
+    jg .loop
+    RET
+%endmacro ; LOAD_DEINTERLEAVE_CHROMA_FENC_AVX512
+
 %macro PLANE_DEINTERLEAVE_RGB_CORE 9 ; pw, i_dsta, i_dstb, i_dstc, i_src, w, h, tmp1, tmp2
 %if cpuflag(ssse3)
     mova        m3, [deinterleave_rgb_shuf+(%1-3)*16]
@@ -1422,6 +1447,8 @@ PLANE_INTERLEAVE
 PLANE_DEINTERLEAVE
 INIT_XMM ssse3
 PLANE_DEINTERLEAVE
+INIT_ZMM avx512
+LOAD_DEINTERLEAVE_CHROMA_FENC_AVX512
 %endif
 
 ; These functions are not general-use; not only do the SSE ones require aligned input,

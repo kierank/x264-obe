@@ -358,6 +358,8 @@ void x264_load_deinterleave_chroma_fenc_mmx ( pixel *dst, pixel *src, intptr_t i
 void x264_load_deinterleave_chroma_fenc_sse2( pixel *dst, pixel *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fenc_ssse3( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fenc_avx( uint16_t *dst, uint16_t *src, intptr_t i_src, int height );
+#define x264_load_deinterleave_chroma_fenc_avx512 x264_template(load_deinterleave_chroma_fenc_avx512)
+void x264_load_deinterleave_chroma_fenc_avx512( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fdec_mmx ( pixel *dst, pixel *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fdec_sse2( pixel *dst, pixel *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fdec_ssse3( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
@@ -1197,6 +1199,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg[PIXEL_8x16]  = x264_pixel_avg_8x16_avx512;
         pf->avg[PIXEL_8x8]   = x264_pixel_avg_8x8_avx512;
         pf->avg[PIXEL_8x4]   = x264_pixel_avg_8x4_avx512;
+        pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx512;
     }
 #endif // HIGH_BIT_DEPTH
 
