@@ -4136,8 +4136,22 @@ HADAMARD_AC_WXH_MMX  8, 16
 HADAMARD_AC_WXH_MMX 16,  8
 HADAMARD_AC_WXH_MMX  8,  8
 
+%assign hadac_vstack 0
 %macro LOAD_INC_8x4W_SSE2 5
-%if HIGH_BIT_DEPTH
+%if HIGH_BIT_DEPTH && mmsize == 32 && hadac_vstack ; lane 1 = the block 8 rows down, at r4
+    movu      xm%1, [r0]
+    vinserti128 m%1, m%1, [r4], 1
+    movu      xm%2, [r0+r1]
+    vinserti128 m%2, m%2, [r4+r1], 1
+    movu      xm%3, [r0+r1*2]
+    vinserti128 m%3, m%3, [r4+r1*2], 1
+    movu      xm%4, [r0+r2]
+    vinserti128 m%4, m%4, [r4+r2], 1
+%ifidn %1, 0
+    lea       r0, [r0+r1*4]
+    lea       r4, [r4+r1*4]
+%endif
+%elif HIGH_BIT_DEPTH
     movu      m%1, [r0]
     movu      m%2, [r0+r1]
     movu      m%3, [r0+r1*2]
@@ -4168,10 +4182,10 @@ HADAMARD_AC_WXH_MMX  8,  8
     HSUMSUB %1, %2, %3, %4, %5
 %endmacro
 
-%macro HADAMARD_AC_SSE2 0
+%macro HADAMARD_AC_SSE2 0-1 ; %1: suffix of the internal (v: vertically stacked blocks)
 ; in:  r0=pix, r1=stride, r2=stride*3
 ; out: [esp+16]=sa8d, [esp+32]=satd, r0+=stride*4
-cglobal hadamard_ac_8x8
+cglobal hadamard_ac_8x8%1
 %if ARCH_X86_64
     %define spill0 m8
     %define spill1 m9
@@ -4278,11 +4292,13 @@ cglobal hadamard_ac_8x8
     SAVE_MM_PERMUTATION
     ret
 
+%ifnidn %1, v
 HADAMARD_AC_WXH_SSE2 16, 16
 HADAMARD_AC_WXH_SSE2 16,  8
 %if mmsize <= 16
 HADAMARD_AC_WXH_SSE2  8, 16
 HADAMARD_AC_WXH_SSE2  8,  8
+%endif
 %endif
 %endmacro ; HADAMARD_AC_SSE2
 
@@ -4597,6 +4613,28 @@ cglobal pixel_satd_16x16, 4,6,8
 INIT_YMM avx2
 SA8D_SATD
 HADAMARD_AC_SSE2
+
+; 8x16: lane 0 is the top 8x8, lane 1 the bottom one, one pass like 16x8
+%assign hadac_vstack 1
+HADAMARD_AC_SSE2 v
+%assign hadac_vstack 0
+cglobal pixel_hadamard_ac_8x16, 2,5,11
+    FIX_STRIDES r1
+    mov   r3, rsp
+    and  rsp, ~(mmsize-1)
+    sub  rsp, mmsize*3
+    lea   r2, [r1*3]
+    lea   r4, [r0+r1*8]
+    call hadamard_ac_8x8v
+    HADAMARD_AC_WXH_SUM_SSE2 8, 16
+    movd edx, xm0
+    movd eax, xm1
+    shr  edx, 2
+    shr  eax, 1
+    shl  rdx, 32
+    add  rax, rdx
+    mov  rsp, r3
+    RET
 
 ; 16 pixel rows: lane 0 is pix[0], lane 1 is pix[8], the 8x8 transform is lane-local
 cglobal pixel_sa8d_16x8_internal
