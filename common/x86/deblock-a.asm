@@ -61,14 +61,31 @@ cextern pb_unpackbd1
     psubw   %4, %3
 %endmacro
 
+; out: %1 = %2 > %3; %2 may be memory
+%macro PCMPGTW_MR 3
+%ifnum sizeof%2
+    pcmpgtw %1, %2, %3
+%else
+    mova    %1, %2
+    pcmpgtw %1, %3
+%endif
+%endmacro
+
 ; out: %4 = |%1-%2|<%3
 %macro DIFF_LT   5
+%if cpuflag(ssse3)
+    ; exact: |%1-%2| <= pixel_max fits a signed word
+    psubw   %5, %1, %2
+    pabsw   %5, %5
+    PCMPGTW_MR %4, %3, %5
+%else
     psubusw %4, %2, %1
     psubusw %5, %1, %2
     por     %5, %4 ; |%1-%2|
     pxor    %4, %4
     psubw   %5, %3 ; |%1-%2|-%3
     pcmpgtw %4, %5 ; 0 > |%1-%2|-%3
+%endif
 %endmacro
 
 %macro LOAD_AB 4
@@ -99,6 +116,18 @@ cextern pb_unpackbd1
 ;     %5=alpha, %6=beta, %7-%9=tmp
 ; out: %7=mask
 %macro LOAD_MASK 9
+%if cpuflag(ssse3)
+    psubw       %8, %2, %3
+    pabsw       %8, %8
+    PCMPGTW_MR  %7, %5, %8     ; |p0-q0| < alpha
+    psubw       %8, %1, %2
+    pabsw       %8, %8
+    psubw       %9, %3, %4
+    pabsw       %9, %9
+    pmaxsw      %8, %9
+    PCMPGTW_MR  %9, %6, %8     ; max(|p1-p0|, |q1-q0|) < beta
+    pand        %7, %9
+%else
     ABS_SUB     %2, %3, %5, %8, %7 ; |p0-q0| - alpha
     ABS_SUB     %1, %2, %6, %9, %7 ; |p1-p0| - beta
     pand        %8, %9
@@ -106,6 +135,7 @@ cextern pb_unpackbd1
     pxor        %7, %7
     pand        %8, %9
     pcmpgtw     %7, %8
+%endif
 %endmacro
 
 ; in: %1=p0, %2=q0, %3=p1, %4=q1, %5=mask, %6=tmp, %7=tmp
