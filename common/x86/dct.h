@@ -40,6 +40,8 @@ void x264_sub8x8_dct_sse2   ( int16_t dct[ 4][16], uint8_t *pix1, uint8_t *pix2 
 void x264_sub16x16_dct_sse2 ( int16_t dct[16][16], uint8_t *pix1, uint8_t *pix2 );
 #define x264_sub4x4_dct_ssse3 x264_template(sub4x4_dct_ssse3)
 void x264_sub4x4_dct_ssse3  ( int16_t dct    [16], uint8_t *pix1, uint8_t *pix2 );
+#define x264_sub4x4_dct_avx512 x264_template(sub4x4_dct_avx512)
+void x264_sub4x4_dct_avx512 ( int16_t dct    [16], uint8_t *pix1, uint8_t *pix2 );
 #define x264_sub8x8_dct_ssse3 x264_template(sub8x8_dct_ssse3)
 void x264_sub8x8_dct_ssse3  ( int16_t dct[ 4][16], uint8_t *pix1, uint8_t *pix2 );
 #define x264_sub16x16_dct_ssse3 x264_template(sub16x16_dct_ssse3)
