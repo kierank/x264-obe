@@ -4766,6 +4766,96 @@ INTRA_X9
 %endif
 HADAMARD_AC_SSE2
 
+;-----------------------------------------------------------------------------
+; uint64_t pixel_hadamard_ac_8x8( pixel *pix, intptr_t stride )
+; Lane 0 holds rows 0-3, lane 1 rows 4-7: the 4x4 transforms and the column
+; half stage are lane-local, the row half stage is across lanes. Pixels are
+; non-negative, so every value before that last stage fits 15 bits except
+; the (masked) DC. 8-bit rows are zero extended to the same layout.
+;-----------------------------------------------------------------------------
+%macro HADAMARD_AC_8x8_AVX2 0
+cglobal pixel_hadamard_ac_8x8, 2,3,8
+    FIX_STRIDES r1
+    lea          r2, [r1*3]
+%if HIGH_BIT_DEPTH
+    movu        xm0, [r0]
+    movu        xm1, [r0+r1]
+    movu        xm2, [r0+r1*2]
+    movu        xm3, [r0+r2]
+    lea          r0, [r0+r1*4]
+    vinserti128  m0, m0, [r0], 1
+    vinserti128  m1, m1, [r0+r1], 1
+    vinserti128  m2, m2, [r0+r1*2], 1
+    vinserti128  m3, m3, [r0+r2], 1
+%else
+    movq        xm0, [r0]
+    movq        xm1, [r0+r1]
+    movq        xm2, [r0+r1*2]
+    movq        xm3, [r0+r2]
+    lea          r0, [r0+r1*4]
+    movhps      xm0, [r0]
+    movhps      xm1, [r0+r1]
+    movhps      xm2, [r0+r1*2]
+    movhps      xm3, [r0+r2]
+    pmovzxbw     m0, xm0
+    pmovzxbw     m1, xm1
+    pmovzxbw     m2, xm2
+    pmovzxbw     m3, xm3
+%endif
+    HADAMARD4_2D_SSE 0, 1, 2, 3, 4
+    mova         m7, [pw_1]
+    pabsw        m4, m0
+    pand         m4, [mask_ac4]
+    pabsw        m5, m1
+    paddw        m4, m5
+    pabsw        m5, m2
+    paddw        m4, m5
+    pabsw        m5, m3
+    paddw        m4, m5            ; 4x4 AC, <= 4*8184
+    pmaddwd      m4, m7
+    HADAMARD 4, sumsub, 0, 1, 5
+    HADAMARD 4, sumsub, 2, 3, 5
+    pabsw        m1, m1
+    pabsw        m2, m2
+    pabsw        m3, m3
+    vextracti128 xm5, m1, 1
+    vextracti128 xm6, m2, 1
+    pmaxsw      xm1, xm5
+    pmaxsw      xm2, xm6
+    vextracti128 xm5, m3, 1
+    vextracti128 xm6, m0, 1
+    pmaxsw      xm3, xm5
+    paddw       xm5, xm0, xm6      ; DC in word 0
+    psubw       xm0, xm6
+    pand        xm5, [mask_ac8]
+    pabsw       xm5, xm5
+    pabsw       xm0, xm0
+    pmaddwd     xm1, xm7
+    pmaddwd     xm2, xm7
+    pmaddwd     xm3, xm7
+    pmaddwd     xm5, xm7
+    pmaddwd     xm0, xm7
+    paddd       xm1, xm2
+    paddd       xm1, xm3
+    paddd       xm1, xm1           ; max(|a|,|b|) is half of |a+b|+|a-b|
+    paddd       xm0, xm5
+    paddd       xm0, xm1           ; sa8d
+    vextracti128 xm1, m4, 1
+    paddd       xm4, xm1           ; satd
+    phaddd      xm4, xm0
+    pshufd      xm0, xm4, q2301
+    paddd       xm0, xm4           ; satd satd sa8d sa8d
+    movd        eax, xm0
+    pextrd      edx, xm0, 2
+    shr         eax, 1
+    shr         edx, 2
+%if ARCH_X86_64
+    shl         rdx, 32
+    add         rax, rdx
+%endif
+    RET
+%endmacro
+
 
 ;-----------------------------------------------------------------------------
 ; int pixel_satd_bi_WxH( fenc, pixel *src0, intptr_t stride0, pixel *src1, intptr_t stride1, int weight )
@@ -5249,78 +5339,8 @@ cglobal pixel_sa8d_16x16, 4,8,12
     RET
 %endif
 
-;-----------------------------------------------------------------------------
-; uint64_t pixel_hadamard_ac_8x8( uint16_t *pix, intptr_t stride )
-; Lane 0 holds rows 0-3, lane 1 rows 4-7: the 4x4 transforms and the column
-; half stage are lane-local, the row half stage is across lanes. Pixels are
-; non-negative, so every value before that last stage fits 15 bits except
-; the (masked) DC.
-;-----------------------------------------------------------------------------
 INIT_YMM avx2
-cglobal pixel_hadamard_ac_8x8, 2,3,8
-    FIX_STRIDES r1
-    lea          r2, [r1*3]
-    movu        xm0, [r0]
-    movu        xm1, [r0+r1]
-    movu        xm2, [r0+r1*2]
-    movu        xm3, [r0+r2]
-    lea          r0, [r0+r1*4]
-    vinserti128  m0, m0, [r0], 1
-    vinserti128  m1, m1, [r0+r1], 1
-    vinserti128  m2, m2, [r0+r1*2], 1
-    vinserti128  m3, m3, [r0+r2], 1
-    HADAMARD4_2D_SSE 0, 1, 2, 3, 4
-    mova         m7, [pw_1]
-    pabsw        m4, m0
-    pand         m4, [mask_ac4]
-    pabsw        m5, m1
-    paddw        m4, m5
-    pabsw        m5, m2
-    paddw        m4, m5
-    pabsw        m5, m3
-    paddw        m4, m5            ; 4x4 AC, <= 4*8184
-    pmaddwd      m4, m7
-    HADAMARD 4, sumsub, 0, 1, 5
-    HADAMARD 4, sumsub, 2, 3, 5
-    pabsw        m1, m1
-    pabsw        m2, m2
-    pabsw        m3, m3
-    vextracti128 xm5, m1, 1
-    vextracti128 xm6, m2, 1
-    pmaxsw      xm1, xm5
-    pmaxsw      xm2, xm6
-    vextracti128 xm5, m3, 1
-    vextracti128 xm6, m0, 1
-    pmaxsw      xm3, xm5
-    paddw       xm5, xm0, xm6      ; DC in word 0
-    psubw       xm0, xm6
-    pand        xm5, [mask_ac8]
-    pabsw       xm5, xm5
-    pabsw       xm0, xm0
-    pmaddwd     xm1, xm7
-    pmaddwd     xm2, xm7
-    pmaddwd     xm3, xm7
-    pmaddwd     xm5, xm7
-    pmaddwd     xm0, xm7
-    paddd       xm1, xm2
-    paddd       xm1, xm3
-    paddd       xm1, xm1           ; max(|a|,|b|) is half of |a+b|+|a-b|
-    paddd       xm0, xm5
-    paddd       xm0, xm1           ; sa8d
-    vextracti128 xm1, m4, 1
-    paddd       xm4, xm1           ; satd
-    phaddd      xm4, xm0
-    pshufd      xm0, xm4, q2301
-    paddd       xm0, xm4           ; satd satd sa8d sa8d
-    movd        eax, xm0
-    pextrd      edx, xm0, 2
-    shr         eax, 1
-    shr         edx, 2
-%if ARCH_X86_64
-    shl         rdx, 32
-    add         rax, rdx
-%endif
-    RET
+HADAMARD_AC_8x8_AVX2
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sa8d_8x8( uint16_t *, intptr_t, uint16_t *, intptr_t )
@@ -6311,6 +6331,160 @@ HADAMARD_AC_SSE2
 %if ARCH_X86_64
 SA8D_SATD
 %endif
+
+HADAMARD_AC_8x8_AVX2
+
+%if ARCH_X86_64
+; 8-bit, ymm: 8 pixel rows as [row row | row+8 row+8], lane 1 at r4 = r0+8*stride
+%macro LOAD_DUP_8x2P_VSTACK 2 ; dst, offset
+    vpbroadcastq m%1, [r0+%2]
+    vpbroadcastq m11, [r4+%2]
+    vpblendd     m%1, m%1, m11, 0xf0
+%endmacro
+
+%macro LOAD_INC_8x4W_VSTACK 5
+    LOAD_DUP_8x2P_VSTACK %1, r2
+    LOAD_DUP_8x2P_VSTACK %2, r1
+    LOAD_DUP_8x2P_VSTACK %3, r1*2
+    LOAD_DUP_8x2P_VSTACK %4, 0
+%ifidn %1, 0
+    lea       r0, [r0+r1*4]
+    lea       r4, [r4+r1*4]
+%endif
+    HSUMSUB %1, %2, %3, %4, %5
+%endmacro
+
+; 8x16: lane 0 is the top 8x8, lane 1 the bottom one, one pass like 16x8
+%define LOAD_INC_8x4W LOAD_INC_8x4W_VSTACK
+HADAMARD_AC_SSE2 v
+%define LOAD_INC_8x4W LOAD_INC_8x4W_SSSE3
+cglobal pixel_hadamard_ac_8x16, 2,5,12
+    mov   r3, rsp
+    and  rsp, ~(mmsize-1)
+    sub  rsp, mmsize*3
+    lea   r2, [r1*3]
+    lea   r4, [r0+r1*8]
+    call hadamard_ac_8x8v
+    HADAMARD_AC_WXH_SUM_SSE2 8, 16
+    movd edx, xm0
+    movd eax, xm1
+    shr  edx, 2
+    shr  eax, 1
+    shl  rdx, 32
+    add  rax, rdx
+    mov  rsp, r3
+    RET
+%endif
+
+;-----------------------------------------------------------------------------
+; int pixel_ssd_8xN( uint8_t *, intptr_t, uint8_t *, intptr_t )
+; four 8 pixel rows a ymm, the two sources interleaved for pmaddubsw
+;-----------------------------------------------------------------------------
+%macro SSD_W8_4ROWS_AVX2 1 ; first
+    movq        xm1, [r0]
+    movhps      xm1, [r0+r1]
+    movq        xm3, [r0+r1*2]
+    movhps      xm3, [r0+r4]
+    movq        xm2, [r2]
+    movhps      xm2, [r2+r3]
+    movq        xm4, [r2+r3*2]
+    movhps      xm4, [r2+r5]
+    vinserti128  m1, m1, xm3, 1
+    vinserti128  m2, m2, xm4, 1
+    punpckhbw    m3, m1, m2
+    punpcklbw    m1, m2
+    pmaddubsw    m1, m5
+    pmaddubsw    m3, m5
+    pmaddwd      m1, m1
+    pmaddwd      m3, m3
+%if %1
+    paddd        m0, m1, m3
+%else
+    paddd        m1, m3
+    paddd        m0, m1
+%endif
+%endmacro
+
+%macro SSD_W8_AVX2 1 ; height
+cglobal pixel_ssd_8x%1, 4,6,6
+    lea          r4, [r1*3]
+    lea          r5, [r3*3]
+    mova         m5, [hsub_mul]
+    SSD_W8_4ROWS_AVX2 1
+%rep %1/4-1
+    lea          r0, [r0+r1*4]
+    lea          r2, [r2+r3*4]
+    SSD_W8_4ROWS_AVX2 0
+%endrep
+    vextracti128 xm1, m0, 1
+    paddd       xm0, xm1
+    pshufd      xm1, xm0, q1032
+    paddd       xm0, xm1
+    pshufd      xm1, xm0, q2301
+    paddd       xm0, xm1
+    movd        eax, xm0
+    RET
+%endmacro
+
+SSD_W8_AVX2  8
+SSD_W8_AVX2 16
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_var_8xN( uint8_t *, intptr_t )
+; four 8 pixel rows a ymm: psadbw sums, zero extended pmaddwd squares
+;-----------------------------------------------------------------------------
+%macro VAR_W8_4ROWS_AVX2 1 ; first
+    movq        xm0, [r0]
+    movhps      xm0, [r0+r1]
+    movq        xm1, [r0+r1*2]
+    movhps      xm1, [r0+r2]
+    vinserti128  m0, m0, xm1, 1
+%if %1
+    psadbw       m5, m0, m4
+%else
+    psadbw       m1, m0, m4
+%endif
+    punpcklbw    m2, m0, m4
+    punpckhbw    m0, m4
+    pmaddwd      m2, m2
+    pmaddwd      m0, m0
+%if %1
+    paddd        m6, m2, m0
+%else
+    paddd        m5, m1
+    paddd        m2, m0
+    paddd        m6, m2
+%endif
+%endmacro
+
+%macro VAR_W8_AVX2 1 ; height
+cglobal pixel_var_8x%1, 2,3,7
+    pxor         m4, m4
+    lea          r2, [r1*3]
+    VAR_W8_4ROWS_AVX2 1
+%rep %1/4-1
+    lea          r0, [r0+r1*4]
+    VAR_W8_4ROWS_AVX2 0
+%endrep
+    pshufd       m0, m6, q2301
+    paddd        m6, m0              ; squares, dword pairs
+    vpblendd     m5, m5, m6, 0xaa    ; sum, squares in each qword
+    vextracti128 xm0, m5, 1
+    paddd       xm5, xm0
+    pshufd      xm0, xm5, q1032
+    paddd       xm5, xm0
+%if ARCH_X86_64
+    movq        rax, xm5
+%else
+    movd        eax, xm5
+    pextrd      edx, xm5, 1
+%endif
+    RET
+%endmacro
+
+VAR_W8_AVX2  8
+VAR_W8_AVX2 16
+
 
 ; 8 pixel rows %3 and %4 as [%3 %3 | %4 %4]
 %macro LOAD_DUP_8x2P_AVX2 4 ; dst, tmp, 2*mem
