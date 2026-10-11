@@ -587,7 +587,7 @@ int main( int argc, char **argv )
             vpush( &v_lajob, c->la_job_max / tpu );
 
         int reenc = 0;
-        int nwork = 0;
+        int nwork = 0, nstart = 0;
         double wsum = 0, wmax = 0;
         for( int t = 0; t < nthr; t++ )
         {
@@ -595,6 +595,7 @@ int main( int argc, char **argv )
             reenc += s->reenc;
             if( c->disp[t] && s->sw_start )
                 vpush( &v_disp[t], us( c->disp[t], s->sw_start ) );
+            nstart += !!s->sw_start;
             if( s->sw_start && s->deblock_end )
             {
                 double w = us( s->sw_start, s->deblock_end );
@@ -607,7 +608,7 @@ int main( int argc, char **argv )
         }
         tot_reenc += reenc;
         fr_reenc += reenc > 0;
-        if( sliced && nwork == nthr && wsum > 0 )
+        if( sliced && nwork > 1 && nwork == nstart && wsum > 0 )
         {
             vpush( &v_imb, wmax / (wsum / nwork) );
             vpush( &v_imb_us, wmax - wsum / nwork );
