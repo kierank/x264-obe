@@ -200,6 +200,25 @@ do\
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* Drop candidates equal to pmv or to an earlier candidate, keeping the order
+ * of first occurrences. An exact duplicate costs no less than its first
+ * occurrence and has a higher index, so it can never win the strict
+ * (cost<<4)+i comparison: the selected predictor and cost are unchanged. */
+static ALWAYS_INLINE int mvc_dedupe( int16_t (*mvc)[2], int n, uint32_t pmv )
+{
+    int k = 0;
+    for( int i = 0; i < n; i++ )
+    {
+        uint32_t mv = M32( mvc[i] );
+        int dup = mv == pmv;
+        for( int j = 0; j < k; j++ )
+            dup |= M32( mvc[j] ) == mv;
+        if( !dup )
+            M32( mvc[k++] ) = mv;
+    }
+    return k;
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -250,6 +269,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
             int valid_mvcs = x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            valid_mvcs = mvc_dedupe( mvc_temp+2, valid_mvcs, pmv );
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
@@ -315,6 +335,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Like in subme>=3, except we also round the candidates to fullpel. */
             int valid_mvcs = x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            valid_mvcs = mvc_dedupe( mvc_temp+2, valid_mvcs, pmv );
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
