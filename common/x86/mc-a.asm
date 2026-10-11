@@ -2301,7 +2301,7 @@ cglobal mc_chroma
     movhps      [r1], xm0
     movq     [r0+r2], xm3
     movhps   [r1+r2], xm3
-    SWAP           0, 1
+    mova           m0, m1              ; SWAP would only rename for the code after it
     lea           r0, [r0+r2*2]
     lea           r1, [r1+r2*2]
     lea           r3, [r3+r4*2]
@@ -2336,7 +2336,7 @@ cglobal mc_chroma
     vextracti32x4 [r0+r2], m0, 1
     vextracti32x4 [r1], m0, 2
     vextracti32x4 [r1+r2], m0, 3
-    SWAP           0, 1
+    mova           m0, m1              ; SWAP would only rename for the code after it
     lea           r0, [r0+r2*2]
     lea           r1, [r1+r2*2]
     lea           r3, [r3+r4*2]
@@ -2362,7 +2362,7 @@ cglobal mc_chroma
     vpermq         m0, m0, q3120       ; u0-u7 | v0-v7
     movu        [r0], xm0
     vextracti128 [r1], m0, 1
-    SWAP           0, 1
+    mova           m0, m1              ; SWAP would only rename for the code after it
     add           r0, r2
     add           r1, r2
     add           r3, r4
