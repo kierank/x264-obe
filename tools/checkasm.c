@@ -2086,11 +2086,11 @@ static int check_quant( int cpu_ref, int cpu_new )
     x264_quant_function_t qf_a;
     ALIGNED_ARRAY_64( dctcoef, dct1,[64] );
     ALIGNED_ARRAY_64( dctcoef, dct2,[64] );
-    ALIGNED_ARRAY_32( dctcoef, dct3,[8],[16] );
-    ALIGNED_ARRAY_32( dctcoef, dct4,[8],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dct3,[8],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dct4,[8],[16] );
     ALIGNED_ARRAY_32( uint8_t, cqm_buf,[64] );
-    ALIGNED_ARRAY_32( dctcoef, lvl1,[4],[16] );
-    ALIGNED_ARRAY_32( dctcoef, lvl2,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, lvl1,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, lvl2,[4],[16] );
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     int ret = 0, ok, used_asm;
     int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
@@ -2248,7 +2248,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_DEQUANT( quant_4x4, dequant_4x4, CQM_4PY, 4 );
 
         /* j: bits 0-3 nonzero blocks (all zero when j%8 == 7), bits 4-5 level size, bit 6 no dequant,
-         * bit 7 zero DC; levels near +-1 exercise the decimate score */
+         * bit 7 zero DC (else often a large DC for _ac); levels near +-1 exercise the decimate score */
 #define TEST_QUANT_SCAN( name, block, ac ) \
         for( int fld = 0; fld < 2; fld++ ) \
             if( zz_a[fld].name != zz_ref[fld].name ) \
@@ -2269,6 +2269,8 @@ static int check_quant( int cpu_ref, int cpu_new )
                             int x = ((j>>4)&3) == 0 ? rand()%(2*big+1) - big \
                                   : ((j>>4)&3) == 3 ? (rand()&15 ? 0 : rand()&1 ? big : -big) \
                                   : (rand()&3 ? 0 : rand()%(2*small+1) - small); \
+                            if( (ac) && !(k&15) && rand()&1 ) \
+                                x = rand()&1 ? big : -big; \
                             dct3[k>>4][k&15] = dct4[k>>4][k&15] = (j>>(k>>4))&1 && (j&7) != 7 ? x : 0; \
                         } \
                         if( (ac) && (j&128) ) \
