@@ -1528,6 +1528,12 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * the SA8D/SATD comparison favours by more than pct% without the RD */
         e = getenv( "X264_EXP_ALG_TRDPRE" );
         h->exp.i_alg_trdpre = e ? atoi( e ) : 0;
+        /* X264_EXP_ALG_CHROMAME, a mask: 1 no chroma ME in 8x8 searches (chroma cost
+         * added at the MV found), 2 the halfpel cut across refs on luma, chroma ME
+         * only for the refs past it */
+        e = getenv( "X264_EXP_ALG_CHROMAME" );
+        h->exp.i_alg_chromame = e ? atoi( e ) : 0;
+        h->exp.i_chromame = h->exp.i_alg_chromame & 3;
         /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
          * the counts at x264_encoder_close; does not change the output */
         e = getenv( "X264_EXP_CENSUS" );
@@ -1536,10 +1542,10 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.b_census_me = 0;
         h->exp.p_hpel_shadow = NULL;
         if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme ||
-            h->exp.i_alg_fieldref || h->exp.i_alg_partgate || h->exp.i_alg_trdpre || h->exp.b_census )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d partgate %d trdpre %d census %d\n",
+            h->exp.i_alg_fieldref || h->exp.i_alg_partgate || h->exp.i_alg_trdpre || h->exp.i_alg_chromame || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d partgate %d trdpre %d chromame %d census %d\n",
                       h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme,
-                      h->exp.i_alg_fieldref, h->exp.i_alg_partgate, h->exp.i_alg_trdpre, h->exp.b_census );
+                      h->exp.i_alg_fieldref, h->exp.i_alg_partgate, h->exp.i_alg_trdpre, h->exp.i_alg_chromame, h->exp.b_census );
     }
 
     /* Init frames. */
@@ -4150,6 +4156,8 @@ static void x264_exp_census_print( x264_t *h )
                  c.trdpre[f][2][1], c.trdpre[f][2][0], c.trdpre[f][3][1], c.trdpre[f][3][0] );
     fprintf( stderr, "bd-alg census: trdpre skipped kept %"PRId64" took-other %"PRId64"\n",
              c.trdpre_skip[0], c.trdpre_skip[1] );
+    fprintf( stderr, "bd-alg census: chromame 8x8-refines %"PRId64" hpel-cuts %"PRId64" stopped %"PRId64"\n",
+             c.chromame[0], c.chromame[1], c.chromame[2] );
 }
 
 /****************************************************************************

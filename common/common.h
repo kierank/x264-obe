@@ -294,6 +294,8 @@ typedef struct
     int64_t trdpre[2][4][2];        /* transform RDs after the ALG_TRDPRE comparison: [it favours the measured
                                      * size, the other][margin <5, <10, <20, >=20%][all, the RD agreed] */
     int64_t trdpre_skip[2];         /* RDs ALG_TRDPRE skipped: [kept the measured size, took the other] */
+    int64_t chromame[3];            /* subpel refines with chroma ME: [8x8 ones, halfpel cuts across refs,
+                                     * refs those stop] */
 } x264_exp_census_t;
 
 struct x264_t
@@ -779,6 +781,8 @@ struct x264_t
         int     i_fieldref_arm;     /* the ALG_FIELDREF arm in effect for the current frame */
         int     i_alg_partgate;
         int     i_alg_trdpre;
+        int     i_alg_chromame;
+        int     i_chromame;         /* the ALG_CHROMAME mask in effect for the current frame */
         int     b_census;           /* X264_EXP_CENSUS */
         int     b_census_me;        /* set around the 16x16 searches */
         int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */
