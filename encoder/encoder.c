@@ -1184,6 +1184,8 @@ static int x264_validate_parameters( x264_t *h, int b_open )
              {{3,2,1,1}, {2,1,1,1}, {4,3,2,1}, {6,4,3,2}, {12, 9, 6, 4}}};
 
             h->param.i_lookahead_threads = h->param.i_threads / lookahead_thread_div[badapt][subme][bframes];
+            if( h->param.i_lookahead_threads_div > 0 )
+                h->param.i_lookahead_threads = X264_MAX( h->param.i_lookahead_threads, h->param.i_threads / h->param.i_lookahead_threads_div );
             /* Since too many lookahead threads significantly degrades lookahead accuracy, limit auto
              * lookahead threads to about 8 macroblock rows high each at worst.  This number is chosen
              * pretty much arbitrarily. */

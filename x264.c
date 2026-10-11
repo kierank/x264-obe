@@ -933,6 +933,8 @@ static void help( x264_param_t *defaults, int longhelp )
     H1( "      --ssim                  Enable SSIM computation\n" );
     H1( "      --threads <integer>     Force a specific number of threads\n" );
     H2( "      --lookahead-threads <integer> Force a specific number of lookahead threads\n" );
+    H2( "      --lookahead-threads-div <integer> Frame threads, auto lookahead threads:\n"
+        "                              use at least threads/N (changes output)\n" );
     H2( "      --sliced-threads        Low-latency but lower-efficiency threading\n" );
     H2( "      --slice-balance <integer> Sliced threads: how rows are split between threads\n"
         "                                  - 0: equal row counts\n"
@@ -1120,6 +1122,7 @@ static struct option long_options[] =
     { "speed-bufsize", required_argument, NULL, 0 },
     { "threads",     required_argument, NULL, 0 },
     { "lookahead-threads", required_argument, NULL, 0 },
+    { "lookahead-threads-div", required_argument, NULL, 0 },
     { "sliced-threads",    no_argument, NULL, 0 },
     { "no-sliced-threads", no_argument, NULL, 0 },
     { "slice-balance",     required_argument, NULL, 0 },

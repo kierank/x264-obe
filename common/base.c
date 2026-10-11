@@ -883,6 +883,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         else
             p->i_lookahead_threads = atoi(value);
     }
+    OPT("lookahead-threads-div")
+        p->i_lookahead_threads_div = atoi(value);
     OPT("sliced-threads")
         p->b_sliced_threads = atobool(value);
     OPT("slice-balance")
@@ -1360,6 +1362,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
     s += sprintf( s, " chroma_qp_offset=%d", p->analyse.i_chroma_qp_offset );
     s += sprintf( s, " threads=%d", p->i_threads );
     s += sprintf( s, " lookahead_threads=%d", p->i_lookahead_threads );
+    if( p->i_lookahead_threads_div )
+        s += sprintf( s, " lookahead_threads_div=%d", p->i_lookahead_threads_div );
     s += sprintf( s, " sliced_threads=%d", p->b_sliced_threads );
     if( p->i_slice_balance )
         s += sprintf( s, " slice_balance=%d", p->i_slice_balance );
