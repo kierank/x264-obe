@@ -226,6 +226,10 @@ void          x264_frame_delete( x264_frame_t *frame );
 
 #define x264_frame_copy_picture x264_template(frame_copy_picture)
 int           x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src );
+#define x264_frame_copy_picture_init x264_template(frame_copy_picture_init)
+int           x264_frame_copy_picture_init( x264_t *h, x264_frame_t *dst, x264_picture_t *src );
+#define x264_frame_copy_picture_rows x264_template(frame_copy_picture_rows)
+void          x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t *src, int y0, int y1 );
 
 #define x264_frame_expand_border x264_template(frame_expand_border)
 void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y );
@@ -233,10 +237,14 @@ void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y
 void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 #define x264_frame_expand_border_lowres x264_template(frame_expand_border_lowres)
 void          x264_frame_expand_border_lowres( x264_frame_t *frame );
+#define x264_frame_expand_border_lowres_rows x264_template(frame_expand_border_lowres_rows)
+void          x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 );
 #define x264_frame_expand_border_chroma x264_template(frame_expand_border_chroma)
 void          x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane );
 #define x264_frame_expand_border_mod16 x264_template(frame_expand_border_mod16)
 void          x264_frame_expand_border_mod16( x264_t *h, x264_frame_t *frame );
+#define x264_frame_expand_border_mod16_rows x264_template(frame_expand_border_mod16_rows)
+void          x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 );
 #define x264_expand_border_mbpair x264_template(expand_border_mbpair)
 void          x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y );
 
@@ -249,6 +257,12 @@ void          x264_macroblock_deblock( x264_t *h );
 void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
+#define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)
+void          x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 );
+#define x264_frame_init_lowres_rows x264_template(frame_init_lowres_rows)
+void          x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 );
+#define x264_frame_init_lowres_finish x264_template(frame_init_lowres_finish)
+void          x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame );
 
 #define x264_deblock_init x264_template(deblock_init)
 void          x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff );

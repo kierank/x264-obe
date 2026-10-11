@@ -3153,6 +3153,125 @@ static int x264_threaded_slices_write( x264_t *h )
     return 0;
 }
 
+/* With sliced threads the per-frame input work (picture copy, AQ energy,
+ * lowres) runs in MB row bands on the lookahead pool, which is idle at that
+ * point; the main thread takes band 0 and keeps every decision. The slice pool
+ * is not used: its job slots stay taken by the previous frame's slices until
+ * x264_threadpool_wait_all. Two passes with a join between them: the copy, then
+ * AQ and lowres, which read source rows of the neighbouring band. */
+typedef struct
+{
+    x264_t *h;
+    x264_frame_t *fenc;
+    x264_picture_t *pic;
+    int mb_y0;
+    int mb_y1;
+    /* second pass */
+    int b_aq;
+    float *quant_offsets;
+    uint32_t pixel_sum[3];
+    uint64_t pixel_ssd[3];
+} x264_prologue_band_t;
+
+static int x264_prologue_band_count( x264_t *h )
+{
+    /* At least 4 MB rows per band, so the last band holds every row that the
+     * padding below the picture copies from. */
+    int bands = X264_MIN( h->param.i_lookahead_threads, h->mb.i_mb_height / 4 );
+    if( !h->param.b_sliced_threads || !h->lookaheadpool || h->param.i_sync_lookahead || bands < 2 )
+        return 0;
+    return bands;
+}
+
+static void x264_prologue_bands_init( x264_t *h, x264_prologue_band_t *band, int bands,
+                                      x264_frame_t *fenc, x264_picture_t *pic )
+{
+    for( int i = 0; i < bands; i++ )
+    {
+        band[i].h = h;
+        band[i].fenc = fenc;
+        band[i].pic = pic;
+        band[i].mb_y0 = (h->mb.i_mb_height *  i    + bands/2) / bands;
+        band[i].mb_y1 = (h->mb.i_mb_height * (i+1) + bands/2) / bands;
+    }
+}
+
+static void x264_prologue_run( x264_t *h, x264_prologue_band_t *band, int bands, void *(*func)( x264_prologue_band_t * ) )
+{
+    for( int i = 1; i < bands; i++ )
+        x264_threadpool_run( h->lookaheadpool, (void*)func, &band[i] );
+    x264_stack_align( func, &band[0] );
+    for( int i = 1; i < bands; i++ )
+        x264_threadpool_wait( h->lookaheadpool, &band[i] );
+}
+
+static void *x264_prologue_copy_band( x264_prologue_band_t *band )
+{
+    x264_t *h = band->h;
+    int y0 = 16 * band->mb_y0;
+    int y1 = 16 * band->mb_y1;
+    x264_frame_copy_picture_rows( h, band->fenc, band->pic, y0, y1 );
+    if( h->param.i_width != 16 * h->mb.i_mb_width ||
+        h->param.i_height != 16 * h->mb.i_mb_height )
+        x264_frame_expand_border_mod16_rows( h, band->fenc, y0, y1 );
+    /* the lowres source edge, here so the second pass only reads the source */
+    if( h->frames.b_have_lowres )
+        x264_frame_init_lowres_edge( band->fenc, y0, y1 );
+    return NULL;
+}
+
+static void *x264_prologue_analyse_band( x264_prologue_band_t *band )
+{
+    x264_t *h = band->h;
+    for( int i = 0; i < 3; i++ )
+    {
+        band->pixel_sum[i] = 0;
+        band->pixel_ssd[i] = 0;
+    }
+    if( band->b_aq )
+        x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, band->mb_y0, band->mb_y1,
+                                        band->pixel_sum, band->pixel_ssd );
+    if( h->frames.b_have_lowres )
+        x264_frame_init_lowres_rows( h, band->fenc, band->mb_y0, band->mb_y1 );
+    return NULL;
+}
+
+/* x264_adaptive_quant_frame (or x264_macroblock_tree_read) and
+ * x264_frame_init_lowres, after the bands were copied */
+static int x264_prologue_analyse( x264_t *h, x264_prologue_band_t *band, int bands,
+                                  x264_frame_t *fenc, float *quant_offsets )
+{
+    int b_aq = !(h->param.rc.b_mb_tree && h->param.rc.b_stat_read);
+    if( !b_aq && x264_macroblock_tree_read( h, fenc, quant_offsets ) )
+        return -1;
+
+    for( int i = 0; i < bands; i++ )
+    {
+        band[i].b_aq = b_aq;
+        band[i].quant_offsets = quant_offsets;
+    }
+    x264_prologue_run( h, band, bands, x264_prologue_analyse_band );
+
+    if( b_aq )
+    {
+        /* integer sums, so the band order does not matter */
+        for( int p = 0; p < 3; p++ )
+        {
+            fenc->i_pixel_sum[p] = 0;
+            fenc->i_pixel_ssd[p] = 0;
+            for( int i = 0; i < bands; i++ )
+            {
+                fenc->i_pixel_sum[p] += band[i].pixel_sum[p];
+                fenc->i_pixel_ssd[p] += band[i].pixel_ssd[p];
+            }
+        }
+        x264_adaptive_quant_frame_end( h, fenc, quant_offsets );
+    }
+    if( h->frames.b_have_lowres )
+        x264_frame_init_lowres_finish( h, fenc );
+    return 0;
+}
+
 void x264_encoder_intra_refresh( x264_t *h )
 {
     h = h->thread[h->i_thread_phase];
@@ -3239,12 +3358,24 @@ int     x264_encoder_encode( x264_t *h,
         if( !fenc )
             return -1;
 
-        if( x264_frame_copy_picture( h, fenc, pic_in ) < 0 )
-            return -1;
+        x264_prologue_band_t prologue[X264_LOOKAHEAD_THREAD_MAX];
+        int prologue_bands = x264_prologue_band_count( h );
+        if( prologue_bands )
+        {
+            if( x264_frame_copy_picture_init( h, fenc, pic_in ) < 0 )
+                return -1;
+            x264_prologue_bands_init( h, prologue, prologue_bands, fenc, pic_in );
+            x264_prologue_run( h, prologue, prologue_bands, x264_prologue_copy_band );
+        }
+        else
+        {
+            if( x264_frame_copy_picture( h, fenc, pic_in ) < 0 )
+                return -1;
 
-        if( h->param.i_width != 16 * h->mb.i_mb_width ||
-            h->param.i_height != 16 * h->mb.i_mb_height )
-            x264_frame_expand_border_mod16( h, fenc );
+            if( h->param.i_width != 16 * h->mb.i_mb_width ||
+                h->param.i_height != 16 * h->mb.i_mb_height )
+                x264_frame_expand_border_mod16( h, fenc );
+        }
 
         fenc->i_frame = h->frames.i_input++;
 
@@ -3278,7 +3409,12 @@ int     x264_encoder_encode( x264_t *h,
                 fenc->i_pic_struct = PIC_STRUCT_PROGRESSIVE;
         }
 
-        if( h->param.rc.b_mb_tree && h->param.rc.b_stat_read )
+        if( prologue_bands )
+        {
+            if( x264_prologue_analyse( h, prologue, prologue_bands, fenc, pic_in->prop.quant_offsets ) < 0 )
+                return -1;
+        }
+        else if( h->param.rc.b_mb_tree && h->param.rc.b_stat_read )
         {
             if( x264_macroblock_tree_read( h, fenc, pic_in->prop.quant_offsets ) )
                 return -1;
@@ -3289,7 +3425,7 @@ int     x264_encoder_encode( x264_t *h,
         if( pic_in->prop.quant_offsets_free )
             pic_in->prop.quant_offsets_free( pic_in->prop.quant_offsets );
 
-        if( h->frames.b_have_lowres )
+        if( h->frames.b_have_lowres && !prologue_bands )
             x264_frame_init_lowres( h, fenc );
 
         /* 2: Place the frame into the queue for its slice type decision */

@@ -369,7 +369,9 @@ static int get_plane_ptr( x264_t *h, x264_picture_t *src, uint8_t **pix, int *st
 
 #define get_plane_ptr(...) do{ if( get_plane_ptr(__VA_ARGS__) < 0 ) return -1; }while(0)
 
-int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
+/* Validate the picture and copy its properties; the pixels are copied by
+ * x264_frame_copy_picture_rows. */
+int x264_frame_copy_picture_init( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
 {
     int i_csp = src->img.i_csp & X264_CSP_MASK;
     if( dst->i_csp != x264_frame_internal_csp( i_csp ) )
@@ -409,16 +411,52 @@ int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
     dst->mb_info    = h->param.analyse.b_mb_info ? src->prop.mb_info : NULL;
     dst->mb_info_free = h->param.analyse.b_mb_info ? src->prop.mb_info_free : NULL;
 
+    /* The stride checks, before any row is copied */
+    if( i_csp != X264_CSP_V210 && i_csp < X264_CSP_BGR )
+    {
+        int v_shift = CHROMA_V_SHIFT;
+        uint8_t *pix;
+        int stride;
+        get_plane_ptr( h, src, &pix, &stride, 0, 0, 0 );
+        if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
+            get_plane_ptr( h, src, &pix, &stride, 1, 0, v_shift );
+        else if( i_csp == X264_CSP_I420 || i_csp == X264_CSP_I422 || i_csp == X264_CSP_YV12 || i_csp == X264_CSP_YV16 )
+        {
+            int uv_swap = i_csp == X264_CSP_YV12 || i_csp == X264_CSP_YV16;
+            get_plane_ptr( h, src, &pix, &stride, uv_swap ? 2 : 1, 1, v_shift );
+            get_plane_ptr( h, src, &pix, &stride, uv_swap ? 1 : 2, 1, v_shift );
+        }
+        else //if( i_csp == X264_CSP_I444 || i_csp == X264_CSP_YV24 )
+        {
+            get_plane_ptr( h, src, &pix, &stride, i_csp==X264_CSP_I444 ? 1 : 2, 0, 0 );
+            get_plane_ptr( h, src, &pix, &stride, i_csp==X264_CSP_I444 ? 2 : 1, 0, 0 );
+        }
+    }
+    return 0;
+}
+
+/* Copy luma rows [y0,y1) of the picture and the chroma rows they cover, after
+ * x264_frame_copy_picture_init. y0 and y1 are multiples of 16 or past the picture
+ * height, so disjoint bands can be copied concurrently. */
+void x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t *src, int y0, int y1 )
+{
+    int i_csp = src->img.i_csp & X264_CSP_MASK;
+    y1 = X264_MIN( y1, h->param.i_height );
+    if( y1 <= y0 )
+        return;
+    int rows = y1 - y0;
+
     uint8_t *pix[3];
     int stride[3];
     if( i_csp == X264_CSP_V210 )
     {
          stride[0] = src->img.i_stride[0];
          pix[0] = src->img.plane[0];
+         intptr_t i_src = stride[0]/sizeof(uint32_t);
 
-         h->mc.plane_copy_deinterleave_v210( dst->plane[0], dst->i_stride[0],
-                                             dst->plane[1], dst->i_stride[1],
-                                             (uint32_t *)pix[0], stride[0]/sizeof(uint32_t), h->param.i_width, h->param.i_height );
+         h->mc.plane_copy_deinterleave_v210( dst->plane[0] + y0 * dst->i_stride[0], dst->i_stride[0],
+                                             dst->plane[1] + y0 * dst->i_stride[1], dst->i_stride[1],
+                                             (uint32_t *)pix[0] + y0 * i_src, i_src, h->param.i_width, rows );
     }
     else if( i_csp >= X264_CSP_BGR )
     {
@@ -429,44 +467,55 @@ int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
              pix[0] += (h->param.i_height-1) * stride[0];
              stride[0] = -stride[0];
          }
+         pix[0] += (intptr_t)y0 * stride[0];
          int b = i_csp==X264_CSP_RGB;
-         h->mc.plane_copy_deinterleave_rgb( dst->plane[1+b], dst->i_stride[1+b],
-                                            dst->plane[0], dst->i_stride[0],
-                                            dst->plane[2-b], dst->i_stride[2-b],
-                                            (pixel*)pix[0], stride[0]/sizeof(pixel), i_csp==X264_CSP_BGRA ? 4 : 3, h->param.i_width, h->param.i_height );
+         h->mc.plane_copy_deinterleave_rgb( dst->plane[1+b] + y0 * dst->i_stride[1+b], dst->i_stride[1+b],
+                                            dst->plane[0] + y0 * dst->i_stride[0], dst->i_stride[0],
+                                            dst->plane[2-b] + y0 * dst->i_stride[2-b], dst->i_stride[2-b],
+                                            (pixel*)pix[0], stride[0]/sizeof(pixel), i_csp==X264_CSP_BGRA ? 4 : 3, h->param.i_width, rows );
     }
     else
     {
         int v_shift = CHROMA_V_SHIFT;
-        get_plane_ptr( h, src, &pix[0], &stride[0], 0, 0, 0 );
-        h->mc.plane_copy( dst->plane[0], dst->i_stride[0], (pixel*)pix[0],
-                          stride[0]/sizeof(pixel), h->param.i_width, h->param.i_height );
+        int c0 = y0 >> v_shift;
+        int c_rows = (y1 >> v_shift) - c0;
+        /* parenthesised: the checking macro returns, x264_frame_copy_picture_init checked */
+        (get_plane_ptr)( h, src, &pix[0], &stride[0], 0, 0, 0 );
+        h->mc.plane_copy( dst->plane[0] + y0 * dst->i_stride[0], dst->i_stride[0], (pixel*)(pix[0] + (intptr_t)y0 * stride[0]),
+                          stride[0]/sizeof(pixel), h->param.i_width, rows );
         if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
         {
-            get_plane_ptr( h, src, &pix[1], &stride[1], 1, 0, v_shift );
-            h->mc.plane_copy( dst->plane[1], dst->i_stride[1], (pixel*)pix[1],
-                              stride[1]/sizeof(pixel), h->param.i_width, h->param.i_height>>v_shift );
+            (get_plane_ptr)( h, src, &pix[1], &stride[1], 1, 0, v_shift );
+            h->mc.plane_copy( dst->plane[1] + c0 * dst->i_stride[1], dst->i_stride[1], (pixel*)(pix[1] + (intptr_t)c0 * stride[1]),
+                              stride[1]/sizeof(pixel), h->param.i_width, c_rows );
         }
         else if( i_csp == X264_CSP_I420 || i_csp == X264_CSP_I422 || i_csp == X264_CSP_YV12 || i_csp == X264_CSP_YV16 )
         {
             int uv_swap = i_csp == X264_CSP_YV12 || i_csp == X264_CSP_YV16;
-            get_plane_ptr( h, src, &pix[1], &stride[1], uv_swap ? 2 : 1, 1, v_shift );
-            get_plane_ptr( h, src, &pix[2], &stride[2], uv_swap ? 1 : 2, 1, v_shift );
-            h->mc.plane_copy_interleave( dst->plane[1], dst->i_stride[1],
-                                         (pixel*)pix[1], stride[1]/sizeof(pixel),
-                                         (pixel*)pix[2], stride[2]/sizeof(pixel),
-                                         h->param.i_width>>1, h->param.i_height>>v_shift );
+            (get_plane_ptr)( h, src, &pix[1], &stride[1], uv_swap ? 2 : 1, 1, v_shift );
+            (get_plane_ptr)( h, src, &pix[2], &stride[2], uv_swap ? 1 : 2, 1, v_shift );
+            h->mc.plane_copy_interleave( dst->plane[1] + c0 * dst->i_stride[1], dst->i_stride[1],
+                                         (pixel*)(pix[1] + (intptr_t)c0 * stride[1]), stride[1]/sizeof(pixel),
+                                         (pixel*)(pix[2] + (intptr_t)c0 * stride[2]), stride[2]/sizeof(pixel),
+                                         h->param.i_width>>1, c_rows );
         }
         else //if( i_csp == X264_CSP_I444 || i_csp == X264_CSP_YV24 )
         {
-            get_plane_ptr( h, src, &pix[1], &stride[1], i_csp==X264_CSP_I444 ? 1 : 2, 0, 0 );
-            get_plane_ptr( h, src, &pix[2], &stride[2], i_csp==X264_CSP_I444 ? 2 : 1, 0, 0 );
-            h->mc.plane_copy( dst->plane[1], dst->i_stride[1], (pixel*)pix[1],
-                              stride[1]/sizeof(pixel), h->param.i_width, h->param.i_height );
-            h->mc.plane_copy( dst->plane[2], dst->i_stride[2], (pixel*)pix[2],
-                              stride[2]/sizeof(pixel), h->param.i_width, h->param.i_height );
+            (get_plane_ptr)( h, src, &pix[1], &stride[1], i_csp==X264_CSP_I444 ? 1 : 2, 0, 0 );
+            (get_plane_ptr)( h, src, &pix[2], &stride[2], i_csp==X264_CSP_I444 ? 2 : 1, 0, 0 );
+            h->mc.plane_copy( dst->plane[1] + y0 * dst->i_stride[1], dst->i_stride[1], (pixel*)(pix[1] + (intptr_t)y0 * stride[1]),
+                              stride[1]/sizeof(pixel), h->param.i_width, rows );
+            h->mc.plane_copy( dst->plane[2] + y0 * dst->i_stride[2], dst->i_stride[2], (pixel*)(pix[2] + (intptr_t)y0 * stride[2]),
+                              stride[2]/sizeof(pixel), h->param.i_width, rows );
         }
     }
+}
+
+int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
+{
+    if( x264_frame_copy_picture_init( h, dst, src ) < 0 )
+        return -1;
+    x264_frame_copy_picture_rows( h, dst, src, 0, h->param.i_height );
     return 0;
 }
 
@@ -620,6 +669,15 @@ void x264_frame_expand_border_lowres( x264_frame_t *frame )
         plane_expand_border( frame->lowres[i], frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres, PADH, PADV, 1, 1, 0 );
 }
 
+/* Lowres rows [y0,y1): side padding, and the padding above or below when the
+ * band is the first or last. */
+void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 )
+{
+    for( int i = 0; i < 4; i++ )
+        plane_expand_border( frame->lowres[i] + y0 * frame->i_stride_lowres, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                             PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+}
+
 void x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane )
 {
     int v_shift = CHROMA_V_SHIFT;
@@ -628,6 +686,14 @@ void x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane 
 }
 
 void x264_frame_expand_border_mod16( x264_t *h, x264_frame_t *frame )
+{
+    x264_frame_expand_border_mod16_rows( h, frame, 0, 16 * h->mb.i_mb_height );
+}
+
+/* Padding of luma rows [y0,y1) and the chroma rows they cover; y0 and y1 are
+ * multiples of 16. The band ending at the frame bottom also pads below the
+ * picture, copying from its last rows, so that band must hold them. */
+void x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 )
 {
     for( int i = 0; i < frame->i_plane; i++ )
     {
@@ -640,12 +706,13 @@ void x264_frame_expand_border_mod16( x264_t *h, x264_frame_t *frame )
 
         if( i_padx )
         {
-            for( int y = 0; y < i_height; y++ )
+            int row_end = X264_MIN( y1 >> v_shift, i_height );
+            for( int y = y0 >> v_shift; y < row_end; y++ )
                 pixel_memset( &frame->plane[i][y*frame->i_stride[i] + i_width],
                               &frame->plane[i][y*frame->i_stride[i] + i_width - 1-h_shift],
                               i_padx>>h_shift, sizeof(pixel)<<h_shift );
         }
-        if( i_pady )
+        if( i_pady && y1 == 16 * h->mb.i_mb_height )
         {
             for( int y = i_height; y < i_height + i_pady; y++ )
                 memcpy( &frame->plane[i][y*frame->i_stride[i]],
