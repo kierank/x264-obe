@@ -1861,6 +1861,32 @@ MEMCPY
 INIT_XMM sse
 MEMCPY
 
+INIT_YMM avx
+cglobal memcpy_aligned, 3,3
+    test r2d, 16
+    jz .copy32
+    mova xm0, [r1+r2-16]
+    mova [r0+r2-16], xm0
+    sub  r2d, 16
+.copy32:
+    test r2d, 32
+    jz .copy64start
+    mova  m0, [r1+r2-32]
+    mova [r0+r2-32], m0
+    sub  r2d, 32
+.copy64start:
+    test r2d, r2d
+    jz .ret
+.copy64:
+    mova  m0, [r1+r2-32]
+    mova  m1, [r1+r2-64]
+    mova [r0+r2-32], m0
+    mova [r0+r2-64], m1
+    sub  r2d, 64
+    jg .copy64
+.ret:
+    RET
+
 INIT_ZMM avx512
 cglobal memcpy_aligned, 3,4
     dec      r2d           ; offset of the last byte
