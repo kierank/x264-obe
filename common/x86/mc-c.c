@@ -733,7 +733,11 @@ static void x264_hpel_filter_##cpu( pixel *dsth, pixel *dstv, pixel *dstc, pixel
 HPEL(8, mmx2, mmx2, mmx2, mmx2)
 #if HIGH_BIT_DEPTH
 HPEL(16, sse2, sse2, sse2, sse2)
+#if ARCH_X86_64
+void x264_hpel_filter_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf );
+#else
 HPEL(32, avx2, avx2, avx2, avx2)
+#endif
 #else // !HIGH_BIT_DEPTH
 HPEL(16, sse2_amd, mmx2, mmx2, sse2)
 #if ARCH_X86_64
