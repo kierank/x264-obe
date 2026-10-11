@@ -2222,6 +2222,93 @@ static int x264_encoder_encapsulate_nals( x264_t *h, int start )
     return nal_buffer - (h0->nal_buffer + previous_nal_size);
 }
 
+/* Sliced threads, no avc-intra or nalu_process: escape a thread slice's NALs
+ * into its own buffer, so the main thread only concatenates them. */
+static void x264_threadslice_escape_nals( x264_t *h )
+{
+    int start = h->i_threadslice_nal;
+    int raw = 0;
+    for( int i = start; i < h->out.i_nal; i++ )
+        raw += h->out.nal[i].i_payload;
+
+    /* worst-case escaping, startcode and header, nal_escape assembly padding */
+    int necessary_size = raw * 3/2 + (h->out.i_nal - start) * 6 + 64;
+    if( h->i_threadslice_buf_size < necessary_size )
+    {
+        necessary_size *= 2;
+        uint8_t *buf = x264_malloc( necessary_size );
+        if( !buf )
+            return;
+        x264_free( h->threadslice_buf );
+        h->threadslice_buf = buf;
+        h->i_threadslice_buf_size = necessary_size;
+    }
+
+    uint8_t *dst = h->threadslice_buf;
+    for( int i = start; i < h->out.i_nal; i++ )
+    {
+        /* long startcode on the frame's first NAL; x264_encoder_concat_nals fixes
+         * one from a later thread slice landing there */
+        h->out.nal[i].b_long_startcode = !i && !h->i_thread_idx;
+        x264_nal_encode( h, dst, &h->out.nal[i] );
+        dst += h->out.nal[i].i_payload;
+    }
+    h->i_threadslice_raw = raw;
+    h->b_threadslice_escaped = 1;
+}
+
+/* Same output as x264_encoder_encapsulate_nals( h, 0 ) when out.nal[i_nal_escaped..]
+ * were escaped by x264_threadslice_escape_nals. */
+static int x264_encoder_concat_nals( x264_t *h )
+{
+    x264_t *h0 = h->thread[0];
+    int i_escaped = h->i_nal_escaped;
+    int nal_size = h->i_nal_escaped_raw;
+    h->b_nal_escaped = 0;
+
+    for( int i = 0; i < i_escaped; i++ )
+        nal_size += h->out.nal[i].i_payload;
+
+    /* Same size as x264_encoder_encapsulate_nals, from the unescaped sizes. */
+    int necessary_size = nal_size * 3/2 + h->out.i_nal * 4 + 4 + 64;
+    for( int i = 0; i < h->out.i_nal; i++ )
+        necessary_size += h->out.nal[i].i_padding;
+    if( x264_check_encapsulated_buffer( h, h0, 0, 0, necessary_size ) )
+        return -1;
+
+    uint8_t *nal_buffer = h0->nal_buffer;
+
+    for( int i = 0; i < i_escaped; i++ )
+    {
+        h->out.nal[i].b_long_startcode = !i || h->out.nal[i].i_type == NAL_SPS || h->out.nal[i].i_type == NAL_PPS;
+        x264_nal_encode( h, nal_buffer, &h->out.nal[i] );
+        nal_buffer += h->out.nal[i].i_payload;
+    }
+
+    for( int i = i_escaped; i < h->out.i_nal; i++ )
+    {
+        x264_nal_t *nal = &h->out.nal[i];
+        uint8_t *src = nal->p_payload;
+        int size = nal->i_payload;
+        nal->p_payload = nal_buffer;
+        if( !i && !nal->b_long_startcode )
+        {
+            nal->b_long_startcode = 1;
+            if( h->param.b_annexb )
+            {
+                *nal_buffer++ = 0x00;
+                nal->i_payload++;
+            }
+        }
+        memcpy( nal_buffer, src, size );
+        nal_buffer += size;
+    }
+
+    x264_emms();
+
+    return nal_buffer - h0->nal_buffer;
+}
+
 /****************************************************************************
  * x264_encoder_headers:
  ****************************************************************************/
@@ -3218,6 +3305,8 @@ cont:
 
         if( h->param.b_sliced_threads )
         {
+            if( !h->param.nalu_process && !h->param.i_avcintra_class )
+                x264_threadslice_escape_nals( h );
             /* Tell the main thread we're done. */
             x264_threadslice_cond_broadcast( h, 1 );
             /* Slice 0 is encoded by the main thread; worker 0 filters it. */
@@ -3273,6 +3362,11 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
+    if( h->param.b_sliced_threads )
+    {
+        h->i_threadslice_nal = h->out.i_nal;
+        h->b_threadslice_escaped = 0;
+    }
     while( h->sh.i_first_mb + SLICE_MBAFF*h->mb.i_mb_stride <= last_thread_mb )
     {
         h->sh.i_last_mb = last_thread_mb;
@@ -3364,6 +3458,24 @@ static int x264_threaded_slices_write( x264_t *h )
         x264_threadslice_cond_wait( h->thread[i], 1 );
 
     x264_threads_merge_ratecontrol( h );
+
+    h->b_nal_escaped = 0;
+    if( !h->param.nalu_process && !h->param.i_avcintra_class )
+    {
+        h->i_nal_escaped = h->i_threadslice_nal;
+        h->i_nal_escaped_raw = 0;
+        for( int i = 0; i < h->param.i_threads; i++ )
+        {
+            x264_t *t = h->thread[i];
+            /* a thread that failed before escaping */
+            if( !t->b_threadslice_escaped )
+                x264_threadslice_escape_nals( t );
+            if( !t->b_threadslice_escaped )
+                return -1;
+            h->i_nal_escaped_raw += t->i_threadslice_raw;
+        }
+        h->b_nal_escaped = 1;
+    }
 
     for( int i = 1; i < h->param.i_threads; i++ )
     {
@@ -4012,7 +4124,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
         h->out.nal[idx] = nal_tmp;
     }
 
-    int frame_size = x264_encoder_encapsulate_nals( h, 0 );
+    int frame_size = h->b_nal_escaped ? x264_encoder_concat_nals( h ) : x264_encoder_encapsulate_nals( h, 0 );
     if( frame_size < 0 )
         return -1;
 
@@ -4629,6 +4741,7 @@ void    x264_encoder_close  ( x264_t *h )
         x264_macroblock_thread_free( h->thread[i], 0 );
         x264_free( h->thread[i]->out.p_bitstream );
         x264_free( h->thread[i]->out.nal );
+        x264_free( h->thread[i]->threadslice_buf );
         x264_pthread_mutex_destroy( &h->thread[i]->mutex );
         x264_pthread_cond_destroy( &h->thread[i]->cv );
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8

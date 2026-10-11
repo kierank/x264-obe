@@ -280,6 +280,11 @@ struct x264_t
     int             i_threadslice_start; /* first row in this thread slice */
     int             i_threadslice_end; /* row after the end of this thread slice */
     int             i_threadslice_pass; /* which pass of encoding we are on */
+    int             i_threadslice_nal; /* first NAL of this thread slice in out.nal */
+    int             b_threadslice_escaped; /* its NALs were escaped into threadslice_buf */
+    int             i_threadslice_raw; /* their payload bytes before escaping */
+    uint8_t         *threadslice_buf;
+    int             i_threadslice_buf_size;
     x264_threadpool_t *threadpool;
     x264_threadpool_t *lookaheadpool;
     struct x264_slicepool_t *slicepool; /* sliced threads: one worker per thread slice */
@@ -299,6 +304,10 @@ struct x264_t
 
     uint8_t *nal_buffer;
     int      nal_buffer_size;
+    /* sliced threads: out.nal[i_nal_escaped..] were escaped by their threads */
+    int      b_nal_escaped;
+    int      i_nal_escaped;
+    int      i_nal_escaped_raw; /* their payload bytes before escaping */
 
     x264_t          *reconfig_h;
     int             reconfig;
