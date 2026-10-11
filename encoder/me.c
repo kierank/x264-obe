@@ -946,6 +946,20 @@ if( b_refine_qpel || (dir^1) != odir ) \
     COPY4_IF_LT( bcost, cost, bmx, mx, bmy, my, bdir, dir ); \
 }
 
+/* Luma-only COST_MV_SATD: the cost does not depend on bcost, so candidates
+ * fold into bkey = min( (cost<<4) + dir+1 ) with the incumbent at 0. */
+#define COST_MV_SATD_KEY( mx, my, dir ) \
+if( b_refine_qpel || (dir^1) != odir ) \
+{ \
+    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my, fenc_pre ) \
+             + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
+    bkey = X264_MIN( bkey, ((uint64_t)cost << 4) + (dir) + 1 ); \
+}
+
+/* qpel step of dir+1; 0 is the incumbent */
+static const int8_t qpel_dir_dx[5] = { 0, 0, 0, -1, 1 };
+static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
+
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -1058,18 +1072,45 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     if( h->mb.i_subpel_refine != 1 )
     {
         bdir = -1;
-        for( int i = qpel_iters; i > 0; i-- )
+        if( !b_chroma_me )
         {
-            if( bmy <= h->mb.mv_min_spel[1] || bmy >= h->mb.mv_max_spel[1] || bmx <= h->mb.mv_min_spel[0] || bmx >= h->mb.mv_max_spel[0] )
-                break;
-            odir = bdir;
-            int omx = bmx, omy = bmy;
-            COST_MV_SATD( omx, omy - 1, 0 );
-            COST_MV_SATD( omx, omy + 1, 1 );
-            COST_MV_SATD( omx - 1, omy, 2 );
-            COST_MV_SATD( omx + 1, omy, 3 );
-            if( (bmx == omx) & (bmy == omy) )
-                break;
+            /* Argmin instead of a compare-and-branch per candidate. Same choice as
+             * the strict-< sequence: the incumbent wins ties, then the lower dir. */
+            for( int i = qpel_iters; i > 0; i-- )
+            {
+                if( bmy <= h->mb.mv_min_spel[1] || bmy >= h->mb.mv_max_spel[1] || bmx <= h->mb.mv_min_spel[0] || bmx >= h->mb.mv_max_spel[0] )
+                    break;
+                odir = bdir;
+                int omx = bmx, omy = bmy;
+                uint64_t bkey = (uint64_t)bcost << 4;
+                COST_MV_SATD_KEY( omx, omy - 1, 0 );
+                COST_MV_SATD_KEY( omx, omy + 1, 1 );
+                COST_MV_SATD_KEY( omx - 1, omy, 2 );
+                COST_MV_SATD_KEY( omx + 1, omy, 3 );
+                int bidx = bkey & 15;
+                if( !bidx )
+                    break;
+                bcost = bkey >> 4;
+                bdir = bidx - 1;
+                bmx = omx + qpel_dir_dx[bidx];
+                bmy = omy + qpel_dir_dy[bidx];
+            }
+        }
+        else
+        {
+            for( int i = qpel_iters; i > 0; i-- )
+            {
+                if( bmy <= h->mb.mv_min_spel[1] || bmy >= h->mb.mv_max_spel[1] || bmx <= h->mb.mv_min_spel[0] || bmx >= h->mb.mv_max_spel[0] )
+                    break;
+                odir = bdir;
+                int omx = bmx, omy = bmy;
+                COST_MV_SATD( omx, omy - 1, 0 );
+                COST_MV_SATD( omx, omy + 1, 1 );
+                COST_MV_SATD( omx - 1, omy, 2 );
+                COST_MV_SATD( omx + 1, omy, 3 );
+                if( (bmx == omx) & (bmy == omy) )
+                    break;
+            }
         }
     }
     /* Special simplified case for subme=1 */
