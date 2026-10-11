@@ -38,6 +38,7 @@
 #define x264_cabac_block_residual_c x264_template(cabac_block_residual_c)
 #define x264_cabac_block_residual_8x8_rd_c x264_template(cabac_block_residual_8x8_rd_c)
 #define x264_cabac_block_residual_rd_c x264_template(cabac_block_residual_rd_c)
+#define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_c)
 
 static inline void x264_cabac_mb_type_intra( x264_t *h, x264_cabac_t *cb, int i_mb_type,
                     int ctx0, int ctx1, int ctx2, int ctx3, int ctx4, int ctx5 )
@@ -767,11 +768,23 @@ static void ALWAYS_INLINE x264_cabac_block_residual( x264_t *h, x264_cabac_t *cb
     x264_cabac_block_residual_c( h, cb, ctx_block_cat, l );
 #endif
 }
-static void x264_cabac_block_residual_422_dc( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
+void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
 {
     /* Template a version specifically for chroma 4:2:2 DC in order to avoid
      * slowing down everything else due to the added complexity. */
     x264_cabac_block_residual_internal( h, cb, DCT_CHROMA_DC, l, 1 );
+}
+
+static void ALWAYS_INLINE x264_cabac_block_residual_422_dc( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
+{
+#if ARCH_X86_64 && HAVE_MMX
+    if( h->bsf.cabac_block_residual_422_dc_internal )
+    {
+        h->bsf.cabac_block_residual_422_dc_internal( l, MB_INTERLACED, DCT_CHROMA_DC, cb );
+        return;
+    }
+#endif
+    x264_cabac_block_residual_422_dc_c( h, cb, DCT_CHROMA_DC, l );
 }
 #define x264_cabac_block_residual_8x8( h, cb, cat, l ) x264_cabac_block_residual( h, cb, cat, l )
 #else

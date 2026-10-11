@@ -2652,9 +2652,11 @@ extern const uint8_t x264_count_cat_m1[14];
 #define x264_cabac_block_residual_c x264_template(cabac_block_residual_c)
 #define x264_cabac_block_residual_8x8_rd_c x264_template(cabac_block_residual_8x8_rd_c)
 #define x264_cabac_block_residual_rd_c x264_template(cabac_block_residual_rd_c)
+#define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_c)
 void x264_cabac_block_residual_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_8x8_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
+void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 
 static int check_cabac( int cpu_ref, int cpu_new )
 {
@@ -2669,12 +2671,13 @@ static int check_cabac( int cpu_ref, int cpu_new )
     x264_quant_init( &h, cpu_new, &h.quantf );
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
 
-#define CABAC_RESIDUAL(name, start, end, rd)\
+#define CABAC_RESIDUAL(name, start, end, rd, dc422)\
 {\
     if( bs_a.name##_internal && (bs_a.name##_internal != bs_ref.name##_internal || (cpu_new&X264_CPU_SSE2_IS_SLOW)) )\
     {\
         used_asm = 1;\
         set_func_name( #name );\
+        h.quantf.coeff_last[DCT_CHROMA_DC] = dc422 ? h.quantf.coeff_last8 : h.quantf.coeff_last4;\
         for( int i = 0; i < 2; i++ )\
         {\
             for( intptr_t ctx_block_cat = start; ctx_block_cat <= end; ctx_block_cat++ )\
@@ -2685,10 +2688,11 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     uint8_t bitstream[2][1<<16];\
                     static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};\
                     int ac = ctx_ac[ctx_block_cat];\
+                    int count_m1 = dc422 ? 7 : x264_count_cat_m1[ctx_block_cat];\
                     int nz = 0;\
                     while( !nz )\
                     {\
-                        for( int k = 0; k <= x264_count_cat_m1[ctx_block_cat]; k++ )\
+                        for( int k = 0; k <= count_m1; k++ )\
                         {\
                             /* Very rough distribution that covers possible inputs */\
                             int rnd = rand();\
@@ -2697,6 +2701,12 @@ static int check_cabac( int cpu_ref, int cpu_new )
                             coef += !(rnd&  63) * (rand()&0x0008);\
                             coef += !(rnd& 255) * (rand()&0x00F0);\
                             coef += !(rnd&1023) * (rand()&0x7F00);\
+                            /* dense 4:2:2 dc blocks reach node_ctx 7 and escapes */\
+                            if( dc422 && (j&1) )\
+                                coef = (rnd&3) ? 1 + (rand() & (j&2 ? 31 : 3)) : 0;\
+                            /* low 16 bits zero: coeff_last must saturate, not truncate */\
+                            if( dc422 && HIGH_BIT_DEPTH && (j&7) == 7 && (rnd&12) == 12 )\
+                                coef = 0x10000;\
                             nz |= dct[0][ac+k] = dct[1][ac+k] = coef * ((rand()&1) ? 1 : -1);\
                         }\
                     }\
@@ -2741,12 +2751,16 @@ static int check_cabac( int cpu_ref, int cpu_new )
 }\
 name##fail:
 
-    CABAC_RESIDUAL( cabac_block_residual, 0, DCT_LUMA_8x8, 0 )
+    CABAC_RESIDUAL( cabac_block_residual, 0, DCT_LUMA_8x8, 0, 0 )
     report( "cabac residual:" );
 
     ok = 1; used_asm = 0;
-    CABAC_RESIDUAL( cabac_block_residual_rd, 0, DCT_LUMA_8x8-1, 1 )
-    CABAC_RESIDUAL( cabac_block_residual_8x8_rd, DCT_LUMA_8x8, DCT_LUMA_8x8, 1 )
+    CABAC_RESIDUAL( cabac_block_residual_422_dc, DCT_CHROMA_DC, DCT_CHROMA_DC, 0, 1 )
+    report( "cabac residual 422 dc:" );
+
+    ok = 1; used_asm = 0;
+    CABAC_RESIDUAL( cabac_block_residual_rd, 0, DCT_LUMA_8x8-1, 1, 0 )
+    CABAC_RESIDUAL( cabac_block_residual_8x8_rd, DCT_LUMA_8x8, DCT_LUMA_8x8, 1, 0 )
     report( "cabac residual rd:" );
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )

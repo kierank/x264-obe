@@ -63,6 +63,8 @@ typedef struct
                                               intptr_t ctx_block_cat, x264_cabac_t *cb );
     void (*cabac_block_residual_8x8_rd_internal)( dctcoef *l, int b_interlaced,
                                                   intptr_t ctx_block_cat, x264_cabac_t *cb );
+    void (*cabac_block_residual_422_dc_internal)( dctcoef *l, int b_interlaced,
+                                                  intptr_t ctx_block_cat, x264_cabac_t *cb );
 } x264_bitstream_function_t;
 
 #define x264_bitstream_init x264_template(bitstream_init)
