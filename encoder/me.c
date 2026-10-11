@@ -823,12 +823,34 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my ); \
 }
 
+/* mbcmp of the luma prediction at a qpel mv. Where get_ref would average two
+ * hpel planes, mbcmp_avg2 does it without storing the average. */
+static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my )
+{
+    if( h->pixf.mbcmp_avg2[i_pixel] && !m->weight[0].weightfn )
+    {
+        int qpel_idx = ((my&3)<<2) + (mx&3);
+        intptr_t stride = m->i_stride[0];
+        intptr_t offset = (my>>2)*stride + (mx>>2);
+        pixel *src1 = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+        if( qpel_idx & 5 )
+        {
+            pixel *src2 = m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
+            return h->pixf.mbcmp_avg2[i_pixel]( m->p_fenc[0], src1, src2, stride );
+        }
+        return h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[0], FENC_STRIDE, src1, stride );
+    }
+    intptr_t stride = 16;
+    pixel *src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] );
+    return h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[0], FENC_STRIDE, src, stride );
+}
+
 #define COST_MV_SATD( mx, my, dir ) \
 if( b_refine_qpel || (dir^1) != odir ) \
 { \
-    intptr_t stride = 16; \
-    pixel *src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] ); \
-    int cost = h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[0], FENC_STRIDE, src, stride ) \
+    intptr_t stride; \
+    pixel *src; \
+    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my ) \
              + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
     if( b_chroma_me && cost < bcost ) \
     { \

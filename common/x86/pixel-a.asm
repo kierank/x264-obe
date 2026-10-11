@@ -4609,6 +4609,111 @@ cglobal pixel_satd_16x16, 4,6,8
 %endrep
     SATD_HBD_END 1
 
+;-----------------------------------------------------------------------------
+; int pixel_satd_avg2_WxH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
+; satd( fenc, (src1+src2+1)>>1 ): the qpel candidates of subpel refinement
+; without storing the average. fenc has FENC_STRIDE, src1/src2 share stride.
+;-----------------------------------------------------------------------------
+%macro SATD_AVG2_LOAD_Y 0 ; 16 wide: r1/r2 rows, r4 = 3*stride
+    movu          m0, [r1]
+    movu          m1, [r1+r3]
+    movu          m2, [r1+2*r3]
+    movu          m3, [r1+r4]
+    pavgw         m0, [r2]
+    pavgw         m1, [r2+r3]
+    pavgw         m2, [r2+2*r3]
+    pavgw         m3, [r2+r4]
+    psubw         m0, [r0]
+    psubw         m1, [r0+1*FENC_STRIDEB]
+    psubw         m2, [r0+2*FENC_STRIDEB]
+    psubw         m3, [r0+3*FENC_STRIDEB]
+%endmacro
+
+; 8 wide, lanes = rows i, i+4: r5/r6 = r1/r2 four rows down
+%macro SATD_AVG2_ROW_X 2 ; dst (number), row
+%if %2 == 3
+    %define satd_avg2_off r4
+%elif %2
+    %define satd_avg2_off %2*r3
+%endif
+%if %2
+    movu         xm%1, [r1+satd_avg2_off]
+    vinserti128   m%1, m%1, [r5+satd_avg2_off], 1
+    movu         xm4, [r2+satd_avg2_off]
+    vinserti128   m4, m4, [r6+satd_avg2_off], 1
+%else
+    movu         xm%1, [r1]
+    vinserti128   m%1, m%1, [r5], 1
+    movu         xm4, [r2]
+    vinserti128   m4, m4, [r6], 1
+%endif
+    movu         xm5, [r0+%2*FENC_STRIDEB]
+    vinserti128   m5, m5, [r0+(%2+4)*FENC_STRIDEB], 1
+    pavgw         m%1, m4
+    psubw         m%1, m5
+%endmacro
+
+%macro SATD_AVG2_LOAD_X 0
+    SATD_AVG2_ROW_X 0, 0
+    SATD_AVG2_ROW_X 1, 1
+    SATD_AVG2_ROW_X 2, 2
+    SATD_AVG2_ROW_X 3, 3
+%endmacro
+
+%macro SATD_AVG2_START 0
+    FIX_STRIDES r3
+    lea       r4, [3*r3]
+%endmacro
+
+%macro SATD_AVG2_START_X 0
+    SATD_AVG2_START
+    lea       r5, [r1+4*r3]
+    lea       r6, [r2+4*r3]
+%endmacro
+
+cglobal pixel_satd_avg2_8x8, 4,7,8
+    SATD_AVG2_START_X
+    SATD_AVG2_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_END 0
+
+cglobal pixel_satd_avg2_8x16, 4,7,8
+    SATD_AVG2_START_X
+    SATD_AVG2_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    lea       r1, [r1+8*r3]
+    lea       r2, [r2+8*r3]
+    lea       r5, [r5+8*r3]
+    lea       r6, [r6+8*r3]
+    add       r0, 8*FENC_STRIDEB
+    SATD_AVG2_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+
+cglobal pixel_satd_avg2_16x8, 4,5,8
+    SATD_AVG2_START
+    SATD_AVG2_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDEB
+    SATD_AVG2_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+
+cglobal pixel_satd_avg2_16x16, 4,5,8
+    SATD_AVG2_START
+    SATD_AVG2_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%rep 3
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDEB
+    SATD_AVG2_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endrep
+    SATD_HBD_END 1
+
 %if ARCH_X86_64
 INIT_YMM avx2
 SA8D_SATD
