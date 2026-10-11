@@ -37,6 +37,7 @@ v210_shuf_avx512: db  0, 0,34, 1,35,34, 4, 4,38, 5,39,38, 8, 8,42, 9, ; luma, ch
                   db 43,42,12,12,46,13,47,46,16,16,50,17,51,50,20,20,
                   db 54,21,55,54,24,24,58,25,59,58,28,28,62,29,63,62
                   times 16 db 0 ; pad to 64 bytes: the kernel loads a full zmm, keeps following data aligned
+deint_uv_shuf_hbd: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
 %endif
 
 pw_1024: times 16 dw 1024
@@ -1556,6 +1557,52 @@ cglobal load_deinterleave_chroma_fenc, 4,5
     jg .loop
     RET
 %endmacro ; LOAD_DEINTERLEAVE_CHROMA_FENC_AVX512
+
+%if HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; void load_deinterleave_chroma_fenc( uint16_t *dst, uint16_t *src, intptr_t i_src, int height )
+; void load_deinterleave_chroma_fdec( uint16_t *dst, uint16_t *src, intptr_t i_src, int height )
+; 10-bit, AVX2: an 8 pixel u/v row is one ymm; pshufb + vpermq give u0-u7 | v0-v7.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal load_deinterleave_chroma_fenc, 4,4
+    mova           m2, [deint_uv_shuf_hbd]
+    FIX_STRIDES    r2
+.loop:
+    movu           m0, [r1]
+    movu           m1, [r1+r2]
+    pshufb         m0, m2
+    pshufb         m1, m2
+    vpermq         m0, m0, q3120
+    vpermq         m1, m1, q3120
+    mova         [r0], m0                  ; FENC_STRIDE rows are u0-u7, v0-v7
+    mova [r0+FENC_STRIDEB], m1
+    add            r0, FENC_STRIDEB*2
+    lea            r1, [r1+r2*2]
+    sub           r3d, 2
+    jg .loop
+    RET
+
+cglobal load_deinterleave_chroma_fdec, 4,4
+    mova           m2, [deint_uv_shuf_hbd]
+    FIX_STRIDES    r2
+.loop:
+    movu           m0, [r1]
+    movu           m1, [r1+r2]
+    pshufb         m0, m2
+    pshufb         m1, m2
+    vpermq         m0, m0, q3120
+    vpermq         m1, m1, q3120
+    mova                       [r0], xm0   ; u at 0, v at FDEC_STRIDE/2
+    vextracti128 [r0+FDEC_STRIDEB/2], m0, 1
+    mova          [r0+FDEC_STRIDEB], xm1
+    vextracti128 [r0+FDEC_STRIDEB*3/2], m1, 1
+    add            r0, FDEC_STRIDEB*2
+    lea            r1, [r1+r2*2]
+    sub           r3d, 2
+    jg .loop
+    RET
+%endif ; HIGH_BIT_DEPTH
 
 %macro PLANE_DEINTERLEAVE_RGB_CORE 9 ; pw, i_dsta, i_dstb, i_dstc, i_src, w, h, tmp1, tmp2
 %if cpuflag(ssse3)
