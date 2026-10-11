@@ -2574,7 +2574,7 @@ static int check_cabac( int cpu_ref, int cpu_new )
     x264_quant_init( &h, cpu_new, &h.quantf );
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
 
-#define CABAC_RESIDUAL(name, start, end, rd)\
+#define CABAC_RESIDUAL(name, cats, rd)\
 {\
     if( bs_a.name##_internal && (bs_a.name##_internal != bs_ref.name##_internal || (cpu_new&X264_CPU_SSE2_IS_SLOW)) )\
     {\
@@ -2582,8 +2582,10 @@ static int check_cabac( int cpu_ref, int cpu_new )
         set_func_name( #name );\
         for( int i = 0; i < 2; i++ )\
         {\
-            for( intptr_t ctx_block_cat = start; ctx_block_cat <= end; ctx_block_cat++ )\
+            for( intptr_t ctx_block_cat = 0; ctx_block_cat < 14; ctx_block_cat++ )\
             {\
+                if( !(((cats) >> ctx_block_cat) & 1) )\
+                    continue;\
                 for( int j = 0; j < 256; j++ )\
                 {\
                     ALIGNED_ARRAY_64( dctcoef, dct, [2],[64] );\
@@ -2638,12 +2640,15 @@ static int check_cabac( int cpu_ref, int cpu_new )
 }\
 name##fail:
 
-    CABAC_RESIDUAL( cabac_block_residual, 0, DCT_LUMA_8x8, 0 )
+    CABAC_RESIDUAL( cabac_block_residual, (1<<(DCT_LUMA_8x8+1))-1, 0 )
     report( "cabac residual:" );
 
     ok = 1; used_asm = 0;
-    CABAC_RESIDUAL( cabac_block_residual_rd, 0, DCT_LUMA_8x8-1, 1 )
-    CABAC_RESIDUAL( cabac_block_residual_8x8_rd, DCT_LUMA_8x8, DCT_LUMA_8x8, 1 )
+    /* every category the rd functions are called with, including 4:4:4 Cb/Cr */
+#define CATS_8x8 ((1<<DCT_LUMA_8x8) | (1<<DCT_CHROMAU_8x8) | (1<<DCT_CHROMAV_8x8))
+    CABAC_RESIDUAL( cabac_block_residual_rd, ((1<<14)-1) & ~CATS_8x8, 1 )
+    CABAC_RESIDUAL( cabac_block_residual_8x8_rd, CATS_8x8, 1 )
+#undef CATS_8x8
     report( "cabac residual rd:" );
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
