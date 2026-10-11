@@ -722,6 +722,85 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X(3);
     TEST_PIXEL_X(4);
 
+    /* against the sequential strict < selection over best then the candidates in order;
+     * j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
+     * 3 maximal sads */
+#define TEST_PIXEL_X_MIN( N ) \
+    ok = 1; used_asm = 0; \
+    for( int i = 0; i < 7; i++ ) \
+    { \
+        if( pixel_asm.sad_x##N##_min[i] && pixel_asm.sad_x##N##_min[i] != pixel_ref.sad_x##N##_min[i] ) \
+        { \
+            static const int offs[4] = { 0, 6, 1, 10 }; \
+            set_func_name( "sad_x%d_min_%s", N, pixel_names[i] ); \
+            used_asm = 1; \
+            for( int j = 0; j < 256 && ok; j++ ) \
+            { \
+                int mode = j>>6; \
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1; \
+                intptr_t stride = mode == 3 ? FENC_STRIDE : 64; \
+                pixel *pix[4]; \
+                int sad[4], bias[4], mvc[4], idx[4], best = 0, res_c, res_a; \
+                int tmin = INT_MAX, tmax = 0; \
+                for( int k = 0; k < 4; k++ ) \
+                { \
+                    pix[k] = mode == 3 ? pbuf4 : pbuf2 + (j&63) + offs[k]; \
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix[k], stride ); \
+                    tmax = X264_MAX( tmax, sad[k] ); \
+                    idx[k] = rand()&63; \
+                    mvc[k] = rand()%131071; \
+                } \
+                if( mode == 1 ) \
+                { \
+                    int t = tmax + (rand()&7); \
+                    for( int k = 0; k < 4; k++ ) \
+                    { \
+                        mvc[k] = t - sad[k]; \
+                        idx[k] = 1 + ((k + j) & 3); \
+                    } \
+                    best = (t << 6) + (rand()%3 ? (int)(rand()&63) : 0); \
+                } \
+                else if( mode == 2 ) \
+                { \
+                    for( int k = 0; k < 4; k++ ) \
+                    { \
+                        mvc[k] = ((j>>k)&1) * 131070; \
+                        idx[k] = ((j>>(k+2))&1) * 63; \
+                    } \
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? (1<<30)-1 : ((sad[0] + mvc[0]) << 6) + idx[0]; \
+                } \
+                for( int k = 0; k < 4; k++ ) \
+                { \
+                    bias[k] = (mvc[k] << 6) + idx[k]; \
+                    tmin = X264_MIN( tmin, sad[k] + mvc[k] ); \
+                } \
+                if( mode == 0 || mode == 3 ) \
+                    best = (X264_MAX( tmin + (rand()&255) - 128, 0 ) << 6) + (rand()&63); \
+                res_c = best; \
+                for( int k = 0; k < N; k++ ) \
+                    if( (sad[k] << 6) + bias[k] < res_c ) \
+                        res_c = (sad[k] << 6) + bias[k]; \
+                if( N == 4 ) \
+                    res_a = call_a( pixel_asm.sad_x4_min[i], fenc, pix[0], pix[1], pix[2], pix[3], stride, \
+                                    (uint32_t)bias[0] | (uint64_t)(uint32_t)bias[1] << 32, \
+                                    (uint32_t)bias[2] | (uint64_t)(uint32_t)bias[3] << 32, best ); \
+                else \
+                    res_a = call_a( pixel_asm.sad_x3_min[i], fenc, pix[0], pix[1], pix[2], stride, \
+                                    (uint32_t)bias[0] | (uint64_t)(uint32_t)bias[1] << 32, \
+                                    (uint32_t)bias[2] | (uint64_t)(uint32_t)best << 32 ); \
+                if( res_c != res_a ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, "sad_x"#N"_min[%d]: mode %d %d != %d [FAILED]\n", i, mode, res_c, res_a ); \
+                } \
+            } \
+        } \
+    } \
+    report( "pixel sad_x"#N"_min :" );
+
+    TEST_PIXEL_X_MIN(3);
+    TEST_PIXEL_X_MIN(4);
+
 #define TEST_PIXEL_VAR( i ) \
     if( pixel_asm.var[i] != pixel_ref.var[i] ) \
     { \

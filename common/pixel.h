@@ -33,6 +33,10 @@
 typedef int  (*x264_pixel_cmp_t) ( pixel *, intptr_t, pixel *, intptr_t );
 typedef void (*x264_pixel_cmp_x3_t) ( pixel *, pixel *, pixel *, pixel *, intptr_t, int[3] );
 typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, int[4] );
+/* min( best, (cmp( fenc, pix_i ) << 6) + bias_i ), compared as int; bias01 = bias_0 | bias_1 << 32,
+ * x3: bias2_best = bias_2 | best << 32, x4: bias23 = bias_2 | bias_3 << 32 and best */
+typedef int  (*x264_pixel_cmp_x3_min_t) ( pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t bias01, uint64_t bias2_best );
+typedef int  (*x264_pixel_cmp_x4_min_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t bias01, uint64_t bias23, int best );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -140,6 +144,10 @@ typedef struct
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
     x264_pixel_cmp_x4_t fpelcmp_x4[7];
+    x264_pixel_cmp_x3_min_t sad_x3_min[7]; /* asm only, NULL otherwise */
+    x264_pixel_cmp_x4_min_t sad_x4_min[7];
+    x264_pixel_cmp_x3_min_t fpelcmp_x3_min[7]; /* sad_x3_min where fpelcmp is sad, else NULL */
+    x264_pixel_cmp_x4_min_t fpelcmp_x4_min[7];
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );

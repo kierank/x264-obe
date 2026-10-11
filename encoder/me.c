@@ -99,17 +99,63 @@ do\
          + p_cost_mvx[ mx ] + p_cost_mvy[ my ];\
 } while(0)
 
-#define COST_MV_X3_DIR( m0x, m0y, m1x, m1y, m2x, m2y, costs )\
+/* best and the candidates are (cost << 6) + idx, idx 0 for the incumbent, so the
+ * min is the sequential strict < selection with ties to the lower idx. b* are
+ * (mv cost << 6) + idx. */
+#define PACK2( a, b ) ((uint32_t)(a) | (uint64_t)(uint32_t)(b) << 32)
+
+#define COST_MIN_X3( best, p0, p1, p2, b0, b1, b2 )\
+{\
+    if( cmp_x3_min )\
+        best = cmp_x3_min( p_fenc, p0, p1, p2, stride, PACK2( b0, b1 ), PACK2( b2, best ) );\
+    else\
+    {\
+        h->pixf.fpelcmp_x3[i_pixel]( p_fenc, p0, p1, p2, stride, costs );\
+        COPY1_IF_LT( best, (costs[0]<<6) + (b0) );\
+        COPY1_IF_LT( best, (costs[1]<<6) + (b1) );\
+        COPY1_IF_LT( best, (costs[2]<<6) + (b2) );\
+    }\
+}
+
+#define COST_MIN_X4( best, p0, p1, p2, p3, b0, b1, b2, b3 )\
+{\
+    if( cmp_x4_min )\
+        best = cmp_x4_min( p_fenc, p0, p1, p2, p3, stride, PACK2( b0, b1 ), PACK2( b2, b3 ), best );\
+    else\
+    {\
+        h->pixf.fpelcmp_x4[i_pixel]( p_fenc, p0, p1, p2, p3, stride, costs );\
+        COPY1_IF_LT( best, (costs[0]<<6) + (b0) );\
+        COPY1_IF_LT( best, (costs[1]<<6) + (b1) );\
+        COPY1_IF_LT( best, (costs[2]<<6) + (b2) );\
+        COPY1_IF_LT( best, (costs[3]<<6) + (b3) );\
+    }\
+}
+
+/* bcost = min( bcost, candidates bmv + m*, idx i, i+1, ... ) */
+#define COST_MV_X3_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, i )\
 {\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
-    h->pixf.fpelcmp_x3[i_pixel]( p_fenc,\
+    COST_MIN_X3( bcost,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
         pix_base + (m2x) + (m2y)*stride,\
-        stride, costs );\
-    (costs)[0] += BITS_MVD( bmx+(m0x), bmy+(m0y) );\
-    (costs)[1] += BITS_MVD( bmx+(m1x), bmy+(m1y) );\
-    (costs)[2] += BITS_MVD( bmx+(m2x), bmy+(m2y) );\
+        (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i),\
+        (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1,\
+        (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2 );\
+}
+
+#define COST_MV_X4_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, i )\
+{\
+    pixel *pix_base = p_fref_w + bmx + bmy*stride;\
+    COST_MIN_X4( bcost,\
+        pix_base + (m0x) + (m0y)*stride,\
+        pix_base + (m1x) + (m1y)*stride,\
+        pix_base + (m2x) + (m2y)*stride,\
+        pix_base + (m3x) + (m3y)*stride,\
+        (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i),\
+        (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1,\
+        (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2,\
+        (BITS_MVD( bmx+(m3x), bmy+(m3y) ) << 6) + (i)+3 );\
 }
 
 #define COST_MV_X4_DIR( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, costs )\
@@ -216,6 +262,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     ALIGNED_ARRAY_8( int16_t, mvc_temp,[16],[2] );
 
     ALIGNED_ARRAY_16( int, costs,[16] );
+    x264_pixel_cmp_x3_min_t cmp_x3_min = h->pixf.fpelcmp_x3_min[i_pixel];
+    x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
 
     int mv_x_min = h->mb.mv_limit_fpel[0][0];
     int mv_y_min = h->mb.mv_limit_fpel[0][1];
@@ -385,58 +433,40 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             /* equivalent to the above, but eliminates duplicate candidates */
 
             /* hexagon */
-            COST_MV_X3_DIR( -2,0, -1, 2,  1, 2, costs   );
-            COST_MV_X3_DIR(  2,0,  1,-2, -1,-2, costs+4 ); /* +4 for 16-byte alignment */
-            bcost <<= 3;
-            COPY1_IF_LT( bcost, (costs[0]<<3)+2 );
-            COPY1_IF_LT( bcost, (costs[1]<<3)+3 );
-            COPY1_IF_LT( bcost, (costs[2]<<3)+4 );
-            COPY1_IF_LT( bcost, (costs[4]<<3)+5 );
-            COPY1_IF_LT( bcost, (costs[5]<<3)+6 );
-            COPY1_IF_LT( bcost, (costs[6]<<3)+7 );
+            bcost <<= 6;
+            COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
+            COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
 
-            if( bcost&7 )
+            if( bcost&63 )
             {
-                int dir = (bcost&7)-2;
+                int dir = (bcost&63)-2;
                 bmx += hex2[dir+1][0];
                 bmy += hex2[dir+1][1];
 
                 /* half hexagon, not overlapping the previous iteration */
                 for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
                 {
-                    COST_MV_X3_DIR( hex2[dir+0][0], hex2[dir+0][1],
-                                    hex2[dir+1][0], hex2[dir+1][1],
-                                    hex2[dir+2][0], hex2[dir+2][1],
-                                    costs );
-                    bcost &= ~7;
-                    COPY1_IF_LT( bcost, (costs[0]<<3)+1 );
-                    COPY1_IF_LT( bcost, (costs[1]<<3)+2 );
-                    COPY1_IF_LT( bcost, (costs[2]<<3)+3 );
-                    if( !(bcost&7) )
+                    bcost &= ~63;
+                    COST_MV_X3_DIR_MIN( hex2[dir+0][0], hex2[dir+0][1],
+                                        hex2[dir+1][0], hex2[dir+1][1],
+                                        hex2[dir+2][0], hex2[dir+2][1], 1 );
+                    if( !(bcost&63) )
                         break;
-                    dir += (bcost&7)-2;
+                    dir += (bcost&63)-2;
                     dir = mod6m1[dir+1];
                     bmx += hex2[dir+1][0];
                     bmy += hex2[dir+1][1];
                 }
             }
-            bcost >>= 3;
+            bcost >>= 6;
     #endif
             /* square refine */
-            bcost <<= 4;
-            COST_MV_X4_DIR(  0,-1,  0,1, -1,0, 1,0, costs );
-            COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
-            COPY1_IF_LT( bcost, (costs[1]<<4)+2 );
-            COPY1_IF_LT( bcost, (costs[2]<<4)+3 );
-            COPY1_IF_LT( bcost, (costs[3]<<4)+4 );
-            COST_MV_X4_DIR( -1,-1, -1,1, 1,-1, 1,1, costs );
-            COPY1_IF_LT( bcost, (costs[0]<<4)+5 );
-            COPY1_IF_LT( bcost, (costs[1]<<4)+6 );
-            COPY1_IF_LT( bcost, (costs[2]<<4)+7 );
-            COPY1_IF_LT( bcost, (costs[3]<<4)+8 );
-            bmx += square1[bcost&15][0];
-            bmy += square1[bcost&15][1];
-            bcost >>= 4;
+            bcost <<= 6;
+            COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
+            COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
+            bmx += square1[bcost&63][0];
+            bmy += square1[bcost&63][1];
+            bcost >>= 6;
             break;
         }
 
@@ -947,6 +977,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
 
     ALIGNED_ARRAY_N( pixel, pix,[64*18] ); // really 17x17x2, but round up for alignment
     ALIGNED_ARRAY_16( int, costs,[4] );
+    pixel *p_fenc = m->p_fenc[0];
+    x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
 
     int bmx = m->mv[0];
     int bmy = m->mv[1];
@@ -987,15 +1019,11 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             }
             src1 = src0 + stride;
             src3 = src2 + 1;
-            h->pixf.fpelcmp_x4[i_pixel]( m->p_fenc[0], src0, src1, src2, src3, stride, costs );
-            costs[0] += p_cost_mvx[omx  ] + p_cost_mvy[omy-2];
-            costs[1] += p_cost_mvx[omx  ] + p_cost_mvy[omy+2];
-            costs[2] += p_cost_mvx[omx-2] + p_cost_mvy[omy  ];
-            costs[3] += p_cost_mvx[omx+2] + p_cost_mvy[omy  ];
-            COPY1_IF_LT( bcost, (costs[0]<<6)+2 );
-            COPY1_IF_LT( bcost, (costs[1]<<6)+6 );
-            COPY1_IF_LT( bcost, (costs[2]<<6)+16 );
-            COPY1_IF_LT( bcost, (costs[3]<<6)+48 );
+            COST_MIN_X4( bcost, src0, src1, src2, src3,
+                         ((p_cost_mvx[omx  ] + p_cost_mvy[omy-2]) << 6) + 2,
+                         ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6,
+                         ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16,
+                         ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48 );
             if( !(bcost&63) )
                 break;
             bmx -= (bcost<<26)>>29;
