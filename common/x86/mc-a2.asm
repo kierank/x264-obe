@@ -91,6 +91,7 @@ SECTION .text
 
 cextern pb_0
 cextern pw_1
+cextern pw_2
 cextern pw_8
 cextern pw_16
 cextern pw_32
@@ -2799,3 +2800,41 @@ cglobal mbtree_propagate_list_internal, 7,7,14
     jl .loop
     RET
 %endif
+
+%if HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; void lowres8_convert( uint8_t *dst, uint16_t *src, intptr_t n )
+; dst[i] = min( (src[i]+2)>>2, 255 ) for --lookahead-8bit, n a multiple of mmsize
+;-----------------------------------------------------------------------------
+%macro LOWRES8_CONVERT 0
+cglobal lowres8_convert, 3,3,4
+%if mmsize == 32
+    vpbroadcastd m3, [pw_2]
+%else
+    mova      m3, [pw_2]
+%endif
+    lea       r1, [r1+2*r2]
+    add       r0, r2
+    neg       r2
+.loop:
+    movu      m0, [r1+2*r2]
+    movu      m1, [r1+2*r2+mmsize]
+    paddw     m0, m3
+    paddw     m1, m3
+    psrlw     m0, 2
+    psrlw     m1, 2
+    packuswb  m0, m1 ; 256 saturates to 255
+%if mmsize == 32
+    vpermq    m0, m0, q3120
+%endif
+    movu [r0+r2], m0
+    add       r2, mmsize
+    jl .loop
+    RET
+%endmacro
+
+INIT_XMM sse2
+LOWRES8_CONVERT
+INIT_YMM avx2
+LOWRES8_CONVERT
+%endif ; HIGH_BIT_DEPTH

@@ -1579,6 +1579,30 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "lowres init :" );
     }
 
+#if HIGH_BIT_DEPTH
+    if( mc_a.lowres8_convert != mc_ref.lowres8_convert )
+    {
+        uint8_t *dstc8 = (uint8_t*)pbuf3;
+        uint8_t *dsta8 = (uint8_t*)pbuf4;
+        set_func_name( "lowres8_convert" );
+        ok = 1; used_asm = 1;
+        for( int n = 64; n <= 1024 && ok; n += 64 )
+        {
+            /* also checks that nothing past n is written */
+            memset( dstc8, 0xaa, 1024+64 );
+            memset( dsta8, 0xaa, 1024+64 );
+            call_c( mc_c.lowres8_convert, dstc8, pbuf1, (intptr_t)n );
+            call_a( mc_a.lowres8_convert, dsta8, pbuf1, (intptr_t)n );
+            if( memcmp( dstc8, dsta8, 1024+64 ) )
+            {
+                ok = 0;
+                fprintf( stderr, "lowres8_convert differs, n=%d\n", n );
+            }
+        }
+        report( "lowres8 convert :" );
+    }
+#endif
+
 #define INTEGRAL_INIT( name, size, ... )\
     if( mc_a.name != mc_ref.name )\
     {\

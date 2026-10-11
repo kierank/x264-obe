@@ -125,6 +125,8 @@ typedef struct
 
     void (*frame_init_lowres_core)( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height );
+    /* rc.b_lookahead_8bit: dst[i] = min( (src[i] + 2) >> 2, 255 ), high bit depth only */
+    void (*lowres8_convert)( uint8_t *dst, pixel *src, intptr_t n );
     weight_fn_t *weight;
     weight_fn_t *offsetadd;
     weight_fn_t *offsetsub;
