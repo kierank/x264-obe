@@ -1051,6 +1051,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
             pf->mc_chroma = x264_mc_chroma_avx2;
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
         pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx2;
+        pf->avg[PIXEL_8x16]  = x264_pixel_avg_8x16_avx2;
+        pf->avg[PIXEL_8x8]   = x264_pixel_avg_8x8_avx2;
+        pf->avg[PIXEL_8x4]   = x264_pixel_avg_8x4_avx2;
     }
 
     if( cpu&X264_CPU_AVX512 )
