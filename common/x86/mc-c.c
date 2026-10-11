@@ -175,6 +175,9 @@
 #define x264_pixel_avg2_w4_mmx2 x264_template(pixel_avg2_w4_mmx2)
 #define x264_pixel_avg2_w4_sse2 x264_template(pixel_avg2_w4_sse2)
 #define x264_pixel_avg2_w8_avx2 x264_template(pixel_avg2_w8_avx2)
+#define x264_pixel_avg2_w8_avx x264_template(pixel_avg2_w8_avx)
+#define x264_pixel_avg2_w10_avx x264_template(pixel_avg2_w10_avx)
+#define x264_pixel_avg2_w16_avx x264_template(pixel_avg2_w16_avx)
 #define x264_pixel_avg2_w8_cache32_mmx2 x264_template(pixel_avg2_w8_cache32_mmx2)
 #define x264_pixel_avg2_w8_cache64_mmx2 x264_template(pixel_avg2_w8_cache64_mmx2)
 #define x264_pixel_avg2_w8_cache64_sse2 x264_template(pixel_avg2_w8_cache64_sse2)
@@ -434,6 +437,7 @@ PIXEL_AVG_WALL(cache64_mmx2)
 PIXEL_AVG_WALL(cache64_sse2)
 PIXEL_AVG_WALL(sse2)
 PIXEL_AVG_WALL(cache64_ssse3)
+PIXEL_AVG_WALL(avx)
 PIXEL_AVG_WALL(avx2)
 
 #define PIXEL_AVG_WTAB(instr, name1, name2, name3, name4, name5)\
@@ -470,12 +474,14 @@ static void (* const x264_pixel_avg_wtab_##instr[6])( pixel *, intptr_t, pixel *
 #define x264_pixel_avg2_w12_cache64_sse2 x264_pixel_avg2_w16_cache64_sse2
 #define x264_pixel_avg2_w12_sse3         x264_pixel_avg2_w16_sse3
 #define x264_pixel_avg2_w12_sse2         x264_pixel_avg2_w16_sse2
+#undef x264_pixel_avg2_w12_avx
+#define x264_pixel_avg2_w12_avx          x264_pixel_avg2_w16_avx
 #endif // HIGH_BIT_DEPTH
 
 PIXEL_AVG_WTAB(mmx2, mmx2, mmx2, mmx2, mmx2, mmx2)
 #if HIGH_BIT_DEPTH
 PIXEL_AVG_WTAB(sse2, mmx2, sse2, sse2, sse2, sse2)
-PIXEL_AVG_WTAB(avx2, mmx2, sse2, avx2, avx2, avx2)
+PIXEL_AVG_WTAB(avx2, mmx2, avx, avx2, avx2, avx2)
 #else // !HIGH_BIT_DEPTH
 #if ARCH_X86
 PIXEL_AVG_WTAB(cache32_mmx2, mmx2, cache32_mmx2, cache32_mmx2, cache32_mmx2, cache32_mmx2)
@@ -485,7 +491,7 @@ PIXEL_AVG_WTAB(sse2, mmx2, mmx2, sse2, sse2, sse2)
 PIXEL_AVG_WTAB(cache64_sse2, mmx2, cache64_mmx2, cache64_sse2, cache64_sse2, cache64_sse2)
 PIXEL_AVG_WTAB(cache64_ssse3, mmx2, cache64_mmx2, cache64_ssse3, cache64_ssse3, cache64_sse2)
 PIXEL_AVG_WTAB(cache64_ssse3_atom, mmx2, mmx2, cache64_ssse3, cache64_ssse3, sse2)
-PIXEL_AVG_WTAB(avx2, mmx2, mmx2, sse2, sse2, avx2)
+PIXEL_AVG_WTAB(avx2, mmx2, mmx2, avx, avx, avx2)
 #endif // HIGH_BIT_DEPTH
 
 #define MC_COPY_WTAB(instr, name1, name2, name3)\

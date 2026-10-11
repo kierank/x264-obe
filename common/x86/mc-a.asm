@@ -864,7 +864,7 @@ cglobal pixel_avg2_w%1, 6,7,8
     %2      m1, [r2+mmsize]
     movu    m2, [r2+r3*2]
     %2      m3, [r2+r3*2+mmsize]
-%if mmsize == 8
+%if cpuflag(avx) || mmsize == 8
     pavgw   m0, [r2+r4]
     pavgw   m1, [r2+r4+mmsize]
     pavgw   m2, [r2+r6]
@@ -894,6 +894,10 @@ INIT_MMX mmx2
 AVG2_W_ONE  4
 AVG2_W_TWO  8, movu, mova
 INIT_XMM sse2
+AVG2_W_ONE  8
+AVG2_W_TWO 10, movd, movd
+AVG2_W_TWO 16, movu, mova
+INIT_XMM avx
 AVG2_W_ONE  8
 AVG2_W_TWO 10, movd, movd
 AVG2_W_TWO 16, movu, mova
@@ -1125,6 +1129,25 @@ cglobal pixel_avg2_w16_sse2, 6,7
     jg .height_loop
     RET
 
+INIT_XMM avx
+; as pixel_avg2_w16_sse2, but VEX allows the unaligned memory operands
+cglobal pixel_avg2_w16, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+.height_loop:
+    movu   m0, [r2]
+    movu   m2, [r2+r3]
+    pavgb  m0, [r2+r4]
+    pavgb  m2, [r2+r6]
+    lea    r2, [r2+r3*2]
+    mova [r0], m0
+    mova [r0+r1], m2
+    lea    r0, [r0+r1*2]
+    sub   r5d, 2
+    jg .height_loop
+    RET
+
+INIT_XMM
 cglobal pixel_avg2_w20_sse2, 6,7
     sub    r2, r4
     lea    r6, [r2+r3]
