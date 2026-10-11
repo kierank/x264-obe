@@ -101,6 +101,7 @@ cextern coeff_last64_sse2
 cextern coeff_last64_sse2_lzcnt
 cextern coeff_last64_avx2_lzcnt
 cextern coeff_last64_avx512
+cextern deinterleave_shufd
 
 %ifdef PIC
 SECTION .data
@@ -919,7 +920,108 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %endif
 %endmacro
 
-%macro CABAC_RESIDUAL_BMI2 1
+; coeff_last of l (r14) -> r0d; %1 = 64 coefficients, else r13d = count-1
+; clobbers r1, r4, r5
+%macro COEFF_LAST_BMI2 1
+%if cpuflag(avx512)
+    vpxord     xmm16, xmm16, xmm16
+%if %1
+%if HIGH_BIT_DEPTH
+    vpcmpd        k0, zmm16, [r14+0*64], 4
+    vpcmpd        k1, zmm16, [r14+1*64], 4
+    vpcmpd        k2, zmm16, [r14+2*64], 4
+    vpcmpd        k3, zmm16, [r14+3*64], 4
+    kunpckwd      k0, k1, k0
+    kunpckwd      k1, k3, k2
+%else
+    vpcmpw        k0, zmm16, [r14+0*64], 4
+    vpcmpw        k1, zmm16, [r14+1*64], 4
+%endif
+    kunpckdq      k0, k1, k0
+    kmovq         r0, k0
+    lzcnt         r0, r0
+    xor          r0d, 63
+%else
+    lea          r1d, [r13+1]
+    mov          r4d, -1
+    bzhi         r4d, r4d, r1d
+    kmovw         k1, r4d           ; read only the block's coefficients
+%if HIGH_BIT_DEPTH
+    vpcmpd   k0{k1}, zmm16, [r14], 4
+%else
+    vpcmpw   k0{k1}, ymm16, [r14], 4
+%endif
+    kmovd        r0d, k0
+    lzcnt        r0d, r0d
+    xor          r0d, 31
+%endif
+%else ; avx2
+    vpxor       xmm0, xmm0, xmm0
+%if %1
+%if HIGH_BIT_DEPTH
+    vmovdqu     ymm5, [deinterleave_shufd GLOBAL]
+    vmovdqu     ymm1, [r14+0*32]
+    vmovdqu     ymm2, [r14+2*32]
+    vmovdqu     ymm3, [r14+4*32]
+    vmovdqu     ymm4, [r14+6*32]
+    vpackssdw   ymm1, ymm1, [r14+1*32]
+    vpackssdw   ymm2, ymm2, [r14+3*32]
+    vpackssdw   ymm3, ymm3, [r14+5*32]
+    vpackssdw   ymm4, ymm4, [r14+7*32]
+    vpacksswb   ymm1, ymm1, ymm2
+    vpacksswb   ymm3, ymm3, ymm4
+    vpermd      ymm1, ymm5, ymm1
+    vpermd      ymm2, ymm5, ymm3
+%else
+    vmovdqu     ymm1, [r14+0*32]
+    vmovdqu     ymm2, [r14+2*32]
+    vpacksswb   ymm1, ymm1, [r14+1*32]
+    vpacksswb   ymm2, ymm2, [r14+3*32]
+    vpermq      ymm1, ymm1, q3120
+    vpermq      ymm2, ymm2, q3120
+%endif
+    vpcmpeqb    ymm1, ymm1, ymm0
+    vpcmpeqb    ymm2, ymm2, ymm0
+    vpmovmskb    r4d, ymm1
+    vpmovmskb    r5d, ymm2
+    vzeroupper
+    shl           r5, 32
+    or            r4, r5
+    not           r4
+    lzcnt         r0, r4
+    xor          r0d, 63
+%else
+    ; the aligned 16 coefficients holding l: SIZEOF_DCTCOEF mask bits each
+    mov           r1, r14
+    and           r1, ~SIZEOF_DCTCOEF
+%if HIGH_BIT_DEPTH
+    vpcmpeqd    ymm1, ymm0, [r1]
+    vpcmpeqd    ymm2, ymm0, [r1+32]
+    vpmovmskb    r4d, ymm1
+    vpmovmskb    r5d, ymm2
+    vzeroupper
+    shl           r5, 32
+    or            r4, r5
+    not           r4
+%else
+    vpcmpeqw    ymm1, ymm0, [r1]
+    vpmovmskb    r4d, ymm1
+    vzeroupper
+    not          r4d
+%endif
+    mov          r1d, r14d
+    and          r1d, SIZEOF_DCTCOEF    ; AC: drop l[-1]
+    shrx          r4, r4, r1
+    lea          r1d, [r13*SIZEOF_DCTCOEF+SIZEOF_DCTCOEF]
+    bzhi          r4, r4, r1
+    lzcnt         r0, r4
+    xor          r0d, 63
+    shr          r0d, SIZEOF_DCTCOEF/2
+%endif
+%endif
+%endmacro
+
+%macro CABAC_RESIDUAL_BMI2 0
 cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %ifdef PIC
     lea      r7, [$$]
@@ -953,8 +1055,6 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     add     r10, r3
     mov  levelm, r10                ; ctx_level state
     add      r3, r8                 ; ctx_sig state
-    call [%1+gprsize*r2 GLOBAL]     ; preserves r3, r7-r14
-    mov   lastm, eax
     mov      r6, cbm
     mov    lowd, [r6+cb.low]
     mov  ranged, [r6+cb.range]
@@ -962,11 +1062,15 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     sub  queued, 24
     cmp    r13d, 63
     je .sigmap_8x8
+    COEFF_LAST_BMI2 0
+    mov   lastm, r0d
     mov     r0d, r13d
     mov    r13d, -1                 ; coeff_idx
     xor    r12d, r12d               ; i
     SIGMAP_BMI2 0, r0d
 .sigmap_8x8:
+    COEFF_LAST_BMI2 1
+    mov   lastm, r0d
     mov      r0, r12
     mov    r13d, -1
     xor    r12d, r12d
@@ -1127,7 +1231,7 @@ CABAC_RESIDUAL coeff_last_sse2
 INIT_XMM sse2,lzcnt
 CABAC_RESIDUAL coeff_last_sse2_lzcnt
 INIT_XMM avx2,bmi2
-CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt
+CABAC_RESIDUAL_BMI2
 INIT_XMM avx512
-CABAC_RESIDUAL_BMI2 coeff_last_avx512
+CABAC_RESIDUAL_BMI2
 %endif
