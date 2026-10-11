@@ -5161,36 +5161,28 @@ HADAMARD_AC_SSE2
 SA8D_SATD
 %endif
 
+; 8 pixel rows %3 and %4 as [%3 %3 | %4 %4]
+%macro LOAD_DUP_8x2P_AVX2 4 ; dst, tmp, 2*mem
+    vpbroadcastq m%1, %3
+    vpbroadcastq m%2, %4
+    vpblendd     m%1, m%1, m%2, 0xf0
+%endmacro
+
+%macro LOAD_SUMSUB_8x2P_AVX2 7 ; dst, 2*tmp, mul, offset, fenc row +4, ref row +4
+    LOAD_DUP_8x2P_AVX2 %1, %2, [r0+%5*r1], [r0+%6]
+    LOAD_DUP_8x2P_AVX2 %2, %3, [r2+%5*r3], [r2+%7]
+    pmaddubsw m%1, m%4
+    pmaddubsw m%2, m%4
+    psubw     m%1, m%2
+%endmacro
+
 %macro LOAD_SUMSUB_8x8P_AVX2 7 ; 4*dst, 2*tmp, mul]
-    movq   xm%1, [r0]
-    movq   xm%3, [r2]
-    movq   xm%2, [r0+r1]
-    movq   xm%4, [r2+r3]
-    vinserti128 m%1, m%1, [r0+4*r1], 1
-    vinserti128 m%3, m%3, [r2+4*r3], 1
-    vinserti128 m%2, m%2, [r0+r4], 1
-    vinserti128 m%4, m%4, [r2+r5], 1
-    punpcklqdq m%1, m%1
-    punpcklqdq m%3, m%3
-    punpcklqdq m%2, m%2
-    punpcklqdq m%4, m%4
-    DIFF_SUMSUB_SSSE3 %1, %3, %2, %4, %7
+    LOAD_SUMSUB_8x2P_AVX2 %1, %5, %6, %7, 0, 4*r1, 4*r3
+    LOAD_SUMSUB_8x2P_AVX2 %2, %5, %6, %7, 1, r4, r5
     lea      r0, [r0+2*r1]
     lea      r2, [r2+2*r3]
-
-    movq   xm%3, [r0]
-    movq   xm%5, [r2]
-    movq   xm%4, [r0+r1]
-    movq   xm%6, [r2+r3]
-    vinserti128 m%3, m%3, [r0+4*r1], 1
-    vinserti128 m%5, m%5, [r2+4*r3], 1
-    vinserti128 m%4, m%4, [r0+r4], 1
-    vinserti128 m%6, m%6, [r2+r5], 1
-    punpcklqdq m%3, m%3
-    punpcklqdq m%5, m%5
-    punpcklqdq m%4, m%4
-    punpcklqdq m%6, m%6
-    DIFF_SUMSUB_SSSE3 %3, %5, %4, %6, %7
+    LOAD_SUMSUB_8x2P_AVX2 %3, %5, %6, %7, 0, 4*r1, 4*r3
+    LOAD_SUMSUB_8x2P_AVX2 %4, %5, %6, %7, 1, r4, r5
 %endmacro
 
 %macro SATD_START_AVX2 2-3 0
@@ -5284,34 +5276,23 @@ cglobal pixel_satd_8x8, 4,6,8
     SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
 %endmacro
 
-; 8 wide, lanes = rows k, k+4: fenc row as in LOAD_SUMSUB_8x8P_AVX2, source rows
-; k and k+4 (r5/r6 = src1/src2 four rows down) averaged and spread by vpermq
-%macro SATD_AVG2_ROW8 2 ; dst (number), k
-    movq          xm%1, [r0+%2*FENC_STRIDE]
-    vinserti128    m%1, m%1, [r0+(%2+4)*FENC_STRIDE], 1
-    punpcklqdq     m%1, m%1
-%endmacro
-
-%macro SATD_AVG2_REF8 2 ; dst (number), source offset
-    movq          xm%1, [r1+%2]
-    movhps        xm%1, [r5+%2]
-    movq          xm8, [r2+%2]
-    movhps        xm8, [r6+%2]
-    pavgb         xm%1, xm8
-    vpermq         m%1, m%1, q1100
+; 8 wide, lanes = rows k, k+4 as in LOAD_SUMSUB_8x8P_AVX2 (r5/r6 = src1/src2
+; four rows down)
+%macro SATD_AVG2_SUMSUB8 3 ; dst (number), k, source offset
+    LOAD_DUP_8x2P_AVX2 %1, 4, [r0+%2*FENC_STRIDE], [r0+(%2+4)*FENC_STRIDE]
+    LOAD_DUP_8x2P_AVX2 4, 5, [r1+%3], [r5+%3]
+    LOAD_DUP_8x2P_AVX2 8, 5, [r2+%3], [r6+%3]
+    pavgb          m4, m8
+    pmaddubsw     m%1, m7
+    pmaddubsw      m4, m7
+    psubw         m%1, m4
 %endmacro
 
 %macro SATD_AVG2_8x8 0
-    SATD_AVG2_ROW8 0, 0
-    SATD_AVG2_REF8 2, 0
-    SATD_AVG2_ROW8 1, 1
-    SATD_AVG2_REF8 3, r3
-    DIFF_SUMSUB_SSSE3 0, 2, 1, 3, 7
-    SATD_AVG2_ROW8 2, 2
-    SATD_AVG2_REF8 4, 2*r3
-    SATD_AVG2_ROW8 3, 3
-    SATD_AVG2_REF8 5, r4
-    DIFF_SUMSUB_SSSE3 2, 4, 3, 5, 7
+    SATD_AVG2_SUMSUB8 0, 0, 0
+    SATD_AVG2_SUMSUB8 1, 1, r3
+    SATD_AVG2_SUMSUB8 2, 2, 2*r3
+    SATD_AVG2_SUMSUB8 3, 3, r4
     SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
 %endmacro
 
