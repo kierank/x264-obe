@@ -4219,16 +4219,22 @@ HADAMARD_AC_WXH_SSE2  8,  8
 %macro HADAMARD_AC_WXH_SUM_SSE2 2
     mova    m1, [rsp+2*mmsize]
 %if HIGH_BIT_DEPTH
-%if %1*%2 >= 128
+%if %1*%2*16/mmsize >= 128
     paddd   m0, [rsp+3*mmsize]
     paddd   m1, [rsp+4*mmsize]
 %endif
-%if %1*%2 == 256
+%if %1*%2*16/mmsize == 256
     paddd   m0, [rsp+5*mmsize]
     paddd   m1, [rsp+6*mmsize]
     paddd   m0, [rsp+7*mmsize]
     paddd   m1, [rsp+8*mmsize]
     psrld   m0, 1
+%endif
+%if mmsize==32
+    vextracti128 xm2, m0, 1
+    vextracti128 xm3, m1, 1
+    paddd   xm0, xm2
+    paddd   xm1, xm3
 %endif
     HADDD  xm0, xm2
     HADDD  xm1, xm3
@@ -4593,6 +4599,7 @@ cglobal pixel_satd_8x16, 4,8,8
 %if ARCH_X86_64
 INIT_YMM avx2
 SA8D_SATD
+HADAMARD_AC_SSE2
 %endif
 %endif ; HIGH_BIT_DEPTH
 
