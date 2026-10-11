@@ -103,6 +103,25 @@ pb_scan8field4a: SHUFFLE_MASK_W    4,   5,   6,   7,  11,0x80,0x80,0x80
 pb_scan8field6 : SHUFFLE_MASK_W    4,   5,   6,   7,  11,0x80,0x80,  12
 pb_scan8field7 : SHUFFLE_MASK_W    5,   6,   7,  11,0x80,0x80,  12,  13
 
+%if HIGH_BIT_DEPTH == 0
+; zigzag_scan_8x8_field rows 1-6 then row 0; ymm loads take rows r and r+1
+align 32
+pb_scan8field_u: SHUFFLE_MASK_W 0x80,   6,   0,   1,   2,   7,0x80,0x80
+                 SHUFFLE_MASK_W    5,   0,   1,   2,   6,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
+                 SHUFFLE_MASK_W    1,   2,   3,   7,0x80,0x80,0x80,0x80
+pb_scan8field_v: SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,0x80,   0,   7
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   5,   6,   0
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,   4,   5,   0,   1
+pb_scan8field_u0: SHUFFLE_MASK_W    0,   1,   2,0x80,0x80,0x80,0x80,0x80
+pb_scan8field_v0: SHUFFLE_MASK_W 0x80,0x80,0x80,   5,   6,   0,   1,   7
+%endif
+
 SECTION .text
 
 cextern pw_32_0
@@ -2073,6 +2092,57 @@ SCAN_8x8 d, dq, qdq, dq, 4
 INIT_MMX mmx2
 SCAN_8x8 w, wd, dq , q , 16
 %endif
+
+%if HIGH_BIT_DEPTH == 0
+; Output rows 1-6 are each a pshufb of two unaligned 8-coef windows of the
+; input (u, v); the windows of rows r and r+1 are 8 coefs apart, so a ymm
+; does two rows. out[8] (in[16]) is in neither window of row 1.
+%macro SCAN_8x8_FIELD_ROWS 3 ; first row, u, v
+%assign %%i 0
+%rep 32/mmsize
+    movu       m0, [r1+(%2+8*%%i)*2]
+    movu       m1, [r1+(%3+8*%%i)*2]
+    pshufb     m0, [pb_scan8field_u+(%1+%%i-1)*16]
+    pshufb     m1, [pb_scan8field_v+(%1+%%i-1)*16]
+    por        m0, m1
+%if mmsize == 32
+    movu [r0+(%1+%%i)*16], m0
+%else
+    mova [r0+(%1+%%i)*16], m0
+%endif
+%assign %%i %%i+1
+%endrep
+%endmacro
+
+%macro SCAN_8x8_FIELD 0
+cglobal zigzag_scan_8x8_field, 2,3,2
+    mova      xm0, [r1+  0]             ; in 0-7
+    movu      xm1, [r1+  6]             ; in 3-10
+    pshufb    xm1, [pb_scan8field_v0]
+%if cpuflag(avx)
+    pblendw   xm0, xm1, 0xf8
+%else
+    pshufb    xm0, [pb_scan8field_u0]
+    por       xm0, xm1
+%endif
+    mova [r0+  0], xm0
+    SCAN_8x8_FIELD_ROWS 1,  5, 17
+    SCAN_8x8_FIELD_ROWS 3, 20, 33
+    SCAN_8x8_FIELD_ROWS 5, 36, 44
+    movzx     r2d, word [r1+32]
+    mov  [r0+ 16], r2w
+    mova      xm0, [r1+112]
+    mov       r2d, [r1+108]
+    mova [r0+112], xm0
+    mov  [r0+112], r2d
+    RET
+%endmacro
+
+INIT_XMM ssse3
+SCAN_8x8_FIELD
+INIT_YMM avx2
+SCAN_8x8_FIELD
+%endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; void zigzag_sub_4x4_frame( int16_t level[16], const uint8_t *src, uint8_t *dst )
