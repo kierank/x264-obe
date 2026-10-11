@@ -257,6 +257,39 @@ SSD_ONE    16, 16
 INIT_YMM avx2
 SSD_ONE    16,  8
 SSD_ONE    16, 16
+
+; 8 wide: two rows a ymm
+%macro SSD_W8_HBD 1 ; height
+cglobal pixel_ssd_8x%1, 4,7,5
+    FIX_STRIDES r1, r3
+    lea     r5, [3*r1]
+    lea     r6, [3*r3]
+    pxor    m0, m0
+%rep %1/4
+    mova   xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    mova   xm2, [r0+2*r1]
+    vinserti128 m2, m2, [r0+r5], 1
+    mova   xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    mova   xm4, [r2+2*r3]
+    vinserti128 m4, m4, [r2+r6], 1
+    psubw   m1, m3
+    psubw   m2, m4
+    pmaddwd m1, m1
+    pmaddwd m2, m2
+    paddd   m0, m1
+    paddd   m0, m2
+    lea     r0, [r0+4*r1]
+    lea     r2, [r2+4*r3]
+%endrep
+    HADDD   m0, m1
+    movd   eax, xm0
+    RET
+%endmacro
+
+SSD_W8_HBD  8
+SSD_W8_HBD 16
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
@@ -1196,6 +1229,48 @@ cglobal pixel_var2_8x%1, 5,6,8
 INIT_XMM sse2
 VAR2_8x8_SSE2  8, 6
 VAR2_8x8_SSE2 16, 7
+
+%if HIGH_BIT_DEPTH
+; AVX2: four rows a pass, two a ymm; lane sums fold to xmm for VAR2_END
+%macro VAR2_8x8_AVX2_HBD 2
+cglobal pixel_var2_8x%1, 5,6,7
+    FIX_STRIDES r1, r3
+    VAR_START 0
+    mov      r5d, %1/4
+.loop:
+    mova     xm0, [r0]
+    vinserti128 m0, m0, [r0+r1], 1
+    mova     xm2, [r2]
+    vinserti128 m2, m2, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    mova     xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    mova     xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    psubw     m0, m2
+    psubw     m1, m3
+    paddw     m5, m0
+    paddw     m5, m1
+    pmaddwd   m0, m0
+    pmaddwd   m1, m1
+    paddd     m6, m0
+    paddd     m6, m1
+    dec      r5d
+    jg .loop
+    vextracti128 xm0, m5, 1
+    paddw    xm5, xm0
+    vextracti128 xm0, m6, 1
+    paddd    xm6, xm0
+    VAR2_END %2, xm5, xm6
+%endmacro
+
+INIT_YMM avx2
+VAR2_8x8_AVX2_HBD  8, 6
+VAR2_8x8_AVX2_HBD 16, 7
+%endif
 
 %if HIGH_BIT_DEPTH == 0
 %macro VAR2_8x8_SSSE3 2
