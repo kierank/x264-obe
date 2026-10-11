@@ -1300,6 +1300,16 @@ static void mbcmp_init( x264_t *h )
     else
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
     h->pixf.mbcmp_mcc = satd ? h->pixf.satd_mcc : NULL;
+    if( satd )
+    {
+        memcpy( h->pixf.mbcmp_pre, h->pixf.satd_pre, sizeof(h->pixf.mbcmp_pre) );
+        memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
+    }
+    else
+    {
+        memset( h->pixf.mbcmp_pre, 0, sizeof(h->pixf.mbcmp_pre) );
+        memset( h->pixf.mbcmp_avg2_pre, 0, sizeof(h->pixf.mbcmp_avg2_pre) );
+    }
     h->pixf.intra_mbcmp_x3_16x16 = satd ? h->pixf.intra_satd_x3_16x16 : h->pixf.intra_sad_x3_16x16;
     h->pixf.intra_mbcmp_x3_8x16c = satd ? h->pixf.intra_satd_x3_8x16c : h->pixf.intra_sad_x3_8x16c;
     h->pixf.intra_mbcmp_x3_8x8c  = satd ? h->pixf.intra_satd_x3_8x8c  : h->pixf.intra_sad_x3_8x8c;

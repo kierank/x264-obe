@@ -842,8 +842,29 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my ); \
 }
 
-static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my )
+static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my,
+                                            int16_t *fenc_pre )
 {
+    if( fenc_pre )
+    {
+        /* subpel_cmp against fenc_pre */
+        intptr_t stride = m->i_stride[0];
+        pixel *src;
+        if( !m->weight[0].weightfn )
+        {
+            int qpel_idx = ((my&3)<<2) + (mx&3);
+            intptr_t offset = (my>>2)*stride + (mx>>2);
+            src = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+            if( qpel_idx & 5 )
+                return h->pixf.mbcmp_avg2_pre[i_pixel]( fenc_pre, src, m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3), stride );
+        }
+        else
+        {
+            stride = 16;
+            src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] );
+        }
+        return h->pixf.mbcmp_pre[i_pixel]( fenc_pre, src, stride );
+    }
     return subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.mbcmp_avg2[i_pixel], h->pixf.mbcmp_unaligned[i_pixel] );
 }
 
@@ -852,7 +873,7 @@ if( b_refine_qpel || (dir^1) != odir ) \
 { \
     intptr_t stride; \
     pixel *src; \
-    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my ) \
+    int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my, fenc_pre ) \
              + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
     if( b_chroma_me && cost < bcost ) \
     { \
@@ -927,6 +948,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int bmy = m->mv[1];
     int bcost = m->cost;
     int odir = -1, bdir;
+    int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
 
     /* halfpel diamond search */
     if( hpel_iters )
@@ -1149,6 +1171,7 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
     const uint16_t *p_cost_m1y = m1->p_cost_mv - m1->mvp[1];
 
     h->mc.memzero_aligned( visited, sizeof(uint8_t[8][8][8]) );
+    int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m0->p_fenc[0] );
 
     for( int pass = 0; pass < 8; pass++ )
     {
@@ -1177,7 +1200,8 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
                 int i1 = 4 + 3*dia4d[j][2] + dia4d[j][3];
                 visited[(m0x)&7][(m0y)&7][(m1x)&7] |= (1<<((m1y)&7));
                 h->mc.avg[i_pixel]( pix, FDEC_STRIDE, src[0][0][i0], stride[0][0][i0], src[0][1][i1], stride[0][1][i1], i_weight );
-                int cost = h->pixf.mbcmp[i_pixel]( m0->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE )
+                int cost = (fenc_pre ? h->pixf.mbcmp_pre[i_pixel]( fenc_pre, pix, FDEC_STRIDE )
+                                     : h->pixf.mbcmp[i_pixel]( m0->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE ))
                          + p_cost_m0x[m0x] + p_cost_m0y[m0y] + p_cost_m1x[m1x] + p_cost_m1y[m1y];
                 if( rd )
                 {

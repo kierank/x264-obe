@@ -59,7 +59,11 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
     memcpy( h->pixf.mbcmp_unaligned, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.mbcmp_unaligned) );
     h->pixf.intra_mbcmp_x3_8x8c = satd ? h->pixf.intra_satd_x3_8x8c : h->pixf.intra_sad_x3_8x8c;
     if( satd )
+    {
         memcpy( h->pixf.mbcmp_avg2, h->pixf.satd_avg2, sizeof(h->pixf.mbcmp_avg2) );
+        memcpy( h->pixf.mbcmp_pre, h->pixf.satd_pre, sizeof(h->pixf.mbcmp_pre) );
+        memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
+    }
     else
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
     satd &= param->analyse.i_me_method == X264_ME_TESA;
@@ -168,6 +172,12 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
 
     h->mb.pic.p_fenc[0] = h->mb.pic.fenc_buf;
     h->mc.copy[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, &fenc->lowres8[0][i_pel_offset], i_stride, 8 );
+    h->mb.pic.i_fenc_pre = 0;
+    int16_t *fenc_pre = x264_me_fenc_pre( h, PIXEL_8x8, h->mb.pic.p_fenc[0] );
+/* mbcmp of the lowres fenc against pix */
+#define LOWRES_MBCMP( pix, stride ) \
+    (fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, stride ) \
+              : h->pixf.mbcmp[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, pix, stride ))
 
     if( p0 == p1 )
         goto lowres_intra_mb;
@@ -222,8 +232,7 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
                                   (mv1)[0], (mv1)[1], 8, 8, w ); \
             h->mc.avg[PIXEL_8x8]( pix1, 16, src1, stride1, src2, stride2, i_bipred_weight ); \
         } \
-        i_cost = penalty * c->lambda + h->pixf.mbcmp[PIXEL_8x8]( \
-                           m[0].p_fenc[0], FENC_STRIDE, pix1, 16 ); \
+        i_cost = penalty * c->lambda + LOWRES_MBCMP( pix1, 16 ); \
         COPY2_IF_LT( i_bcost, i_cost, list_used, 3 ); \
     }
 
@@ -271,7 +280,7 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
         {
             int i_cost;
             h->mc.avg[PIXEL_8x8]( pix1, 16, m[0].p_fref[0], m[0].i_stride[0], m[1].p_fref[0], m[1].i_stride[0], i_bipred_weight );
-            i_cost = h->pixf.mbcmp[PIXEL_8x8]( m[0].p_fenc[0], FENC_STRIDE, pix1, 16 );
+            i_cost = LOWRES_MBCMP( pix1, 16 );
             COPY2_IF_LT( i_bcost, i_cost, list_used, 3 );
         }
     }
@@ -309,7 +318,7 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
              * The threshold is the high bit depth one at 8-bit scale. */
             if( !M32( m[l].mvp ) )
             {
-                m[l].cost = h->pixf.mbcmp[PIXEL_8x8]( m[l].p_fenc[0], FENC_STRIDE, m[l].p_fref[0], m[l].i_stride[0] );
+                m[l].cost = LOWRES_MBCMP( m[l].p_fref[0], m[l].i_stride[0] );
                 if( m[l].cost < (64 >> LOWRES8_COST_SHIFT) )
                 {
                     M32( m[l].mv ) = 0;
@@ -358,13 +367,15 @@ lowres_intra_mb:
         if( h->param.analyse.i_subpel_refine > 1 )
         {
             h->predict_8x8c[I_PRED_CHROMA_P]( pix );
-            int satd = h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
+            int satd = fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, FDEC_STRIDE )
+                                : h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
             i_icost = X264_MIN( i_icost, satd );
             h->predict_8x8_filter( pix, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
             for( int i = 3; i < 9; i++ )
             {
                 h->predict_8x8[i]( pix, edge );
-                satd = h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
+                satd = fenc_pre ? h->pixf.mbcmp_pre[PIXEL_8x8]( fenc_pre, pix, FDEC_STRIDE )
+                                : h->pixf.mbcmp[PIXEL_8x8]( pix, FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
                 i_icost = X264_MIN( i_icost, satd );
             }
         }
@@ -416,6 +427,7 @@ lowres_intra_mb:
     fenc->lowres_costs[b-p0][p1-b][i_mb_xy] = X264_MIN( i_bcost, LOWRES_COST_MASK ) + (list_used << LOWRES_COST_SHIFT);
 }
 #undef TRY_BIDIR
+#undef LOWRES_MBCMP
 
 void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
                               int dist_scale_factor, int do_search[2], const void *weights,
