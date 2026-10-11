@@ -389,6 +389,50 @@ cglobal pixel_sad_16x16, 4,4
     psadbw         m3, [r0+3*64]
     SAD_W16_AVX512_END
 
+; AVX2: two rows a ymm, and fenc rows FENC_STRIDE apart are one 32 byte load
+%macro SAD_W16_AVX2_8ROWS 0 ; rows 0-7 into m0-m3, r1 = 3*stride
+    movu         xm0, [r2]
+    vinserti128   m0, m0, [r2+r3], 1
+    psadbw        m0, [r0+0*32]
+    movu         xm1, [r2+2*r3]
+    vinserti128   m1, m1, [r2+r1], 1
+    lea           r2, [r2+4*r3]
+    psadbw        m1, [r0+1*32]
+    movu         xm2, [r2]
+    vinserti128   m2, m2, [r2+r3], 1
+    psadbw        m2, [r0+2*32]
+    movu         xm3, [r2+2*r3]
+    vinserti128   m3, m3, [r2+r1], 1
+    psadbw        m3, [r0+3*32]
+%endmacro
+
+; rows 4-7 of the next 8 rows (fenc offset %1) added into m%2, m%3
+%macro SAD_W16_AVX2_ACC4 3
+    movu         xm4, [r2]
+    vinserti128   m4, m4, [r2+r3], 1
+    movu         xm5, [r2+2*r3]
+    vinserti128   m5, m5, [r2+r1], 1
+    psadbw        m4, [r0+%1]
+    psadbw        m5, [r0+%1+32]
+    paddd        m%2, m4
+    paddd        m%3, m5
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_sad_16x8, 4,4,4
+    SAD_W16_AVX512_START 8
+    SAD_W16_AVX2_8ROWS
+    SAD_W16_AVX512_END
+
+cglobal pixel_sad_16x16, 4,4,6
+    SAD_W16_AVX512_START 16
+    SAD_W16_AVX2_8ROWS
+    lea           r2, [r2+4*r3]
+    SAD_W16_AVX2_ACC4 4*32, 0, 1
+    lea           r2, [r2+4*r3]
+    SAD_W16_AVX2_ACC4 6*32, 2, 3
+    SAD_W16_AVX512_END
+
 ;-----------------------------------------------------------------------------
 ; void pixel_vsad( pixel *src, intptr_t stride );
 ;-----------------------------------------------------------------------------
