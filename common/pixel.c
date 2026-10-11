@@ -1410,8 +1410,6 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( satd, _avx2 );
         INIT2( hadamard_ac, _avx2 );
         pixf->hadamard_ac[PIXEL_8x8] = x264_pixel_hadamard_ac_8x8_avx2;
-        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
-        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx2;
         INIT_ADS( _avx2 );
         pixf->sa8d[PIXEL_8x8]  = x264_pixel_sa8d_8x8_avx2;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx2;
