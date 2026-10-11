@@ -1520,6 +1520,10 @@ x264_t *x264_encoder_open( x264_param_t *param )
         e = getenv( "X264_EXP_ALG_FIELDREF" );
         h->exp.i_alg_fieldref = e ? atoi( e ) : 0;
         h->exp.i_fieldref_arm = h->exp.i_alg_fieldref >= 1 && h->exp.i_alg_fieldref <= 3 ? h->exp.i_alg_fieldref : 0;
+        /* X264_EXP_ALG_PARTGATE=T: no 8x8 (16x8, 8x16) analysis when the best 16x16 cost
+         * less its MV cost is below T*lambda and no left/top MB used a sub-16x16 partition */
+        e = getenv( "X264_EXP_ALG_PARTGATE" );
+        h->exp.i_alg_partgate = e ? atoi( e ) : 0;
         /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
          * the counts at x264_encoder_close; does not change the output */
         e = getenv( "X264_EXP_CENSUS" );
@@ -1528,10 +1532,10 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.b_census_me = 0;
         h->exp.p_hpel_shadow = NULL;
         if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme ||
-            h->exp.i_alg_fieldref || h->exp.b_census )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d census %d\n",
+            h->exp.i_alg_fieldref || h->exp.i_alg_partgate || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d partgate %d census %d\n",
                       h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme,
-                      h->exp.i_alg_fieldref, h->exp.b_census );
+                      h->exp.i_alg_fieldref, h->exp.i_alg_partgate, h->exp.b_census );
     }
 
     /* Init frames. */
@@ -4132,6 +4136,9 @@ static void x264_exp_census_print( x264_t *h )
     for( int s = 0; s < 2; s++ )
         fprintf( stderr, "bd-alg census: fieldref %s list-searches %"PRId64" refs %"PRId64" arm1 %"PRId64" arm2 %"PRId64" arm3 %"PRId64"\n",
                  slice_name[s], c.fieldref[s][0], c.fieldref[s][1], c.fieldref[s][2], c.fieldref[s][3], c.fieldref[s][4] );
+    for( int s = 0; s < 2; s++ )
+        fprintf( stderr, "bd-alg census: partgate %s evaluated %"PRId64" clean-nb %"PRId64" below-16 %"PRId64" below-32 %"PRId64" below-64 %"PRId64" below-128 %"PRId64"\n",
+                 slice_name[s], c.partgate[s][0], c.partgate[s][1], c.partgate[s][2], c.partgate[s][3], c.partgate[s][4], c.partgate[s][5] );
 }
 
 /****************************************************************************

@@ -3154,6 +3154,41 @@ static int x264_exp_intra_rd_bound( x264_t *h, x264_mb_analysis_t *a, int i_rd_t
     return i_rd_thresh - i_chroma - 1;
 }
 
+/* bd-alg ALG_PARTGATE: whether the left or the top MB, in the slice, used a
+ * partition below 16x16, intra 4x4 and 8x8 included */
+static int x264_exp_nb_sub16( x264_t *h )
+{
+    int b_sub = 0;
+    if( h->mb.i_neighbour & MB_LEFT )
+        for( int i = 0; i < 2; i++ )
+        {
+            int type = h->mb.i_mb_type_left[i];
+            b_sub |= type == I_4x4 || type == I_8x8 ||
+                     (!IS_INTRA( type ) && h->mb.partition[h->mb.i_mb_left_xy[i]] != D_16x16);
+        }
+    if( h->mb.i_neighbour & MB_TOP )
+    {
+        int type = h->mb.i_mb_type_top;
+        b_sub |= type == I_4x4 || type == I_8x8 ||
+                 (!IS_INTRA( type ) && h->mb.partition[h->mb.i_mb_top_xy] != D_16x16);
+    }
+    return b_sub;
+}
+
+/* bd-alg X264_EXP_CENSUS: ALG_PARTGATE evaluations, those with no sub-16x16
+ * neighbour, and of those the ones with a residual below 16, 32, 64, 128 lambda */
+static NOINLINE void x264_exp_census_partgate( x264_t *h, int i_res, int i_lambda, int b_sub )
+{
+    int s = h->sh.i_type == SLICE_TYPE_B;
+    h->exp.census.partgate[s][0]++;
+    if( b_sub )
+        return;
+    h->exp.census.partgate[s][1]++;
+    for( int k = 0; k < 4; k++ )
+        if( i_res < (16 << k) * i_lambda )
+            h->exp.census.partgate[s][2+k]++;
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3286,7 +3321,20 @@ skip_analysis:
                 return;
             }
 
-            if( flags & X264_ANALYSE_PSUB16x16 )
+            /* bd-alg ALG_PARTGATE: no p8x8, so no 16x8 and 8x16, when the 16x16 cost
+             * less its MV cost is below T*lambda and neither the left nor the top MB
+             * used a partition below 16x16. l0.i_cost8x8 stays COST_MAX. */
+            int b_partgate = 0;
+            if( (h->exp.i_alg_partgate || h->exp.b_census) && analysis.b_early_terminate && (flags & X264_ANALYSE_PSUB16x16) )
+            {
+                int i_res = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv;
+                int b_sub = x264_exp_nb_sub16( h );
+                b_partgate = h->exp.i_alg_partgate && !b_sub && i_res < h->exp.i_alg_partgate * analysis.i_lambda;
+                if( h->exp.b_census )
+                    x264_exp_census_partgate( h, i_res, analysis.i_lambda, b_sub );
+            }
+
+            if( (flags & X264_ANALYSE_PSUB16x16) && !b_partgate )
             {
                 if( h->param.analyse.b_mixed_references )
                     x264_mb_analyse_inter_p8x8_mixed_ref( h, &analysis );
@@ -3335,8 +3383,8 @@ skip_analysis:
             }
 
             /* Now do 16x8/8x16 */
-            int i_thresh16x8 = analysis.l0.me8x8[1].cost_mv + analysis.l0.me8x8[2].cost_mv;
-            if( ( flags & X264_ANALYSE_PSUB16x16 ) && (!analysis.b_early_terminate ||
+            int i_thresh16x8 = b_partgate ? 0 : analysis.l0.me8x8[1].cost_mv + analysis.l0.me8x8[2].cost_mv;
+            if( ( flags & X264_ANALYSE_PSUB16x16 ) && !b_partgate && (!analysis.b_early_terminate ||
                 analysis.l0.i_cost8x8 < analysis.l0.me16x16.cost + i_thresh16x8) )
             {
                 int i_avg_mv_ref_cost = (analysis.l0.me8x8[2].cost_mv + analysis.l0.me8x8[2].i_ref_cost
@@ -3667,7 +3715,22 @@ skip_analysis:
                 }
             }
 
-            if( flags & X264_ANALYSE_BSUB16x16 )
+            /* bd-alg ALG_PARTGATE: as in P, on the best 16x16 mode's cost less its MV
+             * costs; no b8x8, 16x8 and 8x16 (their costs stay COST_MAX) */
+            int b_partgate = 0;
+            if( (h->exp.i_alg_partgate || h->exp.b_census) && analysis.b_early_terminate && (flags & X264_ANALYSE_BSUB16x16) )
+            {
+                int i_res = i_type == B_L0_L0 ? analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv :
+                            i_type == B_L1_L1 ? analysis.l1.me16x16.cost - analysis.l1.me16x16.cost_mv :
+                            i_type == B_BI_BI ? analysis.i_cost16x16bi - analysis.l0.bi16x16.cost_mv - analysis.l1.bi16x16.cost_mv :
+                                                analysis.i_cost16x16direct;
+                int b_sub = x264_exp_nb_sub16( h );
+                b_partgate = h->exp.i_alg_partgate && !b_sub && i_res < h->exp.i_alg_partgate * analysis.i_lambda;
+                if( h->exp.b_census )
+                    x264_exp_census_partgate( h, i_res, analysis.i_lambda, b_sub );
+            }
+
+            if( (flags & X264_ANALYSE_BSUB16x16) && !b_partgate )
             {
                 if( h->param.analyse.b_mixed_references )
                     x264_mb_analyse_inter_b8x8_mixed_ref( h, &analysis );
