@@ -2213,6 +2213,72 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_QUANT_DC( quant_4x4_dc, **h->quant4_mf[CQM_4IY] );
         TEST_QUANT_DC( quant_2x2_dc, **h->quant4_mf[CQM_4IC] );
 
+        /* encoder mf/bias at every qp; flat cqm adds full-range and max-magnitude 4:2:2 dcs */
+        if( qf_a.quant_2x4_dc != qf_ref.quant_2x4_dc )
+        {
+            set_func_name( "quant_2x4_dc" );
+            used_asms[0] = 1;
+            for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- )
+            {
+                int mf = h->quant4_mf[CQM_4IC][qp][0] >> 1, bias = h->quant4_bias[CQM_4IC][qp][0] << 1;
+                int max = i_cqm ? 0xfff : 8*16*PIXEL_MAX;
+                for( int j = 0; j < 6; j++ )
+                {
+                    int result_c, result_a;
+                    for( int i = 0; i < 8; i++ )
+                        dct1[i] = dct2[i] = j == 0 ? 0 : j == 1 ? rand()%5 - 2 : j < 4 ? rand()%(2*max+1) - max
+                                          : (j == 4 ? rand()&1 : i&1) ? max : -max;
+                    result_c = call_c1( qf_c.quant_2x4_dc, dct1, mf, bias );
+                    result_a = call_a1( qf_a.quant_2x4_dc, dct2, mf, bias );
+                    if( memcmp( dct1, dct2, 8*sizeof(dctcoef) ) || result_c != result_a )
+                    {
+                        oks[0] = 0;
+                        fprintf( stderr, "quant_2x4_dc (qp=%d, cqm=%d, j=%d): [FAILED]\n", qp, i_cqm, j );
+                        break;
+                    }
+                }
+                call_c2( qf_c.quant_2x4_dc, dct1, mf, bias );
+                call_a2( qf_a.quant_2x4_dc, dct2, mf, bias );
+            }
+        }
+
+        if( qf_a.dct2x4dc_quant != qf_ref.dct2x4dc_quant )
+        {
+            ALIGNED_ARRAY_32( dctcoef, level1,[8] );
+            ALIGNED_ARRAY_32( dctcoef, level2,[8] );
+            set_func_name( "dct2x4dc_quant" );
+            used_asms[0] = 1;
+            for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- )
+            {
+                int mf = h->quant4_mf[CQM_4PC][qp][0] >> 1, bias = h->quant4_bias[CQM_4PC][qp][0] << 1;
+                int max = i_cqm ? 0xfff/8 : 16*PIXEL_MAX;
+                for( int j = 0; j < 5; j++ )
+                {
+                    int result_c, result_a;
+                    /* j = 0: random, 1: random max dcs, 2: max dc, 3: small dcs, 4: zero dcs */
+                    for( int i = 0; i < 8*16; i++ )
+                        dct3[i>>4][i&15] = rand()%(2*4*16*PIXEL_MAX+1) - 4*16*PIXEL_MAX;
+                    for( int i = 0; i < 8; i++ )
+                        dct3[i][0] = j == 0 ? rand()%(2*max+1) - max : j == 1 ? (rand()&1 ? max : -max)
+                                   : j == 2 ? ((i^i>>1^i>>2)&1 ? max : -max) : j == 3 ? rand()%5 - 2 : 0;
+                    memcpy( dct4, dct3, 8*16*sizeof(dctcoef) );
+                    memset( dct1, 0, 8*sizeof(dctcoef) );
+                    memset( dct2, 0, 8*sizeof(dctcoef) );
+                    result_c = call_c1( qf_c.dct2x4dc_quant, dct1, dct3, level1, mf, bias );
+                    result_a = call_a1( qf_a.dct2x4dc_quant, dct2, dct4, level2, mf, bias );
+                    if( memcmp( dct1, dct2, 8*sizeof(dctcoef) ) || memcmp( level1, level2, 8*sizeof(dctcoef) ) ||
+                        memcmp( dct3, dct4, 8*16*sizeof(dctcoef) ) || result_c != result_a )
+                    {
+                        oks[0] = 0;
+                        fprintf( stderr, "dct2x4dc_quant (qp=%d, cqm=%d, j=%d): [FAILED]\n", qp, i_cqm, j );
+                        break;
+                    }
+                }
+                call_c2( qf_c.dct2x4dc_quant, dct1, dct3, level1, mf, bias );
+                call_a2( qf_a.dct2x4dc_quant, dct2, dct4, level2, mf, bias );
+            }
+        }
+
 #define TEST_DEQUANT( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \
         { \
@@ -2309,6 +2375,46 @@ static int check_quant( int cpu_ref, int cpu_new )
                 }
                 call_c2( qf_c.idct_dequant_2x4_dconly, dct1, h->dequant4_mf[CQM_4IC], qp+3 );
                 call_a2( qf_a.idct_dequant_2x4_dconly, dct2, h->dequant4_mf[CQM_4IC], qp+3 );
+            }
+        }
+
+        if( qf_a.add8x16_idct_dequant_dc != qf_ref.add8x16_idct_dequant_dc )
+        {
+            ALIGNED_ARRAY_32( dctcoef, level1,[8] );
+            set_func_name( "add8x16_idct_dequant_dc_%s", i_cqm?"cqm":"flat" );
+            used_asms[1] = 1;
+            for( int qp = h->chroma_qp_table[h->param.rc.i_qp_max]; qp >= h->chroma_qp_table[h->param.rc.i_qp_min]; qp-- )
+            {
+                /* j = 0: as idct_dequant_2x4_dconly; flat cqm: j = 1, 2: max magnitude dcs quantised as the encoder does */
+                for( int j = 0; j < (i_cqm ? 1 : 3); j++ )
+                {
+                    if( !j )
+                    {
+                        for( int i = 0; i < 8; i++ )
+                            dct1[i] = rand()%(PIXEL_MAX*16*2+1) - PIXEL_MAX*16;
+                        qf_c.quant_2x2_dc( &dct1[0], h->quant4_mf[CQM_4IC][qp+3][0]>>1, h->quant4_bias[CQM_4IC][qp+3][0]>>1 );
+                        qf_c.quant_2x2_dc( &dct1[4], h->quant4_mf[CQM_4IC][qp+3][0]>>1, h->quant4_bias[CQM_4IC][qp+3][0]>>1 );
+                    }
+                    else
+                    {
+                        for( int i = 0; i < 8; i++ )
+                            dct3[i][0] = (j == 1 ? rand()&1 : (i^i>>1^i>>2)&1) ? PIXEL_MAX*16 : -PIXEL_MAX*16;
+                        qf_c.dct2x4dc_quant( dct1, dct3, level1, h->quant4_mf[CQM_4IC][qp+3][0]>>1, h->quant4_bias[CQM_4IC][qp+3][0]<<1 );
+                    }
+                    memcpy( dct2, dct1, 8*sizeof(dctcoef) );
+                    for( int i = 0; i < 16*FDEC_STRIDE; i++ )
+                        pbuf3[i] = pbuf4[i] = j == 2 ? -(pbuf1[i]&1) & PIXEL_MAX : pbuf1[i];
+                    call_c1( qf_c.add8x16_idct_dequant_dc, pbuf3, dct1, h->dequant4_mf[CQM_4IC], qp+3 );
+                    call_a1( qf_a.add8x16_idct_dequant_dc, pbuf4, dct2, h->dequant4_mf[CQM_4IC], qp+3 );
+                    if( memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE*sizeof(pixel) ) || memcmp( dct1, dct2, 8*sizeof(dctcoef) ) )
+                    {
+                        oks[1] = 0;
+                        fprintf( stderr, "add8x16_idct_dequant_dc (qp=%d, cqm=%d, j=%d): [FAILED]\n", qp, i_cqm, j );
+                        break;
+                    }
+                }
+                call_c2( qf_c.add8x16_idct_dequant_dc, pbuf3, dct1, h->dequant4_mf[CQM_4IC], qp+3 );
+                call_a2( qf_a.add8x16_idct_dequant_dc, pbuf4, dct2, h->dequant4_mf[CQM_4IC], qp+3 );
             }
         }
 

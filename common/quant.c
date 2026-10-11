@@ -94,6 +94,14 @@ static int quant_2x2_dc( dctcoef dct[4], int mf, int bias )
     return !!nz;
 }
 
+static int quant_2x4_dc( dctcoef dct[8], int mf, int bias )
+{
+    int nz = 0;
+    for( int i = 0; i < 8; i++ )
+        QUANT_ONE( dct[i], mf, bias );
+    return !!nz;
+}
+
 #define DEQUANT_SHL( x ) \
     dct[x] = ( dct[x] * dequant_mf[i_mf][x] ) << i_qbits
 
@@ -199,6 +207,51 @@ static void idct_dequant_2x4_dconly( dctcoef dct[8], int dequant_mf[6][16], int 
     dct[5] = ((b6 - b7) * dmf + 32) >> 6;
     dct[6] = ((b4 + b5) * dmf + 32) >> 6;
     dct[7] = ((b6 + b7) * dmf + 32) >> 6;
+}
+
+/* dct2x4dc, quant_2x4_dc and zigzag_scan_2x4_dc in one */
+static int dct2x4dc_quant( dctcoef dct[8], dctcoef dct4x4[8][16], dctcoef level[8], int mf, int bias )
+{
+    for( int i = 0; i < 8; i++ )
+    {
+        dct[i] = dct4x4[i][0];
+        dct4x4[i][0] = 0;
+    }
+    IDCT_DEQUANT_2X4_START
+    dct[0] = b0 + b1;
+    dct[1] = b2 + b3;
+    dct[2] = b0 - b1;
+    dct[3] = b2 - b3;
+    dct[4] = b4 - b5;
+    dct[5] = b6 - b7;
+    dct[6] = b4 + b5;
+    dct[7] = b6 + b7;
+    int nz = quant_2x4_dc( dct, mf, bias );
+    level[0] = dct[0];
+    level[1] = dct[2];
+    level[2] = dct[1];
+    level[3] = dct[4];
+    level[4] = dct[6];
+    level[5] = dct[3];
+    level[6] = dct[5];
+    level[7] = dct[7];
+    return nz;
+}
+
+/* idct_dequant_2x4_dconly and add8x8_idct_dc on both 8x8 halves in one */
+static void add8x16_idct_dequant_dc( pixel *p_dst, dctcoef dct[8], int dequant_mf[6][16], int i_qp )
+{
+    dctcoef dc[8];
+    memcpy( dc, dct, sizeof(dc) );
+    idct_dequant_2x4_dconly( dc, dequant_mf, i_qp );
+    for( int i = 0; i < 8; i++ )
+    {
+        pixel *p = p_dst + 4*(i&1) + 4*(i>>1)*FDEC_STRIDE;
+        int d = (dc[i] + 32) >> 6;
+        for( int y = 0; y < 4; y++, p += FDEC_STRIDE )
+            for( int x = 0; x < 4; x++ )
+                p[x] = x264_clip_pixel( p[x] + d );
+    }
 }
 
 static ALWAYS_INLINE void optimize_chroma_idct_dequant_2x4( dctcoef out[8], dctcoef dct[8], int dmf )
@@ -409,6 +462,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     pf->quant_4x4x4 = quant_4x4x4;
     pf->quant_4x4_dc = quant_4x4_dc;
     pf->quant_2x2_dc = quant_2x2_dc;
+    pf->quant_2x4_dc = quant_2x4_dc;
 
     pf->dequant_4x4 = dequant_4x4;
     pf->dequant_4x4_dc = dequant_4x4_dc;
@@ -416,6 +470,8 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
 
     pf->idct_dequant_2x4_dc = idct_dequant_2x4_dc;
     pf->idct_dequant_2x4_dconly = idct_dequant_2x4_dconly;
+    pf->dct2x4dc_quant = dct2x4dc_quant;
+    pf->add8x16_idct_dequant_dc = add8x16_idct_dequant_dc;
 
     pf->optimize_chroma_2x2_dc = optimize_chroma_2x2_dc;
     pf->optimize_chroma_2x4_dc = optimize_chroma_2x4_dc;
@@ -464,12 +520,16 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->quant_4x4x4 = x264_quant_4x4x4_sse2;
         pf->quant_8x8 = x264_quant_8x8_sse2;
         pf->quant_2x2_dc = x264_quant_2x2_dc_sse2;
+        pf->quant_2x4_dc = x264_quant_2x4_dc_sse2;
         pf->quant_4x4_dc = x264_quant_4x4_dc_sse2;
         pf->dequant_4x4 = x264_dequant_4x4_sse2;
         pf->dequant_8x8 = x264_dequant_8x8_sse2;
         pf->dequant_4x4_dc = x264_dequant_4x4dc_sse2;
         pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_sse2;
         pf->idct_dequant_2x4_dconly = x264_idct_dequant_2x4_dconly_sse2;
+#if ARCH_X86_64
+        pf->add8x16_idct_dequant_dc = x264_add8x16_idct_dequant_dc_sse2;
+#endif
         pf->denoise_dct = x264_denoise_dct_sse2;
         pf->decimate_score15 = x264_decimate_score15_sse2;
         pf->decimate_score16 = x264_decimate_score16_sse2;
@@ -499,6 +559,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->quant_4x4x4 = x264_quant_4x4x4_ssse3;
         pf->quant_8x8 = x264_quant_8x8_ssse3;
         pf->quant_2x2_dc = x264_quant_2x2_dc_ssse3;
+        pf->quant_2x4_dc = x264_quant_2x4_dc_ssse3;
         pf->quant_4x4_dc = x264_quant_4x4_dc_ssse3;
         pf->denoise_dct = x264_denoise_dct_ssse3;
         pf->decimate_score15 = x264_decimate_score15_ssse3;
@@ -509,6 +570,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     if( cpu&X264_CPU_SSE4 )
     {
         pf->quant_2x2_dc = x264_quant_2x2_dc_sse4;
+        pf->quant_2x4_dc = x264_quant_2x4_dc_sse4;
         pf->quant_4x4_dc = x264_quant_4x4_dc_sse4;
         pf->quant_4x4 = x264_quant_4x4_sse4;
         pf->quant_4x4x4 = x264_quant_4x4x4_sse4;
@@ -518,6 +580,9 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     {
         pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx;
         pf->idct_dequant_2x4_dconly = x264_idct_dequant_2x4_dconly_avx;
+#if ARCH_X86_64
+        pf->add8x16_idct_dequant_dc = x264_add8x16_idct_dequant_dc_avx;
+#endif
         pf->denoise_dct = x264_denoise_dct_avx;
     }
     if( cpu&X264_CPU_XOP )
@@ -535,6 +600,12 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx2;
         pf->quant_8x8 = x264_quant_8x8_avx2;
         pf->quant_4x4x4 = x264_quant_4x4x4_avx2;
+        pf->quant_2x4_dc = x264_quant_2x4_dc_avx2;
+#if ARCH_X86_64
+        pf->dct2x4dc_quant = x264_dct2x4dc_quant_avx2;
+        pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx2;
+        pf->add8x16_idct_dequant_dc = x264_add8x16_idct_dequant_dc_avx2;
+#endif
         pf->dequant_4x4 = x264_dequant_4x4_avx2;
         pf->dequant_8x8 = x264_dequant_8x8_avx2;
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx2;
@@ -605,6 +676,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     if( cpu&X264_CPU_SSE2 )
     {
         pf->quant_4x4_dc = x264_quant_4x4_dc_sse2;
+        pf->quant_2x4_dc = x264_quant_2x4_dc_sse2;
         pf->quant_4x4 = x264_quant_4x4_sse2;
         pf->quant_4x4x4 = x264_quant_4x4x4_sse2;
         pf->quant_8x8 = x264_quant_8x8_sse2;
@@ -641,6 +713,11 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     if( cpu&X264_CPU_SSSE3 )
     {
         pf->quant_2x2_dc = x264_quant_2x2_dc_ssse3;
+        pf->quant_2x4_dc = x264_quant_2x4_dc_ssse3;
+#if ARCH_X86_64
+        pf->dct2x4dc_quant = x264_dct2x4dc_quant_ssse3;
+        pf->add8x16_idct_dequant_dc = x264_add8x16_idct_dequant_dc_ssse3;
+#endif
         pf->quant_4x4_dc = x264_quant_4x4_dc_ssse3;
         pf->quant_4x4 = x264_quant_4x4_ssse3;
         pf->quant_4x4x4 = x264_quant_4x4x4_ssse3;
@@ -682,6 +759,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         }
         pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx;
         pf->idct_dequant_2x4_dconly = x264_idct_dequant_2x4_dconly_avx;
+#if ARCH_X86_64
+        pf->dct2x4dc_quant = x264_dct2x4dc_quant_avx;
+        pf->add8x16_idct_dequant_dc = x264_add8x16_idct_dequant_dc_avx;
+#endif
         pf->optimize_chroma_2x2_dc = x264_optimize_chroma_2x2_dc_avx;
         pf->denoise_dct = x264_denoise_dct_avx;
     }

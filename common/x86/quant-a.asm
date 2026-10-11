@@ -102,6 +102,23 @@ dct_coef_shuffle:
 %endrep
 %endif
 
+; 2x4 dc transform lanes: x0..x7 -> d0 d1 d6 d7 d2 d3 d4 d5
+ALIGN 32, db 0
+%if HIGH_BIT_DEPTH
+pd_pmpmpmpm:   dd 1,-1, 1,-1, 1,-1, 1,-1
+pd_ppmmppmm:   dd 1, 1,-1,-1, 1, 1,-1,-1
+pd_ppppmmmm:   dd 1, 1, 1, 1,-1,-1,-1,-1
+dc2x4_natural: dd 0, 1, 4, 5, 6, 7, 2, 3
+dc2x4_zigzag:  dd 0, 4, 1, 6, 2, 5, 7, 3
+%else
+pw_dc2x4_pm:   dw 1,-1, 1,-1, 1,-1, 1,-1
+pw_dc2x4_ppmm: dw 1, 1,-1,-1, 1, 1,-1,-1
+pw_dc2x4_pppp: dw 1, 1, 1, 1,-1,-1,-1,-1
+dc2x4_swap:    db 2, 3, 0, 1, 6, 7, 4, 5,10,11, 8, 9,14,15,12,13
+dc2x4_natural: db 0, 1, 2, 3, 8, 9,10,11,12,13,14,15, 4, 5, 6, 7
+dc2x4_zigzag:  db 0, 1, 8, 9, 2, 3,12,13, 4, 5,10,11,14,15, 6, 7
+%endif
+
 SECTION .text
 
 cextern pb_1
@@ -113,6 +130,11 @@ cextern pb_01
 cextern pd_1024
 cextern deinterleave_shufd
 cextern popcnt_table
+cextern pd_32
+cextern pw_512
+cextern pw_pixel_max
+cextern pb_unpackbd1
+cextern pb_unpackbd2
 
 %macro QUANT_DC_START 2
     movd      xm%1, r1m     ; mf
@@ -312,6 +334,7 @@ cglobal quant_4x4x4, 3,3,8
 
 INIT_XMM sse2
 QUANT_DC 2, 2
+QUANT_DC 2, 4
 QUANT_DC 4, 4
 QUANT_AC 4, 4
 QUANT_AC 8, 8
@@ -319,6 +342,7 @@ QUANT_4x4x4
 
 INIT_XMM ssse3
 QUANT_DC 2, 2
+QUANT_DC 2, 4
 QUANT_DC 4, 4
 QUANT_AC 4, 4
 QUANT_AC 8, 8
@@ -326,12 +350,14 @@ QUANT_4x4x4
 
 INIT_XMM sse4
 QUANT_DC 2, 2
+QUANT_DC 2, 4
 QUANT_DC 4, 4
 QUANT_AC 4, 4
 QUANT_AC 8, 8
 QUANT_4x4x4
 
 INIT_YMM avx2
+QUANT_DC 2, 4
 QUANT_DC 4, 4
 QUANT_AC 4, 4
 QUANT_AC 8, 8
@@ -516,12 +542,14 @@ QUANT_4x4x4
 
 INIT_XMM sse2
 QUANT_DC quant_4x4_dc, 2, 7
+QUANT_DC quant_2x4_dc, 1
 QUANT_AC quant_4x4, 2
 QUANT_AC quant_8x8, 8
 QUANT_4x4x4
 
 INIT_XMM ssse3
 QUANT_DC quant_4x4_dc, 2, 7
+QUANT_DC quant_2x4_dc, 1
 QUANT_AC quant_4x4, 2
 QUANT_AC quant_8x8, 8
 QUANT_4x4x4
@@ -1059,22 +1087,32 @@ DEQUANT_DC w, pmullw
 ;-----------------------------------------------------------------------------
 ; void idct_dequant_2x4_dc( dctcoef dct[8], dctcoef dct4x4[8][16], int dequant_mf[6][16], int i_qp )
 ; void idct_dequant_2x4_dconly( dctcoef dct[8], int dequant_mf[6][16], int i_qp )
+; void add8x16_idct_dequant_dc( pixel *p_dst, dctcoef dct[8], int dequant_mf[6][16], int i_qp )
 ;-----------------------------------------------------------------------------
 
 %macro DEQUANT_2x4_DC 1
 %ifidn %1, dconly
     DECLARE_REG_TMP 6,3,2
     %define %%args dct, dmf, qp
+    %define %%name idct_dequant_2x4_dconly
+    %assign %%nxmm 5
+%elifidn %1, add
+    DECLARE_REG_TMP 6,4,3
+    %define %%args dst, dct, dmf, qp
+    %define %%name add8x16_idct_dequant_dc
+    %assign %%nxmm 8
 %else
     DECLARE_REG_TMP 6,4,3
     %define %%args dct, dct4x4, dmf, qp
+    %define %%name idct_dequant_2x4_dc
+    %assign %%nxmm 5
 %endif
 
 %if ARCH_X86_64 == 0
     DECLARE_REG_TMP 2,0,1
 %endif
 
-cglobal idct_dequant_2x4_%1, 0,3,5, %%args
+cglobal %%name, 0,3,%%nxmm, %%args
     movifnidn  t2d, qpm
     imul       t0d, t2d, 0x2b
     shr        t0d, 8         ; qp / 6
@@ -1134,6 +1172,74 @@ cglobal idct_dequant_2x4_%1, 0,3,5, %%args
     packssdw    m0, m1
     mova    [dctq], m0
 %endif
+%elifidn %1, add
+%if HIGH_BIT_DEPTH
+    mova        m4, [pd_32]
+    paddd       m0, m4
+    paddd       m1, m4
+    psrad       m0, 6
+    psrad       m1, 6
+    packssdw    m0, m1        ; dc0..dc7
+    punpckhwd   m2, m0, m0
+    punpcklwd   m0, m0
+    pshufd      m1, m0, q3322 ; rows 4-7
+    pshufd      m0, m0, q1100 ; rows 0-3
+    pshufd      m3, m2, q3322 ; rows 12-15
+    pshufd      m2, m2, q1100 ; rows 8-11
+    pxor        m5, m5
+    mova        m6, [pw_pixel_max]
+%assign %%y 0
+%rep 16
+%assign %%r %%y/4
+    paddsw      m4, m %+ %%r, [dstq+%%y*FDEC_STRIDEB]
+    CLIPW       m4, m5, m6
+    mova [dstq+%%y*FDEC_STRIDEB], m4
+%assign %%y %%y+1
+%endrep
+%else
+    packssdw    m0, m1
+    pmulhrsw    m0, [pw_512]  ; (dc+32)>>6
+    pxor        m1, m1
+    psubw       m1, m0
+    packuswb    m0, m0
+    packuswb    m1, m1
+    mova        m4, [pb_unpackbd1]
+    mova        m5, [pb_unpackbd2]
+    pshufb      m2, m0, m5    ; rows 8-15
+    pshufb      m3, m1, m5
+    pshufb      m0, m4        ; rows 0-7
+    pshufb      m1, m4
+%assign %%h 0
+%rep 2
+    movh        m4, [dstq+(%%h*8+0)*FDEC_STRIDE]
+    movh        m5, [dstq+(%%h*8+1)*FDEC_STRIDE]
+    movh        m6, [dstq+(%%h*8+2)*FDEC_STRIDE]
+    movh        m7, [dstq+(%%h*8+3)*FDEC_STRIDE]
+    movhps      m4, [dstq+(%%h*8+4)*FDEC_STRIDE]
+    movhps      m5, [dstq+(%%h*8+5)*FDEC_STRIDE]
+    movhps      m6, [dstq+(%%h*8+6)*FDEC_STRIDE]
+    movhps      m7, [dstq+(%%h*8+7)*FDEC_STRIDE]
+    paddusb     m4, m0
+    paddusb     m5, m0
+    paddusb     m6, m0
+    paddusb     m7, m0
+    psubusb     m4, m1
+    psubusb     m5, m1
+    psubusb     m6, m1
+    psubusb     m7, m1
+    movh   [dstq+(%%h*8+0)*FDEC_STRIDE], m4
+    movh   [dstq+(%%h*8+1)*FDEC_STRIDE], m5
+    movh   [dstq+(%%h*8+2)*FDEC_STRIDE], m6
+    movh   [dstq+(%%h*8+3)*FDEC_STRIDE], m7
+    movhps [dstq+(%%h*8+4)*FDEC_STRIDE], m4
+    movhps [dstq+(%%h*8+5)*FDEC_STRIDE], m5
+    movhps [dstq+(%%h*8+6)*FDEC_STRIDE], m6
+    movhps [dstq+(%%h*8+7)*FDEC_STRIDE], m7
+    SWAP         0, 2
+    SWAP         1, 3
+%assign %%h %%h+1
+%endrep
+%endif
 %else
     movifnidn dct4x4q, dct4x4mp
 %if HIGH_BIT_DEPTH
@@ -1182,9 +1288,209 @@ cglobal idct_dequant_2x4_%1, 0,3,5, %%args
 INIT_XMM sse2
 DEQUANT_2x4_DC dc
 DEQUANT_2x4_DC dconly
+%if ARCH_X86_64 && HIGH_BIT_DEPTH
+DEQUANT_2x4_DC add
+%endif
+%if ARCH_X86_64 && HIGH_BIT_DEPTH == 0
+INIT_XMM ssse3
+DEQUANT_2x4_DC add
+%endif
 INIT_XMM avx
 DEQUANT_2x4_DC dc
 DEQUANT_2x4_DC dconly
+%if ARCH_X86_64
+DEQUANT_2x4_DC add
+%endif
+
+;-----------------------------------------------------------------------------
+; int dct2x4dc_quant( dctcoef dct[8], dctcoef dct4x4[8][16], dctcoef level[8], int mf, int bias )
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+; x0..x7 -> d0 d1 d6 d7 d2 d3 d4 d5; forward and inverse 2x4 dc transforms are the same
+%macro DC2x4_HADAMARD 2 ; src/dst, tmp
+    pshufd       m%2, m%1, q2301
+    psignd       m%1, [pd_pmpmpmpm]
+    paddd        m%1, m%2
+    pshufd       m%2, m%1, q1032
+    psignd       m%1, [pd_ppmmppmm]
+    paddd        m%1, m%2
+    vpermq       m%2, m%1, q1032
+    psignd       m%1, [pd_ppppmmmm]
+    paddd        m%1, m%2
+%endmacro
+
+; dmf << qp/6 in all dwords of m%1; clobbers r3 (qp), r4, r5, m%2
+%macro DC2x4_DMF 3 ; dst, tmp, dequant_mf
+    imul         r4d, r3d, 0x2b
+    shr          r4d, 8         ; qp / 6
+    lea          r5d, [r4*3]
+    add          r5d, r5d
+    sub          r3d, r5d       ; qp % 6
+    shl          r3d, 6
+    vpbroadcastd m%1, [%3+r3]
+    movd        xm%2, r4d
+    pslld        m%1, xm%2
+%endmacro
+
+INIT_YMM avx2
+cglobal dct2x4dc_quant, 5,6,4
+    movd        xm0, [r1+0*64]
+    movd        xm1, [r1+4*64]
+    pinsrd      xm0, [r1+1*64], 1
+    pinsrd      xm1, [r1+5*64], 1
+    pinsrd      xm0, [r1+2*64], 2
+    pinsrd      xm1, [r1+6*64], 2
+    pinsrd      xm0, [r1+3*64], 3
+    pinsrd      xm1, [r1+7*64], 3
+    xor         r5d, r5d
+    mov  [r1+0*64], r5d
+    mov  [r1+1*64], r5d
+    mov  [r1+2*64], r5d
+    mov  [r1+3*64], r5d
+    mov  [r1+4*64], r5d
+    mov  [r1+5*64], r5d
+    mov  [r1+6*64], r5d
+    mov  [r1+7*64], r5d
+    vinserti128  m0, m0, xm1, 1
+    DC2x4_HADAMARD 0, 1
+    movd        xm2, r3d
+    movd        xm3, r4d
+    vpbroadcastd m2, xm2
+    vpbroadcastd m3, xm3
+    pabsd        m1, m0
+    paddd        m1, m3
+    pmulld       m1, m2
+    psrad        m1, 16
+    psignd       m1, m0
+    mova         m2, [dc2x4_natural]
+    mova         m3, [dc2x4_zigzag]
+    vpermd       m2, m2, m1
+    vpermd       m3, m3, m1
+    movu       [r0], m2
+    movu       [r2], m3
+    xor         eax, eax
+    ptest        m1, m1
+    setnz        al
+    RET
+
+;-----------------------------------------------------------------------------
+; void idct_dequant_2x4_dc( dctcoef dct[8], dctcoef dct4x4[8][16], int dequant_mf[6][16], int i_qp )
+;-----------------------------------------------------------------------------
+cglobal idct_dequant_2x4_dc, 4,6,3
+    DC2x4_DMF    2, 1, r2
+    movu         m0, [r0]
+    DC2x4_HADAMARD 0, 1
+    pmulld       m0, m2
+    vpbroadcastd m1, [pd_32]
+    paddd        m0, m1
+    psrad        m0, 6
+    vextracti128 xm1, m0, 1
+    movd   [r1+0*64], xm0
+    pextrd [r1+1*64], xm0, 1
+    pextrd [r1+6*64], xm0, 2
+    pextrd [r1+7*64], xm0, 3
+    movd   [r1+2*64], xm1
+    pextrd [r1+3*64], xm1, 1
+    pextrd [r1+4*64], xm1, 2
+    pextrd [r1+5*64], xm1, 3
+    RET
+
+;-----------------------------------------------------------------------------
+; void add8x16_idct_dequant_dc( pixel *p_dst, dctcoef dct[8], int dequant_mf[6][16], int i_qp )
+;-----------------------------------------------------------------------------
+cglobal add8x16_idct_dequant_dc, 4,6,7
+    DC2x4_DMF    2, 1, r2
+    movu         m0, [r1]
+    DC2x4_HADAMARD 0, 1
+    pmulld       m0, m2
+    vpbroadcastd m1, [pd_32]
+    paddd        m0, m1
+    psrad        m0, 6
+    paddd        m0, m1
+    psrad        m0, 6
+    packssdw     m0, m0
+    punpcklwd    m0, m0
+    punpckhdq    m3, m0, m0     ; rows 12-15 | rows 8-11
+    punpckldq    m0, m0         ; rows 0-3   | rows 4-7
+    vextracti128 xm1, m0, 1
+    vextracti128 xm2, m3, 1
+    pxor        xm4, xm4
+    mova        xm5, [pw_pixel_max]
+%assign dc2x4_y 0
+%rep 16
+%assign dc2x4_r dc2x4_y/4
+    paddsw      xm6, xm %+ dc2x4_r, [r0+dc2x4_y*FDEC_STRIDEB]
+    CLIPW       xm6, xm4, xm5
+    mova [r0+dc2x4_y*FDEC_STRIDEB], xm6
+%assign dc2x4_y dc2x4_y+1
+%endrep
+%undef dc2x4_y
+%undef dc2x4_r
+    RET
+
+%else ; !HIGH_BIT_DEPTH
+
+%macro DCT2x4DC_QUANT 0
+cglobal dct2x4dc_quant, 5,6,6
+    movd         m0, [r1+0*32]
+    pinsrw       m0, [r1+1*32], 1
+    pinsrw       m0, [r1+2*32], 2
+    pinsrw       m0, [r1+3*32], 3
+    pinsrw       m0, [r1+4*32], 4
+    pinsrw       m0, [r1+5*32], 5
+    pinsrw       m0, [r1+6*32], 6
+    pinsrw       m0, [r1+7*32], 7
+    xor         r5d, r5d
+    mov  [r1+0*32], r5w
+    mov  [r1+1*32], r5w
+    mov  [r1+2*32], r5w
+    mov  [r1+3*32], r5w
+    mov  [r1+4*32], r5w
+    mov  [r1+5*32], r5w
+    mov  [r1+6*32], r5w
+    mov  [r1+7*32], r5w
+    pshufb       m1, m0, [dc2x4_swap]
+    psignw       m0, [pw_dc2x4_pm]
+    paddw        m0, m1
+    pshufd       m1, m0, q2301
+    psignw       m0, [pw_dc2x4_ppmm]
+    paddw        m0, m1
+    pshufd       m1, m0, q1032
+    psignw       m0, [pw_dc2x4_pppp]
+    paddw        m0, m1         ; d0 d1 d6 d7 d2 d3 d4 d5
+    movd         m2, r3d
+    movd         m3, r4d
+    SPLATW       m2, m2
+    SPLATW       m3, m3
+    pabsw        m1, m0
+    paddusw      m1, m3
+    pmulhuw      m1, m2
+    psignw       m1, m0
+    pshufb       m2, m1, [dc2x4_natural]
+    pshufb       m3, m1, [dc2x4_zigzag]
+    movu       [r0], m2
+    movu       [r2], m3
+    xor         eax, eax
+%if cpuflag(sse4)
+    ptest        m1, m1
+    setnz        al
+%else
+    pxor         m0, m0
+    pcmpeqw      m1, m0
+    pmovmskb    r5d, m1
+    cmp         r5d, 0xffff
+    setne        al
+%endif
+    RET
+%endmacro
+
+INIT_XMM ssse3
+DCT2x4DC_QUANT
+INIT_XMM avx
+DCT2x4DC_QUANT
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
 
 ; t4 is eax for return value.
 %if ARCH_X86_64
