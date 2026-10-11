@@ -2088,3 +2088,55 @@ int x264_rc_analyse_slice( x264_t *h )
 
     return cost;
 }
+
+/* Lowres cost of each mb row of the frame being coded, AQ weighted like the
+ * row SATDs, for --slice-balance 1.  Returns -1 if there is no lowres cost. */
+int x264_slice_balance_row_costs( x264_t *h, int64_t *row_cost )
+{
+    x264_frame_t *fenc = h->fenc;
+    if( h->param.rc.i_rc_method == X264_RC_CQP || h->param.rc.b_stat_read || !h->frames.b_have_lowres )
+        return -1;
+
+    /* i_intra_cost is lowres_costs[0][0]: raw intra costs, no list bits */
+    int b_inter = !IS_X264_TYPE_I( fenc->i_type );
+    uint16_t *cost = fenc->i_intra_cost;
+    if( b_inter )
+    {
+        int p0 = 0, p1, b;
+        if( fenc->i_type == X264_TYPE_P )
+            p1 = b = fenc->i_bframes + 1;
+        else //B
+        {
+            p1 = (h->fref_nearest[1]->i_poc - h->fref_nearest[0]->i_poc)/2;
+            b  = (fenc->i_poc - h->fref_nearest[0]->i_poc)/2;
+        }
+        if( fenc->i_cost_est[b-p0][p1-b] < 0 )
+            return -1;
+        cost = fenc->lowres_costs[b-p0][p1-b];
+    }
+    else if( !fenc->b_intra_calculated )
+        return -1;
+
+    /* Without mbtree or VBV the lookahead skips the edge mbs: leave out the edge
+     * columns and give the edge rows the cost of their neighbour. */
+    int do_edges = h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size || h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2;
+    int x0 = !do_edges;
+    int x1 = h->mb.i_mb_width - !do_edges;
+    int y0 = !do_edges;
+    int y1 = h->mb.i_mb_height - 1 - !do_edges;
+    for( int y = 0; y < h->mb.i_mb_height; y++ )
+    {
+        int sy = x264_clip3( y, y0, y1 );
+        int64_t sum = 0;
+        for( int x = x0; x < x1; x++ )
+        {
+            int mb_xy = x + sy * h->mb.i_mb_stride;
+            int64_t c = b_inter ? cost[mb_xy] & LOWRES_COST_MASK : cost[mb_xy];
+            if( h->param.rc.i_aq_mode )
+                c = (c * fenc->i_inv_qscale_factor[mb_xy] + 128) >> 8;
+            sum += c;
+        }
+        row_cost[y] = sum;
+    }
+    return 0;
+}

@@ -907,6 +907,9 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         if( h->param.i_slice_max_mbs || h->param.i_slice_max_size )
             h->param.i_slice_count = 0;
     }
+    h->param.i_slice_balance = x264_clip3( h->param.i_slice_balance, 0, 2 );
+    if( !h->param.b_sliced_threads || h->param.i_threads == 1 || h->param.i_avcintra_class )
+        h->param.i_slice_balance = 0;
     if( h->param.i_slice_count_max > 0 )
         h->param.i_slice_count_max = X264_MAX( h->param.i_slice_count, h->param.i_slice_count_max );
 
@@ -1618,6 +1621,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
     CHECKED_MALLOC( h->nal_buffer, h->nal_buffer_size );
 
     CHECKED_MALLOC( h->reconfig_h, sizeof(x264_t) );
+
+    if( h->param.i_slice_balance )
+        CHECKED_MALLOCZERO( h->slice_balance_buf, 3 * (h->mb.i_mb_height + 1) * sizeof(int64_t) );
 
     if( h->param.i_threads > 1 &&
         x264_threadpool_init( &h->threadpool, h->param.i_threads, (void*)x264_encoder_thread_init, h ) )
@@ -2627,6 +2633,16 @@ static ALWAYS_INLINE void x264_bitstream_restore( x264_t *h, x264_bs_bak_t *bak,
     }
 }
 
+/* --slice-balance 2 row timer */
+static ALWAYS_INLINE int64_t slice_balance_clock( void )
+{
+#if (ARCH_X86 || ARCH_X86_64) && defined(__GNUC__)
+    return __builtin_ia32_rdtsc();
+#else
+    return x264_mdate();
+#endif
+}
+
 static intptr_t x264_slice_write( x264_t *h )
 {
     int i_skip;
@@ -2934,6 +2950,13 @@ cont:
         if( b_deblock )
             x264_macroblock_deblock_strength( h );
 
+        if( h->param.i_slice_balance == 2 && i_mb_x == h->mb.i_mb_width - 1 && (!SLICE_MBAFF || (i_mb_y&1)) )
+        {
+            int64_t now = slice_balance_clock();
+            h->thread[0]->slice_balance_buf[h->mb.i_mb_height + 1 + (i_mb_y >> SLICE_MBAFF)] += now - h->i_slice_balance_last;
+            h->i_slice_balance_last = now;
+        }
+
         if( mb_xy == h->sh.i_last_mb )
             break;
 
@@ -3040,6 +3063,9 @@ static void *x264_slices_write( x264_t *h )
     int i_slice_num = 0;
     int last_thread_mb = h->sh.i_last_mb;
 
+    if( h->param.i_slice_balance == 2 )
+        h->i_slice_balance_last = slice_balance_clock();
+
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
@@ -3094,8 +3120,73 @@ fail:
     return (void *)-1;
 }
 
+/* Thread slice boundaries in rows (mb pair rows in MBAFF): slice i starts at
+ * bounds[i], bounds[i_threads] is the height.  --slice-balance moves them so
+ * each slice gets an equal share of the predicted coding time. */
+static void slice_balance_bounds( x264_t *h, int *bounds )
+{
+    int n = h->param.i_threads;
+    int units = h->mb.i_mb_height >> PARAM_INTERLACED;
+    for( int i = 0; i <= n; i++ )
+        bounds[i] = (units * i + h->param.i_slice_count/2) / n;
+    if( !h->param.i_slice_balance )
+        return;
+
+    int64_t *prefix = h->slice_balance_buf;
+    int64_t *smooth = prefix + 2 * (h->mb.i_mb_height + 1);
+    int64_t total = 0;
+    if( h->param.i_slice_balance == 2 )
+        for( int u = 0; u < units; u++ )
+        {
+            prefix[u+1] = smooth[u];
+            total += smooth[u];
+        }
+    if( !total )
+    {
+        if( x264_slice_balance_row_costs( h, prefix + 1 ) < 0 )
+            return;
+        for( int u = 0; u < units; u++ )
+        {
+            int64_t w = prefix[1 + (u << PARAM_INTERLACED)];
+            if( PARAM_INTERLACED )
+                w += prefix[2 + 2*u];
+            prefix[u+1] = w;
+            total += w;
+        }
+        /* Part of a row's coding time doesn't depend on its content:
+         * model it as half the mean row cost. */
+        int64_t fixed = total / (2 * units);
+        for( int u = 0; u < units; u++ )
+            prefix[u+1] += fixed;
+        total += fixed * units;
+    }
+    if( total <= 0 )
+        return;
+
+    prefix[0] = 0;
+    for( int u = 0; u < units; u++ )
+        prefix[u+1] += prefix[u];
+    /* Each boundary goes to the unit edge closest to its share of the total,
+     * leaving at least one unit for every slice. */
+    for( int i = 1; i < n; i++ )
+    {
+        int64_t target = (total * i + n/2) / n;
+        int lo = bounds[i-1] + 1;
+        int hi = units - (n - i);
+        int u = lo;
+        while( u < hi && prefix[u] < target )
+            u++;
+        if( u > lo && target - prefix[u-1] < prefix[u] - target )
+            u--;
+        bounds[i] = u;
+    }
+}
+
 static int x264_threaded_slices_write( x264_t *h )
 {
+    int bounds[X264_THREAD_MAX+1];
+    slice_balance_bounds( h, bounds );
+
     /* set first/last mb and sync contexts */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
@@ -3105,9 +3196,8 @@ static int x264_threaded_slices_write( x264_t *h )
             t->param = h->param;
             memcpy( &t->i_frame, &h->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
         }
-        int height = h->mb.i_mb_height >> PARAM_INTERLACED;
-        t->i_threadslice_start = ((height *  i    + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
-        t->i_threadslice_end   = ((height * (i+1) + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
+        t->i_threadslice_start = bounds[i]   << PARAM_INTERLACED;
+        t->i_threadslice_end   = bounds[i+1] << PARAM_INTERLACED;
         t->sh.i_first_mb = t->i_threadslice_start * h->mb.i_mb_width;
         t->sh.i_last_mb  =   t->i_threadslice_end * h->mb.i_mb_width - 1;
     }
@@ -3131,6 +3221,18 @@ static int x264_threaded_slices_write( x264_t *h )
         x264_threadslice_cond_wait( h->thread[i], 1 );
 
     x264_threads_merge_ratecontrol( h );
+
+    if( h->param.i_slice_balance == 2 )
+    {
+        int units = h->mb.i_mb_height >> PARAM_INTERLACED;
+        int64_t *row_time = h->slice_balance_buf + h->mb.i_mb_height + 1;
+        int64_t *smooth = row_time + h->mb.i_mb_height + 1;
+        for( int u = 0; u < units; u++ )
+        {
+            smooth[u] = smooth[u] ? (3 * smooth[u] + row_time[u] + 2) >> 2 : row_time[u];
+            row_time[u] = 0;
+        }
+    }
 
     for( int i = 1; i < h->param.i_threads; i++ )
     {
@@ -4338,6 +4440,7 @@ void    x264_encoder_close  ( x264_t *h )
     x264_cqm_delete( h );
     x264_free( h->nal_buffer );
     x264_free( h->reconfig_h );
+    x264_free( h->slice_balance_buf );
     x264_analyse_free_costs( h );
 
     if( h->i_thread_frames > 1 )

@@ -41,7 +41,7 @@
 
 #include "x264_config.h"
 
-#define X264_BUILD 146
+#define X264_BUILD 147
 
 /* Application developers planning to link against a shared library version of
  * libx264 from a Microsoft Visual Studio or similar development environment
@@ -274,6 +274,8 @@ typedef struct x264_param_t
     int         i_threads;           /* encode multiple frames in parallel */
     int         i_lookahead_threads; /* multiple threads for lookahead analysis */
     int         b_sliced_threads;  /* Whether to use slice-based threading. */
+    int         i_slice_balance;   /* sliced threads: 0 = even row split, 1 = split by lowres cost,
+                                    * 2 = split by measured row encode time (nondeterministic) */
     int         b_deterministic; /* whether to allow non-deterministic optimizations when threaded */
     int         b_cpu_independent; /* force canonical behavior rather than cpu-dependent optimal algorithms */
     int         i_sync_lookahead; /* threaded lookahead buffer */

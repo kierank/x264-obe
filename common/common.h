@@ -280,6 +280,10 @@ struct x264_t
     int             i_threadslice_start; /* first row in this thread slice */
     int             i_threadslice_end; /* row after the end of this thread slice */
     int             i_threadslice_pass; /* which pass of encoding we are on */
+    /* --slice-balance: per-unit (row, or mb pair row) buffers owned by thread[0]:
+     * [0, units] weight prefix sums, then (mode 2) last frame's row times and smoothed row times */
+    int64_t         *slice_balance_buf;
+    int64_t         i_slice_balance_last; /* mode 2: clock at the end of this thread's last row */
     x264_threadpool_t *threadpool;
     x264_threadpool_t *lookaheadpool;
     x264_pthread_mutex_t mutex;

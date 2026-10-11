@@ -79,6 +79,8 @@ void x264_ratecontrol_set_estimated_size( x264_t *, int bits );
 int  x264_ratecontrol_get_estimated_size( x264_t const *);
 #define x264_rc_analyse_slice x264_template(rc_analyse_slice)
 int  x264_rc_analyse_slice( x264_t *h );
+#define x264_slice_balance_row_costs x264_template(slice_balance_row_costs)
+int  x264_slice_balance_row_costs( x264_t *h, int64_t *row_cost );
 #define x264_weighted_reference_duplicate x264_template(weighted_reference_duplicate)
 int x264_weighted_reference_duplicate( x264_t *h, int i_ref, const x264_weight_t *w );
 #define x264_threads_distribute_ratecontrol x264_template(threads_distribute_ratecontrol)
