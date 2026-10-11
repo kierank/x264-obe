@@ -1176,6 +1176,8 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
 
     h->mc.memzero_aligned( visited, sizeof(uint8_t[8][8][8]) );
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m0->p_fenc[0] );
+    /* satd only: the candidates' average isn't stored (rd needs it in fdec) */
+    x264_bi_fenc_t *bi_fenc = rd ? NULL : x264_me_bi_fenc( h, i_pixel, m0->p_fenc[0] );
 
     for( int pass = 0; pass < 8; pass++ )
     {
@@ -1203,10 +1205,16 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
                 int i0 = 4 + 3*dia4d[j][0] + dia4d[j][1];
                 int i1 = 4 + 3*dia4d[j][2] + dia4d[j][3];
                 visited[(m0x)&7][(m0y)&7][(m1x)&7] |= (1<<((m1y)&7));
-                h->mc.avg[i_pixel]( pix, FDEC_STRIDE, src[0][0][i0], stride[0][0][i0], src[0][1][i1], stride[0][1][i1], i_weight );
-                int cost = (fenc_pre ? h->pixf.mbcmp_pre[i_pixel]( fenc_pre, pix, FDEC_STRIDE )
-                                     : h->pixf.mbcmp[i_pixel]( m0->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE ))
-                         + p_cost_m0x[m0x] + p_cost_m0y[m0y] + p_cost_m1x[m1x] + p_cost_m1y[m1y];
+                int cost;
+                if( bi_fenc )
+                    cost = h->pixf.mbcmp_bi[i_pixel]( bi_fenc, src[0][0][i0], stride[0][0][i0], src[0][1][i1], stride[0][1][i1], i_weight );
+                else
+                {
+                    h->mc.avg[i_pixel]( pix, FDEC_STRIDE, src[0][0][i0], stride[0][0][i0], src[0][1][i1], stride[0][1][i1], i_weight );
+                    cost = fenc_pre ? h->pixf.mbcmp_pre[i_pixel]( fenc_pre, pix, FDEC_STRIDE )
+                                    : h->pixf.mbcmp[i_pixel]( m0->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE );
+                }
+                cost += p_cost_m0x[m0x] + p_cost_m0y[m0y] + p_cost_m1x[m1x] + p_cost_m1y[m1y];
                 if( rd )
                 {
                     if( cost < SATD_THRESH(bcost) )
