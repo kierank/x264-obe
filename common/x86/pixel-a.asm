@@ -4800,6 +4800,7 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     shr           r3d, 2
     pinsrw       xm13, r3d, 1               ; dc1 = (s1 + 2) >> 2
     movzx         r4d, word [r1+4*FDEC_STRIDEB-2]
+%assign intra_hbd_y 5
 %rep 3
     movzx         r6d, word [r1+intra_hbd_y*FDEC_STRIDEB-2]
     add           r4d, r6d
