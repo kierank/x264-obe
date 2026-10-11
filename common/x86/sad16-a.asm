@@ -202,9 +202,49 @@ SAD 16, 16
 SAD 16,  8
 SAD  8, 16
 SAD  8,  8
+
+; 16 wide, AVX2: one row per ymm, 4 rows per pointer step, rows summed in
+; pairs before the accumulator (at most 16*1023 a lane)
+%macro SAD_HBD_16 1 ; height
+cglobal pixel_sad_16x%1, 4,6,5
+    lea            r4, [r1+2*r1]
+    lea            r5, [r3+2*r3]
+%assign sad_hbd_k 0
+%rep %1/4
+    movu           m1, [r2]
+    movu           m2, [r2+2*r3]
+    movu           m3, [r2+4*r3]
+    movu           m4, [r2+2*r5]
+    psubw          m1, [r0]
+    psubw          m2, [r0+2*r1]
+    psubw          m3, [r0+4*r1]
+    psubw          m4, [r0+2*r4]
+    pabsw          m1, m1
+    pabsw          m2, m2
+    pabsw          m3, m3
+    pabsw          m4, m4
+    paddw          m1, m2
+    paddw          m3, m4
+%if sad_hbd_k == 0
+    paddw          m0, m1, m3
+%else
+    paddw          m1, m3
+    paddw          m0, m1
+%endif
+%if sad_hbd_k < %1-4
+    lea            r0, [r0+8*r1]
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_hbd_k sad_hbd_k+4
+%endrep
+    HADDW          m0, m1
+    movd          eax, xm0
+    RET
+%endmacro
+
 INIT_YMM avx2
-SAD 16, 16
-SAD 16,  8
+SAD_HBD_16 16
+SAD_HBD_16  8
 
 ;=============================================================================
 ; SAD x3/x4
