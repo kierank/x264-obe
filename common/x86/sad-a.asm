@@ -531,6 +531,34 @@ cglobal pixel_sad_avg2_8x8, 4,5,5
     SAD_AVG2_END 4, 8
 
 ;-----------------------------------------------------------------------------
+; int pixel_sad_8x16( uint8_t *, intptr_t, uint8_t *, intptr_t )
+; The 16 wide loads: fenc rows k, k+1 are one 32 byte load at FENC_STRIDE,
+; the ref rows are read 8 bytes past the block and qword 1 of each lane is
+; dropped. The stride check is before the prologue, so the fallback is a plain
+; tail call on every ABI.
+;-----------------------------------------------------------------------------
+%macro SAD_W8_AVX2_START 2 ; h, xmm regs
+    cmp        r1mp, FENC_STRIDE
+    jne pixel_sad_8x%1_mmx2
+    PROLOGUE 4,4,%2
+    lea           r1, [3*r3]
+%endmacro
+
+cglobal pixel_sad_8x8
+    SAD_W8_AVX2_START 8, 4
+    SAD_W16_AVX2_8ROWS
+    SAD_AVG2_END 4, 8
+
+cglobal pixel_sad_8x16
+    SAD_W8_AVX2_START 16, 6
+    SAD_W16_AVX2_8ROWS
+    lea           r2, [r2+4*r3]
+    SAD_W16_AVX2_ACC4 4*32, 0, 1
+    lea           r2, [r2+4*r3]
+    SAD_W16_AVX2_ACC4 6*32, 2, 3
+    SAD_AVG2_END 4, 8
+
+;-----------------------------------------------------------------------------
 ; void pixel_vsad( pixel *src, intptr_t stride );
 ;-----------------------------------------------------------------------------
 
