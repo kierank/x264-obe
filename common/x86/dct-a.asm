@@ -1025,6 +1025,8 @@ SUB_NxN_DCT  sub16x16_dct8_sse4, sub8x8_dct8_sse4, 256, 16, 0, 0, 14
 SUB_NxN_DCT  sub16x16_dct8_avx,  sub8x8_dct8_avx,  256, 16, 0, 0, 14
 %if ARCH_X86_64
 INIT_YMM
+cextern add8x8_idct8_avx2.skip_prologue
+ADD_NxN_IDCT add16x16_idct8_avx2, add8x8_idct8_avx2, 256, 16, 0, 0, 11
 cextern sub8x8_dct8_avx2.skip_prologue
 SUB_NxN_DCT  sub16x16_dct8_avx2, sub8x8_dct8_avx2, 256, 16, 0, 0, 10
 %endif
