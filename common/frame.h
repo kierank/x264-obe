@@ -267,6 +267,24 @@ void          x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mba
 void          x264_frame_cond_broadcast( x264_frame_t *frame, int i_lines_completed );
 #define x264_frame_cond_wait x264_template(frame_cond_wait)
 int           x264_frame_cond_wait( x264_frame_t *frame, int i_lines_completed );
+
+#if HAVE_POSIXTHREAD && defined(__ATOMIC_RELAXED)
+#define X264_FRAME_LINES_ATOMIC 1
+#else
+#define X264_FRAME_LINES_ATOMIC 0
+#endif
+
+/* Non-blocking read of i_lines_completed. The value only grows while the frame
+ * is referenced, so a later read is never below one taken under the mutex. */
+static ALWAYS_INLINE int x264_frame_lines_completed( x264_frame_t *frame )
+{
+#if X264_FRAME_LINES_ATOMIC
+    return __atomic_load_n( &frame->i_lines_completed, __ATOMIC_RELAXED );
+#else
+    return x264_frame_cond_wait( frame, -1 );
+#endif
+}
+
 #define x264_frame_new_slice x264_template(frame_new_slice)
 int           x264_frame_new_slice( x264_t *h, x264_frame_t *frame );
 

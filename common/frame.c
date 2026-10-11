@@ -682,7 +682,11 @@ void x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y )
 void x264_frame_cond_broadcast( x264_frame_t *frame, int i_lines_completed )
 {
     x264_pthread_mutex_lock( &frame->mutex );
+#if X264_FRAME_LINES_ATOMIC
+    __atomic_store_n( &frame->i_lines_completed, i_lines_completed, __ATOMIC_RELAXED );
+#else
     frame->i_lines_completed = i_lines_completed;
+#endif
     x264_pthread_cond_broadcast( &frame->cv );
     x264_pthread_mutex_unlock( &frame->mutex );
 }
