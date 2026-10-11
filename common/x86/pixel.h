@@ -818,6 +818,14 @@ int x264_pixel_satd_avg2_16x8_avx2( pixel *, pixel *, pixel *, intptr_t );
 int x264_pixel_satd_avg2_8x16_avx2( pixel *, pixel *, pixel *, intptr_t );
 #define x264_pixel_satd_avg2_8x8_avx2 x264_template(pixel_satd_avg2_8x8_avx2)
 int x264_pixel_satd_avg2_8x8_avx2( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_sad_avg2_16x16_avx2 x264_template(pixel_sad_avg2_16x16_avx2)
+int x264_pixel_sad_avg2_16x16_avx2( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_sad_avg2_16x8_avx2 x264_template(pixel_sad_avg2_16x8_avx2)
+int x264_pixel_sad_avg2_16x8_avx2( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_sad_avg2_8x16_avx2 x264_template(pixel_sad_avg2_8x16_avx2)
+int x264_pixel_sad_avg2_8x16_avx2( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_sad_avg2_8x8_avx2 x264_template(pixel_sad_avg2_8x8_avx2)
+int x264_pixel_sad_avg2_8x8_avx2( pixel *, pixel *, pixel *, intptr_t );
 void x264_intra_sad_x3_16x16_mmx2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_sse2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_ssse3 ( pixel   *, pixel   *, int * );

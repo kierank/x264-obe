@@ -83,12 +83,14 @@ typedef struct
     x264_pixel_cmp_t  ssd[8];
     x264_pixel_cmp_t satd[8];
     x264_pixel_cmp_avg2_t satd_avg2[7]; /* asm only, NULL otherwise */
+    x264_pixel_cmp_avg2_t sad_avg2[7];  /* asm only, NULL otherwise */
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
     x264_pixel_cmp_t mbcmp_unaligned[8]; /* unaligned mbcmp for subpel */
     x264_pixel_cmp_avg2_t mbcmp_avg2[7]; /* mbcmp of a qpel average, NULL where get_ref + mbcmp is used */
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
+    x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
     x264_pixel_cmp_x4_t fpelcmp_x4[7];
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */

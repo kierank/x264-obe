@@ -434,6 +434,98 @@ cglobal pixel_sad_16x16, 4,4,6
     SAD_W16_AVX512_END
 
 ;-----------------------------------------------------------------------------
+; int pixel_sad_avg2_WxH( uint8_t *fenc, uint8_t *src1, uint8_t *src2, intptr_t stride )
+; sad( fenc, (src1+src2+1)>>1 ): qpel candidates of the motion search without
+; storing the average. fenc has FENC_STRIDE.
+;-----------------------------------------------------------------------------
+; 16 wide, rows k, k+1 a ymm: %1 = dst (number), %2 = row k
+%macro SAD_AVG2_W16_ROW2 2
+%if %2
+    lea           r1, [r1+2*r3]
+    lea           r2, [r2+2*r3]
+%endif
+    movu         xm%1, [r1]
+    vinserti128   m%1, m%1, [r1+r3], 1
+    movu         xm4, [r2]
+    vinserti128   m4, m4, [r2+r3], 1
+    pavgb         m%1, m4
+    psadbw        m%1, [r0+%2*FENC_STRIDE]
+%endmacro
+
+; 8 wide, four rows a ymm as [k,k+2|k+1,k+3]: %1 = dst (number), %2 = row k
+%macro SAD_AVG2_W8_ROW4 2
+%if %2
+    lea           r1, [r1+4*r3]
+    lea           r2, [r2+4*r3]
+%endif
+    movq         xm%1, [r1]
+    movhps       xm%1, [r1+2*r3]
+    movq         xm4, [r1+r3]
+    movhps       xm4, [r1+r4]
+    vinserti128   m%1, m%1, xm4, 1
+    movq         xm4, [r2]
+    movhps       xm4, [r2+2*r3]
+    movq         xm5, [r2+r3]
+    movhps       xm5, [r2+r4]
+    vinserti128   m4, m4, xm5, 1
+    pavgb         m%1, m4
+    movu          m4, [r0+%2*FENC_STRIDE]      ; k, -, k+1, -
+    punpcklqdq    m4, [r0+(%2+2)*FENC_STRIDE]  ; k, k+2 | k+1, k+3
+    psadbw        m%1, m4
+%endmacro
+
+%macro SAD_AVG2_END 1 ; number of accumulators
+%if %1 > 1
+    paddd         m0, m1
+%endif
+%if %1 > 2
+    paddd         m2, m3
+    paddd         m0, m2
+%endif
+    vextracti128 xm1, m0, 1
+    paddd        xm0, xm1
+    punpckhqdq   xm1, xm0, xm0
+    paddd        xm0, xm1
+    movd         eax, xm0
+    RET
+%endmacro
+
+cglobal pixel_sad_avg2_16x16, 4,4,6
+    SAD_AVG2_W16_ROW2 0, 0
+    SAD_AVG2_W16_ROW2 1, 2
+    SAD_AVG2_W16_ROW2 2, 4
+    SAD_AVG2_W16_ROW2 3, 6
+%assign sad_avg2_k 8
+%rep 4
+    %assign sad_avg2_d (sad_avg2_k-8)/2
+    SAD_AVG2_W16_ROW2 5, sad_avg2_k
+    paddd          m %+ sad_avg2_d, m5
+%assign sad_avg2_k sad_avg2_k+2
+%endrep
+    SAD_AVG2_END 4
+
+cglobal pixel_sad_avg2_16x8, 4,4,5
+    SAD_AVG2_W16_ROW2 0, 0
+    SAD_AVG2_W16_ROW2 1, 2
+    SAD_AVG2_W16_ROW2 2, 4
+    SAD_AVG2_W16_ROW2 3, 6
+    SAD_AVG2_END 4
+
+cglobal pixel_sad_avg2_8x16, 4,5,6
+    lea           r4, [3*r3]
+    SAD_AVG2_W8_ROW4 0, 0
+    SAD_AVG2_W8_ROW4 1, 4
+    SAD_AVG2_W8_ROW4 2, 8
+    SAD_AVG2_W8_ROW4 3, 12
+    SAD_AVG2_END 4
+
+cglobal pixel_sad_avg2_8x8, 4,5,6
+    lea           r4, [3*r3]
+    SAD_AVG2_W8_ROW4 0, 0
+    SAD_AVG2_W8_ROW4 1, 4
+    SAD_AVG2_END 2
+
+;-----------------------------------------------------------------------------
 ; void pixel_vsad( pixel *src, intptr_t stride );
 ;-----------------------------------------------------------------------------
 

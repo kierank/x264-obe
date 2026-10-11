@@ -660,6 +660,56 @@ SAD_X4_HBD_Y 8
 SAD_X4_HBD_Y 16
 
 ;-----------------------------------------------------------------------------
+; int pixel_sad_avg2_WxH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
+; sad( fenc, (src1+src2+1)>>1 ), word sums (at most 16*1023 a lane)
+;-----------------------------------------------------------------------------
+; %1 = row k: m1 = |fenc - avg| of one 16 pixel row (16 wide) or rows k, k+1 (8 wide)
+%macro SAD_AVG2_HBD_ROW 2 ; row, width
+%if %2 == 16
+    movu          m1, [r1]
+    pavgw         m1, [r2]
+    psubw         m1, [r0+%1*FENC_STRIDEB]
+    add           r1, r3
+    add           r2, r3
+%else
+    movu         xm1, [r1]
+    vinserti128   m1, m1, [r1+r3], 1
+    movu         xm2, [r2]
+    vinserti128   m2, m2, [r2+r3], 1
+    pavgw         m1, m2
+    movu         xm2, [r0+%1*FENC_STRIDEB]
+    vinserti128   m2, m2, [r0+(%1+1)*FENC_STRIDEB], 1
+    psubw         m1, m2
+    lea           r1, [r1+2*r3]
+    lea           r2, [r2+2*r3]
+%endif
+    pabsw         m1, m1
+%if %1
+    paddw         m0, m1
+%else
+    SWAP 0, 1
+%endif
+%endmacro
+
+%macro SAD_AVG2_HBD 2 ; width, height
+cglobal pixel_sad_avg2_%1x%2, 4,4,3
+    FIX_STRIDES   r3
+%assign sad_avg2_k 0
+%rep %2*%1/16
+    SAD_AVG2_HBD_ROW sad_avg2_k, %1
+%assign sad_avg2_k sad_avg2_k+16*16/(%1*16)
+%endrep
+    HADDW         m0, m1
+    movd         eax, xm0
+    RET
+%endmacro
+
+SAD_AVG2_HBD 16, 16
+SAD_AVG2_HBD 16,  8
+SAD_AVG2_HBD  8, 16
+SAD_AVG2_HBD  8,  8
+
+;-----------------------------------------------------------------------------
 ; void intra_sad_x3_4x4( uint16_t *fenc, uint16_t *fdec, int res[3] );
 ;-----------------------------------------------------------------------------
 
