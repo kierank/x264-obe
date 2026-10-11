@@ -452,29 +452,28 @@ cglobal pixel_sad_16x16, 4,4,6
     psadbw        m%1, [r0+%2*FENC_STRIDE]
 %endmacro
 
-; 8 wide, four rows a ymm as [k,k+2|k+1,k+3]: %1 = dst (number), %2 = row k
-%macro SAD_AVG2_W8_ROW4 2
-%if %2
+; 8 wide, rows k, k+1 and k+2, k+3 a ymm each, loaded as 16 wide (8 bytes past
+; the block, inside the planes' PADH): qword 1 of each lane is junk, dropped at the end
+%macro SAD_AVG2_W8_ROW4 3 ; 2*dst (numbers), row k; r4 = 3*stride
+%if %3
     lea           r1, [r1+4*r3]
     lea           r2, [r2+4*r3]
 %endif
-    movq         xm%1, [r1]
-    movhps       xm%1, [r1+2*r3]
-    movq         xm4, [r1+r3]
-    movhps       xm4, [r1+r4]
-    vinserti128   m%1, m%1, xm4, 1
-    movq         xm4, [r2]
-    movhps       xm4, [r2+2*r3]
-    movq         xm5, [r2+r3]
-    movhps       xm5, [r2+r4]
-    vinserti128   m4, m4, xm5, 1
+    movu         xm%1, [r1]
+    vinserti128   m%1, m%1, [r1+r3], 1
+    movu         xm4, [r2]
+    vinserti128   m4, m4, [r2+r3], 1
     pavgb         m%1, m4
-    movu          m4, [r0+%2*FENC_STRIDE]      ; k, -, k+1, -
-    punpcklqdq    m4, [r0+(%2+2)*FENC_STRIDE]  ; k, k+2 | k+1, k+3
-    psadbw        m%1, m4
+    psadbw        m%1, [r0+%3*FENC_STRIDE]
+    movu         xm%2, [r1+2*r3]
+    vinserti128   m%2, m%2, [r1+r4], 1
+    movu         xm4, [r2+2*r3]
+    vinserti128   m4, m4, [r2+r4], 1
+    pavgb         m%2, m4
+    psadbw        m%2, [r0+(%3+2)*FENC_STRIDE]
 %endmacro
 
-%macro SAD_AVG2_END 1 ; number of accumulators
+%macro SAD_AVG2_END 1-2 16 ; number of accumulators, width
 %if %1 > 1
     paddd         m0, m1
 %endif
@@ -484,8 +483,10 @@ cglobal pixel_sad_16x16, 4,4,6
 %endif
     vextracti128 xm1, m0, 1
     paddd        xm0, xm1
+%if %2 == 16
     punpckhqdq   xm1, xm0, xm0
     paddd        xm0, xm1
+%endif
     movd         eax, xm0
     RET
 %endmacro
@@ -511,19 +512,23 @@ cglobal pixel_sad_avg2_16x8, 4,4,5
     SAD_AVG2_W16_ROW2 3, 6
     SAD_AVG2_END 4
 
-cglobal pixel_sad_avg2_8x16, 4,5,6
+cglobal pixel_sad_avg2_8x16, 4,5,5
     lea           r4, [3*r3]
-    SAD_AVG2_W8_ROW4 0, 0
-    SAD_AVG2_W8_ROW4 1, 4
-    SAD_AVG2_W8_ROW4 2, 8
-    SAD_AVG2_W8_ROW4 3, 12
-    SAD_AVG2_END 4
+    SAD_AVG2_W8_ROW4 0, 1, 0
+    SAD_AVG2_W8_ROW4 2, 3, 4
+    paddd         m0, m2
+    paddd         m1, m3
+    SAD_AVG2_W8_ROW4 2, 3, 8
+    paddd         m0, m2
+    paddd         m1, m3
+    SAD_AVG2_W8_ROW4 2, 3, 12
+    SAD_AVG2_END 4, 8
 
-cglobal pixel_sad_avg2_8x8, 4,5,6
+cglobal pixel_sad_avg2_8x8, 4,5,5
     lea           r4, [3*r3]
-    SAD_AVG2_W8_ROW4 0, 0
-    SAD_AVG2_W8_ROW4 1, 4
-    SAD_AVG2_END 2
+    SAD_AVG2_W8_ROW4 0, 1, 0
+    SAD_AVG2_W8_ROW4 2, 3, 4
+    SAD_AVG2_END 4, 8
 
 ;-----------------------------------------------------------------------------
 ; void pixel_vsad( pixel *src, intptr_t stride );
