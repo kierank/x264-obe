@@ -1034,6 +1034,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->mc_luma = mc_luma_avx2;
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx2;
         pf->hpel_filter = x264_hpel_filter_avx2;
+        pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
         if( !(cpu&X264_CPU_STACK_MOD4) )
             pf->mc_chroma = x264_mc_chroma_avx2;
     }

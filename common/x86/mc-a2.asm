@@ -2216,8 +2216,50 @@ cglobal integral_init4v, 3,5
 ; void frame_init_lowres_core( uint8_t *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                              intptr_t src_stride, intptr_t dst_stride, int width, int height )
 ;-----------------------------------------------------------------------------
+; 10-bit, ymm: 16 pixels of all four planes from 32 source words of 3 rows. Each row is
+; also loaded one word to the right, so the horizontal average needs no palignr across
+; iterations; pavgw(pavgw(a, b), pavgw(c, d)) is the C FILTER. m7 = pd_0xffff.
+%macro FILT16x4W 0
+    movu      m0, [r0+r5]
+    movu      m1, [r0+r5+mmsize]
+    movu      m2, [r0+r5+2]
+    movu      m3, [r0+r5+mmsize+2]
+    pavgw     m4, m0, [r0]
+    pavgw     m5, m1, [r0+mmsize]
+    pavgw     m6, m2, [r0+2]
+    pavgw     m8, m3, [r0+mmsize+2]
+    pavgw     m4, m6
+    pavgw     m5, m8                ; rows 0, 1
+    pavgw     m0, [r0+r5*2]
+    pavgw     m1, [r0+r5*2+mmsize]
+    pavgw     m2, [r0+r5*2+2]
+    pavgw     m3, [r0+r5*2+mmsize+2]
+    pavgw     m0, m2
+    pavgw     m1, m3                ; rows 1, 2
+    psrld     m2, m4, 16
+    psrld     m3, m5, 16
+    pand      m4, m7
+    pand      m5, m7
+    packusdw  m4, m5
+    packusdw  m2, m3
+    vpermq    m4, m4, q3120
+    vpermq    m2, m2, q3120
+    movu    [r1], m4
+    movu    [r2], m2
+    psrld     m2, m0, 16
+    psrld     m3, m1, 16
+    pand      m0, m7
+    pand      m1, m7
+    packusdw  m0, m1
+    packusdw  m2, m3
+    vpermq    m0, m0, q3120
+    vpermq    m2, m2, q3120
+    movu    [r3], m0
+    movu    [r4], m2
+%endmacro
+
 %macro FRAME_INIT_LOWRES 0
-cglobal frame_init_lowres_core, 6,7,(12-4*(BIT_DEPTH/9)) ; 8 for HIGH_BIT_DEPTH, 12 otherwise
+cglobal frame_init_lowres_core, 6,7,(12-4*(BIT_DEPTH/9)*(mmsize<32)) ; 8 for xmm HIGH_BIT_DEPTH, 12 otherwise
 %if HIGH_BIT_DEPTH
     shl   dword r6m, 1
     FIX_STRIDES r5
@@ -2262,11 +2304,13 @@ cglobal frame_init_lowres_core, 6,7,(12-4*(BIT_DEPTH/9)) ; 8 for HIGH_BIT_DEPTH,
 %endif
 .vloop:
     mov      r6d, r7m
+%if mmsize < 32
 %ifnidn cpuname, mmx2
     mova      m0, [r0]
     mova      m1, [r0+r5]
     pavgw     m0, m1
     pavgw     m1, [r0+r5*2]
+%endif
 %endif
 .hloop:
     sub       r0, mmsize*2
@@ -2274,7 +2318,9 @@ cglobal frame_init_lowres_core, 6,7,(12-4*(BIT_DEPTH/9)) ; 8 for HIGH_BIT_DEPTH,
     sub       r2, mmsize
     sub       r3, mmsize
     sub       r4, mmsize
-%ifidn cpuname, mmx2
+%if mmsize == 32
+    FILT16x4W
+%elifidn cpuname, mmx2
     FILT8xU r1, r2, 0
     FILT8xU r3, r4, r5
 %else
@@ -2369,10 +2415,8 @@ INIT_XMM avx
 FRAME_INIT_LOWRES
 INIT_XMM xop
 FRAME_INIT_LOWRES
-%if HIGH_BIT_DEPTH==0
 INIT_YMM avx2
 FRAME_INIT_LOWRES
-%endif
 
 ;-----------------------------------------------------------------------------
 ; void mbtree_propagate_cost( int *dst, uint16_t *propagate_in, uint16_t *intra_costs,
