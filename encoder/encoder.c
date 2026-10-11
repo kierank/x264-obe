@@ -1530,6 +1530,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
         x264_cabac_init( h );
     else
         x264_stack_align( x264_cavlc_init, h );
+#if HAVE_MMX
+    x264_cabac_bmi2 = (h->param.cpu & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT);
+#endif
 
     mbcmp_init( h );
     chroma_dsp_init( h );
