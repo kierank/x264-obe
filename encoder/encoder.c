@@ -2351,8 +2351,10 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 
     /* FIXME: Prediction requires different borders for interlaced/progressive mc,
      * but the actual image data is equivalent. For now, maintain this
-     * consistency by copying deblocked pixels between planes. */
-    if( PARAM_INTERLACED && (!h->param.b_sliced_threads || pass == 1) )
+     * consistency by copying deblocked pixels between planes.
+     * plane_fld is only read through references (field mc, its borders and
+     * hpel), so frames that aren't kept as references don't need it. */
+    if( PARAM_INTERLACED && h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
         for( int p = 0; p < h->fdec->i_plane; p++ )
             for( int i = minpix_y>>(CHROMA_V_SHIFT && p); i < maxpix_y>>(CHROMA_V_SHIFT && p); i++ )
                 memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
