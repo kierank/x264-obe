@@ -199,6 +199,7 @@ cextern pw_ppmmppmm
 cextern pw_pmpmpmpm
 cextern pw_pmmpzzzz
 cextern pd_1
+cextern pd_ffff
 cextern hsub_mul
 cextern popcnt_table
 
@@ -4605,6 +4606,42 @@ INTRA_X9
 %endif
 HADAMARD_AC_SSE2
 
+;-----------------------------------------------------------------------------
+; End of a one pass 8x8 satd, ymm (both depths). m0-m3 hold every stage of
+; the 4x4 transforms but the last, whose partners are the two words of each
+; dword: max(|a|,|b|) of those comes out as clean dwords (pand pd_ffff,
+; psrld 16, pmaxsw) and is summed with paddd, so there is no transpose before
+; the max and no pmaddwd after it. m6 = pd_ffff, words at most 8184.
+;-----------------------------------------------------------------------------
+%macro SATD_8x8_MAXD_END 0
+    pabsw        m0, m0
+    pabsw        m1, m1
+    pabsw        m2, m2
+    pabsw        m3, m3
+    psrld        m4, m0, 16
+    psrld        m5, m1, 16
+    pand         m0, m6
+    pand         m1, m6
+    pmaxsw       m0, m4
+    pmaxsw       m1, m5
+    psrld        m4, m2, 16
+    psrld        m5, m3, 16
+    pand         m2, m6
+    pand         m3, m6
+    pmaxsw       m2, m4
+    pmaxsw       m3, m5
+    paddd        m0, m1
+    paddd        m2, m3
+    paddd        m0, m2
+    vextracti128 xm1, m0, 1
+    paddd        xm0, xm1
+    punpckhqdq   xm1, xm0, xm0
+    paddd        xm0, xm1
+    pshuflw      xm1, xm0, q1032
+    paddd        xm0, xm1
+    movd         eax, xm0
+    RET
+%endmacro
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
@@ -4676,12 +4713,38 @@ HADAMARD_AC_SSE2
     RET
 %endmacro
 
+; one pass 8x8 from m0-m3 = fenc - ref (lanes = rows k, k+4): vertical stages,
+; the dword distance stage in register (pshufd q2301 + psignw by ppmm, paddw:
+; { a+b, a-b } per dword pair, no transpose), then the word distance stage as
+; the max. m6 = pd_ffff, m7 = pw_ppmmppmm.
+%macro SATD_HBD_8x8_END 0
+    HADAMARD4_V 0, 1, 2, 3, 4
+    pshufd       m4, m0, q2301
+    pshufd       m5, m1, q2301
+    psignw       m0, m7
+    psignw       m1, m7
+    paddw        m0, m4
+    paddw        m1, m5
+    pshufd       m4, m2, q2301
+    pshufd       m5, m3, q2301
+    psignw       m2, m7
+    psignw       m3, m7
+    paddw        m2, m4
+    paddw        m3, m5
+    SATD_8x8_MAXD_END
+%endmacro
+
+%macro SATD_HBD_8x8_CONST 0
+    vpbroadcastd   m6, [pd_ffff]
+    vbroadcasti128 m7, [pw_ppmmppmm]
+%endmacro
+
 INIT_YMM avx2
 cglobal pixel_satd_8x8, 4,8,8
     SATD_HBD_START
+    SATD_HBD_8x8_CONST
     SATD_HBD_LOAD_X
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
-    SATD_HBD_END 0
+    SATD_HBD_8x8_END
 
 cglobal pixel_satd_8x16, 4,8,8
     SATD_HBD_START
@@ -4783,9 +4846,9 @@ cglobal pixel_satd_16x16, 4,6,8
 
 cglobal pixel_satd_avg2_8x8, 4,7,8
     SATD_AVG2_START_X
+    SATD_HBD_8x8_CONST
     SATD_AVG2_LOAD_X
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
-    SATD_HBD_END 0
+    SATD_HBD_8x8_END
 
 cglobal pixel_satd_avg2_8x16, 4,7,8
     SATD_AVG2_START_X
@@ -5767,12 +5830,13 @@ cglobal pixel_satd_8x16, 4,6,8
     RET
 
 cglobal pixel_satd_8x8, 4,6,8
-    SATD_START_AVX2 m6, m7, 1
-    call pixel_satd_8x8_internal
-    vextracti128 xm0, m6, 1
-    paddw        xm0, xm6
-    SATD_END_SSE2 xm0
-    RET
+    mova         m7, [hmul_8p]
+    vpbroadcastd m6, [pd_ffff]
+    lea          r4, [5*r1]
+    lea          r5, [5*r3]
+    LOAD_SUMSUB_8x8P_AVX2 0, 1, 2, 3, 4, 5, 7
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SATD_8x8_MAXD_END
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
@@ -5867,12 +5931,16 @@ cglobal pixel_satd_avg2_8x16, 4,7,9
 
 cglobal pixel_satd_avg2_8x8, 4,7,9
     mova     m7, [hmul_8p]
+    vpbroadcastd m6, [pd_ffff]
     lea      r4, [3*r3]
     lea      r5, [r1+4*r3]
     lea      r6, [r2+4*r3]
-    pxor     m6, m6
-    SATD_AVG2_8x8
-    SATD_AVG2_END
+    SATD_AVG2_SUMSUB8 0, 0, 0
+    SATD_AVG2_SUMSUB8 1, 1, r3
+    SATD_AVG2_SUMSUB8 2, 2, 2*r3
+    SATD_AVG2_SUMSUB8 3, 3, r4
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SATD_8x8_MAXD_END
 
 ;-----------------------------------------------------------------------------
 ; void pixel_satd_fenc_pre_16x16( int16_t dst[256], uint8_t *fenc )
@@ -5972,10 +6040,15 @@ cglobal pixel_satd_pre_8x16, 3,5,8
 
 cglobal pixel_satd_pre_8x8, 3,5,8
     mova     m7, [hmul_8p]
+    vpbroadcastd m6, [pd_ffff]
     lea      r3, [3*r2]
     lea      r4, [r1+4*r2]
-    SATD_PRE_8x8 0, swap
-    SATD_AVG2_END
+    SATD_PRE_SUMSUB8 0, 0,    0
+    SATD_PRE_SUMSUB8 1, r2,   32
+    SATD_PRE_SUMSUB8 2, 2*r2, 64
+    SATD_PRE_SUMSUB8 3, r3,   96
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SATD_8x8_MAXD_END
 
 ; 16 wide: row (%2 = k*stride) of pavgb( src1, src2 ) less fenc_pre's
 %macro SATD_AVG2_PRE_ROW16 3 ; dst (number), source offset, fenc_pre offset
@@ -6049,11 +6122,16 @@ cglobal pixel_satd_avg2_pre_8x16, 4,7,8
 
 cglobal pixel_satd_avg2_pre_8x8, 4,7,8
     mova     m7, [hmul_8p]
+    vpbroadcastd m6, [pd_ffff]
     lea      r4, [3*r3]
     lea      r5, [r1+4*r3]
     lea      r6, [r2+4*r3]
-    SATD_AVG2_PRE_8x8 0, swap
-    SATD_AVG2_END
+    SATD_AVG2_PRE_SUMSUB8 0, 0,    0
+    SATD_AVG2_PRE_SUMSUB8 1, r3,   32
+    SATD_AVG2_PRE_SUMSUB8 2, 2*r3, 64
+    SATD_AVG2_PRE_SUMSUB8 3, r4,   96
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SATD_8x8_MAXD_END
 
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
