@@ -827,6 +827,24 @@ cglobal pixel_var_8x8, 2,3,8
     mova      m4, [r0+r2*2]
     VAR_CORE
     VAR_END 8, 8
+
+cglobal pixel_var_8x16, 2,3,8
+    lea       r2, [r1*3]
+    VAR_START 0
+%rep 3
+    mova      m0, [r0]
+    mova      m1, [r0+r1*2]
+    mova      m3, [r0+r1*4]
+    mova      m4, [r0+r2*2]
+    lea       r0, [r0+r1*8]
+    VAR_CORE
+%endrep
+    mova      m0, [r0]
+    mova      m1, [r0+r1*2]
+    mova      m3, [r0+r1*4]
+    mova      m4, [r0+r2*2]
+    VAR_CORE
+    VAR_END 8, 16
 %endmacro ; VAR
 
 INIT_XMM sse2
@@ -835,6 +853,57 @@ INIT_XMM avx
 VAR
 INIT_XMM xop
 VAR
+
+; rows only need 16 byte alignment: without AVX-512 frame strides are 16 byte aligned
+%macro VAR_END_YMM 0
+    HADDW     m5, m2
+    HADDD     m6, m1
+%if ARCH_X86_64
+    punpckldq xm5, xm6
+    movq     rax, xm5
+%else
+    movd     eax, xm5
+    movd     edx, xm6
+%endif
+    RET
+%endmacro
+
+; four rows a ymm pair: lane 0 rows from %1, lane 1 rows from %2
+%macro VAR_LOAD4_YMM 2
+    mova         xm0, [%1]
+    vinserti128   m0, m0, [%2], 1
+    mova         xm3, [%1+r1]
+    vinserti128   m3, m3, [%2+r1], 1
+    mova         xm1, [%1+r1*2]
+    vinserti128   m1, m1, [%2+r1*2], 1
+    mova         xm4, [%1+r3]
+    vinserti128   m4, m4, [%2+r3], 1
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_var_16x16, 2,4,7
+    FIX_STRIDES r1
+    lea       r3, [r1*3]
+    VAR_START 0
+%rep 4
+    VAR_LOAD4_YMM r0, r0+16
+    lea       r0, [r0+r1*4]
+    VAR_CORE
+%endrep
+    VAR_END_YMM
+
+cglobal pixel_var_8x16, 2,4,7
+    FIX_STRIDES r1
+    lea       r3, [r1*3]
+    lea       r2, [r0+r1*4]
+    VAR_START 0
+    VAR_LOAD4_YMM r0, r2
+    lea       r0, [r0+r1*8]
+    lea       r2, [r2+r1*8]
+    VAR_CORE
+    VAR_LOAD4_YMM r0, r2
+    VAR_CORE
+    VAR_END_YMM
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0

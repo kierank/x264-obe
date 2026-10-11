@@ -952,6 +952,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssim_end4        = x264_pixel_ssim_end4_sse2;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_sse2;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_sse2;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_sse2;
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_sse2;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_sse2;
         pixf->intra_sad_x3_8x8 = x264_intra_sad_x3_8x8_sse2;
@@ -1046,6 +1047,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sa8d[PIXEL_8x8]  = x264_pixel_sa8d_8x8_avx;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx;
         pixf->ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx;
         pixf->ssim_4x4x2_core  = x264_pixel_ssim_4x4x2_core_avx;
         pixf->ssim_end4        = x264_pixel_ssim_end4_avx;
@@ -1067,6 +1069,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x3, _avx2 );
         INIT4( sad_x4, _avx2 );
         INIT4( satd, _avx2 );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx2;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx2;
         INIT4( satd_x3, _avx2 );
         INIT4( satd_x4, _avx2 );
 #if ARCH_X86_64
