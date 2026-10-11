@@ -4849,6 +4849,79 @@ cglobal pixel_sa8d_16x16, 4,8,12
     shr  eax, 1
     RET
 %endif
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_hadamard_ac_8x8( uint16_t *pix, intptr_t stride )
+; Lane 0 holds rows 0-3, lane 1 rows 4-7: the 4x4 transforms and the column
+; half stage are lane-local, the row half stage is across lanes. Pixels are
+; non-negative, so every value before that last stage fits 15 bits except
+; the (masked) DC.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal pixel_hadamard_ac_8x8, 2,3,8
+    FIX_STRIDES r1
+    lea          r2, [r1*3]
+    movu        xm0, [r0]
+    movu        xm1, [r0+r1]
+    movu        xm2, [r0+r1*2]
+    movu        xm3, [r0+r2]
+    lea          r0, [r0+r1*4]
+    vinserti128  m0, m0, [r0], 1
+    vinserti128  m1, m1, [r0+r1], 1
+    vinserti128  m2, m2, [r0+r1*2], 1
+    vinserti128  m3, m3, [r0+r2], 1
+    HADAMARD4_2D_SSE 0, 1, 2, 3, 4
+    mova         m7, [pw_1]
+    pabsw        m4, m0
+    pand         m4, [mask_ac4]
+    pabsw        m5, m1
+    paddw        m4, m5
+    pabsw        m5, m2
+    paddw        m4, m5
+    pabsw        m5, m3
+    paddw        m4, m5            ; 4x4 AC, <= 4*8184
+    pmaddwd      m4, m7
+    HADAMARD 4, sumsub, 0, 1, 5
+    HADAMARD 4, sumsub, 2, 3, 5
+    pabsw        m1, m1
+    pabsw        m2, m2
+    pabsw        m3, m3
+    vextracti128 xm5, m1, 1
+    vextracti128 xm6, m2, 1
+    pmaxsw      xm1, xm5
+    pmaxsw      xm2, xm6
+    vextracti128 xm5, m3, 1
+    vextracti128 xm6, m0, 1
+    pmaxsw      xm3, xm5
+    paddw       xm5, xm0, xm6      ; DC in word 0
+    psubw       xm0, xm6
+    pand        xm5, [mask_ac8]
+    pabsw       xm5, xm5
+    pabsw       xm0, xm0
+    pmaddwd     xm1, xm7
+    pmaddwd     xm2, xm7
+    pmaddwd     xm3, xm7
+    pmaddwd     xm5, xm7
+    pmaddwd     xm0, xm7
+    paddd       xm1, xm2
+    paddd       xm1, xm3
+    paddd       xm1, xm1           ; max(|a|,|b|) is half of |a+b|+|a-b|
+    paddd       xm0, xm5
+    paddd       xm0, xm1           ; sa8d
+    vextracti128 xm1, m4, 1
+    paddd       xm4, xm1           ; satd
+    phaddd      xm4, xm0
+    pshufd      xm0, xm4, q2301
+    paddd       xm0, xm4           ; satd satd sa8d sa8d
+    movd        eax, xm0
+    pextrd      edx, xm0, 2
+    shr         eax, 1
+    shr         edx, 2
+%if ARCH_X86_64
+    shl         rdx, 32
+    add         rax, rdx
+%endif
+    RET
 %if ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
