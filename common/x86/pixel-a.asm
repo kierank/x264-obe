@@ -5178,40 +5178,6 @@ SA8D_SATD
     psubw     m%1, m%2
 %endmacro
 
-; as LOAD_SUMSUB_8x8P_AVX2 with movq/vinserti128/punpcklqdq rows, which sa8d
-; prefers (checkasm on Zen 4: the broadcast rows cost sa8d_8x8 3.5%)
-%macro LOAD_SUMSUB_8x8P_AVX2_INS 7 ; 4*dst, 2*tmp, mul
-    movq   xm%1, [r0]
-    movq   xm%3, [r2]
-    movq   xm%2, [r0+r1]
-    movq   xm%4, [r2+r3]
-    vinserti128 m%1, m%1, [r0+4*r1], 1
-    vinserti128 m%3, m%3, [r2+4*r3], 1
-    vinserti128 m%2, m%2, [r0+r4], 1
-    vinserti128 m%4, m%4, [r2+r5], 1
-    punpcklqdq m%1, m%1
-    punpcklqdq m%3, m%3
-    punpcklqdq m%2, m%2
-    punpcklqdq m%4, m%4
-    DIFF_SUMSUB_SSSE3 %1, %3, %2, %4, %7
-    lea      r0, [r0+2*r1]
-    lea      r2, [r2+2*r3]
-
-    movq   xm%3, [r0]
-    movq   xm%5, [r2]
-    movq   xm%4, [r0+r1]
-    movq   xm%6, [r2+r3]
-    vinserti128 m%3, m%3, [r0+4*r1], 1
-    vinserti128 m%5, m%5, [r2+4*r3], 1
-    vinserti128 m%4, m%4, [r0+r4], 1
-    vinserti128 m%6, m%6, [r2+r5], 1
-    punpcklqdq m%3, m%3
-    punpcklqdq m%5, m%5
-    punpcklqdq m%4, m%4
-    punpcklqdq m%6, m%6
-    DIFF_SUMSUB_SSSE3 %3, %5, %4, %6, %7
-%endmacro
-
 %macro LOAD_SUMSUB_8x8P_AVX2 7 ; 4*dst, 2*tmp, mul]
     LOAD_SUMSUB_8x2P_AVX2 %1, %5, %6, %7, 0, 4*r1, 4*r3
     LOAD_SUMSUB_8x2P_AVX2 %2, %5, %6, %7, 1, r4, r5
@@ -5568,7 +5534,7 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 %endif ; ARCH_X86_64
 
 cglobal pixel_sa8d_8x8_internal
-    LOAD_SUMSUB_8x8P_AVX2_INS 0, 1, 2, 3, 4, 5, 7
+    LOAD_SUMSUB_8x8P_AVX2 0, 1, 2, 3, 4, 5, 7
     HADAMARD4_V 0, 1, 2, 3, 4
     HADAMARD 8, sumsub, 0, 1, 4, 5
     HADAMARD 8, sumsub, 2, 3, 4, 5
