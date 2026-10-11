@@ -2407,8 +2407,11 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_32( dctcoef, dct3,[8],[16] );
     ALIGNED_ARRAY_32( dctcoef, dct4,[8],[16] );
     ALIGNED_ARRAY_32( uint8_t, cqm_buf,[64] );
+    ALIGNED_ARRAY_32( dctcoef, lvl1,[4],[16] );
+    ALIGNED_ARRAY_32( dctcoef, lvl2,[4],[16] );
+    x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     int ret = 0, ok, used_asm;
-    int oks[3] = {1,1,1}, used_asms[3] = {0,0,0};
+    int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -2451,6 +2454,9 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_quant_init( h, 0, &qf_c );
         x264_quant_init( h, cpu_ref, &qf_ref );
         x264_quant_init( h, cpu_new, &qf_a );
+        x264_zigzag_init( 0, &zz_c[0], &zz_c[1] );
+        x264_zigzag_init( cpu_ref, &zz_ref[0], &zz_ref[1] );
+        x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1] );
 
 #define INIT_QUANT8(j,max) \
         { \
@@ -2558,6 +2564,55 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_DEQUANT( quant_8x8, dequant_8x8, CQM_8PY, 8 );
         TEST_DEQUANT( quant_4x4, dequant_4x4, CQM_4IY, 4 );
         TEST_DEQUANT( quant_4x4, dequant_4x4, CQM_4PY, 4 );
+
+        /* j: bits 0-3 nonzero blocks (all zero when j%8 == 7), bits 4-5 level size, bit 6 no dequant,
+         * bit 7 zero DC; levels near +-1 exercise the decimate score */
+#define TEST_QUANT_SCAN( name, block, ac ) \
+        for( int fld = 0; fld < 2; fld++ ) \
+            if( zz_a[fld].name != zz_ref[fld].name ) \
+            { \
+                set_func_name( "%s_%s_%s", #name, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                used_asms[3] = 1; \
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- ) \
+                { \
+                    udctcoef *mf = h->quant4_mf[block][qp], *bias = h->quant4_bias[block][qp]; \
+                    for( int j = 0; j < 256; j++ ) \
+                    { \
+                        static const int scale1d[4] = {4,6,4,6}; \
+                        int (*dmf)[16] = j&64 ? NULL : h->dequant4_mf[block]; \
+                        for( int k = 0; k < 64; k++ ) \
+                        { \
+                            int big = 255*scale1d[(k>>2)&3]*scale1d[k&3]; \
+                            int small = X264_MIN( big, ((j>>4)&3) == 1 ? (3<<15)/mf[k&15] : (3<<16)/mf[k&15] ); \
+                            int x = ((j>>4)&3) == 0 ? rand()%(2*big+1) - big \
+                                  : ((j>>4)&3) == 3 ? (rand()&15 ? 0 : rand()&1 ? big : -big) \
+                                  : (rand()&3 ? 0 : rand()%(2*small+1) - small); \
+                            dct3[k>>4][k&15] = dct4[k>>4][k&15] = (j>>(k>>4))&1 && (j&7) != 7 ? x : 0; \
+                        } \
+                        if( (ac) && (j&128) ) \
+                            for( int k = 0; k < 4; k++ ) \
+                                dct3[k][0] = dct4[k][0] = 0; \
+                        for( int k = 0; k < 64; k++ ) \
+                            lvl1[k>>4][k&15] = lvl2[k>>4][k&15] = 0x5a5a + k; \
+                        int res_c = call_c1( zz_c[fld].name, dct3, lvl1, mf, bias, dmf, qp ); \
+                        int res_a = call_a1( zz_a[fld].name, dct4, lvl2, mf, bias, dmf, qp ); \
+                        if( res_c != res_a || memcmp( dct3, dct4, 64*sizeof(dctcoef) ) || memcmp( lvl1, lvl2, 64*sizeof(dctcoef) ) ) \
+                        { \
+                            oks[3] = 0; \
+                            fprintf( stderr, #name "_%s (qp=%d, cqm=%d, block="#block", j=%d, res_c=%x, res_asm=%x): [FAILED]\n", \
+                                     fld?"field":"frame", qp, i_cqm, j, res_c, res_a ); \
+                            break; \
+                        } \
+                        call_c2( zz_c[fld].name, dct3, lvl1, mf, bias, dmf, qp ); \
+                        call_a2( zz_a[fld].name, dct4, lvl2, mf, bias, dmf, qp ); \
+                    } \
+                } \
+            }
+
+        TEST_QUANT_SCAN( quant_4x4x4_scan, CQM_4PY, 0 );
+        TEST_QUANT_SCAN( quant_4x4x4_scan, CQM_4PC, 0 );
+        TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IY, 1 );
+        TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IC, 1 );
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \
@@ -2699,6 +2754,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[2]; used_asm = used_asms[2];
     report( "optimize chroma dc :" );
+
+    ok = oks[3]; used_asm = used_asms[3];
+    report( "quant scan :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

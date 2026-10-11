@@ -354,6 +354,46 @@ static int x264_decimate_score64( dctcoef *dct )
     return x264_decimate_score_internal( dct, 64 );
 }
 
+/* quant_4x4x4, then for each nonzero block: zigzag into level, decimate score, dequant in place
+ * (unless dequant_mf is NULL). Returns the nonzero mask | min(summed score, 9) << 4. */
+static ALWAYS_INLINE int quant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
+                                           int dequant_mf[6][16], int i_qp, int b_field, int b_ac )
+{
+    int nza = 0, score = 0;
+    for( int j = 0; j < 4; j++ )
+    {
+        int nz = 0;
+        for( int i = 0; i < 16; i++ )
+            QUANT_ONE( dct[j][i], mf[i], bias[i] );
+        if( !nz )
+            continue;
+        nza |= 1 << j;
+        for( int i = 0; i < 16; i++ )
+            level[j][i] = dct[j][x264_zigzag_scan4[b_field][i]];
+        score += x264_decimate_score_internal( level[j]+b_ac, 16-b_ac );
+        if( dequant_mf )
+            dequant_4x4( dct[j], dequant_mf, i_qp );
+    }
+    return nza | X264_MIN( score, 9 ) << 4;
+}
+
+int x264_quant_4x4x4_scan_frame( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
+{
+    return quant_4x4x4_scan( dct, level, mf, bias, dequant_mf, i_qp, 0, 0 );
+}
+int x264_quant_4x4x4_scan_field( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
+{
+    return quant_4x4x4_scan( dct, level, mf, bias, dequant_mf, i_qp, 1, 0 );
+}
+int x264_quant_4x4x4_scan_frame_ac( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
+{
+    return quant_4x4x4_scan( dct, level, mf, bias, dequant_mf, i_qp, 0, 1 );
+}
+int x264_quant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
+{
+    return quant_4x4x4_scan( dct, level, mf, bias, dequant_mf, i_qp, 1, 1 );
+}
+
 #define last(num)\
 static int x264_coeff_last##num( dctcoef *l )\
 {\

@@ -110,6 +110,17 @@ do\
     M16( &h->mb.cache.non_zero_count[x264_scan8[p*16+idx*4]+8] ) = (nz) * 0x0101;\
 } while(0)
 
+/* nnz of the 2x2 group of 4x4 blocks at idx from a 4-bit mask; the caller has cleared them */
+#define STORE_4x4x4_NNZ( idx, nz )\
+do\
+{\
+    uint8_t *nnz4 = &h->mb.cache.non_zero_count[x264_scan8[idx]];\
+    nnz4[0] = (nz)&1;\
+    nnz4[1] = ((nz)>>1)&1;\
+    nnz4[8] = ((nz)>>2)&1;\
+    nnz4[9] = ((nz)>>3)&1;\
+} while(0)
+
 #define CLEAR_16x16_NNZ( p ) \
 do\
 {\
