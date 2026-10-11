@@ -1394,6 +1394,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
+        pixf->sad[PIXEL_8x16] = pixf->sad_aligned[PIXEL_8x16] = x264_pixel_sad_8x16_avx2;
+        pixf->sad[PIXEL_8x8]  = pixf->sad_aligned[PIXEL_8x8]  = x264_pixel_sad_8x8_avx2;
         INIT2( sad_x3, _avx2 );
         INIT2( sad_x4, _avx2 );
         INIT4( satd, _avx2 );
