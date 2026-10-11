@@ -134,9 +134,8 @@ void x264_lowres8_weight_plane( void *ctx, void *fenc_, void *ref_, const void *
 #define INTRA_MBS 2
 #define ROW_SATD (NUM_INTS + (h->mb.i_mb_y - h->i_threadslice_start))
 
-/* slicetype_mb_cost() at 8-bit. Internally all costs are 8-bit; what is stored or
- * accumulated for the rest of the encoder is scaled by LOWRES8_COST_SHIFT.
- * lowres_mv_costs stay 8-bit, since only this function reads them back. */
+/* slicetype_mb_cost() at 8-bit. All costs, stored and accumulated, are at 8-bit
+ * scale like those of the high bit depth slicetype_mb_cost(). */
 static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1, int b,
                              int dist_scale_factor, int do_search[2], const x264_weight_t *w,
                              int *output_inter, int *output_intra )
@@ -364,7 +363,7 @@ lowres_intra_mb:
             }
         }
 
-        i_icost = (i_icost + intra_penalty + lowres_penalty) << LOWRES8_COST_SHIFT;
+        i_icost += intra_penalty + lowres_penalty;
         fenc->i_intra_cost[i_mb_xy] = i_icost;
         int i_icost_aq = i_icost;
         if( h->param.rc.i_aq_mode )
@@ -376,7 +375,7 @@ lowres_intra_mb:
             output_intra[COST_EST_AQ] += i_icost_aq;
         }
     }
-    i_bcost = (i_bcost + lowres_penalty) << LOWRES8_COST_SHIFT;
+    i_bcost += lowres_penalty;
 
     /* forbid intra-mbs in B-frames, because it's rare and not worth checking */
     /* FIXME: Should we still forbid them now that we cache intra scores? */
