@@ -51,7 +51,7 @@ for R in $RATES; do
                 else if (kv[1] == "V") v = kv[2]; else if (kv[1] == "kb/s") kbps = kv[2]
             }
         }
-        /SSIM Mean/ { match($0, /\(([0-9.]+)db\)/); s = substr($0, RSTART + 1, RLENGTH - 4) }
+        /SSIM Mean/ { match($0, /\( *[0-9.]+db\)/); s = substr($0, RSTART + 1, RLENGTH - 4); gsub(/ /, "", s) } # %6.3f: below 10 dB has a leading space
         /encoded [0-9]+ frames/ { for (i = 1; i <= NF; i++) if ($i == "fps,") fps = $(i-1) }
         END {
             if (y == "" || kbps == "") { print "bd-encode.sh: no PSNR line in the x264 log" > "/dev/stderr"; exit 1 }

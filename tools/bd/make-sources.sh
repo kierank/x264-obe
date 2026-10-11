@@ -1,7 +1,8 @@
 #!/bin/sh
 # make-sources.sh <dir>: fetch and prepare 1080i25 BD-rate sources into <dir>
 # Native 1080i25 (SVT 2001, LDV mirror at Xiph): parkrun, stockholm, mobcal, shields,
-#   8-bit 4:2:0 yuv, 252 frames, 2 of them mid-grey (dropped here by luma mean).
+#   8-bit 4:2:0 yuv, 252 frames incl. flat slate frames (dropped here by luma max;
+#   parkrun has 5 of them, so it yields 247 frames).
 # Woven 1080i25 from the SVT Multi Format 1080p50 masters (Xiph derf): one field
 #   per 50p frame, vertically low-passed, as SVT made their 1080i25 versions.
 # Outputs per sequence: <name>_1080i25.y4m (8-bit 4:2:0) and
