@@ -408,7 +408,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
             int res_c[2], res_asm[2];
             for( int j = 0; j < 64 && ok; j++ )
             {
-                int dx = (j*5) & 31, dy = (j*3+s) & 31;
+                /* all 64 (dx&7, dy&7) pairs */
+                int dx = (j*5) & 31, dy = (j*3+(j>>3)+s) & 31;
                 pixel *src = pbuf2 + 64 + 2*j;
                 pixel *fenc = pbuf1 + 2*(j&7);
                 mc_c.mc_chroma( dstu, dstv, 16, src, 64, dx, dy, w, hgt );
