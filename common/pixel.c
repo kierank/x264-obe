@@ -506,6 +506,14 @@ SATD_X_DECL7( _sse4 )
 SATD_X_DECL7( _avx )
 SATD_X_DECL7( _xop )
 SATD_X_DECL7( _avx512 )
+#else
+SATD_X( 16x16, _avx2 )
+SATD_X( 16x8, _avx2 )
+SATD_X( 8x16, _avx2 )
+SATD_X( 8x8, _avx2 )
+SATD_X( 16x16, _avx512 )
+SATD_X( 16x8, _avx512 )
+SATD_X( 8x16, _avx512 )
 #endif // !HIGH_BIT_DEPTH
 #endif
 
@@ -1060,6 +1068,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT2_NAME( sad_aligned, sad, _avx2 );
         INIT2( sad_x3, _avx2 );
         INIT2( sad_x4, _avx2 );
+        INIT4( satd, _avx2 );
+        INIT4( satd_x3, _avx2 );
+        INIT4( satd_x4, _avx2 );
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
         pixf->intra_sad_x3_8x8 = x264_intra_sad_x3_8x8_avx2;
@@ -1068,6 +1079,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512;
+        pixf->satd[PIXEL_16x16] = x264_pixel_satd_16x16_avx512;
+        pixf->satd[PIXEL_16x8]  = x264_pixel_satd_16x8_avx512;
+        pixf->satd[PIXEL_8x16]  = x264_pixel_satd_8x16_avx512;
+        pixf->satd_x3[PIXEL_16x16] = x264_pixel_satd_x3_16x16_avx512;
+        pixf->satd_x3[PIXEL_16x8]  = x264_pixel_satd_x3_16x8_avx512;
+        pixf->satd_x3[PIXEL_8x16]  = x264_pixel_satd_x3_8x16_avx512;
+        pixf->satd_x4[PIXEL_16x16] = x264_pixel_satd_x4_16x16_avx512;
+        pixf->satd_x4[PIXEL_16x8]  = x264_pixel_satd_x4_16x8_avx512;
+        pixf->satd_x4[PIXEL_8x16]  = x264_pixel_satd_x4_8x16_avx512;
     }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH

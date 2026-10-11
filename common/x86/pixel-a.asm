@@ -4400,6 +4400,193 @@ INTRA_X9
 HADAMARD_AC_SSE2
 
 
+%if HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; 10-bit satd, ymm and zmm. Each 128-bit lane holds one row of an independent
+; 8x4 unit, so the lane-local vertical-mode transform of SATD_8x4_SSE runs on
+; 2 (ymm) or 4 (zmm) units per pass. Every pass adds at most 2*8184 per word,
+; so up to two passes fit signed words and up to four fit unsigned words.
+;-----------------------------------------------------------------------------
+
+; m0-m3 = pix1-pix2 rows %1..%1+3 of the units at r0/r2 (lane 0) and r6/r7 (lane 1+)
+%macro SATD_HBD_LOAD_X 0 ; 8 wide, ymm: lanes = rows i, i+4
+    movu         xm0, [r0]
+    vinserti128   m0, m0, [r6], 1
+    movu         xm4, [r2]
+    vinserti128   m4, m4, [r7], 1
+    movu         xm1, [r0+r1]
+    vinserti128   m1, m1, [r6+r1], 1
+    movu         xm5, [r2+r3]
+    vinserti128   m5, m5, [r7+r3], 1
+    psubw         m0, m4
+    psubw         m1, m5
+    movu         xm2, [r0+2*r1]
+    vinserti128   m2, m2, [r6+2*r1], 1
+    movu         xm4, [r2+2*r3]
+    vinserti128   m4, m4, [r7+2*r3], 1
+    movu         xm3, [r0+r4]
+    vinserti128   m3, m3, [r6+r4], 1
+    movu         xm5, [r2+r5]
+    vinserti128   m5, m5, [r7+r5], 1
+    psubw         m2, m4
+    psubw         m3, m5
+%endmacro
+
+%macro SATD_HBD_LOAD_Y 0 ; 16 wide, ymm: lanes = columns 0-7, 8-15 of one row
+    movu          m0, [r0]
+    movu          m1, [r0+r1]
+    movu          m2, [r0+2*r1]
+    movu          m3, [r0+r4]
+    psubw         m0, [r2]
+    psubw         m1, [r2+r3]
+    psubw         m2, [r2+2*r3]
+    psubw         m3, [r2+r5]
+%endmacro
+
+%macro SATD_HBD_LOAD_Z 0 ; 16 wide, zmm: lanes = columns 0-7, 8-15 of rows i, i+4
+    movu          ym0, [r0]
+    vinserti32x8   m0, m0, [r6], 1
+    movu          ym4, [r2]
+    vinserti32x8   m4, m4, [r7], 1
+    movu          ym1, [r0+r1]
+    vinserti32x8   m1, m1, [r6+r1], 1
+    movu          ym5, [r2+r3]
+    vinserti32x8   m5, m5, [r7+r3], 1
+    psubw          m0, m4
+    psubw          m1, m5
+    movu          ym2, [r0+2*r1]
+    vinserti32x8   m2, m2, [r6+2*r1], 1
+    movu          ym4, [r2+2*r3]
+    vinserti32x8   m4, m4, [r7+2*r3], 1
+    movu          ym3, [r0+r4]
+    vinserti32x8   m3, m3, [r6+r4], 1
+    movu          ym5, [r2+r5]
+    vinserti32x8   m5, m5, [r7+r5], 1
+    psubw          m2, m4
+    psubw          m3, m5
+%endmacro
+
+%macro SATD_HBD_LOAD_W 0 ; 8 wide, zmm: lanes = rows i, i+4, i+8, i+12 (r6 = r0+4*r1)
+%assign satd_hbd_w 0
+%rep 4
+    movu          xm %+ satd_hbd_w, [r0]
+    vinserti32x4   m %+ satd_hbd_w, m %+ satd_hbd_w, [r6], 1
+    vinserti32x4   m %+ satd_hbd_w, m %+ satd_hbd_w, [r6+4*r1], 2
+    vinserti32x4   m %+ satd_hbd_w, m %+ satd_hbd_w, [r6+8*r1], 3
+    movu          xm4, [r2]
+    vinserti32x4   m4, m4, [r7], 1
+    vinserti32x4   m4, m4, [r7+4*r3], 2
+    vinserti32x4   m4, m4, [r7+8*r3], 3
+    psubw          m %+ satd_hbd_w, m4
+%if satd_hbd_w < 3
+    add            r0, r1
+    add            r6, r1
+    add            r2, r3
+    add            r7, r3
+%endif
+%assign satd_hbd_w satd_hbd_w+1
+%endrep
+%endmacro
+
+%macro SATD_HBD_START 0
+    FIX_STRIDES r1, r3
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    lea       r6, [r0+4*r1]
+    lea       r7, [r2+4*r3]
+%endmacro
+
+%macro SATD_HBD_NEXT4 0 ; advance all row pointers by 4 rows
+    lea       r0, [r0+4*r1]
+    lea       r2, [r2+4*r3]
+    lea       r6, [r6+4*r1]
+    lea       r7, [r7+4*r3]
+%endmacro
+
+%macro SATD_HBD_NEXT8 0 ; advance all row pointers by 8 rows
+    lea       r0, [r0+8*r1]
+    lea       r2, [r2+8*r3]
+    lea       r6, [r6+8*r1]
+    lea       r7, [r7+8*r3]
+%endmacro
+
+%macro SATD_HBD_END 1 ; 1: words may exceed 32767
+%if %1
+    HADDUWD   m6, m7
+%else
+    vpbroadcastd m7, [pw_1]
+    pmaddwd   m6, m7
+%endif
+    HADDD     m6, m7
+    movd     eax, xm6
+    RET
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_satd_8x8, 4,8,8
+    SATD_HBD_START
+    SATD_HBD_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_END 0
+
+cglobal pixel_satd_8x16, 4,8,8
+    SATD_HBD_START
+    SATD_HBD_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_NEXT8
+    SATD_HBD_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+
+cglobal pixel_satd_16x8, 4,6,8
+    FIX_STRIDES r1, r3
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    SATD_HBD_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    lea       r0, [r0+4*r1]
+    lea       r2, [r2+4*r3]
+    SATD_HBD_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+
+cglobal pixel_satd_16x16, 4,6,8
+    FIX_STRIDES r1, r3
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    SATD_HBD_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%rep 3
+    lea       r0, [r0+4*r1]
+    lea       r2, [r2+4*r3]
+    SATD_HBD_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endrep
+    SATD_HBD_END 1
+
+INIT_ZMM avx512
+cglobal pixel_satd_16x8, 4,8,8
+    SATD_HBD_START
+    SATD_HBD_LOAD_Z
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_END 0
+
+cglobal pixel_satd_16x16, 4,8,8
+    SATD_HBD_START
+    SATD_HBD_LOAD_Z
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_NEXT8
+    SATD_HBD_LOAD_Z
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    SATD_HBD_END 0
+
+cglobal pixel_satd_8x16, 4,8,8
+    SATD_HBD_START
+    SATD_HBD_LOAD_W
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    SATD_HBD_END 0
+%endif ; HIGH_BIT_DEPTH
+
 %if HIGH_BIT_DEPTH == 0
 %define LOAD_SUMSUB_8x4P LOAD_SUMSUB8_16x4P_AVX2
 %define LOAD_DUP_4x8P LOAD_DUP_4x16P_AVX2
