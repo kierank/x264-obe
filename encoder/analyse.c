@@ -3002,6 +3002,53 @@ static inline void x264_mb_analyse_transform( x264_t *h )
     }
 }
 
+/* bd-alg ALG_TRDPRE: the SA8D and SATD of the prediction, as x264_mb_analyse_transform
+ * compares them */
+static NOINLINE void x264_exp_transform_satd( x264_t *h, int *i_cost8, int *i_cost4 )
+{
+    x264_mb_mc( h );
+
+    int plane_count = CHROMA444 && h->mb.b_chroma_me ? 3 : 1;
+    int c8 = 0, c4 = 0;
+    if( h->pixf.sa8d_satd[PIXEL_16x16] )
+    {
+        uint64_t cost = 0;
+        for( int p = 0; p < plane_count; p++ )
+            cost += h->pixf.sa8d_satd[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE,
+                                                    h->mb.pic.p_fdec[p], FDEC_STRIDE );
+        c8 = (uint32_t)cost;
+        c4 = (uint32_t)(cost >> 32);
+    }
+    else
+    {
+        for( int p = 0; p < plane_count; p++ )
+        {
+            c8 += h->pixf.sa8d[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE,
+                                             h->mb.pic.p_fdec[p], FDEC_STRIDE );
+            c4 += h->pixf.satd[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE,
+                                             h->mb.pic.p_fdec[p], FDEC_STRIDE );
+        }
+    }
+    *i_cost8 = c8;
+    *i_cost4 = c4;
+}
+
+/* bd-alg X264_EXP_CENSUS: a transform RD that ran after the ALG_TRDPRE comparison,
+ * by the size the comparison favours (the measured one, the other), its margin
+ * (below 5, 10, 20%, above) and whether the RD agreed */
+static NOINLINE void x264_exp_census_trdpre( x264_t *h, int i_cnow, int i_calt, int b_switched )
+{
+    int fav = i_calt < i_cnow;
+    int lo = X264_MIN( i_cnow, i_calt );
+    int64_t diff = abs( i_cnow - i_calt );
+    int bucket = diff * 100 < (int64_t)lo * 5  ? 0 :
+                 diff * 100 < (int64_t)lo * 10 ? 1 :
+                 diff * 100 < (int64_t)lo * 20 ? 2 : 3;
+    h->exp.census.trdpre[fav][bucket][0]++;
+    if( fav == b_switched )
+        h->exp.census.trdpre[fav][bucket][1]++;
+}
+
 static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *a, int *i_satd, int *i_rd )
 {
     if( h->param.analyse.b_transform_8x8 && h->pps->b_transform_8x8_mode )
@@ -3014,9 +3061,45 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
             return;
 
         x264_analyse_update_cache( h, a );
+
+        /* bd-alg ALG_TRDPRE: x264_mb_analyse_transform's SA8D/SATD comparison of the
+         * prediction first; when it favours one size by more than pct%, take that
+         * size without the RD of the other one. *i_rd and *i_satd stay those of the
+         * measured size, an over-estimate when the other size is taken (it only
+         * biases the intra RD after this). Only when the subpartitions were 8x8
+         * already, so both sizes have the same prediction. X264_EXP_CENSUS: the
+         * comparison before every RD it could have skipped. */
+        int b_pre = 0, i_cnow = 0, i_calt = 0;
+        if( (h->exp.i_alg_trdpre || h->exp.b_census) && !h->mb.b_lossless &&
+            (h->mb.i_type != P_8x8 || subpart_bak == D_L0_8x8*0x01010101) )
+        {
+            int i_cost8, i_cost4;
+            x264_exp_transform_satd( h, &i_cost8, &i_cost4 );
+            i_cnow = h->mb.b_transform_8x8 ? i_cost8 : i_cost4;
+            i_calt = h->mb.b_transform_8x8 ? i_cost4 : i_cost8;
+            b_pre = 1;
+            if( h->exp.i_alg_trdpre > 0 )
+            {
+                int64_t pct = 100 + h->exp.i_alg_trdpre;
+                if( (int64_t)i_calt * 100 > i_cnow * pct )
+                {
+                    h->exp.census.trdpre_skip[0] += h->exp.b_census;
+                    M32( h->mb.i_sub_partition ) = subpart_bak;
+                    return;
+                }
+                if( (int64_t)i_cnow * 100 > i_calt * pct )
+                {
+                    h->exp.census.trdpre_skip[1] += h->exp.b_census;
+                    h->mb.b_transform_8x8 ^= 1;
+                    return;
+                }
+            }
+        }
+
         h->mb.b_transform_8x8 ^= 1;
         /* FIXME only luma is needed for 4:2:0, but the score for comparison already includes chroma */
         int i_rd8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        int b_switched = *i_rd >= i_rd8;
 
         if( *i_rd >= i_rd8 )
         {
@@ -3029,6 +3112,8 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
             h->mb.b_transform_8x8 ^= 1;
             M32( h->mb.i_sub_partition ) = subpart_bak;
         }
+        if( b_pre && h->exp.b_census )
+            x264_exp_census_trdpre( h, i_cnow, i_calt, b_switched );
     }
 }
 

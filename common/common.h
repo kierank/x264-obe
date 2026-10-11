@@ -291,6 +291,9 @@ typedef struct
                                      * refs ALG_FIELDREF arm 1, 2, 3 would search] */
     int64_t partgate[2][6];         /* ALG_PARTGATE: [P,B][evaluated, no sub-16x16 neighbour, and of those
                                      * 16x16 cost less MV cost below 16, 32, 64, 128 lambda] */
+    int64_t trdpre[2][4][2];        /* transform RDs after the ALG_TRDPRE comparison: [it favours the measured
+                                     * size, the other][margin <5, <10, <20, >=20%][all, the RD agreed] */
+    int64_t trdpre_skip[2];         /* RDs ALG_TRDPRE skipped: [kept the measured size, took the other] */
 } x264_exp_census_t;
 
 struct x264_t
@@ -775,6 +778,7 @@ struct x264_t
         int     i_alg_fieldref;
         int     i_fieldref_arm;     /* the ALG_FIELDREF arm in effect for the current frame */
         int     i_alg_partgate;
+        int     i_alg_trdpre;
         int     b_census;           /* X264_EXP_CENSUS */
         int     b_census_me;        /* set around the 16x16 searches */
         int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */
