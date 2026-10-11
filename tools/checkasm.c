@@ -388,6 +388,55 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_AVG2( satd_avg2, satd );
     TEST_PIXEL_AVG2( sad_avg2, sad );
 
+    ok = 1, used_asm = 0;
+    if( pixel_asm.satd_mcc && pixel_asm.satd_mcc != pixel_ref.satd_mcc )
+    {
+        /* width, height, satd size of the u and v blocks */
+        static const int mcc_sizes[5][3] = { {8, 16, PIXEL_8x16}, {8, 8, PIXEL_8x8}, {8, 4, PIXEL_8x4},
+                                             {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8} };
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+        set_func_name( "satd_mcc" );
+        used_asm = 1;
+        for( int s = 0; s < 5; s++ )
+        {
+            int w = mcc_sizes[s][0], hgt = mcc_sizes[s][1], size = mcc_sizes[s][2];
+            ALIGNED_16( pixel dstu[16*16] );
+            ALIGNED_16( pixel dstv[16*16] );
+            int res_c[2], res_asm[2];
+            for( int j = 0; j < 64 && ok; j++ )
+            {
+                int dx = (j*5) & 31, dy = (j*3+s) & 31;
+                pixel *src = pbuf2 + 64 + 2*j;
+                mc_c.mc_chroma( dstu, dstv, 16, src, 64, dx, dy, w, hgt );
+                res_c[0] = pixel_c.satd[size]( pbuf1,   FENC_STRIDE, dstu, 16 );
+                res_c[1] = pixel_c.satd[size]( pbuf1+8, FENC_STRIDE, dstv, 16 );
+                res_asm[0] = res_asm[1] = -1;
+                call_a( pixel_asm.satd_mcc, pbuf1, res_asm, src, (intptr_t)64, dx, dy, w, hgt );
+                if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "satd_mcc %dx%d dx %d dy %d: %d,%d != %d,%d [FAILED]\n",
+                             w, hgt, dx, dy, res_c[0], res_c[1], res_asm[0], res_asm[1] );
+                }
+            }
+            for( int j = 0; j < 0xc00 && ok; j += 256 )
+            {
+                mc_c.mc_chroma( dstu, dstv, 16, pbuf4+j, 16, 0, 0, w, hgt );
+                res_c[0] = pixel_c.satd[size]( pbuf3+j,   FENC_STRIDE, dstu, 16 );
+                res_c[1] = pixel_c.satd[size]( pbuf3+j+8, FENC_STRIDE, dstv, 16 );
+                pixel_asm.satd_mcc( pbuf3+j, res_asm, pbuf4+j, 16, 0, 0, w, hgt );
+                if( res_c[0] != res_asm[0] || res_c[1] != res_asm[1] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "satd_mcc %dx%d: overflow %d,%d != %d,%d\n",
+                             w, hgt, res_c[0], res_c[1], res_asm[0], res_asm[1] );
+                }
+            }
+        }
+    }
+    report( "pixel satd_mcc :" );
+
     TEST_PIXEL( sa8d, 1 );
 
     ok = 1, used_asm = 0;

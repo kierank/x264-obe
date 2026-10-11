@@ -868,6 +868,15 @@ if( b_refine_qpel || (dir^1) != odir ) \
                 cost += h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[2], FENC_STRIDE, src, stride ); \
             } \
         } \
+        else if( b_chroma_mcc ) \
+        { \
+            int mcc[2]; \
+            h->pixf.mbcmp_mcc( m->p_fenc[1], mcc, m->p_fref[4], m->i_stride[1], \
+                               mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+            cost += mcc[0]; \
+            if( cost < bcost ) \
+                cost += mcc[1]; \
+        } \
         else \
         { \
             h->mc.mc_chroma( pix, pix+8, 16, m->p_fref[4], m->i_stride[1], \
@@ -897,6 +906,11 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int chromapix = h->luma2chroma_pixel[i_pixel];
     int chroma_v_shift = CHROMA_V_SHIFT;
     int mvy_offset = chroma_v_shift & MB_INTERLACED & m->i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
+    /* chroma cost without storing the prediction: mbcmp_mcc takes u and v
+     * widths 8 (height >= 4) and 4 (height >= 8) */
+    const int b_chroma_mcc = b_chroma_me && !CHROMA444 && h->pixf.mbcmp_mcc
+                          && !m->weight[1].weightfn && !m->weight[2].weightfn
+                          && (bh>>chroma_v_shift) >= (bw == 16 ? 4 : 8);
 
     ALIGNED_ARRAY_N( pixel, pix,[64*18] ); // really 17x17x2, but round up for alignment
     ALIGNED_ARRAY_16( int, costs,[4] );
