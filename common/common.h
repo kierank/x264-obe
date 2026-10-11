@@ -287,6 +287,8 @@ typedef struct
                                      * i4x4 under an RD bound, over it, over it before the last block */
     int64_t mvstart[2][EXP_MVC_COUNT]; /* 16x16 searches: [frame,field MB][start type] */
     int64_t hpel8[2][2];            /* mixed-ref 8x8 searches past the first ref: [P,B][all, over 8/7 at hpel] */
+    int64_t fieldref[2][5];         /* field MB 16x16 searches per list: [P,B][searches, refs in the list,
+                                     * refs ALG_FIELDREF arm 1, 2, 3 would search] */
 } x264_exp_census_t;
 
 struct x264_t
@@ -768,6 +770,8 @@ struct x264_t
         int     i_alg_mixref;
         int     i_alg_hpel8;
         int     i_alg_lowresme;
+        int     i_alg_fieldref;
+        int     i_fieldref_arm;     /* the ALG_FIELDREF arm in effect for the current frame */
         int     b_census;           /* X264_EXP_CENSUS */
         int     b_census_me;        /* set around the 16x16 searches */
         int    *p_hpel_shadow;      /* census: the halfpel threshold ALG_HPEL8 would use */

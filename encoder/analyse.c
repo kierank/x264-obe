@@ -1289,6 +1289,72 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
 
+static int x264_exp_field_ref1_nearer( x264_t *h, int i_list );
+
+/* bd-alg ALG_FIELDREF: the 16x16 search of list l in a field MB covers refs 0 to
+ * the returned one, less ref 1 when *p_skip1. Field ref 2k is the same parity
+ * field of frame k, 2k+1 the opposite one.
+ * Arm 1: refs 0 and 1, older ones only up to the highest used by the left, top or
+ * top-right MB (the cache, already in field units), the top MB of the pair (for
+ * the bottom one: analysed just before, a field MB, refs in the same relative
+ * parity) or, list 0, the collocated MB of fref[0][0] (a frame MB's ref r as 2r,
+ * as the cache maps it).
+ * Arm 2: no ref 1 when it is the further field (list 0, TFF: the bottom field MB).
+ * Arm 3: at most 4 refs (2 frames). */
+static int x264_exp_fieldref_limit( x264_t *h, int l, int arm, int *p_skip1 )
+{
+    int i_maxref = h->mb.pic.i_fref[l] - 1;
+    *p_skip1 = 0;
+    if( arm == 1 )
+    {
+        const int8_t *ref = h->mb.cache.ref[l];
+        int s8 = h->mb.i_b8_stride;
+        int r = 1;
+        r = X264_MAX( r, ref[X264_SCAN8_0 - 1] );
+        r = X264_MAX( r, ref[X264_SCAN8_0 - 1 + 2*8] );
+        r = X264_MAX( r, ref[X264_SCAN8_0 - 8] );
+        r = X264_MAX( r, ref[X264_SCAN8_0 - 8 + 2] );
+        r = X264_MAX( r, ref[X264_SCAN8_0 - 8 + 4] );
+        if( h->mb.i_mb_y & 1 )
+        {
+            const int8_t *pref = &h->mb.ref[l][h->mb.i_b8_xy - 2*s8];
+            r = X264_MAX( r, X264_MAX( X264_MAX( pref[0], pref[1] ), X264_MAX( pref[s8], pref[s8+1] ) ) );
+        }
+        if( !l && h->fref[0][0]->i_ref[0] > 0 )
+        {
+            x264_frame_t *col = h->fref[0][0];
+            const int8_t *cref = &col->ref[0][h->mb.i_b8_xy];
+            int c = X264_MAX( X264_MAX( cref[0], cref[1] ), X264_MAX( cref[s8], cref[s8+1] ) );
+            if( c > 0 && !col->field[h->mb.i_mb_xy] )
+                c <<= 1;
+            r = X264_MAX( r, c );
+        }
+        i_maxref = X264_MIN( i_maxref, r );
+    }
+    else if( arm == 2 )
+        *p_skip1 = i_maxref >= 1 && !x264_exp_field_ref1_nearer( h, l );
+    else if( arm == 3 )
+        i_maxref = X264_MIN( i_maxref, 3 );
+    return i_maxref;
+}
+
+/* bd-alg X264_EXP_CENSUS: the refs of list l each ALG_FIELDREF arm would search
+ * in this field MB */
+static NOINLINE void x264_exp_census_fieldref( x264_t *h, int l )
+{
+    int s = h->sh.i_type == SLICE_TYPE_B;
+    int i_refs = h->mb.pic.i_fref[l];
+    int skip1, skip2, skip3;
+    int max1 = x264_exp_fieldref_limit( h, l, 1, &skip1 );
+    int max2 = x264_exp_fieldref_limit( h, l, 2, &skip2 );
+    int max3 = x264_exp_fieldref_limit( h, l, 3, &skip3 );
+    h->exp.census.fieldref[s][0]++;
+    h->exp.census.fieldref[s][1] += i_refs;
+    h->exp.census.fieldref[s][2] += max1 + 1 - skip1;
+    h->exp.census.fieldref[s][3] += max2 + 1 - skip2;
+    h->exp.census.fieldref[s][4] += max3 + 1 - skip3;
+}
+
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
@@ -1302,6 +1368,14 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     if( h->exp.b_census && SLICE_MBAFF )
         h->exp.census.ctl++;
 
+    /* bd-alg ALG_FIELDREF: the refs a field MB searches */
+    int i_maxref16 = h->mb.pic.i_fref[0] - 1;
+    int b_skip_ref1 = 0;
+    if( h->exp.i_fieldref_arm && MB_INTERLACED )
+        i_maxref16 = x264_exp_fieldref_limit( h, 0, h->exp.i_fieldref_arm, &b_skip_ref1 );
+    if( h->exp.b_census && MB_INTERLACED )
+        x264_exp_census_fieldref( h, 0 );
+
     /* 16x16 Search on all ref frame */
     m.i_pixel = PIXEL_16x16;
     LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
@@ -1309,6 +1383,15 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     a->l0.me16x16.cost = INT_MAX;
     for( int i_ref = 0; i_ref < h->mb.pic.i_fref[0]; i_ref++ )
     {
+        if( i_ref > i_maxref16 || (i_ref == 1 && b_skip_ref1) )
+        {
+            /* bd-alg ALG_FIELDREF: not searched; the zero MV for the neighbours'
+             * predictors and the 8x8 candidates, as after a skip */
+            M32( h->mb.mvr[0][i_ref][h->mb.i_mb_xy] ) = 0;
+            M32( a->l0.mvc[i_ref][0] ) = 0;
+            continue;
+        }
+
         m.i_ref_cost = REF_COST( 0, i_ref );
         i_halfpel_thresh -= m.i_ref_cost;
 
@@ -2000,6 +2083,20 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
 
     LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
 
+    /* bd-alg ALG_FIELDREF: as in x264_mb_analyse_inter_p16x16, per list */
+    int i_maxref16[2] = { h->mb.pic.i_fref[0] - 1, h->mb.pic.i_fref[1] - 1 };
+    int b_skip_ref1[2] = { 0, 0 };
+    if( h->exp.i_fieldref_arm && MB_INTERLACED )
+    {
+        i_maxref16[0] = x264_exp_fieldref_limit( h, 0, h->exp.i_fieldref_arm, &b_skip_ref1[0] );
+        i_maxref16[1] = x264_exp_fieldref_limit( h, 1, h->exp.i_fieldref_arm, &b_skip_ref1[1] );
+    }
+    if( h->exp.b_census && MB_INTERLACED )
+    {
+        x264_exp_census_fieldref( h, 0 );
+        x264_exp_census_fieldref( h, 1 );
+    }
+
     /* 16x16 Search on list 0 and list 1 */
     a->l0.me16x16.cost = INT_MAX;
     a->l1.me16x16.cost = INT_MAX;
@@ -2021,6 +2118,14 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
             {
                 list1_skipped = 1;
                 break;
+            }
+
+            if( i_ref > i_maxref16[l] || (i_ref == 1 && b_skip_ref1[l]) )
+            {
+                /* bd-alg ALG_FIELDREF: not searched, as in x264_mb_analyse_inter_p16x16 */
+                M32( lX->mvc[i_ref][0] ) = 0;
+                M32( h->mb.mvr[l][i_ref][h->mb.i_mb_xy] ) = 0;
+                continue;
             }
 
             m.i_ref_cost = REF_COST( l, i_ref );

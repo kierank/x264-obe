@@ -1514,6 +1514,12 @@ x264_t *x264_encoder_open( x264_param_t *param )
          * of HEX and subme 4 when subme <= 2, 2 lowres subme 3 when subme > 2 */
         e = getenv( "X264_EXP_ALG_LOWRESME" );
         h->exp.i_alg_lowresme = e ? atoi( e ) : 0;
+        /* X264_EXP_ALG_FIELDREF, field MBs' 16x16 refs: 1 refs 0 and 1, older ones only
+         * up to those the neighbours used, 2 no ref 1 when it is the further field,
+         * 3 at most 4 refs */
+        e = getenv( "X264_EXP_ALG_FIELDREF" );
+        h->exp.i_alg_fieldref = e ? atoi( e ) : 0;
+        h->exp.i_fieldref_arm = h->exp.i_alg_fieldref >= 1 && h->exp.i_alg_fieldref <= 3 ? h->exp.i_alg_fieldref : 0;
         /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
          * the counts at x264_encoder_close; does not change the output */
         e = getenv( "X264_EXP_CENSUS" );
@@ -1521,10 +1527,11 @@ x264_t *x264_encoder_open( x264_param_t *param )
         memset( &h->exp.census, 0, sizeof(h->exp.census) );
         h->exp.b_census_me = 0;
         h->exp.p_hpel_shadow = NULL;
-        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme || h->exp.b_census )
-            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d census %d\n",
+        if( h->exp.i_alg_rdbound || h->exp.i_alg_mvpred || h->exp.i_alg_mixref || h->exp.i_alg_hpel8 || h->exp.i_alg_lowresme ||
+            h->exp.i_alg_fieldref || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg: rdbound %d mvpred %d mixref %d hpel8 %d lowresme %d fieldref %d census %d\n",
                       h->exp.i_alg_rdbound, h->exp.i_alg_mvpred, h->exp.i_alg_mixref, h->exp.i_alg_hpel8, h->exp.i_alg_lowresme,
-                      h->exp.b_census );
+                      h->exp.i_alg_fieldref, h->exp.b_census );
     }
 
     /* Init frames. */
@@ -4122,6 +4129,9 @@ static void x264_exp_census_print( x264_t *h )
     for( int s = 0; s < 2; s++ )
         fprintf( stderr, "bd-alg census: hpel8 %s searches %"PRId64" over-7/8 %"PRId64"\n",
                  slice_name[s], c.hpel8[s][0], c.hpel8[s][1] );
+    for( int s = 0; s < 2; s++ )
+        fprintf( stderr, "bd-alg census: fieldref %s list-searches %"PRId64" refs %"PRId64" arm1 %"PRId64" arm2 %"PRId64" arm3 %"PRId64"\n",
+                 slice_name[s], c.fieldref[s][0], c.fieldref[s][1], c.fieldref[s][2], c.fieldref[s][3], c.fieldref[s][4] );
 }
 
 /****************************************************************************
