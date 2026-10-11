@@ -226,6 +226,10 @@ void          x264_frame_delete( x264_frame_t *frame );
 
 #define x264_frame_copy_picture x264_template(frame_copy_picture)
 int           x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src );
+#define x264_frame_copy_picture_init x264_template(frame_copy_picture_init)
+int           x264_frame_copy_picture_init( x264_t *h, x264_frame_t *dst, x264_picture_t *src );
+#define x264_frame_copy_picture_rows x264_template(frame_copy_picture_rows)
+void          x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t *src, int y0, int y1 );
 
 #define x264_frame_expand_border x264_template(frame_expand_border)
 void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y );
@@ -237,6 +241,8 @@ void          x264_frame_expand_border_lowres( x264_frame_t *frame );
 void          x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane );
 #define x264_frame_expand_border_mod16 x264_template(frame_expand_border_mod16)
 void          x264_frame_expand_border_mod16( x264_t *h, x264_frame_t *frame );
+#define x264_frame_expand_border_mod16_rows x264_template(frame_expand_border_mod16_rows)
+void          x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 );
 #define x264_expand_border_mbpair x264_template(expand_border_mbpair)
 void          x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y );
 
