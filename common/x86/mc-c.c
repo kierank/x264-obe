@@ -892,8 +892,10 @@ static void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, in
 
 #define x264_mbtree_propagate_list_internal_ssse3 x264_template(mbtree_propagate_list_internal_ssse3)
 #define x264_mbtree_propagate_list_internal_avx x264_template(mbtree_propagate_list_internal_avx)
+#define x264_mbtree_propagate_list_internal_avx2 x264_template(mbtree_propagate_list_internal_avx2)
 PROPAGATE_LIST(ssse3)
 PROPAGATE_LIST(avx)
+PROPAGATE_LIST(avx2)
 #if ARCH_X86_64
 #define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
 PROPAGATE_LIST(avx512)
@@ -1235,6 +1237,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         return;
     pf->memcpy_aligned = x264_memcpy_aligned_avx;
     pf->get_ref = get_ref_avx2;
+    pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx2;
 
     if( cpu&X264_CPU_FMA3 )
         pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx2_fma3;
