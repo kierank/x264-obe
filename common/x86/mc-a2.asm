@@ -950,17 +950,20 @@ cglobal hpel_filter_h, 3,3,8
 
 %macro DO_FILT_H 3
 %if mmsize==32
-    vperm2i128 m3, %2, %1, q0003
-%endif
+    ; r9+r4 = src of this block: unaligned loads instead of lane-crossing palignr
+    movu      m1, [r9+r4-2]
+    movu      m2, [r9+r4-1]
+    movu      m4, [r9+r4+1]
+    movu      m5, [r9+r4+2]
+    movu      m6, [r9+r4+3]
+%else
     PALIGNR   m1, %2, %1, (mmsize-2), m3
     PALIGNR   m2, %2, %1, (mmsize-1), m3
-%if mmsize==32
-    vperm2i128 m3, %3, %2, q0003
-%endif
     PALIGNR   m4, %3, %2, 1 , m3
     PALIGNR   m5, %3, %2, 2 , m3
     PALIGNR   m6, %3, %2, 3 , m3
     mova      %1, %2
+%endif
 %if cpuflag(ssse3)
     pmaddubsw m1, m12
     pmaddubsw m2, m12
@@ -990,9 +993,16 @@ cglobal hpel_filter_h, 3,3,8
 ; void hpel_filter( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                   uint8_t *src, intptr_t stride, int width, int height )
 ;-----------------------------------------------------------------------------
+%if mmsize==32
+cglobal hpel_filter, 7,10,16
+%else
 cglobal hpel_filter, 7,9,16
+%endif
     mov       r7, r3
     sub      r5d, mmsize
+%if mmsize==32
+    lea       r9, [r3+r5]
+%endif
     mov       r8, r1
     and       r7, mmsize-1
     sub       r3, r7
@@ -1048,6 +1058,9 @@ cglobal hpel_filter, 7,9,16
     add      r0, r2
     add      r8, r2
     add      r5, r2
+%if mmsize==32
+    add      r9, r2
+%endif
     mov      r4, r7
     sub     r6d, 1
     jg .loopy
