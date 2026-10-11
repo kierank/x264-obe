@@ -261,7 +261,12 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
     int nz, nz_dc;
     int b_decimate = b_inter && h->mb.b_dct_decimate;
     int (*dequant_mf)[16] = h->dequant4_mf[CQM_4IC + b_inter];
-    ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+    int i_qp_dc = i_qp + 3*chroma422;
+    int dc_mf = h->quant4_mf[CQM_4IC+b_inter][i_qp_dc][0] >> 1;
+    int dc_bias = h->quant4_bias[CQM_4IC+b_inter][i_qp_dc][0] << 1;
+    /* 4:2:2 without trellis zigzags in dct2x4dc_quant; rescan if trellis or the dc optimisation may have run */
+    int dc_rescan = h->mb.b_trellis || (dequant_mf[i_qp_dc%6][0] << i_qp_dc/6) <= 32*64;
+    ALIGNED_ARRAY_32( dctcoef, dct_dc,[8] );
     h->mb.i_cbp_chroma = 0;
     h->nr_count[2] += h->mb.b_noise_reduction * 4;
 
@@ -308,33 +313,28 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
                         h->dctf.sub8x8_dct_dc( dct_dc, p_src, p_dst );
 
                     if( h->mb.b_trellis )
-                        nz_dc = x264_quant_chroma_dc_trellis( h, dct_dc, i_qp+3*chroma422, !b_inter, CHROMA_DC+ch );
+                        nz_dc = x264_quant_chroma_dc_trellis( h, dct_dc, i_qp_dc, !b_inter, CHROMA_DC+ch );
+                    else if( chroma422 )
+                        nz_dc = h->quantf.quant_2x4_dc( dct_dc, dc_mf, dc_bias );
                     else
-                    {
-                        nz_dc = 0;
-                        for( int i = 0; i <= chroma422; i++ )
-                            nz_dc |= h->quantf.quant_2x2_dc( &dct_dc[4*i], h->quant4_mf[CQM_4IC+b_inter][i_qp+3*chroma422][0] >> 1,
-                                                             h->quant4_bias[CQM_4IC+b_inter][i_qp+3*chroma422][0] << 1 );
-                    }
+                        nz_dc = h->quantf.quant_2x2_dc( dct_dc, dc_mf, dc_bias );
 
                     if( nz_dc )
                     {
-                        if( !x264_mb_optimize_chroma_dc( h, dct_dc, dequant_mf, i_qp+3*chroma422, chroma422 ) )
+                        if( !x264_mb_optimize_chroma_dc( h, dct_dc, dequant_mf, i_qp_dc, chroma422 ) )
                             continue;
                         h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+ch]] = 1;
                         if( chroma422 )
                         {
                             zigzag_scan_2x4_dc( h->dct.chroma_dc[ch], dct_dc );
-                            h->quantf.idct_dequant_2x4_dconly( dct_dc, dequant_mf, i_qp+3 );
+                            h->quantf.add8x16_idct_dequant_dc( p_dst, dct_dc, dequant_mf, i_qp+3 );
                         }
                         else
                         {
                             zigzag_scan_2x2_dc( h->dct.chroma_dc[ch], dct_dc );
                             idct_dequant_2x2_dconly( dct_dc, dequant_mf, i_qp );
+                            h->dctf.add8x8_idct_dc( p_dst, dct_dc );
                         }
-
-                        for( int i = 0; i <= chroma422; i++ )
-                            h->dctf.add8x8_idct_dc( p_dst + 8*i*FDEC_STRIDE, &dct_dc[4*i] );
                         h->mb.i_cbp_chroma = 1;
                     }
                 }
@@ -376,10 +376,12 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             for( int i = 0; i < (chroma422?8:4); i++ )
                 h->quantf.denoise_dct( dct4x4[i], h->nr_residual_sum[2], h->nr_offset[2], 16 );
 
-        if( chroma422 )
+        if( !chroma422 )
+            dct2x2dc( dct_dc, dct4x4 );
+        else if( h->mb.b_trellis )
             h->dctf.dct2x4dc( dct_dc, dct4x4 );
         else
-            dct2x2dc( dct_dc, dct4x4 );
+            nz_dc = h->quantf.dct2x4dc_quant( dct_dc, dct4x4, h->dct.chroma_dc[ch], dc_mf, dc_bias );
 
         /* calculate dct coeffs */
         for( int i8x8 = 0; i8x8 < (chroma422?2:1); i8x8++ )
@@ -420,14 +422,9 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
         }
 
         if( h->mb.b_trellis )
-            nz_dc = x264_quant_chroma_dc_trellis( h, dct_dc, i_qp+3*chroma422, !b_inter, CHROMA_DC+ch );
-        else
-        {
-            nz_dc = 0;
-            for( int i = 0; i <= chroma422; i++ )
-                nz_dc |= h->quantf.quant_2x2_dc( &dct_dc[4*i], h->quant4_mf[CQM_4IC+b_inter][i_qp+3*chroma422][0] >> 1,
-                                                 h->quant4_bias[CQM_4IC+b_inter][i_qp+3*chroma422][0] << 1 );
-        }
+            nz_dc = x264_quant_chroma_dc_trellis( h, dct_dc, i_qp_dc, !b_inter, CHROMA_DC+ch );
+        else if( !chroma422 )
+            nz_dc = h->quantf.quant_2x2_dc( dct_dc, dc_mf, dc_bias );
 
         h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+ch]] = nz_dc;
 
@@ -444,7 +441,7 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
 
             if( !nz_dc ) /* Whole block is empty */
                 continue;
-            if( !x264_mb_optimize_chroma_dc( h, dct_dc, dequant_mf, i_qp+3*chroma422, chroma422 ) )
+            if( !x264_mb_optimize_chroma_dc( h, dct_dc, dequant_mf, i_qp_dc, chroma422 ) )
             {
                 h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+ch]] = 0;
                 continue;
@@ -452,17 +449,16 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             /* DC-only */
             if( chroma422 )
             {
-                zigzag_scan_2x4_dc( h->dct.chroma_dc[ch], dct_dc );
-                h->quantf.idct_dequant_2x4_dconly( dct_dc, dequant_mf, i_qp+3 );
+                if( dc_rescan )
+                    zigzag_scan_2x4_dc( h->dct.chroma_dc[ch], dct_dc );
+                h->quantf.add8x16_idct_dequant_dc( p_dst, dct_dc, dequant_mf, i_qp+3 );
             }
             else
             {
                 zigzag_scan_2x2_dc( h->dct.chroma_dc[ch], dct_dc );
                 idct_dequant_2x2_dconly( dct_dc, dequant_mf, i_qp );
+                h->dctf.add8x8_idct_dc( p_dst, dct_dc );
             }
-
-            for( int i = 0; i <= chroma422; i++ )
-                h->dctf.add8x8_idct_dc( p_dst + 8*i*FDEC_STRIDE, &dct_dc[4*i] );
         }
         else
         {
@@ -472,7 +468,8 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             {
                 if( chroma422 )
                 {
-                    zigzag_scan_2x4_dc( h->dct.chroma_dc[ch], dct_dc );
+                    if( h->mb.b_trellis )
+                        zigzag_scan_2x4_dc( h->dct.chroma_dc[ch], dct_dc );
                     h->quantf.idct_dequant_2x4_dc( dct_dc, dct4x4, dequant_mf, i_qp+3 );
                 }
                 else
@@ -1012,7 +1009,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         int chroma422 = chroma == CHROMA_422;
         int thresh = chroma422 ? (x264_lambda2_tab[i_qp] + 16) >> 5 : (x264_lambda2_tab[i_qp] + 32) >> 6;
         int ssd;
-        ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+        ALIGNED_ARRAY_32( dctcoef, dct_dc,[8] );
 
         if( !b_bidir )
         {
@@ -1064,10 +1061,11 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                     h->dctf.sub8x8_dct_dc( dct_dc, p_src, p_dst );
             }
 
-            for( int i = 0; i <= chroma422; i++ )
-                if( h->quantf.quant_2x2_dc( &dct_dc[4*i], h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
-                                            h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1 ) )
-                    return 0;
+            int dc_mf = h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1;
+            int dc_bias = h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1;
+            if( chroma422 ? h->quantf.quant_2x4_dc( dct_dc, dc_mf, dc_bias )
+                          : h->quantf.quant_2x2_dc( dct_dc, dc_mf, dc_bias ) )
+                return 0;
 
             /* If there wasn't a termination in DC, we can check against a much higher threshold. */
             if( ssd < thresh*4 )

@@ -660,9 +660,8 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
         else
         {
             memcpy( orig_coefs, dct, sizeof(dctcoef)*num_coefs );
-            int nz = h->quantf.quant_2x2_dc( &dct[0], quant_mf[0] >> 1, quant_bias[0] << 1 );
-            if( num_coefs == 8 )
-                nz |= h->quantf.quant_2x2_dc( &dct[4], quant_mf[0] >> 1, quant_bias[0] << 1 );
+            int nz = num_coefs == 8 ? h->quantf.quant_2x4_dc( dct, quant_mf[0] >> 1, quant_bias[0] << 1 )
+                                    : h->quantf.quant_2x2_dc( dct, quant_mf[0] >> 1, quant_bias[0] << 1 );
             if( !nz )
                 return 0;
             for( int i = 0; i < num_coefs; i++ )
