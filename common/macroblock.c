@@ -872,6 +872,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
     const x264_left_table_t *left_index_table = h->mb.left_index_table;
 
     h->mb.cache.deblock_strength = h->deblock_strength[mb_y&1][h->param.b_sliced_threads?h->mb.i_mb_xy:mb_x];
+    h->mb.mvp16_valid[0] = h->mb.mvp16_valid[1] = 0;
 
     /* load cache */
     if( h->mb.i_neighbour & MB_TOP )
