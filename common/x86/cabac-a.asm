@@ -73,6 +73,7 @@ rd_entropy_sb:      dw 7, 1469, 1469, 7, 7, 1449, 1449, 7, 8, 1430, 1430, 8, 8, 
                     dw 122, 468, 468, 122, 130, 448, 448, 130, 139, 429, 429, 139, 148, 410, 410, 148
                     dw 157, 391, 391, 157, 168, 371, 371, 168, 180, 352, 352, 180, 192, 333, 333, 192
                     dw 206, 314, 314, 206, 221, 295, 295, 221, 238, 275, 275, 238, 256, 256, 256, 256
+rd_level_transition: db 1, 4, 2, 4, 3, 4, 3, 4, 4, 5, 5, 6, 6, 7, 7, 7 ; [2*node_ctx+b]
 rd_lanes_4x4:       dw 0xffff, 0x7fff, 0xffff, 0x000f, 0x7fff, 0xffff, 0xffff
                     dw 0x7fff, 0xffff, 0xffff, 0xffff, 0x7fff, 0xffff, 0xffff
 rd_nzmask_4x4:  dd 0xffff, 0, 0xffff, 1, 0xffff, 0, 0x000f, 0, 0xffff, 1, 0xffff, 0, 0xffff, 0
@@ -414,6 +415,100 @@ CABAC bmi2
 .%1_end:
 %endmacro
 
+; Branchless COEFF_ABS_LEVEL_GT1 for coeff_abs < 15. Row 0 of the unary
+; tables is the sign alone with the state unchanged, so coeff_abs == 1 runs
+; the same code with row coeff_abs-1 = 0 on the gt1 context:
+;   b = coeff_abs > 1
+;   f8 += entropy[s1^b], s1 = transition[s1][b]                   (level1 ctx)
+;   f8 += size_unary[coeff_abs-1][s2], s2 = transition_unary[..][s2] (gt1 ctx)
+;   node_ctx = coeff_abs_level_transition[b][node_ctx]
+; The escape (coeff_abs >= 15) stays a branch, to COEFF_ABS_LEVEL_ESCAPE.
+; %1 = label name
+; %2 = node_ctx init?
+%macro COEFF_ABS_LEVEL_BF 2
+    cmp     r1d, 15
+    jae .%1_escape
+    dec     r1d
+    shl     r1d, 7                                            ; (coeff_abs-1)*128
+    neg     r1d                                               ; CF = b
+%if %2
+    %define ctx 1
+%else
+    movzx  lctxd, byte [coeff_abs_level1_ctx+r2 GLOBAL]
+    %define ctx lctx
+%endif
+    movzx   lt0d, byte [r8+ctx]
+    adc     lt0d, lt0d                                        ; 2*s1+b
+    movzx   lt1d, byte [cabac_transition+lt0 GLOBAL]
+    movzx   lt0d, word [rd_entropy_sb+lt0*2 GLOBAL]
+    mov [r8+ctx], lt1b
+    add     r0d, lt0d
+%if %2
+    %define ctx 5
+%else
+    movzx  lctxd, byte [coeff_abs_levelgt1_ctx+r2 GLOBAL]
+    %define ctx lctx
+%endif
+    movzx   lt0d, byte [r8+ctx]
+    sub     lt0d, r1d                                         ; (coeff_abs-1)*128+s2
+    movzx   lt1d, byte [cabac_transition_unary+lt0 GLOBAL]
+    movzx   lt0d, word [cabac_size_unary+lt0*2 GLOBAL]
+    mov [r8+ctx], lt1b
+    add     r0d, lt0d
+    neg     r1d                                               ; CF = b
+%if %2
+    sbb     r2d, r2d
+    and     r2d, 3
+    inc     r2d                                               ; b ? 4 : 1
+%else
+    adc     r2d, r2d
+    movzx   r2d, byte [rd_level_transition+r2 GLOBAL]         ; [2*node_ctx+b]
+%endif
+.%1_end:
+%endmacro
+
+; out of line: coeff_abs >= 15
+%macro COEFF_ABS_LEVEL_ESCAPE 2
+.%1_escape:
+%if %2
+    %define ctx 1
+%else
+    movzx  lctxd, byte [coeff_abs_level1_ctx+r2 GLOBAL]
+    %define ctx lctx
+%endif
+    movzx   lt0d, byte [r8+ctx]
+    movzx   lt1d, byte [cabac_transition+lt0*2+1 GLOBAL]
+    movzx   lt0d, word [rd_entropy_sb+lt0*4+2 GLOBAL]
+    mov [r8+ctx], lt1b
+    add     r0d, lt0d
+%if %2
+    %define ctx 5
+%else
+    movzx  lctxd, byte [coeff_abs_levelgt1_ctx+r2 GLOBAL]
+    %define ctx lctx
+%endif
+    movzx   lt0d, byte [r8+ctx]
+    movzx   lt1d, byte [cabac_transition_unary+128*14+lt0 GLOBAL]
+    movzx   lt0d, word [cabac_size_unary+256*14+lt0*2 GLOBAL]
+    mov [r8+ctx], lt1b
+    add     r0d, lt0d
+    sub     r1d, 14
+%if cpuflag(lzcnt)
+    lzcnt   lt0d, r1d
+    xor     lt0d, 0x1f
+%else
+    bsr     lt0d, r1d
+%endif
+    shl     lt0d, 9
+    lea     r0d, [r0+lt0+256]                                 ; (ilog2(coeff_abs-14)+1) << 8
+%if %2
+    mov     r2d, 4
+%else
+    movzx   r2d, byte [coeff_abs_level_transition+8+r2 GLOBAL]
+%endif
+    jmp .%1_end
+%endmacro
+
 %macro LOAD_DCTCOEF 1
 %if HIGH_BIT_DEPTH
     mov     %1, [dct+r6*4]
@@ -633,7 +728,7 @@ CABAC bmi2
     add      r0d, r1d
 ; levels: last, then the other nonzero coefficients in descending order
     LOAD_DCTCOEF r1d
-    COEFF_ABS_LEVEL_GT1 last, 1
+    COEFF_ABS_LEVEL_BF last, 1
     btr      r4d, r6d
     test     r4d, r4d
     jz .end
@@ -642,12 +737,14 @@ CABAC bmi2
     xor      r6d, 31
     btr      r4d, r6d
     LOAD_DCTCOEF r1d
-    COEFF_ABS_LEVEL_GT1 coeff, 0
+    COEFF_ABS_LEVEL_BF coeff, 0
     test     r4d, r4d
     jnz .level_loop
 .end:
     mov [r3+cb.bits_encoded-cb.state], r0d
     RET
+    COEFF_ABS_LEVEL_ESCAPE last, 1
+    COEFF_ABS_LEVEL_ESCAPE coeff, 0
 %endmacro
 
 ; abs() of the 64 coefficients of l (r0) to [rsp], nonzero mask to r9
@@ -792,7 +889,7 @@ CABAC bmi2
 .sig_end:
     RD_TMP_REGS 4, 5, 3
     LOAD_DCTCOEF r1d
-    COEFF_ABS_LEVEL_GT1 last, 1
+    COEFF_ABS_LEVEL_BF last, 1
     btr       r9, r6
     test      r9, r9
     jz .end
@@ -813,13 +910,15 @@ CABAC bmi2
     mov [r7+r4], r10b
     add      r0d, r5d
     LOAD_DCTCOEF r1d
-    COEFF_ABS_LEVEL_GT1 coeff, 0
+    COEFF_ABS_LEVEL_BF coeff, 0
     test      r9, r9
     jnz .coeff_loop
 .end:
     mov       r3, cbm
     mov [r3+cb.bits_encoded], r0d
     RET
+    COEFF_ABS_LEVEL_ESCAPE last, 1
+    COEFF_ABS_LEVEL_ESCAPE coeff, 0
 %endmacro
 
 %if ARCH_X86_64
