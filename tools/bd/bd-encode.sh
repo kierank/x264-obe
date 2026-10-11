@@ -1,6 +1,6 @@
 #!/bin/sh
 # bd-encode.sh: rate points for BD-rate, obed-style VBV encodes, one line each
-# usage: bd-encode.sh <x264> <arm label> <normal|lowlat> <8|10> <source> <out.tsv> <kbps...> [-- extra x264 options]
+# usage: [BD_RC=crf] bd-encode.sh <x264> <arm label> <normal|lowlat> <8|10> <source> <out.tsv> <kbps...> [-- extra x264 options]
 # <source>: .y4m (8-bit 4:2:0), or raw 10-bit 4:2:2 1920x1080 (.yuv); set
 #   BD_INPUT to override the input options, BD_FRAMES (default 300) the length.
 # Output, tab separated, appended to <out.tsv>:
@@ -20,12 +20,22 @@ case $SRC in
 esac
 [ -n "$BD_INPUT" ] && INPUT="$BD_INPUT $SRC"
 
-COMMON="--output-depth $DEPTH --aud --pic-struct --open-gop --nal-hrd fakevbr --threads 8 --keyint 24 --colorprim bt709 --transfer bt709 --colormatrix bt709 --overscan crop --psnr --ssim"
+COMMON="--output-depth $DEPTH --aud --pic-struct --open-gop --threads 8 --keyint 24 --colorprim bt709 --transfer bt709 --colormatrix bt709 --overscan crop --psnr --ssim"
+[ "$BD_RC" = crf ] || COMMON="$COMMON --nal-hrd fakevbr"
 
 for R in $RATES; do
+    # BD_RC=crf: the rate points are CRF values and there is no VBV. That is
+    # deterministic with frame threads, unlike VBV (10-bit normal varies ~1% run
+    # to run), so rank arms with it and confirm with the obed VBV mode.
+    if [ "$BD_RC" = crf ]; then
+        RC="--crf $R"; RCL="--crf $R"
+    else
+        RC="--bitrate $R --vbv-maxrate $R --vbv-bufsize $R"
+        RCL="--bitrate $R --vbv-maxrate $R --vbv-bufsize $((R / 2))"
+    fi
     case $CFG in
-        normal) OPTS="$COMMON --bitrate $R --vbv-maxrate $R --vbv-bufsize $R --ref 4 --bframes 3 --rc-lookahead 24" ;;
-        lowlat) OPTS="$COMMON --preset veryfast --tune zerolatency --bitrate $R --vbv-maxrate $R --vbv-bufsize $((R / 2))" ;;
+        normal) OPTS="$COMMON $RC --ref 4 --bframes 3 --rc-lookahead 24" ;;
+        lowlat) OPTS="$COMMON --preset veryfast --tune zerolatency $RCL" ;;
         *) echo "bd-encode.sh: config must be normal or lowlat" >&2; exit 1 ;;
     esac
     LOG=$(mktemp)
