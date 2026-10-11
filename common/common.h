@@ -466,6 +466,7 @@ struct x264_t
         int     b_adaptive_mbaff; /* MBAFF+subme 0 requires non-adaptive MBAFF i.e. all field mbs */
         int     i_exp_vsad_bias;  /* bd-exp */
         int     i_exp_vsad_fieldmul; /* bd-exp, /16 */
+        int     i_exp_vsad_chroma; /* bd-exp, /16 */
 
         /* Allowed qpel MV range to stay within the picture + emulated edge pixels */
         int     mv_min[2];

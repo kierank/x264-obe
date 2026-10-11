@@ -758,6 +758,21 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
     score_field  = h->pixf.vsad( fenc,        stride*2, mbpair_height >> 1 );
     score_field += h->pixf.vsad( fenc+stride, stride*2, mbpair_height >> 1 );
 
+    /* bd-exp: chroma term. The interleaved u/v plane gives 8 u + 8 v per MB,
+     * the 16 columns vsad takes. */
+    int cw = h->mb.i_exp_vsad_chroma;
+    if( cw && CHROMA_FORMAT != CHROMA_400 && !CHROMA444 )
+    {
+        int cstride = h->fenc->i_stride[1];
+        int cheight = mbpair_height >> CHROMA_V_SHIFT;
+        pixel *fenc_c = h->fenc->plane[1] + 16 * mb_x + mb_y * (16 >> CHROMA_V_SHIFT) * cstride;
+        int cframe = h->pixf.vsad( fenc_c, cstride, cheight );
+        int cfield = h->pixf.vsad( fenc_c, cstride*2, cheight >> 1 )
+                   + h->pixf.vsad( fenc_c+cstride, cstride*2, cheight >> 1 );
+        score_frame += cframe * cw >> 4;
+        score_field += cfield * cw >> 4;
+    }
+
     int bias = h->mb.i_exp_vsad_bias;
     score_field = score_field * h->mb.i_exp_vsad_fieldmul >> 4;
     if( mb_x > 0 )

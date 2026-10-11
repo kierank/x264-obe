@@ -1472,8 +1472,11 @@ x264_t *x264_encoder_open( x264_param_t *param )
             h->mb.i_exp_vsad_bias <<= BIT_DEPTH - 8;
         e = getenv( "X264_EXP_VSAD_FIELDMUL" );
         h->mb.i_exp_vsad_fieldmul = e ? atoi( e ) : 16;
+        /* X264_EXP_VSAD_CHROMA (default 0): weight/16 of the chroma vsad added to both scores */
+        e = getenv( "X264_EXP_VSAD_CHROMA" );
+        h->mb.i_exp_vsad_chroma = e ? atoi( e ) : 0;
         if( PARAM_INTERLACED )
-            x264_log( h, X264_LOG_INFO, "bd-exp: vsad bias %d fieldmul %d/16\n", h->mb.i_exp_vsad_bias, h->mb.i_exp_vsad_fieldmul );
+            x264_log( h, X264_LOG_INFO, "bd-exp: vsad bias %d fieldmul %d/16 chroma %d/16\n", h->mb.i_exp_vsad_bias, h->mb.i_exp_vsad_fieldmul, h->mb.i_exp_vsad_chroma );
     }
 
     /* Init frames. */
