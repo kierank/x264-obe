@@ -882,37 +882,13 @@ static void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, in
 #define x264_mbtree_propagate_list_internal_avx x264_template(mbtree_propagate_list_internal_avx)
 PROPAGATE_LIST(ssse3)
 PROPAGATE_LIST(avx)
+#if ARCH_X86_64
+#define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
+PROPAGATE_LIST(avx512)
+#endif
 #undef CLIP_ADD
 #undef CLIP_ADD2
 
-#if ARCH_X86_64
-#define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
-void x264_mbtree_propagate_list_internal_avx512( size_t len, uint16_t *ref_costs, int16_t (*mvs)[2], int16_t *propagate_amount,
-                                                 uint16_t *lowres_costs, int bipred_weight, int mb_y,
-                                                 int width, int height, int stride, int list_mask );
-
-static void x264_mbtree_propagate_list_avx512( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
-                                               int16_t *propagate_amount, uint16_t *lowres_costs,
-                                               int bipred_weight, int mb_y, int len, int list )
-{
-    /* The kernel does 8 entries per iteration and nothing masks the ones past len,
-     * so a partial last group is run separately with their list bits cleared.
-     * Its mb_x starts at len8, which is OR'd into the {mb_x, mb_y} vector. */
-    int len8 = len & ~7;
-    if( len8 )
-        x264_mbtree_propagate_list_internal_avx512( len8, ref_costs, mvs, propagate_amount, lowres_costs, bipred_weight << 9,
-                                                    mb_y << 16, h->mb.i_mb_width, h->mb.i_mb_height, h->mb.i_mb_stride,
-                                                    (1 << LOWRES_COST_SHIFT) << list );
-    if( len8 < len )
-    {
-        ALIGNED_16( uint16_t tail_costs[8] ) = {0};
-        memcpy( tail_costs, lowres_costs + len8, (len - len8) * sizeof(uint16_t) );
-        x264_mbtree_propagate_list_internal_avx512( 8, ref_costs, mvs + len8, propagate_amount + len8, tail_costs, bipred_weight << 9,
-                                                    (mb_y << 16) | len8, h->mb.i_mb_width, h->mb.i_mb_height, h->mb.i_mb_stride,
-                                                    (1 << LOWRES_COST_SHIFT) << list );
-    }
-}
-#endif
 
 void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 {

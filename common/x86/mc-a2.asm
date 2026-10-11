@@ -2657,47 +2657,39 @@ MBTREE_PROPAGATE_LIST
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
-; void x264_mbtree_propagate_list_internal_avx512( size_t len, uint16_t *ref_costs, int16_t (*mvs)[2], int16_t *propagate_amount,
-;                                                  uint16_t *lowres_costs, int bipred_weight, int mb_y,
-;                                                  int width, int height, int stride, int list_mask );
+; void mbtree_propagate_list_internal( int16_t (*mvs)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
+;                                      int16_t *output, int bipred_weight, int mb_y, int len )
+; Same output layout as the SSSE3/AVX versions (per 8 entries: {mbx, mby}, then the
+; idx0/idx1 and idx2/idx3 weight pairs); the C wrapper does the clipped accumulation,
+; so there is no gather/scatter. Each zmm half holds the same 8 entries, the low half
+; computing the idx0/idx1 weights and the high half idx2/idx3.
 ;-----------------------------------------------------------------------------
 INIT_ZMM avx512
-cglobal mbtree_propagate_list_internal, 5,7,21
-    mova          xm16, [pw_0xc000]
-    vpbroadcastw  xm17, r5m            ; bipred_weight << 9
-    vpbroadcastw  ym18, r10m           ; 1 << (list+LOWRES_COST_SHIFT)
+cglobal mbtree_propagate_list_internal, 7,7,14
+    mova          xm11, [pw_0xc000]
+    vpbroadcastw  xm12, r4d
+    psllw         xm12, 9              ; bipred_weight << 9
     vbroadcasti32x8 m5, [mbtree_prop_list_avx512_shuf]
     vbroadcasti32x8 m6, [pd_0123]
-    vpord           m6, r6m {1to16}    ; 0 y 1 y 2 y 3 y 4 y 5 y 6 y 7 y
+    shl            r5d, 16
+    vpbroadcastd   m13, r5d
+    por             m6, m13            ; 0 y 1 y 2 y 3 y 4 y 5 y 6 y 7 y
     vbroadcasti128  m7, [pd_8]
     vbroadcasti128  m8, [pw_31]
     vbroadcasti128  m9, [pw_32]
     psllw          m10, m9, 4
-    pcmpeqw       ym19, ym19           ; pw_m1
-    vpbroadcastw  ym20, r7m            ; width
-    psrld          m11, m7, 3          ; pd_1
-    psrld          m12, m8, 16         ; pd_31
-    vpbroadcastd   m13, r8m            ; height
-    vpbroadcastd   m14, r9m            ; stride
-    pslld          m15, m14, 16
-    por            m15, m11            ; {1, stride, 1, stride} ...
-    lea             r4, [r4+2*r0]      ; lowres_costs
-    lea             r3, [r3+2*r0]      ; propagate_amount
-    lea             r2, [r2+4*r0]      ; mvs
-    neg             r0
-    mov            r6d, 0x5555ffff
-    kmovd           k4, r6d
+    mov            r5d, 0x5555ffff
+    kmovd           k4, r5d
     kshiftrd        k5, k4, 16         ; 0x5555
-    kshiftlw        k6, k4, 8          ; 0xff00
+    xor            r4d, r4d
 .loop:
-    vbroadcasti128 ym1, [r4+2*r0]
-    mova           xm4, [r3+2*r0]
-    vpcmpuw         k1, xm1, xm16, 5   ; if (lists_used == 3)
-    vpmulhrsw      xm4 {k1}, xm17      ;     propagate_amount = (propagate_amount * bipred_weight + 32) >> 6
-    vptestmw        k1, ym1, ym18
+    movu           xm1, [r2+r4*2]
+    movu           xm4, [r1+r4*2]
+    vpcmpuw         k1, xm1, xm11, 5   ; if (lists_used == 3)
+    vpmulhrsw      xm4 {k1}, xm12      ;     propagate_amount = (propagate_amount * bipred_weight + 32) >> 6
     vpermw          m4, m5, m4
 
-    vbroadcasti32x8 m3, [r2+4*r0]      ; {mvx, mvy}
+    vbroadcasti32x8 m3, [r0+r4*4]      ; {mvx, mvy}
     psraw           m0, m3, 5
     paddw           m0, m6             ; {mbx, mby} = ({x, y} >> 5) + {h->mb.i_mb_x, h->mb.i_mb_y}
     paddd           m6, m7             ; i_mb_x += 8
@@ -2707,56 +2699,12 @@ cglobal mbtree_propagate_list_internal, 5,7,21
     vpsubw          m1 {k5}, m10, m1   ; ({32-y, x}, {y, x}) << 4
     pmullw          m3, m1
     paddsw          m3, m3             ; prevent signed overflow in idx0 (32*32<<5 == 0x8000)
-    pmulhrsw        m2, m3, m4         ; idx01weight idx23weightp
-
-    pslld          ym1, ym0, 16
-    psubw          ym1, ym19
-    vmovdqu16      ym1 {k5}, ym0
-    vpcmpuw         k2, ym1, ym20, 1    ; {mbx, mbx+1} < width
-    kunpckwd        k2, k2, k2
-    psrad           m1, m0, 16
-    vpaddd          m1 {k6}, m11
-    vpcmpud         k1 {k1}, m1, m13, 1 ; mby < height | mby+1 < height
-
-    pmaddwd         m0, m15
-    vpaddd          m0 {k6}, m14        ; idx0 | idx2
-    vmovdqu16       m2 {k2}{z}, m2      ; idx01weight | idx23weight
-    vptestmd        k1 {k1}, m2, m2     ; mask out offsets with no changes
-
-    ; We're handling dwords, but the offsets are in words so there may be partial overlaps.
-    ; We can work around this by handling dword-aligned and -unaligned offsets separately.
-    vptestmd        k0, m0, m11
-    kandnw          k2, k0, k1          ; dword-aligned offsets
-    kmovw           k3, k2
-    vpgatherdd      m3 {k2}, [r1+2*m0]
-
-    ; If there are conflicts in the offsets we have to handle them before storing the results.
-    ; By creating a permutation index using vplzcntd we can resolve all conflicts in parallel
-    ; in ceil(log2(n)) iterations where n is the largest number of duplicate offsets.
-    vpconflictd     m4, m0
-    vpbroadcastmw2d m1, k1
-    vptestmd        k2, m1, m4
-    ktestw          k2, k2
-    jz .no_conflicts
-    pand            m1, m4              ; mask away unused offsets to avoid false positives
-    vplzcntd        m1, m1
-    pxor            m1, m12             ; lzcnt gives us the distance from the msb, we want it from the lsb
-.conflict_loop:
-    vpermd          m4 {k2}{z}, m1, m2
-    vpermd          m1 {k2}, m1, m1     ; shift the index one step forward
-    paddsw          m2, m4              ; add the weights of conflicting offsets
-    vpcmpd          k2, m1, m12, 2
-    ktestw          k2, k2
-    jnz .conflict_loop
-.no_conflicts:
-    paddsw          m3, m2
-    vpscatterdd [r1+2*m0] {k3}, m3
-    kandw           k1, k0, k1          ; dword-unaligned offsets
-    kmovw           k2, k1
-    vpgatherdd      m1 {k1}, [r1+2*m0]
-    paddsw          m1, m2              ; all conflicts have already been resolved
-    vpscatterdd [r1+2*m0] {k2}, m1
-    add             r0, 8
+    pmulhrsw        m3, m4             ; idx01weight idx23weight
+    movu    [r3+ 0], ym0
+    movu    [r3+32], m3
+    add            r4d, 8
+    add             r3, 96
+    cmp            r4d, r6d
     jl .loop
     RET
 %endif
