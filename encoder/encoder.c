@@ -2313,6 +2313,14 @@ static inline void x264_reference_build_list( x264_t *h, int i_poc )
     h->mb.pic.i_fref[1] = h->i_ref[1];
 }
 
+static void fdec_copy_fld_rows( x264_t *h, int p, int y0, int y1 )
+{
+    for( int i = y0; i < y1; i++ )
+        memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
+                h->fdec->plane[p]     + i*h->fdec->i_stride[p],
+                h->mb.i_mb_width*16*sizeof(pixel) );
+}
+
 static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 {
     /* mb_y is the mb to be encoded next, not the mb to be filtered here */
@@ -2364,13 +2372,26 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
      * but the actual image data is equivalent. For now, maintain this
      * consistency by copying deblocked pixels between planes.
      * plane_fld is only read through references (field mc, its borders and
-     * hpel), so frames that aren't kept as references don't need it. */
+     * hpel), so frames that aren't kept as references don't need it.
+     * Planes that get hpel are copied by the field hpel pass instead, except
+     * for the top and bottom 16 rows (see x264_frame_filter). */
     if( PARAM_INTERLACED && h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
+    {
+        int hpel_planes = h->param.analyse.i_subpel_refine ? (CHROMA444 ? 3 : 1) : 0;
         for( int p = 0; p < h->fdec->i_plane; p++ )
-            for( int i = minpix_y>>(CHROMA_V_SHIFT && p); i < maxpix_y>>(CHROMA_V_SHIFT && p); i++ )
-                memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
-                        h->fdec->plane[p]     + i*h->fdec->i_stride[p],
-                        h->mb.i_mb_width*16*sizeof(pixel) );
+        {
+            int v_shift = CHROMA_V_SHIFT && p;
+            int y0 = minpix_y >> v_shift;
+            int y1 = maxpix_y >> v_shift;
+            if( p < hpel_planes )
+            {
+                fdec_copy_fld_rows( h, p, y0, X264_MIN( y1, 16 ) );
+                fdec_copy_fld_rows( h, p, X264_MAX( y0, h->fdec->i_lines[p] - 16 ), y1 );
+            }
+            else
+                fdec_copy_fld_rows( h, p, y0, y1 );
+        }
+    }
 
     if( h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
         x264_frame_expand_border( h, h->fdec, min_y );

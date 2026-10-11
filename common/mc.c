@@ -631,6 +631,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_c;
 
     pf->hpel_filter = hpel_filter;
+    pf->hpel_filter_copy = NULL;
 
     pf->prefetch_fenc_420 = prefetch_fenc_null;
     pf->prefetch_fenc_422 = prefetch_fenc_null;
@@ -668,6 +669,31 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     }
 }
 
+/* Field hpel of field rows [y0, y1) of parity i. With b_copy, read the frame
+ * plane and copy it to plane_fld as we go. */
+static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int y0, int y1, int b_copy )
+{
+    intptr_t stride = frame->i_stride[p] << 1;
+    int width = frame->i_width[p] + 16;
+    int offs = y0*stride + i*frame->i_stride[p] - 8;
+    pixel *dsth = frame->filtered_fld[p][1] + offs;
+    pixel *dstv = frame->filtered_fld[p][2] + offs;
+    pixel *dstc = frame->filtered_fld[p][3] + offs;
+    if( y1 <= y0 )
+        return;
+    if( !b_copy )
+        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
+    else if( h->mc.hpel_filter_copy )
+        h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer,
+                                frame->plane_fld[p] + offs );
+    else
+    {
+        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
+        for( int y = 0; y < y1 - y0; y++ )
+            memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
+    }
+}
+
 void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 {
     const int b_interlaced = PARAM_INTERLACED;
@@ -695,19 +721,19 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         if( b_interlaced )
         {
             /* MC must happen between pixels in the same field. */
-            stride = frame->i_stride[p] << 1;
             start = (mb_y*16 >> 1) - 8;
             int height_fld = ((b_end ? frame->i_lines[p] : mb_y*16) >> 1) + 8;
-            offs = start*stride - 8;
-            for( int i = 0; i < 2; i++, offs += frame->i_stride[p] )
+            /* Rows whose 6-tap window (rows -2..3) is inside the picture see
+             * the same pixels in the frame plane, and copy them to plane_fld.
+             * The others read plane_fld's field borders, and the fullpel rows
+             * near them, which the encoder copies (top and bottom 16 rows). */
+            int y0 = x264_clip3( 2, start, height_fld );
+            int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
+            for( int i = 0; i < 2; i++ )
             {
-                h->mc.hpel_filter(
-                    frame->filtered_fld[p][1] + offs,
-                    frame->filtered_fld[p][2] + offs,
-                    frame->filtered_fld[p][3] + offs,
-                    frame->plane_fld[p] + offs,
-                    stride, width + 16, height_fld - start,
-                    h->scratch_buffer );
+                frame_filter_fld( h, frame, p, i, start, y0, 0 );
+                frame_filter_fld( h, frame, p, i, y0, y1, 1 );
+                frame_filter_fld( h, frame, p, i, y1, height_fld, 0 );
             }
         }
     }

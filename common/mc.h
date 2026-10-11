@@ -106,6 +106,11 @@ typedef struct
                                           uint32_t *src, intptr_t i_src, int w, int h );
     void (*hpel_filter)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                          intptr_t i_stride, int i_width, int i_height, int16_t *buf );
+    /* hpel_filter that also copies src to dst (same stride): every output
+     * column, and anything else it writes is src at the same offset. NULL if
+     * there is no asm. */
+    void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                              intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );
