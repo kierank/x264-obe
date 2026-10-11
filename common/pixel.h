@@ -98,11 +98,12 @@ typedef struct
     x264_pixel_cmp_t satd[8];
     x264_pixel_cmp_avg2_t satd_avg2[7]; /* asm only, NULL otherwise */
     x264_pixel_cmp_avg2_t sad_avg2[7];  /* asm only, NULL otherwise */
-    x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; width 8 heights 4-16, width 4 heights 8-16 */
+    x264_pixel_satd_mcc_t satd_mcc;     /* asm only, NULL otherwise; widths 8 and 4, heights 4-16 */
     /* asm only, 8-bit only, NULL otherwise: satd_mcc's fenc, 64*fenc - 32 uv interleaved,
      * from the chroma fenc (FENC_STRIDE, u then v, height 8 or 16) into 512 words. Width 8:
      * row y at 16*y; width 4: chroma x 0 or 4, y 0 or 8 at 256 + 32*x + 8*y, rows y+k | y+k+4
-     * 16 words apart. */
+     * 16 words apart; 4x4, height 8 only: x, y 0 or 4 at 128 + 8*x + 16*y, rows y | y+2
+     * then y+1 | y+3. */
     void (*satd_mcc_fenc_pre)( int16_t *fenc_pre, pixel *fenc, int i_height );
     /* asm only, NULL otherwise. satd_fenc_pre[0] fills 256 words from a 16x16 fenc
      * (FENC_STRIDE) for the 16 wide sizes, 16 words a row; [1] 64 from an 8x8 for the
