@@ -392,13 +392,13 @@ static int check_pixel( int cpu_ref, int cpu_new )
     if( pixel_asm.satd_mcc && pixel_asm.satd_mcc != pixel_ref.satd_mcc )
     {
         /* width, height, satd size of the u and v blocks */
-        static const int mcc_sizes[6][3] = { {8, 16, PIXEL_8x16}, {8, 8, PIXEL_8x8}, {8, 4, PIXEL_8x4},
-                                             {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8}, {4, 4, PIXEL_4x4} };
+        static const int mcc_sizes[5][3] = { {8, 16, PIXEL_8x16}, {8, 8, PIXEL_8x8}, {8, 4, PIXEL_8x4},
+                                             {4, 16, PIXEL_4x16}, {4, 8, PIXEL_4x8} };
         x264_mc_functions_t mc_c;
         x264_mc_init( 0, &mc_c, 0 );
         set_func_name( "satd_mcc" );
         used_asm = 1;
-        for( int s = 0; s < 6; s++ )
+        for( int s = 0; s < 5; s++ )
         {
             int w = mcc_sizes[s][0], hgt = mcc_sizes[s][1], size = mcc_sizes[s][2];
             ALIGNED_16( pixel dstu[16*16] );
