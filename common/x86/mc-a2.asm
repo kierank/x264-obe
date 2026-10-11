@@ -37,6 +37,8 @@ v210_shuf_avx512: db  0, 0,34, 1,35,34, 4, 4,38, 5,39,38, 8, 8,42, 9, ; luma, ch
                   db 43,42,12,12,46,13,47,46,16,16,50,17,51,50,20,20,
                   db 54,21,55,54,24,24,58,25,59,58,28,28,62,29,63,62
                   times 16 db 0 ; pad to 64 bytes: the kernel loads a full zmm, keeps following data aligned
+deint_uv_permw_hbd: dw  0, 2, 4, 6, 8,10,12,14, 1, 3, 5, 7, 9,11,13,15
+                    dw 16,18,20,22,24,26,28,30,17,19,21,23,25,27,29,31
 deint_uv_shuf_hbd: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
 %endif
 
@@ -1604,6 +1606,71 @@ cglobal load_deinterleave_chroma_fdec, 4,4
     add            r0, FDEC_STRIDEB*2
     lea            r1, [r1+r2*2]
     sub           r3d, 2
+    jg .loop
+    RET
+
+; AVX-512: one vpermw from memory per row instead of load + pshufb + vpermq
+INIT_YMM avx512
+cglobal load_deinterleave_chroma_fenc, 4,5
+    mova           m2, [deint_uv_permw_hbd]
+    FIX_STRIDES    r2
+    lea            r4, [r2*3]
+.loop:
+    vpermw         m0, m2, [r1]
+    vpermw         m1, m2, [r1+r2]
+    mova                  [r0], m0
+    mova  [r0+FENC_STRIDEB*1], m1
+    vpermw         m0, m2, [r1+r2*2]
+    vpermw         m1, m2, [r1+r4]
+    mova  [r0+FENC_STRIDEB*2], m0
+    mova  [r0+FENC_STRIDEB*3], m1
+    add            r0, FENC_STRIDEB*4
+    lea            r1, [r1+r2*4]
+    sub           r3d, 4
+    jg .loop
+    RET
+
+cglobal load_deinterleave_chroma_fdec, 4,5
+    mova           m2, [deint_uv_permw_hbd]
+    FIX_STRIDES    r2
+    lea            r4, [r2*3]
+.loop:
+    vpermw         m0, m2, [r1]
+    vpermw         m1, m2, [r1+r2]
+    mova                          [r0], xm0
+    vextracti128 [r0+FDEC_STRIDEB*1/2], m0, 1
+    mova          [r0+FDEC_STRIDEB*1], xm1
+    vextracti128 [r0+FDEC_STRIDEB*3/2], m1, 1
+    vpermw         m0, m2, [r1+r2*2]
+    vpermw         m1, m2, [r1+r4]
+    mova          [r0+FDEC_STRIDEB*2], xm0
+    vextracti128 [r0+FDEC_STRIDEB*5/2], m0, 1
+    mova          [r0+FDEC_STRIDEB*3], xm1
+    vextracti128 [r0+FDEC_STRIDEB*7/2], m1, 1
+    add            r0, FDEC_STRIDEB*4
+    lea            r1, [r1+r2*4]
+    sub           r3d, 4
+    jg .loop
+    RET
+
+; two rows per vpermw and one 64 byte store; not dispatched (for cpus where zmm is not slow)
+INIT_ZMM avx512
+cglobal load_deinterleave_chroma_fenc_zmm, 4,5
+    mova           m2, [deint_uv_permw_hbd]
+    FIX_STRIDES    r2
+    lea            r4, [r2*3]
+.loop:
+    movu          ym0, [r1]
+    vinserti32x8   m0, m0, [r1+r2], 1
+    movu          ym1, [r1+r2*2]
+    vinserti32x8   m1, m1, [r1+r4], 1
+    vpermw         m0, m2, m0
+    vpermw         m1, m2, m1
+    mova                  [r0], m0
+    mova  [r0+FENC_STRIDEB*2], m1
+    add            r0, FENC_STRIDEB*4
+    lea            r1, [r1+r2*4]
+    sub           r3d, 4
     jg .loop
     RET
 %endif ; HIGH_BIT_DEPTH

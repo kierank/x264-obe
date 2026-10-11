@@ -372,7 +372,9 @@ void x264_load_deinterleave_chroma_fenc_avx( uint16_t *dst, uint16_t *src, intpt
 #define x264_load_deinterleave_chroma_fenc_avx2 x264_template(load_deinterleave_chroma_fenc_avx2)
 void x264_load_deinterleave_chroma_fenc_avx2( uint16_t *dst, uint16_t *src, intptr_t i_src, int height );
 #define x264_load_deinterleave_chroma_fenc_avx512 x264_template(load_deinterleave_chroma_fenc_avx512)
-void x264_load_deinterleave_chroma_fenc_avx512( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
+void x264_load_deinterleave_chroma_fenc_avx512( pixel *dst, pixel *src, intptr_t i_src, int height );
+#define x264_load_deinterleave_chroma_fenc_zmm_avx512 x264_template(load_deinterleave_chroma_fenc_zmm_avx512)
+void x264_load_deinterleave_chroma_fenc_zmm_avx512( uint16_t *dst, uint16_t *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fdec_mmx ( pixel *dst, pixel *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fdec_sse2( pixel *dst, pixel *src, intptr_t i_src, int height );
 void x264_load_deinterleave_chroma_fdec_ssse3( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
@@ -380,7 +382,7 @@ void x264_load_deinterleave_chroma_fdec_avx( uint16_t *dst, uint16_t *src, intpt
 #define x264_load_deinterleave_chroma_fdec_avx2 x264_template(load_deinterleave_chroma_fdec_avx2)
 void x264_load_deinterleave_chroma_fdec_avx2( uint16_t *dst, uint16_t *src, intptr_t i_src, int height );
 #define x264_load_deinterleave_chroma_fdec_avx512 x264_template(load_deinterleave_chroma_fdec_avx512)
-void x264_load_deinterleave_chroma_fdec_avx512( uint8_t *dst, uint8_t *src, intptr_t i_src, int height );
+void x264_load_deinterleave_chroma_fdec_avx512( pixel *dst, pixel *src, intptr_t i_src, int height );
 void *x264_memcpy_aligned_mmx( void *dst, const void *src, size_t n );
 void *x264_memcpy_aligned_sse( void *dst, const void *src, size_t n );
 void *x264_memcpy_aligned_avx( void *dst, const void *src, size_t n );
@@ -1059,6 +1061,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512 )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
+        pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx512;
+        pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx512;
+        /* load_deinterleave_chroma_fenc_zmm_avx512 is for cpus where zmm is not slow */
     }
 #else // !HIGH_BIT_DEPTH
 
