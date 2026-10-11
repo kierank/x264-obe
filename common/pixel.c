@@ -726,7 +726,8 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
 
     if( mb_x > 0 )
         score_field += 512 - h->mb.field[mb_xy        -1]*1024;
-    if( mb_y > 0 )
+    /* the pair above may belong to another slice thread that is still encoding it */
+    if( mb_y > h->i_threadslice_start )
         score_field += 512 - h->mb.field[mb_xy-mb_stride]*1024;
 
     return (score_field < score_frame);
