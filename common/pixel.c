@@ -1454,6 +1454,21 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 
     /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
      * (rack01 ablation, obed low latency), although most win in checkasm. */
+#if ARCH_X86_64
+#if HAVE_AVX512_VNNI
+    /* except ssd: ymm only (no zmm), the AVX2 code with vpdpwssd */
+    if( cpu&X264_CPU_AVX512_VNNI )
+    {
+        INIT2( ssd, _avx512vnni );
+    }
+#endif
+#if HAVE_AVX_VNNI
+    if( cpu&X264_CPU_AVX_VNNI )
+    {
+        INIT2( ssd, _avxvnni );
+    }
+#endif
+#endif
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6

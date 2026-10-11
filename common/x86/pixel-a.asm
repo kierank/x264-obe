@@ -487,19 +487,28 @@ SSD_ONE    16, 16
     pmaddubsw m%2, m%5
     pmaddubsw m%3, m%5
     pmaddubsw m%4, m%5
+%if notcpuflag(avxvnni) ; squared in SSD_ITER
     pmaddwd   m%1, m%1
     pmaddwd   m%2, m%2
     pmaddwd   m%3, m%3
     pmaddwd   m%4, m%4
+%endif
 %endmacro
 
 %macro SSD_ITER 6
     SSD_LOAD_%1 %2,%3,%4,%5,%6
     SSD_CORE  1, 2, 3, 4, 7, 5, 6, %1
+%if cpuflag(avxvnni) ; four accumulators: one vpdpwssd each per iteration
+    vpdpwssd  m0, m1, m1
+    vpdpwssd  m8, m2, m2
+    vpdpwssd  m9, m3, m3
+    vpdpwssd m10, m4, m4
+%else
     paddd     m1, m2
     paddd     m3, m4
     paddd     m0, m1
     paddd     m0, m3
+%endif
 %endmacro
 
 ;-----------------------------------------------------------------------------
@@ -521,7 +530,7 @@ cglobal pixel_ssd_%1x%2, 0,0,0
 .startloop:
 %if ARCH_X86_64
     DECLARE_REG_TMP 0,1,2,3
-    PROLOGUE 0,0,8
+    PROLOGUE 0,0,8+3*cpuflag(avxvnni)
 %else
     PROLOGUE 0,5
     DECLARE_REG_TMP 1,2,3,4
@@ -539,6 +548,11 @@ cglobal pixel_ssd_%1x%2, 0,0,0
     pxor    m7, m7
 %endif
     pxor    m0, m0
+%if cpuflag(avxvnni)
+    pxor    m8, m8
+    pxor    m9, m9
+    pxor   m10, m10
+%endif
 
 ALIGN 16
 .loop:
@@ -551,6 +565,11 @@ ALIGN 16
 %endif
     dec     al
     jg .loop
+%if cpuflag(avxvnni)
+    paddd   m0, m8
+    paddd   m9, m10
+    paddd   m0, m9
+%endif
 %if mmsize==32
     vextracti128 xm1, m0, 1
     paddd  xm0, xm1
@@ -616,6 +635,16 @@ SSD  8,  4
 INIT_YMM avx2
 SSD 16, 16
 SSD 16,  8
+%if ARCH_X86_64 && HAVE_AVX_VNNI
+INIT_YMM avxvnni
+SSD 16, 16
+SSD 16,  8
+%endif
+%if ARCH_X86_64 && HAVE_AVX512_VNNI
+INIT_YMM avx512vnni
+SSD 16, 16
+SSD 16,  8
+%endif
 %assign function_align 16
 %endif ; !HIGH_BIT_DEPTH
 
