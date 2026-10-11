@@ -938,8 +938,19 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             int omx = bmx, omy = bmy;
             intptr_t stride = 64; // candidates are either all hpel or all qpel, so one stride is enough
             pixel *src0, *src1, *src2, *src3;
-            src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
-            src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
+            if( !((omx|omy)&1) && !m->weight[0].weightfn )
+            {
+                /* hpel candidates without weighting: get_ref would only pick a
+                 * filtered plane, so skip the calls */
+                stride = m->i_stride[0];
+                src0 = m->p_fref[x264_hpel_ref0[(((omy-2)&3)<<2) + (omx&3)]] + ((omy-2)>>2)*stride + (omx>>2);
+                src2 = m->p_fref[x264_hpel_ref0[((omy&3)<<2) + ((omx-2)&3)]] + (omy>>2)*stride + ((omx-2)>>2);
+            }
+            else
+            {
+                src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
+                src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
+            }
             src1 = src0 + stride;
             src3 = src2 + 1;
             h->pixf.fpelcmp_x4[i_pixel]( m->p_fenc[0], src0, src1, src2, src3, stride, costs );
