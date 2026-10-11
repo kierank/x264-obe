@@ -1845,6 +1845,103 @@ SAD_X_AVX2 3, 16,  8, 7
 SAD_X_AVX2 4, 16, 16, 8
 SAD_X_AVX2 4, 16,  8, 8
 
+; 8 wide: ymm = { p row j, q row j | p row j+1, q row j+1 } against a vmovddup
+; of fenc rows j, j+1. Lane 1 of p is a 16 byte load (reads 8 bytes past the
+; row, as pixel_sad_8x8_avx2 does), q row j+1 a broadcast + blend.
+%macro SAD_X_W8_PAIR_AVX2 6 ; dst, tmp, p, q, row j offset, row j+1 offset
+    movq          xm%1, [%3+%5]
+    movhps        xm%1, [%4+%5]
+    vinserti128    m%1, m%1, [%3+%6], 1
+    vpbroadcastq   m%2, [%4+%6]
+    vpblendd       m%1, m%1, m%2, 0xc0
+%endmacro
+
+; rows of a 4 row group: 0, stride, 2*stride, 3*stride
+%macro SAD_X_W8_ROWOFF 3 ; row pair, stride, 3*stride
+%if %1 & 2
+    %xdefine sad_o0 2*%2
+    %xdefine sad_o1 %3
+%else
+    %xdefine sad_o0 0
+    %xdefine sad_o1 %2
+%endif
+%endmacro
+
+%macro SAD_X3_W8_AVX2 1 ; h
+cglobal pixel_sad_x3_8x%1, 5,6,6
+    lea            t0, [3*r4]
+%assign %%k 0
+%rep %1/2
+    SAD_X_W8_ROWOFF %%k, r4, t0
+    vmovddup       m3, [r0+%%k*FENC_STRIDE]
+    SAD_X_W8_PAIR_AVX2 2, 4, r1, r2, sad_o0, sad_o1
+    movq          xm5, [r3+sad_o0]
+    vinserti128    m5, m5, [r3+sad_o1], 1
+%if %%k == 0
+    psadbw         m0, m2, m3
+    psadbw         m1, m5, m3
+%else
+    psadbw         m2, m3
+    psadbw         m5, m3
+    paddd          m0, m2
+    paddd          m1, m5
+%endif
+%if (%%k & 3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r4]
+    lea            r2, [r2+4*r4]
+    lea            r3, [r3+4*r4]
+%endif
+%assign %%k %%k+2
+%endrep
+    movifnidn      r5, r5mp
+    packssdw       m0, m1         ; { s0 s1 s2 _ | s0 s1 s2 _ }
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    mova         [r5], xm0
+    RET
+%endmacro
+
+%macro SAD_X4_W8_AVX2 1 ; h
+cglobal pixel_sad_x4_8x%1, 6,7,6
+    lea            r6, [3*r5]
+%assign %%k 0
+%rep %1/2
+    SAD_X_W8_ROWOFF %%k, r5, r6
+    vmovddup       m4, [r0+%%k*FENC_STRIDE]
+    SAD_X_W8_PAIR_AVX2 2, 5, r1, r2, sad_o0, sad_o1
+    SAD_X_W8_PAIR_AVX2 3, 5, r3, r4, sad_o0, sad_o1
+%if %%k == 0
+    psadbw         m0, m2, m4
+    psadbw         m1, m3, m4
+%else
+    psadbw         m2, m4
+    psadbw         m3, m4
+    paddd          m0, m2
+    paddd          m1, m3
+%endif
+%if (%%k & 3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r5]
+    lea            r2, [r2+4*r5]
+    lea            r3, [r3+4*r5]
+    lea            r4, [r4+4*r5]
+%endif
+%assign %%k %%k+2
+%endrep
+    mov            r0, r6mp
+    packssdw       m0, m1         ; { s0 s1 s2 s3 | s0 s1 s2 s3 }
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    mova         [r0], xm0
+    RET
+%endmacro
+
+SAD_X3_W8_AVX2 16
+SAD_X3_W8_AVX2 8
+SAD_X3_W8_AVX2 4
+SAD_X4_W8_AVX2 16
+SAD_X4_W8_AVX2 8
+SAD_X4_W8_AVX2 4
+
 %macro SAD_X_W4_AVX512 2 ; x, h
 cglobal pixel_sad_x%1_4x%2, %1+2,%1+3
     mov           t1d, 0xa
