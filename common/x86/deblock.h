@@ -30,6 +30,10 @@
 void x264_deblock_v_luma_sse2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_v_luma_avx x264_template(deblock_v_luma_avx)
 void x264_deblock_v_luma_avx ( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
+#define x264_deblock_v_luma_avx2 x264_template(deblock_v_luma_avx2)
+void x264_deblock_v_luma_avx2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
+#define x264_deblock_h_luma_avx2 x264_template(deblock_h_luma_avx2)
+void x264_deblock_h_luma_avx2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_h_luma_sse2 x264_template(deblock_h_luma_sse2)
 void x264_deblock_h_luma_sse2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_h_luma_avx x264_template(deblock_h_luma_avx)

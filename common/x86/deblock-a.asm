@@ -36,6 +36,7 @@ load_bytes_zmm_shuf: dd 0x50404032, 0x70606053, 0xd0c0c0b4, 0xf0e0e0d5
                      dd 0x50104005, 0x70306027, 0xd090c087, 0xf0b0e0a9
 load_bytes_shuf: times 2 db 3,4,5,6,11,12,13,14,4,5,6,7,12,13,14,15
 insert_top_shuf: dd 0,1,4,5,7,2,3,6
+deblock_tc_shuf_avx2: db 0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3
 transpose_shuf: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 
 SECTION .text
@@ -82,6 +83,9 @@ cextern pb_unpackbd1
 %macro LOAD_TC 2
 %if mmsize == 8
     pshufw      %1, [%2-1], 0
+%elif mmsize == 32
+    vpbroadcastd %1, [%2]
+    pshufb      %1, [deblock_tc_shuf_avx2]
 %else
     movd        %1, [%2]
     punpcklbw   %1, %1
@@ -424,6 +428,107 @@ INIT_XMM sse2
 DEBLOCK_LUMA_64
 INIT_XMM avx
 DEBLOCK_LUMA_64
+
+;-----------------------------------------------------------------------------
+; 10-bit deblock_v_luma / deblock_h_luma, AVX2: the whole 16 pixel edge in one
+; pass. h_luma keeps rows 0-7 in lane 0 and rows 8-15 in lane 1, so its
+; transposes stay lane-local and both directions see the same tc layout:
+; words 0-3, 4-7 | 8-11, 12-15 = tc0[0], tc0[1] | tc0[2], tc0[3].
+;-----------------------------------------------------------------------------
+%macro DEBLOCK_H_LOAD_ROW 3 ; dst (number), row 0-7 address, row 8-15 address
+    movu       xm%1, %2
+    vinserti128 m%1, m%1, %3, 1
+%endmacro
+
+%macro DEBLOCK_LUMA_64_AVX2 0
+cglobal deblock_v_luma, 5,5,15
+    %define p2 m8
+    %define p1 m0
+    %define p0 m1
+    %define q0 m2
+    %define q1 m3
+    %define q2 m9
+    %define mask0 m7
+    %define mask1 m10
+    %define mask2 m11
+    add         r1, r1
+    movd       xm12, r2d
+    movd       xm13, r3d
+    vpbroadcastw m12, xm12
+    vpbroadcastw m13, xm13
+    mov         r2, r0
+    sub         r0, r1
+    sub         r0, r1
+    sub         r0, r1
+    movu        p2, [r0]
+    movu        p1, [r0+r1]
+    movu        p0, [r0+r1*2]
+    movu        q0, [r2]
+    movu        q1, [r2+r1]
+    movu        q2, [r2+r1*2]
+    DEBLOCK_LUMA_INTER_SSE2
+    movu   [r0+r1], p1
+    movu [r0+r1*2], p0
+    movu      [r2], q0
+    movu   [r2+r1], q1
+    RET
+
+
+cglobal deblock_h_luma, 5,7,15
+    add         r1, r1
+    movd       xm12, r2d
+    movd       xm13, r3d
+    vpbroadcastw m12, xm12
+    vpbroadcastw m13, xm13
+    lea         r2, [r1*3]
+    lea         r5, [r0+r2]
+    lea         r3, [r0+r1*8]
+    lea         r6, [r5+r1*8]
+    DEBLOCK_H_LOAD_ROW 8, [r0-8],      [r3-8]       ; y q2 q1 q0 p0 p1 p2 x
+    DEBLOCK_H_LOAD_ROW 0, [r0+r1-8],   [r3+r1-8]
+    DEBLOCK_H_LOAD_ROW 2, [r0+r1*2-8], [r3+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 9, [r5-8],      [r6-8]
+    DEBLOCK_H_LOAD_ROW 5, [r5+r1-8],   [r6+r1-8]
+    DEBLOCK_H_LOAD_ROW 1, [r5+r1*2-8], [r6+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 3, [r5+r2-8],   [r6+r2-8]
+    DEBLOCK_H_LOAD_ROW 7, [r5+r1*4-8], [r6+r1*4-8]
+
+    TRANSPOSE4x4W 8, 0, 2, 9, 10
+    TRANSPOSE4x4W 5, 1, 3, 7, 10
+
+    punpckhqdq  m8, m5
+    SBUTTERFLY qdq, 0, 1, 10
+    SBUTTERFLY qdq, 2, 3, 10
+    punpcklqdq  m9, m7
+
+    DEBLOCK_LUMA_INTER_SSE2
+
+    TRANSPOSE4x4W 0, 1, 2, 3, 4
+    movq        [r0-4], xm0
+    movhps      [r0+r1-4], xm0
+    movq        [r0+r1*2-4], xm1
+    movhps      [r5-4], xm1
+    movq        [r5+r1-4], xm2
+    movhps      [r5+r1*2-4], xm2
+    movq        [r5+r2-4], xm3
+    movhps      [r5+r1*4-4], xm3
+    vextracti128 xm0, m0, 1
+    vextracti128 xm1, m1, 1
+    vextracti128 xm2, m2, 1
+    vextracti128 xm3, m3, 1
+    movq        [r3-4], xm0
+    movhps      [r3+r1-4], xm0
+    movq        [r3+r1*2-4], xm1
+    movhps      [r6-4], xm1
+    movq        [r6+r1-4], xm2
+    movhps      [r6+r1*2-4], xm2
+    movq        [r6+r2-4], xm3
+    movhps      [r6+r1*4-4], xm3
+    RET
+%endmacro
+
+INIT_YMM avx2
+DEBLOCK_LUMA_64_AVX2
 %endif
 
 %macro SWAPMOVA 2

@@ -739,6 +739,10 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
         if( cpu&X264_CPU_AVX2 )
         {
             pf->deblock_strength = x264_deblock_strength_avx2;
+#if HIGH_BIT_DEPTH && ARCH_X86_64
+            pf->deblock_luma[1] = x264_deblock_v_luma_avx2;
+            pf->deblock_luma[0] = x264_deblock_h_luma_avx2;
+#endif
         }
     }
 #endif
