@@ -291,6 +291,19 @@ cglobal pixel_avg_weight_w16
     movu  [t0+t1*2], m0
     AVG_END
 
+cglobal pixel_avg_weight_w8
+    BIWEIGHT_START_AVX2
+    AVG_START 6
+.height_loop:
+    movu         xm0, [t2]
+    movu         xm1, [t4]
+    vinserti128   m0, m0, [t2+t3*2], 1
+    vinserti128   m1, m1, [t4+t5*2], 1
+    BIWEIGHT_AVX2
+    movu        [t0], xm0
+    vextracti128 [t0+t1*2], m0, 1
+    AVG_END
+
 %else ;!HIGH_BIT_DEPTH
 INIT_XMM sse2
 AVG_WEIGHT 8,  7
@@ -739,7 +752,7 @@ cglobal pixel_avg_%1x%2
     mov eax, %2
     cmp dword r6m, 32
     jne pixel_avg_weight_w%1 %+ SUFFIX
-%if cpuflag(avx2) && %1 == 16 ; all AVX2 machines can do fast 16-byte unaligned loads
+%if cpuflag(avx2) && %1*SIZEOF_PIXEL >= 16 ; all AVX2 machines can do fast 16-byte unaligned loads
     jmp pixel_avg_w%1_avx2
 %else
 %if mmsize == 16 && %1 == 16
@@ -811,10 +824,15 @@ AVG_FUNC 16, movdqu, movdqa
 AVGH  16, 16
 AVGH  16,  8
 
+INIT_XMM avx2
+AVG_FUNC 8, movdqu, movdqu
 INIT_YMM avx2
 AVG_FUNC 16, movdqu, movdqu
 AVGH  16, 16
 AVGH  16,  8
+AVGH   8, 16
+AVGH   8,  8
+AVGH   8,  4
 
 %else ;!HIGH_BIT_DEPTH
 
