@@ -27,10 +27,6 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
-SECTION_RODATA 64
-
-sad_hbd_fenc_perm: dq 0, 1, 4, 5, 8, 9, 12, 13
-
 SECTION .text
 
 cextern pw_1
@@ -531,38 +527,6 @@ SAD_X 3, 16,  8
 SAD_X 4, 16, 16
 SAD_X 4, 16,  8
 
-;=============================================================================
-; 10-bit SAD 8x8 and 8x16, AVX-512: four 8 pixel rows per zmm. fenc rows are
-; FENC_STRIDE apart, so four of them come from two 64 byte loads and one
-; vpermt2q; other rows take one load and three inserts per four rows.
-;=============================================================================
-
-; %1 = dst, %2 = base: four rows of 8 pixels at FENC_STRIDE, m15 = sad_hbd_fenc_perm
-%macro SAD_HBD_FENC4 2
-    movu          %1, [%2]
-    vpermt2q      %1, m15, [%2+64]
-%endmacro
-
-; %1 = dst (number), %2 = base, %3 = stride, %4 = 3*stride
-%macro SAD_HBD_ROW4 4
-    movu          xm%1, [%2]
-    vinserti32x4   m%1, m%1, [%2+%3], 1
-    vinserti32x4   m%1, m%1, [%2+%3*2], 2
-    vinserti32x4   m%1, m%1, [%2+%4], 3
-%endmacro
-
-; %1 = dst/acc (number), %2 = fenc reg, %3 = tmp (number), %4 = first?
-%macro SAD_HBD_ACC 4
-%if %4
-    psubw          m%1, m%3, %2
-    pabsw          m%1, m%1
-%else
-    psubw          m%3, %2
-    pabsw          m%3, m%3
-    paddw          m%1, m%3
-%endif
-%endmacro
-
 ; xmm %1..%4 of 4 dword sums each -> %1 = { sum %1, sum %2, sum %3, sum %4 }; %5, %6 tmp
 %macro SAD_HBD_HSUM4 6
     punpckldq     xm%5, xm%1, xm%2
@@ -576,137 +540,17 @@ SAD_X 4, 16,  8
     paddd         xm%1, xm%5
 %endmacro
 
-; zmm of word sums (at most 4*1023 a lane) -> xmm of 4 dword sums
-%macro SAD_HBD_FOLD 2 ; reg (number), tmp (number)
-    vextracti32x8  ym%2, m%1, 1
-    paddw          ym%1, ym%2
-    vextracti128   xm%2, ym%1, 1
-    paddw          xm%1, xm%2
-    pmaddwd        xm%1, [pw_1]
-%endmacro
-
-%macro SAD_HBD 1 ; height
-cglobal pixel_sad_8x%1, 4,7,16
-    FIX_STRIDES   r1, r3
-    lea           r5, [r3*3]
-    cmp           r1, FENC_STRIDEB
-    jne .generic
-    movu         m15, [sad_hbd_fenc_perm]
-%assign sad_hbd_n 0
-%rep %1/4
-    SAD_HBD_FENC4  m1, r0
-    SAD_HBD_ROW4   2, r2, r3, r5
-    SAD_HBD_ACC    0, m1, 2, sad_hbd_n==0
-%if sad_hbd_n < %1/4-1
-    add           r0, 4*FENC_STRIDEB
-    lea           r2, [r2+r3*4]
+; %1 = dst/acc (number), %2 = fenc reg, %3 = tmp (number), %4 = first?
+%macro SAD_HBD_ACC 4
+%if %4
+    psubw          m%1, m%3, %2
+    pabsw          m%1, m%1
+%else
+    psubw          m%3, %2
+    pabsw          m%3, m%3
+    paddw          m%1, m%3
 %endif
-%assign sad_hbd_n sad_hbd_n+1
-%endrep
-    jmp .end
-.generic:
-    lea           r4, [r1*3]
-%assign sad_hbd_n 0
-%rep %1/4
-    SAD_HBD_ROW4   1, r0, r1, r4
-    SAD_HBD_ROW4   2, r2, r3, r5
-    SAD_HBD_ACC    0, m1, 2, sad_hbd_n==0
-%if sad_hbd_n < %1/4-1
-    lea           r0, [r0+r1*4]
-    lea           r2, [r2+r3*4]
-%endif
-%assign sad_hbd_n sad_hbd_n+1
-%endrep
-.end:
-    SAD_HBD_FOLD   0, 1
-    punpckhqdq    xm1, xm0, xm0
-    paddd         xm0, xm1
-    pshuflw       xm1, xm0, q1032
-    paddd         xm0, xm1
-    movd          eax, xm0
-    RET
 %endmacro
-
-;-----------------------------------------------------------------------------
-; void pixel_sad_x3_8xN( uint16_t *fenc, uint16_t *pix0, uint16_t *pix1,
-;                        uint16_t *pix2, intptr_t i_stride, int scores[3] )
-;-----------------------------------------------------------------------------
-%macro SAD_X3_HBD 1
-cglobal pixel_sad_x3_8x%1, 6,7,16
-    FIX_STRIDES   r4
-    lea           r6, [r4*3]
-    movu         m15, [sad_hbd_fenc_perm]
-%assign sad_hbd_n 0
-%rep %1/4
-    SAD_HBD_FENC4  m3, r0
-    SAD_HBD_ROW4   4, r1, r4, r6
-    SAD_HBD_ROW4   5, r2, r4, r6
-    SAD_HBD_ROW4   6, r3, r4, r6
-    SAD_HBD_ACC    0, m3, 4, sad_hbd_n==0
-    SAD_HBD_ACC    1, m3, 5, sad_hbd_n==0
-    SAD_HBD_ACC    2, m3, 6, sad_hbd_n==0
-%if sad_hbd_n < %1/4-1
-    add           r0, 4*FENC_STRIDEB
-    lea           r1, [r1+r4*4]
-    lea           r2, [r2+r4*4]
-    lea           r3, [r3+r4*4]
-%endif
-%assign sad_hbd_n sad_hbd_n+1
-%endrep
-    SAD_HBD_FOLD   0, 4
-    SAD_HBD_FOLD   1, 5
-    SAD_HBD_FOLD   2, 6
-    SAD_HBD_HSUM4  0, 1, 2, 2, 4, 5
-    movq     [r5+0], xm0
-    pextrd   [r5+8], xm0, 2
-    RET
-%endmacro
-
-;-----------------------------------------------------------------------------
-; void pixel_sad_x4_8xN( uint16_t *fenc, uint16_t *pix0, uint16_t *pix1,
-;                        uint16_t *pix2, uint16_t *pix3, intptr_t i_stride, int scores[4] )
-;-----------------------------------------------------------------------------
-%macro SAD_X4_HBD 1
-cglobal pixel_sad_x4_8x%1, 7,8,16
-    FIX_STRIDES   r5
-    lea           r7, [r5*3]
-    movu         m15, [sad_hbd_fenc_perm]
-%assign sad_hbd_n 0
-%rep %1/4
-    SAD_HBD_FENC4  m4, r0
-    SAD_HBD_ROW4   5, r1, r5, r7
-    SAD_HBD_ROW4   6, r2, r5, r7
-    SAD_HBD_ROW4   7, r3, r5, r7
-    SAD_HBD_ROW4   8, r4, r5, r7
-    SAD_HBD_ACC    0, m4, 5, sad_hbd_n==0
-    SAD_HBD_ACC    1, m4, 6, sad_hbd_n==0
-    SAD_HBD_ACC    2, m4, 7, sad_hbd_n==0
-    SAD_HBD_ACC    3, m4, 8, sad_hbd_n==0
-%if sad_hbd_n < %1/4-1
-    add           r0, 4*FENC_STRIDEB
-    lea           r1, [r1+r5*4]
-    lea           r2, [r2+r5*4]
-    lea           r3, [r3+r5*4]
-    lea           r4, [r4+r5*4]
-%endif
-%assign sad_hbd_n sad_hbd_n+1
-%endrep
-    SAD_HBD_FOLD   0, 5
-    SAD_HBD_FOLD   1, 6
-    SAD_HBD_FOLD   2, 7
-    SAD_HBD_FOLD   3, 8
-    SAD_HBD_HSUM4  0, 1, 2, 3, 5, 6
-    movu        [r6], xm0
-    RET
-%endmacro
-
-INIT_ZMM avx512
-SAD_HBD 8
-SAD_HBD 16
-SAD_X3_HBD 8
-SAD_X3_HBD 16
-SAD_X4_HBD 8
-SAD_X4_HBD 16
 
 ;=============================================================================
 ; 10-bit SAD 8x8 and 8x16, AVX2: two 8 pixel rows per ymm.

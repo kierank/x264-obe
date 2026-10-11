@@ -4478,28 +4478,6 @@ HADAMARD_AC_SSE2
     psubw          m3, m5
 %endmacro
 
-%macro SATD_HBD_LOAD_W 0 ; 8 wide, zmm: lanes = rows i, i+4, i+8, i+12 (r6 = r0+4*r1)
-%assign satd_hbd_w 0
-%rep 4
-    movu          xm %+ satd_hbd_w, [r0]
-    vinserti32x4   m %+ satd_hbd_w, m %+ satd_hbd_w, [r6], 1
-    vinserti32x4   m %+ satd_hbd_w, m %+ satd_hbd_w, [r6+4*r1], 2
-    vinserti32x4   m %+ satd_hbd_w, m %+ satd_hbd_w, [r6+8*r1], 3
-    movu          xm4, [r2]
-    vinserti32x4   m4, m4, [r7], 1
-    vinserti32x4   m4, m4, [r7+4*r3], 2
-    vinserti32x4   m4, m4, [r7+8*r3], 3
-    psubw          m %+ satd_hbd_w, m4
-%if satd_hbd_w < 3
-    add            r0, r1
-    add            r6, r1
-    add            r2, r3
-    add            r7, r3
-%endif
-%assign satd_hbd_w satd_hbd_w+1
-%endrep
-%endmacro
-
 %macro SATD_HBD_START 0
     FIX_STRIDES r1, r3
     lea       r4, [3*r1]
@@ -4590,12 +4568,6 @@ cglobal pixel_satd_16x16, 4,8,8
     SATD_HBD_NEXT8
     SATD_HBD_LOAD_Z
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
-    SATD_HBD_END 0
-
-cglobal pixel_satd_8x16, 4,8,8
-    SATD_HBD_START
-    SATD_HBD_LOAD_W
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
     SATD_HBD_END 0
 %if ARCH_X86_64
 INIT_YMM avx2
