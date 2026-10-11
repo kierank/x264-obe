@@ -1003,11 +1003,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->mc_luma = mc_luma_avx2;
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx2;
     }
-
-    if( cpu&X264_CPU_AVX512 )
-    {
-        pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
-    }
 #else // !HIGH_BIT_DEPTH
 
 #if ARCH_X86 // all x86_64 cpus with cacheline split issues use sse2 instead
@@ -1173,9 +1168,11 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_FMA3 )
         pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx2_fma3;
 
+#if !HIGH_BIT_DEPTH
     if( !(cpu&X264_CPU_AVX512) )
         return;
     pf->memcpy_aligned = x264_memcpy_aligned_avx512;
     pf->memzero_aligned = x264_memzero_aligned_avx512;
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
+#endif
 }

@@ -536,19 +536,6 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx2;
         pf->denoise_dct = x264_denoise_dct_avx2;
     }
-    if( cpu&X264_CPU_AVX512 )
-    {
-        pf->dequant_4x4 = x264_dequant_4x4_avx512;
-        pf->dequant_8x8 = x264_dequant_8x8_avx512;
-        pf->decimate_score15 = x264_decimate_score15_avx512;
-        pf->decimate_score16 = x264_decimate_score16_avx512;
-        pf->decimate_score64 = x264_decimate_score64_avx512;
-        pf->coeff_last4 = x264_coeff_last4_avx512;
-        pf->coeff_last8 = x264_coeff_last8_avx512;
-        pf->coeff_last[ DCT_LUMA_AC] = x264_coeff_last15_avx512;
-        pf->coeff_last[DCT_LUMA_4x4] = x264_coeff_last16_avx512;
-        pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
-    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX

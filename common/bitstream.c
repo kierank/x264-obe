@@ -130,12 +130,14 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
             pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_avx2_bmi2;
     }
 
+#if !HIGH_BIT_DEPTH
     if( cpu&X264_CPU_AVX512 )
     {
         pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_avx512;
         pf->cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx512;
         pf->cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx512;
     }
+#endif
 #endif
 #endif
 }

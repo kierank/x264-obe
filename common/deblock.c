@@ -740,10 +740,12 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
         {
             pf->deblock_strength = x264_deblock_strength_avx2;
         }
+#if !HIGH_BIT_DEPTH
         if( cpu&X264_CPU_AVX512 )
         {
             pf->deblock_strength = x264_deblock_strength_avx512;
         }
+#endif
     }
 #endif
 
