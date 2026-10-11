@@ -808,6 +808,8 @@ void x264_intra_satd_x3_16x16_avx2( pixel *, pixel *, int * );
 void x264_intra_satd_x3_16x16_avx512( pixel *, pixel *, int * );
 #define x264_intra_satd_x3_8x8c_avx2 x264_template(intra_satd_x3_8x8c_avx2)
 void x264_intra_satd_x3_8x8c_avx2( pixel *, pixel *, int * );
+#define x264_intra_satd_x3_8x16c_avx2 x264_template(intra_satd_x3_8x16c_avx2)
+void x264_intra_satd_x3_8x16c_avx2( pixel *, pixel *, int * );
 void x264_intra_sad_x3_16x16_mmx2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_sse2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_ssse3 ( pixel   *, pixel   *, int * );

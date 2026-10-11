@@ -4880,9 +4880,98 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     INTRA_HBD_X3_END 14, 15, 6, 0
 %endmacro
 
+;-----------------------------------------------------------------------------
+; void intra_satd_x3_8x16c( uint16_t *fenc, uint16_t *fdec, int res[3] )  (DC, H, V)
+; two 8x8c halves; xm13 holds dc0-dc7, m7 the DC register of the current half
+;-----------------------------------------------------------------------------
+; %1 = sum of left[%2..%2+3]
+%macro INTRA_HBD_LEFT4 2
+    movzx         %1, word [r1+%2*FDEC_STRIDEB-2]
+%assign intra_hbd_y %2+1
+%rep 3
+    movzx         r6d, word [r1+intra_hbd_y*FDEC_STRIDEB-2]
+    add           %1, r6d
+%assign intra_hbd_y intra_hbd_y+1
+%endrep
+%endmacro
+
+; rows %1..%1+7, %2 = first half
+%macro INTRA_HBD_8x16C_HALF 2
+%assign intra_hbd_i 0
+%rep 4
+    %assign intra_hbd_f 8+intra_hbd_i
+    movu          xm %+ intra_hbd_f, [r0+(%1+intra_hbd_i)*FENC_STRIDEB]
+    vinserti128    m %+ intra_hbd_f, m %+ intra_hbd_f, [r0+(%1+intra_hbd_i+4)*FENC_STRIDEB], 1
+%assign intra_hbd_i intra_hbd_i+1
+%endrep
+    INTRA_HBD_DIFF4 7                       ; DC
+%if %2
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14
+%endif
+%assign intra_hbd_i 0
+%rep 4                                      ; H
+    %assign intra_hbd_f 8+intra_hbd_i
+    vpbroadcastw  xm %+ intra_hbd_i, [r1+(%1+intra_hbd_i)*FDEC_STRIDEB-2]
+    vpbroadcastw  xm4, [r1+(%1+intra_hbd_i+4)*FDEC_STRIDEB-2]
+    vinserti128    m %+ intra_hbd_i, m %+ intra_hbd_i, xm4, 1
+    psubw          m %+ intra_hbd_i, m %+ intra_hbd_f, m %+ intra_hbd_i
+%assign intra_hbd_i intra_hbd_i+1
+%endrep
+%if %2
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15
+%endif
+    INTRA_HBD_DIFF4 12                      ; V
+%if %2
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endif
+%endmacro
+
+%macro INTRA_SATD_X3_8x16C_HBD 0
+cglobal intra_satd_x3_8x16c, 3,7,16
+    movu          xm4, [r1-FDEC_STRIDEB]
+    pmaddwd       xm4, [pw_1]
+    pshufd        xm5, xm4, q2301
+    paddd         xm4, xm5                  ; s0 s0 s1 s1
+    movd          r3d, xm4
+    pextrd        r5d, xm4, 2
+    INTRA_HBD_LEFT4 r4d, 0                  ; s2
+    lea           r3d, [r3+r4+4]
+    shr           r3d, 3
+    movd         xm13, r3d                  ; dc0 = (s0 + s2 + 4) >> 3
+    lea           r3d, [r5+2]
+    shr           r3d, 2
+    pinsrw       xm13, r3d, 1               ; dc1 = (s1 + 2) >> 2
+%assign intra_hbd_k 2
+%rep 3
+    INTRA_HBD_LEFT4 r4d, intra_hbd_k*2      ; s3, s4, s5
+    lea           r3d, [r4+2]
+    shr           r3d, 2
+    pinsrw       xm13, r3d, intra_hbd_k     ; (s + 2) >> 2
+    lea           r3d, [r4+r5+4]
+    shr           r3d, 3
+    pinsrw       xm13, r3d, intra_hbd_k+1   ; (s1 + s + 4) >> 3
+%assign intra_hbd_k intra_hbd_k+2
+%endrep
+    vpbroadcastq  m7, xm13
+    pshufb        m7, [intra_8x8c_dc_shuf]
+    vbroadcasti128 m12, [r1-FDEC_STRIDEB]  ; V
+    INTRA_HBD_8x16C_HALF 0, 1
+    vpermq        m7, m13, q1111
+    pshufb        m7, [intra_8x8c_dc_shuf]
+    INTRA_HBD_8x16C_HALF 8, 0
+    INTRA_HBD_X3_END 14, 15, 6, 0
+%endmacro
+
 INIT_YMM avx2
 INTRA_SATD_X3_16x16_HBD
 INTRA_SATD_X3_8x8C_HBD
+INTRA_SATD_X3_8x16C_HBD
 INIT_ZMM avx512
 INTRA_SATD_X3_16x16_HBD
 %endif

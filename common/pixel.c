@@ -1081,6 +1081,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
+        pixf->intra_satd_x3_8x16c = x264_intra_satd_x3_8x16c_avx2;
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
