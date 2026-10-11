@@ -47,6 +47,9 @@ cavlc_shuf_avx512: dd 0x00018820, 0x000398a4, 0x0005a928, 0x0007b9ac ; bits 0-4:
                    dd 0x00010c01, 0x00031c85, 0x00052d09, 0x00073d8d ; bits 10-14: interleave3
                    dd 0x00094e11, 0x000b5e95, 0x000d6f19, 0x000f7f9d ; bits 15-19: interleave4
 sub4x4_hbd_shift:  dd 0, 0, 0, 0, 1, 1, 1, 1
+; zigzag_scan_4x4_frame avx2: out0 = I(in0-7) | J(in8-15), out1 = J(in0-7) | I(in8-15)
+scan4x4_frame_avx2: dd 0, 4, 1, 2, 5, 6, 3, 7 ; I
+                    dd 6, 3, 7, 0, 0, 0, 4, 1 ; J
 %else
 dct_avx512:        dd 0x10000000, 0x00021104, 0x3206314c, 0x60042048 ; bits    0-4:   dct8x8_fenc    bits    5-9:   dct8x8_fdec
                    dd 0x98008a10, 0x20029b14, 0xba06bb5c, 0x4004aa58 ; bits    10-13: dct16x16_fenc  bits    14-18: dct16x16_fdec
@@ -1918,6 +1921,20 @@ INIT_XMM sse2
 SCAN_4x4  4, dq, qdq, dq
 INIT_XMM avx
 SCAN_4x4  4, dq, qdq, dq
+
+INIT_YMM avx2
+cglobal zigzag_scan_4x4_frame, 2,2,4
+    mova      m0, [scan4x4_frame_avx2]
+    mova      m1, [scan4x4_frame_avx2+32]
+    vpermd    m2, m0, [r1]
+    vpermd    m3, m1, [r1+32]
+    vpblendd  m2, m2, m3, 0xe0      ;  0  4  1  2  5  8 12  9
+    vpermd    m1, m1, [r1]
+    vpermd    m0, m0, [r1+32]
+    vpblendd  m0, m1, m0, 0xf8      ;  6  3  7 10 13 14 11 15
+    movu [r0+ 0], m2
+    movu [r0+32], m0
+    RET
 %else
 INIT_MMX mmx
 SCAN_4x4 16, q , dq , wd
