@@ -82,6 +82,7 @@ typedef struct x264_frame
     pixel *filtered[3][4]; /* plane[0], H, V, HV */
     pixel *filtered_fld[3][4];
     pixel *lowres[4]; /* half-size copy of input frame: Orig, H, V, HV */
+    uint8_t *lowres8[4]; /* 8-bit copies of lowres for rc.b_lookahead_8bit, same layout */
     uint16_t *integral;
 
     /* for unrestricted mv we allocate more data than needed
@@ -89,9 +90,11 @@ typedef struct x264_frame
     pixel *buffer[4];
     pixel *buffer_fld[4];
     pixel *buffer_lowres[4];
+    uint8_t *buffer_lowres8;
 
     x264_weight_t weight[X264_REF_MAX][3]; /* [ref_index][plane] */
     pixel *weighted[X264_REF_MAX]; /* plane[0] weighted of the reference frames */
+    uint8_t *weighted8; /* lowres8[0] of the lookahead reference, weighted */
     int b_duplicate;
     struct x264_frame *orig;
 
