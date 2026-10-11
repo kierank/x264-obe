@@ -871,7 +871,7 @@ if( b_refine_qpel || (dir^1) != odir ) \
         else if( b_chroma_mcc ) \
         { \
             int mcc[2]; \
-            h->pixf.mbcmp_mcc( m->p_fenc[1], mcc, m->p_fref[4], m->i_stride[1], \
+            h->pixf.mbcmp_mcc( p_fenc_uv, mcc, m->p_fref[4], m->i_stride[1], \
                                mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
             cost += mcc[0]; \
             if( cost < bcost ) \
@@ -911,6 +911,14 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     const int b_chroma_mcc = b_chroma_me && !CHROMA444 && h->pixf.mbcmp_mcc
                           && !m->weight[1].weightfn && !m->weight[2].weightfn
                           && (bh>>chroma_v_shift) >= (bw == 16 ? 4 : 8);
+    /* mbcmp_mcc takes fenc as the interleaved uv plane (the source of p_fenc[1] and
+     * p_fenc[2]) at the partition, which has the stride of the ref planes */
+    pixel *p_fenc_uv = NULL;
+    if( b_chroma_mcc )
+    {
+        int off = m->p_fenc[1] - h->mb.pic.p_fenc[1];
+        p_fenc_uv = h->mb.pic.p_fenc_plane[1] + 2*(off%FENC_STRIDE) + (off/FENC_STRIDE)*m->i_stride[1];
+    }
 
     ALIGNED_ARRAY_N( pixel, pix,[64*18] ); // really 17x17x2, but round up for alignment
     ALIGNED_ARRAY_16( int, costs,[4] );
