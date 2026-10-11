@@ -39,6 +39,9 @@ ch_shuf_adj: times 8 db 0
              times 8 db 2
              times 8 db 4
              times 8 db 6
+chroma_deint_shuf: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
+chroma_deint_perm: dw  0, 2, 4, 6, 8,10,12,14, 16,18,20,22,24,26,28,30
+                   dw  1, 3, 5, 7, 9,11,13,15, 17,19,21,23,25,27,29,31
 sq_1: times 1 dq 1
 
 SECTION .text
@@ -2190,6 +2193,189 @@ INIT_XMM sse2
 MC_CHROMA
 INIT_XMM avx
 MC_CHROMA
+
+;-----------------------------------------------------------------------------
+; 10-bit mc_chroma, AVX2 and AVX-512. Every (8-d)*s and d*s fits a word, so
+; both passes are pmullw/paddw: H = (8-dx)*s[x] + dx*s[x+2], then
+; ((8-dy)*H0 + dy*H1 + 32) >> 6, whose sum is at most 64*1023+32 as an
+; unsigned word. No rounding in between, so it equals the 2D C filter.
+; Width 2 goes to the AVX version.
+;-----------------------------------------------------------------------------
+%macro MCC_HBD_BCASTW 2 ; dst, gpr dword
+%if cpuflag(avx512)
+    vpbroadcastw  m%1, %2
+%else
+    movd         xm%1, %2
+    vpbroadcastw  m%1, xm%1
+%endif
+%endmacro
+
+%macro MCC_HBD_INS128 3 ; dst (number), mem, lane
+%if cpuflag(avx512)
+    vinserti32x4   m%1, m%1, %2, %3
+%else
+    vinserti128    m%1, m%1, %2, %3
+%endif
+%endmacro
+
+; H of rows %2 and %2+r4 (8 pixel rows, one per ymm lane) -> m%1; clobbers m%3
+%macro MCC_HBD_H4 3
+    movu          xm%1, [%2]
+    MCC_HBD_INS128 %1, [%2+r4], 1
+    movu          xm%3, [%2+4]
+    MCC_HBD_INS128 %3, [%2+r4+4], 1
+    pmullw         m%1, m8
+    pmullw         m%3, m9
+    paddw          m%1, m%3
+%endmacro
+
+; out = (H0*(8-dy) + H1*dy + 32) >> 6 into m%1; m%1 = H0 (kept in m%4), m%2 = H1
+%macro MCC_HBD_V 4
+    pmullw         m%4, m%1, m10
+    pmullw         m%1, m%2, m11
+    paddw          m%1, m%4
+    paddw          m%1, m12
+    psrlw          m%1, 6
+%endmacro
+
+%macro MC_CHROMA_HBD 0
+cglobal mc_chroma
+    cmp dword     r7m, 4
+    jl mc_chroma_avx
+    PROLOGUE 0,9,15
+    movifnidn     r3,  r3mp
+    movifnidn     r4,  r4mp
+    movifnidn     r5d, r5m
+    movifnidn     t0d, r6m
+    mov           t2d, t0d
+    mov           t1d, r5d
+    sar           t0d, 3
+    sar           t1d, 3
+    imul          t0d, r4d
+    lea           t0d, [t0+t1*2]
+    FIX_STRIDES   t0d, r4
+    movsxdifnidn  t0, t0d
+    add           r3, t0              ; src += (dx>>3) + (dy>>3) * src_stride
+    and           r5d, 7
+    and           t2d, 7
+    mov           t0d, 8
+    sub           t0d, r5d
+    MCC_HBD_BCASTW 8, t0d            ; 8-dx
+    MCC_HBD_BCASTW 9, r5d            ; dx
+    mov           t0d, 8
+    sub           t0d, t2d
+    MCC_HBD_BCASTW 10, t0d           ; 8-dy
+    MCC_HBD_BCASTW 11, t2d           ; dy
+    vpbroadcastw  m12, [pw_32]
+%if mmsize == 64
+    vbroadcasti32x4 m14, [chroma_deint_shuf]
+%else
+    VBROADCASTI128 m14, [chroma_deint_shuf]
+%endif
+    movifnidn     r0, r0mp
+    movifnidn     r1, r1mp
+    movifnidn     r2, r2mp
+    FIX_STRIDES   r2
+    mov           r5d, r8m
+    cmp dword     r7m, 4
+    jg .w8
+
+    ; width 4: two rows per ymm, H carried across iterations
+    MCC_HBD_H4     0, r3, 1           ; H of rows 0, 1
+    lea           r3, [r3+r4*2]
+.loop4:
+    MCC_HBD_H4     1, r3, 2           ; H of rows 2, 3
+%if cpuflag(avx512)
+    vshufi32x4    ym2, ym0, ym1, 1     ; H of rows 1, 2
+%else
+    vperm2i128     m2, m0, m1, 0x21
+%endif
+    MCC_HBD_V      0, 2, 3, 3
+    pshufb        ym0, ym14            ; per row: u0-u3, v0-v3
+%if cpuflag(avx512)
+    vextracti32x4 xm3, ym0, 1
+%else
+    vextracti128  xm3, m0, 1
+%endif
+    movq        [r0], xm0
+    movhps      [r1], xm0
+    movq     [r0+r2], xm3
+    movhps   [r1+r2], xm3
+    SWAP           0, 1
+    lea           r0, [r0+r2*2]
+    lea           r1, [r1+r2*2]
+    lea           r3, [r3+r4*2]
+    sub           r5d, 2
+    jg .loop4
+    RET
+
+.w8:
+%if mmsize == 64
+    ; width 8: two rows per zmm
+    movu          m13, [chroma_deint_perm]
+    movu          ym0, [r3]
+    vinserti32x8   m0, m0, [r3+r4], 1
+    movu          ym3, [r3+4]
+    vinserti32x8   m3, m3, [r3+r4+4], 1
+    pmullw         m0, m8
+    pmullw         m3, m9
+    paddw          m0, m3              ; H of rows 0, 1
+    lea           r3, [r3+r4*2]
+.loop8:
+    movu          ym1, [r3]
+    vinserti32x8   m1, m1, [r3+r4], 1
+    movu          ym3, [r3+4]
+    vinserti32x8   m3, m3, [r3+r4+4], 1
+    pmullw         m1, m8
+    pmullw         m3, m9
+    paddw          m1, m3              ; H of rows 2, 3
+    valignq        m2, m1, m0, 4       ; H of rows 1, 2
+    MCC_HBD_V      0, 2, 3, 3
+    vpermw         m0, m13, m0         ; u row 0, u row 1, v row 0, v row 1
+    movu        [r0], xm0
+    vextracti32x4 [r0+r2], m0, 1
+    vextracti32x4 [r1], m0, 2
+    vextracti32x4 [r1+r2], m0, 3
+    SWAP           0, 1
+    lea           r0, [r0+r2*2]
+    lea           r1, [r1+r2*2]
+    lea           r3, [r3+r4*2]
+    sub           r5d, 2
+    jg .loop8
+    RET
+%else
+    ; width 8: one row per ymm
+    movu           m0, [r3]
+    movu           m3, [r3+4]
+    pmullw         m0, m8
+    pmullw         m3, m9
+    paddw          m0, m3              ; H of row 0
+    add           r3, r4
+.loop8:
+    movu           m1, [r3]
+    movu           m3, [r3+4]
+    pmullw         m1, m8
+    pmullw         m3, m9
+    paddw          m1, m3              ; H of row 1
+    MCC_HBD_V      0, 1, 3, 3
+    pshufb         m0, m14             ; u0-u3 v0-v3 | u4-u7 v4-v7
+    vpermq         m0, m0, q3120       ; u0-u7 | v0-v7
+    movu        [r0], xm0
+    vextracti128 [r1], m0, 1
+    SWAP           0, 1
+    add           r0, r2
+    add           r1, r2
+    add           r3, r4
+    dec           r5d
+    jg .loop8
+    RET
+%endif
+%endmacro
+
+INIT_YMM avx2
+MC_CHROMA_HBD
+INIT_ZMM avx512
+MC_CHROMA_HBD
 %else ; !HIGH_BIT_DEPTH
 INIT_MMX mmx2
 MC_CHROMA
