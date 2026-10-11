@@ -1129,25 +1129,6 @@ cglobal pixel_avg2_w16_sse2, 6,7
     jg .height_loop
     RET
 
-INIT_XMM avx
-; as pixel_avg2_w16_sse2, but VEX allows the unaligned memory operands
-cglobal pixel_avg2_w16, 6,7
-    sub    r4, r2
-    lea    r6, [r4+r3]
-.height_loop:
-    movu   m0, [r2]
-    movu   m2, [r2+r3]
-    pavgb  m0, [r2+r4]
-    pavgb  m2, [r2+r6]
-    lea    r2, [r2+r3*2]
-    mova [r0], m0
-    mova [r0+r1], m2
-    lea    r0, [r0+r1*2]
-    sub   r5d, 2
-    jg .height_loop
-    RET
-
-INIT_XMM
 cglobal pixel_avg2_w20_sse2, 6,7
     sub    r2, r4
     lea    r6, [r2+r3]
