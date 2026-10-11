@@ -52,6 +52,24 @@ void x264_cabac_block_residual_8x8_rd_internal_ssse3      ( dctcoef *l, int b_in
 void x264_cabac_block_residual_8x8_rd_internal_ssse3_lzcnt( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 #define x264_cabac_block_residual_8x8_rd_internal_avx512 x264_template(cabac_block_residual_8x8_rd_internal_avx512)
 void x264_cabac_block_residual_8x8_rd_internal_avx512     ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_rd2p_internal_sse2 x264_template(cabac_block_residual_rd2p_internal_sse2)
+void x264_cabac_block_residual_rd2p_internal_sse2           ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_rd2p_internal_sse2_lzcnt x264_template(cabac_block_residual_rd2p_internal_sse2_lzcnt)
+void x264_cabac_block_residual_rd2p_internal_sse2_lzcnt     ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_rd2p_internal_ssse3 x264_template(cabac_block_residual_rd2p_internal_ssse3)
+void x264_cabac_block_residual_rd2p_internal_ssse3          ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_rd2p_internal_ssse3_lzcnt x264_template(cabac_block_residual_rd2p_internal_ssse3_lzcnt)
+void x264_cabac_block_residual_rd2p_internal_ssse3_lzcnt    ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_8x8_rd2p_internal_sse2 x264_template(cabac_block_residual_8x8_rd2p_internal_sse2)
+void x264_cabac_block_residual_8x8_rd2p_internal_sse2       ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_8x8_rd2p_internal_sse2_lzcnt x264_template(cabac_block_residual_8x8_rd2p_internal_sse2_lzcnt)
+void x264_cabac_block_residual_8x8_rd2p_internal_sse2_lzcnt ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_8x8_rd2p_internal_ssse3 x264_template(cabac_block_residual_8x8_rd2p_internal_ssse3)
+void x264_cabac_block_residual_8x8_rd2p_internal_ssse3      ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_8x8_rd2p_internal_ssse3_lzcnt x264_template(cabac_block_residual_8x8_rd2p_internal_ssse3_lzcnt)
+void x264_cabac_block_residual_8x8_rd2p_internal_ssse3_lzcnt( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_8x8_rd2p_internal_avx512 x264_template(cabac_block_residual_8x8_rd2p_internal_avx512)
+void x264_cabac_block_residual_8x8_rd2p_internal_avx512     ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 #define x264_cabac_block_residual_internal_sse2 x264_template(cabac_block_residual_internal_sse2)
 void x264_cabac_block_residual_internal_sse2  ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 #define x264_cabac_block_residual_internal_sse2_lzcnt x264_template(cabac_block_residual_internal_sse2_lzcnt)

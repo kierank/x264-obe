@@ -410,18 +410,43 @@ CABAC bmi2
 ;-----------------------------------------------------------------------------
 
 ;%1 = 8x8 mode
-%macro CABAC_RESIDUAL_RD 2
+;%2 = coeff_last table
+;%3 = two pass: a branchless sig/last pass that also lists the nonzero levels,
+;     then a level pass over that list. sig, last and level ctxs are disjoint,
+;     so the states and the bit count match the interleaved order.
+%macro CABAC_RESIDUAL_RD 2-3 0
 %if %1
-    %define func cabac_block_residual_8x8_rd_internal
     %define maxcoeffs 64
     %define dct rsp
+    %if %3
+        %define func cabac_block_residual_8x8_rd2p_internal
+    %else
+        %define func cabac_block_residual_8x8_rd_internal
+    %endif
 %else
-    %define func cabac_block_residual_rd_internal
     %define maxcoeffs 16
     %define dct r4
+    %if %3
+        %define func cabac_block_residual_rd2p_internal
+    %else
+        %define func cabac_block_residual_rd_internal
+    %endif
 %endif
 
-%ifdef PIC
+%if %3
+; stack: abs coefs, level list, saved cb state pointer, dummy state byte
+    %define rdlist  rsp+maxcoeffs*SIZEOF_DCTCOEF
+    %define rdcb    rsp+maxcoeffs*(SIZEOF_DCTCOEF+4)
+    %define rddummy rsp+maxcoeffs*(SIZEOF_DCTCOEF+4)+8
+    %assign rdstack -((maxcoeffs*(SIZEOF_DCTCOEF+4)+16+mmsize-1) & ~(mmsize-1)) ; keep rsp mmsize aligned
+    cglobal func, 4,15,6,rdstack
+    %ifdef PIC
+        lea     r12, [$$]
+        %define GLOBAL +r12-$$
+    %else
+        %define GLOBAL
+    %endif
+%elifdef PIC
     cglobal func, 4,13,6,-maxcoeffs*SIZEOF_DCTCOEF
     lea     r12, [$$]
     %define GLOBAL +r12-$$
@@ -498,6 +523,68 @@ CABAC bmi2
     add     r0d, r1d
 .skip_last_sigmap:
     LOAD_DCTCOEF r1d
+%if %3
+    mov  [rdcb], r3
+    mov  [rdlist], r1d                                        ; list[0] = abs(l[last])
+    mov     r13d, 1                                           ; r13 = list length
+    lea      r14, [rddummy]
+    dec      r6d
+    jl .levels
+%if %1
+    %define sigp  r10
+    %define lastp r11
+%else
+    %define sigp  r5+r6
+    %define lastp r7+r6
+%endif
+; for( int i = last-1 ; i >= 0; i-- ), without branching on l[i]
+.sigmap_loop:
+    LOAD_DCTCOEF r1d
+%if %1
+    movzx    r10d, byte [r4+r6]
+    movzx    r11d, byte [last_coeff_flag_offset_8x8+r6 GLOBAL]
+    add       r10, r5
+    add       r11, r7
+%endif
+    xor      r2d, r2d
+    test     r1d, r1d
+    setnz    r2b                                              ; r2 = bin = !!l[i]
+    lea       r3, [lastp]
+    cmovz     r3, r14                                         ; l[i] == 0: no last flag, store to the dummy
+    mov [rdlist+r13*4], r1d
+    add     r13d, r2d
+; x264_cabac_encode_decision( cb, ctx_sig + i, bin )
+    movzx    r9d, byte [sigp]
+    movzx    r1d, byte [lastp]
+    lea     r11d, [r2+r9*2]
+    xor      r9d, r2d
+    movzx   r11d, byte [cabac_transition+r11 GLOBAL]
+    movzx    r9d, word [cabac_entropy+r9*2 GLOBAL]
+    mov   [sigp], r11b
+    add      r0d, r9d
+; if( bin ) x264_cabac_encode_decision( cb, ctx_last + i, 0 )
+    movzx    r9d, byte [cabac_transition+r1*2 GLOBAL]
+    movzx    r1d, word [cabac_entropy+r1*2 GLOBAL]
+    mov     [r3], r9b
+    imul     r1d, r2d
+    add      r0d, r1d
+    dec      r6d
+    jge .sigmap_loop
+.levels:
+    mov      r1d, [rdlist]
+    COEFF_ABS_LEVEL_GT1 last, 1
+    lea       r4, [rdlist+r13*4]
+    mov      r6d, 1
+    sub       r6, r13
+    jz .end
+.level_loop:
+    mov      r1d, [r4+r6*4]
+    COEFF_ABS_LEVEL_GT1 coeff, 0
+    inc       r6
+    jnz .level_loop
+.end:
+    mov       r3, [rdcb]
+%else
     COEFF_ABS_LEVEL_GT1 last, 1
 ; for( int i = last-1 ; i >= 0; i-- )
     dec     r6d
@@ -535,6 +622,7 @@ CABAC bmi2
     dec     r6d
     jge .coeff_loop
 .end:
+%endif
     mov [r3+cb.bits_encoded-cb.state], r0d
     RET
 %endmacro
@@ -543,15 +631,23 @@ CABAC bmi2
 INIT_XMM sse2
 CABAC_RESIDUAL_RD 0, coeff_last_sse2
 CABAC_RESIDUAL_RD 1, coeff_last_sse2
+CABAC_RESIDUAL_RD 0, coeff_last_sse2, 1
+CABAC_RESIDUAL_RD 1, coeff_last_sse2, 1
 INIT_XMM sse2,lzcnt
 CABAC_RESIDUAL_RD 0, coeff_last_sse2_lzcnt
 CABAC_RESIDUAL_RD 1, coeff_last_sse2_lzcnt
+CABAC_RESIDUAL_RD 0, coeff_last_sse2_lzcnt, 1
+CABAC_RESIDUAL_RD 1, coeff_last_sse2_lzcnt, 1
 INIT_XMM ssse3
 CABAC_RESIDUAL_RD 0, coeff_last_sse2
 CABAC_RESIDUAL_RD 1, coeff_last_sse2
+CABAC_RESIDUAL_RD 0, coeff_last_sse2, 1
+CABAC_RESIDUAL_RD 1, coeff_last_sse2, 1
 INIT_XMM ssse3,lzcnt
 CABAC_RESIDUAL_RD 0, coeff_last_sse2_lzcnt
 CABAC_RESIDUAL_RD 1, coeff_last_sse2_lzcnt
+CABAC_RESIDUAL_RD 0, coeff_last_sse2_lzcnt, 1
+CABAC_RESIDUAL_RD 1, coeff_last_sse2_lzcnt, 1
 %if HIGH_BIT_DEPTH
 INIT_ZMM avx512
 %else
@@ -560,6 +656,7 @@ INIT_YMM avx512
 CABAC_RESIDUAL_RD 0, coeff_last_avx512
 INIT_ZMM avx512
 CABAC_RESIDUAL_RD 1, coeff_last_avx512
+CABAC_RESIDUAL_RD 1, coeff_last_avx512, 1
 %endif
 
 ;-----------------------------------------------------------------------------
