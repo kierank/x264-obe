@@ -1074,6 +1074,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
 #endif
         INIT2( hadamard_ac, _avx2 );
+#if ARCH_X86_64
+        pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
+        pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
+#endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
         pixf->intra_sad_x3_8x8 = x264_intra_sad_x3_8x8_avx2;
@@ -1099,6 +1103,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_x4[PIXEL_16x16] = x264_pixel_satd_x4_16x16_avx512;
         pixf->satd_x4[PIXEL_16x8]  = x264_pixel_satd_x4_16x8_avx512;
         pixf->satd_x4[PIXEL_8x16]  = x264_pixel_satd_x4_8x16_avx512;
+#if ARCH_X86_64
+        pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
+#endif
     }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH

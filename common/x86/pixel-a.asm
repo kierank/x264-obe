@@ -45,6 +45,7 @@ mask_ff:   times 16 db 0xff
 mask_ac4:  times 2 dw 0, -1, -1, -1, 0, -1, -1, -1
 mask_ac4b: times 2 dw 0, -1, 0, -1, -1, -1, -1, -1
 mask_ac8:  times 2 dw 0, -1, -1, -1, -1, -1, -1, -1
+intra_8x8c_dc_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
 %if BIT_DEPTH == 10
 ssim_c1:   times 4 dd 6697.7856    ; .01*.01*1023*1023*64
 ssim_c2:   times 4 dd 3797644.4352 ; .03*.03*1023*1023*64*63
@@ -4600,6 +4601,212 @@ cglobal pixel_satd_8x16, 4,8,8
 INIT_YMM avx2
 SA8D_SATD
 HADAMARD_AC_SSE2
+%endif
+%if ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; void intra_satd_x3_16x16( uint16_t *fenc, uint16_t *fdec, int res[3] ) (V, H, DC)
+; void intra_satd_x3_8x8c( uint16_t *fenc, uint16_t *fdec, int res[3] )  (DC, H, V)
+; 10-bit: the three predictions are built in registers and each goes through the
+; vertical-mode SATD_8x4_SSE pass of pixel_satd, so the results equal satd() of the
+; C predictions. fenc rows are loaded once, into m8-m11.
+;-----------------------------------------------------------------------------
+
+; m0-m3 = m8-m11 - m%1
+%macro INTRA_HBD_DIFF4 1
+    psubw   m0, m8, m%1
+    psubw   m1, m9, m%1
+    psubw   m2, m10, m%1
+    psubw   m3, m11, m%1
+%endmacro
+
+; word accumulator m%1 -> 4 dword sums in xm%1 (%2: lanes may exceed 32767)
+%macro INTRA_HBD_FOLD 2
+%if %2
+    HADDUWD m%1, m4
+%else
+    pmaddwd m%1, [pw_1]
+%endif
+%if mmsize == 64
+    vextracti32x8 ym4, m%1, 1
+    paddd   ym%1, ym4
+%endif
+%if mmsize >= 32
+    vextracti128 xm4, ym%1, 1
+    paddd   xm%1, xm4
+%endif
+%endmacro
+
+; accumulators m%1, m%2, m%3 -> res[0], res[1], res[2]
+%macro INTRA_HBD_X3_END 4
+    INTRA_HBD_FOLD %1, %4
+    INTRA_HBD_FOLD %2, %4
+    INTRA_HBD_FOLD %3, %4
+    punpckldq     xm4, xm%1, xm%2
+    punpckhdq     xm%1, xm%2
+    paddd         xm%1, xm4
+    punpckhdq     xm5, xm%3, xm%3
+    punpckldq     xm%3, xm%3
+    paddd         xm%3, xm5
+    punpcklqdq    xm4, xm%1, xm%3
+    punpckhqdq    xm%1, xm%3
+    paddd         xm%1, xm4
+    movq      [r2], xm%1
+    pextrd  [r2+8], xm%1, 2
+    RET
+%endmacro
+
+%macro INTRA_SATD_X3_16x16_HBD 0
+cglobal intra_satd_x3_16x16, 3,5,16
+    ; DC = (sum of top + sum of left + 16) >> 5
+    movzx         r3d, word [r1-2]
+%assign intra_hbd_y 1
+%rep 15
+    movzx         r4d, word [r1+intra_hbd_y*FDEC_STRIDEB-2]
+    add           r3d, r4d
+%assign intra_hbd_y intra_hbd_y+1
+%endrep
+    movu          ym4, [r1-FDEC_STRIDEB]
+    pmaddwd       ym4, [pw_1]
+    vextracti128  xm5, ym4, 1
+    paddd         xm4, xm5
+    punpckhqdq    xm5, xm4, xm4
+    paddd         xm4, xm5
+    pshuflw       xm5, xm4, q1032
+    paddd         xm4, xm5
+    movd          r4d, xm4
+    lea           r3d, [r3+r4+16]
+    shr           r3d, 5
+    movd         xm13, r3d
+    vpbroadcastw  m13, xm13                ; DC
+%if mmsize == 64
+    vbroadcasti32x8 m12, [r1-FDEC_STRIDEB] ; V: the top row in both halves
+    mov           r3d, 0xffff0000
+    kmovd          k1, r3d
+%else
+    movu          m12, [r1-FDEC_STRIDEB]
+%endif
+%assign intra_hbd_pass 0
+%rep 128/mmsize
+%if mmsize == 64
+    %assign intra_hbd_r0 intra_hbd_pass*8   ; lanes: rows r0+i and r0+i+4
+%else
+    %assign intra_hbd_r0 intra_hbd_pass*4   ; one row per register
+%endif
+%assign intra_hbd_i 0
+%rep 4
+    %assign intra_hbd_f 8+intra_hbd_i
+%if mmsize == 64
+    movu          ym %+ intra_hbd_f, [r0+(intra_hbd_r0+intra_hbd_i)*FENC_STRIDEB]
+    vinserti32x8   m %+ intra_hbd_f, m %+ intra_hbd_f, [r0+(intra_hbd_r0+intra_hbd_i+4)*FENC_STRIDEB], 1
+%else
+    movu           m %+ intra_hbd_f, [r0+(intra_hbd_r0+intra_hbd_i)*FENC_STRIDEB]
+%endif
+%assign intra_hbd_i intra_hbd_i+1
+%endrep
+    INTRA_HBD_DIFF4 12                      ; V
+%if intra_hbd_pass == 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14
+%endif
+%assign intra_hbd_i 0
+%rep 4                                      ; H: each row minus its left neighbour
+    %assign intra_hbd_f 8+intra_hbd_i
+%if mmsize == 64
+    vpbroadcastw   m %+ intra_hbd_i, [r1+(intra_hbd_r0+intra_hbd_i)*FDEC_STRIDEB-2]
+    vpbroadcastw   m %+ intra_hbd_i {k1}, [r1+(intra_hbd_r0+intra_hbd_i+4)*FDEC_STRIDEB-2]
+%else
+    vpbroadcastw   m %+ intra_hbd_i, [r1+(intra_hbd_r0+intra_hbd_i)*FDEC_STRIDEB-2]
+%endif
+    psubw          m %+ intra_hbd_i, m %+ intra_hbd_f, m %+ intra_hbd_i
+%assign intra_hbd_i intra_hbd_i+1
+%endrep
+%if intra_hbd_pass == 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15
+%endif
+    INTRA_HBD_DIFF4 13                      ; DC
+%if intra_hbd_pass == 0
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endif
+%assign intra_hbd_pass intra_hbd_pass+1
+%endrep
+    INTRA_HBD_X3_END 14, 15, 6, mmsize == 32
+%endmacro
+
+;-----------------------------------------------------------------------------
+; chroma 8x8, ymm: lanes = rows i and i+4; the DC register is
+; lane 0 { dc0 x4, dc1 x4 }, lane 1 { dc2 x4, dc3 x4 } for every row.
+;-----------------------------------------------------------------------------
+%macro INTRA_SATD_X3_8x8C_HBD 0
+cglobal intra_satd_x3_8x8c, 3,7,16
+    movu          xm4, [r1-FDEC_STRIDEB]
+    pmaddwd       xm4, [pw_1]
+    pshufd        xm5, xm4, q2301
+    paddd         xm4, xm5                  ; s0 s0 s1 s1 (top 0-3, top 4-7)
+    movd          r3d, xm4
+    pextrd        r5d, xm4, 2
+    movzx         r4d, word [r1-2]
+%assign intra_hbd_y 1
+%rep 3
+    movzx         r6d, word [r1+intra_hbd_y*FDEC_STRIDEB-2]
+    add           r4d, r6d
+%assign intra_hbd_y intra_hbd_y+1
+%endrep                                     ; s2 = left 0-3
+    lea           r3d, [r3+r4+4]
+    shr           r3d, 3
+    movd         xm13, r3d                  ; dc0 = (s0 + s2 + 4) >> 3
+    lea           r3d, [r5+2]
+    shr           r3d, 2
+    pinsrw       xm13, r3d, 1               ; dc1 = (s1 + 2) >> 2
+    movzx         r4d, word [r1+4*FDEC_STRIDEB-2]
+%rep 3
+    movzx         r6d, word [r1+intra_hbd_y*FDEC_STRIDEB-2]
+    add           r4d, r6d
+%assign intra_hbd_y intra_hbd_y+1
+%endrep                                     ; s3 = left 4-7
+    lea           r3d, [r4+2]
+    shr           r3d, 2
+    pinsrw       xm13, r3d, 2               ; dc2 = (s3 + 2) >> 2
+    lea           r3d, [r4+r5+4]
+    shr           r3d, 3
+    pinsrw       xm13, r3d, 3               ; dc3 = (s1 + s3 + 4) >> 3
+    vpbroadcastq  m13, xm13
+    pshufb        m13, [intra_8x8c_dc_shuf]
+    vbroadcasti128 m12, [r1-FDEC_STRIDEB]  ; V
+%assign intra_hbd_i 0
+%rep 4
+    %assign intra_hbd_f 8+intra_hbd_i
+    movu          xm %+ intra_hbd_f, [r0+intra_hbd_i*FENC_STRIDEB]
+    vinserti128    m %+ intra_hbd_f, m %+ intra_hbd_f, [r0+(intra_hbd_i+4)*FENC_STRIDEB], 1
+%assign intra_hbd_i intra_hbd_i+1
+%endrep
+    INTRA_HBD_DIFF4 13                      ; DC
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14, swap
+%assign intra_hbd_i 0
+%rep 4                                      ; H
+    %assign intra_hbd_f 8+intra_hbd_i
+    vpbroadcastw  xm %+ intra_hbd_i, [r1+intra_hbd_i*FDEC_STRIDEB-2]
+    vpbroadcastw  xm6, [r1+(intra_hbd_i+4)*FDEC_STRIDEB-2]
+    vinserti128    m %+ intra_hbd_i, m %+ intra_hbd_i, xm6, 1
+    psubw          m %+ intra_hbd_i, m %+ intra_hbd_f, m %+ intra_hbd_i
+%assign intra_hbd_i intra_hbd_i+1
+%endrep
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15, swap
+    INTRA_HBD_DIFF4 12                      ; V
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+    INTRA_HBD_X3_END 14, 15, 6, 0
+%endmacro
+
+INIT_YMM avx2
+INTRA_SATD_X3_16x16_HBD
+INTRA_SATD_X3_8x8C_HBD
+INIT_ZMM avx512
+INTRA_SATD_X3_16x16_HBD
 %endif
 %endif ; HIGH_BIT_DEPTH
 
