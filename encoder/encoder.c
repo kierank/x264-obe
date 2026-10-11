@@ -2345,7 +2345,7 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
     if( PARAM_INTERLACED && (!h->param.b_sliced_threads || pass == 1) )
         for( int p = 0; p < h->fdec->i_plane; p++ )
             for( int i = minpix_y>>(CHROMA_V_SHIFT && p); i < maxpix_y>>(CHROMA_V_SHIFT && p); i++ )
-                memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
+                h->mc.memcpy_nt( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
                         h->fdec->plane[p]     + i*h->fdec->i_stride[p],
                         h->mb.i_mb_width*16*sizeof(pixel) );
 

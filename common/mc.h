@@ -115,6 +115,8 @@ typedef struct
     void (*prefetch_ref)( pixel *pix, intptr_t stride, int parity );
 
     void *(*memcpy_aligned)( void *dst, const void *src, size_t n );
+    /* as memcpy_aligned with non-temporal stores (n%16 == 0) */
+    void *(*memcpy_nt)( void *dst, const void *src, size_t n );
     void (*memzero_aligned)( void *dst, size_t n );
 
     /* successive elimination prefilter */

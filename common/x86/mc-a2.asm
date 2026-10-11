@@ -1816,6 +1816,24 @@ LOAD_DEINTERLEAVE_CHROMA_FENC_AVX512
 ; memzero SSE will fail for non-mod128.
 
 ;-----------------------------------------------------------------------------
+; void *memcpy_nt( void *dst, const void *src, size_t n );
+; 16 byte aligned, n%16 == 0; non-temporal stores, so the destination lines
+; are not read in first
+;-----------------------------------------------------------------------------
+INIT_XMM sse2
+cglobal memcpy_nt, 3,3
+    sub      r2d, 16
+    jl .ret
+.loop:
+    mova      m0, [r1+r2]
+    movntdq [r0+r2], m0
+    sub      r2d, 16
+    jge .loop
+.ret:
+    sfence
+    RET
+
+;-----------------------------------------------------------------------------
 ; void *memcpy_aligned( void *dst, const void *src, size_t n );
 ;-----------------------------------------------------------------------------
 %macro MEMCPY 0

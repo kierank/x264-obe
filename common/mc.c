@@ -636,6 +636,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->prefetch_fenc_422 = prefetch_fenc_null;
     pf->prefetch_ref  = prefetch_ref_null;
     pf->memcpy_aligned = memcpy;
+    pf->memcpy_nt = memcpy;
     pf->memzero_aligned = memzero_aligned;
     pf->frame_init_lowres_core = frame_init_lowres_core;
 #if HIGH_BIT_DEPTH
