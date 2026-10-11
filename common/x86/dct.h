@@ -163,6 +163,8 @@ void x264_sub16x16_dct8_sse4 ( int32_t dct[4][64], uint16_t *pix1, uint16_t *pix
 void x264_sub8x8_dct8_avx    ( dctcoef dct   [64], pixel *pix1, pixel *pix2 );
 #define x264_sub16x16_dct8_avx x264_template(sub16x16_dct8_avx)
 void x264_sub16x16_dct8_avx  ( dctcoef dct[4][64], pixel *pix1, pixel *pix2 );
+#define x264_sub8x8_dct8_avx2 x264_template(sub8x8_dct8_avx2)
+void x264_sub8x8_dct8_avx2   ( dctcoef dct   [64], pixel *pix1, pixel *pix2 );
 #define x264_sub16x16_dct8_avx2 x264_template(sub16x16_dct8_avx2)
 void x264_sub16x16_dct8_avx2 ( dctcoef dct[4][64], pixel *pix1, pixel *pix2 );
 

@@ -188,6 +188,38 @@ SUB8x8_DCT8
 INIT_XMM avx
 SUB8x8_DCT8
 
+;-----------------------------------------------------------------------------
+; void sub8x8_dct8( int32_t dct[64], uint16_t *pix1, uint16_t *pix2 ), AVX2
+; Word pass on xmm rows (upper lanes zero), then one 8x8 word transpose and
+; sign extension, so the dword pass works on whole 8 coefficient rows and
+; each row is one 32 byte store, which quant_8x8's 32 byte loads forward.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal sub8x8_dct8, 3,3,10
+    TAIL_CALL .skip_prologue, 0
+global current_function %+ .skip_prologue
+.skip_prologue:
+%assign dct8_hbd_i 0
+%rep 8
+    movu      xm %+ dct8_hbd_i, [r1+dct8_hbd_i*FENC_STRIDEB]
+    psubw     xm %+ dct8_hbd_i, [r2+dct8_hbd_i*FDEC_STRIDEB]
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
+%assign dct8_hbd_i 0
+%rep 8
+    pmovsxwd   m %+ dct8_hbd_i, xm %+ dct8_hbd_i
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    DCT8_1D d, 0,1,2,3,4,5,6,7, 8,9
+%assign dct8_hbd_i 0
+%rep 8
+    mova [r0+dct8_hbd_i*32], m %+ dct8_hbd_i
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    ret
+
 %macro ADD8x8_IDCT8 0
 cglobal add8x8_idct8, 2,2,16
     add r1, 128
