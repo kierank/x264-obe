@@ -1049,6 +1049,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
         if( !(cpu&X264_CPU_STACK_MOD4) )
             pf->mc_chroma = x264_mc_chroma_avx2;
+        pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
+        pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx2;
     }
 
     if( cpu&X264_CPU_AVX512 )
