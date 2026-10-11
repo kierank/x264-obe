@@ -163,6 +163,7 @@ static void print_bench(void)
                 continue;
             printf( "%s_%s%s: %"PRId64"\n", benchs[i].name,
 #if HAVE_MMX
+                    b->cpu&X264_CPU_AVX512ICL ? "avx512icl" :
                     b->cpu&X264_CPU_AVX512 ? "avx512" :
                     b->cpu&X264_CPU_AVX2 && b->cpu&X264_CPU_FMA3 ? "avx2_fma3" :
                     b->cpu&X264_CPU_AVX2 ? "avx2" :
@@ -2724,6 +2725,8 @@ static int check_all_flags( void )
     /* everything AVX-512 machines have, as x264_cpu_names' AVX512 */
     if( x264_cpu_detect() & X264_CPU_AVX512 )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX512, "AVX512" );
+    if( x264_cpu_detect() & X264_CPU_AVX512ICL )
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_AVX512ICL, "AVX512ICL" );
 #elif ARCH_PPC
     if( x264_cpu_detect() & X264_CPU_ALTIVEC )
     {

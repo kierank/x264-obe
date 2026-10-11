@@ -69,6 +69,7 @@ const x264_cpu_name_t x264_cpu_names[] =
     {"AVX2",        AVX|X264_CPU_AVX2},
     {"FMA3",        AVX|X264_CPU_FMA3},
     {"AVX512",      AVX|X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX2|X264_CPU_AVX512},
+    {"AVX512ICL",   AVX|X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX2|X264_CPU_AVX512|X264_CPU_AVX512ICL},
 #undef AVX
 #undef SSE2
 #undef MMX2
@@ -182,6 +183,9 @@ uint32_t x264_cpu_detect( void )
             {
                 if( (ebx&0xD0030000) == 0xD0030000 )
                     cpu |= X264_CPU_AVX512;
+                if( (ebx&0xD0230000) == 0xD0230000 && /* AVX-512 {F, CD, BW, DQ, VL} + IFMA */
+                    (ecx&0x00005F42) == 0x00005F42 )  /* VBMI, VBMI2, GFNI, VAES, VPCLMULQDQ, VNNI, BITALG, VPOPCNTDQ */
+                    cpu |= X264_CPU_AVX512ICL;
             }
         }
     }

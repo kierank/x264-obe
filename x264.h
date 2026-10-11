@@ -133,6 +133,7 @@ typedef struct
 #define X264_CPU_BMI2               (1<<14)
 #define X264_CPU_AVX2               (1<<15)
 #define X264_CPU_AVX512             (1<<16) /* AVX-512 {F, CD, BW, DQ, VL}, requires OS support */
+#define X264_CPU_AVX512ICL          (1<<26) /* AVX-512 Ice Lake subset {VBMI, VBMI2, VNNI, BITALG, VPOPCNTDQ, GFNI, VAES, VPCLMULQDQ, IFMA} */
 /* x86 modifiers */
 #define X264_CPU_CACHELINE_32       (1<<17) /* avoid memory loads that span the border between two cachelines */
 #define X264_CPU_CACHELINE_64       (1<<18) /* 32/64 is the size of a cacheline in bytes */
