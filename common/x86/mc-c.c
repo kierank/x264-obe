@@ -306,6 +306,8 @@ void x264_prefetch_fenc_420_mmx2( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_fenc_422_mmx2( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_ref_mmx2( pixel *, intptr_t, int );
 void x264_plane_copy_core_mmx2( pixel *, intptr_t, pixel *, intptr_t, int w, int h );
+#define x264_plane_copy_avx512 x264_template(plane_copy_avx512)
+void x264_plane_copy_avx512( pixel *, intptr_t, pixel *, intptr_t, int w, int h );
 void x264_plane_copy_c( pixel *, intptr_t, pixel *, intptr_t, int w, int h );
 void x264_plane_copy_interleave_core_mmx2( pixel *dst,  intptr_t i_dst,
                                            pixel *srcu, intptr_t i_srcu,
@@ -1227,6 +1229,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         return;
     pf->memcpy_aligned = x264_memcpy_aligned_avx512;
     pf->memzero_aligned = x264_memzero_aligned_avx512;
+    pf->plane_copy = x264_plane_copy_avx512;
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;

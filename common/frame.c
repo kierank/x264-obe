@@ -86,6 +86,9 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
     int disalign = 1<<10;
 #endif
 
+    /* ensure frame alignment after PADH is added */
+    int padh_align = X264_MAX( align - PADH * (int)sizeof(pixel), 0 ) / (int)sizeof(pixel);
+
     CHECKED_MALLOCZERO( frame, sizeof(x264_frame_t) );
     PREALLOC_INIT
 
@@ -151,9 +154,9 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
     {
         int chroma_padv = i_padv >> (i_csp == X264_CSP_NV12);
         int chroma_plane_size = (frame->i_stride[1] * (frame->i_lines[1] + 2*chroma_padv));
-        PREALLOC( frame->buffer[1], chroma_plane_size * sizeof(pixel) );
+        PREALLOC( frame->buffer[1], (chroma_plane_size + padh_align) * sizeof(pixel) );
         if( PARAM_INTERLACED )
-            PREALLOC( frame->buffer_fld[1], chroma_plane_size * sizeof(pixel) );
+            PREALLOC( frame->buffer_fld[1], (chroma_plane_size + padh_align) * sizeof(pixel) );
     }
 
     /* all 4 luma planes allocated together, since the cacheline split code
@@ -165,15 +168,15 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
         if( h->param.analyse.i_subpel_refine && b_fdec )
         {
             /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
-            PREALLOC( frame->buffer[p], 4*luma_plane_size * sizeof(pixel) );
+            PREALLOC( frame->buffer[p], (4*luma_plane_size + padh_align) * sizeof(pixel) );
             if( PARAM_INTERLACED )
-                PREALLOC( frame->buffer_fld[p], 4*luma_plane_size * sizeof(pixel) );
+                PREALLOC( frame->buffer_fld[p], (4*luma_plane_size + padh_align) * sizeof(pixel) );
         }
         else
         {
-            PREALLOC( frame->buffer[p], luma_plane_size * sizeof(pixel) );
+            PREALLOC( frame->buffer[p], (luma_plane_size + padh_align) * sizeof(pixel) );
             if( PARAM_INTERLACED )
-                PREALLOC( frame->buffer_fld[p], luma_plane_size * sizeof(pixel) );
+                PREALLOC( frame->buffer_fld[p], (luma_plane_size + padh_align) * sizeof(pixel) );
         }
     }
 
@@ -242,9 +245,9 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
     if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
     {
         int chroma_padv = i_padv >> (i_csp == X264_CSP_NV12);
-        frame->plane[1] = frame->buffer[1] + frame->i_stride[1] * chroma_padv + PADH;
+        frame->plane[1] = frame->buffer[1] + frame->i_stride[1] * chroma_padv + PADH + padh_align;
         if( PARAM_INTERLACED )
-            frame->plane_fld[1] = frame->buffer_fld[1] + frame->i_stride[1] * chroma_padv + PADH;
+            frame->plane_fld[1] = frame->buffer_fld[1] + frame->i_stride[1] * chroma_padv + PADH + padh_align;
     }
 
     for( int p = 0; p < luma_plane_count; p++ )
@@ -254,16 +257,16 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
         {
             for( int i = 0; i < 4; i++ )
             {
-                frame->filtered[p][i] = frame->buffer[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH;
-                frame->filtered_fld[p][i] = frame->buffer_fld[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH;
+                frame->filtered[p][i] = frame->buffer[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
+                frame->filtered_fld[p][i] = frame->buffer_fld[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
             }
             frame->plane[p] = frame->filtered[p][0];
             frame->plane_fld[p] = frame->filtered_fld[p][0];
         }
         else
         {
-            frame->filtered[p][0] = frame->plane[p] = frame->buffer[p] + frame->i_stride[p] * i_padv + PADH;
-            frame->filtered_fld[p][0] = frame->plane_fld[p] = frame->buffer_fld[p] + frame->i_stride[p] * i_padv + PADH;
+            frame->filtered[p][0] = frame->plane[p] = frame->buffer[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
+            frame->filtered_fld[p][0] = frame->plane_fld[p] = frame->buffer_fld[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
         }
     }
 
