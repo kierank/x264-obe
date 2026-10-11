@@ -59,11 +59,15 @@ static uint16_t cabac_size_5ones[128];
 #undef  x264_cabac_encode_bypass
 #undef  x264_cabac_encode_terminal
 #undef  x264_cabac_encode_ue_bypass
-#define x264_cabac_encode_decision(c,x,v) x264_cabac_size_decision(c,x,v)
-#define x264_cabac_encode_decision_noup(c,x,v) x264_cabac_size_decision_noup(c,x,v)
-#define x264_cabac_encode_terminal(c)     ((c)->f8_bits_encoded += 7)
-#define x264_cabac_encode_bypass(c,v)     ((c)->f8_bits_encoded += 256)
-#define x264_cabac_encode_ue_bypass(c,e,v) ((c)->f8_bits_encoded += (bs_size_ue_big(v+(1<<e)-1)-e)<<8)
+/* CABAC_F8 is the bit accumulator. A size block with no calls inside may point
+ * it at a local, so the sum stays in a register instead of a load/add/store of
+ * f8_bits_encoded per bin, and add the local to f8_bits_encoded once at the end. */
+#define CABAC_F8(c) ((c)->f8_bits_encoded)
+#define x264_cabac_encode_decision(c,x,v) (CABAC_F8(c) += x264_cabac_size_decision2( &(c)->state[x], v ))
+#define x264_cabac_encode_decision_noup(c,x,v) (CABAC_F8(c) += x264_cabac_size_decision_noup2( &(c)->state[x], v ))
+#define x264_cabac_encode_terminal(c)     (CABAC_F8(c) += 7)
+#define x264_cabac_encode_bypass(c,v)     (CABAC_F8(c) += 256)
+#define x264_cabac_encode_ue_bypass(c,e,v) (CABAC_F8(c) += (bs_size_ue_big(v+(1<<e)-1)-e)<<8)
 #undef  x264_macroblock_write_cabac
 #define x264_macroblock_write_cabac  static x264_macroblock_size_cabac
 #include "cabac.c"

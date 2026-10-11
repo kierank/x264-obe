@@ -287,6 +287,9 @@ static ALWAYS_INLINE int x264_cabac_mvd_cpn( x264_t *h, x264_cabac_t *cb, int i_
     int i_abs = abs( mvd );
     x264_cabac_encode_decision( cb, ctxbase + ctx, 1 );
 #if RDO_SKIP_BS
+    int f8_local = 0;
+#undef  CABAC_F8
+#define CABAC_F8(c) f8_local
     if( i_abs <= 3 )
     {
         for( int i = 1; i < i_abs; i++ )
@@ -301,16 +304,19 @@ static ALWAYS_INLINE int x264_cabac_mvd_cpn( x264_t *h, x264_cabac_t *cb, int i_
         x264_cabac_encode_decision( cb, ctxbase + 5, 1 );
         if( i_abs < 9 )
         {
-            cb->f8_bits_encoded += x264_cabac_size_unary[i_abs - 3][cb->state[ctxbase+6]];
+            CABAC_F8(cb) += x264_cabac_size_unary[i_abs - 3][cb->state[ctxbase+6]];
             cb->state[ctxbase+6] = x264_cabac_transition_unary[i_abs - 3][cb->state[ctxbase+6]];
         }
         else
         {
-            cb->f8_bits_encoded += cabac_size_5ones[cb->state[ctxbase+6]];
+            CABAC_F8(cb) += cabac_size_5ones[cb->state[ctxbase+6]];
             cb->state[ctxbase+6] = cabac_transition_5ones[cb->state[ctxbase+6]];
             x264_cabac_encode_ue_bypass( cb, 3, i_abs - 9 );
         }
     }
+#undef  CABAC_F8
+#define CABAC_F8(c) ((c)->f8_bits_encoded)
+    cb->f8_bits_encoded += f8_local;
 #else
     static const uint8_t ctxes[8] = { 3,4,5,6,6,6,6,6 };
 
@@ -790,6 +796,9 @@ static void ALWAYS_INLINE x264_cabac_block_residual_internal( x264_t *h, x264_ca
     int ctx = coeff_abs_level1_ctx[0] + ctx_level;
     int node_ctx;
     const uint8_t *levelgt1_ctx = chroma422dc ? coeff_abs_levelgt1_ctx_chroma_dc : coeff_abs_levelgt1_ctx;
+    int f8_local = 0;
+#undef  CABAC_F8
+#define CABAC_F8(c) f8_local
 
     if( last != (b_8x8 ? 63 : chroma422dc ? 7 : x264_count_cat_m1[ctx_block_cat]) )
     {
@@ -805,12 +814,12 @@ static void ALWAYS_INLINE x264_cabac_block_residual_internal( x264_t *h, x264_ca
         ctx = levelgt1_ctx[0] + ctx_level;
         if( coeff_abs < 15 )
         {
-            cb->f8_bits_encoded += x264_cabac_size_unary[coeff_abs-1][cb->state[ctx]];
+            CABAC_F8(cb) += x264_cabac_size_unary[coeff_abs-1][cb->state[ctx]];
             cb->state[ctx] = x264_cabac_transition_unary[coeff_abs-1][cb->state[ctx]];
         }
         else
         {
-            cb->f8_bits_encoded += x264_cabac_size_unary[14][cb->state[ctx]];
+            CABAC_F8(cb) += x264_cabac_size_unary[14][cb->state[ctx]];
             cb->state[ctx] = x264_cabac_transition_unary[14][cb->state[ctx]];
             x264_cabac_encode_ue_bypass( cb, 0, coeff_abs - 15 );
         }
@@ -840,12 +849,12 @@ static void ALWAYS_INLINE x264_cabac_block_residual_internal( x264_t *h, x264_ca
                 ctx = levelgt1_ctx[node_ctx] + ctx_level;
                 if( coeff_abs < 15 )
                 {
-                    cb->f8_bits_encoded += x264_cabac_size_unary[coeff_abs-1][cb->state[ctx]];
+                    CABAC_F8(cb) += x264_cabac_size_unary[coeff_abs-1][cb->state[ctx]];
                     cb->state[ctx] = x264_cabac_transition_unary[coeff_abs-1][cb->state[ctx]];
                 }
                 else
                 {
-                    cb->f8_bits_encoded += x264_cabac_size_unary[14][cb->state[ctx]];
+                    CABAC_F8(cb) += x264_cabac_size_unary[14][cb->state[ctx]];
                     cb->state[ctx] = x264_cabac_transition_unary[14][cb->state[ctx]];
                     x264_cabac_encode_ue_bypass( cb, 0, coeff_abs - 15 );
                 }
@@ -862,6 +871,9 @@ static void ALWAYS_INLINE x264_cabac_block_residual_internal( x264_t *h, x264_ca
             x264_cabac_encode_decision( cb, ctx_sig + (b_8x8 ? sig_offset[i] :
                                         chroma422dc ? x264_coeff_flag_offset_chroma_422_dc[i] : i), 0 );
     }
+#undef  CABAC_F8
+#define CABAC_F8(c) ((c)->f8_bits_encoded)
+    cb->f8_bits_encoded += f8_local;
 }
 
 void x264_cabac_block_residual_8x8_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
