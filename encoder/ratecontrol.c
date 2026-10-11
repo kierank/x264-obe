@@ -7,7 +7,7 @@
  *          Michael Niedermayer <michaelni@gmx.at>
  *          Gabriel Bouvigne <gabriel.bouvigne@joost.com>
  *          Jason Garrett-Glaser <darkshikari@gmail.com>
- *          Måns Rullgård <mru@mru.ath.cx>
+ *          Mï¿½ns Rullgï¿½rd <mru@mru.ath.cx>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -352,7 +352,28 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
     /* Actual adaptive quantization */
     else
     {
-        if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
+        float bias_strength = 0.f;
+        if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE_BIASED )
+        {
+            /* as upstream: energy normalised to 8-bit, so 14 is the 8-bit pivot at any depth */
+            float bit_depth_correction = 1.f / (1 << (2*(BIT_DEPTH-8)));
+            float avg_adj_pow2 = 0.f;
+            for( int mb_y = 0; mb_y < h->mb.i_mb_height; mb_y++ )
+                for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x++ )
+                {
+                    uint32_t energy = x264_ac_energy_mb( h, mb_x, mb_y, frame );
+                    float qp_adj = powf( energy * bit_depth_correction + 1, 0.125f );
+                    frame->f_qp_offset[mb_x + mb_y*h->mb.i_mb_stride] = qp_adj;
+                    avg_adj += qp_adj;
+                    avg_adj_pow2 += qp_adj * qp_adj;
+                }
+            avg_adj /= h->mb.i_mb_count;
+            avg_adj_pow2 /= h->mb.i_mb_count;
+            strength = h->param.rc.f_aq_strength * avg_adj;
+            avg_adj = avg_adj - 0.5f * (avg_adj_pow2 - 14.f) / avg_adj;
+            bias_strength = h->param.rc.f_aq_strength;
+        }
+        else if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
         {
             float bit_depth_correction = powf(1 << (BIT_DEPTH-8), 0.5f);
             float avg_adj_pow2 = 0.f;
@@ -378,7 +399,12 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
             {
                 float qp_adj;
                 int mb_xy = mb_x + mb_y*h->mb.i_mb_stride;
-                if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
+                if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE_BIASED )
+                {
+                    qp_adj = frame->f_qp_offset[mb_xy];
+                    qp_adj = strength * (qp_adj - avg_adj) + bias_strength * (1.f - 14.f / (qp_adj * qp_adj));
+                }
+                else if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
                 {
                     qp_adj = frame->f_qp_offset[mb_xy];
                     qp_adj = strength * (qp_adj - avg_adj);
