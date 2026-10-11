@@ -161,6 +161,10 @@ struct x264_ratecontrol_t
     double slice_size_planned;
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
+    /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
+     * (MBAFF alternates two rows); added at every row end. */
+    int row_bits[2];
+    int row_bits_y[2];
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1568,6 +1572,15 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
     return bits;
 }
 
+static ALWAYS_INLINE void row_bits_flush( x264_t *h, x264_ratecontrol_t *rc, int k )
+{
+    if( rc->row_bits[k] )
+    {
+        h->fdec->i_row_bits[rc->row_bits_y[k]] += rc->row_bits[k];
+        rc->row_bits[k] = 0;
+    }
+}
+
 /* TODO:
  *  eliminate all use of qp in row ratecontrol: make it entirely qscale-based.
  *  make this function stop being needlessly O(N^2)
@@ -1576,12 +1589,23 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 {
     x264_ratecontrol_t *rc = h->rc;
     const int y = h->mb.i_mb_y;
+    const int k = y&1;
 
-    h->fdec->i_row_bits[y] += bits;
+    /* Sum per MB in this thread, not in fdec rows that share cache lines across slices. */
+    if( rc->row_bits_y[k] != y )
+    {
+        row_bits_flush( h, rc, k );
+        rc->row_bits_y[k] = y;
+    }
+    rc->row_bits[k] += bits;
     rc->qpa_aq += h->mb.i_qp;
 
     if( h->mb.i_mb_x != h->mb.i_mb_width - 1 )
         return 0;
+
+    /* i_row_bits is only read or reset at row ends and in later frames. */
+    row_bits_flush( h, rc, 0 );
+    row_bits_flush( h, rc, 1 );
 
     x264_emms();
     rc->qpa_rc += rc->qpm * h->mb.i_mb_width;
