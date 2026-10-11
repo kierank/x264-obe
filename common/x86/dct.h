@@ -208,6 +208,8 @@ void x264_zigzag_scan_4x4_frame_ssse3( int16_t level[16], int16_t dct[16] );
 void x264_zigzag_scan_4x4_frame_sse2 ( int32_t level[16], int32_t dct[16] );
 #define x264_zigzag_scan_4x4_frame_mmx x264_template(zigzag_scan_4x4_frame_mmx)
 void x264_zigzag_scan_4x4_frame_mmx  ( int16_t level[16], int16_t dct[16] );
+#define x264_zigzag_scan_4x4_frame_avx2 x264_template(zigzag_scan_4x4_frame_avx2)
+void x264_zigzag_scan_4x4_frame_avx2 ( int32_t level[16], int32_t dct[16] );
 #define x264_zigzag_scan_4x4_frame_avx512 x264_template(zigzag_scan_4x4_frame_avx512)
 void x264_zigzag_scan_4x4_frame_avx512( dctcoef level[16], dctcoef dct[16] );
 #define x264_zigzag_scan_4x4_field_sse2 x264_template(zigzag_scan_4x4_field_sse2)
