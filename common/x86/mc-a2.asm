@@ -1133,6 +1133,51 @@ cglobal plane_copy_core_mmx2, 6,7
     %endrep
 %endmacro
 
+;-----------------------------------------------------------------------------
+; void plane_copy_core( pixel *dst, intptr_t i_dst,
+;                       pixel *src, intptr_t i_src, int w, int h )
+;-----------------------------------------------------------------------------
+; assumes i_dst and w*sizeof(pixel) are multiples of mmsize, dst is mmsize
+; aligned, i_dst>w and w*sizeof(pixel) >= 4*mmsize
+INIT_YMM avx2
+cglobal plane_copy_core, 6,7
+    FIX_STRIDES r1, r3, r4d
+%if HIGH_BIT_DEPTH == 0
+    movsxdifnidn r4, r4d
+%endif
+    add    r0, r4
+    add    r2, r4
+    neg    r4
+.loopy:
+    lea    r6, [r4+4*mmsize]
+.loopx:
+    PREFETCHNT_ITER r2+r6, 4*mmsize
+    movu   m0, [r2+r6-4*mmsize]
+    movu   m1, [r2+r6-3*mmsize]
+    movu   m2, [r2+r6-2*mmsize]
+    movu   m3, [r2+r6-1*mmsize]
+    movnta [r0+r6-4*mmsize], m0
+    movnta [r0+r6-3*mmsize], m1
+    movnta [r0+r6-2*mmsize], m2
+    movnta [r0+r6-1*mmsize], m3
+    add    r6, 4*mmsize
+    jle .loopx
+    PREFETCHNT_ITER r2+r6, 4*mmsize
+    sub    r6, 4*mmsize
+    jz .end
+.loop_end:
+    movu   m0, [r2+r6]
+    movnta [r0+r6], m0
+    add    r6, mmsize
+    jl .loop_end
+.end:
+    add    r0, r1
+    add    r2, r3
+    dec   r5d
+    jg .loopy
+    sfence
+    RET
+
 %macro PLANE_COPY_AVX512 1 ; swap
 %if %1
 cglobal plane_copy_swap, 6,7
