@@ -3469,6 +3469,7 @@ int     x264_encoder_encode( x264_t *h,
         x264_nal_start( h, NAL_AUD, NAL_PRIORITY_DISPOSABLE );
         bs_write( &h->out.bs, 3, pic_type );
         bs_rbsp_trailing( &h->out.bs );
+        bs_flush( &h->out.bs );
         if( x264_nal_end( h ) )
             return -1;
         overhead += h->out.nal[h->out.i_nal-1].i_payload + NALU_OVERHEAD;
