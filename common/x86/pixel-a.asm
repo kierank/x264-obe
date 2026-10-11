@@ -4686,131 +4686,6 @@ cglobal pixel_satd_16x16, 4,6,8
 %endrep
     SATD_HBD_END 1
 
-%if ARCH_X86_64
-;-----------------------------------------------------------------------------
-; void pixel_satd_mcc( uint16_t *fenc, int res[2], uint16_t *src, intptr_t src_stride,
-;                      int dx, int dy, int width, int height )
-; Chroma ME: satd of the u and v mc_chroma predictions against fenc's u
-; (res[0]) and v (res[1], 8 pixels after u) without storing them. The filter
-; is that of the 10-bit AVX2 mc_chroma. Lane 0 holds u, lane 1 v: width 8 one
-; row per ymm, width 4 rows k and k+4 as satd_4x8. Width 8: height 4, 8 or 16;
-; width 4: height 8 or 16.
-;-----------------------------------------------------------------------------
-; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15
-%macro MCC_SATD_H 2-3
-%if %0 == 3
-    movu         xm%1, [%2]
-    vinserti128   m%1, m%1, [%3], 1
-    movu         xm15, [%2+4]
-    vinserti128   m15, m15, [%3+4], 1
-%else
-    movu          m%1, [%2]
-    movu          m15, [%2+4]
-%endif
-    pmullw        m%1, m8
-    pmullw        m15, m9
-    paddw         m%1, m15
-%endmacro
-
-; prediction from H m7 (clobbered) and m13 -> m7 as [u | v]
-%macro MCC_SATD_V 0
-    pmullw        m15, m7, m10
-    pmullw         m7, m13, m11
-    paddw          m7, m15
-    paddw          m7, m12
-    psrlw          m7, 6
-    pshufb         m7, m14
-    vpermq         m7, m7, q3120
-%endmacro
-
-INIT_YMM avx2
-cglobal pixel_satd_mcc, 4,8,16
-    FIX_STRIDES   r3
-    movifnidn    r4d, r4m
-    movifnidn    r5d, r5m
-    mov          r6d, r5d
-    sar          r6d, 3
-    movsxd        r6, r6d
-    imul          r6, r3
-    add           r2, r6
-    mov          r6d, r4d
-    sar          r6d, 3
-    movsxd        r6, r6d
-    lea           r2, [r2+r6*4]       ; src += (dx>>3)*2 + (dy>>3)*stride pixels
-    and          r4d, 7
-    and          r5d, 7
-    mov          r6d, 8
-    sub          r6d, r4d
-    movd         xm8, r6d
-    vpbroadcastw  m8, xm8              ; 8-dx
-    movd         xm9, r4d
-    vpbroadcastw  m9, xm9              ; dx
-    mov          r6d, 8
-    sub          r6d, r5d
-    movd        xm10, r6d
-    vpbroadcastw m10, xm10             ; 8-dy
-    movd        xm11, r5d
-    vpbroadcastw m11, xm11             ; dy
-    vpbroadcastw m12, [pw_32]
-    vbroadcasti128 m14, [mcc_deint_shuf]
-    mov          r7d, r7m
-    pxor          m6, m6
-    cmp dword    r6m, 4
-    je .w4
-
-    MCC_SATD_H     7, r2
-    add           r2, r3
-.loop8:
-%assign mcc_k 0
-%rep 4
-    MCC_SATD_H    13, r2
-    add           r2, r3
-    MCC_SATD_V
-    psubw         m %+ mcc_k, m7, [r0+mcc_k*FENC_STRIDEB]
-    mova           m7, m13
-%assign mcc_k mcc_k+1
-%endrep
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
-    add           r0, 4*FENC_STRIDEB
-    sub          r7d, 4
-    jg .loop8
-    jmp .end
-
-.w4:
-    lea           r6, [r2+4*r3]
-    MCC_SATD_H     7, r2, r6          ; rows 0 | 4
-%assign mcc_k 0
-%rep 4
-    add           r2, r3
-    add           r6, r3
-    MCC_SATD_H    13, r2, r6          ; rows k+1 | k+5
-    MCC_SATD_V                        ; u k, u k+4 | v k, v k+4
-    vpbroadcastq  m15, [r0+mcc_k*FENC_STRIDEB]
-    vpbroadcastq   m5, [r0+(mcc_k+4)*FENC_STRIDEB]
-    vpblendd      m15, m15, m5, 0x0c
-    vpbroadcastq   m4, [r0+mcc_k*FENC_STRIDEB+16]
-    vpbroadcastq   m5, [r0+(mcc_k+4)*FENC_STRIDEB+16]
-    vpblendd       m4, m4, m5, 0xc0
-    vpblendd      m15, m15, m4, 0xf0
-    psubw         m %+ mcc_k, m7, m15
-    mova           m7, m13
-%assign mcc_k mcc_k+1
-%endrep
-    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
-    add           r0, 8*FENC_STRIDEB
-    lea           r2, [r2+4*r3]       ; row 4 -> row 8
-    sub          r7d, 8
-    jg .w4
-
-.end:
-    ; at most 4 passes per lane: unsigned words
-    HADDUWD       m6, m7
-    vextracti128 xm7, m6, 1
-    phaddd       xm6, xm7
-    phaddd       xm6, xm6
-    movq        [r1], xm6
-    RET
-%endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
 ; int pixel_satd_avg2_WxH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
@@ -6708,3 +6583,156 @@ ads_mvs_ssse3:
     jl .loop
     movifnidn eax, r0d
     RET
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void pixel_satd_mcc( pixel *fenc, int res[2], pixel *src, intptr_t src_stride,
+;                      int dx, int dy, int width, int height )
+; Chroma ME: satd of the u and v mc_chroma predictions against fenc's u
+; (res[0]) and v (res[1], 8 pixels after u) without storing them. The filter
+; is mc_chroma's in two exact passes, on words (8-bit pixels zero extended),
+; as the 10-bit AVX2 mc_chroma. Lane 0 holds u, lane 1 v: width 8 one
+; row per ymm, width 4 rows k and k+4 as satd_4x8. Width 8: height 4, 8 or 16;
+; width 4: height 8 or 16.
+;-----------------------------------------------------------------------------
+; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15
+%macro MCC_SATD_H 2-3
+%if HIGH_BIT_DEPTH && %0 == 3
+    movu         xm%1, [%2]
+    vinserti128   m%1, m%1, [%3], 1
+    movu         xm15, [%2+4]
+    vinserti128   m15, m15, [%3+4], 1
+%elif HIGH_BIT_DEPTH
+    movu          m%1, [%2]
+    movu          m15, [%2+4]
+%elif %0 == 3
+    movq         xm%1, [%2]
+    movhps       xm%1, [%3]
+    vpmovzxbw     m%1, xm%1
+    movq         xm15, [%2+2]
+    movhps       xm15, [%3+2]
+    vpmovzxbw     m15, xm15
+%else
+    vpmovzxbw     m%1, [%2]
+    vpmovzxbw     m15, [%2+2]
+%endif
+    pmullw        m%1, m8
+    pmullw        m15, m9
+    paddw         m%1, m15
+%endmacro
+
+; prediction from H m7 (clobbered) and m13 -> m7 as [u | v]
+%macro MCC_SATD_V 0
+    pmullw        m15, m7, m10
+    pmullw         m7, m13, m11
+    paddw          m7, m15
+    paddw          m7, m12
+    psrlw          m7, 6
+    pshufb         m7, m14
+    vpermq         m7, m7, q3120
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_satd_mcc, 4,8,16
+    FIX_STRIDES   r3
+    movifnidn    r4d, r4m
+    movifnidn    r5d, r5m
+    mov          r6d, r5d
+    sar          r6d, 3
+    movsxd        r6, r6d
+    imul          r6, r3
+    add           r2, r6
+    mov          r6d, r4d
+    sar          r6d, 3
+    movsxd        r6, r6d
+    lea           r2, [r2+r6*2*SIZEOF_PIXEL] ; src += (dx>>3)*2 + (dy>>3)*stride pixels
+    and          r4d, 7
+    and          r5d, 7
+    mov          r6d, 8
+    sub          r6d, r4d
+    movd         xm8, r6d
+    vpbroadcastw  m8, xm8              ; 8-dx
+    movd         xm9, r4d
+    vpbroadcastw  m9, xm9              ; dx
+    mov          r6d, 8
+    sub          r6d, r5d
+    movd        xm10, r6d
+    vpbroadcastw m10, xm10             ; 8-dy
+    movd        xm11, r5d
+    vpbroadcastw m11, xm11             ; dy
+    vpbroadcastw m12, [pw_32]
+    vbroadcasti128 m14, [mcc_deint_shuf]
+    mov          r7d, r7m
+    pxor          m6, m6
+    cmp dword    r6m, 4
+    je .w4
+
+    MCC_SATD_H     7, r2
+    add           r2, r3
+.loop8:
+%assign mcc_k 0
+%rep 4
+    MCC_SATD_H    13, r2
+    add           r2, r3
+    MCC_SATD_V
+%if HIGH_BIT_DEPTH
+    psubw         m %+ mcc_k, m7, [r0+mcc_k*FENC_STRIDEB]
+%else
+    vpmovzxbw     m15, [r0+mcc_k*FENC_STRIDE]
+    psubw         m %+ mcc_k, m7, m15
+%endif
+    mova           m7, m13
+%assign mcc_k mcc_k+1
+%endrep
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    add           r0, 4*FENC_STRIDEB
+    sub          r7d, 4
+    jg .loop8
+    jmp .end
+
+.w4:
+    lea           r6, [r2+4*r3]
+    MCC_SATD_H     7, r2, r6          ; rows 0 | 4
+%assign mcc_k 0
+%rep 4
+    add           r2, r3
+    add           r6, r3
+    MCC_SATD_H    13, r2, r6          ; rows k+1 | k+5
+    MCC_SATD_V                        ; u k, u k+4 | v k, v k+4
+%if HIGH_BIT_DEPTH
+    vpbroadcastq  m15, [r0+mcc_k*FENC_STRIDEB]
+    vpbroadcastq   m5, [r0+(mcc_k+4)*FENC_STRIDEB]
+    vpblendd      m15, m15, m5, 0x0c
+    vpbroadcastq   m4, [r0+mcc_k*FENC_STRIDEB+16]
+    vpbroadcastq   m5, [r0+(mcc_k+4)*FENC_STRIDEB+16]
+    vpblendd       m4, m4, m5, 0xc0
+    vpblendd      m15, m15, m4, 0xf0
+%else
+    vpbroadcastd xm15, [r0+mcc_k*FENC_STRIDE]
+    vpbroadcastd  xm5, [r0+(mcc_k+4)*FENC_STRIDE]
+    vpblendd     xm15, xm15, xm5, 0x2
+    vpbroadcastd  xm4, [r0+mcc_k*FENC_STRIDE+8]
+    vpbroadcastd  xm5, [r0+(mcc_k+4)*FENC_STRIDE+8]
+    vpblendd      xm4, xm4, xm5, 0x8
+    vpblendd     xm15, xm15, xm4, 0xc
+    vpmovzxbw     m15, xm15
+%endif
+    psubw         m %+ mcc_k, m7, m15
+    mova           m7, m13
+%assign mcc_k mcc_k+1
+%endrep
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    add           r0, 8*FENC_STRIDEB
+    lea           r2, [r2+4*r3]       ; row 4 -> row 8
+    sub          r7d, 8
+    jg .w4
+
+.end:
+    ; at most 4 passes per lane: unsigned words
+    HADDUWD       m6, m7
+    vextracti128 xm7, m6, 1
+    phaddd       xm6, xm7
+    phaddd       xm6, xm6
+    movq        [r1], xm6
+    RET
+%endif ; ARCH_X86_64
