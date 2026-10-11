@@ -935,6 +935,9 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - 1: equal lowres cost of the frame being coded\n"
         "                                  - 2: equal measured row encode time of previous\n"
         "                                       frames (nondeterministic output)\n" );
+    H2( "      --sliced-threads-rows <integer> Sliced threads: use as many threads as it\n"
+        "                              takes for at most this many rows per thread\n"
+        "                              (mb pair rows if interlaced); overrides --threads\n" );
     H2( "      --thread-input          Run Avisynth in its own thread\n" );
     H2( "      --sync-lookahead <integer> Number of buffer frames for threaded lookahead\n" );
     H2( "      --non-deterministic     Slightly improve quality of SMP, at the cost of repeatability\n" );
@@ -1115,6 +1118,7 @@ static struct option long_options[] =
     { "sliced-threads",    no_argument, NULL, 0 },
     { "no-sliced-threads", no_argument, NULL, 0 },
     { "slice-balance",     required_argument, NULL, 0 },
+    { "sliced-threads-rows", required_argument, NULL, 0 },
     { "slice-max-size",    required_argument, NULL, 0 },
     { "slice-max-mbs",     required_argument, NULL, 0 },
     { "slice-min-mbs",     required_argument, NULL, 0 },

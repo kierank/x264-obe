@@ -519,6 +519,14 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         h->param.vui.i_sar_height = 0;
     }
 
+    if( h->param.b_sliced_threads && h->param.i_sliced_threads_rows > 0 )
+    {
+        int mb_rows = (h->param.i_height + 15) / 16;
+        if( PARAM_INTERLACED || h->param.b_fake_interlaced )
+            mb_rows = (mb_rows + 1) & ~1;
+        int units = mb_rows >> PARAM_INTERLACED;
+        h->param.i_threads = (units + h->param.i_sliced_threads_rows - 1) / h->param.i_sliced_threads_rows;
+    }
     if( h->param.i_threads == X264_THREADS_AUTO )
         h->param.i_threads = x264_cpu_num_processors() * (h->param.b_sliced_threads?2:3)/2;
     int max_sliced_threads = X264_MAX( 1, (h->param.i_height+15)/16 / 4 );

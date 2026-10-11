@@ -887,6 +887,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->b_sliced_threads = atobool(value);
     OPT("slice-balance")
         p->i_slice_balance = atoi(value);
+    OPT("sliced-threads-rows")
+        p->i_sliced_threads_rows = atoi(value);
     OPT("sync-lookahead")
     {
         if( !strcasecmp(value, "auto") )
@@ -1359,6 +1361,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
     s += sprintf( s, " sliced_threads=%d", p->b_sliced_threads );
     if( p->i_slice_balance )
         s += sprintf( s, " slice_balance=%d", p->i_slice_balance );
+    if( p->i_sliced_threads_rows )
+        s += sprintf( s, " sliced_threads_rows=%d", p->i_sliced_threads_rows );
     if( p->i_slice_count )
         s += sprintf( s, " slices=%d", p->i_slice_count );
     if( p->i_slice_count_max )
