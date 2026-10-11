@@ -136,11 +136,14 @@ cextern pd_ffff
     paddw  %4, %6
 %endmacro
 
+; (a-b)/4-b+c spans [-33150, 33150] for 8-bit pixels: saturate. It only
+; saturates when c >= 21038 or c <= -4719, where the exact result clips to 255
+; or 0 either way, so the output equals the 6-tap filter for all inputs.
 %macro FILT_H 3
     psubw  %1, %2  ; a-b
     psraw  %1, 2   ; (a-b)/4
     psubw  %1, %2  ; (a-b)/4-b
-    paddw  %1, %3  ; (a-b)/4-b+c
+    paddsw %1, %3  ; (a-b)/4-b+c
     psraw  %1, 2   ; ((a-b)/4-b+c)/4
     paddw  %1, %3  ; ((a-b)/4-b+c)/4+c = (a-5*b+20*c)/16
 %endmacro
@@ -152,8 +155,8 @@ cextern pd_ffff
     psraw  %4, 2
     psubw  %1, %2
     psubw  %4, %5
-    paddw  %1, %3
-    paddw  %4, %6
+    paddsw %1, %3
+    paddsw %4, %6
     psraw  %1, 2
     psraw  %4, 2
     paddw  %1, %3

@@ -1637,6 +1637,33 @@ static int check_mc( int cpu_ref, int cpu_new )
                     printf( "\n" );
                     break;
                 }
+        /* columns N P N N P N of vertical patterns (0,max,0 | max,0,max), period 3:
+         * the extremes of the vertical 6-tap, which overflowed the 16-bit
+         * intermediate of the centre filter */
+        for( int phase = 0; phase < 12 && ok; phase++ )
+        {
+            ALIGNED_ARRAY_32( pixel, src,[16*64] );
+            pixel *srcp = src+8+2*64;
+            for( int y = 0; y < 16; y++ )
+                for( int x = 0; x < 64; x++ )
+                {
+                    int p = "010010"[(x+phase)%6] - '0'; /* 0 = N, 1 = P */
+                    int hi = (y%3 == 1) ^ p ^ (phase >= 6);
+                    src[y*64+x] = hi ? PIXEL_MAX : 0;
+                }
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0], dstc[1], dstc[2], srcp, 64, 48, 10, tmp );
+            mc_a.hpel_filter( dsta[0], dsta[1], dsta[2], srcp, 64, 48, 10, tmp );
+            for( int i = 0; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+j*64+2, dsta[i]+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter differs at plane %c line %d (stripe pattern %d)\n", "hvc"[i], j, phase );
+                        break;
+                    }
+        }
         report( "hpel filter :" );
     }
 
