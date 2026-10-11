@@ -2774,6 +2774,7 @@ static int check_cabac( int cpu_ref, int cpu_new )
     int ret = 0, ok = 1, used_asm = 0;
     x264_t h;
     h.sps->i_chroma_format_idc = 3;
+    h.i_frame = 0;
 
     x264_bitstream_function_t bs_ref;
     x264_bitstream_function_t bs_a;
@@ -2824,18 +2825,19 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     if( !rd ) memcpy( bitstream[1], bitstream[0], 0x400 );\
                     /* start mid-stream: arbitrary low/queue, sometimes bytes outstanding */\
                     if( !rd )\
-                        for( int k = rand()&63; k > 0; k-- )\
+                        for( int k = (rand()&63) | (j&2)*12; k > 0; k-- )\
                         {\
                             int bit = -(rand()&1);\
                             x264_cabac_encode_bypass_c( &cb[0], bit );\
                             x264_cabac_encode_bypass_c( &cb[1], bit );\
                         }\
-                    /* low just below a byte boundary inside the interval, steered bypasses keep it there:\
-                     * bytes outstanding on entry, more 0xff bytes, then a carry or not through them */\
-                    if( !rd && (j&3) == 3 && cb[0].p > cb[0].p_start )\
+                    /* low just below a byte boundary inside the interval: pending 0xff bits on entry;\
+                     * j&1: steered bypasses keep it there, so bytes outstanding on entry, more 0xff\
+                     * bytes, then a carry or not through them */\
+                    if( !rd && (j&2) && cb[0].p > cb[0].p_start )\
                     {\
                         cb[0].i_low = cb[1].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);\
-                        for( int k = 8 + (rand()&31); k > 0; k-- )\
+                        for( int k = (j&1) * (8 + (rand()&31)); k > 0; k-- )\
                         {\
                             int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));\
                             x264_cabac_encode_bypass_c( &cb[0], bit );\
@@ -2845,7 +2847,22 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     call_c1( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                     call_a1( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
                     ok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp(cb[0].state, cb[1].state, 1024);\
-                    if( !rd ) ok &= !memcmp( bitstream[1], bitstream[0], 0x400 ) && !memcmp( &cb[1], &cb[0], offsetof(x264_cabac_t, p_start) );\
+                    if( !rd )\
+                    {\
+                        /* a carry or a 0xff byte may be held in another form: compare the position,\
+                         * then flush copies and compare the whole stream */\
+                        x264_cabac_t fl[2];\
+                        ok &= x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) &&\
+                              cb[0].i_range == cb[1].i_range && cb[0].i_queue == cb[1].i_queue;\
+                        memcpy( &fl[0], &cb[0], sizeof(x264_cabac_t) );\
+                        memcpy( &fl[1], &cb[1], sizeof(x264_cabac_t) );\
+                        x264_cabac_encode_bypass_c( &fl[0], 0 ); /* flush ORs in bit 0 */\
+                        x264_cabac_encode_bypass_c( &fl[1], 0 );\
+                        x264_cabac_encode_flush( &h, &fl[0] );\
+                        x264_cabac_encode_flush( &h, &fl[1] );\
+                        ok &= fl[0].p - bitstream[0] == fl[1].p - bitstream[1] &&\
+                              !memcmp( bitstream[1], bitstream[0], fl[0].p - bitstream[0] );\
+                    }\
                     if( !ok )\
                     {\
                         fprintf( stderr, #name " :  [FAILED] ctx_block_cat %d", (int)ctx_block_cat );\

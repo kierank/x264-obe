@@ -758,7 +758,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 
 ;-----------------------------------------------------------------------------
 ; BMI2: low/range/queue stay in r8-r10 for the whole block; decision,
-; bypass and putbyte are inlined.
+; bypass and putbyte are inlined. low is 64-bit and queue is biased by -24,
+; so bytes are emitted 4 at a time and the rest at the end of the block.
 ;-----------------------------------------------------------------------------
 
 ; in: flags from the queue update; clobbers r1, r4-r6
@@ -769,29 +770,31 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     %assign pb_count pb_count+1
 %endmacro
 
-; one stub per site: no 0xff byte and nothing outstanding inline, else .putbyte_slow
+; one stub per site: 4 bytes pending. last byte not 0xff and nothing
+; outstanding: store all 4 inline, else .putbytes_slow
 %macro PUTBYTE_STUBS 0
 %assign pb_i 0
 %rep pb_count
 .pb %+ pb_i:
-    lea     r4d, [queueq+10]
-    shrx    r1d, lowd, r4d          ; out
-    bzhi   lowd, lowd, r4d
-    sub  queued, 8
     mov      r6, cbm
+    lea     r4d, [queueq+10]
+    shrx     r1, lowq, r4           ; carry, 4 bytes
     cmp     r1b, 0xff
     je .pbs %+ pb_i
     cmp dword [r6+cb.bytes_outstanding], 0
     jne .pbs %+ pb_i
+    bzhi   lowq, lowq, r4
+    sub  queued, 32
     mov      r5, [r6+cb.p]
-    rorx    r4d, r1d, 8             ; carry
+    rorx     r4, r1, 32             ; carry
     add  [r5-1], r4b
-    mov    [r5], r1b
-    inc      r5
+    bswap   r1d
+    mov    [r5], r1d
+    add      r5, 4
     mov [r6+cb.p], r5
     jmp .pbr %+ pb_i
 .pbs %+ pb_i:
-    call .putbyte_slow
+    call .putbytes_slow
     jmp .pbr %+ pb_i
 %assign pb_i pb_i+1
 %endrep
@@ -815,14 +818,14 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     movzx   r4d, byte [cabac_range_lps-4+r4+r5*2]
 %endif
     sub  ranged, r4d
-    lea     r6d, [lowq+rangeq]
+    lea      r6, [lowq+rangeq]
     test    r2b, 1
 %if %1
     cmovz  ranged, r4d
-    cmovz    lowd, r6d
+    cmovz    lowq, r6
 %else
     cmovnz ranged, r4d
-    cmovnz   lowd, r6d
+    cmovnz   lowq, r6
 %endif
     movzx   r2d, byte [cabac_transition+%1+r2*2 GLOBAL]
 %if %0 > 1
@@ -831,7 +834,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     lzcnt   r5d, ranged
     sub     r5d, 23
     shlx ranged, ranged, r5d
-    shlx   lowd, lowd, r5d
+    shlx   lowq, lowq, r5
     add  queued, r5d
     PUTBYTE
 %endmacro
@@ -927,6 +930,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     mov    lowd, [r6+cb.low]
     mov  ranged, [r6+cb.range]
     mov  queued, [r6+cb.queue]
+    sub  queued, 24
     cmp    r13d, 63
     je .sigmap_8x8
     mov     r0d, r13d
@@ -993,8 +997,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     shrx    r1d, r2d, r14d
     movzx   r1d, r1b
     imul    r1d, ranged
-    shlx   lowd, lowd, r11d
-    add    lowd, r1d
+    shlx   lowq, lowq, r11
+    add    lowq, r1
     add  queued, r11d
     PUTBYTE
     mov    r11d, 8
@@ -1007,39 +1011,82 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     mov     r1d, [coeffs+r13*4]
     sar     r1d, 31
     and     r1d, ranged
-    lea    lowd, [lowq*2+r1]
+    lea     lowq, [lowq*2+r1]
     inc  queued
     PUTBYTE
     dec    r13d
     jge .level_loop
+; emit the 0-3 whole bytes left, store the state unbiased
     mov      r6, cbm
+    lea     r0d, [queueq+32]        ; pending bits
+    mov     r4d, r0d
+    and     r0d, 7
+    add     r0d, 10                 ; lowest bit of the whole bytes
+    shr     r4d, 3                  ; n
+    shrx     r1, lowq, r0           ; carry, n bytes
+    cmp     r1b, 0xff
+    je .flush_slow
+    cmp dword [r6+cb.bytes_outstanding], 0
+    jne .flush_slow
+    bzhi   lowq, lowq, r0
+    lea     r2d, [r4*8]
+    sub  queued, r2d
+    neg     r2d
+    add     r2d, 32
+    shlx     r1, r1, r2             ; carry in bit 32, bytes from bit 31 down
+    mov      r5, [r6+cb.p]
+    rorx     r2, r1, 32
+    add  [r5-1], r2b
+    bswap   r1d
+    mov    [r5], r1d                ; 4-n bytes past p are rewritten later
+    add      r5, r4
+    mov [r6+cb.p], r5
+.flush_end:
+    add  queued, 24
     mov [r6+cb.low], lowd
     mov [r6+cb.range], ranged
     mov [r6+cb.queue], queued
     RET
+.flush_slow:
+    call .putbytes_slow
+    mov      r6, cbm
+    jmp .flush_end
 
-; in: r1d = out, r6 = cb; clobbers r4-r6
-.putbyte_slow:
-    cmp     r1b, 0xff
-    je .postpone
+; x264_cabac_putbyte while queue >= 0; in: r6 = cb; clobbers r1, r4-r6
+.putbytes_slow:
     mov     r4d, [r6+cb.bytes_outstanding]
     mov      r5, [r6+cb.p]
+    jmp .slow_next
+.slow_loop:
+    lea     r6d, [queueq+34]
+    shrx     r1, lowq, r6           ; out
+    bzhi   lowq, lowq, r6
+    sub  queued, 8
+    cmp     r1b, 0xff
+    je .postpone
     mov     r6d, r1d
     shr     r6d, 8                  ; carry
     add  [r5-1], r6b
     dec     r6d
+    test    r4d, r4d
+    jz .write
 .loop_outstanding:
     mov    [r5], r6b
     inc      r5
     dec     r4d
-    jge .loop_outstanding
-    mov  [r5-1], r1b
+    jg .loop_outstanding
+.write:
+    mov    [r5], r1b
+    inc      r5
+    jmp .slow_next
+.postpone:
+    inc     r4d
+.slow_next:
+    cmp  queued, -24
+    jge .slow_loop
     mov      r6, [rsp+gprsize]
     mov [r6+cb.p], r5
-    mov dword [r6+cb.bytes_outstanding], 0
-    ret
-.postpone:
-    inc dword [r6+cb.bytes_outstanding]
+    mov [r6+cb.bytes_outstanding], r4d
     ret
 
     PUTBYTE_STUBS
