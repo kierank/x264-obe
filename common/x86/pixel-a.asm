@@ -5908,8 +5908,109 @@ cglobal pixel_satd_fenc_pre_8x8, 2,2,3
 %undef fpre_i
     RET
 
+; avx512icl: k1 = 0x5555, k2 = 0xc (from %1, a gpr about to be overwritten)
+%macro SATD_PRE_KMASK 2 ; gpr (dword), 8 wide
+%if cpuflag(avx512icl)
+%if %2
+    mov       %1, 0x5555000c
+    kmovd     k2, %1
+    kshiftrd  k1, k2, 16
+%else
+    mov       %1, 0x5555
+    kmovd     k1, %1
+%endif
+%endif
+%endmacro
+
+; 8 pixel rows %3 and %4 as [%3 %3 | %4 %4]
+%macro SATD_PRE_DUP8 4 ; dst, tmp, 2*mem
+%if cpuflag(avx512icl)
+    vpbroadcastq m%1, %3
+    vpbroadcastq m%1 {k2}, %4
+%else
+    LOAD_DUP_8x2P_AVX2 %1, %2, %3, %4
+%endif
+%endmacro
+
+; HADAMARD 1, max: the pairs of TRANS d unord from [b0 a1] and [b1 a0]
+%macro SATD_PRE_HMAX 3 ; a, b, tmp
+    vpblendmw m%3 {k1}, m%1, m%2
+    vpshldd   m%2, m%1, m%2, 16
+    pmaxsw    m%1, m%3, m%2
+%endmacro
+
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %1 (only = swap, last = add); avx512icl:
+; the last 8x4 takes the max of each pair zero extended to a dword and leaves
+; the dword sum in m0
+%macro SATD_PRE_8x4 1 ; swap/add/last/only
+%if cpuflag(avx512icl)
+%ifidn %1, last
+    pmaddwd   m6, [pw_1]
+%endif
+    HADAMARD4_V 0, 1, 2, 3, 4
+    pabsw     m0, m0
+    pabsw     m2, m2
+    pabsw     m1, m1
+    pabsw     m3, m3
+%ifidn %1, last
+    %define satd_pre_last 1
+%elifidn %1, only
+    %define satd_pre_last 1
+%else
+    %define satd_pre_last 0
+%endif
+%if satd_pre_last
+    psrld     m4, m0, 16
+    psrld     m5, m1, 16
+    vpmaxsw   m0 {k1}{z}, m0, m4
+    vpmaxsw   m1 {k1}{z}, m1, m5
+    psrld     m4, m2, 16
+    psrld     m5, m3, 16
+    vpmaxsw   m2 {k1}{z}, m2, m4
+    vpmaxsw   m3 {k1}{z}, m3, m5
+    paddd     m0, m1
+    paddd     m2, m3
+    paddd     m0, m2
+%ifidn %1, last
+    paddd     m0, m6
+%endif
+%else
+    SATD_PRE_HMAX 0, 2, 4
+%ifnidn %1, swap
+    paddw     m6, m0
+%else
+    SWAP       6, 0
+%endif
+    SATD_PRE_HMAX 1, 3, 4
+    paddw     m6, m1
+%endif
+%undef satd_pre_last
+%elifidn %1, only
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, swap
+%elifidn %1, last
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, add
+%else
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %1
+%endif
+%endmacro
+
+%macro SATD_PRE_END 0
+%if cpuflag(avx512icl)
+    vextracti128 xm1, m0, 1
+    paddd        xm0, xm1
+    punpckhqdq   xm1, xm0, xm0
+    paddd        xm0, xm1
+    pshuflw      xm1, xm0, q1032
+    paddd        xm0, xm1
+    movd         eax, xm0
+    RET
+%else
+    SATD_AVG2_END
+%endif
+%endmacro
+
 ; four 16 pixel rows (r3 = 3*stride) less fenc_pre rows %1 to %1+3
-%macro SATD_PRE_16x4 2 ; fenc_pre row, swap/add
+%macro SATD_PRE_16x4 2 ; fenc_pre row, swap/add/last/only
     vbroadcasti128 m0, [r1]
     vbroadcasti128 m1, [r1+r2]
     vbroadcasti128 m2, [r1+2*r2]
@@ -5922,60 +6023,23 @@ cglobal pixel_satd_fenc_pre_8x8, 2,2,3
     psubw          m1, [r0+(%1+1)*32]
     psubw          m2, [r0+(%1+2)*32]
     psubw          m3, [r0+(%1+3)*32]
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_8x4 %2
 %endmacro
 
 ; rows k, k+4 (r1, r4 = r1+4*stride, %2 = k*stride) less fenc_pre's
 %macro SATD_PRE_SUMSUB8 3 ; dst (number), source offset, fenc_pre offset
-    LOAD_DUP_8x2P_AVX2 %1, 4, [r1+%2], [r4+%2]
+    SATD_PRE_DUP8 %1, 4, [r1+%2], [r4+%2]
     pmaddubsw     m%1, m7
     psubw         m%1, [r0+%3]
 %endmacro
 
-%macro SATD_PRE_8x8 2 ; fenc_pre offset, swap/add
+%macro SATD_PRE_8x8 2 ; fenc_pre offset, swap/add/last/only
     SATD_PRE_SUMSUB8 0, 0,    %1
     SATD_PRE_SUMSUB8 1, r2,   %1+32
     SATD_PRE_SUMSUB8 2, 2*r2, %1+64
     SATD_PRE_SUMSUB8 3, r3,   %1+96
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_8x4 %2
 %endmacro
-
-cglobal pixel_satd_pre_16x16, 3,4,8
-    mova     m7, [hmul_16p]
-    lea      r3, [3*r2]
-    SATD_PRE_16x4 0, swap
-    lea      r1, [r1+4*r2]
-    SATD_PRE_16x4 4, add
-    lea      r1, [r1+4*r2]
-    SATD_PRE_16x4 8, add
-    lea      r1, [r1+4*r2]
-    SATD_PRE_16x4 12, add
-    SATD_AVG2_END
-
-cglobal pixel_satd_pre_16x8, 3,4,8
-    mova     m7, [hmul_16p]
-    lea      r3, [3*r2]
-    SATD_PRE_16x4 0, swap
-    lea      r1, [r1+4*r2]
-    SATD_PRE_16x4 4, add
-    SATD_AVG2_END
-
-cglobal pixel_satd_pre_8x16, 3,5,8
-    mova     m7, [hmul_8p]
-    lea      r3, [3*r2]
-    lea      r4, [r1+4*r2]
-    SATD_PRE_8x8 0, swap
-    lea      r1, [r1+8*r2]
-    lea      r4, [r4+8*r2]
-    SATD_PRE_8x8 128, add
-    SATD_AVG2_END
-
-cglobal pixel_satd_pre_8x8, 3,5,8
-    mova     m7, [hmul_8p]
-    lea      r3, [3*r2]
-    lea      r4, [r1+4*r2]
-    SATD_PRE_8x8 0, swap
-    SATD_AVG2_END
 
 ; 16 wide: row (%2 = k*stride) of pavgb( src1, src2 ) less fenc_pre's
 %macro SATD_AVG2_PRE_ROW16 3 ; dst (number), source offset, fenc_pre offset
@@ -5986,55 +6050,103 @@ cglobal pixel_satd_pre_8x8, 3,5,8
     psubw          m%1, [r0+%3]
 %endmacro
 
-%macro SATD_AVG2_PRE_16x4 2 ; fenc_pre row, swap/add
+%macro SATD_AVG2_PRE_16x4 2 ; fenc_pre row, swap/add/last/only
     SATD_AVG2_PRE_ROW16 0, 0,    (%1+0)*32
     SATD_AVG2_PRE_ROW16 1, r3,   (%1+1)*32
     SATD_AVG2_PRE_ROW16 2, 2*r3, (%1+2)*32
     SATD_AVG2_PRE_ROW16 3, r4,   (%1+3)*32
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_8x4 %2
 %endmacro
 
 ; 8 wide: rows k, k+4 (r5/r6 = src1/src2 four rows down)
 %macro SATD_AVG2_PRE_SUMSUB8 3 ; dst (number), source offset, fenc_pre offset
-    LOAD_DUP_8x2P_AVX2 %1, 4, [r1+%2], [r5+%2]
-    LOAD_DUP_8x2P_AVX2 5, 4, [r2+%2], [r6+%2]
+    SATD_PRE_DUP8 %1, 4, [r1+%2], [r5+%2]
+    SATD_PRE_DUP8 5, 4, [r2+%2], [r6+%2]
     pavgb         m%1, m5
     pmaddubsw     m%1, m7
     psubw         m%1, [r0+%3]
 %endmacro
 
-%macro SATD_AVG2_PRE_8x8 2 ; fenc_pre offset, swap/add
+%macro SATD_AVG2_PRE_8x8 2 ; fenc_pre offset, swap/add/last/only
     SATD_AVG2_PRE_SUMSUB8 0, 0,    %1
     SATD_AVG2_PRE_SUMSUB8 1, r3,   %1+32
     SATD_AVG2_PRE_SUMSUB8 2, 2*r3, %1+64
     SATD_AVG2_PRE_SUMSUB8 3, r4,   %1+96
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_8x4 %2
 %endmacro
 
+%macro SATD_PRE 0
+cglobal pixel_satd_pre_16x16, 3,4,8
+    SATD_PRE_KMASK r3d, 0
+    mova     m7, [hmul_16p]
+    lea      r3, [3*r2]
+    SATD_PRE_16x4 0, swap
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 4, add
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 8, add
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 12, last
+    SATD_PRE_END
+
+cglobal pixel_satd_pre_16x8, 3,4,8
+    SATD_PRE_KMASK r3d, 0
+    mova     m7, [hmul_16p]
+    lea      r3, [3*r2]
+    SATD_PRE_16x4 0, swap
+    lea      r1, [r1+4*r2]
+    SATD_PRE_16x4 4, last
+    SATD_PRE_END
+
+cglobal pixel_satd_pre_8x16, 3,5,8
+    SATD_PRE_KMASK r3d, 1
+    mova     m7, [hmul_8p]
+    lea      r3, [3*r2]
+    lea      r4, [r1+4*r2]
+    SATD_PRE_8x8 0, swap
+    lea      r1, [r1+8*r2]
+    lea      r4, [r4+8*r2]
+    SATD_PRE_8x8 128, last
+    SATD_PRE_END
+
+cglobal pixel_satd_pre_8x8, 3,5,8
+    SATD_PRE_KMASK r3d, 1
+    mova     m7, [hmul_8p]
+    lea      r3, [3*r2]
+    lea      r4, [r1+4*r2]
+    SATD_PRE_8x8 0, only
+    SATD_PRE_END
+
 cglobal pixel_satd_avg2_pre_16x16, 4,5,8
+    SATD_PRE_KMASK r4d, 0
     mova     m7, [hmul_16p]
     lea      r4, [3*r3]
     SATD_AVG2_PRE_16x4 0, swap
 %assign fpre_i 4
-%rep 3
+%rep 2
     lea      r1, [r1+4*r3]
     lea      r2, [r2+4*r3]
     SATD_AVG2_PRE_16x4 fpre_i, add
 %assign fpre_i fpre_i+4
 %endrep
 %undef fpre_i
-    SATD_AVG2_END
+    lea      r1, [r1+4*r3]
+    lea      r2, [r2+4*r3]
+    SATD_AVG2_PRE_16x4 12, last
+    SATD_PRE_END
 
 cglobal pixel_satd_avg2_pre_16x8, 4,5,8
+    SATD_PRE_KMASK r4d, 0
     mova     m7, [hmul_16p]
     lea      r4, [3*r3]
     SATD_AVG2_PRE_16x4 0, swap
     lea      r1, [r1+4*r3]
     lea      r2, [r2+4*r3]
-    SATD_AVG2_PRE_16x4 4, add
-    SATD_AVG2_END
+    SATD_AVG2_PRE_16x4 4, last
+    SATD_PRE_END
 
 cglobal pixel_satd_avg2_pre_8x16, 4,7,8
+    SATD_PRE_KMASK r4d, 1
     mova     m7, [hmul_8p]
     lea      r4, [3*r3]
     lea      r5, [r1+4*r3]
@@ -6044,16 +6156,23 @@ cglobal pixel_satd_avg2_pre_8x16, 4,7,8
     lea      r2, [r2+8*r3]
     lea      r5, [r5+8*r3]
     lea      r6, [r6+8*r3]
-    SATD_AVG2_PRE_8x8 128, add
-    SATD_AVG2_END
+    SATD_AVG2_PRE_8x8 128, last
+    SATD_PRE_END
 
 cglobal pixel_satd_avg2_pre_8x8, 4,7,8
+    SATD_PRE_KMASK r4d, 1
     mova     m7, [hmul_8p]
     lea      r4, [3*r3]
     lea      r5, [r1+4*r3]
     lea      r6, [r2+4*r3]
-    SATD_AVG2_PRE_8x8 0, swap
-    SATD_AVG2_END
+    SATD_AVG2_PRE_8x8 0, only
+    SATD_PRE_END
+%endmacro
+
+SATD_PRE
+INIT_YMM avx512icl
+SATD_PRE
+INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
