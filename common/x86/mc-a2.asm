@@ -77,6 +77,8 @@ depad: times 4 dd 32*20*PIXEL_MAX + 512
 tap1: times 4 dw  1, -5
 tap2: times 4 dw 20, 20
 tap3: times 4 dw -5,  1
+pw_pad10_16: dw 10*PIXEL_MAX+16
+pw_pad30_16: dw 30*PIXEL_MAX+16
 
 pw_0xc000: times 8 dw 0xc000
 pw_31: times 8 dw 31
@@ -343,6 +345,150 @@ INIT_MMX mmx2
 HPEL_FILTER
 INIT_XMM sse2
 HPEL_FILTER
+
+;-----------------------------------------------------------------------------
+; 10-bit hpel_filter_v/c/h, AVX2 and AVX-512: 32 pixels per iteration.
+; v and h form a - 5*b + 20*c as a + 5*(4*c - b) in wrapping words; the true
+; value lies in [-10230, 42966], so v + 10*PIXEL_MAX + 16 is a valid unsigned
+; word and clip((v + 16) >> 5) is a saturating subtract, a shift and a min.
+;-----------------------------------------------------------------------------
+%macro HPEL_FILT_HBD 3 ; a/dst, b, c (a, b, c clobbered): a - 5*b + 20*c, wrapping
+    psllw      %3, 2
+    psubw      %3, %2
+    paddw      %1, %3
+    psllw      %3, 2
+    paddw      %1, %3
+%endmacro
+
+%macro HPEL_PACK_HBD 1 ; v + m8 - 10*PIXEL_MAX -> clip((v + 16) >> 5); m8 = bias + 10*PIXEL_MAX+16, m9 = 10*PIXEL_MAX, m10 = PIXEL_MAX
+    paddw      %1, m8
+    psubusw    %1, m9
+    psrlw      %1, 5
+    pminsw     %1, m10
+%endmacro
+
+%macro HPEL_FILTER_HBD 0
+;-----------------------------------------------------------------------------
+; void hpel_filter_v( uint16_t *dst, uint16_t *src, int16_t *buf, intptr_t stride, intptr_t width );
+;-----------------------------------------------------------------------------
+cglobal hpel_filter_v, 5,6,12
+    FIX_STRIDES r3, r4
+    lea          r5, [r1+r3]
+    sub          r1, r3
+    sub          r1, r3
+    add          r0, r4
+    add          r2, r4
+    neg          r4
+    vpbroadcastw m8, [pw_pad30_16]
+    vpbroadcastw m9, [pad10]
+    vpbroadcastw m10, [pw_pixel_max]
+    vpbroadcastw m11, [pad20]
+.loop:
+%assign hpel_hbd_i 0
+%rep 64/mmsize
+    mova         m0, [r1+hpel_hbd_i]
+    paddw        m0, [r5+r3*2+hpel_hbd_i]   ; a = row -2 + row 3
+    mova         m1, [r1+r3+hpel_hbd_i]
+    paddw        m1, [r5+r3+hpel_hbd_i]     ; b = row -1 + row 2
+    mova         m2, [r1+r3*2+hpel_hbd_i]
+    paddw        m2, [r5+hpel_hbd_i]        ; c = row 0 + row 1
+    HPEL_FILT_HBD m0, m1, m2
+    psubw        m0, m11
+    movu  [r2+r4+hpel_hbd_i], m0            ; buf = v - 20*PIXEL_MAX
+    HPEL_PACK_HBD m0
+    mova  [r0+r4+hpel_hbd_i], m0
+%assign hpel_hbd_i hpel_hbd_i+mmsize
+%endrep
+    add          r1, 64
+    add          r5, 64
+    add          r4, 64
+    jl .loop
+    RET
+
+;-----------------------------------------------------------------------------
+; void hpel_filter_c( uint16_t *dst, int16_t *buf, intptr_t width );
+;-----------------------------------------------------------------------------
+cglobal hpel_filter_c, 3,3,12
+    add          r2, r2
+    add          r0, r2
+    add          r1, r2
+    neg          r2
+    vpbroadcastd m6, [tap1]
+    vpbroadcastd m7, [tap2]
+    vpbroadcastd m8, [tap3]
+    vpbroadcastd m9, [depad]
+    vpbroadcastw m10, [pw_pixel_max]
+    pxor        m11, m11
+%if mmsize == 64
+    mov         r3d, 0xaaaaaaaa
+    kmovd        k1, r3d
+%endif
+.loop:
+    movu         m0, [r1+r2-4]
+    movu         m1, [r1+r2-2]
+    movu         m2, [r1+r2+0]
+    movu         m3, [r1+r2+2]
+    movu         m4, [r1+r2+4]
+    movu         m5, [r1+r2+6]
+    pmaddwd      m0, m6
+    pmaddwd      m1, m6
+    pmaddwd      m2, m7
+    pmaddwd      m3, m7
+    pmaddwd      m4, m8
+    pmaddwd      m5, m8
+    paddd        m0, m9
+    paddd        m1, m9
+    paddd        m2, m4
+    paddd        m3, m5
+    paddd        m0, m2                     ; even outputs
+    paddd        m1, m3                     ; odd outputs
+    psrad        m0, 10
+    pslld        m1, 6                      ; odd >> 10 in the high word
+%if mmsize == 64
+    vpblendmw    m0 {k1}, m0, m1
+%else
+    pblendw      m0, m1, 0xaa
+%endif
+    CLIPW        m0, m11, m10
+    mova    [r0+r2], m0
+    add          r2, mmsize
+    jl .loop
+    RET
+
+;-----------------------------------------------------------------------------
+; void hpel_filter_h( uint16_t *dst, uint16_t *src, intptr_t width );
+;-----------------------------------------------------------------------------
+cglobal hpel_filter_h, 3,3,11
+    add          r2, r2
+    add          r0, r2
+    add          r1, r2
+    neg          r2
+    vpbroadcastw m8, [pw_pad10_16]
+    vpbroadcastw m9, [pad10]
+    vpbroadcastw m10, [pw_pixel_max]
+.loop:
+%assign hpel_hbd_i 0
+%rep 64/mmsize
+    movu         m0, [r1+r2+hpel_hbd_i-4]
+    paddw        m0, [r1+r2+hpel_hbd_i+6]   ; a
+    movu         m1, [r1+r2+hpel_hbd_i-2]
+    paddw        m1, [r1+r2+hpel_hbd_i+4]   ; b
+    mova         m2, [r1+r2+hpel_hbd_i]
+    paddw        m2, [r1+r2+hpel_hbd_i+2]   ; c
+    HPEL_FILT_HBD m0, m1, m2
+    HPEL_PACK_HBD m0
+    mova  [r0+r2+hpel_hbd_i], m0
+%assign hpel_hbd_i hpel_hbd_i+mmsize
+%endrep
+    add          r2, 64
+    jl .loop
+    RET
+%endmacro ; HPEL_FILTER_HBD
+
+INIT_YMM avx2
+HPEL_FILTER_HBD
+INIT_ZMM avx512
+HPEL_FILTER_HBD
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
