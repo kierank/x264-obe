@@ -564,6 +564,8 @@ DEBLOCK_LUMA_64_AVX2
 %macro SWAPMOVA 2
 %ifid %1
     SWAP %1, %2
+%elif mmsize == 32
+    movu %1, %2
 %else
     mova %1, %2
 %endif
@@ -575,7 +577,11 @@ DEBLOCK_LUMA_64_AVX2
 %macro LUMA_INTRA_P012 12 ; p0..p3 in memory
 %if ARCH_X86_64
     paddw     t0, %3, %2
+%if mmsize == 32
+    movu      t2, %4
+%else
     mova      t2, %4
+%endif
     paddw     t2, %3
 %else
     mova      t0, %3
@@ -851,6 +857,123 @@ INIT_XMM sse2
 DEBLOCK_LUMA_INTRA_64
 INIT_XMM avx
 DEBLOCK_LUMA_INTRA_64
+
+;-----------------------------------------------------------------------------
+; 10-bit deblock_v_luma_intra / deblock_h_luma_intra, AVX2: the whole 16 pixel
+; edge in one pass. h_luma_intra keeps rows 0-7 in lane 0 and rows 8-15 in
+; lane 1, so both 8x8 transposes stay lane-local.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal deblock_v_luma_intra, 4,6,16
+    %define t0 m1
+    %define t1 m2
+    %define t2 m4
+    %define p2 m8
+    %define p1 m9
+    %define p0 m10
+    %define q0 m11
+    %define q1 m12
+    %define q2 m13
+    %define aa m5
+    %define bb m14
+    add     r1, r1
+    lea     r4, [r1*4]
+    lea     r5, [r1*3] ; 3*stride
+    neg     r4
+    add     r4, r0     ; pix-4*stride
+    movd   xm5, r2d
+    movd  xm14, r3d
+    vpbroadcastd m0, [pw_2]
+    vpbroadcastw aa, xm5
+    vpbroadcastw bb, xm14
+    movu    p2, [r4+r1]
+    movu    p1, [r4+2*r1]
+    movu    p0, [r4+r5]
+    movu    q0, [r0]
+    movu    q1, [r0+r1]
+    movu    q2, [r0+2*r1]
+
+    LOAD_MASK p1, p0, q0, q1, aa, bb, m3, t0, t1
+    psrlw   t2, aa, 2
+    paddw   t2, m0 ; alpha/4+2
+    DIFF_LT p0, q0, t2, m6, t0 ; m6 = |p0-q0| < alpha/4+2
+    DIFF_LT p2, p0, bb, t1, t0 ; t1 = |p2-p0| < beta
+    DIFF_LT q2, q0, bb, m7, t0 ; m7 = |q2-q0| < beta
+    pand    m6, m3
+    pand    m7, m6
+    pand    m6, t1
+    LUMA_INTRA_P012 p0, p1, p2, [r4], q0, q1, m3, m6, m0, [r4+r5], [r4+2*r1], [r4+r1]
+    LUMA_INTRA_P012 q0, q1, q2, [r0+r5], p0, p1, m3, m7, m0, [r0], [r0+r1], [r0+2*r1]
+    RET
+
+cglobal deblock_h_luma_intra, 4,7,16
+    %define t0 m15
+    %define t1 m14
+    %define t2 m2
+    %define q3 m5
+    %define q2 m8
+    %define q1 m9
+    %define q0 m10
+    %define p0 m11
+    %define p1 m12
+    %define p2 m13
+    %define p3 m4
+    %define spill [rsp]
+    SUB     rsp, 32
+    add     r1, r1
+    movd  xm14, r2d
+    movd  xm15, r3d
+    lea     r5, [r1*3]    ; 3*stride
+    lea     r4, [r0+r1*4] ; pix+4*stride
+    lea     r2, [r0+r1*8]
+    lea     r3, [r4+r1*8]
+    DEBLOCK_H_LOAD_ROW  5, [r0-8],      [r2-8]
+    DEBLOCK_H_LOAD_ROW  8, [r0+r1-8],   [r2+r1-8]
+    DEBLOCK_H_LOAD_ROW  9, [r0+r1*2-8], [r2+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 10, [r0+r5-8],   [r2+r5-8]
+    DEBLOCK_H_LOAD_ROW 11, [r4-8],      [r3-8]
+    DEBLOCK_H_LOAD_ROW 12, [r4+r1-8],   [r3+r1-8]
+    DEBLOCK_H_LOAD_ROW 13, [r4+r1*2-8], [r3+r1*2-8]
+    DEBLOCK_H_LOAD_ROW  4, [r4+r5-8],   [r3+r5-8]
+    TRANSPOSE8x8W 5, 8, 9, 10, 11, 12, 13, 4, 1
+
+    vpbroadcastd m0, [pw_2]
+    vpbroadcastw m1, xm14
+    vpbroadcastw m2, xm15
+    LOAD_MASK q1, q0, p0, p1, m1, m2, m3, t0, t1
+    psrlw   m1, 2
+    paddw   m1, m0 ; alpha/4+2
+    DIFF_LT p0, q0, m1, m6, t0 ; m6 = |p0-q0| < alpha/4+2
+    DIFF_LT q2, q0, m2, t1, t0 ; t1 = |q2-q0| < beta
+    DIFF_LT p0, p2, m2, m7, t0 ; m7 = |p2-p0| < beta
+    pand    m6, m3
+    pand    m7, m6
+    pand    m6, t1
+
+    movu spill, q3
+    LUMA_INTRA_P012 q0, q1, q2, q3, p0, p1, m3, m6, m0, m5, m1, q2
+    LUMA_INTRA_P012 p0, p1, p2, p3, q0, q1, m3, m7, m0, p0, m6, p2
+    movu    m7, spill
+
+    TRANSPOSE8x8W 7, 8, 1, 5, 11, 6, 13, 4, 14
+    movu         [r0-8], xm7
+    movu      [r0+r1-8], xm8
+    movu    [r0+r1*2-8], xm1
+    movu      [r0+r5-8], xm5
+    movu         [r4-8], xm11
+    movu      [r4+r1-8], xm6
+    movu    [r4+r1*2-8], xm13
+    movu      [r4+r5-8], xm4
+    vextracti128      [r2-8], m7, 1
+    vextracti128   [r2+r1-8], m8, 1
+    vextracti128 [r2+r1*2-8], m1, 1
+    vextracti128   [r2+r5-8], m5, 1
+    vextracti128      [r3-8], m11, 1
+    vextracti128   [r3+r1-8], m6, 1
+    vextracti128 [r3+r1*2-8], m13, 1
+    vextracti128   [r3+r5-8], m4, 1
+    ADD     rsp, 32
+    RET
 
 %endif
 

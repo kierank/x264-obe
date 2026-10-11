@@ -742,6 +742,8 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 #if HIGH_BIT_DEPTH && ARCH_X86_64
             pf->deblock_luma[1] = x264_deblock_v_luma_avx2;
             pf->deblock_luma[0] = x264_deblock_h_luma_avx2;
+            pf->deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx2;
+            pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx2;
             pf->deblock_chroma[1] = x264_deblock_v_chroma_avx2;
             pf->deblock_h_chroma_420 = x264_deblock_h_chroma_avx2;
             pf->deblock_h_chroma_422 = x264_deblock_h_chroma_422_avx2;
