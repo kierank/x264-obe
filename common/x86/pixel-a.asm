@@ -5182,6 +5182,118 @@ cglobal pixel_satd_8x8, 4,6,8
     SATD_END_SSE2 xm0
     RET
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int pixel_satd_avg2_WxH( uint8_t *fenc, uint8_t *src1, uint8_t *src2, intptr_t stride )
+; satd( fenc, (src1+src2+1)>>1 ) with the layout of the satd functions above:
+; only the reference rows change, to pavgb of the two sources.
+;-----------------------------------------------------------------------------
+; 16 wide: rows %5, %6 (fenc offsets) and %7, %8 (source offsets), each row in both lanes
+%macro SATD_AVG2_SUMSUB16x2 8 ; 2*dst, 2*tmp, 2*fenc offset, 2*src offset
+    vbroadcasti128 m%1, [r0+%5]
+    vbroadcasti128 m%2, [r0+%6]
+    movu          xm%3, [r1+%7]
+    pavgb         xm%3, [r2+%7]
+    movu          xm%4, [r1+%8]
+    pavgb         xm%4, [r2+%8]
+    vinserti128    m%3, m%3, xm%3, 1
+    vinserti128    m%4, m%4, xm%4, 1
+    DIFF_SUMSUB_SSSE3 %1, %3, %2, %4, 7
+%endmacro
+
+; four 16 pixel rows, r4 = 3*stride
+%macro SATD_AVG2_16x4 0
+    SATD_AVG2_SUMSUB16x2 0, 1, 4, 5, 0, FENC_STRIDE, 0, r3
+    SATD_AVG2_SUMSUB16x2 2, 3, 4, 5, 2*FENC_STRIDE, 3*FENC_STRIDE, 2*r3, r4
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+%endmacro
+
+; 8 wide, lanes = rows k, k+4: fenc row as in LOAD_SUMSUB_8x8P_AVX2, source rows
+; k and k+4 (r5/r6 = src1/src2 four rows down) averaged and spread by vpermq
+%macro SATD_AVG2_ROW8 2 ; dst (number), k
+    movq          xm%1, [r0+%2*FENC_STRIDE]
+    vinserti128    m%1, m%1, [r0+(%2+4)*FENC_STRIDE], 1
+    punpcklqdq     m%1, m%1
+%endmacro
+
+%macro SATD_AVG2_REF8 2 ; dst (number), source offset
+    movq          xm%1, [r1+%2]
+    movhps        xm%1, [r5+%2]
+    movq          xm8, [r2+%2]
+    movhps        xm8, [r6+%2]
+    pavgb         xm%1, xm8
+    vpermq         m%1, m%1, q1100
+%endmacro
+
+%macro SATD_AVG2_8x8 0
+    SATD_AVG2_ROW8 0, 0
+    SATD_AVG2_REF8 2, 0
+    SATD_AVG2_ROW8 1, 1
+    SATD_AVG2_REF8 3, r3
+    DIFF_SUMSUB_SSSE3 0, 2, 1, 3, 7
+    SATD_AVG2_ROW8 2, 2
+    SATD_AVG2_REF8 4, 2*r3
+    SATD_AVG2_ROW8 3, 3
+    SATD_AVG2_REF8 5, r4
+    DIFF_SUMSUB_SSSE3 2, 4, 3, 5, 7
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+%endmacro
+
+%macro SATD_AVG2_END 0
+    vextracti128 xm0, m6, 1
+    paddw        xm0, xm6
+    SATD_END_SSE2 xm0
+%endmacro
+
+cglobal pixel_satd_avg2_16x16, 4,5,8
+    mova     m7, [hmul_16p]
+    lea      r4, [3*r3]
+    pxor     m6, m6
+    SATD_AVG2_16x4
+%rep 3
+    lea      r1, [r1+4*r3]
+    lea      r2, [r2+4*r3]
+    add      r0, 4*FENC_STRIDE
+    SATD_AVG2_16x4
+%endrep
+    SATD_AVG2_END
+
+cglobal pixel_satd_avg2_16x8, 4,5,8
+    mova     m7, [hmul_16p]
+    lea      r4, [3*r3]
+    pxor     m6, m6
+    SATD_AVG2_16x4
+    lea      r1, [r1+4*r3]
+    lea      r2, [r2+4*r3]
+    add      r0, 4*FENC_STRIDE
+    SATD_AVG2_16x4
+    SATD_AVG2_END
+
+cglobal pixel_satd_avg2_8x16, 4,7,9
+    mova     m7, [hmul_8p]
+    lea      r4, [3*r3]
+    lea      r5, [r1+4*r3]
+    lea      r6, [r2+4*r3]
+    pxor     m6, m6
+    SATD_AVG2_8x8
+    lea      r1, [r1+8*r3]
+    lea      r2, [r2+8*r3]
+    lea      r5, [r5+8*r3]
+    lea      r6, [r6+8*r3]
+    add      r0, 8*FENC_STRIDE
+    SATD_AVG2_8x8
+    SATD_AVG2_END
+
+cglobal pixel_satd_avg2_8x8, 4,7,9
+    mova     m7, [hmul_8p]
+    lea      r4, [3*r3]
+    lea      r5, [r1+4*r3]
+    lea      r6, [r2+4*r3]
+    pxor     m6, m6
+    SATD_AVG2_8x8
+    SATD_AVG2_END
+%endif ; ARCH_X86_64
+
 cglobal pixel_sa8d_8x8_internal
     LOAD_SUMSUB_8x8P_AVX2 0, 1, 2, 3, 4, 5, 7
     HADAMARD4_V 0, 1, 2, 3, 4

@@ -1397,6 +1397,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
 #if ARCH_X86_64
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
+        pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
+        pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
+        pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
+        pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx2;
 #endif
     }
 
