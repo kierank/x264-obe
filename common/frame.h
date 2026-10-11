@@ -198,6 +198,15 @@ typedef struct
 
 typedef void (*x264_deblock_inter_t)( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 typedef void (*x264_deblock_intra_t)( pixel *pix, intptr_t stride, int alpha, int beta );
+/* deblock_luma_mb edge classes: [0] left edge, [1] top edge, [2] inner edges */
+typedef struct
+{
+    int8_t  tc0[4]; /* tc0 by bS, scaled to the bit depth; tc0[0] < 0 */
+    int16_t alpha;
+    int16_t beta;
+} x264_deblock_edge_t;
+/* edges: bit dir*4+edge; set only for edges whose class has nonzero alpha and beta */
+typedef void (*x264_deblock_mb_t)( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges );
 typedef struct
 {
     x264_deblock_inter_t deblock_luma[2];
@@ -219,6 +228,7 @@ typedef struct
     void (*deblock_strength) ( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X264_SCAN8_LUMA_SIZE],
                                int16_t mv[2][X264_SCAN8_LUMA_SIZE][2], uint8_t bs[2][8][4], int mvy_limit,
                                int bframe );
+    x264_deblock_mb_t deblock_luma_mb; /* NULL: per-edge path */
 } x264_deblock_function_t;
 
 #define x264_frame_delete x264_template(frame_delete)
