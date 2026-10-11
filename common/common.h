@@ -282,6 +282,7 @@ struct x264_t
     int             i_threadslice_pass; /* which pass of encoding we are on */
     x264_threadpool_t *threadpool;
     x264_threadpool_t *lookaheadpool;
+    struct x264_slicepool_t *slicepool; /* sliced threads: one worker per thread slice */
     x264_pthread_mutex_t mutex;
     x264_pthread_cond_t cv;
 
