@@ -1648,14 +1648,14 @@ static int check_mc( int cpu_ref, int cpu_new )
          * intermediate of the centre filter */
         for( int phase = 0; phase < 12 && ok; phase++ )
         {
-            ALIGNED_ARRAY_32( pixel, src,[16*64] );
-            pixel *srcp = src+8+2*64;
+            ALIGNED_ARRAY_32( pixel, stripe,[16*64] );
+            pixel *srcp = stripe+8+2*64;
             for( int y = 0; y < 16; y++ )
                 for( int x = 0; x < 64; x++ )
                 {
                     int p = "010010"[(x+phase)%6] - '0'; /* 0 = N, 1 = P */
                     int hi = (y%3 == 1) ^ p ^ (phase >= 6);
-                    src[y*64+x] = hi ? PIXEL_MAX : 0;
+                    stripe[y*64+x] = hi ? PIXEL_MAX : 0;
                 }
             memset( pbuf3, 0, 4096 * sizeof(pixel) );
             memset( pbuf4, 0, 4096 * sizeof(pixel) );
