@@ -1199,41 +1199,46 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
 
         /* If motion vectors are cached from frame macroblocks but this
          * macroblock is a field macroblock then the motion vector must be
-         * halved. Similarly, motion vectors from field macroblocks are doubled. */
+         * halved. Similarly, motion vectors from field macroblocks are doubled.
+         * Branchless per entry: c is 0 for a same-mode neighbour or an
+         * unavailable ref, and a shift by 0 rewrites the entry unchanged. */
         if( b_mbaff )
         {
 #define MAP_MVS\
-                if( FIELD_DIFFERENT(h->mb.i_mb_topleft_xy) )\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 - 1*8)\
-                if( FIELD_DIFFERENT(top) )\
+            {\
+                int fd_tl = FIELD_DIFFERENT(h->mb.i_mb_topleft_xy);\
+                int fd_t  = FIELD_DIFFERENT(top);\
+                int fd_tr = FIELD_DIFFERENT(h->mb.i_mb_topright_xy);\
+                int fd_l  = FIELD_DIFFERENT(left[0]);\
+                if( fd_tl | fd_t | fd_tr | fd_l )\
                 {\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 0 - 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 1 - 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 2 - 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 3 - 1*8)\
+                    MAP_F2F(mv, ref, x264_scan8[0] - 1 - 1*8, fd_tl)\
+                    MAP_F2F(mv, ref, x264_scan8[0] + 0 - 1*8, fd_t)\
+                    MAP_F2F(mv, ref, x264_scan8[0] + 1 - 1*8, fd_t)\
+                    MAP_F2F(mv, ref, x264_scan8[0] + 2 - 1*8, fd_t)\
+                    MAP_F2F(mv, ref, x264_scan8[0] + 3 - 1*8, fd_t)\
+                    MAP_F2F(mv, ref, x264_scan8[0] + 4 - 1*8, fd_tr)\
+                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 0*8, fd_l)\
+                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 1*8, fd_l)\
+                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 2*8, fd_l)\
+                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 3*8, fd_l)\
+                    MAP_F2F(topright_mv, topright_ref, 0, fd_l)\
+                    MAP_F2F(topright_mv, topright_ref, 1, fd_l)\
+                    MAP_F2F(topright_mv, topright_ref, 2, fd_l)\
                 }\
-                if( FIELD_DIFFERENT(h->mb.i_mb_topright_xy) )\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 4 - 1*8)\
-                if( FIELD_DIFFERENT(left[0]) )\
-                {\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 0*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 2*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 3*8)\
-                    MAP_F2F(topright_mv, topright_ref, 0)\
-                    MAP_F2F(topright_mv, topright_ref, 1)\
-                    MAP_F2F(topright_mv, topright_ref, 2)\
-                }
+            }
 
             if( MB_INTERLACED )
             {
-#define FIELD_DIFFERENT(macroblock) (macroblock >= 0 && !h->mb.field[macroblock])
-#define MAP_F2F(varmv, varref, index)\
-                if( h->mb.cache.varref[l][index] >= 0 )\
+#define FIELD_DIFFERENT(macroblock) (((macroblock) >= 0) & !h->mb.field[X264_MAX( macroblock, 0 )])
+/* mv_y /= 2 with C's truncation toward zero: (y + (y < 0)) >> 1 */
+#define MAP_F2F(varmv, varref, index, fd)\
                 {\
-                    h->mb.cache.varref[l][index] <<= 1;\
-                    h->mb.cache.varmv[l][index][1] /= 2;\
-                    h->mb.cache.mvd[l][index][1] >>= 1;\
+                    int c = (fd) & (h->mb.cache.varref[l][index] >= 0);\
+                    int y = h->mb.cache.varmv[l][index][1];\
+                    h->mb.cache.varref[l][index] <<= c;\
+                    M32( h->mb.cache.varmv[l][index] ) = pack16to32_mask( h->mb.cache.varmv[l][index][0], (y + ((y < 0) & c)) >> c );\
+                    h->mb.cache.mvd[l][index][1] >>= c;\
                 }
                 MAP_MVS
 #undef MAP_F2F
@@ -1241,18 +1246,20 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             }
             else
             {
-#define FIELD_DIFFERENT(macroblock) (macroblock >= 0 && h->mb.field[macroblock])
-#define MAP_F2F(varmv, varref, index)\
-                if( h->mb.cache.varref[l][index] >= 0 )\
+#define FIELD_DIFFERENT(macroblock) (((macroblock) >= 0) & !!h->mb.field[X264_MAX( macroblock, 0 )])
+/* mv_y <<= 1 wraps to int16 as the int16_t store did */
+#define MAP_F2F(varmv, varref, index, fd)\
                 {\
-                    h->mb.cache.varref[l][index] >>= 1;\
-                    h->mb.cache.varmv[l][index][1] <<= 1;\
-                    h->mb.cache.mvd[l][index][1] <<= 1;\
+                    int c = (fd) & (h->mb.cache.varref[l][index] >= 0);\
+                    h->mb.cache.varref[l][index] >>= c;\
+                    M32( h->mb.cache.varmv[l][index] ) = pack16to32_mask( h->mb.cache.varmv[l][index][0], (int16_t)(h->mb.cache.varmv[l][index][1] << c) );\
+                    h->mb.cache.mvd[l][index][1] <<= c;\
                 }
                 MAP_MVS
 #undef MAP_F2F
 #undef FIELD_DIFFERENT
             }
+#undef MAP_MVS
         }
     }
 
