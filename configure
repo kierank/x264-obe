@@ -1158,6 +1158,12 @@ if [ $compiler = GNU ]; then
     PROF_GEN_LD="-fprofile-generate"
     PROF_USE_CC="-fprofile-use"
     PROF_USE_LD="-fprofile-use"
+    # threaded training runs update the counters from several threads
+    if cc_check "" "-fprofile-generate -fprofile-update=atomic" ; then
+        PROF_GEN_CC="$PROF_GEN_CC -fprofile-update=atomic"
+        PROF_GEN_LD="$PROF_GEN_LD -fprofile-update=atomic"
+    fi
+    cc_check "" "-fprofile-correction -Werror" && PROF_USE_CC="$PROF_USE_CC -fprofile-correction"
 else
     CFLAGS="$(intel_cflags $CFLAGS)"
     # icc does not define __SSE__ until SSE2 optimization and icl never defines it or _M_IX86_FP
