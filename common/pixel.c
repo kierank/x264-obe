@@ -1267,7 +1267,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
-        pixf->me_hex_walk[PIXEL_16x16] = x264_pixel_me_hex_walk_16x16_avx2;
+        INIT4( me_hex_walk, _avx2 );
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1278,7 +1278,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx512;
-        pixf->me_hex_walk[PIXEL_16x16] = x264_pixel_me_hex_walk_16x16_avx512;
+        INIT4( me_hex_walk, _avx512 );
 #endif
     }
 #endif // HAVE_MMX

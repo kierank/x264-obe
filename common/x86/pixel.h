@@ -910,6 +910,15 @@ uint64_t x264_pixel_me_hex_walk_8x8_avx2( pixel *, pixel *, intptr_t, const uint
 #define x264_pixel_me_hex_walk_16x16_avx512 x264_template(pixel_me_hex_walk_16x16_avx512)
 uint64_t x264_pixel_me_hex_walk_16x16_avx512( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
                                               int, int, int, uint32_t, uint32_t, int, int );
+#define x264_pixel_me_hex_walk_16x8_avx512 x264_template(pixel_me_hex_walk_16x8_avx512)
+uint64_t x264_pixel_me_hex_walk_16x8_avx512( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                             int, int, int, uint32_t, uint32_t, int, int );
+#define x264_pixel_me_hex_walk_8x16_avx512 x264_template(pixel_me_hex_walk_8x16_avx512)
+uint64_t x264_pixel_me_hex_walk_8x16_avx512( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                             int, int, int, uint32_t, uint32_t, int, int );
+#define x264_pixel_me_hex_walk_8x8_avx512 x264_template(pixel_me_hex_walk_8x8_avx512)
+uint64_t x264_pixel_me_hex_walk_8x8_avx512( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                            int, int, int, uint32_t, uint32_t, int, int );
 void x264_intra_sad_x3_16x16_mmx2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_sse2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_ssse3 ( pixel   *, pixel   *, int * );

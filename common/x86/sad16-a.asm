@@ -1600,7 +1600,11 @@ cglobal intra_sad_x3_8x8, 3,3,8
     HX_SQUARE
 %endmacro
 
-%macro HX10_REGS 0
+; %1 (AVX2): 0 16 wide, fenc a row at a time in hxF; 1 8 wide, fenc a row pair at a time in
+; hxF; 2 8 wide, fenc row pairs resident from m12. AVX-512: fenc resident from m0 (ymm16).
+; 8 wide: the sums of a block are { even rows | odd rows } a ymm, fenc { row 2k | row 2k+1 };
+; hxT3 is hxT0 where the registers run out (its sad is added before the reuse)
+%macro HX10_REGS 1
 %if cpuflag(avx512)
     %define hxA0 m16
     %define hxA1 m17
@@ -1619,10 +1623,42 @@ cglobal intra_sad_x3_8x8, 3,3,8
     %define xhxA2   xm18
     %define xhxA3   xm19
     %define xhxT0   xm20
+    %define xhxT1   xm21
+    %define xhxT2   xm22
+    %define xhxT3   xm23
     %define xhxB0   xm24
     %define xhxB1   xm25
     %define xhxP    xm28
     %define xhxBEST xm29
+    %assign hx_fres  1
+    %assign hx_fbase 0
+%elif %1 == 2
+    %define hxA0 m0
+    %define hxA1 m1
+    %define hxA2 m2
+    %define hxA3 m3
+    %define hxT0 m4
+    %define hxT1 m5
+    %define hxT2 m8
+    %define hxT3 m4
+    %define hxB0 m6
+    %define hxB1 m7
+    %define hxPW m9
+    %define hxZ  m10
+    %define xhxA0   xm0
+    %define xhxA1   xm1
+    %define xhxA2   xm2
+    %define xhxA3   xm3
+    %define xhxT0   xm4
+    %define xhxT1   xm5
+    %define xhxT2   xm8
+    %define xhxT3   xm4
+    %define xhxB0   xm6
+    %define xhxB1   xm7
+    %define xhxP    xm11
+    %define xhxBEST xm8             ; hxT2, free from the end to the next sads
+    %assign hx_fres  1
+    %assign hx_fbase 12
 %else
     %define hxA0 m0
     %define hxA1 m1
@@ -1632,7 +1668,11 @@ cglobal intra_sad_x3_8x8, 3,3,8
     %define hxT0 m5
     %define hxT1 m8
     %define hxT2 m9
+%if %1
+    %define hxT3 m5
+%else
     %define hxT3 m4                 ; fenc, last use
+%endif
     %define hxB0 m6
     %define hxB1 m7
     %define hxPW m10
@@ -1641,21 +1681,41 @@ cglobal intra_sad_x3_8x8, 3,3,8
     %define xhxA1   xm1
     %define xhxA2   xm2
     %define xhxA3   xm3
+    %define xhxF    xm4
     %define xhxT0   xm5
+    %define xhxT1   xm8
+    %define xhxT2   xm9
+%if %1
+    %define xhxT3   xm5
+%else
+    %define xhxT3   xm4
+%endif
     %define xhxB0   xm6
     %define xhxB1   xm7
     %define xhxP    xm12
     %define xhxBEST xm13
+    %assign hx_fres  0
+    %assign hx_fbase 0
 %endif
 %endmacro
 
 %macro HX_LOAD_FENC 0
-%if cpuflag(avx512)
+%if hx_fres
+%if hx_w == 16
 %assign hx_r 0
-%rep 16
+%rep hx_h
     mova      m %+ hx_r, [r0+hx_r*FENC_STRIDEB]
 %assign hx_r hx_r+1
 %endrep
+%else
+%assign hx_p 0
+%rep hx_h/2
+%assign hx_fr hx_fbase+hx_p
+    movu     xm %+ hx_fr, [r0+2*hx_p*FENC_STRIDEB]
+    vinserti128 m %+ hx_fr, m %+ hx_fr, [r0+(2*hx_p+1)*FENC_STRIDEB], 1
+%assign hx_p hx_p+1
+%endrep
+%endif
 %endif
     vpbroadcastd hxPW, [pw_64]
     pxor         hxZ, hxZ
@@ -1680,10 +1740,47 @@ cglobal intra_sad_x3_8x8, 3,3,8
 %endif
 %endmacro
 
-; A0-A2 = word sads of the 16x16 at %1-%3 (the pointers advance 12 rows)
+; 8 wide, row pair hx_p: hx_f = fenc { row 2*hx_p | row 2*hx_p+1 }, hx_o0/hx_o1 = the
+; offsets of the rows in a group of 4 rows
+%macro HX_PAIR 0
+%if hx_p & 1
+    %xdefine hx_o0 r2*2
+    %xdefine hx_o1 r5
+%else
+    %xdefine hx_o0 0
+    %xdefine hx_o1 r2
+%endif
+%if hx_fres
+%assign hx_fr hx_fbase+hx_p
+    %xdefine hx_f m %+ hx_fr
+%else
+    movu         xhxF, [r0+2*hx_p*FENC_STRIDEB]
+    vinserti128   hxF, hxF, [r0+(2*hx_p+1)*FENC_STRIDEB], 1
+    %xdefine hx_f hxF
+%endif
+%endmacro
+
+; 8 wide: %1 (+)= |{ row 2*hx_p | row 2*hx_p+1 } of the block at %5 - hx_f|, %3 = temp
+%macro HX_PAIR_SAD 5 ; acc, xacc, temp, xtemp, pointer
+%if hx_p == 0
+    movu           %2, [%5]
+    vinserti128    %1, %1, [%5+r2], 1
+    psubw          %1, hx_f
+    pabsw          %1, %1
+%else
+    movu           %4, [%5+hx_o0]
+    vinserti128    %3, %3, [%5+hx_o1], 1
+    psubw          %3, hx_f
+    pabsw          %3, %3
+    paddw          %1, %3
+%endif
+%endmacro
+
+; A0-A2 = word sads of the block at %1-%3 (the pointers advance hx_h-4 rows)
 %macro HX_SAD_X3 3
+%if hx_w == 16
 %assign hx_r 0
-%rep 16
+%rep hx_h
     HX_ROW
 %if hx_r == 0
     psubw        hxA0, hx_f, [%1]
@@ -1703,19 +1800,35 @@ cglobal intra_sad_x3_8x8, 3,3,8
     paddw        hxA1, hxT1
     paddw        hxA2, hxT2
 %endif
-%if (hx_r & 3) == 3 && hx_r < 15
+%if (hx_r & 3) == 3 && hx_r < hx_h-1
     lea            %1, [%1+r2*4]
     lea            %2, [%2+r2*4]
     lea            %3, [%3+r2*4]
 %endif
 %assign hx_r hx_r+1
 %endrep
+%else
+%assign hx_p 0
+%rep hx_h/2
+    HX_PAIR
+    HX_PAIR_SAD  hxA0, xhxA0, hxT0, xhxT0, %1
+    HX_PAIR_SAD  hxA1, xhxA1, hxT1, xhxT1, %2
+    HX_PAIR_SAD  hxA2, xhxA2, hxT2, xhxT2, %3
+%if (hx_p & 1) && hx_p < hx_h/2-1
+    lea            %1, [%1+r2*4]
+    lea            %2, [%2+r2*4]
+    lea            %3, [%3+r2*4]
+%endif
+%assign hx_p hx_p+1
+%endrep
+%endif
 %endmacro
 
-; A0-A3 = word sads of the 16x16 at %1-%4
+; A0-A3 = word sads of the block at %1-%4
 %macro HX_SAD_X4 4
+%if hx_w == 16
 %assign hx_r 0
-%rep 16
+%rep hx_h
     HX_ROW
 %if hx_r == 0
     psubw        hxA0, hx_f, [%1]
@@ -1740,7 +1853,7 @@ cglobal intra_sad_x3_8x8, 3,3,8
     paddw        hxA2, hxT2
     paddw        hxA3, hxT3
 %endif
-%if (hx_r & 3) == 3 && hx_r < 15
+%if (hx_r & 3) == 3 && hx_r < hx_h-1
     lea            %1, [%1+r2*4]
     lea            %2, [%2+r2*4]
     lea            %3, [%3+r2*4]
@@ -1748,6 +1861,23 @@ cglobal intra_sad_x3_8x8, 3,3,8
 %endif
 %assign hx_r hx_r+1
 %endrep
+%else
+%assign hx_p 0
+%rep hx_h/2
+    HX_PAIR
+    HX_PAIR_SAD  hxA0, xhxA0, hxT0, xhxT0, %1
+    HX_PAIR_SAD  hxA1, xhxA1, hxT1, xhxT1, %2
+    HX_PAIR_SAD  hxA2, xhxA2, hxT2, xhxT2, %3
+    HX_PAIR_SAD  hxA3, xhxA3, hxT3, xhxT3, %4
+%if (hx_p & 1) && hx_p < hx_h/2-1
+    lea            %1, [%1+r2*4]
+    lea            %2, [%2+r2*4]
+    lea            %3, [%3+r2*4]
+    lea            %4, [%4+r2*4]
+%endif
+%assign hx_p hx_p+1
+%endrep
+%endif
 %endmacro
 
 ; A0-A2 word sads, B0 = { b0 b1 }, B1 = { b2 best } -> xA0 = { min( c0, c2 ), min( c1, best ) }
@@ -1799,19 +1929,52 @@ cglobal intra_sad_x3_8x8, 3,3,8
     pminsd      xhxA0, xhxA2
 %endmacro
 
+; hx_w, hx_h: the block (file scope, set before each function)
 INIT_YMM avx2
-HX10_REGS
+%assign hx_w 16
+%assign hx_h 16
+HX10_REGS 0
 cglobal me_hex_16x16, 5,15,14
     HX_BODY
 
 cglobal pixel_me_hex_walk_16x16, 5,15,14
     HX_WALK_BODY
 
+%assign hx_h 8
+cglobal pixel_me_hex_walk_16x8, 5,15,14
+    HX_WALK_BODY
+
+%assign hx_w 8
+%assign hx_h 16
+HX10_REGS 1
+cglobal pixel_me_hex_walk_8x16, 5,15,14
+    HX_WALK_BODY
+
+%assign hx_h 8
+HX10_REGS 2
+cglobal pixel_me_hex_walk_8x8, 5,15,16
+    HX_WALK_BODY
+
 INIT_YMM avx512
-HX10_REGS
+%assign hx_w 16
+%assign hx_h 16
+HX10_REGS 0
 cglobal me_hex_16x16, 5,15,30
     HX_BODY
 
 cglobal pixel_me_hex_walk_16x16, 5,15,30
+    HX_WALK_BODY
+
+%assign hx_h 8
+cglobal pixel_me_hex_walk_16x8, 5,15,30
+    HX_WALK_BODY
+
+%assign hx_w 8
+%assign hx_h 16
+cglobal pixel_me_hex_walk_8x16, 5,15,30
+    HX_WALK_BODY
+
+%assign hx_h 8
+cglobal pixel_me_hex_walk_8x8, 5,15,30
     HX_WALK_BODY
 %endif ; ARCH_X86_64
