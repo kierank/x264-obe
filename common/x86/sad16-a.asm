@@ -648,10 +648,10 @@ cglobal pixel_sad_8x%1, 4,6,3
 ; m0 = { ref1 | ref2 }, m%2 = { ref3 | ref4 } (4 or 8 sums a lane; words, at most
 ; 16*1023, if %1, else dwords) -> xm%3 = { sad1, sad2, sad3, sad4 },
 ; xm%2 = { sad2, sad4, _, _ }, xm0 = { sad1, sad3, _, _ }
-%macro SAD_HBD_X_END 3 ; pmaddwd?, b (number), tmp (number)
+%macro SAD_HBD_X_END 3-4 [pw_1] ; pmaddwd?, b (number), tmp (number), pmaddwd multiplier
 %if %1
-    pmaddwd        m0, [pw_1]
-    pmaddwd       m%2, [pw_1]
+    pmaddwd        m0, %4
+    pmaddwd       m%2, %4
 %endif
     punpckldq     m%3, m0, m%2
     punpckhdq      m0, m%2
@@ -673,8 +673,41 @@ cglobal pixel_sad_8x%1, 4,6,3
 ; last in-lane qword swap and the candidates of the two ymm lanes meet in the
 ; first pminsd, so the cross-lane step is one vextracti128.
 ;-----------------------------------------------------------------------------
-%macro SAD_X3_HBD_Y 1-2 0 ; h, min
-%if %2
+; layout twin only: the 925d62af tails as pixel_sad_x*_minold_*
+%macro SAD_X_MIN_TREE 3 ; c, best, tmp
+    pminsd       xm%2, xm%1
+    pshufd       xm%3, xm%1, q1032
+    pminsd       xm%1, xm%2, xm%3
+    psrlq        xm%3, xm%1, 32
+    pminsd       xm%1, xm%3
+    movd          eax, xm%1
+    RET
+%endmacro
+
+%macro SAD_X3_MIN_END 2
+    paddd         xm0, xm%2
+    punpcklqdq   xm%1, xm0
+    movq          xm4, r5mp
+    vpbroadcastq  xm5, r6mp
+    pshufd       xm%2, xm5, q0100
+    vpblendd      xm4, xm4, xm%2, 1100b
+    pshufd        xm5, xm5, q1111
+    paddd        xm%1, xm4
+    SAD_X_MIN_TREE %1, 5, 0
+%endmacro
+
+%macro SAD_X4_MIN_END 1
+    movq          xm3, r6mp
+    movhps        xm3, r7mp
+    vpbroadcastd  xm4, r8m
+    paddd        xm%1, xm3
+    SAD_X_MIN_TREE %1, 4, 0
+%endmacro
+
+%macro SAD_X3_HBD_Y 1-2 0 ; h, min (2: twin old tail)
+%if %2 == 2
+cglobal pixel_sad_x3_minold_8x%1, 5,7,7
+%elif %2
 cglobal pixel_sad_x3_min_8x%1, 5,7,7
 %else
 cglobal pixel_sad_x3_8x%1, 6,7,6
@@ -720,7 +753,11 @@ cglobal pixel_sad_x3_8x%1, 6,7,6
 %endif
 %assign sad_hbd_k sad_hbd_k+2
 %endrep
-%if %2
+%if %2 == 2
+    vpbroadcastd   m6, [pw_64]
+    SAD_HBD_X_END  1, 1, 2, m6
+    SAD_X3_MIN_END 2, 1
+%elif %2
     ; m0 = { ref1 | ref2 }, m1 = { ref3 even rows | ref3 odd rows }
     vpbroadcastd   m6, [pw_64]
     movq          xm3, r5mp        ; b0 b1
@@ -754,8 +791,10 @@ cglobal pixel_sad_x3_8x%1, 6,7,6
 %endif
 %endmacro
 
-%macro SAD_X4_HBD_Y 1-2 0 ; h, min
-%if %2
+%macro SAD_X4_HBD_Y 1-2 0 ; h, min (2: twin old tail)
+%if %2 == 2
+cglobal pixel_sad_x4_minold_8x%1, 6,7,6
+%elif %2
 cglobal pixel_sad_x4_min_8x%1, 6,7,6
 %else
 cglobal pixel_sad_x4_8x%1, 6,7,5
@@ -790,7 +829,11 @@ cglobal pixel_sad_x4_8x%1, 6,7,5
 %endif
 %assign sad_hbd_k sad_hbd_k+1
 %endrep
-%if %2
+%if %2 == 2
+    vpbroadcastd   m5, [pw_64]
+    SAD_HBD_X_END  1, 1, 2, m5
+    SAD_X4_MIN_END 2
+%elif %2
     ; m0 = { ref1 | ref2 }, m1 = { ref3 | ref4 }
     vpbroadcastd   m5, [pw_64]
     movq          xm3, r6mp        ; b0 b1
@@ -836,12 +879,12 @@ SAD_X4_HBD_Y 16
 ;=============================================================================
 ; m0..m%1-1 = 16 word sums each (at most 16*1023 a lane) -> 8 dword sums each
 ; folded to m0 = { sad1 | sad2 } and, for x4, m1 = { sad3 | sad4 } (4 dwords a lane)
-%macro SAD_X_HBD16_FOLD 1 ; refs
-    pmaddwd        m0, [pw_1]
-    pmaddwd        m1, [pw_1]
-    pmaddwd        m2, [pw_1]
+%macro SAD_X_HBD16_FOLD 1-2 [pw_1] ; refs, pmaddwd multiplier
+    pmaddwd        m0, %2
+    pmaddwd        m1, %2
+    pmaddwd        m2, %2
 %if %1 == 4
-    pmaddwd        m3, [pw_1]
+    pmaddwd        m3, %2
 %endif
     vperm2i128     m%1, m0, m1, q0301
     vinserti128    m0, m0, xm1, 1
@@ -879,8 +922,10 @@ SAD_X4_HBD_Y 16
     RET
 %endmacro
 
-%macro SAD_X3_HBD16 1-2 0 ; height, min
-%if %2
+%macro SAD_X3_HBD16 1-2 0 ; height, min (2: twin old tail)
+%if %2 == 2
+cglobal pixel_sad_x3_minold_16x%1, 5,7,7
+%elif %2
 cglobal pixel_sad_x3_min_16x%1, 5,7,7
 %else
 cglobal pixel_sad_x3_16x%1, 6,7,6
@@ -915,7 +960,12 @@ cglobal pixel_sad_x3_16x%1, 6,7,6
 %endif
 %assign sad_hbd_k sad_hbd_k+1
 %endrep
-%if %2
+%if %2 == 2
+    vpbroadcastd   m6, [pw_64]
+    SAD_X_HBD16_FOLD 3, m6
+    SAD_HBD_X_END  0, 2, 3
+    SAD_X3_MIN_END 3, 2
+%elif %2
     ; m0, m1, m2 = refs 1, 2, 3; ref 4 is zero with bias best
     vpbroadcastd   m6, [pw_64]
     pmaddwd        m0, m6
@@ -941,8 +991,10 @@ cglobal pixel_sad_x3_16x%1, 6,7,6
 %endif
 %endmacro
 
-%macro SAD_X4_HBD16 1-2 0 ; height, min
-%if %2
+%macro SAD_X4_HBD16 1-2 0 ; height, min (2: twin old tail)
+%if %2 == 2
+cglobal pixel_sad_x4_minold_16x%1, 6,7,8
+%elif %2
 cglobal pixel_sad_x4_min_16x%1, 6,7,8
 %else
 cglobal pixel_sad_x4_16x%1, 6,7,8
@@ -983,7 +1035,12 @@ cglobal pixel_sad_x4_16x%1, 6,7,8
 %endif
 %assign sad_hbd_k sad_hbd_k+1
 %endrep
-%if %2
+%if %2 == 2
+    vpbroadcastd   m5, [pw_64]
+    SAD_X_HBD16_FOLD 4, m5
+    SAD_HBD_X_END  0, 1, 2
+    SAD_X4_MIN_END 2
+%elif %2
     ; m0, m1, m2, m3 = refs 1, 2, 3, 4
     vpbroadcastd   m5, [pw_64]
     pmaddwd        m0, m5
@@ -1022,6 +1079,14 @@ SAD_X3_HBD16 16, 1
 SAD_X3_HBD16  8, 1
 SAD_X4_HBD16 16, 1
 SAD_X4_HBD16  8, 1
+SAD_X3_HBD_Y 8, 2
+SAD_X3_HBD_Y 16, 2
+SAD_X4_HBD_Y 8, 2
+SAD_X4_HBD_Y 16, 2
+SAD_X3_HBD16 16, 2
+SAD_X3_HBD16  8, 2
+SAD_X4_HBD16 16, 2
+SAD_X4_HBD16  8, 2
 %endif
 
 ;-----------------------------------------------------------------------------

@@ -1115,8 +1115,17 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
         pixf->sad_avg2[PIXEL_8x16]  = x264_pixel_sad_avg2_8x16_avx2;
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
-        INIT4( sad_x3_min, _avx2 );
-        INIT4( sad_x4_min, _avx2 );
+        /* layout twin: flip this test to measure the old tails at identical addresses */
+        if( !(cpu&X264_CPU_SLOW_ATOM) )
+        {
+            INIT4( sad_x3_min, _avx2 );
+            INIT4( sad_x4_min, _avx2 );
+        }
+        else
+        {
+            INIT4_NAME( sad_x3_min, sad_x3_minold, _avx2 );
+            INIT4_NAME( sad_x4_min, sad_x4_minold, _avx2 );
+        }
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1464,8 +1473,17 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
         pixf->sad_avg2[PIXEL_8x16]  = x264_pixel_sad_avg2_8x16_avx2;
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
-        INIT4( sad_x3_min, _avx2 );
-        INIT4( sad_x4_min, _avx2 );
+        /* layout twin: flip this test to measure the old tails at identical addresses */
+        if( !(cpu&X264_CPU_SLOW_ATOM) )
+        {
+            INIT4( sad_x3_min, _avx2 );
+            INIT4( sad_x4_min, _avx2 );
+        }
+        else
+        {
+            INIT4_NAME( sad_x3_min, sad_x3_minold, _avx2 );
+            INIT4_NAME( sad_x4_min, sad_x4_minold, _avx2 );
+        }
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;

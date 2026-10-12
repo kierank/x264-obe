@@ -1909,20 +1909,70 @@ SAD_X_AVX2 4, 16,  8, 8
     RET
 %endmacro
 
-%macro SAD_X_MIN_AVX2 4
-cglobal pixel_sad_x%1_min_%2x%3, 2+%1,7,%4
+; layout twin only: the 925d62af tails as pixel_sad_x*_minold_*
+%macro SAD_X3_MIN_ARGS 2
+    movq         xm%1, r5mp
+    vpbroadcastq xm%2, r6mp
+    vpblendd     xm%1, xm%1, xm%2, 1100b
+    pshufd       xm%2, xm%2, q1111
+%endmacro
+
+%macro SAD_X4_MIN_ARGS 2
+    movq         xm%1, r6mp
+    movhps       xm%1, r7mp
+    vpbroadcastd xm%2, r8m
+%endmacro
+
+%macro SAD_X_MIN_TREE 3 ; c, best, tmp
+    pminsd       xm%2, xm%1
+    pshufd       xm%3, xm%1, q1032
+    pminsd       xm%1, xm%2, xm%3
+    psrlq        xm%3, xm%1, 32
+    pminsd       xm%1, xm%3
+    movd          eax, xm%1
+    RET
+%endmacro
+
+%macro SAD_X3_MIN_END_AVX2old 0
+    SAD_X3_MIN_ARGS 4, 5
+    packssdw  m0, m1
+    packssdw  m2, m2
+    phaddd    m0, m2
+    pslld     m0, 6
+    vextracti128 xm1, m0, 1
+    paddd    xm0, xm4
+    paddd    xm0, xm1
+    SAD_X_MIN_TREE 0, 5, 1
+%endmacro
+
+%macro SAD_X4_MIN_END_AVX2old 0
+    SAD_X4_MIN_ARGS 4, 5
+    packssdw  m0, m1
+    pslld     m0, 6
+    vextracti128 xm1, m0, 1
+    phaddd   xm0, xm1
+    paddd    xm0, xm4
+    SAD_X_MIN_TREE 0, 5, 1
+%endmacro
+
+%macro SAD_X_MIN_AVX2 4-5 ; x, w, h, regs, old
+cglobal pixel_sad_x%1_min%5_%2x%3, 2+%1,7,%4
 %assign x 0
 %rep %3/4
     SAD_X%1_4x%2P_AVX2 x, %3/4
 %assign x x+1
 %endrep
-    SAD_X%1_MIN_END_AVX2
+    SAD_X%1_MIN_END_AVX2%5
 %endmacro
 
 SAD_X_MIN_AVX2 3, 16, 16, 7
 SAD_X_MIN_AVX2 3, 16,  8, 7
 SAD_X_MIN_AVX2 4, 16, 16, 8
 SAD_X_MIN_AVX2 4, 16,  8, 8
+SAD_X_MIN_AVX2 3, 16, 16, 7, old
+SAD_X_MIN_AVX2 3, 16,  8, 7, old
+SAD_X_MIN_AVX2 4, 16, 16, 8, old
+SAD_X_MIN_AVX2 4, 16,  8, 8, old
 %endif ; ARCH_X86_64
 
 ; 8 wide: ymm = { p row j, q row j | p row j+1, q row j+1 } against a vmovddup
@@ -1947,8 +1997,10 @@ SAD_X_MIN_AVX2 4, 16,  8, 8
 %endif
 %endmacro
 
-%macro SAD_X3_W8_AVX2 1-2 0 ; h, min
-%if %2
+%macro SAD_X3_W8_AVX2 1-2 0 ; h, min (2: twin old tail)
+%if %2 == 2
+cglobal pixel_sad_x3_minold_8x%1, 5,6,6
+%elif %2
 cglobal pixel_sad_x3_min_8x%1, 5,6,6
 %else
 cglobal pixel_sad_x3_8x%1, 5,6,6
@@ -1977,7 +2029,15 @@ cglobal pixel_sad_x3_8x%1, 5,6,6
 %endif
 %assign %%k %%k+2
 %endrep
-%if %2
+%if %2 == 2
+    SAD_X3_MIN_ARGS 2, 3
+    packssdw       m0, m1
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm2
+    paddd         xm0, xm1
+    SAD_X_MIN_TREE 0, 3, 1
+%elif %2
     ; m0 = { r1, r2 | r1, r2 }, m1 = { r3, sad(fenc, junk) | r3, junk }
     movq          xm2, r5mp
     pmovzxdq      xm3, r6mp       ; b2 _ best _
@@ -2007,8 +2067,10 @@ cglobal pixel_sad_x3_8x%1, 5,6,6
 %endif
 %endmacro
 
-%macro SAD_X4_W8_AVX2 1-2 0 ; h, min
-%if %2
+%macro SAD_X4_W8_AVX2 1-2 0 ; h, min (2: twin old tail)
+%if %2 == 2
+cglobal pixel_sad_x4_minold_8x%1, 6,7,6
+%elif %2
 cglobal pixel_sad_x4_min_8x%1, 6,7,6
 %else
 cglobal pixel_sad_x4_8x%1, 6,7,6
@@ -2037,7 +2099,15 @@ cglobal pixel_sad_x4_8x%1, 6,7,6
 %endif
 %assign %%k %%k+2
 %endrep
-%if %2
+%if %2 == 2
+    SAD_X4_MIN_ARGS 2, 3
+    packssdw       m0, m1
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm2
+    paddd         xm0, xm1
+    SAD_X_MIN_TREE 0, 3, 1
+%elif %2
     ; m0 = { r1, r2 | r1, r2 }, m1 = { r3, r4 | r3, r4 }
     pmovzxdq      xm2, r6mp       ; b0 _ b1 _
     pmovzxdq      xm3, r7mp       ; b2 _ b3 _
@@ -2077,6 +2147,10 @@ SAD_X3_W8_AVX2 16, 1
 SAD_X3_W8_AVX2 8, 1
 SAD_X4_W8_AVX2 16, 1
 SAD_X4_W8_AVX2 8, 1
+SAD_X3_W8_AVX2 16, 2
+SAD_X3_W8_AVX2 8, 2
+SAD_X4_W8_AVX2 16, 2
+SAD_X4_W8_AVX2 8, 2
 %endif
 
 %macro SAD_X_W4_AVX512 2 ; x, h
