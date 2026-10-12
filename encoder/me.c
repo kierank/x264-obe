@@ -413,16 +413,6 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         case X264_ME_HEX:
         {
     me_hex2:
-            if( i_pixel == PIXEL_16x16 && h->pixf.fpelcmp_hex_16x16 )
-            {
-                /* all of the below in one call */
-                uint64_t res = h->pixf.fpelcmp_hex_16x16( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
-                                                          bmx, bmy, bcost, mv_min, mv_max, i_me_range );
-                bcost = (uint32_t)res;
-                bmx = (int16_t)(res >> 32);
-                bmy = (int16_t)(res >> 48);
-                break;
-            }
             /* hexagon search, radius 2 */
     #if 0
             for( int i = 0; i < i_me_range/2; i++ )
@@ -452,6 +442,18 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 int dir = (bcost&63)-2;
                 bmx += hex2[dir+1][0];
                 bmy += hex2[dir+1][1];
+
+                if( i_pixel == PIXEL_16x16 && h->pixf.fpelcmp_hex_walk_16x16 )
+                {
+                    /* the loop below and the square refine in one call */
+                    uint64_t res = h->pixf.fpelcmp_hex_walk_16x16( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
+                                                                   bmx, bmy, bcost, mv_min, mv_max,
+                                                                   (i_me_range>>1) - 1, dir );
+                    bcost = (uint32_t)res;
+                    bmx = (int16_t)(res >> 32);
+                    bmy = (int16_t)(res >> 48);
+                    break;
+                }
 
                 /* half hexagon, not overlapping the previous iteration */
                 for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )

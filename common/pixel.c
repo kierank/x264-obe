@@ -544,6 +544,47 @@ uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
     bmy += square1[bcost&63][1];
     bcost >>= 6;
 
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+
+/****************************************************************************
+ * me_hex_walk_16x16: me_hex_16x16_c from the point where the hexagon moved
+ * (x264_pixel_me_hex_walk_t), the statements of me.c from there; the
+ * reference of the asm
+ ****************************************************************************/
+uint64_t x264_me_hex_walk_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
+                                   const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                                   int bmx, int bmy, int bcost,
+                                   uint32_t mv_min, uint32_t mv_max, int i, int dir )
+{
+    static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
+    static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
+    static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+    int costs[4];
+
+    /* half hexagon, not overlapping the previous iteration */
+    for( ; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
+    {
+        bcost &= ~63;
+        COST_MV_X3_DIR_MIN( hex2[dir+0][0], hex2[dir+0][1],
+                            hex2[dir+1][0], hex2[dir+1][1],
+                            hex2[dir+2][0], hex2[dir+2][1], 1 );
+        if( !(bcost&63) )
+            break;
+        dir += (bcost&63)-2;
+        dir = mod6m1[dir+1];
+        bmx += hex2[dir+1][0];
+        bmy += hex2[dir+1][1];
+    }
+    bcost >>= 6;
+    /* square refine */
+    bcost <<= 6;
+    COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
+    COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
+    bmx += square1[bcost&63][0];
+    bmy += square1[bcost&63][1];
+    bcost >>= 6;
+
 #undef COST_MV_X4_DIR_MIN
 #undef COST_MV_X3_DIR_MIN
 #undef COPY1_IF_LT

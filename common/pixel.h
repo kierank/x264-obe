@@ -45,6 +45,16 @@ typedef uint64_t (*x264_pixel_me_hex_t) ( pixel *fenc, pixel *ref, intptr_t stri
                                           const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
                                           int bmx, int bmy, int bcost,
                                           uint32_t mv_min, uint32_t mv_max, int i_me_range );
+/* The same from the point where the hexagon moved: me.c's half hexagon loop and the square
+ * refine. bmx, bmy: the centre after the move by hex2[dir+1], in range or not. bcost: as
+ * me.c has it there, (cost << 6) | (dir+2); the low 6 bits are not read. i: the loop's
+ * count, me.c passes (i_me_range>>1) - 1; while i > 0 and CHECK_MVRANGE( bmx, bmy ) a step
+ * costs hex2[dir..dir+2] around the centre, stops if none is better, else moves and
+ * decrements i. i <= 0: the square refine only. dir: 0..5. Returns as x264_pixel_me_hex_t. */
+typedef uint64_t (*x264_pixel_me_hex_walk_t) ( pixel *fenc, pixel *ref, intptr_t stride,
+                                               const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                                               int bmx, int bmy, int bcost,
+                                               uint32_t mv_min, uint32_t mv_max, int i, int dir );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -156,8 +166,9 @@ typedef struct
     x264_pixel_cmp_x4_min_t sad_x4_min[7];
     x264_pixel_cmp_x3_min_t fpelcmp_x3_min[7]; /* sad_x3_min where fpelcmp is sad, else NULL */
     x264_pixel_cmp_x4_min_t fpelcmp_x4_min[7];
-    x264_pixel_me_hex_t me_hex_16x16;      /* asm only, NULL otherwise; sad */
-    x264_pixel_me_hex_t fpelcmp_hex_16x16; /* me_hex_16x16 where fpelcmp is sad, else NULL */
+    x264_pixel_me_hex_t me_hex_16x16;                /* asm only, NULL otherwise; sad; not called by me.c */
+    x264_pixel_me_hex_walk_t me_hex_walk_16x16;      /* asm only, NULL otherwise; sad */
+    x264_pixel_me_hex_walk_t fpelcmp_hex_walk_16x16; /* me_hex_walk_16x16 where fpelcmp is sad, else NULL */
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
@@ -239,5 +250,10 @@ uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
                               const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
                               int bmx, int bmy, int bcost,
                               uint32_t mv_min, uint32_t mv_max, int i_me_range );
+#define x264_me_hex_walk_16x16_c x264_template(me_hex_walk_16x16_c)
+uint64_t x264_me_hex_walk_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
+                                   const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                                   int bmx, int bmy, int bcost,
+                                   uint32_t mv_min, uint32_t mv_max, int i, int dir );
 
 #endif
