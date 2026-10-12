@@ -666,7 +666,7 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - zerolatency:\n"
         "                                    --bframes 0 --force-cfr --no-mbtree\n"
         "                                    --sync-lookahead 0 --sliced-threads\n"
-        "                                    --rc-lookahead 0\n" );
+        "                                    --rc-lookahead 0 --lookahead-8bit\n" );
     else H0( "                                  - psy tunings: film,animation,grain,\n"
              "                                                 stillimage,psnr,ssim\n"
              "                                  - other tunings: fastdecode,zerolatency\n" );
@@ -733,7 +733,8 @@ static void help( x264_param_t *defaults, int longhelp )
     H0( "      --crf <float>           Quality-based VBR (%d-51) [%.1f]\n", 51 - QP_MAX_SPEC, defaults->rc.f_rf_constant );
     H1( "      --rc-lookahead <integer> Number of frames for frametype lookahead [%d]\n", defaults->rc.i_lookahead );
     H2( "      --lookahead-8bit        Run the lookahead on 8-bit copies of the frames\n"
-        "                              (high bit depth only; faster, changes output)\n" );
+        "                              (high bit depth only; faster, changes output;\n"
+        "                              on with --tune zerolatency, --no-lookahead-8bit)\n" );
     H0( "      --vbv-maxrate <integer> Max local bitrate (kbit/s) [%d]\n", defaults->rc.i_vbv_max_bitrate );
     H0( "      --vbv-bufsize <integer> Set size of the VBV buffer (kbit) [%d]\n", defaults->rc.i_vbv_buffer_size );
     H2( "      --vbv-init <float>      Initial VBV buffer occupancy [%.1f]\n", defaults->rc.f_vbv_buffer_init );
@@ -1042,6 +1043,7 @@ static struct option long_options[] =
     { "crf",         required_argument, NULL, 0 },
     { "rc-lookahead",required_argument, NULL, 0 },
     { "lookahead-8bit", no_argument, NULL, 0 },
+    { "no-lookahead-8bit", no_argument, NULL, 0 },
     { "ref",         required_argument, NULL, 'r' },
     { "asm",         required_argument, NULL, 0 },
     { "no-asm",            no_argument, NULL, 0 },
