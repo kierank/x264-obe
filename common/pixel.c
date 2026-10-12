@@ -221,6 +221,49 @@ static int name( pixel *pix1, intptr_t i_stride1, pixel *pix2, intptr_t i_stride
 PIXEL_VAR2_C( x264_pixel_var2_8x16, 8, 16, 7 )
 PIXEL_VAR2_C( x264_pixel_var2_8x8,  8,  8, 6 )
 
+/****************************************************************************
+ * pixel_var_pair: var sums of an MB pair column by 16-row half and row parity
+ ****************************************************************************/
+static void pixel_var_pair( pixel *pix, intptr_t i_stride, uint32_t res[8] )
+{
+    for( int half = 0; half < 2; half++, res += 4 )
+    {
+        uint32_t sum[2] = {0}, sqr[2] = {0};
+        for( int y = 0; y < 16; y++, pix += i_stride )
+            for( int x = 0; x < 16; x++ )
+            {
+                sum[y&1] += pix[x];
+                sqr[y&1] += pix[x] * pix[x];
+            }
+        res[0] = sum[0];
+        res[1] = sqr[0];
+        res[2] = sum[1];
+        res[3] = sqr[1];
+    }
+}
+
+/* interleaved chroma: plane 0 the even columns, 1 the odd */
+static void pixel_var_pair_nv( pixel *pix, intptr_t i_stride, int h, uint32_t res[16] )
+{
+    for( int half = 0; half < 2; half++, res += 8 )
+    {
+        uint32_t sum[2][2] = {{0}}, sqr[2][2] = {{0}};
+        for( int y = 0; y < h; y++, pix += i_stride )
+            for( int x = 0; x < 16; x++ )
+            {
+                sum[y&1][x&1] += pix[x];
+                sqr[y&1][x&1] += pix[x] * pix[x];
+            }
+        for( int p = 0; p < 2; p++ )
+        {
+            res[4*p+0] = sum[p][0];
+            res[4*p+1] = sum[p][1];
+            res[4*p+2] = sqr[p][0];
+            res[4*p+3] = sqr[p][1];
+        }
+    }
+}
+
 #if BIT_DEPTH > 8
     typedef uint32_t sum_t;
     typedef uint64_t sum2_t;
@@ -891,6 +934,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->ssd_nv12_core = pixel_ssd_nv12_core;
     pixf->ssim_4x4x2_core = ssim_4x4x2_core;
     pixf->ssim_end4 = ssim_end4;
+    pixf->var_pair = pixel_var_pair;
+    pixf->var_pair_nv = pixel_var_pair_nv;
     pixf->vsad = pixel_vsad;
     pixf->asd8 = pixel_asd8;
 

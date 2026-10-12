@@ -274,40 +274,101 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
      * sure no reordering goes on. */
     uint32_t var;
     x264_prefetch_fenc( h, frame, mb_x, mb_y );
-    if( h->mb.b_adaptive_mbaff )
+    var  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, PARAM_INTERLACED, 1 );
+    if( CHROMA444 )
     {
-        /* We don't know the super-MB mode we're going to pick yet, so
-         * simply try both and pick the lower of the two. */
-        uint32_t var_interlaced, var_progressive;
-        var_interlaced   = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, 1, 1 );
-        var_progressive  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, 0, 0 );
-        if( CHROMA444 )
-        {
-            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, 1, 1 );
-            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, 0, 0 );
-            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, 1, 1 );
-            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, 0, 0 );
-        }
-        else
-        {
-            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, 1, 1 );
-            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, 0, 0 );
-        }
-        var = X264_MIN( var_interlaced, var_progressive );
+        var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, PARAM_INTERLACED, 1 );
+        var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, PARAM_INTERLACED, 1 );
     }
     else
-    {
-        var  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, PARAM_INTERLACED, 1 );
-        if( CHROMA444 )
-        {
-            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, PARAM_INTERLACED, 1 );
-            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, PARAM_INTERLACED, 1 );
-        }
-        else
-            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, PARAM_INTERLACED, 1 );
-    }
+        var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, PARAM_INTERLACED, 1 );
     x264_emms();
     return var;
+}
+
+/* One plane of x264_ac_energy_mbpair: sum and sumsq of half k, parity p at
+ * r[hs*k+ps*p] and r[hs*k+ps*p+qo]. var[field][MB] */
+static ALWAYS_INLINE void ac_energy_pair( uint32_t var[2][2], const uint32_t *r, int hs, int ps, int qo, int shift,
+                                          uint32_t *pixel_sum, uint64_t *pixel_ssd, int i, int b_mb )
+{
+    for( int m = 0; m < 2; m++ )
+    {
+        /* frame MB m: half m, both parities; field MB m: parity m, both halves */
+        uint32_t frame_sum = r[hs*m]    + r[hs*m+ps];
+        uint32_t frame_sqr = r[hs*m+qo] + r[hs*m+ps+qo];
+        uint32_t field_sum = r[ps*m]    + r[hs+ps*m];
+        uint32_t field_sqr = r[ps*m+qo] + r[hs+ps*m+qo];
+        var[0][m] += ac_energy_var( frame_sum + ((uint64_t)frame_sqr << 32), shift, pixel_sum, pixel_ssd, i, 0 );
+        var[1][m] += ac_energy_var( field_sum + ((uint64_t)field_sqr << 32), shift, pixel_sum, pixel_ssd, i, (b_mb >> m) & 1 );
+    }
+}
+
+/* Adaptive MBAFF: x264_ac_energy_mb of the MBs of the pair at mb_x, mb_y (even), the
+ * lower of the frame and the field MB's energy, from one read of the pair. b_mb: bit 0
+ * the top MB, bit 1 the bottom; only their field sums go to pixel_sum/ssd. */
+static NOINLINE void x264_ac_energy_mbpair( x264_t *h, int mb_x, int mb_y, x264_frame_t *frame,
+                                            uint32_t *pixel_sum, uint64_t *pixel_ssd, int b_mb, uint32_t energy[2] )
+{
+    uint32_t r[16];
+    uint32_t var[2][2] = {{0}};
+    x264_prefetch_fenc( h, frame, mb_x, mb_y );
+    x264_prefetch_fenc( h, frame, mb_x, mb_y+1 );
+    for( int i = 0; i < (CHROMA444 ? 3 : 1); i++ )
+    {
+        int stride = frame->i_stride[i];
+        h->pixf.var_pair( frame->plane[i] + 16 * mb_x + 16 * mb_y * stride, stride, r );
+        ac_energy_pair( var, r, 4, 2, 1, 8, pixel_sum, pixel_ssd, i, b_mb );
+    }
+    if( !CHROMA444 )
+    {
+        int height = 16>>CHROMA_V_SHIFT;
+        int stride = frame->i_stride[1];
+        int shift = 7 - CHROMA_V_SHIFT;
+        h->pixf.var_pair_nv( frame->plane[1] + 16 * mb_x + height * mb_y * stride, stride, height, r );
+        ac_energy_pair( var, r,   8, 4, 2, shift, pixel_sum, pixel_ssd, 1, b_mb );
+        ac_energy_pair( var, r+1, 8, 4, 2, shift, pixel_sum, pixel_ssd, 2, b_mb );
+    }
+    energy[0] = X264_MIN( var[1][0], var[0][0] );
+    energy[1] = X264_MIN( var[1][1], var[0][1] );
+    x264_emms();
+}
+
+/* x264_adaptive_quant_frame_rows in adaptive MBAFF, by MB pair. A pair across mb_y0
+ * or mb_y1 is read for its MB in [mb_y0,mb_y1) alone. */
+static void adaptive_quant_frame_rows_mbaff( x264_t *h, x264_frame_t *frame, float *quant_offsets,
+                                             int mb_y0, int mb_y1, uint32_t *pixel_sum, uint64_t *pixel_ssd )
+{
+    int b_aq = h->param.rc.i_aq_mode != X264_AQ_NONE && h->param.rc.f_aq_strength != 0;
+    if( !b_aq && !h->param.analyse.i_weighted_pred )
+        return;
+    float strength = h->param.rc.f_aq_strength * 1.0397f;
+    for( int mb_y = mb_y0 & ~1; mb_y < mb_y1; mb_y += 2 )
+        for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x++ )
+        {
+            uint32_t energy[2];
+            int b_mb = (mb_y >= mb_y0) | ((mb_y+1 < mb_y1) << 1);
+            x264_ac_energy_mbpair( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, b_mb, energy );
+            if( !b_aq )
+                continue;
+            for( int m = 0; m < 2; m++ )
+            {
+                if( !((b_mb >> m) & 1) )
+                    continue;
+                int mb_xy = mb_x + (mb_y+m)*h->mb.i_mb_stride;
+                if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
+                    frame->f_qp_offset[mb_xy] = powf( energy[m] + 1, 0.125f );
+                else
+                {
+                    float qp_adj = strength * (x264_log2( X264_MAX(energy[m], 1) ) - (14.427f + 2*(BIT_DEPTH-8)));
+                    if( quant_offsets )
+                        qp_adj += quant_offsets[mb_xy];
+                    frame->f_qp_offset[mb_xy] =
+                    frame->f_qp_offset_aq[mb_xy] = qp_adj;
+                    if( h->frames.b_have_lowres )
+                        frame->i_inv_qscale_factor[mb_xy] = x264_exp2fix8(qp_adj);
+                }
+            }
+        }
 }
 
 /* Per-MB part of x264_adaptive_quant_frame for MB rows [mb_y0,mb_y1). It reads
@@ -317,6 +378,11 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
 void x264_adaptive_quant_frame_rows( x264_t *h, x264_frame_t *frame, float *quant_offsets,
                                      int mb_y0, int mb_y1, uint32_t *pixel_sum, uint64_t *pixel_ssd )
 {
+    if( h->mb.b_adaptive_mbaff )
+    {
+        adaptive_quant_frame_rows_mbaff( h, frame, quant_offsets, mb_y0, mb_y1, pixel_sum, pixel_ssd );
+        return;
+    }
     if( h->param.rc.i_aq_mode == X264_AQ_NONE || h->param.rc.f_aq_strength == 0 )
     {
         /* Need variance data for weighted prediction */

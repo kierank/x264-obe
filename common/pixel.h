@@ -164,6 +164,12 @@ typedef struct
     void (*ssim_4x4x2_core)( const pixel *pix1, intptr_t stride1,
                              const pixel *pix2, intptr_t stride2, int sums[2][4] );
     float (*ssim_end4)( int sum0[5][4], int sum1[5][4], int width );
+    /* Adaptive MBAFF AQ: sums and sums of squares of the 16 wide column of an MB pair,
+     * 2*16 rows, by 16-row half and row parity: res[4*half+2*parity] = sum, +1 = sumsq.
+     * var_pair_nv: the same over interleaved chroma, 2*h rows (h = 8 or 16), also by
+     * plane: res[8*half+4*parity+plane] = sum, +2 = sumsq. */
+    void (*var_pair)( pixel *pix, intptr_t stride, uint32_t res[8] );
+    void (*var_pair_nv)( pixel *pix, intptr_t stride, int h, uint32_t res[16] );
 
     /* multiple parallel calls to cmp. */
     x264_pixel_cmp_x3_t sad_x3[7];
