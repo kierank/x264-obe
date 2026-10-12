@@ -73,6 +73,41 @@ rd_entropy_sb:      dw 7, 1469, 1469, 7, 7, 1449, 1449, 7, 8, 1430, 1430, 8, 8, 
                     dw 122, 468, 468, 122, 130, 448, 448, 130, 139, 429, 429, 139, 148, 410, 410, 148
                     dw 157, 391, 391, 157, 168, 371, 371, 168, 180, 352, 352, 180, 192, 333, 333, 192
                     dw 206, 314, 314, 206, 221, 295, 295, 221, 238, 275, 275, 238, 256, 256, 256, 256
+; rd 8x8 sig map (avx512icl): transition[state][bin] ^ bin, index state^bin
+rd_transition_sb:   db 0, 1, 2, 51, 2, 51, 4, 53, 6, 53, 8, 53, 10, 55, 12, 55
+                    db 14, 55, 16, 57, 18, 57, 20, 57, 22, 59, 24, 59, 26, 61, 28, 61
+                    db 30, 61, 32, 63, 34, 63, 36, 65, 38, 67, 40, 67, 42, 67, 44, 69
+                    db 46, 69, 48, 71, 50, 73, 52, 73, 54, 75, 56, 75, 58, 77, 60, 79
+                    db 62, 79, 64, 81, 66, 83, 68, 83, 70, 85, 72, 85, 74, 89, 76, 89
+                    db 78, 91, 80, 91, 82, 95, 84, 95, 86, 97, 88, 97, 90, 101, 92, 101
+                    db 94, 103, 96, 105, 98, 105, 100, 109, 102, 109, 104, 111, 106, 113, 108, 115
+                    db 110, 117, 112, 119, 114, 119, 116, 123, 118, 123, 120, 125, 122, 127, 124, 126
+; position coded in round r (row) for sig context c (column), descending
+; per context and right-aligned, 255 = none; frame then field
+rd8_sig_slots:      db 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255
+                    db 255,255,255,255, 19,255,255,255,255,255,255,255,255,255,255,255
+                    db 255,255,255,255, 18,255,255,255,255,255,255,255,255,255,255,255
+                    db 255,255,255,255, 17,255,255,255,255,255,255,255,255,255,255,255
+                    db 255,255,255,255, 16,255,255,255,255,255,255,255,255,255,255,255
+                    db 255,255,255,255, 13,255,255, 39,255, 55,255, 59,255,255,255,255
+                    db 255,255,255, 21, 12,255, 51, 32,255, 52,255, 56,255,255,255,255
+                    db 255,255,255, 20, 11, 15, 46, 31, 45, 44, 61, 50, 62,255,255,255
+                    db 255,255,255, 10,  8, 14, 38, 25, 40, 41, 54, 47, 57, 58, 60,255
+                    db 255,255,255,  9,  7,  6, 33, 24, 30, 29, 43, 37, 48, 49, 53,255
+                    db   0,  1,  2,  3,  4,  5, 22, 23, 26, 27, 28, 34, 35, 36, 42,255
+                    db 255,255,255,255,255,255,255,255,255,255, 57,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255,255, 55, 56,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255,255, 54, 50,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255,255, 48, 49,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255,255, 47, 43,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255,255, 41, 42,255,255,255,255,255
+                    db 255,255,255,255,255,255,255,255, 51, 40, 35, 39,255,255,255,255
+                    db 255,255,255,255,255,255,255,255, 44, 33, 34, 37,255,255, 62,255
+                    db 255,255,255,255,255,255,255,255, 36, 32, 27, 31,255, 53, 61,255
+                    db 255,255,255,255,255,255,255, 12, 28, 25, 26, 29, 38, 52, 60,255
+                    db 255,  2,  4,  6, 14, 15, 16, 11, 20, 24, 19, 23, 30, 46, 59,255
+                    db   0,  1,  3,  5,  7,  8,  9, 10, 13, 17, 18, 21, 22, 45, 58,255
 rd_lanes_4x4:       dw 0xffff, 0x7fff, 0xffff, 0x000f, 0x7fff, 0xffff, 0xffff
                     dw 0x7fff, 0xffff, 0xffff, 0xffff, 0x7fff, 0xffff, 0xffff
 rd_nzmask_4x4:  dd 0xffff, 0, 0xffff, 1, 0xffff, 0, 0x000f, 0, 0xffff, 1, 0xffff, 0, 0xffff, 0
@@ -716,22 +751,52 @@ CABAC bmi2
 %endif
 %endmacro
 
+; one round of the avx512icl 8x8 sig map: m8 = state^bin of the round, which
+; for an uncoded lane is the state itself
+%macro RD8_SIG_ROUND 5 ; lane group, coded mask of 4 rounds, idx copy, D, D (xmm)
+%if %1
+    kshiftrq  k5, %2, 16*%1
+    vinserti32x4 %3, %3, xm8, %1
+    vextracti32x4 xm14, %4, %1
+    vpermi2b  m8 {k5}, m12, m13
+    vpxord   xm8, xm8, xm14
+%else
+    vmovdqa64 %3, m8
+    vpermi2b  m8 {%2}, m12, m13
+    vpxord   xm8, xm8, %5
+%endif
+%endmacro
+
 ; 8x8 blocks. Sig and last contexts repeat within a block, so each kind of
 ; decision keeps the descending order of the C code: the sig pass codes
 ; every i < last downwards without a branch on l[i], then the nonzero ones
 ; below last are visited downwards for their last flag and level. The sig,
 ; last and level context ranges are disjoint, so this matches the
 ; interleaved order, and f8_bits is an integer sum.
+;
+; avx512icl: the sig pass is 12 rounds over the 15 sig contexts. Round r
+; codes, for each context, the position in rd8_sig_slots[r] if it is <= last.
+; Each context's positions are right-aligned in descending order, at most 10
+; (frame) or 12 (field) of them. With idx = state^bin, transition[state][bin]
+; = rd_transition_sb[idx] ^ bin, so a round is a merge-masked vpermi2b and an
+; xor with bin ^ next bin. The idx of each round is kept for the entropy,
+; which is summed once.
 %macro CABAC_RESIDUAL_RD_8x8 0
     %define dct rsp
-    %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb
+    %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb, ctx_sig
     %define cbm [rsp+64*SIZEOF_DCTCOEF]
+    %define sigm [rsp+64*SIZEOF_DCTCOEF+8]
+%if cpuflag(avx512icl)
+    %define rd8_mm 16
+%else
+    %define rd8_mm 6
+%endif
 %ifdef PIC
-    cglobal cabac_block_residual_8x8_rd_internal, 4,12,6,-rd8_stack
+    cglobal cabac_block_residual_8x8_rd_internal, 4,12,rd8_mm,-rd8_stack
     lea     r11, [$$]
     %define GLOBAL +r11-$$
 %else
-    cglobal cabac_block_residual_8x8_rd_internal, 4,11,6,-rd8_stack
+    cglobal cabac_block_residual_8x8_rd_internal, 4,11,rd8_mm,-rd8_stack
     %define GLOBAL
 %endif
     ABS_NZMASK_8x8
@@ -742,7 +807,12 @@ CABAC bmi2
     bsr       r6, r9                                          ; r6 = last
 %endif
     shl      r1d, 4                                           ; MB_INTERLACED*16
+%if cpuflag(avx512icl)
+    lea      r4d, [r1+r1*2]
+    lea       r4, [rd8_sig_slots+r4*4 GLOBAL]                 ; r4 = sig slots, frame or field
+%else
     lea       r4, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]    ; r4 = sig offset 8x8
+%endif
     add      r1d, r2d
     movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
     movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
@@ -753,12 +823,81 @@ CABAC bmi2
     add       r5, r3
     add       r7, r3
     add       r8, r3                                          ; precalculate cabac state pointers
+%if cpuflag(avx512icl)
+; sig decisions of every i <= last, i != 63
+    mov      sigm, r5
+    vpbroadcastb m0, r6d
+    vpmovm2b  m1, k0
+    vpabsb    m1, m1                                          ; bin of each position
+    vmovdqu8  m2, [r4+0*64]
+    vmovdqu8  m3, [r4+1*64]
+    vmovdqu8  m4, [r4+2*64]
+    vpcmpub   k1, m2, m0, 2                                   ; coded lanes of rounds 0-3, 4-7, 8-11
+    vpcmpub   k2, m3, m0, 2
+    vpcmpub   k3, m4, m0, 2
+    vpermb    m2 {k1}{z}, m2, m1                              ; bins, 0 in the uncoded lanes
+    vpermb    m3 {k2}{z}, m3, m1
+    vpermb    m4 {k3}{z}, m4, m1
+    vpxord   xm15, xm15, xm15
+    valignd   m5, m3, m2, 4
+    valignd   m6, m4, m3, 4
+    valignd   m7, m15, m4, 4
+    vpxord    m5, m5, m2                                      ; D = bin ^ bin of the next round
+    vpxord    m6, m6, m3
+    vpxord    m7, m7, m4
+    vmovdqu8 xm8, [r5]
+    vpxord   xm8, xm8, xm2
+    vmovdqu8 m12, [rd_transition_sb]
+    vmovdqu8 m13, [rd_transition_sb+64]
+    RD8_SIG_ROUND 0, k1, m9,  m5, xm5
+    RD8_SIG_ROUND 1, k1, m9,  m5, xm5
+    RD8_SIG_ROUND 2, k1, m9,  m5, xm5
+    RD8_SIG_ROUND 3, k1, m9,  m5, xm5
+    RD8_SIG_ROUND 0, k2, m10, m6, xm6
+    RD8_SIG_ROUND 1, k2, m10, m6, xm6
+    RD8_SIG_ROUND 2, k2, m10, m6, xm6
+    RD8_SIG_ROUND 3, k2, m10, m6, xm6
+    RD8_SIG_ROUND 0, k3, m11, m7, xm7
+    RD8_SIG_ROUND 1, k3, m11, m7, xm7
+    RD8_SIG_ROUND 2, k3, m11, m7, xm7
+    RD8_SIG_ROUND 3, k3, m11, m7, xm7                         ; xm8 = the new states
+    mov     r10d, 0x7fff
+    kmovw     k4, r10d
+    vmovdqu8  m0, [rd_entropy_lo]
+    vpermt2b  m0 {k1}{z}, m9,  [rd_entropy_lo+64]
+    vmovdqu8  m1, [rd_entropy_hi]
+    vpermt2b  m1 {k1}{z}, m9,  [rd_entropy_hi+64]
+    vmovdqu8  m2, [rd_entropy_lo]
+    vpermt2b  m2 {k2}{z}, m10, [rd_entropy_lo+64]
+    vmovdqu8  m3, [rd_entropy_hi]
+    vpermt2b  m3 {k2}{z}, m10, [rd_entropy_hi+64]
+    vmovdqu8  m4, [rd_entropy_lo]
+    vpermt2b  m4 {k3}{z}, m11, [rd_entropy_lo+64]
+    vmovdqu8  m5, [rd_entropy_hi]
+    vpermt2b  m5 {k3}{z}, m11, [rd_entropy_hi+64]
+    vpaddb    m1, m1, m3
+    vpaddb    m1, m1, m5                                      ; high bytes, at most 3*5
+    vpsadbw   m0, m0, m15
+    vpsadbw   m2, m2, m15
+    vpsadbw   m4, m4, m15
+    vpsadbw   m1, m1, m15
+    vpaddq    m0, m0, m2
+    vpsllq    m1, m1, 8
+    vpaddq    m0, m0, m4
+    vpaddq    m0, m0, m1
+    vextracti64x4 ym1, m0, 1
+    vpaddq   ym0, ym0, ym1
+    vextracti32x4 xm1, ym0, 1
+    vpaddq   xm0, xm0, xm1
+    vpsrldq  xm1, xm0, 8
+    vpaddq   xm0, xm0, xm1                                    ; xm0 = sig f8_bits, added at the end
+%endif
 
 ; if( last != 63 )
     cmp      r6d, 63
     je .skip_last_sigmap
+%if notcpuflag(avx512icl)
 ; x264_cabac_encode_decision( cb, ctx_sig + sig_off[last], 1 )
-; x264_cabac_encode_decision( cb, ctx_last + last_off[last], 1 )
     movzx    r1d, byte [r4+r6]
     movzx    r2d, byte [r5+r1]
     movzx   r10d, byte [cabac_transition+1+r2*2 GLOBAL]
@@ -766,6 +905,8 @@ CABAC bmi2
     movzx    r2d, word [cabac_entropy+r2*2 GLOBAL]
     mov [r5+r1], r10b
     add      r0d, r2d
+%endif
+; x264_cabac_encode_decision( cb, ctx_last + last_off[last], 1 )
     movzx    r1d, byte [last_coeff_flag_offset_8x8+r6 GLOBAL]
     movzx    r2d, byte [r7+r1]
     movzx   r10d, byte [cabac_transition+1+r2*2 GLOBAL]
@@ -774,6 +915,7 @@ CABAC bmi2
     mov [r7+r1], r10b
     add      r0d, r2d
 .skip_last_sigmap:
+%if notcpuflag(avx512icl)
 ; for( int i = last-1 ; i >= 0; i-- ) x264_cabac_encode_decision( cb, ctx_sig + sig_off[i], !!l[i] )
     mov      r1d, r6d
     dec      r1d
@@ -790,6 +932,7 @@ CABAC bmi2
     dec      r1d
     jge .sig_loop
 .sig_end:
+%endif
     RD_TMP_REGS 4, 5, 3
     LOAD_DCTCOEF r1d
     COEFF_ABS_LEVEL_GT1 last, 1
@@ -817,6 +960,12 @@ CABAC bmi2
     test      r9, r9
     jnz .coeff_loop
 .end:
+%if cpuflag(avx512icl)
+    mov       r1, sigm
+    vmovdqu8 [r1] {k4}, xm8
+    vmovd    r1d, xm0
+    add      r0d, r1d
+%endif
     mov       r3, cbm
     mov [r3+cb.bits_encoded], r0d
     RET
@@ -839,6 +988,7 @@ INIT_ZMM avx512
 CABAC_RESIDUAL_RD_8x8
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_4x4_ICL
+CABAC_RESIDUAL_RD_8x8
 %endif
 
 ;-----------------------------------------------------------------------------
