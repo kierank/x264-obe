@@ -2669,25 +2669,36 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 ;                        uint32_t mv_max, int i_me_range )
 ; x264_me_hex_16x16_c in one function. Candidates are 64*(sad + mv cost) + idx, the best
 ; 64*bcost + idx, reduced with pminsd as in sad_x3_min/sad_x4_min.
+;
+; uint64_t me_hex_walk_16x16( pixel *fenc, pixel *ref, intptr_t stride, uint16_t *cost_mvx,
+;                             uint16_t *cost_mvy, int bmx, int bmy, int bcost, uint32_t mv_min,
+;                             uint32_t mv_max, int i, int dir )
+; x264_me_hex_walk_16x16_c: the same from me.c's state after the hexagon moved, entered at
+; the loop test: bmx, bmy the moved centre (CHECK_MVRANGE'd here, as before each step), bcost
+; (cost << 6) | idx with idx not read, i the loop count (me.c: (i_me_range>>1) - 1, <= 0 is
+; the square refine alone), dir 0..5 (r10 = dir+1, the hex2 index of the move).
 ; r1 ref at the centre, r2 stride (bytes), r3/r4 cost_mvx/y + 8*bmx/bmy, r5 3*stride,
 ; eax best, r7-r9/r14 candidates, r10 hex2 index, r11/r12 temps, r13 me_hex_tab
 ;-----------------------------------------------------------------------------
 %assign HX_OFF   0    ; stack: hex2[t mod 6] in bytes at 8*(t+1), t = -1..8
 %assign HX_BASEX 80   ; cost_mvx
 %assign HX_BASEY 88   ; cost_mvy
-%assign HX_ICNT  96   ; hexagon steps left + 1
+%assign HX_ICNT  96   ; hexagon steps left (+ 1 in me_hex_16x16)
 %assign HX_STACK 104
 %assign HX_IDX   0    ; me_hex_tab
 %assign HX_MOD6  80
 %assign HX_HEX   90
 %assign HX_SQ    108
 
-; in: r11 = bmx, r12 = bmy, r10d = i_me_range, the stack allocated
-%macro HX_PROLOGUE 0
+; in: r11 = bmx, r12 = bmy, r10d = i_me_range (%1 = 1) or the count (%1 = 0), the stack
+; allocated; r10 is kept
+%macro HX_PROLOGUE 1
 %if HIGH_BIT_DEPTH
     add            r2, r2
 %endif
+%if %1
     sar          r10d, 1
+%endif
     mov  [rsp+HX_ICNT], r10d
     mov  [rsp+HX_BASEX], r3
     mov  [rsp+HX_BASEY], r4
@@ -2763,6 +2774,43 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     movd          eax, %1
 %endmacro
 
+; move the centre by hex2[r10]
+%macro HX_MOVE 0
+    add            r1, [rsp+r10*8+HX_OFF+8]
+    movsx         r11, byte [r13+r10*2+HX_HEX]
+    movsx         r12, byte [r13+r10*2+HX_HEX+1]
+    lea            r3, [r3+r11*8]
+    lea            r4, [r4+r12*8]
+%endmacro
+
+; a hexagon step's candidates hex2[r10-1..r10+1] around the centre, eax the best; then
+; r10 = the hex2 index of the next move, zf if none was better
+%macro HX_STEP 0
+    mov            r7, [rsp+r10*8+HX_OFF]
+    mov            r8, [rsp+r10*8+HX_OFF+8]
+    mov            r9, [rsp+r10*8+HX_OFF+16]
+    add            r7, r1
+    add            r8, r1
+    add            r9, r1
+    HX_MVCOST_DIR   0
+    vmovd       xhxB0, r11d
+    HX_MVCOST_DIR   1
+    vpinsrd     xhxB0, xhxB0, r11d, 1
+    HX_MVCOST_DIR   2
+    vmovd       xhxB1, r11d
+    mov          r11d, eax
+    shr          r11d, 6
+    vpinsrd     xhxB1, xhxB1, r11d, 1
+    movzx        r10d, byte [r13+r10+HX_MOD6]
+    HX_BIAS     xhxB0, xhxB1, HX_IDX
+    HX_SAD_X3      r7, r8, r9
+    HX_END_X3
+    HX_MIN_END  xhxA0, xhxA1
+    mov          r11d, eax
+    and          r11d, 63
+    lea           r10, [r10+r11-1]
+%endmacro
+
 ; needs HX_LOAD_FENC, HX_SAD_X3/X4 (pointers) and HX_END_X3/X4 (xhxA0 = the pairwise
 ; min of the candidates and the bias registers hxB0/hxB1) and the xmm names xhxA0,
 ; xhxA1, xhxB0, xhxB1, xhxP, xhxBEST
@@ -2772,7 +2820,7 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     mov           eax, r7m
     mov          r10d, r10m
     SUB           rsp, HX_STACK
-    HX_PROLOGUE
+    HX_PROLOGUE 1
     HX_LOAD_FENC
     ; hexagon: hex2[1..3] (idx 2-4), then hex2[4..6] (idx 5-7)
     lea            r7, [r1-2*SIZEOF_PIXEL]
@@ -2813,38 +2861,17 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     jz .square
 .step:
     ; move by hex2[r10], the candidates are hex2[r10-1..r10+1] around the new centre
-    add            r1, [rsp+r10*8+HX_OFF+8]
-    movsx         r11, byte [r13+r10*2+HX_HEX]
-    movsx         r12, byte [r13+r10*2+HX_HEX+1]
-    lea            r3, [r3+r11*8]
-    lea            r4, [r4+r12*8]
+    HX_MOVE
     dec dword [rsp+HX_ICNT]
     jle .square
     HX_CHECK_RANGE .square
-    mov            r7, [rsp+r10*8+HX_OFF]
-    mov            r8, [rsp+r10*8+HX_OFF+8]
-    mov            r9, [rsp+r10*8+HX_OFF+16]
-    add            r7, r1
-    add            r8, r1
-    add            r9, r1
-    HX_MVCOST_DIR   0
-    vmovd       xhxB0, r11d
-    HX_MVCOST_DIR   1
-    vpinsrd     xhxB0, xhxB0, r11d, 1
-    HX_MVCOST_DIR   2
-    vmovd       xhxB1, r11d
-    mov          r11d, eax
-    shr          r11d, 6
-    vpinsrd     xhxB1, xhxB1, r11d, 1
-    movzx        r10d, byte [r13+r10+HX_MOD6]
-    HX_BIAS     xhxB0, xhxB1, HX_IDX
-    HX_SAD_X3      r7, r8, r9
-    HX_END_X3
-    HX_MIN_END  xhxA0, xhxA1
-    mov          r11d, eax
-    and          r11d, 63
-    lea           r10, [r10+r11-1]
+    HX_STEP
     jnz .step
+    HX_SQUARE
+%endmacro
+
+; the square refine around the centre and the result
+%macro HX_SQUARE 0
 .square:
     ; square1[1..4] (idx 1-4), then square1[5..8] (idx 5-8)
     and           eax, ~63
@@ -2905,6 +2932,29 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     or            rax, r3
     ADD           rsp, HX_STACK
     RET
+%endmacro
+
+; me_hex_walk_16x16: HX_BODY entered at its loop test after the hexagon's move
+%macro HX_WALK_BODY 0
+    movsxd        r11, r5m                 ; first: r5 itself on unix64
+    movsxd        r12, r6m
+    mov           eax, r7m
+    mov          r10d, r10m                ; i
+    SUB           rsp, HX_STACK
+    HX_PROLOGUE 0
+    HX_LOAD_FENC
+    test         r10d, r10d
+    mov          r10d, r11m                ; dir
+    lea          r10d, [r10+1]
+    jle .square
+.step:
+    HX_CHECK_RANGE .square
+    HX_STEP
+    jz .square
+    HX_MOVE
+    dec dword [rsp+HX_ICNT]
+    jg .step
+    HX_SQUARE
 %endmacro
 
 %macro HX_LOAD_FENC 0
@@ -3027,4 +3077,7 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 INIT_YMM avx2
 cglobal me_hex_16x16, 5,15,16
     HX_BODY
+
+cglobal me_hex_walk_16x16, 5,15,16
+    HX_WALK_BODY
 %endif ; ARCH_X86_64

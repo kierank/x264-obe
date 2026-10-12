@@ -1600,6 +1600,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
+        pixf->me_hex_walk_16x16 = x264_me_hex_walk_16x16_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
