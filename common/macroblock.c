@@ -57,12 +57,13 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
             mvy += (h->mb.i_mb_y & 1)*4 - 2;
 
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
+        int uv_dy = 2*mvy>>v_shift;
         height = 4*height >> v_shift;
 
         h->mc.mc_chroma( &h->mb.pic.p_fdec[1][offset],
                          &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE,
-                         h->mb.pic.p_fref[0][i_ref][4], h->mb.pic.i_stride[1],
-                         mvx, 2*mvy>>v_shift, 2*width, height );
+                         x264_mb_fref_uv( h, h->mb.pic.p_fref[0][i_ref], h->mb.pic.i_fld_uv_y, uv_dy, height ),
+                         h->mb.pic.i_stride[1], mvx, uv_dy, 2*width, height );
 
         if( h->sh.weight[i_ref][1].weightfn )
             h->sh.weight[i_ref][1].weightfn[width>>1]( &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE,
@@ -95,10 +96,12 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
             mvy += (h->mb.i_mb_y & 1)*4 - 2;
 
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
+        int uv_dy = 2*mvy>>v_shift;
+        height = 4*height >> v_shift;
         h->mc.mc_chroma( &h->mb.pic.p_fdec[1][offset],
                          &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE,
-                         h->mb.pic.p_fref[1][i_ref][4], h->mb.pic.i_stride[1],
-                         mvx, 2*mvy>>v_shift, 2*width, 4*height>>v_shift );
+                         x264_mb_fref_uv( h, h->mb.pic.p_fref[1][i_ref], h->mb.pic.i_fld_uv_y, uv_dy, height ),
+                         h->mb.pic.i_stride[1], mvx, uv_dy, 2*width, height );
     }
 }
 
@@ -141,10 +144,15 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
         if( v_shift & MB_INTERLACED & i_ref1 )
             mvy1 += (h->mb.i_mb_y & 1)*4 - 2;
 
-        h->mc.mc_chroma( tmp0, tmp0+8, 16, h->mb.pic.p_fref[0][i_ref0][4], h->mb.pic.i_stride[1],
-                         mvx0, 2*mvy0>>v_shift, 2*width, 4*height>>v_shift );
-        h->mc.mc_chroma( tmp1, tmp1+8, 16, h->mb.pic.p_fref[1][i_ref1][4], h->mb.pic.i_stride[1],
-                         mvx1, 2*mvy1>>v_shift, 2*width, 4*height>>v_shift );
+        int uv_dy0 = 2*mvy0>>v_shift;
+        int uv_dy1 = 2*mvy1>>v_shift;
+        int chroma_height = 4*height>>v_shift;
+        h->mc.mc_chroma( tmp0, tmp0+8, 16,
+                         x264_mb_fref_uv( h, h->mb.pic.p_fref[0][i_ref0], h->mb.pic.i_fld_uv_y, uv_dy0, chroma_height ),
+                         h->mb.pic.i_stride[1], mvx0, uv_dy0, 2*width, chroma_height );
+        h->mc.mc_chroma( tmp1, tmp1+8, 16,
+                         x264_mb_fref_uv( h, h->mb.pic.p_fref[1][i_ref1], h->mb.pic.i_fld_uv_y, uv_dy1, chroma_height ),
+                         h->mb.pic.i_stride[1], mvx1, uv_dy1, 2*width, chroma_height );
 
         int chromapix = h->luma2chroma_pixel[i_mode];
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
@@ -589,6 +597,8 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
         memcpy( h->mb.pic.p_fdec[2]-FDEC_STRIDE, intra_fdec+8, 8*sizeof(pixel) );
         h->mb.pic.p_fdec[1][-FDEC_STRIDE-1] = intra_fdec[-1-8];
         h->mb.pic.p_fdec[2][-FDEC_STRIDE-1] = intra_fdec[-1];
+        h->mb.pic.i_fld_uv_y = height * (mb_y >> 1);
+        h->mb.pic.i_fld_uv_lines = height * h->mb.i_mb_height >> 1;
     }
     else
     {
@@ -635,6 +645,11 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                     h->mb.pic.p_fref_w[j] = h->mb.pic.p_fref[0][j][0];
             }
         }
+        else
+        {
+            h->mb.pic.p_fref[0][j][5] = plane_src + ref_pix_offset[j&1];
+            h->mb.pic.p_fref[0][j][4] = h->fref[0][j >> mb_interlaced]->plane[i] + ref_pix_offset[j&1];
+        }
     }
     if( h->sh.i_type == SLICE_TYPE_B )
         for( int j = 0; j < h->mb.pic.i_fref[1]; j++ )
@@ -654,6 +669,11 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )
                     h->mb.pic.p_fref[1][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
+            else
+            {
+                h->mb.pic.p_fref[1][j][5] = plane_src + ref_pix_offset[j&1];
+                h->mb.pic.p_fref[1][j][4] = h->fref[1][j >> mb_interlaced]->plane[i] + ref_pix_offset[j&1];
+            }
         }
 }
 
