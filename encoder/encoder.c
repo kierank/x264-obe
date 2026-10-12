@@ -3604,11 +3604,18 @@ static void *x264_prologue_analyse_band( x264_prologue_band_t *band )
         band->pixel_sum[i] = 0;
         band->pixel_ssd[i] = 0;
     }
-    if( band->b_aq )
-        x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, band->mb_y0, band->mb_y1,
-                                        band->pixel_sum, band->pixel_ssd );
-    if( h->frames.b_have_lowres )
-        x264_frame_init_lowres_rows( h, band->fenc, band->mb_y0, band->mb_y1 );
+    /* An MB row pair at a time, so lowres reads the luma rows AQ just
+     * brought into L2; a band is too large to stay there between the passes. */
+    for( int y0 = band->mb_y0; y0 < band->mb_y1; )
+    {
+        int y1 = X264_MIN( (y0 + 2) & ~1, band->mb_y1 );
+        if( band->b_aq )
+            x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, y0, y1,
+                                            band->pixel_sum, band->pixel_ssd );
+        if( h->frames.b_have_lowres )
+            x264_frame_init_lowres_rows( h, band->fenc, y0, y1 );
+        y0 = y1;
+    }
     return NULL;
 }
 
