@@ -2549,7 +2549,13 @@ cglobal integral_init4v, 3,5
 %endmacro
 
 %macro FRAME_INIT_LOWRES 0
-cglobal frame_init_lowres_core, 6,7,(12-4*(BIT_DEPTH/9)*(mmsize<32)) ; 8 for xmm HIGH_BIT_DEPTH, 12 otherwise
+; nasm < 2.15 can't take comparisons in the register count
+%if HIGH_BIT_DEPTH && mmsize < 32
+    %assign lowres_xmm_regs 8
+%else
+    %assign lowres_xmm_regs 12
+%endif
+cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
 %if HIGH_BIT_DEPTH
     shl   dword r6m, 1
     FIX_STRIDES r5
