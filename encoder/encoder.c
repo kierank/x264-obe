@@ -1702,6 +1702,25 @@ x264_t *x264_encoder_open( x264_param_t *param )
      * The chosen solution is to make MBAFF non-adaptive in this case. */
     h->mb.b_adaptive_mbaff = PARAM_INTERLACED && h->param.analyse.i_subpel_refine;
 
+    {
+        /* bd-alg2 knobs, all default 0 (= speed-next 81a0f620):
+         * X264_EXP_ALG_HEXEXIT=T: HEX does only its square refine when the best
+         * predictor's cost is below T (a 16x16 at 8-bit; UMH uses 500), scaled for the
+         * partition size and the bit depth; not in the lowres search */
+        const char *e = getenv( "X264_EXP_ALG_HEXEXIT" );
+        h->exp.i_alg_hexexit = e ? atoi( e ) : 0;
+        h->exp.b_lowres_ctx = 0;
+        h->exp.i_hex_census = 4;
+        /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
+         * the counts at x264_encoder_close; does not change the output */
+        e = getenv( "X264_EXP_CENSUS" );
+        h->exp.b_census = e ? !!atoi( e ) : 0;
+        memset( &h->exp.census, 0, sizeof(h->exp.census) );
+        if( h->exp.i_alg_hexexit || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg2: hexexit %d census %d\n",
+                      h->exp.i_alg_hexexit, h->exp.b_census );
+    }
+
     /* Init frames. */
     if( h->param.i_bframe_adaptive == X264_B_ADAPT_TRELLIS && !h->param.rc.b_stat_read )
         h->frames.i_delay = X264_MAX(h->param.i_bframe,3)*4;
@@ -1875,6 +1894,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
         {
             CHECKED_MALLOC( h->lookahead_thread[i], sizeof(x264_t) );
             *h->lookahead_thread[i] = *h;
+            /* bd-alg2: lowres searches only */
+            h->lookahead_thread[i]->exp.b_lowres_ctx = 1;
         }
     *h->reconfig_h = *h;
 
@@ -3014,6 +3035,9 @@ static intptr_t x264_slice_write( x264_t *h )
 
     /* Slice header */
     x264_macroblock_thread_init( h );
+    /* bd-alg2: the main analysis from here, whatever lowres search ran on this
+     * context (x264_lowres_context_init sets it) */
+    h->exp.b_lowres_ctx = 0;
 
     /* Set the QP equal to the first QP in the slice for more accurate CABAC initialization. */
     h->mb.i_mb_xy = h->sh.i_first_mb;
@@ -4533,6 +4557,35 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
         sprintf( intra, " %4.1f%%", i_mb_count[I_PCM]  / i_count );
 }
 
+/* bd-alg2 X264_EXP_CENSUS: sum the counters of the encoding threads, print them */
+static void x264_exp_census_print( x264_t *h )
+{
+    x264_exp_census_t c;
+    int64_t *sum = (int64_t*)&c;
+    int n = sizeof(c) / sizeof(int64_t);
+    memset( &c, 0, sizeof(c) );
+    for( int t = 0; t < h->param.i_threads; t++ )
+    {
+        const int64_t *add = (const int64_t*)&h->thread[t]->exp.census;
+        for( int k = 0; k < n; k++ )
+            sum[k] += add[k];
+    }
+
+    static const char * const slice_name[2] = { "P", "B" };
+    static const char * const mb_name[2] = { "frame", "field" };
+    fprintf( stderr, "bd-alg2 census: %d-bit, %s, tff %d, hexexit %d\n", BIT_DEPTH,
+             PARAM_INTERLACED ? "mbaff" : "progressive", h->param.b_tff, h->exp.i_alg_hexexit );
+    for( int f = 0; f < 2; f++ )
+        for( int s = 0; s < 2; s++ )
+            fprintf( stderr, "bd-alg2 census: hexexit %s-mb %s searches %"PRId64" below-250 %"PRId64" (moved %"PRId64") "
+                     "below-500 %"PRId64" (moved %"PRId64") below-1000 %"PRId64" (moved %"PRId64") "
+                     "below-2000 %"PRId64" (moved %"PRId64") fired %"PRId64"\n",
+                     mb_name[f], slice_name[s], c.hexexit[f][s][0],
+                     c.hexexit[f][s][1], c.hexmoved[f][s][0], c.hexexit[f][s][2], c.hexmoved[f][s][1],
+                     c.hexexit[f][s][3], c.hexmoved[f][s][2], c.hexexit[f][s][4], c.hexmoved[f][s][3],
+                     c.hexexit[f][s][5] );
+}
+
 /****************************************************************************
  * x264_encoder_close:
  ****************************************************************************/
@@ -4562,6 +4615,8 @@ void    x264_encoder_close  ( x264_t *h )
         x264_threadpool_delete( h->threadpool );
     if( h->param.i_lookahead_threads > 1 )
         x264_threadpool_delete( h->lookaheadpool );
+    if( h->exp.b_census )
+        x264_exp_census_print( h );
     if( h->i_thread_frames > 1 )
     {
         for( int i = 0; i < h->i_thread_frames; i++ )

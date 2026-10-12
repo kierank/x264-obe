@@ -267,6 +267,16 @@ typedef struct
     int i_ssim_cnt;
 } x264_frame_stat_t;
 
+/* bd-alg2 X264_EXP_CENSUS counters, int64_t only (summed as an array).
+ * [f][s]: f 0 frame MB, 1 field MB; s 0 P, 1 B. */
+typedef struct
+{
+    int64_t hexexit[2][2][6];       /* HEX searches (not lowres): [all, start cost below the ALG_HEXEXIT
+                                     * threshold 250, 500, 1000, 2000, below the threshold in effect (fired)] */
+    int64_t hexmoved[2][2][4];      /* of those below each threshold, the first hexagon moved off the start
+                                     * (only where it runs: with ALG_HEXEXIT set, not on the fired ones) */
+} x264_exp_census_t;
+
 struct x264_t
 {
     /* encoder parameters */
@@ -749,6 +759,17 @@ struct x264_t
     uint32_t nr_count_buf[2][4];
 
     uint8_t luma2chroma_pixel[7]; /* Subsampled pixel size */
+
+    /* bd-alg2: X264_EXP_ALG_* knobs, read once in x264_encoder_open (0 = off).
+     * Outside the ranges the thread syncs copy, so each thread keeps its own. */
+    struct
+    {
+        int     i_alg_hexexit;
+        int     b_lowres_ctx;       /* this context runs lowres searches (lookahead) */
+        int     i_hex_census;       /* census: the smallest ALG_HEXEXIT threshold the HEX start is below */
+        int     b_census;           /* X264_EXP_CENSUS */
+        x264_exp_census_t census;
+    } exp;
 
     /* Buffers that are allocated per-thread even in sliced threads. */
     void *scratch_buffer; /* for any temporary storage that doesn't want repeated malloc */

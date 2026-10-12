@@ -90,6 +90,8 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         h->mb.i_subpel_refine = 2;
     }
     h->mb.b_chroma_me = 0;
+    /* bd-alg2: lowres only; h->exp is otherwise zero, so no ALG_HEXEXIT, no census */
+    h->exp.b_lowres_ctx = 1;
 
     float *logs = x264_analyse_prepare_costs( h );
     if( !logs )

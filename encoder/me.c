@@ -246,6 +246,35 @@ do\
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* bd-alg2 ALG_HEXEXIT: UMH's x264_pixel_size_shift, the threshold of a 16x16 block
+ * scaled down for each partition size */
+static const uint8_t x264_exp_pixel_size_shift[7] = { 0, 1, 1, 2, 3, 3, 4 };
+
+/* bd-alg2 X264_EXP_CENSUS: HEX searches, those whose start cost is below the
+ * ALG_HEXEXIT threshold 250, 500, 1000, 2000, and those ALG_HEXEXIT exits;
+ * remembers the smallest threshold it is below (4: none) */
+static NOINLINE void x264_exp_census_hex_start( x264_t *h, int i_pixel, int bcost, int b_exit )
+{
+    int64_t *c = h->exp.census.hexexit[!!MB_INTERLACED][h->sh.i_type == SLICE_TYPE_B];
+    int k0 = 0;
+    while( k0 < 4 && bcost >= (((250 << k0) << (BIT_DEPTH-8)) >> x264_exp_pixel_size_shift[i_pixel]) )
+        k0++;
+    c[0]++;
+    for( int k = k0; k < 4; k++ )
+        c[1+k]++;
+    c[5] += b_exit;
+    h->exp.i_hex_census = k0;
+}
+
+/* ... and of those, the ones where the first hexagon moves off the start */
+static NOINLINE void x264_exp_census_hex_moved( x264_t *h, int b_moved )
+{
+    int64_t *c = h->exp.census.hexmoved[!!MB_INTERLACED][h->sh.i_type == SLICE_TYPE_B];
+    if( b_moved )
+        for( int k = h->exp.i_hex_census; k < 4; k++ )
+            c[k]++;
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -412,6 +441,20 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         case X264_ME_HEX:
         {
+            /* bd-alg2 ALG_HEXEXIT: UMH's SAD_THRESH early exit for HEX, the threshold
+             * a 16x16 one at 8-bit scaled for the partition and the bit depth: when the
+             * start cost (best predictor or zero MV, MV cost included) is below it, only
+             * the square refine around it. Not in the lowres search; UMH's jump to
+             * me_hex2 skips it. */
+            if( (h->exp.i_alg_hexexit || h->exp.b_census) && !h->exp.b_lowres_ctx )
+            {
+                int b_exit = h->exp.i_alg_hexexit &&
+                             bcost < ((h->exp.i_alg_hexexit << (BIT_DEPTH-8)) >> x264_exp_pixel_size_shift[i_pixel]);
+                if( h->exp.b_census )
+                    x264_exp_census_hex_start( h, i_pixel, bcost, b_exit );
+                if( b_exit )
+                    goto me_hex_square;
+            }
     me_hex2:
             /* hexagon search, radius 2 */
     #if 0
@@ -436,6 +479,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             bcost <<= 6;
             COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
             COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+            /* bd-alg2 X264_EXP_CENSUS: whether the hexagon leaves the start, i.e. the
+             * fullpel result ALG_HEXEXIT would change */
+            if( h->exp.b_census && !h->exp.b_lowres_ctx && h->mb.i_me_method == X264_ME_HEX )
+                x264_exp_census_hex_moved( h, bcost&63 );
 
             if( bcost&63 )
             {
@@ -460,6 +507,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             }
             bcost >>= 6;
     #endif
+    me_hex_square:
             /* square refine */
             bcost <<= 6;
             COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
