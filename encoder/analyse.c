@@ -2624,10 +2624,10 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
 
 static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
 {
-    int thresh = a->b_early_terminate ? i_satd * 5/4 + 1 : COST_MAX;
+    int thresh = a->b_early_terminate ? (int)((int64_t)i_satd * 9/8) + 1 : COST_MAX;
 
     h->mb.i_type = P_L0;
-    if( a->l0.i_rd16x16 == COST_MAX && (!a->b_early_terminate || a->l0.me16x16.cost <= i_satd * 3/2) )
+    if( a->l0.i_rd16x16 == COST_MAX && (!a->b_early_terminate || a->l0.me16x16.cost <= i_satd * 5/4) )
     {
         h->mb.i_partition = D_16x16;
         x264_analyse_update_cache( h, a );
@@ -3293,7 +3293,7 @@ skip_analysis:
                 h->mb.i_partition = i_partition;
                 if( i_cost < COST_MAX )
                     x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
-                x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1 );
+                x264_intra_rd( h, &analysis, (int)((int64_t)i_satd_inter * 9/8) + 1 );
             }
 
             COPY2_IF_LT( i_cost, analysis.i_satd_i16x16, i_type, I_16x16 );
