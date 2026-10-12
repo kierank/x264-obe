@@ -898,6 +898,15 @@ uint64_t x264_me_hex_16x16_avx512( pixel *, pixel *, intptr_t, const uint16_t *,
 #define x264_pixel_me_hex_walk_16x16_avx2 x264_template(pixel_me_hex_walk_16x16_avx2)
 uint64_t x264_pixel_me_hex_walk_16x16_avx2( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
                                             int, int, int, uint32_t, uint32_t, int, int );
+#define x264_pixel_me_hex_walk_16x8_avx2 x264_template(pixel_me_hex_walk_16x8_avx2)
+uint64_t x264_pixel_me_hex_walk_16x8_avx2( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                           int, int, int, uint32_t, uint32_t, int, int );
+#define x264_pixel_me_hex_walk_8x16_avx2 x264_template(pixel_me_hex_walk_8x16_avx2)
+uint64_t x264_pixel_me_hex_walk_8x16_avx2( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                           int, int, int, uint32_t, uint32_t, int, int );
+#define x264_pixel_me_hex_walk_8x8_avx2 x264_template(pixel_me_hex_walk_8x8_avx2)
+uint64_t x264_pixel_me_hex_walk_8x8_avx2( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                          int, int, int, uint32_t, uint32_t, int, int );
 #define x264_pixel_me_hex_walk_16x16_avx512 x264_template(pixel_me_hex_walk_16x16_avx512)
 uint64_t x264_pixel_me_hex_walk_16x16_avx512( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
                                               int, int, int, uint32_t, uint32_t, int, int );

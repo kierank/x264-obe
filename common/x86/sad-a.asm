@@ -2742,11 +2742,14 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 %endmacro
 
 ; %1 = { c0 c1 }, %2 = { c2 c3 } mv costs -> %1 = (c << 6) | idx, %2 = %1 lanes 2, 3
+; (8 wide: %2 not set, the end reads %1 only)
 %macro HX_BIAS 3 ; x, x, me_hex_tab offset of the idx
     punpcklqdq     %1, %2
     pslld          %1, 6
     por            %1, [r13+%3]
+%if hx_w == 16
     pshufd         %2, %1, q1032
+%endif
 %endmacro
 
 ; CHECK_MVRANGE of the centre from the cost pointers, else jump to %1
@@ -2957,15 +2960,18 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     HX_SQUARE
 %endmacro
 
+; hx_w 16: rows 2k, 2k+1 in m8+k; hx_w 8: vmovddup of them, { row 2k x2 | row 2k+1 x2 }
 %macro HX_LOAD_FENC 0
-    movu           m8, [r0+0*32]
-    movu           m9, [r0+1*32]
-    movu          m10, [r0+2*32]
-    movu          m11, [r0+3*32]
-    movu          m12, [r0+4*32]
-    movu          m13, [r0+5*32]
-    movu          m14, [r0+6*32]
-    movu          m15, [r0+7*32]
+%assign hx_p 0
+%rep hx_h/2
+%assign hx_fr hx_p+8
+%if hx_w == 16
+    movu   m %+ hx_fr, [r0+hx_p*32]
+%else
+    vmovddup m %+ hx_fr, [r0+hx_p*32]
+%endif
+%assign hx_p hx_p+1
+%endrep
 %endmacro
 
 ; m%1 (+)= sad of rows 2*hx_p, 2*hx_p+1 of the block at %2 against hx_fenc; m%3 = temp
@@ -2989,16 +2995,25 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 %endif
 %endmacro
 
-; m0-m2 = sad qwords of the 16x16 at %1-%3 (the pointers advance 12 rows)
+; hx_w 16: m0-m2 = sad qwords of the block at %1-%3 (the pointers advance hx_h-4 rows)
+; hx_w 8: m0 = { %1, %2 | %1, %2 }, m1 = { %3, _ | %3, _ } sad qwords, as in sad_x3_min_8x8
 %macro HX_SAD_X3 3
 %assign hx_p 0
-%rep 8
+%rep hx_h/2
 %assign hx_fr hx_p+8
     %xdefine hx_fenc m %+ hx_fr
+%if hx_w == 16
     HX_SAD8_PAIR    0, %1, 3
     HX_SAD8_PAIR    1, %2, 3
     HX_SAD8_PAIR    2, %3, 3
-%if (hx_p & 1) && hx_p < 7
+%else
+    HX_W8_ROWOFF
+    SAD_X_W8_PAIR_AVX2 2, 4, %1, %2, hx_o0, hx_o1
+    movq          xm3, [%3+hx_o0]
+    vinserti128    m3, m3, [%3+hx_o1], 1
+    HX_W8_ACC
+%endif
+%if (hx_p & 1) && hx_p < hx_h/2-1
     lea            %1, [%1+r2*4]
     lea            %2, [%2+r2*4]
     lea            %3, [%3+r2*4]
@@ -3007,17 +3022,25 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 %endrep
 %endmacro
 
-; m0-m3 = sad qwords of the 16x16 at %1-%4
+; hx_w 16: m0-m3 = sad qwords of the block at %1-%4
+; hx_w 8: m0 = { %1, %2 | %1, %2 }, m1 = { %3, %4 | %3, %4 } sad qwords
 %macro HX_SAD_X4 4
 %assign hx_p 0
-%rep 8
+%rep hx_h/2
 %assign hx_fr hx_p+8
     %xdefine hx_fenc m %+ hx_fr
+%if hx_w == 16
     HX_SAD8_PAIR    0, %1, 4
     HX_SAD8_PAIR    1, %2, 4
     HX_SAD8_PAIR    2, %3, 4
     HX_SAD8_PAIR    3, %4, 4
-%if (hx_p & 1) && hx_p < 7
+%else
+    HX_W8_ROWOFF
+    SAD_X_W8_PAIR_AVX2 2, 4, %1, %2, hx_o0, hx_o1
+    SAD_X_W8_PAIR_AVX2 3, 4, %3, %4, hx_o0, hx_o1
+    HX_W8_ACC
+%endif
+%if (hx_p & 1) && hx_p < hx_h/2-1
     lea            %1, [%1+r2*4]
     lea            %2, [%2+r2*4]
     lea            %3, [%3+r2*4]
@@ -3027,8 +3050,50 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 %endrep
 %endmacro
 
+; 8 wide: rows 2*hx_p, 2*hx_p+1 of a 4 row group
+%macro HX_W8_ROWOFF 0
+%if hx_p & 1
+    %xdefine hx_o0 r2*2
+    %xdefine hx_o1 r5
+%else
+    %xdefine hx_o0 0
+    %xdefine hx_o1 r2
+%endif
+%endmacro
+
+; 8 wide: m0 (+)= psadbw( m2, fenc ), m1 (+)= psadbw( m3, fenc )
+%macro HX_W8_ACC 0
+%if hx_p == 0
+    psadbw         m0, m2, hx_fenc
+    psadbw         m1, m3, hx_fenc
+%else
+    psadbw         m2, hx_fenc
+    psadbw         m3, hx_fenc
+    paddd          m0, m2
+    paddd          m1, m3
+%endif
+%endmacro
+
+; 8 wide: m0, m1 sad qwords, xm6 = { b0 b1 b2 b3 } (x3: b3 = best) -> xm0 = { min( c0, c2 ),
+; min( c1, c3 ) }; x3: lane 3 (best + 64*sad of the junk qwords) replaced by best
+%macro HX_END_W8 1 ; x4
+    packssdw       m0, m1           ; { 0 1 2 3 | 0 1 2 3 }, at most 8*8*255 a word
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    paddd         xm0, xm6
+%if %1 == 0
+    vpblendd      xm0, xm0, xm6, 1000b
+%endif
+    pshufd        xm1, xm0, q1032
+    pminsd        xm0, xm1
+%endmacro
+
 ; m0-m2 sads, xm6 = { b0 b1 }, xm7 = { b2 best } -> xm0 = { min( c0, c2 ), min( c1, best ) }
 %macro HX_END_X3 0
+%if hx_w == 8
+    HX_END_W8 0
+%else
     pslld          m0, 6
     psllq          m1, 38
     pslld          m2, 6
@@ -3044,10 +3109,14 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     paddd         xm0, xm1
     paddd         xm2, xm3
     pminsd        xm0, xm2
+%endif
 %endmacro
 
 ; m0-m3 sads, xm6 = { b0 b1 }, xm7 = { b2 b3 } -> xm0 = { min( c0, c2 ), min( c1, c3 ) }
 %macro HX_END_X4 0
+%if hx_w == 8
+    HX_END_W8 1
+%else
     pslld          m0, 6
     psllq          m1, 38
     pslld          m2, 6
@@ -3065,6 +3134,7 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
     paddd         xm0, xm1
     paddd         xm2, xm3
     pminsd        xm0, xm2
+%endif
 %endmacro
 
 %define xhxA0   xm0
@@ -3074,10 +3144,26 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 %define xhxB0   xm6
 %define xhxB1   xm7
 
+; hx_w, hx_h: the block (file scope, set before each function)
 INIT_YMM avx2
+%assign hx_w 16
+%assign hx_h 16
 cglobal me_hex_16x16, 5,15,16
     HX_BODY
 
 cglobal pixel_me_hex_walk_16x16, 5,15,16
+    HX_WALK_BODY
+
+%assign hx_h 8
+cglobal pixel_me_hex_walk_16x8, 5,15,12
+    HX_WALK_BODY
+
+%assign hx_w 8
+%assign hx_h 16
+cglobal pixel_me_hex_walk_8x16, 5,15,16
+    HX_WALK_BODY
+
+%assign hx_h 8
+cglobal pixel_me_hex_walk_8x8, 5,15,12
     HX_WALK_BODY
 %endif ; ARCH_X86_64
