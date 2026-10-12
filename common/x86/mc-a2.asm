@@ -2027,6 +2027,58 @@ LOAD_DEINTERLEAVE_CHROMA_FDEC_AVX512
 LOAD_DEINTERLEAVE_CHROMA_FENC_AVX512
 %endif
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void plane_copy_interleave_core( pixel *dst,  intptr_t i_dst,
+;                                  pixel *srcu, intptr_t i_srcu,
+;                                  pixel *srcv, intptr_t i_srcv, int w, int h )
+;-----------------------------------------------------------------------------
+; 16 u and 16 v pixels a step: w a multiple of 16, dst 32 byte aligned (frames
+; are with AVX2), i_dst>2*w. No padding stores past 2*w, unlike the mmx/sse ones.
+INIT_YMM avx2
+cglobal plane_copy_interleave_core, 6,9
+    mov      r6d, r6m
+    mov      r7d, r7m
+    FIX_STRIDES r1, r3, r5, r6
+    lea       r0, [r0+r6*2]
+    add       r2, r6
+    add       r4, r6
+    neg       r6
+.loopy:
+    mov       r8, r6
+.prefetch:
+    prefetchnta [r2+r8]
+    prefetchnta [r4+r8]
+    add       r8, 64
+    jl .prefetch
+    mov       r8, r6
+.loopx:
+%if HIGH_BIT_DEPTH
+    vpermq    m0, [r2+r8], q3120   ; u0-3 u8-11 | u4-7 u12-15
+    vpermq    m1, [r4+r8], q3120
+    punpckhwd m2, m0, m1
+    punpcklwd m0, m1
+    movntdq [r0+r8*2], m0
+    movntdq [r0+r8*2+32], m2
+    add       r8, 32
+%else
+    pmovzxbw  m0, [r2+r8]
+    pmovzxbw  m1, [r4+r8]
+    psllw     m1, 8
+    por       m0, m1
+    movntdq [r0+r8*2], m0
+    add       r8, 16
+%endif
+    jl .loopx
+    add       r0, r1
+    add       r2, r3
+    add       r4, r5
+    dec      r7d
+    jg .loopy
+    sfence
+    RET
+%endif ; ARCH_X86_64
+
 ; These functions are not general-use; not only do the SSE ones require aligned input,
 ; but they also will fail if given a non-mod16 size.
 ; memzero SSE will fail for non-mod128.

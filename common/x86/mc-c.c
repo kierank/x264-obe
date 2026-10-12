@@ -251,6 +251,7 @@
 #define x264_plane_copy_deinterleave_v210_ssse3 x264_template(plane_copy_deinterleave_v210_ssse3)
 #define x264_plane_copy_interleave_c x264_template(plane_copy_interleave_c)
 #define x264_plane_copy_interleave_core_avx x264_template(plane_copy_interleave_core_avx)
+#define x264_plane_copy_interleave_core_avx2 x264_template(plane_copy_interleave_core_avx2)
 #define x264_plane_copy_interleave_core_mmx2 x264_template(plane_copy_interleave_core_mmx2)
 #define x264_plane_copy_interleave_core_sse2 x264_template(plane_copy_interleave_core_sse2)
 #define x264_prefetch_fenc_420_mmx2 x264_template(prefetch_fenc_420_mmx2)
@@ -334,6 +335,9 @@ void x264_plane_copy_interleave_core_sse2( pixel *dst,  intptr_t i_dst,
 void x264_plane_copy_interleave_core_avx( pixel *dst,  intptr_t i_dst,
                                           pixel *srcu, intptr_t i_srcu,
                                           pixel *srcv, intptr_t i_srcv, int w, int h );
+void x264_plane_copy_interleave_core_avx2( pixel *dst,  intptr_t i_dst,
+                                           pixel *srcu, intptr_t i_srcu,
+                                           pixel *srcv, intptr_t i_srcv, int w, int h );
 void x264_plane_copy_interleave_c( pixel *dst,  intptr_t i_dst,
                                    pixel *srcu, intptr_t i_srcu,
                                    pixel *srcv, intptr_t i_srcv, int w, int h );
@@ -844,6 +848,9 @@ PLANE_INTERLEAVE(sse2)
 #if HIGH_BIT_DEPTH
 PLANE_INTERLEAVE(avx)
 #endif
+#if ARCH_X86_64
+PLANE_INTERLEAVE(avx2)
+#endif
 
 #if HAVE_X86_INLINE_ASM
 #define CLIP_ADD(s,x)\
@@ -1105,6 +1112,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->lowres8_convert = x264_lowres8_convert_avx2;
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
+#if ARCH_X86_64
+        pf->plane_copy_interleave = x264_plane_copy_interleave_avx2;
+#endif
         if( !(cpu&X264_CPU_STACK_MOD4) )
             pf->mc_chroma = x264_mc_chroma_avx2;
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
@@ -1281,6 +1291,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init8h = x264_integral_init8h_avx2;
         pf->integral_init4h = x264_integral_init4h_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
+#if ARCH_X86_64
+        pf->plane_copy_interleave = x264_plane_copy_interleave_avx2;
+#endif
     }
 
     if( cpu&X264_CPU_AVX512 )
