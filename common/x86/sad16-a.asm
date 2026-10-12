@@ -29,16 +29,9 @@
 
 SECTION_RODATA 32
 
-; me_hex_16x16: candidate idx, 0 in the best lane (+0 hexagon step, +16 and +32 the first
-; hexagon, +48 and +64 the square); +80 mod6m1; +90 + 2*t hex2[t mod 6] (dx, dy) for
-; t = -1..8; +108 square1 (dx, dy)
+; me_hex_16x16: +0 mod6m1; +10 + 2*t hex2[t mod 6] (dx, dy) for t = -1..8; +28 square1 (dx, dy)
 ALIGN 16
-me_hex_tab: dd 1, 2, 3, 0
-            dd 2, 3, 4, 0
-            dd 5, 6, 7, 0
-            dd 1, 2, 3, 4
-            dd 5, 6, 7, 8
-            db 5, 0, 1, 2, 3, 4, 5, 0
+me_hex_tab: db 5, 0, 1, 2, 3, 4, 5, 0
             db 1,-2, -1,-2, -2,0, -1,2, 1,2, 2,0, 1,-2, -1,-2, -2,0, -1,2
             db 0,0, 0,-1, 0,1, -1,0, 1,0, -1,-1, -1,1, 1,-1, 1,1
 
@@ -1310,22 +1303,22 @@ cglobal intra_sad_x3_8x8, 3,3,8
 ; uint64_t me_hex_16x16( pixel *fenc, pixel *ref, intptr_t stride, uint16_t *cost_mvx,
 ;                        uint16_t *cost_mvy, int bmx, int bmy, int bcost, uint32_t mv_min,
 ;                        uint32_t mv_max, int i_me_range )
-; x264_me_hex_16x16_c in one function. Candidates are 64*(sad + mv cost) + idx, the best
-; 64*bcost + idx, reduced with pminsd as in sad_x3_min/sad_x4_min.
+; x264_me_hex_16x16_c in one function. .cand evaluates one candidate: eax = min( eax,
+; 64*(sad + mv cost) + idx ), so eax is 64*bcost + the winner's idx. The hexagon is 6
+; calls and the square 8, straight; the hexagon steps (3 calls each) are out of line.
 ; r1 ref at the centre, r2 stride (bytes), r3/r4 cost_mvx/y + 8*bmx/bmy, r5 3*stride,
-; eax best, r7-r9/r14 candidates, r10 hex2 index, r11/r12 temps, r13 me_hex_tab
+; eax best, r9 + 2*r14 the (dx, dy) of idx r14, r10 hex2 index, r13 me_hex_tab;
+; .cand clobbers r7, r8, r11, r12, hxC and its vector temps, and increments r14
 ;-----------------------------------------------------------------------------
-%assign HX_OFF   0    ; stack: hex2[t mod 6] in bytes at 8*(t+1), t = -1..8
-%assign HX_BASEX 80   ; cost_mvx
-%assign HX_BASEY 88   ; cost_mvy
-%assign HX_ICNT  96   ; hexagon steps left + 1
-%assign HX_STACK 104
-%assign HX_IDX   0    ; me_hex_tab
-%assign HX_MOD6  80
-%assign HX_HEX   90
-%assign HX_SQ    108
+%assign HX_BASEX 0    ; stack: cost_mvx
+%assign HX_BASEY 8    ; cost_mvy
+%assign HX_ICNT  16   ; hexagon steps left + 1
+%assign HX_STACK 24
+%assign HX_MOD6  0    ; me_hex_tab
+%assign HX_HEX   10
+%assign HX_SQ    28
 
-; in: r11 = bmx, r12 = bmy, r10d = i_me_range, the stack allocated
+; in: r11 = bmx, r12 = bmy, r10d = i_me_range, eax = bcost, the stack allocated
 %macro HX_PROLOGUE 0
 %if HIGH_BIT_DEPTH
     add            r2, r2
@@ -1341,44 +1334,7 @@ cglobal intra_sad_x3_8x8, 3,3,8
     add            r1, r12
     lea            r5, [r2*3]
     lea           r13, [me_hex_tab]
-    lea           r11, [r2*2+SIZEOF_PIXEL] ; ( 1, 2)
-    lea           r12, [r2*2-SIZEOF_PIXEL] ; (-1, 2)
-    mov  [rsp+HX_OFF+4*8], r11
-    mov  [rsp+HX_OFF+3*8], r12
-    mov  [rsp+HX_OFF+9*8], r12
-    neg           r11                      ; (-1,-2)
-    neg           r12                      ; ( 1,-2)
-    mov  [rsp+HX_OFF+1*8], r11
-    mov  [rsp+HX_OFF+7*8], r11
-    mov  [rsp+HX_OFF+0*8], r12
-    mov  [rsp+HX_OFF+6*8], r12
-    mov qword [rsp+HX_OFF+2*8], -2*SIZEOF_PIXEL ; (-2, 0)
-    mov qword [rsp+HX_OFF+8*8], -2*SIZEOF_PIXEL
-    mov qword [rsp+HX_OFF+5*8], 2*SIZEOF_PIXEL  ; ( 2, 0)
-%endmacro
-
-; r11d = cost_mvx + cost_mvy at byte offsets %1, %2 from the centre
-%macro HX_MVCOST 2
-    movzx        r11d, word [r3+%1]
-    movzx        r12d, word [r4+%2]
-    add          r11d, r12d
-%endmacro
-
-; the same at hex2[r10-1+%1]
-%macro HX_MVCOST_DIR 1
-    movsx         r11, byte [r13+r10*2+HX_HEX+2*%1-2]
-    movsx         r12, byte [r13+r10*2+HX_HEX+2*%1-1]
-    movzx        r11d, word [r3+r11*8]
-    movzx        r12d, word [r4+r12*8]
-    add          r11d, r12d
-%endmacro
-
-; %1 = { c0 c1 }, %2 = { c2 c3 } mv costs -> %1 = (c << 6) | idx, %2 = %1 lanes 2, 3
-%macro HX_BIAS 3 ; x, x, me_hex_tab offset of the idx
-    punpcklqdq     %1, %2
-    pslld          %1, 6
-    por            %1, [r13+%3]
-    pshufd         %2, %1, q1032
+    shl           eax, 6
 %endmacro
 
 ; CHECK_MVRANGE of the centre from the cost pointers, else jump to %1
@@ -1399,16 +1355,33 @@ cglobal intra_sad_x3_8x8, 3,3,8
     jnz %1
 %endmacro
 
-; %1 = { min( c0, c2 ), min( c1, c3 ) } -> eax
-%macro HX_MIN_END 2 ; x, x tmp
-    psrlq          %2, %1, 32
-    pminsd         %1, %2
-    movd          eax, %1
+; eax = min( eax, 64*(sad + mv cost) + r14d ) for the (dx, dy) at r9 + 2*r14; r14d += 1
+%macro HX_CAND 0
+.cand:
+    movsx         r11, byte [r9+r14*2]
+    movsx         r12, byte [r9+r14*2+1]
+    movzx        r8d, word [r3+r11*8]
+    movzx        r7d, word [r4+r12*8]
+    add          r8d, r7d
+    shl          r8d, 6
+    add          r8d, r14d
+    inc          r14d
+    imul          r12, r2
+    lea           hxC, [r1+r11*SIZEOF_PIXEL]
+    add           hxC, r12
+    HX_SAD1       hxC
+    movd         r7d, xhxA0
+%if HIGH_BIT_DEPTH == 0
+    shl          r7d, 6
+%endif
+    add          r7d, r8d
+    cmp          r7d, eax
+    cmovl        eax, r7d
+    ret
 %endmacro
 
-; needs HX_LOAD_FENC, HX_SAD_X3/X4 (pointers) and HX_END_X3/X4 (xhxA0 = the pairwise
-; min of the candidates and the bias registers hxB0/hxB1) and the xmm names xhxA0,
-; xhxA1, xhxB0, xhxB1, xhxP, xhxBEST
+; needs HX_LOAD_FENC, HX_SAD1 (xhxA0 dword 0 = the sad of the 16x16 at its argument, 64*
+; that at high bit depth) and hxC
 %macro HX_BODY 0
     movsxd        r11, r5m                 ; first: r5 itself on unix64
     movsxd        r12, r6m
@@ -1417,118 +1390,22 @@ cglobal intra_sad_x3_8x8, 3,3,8
     SUB           rsp, HX_STACK
     HX_PROLOGUE
     HX_LOAD_FENC
-    ; hexagon: hex2[1..3] (idx 2-4), then hex2[4..6] (idx 5-7)
-    lea            r7, [r1-2*SIZEOF_PIXEL]
-    lea            r8, [r1+r2*2-SIZEOF_PIXEL]
-    lea            r9, [r1+r2*2+SIZEOF_PIXEL]
-    HX_MVCOST     -16, 0
-    vmovd       xhxB0, r11d
-    HX_MVCOST      -8, 16
-    vpinsrd     xhxB0, xhxB0, r11d, 1
-    HX_MVCOST       8, 16
-    vmovd       xhxB1, r11d
-    vpinsrd     xhxB1, xhxB1, eax, 1
-    HX_BIAS     xhxB0, xhxB1, HX_IDX+16
-    HX_SAD_X3      r7, r8, r9
-    HX_END_X3
-    mova         xhxP, xhxA0
-    lea           r12, [r2*2]
-    mov            r9, r1
-    sub            r9, r12
-    lea            r8, [r9+SIZEOF_PIXEL]
-    sub            r9, SIZEOF_PIXEL
-    lea            r7, [r1+2*SIZEOF_PIXEL]
-    HX_MVCOST      16, 0
-    vmovd       xhxB0, r11d
-    HX_MVCOST       8, -16
-    vpinsrd     xhxB0, xhxB0, r11d, 1
-    HX_MVCOST      -8, -16
-    vmovd       xhxB1, r11d
-    vpinsrd     xhxB1, xhxB1, eax, 1
-    HX_BIAS     xhxB0, xhxB1, HX_IDX+32
-    HX_SAD_X3      r7, r8, r9
-    HX_END_X3
-    pminsd      xhxA0, xhxP
-    HX_MIN_END  xhxA0, xhxA1
+    ; hexagon: hex2[1..6], idx 2-7
+    lea            r9, [r13+HX_HEX-2]
+    mov          r14d, 2
+%rep 6
+    call .cand
+%endrep
     mov          r11d, eax
     and          r11d, 63
-    lea           r10, [r11-1]
-    jz .square
-.step:
-    ; move by hex2[r10], the candidates are hex2[r10-1..r10+1] around the new centre
-    add            r1, [rsp+r10*8+HX_OFF+8]
-    movsx         r11, byte [r13+r10*2+HX_HEX]
-    movsx         r12, byte [r13+r10*2+HX_HEX+1]
-    lea            r3, [r3+r11*8]
-    lea            r4, [r4+r12*8]
-    dec dword [rsp+HX_ICNT]
-    jle .square
-    HX_CHECK_RANGE .square
-    mov            r7, [rsp+r10*8+HX_OFF]
-    mov            r8, [rsp+r10*8+HX_OFF+8]
-    mov            r9, [rsp+r10*8+HX_OFF+16]
-    add            r7, r1
-    add            r8, r1
-    add            r9, r1
-    HX_MVCOST_DIR   0
-    vmovd       xhxB0, r11d
-    HX_MVCOST_DIR   1
-    vpinsrd     xhxB0, xhxB0, r11d, 1
-    HX_MVCOST_DIR   2
-    vmovd       xhxB1, r11d
-    mov          r11d, eax
-    shr          r11d, 6
-    vpinsrd     xhxB1, xhxB1, r11d, 1
-    movzx        r10d, byte [r13+r10+HX_MOD6]
-    HX_BIAS     xhxB0, xhxB1, HX_IDX
-    HX_SAD_X3      r7, r8, r9
-    HX_END_X3
-    HX_MIN_END  xhxA0, xhxA1
-    mov          r11d, eax
-    and          r11d, 63
-    lea           r10, [r10+r11-1]
-    jnz .step
+    jnz .hex
 .square:
-    ; square1[1..4] (idx 1-4), then square1[5..8] (idx 5-8)
-    and           eax, ~63
-    mov            r7, r1
-    sub            r7, r2
-    lea            r8, [r1+r2]
-    lea            r9, [r1-SIZEOF_PIXEL]
-    lea           r14, [r1+SIZEOF_PIXEL]
-    HX_MVCOST       0, -8
-    vmovd       xhxB0, r11d
-    HX_MVCOST       0, 8
-    vpinsrd     xhxB0, xhxB0, r11d, 1
-    HX_MVCOST      -8, 0
-    vmovd       xhxB1, r11d
-    HX_MVCOST       8, 0
-    vpinsrd     xhxB1, xhxB1, r11d, 1
-    HX_BIAS     xhxB0, xhxB1, HX_IDX+48
-    HX_SAD_X4      r7, r8, r9, r14
-    vmovd     xhxBEST, eax
-    pshufd    xhxBEST, xhxBEST, 0
-    HX_END_X4
-    pminsd       xhxP, xhxA0, xhxBEST
-    mov            r8, r1
-    sub            r8, r2
-    lea            r7, [r8-SIZEOF_PIXEL]
-    lea            r9, [r8+SIZEOF_PIXEL]
-    lea            r8, [r1+r2-SIZEOF_PIXEL]
-    lea           r14, [r1+r2+SIZEOF_PIXEL]
-    HX_MVCOST      -8, -8
-    vmovd       xhxB0, r11d
-    HX_MVCOST      -8, 8
-    vpinsrd     xhxB0, xhxB0, r11d, 1
-    HX_MVCOST       8, -8
-    vmovd       xhxB1, r11d
-    HX_MVCOST       8, 8
-    vpinsrd     xhxB1, xhxB1, r11d, 1
-    HX_BIAS     xhxB0, xhxB1, HX_IDX+64
-    HX_SAD_X4      r7, r8, r9, r14
-    HX_END_X4
-    pminsd      xhxA0, xhxP
-    HX_MIN_END  xhxA0, xhxA1
+    ; square1[1..8], idx 1-8
+    lea            r9, [r13+HX_SQ]
+    mov          r14d, 1
+%rep 8
+    call .cand
+%endrep
     ; bcost | pack16to32_mask( bmx, bmy ) << 32
     mov          r11d, eax
     and          r11d, 63
@@ -1548,54 +1425,58 @@ cglobal intra_sad_x3_8x8, 3,3,8
     or            rax, r3
     ADD           rsp, HX_STACK
     RET
+%assign stack_offset stack_offset+HX_STACK ; the code below runs with the stack allocated
+    HX_CAND
+.hex:
+    lea           r10, [r11-1]
+.step:
+    ; move by hex2[r10], the candidates are hex2[r10-1..r10+1] (idx 1-3) around the new centre
+    movsx         r11, byte [r13+r10*2+HX_HEX]
+    movsx         r12, byte [r13+r10*2+HX_HEX+1]
+    lea            r3, [r3+r11*8]
+    lea            r4, [r4+r12*8]
+    imul          r12, r2
+    lea            r1, [r1+r11*SIZEOF_PIXEL]
+    add            r1, r12
+    dec dword [rsp+HX_ICNT]
+    jle .stop
+    HX_CHECK_RANGE .stop
+    and           eax, ~63
+    lea            r9, [r13+r10*2+HX_HEX-4]
+    mov          r14d, 1
+    movzx        r10d, byte [r13+r10+HX_MOD6]
+    call .cand
+    call .cand
+    call .cand
+    mov          r11d, eax
+    and          r11d, 63
+    lea           r10, [r10+r11-1]
+    jnz .step
+    jmp .square
+.stop:
+    and           eax, ~63
+    jmp .square
 %endmacro
+
 
 %macro HX10_REGS 0
 %if cpuflag(avx512)
     %define hxA0 m16
     %define hxA1 m17
-    %define hxA2 m18
-    %define hxA3 m19
-    %define hxT0 m20
-    %define hxT1 m21
-    %define hxT2 m22
-    %define hxT3 m23
-    %define hxB0 m24
-    %define hxB1 m25
-    %define hxPW m26
-    %define hxZ  m27
-    %define xhxA0   xm16
-    %define xhxA1   xm17
-    %define xhxA2   xm18
-    %define xhxA3   xm19
-    %define xhxT0   xm20
-    %define xhxB0   xm24
-    %define xhxB1   xm25
-    %define xhxP    xm28
-    %define xhxBEST xm29
+    %define hxT0 m18
+    %define hxPW m19
+    %define xhxA0 xm16
+    %define xhxT0 xm18
+    %define hxC  r0
 %else
     %define hxA0 m0
     %define hxA1 m1
-    %define hxA2 m2
-    %define hxA3 m3
-    %define hxF  m4
-    %define hxT0 m5
-    %define hxT1 m8
-    %define hxT2 m9
-    %define hxT3 m4                 ; fenc, last use
-    %define hxB0 m6
-    %define hxB1 m7
-    %define hxPW m10
-    %define hxZ  m11
-    %define xhxA0   xm0
-    %define xhxA1   xm1
-    %define xhxA2   xm2
-    %define xhxA3   xm3
-    %define xhxT0   xm5
-    %define xhxB0   xm6
-    %define xhxB1   xm7
-    %define xhxP    xm12
-    %define xhxBEST xm13
+    %define hxT0 m2
+    %define hxF  m3
+    %define hxPW m4
+    %define xhxA0 xm0
+    %define xhxT0 xm2
+    %define hxC  r7
 %endif
 %endmacro
 
@@ -1608,7 +1489,6 @@ cglobal intra_sad_x3_8x8, 3,3,8
 %endrep
 %endif
     vpbroadcastd hxPW, [pw_64]
-    pxor         hxZ, hxZ
 %endmacro
 
 ; row hx_r: hx_f = fenc row, hx_off = its offset in a group of 4 rows
@@ -1630,132 +1510,46 @@ cglobal intra_sad_x3_8x8, 3,3,8
 %endif
 %endmacro
 
-; A0-A2 = word sads of the 16x16 at %1-%3 (the pointers advance 12 rows)
-%macro HX_SAD_X3 3
+; xhxA0 dword 0 = 64*sad of the 16x16 at %1 (advanced 12 rows), the rows alternately in A0, A1
+%macro HX_SAD1 1
 %assign hx_r 0
 %rep 16
     HX_ROW
-%if hx_r == 0
-    psubw        hxA0, hx_f, [%1]
-    psubw        hxA1, hx_f, [%2]
-    psubw        hxA2, hx_f, [%3]
-    pabsw        hxA0, hxA0
-    pabsw        hxA1, hxA1
-    pabsw        hxA2, hxA2
+%if hx_r & 1
+    %xdefine hx_a hxA1
+%else
+    %xdefine hx_a hxA0
+%endif
+%if hx_r < 2
+    psubw        hx_a, hx_f, [%1+hx_off]
+    pabsw        hx_a, hx_a
 %else
     psubw        hxT0, hx_f, [%1+hx_off]
-    psubw        hxT1, hx_f, [%2+hx_off]
-    psubw        hxT2, hx_f, [%3+hx_off]
     pabsw        hxT0, hxT0
-    pabsw        hxT1, hxT1
-    pabsw        hxT2, hxT2
-    paddw        hxA0, hxT0
-    paddw        hxA1, hxT1
-    paddw        hxA2, hxT2
+    paddw        hx_a, hxT0
 %endif
 %if (hx_r & 3) == 3 && hx_r < 15
     lea            %1, [%1+r2*4]
-    lea            %2, [%2+r2*4]
-    lea            %3, [%3+r2*4]
 %endif
 %assign hx_r hx_r+1
 %endrep
-%endmacro
-
-; A0-A3 = word sads of the 16x16 at %1-%4
-%macro HX_SAD_X4 4
-%assign hx_r 0
-%rep 16
-    HX_ROW
-%if hx_r == 0
-    psubw        hxA0, hx_f, [%1]
-    psubw        hxA1, hx_f, [%2]
-    psubw        hxA2, hx_f, [%3]
-    psubw        hxA3, hx_f, [%4]
-    pabsw        hxA0, hxA0
-    pabsw        hxA1, hxA1
-    pabsw        hxA2, hxA2
-    pabsw        hxA3, hxA3
-%else
-    psubw        hxT0, hx_f, [%1+hx_off]
-    psubw        hxT1, hx_f, [%2+hx_off]
-    psubw        hxT2, hx_f, [%3+hx_off]
-    psubw        hxT3, hx_f, [%4+hx_off]
-    pabsw        hxT0, hxT0
-    pabsw        hxT1, hxT1
-    pabsw        hxT2, hxT2
-    pabsw        hxT3, hxT3
-    paddw        hxA0, hxT0
-    paddw        hxA1, hxT1
-    paddw        hxA2, hxT2
-    paddw        hxA3, hxT3
-%endif
-%if (hx_r & 3) == 3 && hx_r < 15
-    lea            %1, [%1+r2*4]
-    lea            %2, [%2+r2*4]
-    lea            %3, [%3+r2*4]
-    lea            %4, [%4+r2*4]
-%endif
-%assign hx_r hx_r+1
-%endrep
-%endmacro
-
-; A0-A2 word sads, B0 = { b0 b1 }, B1 = { b2 best } -> xA0 = { min( c0, c2 ), min( c1, best ) }
-%macro HX_END_X3 0
+    paddw        hxA0, hxA1
     pmaddwd      hxA0, hxPW
-    pmaddwd      hxA1, hxPW
-    pmaddwd      hxA2, hxPW
-    punpckldq    hxT0, hxA0, hxA1
-    punpckhdq    hxA0, hxA1
-    punpckldq    hxA1, hxA2, hxZ
-    punpckhdq    hxA2, hxZ
-    paddd        hxA0, hxT0          ; { a02 b02 a13 b13 | a46 b46 a57 b57 }
-    paddd        hxA2, hxA1          ; { c02 0 c13 0 | c46 0 c57 0 }
-    pshufd       hxA1, hxA0, q1032
-    pshufd       hxT0, hxA2, q1032
-    paddd        hxA0, hxB0
-    paddd        hxA2, hxB1
-    paddd        hxA0, hxA1
-    paddd        hxA2, hxT0
-    vextracti128 xhxA1, hxA0, 1
-    vextracti128 xhxT0, hxA2, 1
-    paddd       xhxA0, xhxA1
-    paddd       xhxA2, xhxT0
-    pminsd      xhxA0, xhxA2
-%endmacro
-
-; A0-A3 word sads, B0 = { b0 b1 }, B1 = { b2 b3 } -> xA0 = { min( c0, c2 ), min( c1, c3 ) }
-%macro HX_END_X4 0
-    pmaddwd      hxA0, hxPW
-    pmaddwd      hxA1, hxPW
-    pmaddwd      hxA2, hxPW
-    pmaddwd      hxA3, hxPW
-    punpckldq    hxT0, hxA0, hxA1
-    punpckhdq    hxA0, hxA1
-    punpckldq    hxT1, hxA2, hxA3
-    punpckhdq    hxA2, hxA3
-    paddd        hxA0, hxT0
-    paddd        hxA2, hxT1
-    pshufd       hxA1, hxA0, q1032
-    pshufd       hxA3, hxA2, q1032
-    paddd        hxA0, hxB0
-    paddd        hxA2, hxB1
-    paddd        hxA0, hxA1
-    paddd        hxA2, hxA3
-    vextracti128 xhxA1, hxA0, 1
-    vextracti128 xhxA3, hxA2, 1
-    paddd       xhxA0, xhxA1
-    paddd       xhxA2, xhxA3
-    pminsd      xhxA0, xhxA2
+    vextracti128 xhxT0, hxA0, 1
+    paddd       xhxA0, xhxT0
+    punpckhqdq  xhxT0, xhxA0, xhxA0
+    paddd       xhxA0, xhxT0
+    psrlq       xhxT0, xhxA0, 32
+    paddd       xhxA0, xhxT0
 %endmacro
 
 INIT_YMM avx2
 HX10_REGS
-cglobal me_hex_16x16, 5,15,14
+cglobal me_hex_16x16, 5,15,5
     HX_BODY
 
 INIT_YMM avx512
 HX10_REGS
-cglobal me_hex_16x16, 5,15,30
+cglobal me_hex_16x16, 5,15,20
     HX_BODY
 %endif ; ARCH_X86_64
