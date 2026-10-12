@@ -1388,5 +1388,69 @@ cglobal pixel_sad_avg2_16x%1, 4,7,6
 
 SAD_AVG2_SPLIT 16
 SAD_AVG2_SPLIT  8
+
+; Two rows per zmm: { a, a + 32 } of row j and of row j+1 (4 aligned 32 B
+; loads), one vpermt2w (idx + 32 for row j+1, in the second table), and the
+; two fenc rows as one 64 B operand (fenc stride must be FENC_STRIDE).
+; Even pairs accumulate in m0, odd pairs in m4 (at most 4*1023 a lane each).
+INIT_ZMM avx512
+%macro SAD_SPLIT_PAIR16 1 ; height
+cglobal pixel_sad_16x%1_pair, 4,7,5
+    mov           r6d, r2d
+    and           r6d, 63
+    cmp           r6d, 32
+    jbe .avx2
+    test          r3d, 15
+    jnz .avx2
+    cmp           r1d, FENC_STRIDE
+    jne .avx2
+    SAD_SPLIT_IDX  3, r2, r6
+    and            r2, -32
+    lea            r5, [r3+2*r3]
+%assign sad_split_k 0
+%rep %1/2
+    SAD_HBD_ROWOFF sad_split_k&3, r3, r5
+    movu          ym1, [r2+sad_off]
+    vinserti64x4   m1, m1, [r2+sad_off+32], 1
+    SAD_HBD_ROWOFF (sad_split_k+1)&3, r3, r5
+    movu          ym2, [r2+sad_off]
+    vinserti64x4   m2, m2, [r2+sad_off+32], 1
+    vpermt2w       m1, m3, m2
+    psubw          m1, [r0+sad_split_k*FENC_STRIDEB]
+%if sad_split_k == 0
+    pabsw          m0, m1
+%elif sad_split_k == 2
+    pabsw          m4, m1
+%else
+    pabsw          m1, m1
+%if sad_split_k & 2
+    paddw          m4, m1
+%else
+    paddw          m0, m1
+%endif
+%endif
+%if (sad_split_k&3) == 2 && sad_split_k < %1-2
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_split_k sad_split_k+2
+%endrep
+    paddw          m0, m4
+    vextracti64x4 ym1, m0, 1
+    paddw         ym0, ym1
+    vextracti32x4 xm1, ym0, 1
+    paddw         xm0, xm1        ; at most 32*1023
+    pmaddwd       xm0, [pw_1]
+    MOVHL         xm1, xm0
+    paddd         xm0, xm1
+    PSHUFLW       xm1, xm0, q1032
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+.avx2:
+    jmp mangle(private_prefix %+ _pixel_sad_16x%1_avx2)
+%endmacro
+
+SAD_SPLIT_PAIR16 16
+SAD_SPLIT_PAIR16  8
 %undef sad_split_k
 %endif ; ARCH_X86_64

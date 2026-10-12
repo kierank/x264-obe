@@ -877,6 +877,10 @@ int x264_pixel_sad_avg2_8x8_avx2( pixel *, pixel *, pixel *, intptr_t );
 int x264_pixel_sad_avg2_16x16_avx512( pixel *, pixel *, pixel *, intptr_t );
 #define x264_pixel_sad_avg2_16x8_avx512 x264_template(pixel_sad_avg2_16x8_avx512)
 int x264_pixel_sad_avg2_16x8_avx512( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_sad_16x16_pair_avx512 x264_template(pixel_sad_16x16_pair_avx512)
+int x264_pixel_sad_16x16_pair_avx512( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_sad_16x8_pair_avx512 x264_template(pixel_sad_16x8_pair_avx512)
+int x264_pixel_sad_16x8_pair_avx512( pixel *, intptr_t, pixel *, intptr_t );
 #define x264_pixel_sad_x3_min_16x16_avx2 x264_template(pixel_sad_x3_min_16x16_avx2)
 int x264_pixel_sad_x3_min_16x16_avx2( pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t );
 #define x264_pixel_sad_x3_min_16x8_avx2 x264_template(pixel_sad_x3_min_16x8_avx2)

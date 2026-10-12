@@ -31,7 +31,7 @@
 #   include "x86/pixel.h"
 #   include "x86/predict.h"
 /* 10-bit 16 wide sad / sad_avg2 without cache line split loads, chosen at build
- * time for A/B. X264_SAD10_SPLIT: 0 AVX2, 1 vpermt2w a row.
+ * time for A/B. X264_SAD10_SPLIT: 0 AVX2, 1 vpermt2w a row, 2 row pairs in zmm.
  * X264_SAD10_AVG2_SPLIT: 0 AVX2, 1 vpermt2w a row. X264_SAD10_SPLIT_CPU gates
  * both; X264_CPU_SLOW_ATOM keeps the code linked but never selected. */
 #ifndef X264_SAD10_SPLIT
@@ -1147,6 +1147,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if X264_SAD10_SPLIT == 1
         pixf->sad[PIXEL_16x16] = x264_pixel_sad_16x16_avx512;
         pixf->sad[PIXEL_16x8]  = x264_pixel_sad_16x8_avx512;
+#elif X264_SAD10_SPLIT == 2
+        pixf->sad[PIXEL_16x16] = x264_pixel_sad_16x16_pair_avx512;
+        pixf->sad[PIXEL_16x8]  = x264_pixel_sad_16x8_pair_avx512;
 #endif
 #if X264_SAD10_AVG2_SPLIT == 1
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx512;
