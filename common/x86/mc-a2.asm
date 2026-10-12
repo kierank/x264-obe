@@ -87,6 +87,12 @@ pw_31: times 8 dw 31
 pd_4: times 4 dd 4
 pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4567
 pd_8: times 4 dd 8
+%if HIGH_BIT_DEPTH
+hpel_c_tap1x64: dw  64, -320 ; tap1-3 << 6 for the avx512icl one-pass c
+hpel_c_tap2x64: dw 1280, 1280
+hpel_c_tap3x64: dw -320,  64
+hpel_c_hiw: dw 1,17,3,19,5,21,7,23,9,25,11,27,13,29,15,31 ; high words of even | odd dwords
+%endif
 
 SECTION .text
 
@@ -568,12 +574,37 @@ HPEL_FILTER_HBD
     mova  [r2+r7+%1], m4
 %endmacro
 
+; avx512icl: taps << 6 in m7-m9, so each dword sum >> 10 is its high word; the
+; three products of each sum by vpdpwssd, even | odd high words by vpermt2w (m16)
+%macro HPEL_C_HBD_ICL 5
+    vshufi64x2   %5, %2, %4, 1
+    palignr      m4, %2, %3, 12             ; v[x-2]
+    palignr      %3, %2, %3, 14             ; v[x-1]
+    pmaddwd      m4, m7
+    pmaddwd      %3, m7
+    vpdpwssd     m4, %2, m8
+    palignr      m5, %5, %2, 4              ; v[x+2]
+    palignr      m6, %5, %2, 2              ; v[x+1]
+    vpdpwssd     m4, m5, m9                 ; even outputs << 6
+    vpdpwssd     %3, m6, m8
+    palignr      m5, %5, %2, 6              ; v[x+3]
+    vpdpwssd     %3, m5, m9                 ; odd outputs << 6
+    vpermt2w     m4, m16, %3
+    paddsw       m4, m14
+    psubusw      m4, m15
+    mova  [r2+r7+%1], m4
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; void hpel_filter( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src,
 ;                   intptr_t stride, int width, int height, int16_t *buf )
 ;-----------------------------------------------------------------------------
-INIT_YMM avx2
+%macro HPEL_FILTER_1P 0
+%if cpuflag(avx512icl)
+cglobal hpel_filter, 7,13,17
+%else
 cglobal hpel_filter, 7,13,16
+%endif
     FIX_STRIDES  r4
     mov         r7d, r3d
     and         r7d, 31                     ; realign to 32 bytes, as the 3-pass wrapper
@@ -595,9 +626,18 @@ cglobal hpel_filter, 7,13,16
     sub          r9, r4
     mov          r8, r9
     sub          r8, r4
+%if cpuflag(avx512icl)
+    vpbroadcastd m7, [hpel_c_tap1x64]
+    vpbroadcastd m8, [hpel_c_tap2x64]
+    vpbroadcastd m9, [hpel_c_tap3x64]
+    movu        m16, [hpel_c_hiw]
+    %define hpel_c HPEL_C_HBD_ICL
+%else
     vpbroadcastd m7, [tap1]
     vpbroadcastd m8, [tap2]
     vpbroadcastd m9, [tap3]
+    %define hpel_c HPEL_C_HBD
+%endif
     vpbroadcastw m10, [pw_pixel_max]
     vpbroadcastw m11, [pad10]
     vpbroadcastw m12, [pw_pad10_16]
@@ -612,15 +652,15 @@ cglobal hpel_filter, 7,13,16
     jge .tail
 .loopx:
     HPEL_VH_HBD -32, m2
-    HPEL_C_HBD  -64, m0, m1, m2, m3
+    hpel_c      -64, m0, m1, m2, m3
     HPEL_VH_HBD   0, m0
-    HPEL_C_HBD  -32, m2, m3, m0, m1
+    hpel_c      -32, m2, m3, m0, m1
     add          r7, 64
     jl .loopx
 .tail:
     HPEL_VH_HBD -32, m2
-    HPEL_C_HBD  -64, m0, m1, m2, m3
-    HPEL_C_HBD  -32, m2, m3, m2, m1
+    hpel_c      -64, m0, m1, m2, m3
+    hpel_c      -32, m2, m3, m2, m1
     add          r0, r4
     add          r1, r4
     add          r2, r4
@@ -633,6 +673,13 @@ cglobal hpel_filter, 7,13,16
     dec         r6d
     jg .loopy
     RET
+%undef hpel_c
+%endmacro ; HPEL_FILTER_1P
+
+INIT_YMM avx2
+HPEL_FILTER_1P
+INIT_YMM avx512icl
+HPEL_FILTER_1P
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 

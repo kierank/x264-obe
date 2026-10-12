@@ -766,6 +766,8 @@ HPEL(8, mmx2, mmx2, mmx2, mmx2)
 HPEL(16, sse2, sse2, sse2, sse2)
 #if ARCH_X86_64
 void x264_hpel_filter_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf );
+#define x264_hpel_filter_avx512icl x264_template(hpel_filter_avx512icl)
+void x264_hpel_filter_avx512icl( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf );
 /* the field pass copy still uses the 3-pass kernels */
 void x264_hpel_filter_v_avx2( pixel *dst, pixel *src, int16_t *buf, intptr_t stride, intptr_t width );
 void x264_hpel_filter_c_avx2( pixel *dst, int16_t *buf, intptr_t width );
@@ -1118,6 +1120,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
     }
+#if ARCH_X86_64
+    if( cpu&X264_CPU_AVX512ICL )
+        pf->hpel_filter = x264_hpel_filter_avx512icl;
+#endif
 #else // !HIGH_BIT_DEPTH
 
 #if ARCH_X86 // all x86_64 cpus with cacheline split issues use sse2 instead
