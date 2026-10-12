@@ -51,6 +51,11 @@ int x264_encoder_reconfig_apply( x264_t *h, x264_param_t *param );
 
 #define x264_adaptive_quant_frame x264_template(adaptive_quant_frame)
 void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_offsets );
+#define x264_adaptive_quant_frame_rows x264_template(adaptive_quant_frame_rows)
+void x264_adaptive_quant_frame_rows( x264_t *h, x264_frame_t *frame, float *quant_offsets,
+                                     int mb_y0, int mb_y1, uint32_t *pixel_sum, uint64_t *pixel_ssd );
+#define x264_adaptive_quant_frame_end x264_template(adaptive_quant_frame_end)
+void x264_adaptive_quant_frame_end( x264_t *h, x264_frame_t *frame, float *quant_offsets );
 #define x264_macroblock_tree_read x264_template(macroblock_tree_read)
 int  x264_macroblock_tree_read( x264_t *h, x264_frame_t *frame, float *quant_offsets );
 #define x264_reference_build_list_optimal x264_template(reference_build_list_optimal)
