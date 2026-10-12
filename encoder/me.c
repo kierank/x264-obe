@@ -960,6 +960,41 @@ if( b_refine_qpel || (dir^1) != odir ) \
 static const int8_t qpel_dir_dx[5] = { 0, 0, 0, -1, 1 };
 static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
 
+/* adds to cost the chroma cost COST_MV_SATD would add at (mx,my) against a
+ * best cost of COST_MAX, i.e. both planes */
+#define ADD_CHROMA_COST( mx, my, cost ) \
+{ \
+    intptr_t stride; \
+    pixel *src; \
+    if( CHROMA444 ) \
+    { \
+        stride = 16; \
+        src = h->mc.get_ref( pix, &stride, &m->p_fref[4], m->i_stride[1], mx, my, bw, bh, &m->weight[1] ); \
+        cost += h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[1], FENC_STRIDE, src, stride ); \
+        stride = 16; \
+        src = h->mc.get_ref( pix, &stride, &m->p_fref[8], m->i_stride[2], mx, my, bw, bh, &m->weight[2] ); \
+        cost += h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[2], FENC_STRIDE, src, stride ); \
+    } \
+    else if( b_chroma_mcc ) \
+    { \
+        int mcc[2]; \
+        h->pixf.mbcmp_mcc( p_fenc_uv, mcc, m->p_fref[4], m->i_stride[1], \
+                           mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+        cost += mcc[0] + mcc[1]; \
+    } \
+    else \
+    { \
+        h->mc.mc_chroma( pix, pix+8, 16, m->p_fref[4], m->i_stride[1], \
+                         mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+        if( m->weight[1].weightfn ) \
+            m->weight[1].weightfn[bw>>3]( pix, 16, pix, 16, &m->weight[1], bh>>chroma_v_shift ); \
+        cost += h->pixf.mbcmp[chromapix]( m->p_fenc[1], FENC_STRIDE, pix, 16 ); \
+        if( m->weight[2].weightfn ) \
+            m->weight[2].weightfn[bw>>3]( pix+8, 16, pix+8, 16, &m->weight[2], bh>>chroma_v_shift ); \
+        cost += h->pixf.mbcmp[chromapix]( m->p_fenc[2], FENC_STRIDE, pix+8, 16 ); \
+    } \
+}
+
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -967,13 +1002,19 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
     const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
     const int i_pixel = m->i_pixel;
-    const int b_chroma_me = h->mb.b_chroma_me && (i_pixel <= PIXEL_8x8 || CHROMA444);
+    const int b_chroma_full = h->mb.b_chroma_me && (i_pixel <= PIXEL_8x8 || CHROMA444);
+    /* An 8x8 search refines on luma alone and gets its chroma cost once, at the
+     * MV returned. With a halfpel threshold across refs, the cut and the
+     * threshold are on luma alone, and only a ref past the cut gets chroma ME. */
+    const int b_chroma_late = b_chroma_full && i_pixel == PIXEL_8x8 && !b_refine_qpel;
+    const int b_chroma_cut = b_chroma_full && !b_chroma_late && p_halfpel_thresh;
+    int b_chroma_me = b_chroma_full && !b_chroma_late && !b_chroma_cut;
     int chromapix = h->luma2chroma_pixel[i_pixel];
     int chroma_v_shift = CHROMA_V_SHIFT;
     int mvy_offset = chroma_v_shift & MB_INTERLACED & m->i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
     /* chroma cost without storing the prediction: mbcmp_mcc takes every
      * chroma ME size, u and v widths 8 and 4, heights 4 to 16 */
-    const int b_chroma_mcc = b_chroma_me && !CHROMA444 && h->pixf.mbcmp_mcc
+    const int b_chroma_mcc = b_chroma_full && !CHROMA444 && h->pixf.mbcmp_mcc
                           && !m->weight[1].weightfn && !m->weight[2].weightfn;
     /* mbcmp_mcc takes fenc, high bit depth, as the interleaved uv plane (the source of
      * p_fenc[1] and p_fenc[2]) at the partition, which has the stride of the ref planes;
@@ -1058,7 +1099,11 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     {
         if( (bcost*7)>>3 > *p_halfpel_thresh )
         {
-            m->cost = bcost;
+            /* a stopped 8x8 ref gets its chroma cost; a ref stopped by the cut
+             * on luma alone never becomes the best, as with chroma */
+            if( b_chroma_late )
+                ADD_CHROMA_COST( bmx, bmy, bcost );
+            m->cost = b_chroma_cut ? COST_MAX : bcost;
             m->mv[0] = bmx;
             m->mv[1] = bmy;
             // don't need cost_mv
@@ -1066,6 +1111,13 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         }
         else if( bcost < *p_halfpel_thresh )
             *p_halfpel_thresh = bcost;
+    }
+
+    /* past the cut: the chroma cost here and chroma ME */
+    if( b_chroma_cut )
+    {
+        ADD_CHROMA_COST( bmx, bmy, bcost );
+        b_chroma_me = 1;
     }
 
     /* quarterpel diamond search */
@@ -1136,6 +1188,9 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         bmy -= (bcost<<30)>>30;
         bcost >>= 4;
     }
+
+    if( b_chroma_late )
+        ADD_CHROMA_COST( bmx, bmy, bcost );
 
     m->cost = bcost;
     m->mv[0] = bmx;
