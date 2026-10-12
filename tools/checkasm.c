@@ -3169,11 +3169,18 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     int ac = ctx_ac[ctx_block_cat];\
                     /* mode 0: as before, 1: dense, 2: sparse with long zero runs, 3: large levels */\
                     int mode = (j>>2)&3;\
+                    /* sparse, j&64: only the first kmax+1 can be nonzero, so last is small */\
+                    int kmax = mode == 2 && (j&64) ? (j&3) | ((j>>2)&4) : 63;\
                     int nz = 0;\
                     while( !nz )\
                     {\
                         for( int k = 0; k <= x264_count_cat_m1[ctx_block_cat]; k++ )\
                         {\
+                            if( k > kmax )\
+                            {\
+                                dct[0][ac+k] = dct[1][ac+k] = 0;\
+                                continue;\
+                            }\
                             /* Very rough distribution that covers possible inputs */\
                             int rnd = rand();\
                             int coef = mode == 1 ? !!(rnd&7) : mode == 2 ? !(rnd&15) : !(rnd&3);\
