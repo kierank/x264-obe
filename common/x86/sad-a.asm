@@ -1852,54 +1852,61 @@ SAD_X_AVX2 4, 16,  8, 8
 ;                             uint8_t *pix3, intptr_t i_stride, uint64_t bias01,
 ;                             uint64_t bias23, int best )
 ; min( best, (sad_i << 6) + bias_i ), signed; bias01 = bias_0 | bias_1 << 32, etc.
+; The tails shift the psadbw sums first and add each bias beside a shuffle;
+; the candidates meet in matching dwords of separate registers, so the first
+; pminsd needs no shuffle.
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
-; xm%1 = { b0 b1 b2 best }, xm%2 = best in all lanes
-%macro SAD_X3_MIN_ARGS 2
-    movq         xm%1, r5mp
-    vpbroadcastq xm%2, r6mp
-    vpblendd     xm%1, xm%1, xm%2, 1100b
-    pshufd       xm%2, xm%2, q1111
-%endmacro
-
-; xm%1 = { b0 b1 b2 b3 }, xm%2 = best in all lanes
-%macro SAD_X4_MIN_ARGS 2
-    movq         xm%1, r6mp
-    movhps       xm%1, r7mp
-    vpbroadcastd xm%2, r8m
-%endmacro
-
-; xm%1 = candidates, xm%2 = best in all lanes -> eax
-%macro SAD_X_MIN_TREE 3 ; c, best, tmp
-    pminsd       xm%2, xm%1
-    pshufd       xm%3, xm%1, q1032
-    pminsd       xm%1, xm%2, xm%3
-    psrlq        xm%3, xm%1, 32
-    pminsd       xm%1, xm%3
-    movd          eax, xm%1
+; m0, m1, m2 = { lo, hi | lo, hi } of refs 0, 1, 2 (rows j | j+1)
+%macro SAD_X3_MIN_END_AVX2 0
+    movq         xm3, r5mp          ; b0 b1
+    movq         xm5, r6mp          ; b2 best
+    pslld         m0, 6
+    pslld         m1, 6
+    pslld         m2, 6
+    psrlq        xm4, xm3, 32       ; b1
+    pshufd        m6, m0, q1032
+    paddd         m0, m3
+    paddd         m0, m6
+    pshufd        m6, m1, q1032
+    paddd         m1, m4
+    paddd         m1, m6
+    pshufd        m6, m2, q1032
+    paddd         m2, m5
+    paddd         m2, m6
+    psrlq        xm5, 32            ; best
+    vextracti128 xm3, m0, 1
+    vextracti128 xm4, m1, 1
+    vextracti128 xm6, m2, 1
+    paddd        xm0, xm3           ; c0
+    paddd        xm1, xm4           ; c1
+    paddd        xm2, xm6           ; c2
+    pminsd       xm0, xm1
+    pminsd       xm2, xm5
+    pminsd       xm0, xm2
+    movd         eax, xm0
     RET
 %endmacro
 
-%macro SAD_X3_MIN_END_AVX2 0
-    SAD_X3_MIN_ARGS 4, 5
-    packssdw  m0, m1
-    packssdw  m2, m2
-    phaddd    m0, m2        ; 0 1 2 2 | 0 1 2 2
-    pslld     m0, 6
-    vextracti128 xm1, m0, 1
-    paddd    xm0, xm4       ; lane 3 is best + 64*sad_2
-    paddd    xm0, xm1
-    SAD_X_MIN_TREE 0, 5, 1
-%endmacro
-
+; m0 = { lo, hi | lo, hi } of refs 0 | 2, m1 of refs 1 | 3
 %macro SAD_X4_MIN_END_AVX2 0
-    SAD_X4_MIN_ARGS 4, 5
-    packssdw  m0, m1        ; 0 0 1 1 | 2 2 3 3
-    pslld     m0, 6
+    vpmovzxdq     m4, r6m           ; b0 _ b1 _ | b2 _ b3 _ (bias01, bias23)
+    pslld         m0, 6
+    pslld         m1, 6
+    psrldq        m5, m4, 8         ; b1 | b3
+    pshufd        m2, m0, q1032
+    pshufd        m3, m1, q1032
+    paddd         m0, m4
+    paddd         m1, m5
+    paddd         m0, m2            ; c0 | c2
+    paddd         m1, m3            ; c1 | c3
+    vpbroadcastd xm5, r8m
+    pminsd        m0, m1
     vextracti128 xm1, m0, 1
-    phaddd   xm0, xm1
-    paddd    xm0, xm4
-    SAD_X_MIN_TREE 0, 5, 1
+    pminsd       xm0, xm5
+    pminsd       xm0, xm1
+    movd         eax, xm0
+    RET
 %endmacro
 
 %macro SAD_X_MIN_AVX2 4
@@ -1971,13 +1978,25 @@ cglobal pixel_sad_x3_8x%1, 5,6,6
 %assign %%k %%k+2
 %endrep
 %if %2
-    SAD_X3_MIN_ARGS 2, 3
-    packssdw       m0, m1
+    ; m0 = { r1, r2 | r1, r2 }, m1 = { r3, sad(fenc, junk) | r3, junk }
+    movq          xm2, r5mp
+    pmovzxdq      xm3, r6mp       ; b2 _ best _
+    pmovzxdq      xm2, xm2        ; b0 _ b1 _
     pslld          m0, 6
-    vextracti128  xm1, m0, 1
-    paddd         xm0, xm2       ; lane 3 is best + 64*sad(fenc, 0)
-    paddd         xm0, xm1
-    SAD_X_MIN_TREE 0, 3, 1
+    pslld          m1, 6
+    vextracti128  xm4, m0, 1
+    vextracti128  xm5, m1, 1
+    paddd         xm0, xm2
+    paddd         xm1, xm3        ; dword 2 is best + 64*junk >= best
+    pshufd        xm3, xm3, q2222 ; best
+    paddd         xm0, xm4        ; c0 _ c1 _
+    paddd         xm1, xm5        ; c2 _ >=best _
+    pminsd        xm0, xm1
+    pshufd        xm1, xm0, q1032
+    pminsd        xm0, xm3
+    pminsd        xm0, xm1
+    movd          eax, xm0
+    RET
 %else
     movifnidn      r5, r5mp
     packssdw       m0, m1         ; { s0 s1 s2 _ | s0 s1 s2 _ }
@@ -2019,13 +2038,24 @@ cglobal pixel_sad_x4_8x%1, 6,7,6
 %assign %%k %%k+2
 %endrep
 %if %2
-    SAD_X4_MIN_ARGS 2, 3
-    packssdw       m0, m1
+    ; m0 = { r1, r2 | r1, r2 }, m1 = { r3, r4 | r3, r4 }
+    pmovzxdq      xm2, r6mp       ; b0 _ b1 _
+    pmovzxdq      xm3, r7mp       ; b2 _ b3 _
     pslld          m0, 6
-    vextracti128  xm1, m0, 1
+    pslld          m1, 6
+    vextracti128  xm4, m0, 1
+    vextracti128  xm5, m1, 1
     paddd         xm0, xm2
-    paddd         xm0, xm1
-    SAD_X_MIN_TREE 0, 3, 1
+    paddd         xm1, xm3
+    vpbroadcastd  xm3, r8m
+    paddd         xm0, xm4        ; c0 _ c1 _
+    paddd         xm1, xm5        ; c2 _ c3 _
+    pminsd        xm0, xm1
+    pshufd        xm1, xm0, q1032
+    pminsd        xm0, xm3
+    pminsd        xm0, xm1
+    movd          eax, xm0
+    RET
 %else
     mov            r0, r6mp
     packssdw       m0, m1         ; { s0 s1 s2 s3 | s0 s1 s2 s3 }
