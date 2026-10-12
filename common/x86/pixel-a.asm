@@ -4912,8 +4912,14 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
 ; the function: SATD_BI_BODY height, weighted after the weight dispatch
 %macro SATD_BI 3 ; width, height, bi4
 %assign bi_four %3
-%assign bi_wide %1 == 16
-%assign bi_big %1*%2 == 256
+%assign bi_wide 0
+%assign bi_big 0
+%if %1 == 16
+%assign bi_wide 1
+%endif
+%if %1*%2 == 256
+%assign bi_big 1
+%endif
 %if bi_four
 %if bi_wide
 cglobal pixel_satd_bi4_%1x%2, 7,8,11
