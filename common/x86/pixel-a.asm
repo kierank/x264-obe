@@ -9033,3 +9033,93 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
     RET
 %endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; void pixel_var_pair( pixel *pix, intptr_t stride, uint32_t res[8] )
+; void pixel_var_pair_nv( pixel *pix, intptr_t stride, int h, uint32_t res[16] )
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; m0-m1 sum of the even, odd rows (words), m2-m3 sumsq, m4-m5 sumsq of the even columns
+%macro VAR_PAIR_ROW 5 ; src, sum, sumsq, sumsq even columns, nv
+%if HIGH_BIT_DEPTH
+    movu      m6, %1
+%else
+    pmovzxbw  m6, %1
+%endif
+    paddw    m%2, m6
+%if %5
+    pand      m7, m6, m9
+    pmaddwd   m7, m7
+    paddd    m%4, m7
+%endif
+    pmaddwd   m6, m6
+    paddd    m%3, m6
+%endmacro
+
+%macro VAR_PAIR_HALF 2 ; nv, res offset
+    pxor      m0, m0
+    pxor      m1, m1
+    pxor      m2, m2
+    pxor      m3, m3
+%if %1
+    pxor      m4, m4
+    pxor      m5, m5
+    mov      r5d, r2d
+%else
+    mov      r5d, 16
+%endif
+%%loop:
+    VAR_PAIR_ROW [r0],      0, 2, 4, %1
+    VAR_PAIR_ROW [r0+r1],   1, 3, 5, %1
+    VAR_PAIR_ROW [r0+r1*2], 0, 2, 4, %1
+    VAR_PAIR_ROW [r0+r4],   1, 3, 5, %1
+    lea       r0, [r0+r1*4]
+    sub      r5d, 4
+    jg %%loop
+%if %1
+    psubd     m2, m4          ; sumsq of the odd columns
+    psubd     m3, m5
+    pand      m6, m0, m9      ; sum of the even columns
+    psrld     m0, 16          ; odd
+    pand      m7, m1, m9
+    psrld     m1, 16
+    phaddd    m6, m0
+    phaddd    m4, m2
+    phaddd    m7, m1
+    phaddd    m5, m3
+    phaddd    m6, m4          ; a lane: sum even, odd columns, sumsq even, odd columns
+    phaddd    m7, m5
+    vperm2i128 m8, m6, m7, 0x31
+    vinserti128 m6, m6, xm7, 1
+    paddd     m6, m8
+    movu [r3+%2], m6
+%else
+    pmaddwd   m0, m8
+    pmaddwd   m1, m8
+    phaddd    m0, m2
+    phaddd    m1, m3
+    phaddd    m0, m1          ; a lane: sum, sumsq of the even rows, of the odd rows
+    vextracti128 xm1, m0, 1
+    paddd    xm0, xm1
+    movu [r2+%2], xm0
+%endif
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_var_pair, 3,6,9
+    FIX_STRIDES r1
+    lea       r4, [r1*3]
+    vpbroadcastd m8, [pw_1]
+    VAR_PAIR_HALF 0, 0
+    VAR_PAIR_HALF 0, 16
+    RET
+
+cglobal pixel_var_pair_nv, 4,6,10
+    FIX_STRIDES r1
+    lea       r4, [r1*3]
+    pcmpeqd   m9, m9
+    psrld     m9, 16          ; the even words
+    VAR_PAIR_HALF 1, 0
+    VAR_PAIR_HALF 1, 32
+    RET
+%endif ; ARCH_X86_64

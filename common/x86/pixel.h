@@ -981,6 +981,11 @@ DECL_ADS( 4, avx2 )
 DECL_ADS( 2, avx2 )
 DECL_ADS( 1, avx2 )
 
+#define x264_pixel_var_pair_avx2 x264_template(pixel_var_pair_avx2)
+void x264_pixel_var_pair_avx2( pixel *pix, intptr_t stride, uint32_t res[8] );
+#define x264_pixel_var_pair_nv_avx2 x264_template(pixel_var_pair_nv_avx2)
+void x264_pixel_var_pair_nv_avx2( pixel *pix, intptr_t stride, int h, uint32_t res[16] );
+
 #undef DECL_PIXELS
 #undef DECL_X1
 #undef DECL_X4

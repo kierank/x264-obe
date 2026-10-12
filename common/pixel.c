@@ -1165,6 +1165,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
+#if ARCH_X86_64
+        pixf->var_pair    = x264_pixel_var_pair_avx2;
+        pixf->var_pair_nv = x264_pixel_var_pair_nv_avx2;
+#endif
         pixf->intra_sad_x3_8x8 = x264_intra_sad_x3_8x8_avx2;
     }
     if( cpu&X264_CPU_AVX512 )
@@ -1479,6 +1483,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_8x8c = x264_intra_sad_x3_8x8c_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
 #if ARCH_X86_64
+        pixf->var_pair    = x264_pixel_var_pair_avx2;
+        pixf->var_pair_nv = x264_pixel_var_pair_nv_avx2;
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;

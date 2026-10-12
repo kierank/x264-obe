@@ -847,6 +847,75 @@ static int check_pixel( int cpu_ref, int cpu_new )
     report( "pixel var2 :" );
 
     ok = 1; used_asm = 0;
+    if( pixel_asm.var_pair != pixel_ref.var_pair || pixel_asm.var_pair_nv != pixel_ref.var_pair_nv )
+    {
+        /* k = 0: random; 1: random 0/max; 2: all max; 3: a 0/max checkerboard,
+         * its phase by j */
+        ALIGNED_ARRAY_64( pixel, buf,[32*64+64] );
+        uint32_t res_c[16], res_a[16];
+        used_asm = 1;
+        for( int k = 0; k < 4 && ok; k++ )
+            for( int j = 0; j < 16 && ok; j++ )
+            {
+                intptr_t stride = 16 + 16*(j&3);
+                pixel *pix = buf + 16*((j>>2)&1) + ((j>>3)&1);
+                for( int i = 0; i < 32*64+64; i++ )
+                    buf[i] = k == 1 ? -(pbuf2[i+j]&1) & PIXEL_MAX : k == 2 ? PIXEL_MAX : pbuf1[i+j];
+                if( k == 3 )
+                    for( int y = 0; y < 32; y++ )
+                        for( int x = 0; x < 16; x++ )
+                            pix[y*stride+x] = -((x^y^j)&1) & PIXEL_MAX;
+                if( pixel_asm.var_pair != pixel_ref.var_pair )
+                {
+                    set_func_name( "var_pair" );
+                    memset( res_c, 0, sizeof(res_c) );
+                    memset( res_a, 0xff, sizeof(res_a) );
+                    call_c1( pixel_c.var_pair,   pix, stride, res_c );
+                    call_a1( pixel_asm.var_pair, pix, stride, res_a );
+                    for( int i = 0; i < 8; i++ )
+                        if( res_c[i] != res_a[i] )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "var_pair k=%d j=%d res[%d]: %u != %u [FAILED]\n", k, j, i, res_c[i], res_a[i] );
+                            break;
+                        }
+                }
+                if( pixel_asm.var_pair_nv != pixel_ref.var_pair_nv )
+                    for( int h = 8; h <= 16; h += 8 )
+                    {
+                        set_func_name( "var_pair_nv_%d", h );
+                        memset( res_c, 0, sizeof(res_c) );
+                        memset( res_a, 0xff, sizeof(res_a) );
+                        call_c1( pixel_c.var_pair_nv,   pix, stride, h, res_c );
+                        call_a1( pixel_asm.var_pair_nv, pix, stride, h, res_a );
+                        for( int i = 0; i < 16; i++ )
+                            if( res_c[i] != res_a[i] )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "var_pair_nv h=%d k=%d j=%d res[%d]: %u != %u [FAILED]\n", h, k, j, i, res_c[i], res_a[i] );
+                                break;
+                            }
+                    }
+            }
+        for( int i = 0; i < 32*64+64; i++ )
+            buf[i] = pbuf1[i];
+        if( pixel_asm.var_pair != pixel_ref.var_pair )
+        {
+            set_func_name( "var_pair" );
+            call_c2( pixel_c.var_pair,   buf, (intptr_t)64, res_c );
+            call_a2( pixel_asm.var_pair, buf, (intptr_t)64, res_a );
+        }
+        if( pixel_asm.var_pair_nv != pixel_ref.var_pair_nv )
+            for( int h = 8; h <= 16; h += 8 )
+            {
+                set_func_name( "var_pair_nv_%d", h );
+                call_c2( pixel_c.var_pair_nv,   buf, (intptr_t)64, h, res_c );
+                call_a2( pixel_asm.var_pair_nv, buf, (intptr_t)64, h, res_a );
+            }
+    }
+    report( "pixel var_pair :" );
+
+    ok = 1; used_asm = 0;
     for( int i = 0; i < 4; i++ )
         if( pixel_asm.hadamard_ac[i] != pixel_ref.hadamard_ac[i] )
         {
