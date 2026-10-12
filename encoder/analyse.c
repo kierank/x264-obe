@@ -3012,7 +3012,7 @@ static int x264_mb_analyse_nb_sub16x16( x264_t *h )
 }
 
 /* Sub-16x16 partition skip threshold in lambda, interlaced (MBAFF) encodes only */
-#define PARTGATE_THRESH 256
+#define PARTGATE_THRESH 512
 
 /*****************************************************************************
  * x264_macroblock_analyse:
