@@ -2990,6 +2990,30 @@ static inline void x264_mb_analyse_qp_rd( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+/* Whether the left or top MB in the slice used a partition below 16x16,
+ * intra 4x4/8x8 included. */
+static int x264_mb_analyse_nb_sub16x16( x264_t *h )
+{
+    int b_sub = 0;
+    if( h->mb.i_neighbour & MB_LEFT )
+        for( int i = 0; i < 2; i++ )
+        {
+            int type = h->mb.i_mb_type_left[i];
+            b_sub |= type == I_4x4 || type == I_8x8 ||
+                     (!IS_INTRA( type ) && h->mb.partition[h->mb.i_mb_left_xy[i]] != D_16x16);
+        }
+    if( h->mb.i_neighbour & MB_TOP )
+    {
+        int type = h->mb.i_mb_type_top;
+        b_sub |= type == I_4x4 || type == I_8x8 ||
+                 (!IS_INTRA( type ) && h->mb.partition[h->mb.i_mb_top_xy] != D_16x16);
+    }
+    return b_sub;
+}
+
+/* Sub-16x16 partition skip threshold in lambda, interlaced (MBAFF) encodes only */
+#define PARTGATE_THRESH 256
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3122,7 +3146,14 @@ skip_analysis:
                 return;
             }
 
-            if( flags & X264_ANALYSE_PSUB16x16 )
+            /* Interlaced: no 8x8, 16x8 or 8x16 when the 16x16 residual is cheap and
+             * no neighbour used a sub-16x16 partition. l0.i_cost8x8 stays COST_MAX. */
+            int b_partgate = 0;
+            if( PARAM_INTERLACED && analysis.b_early_terminate && (flags & X264_ANALYSE_PSUB16x16) )
+                b_partgate = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv < PARTGATE_THRESH * analysis.i_lambda &&
+                             !x264_mb_analyse_nb_sub16x16( h );
+
+            if( (flags & X264_ANALYSE_PSUB16x16) && !b_partgate )
             {
                 if( h->param.analyse.b_mixed_references )
                     x264_mb_analyse_inter_p8x8_mixed_ref( h, &analysis );
@@ -3171,8 +3202,8 @@ skip_analysis:
             }
 
             /* Now do 16x8/8x16 */
-            int i_thresh16x8 = analysis.l0.me8x8[1].cost_mv + analysis.l0.me8x8[2].cost_mv;
-            if( ( flags & X264_ANALYSE_PSUB16x16 ) && (!analysis.b_early_terminate ||
+            int i_thresh16x8 = b_partgate ? 0 : analysis.l0.me8x8[1].cost_mv + analysis.l0.me8x8[2].cost_mv;
+            if( ( flags & X264_ANALYSE_PSUB16x16 ) && !b_partgate && (!analysis.b_early_terminate ||
                 analysis.l0.i_cost8x8 < analysis.l0.me16x16.cost + i_thresh16x8) )
             {
                 int i_avg_mv_ref_cost = (analysis.l0.me8x8[2].cost_mv + analysis.l0.me8x8[2].i_ref_cost
@@ -3496,7 +3527,19 @@ skip_analysis:
                 }
             }
 
-            if( flags & X264_ANALYSE_BSUB16x16 )
+            /* As in P, on the best 16x16 mode's cost less its MV costs; the b8x8,
+             * 16x8 and 8x16 costs stay COST_MAX. */
+            int b_partgate = 0;
+            if( PARAM_INTERLACED && analysis.b_early_terminate && (flags & X264_ANALYSE_BSUB16x16) )
+            {
+                int i_res = i_type == B_L0_L0 ? analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv :
+                            i_type == B_L1_L1 ? analysis.l1.me16x16.cost - analysis.l1.me16x16.cost_mv :
+                            i_type == B_BI_BI ? analysis.i_cost16x16bi - analysis.l0.bi16x16.cost_mv - analysis.l1.bi16x16.cost_mv :
+                                                analysis.i_cost16x16direct;
+                b_partgate = i_res < PARTGATE_THRESH * analysis.i_lambda && !x264_mb_analyse_nb_sub16x16( h );
+            }
+
+            if( (flags & X264_ANALYSE_BSUB16x16) && !b_partgate )
             {
                 if( h->param.analyse.b_mixed_references )
                     x264_mb_analyse_inter_b8x8_mixed_ref( h, &analysis );
