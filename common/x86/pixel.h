@@ -889,6 +889,9 @@ int x264_pixel_sad_x4_min_16x8_avx2( pixel *, pixel *, pixel *, pixel *, pixel *
 int x264_pixel_sad_x4_min_8x16_avx2( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t, int );
 #define x264_pixel_sad_x4_min_8x8_avx2 x264_template(pixel_sad_x4_min_8x8_avx2)
 int x264_pixel_sad_x4_min_8x8_avx2( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t, int );
+#define x264_me_hex_16x16_avx2 x264_template(me_hex_16x16_avx2)
+uint64_t x264_me_hex_16x16_avx2( pixel *, pixel *, intptr_t, const uint16_t *, const uint16_t *,
+                                 int, int, int, uint32_t, uint32_t, int );
 void x264_intra_sad_x3_16x16_mmx2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_sse2  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_16x16_ssse3 ( pixel   *, pixel   *, int * );
