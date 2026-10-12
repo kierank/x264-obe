@@ -3078,6 +3078,6 @@ INIT_YMM avx2
 cglobal me_hex_16x16, 5,15,16
     HX_BODY
 
-cglobal me_hex_walk_16x16, 5,15,16
+cglobal pixel_me_hex_walk_16x16, 5,15,16
     HX_WALK_BODY
 %endif ; ARCH_X86_64

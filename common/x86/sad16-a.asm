@@ -1804,7 +1804,7 @@ HX10_REGS
 cglobal me_hex_16x16, 5,15,14
     HX_BODY
 
-cglobal me_hex_walk_16x16, 5,15,14
+cglobal pixel_me_hex_walk_16x16, 5,15,14
     HX_WALK_BODY
 
 INIT_YMM avx512
@@ -1812,6 +1812,6 @@ HX10_REGS
 cglobal me_hex_16x16, 5,15,30
     HX_BODY
 
-cglobal me_hex_walk_16x16, 5,15,30
+cglobal pixel_me_hex_walk_16x16, 5,15,30
     HX_WALK_BODY
 %endif ; ARCH_X86_64

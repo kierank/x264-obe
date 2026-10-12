@@ -443,12 +443,12 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 bmx += hex2[dir+1][0];
                 bmy += hex2[dir+1][1];
 
-                if( i_pixel == PIXEL_16x16 && h->pixf.fpelcmp_hex_walk_16x16 )
+                if( h->pixf.fpelcmp_hex_walk[i_pixel] )
                 {
                     /* the loop below and the square refine in one call */
-                    uint64_t res = h->pixf.fpelcmp_hex_walk_16x16( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
-                                                                   bmx, bmy, bcost, mv_min, mv_max,
-                                                                   (i_me_range>>1) - 1, dir );
+                    uint64_t res = h->pixf.fpelcmp_hex_walk[i_pixel]( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
+                                                                    bmx, bmy, bcost, mv_min, mv_max,
+                                                                    (i_me_range>>1) - 1, dir );
                     bcost = (uint32_t)res;
                     bmx = (int16_t)(res >> 32);
                     bmy = (int16_t)(res >> 48);

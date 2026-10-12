@@ -476,6 +476,8 @@ uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
     static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
     static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
     static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+    x264_pixel_cmp_x3_t sad_x3 = x264_pixel_sad_x3_16x16;
+    x264_pixel_cmp_x4_t sad_x4 = x264_pixel_sad_x4_16x16;
     int costs[4];
 
 #define pack16to32_mask2(mx,my) ((mx<<16)|(my&0x7FFF))
@@ -485,7 +487,7 @@ uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
 #define COST_MV_X3_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, i )\
 {\
     pixel *pix_base = ref + bmx + bmy*stride;\
-    x264_pixel_sad_x3_16x16( fenc,\
+    sad_x3( fenc,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
         pix_base + (m2x) + (m2y)*stride,\
@@ -497,7 +499,7 @@ uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
 #define COST_MV_X4_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, i )\
 {\
     pixel *pix_base = ref + bmx + bmy*stride;\
-    x264_pixel_sad_x4_16x16( fenc,\
+    sad_x4( fenc,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
         pix_base + (m2x) + (m2y)*stride,\
@@ -548,14 +550,15 @@ uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
 }
 
 /****************************************************************************
- * me_hex_walk_16x16: me_hex_16x16_c from the point where the hexagon moved
- * (x264_pixel_me_hex_walk_t), the statements of me.c from there; the
- * reference of the asm
+ * me_hex_walk_WxH: me_hex_16x16_c from the point where the hexagon moved
+ * (x264_pixel_me_hex_walk_t), the statements of me.c from there with the
+ * sad_x3/sad_x4 of that size; the reference of the asm
  ****************************************************************************/
-uint64_t x264_me_hex_walk_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
-                                   const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
-                                   int bmx, int bmy, int bcost,
-                                   uint32_t mv_min, uint32_t mv_max, int i, int dir )
+static ALWAYS_INLINE uint64_t me_hex_walk( pixel *fenc, pixel *ref, intptr_t stride,
+                                           const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                                           int bmx, int bmy, int bcost,
+                                           uint32_t mv_min, uint32_t mv_max, int i, int dir,
+                                           x264_pixel_cmp_x3_t sad_x3, x264_pixel_cmp_x4_t sad_x4 )
 {
     static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
     static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
@@ -593,6 +596,21 @@ uint64_t x264_me_hex_walk_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
 #undef pack16to32_mask2
     return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
 }
+
+#define ME_HEX_WALK_C( size )\
+uint64_t x264_me_hex_walk_##size##_c( pixel *fenc, pixel *ref, intptr_t stride,\
+                                      const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,\
+                                      int bmx, int bmy, int bcost,\
+                                      uint32_t mv_min, uint32_t mv_max, int i, int dir )\
+{\
+    return me_hex_walk( fenc, ref, stride, p_cost_mvx, p_cost_mvy, bmx, bmy, bcost,\
+                        mv_min, mv_max, i, dir, x264_pixel_sad_x3_##size, x264_pixel_sad_x4_##size );\
+}
+
+ME_HEX_WALK_C( 16x16 )
+ME_HEX_WALK_C( 16x8 )
+ME_HEX_WALK_C( 8x16 )
+ME_HEX_WALK_C( 8x8 )
 
 /****************************************************************************
  * pixel_satd_x4
@@ -1249,7 +1267,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
-        pixf->me_hex_walk_16x16 = x264_me_hex_walk_16x16_avx2;
+        pixf->me_hex_walk[PIXEL_16x16] = x264_pixel_me_hex_walk_16x16_avx2;
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1260,7 +1278,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx512;
-        pixf->me_hex_walk_16x16 = x264_me_hex_walk_16x16_avx512;
+        pixf->me_hex_walk[PIXEL_16x16] = x264_pixel_me_hex_walk_16x16_avx512;
 #endif
     }
 #endif // HAVE_MMX
@@ -1602,7 +1620,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
-        pixf->me_hex_walk_16x16 = x264_me_hex_walk_16x16_avx2;
+        pixf->me_hex_walk[PIXEL_16x16] = x264_pixel_me_hex_walk_16x16_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;

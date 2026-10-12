@@ -821,11 +821,17 @@ static int check_pixel( int cpu_ref, int cpu_new )
      * 4..24, cost tables x264_cost_mv like, flat, steep and random, the start cost exact or off
      * by a little. The walk from the state me.c's hexagon leaves (the square refine alone,
      * count 0, where it did not move), which must also give x264_me_hex_16x16_c's result, and
-     * from the start with a random dir, idx bits and count -2..12. */
-    for( int walk = 0; walk < 2; walk++ )
+     * from the start with a random dir, idx bits and count -2..12. walk 1..4: the walk of
+     * PIXEL_16x16, 16x8, 8x16, 8x8 (the split check against x264_me_hex_16x16_c in 16x16). */
+    for( int walk = 0; walk < 5; walk++ )
     {
+        static const x264_pixel_me_hex_walk_t walk_c[4] = { x264_me_hex_walk_16x16_c, x264_me_hex_walk_16x8_c,
+                                                            x264_me_hex_walk_8x16_c, x264_me_hex_walk_8x8_c };
+        static const char *walk_names[4] = { "me_hex_walk_16x16", "me_hex_walk_16x8", "me_hex_walk_8x16", "me_hex_walk_8x8" };
+        int i_pixel = walk ? walk-1 : PIXEL_16x16;
+        int bw = 16 >> (i_pixel >= PIXEL_8x16), bh = 16 >> (i_pixel & 1);
         ok = 1; used_asm = 0;
-        if( walk ? pixel_asm.me_hex_walk_16x16 && pixel_asm.me_hex_walk_16x16 != pixel_ref.me_hex_walk_16x16
+        if( walk ? pixel_asm.me_hex_walk[i_pixel] && pixel_asm.me_hex_walk[i_pixel] != pixel_ref.me_hex_walk[i_pixel]
                  : pixel_asm.me_hex_16x16 && pixel_asm.me_hex_16x16 != pixel_ref.me_hex_16x16 )
         {
             static const int8_t hex2_tab[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
@@ -834,7 +840,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
             uint16_t *cost_tab = x264_malloc( 2049*sizeof(uint16_t) );
             ALIGNED_ARRAY_32( pixel, fenc,[16*FENC_STRIDE] );
             int moved = 0, walked = 0, outside = 0, limited = 0, entry_out = 0;
-            const char *name = walk ? "me_hex_walk_16x16" : "me_hex_16x16";
+            const char *name = walk ? walk_names[i_pixel] : "me_hex_16x16";
+            x264_pixel_me_hex_walk_t walk_ref = walk_c[i_pixel];
             set_func_name( "%s", name );
             used_asm = 1;
             if( !planes || !cost_tab )
@@ -898,8 +905,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         bmy = rand()&1 ? mv_y_max+1 : mv_y_min-1;
                     int tx = rand()%41 - 20, ty = rand()%41 - 20;
                     pixel *src = k == 3 ? ref : ref + tx + ty*stride;
-                    for( int y = 0; y < 16; y++ )
-                        for( int x = 0; x < 16; x++ )
+                    for( int y = 0; y < bh; y++ )
+                        for( int x = 0; x < bw; x++ )
                         {
                             int v = src[y*stride+x];
                             if( k == 1 )
@@ -910,7 +917,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                                 v += (rand()%3 - 1) * (1 << (BIT_DEPTH-8));
                             fenc[y*FENC_STRIDE+x] = x264_clip3( v, 0, PIXEL_MAX );
                         }
-                    int bcost = pixel_c.sad[PIXEL_16x16]( fenc, FENC_STRIDE, ref + bmx + bmy*stride, stride );
+                    int bcost = pixel_c.sad[i_pixel]( fenc, FENC_STRIDE, ref + bmx + bmy*stride, stride );
                     r = rand()&3;
                     if( r == 0 )
                         bcost += cost_mvx[bmx<<2] + cost_mvy[bmy<<2];
@@ -950,7 +957,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         pixel *pix[3];
                         for( int c = 0; c < 3; c++ )
                             pix[c] = ref + bmx+hex2_tab[3*h+c+1][0] + (bmy+hex2_tab[3*h+c+1][1])*stride;
-                        pixel_c.sad_x3[PIXEL_16x16]( fenc, pix[0], pix[1], pix[2], stride, costs );
+                        pixel_c.sad_x3[i_pixel]( fenc, pix[0], pix[1], pix[2], stride, costs );
                         for( int c = 0; c < 3; c++ )
                             hcost = X264_MIN( hcost, ((costs[c] + cost_mvx[(bmx+hex2_tab[3*h+c+1][0])<<2]
                                                      + cost_mvy[(bmy+hex2_tab[3*h+c+1][1])<<2]) << 6) + 3*h+c+2 );
@@ -975,13 +982,13 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         }
                         /* the steps of the C walk, up to 5, for the bench names */
                         int steps = 0;
-                        uint64_t sq = x264_me_hex_walk_16x16_c( fenc, ref, stride, cost_mvx, cost_mvy,
-                                                                ex, ey, ecost, mv_min, mv_max, 0, edir );
+                        uint64_t sq = walk_ref( fenc, ref, stride, cost_mvx, cost_mvy,
+                                                ex, ey, ecost, mv_min, mv_max, 0, edir );
                         uint64_t prev = sq;
                         for( int n = 1; n <= X264_MIN( ecount, 5 ); n++ )
                         {
-                            uint64_t cur = x264_me_hex_walk_16x16_c( fenc, ref, stride, cost_mvx, cost_mvy,
-                                                                     ex, ey, ecost, mv_min, mv_max, n, edir );
+                            uint64_t cur = walk_ref( fenc, ref, stride, cost_mvx, cost_mvy,
+                                                     ex, ey, ecost, mv_min, mv_max, n, edir );
                             if( cur == prev )
                                 break;
                             steps = n;
@@ -993,9 +1000,9 @@ static int check_pixel( int cpu_ref, int cpu_new )
                             set_func_name( "%s_sq", name );
                         else
                             set_func_name( "%s_%d", name, steps );
-                        uint64_t res_c = call_c( x264_me_hex_walk_16x16_c, fenc, ref, stride, cost_mvx, cost_mvy,
+                        uint64_t res_c = call_c( walk_ref, fenc, ref, stride, cost_mvx, cost_mvy,
                                                  ex, ey, ecost, mv_min, mv_max, ecount, edir );
-                        uint64_t res_a = call_a( pixel_asm.me_hex_walk_16x16, fenc, ref, stride, cost_mvx, cost_mvy,
+                        uint64_t res_a = call_a( pixel_asm.me_hex_walk[i_pixel], fenc, ref, stride, cost_mvx, cost_mvy,
                                                  ex, ey, ecost, mv_min, mv_max, ecount, edir );
                         set_func_name( "%s", name );
                         int fx = (int16_t)(res_c >> 32), fy = (int16_t)(res_c >> 48);
@@ -1004,10 +1011,11 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         outside += ein && (fx < mv_x_min-1 || fx > mv_x_max+1 || fy < mv_y_min-1 || fy > mv_y_max+1);
                         /* CHECK_MVRANGE failed at the entry with a count left: the square refine alone */
                         entry_out += !ein && ecount > 0;
-                        limited += res_c != x264_me_hex_walk_16x16_c( fenc, ref, stride, cost_mvx, cost_mvy,
-                                                                      ex, ey, ecost, mv_min, mv_max, 1024, edir );
-                        if( t == 0 && res_c != x264_me_hex_16x16_c( fenc, ref, stride, cost_mvx, cost_mvy,
-                                                                    bmx, bmy, bcost, mv_min, mv_max, range ) )
+                        limited += res_c != walk_ref( fenc, ref, stride, cost_mvx, cost_mvy,
+                                                      ex, ey, ecost, mv_min, mv_max, 1024, edir );
+                        if( t == 0 && i_pixel == PIXEL_16x16
+                            && res_c != x264_me_hex_16x16_c( fenc, ref, stride, cost_mvx, cost_mvy,
+                                                             bmx, bmy, bcost, mv_min, mv_max, range ) )
                         {
                             ok = 0;
                             fprintf( stderr, "me_hex_walk_16x16: the hexagon + x264_me_hex_walk_16x16_c != x264_me_hex_16x16_c [FAILED]\n" );
@@ -1015,8 +1023,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         if( res_c != res_a )
                         {
                             ok = 0;
-                            fprintf( stderr, "me_hex_walk_16x16: plane %d stride %d entry %d,%d cost %d count %d dir %d limits x %d..%d y %d..%d:"
-                                     " %d,%d %d != %d,%d %d [FAILED]\n", k, (int)stride, ex, ey, ecost, ecount, edir,
+                            fprintf( stderr, "%s: plane %d stride %d entry %d,%d cost %d count %d dir %d limits x %d..%d y %d..%d:"
+                                     " %d,%d %d != %d,%d %d [FAILED]\n", name, k, (int)stride, ex, ey, ecost, ecount, edir,
                                      mv_x_min, mv_x_max, mv_y_min, mv_y_max, fx, fy, (int)(uint32_t)res_c,
                                      (int16_t)(res_a >> 32), (int16_t)(res_a >> 48), (int)(uint32_t)res_a );
                         }
@@ -1033,7 +1041,14 @@ static int check_pixel( int cpu_ref, int cpu_new )
             x264_free( planes );
             x264_free( cost_tab );
         }
-        report( walk ? "pixel me_hex_walk_16x16 :" : "pixel me_hex_16x16 :" );
+        if( walk )
+        {
+            char rname[32];
+            snprintf( rname, sizeof(rname), "pixel %s :", walk_names[i_pixel] );
+            report( rname );
+        }
+        else
+            report( "pixel me_hex_16x16 :" );
     }
 
 #define TEST_PIXEL_VAR( i ) \

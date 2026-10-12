@@ -75,8 +75,8 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
     {
         h->pixf.fpelcmp_x3_min[i] = satd ? NULL : h->pixf.sad_x3_min[i];
         h->pixf.fpelcmp_x4_min[i] = satd ? NULL : h->pixf.sad_x4_min[i];
+        h->pixf.fpelcmp_hex_walk[i] = satd ? NULL : h->pixf.me_hex_walk[i];
     }
-    h->pixf.fpelcmp_hex_walk_16x16 = satd ? NULL : h->pixf.me_hex_walk_16x16;
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
 
     /* x264_lowres_context_init() */
