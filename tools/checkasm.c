@@ -732,6 +732,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
         if( pixel_asm.sad_x##N##_min[i] && pixel_asm.sad_x##N##_min[i] != pixel_ref.sad_x##N##_min[i] ) \
         { \
             static const int offs[4] = { 0, 6, 1, 10 }; \
+            int wins[5] = {0}; \
             set_func_name( "sad_x%d_min_%s", N, pixel_names[i] ); \
             used_asm = 1; \
             for( int j = 0; j < 256 && ok; j++ ) \
@@ -776,10 +777,15 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 } \
                 if( mode == 0 || mode == 3 ) \
                     best = (X264_MAX( tmin + (rand()&255) - 128, 0 ) << 6) + (rand()&63); \
+                int win = 0; \
                 res_c = best; \
                 for( int k = 0; k < N; k++ ) \
                     if( (sad[k] << 6) + bias[k] < res_c ) \
+                    { \
                         res_c = (sad[k] << 6) + bias[k]; \
+                        win = k+1; \
+                    } \
+                wins[win]++; \
                 if( N == 4 ) \
                     res_a = call_a( pixel_asm.sad_x4_min[i], fenc, pix[0], pix[1], pix[2], pix[3], stride, \
                                     (uint32_t)bias[0] | (uint64_t)(uint32_t)bias[1] << 32, \
@@ -794,6 +800,13 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     fprintf( stderr, "sad_x"#N"_min[%d]: mode %d %d != %d [FAILED]\n", i, mode, res_c, res_a ); \
                 } \
             } \
+            /* every lane of the reduction, and best, must have been the result */ \
+            for( int k = 0; k <= N && ok; k++ ) \
+                if( !wins[k] ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, "sad_x"#N"_min[%d]: %s %d never selected [FAILED]\n", i, k ? "candidate" : "best", k-1 ); \
+                } \
         } \
     } \
     report( "pixel sad_x"#N"_min :" );
