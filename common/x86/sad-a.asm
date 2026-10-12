@@ -34,18 +34,40 @@ SECTION_RODATA 32
 pb_shuf8x8c2: times 2 db 0,0,0,0,8,8,8,8,-1,-1,-1,-1,-1,-1,-1,-1
 hpred_shuf: db 0,0,2,2,8,8,10,10,1,1,3,3,9,9,11,11
 
-; me_hex_16x16: +0 the hexagon's groups, +96 the square's (vpermd lanes of dx,
-; dy; idx); +192 square1; +224 + 160*u a step in direction hex2[u]: lanes of
-; hex2[u-1..u+1], (dy + 2, dx) of the pointers, the move, flags (V2)
+; me_hex_16x16: +0 square1; +32 + 160*k the hexagon's and the square's groups,
+; +672 + 160*u a step in direction hex2[u]: vpermd lanes of dx, dy; idx; (dy + 2,
+; dx) of the pointers; the move; flags (1 reduce after, 2 the last)
 ALIGN 16
-me_hex_tab: dd 0, 2, 6, 0, 7, 6, 2, 0
-            dd 4, 7, 7, 0, 4, 0, 0, 0
-            dd 9, 18, 27, 0x7e000000, 36, 45, 48, 0x7e000000
-            dd 4, 4, 2, 6, 2, 2, 6, 6
-            dd 2, 6, 4, 4, 2, 6, 2, 6
-            dd 1, 2, 3, 4, 5, 6, 7, 8
-            db 0,0, 0,-1, 0,1, -1,0, 1,0, -1,-1, -1,1, 1,-1, 1,1
+me_hex_tab: db 0,0, 0,-1, 0,1, -1,0, 1,0, -1,-1, -1,1, 1,-1, 1,1
             dw 0, 0, 0, 0, 0, 0, 0
+            dd 0, 2, 6, 0
+            dd 4, 7, 7, 0
+            dd 9, 18, 27, 0x7e000000
+            dq 2, 4, 4, 2
+            dq -2, -1, 1, -2
+            dq 0, 0, 0, 0
+            dd 0, 0, 0, 0
+            dd 7, 6, 2, 0
+            dd 4, 0, 0, 0
+            dd 36, 45, 48, 0x7e000000
+            dq 2, 0, 0, 2
+            dq 2, 1, -1, 2
+            dq 0, 0, 0, 0
+            dd 1, 0, 0, 0
+            dd 4, 4, 2, 6
+            dd 2, 6, 4, 4
+            dd 1, 2, 3, 4
+            dq 1, 3, 2, 2
+            dq 0, 0, -1, 1
+            dq 0, 0, 0, 0
+            dd 0, 0, 0, 0
+            dd 2, 2, 6, 6
+            dd 2, 6, 2, 6
+            dd 5, 6, 7, 8
+            dq 1, 3, 1, 3
+            dq -1, -1, 1, 1
+            dq 0, 0, 0, 0
+            dd 3, 0, 0, 0
             dd 6, 2, 0, 0
             dd 0, 0, 4, 0
             dd 13, 16, 25, 0x7e000000
@@ -2923,78 +2945,45 @@ SADX34_CACHELINE_FUNC 16,  8, 64, sse2, ssse3, ssse3
 %assign HX_MCX 64
 %assign HX_MCY 72
 %assign HX_FL  80
-; me_hex_tab from r8 = me_hex_tab + 96: the hexagon's groups (8 dword lanes of dx, dy,
-; idx), the square's, square1, the step blocks
-%assign HX_HIX   -96
-%assign HX_HIY   -64
-%assign HX_HID   -32
-%assign HX_SIX   0
-%assign HX_SIY   32
-%assign HX_SID   64
-%assign HX_SQ1   192
-%assign HX_STEPB 224
+; me_hex_tab: square1, the blocks of the hexagon's and the square's groups, the step blocks
+%assign HX_SQ1   0
+%assign HX_BLKS  32
+%assign HX_STEPB 672
 
-; V1: .group called; hxB the biases of a pair of groups (the second's in the high lane),
-; hxS the square's from the start
+; V2: no call, one loop: a group's pointers and biases from its block (Z in hxS), the
+; group, then the block's flags: the next block, or reduce and step, square or end
 %macro HX_BODY 0
     HX_PROLOGUE
     HX_LOAD_FENC
-    HX_COSTS      hxU0
-    lea         hxBLK, [me_hex_tab+96]
-    HX_BIAS 2, hxB, hxU0, hxBLK, HX_HIX, HX_HIY, HX_HID
-    HX_BIAS 2, hxS, hxU0, hxBLK, HX_SIX, HX_SIY, HX_SID
-    ; hexagon: hex2[1..3], hex2[4..6]
-    HX_PTR 0, -2, 0
-    HX_PTR 1, -1, 2
-    HX_PTR 2,  1, 2
-    mov          hxP3, hxP0
-    call .group
-    vextracti128 xhxB, hxB, 1
-    HX_PTR 0,  2, 0
-    HX_PTR 1,  1,-2
-    HX_PTR 2, -1,-2
-    mov          hxP3, hxP0
-    call .group
+    HX_COSTS       hxS
+    lea         hxBLK, [me_hex_tab+HX_BLKS+64]
+.group:
+    HX_PTRS_BLK 4
+    HX_BIAS 1, xhxB, hxS, hxBLK, HX_IX, HX_IY, HX_ID
+    HX_GROUP
+    test  byte [hxBLK+HX_FL], 1
+    jnz .reduce
+    add         hxBLK, 160
+    jmp .group
+.reduce:
     HX_REDUCE
+    test  byte [hxBLK+HX_FL], 2
+    jnz .end
     movd          r6d, xhxBEST
     and           r6d, 63
     jnz .step
 .square:
-    ; square1[1..4], square1[5..8]
-    mova          hxB, hxS
-    HX_PTR 0,  0,-1
-    HX_PTR 1,  0, 1
-    HX_PTR 2, -1, 0
-    HX_PTR 3,  1, 0
-    call .group
-    vextracti128 xhxB, hxB, 1
-    HX_PTR 0, -1,-1
-    HX_PTR 1, -1, 1
-    HX_PTR 2,  1,-1
-    HX_PTR 3,  1, 1
-    call .group
-    HX_REDUCE
+    lea         hxBLK, [me_hex_tab+HX_BLKS+64+2*160]
+    jmp .group
+.end:
     HX_END
-.group:
-    HX_GROUP
-    ret
 .step:
     and           r6d, 7
-    HX_MOVE       hxU0
+    HX_MOVE        hxS
     dec          hxNd
-    jle .square_moved
-    HX_CHECK_RANGE .square_moved
-    HX_BIAS 1, xhxB, hxU0, hxBLK, HX_IX, HX_IY, HX_ID
-    HX_PTRS_BLK 3
-    call .group
-    HX_REDUCE
-    movd          r6d, xhxBEST
-    and           r6d, 63
-    jnz .step
-    HX_COSTS      hxU0
-.square_moved:
-    HX_BIAS 2, hxS, hxU0, me_hex_tab+96, HX_SIX, HX_SIY, HX_SID
-    jmp .square
+    jle .square
+    HX_CHECK_RANGE .square
+    jmp .group
 %endmacro
 %macro HX_LOAD_FENC 0
     sub            r0, -128
