@@ -516,7 +516,7 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed )
 }
 
 /* This just improves encoder performance, it's not part of the spec */
-void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[9][2], int *i_mvc )
+void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
 {
     int16_t (*mvr)[2] = h->mb.mvr[i_list][i_ref];
     int i = 0;
@@ -553,7 +553,14 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
             int16_t (*lowres_mv)[2] = h->fenc->lowres_mvs[i_list][idx];
             if( lowres_mv[0][0] != 0x7fff )
             {
-                M32( mvc[i] ) = (M32( lowres_mv[h->mb.i_mb_xy] )*2)&0xfffeffff;
+                if( MB_INTERLACED )
+                {
+                    /* lowres qpel is 2 frame qpel, 1 field qpel vertically */
+                    mvc[i][0] = lowres_mv[h->mb.i_mb_xy][0] * 2;
+                    mvc[i][1] = lowres_mv[h->mb.i_mb_xy][1];
+                }
+                else
+                    M32( mvc[i] ) = (M32( lowres_mv[h->mb.i_mb_xy] )*2)&0xfffeffff;
                 i++;
             }
         }
@@ -566,6 +573,10 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         SET_IMVP( h->mb.i_mb_top_xy );
         SET_IMVP( h->mb.i_mb_topleft_xy );
         SET_IMVP( h->mb.i_mb_topright_xy );
+        /* the top MB of the pair, analysed just before and in the same slice,
+         * is a field MB too, its refs in the same parity-relative units */
+        if( MB_INTERLACED && (h->mb.i_mb_y & 1) )
+            SET_MVP( mvr[h->mb.i_mb_xy - h->mb.i_mb_stride] );
     }
     else
     {
@@ -585,13 +596,27 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         int curpoc = h->fdec->i_poc + h->fdec->i_delta_poc[field];
         int refpoc = h->fref[i_list][i_ref>>SLICE_MBAFF]->i_poc;
         refpoc += l0->i_delta_poc[field^(i_ref&1)];
+        /* In MBAFF a frame MB's i_ref is a frame index and its own parity,
+         * and mv16x16 is in the units of the collocated MB (l0->field) */
+        int b_tconv = SLICE_MBAFF && l0->field;
+        if( b_tconv )
+            refpoc = h->fref[i_list][i_ref>>MB_INTERLACED]->i_poc + l0->i_delta_poc[field^(i_ref&MB_INTERLACED)];
 
 #define SET_TMVP( dx, dy ) \
         { \
             int mb_index = h->mb.i_mb_xy + dx + dy*h->mb.i_mb_stride; \
             int scale = (curpoc - refpoc) * l0->inv_ref_poc[MB_INTERLACED&field]; \
-            mvc[i][0] = (l0->mv16x16[mb_index][0]*scale + 128) >> 8; \
-            mvc[i][1] = (l0->mv16x16[mb_index][1]*scale + 128) >> 8; \
+            if( b_tconv ) \
+            { \
+                int tmvy = l0->mv16x16[mb_index][1] * 2 >> (1 + MB_INTERLACED - l0->field[mb_index]); \
+                mvc[i][0] = x264_clip3( (l0->mv16x16[mb_index][0]*scale + 128) >> 8, -32768, 32767 ); \
+                mvc[i][1] = x264_clip3( (tmvy*scale + 128) >> 8, -32768, 32767 ); \
+            } \
+            else \
+            { \
+                mvc[i][0] = (l0->mv16x16[mb_index][0]*scale + 128) >> 8; \
+                mvc[i][1] = (l0->mv16x16[mb_index][1]*scale + 128) >> 8; \
+            } \
             i++; \
         }
 
