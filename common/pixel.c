@@ -1207,7 +1207,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
-        pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
+        /* layout arms: this condition is their only difference */
+        if( cpu&X264_CPU_SLOW_ATOM )
+            pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1217,7 +1219,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
-        pixf->me_hex_16x16 = x264_me_hex_16x16_avx512;
+        /* layout arms: this condition is their only difference */
+        if( cpu&X264_CPU_SLOW_ATOM )
+            pixf->me_hex_16x16 = x264_me_hex_16x16_avx512;
 #endif
     }
 #endif // HAVE_MMX
@@ -1558,7 +1562,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
-        pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
+        /* layout arms: this condition is their only difference */
+        if( cpu&X264_CPU_SLOW_ATOM )
+            pixf->me_hex_16x16 = x264_me_hex_16x16_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
