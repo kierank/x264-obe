@@ -4900,12 +4900,28 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
 %endif
 %endmacro
 
-; the satd pass of rows m0-m3 into m6
+; the satd pass of rows m0-m3 into m6 (avx512icl: BI_SATD_PASS_ICL)
 %macro BI_SATD_PASS 1 ; 1 for the high bit depth transform
-%if bi_pass
+%if cpuflag(avx512icl)
+    BI_SATD_PASS_ICL
+%elif bi_pass
     SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6
 %else
     SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%endmacro
+
+; avx512icl: k1 = 0x5555 and, 8 wide, k2 = 0xc, from gpr %1
+%macro BI_KMASK 1
+%if cpuflag(avx512icl)
+%if bi_wide
+    mov       %1, 0x5555
+    kmovd     k1, %1
+%else
+    mov       %1, 0x5555000c
+    kmovd     k2, %1
+    kshiftrd  k1, k2, 16
+%endif
 %endif
 %endmacro
 
@@ -4940,6 +4956,7 @@ cglobal pixel_satd_bi4_%1x%2, 7,12,11
     %define bi_q1b r11
     %define bi_wd  r6d
     %define bi_wb  r6b
+    BI_KMASK r7d
     FIX_STRIDES r5
     lea       r7, [3*r5]
 %if bi_wide == 0
@@ -4964,6 +4981,7 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
     %define bi_q1a r9
     %define bi_wd  r5d
     %define bi_wb  r5b
+    BI_KMASK r7d
     FIX_STRIDES r2, r4
     lea       r6, [3*r2]
     lea       r7, [3*r4]
@@ -6918,12 +6936,22 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
     psubw          m%1, [r0+(bi_fr+%2)*32]
 %endmacro
 
+; 8 pixel rows %3 and %4 as [%3 %3 | %4 %4]; avx512icl: merge-masked by k2
+%macro BI_DUP8 4 ; dst, tmp, 2*mem
+%if cpuflag(avx512icl)
+    vpbroadcastq   m%1, %3
+    vpbroadcastq   m%1 {k2}, %4
+%else
+    LOAD_DUP_8x2P_AVX2 %1, %2, %3, %4
+%endif
+%endmacro
+
 ; 8 wide: list %2's rows %3, %3+4 as [k k | k+4 k+4] in m%1; m4, m10 tmp
 %macro BI_PRE_SRC8 3
     BI_ROW_OFF %2, %3
-    LOAD_DUP_8x2P_AVX2 %1, 4, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
+    BI_DUP8 %1, 4, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
 %if bi_four
-    LOAD_DUP_8x2P_AVX2 10, 4, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
+    BI_DUP8 10, 4, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
     pavgb          m%1, m10
 %endif
 %endmacro
@@ -6944,6 +6972,70 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
     psubw          m%1, [r0+bi_fp+%2*32]
 %endmacro
 
+; avx512icl HADAMARD 1, max: TRANS d unord's pairs, from [b0 a1] and [b1 a0]
+%macro BI_HMAX 3 ; a, b, tmp
+    vpblendmw      m%3 {k1}, m%1, m%2
+    vpshldd        m%2, m%1, m%2, 16
+    pmaxsw         m%1, m%3, m%2
+%endmacro
+
+; avx512icl SATD_8x4_SSE 0 of m0-m3 into the word sum m6; the last pass takes
+; each pair's max zero extended to a dword and leaves the dword sum in m0
+%macro BI_SATD_PASS_ICL 0
+%assign bi_last 0
+%if bi_pass == bi_npass-1
+%assign bi_last 1
+%endif
+%if bi_last && bi_pass
+    pmaddwd         m6, [pw_1]
+%endif
+    HADAMARD4_V 0, 1, 2, 3, 4
+    pabsw           m0, m0
+    pabsw           m2, m2
+    pabsw           m1, m1
+    pabsw           m3, m3
+%if bi_last
+    psrld           m4, m0, 16
+    psrld           m5, m1, 16
+    vpmaxsw         m0 {k1}{z}, m0, m4
+    vpmaxsw         m1 {k1}{z}, m1, m5
+    psrld           m4, m2, 16
+    psrld           m5, m3, 16
+    vpmaxsw         m2 {k1}{z}, m2, m4
+    vpmaxsw         m3 {k1}{z}, m3, m5
+    paddd           m0, m1
+    paddd           m2, m3
+    paddd           m0, m2
+%if bi_pass
+    paddd           m0, m6
+%endif
+%else
+    BI_HMAX          0, 2, 4
+%if bi_pass
+    paddw           m6, m0
+%else
+    SWAP             6, 0
+%endif
+    BI_HMAX          1, 3, 4
+    paddw           m6, m1
+%endif
+%endmacro
+
+%macro SATD_BI_END 0
+%if cpuflag(avx512icl)
+    vextracti128   xm1, m0, 1
+    paddd          xm0, xm1
+    punpckhqdq     xm1, xm0, xm0
+    paddd          xm0, xm1
+    pshuflw        xm1, xm0, q1032
+    paddd          xm0, xm1
+    movd           eax, xm0
+    RET
+%else
+    SATD_AVG2_END
+%endif
+%endmacro
+
 %macro SATD_BI_BODY 2 ; height, weighted
 %assign bi_weight %2
 %if bi_wide
@@ -6955,11 +7047,16 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
     movzx        bi_wd, bi_wb
     imul         bi_wd, bi_wd, -255
     add          bi_wd, 64<<8 ; w | (64-w)<<8 as in BIWEIGHT_START_SSSE3
+%if cpuflag(avx512icl)
+    vpbroadcastw    m8, bi_wd
+%else
     movd           xm8, bi_wd
     vpbroadcastw    m8, xm8
+%endif
     vpbroadcastd    m9, [pw_512]
 %endif
 %assign bi_pass 0
+%assign bi_npass %1/(8-4*bi_wide)
 %if bi_wide
 %rep %1/4
 %if bi_pass
@@ -6992,7 +7089,7 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
 %assign bi_pass bi_pass+1
 %endrep
 %endif
-    SATD_AVG2_END
+    SATD_BI_END
 %endmacro
 
 SATD_BI 16, 16, 0
@@ -7003,6 +7100,16 @@ SATD_BI 16, 16, 1
 SATD_BI 16,  8, 1
 SATD_BI  8, 16, 1
 SATD_BI  8,  8, 1
+INIT_YMM avx512icl
+SATD_BI 16, 16, 0
+SATD_BI 16,  8, 0
+SATD_BI  8, 16, 0
+SATD_BI  8,  8, 0
+SATD_BI 16, 16, 1
+SATD_BI 16,  8, 1
+SATD_BI  8, 16, 1
+SATD_BI  8,  8, 1
+INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x3_16x16( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
