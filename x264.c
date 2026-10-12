@@ -732,8 +732,8 @@ static void help( x264_param_t *defaults, int longhelp )
     H0( "  -B, --bitrate <integer>     Set bitrate (kbit/s)\n" );
     H0( "      --crf <float>           Quality-based VBR (%d-51) [%.1f]\n", 51 - QP_MAX_SPEC, defaults->rc.f_rf_constant );
     H1( "      --rc-lookahead <integer> Number of frames for frametype lookahead [%d]\n", defaults->rc.i_lookahead );
-    H2( "      --lookahead-8bit        Run the lookahead on 8-bit copies of the frames\n"
-        "                              (high bit depth only; faster, changes output)\n" );
+    H2( "      --no-lookahead-8bit     Run the lookahead at full bit depth instead of on\n"
+        "                              8-bit copies of the frames (high bit depth only)\n" );
     H0( "      --vbv-maxrate <integer> Max local bitrate (kbit/s) [%d]\n", defaults->rc.i_vbv_max_bitrate );
     H0( "      --vbv-bufsize <integer> Set size of the VBV buffer (kbit) [%d]\n", defaults->rc.i_vbv_buffer_size );
     H2( "      --vbv-init <float>      Initial VBV buffer occupancy [%.1f]\n", defaults->rc.f_vbv_buffer_init );
@@ -1042,6 +1042,7 @@ static struct option long_options[] =
     { "crf",         required_argument, NULL, 0 },
     { "rc-lookahead",required_argument, NULL, 0 },
     { "lookahead-8bit", no_argument, NULL, 0 },
+    { "no-lookahead-8bit", no_argument, NULL, 0 },
     { "ref",         required_argument, NULL, 'r' },
     { "asm",         required_argument, NULL, 0 },
     { "no-asm",            no_argument, NULL, 0 },

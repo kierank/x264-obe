@@ -354,6 +354,7 @@ void x264_param_default( x264_param_t *param )
     param->rc.f_complexity_blur = 20;
     param->rc.i_zones = 0;
     param->rc.b_mb_tree = 1;
+    param->rc.b_lookahead_8bit = 1;
 
     // speedcontrol
     param->sc.f_speed = 0;
