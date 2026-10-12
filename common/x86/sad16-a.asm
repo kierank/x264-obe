@@ -1753,4 +1753,9 @@ INIT_YMM avx2
 HX10_REGS
 cglobal me_hex_16x16, 5,15,14
     HX_BODY
+
+INIT_YMM avx512
+HX10_REGS
+cglobal me_hex_16x16, 5,15,30
+    HX_BODY
 %endif ; ARCH_X86_64
