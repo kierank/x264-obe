@@ -1452,5 +1452,42 @@ cglobal pixel_sad_16x%1_pair, 4,7,5
 
 SAD_SPLIT_PAIR16 16
 SAD_SPLIT_PAIR16  8
+
+; pixel_sad_16xH without the split test: every block reads aligned chunks
+; (b = (ref + 31) & -32, so a 32 B aligned ref reads its chunk twice and
+; nothing past its row). No data dependent branch, 2 ref loads a row always.
+INIT_YMM avx512
+%macro SAD_SPLIT_NB16 1 ; height
+cglobal pixel_sad_16x%1_nb, 4,7,4
+    test          r3d, 15
+    jnz .avx2
+    SAD_SPLIT_IDX  3, r2, r6
+    lea            r6, [r2+31]
+    and            r6, -32
+    and            r2, -32
+    lea            r4, [r1+2*r1]
+    lea            r5, [r3+2*r3]
+%assign sad_split_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_split_k&3, r3, r5
+    movu           m1, [r2+sad_off]
+    vpermt2w       m1, m3, [r6+sad_off]
+    SAD_HBD_ROWOFF sad_split_k&3, r1, r4
+    psubw          m1, [r0+sad_off]
+    SAD_SPLIT_ACC  sad_split_k, 2
+%if (sad_split_k&3) == 3 && sad_split_k < %1-1
+    lea            r0, [r0+8*r1]
+    lea            r2, [r2+8*r3]
+    lea            r6, [r6+8*r3]
+%endif
+%assign sad_split_k sad_split_k+1
+%endrep
+    SAD_SPLIT_END  2
+.avx2:
+    jmp mangle(private_prefix %+ _pixel_sad_16x%1_avx2)
+%endmacro
+
+SAD_SPLIT_NB16 16
+SAD_SPLIT_NB16  8
 %undef sad_split_k
 %endif ; ARCH_X86_64
