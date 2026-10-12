@@ -1569,6 +1569,13 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 
     /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
      * (rack01 ablation, obed low latency), although most win in checkasm. */
+#if ARCH_X86_64
+    if( cpu&X264_CPU_AVX512 )
+    {
+        /* zmm, for evaluation on Zen 5 (native 512-bit) only */
+        pixf->me_hex_16x16 = x264_me_hex_16x16_avx512;
+    }
+#endif
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6
