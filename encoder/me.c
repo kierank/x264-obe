@@ -413,6 +413,16 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         case X264_ME_HEX:
         {
     me_hex2:
+            if( i_pixel == PIXEL_16x16 && h->pixf.fpelcmp_hex_16x16 )
+            {
+                /* all of the below in one call */
+                uint64_t res = h->pixf.fpelcmp_hex_16x16( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
+                                                          bmx, bmy, bcost, mv_min, mv_max, i_me_range );
+                bcost = (uint32_t)res;
+                bmx = (int16_t)(res >> 32);
+                bmy = (int16_t)(res >> 48);
+                break;
+            }
             /* hexagon search, radius 2 */
     #if 0
             for( int i = 0; i < i_me_range/2; i++ )

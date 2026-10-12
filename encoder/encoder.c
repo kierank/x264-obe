@@ -1552,6 +1552,7 @@ static void mbcmp_init( x264_t *h )
         h->pixf.fpelcmp_x3_min[i] = satd ? NULL : h->pixf.sad_x3_min[i];
         h->pixf.fpelcmp_x4_min[i] = satd ? NULL : h->pixf.sad_x4_min[i];
     }
+    h->pixf.fpelcmp_hex_16x16 = satd ? NULL : h->pixf.me_hex_16x16;
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
 }
 

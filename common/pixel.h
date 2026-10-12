@@ -37,6 +37,14 @@ typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel 
  * x3: bias2_best = bias_2 | best << 32, x4: bias23 = bias_2 | bias_3 << 32 and best */
 typedef int  (*x264_pixel_cmp_x3_min_t) ( pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t bias01, uint64_t bias2_best );
 typedef int  (*x264_pixel_cmp_x4_min_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t bias01, uint64_t bias23, int best );
+/* x264_me_search_ref's X264_ME_HEX for a 16x16 sad: the hexagon search and the square refine
+ * from the fullpel bmx, bmy of cost bcost. ref is the plane at mv 0, p_cost_mvx/y as in
+ * me.c, mv_min/mv_max its CHECK_MVRANGE bounds. Returns the final bcost | the final
+ * pack16to32_mask( bmx, bmy ) << 32. */
+typedef uint64_t (*x264_pixel_me_hex_t) ( pixel *fenc, pixel *ref, intptr_t stride,
+                                          const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                                          int bmx, int bmy, int bcost,
+                                          uint32_t mv_min, uint32_t mv_max, int i_me_range );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -148,6 +156,8 @@ typedef struct
     x264_pixel_cmp_x4_min_t sad_x4_min[7];
     x264_pixel_cmp_x3_min_t fpelcmp_x3_min[7]; /* sad_x3_min where fpelcmp is sad, else NULL */
     x264_pixel_cmp_x4_min_t fpelcmp_x4_min[7];
+    x264_pixel_me_hex_t me_hex_16x16;      /* asm only, NULL otherwise; sad */
+    x264_pixel_me_hex_t fpelcmp_hex_16x16; /* me_hex_16x16 where fpelcmp is sad, else NULL */
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
@@ -224,5 +234,10 @@ float x264_pixel_ssim_wxh  ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_
                              int i_width, int i_height, void *buf, int *cnt );
 #define x264_field_vsad x264_template(field_vsad)
 int x264_field_vsad( x264_t *h, int mb_x, int mb_y );
+#define x264_me_hex_16x16_c x264_template(me_hex_16x16_c)
+uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
+                              const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                              int bmx, int bmy, int bcost,
+                              uint32_t mv_min, uint32_t mv_max, int i_me_range );
 
 #endif

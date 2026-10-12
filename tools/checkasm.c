@@ -814,6 +814,137 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(3);
     TEST_PIXEL_X_MIN(4);
 
+    /* against x264_me_hex_16x16_c. Planes (j&3): 0 smooth (bilinear from a 16 pixel grid)
+     * with fenc a noisy copy of a block up to 20 away, so the search walks; 1 flat, every
+     * sad tied; 2 random, fenc a noisy displaced block; 3 extreme sads. Limits 0..24 on
+     * each side, the start inside, on a limit or one outside, me range 4..24, cost tables
+     * x264_cost_mv like, flat, steep and random, the start cost exact or off by a little. */
+    ok = 1; used_asm = 0;
+    if( pixel_asm.me_hex_16x16 && pixel_asm.me_hex_16x16 != pixel_ref.me_hex_16x16 )
+    {
+        enum { HEX_H = 128, HEX_S = 192, HEX_O = 56 };
+        pixel *planes = x264_malloc( 4*HEX_H*HEX_S*sizeof(pixel) );
+        uint16_t *cost_tab = x264_malloc( 2049*sizeof(uint16_t) );
+        ALIGNED_ARRAY_32( pixel, fenc,[16*FENC_STRIDE] );
+        int moved = 0, walked = 0, outside = 0, limited = 0;
+        set_func_name( "me_hex_16x16" );
+        used_asm = 1;
+        if( !planes || !cost_tab )
+        {
+            ok = 0;
+            fprintf( stderr, "me_hex_16x16: malloc failed [FAILED]\n" );
+        }
+        else
+        {
+            int grid[HEX_H/16+1][HEX_S/16+1];
+            for( int y = 0; y <= HEX_H/16; y++ )
+                for( int x = 0; x <= HEX_S/16; x++ )
+                    grid[y][x] = rand() % (PIXEL_MAX+1);
+            for( int y = 0; y < HEX_H; y++ )
+                for( int x = 0; x < HEX_S; x++ )
+                {
+                    int gx = x>>4, gy = y>>4, fx = x&15, fy = y&15;
+                    planes[y*HEX_S+x] = ((16-fx)*(16-fy)*grid[gy][gx] + fx*(16-fy)*grid[gy][gx+1]
+                                      + (16-fx)*fy*grid[gy+1][gx] + fx*fy*grid[gy+1][gx+1] + 128) >> 8;
+                    planes[1*HEX_H*HEX_S+y*HEX_S+x] = PIXEL_MAX/2;
+                    planes[2*HEX_H*HEX_S+y*HEX_S+x] = rand() % (PIXEL_MAX+1);
+                    planes[3*HEX_H*HEX_S+y*HEX_S+x] = -((x^(y>>1))&1) & PIXEL_MAX;
+                }
+            for( int j = 0; j < 1024 && ok; j++ )
+            {
+                int k = j&3;
+                /* mostly the stride the planes were made with */
+                intptr_t stride = (j&12) == 12 ? 128 + 32*((j>>4)&1) : HEX_S;
+                pixel *ref = planes + k*HEX_H*HEX_S + HEX_O*stride + HEX_O;
+                if( !(j&15) )
+                {
+                    /* exp-golomb length ramps, zero, steep, random */
+                    int cm = (j>>4)&3;
+                    int lambda = cm == 0 ? 1 + rand()%16 : cm == 2 ? 200 + rand()%2000 : 0;
+                    for( int i = -1024; i <= 1024; i++ )
+                    {
+                        int bits = 1;
+                        for( int v = abs(i); v; v >>= 1 )
+                            bits += 2;
+                        cost_tab[1024+i] = cm == 3 ? rand()&0xffff : X264_MIN( lambda*bits, 0xffff );
+                    }
+                }
+                int mvpx = rand()%401 - 200, mvpy = rand()%401 - 200;
+                const uint16_t *cost_mvx = cost_tab + 1024 - mvpx;
+                const uint16_t *cost_mvy = cost_tab + 1024 - mvpy;
+                int mv_x_min = -(rand()%25), mv_x_max = rand()%25;
+                int mv_y_min = -(rand()%25), mv_y_max = rand()%25;
+                uint32_t mv_min = ((-mv_x_min)<<16) | ((-mv_y_min)&0x7FFF);
+                uint32_t mv_max = ((mv_x_max<<16) | (mv_y_max&0x7FFF)) | 0x8000;
+                int range = 4 + rand()%21;
+                int bmx = mv_x_min + rand()%(mv_x_max - mv_x_min + 1);
+                int bmy = mv_y_min + rand()%(mv_y_max - mv_y_min + 1);
+                int r = rand()&7;
+                if( r == 0 )
+                    bmx = rand()&1 ? mv_x_max : mv_x_min;
+                else if( r == 1 )
+                    bmy = rand()&1 ? mv_y_max : mv_y_min;
+                else if( r == 2 )
+                    bmx = rand()&1 ? mv_x_max+1 : mv_x_min-1;
+                else if( r == 3 )
+                    bmy = rand()&1 ? mv_y_max+1 : mv_y_min-1;
+                int tx = rand()%41 - 20, ty = rand()%41 - 20;
+                pixel *src = k == 3 ? ref : ref + tx + ty*stride;
+                for( int y = 0; y < 16; y++ )
+                    for( int x = 0; x < 16; x++ )
+                    {
+                        int v = src[y*stride+x];
+                        if( k == 1 )
+                            v = PIXEL_MAX/2 + (j>>2)%5;
+                        else if( k == 3 )
+                            v = PIXEL_MAX - v;
+                        else
+                            v += (rand()%3 - 1) * (1 << (BIT_DEPTH-8));
+                        fenc[y*FENC_STRIDE+x] = x264_clip3( v, 0, PIXEL_MAX );
+                    }
+                int bcost = pixel_c.sad[PIXEL_16x16]( fenc, FENC_STRIDE, ref + bmx + bmy*stride, stride );
+                r = rand()&3;
+                if( r == 0 )
+                    bcost += cost_mvx[bmx<<2] + cost_mvy[bmy<<2];
+                else if( r == 1 )
+                    bcost += rand()%(64<<(BIT_DEPTH-8));
+                else if( r == 2 )
+                    bcost = X264_MAX( bcost - rand()%(64<<(BIT_DEPTH-8)), 0 );
+                uint64_t res_c = call_c( x264_me_hex_16x16_c, fenc, ref, stride, cost_mvx, cost_mvy,
+                                         bmx, bmy, bcost, mv_min, mv_max, range );
+                uint64_t res_a = call_a( pixel_asm.me_hex_16x16, fenc, ref, stride, cost_mvx, cost_mvy,
+                                         bmx, bmy, bcost, mv_min, mv_max, range );
+                int fx = (int16_t)(res_c >> 32), fy = (int16_t)(res_c >> 48);
+                int inside = bmx >= mv_x_min && bmx <= mv_x_max && bmy >= mv_y_min && bmy <= mv_y_max;
+                moved += fx != bmx || fy != bmy;
+                walked += abs( fx - bmx ) >= 6 || abs( fy - bmy ) >= 6;
+                /* the hexagon left the limits: stopped by CHECK_MVRANGE */
+                outside += inside && (fx < mv_x_min-1 || fx > mv_x_max+1 || fy < mv_y_min-1 || fy > mv_y_max+1);
+                /* stopped by the me range */
+                limited += res_c != x264_me_hex_16x16_c( fenc, ref, stride, cost_mvx, cost_mvy,
+                                                         bmx, bmy, bcost, mv_min, mv_max, 1024 );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "me_hex_16x16: plane %d stride %d start %d,%d cost %d range %d limits x %d..%d y %d..%d:"
+                             " %d,%d %d != %d,%d %d [FAILED]\n", k, (int)stride, bmx, bmy, bcost, range,
+                             mv_x_min, mv_x_max, mv_y_min, mv_y_max, fx, fy, (int)(uint32_t)res_c,
+                             (int16_t)(res_a >> 32), (int16_t)(res_a >> 48), (int)(uint32_t)res_a );
+                }
+            }
+            /* every way the search ends must have been tested */
+            if( ok && (!moved || !walked || !outside || !limited) )
+            {
+                ok = 0;
+                fprintf( stderr, "me_hex_16x16: coverage moved %d walked %d outside %d limited %d [FAILED]\n",
+                         moved, walked, outside, limited );
+            }
+        }
+        x264_free( planes );
+        x264_free( cost_tab );
+    }
+    report( "pixel me_hex_16x16 :" );
+
 #define TEST_PIXEL_VAR( i ) \
     if( pixel_asm.var[i] != pixel_ref.var[i] ) \
     { \

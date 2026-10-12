@@ -464,6 +464,96 @@ SAD_X( 8x8_vis )
 #endif // !HIGH_BIT_DEPTH
 
 /****************************************************************************
+ * me_hex_16x16: x264_me_search_ref's X264_ME_HEX for PIXEL_16x16 with fpelcmp
+ * = sad, the case statements of me.c with its COST_MIN_X3/X4 C fallback; the
+ * reference of the asm
+ ****************************************************************************/
+uint64_t x264_me_hex_16x16_c( pixel *fenc, pixel *ref, intptr_t stride,
+                              const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy,
+                              int bmx, int bmy, int bcost,
+                              uint32_t mv_min, uint32_t mv_max, int i_me_range )
+{
+    static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
+    static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
+    static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+    int costs[4];
+
+#define pack16to32_mask2(mx,my) ((mx<<16)|(my&0x7FFF))
+#define CHECK_MVRANGE(mx,my) (!(((pack16to32_mask2(mx,my) + mv_min) | (mv_max - pack16to32_mask2(mx,my))) & 0x80004000))
+#define BITS_MVD( mx, my ) (p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
+#define COPY1_IF_LT(x,y) if((y)<(x)) (x)=(y);
+#define COST_MV_X3_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, i )\
+{\
+    pixel *pix_base = ref + bmx + bmy*stride;\
+    x264_pixel_sad_x3_16x16( fenc,\
+        pix_base + (m0x) + (m0y)*stride,\
+        pix_base + (m1x) + (m1y)*stride,\
+        pix_base + (m2x) + (m2y)*stride,\
+        stride, costs );\
+    COPY1_IF_LT( bcost, (costs[0]<<6) + (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i) );\
+    COPY1_IF_LT( bcost, (costs[1]<<6) + (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1 );\
+    COPY1_IF_LT( bcost, (costs[2]<<6) + (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2 );\
+}
+#define COST_MV_X4_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, i )\
+{\
+    pixel *pix_base = ref + bmx + bmy*stride;\
+    x264_pixel_sad_x4_16x16( fenc,\
+        pix_base + (m0x) + (m0y)*stride,\
+        pix_base + (m1x) + (m1y)*stride,\
+        pix_base + (m2x) + (m2y)*stride,\
+        pix_base + (m3x) + (m3y)*stride,\
+        stride, costs );\
+    COPY1_IF_LT( bcost, (costs[0]<<6) + (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i) );\
+    COPY1_IF_LT( bcost, (costs[1]<<6) + (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1 );\
+    COPY1_IF_LT( bcost, (costs[2]<<6) + (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2 );\
+    COPY1_IF_LT( bcost, (costs[3]<<6) + (BITS_MVD( bmx+(m3x), bmy+(m3y) ) << 6) + (i)+3 );\
+}
+
+    /* hexagon */
+    bcost <<= 6;
+    COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
+    COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+
+    if( bcost&63 )
+    {
+        int dir = (bcost&63)-2;
+        bmx += hex2[dir+1][0];
+        bmy += hex2[dir+1][1];
+
+        /* half hexagon, not overlapping the previous iteration */
+        for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
+        {
+            bcost &= ~63;
+            COST_MV_X3_DIR_MIN( hex2[dir+0][0], hex2[dir+0][1],
+                                hex2[dir+1][0], hex2[dir+1][1],
+                                hex2[dir+2][0], hex2[dir+2][1], 1 );
+            if( !(bcost&63) )
+                break;
+            dir += (bcost&63)-2;
+            dir = mod6m1[dir+1];
+            bmx += hex2[dir+1][0];
+            bmy += hex2[dir+1][1];
+        }
+    }
+    bcost >>= 6;
+    /* square refine */
+    bcost <<= 6;
+    COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
+    COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
+    bmx += square1[bcost&63][0];
+    bmy += square1[bcost&63][1];
+    bcost >>= 6;
+
+#undef COST_MV_X4_DIR_MIN
+#undef COST_MV_X3_DIR_MIN
+#undef COPY1_IF_LT
+#undef BITS_MVD
+#undef CHECK_MVRANGE
+#undef pack16to32_mask2
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+
+/****************************************************************************
  * pixel_satd_x4
  * no faster than single satd, but needed for satd to be a drop-in replacement for sad
  ****************************************************************************/
