@@ -318,11 +318,26 @@ OPT5 = --frames 50 --crf 24 -b3 -m10 -r3 --me tesa -t2
 OPT6 = --frames 50 -q0 -m9 -r2 --me hex -Aall
 OPT7 = --frames 50 -q0 -m2 -r1 --me hex --no-cabac
 
-ifeq (,$(VIDS))
+ifneq (,$(PGO_RUNS))
+# PGO_RUNS: a file with one x264 command line (options and input, no -o) per
+# line, e.g. the production option strings on representative sources
+fprofiled:
+	$(MAKE) clean
+	$(MAKE) x264$(EXE) CFLAGS="$(CFLAGS) $(PROF_GEN_CC)" LDFLAGS="$(LDFLAGS) $(PROF_GEN_LD)"
+	while read -r args; do \
+		case "$$args" in ''|'#'*) continue ;; esac; \
+		./x264$(EXE) $$args -o $(DEVNULL) || exit 1; \
+	done < $(PGO_RUNS)
+	rm -f $(OBJPROF)
+	$(MAKE) CFLAGS="$(CFLAGS) $(PROF_USE_CC)" LDFLAGS="$(LDFLAGS) $(PROF_USE_LD)"
+	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock
+else ifeq (,$(VIDS))
 fprofiled:
 	@echo 'usage: make fprofiled VIDS="infile1 infile2 ..."'
 	@echo 'where infiles are anything that x264 understands,'
 	@echo 'i.e. YUV with resolution in the filename, y4m, or avisynth.'
+	@echo 'or:    make fprofiled PGO_RUNS=file'
+	@echo 'with one x264 command line (options and input, no -o) per line.'
 else
 fprofiled:
 	$(MAKE) clean
