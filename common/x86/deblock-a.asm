@@ -1947,6 +1947,81 @@ DEBLOCK_LUMA
     mova     [%4], xm2
 %endmacro
 
+; avx512: LUMA_MB_EDGE with k masks, the six rows in registers.
+; xm16 = -1, xm17 = pb_1, xm18 = pb_a1; clobbers xm0-xm13, k1-k4
+%macro LUMA_MB_EDGE_EVEX 7
+    mova     xm0, [%2]        ; p1
+    mova     xm1, [%3]        ; p0
+    mova     xm2, [%4]        ; q0
+    mova     xm3, [%5]        ; q1
+    mova    xm11, [%1]        ; p2
+    mova    xm12, [%6]        ; q2
+    psubusb  xm4, xm1, xm2
+    psubusb  xm5, xm2, xm1
+    psubusb  xm6, xm0, xm1
+    psubusb  xm7, xm1, xm0
+    psubusb  xm9, xm3, xm2
+    psubusb xm10, xm2, xm3
+    por      xm4, xm5         ; |p0-q0|
+    por      xm6, xm7
+    por      xm9, xm10
+    pmaxub   xm6, xm9         ; max(|p1-p0|, |q1-q0|)
+    psubusb  xm5, xm11, xm1
+    psubusb  xm7, xm1, xm11
+    psubusb  xm9, xm12, xm2
+    psubusb xm10, xm2, xm12
+    por      xm5, xm7         ; |p2-p0|
+    por      xm9, xm10        ; |q2-q0|
+    vpcmpgtb    k1, xm8, xm16           ; tc0 >= 0
+    vpcmpub     k1 {k1}, xm4, [%7], 2   ; |p0-q0| <= alpha-1
+    vpcmpub     k4, xm6, [%7+16], 2     ; |p1-p0|, |q1-q0| <= beta-1
+    vpcmpub     k2, xm5, [%7+16], 2     ; ap
+    vpcmpub     k3, xm9, [%7+16], 2     ; aq
+    kandw       k1, k1, k4              ; filtered
+    mova        xm7, xm8
+    vpsubb      xm7 {k2}, xm7, xm16
+    vpsubb      xm7 {k3}, xm7, xm16     ; tc = tc0 + ap + aq
+    vmovdqu8    xm8 {k1}{z}, xm8        ; tc0, 0 where not filtered
+    vmovdqu8    xm6 {k2}{z}, xm8
+    vmovdqu8   xm13 {k3}{z}, xm8
+    pavgb       xm4, xm1, xm2
+    pavgb       xm5, xm11, xm4
+    pavgb       xm9, xm12, xm4
+    vpternlogd xm11, xm4, xm17, 0x28    ; (p2^avg(p0,q0))&1
+    vpternlogd xm12, xm4, xm17, 0x28
+    psubusb     xm5, xm11               ; (p2+((p0+q0+1)>>1))>>1
+    psubusb     xm9, xm12
+    psubusb    xm10, xm0, xm6
+    paddusb     xm6, xm0
+    pmaxub      xm5, xm10
+    pminub      xm5, xm6
+    psubusb    xm10, xm3, xm13
+    paddusb    xm13, xm3
+    pmaxub      xm9, xm10
+    pminub      xm9, xm13
+    mova       [%2], xm5
+    mova       [%5], xm9
+    pxor        xm5, xm1, xm2
+    pand        xm5, xm17               ; (p0^q0)&1
+    vpternlogd xm10, xm3, xm3, 0x33     ; ~q1
+    pavgb      xm10, xm0                ; (p1 - q1 + 256)>>1
+    pavgb      xm10, [pb_3]             ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    vpternlogd  xm4, xm1, xm1, 0x33     ; ~p0
+    pavgb       xm4, xm2                ; (q0 - p0 + 256)>>1
+    pavgb      xm10, xm5
+    paddusb    xm10, xm4                ; d+128+33
+    psubusb     xm6, xm18, xm10
+    psubusb    xm10, xm18
+    pminub      xm6, xm7
+    pminub     xm10, xm7
+    vpsubusb    xm1 {k1}, xm1, xm6
+    vpsubusb    xm2 {k1}, xm2, xm10
+    vpaddusb    xm1 {k1}, xm1, xm10
+    vpaddusb    xm2 {k1}, xm2, xm6
+    mova       [%3], xm1
+    mova       [%4], xm2
+%endmacro
+
 ; in: m0-m7 = rows 0-7 | rows 8-15 of 16 bytes
 ; out: m0,m4,m2,m6,m1,m5,m3,m7 = columns 0|1, 2|3, ..., 14|15 of 16 bytes
 %macro TRANSPOSE16x16B_LANES 0
@@ -1996,16 +2071,30 @@ DEBLOCK_LUMA
     [rsp+3*32+((x)+8)*16], [rsp+3*32+((x)+9)*16], [rsp+3*32+((x)+10)*16], [rsp+3*32+((x)+11)*16]
 %define COL(x) rsp+3*32+((x)+4)*16
 
-INIT_YMM avx2
+%macro DEBLOCK_LUMA_MB_8 0
+%if cpuflag(avx512)
+cglobal deblock_luma_mb, 5,13,19, 0-(3*32+20*16)
+%else
 cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
+%endif
     ; stack: 3 x (alpha-1, beta-1), then columns -4..15
+%if cpuflag(avx512)
+    pcmpeqb     m16, m16
+    mova       xm17, [pb_1]
+    mova       xm18, [pb_a1]
+    %define dbmb_pb1 xm17
+    %define dbmb_edge LUMA_MB_EDGE_EVEX
+%else
     mova       xm15, [pb_1]
+    %define dbmb_pb1 xm15
+    %define dbmb_edge LUMA_MB_EDGE
+%endif
 %assign dbmb_i 0
 %rep 3
     vpbroadcastb xm0, [r3+8*dbmb_i+4]
     vpbroadcastb xm1, [r3+8*dbmb_i+6]
-    psubusb     xm0, xm15
-    psubusb     xm1, xm15
+    psubusb     xm0, dbmb_pb1
+    psubusb     xm1, dbmb_pb1
     mova [rsp+32*dbmb_i], xm0
     mova [rsp+32*dbmb_i+16], xm1
 %assign dbmb_i dbmb_i+1
@@ -2014,6 +2103,13 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     lea         r7, [r0+r1*4]
     lea         r6, [r0+r1*8]
     lea         r8, [r7+r1*8]
+%if cpuflag(avx512)
+    movu        xm4, [r2]
+    vinserti128  m4, m4, [r2+32], 1
+    vptestmd     k1, m4, m4
+    kmovb       r9d, k1
+    and         r4d, r9d          ; drop edges with bS 0
+%else
     movu        xm0, [r2]
     movu        xm1, [r2+32]
     pxor        xm2, xm2
@@ -2025,6 +2121,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     or          r9d, r10d
     not         r9d
     and         r4d, r9d          ; drop edges with bS 0
+%endif
     test        r4d, 15
     jz .horizontal
 
@@ -2062,7 +2159,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     movd        xm9, [r3+r11]
     pshufb      xm8, xm9, xm8
     pshufb      xm8, [pb_unpackbd1]
-    LUMA_MB_EDGE r12, r12+16, r12+32, r12+48, r12+64, r12+80, rsp+r11*4
+    dbmb_edge r12, r12+16, r12+32, r12+48, r12+64, r12+80, rsp+r11*4
 .vnext:
     mov        r11d, 16
     add        r10d, 4
@@ -2118,7 +2215,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     pshufb      xm8, xm9, xm8
     pshufb      xm8, [pb_unpackbd1]
     lea         r12, [r0+r5]
-    LUMA_MB_EDGE r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2, rsp+r11*4
+    dbmb_edge r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2, rsp+r11*4
 .hnext:
     mov        r11d, 16
     add        r10d, 4
@@ -2127,6 +2224,14 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     jnz .hloop
 .end:
     RET
+%undef dbmb_pb1
+%undef dbmb_edge
+%endmacro ; DEBLOCK_LUMA_MB_8
+
+INIT_YMM avx2
+DEBLOCK_LUMA_MB_8
+INIT_YMM avx512
+DEBLOCK_LUMA_MB_8
 
 %else
 
