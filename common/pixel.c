@@ -1218,6 +1218,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
         pixf->me_hex_16x16 = x264_me_hex_16x16_avx512;
+        /* zmm over the ymm one, for evaluation on Zen 5 (native 512-bit) only */
+        pixf->me_hex_16x16 = x264_me_hex_16x16_zmm_avx512;
 #endif
     }
 #endif // HAVE_MMX

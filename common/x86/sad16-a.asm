@@ -42,6 +42,28 @@ me_hex_tab: dd 1, 2, 3, 0
             db 1,-2, -1,-2, -2,0, -1,2, 1,2, 2,0, 1,-2, -1,-2, -2,0, -1,2
             db 0,0, 0,-1, 0,1, -1,0, 1,0, -1,-1, -1,1, 1,-1, 1,1
 
+; me_hex_16x16 zmm: +0 candidate idx of the groups (first hexagon 2, step, square 2), a
+; group of three repeats its first; +80 mod6m1; +88 (dx, dy) of the first hexagon's
+; groups; +104 square1 (dx, dy); +128 + 8*t the step's group around hex2[t]: hex2[t-1],
+; hex2[t], hex2[t+1], hex2[t-1] (t mod 6), t = 0..7
+ALIGN 16
+me_hex_zmm_tab: dd 2, 3, 4, 5
+                dd 6, 7, 6, 7
+                dd 1, 2, 3, 1
+                dd 1, 2, 3, 4
+                dd 5, 6, 7, 8
+                db 5, 0, 1, 2, 3, 4, 5, 0
+                db -2,0, -1,2, 1,2, 2,0, 1,-2, -1,-2, 1,-2, -1,-2
+                db 0,0, 0,-1, 0,1, -1,0, 1,0, -1,-1, -1,1, 1,-1, 1,1, 0,0, 0,0, 0,0
+                db 1,-2, -1,-2, -2,0, 1,-2
+                db -1,-2, -2,0, -1,2, -1,-2
+                db -2,0, -1,2, 1,2, -2,0
+                db -1,2, 1,2, 2,0, -1,2
+                db 1,2, 2,0, 1,-2, 1,2
+                db 2,0, 1,-2, -1,-2, 2,0
+                db 1,-2, -1,-2, -2,0, 1,-2
+                db -1,-2, -2,0, -1,2, -1,-2
+
 SECTION .text
 
 cextern pw_1
@@ -1758,4 +1780,291 @@ INIT_YMM avx512
 HX10_REGS
 cglobal me_hex_16x16, 5,15,30
     HX_BODY
+%endif ; ARCH_X86_64
+
+;=============================================================================
+; me_hex_16x16 AVX-512 (zmm): the candidates four at a time through one .group
+;=============================================================================
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; uint64_t me_hex_16x16( pixel *fenc, pixel *ref, intptr_t stride, uint16_t *cost_mvx,
+;                        uint16_t *cost_mvy, int bmx, int bmy, int bcost, uint32_t mv_min,
+;                        uint32_t mv_max, int i_me_range )
+; x264_me_hex_16x16_c in one function. .group scores the four (dx, dy) at r9 with the idx
+; in xhzI: xhzACC = min( xhzACC, 64*(sad + mv cost) + idx ) lane by lane. A phase (the
+; hexagon, a step, the square) starts with 64*bcost in all lanes of xhzACC and ends with
+; its horizontal min in eax, 64*bcost + the winner's idx. A group of three repeats its
+; first candidate. The steps are out of line after the RET, .group after them.
+; r1 ref at the centre, r2 stride (bytes), r3/r4 cost_mvx/y + 8*bmx/bmy, r5 3*stride,
+; eax best, r10 hex2 index, r13 me_hex_zmm_tab; .group clobbers r0, r7-r9, r11, r12
+;-----------------------------------------------------------------------------
+%assign HZ_BASEX 0    ; stack: cost_mvx
+%assign HZ_BASEY 8    ; cost_mvy
+%assign HZ_ICNT  16   ; hexagon steps left + 1
+%assign HZ_STACK 24
+%assign HZ_IH1   0    ; me_hex_zmm_tab
+%assign HZ_IH2   16
+%assign HZ_IST   32
+%assign HZ_IS1   48
+%assign HZ_IS2   64
+%assign HZ_MOD6  80
+%assign HZ_H1    88
+%assign HZ_H2    96
+%assign HZ_SQ    104
+%assign HZ_STEP  128
+
+; CHECK_MVRANGE of the centre from the cost pointers, else jump to %1
+%macro HZ_CHECK_RANGE 1
+    mov           r11, r3
+    sub           r11, [rsp+HZ_BASEX]
+    shl          r11d, 13                  ; bmx << 16
+    mov           r12, r4
+    sub           r12, [rsp+HZ_BASEY]
+    shr          r12d, 3
+    and          r12d, 0x7fff
+    or           r11d, r12d
+    mov          r12d, r9m                 ; mv_max
+    sub          r12d, r11d
+    add          r11d, r8m                 ; mv_min
+    or           r11d, r12d
+    test         r11d, 0x80004000
+    jnz %1
+%endmacro
+
+; eax = the min of the lanes of xhzACC
+%macro HZ_HMIN 0
+    pshufd      xhzCX, xhzACC, q1032
+    pminsd     xhzACC, xhzCX
+    pshufd      xhzCX, xhzACC, q2301
+    pminsd     xhzACC, xhzCX
+    movd          eax, xhzACC
+%endmacro
+
+; group %1 of me_hex_zmm_tab at r9 with the idx at %2
+%macro HZ_CALL 2
+    lea            r9, [r13+%1]
+    mova         xhzI, [r13+%2]
+    call .group
+%endmacro
+
+; pointer %2 and the mv cost (words 2*%1 of xhzCX, xhzCY) of the (dx, dy) at r9+2*%1
+%macro HZ_CAND 2
+    movsx         r11, byte [r9+2*%1]
+    movsx         r12, byte [r9+2*%1+1]
+%if %1
+    vpinsrw     xhzCX, xhzCX, word [r3+r11*8], 2*%1
+    vpinsrw     xhzCY, xhzCY, word [r4+r12*8], 2*%1
+%else
+    vpinsrw     xhzCX, xhzZ, word [r3+r11*8], 0
+    vpinsrw     xhzCY, xhzZ, word [r4+r12*8], 0
+%endif
+    imul          r12, r2
+    lea            %2, [r12+r11*SIZEOF_PIXEL]
+    add            %2, r1
+%endmacro
+
+; needs HZ_LOAD_FENC (fenc, xhzPW = pw_64) and HZ_SAD4 (xhzCY dwords = 64*sad of the 16x16
+; at r0, r7, r8, r12 in that order; may clobber the pointers, r11 and r12) and the names
+%macro HZ_BODY 0
+    movsxd        r11, r5m                 ; first: r5 itself on unix64
+    movsxd        r12, r6m
+    mov           eax, r7m
+    mov          r10d, r10m
+    SUB           rsp, HZ_STACK
+%if HIGH_BIT_DEPTH
+    add            r2, r2
+%endif
+    sar          r10d, 1
+    mov  [rsp+HZ_ICNT], r10d
+    mov  [rsp+HZ_BASEX], r3
+    mov  [rsp+HZ_BASEY], r4
+    lea            r3, [r3+r11*8]
+    lea            r4, [r4+r12*8]
+    imul          r12, r2
+    lea            r1, [r1+r11*SIZEOF_PIXEL]
+    add            r1, r12
+    lea            r5, [r2*3]
+    lea           r13, [me_hex_zmm_tab]
+    shl           eax, 6
+    HZ_LOAD_FENC
+    pxor         xhzZ, xhzZ
+    ; hexagon: hex2[1..4] (idx 2-5), then hex2[5..6] (idx 6-7) twice
+    vpbroadcastd xhzACC, eax
+    HZ_CALL    HZ_H1, HZ_IH1
+    HZ_CALL    HZ_H2, HZ_IH2
+    HZ_HMIN
+    mov          r11d, eax
+    and          r11d, 63
+    jnz .hex
+.square:
+    ; square1[1..4] (idx 1-4), then square1[5..8] (idx 5-8)
+    and           eax, ~63
+    vpbroadcastd xhzACC, eax
+    HZ_CALL    HZ_SQ+2, HZ_IS1
+    HZ_CALL    HZ_SQ+10, HZ_IS2
+    HZ_HMIN
+    ; bcost | pack16to32_mask( bmx, bmy ) << 32
+    mov          r11d, eax
+    and          r11d, 63
+    sar           eax, 6                   ; bcost >>= 6
+    movsx         r12, byte [r13+r11*2+HZ_SQ+1]
+    movsx         r11, byte [r13+r11*2+HZ_SQ]
+    sub            r3, [rsp+HZ_BASEX]
+    sub            r4, [rsp+HZ_BASEY]
+    sar            r3, 3
+    sar            r4, 3
+    add            r3, r11
+    add            r4, r12
+    shl           r4d, 16
+    movzx         r3d, r3w
+    or            r3d, r4d
+    shl            r3, 32
+    or            rax, r3
+    ADD           rsp, HZ_STACK
+    RET
+%assign stack_offset stack_offset+HZ_STACK ; the code below runs with the stack allocated
+.hex:
+    lea           r10, [r11-1]
+.step:
+    ; move by hex2[r10], the candidates are hex2[r10-1..r10+1] (idx 1-3) around the new centre
+    movsx         r11, byte [r13+r10*8+HZ_STEP+2]
+    movsx         r12, byte [r13+r10*8+HZ_STEP+3]
+    lea            r3, [r3+r11*8]
+    lea            r4, [r4+r12*8]
+    imul          r12, r2
+    lea            r1, [r1+r11*SIZEOF_PIXEL]
+    add            r1, r12
+    dec dword [rsp+HZ_ICNT]
+    jle .square
+    HZ_CHECK_RANGE .square
+    and           eax, ~63
+    vpbroadcastd xhzACC, eax
+    lea            r9, [r13+r10*8+HZ_STEP]
+    mova         xhzI, [r13+HZ_IST]
+    movzx        r10d, byte [r13+r10+HZ_MOD6]
+    call .group
+    HZ_HMIN
+    mov          r11d, eax
+    and          r11d, 63
+    lea           r10, [r10+r11-1]
+    jnz .step
+    jmp .square
+.group:
+    HZ_CAND         0, r0
+    HZ_CAND         1, r7
+    HZ_CAND         2, r8
+    HZ_CAND         3, r12
+    paddd       xhzCX, xhzCY
+    pslld       xhzCX, 6
+    paddd       xhzCX, xhzI                ; 64*mv cost + idx
+    HZ_SAD4
+    paddd       xhzCY, xhzCX
+    pminsd     xhzACC, xhzCY
+    ret
+%endmacro
+
+; fenc rows 2h, 2h+1 in m0+h; pw_64
+%macro HZ_LOAD_FENC 0
+%assign hz_h 0
+%rep 8
+    movu      m %+ hz_h, [r0+hz_h*64]
+%assign hz_h hz_h+1
+%endrep
+    vpbroadcastd hzPW, [pw_64]
+%endmacro
+
+; xhzCY dwords = 64*sad of the 16x16 at r0, r7, r8, r12 (a, b, c, d; the pointers advance
+; 12 rows): rows 2h, 2h+1 of a candidate in one zmm, ref - m0+h, pabsw and word sums (each
+; at most 8*1023) in A0-A3, then pmaddwd by 64 and the 4x16 dword transpose-sum
+%macro HZ_SAD4 0
+%assign hz_h 0
+%rep 8
+    %xdefine hz_f m %+ hz_h
+%if hz_h & 1
+    %xdefine hz_o0 r2*2
+    %xdefine hz_o1 r5
+%else
+    %xdefine hz_o0 0
+    %xdefine hz_o1 r2
+%endif
+    movu        yhzT0, [r0+hz_o0]
+    movu        yhzT1, [r7+hz_o0]
+    movu        yhzT2, [r8+hz_o0]
+    movu        yhzT3, [r12+hz_o0]
+    vinserti64x4 hzT0, hzT0, [r0+hz_o1], 1
+    vinserti64x4 hzT1, hzT1, [r7+hz_o1], 1
+    vinserti64x4 hzT2, hzT2, [r8+hz_o1], 1
+    vinserti64x4 hzT3, hzT3, [r12+hz_o1], 1
+%if (hz_h & 1) && hz_h < 7
+    lea            r0, [r0+r2*4]
+    lea            r7, [r7+r2*4]
+    lea            r8, [r8+r2*4]
+    lea           r12, [r12+r2*4]
+%endif
+    psubw        hzT0, hz_f
+    psubw        hzT1, hz_f
+    psubw        hzT2, hz_f
+    psubw        hzT3, hz_f
+%if hz_h == 0
+    pabsw        hzA0, hzT0
+    pabsw        hzA1, hzT1
+    pabsw        hzA2, hzT2
+    pabsw        hzA3, hzT3
+%else
+    pabsw        hzT0, hzT0
+    pabsw        hzT1, hzT1
+    pabsw        hzT2, hzT2
+    pabsw        hzT3, hzT3
+    paddw        hzA0, hzT0
+    paddw        hzA1, hzT1
+    paddw        hzA2, hzT2
+    paddw        hzA3, hzT3
+%endif
+%assign hz_h hz_h+1
+%endrep
+    pmaddwd      hzA0, hzPW
+    pmaddwd      hzA1, hzPW
+    pmaddwd      hzA2, hzPW
+    pmaddwd      hzA3, hzPW
+    punpckldq    hzT0, hzA0, hzA1
+    punpckhdq    hzA0, hzA1
+    punpckldq    hzT1, hzA2, hzA3
+    punpckhdq    hzA2, hzA3
+    paddd        hzA0, hzT0                 ; a b a b in each 128 bits
+    paddd        hzA2, hzT1                 ; c d c d
+    punpcklqdq   hzT0, hzA0, hzA2
+    punpckhqdq   hzA0, hzA2
+    paddd        hzA0, hzT0                 ; a b c d
+    vextracti64x4 yhzT0, hzA0, 1
+    paddd       yhzA0, yhzT0
+    vextracti128 xhzT0, yhzA0, 1
+    paddd       xhzCY, xhzA0, xhzT0
+%endmacro
+
+%define hzA0   m8
+%define hzA1   m9
+%define hzA2   m10
+%define hzA3   m11
+%define hzT0   m12
+%define hzT1   m13
+%define hzT2   m20
+%define hzT3   m21
+%define hzPW   m15
+%define yhzA0  ym8
+%define xhzA0  xm8
+%define yhzT0  ym12
+%define yhzT1  ym13
+%define yhzT2  ym20
+%define yhzT3  ym21
+%define xhzT0  xm12
+%define xhzACC xm14
+%define xhzPW  xm15
+%define xhzCX  xm16
+%define xhzCY  xm17
+%define xhzI   xm18
+%define xhzZ   xm19
+
+INIT_ZMM avx512
+cglobal me_hex_16x16_zmm, 5,14,22
+    HZ_BODY
 %endif ; ARCH_X86_64

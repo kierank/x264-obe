@@ -3133,8 +3133,8 @@ cglobal me_hex_16x16, 5,15,16
     add            %2, r1
 %endmacro
 
-; needs HZ_LOAD_FENC and HZ_SAD4 (xhzCY dwords = 64*sad of the 16x16 at r0, r7, r8, r12,
-; in that order; may clobber the pointers and r11, r12) and the register names
+; needs HZ_LOAD_FENC (fenc, xhzPW = pw_64) and HZ_SAD4 (xhzCY dwords = 64*sad of the 16x16
+; at r0, r7, r8, r12 in that order; may clobber the pointers, r11 and r12) and the names
 %macro HZ_BODY 0
     movsxd        r11, r5m                 ; first: r5 itself on unix64
     movsxd        r12, r6m
@@ -3157,7 +3157,6 @@ cglobal me_hex_16x16, 5,15,16
     lea           r13, [me_hex_zmm_tab]
     shl           eax, 6
     HZ_LOAD_FENC
-    vpbroadcastd xhzPW, [pw_64]
     pxor         xhzZ, xhzZ
     ; hexagon: hex2[1..4] (idx 2-5), then hex2[5..6] (idx 6-7) twice
     vpbroadcastd xhzACC, eax
@@ -3234,7 +3233,7 @@ cglobal me_hex_16x16, 5,15,16
     ret
 %endmacro
 
-; fenc rows 4g..4g+3 (s0 s1 s2 s3) in m0+g, lane swapped (s1 s0 s3 s2) in m4+g
+; fenc rows 4g..4g+3 (s0 s1 s2 s3) in m0+g, lane swapped (s1 s0 s3 s2) in m4+g; pw_64
 %macro HZ_LOAD_FENC 0
     movu           m0, [r0+0*64]
     movu           m1, [r0+1*64]
@@ -3244,6 +3243,7 @@ cglobal me_hex_16x16, 5,15,16
     vpermq         m5, m1, q1032
     vpermq         m6, m2, q1032
     vpermq         m7, m3, q1032
+    vpbroadcastd xhzPW, [pw_64]
 %endmacro
 
 ; xhzCY dwords = 64*sad of the 16x16 at r0, r7, r8, r12 (a, b, c, d; the pointers advance
