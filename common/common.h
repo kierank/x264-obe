@@ -275,6 +275,8 @@ typedef struct
                                      * threshold 250, 500, 1000, 2000, below the threshold in effect (fired)] */
     int64_t hexmoved[2][2][4];      /* of those below each threshold, the first hexagon moved off the start
                                      * (only where it runs: with ALG_HEXEXIT set, not on the fired ones) */
+    int64_t partgate[2][2][7];      /* ALG_PARTGATE: [evaluated, no sub-16x16 neighbour, and of those 16x16 cost
+                                     * less MV cost below 16, 32, 64, 128 lambda, skipped by the knob in effect] */
 } x264_exp_census_t;
 
 struct x264_t
@@ -767,6 +769,9 @@ struct x264_t
         int     i_alg_hexexit;
         int     b_lowres_ctx;       /* this context runs lowres searches (lookahead) */
         int     i_hex_census;       /* census: the smallest ALG_HEXEXIT threshold the HEX start is below */
+        int     i_alg_partgate;     /* X264_EXP_ALG_PARTGATE */
+        int     b_alg_partgate_il;  /* X264_EXP_ALG_PARTGATE_IL */
+        int     i_partgate;         /* the ALG_PARTGATE threshold in effect (0 when _IL and progressive) */
         int     b_census;           /* X264_EXP_CENSUS */
         x264_exp_census_t census;
     } exp;

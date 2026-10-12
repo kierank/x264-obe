@@ -1711,14 +1711,23 @@ x264_t *x264_encoder_open( x264_param_t *param )
         h->exp.i_alg_hexexit = e ? atoi( e ) : 0;
         h->exp.b_lowres_ctx = 0;
         h->exp.i_hex_census = 4;
+        /* X264_EXP_ALG_PARTGATE=T: no 8x8 (16x8, 8x16) analysis when the best 16x16 cost
+         * less its MV cost is below T*lambda and no left/top MB used a sub-16x16 partition.
+         * X264_EXP_ALG_PARTGATE_IL=1: only in interlaced (MBAFF) encodes */
+        e = getenv( "X264_EXP_ALG_PARTGATE" );
+        h->exp.i_alg_partgate = e ? atoi( e ) : 0;
+        e = getenv( "X264_EXP_ALG_PARTGATE_IL" );
+        h->exp.b_alg_partgate_il = e ? !!atoi( e ) : 0;
+        h->exp.i_partgate = h->exp.b_alg_partgate_il && !PARAM_INTERLACED ? 0 : h->exp.i_alg_partgate;
         /* X264_EXP_CENSUS=1: count the decisions each knob would touch and print
          * the counts at x264_encoder_close; does not change the output */
         e = getenv( "X264_EXP_CENSUS" );
         h->exp.b_census = e ? !!atoi( e ) : 0;
         memset( &h->exp.census, 0, sizeof(h->exp.census) );
-        if( h->exp.i_alg_hexexit || h->exp.b_census )
-            x264_log( h, X264_LOG_INFO, "bd-alg2: hexexit %d census %d\n",
-                      h->exp.i_alg_hexexit, h->exp.b_census );
+        if( h->exp.i_alg_hexexit || h->exp.i_alg_partgate || h->exp.b_alg_partgate_il || h->exp.b_census )
+            x264_log( h, X264_LOG_INFO, "bd-alg2: hexexit %d partgate %d (il %d, in effect %d) census %d\n",
+                      h->exp.i_alg_hexexit, h->exp.i_alg_partgate, h->exp.b_alg_partgate_il, h->exp.i_partgate,
+                      h->exp.b_census );
     }
 
     /* Init frames. */
@@ -4573,8 +4582,9 @@ static void x264_exp_census_print( x264_t *h )
 
     static const char * const slice_name[2] = { "P", "B" };
     static const char * const mb_name[2] = { "frame", "field" };
-    fprintf( stderr, "bd-alg2 census: %d-bit, %s, tff %d, hexexit %d\n", BIT_DEPTH,
-             PARAM_INTERLACED ? "mbaff" : "progressive", h->param.b_tff, h->exp.i_alg_hexexit );
+    fprintf( stderr, "bd-alg2 census: %d-bit, %s, tff %d, hexexit %d, partgate %d (il %d, in effect %d)\n", BIT_DEPTH,
+             PARAM_INTERLACED ? "mbaff" : "progressive", h->param.b_tff, h->exp.i_alg_hexexit,
+             h->exp.i_alg_partgate, h->exp.b_alg_partgate_il, h->exp.i_partgate );
     for( int f = 0; f < 2; f++ )
         for( int s = 0; s < 2; s++ )
             fprintf( stderr, "bd-alg2 census: hexexit %s-mb %s searches %"PRId64" below-250 %"PRId64" (moved %"PRId64") "
@@ -4584,6 +4594,12 @@ static void x264_exp_census_print( x264_t *h )
                      c.hexexit[f][s][1], c.hexmoved[f][s][0], c.hexexit[f][s][2], c.hexmoved[f][s][1],
                      c.hexexit[f][s][3], c.hexmoved[f][s][2], c.hexexit[f][s][4], c.hexmoved[f][s][3],
                      c.hexexit[f][s][5] );
+    for( int f = 0; f < 2; f++ )
+        for( int s = 0; s < 2; s++ )
+            fprintf( stderr, "bd-alg2 census: partgate %s-mb %s evaluated %"PRId64" clean-nb %"PRId64" below-16 %"PRId64" "
+                     "below-32 %"PRId64" below-64 %"PRId64" below-128 %"PRId64" fired %"PRId64"\n",
+                     mb_name[f], slice_name[s], c.partgate[f][s][0], c.partgate[f][s][1], c.partgate[f][s][2],
+                     c.partgate[f][s][3], c.partgate[f][s][4], c.partgate[f][s][5], c.partgate[f][s][6] );
 }
 
 /****************************************************************************
