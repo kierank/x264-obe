@@ -124,6 +124,8 @@ void x264_deblock_strength_avx512( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X
                                    int mvy_limit, int bframe );
 #define x264_deblock_luma_mb_avx2 x264_template(deblock_luma_mb_avx2)
 void x264_deblock_luma_mb_avx2( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges );
+#define x264_deblock_luma_mb_avx512 x264_template(deblock_luma_mb_avx512)
+void x264_deblock_luma_mb_avx512( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges );
 
 #define x264_deblock_h_chroma_intra_mbaff_mmx2 x264_template(deblock_h_chroma_intra_mbaff_mmx2)
 void x264_deblock_h_chroma_intra_mbaff_mmx2( pixel *pix, intptr_t stride, int alpha, int beta );

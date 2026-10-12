@@ -619,7 +619,65 @@ DEBLOCK_LUMA_64_AVX2
 ; copy of the block, then horizontal edges top to bottom.
 ; e[0] left edge, e[1] top edge, e[2] inner edges; edges bit dir*4+edge.
 ;-----------------------------------------------------------------------------
-; %1-%6: p2 p1 p0 q0 q1 q2 addresses; m12=alpha, m13=beta, xm14=tc0
+; avx512: DEBLOCK_LUMA_INTER_SSE2 with k masks, in place.
+; in: m8=p2, m0=p1, m1=p0, m2=q0, m3=q1, m9=q2, m12=alpha, m13=beta, m6=tc0 words
+;     m16=0, m17=-1, m18=pw_4, m19=pixel_max
+; out: m0=p1', m1=p0', m2=q0', m3=q1'
+; clobbers: m4, m5, m7, m10, m11, m14, k1-k4
+%macro LUMA_MB_FILTER_EVEX 0
+    psubw       m4, m1, m2
+    psubw       m5, m0, m1
+    psubw       m7, m3, m2
+    psubw      m10, m8, m1
+    psubw      m11, m9, m2
+    pabsw       m4, m4
+    pabsw       m5, m5
+    pabsw       m7, m7
+    pabsw      m10, m10
+    pabsw      m11, m11
+    pmaxsw      m5, m7
+    vpcmpgtw    k1, m6, m17           ; tc0 >= 0
+    vpcmpgtw    k1 {k1}, m12, m4      ; |p0-q0| < alpha
+    vpcmpgtw    k4, m13, m5           ; |p1-p0| < beta, |q1-q0| < beta
+    vpcmpgtw    k2, m13, m10          ; ap = |p2-p0| < beta
+    vpcmpgtw    k3, m13, m11          ; aq = |q2-q0| < beta
+    kandw       k1, k1, k4            ; filtered
+    psubw       m4, m0, m3
+    psubw       m5, m2, m1
+    paddw       m4, m18
+    psllw       m5, 2
+    paddw       m4, m5
+    psraw       m4, 3
+    mova       m11, m6
+    vpsubw     m11 {k2}, m11, m17
+    vpsubw     m11 {k3}, m11, m17     ; tc = tc0 + ap + aq
+    psubw      m10, m16, m11
+    pmaxsw      m4, m10
+    pminsw      m4, m11               ; delta
+    vmovdqu16   m7 {k1}{z}, m6        ; tc0, 0 where not filtered
+    pavgw       m5, m1, m2
+    psubw      m14, m16, m7
+    paddw      m10, m8, m5
+    paddw      m11, m9, m5
+    psraw      m10, 1
+    psraw      m11, 1
+    psubw      m10, m0
+    psubw      m11, m3
+    pmaxsw     m10, m14
+    pmaxsw     m11, m14
+    pminsw     m10, m7
+    pminsw     m11, m7
+    vpaddw      m0 {k2}, m0, m10
+    vpaddw      m3 {k3}, m3, m11
+    vpaddw      m1 {k1}, m1, m4
+    vpsubw      m2 {k1}, m2, m4
+    pmaxsw      m1, m16
+    pmaxsw      m2, m16
+    pminsw      m1, m19
+    pminsw      m2, m19
+%endmacro
+
+; %1-%6: p2 p1 p0 q0 q1 q2 addresses; m12=alpha, m13=beta, xm14=tc0 (avx512: m6)
 %macro LUMA_MB_EDGE16 6
     movu        m8, [%1]
     movu        m0, [%2]
@@ -627,13 +685,36 @@ DEBLOCK_LUMA_64_AVX2
     movu        m2, [%4]
     movu        m3, [%5]
     movu        m9, [%6]
+%if cpuflag(avx512)
+    LUMA_MB_FILTER_EVEX
+%else
     DEBLOCK_LUMA_INTER_SSE2 2
+%endif
     movu      [%2], m0
     movu      [%3], m1
     movu      [%4], m2
     movu      [%5], m3
+%if notcpuflag(avx512)
     SWAP         3, 9
     SWAP         0, 8
+%endif
+%endmacro
+
+; tc0, alpha, beta of the edge: r10 = bs offset, r11 = class*8
+%macro LUMA_MB_TC16 0
+%if cpuflag(avx512)
+    vpbroadcastd xm14, [r2+r10]
+    pshufb     xm14, xm20             ; bs of each row
+    movd       xm15, [r3+r11]
+    pshufb     xm14, xm15, xm14
+    vpmovsxbw   m6, xm14
+%else
+    movd       xm14, [r2+r10]
+    movd       xm15, [r3+r11]
+    pshufb     xm14, xm15, xm14
+%endif
+    vpbroadcastw m12, [r3+r11+4]
+    vpbroadcastw m13, [r3+r11+6]
 %endmacro
 
 ; in: m0-m7 = rows 0-7 | rows 8-15 of 8 words
@@ -699,14 +780,30 @@ DEBLOCK_LUMA_64_AVX2
 
 %define COL16(x) rsp+((x)+4)*32
 
-INIT_YMM avx2
+%macro DEBLOCK_LUMA_MB_HBD 0
+%if cpuflag(avx512)
+cglobal deblock_luma_mb, 5,13,21, 0-20*32
+%else
 cglobal deblock_luma_mb, 5,13,16, 0-20*32
+%endif
     ; stack: columns -4..15
     add         r1, r1
     lea         r5, [r1*3]
     lea         r7, [r0+r1*4]
     lea         r6, [r0+r1*8]
     lea         r8, [r7+r1*8]
+%if cpuflag(avx512)
+    movu        xm4, [r2]
+    vinserti128  m4, m4, [r2+32], 1
+    vptestmd     k1, m4, m4
+    kmovb       r9d, k1
+    and         r4d, r9d          ; drop edges with bS 0
+    pxor        m16, m16
+    pcmpeqw     m17, m17
+    vpbroadcastd m18, [pw_4]
+    vpbroadcastw m19, [pw_pixel_max]
+    movu        xm20, [pb_unpackbd1]
+%else
     movu        xm0, [r2]
     movu        xm1, [r2+32]
     pxor        xm2, xm2
@@ -718,6 +815,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     or          r9d, r10d
     not         r9d
     and         r4d, r9d          ; drop edges with bS 0
+%endif
     test        r4d, 15
     jz .horizontal
 
@@ -763,11 +861,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
 .vloop:
     test        r9d, 1
     jz .vnext
-    movd       xm14, [r2+r10]
-    movd       xm15, [r3+r11]
-    pshufb     xm14, xm15, xm14
-    vpbroadcastw m12, [r3+r11+4]
-    vpbroadcastw m13, [r3+r11+6]
+    LUMA_MB_TC16
     LUMA_MB_EDGE16 r12, r12+32, r12+64, r12+96, r12+128, r12+160
 .vnext:
     mov        r11d, 16
@@ -831,11 +925,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
 .hloop:
     test        r9d, 1
     jz .hnext
-    movd       xm14, [r2+r10]
-    movd       xm15, [r3+r11]
-    pshufb     xm14, xm15, xm14
-    vpbroadcastw m12, [r3+r11+4]
-    vpbroadcastw m13, [r3+r11+6]
+    LUMA_MB_TC16
     lea         r12, [r0+r5]
     LUMA_MB_EDGE16 r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2
 .hnext:
@@ -846,6 +936,12 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     jnz .hloop
 .end:
     RET
+%endmacro ; DEBLOCK_LUMA_MB_HBD
+
+INIT_YMM avx2
+DEBLOCK_LUMA_MB_HBD
+INIT_YMM avx512
+DEBLOCK_LUMA_MB_HBD
 %endif
 
 %macro SWAPMOVA 2
