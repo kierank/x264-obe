@@ -847,6 +847,48 @@ static int check_pixel( int cpu_ref, int cpu_new )
     report( "pixel var2 :" );
 
     ok = 1; used_asm = 0;
+    for( int i = 0; i < 2; i++ )
+        if( pixel_asm.var_mb[i] && pixel_asm.var_mb[i] != pixel_ref.var_mb[i] )
+        {
+            /* [0] 4:2:2, [1] 4:2:0: var of the luma and of the deinterleaved u and v */
+            int ch = 16 >> i;
+            ALIGNED_16( pixel pmax[64*16] );
+            ALIGNED_16( pixel uv[2][8*16] );
+            for( int j = 0; j < 64*16; j++ )
+                pmax[j] = PIXEL_MAX;
+            set_func_name( "var_mb_%s", i ? "420" : "422" );
+            used_asm = 1;
+            for( int k = 0; k < 6; k++ )
+            {
+                /* random, then all PIXEL_MAX; strides 16 to 64, luma and chroma different */
+                intptr_t sy = 16 << (k%3);
+                intptr_t sc = 16 << ((k+1)%3);
+                pixel *pix   = k < 3 ? pbuf1 : pmax;
+                pixel *pixuv = k < 3 ? pbuf1 + 0x1000 : pmax;
+                uint64_t res_c[3], res_a[3];
+                res_c[0] = pixel_c.var[PIXEL_16x16]( pix, sy );
+                for( int y = 0; y < ch; y++ )
+                    for( int x = 0; x < 8; x++ )
+                    {
+                        uv[0][y*8+x] = pixuv[y*sc+2*x];
+                        uv[1][y*8+x] = pixuv[y*sc+2*x+1];
+                    }
+                res_c[1] = pixel_c.var[i ? PIXEL_8x8 : PIXEL_8x16]( uv[0], 8 );
+                res_c[2] = pixel_c.var[i ? PIXEL_8x8 : PIXEL_8x16]( uv[1], 8 );
+                memset( res_a, 0, sizeof(res_a) );
+                call_a( pixel_asm.var_mb[i], pix, sy, pixuv, sc, res_a );
+                for( int j = 0; j < 3; j++ )
+                    if( res_c[j] != res_a[j] )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "var_mb_%s case %d plane %d: %d %d != %d %d [FAILED]\n", i ? "420" : "422", k, j,
+                                 (int)res_c[j], (int)(res_c[j]>>32), (int)res_a[j], (int)(res_a[j]>>32) );
+                    }
+            }
+        }
+    report( "pixel var_mb :" );
+
+    ok = 1; used_asm = 0;
     for( int i = 0; i < 4; i++ )
         if( pixel_asm.hadamard_ac[i] != pixel_ref.hadamard_ac[i] )
         {

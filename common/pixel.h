@@ -156,6 +156,10 @@ typedef struct
     uint64_t (*var[4])( pixel *pix, intptr_t stride );
     int (*var2[4])( pixel *pix1, intptr_t stride1,
                     pixel *pix2, intptr_t stride2, int *ssd );
+    /* asm only, NULL otherwise: var[PIXEL_16x16] of an mb's luma and var of its u and v,
+     * uv interleaved as frame->plane[1] holds them; res[] y, u, v as var returns them.
+     * [0] 4:2:2, [1] 4:2:0, so indexed by CHROMA_V_SHIFT */
+    void (*var_mb[2])( pixel *pix, intptr_t i_pix, pixel *pixuv, intptr_t i_pixuv, uint64_t res[3] );
     uint64_t (*hadamard_ac[4])( pixel *pix, intptr_t stride );
 
     void (*ssd_nv12_core)( pixel *pixuv1, intptr_t stride1,

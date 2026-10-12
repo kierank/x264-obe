@@ -264,6 +264,29 @@ static ALWAYS_INLINE uint32_t ac_energy_plane( x264_t *h, int mb_x, int mb_y, x2
         return ac_energy_var( h->pixf.var[PIXEL_16x16]( frame->plane[i] + offset, stride ), 8, pixel_sum, pixel_ssd, i, b_store );
 }
 
+/* ac_energy_plane of the three planes of a 4:2:0 or 4:2:2 mb, b_store, in one var_mb call */
+static ALWAYS_INLINE uint32_t ac_energy_mb_planes( x264_t *h, int mb_x, int mb_y, x264_frame_t *frame,
+                                                   uint32_t *pixel_sum, uint64_t *pixel_ssd, int b_field )
+{
+    uint64_t res[3];
+    int stride  = frame->i_stride[0];
+    int stridec = frame->i_stride[1];
+    int heightc = 16 >> CHROMA_V_SHIFT;
+    int offset  = b_field
+        ? 16 * mb_x + 16 * (mb_y&~1) * stride + (mb_y&1) * stride
+        : 16 * mb_x + 16 * mb_y * stride;
+    int offsetc = b_field
+        ? 16 * mb_x + heightc * (mb_y&~1) * stridec + (mb_y&1) * stridec
+        : 16 * mb_x + heightc * mb_y * stridec;
+    int shift = 7 - CHROMA_V_SHIFT;
+
+    h->pixf.var_mb[CHROMA_V_SHIFT]( frame->plane[0] + offset, stride << b_field,
+                                    frame->plane[1] + offsetc, stridec << b_field, res );
+    return ac_energy_var( res[0], 8, pixel_sum, pixel_ssd, 0, 1 )
+         + ac_energy_var( res[1], shift, pixel_sum, pixel_ssd, 1, 1 )
+         + ac_energy_var( res[2], shift, pixel_sum, pixel_ssd, 2, 1 );
+}
+
 // Find the total AC energy of the block in all planes.
 static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_frame_t *frame,
                                            uint32_t *pixel_sum, uint64_t *pixel_ssd )
@@ -295,6 +318,8 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
         }
         var = X264_MIN( var_interlaced, var_progressive );
     }
+    else if( !CHROMA444 && h->pixf.var_mb[CHROMA_V_SHIFT] )
+        var = ac_energy_mb_planes( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, PARAM_INTERLACED );
     else
     {
         var  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, PARAM_INTERLACED, 1 );

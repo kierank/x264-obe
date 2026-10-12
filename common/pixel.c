@@ -1103,6 +1103,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
         pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx2;
         pixf->satd_mcc = x264_pixel_satd_mcc_avx2;
+        pixf->var_mb[0] = x264_pixel_var_mb_422_avx2;
+        pixf->var_mb[1] = x264_pixel_var_mb_420_avx2;
         pixf->satd_bi[PIXEL_16x16] = x264_pixel_satd_bi_16x16_avx2;
         pixf->satd_bi[PIXEL_16x8]  = x264_pixel_satd_bi_16x8_avx2;
         pixf->satd_bi[PIXEL_8x16]  = x264_pixel_satd_bi_8x16_avx2;
@@ -1441,6 +1443,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
         pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx2;
         pixf->satd_mcc = x264_pixel_satd_mcc_avx2;
+        pixf->var_mb[0] = x264_pixel_var_mb_422_avx2;
+        pixf->var_mb[1] = x264_pixel_var_mb_420_avx2;
         pixf->satd_mcc_fenc_pre = x264_pixel_satd_mcc_fenc_pre_avx2;
         pixf->satd_fenc_pre[0] = x264_pixel_satd_fenc_pre_16x16_avx2;
         pixf->satd_fenc_pre[1] = x264_pixel_satd_fenc_pre_8x8_avx2;

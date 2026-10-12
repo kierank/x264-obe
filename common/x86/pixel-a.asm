@@ -1219,6 +1219,103 @@ cglobal pixel_var_16x16, 2,4,7
     RET
 %endif ; !HIGH_BIT_DEPTH
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void pixel_var_mb_420( pixel *pix, intptr_t i_pix, pixel *pixuv, intptr_t i_pixuv, uint64_t res[3] )
+; void pixel_var_mb_422( pixel *pix, intptr_t i_pix, pixel *pixuv, intptr_t i_pixuv, uint64_t res[3] )
+;-----------------------------------------------------------------------------
+; var_16x16 of the luma and var_8x8 (420) or var_8x16 (422) of u and v, uv
+; interleaved as frame->plane[1] holds them; res[] y, u, v as var returns them.
+; Word sums: 16 values a lane at most. u sums and squares are the even words,
+; v the odd ones: the v squares are the uv squares less the u ones.
+%macro VAR_MB_LOAD 2 ; dst, src
+%if HIGH_BIT_DEPTH
+    movu      %1, [%2]
+%else
+    pmovzxbw  %1, [%2]
+%endif
+%endmacro
+
+%macro VAR_MB_Y 1 ; src
+    VAR_MB_LOAD m0, %1
+    paddw     m3, m0
+    pmaddwd   m0, m0
+    paddd     m4, m0
+%endmacro
+
+%macro VAR_MB_UV 1 ; src
+    VAR_MB_LOAD m1, %1
+    paddw     m5, m1
+    pand      m2, m1, m8
+    pmaddwd   m1, m1
+    pmaddwd   m2, m2
+    paddd     m6, m1
+    paddd     m7, m2
+%endmacro
+
+%macro VAR_MB 2 ; 420/422, chroma rows per 4 luma rows
+cglobal pixel_var_mb_%1, 5,8,9
+    FIX_STRIDES r1, r3
+    lea       r5, [r1*3]
+    lea       r6, [r3*3]
+    pcmpeqw   m8, m8
+    psrld     m8, 16              ; even words
+    pxor      m3, m3              ; y sum
+    pxor      m4, m4              ; y squares
+    pxor      m5, m5              ; uv sums
+    pxor      m6, m6              ; uv squares
+    pxor      m7, m7              ; u squares
+    mov      r7d, 4
+.loop:
+    VAR_MB_Y  r0
+    VAR_MB_UV r2
+    VAR_MB_Y  r0+r1
+    VAR_MB_UV r2+r3
+    VAR_MB_Y  r0+r1*2
+%if %2 == 4
+    VAR_MB_UV r2+r3*2
+%endif
+    VAR_MB_Y  r0+r5
+%if %2 == 4
+    VAR_MB_UV r2+r6
+%endif
+    lea       r0, [r0+r1*4]
+    lea       r2, [r2+r3*%2]
+    dec      r7d
+    jg .loop
+    pmaddwd   m3, [pw_1]
+    pand      m0, m5, m8          ; u sum
+    psrld     m5, 16              ; v sum
+    psubd     m6, m7              ; v squares
+    ; per lane: y sum, y ssd, u sum, u ssd in m3; v sum, v ssd in m5
+    punpckldq m1, m3, m4
+    punpckhdq m3, m4
+    paddd     m3, m1
+    punpckldq m1, m0, m7
+    punpckhdq m0, m7
+    paddd     m0, m1
+    punpcklqdq m1, m3, m0
+    punpckhqdq m3, m0
+    paddd     m3, m1
+    punpckldq m1, m5, m6
+    punpckhdq m5, m6
+    paddd     m5, m1
+    punpckhqdq m1, m5, m5
+    paddd     m5, m1
+    vextracti128 xm1, m3, 1
+    paddd     xm3, xm1
+    vextracti128 xm1, m5, 1
+    paddd     xm5, xm1
+    movu    [r4], xm3
+    movq [r4+16], xm5
+    RET
+%endmacro
+
+INIT_YMM avx2
+VAR_MB 420, 2
+VAR_MB 422, 4
+%endif ; ARCH_X86_64
+
 %macro VAR_AVX512_CORE 1 ; accum
 %if %1
     paddw    m0, m2
