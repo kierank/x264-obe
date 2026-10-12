@@ -27,6 +27,13 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
+SECTION_RODATA 64
+
+; vpermt2w base index of the split-free 16 wide sad: word i of a row is word
+; k+i of its two 32 B chunks; in zmm the second row is the second table
+sad_split_idx: dw  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
+               dw 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47
+
 SECTION .text
 
 cextern pw_1
@@ -1228,3 +1235,158 @@ cglobal intra_sad_x3_8x8, 3,3,8
     pmaddwd       xm1, [pw_1] ; 1 2 3 _
     mova         [r2], xm1
     RET
+
+%if ARCH_X86_64
+;=============================================================================
+; 10-bit 16 wide sad and sad_avg2 without cache line split loads, AVX-512.
+; A 16 pixel row at p lies in the 32 B chunks a = p & -32 and a + 32, which as
+; aligned loads never cross a 64 B line; vpermt2w with idx = k + i, k =
+; (p & 31) / 2, rebuilds the row. A row stride of 16n pixels keeps k for every
+; row. Blocks with no split row (p & 63 <= 32 at a 64 B stride) take the AVX2
+; kernel.
+;=============================================================================
+; m%1 = k + sad_split_idx, k = (%2 & 31) / 2 words
+%macro SAD_SPLIT_IDX 3 ; dst, ptr, gpr tmp
+    mov           %3d, %2d
+    and           %3d, 31
+    shr           %3d, 1
+    vpbroadcastw  m%1, %3d
+    paddw         m%1, [sad_split_idx]
+%endmacro
+
+; |m1| into the row %1 accumulator (m0 even rows, m%2 odd rows, at most
+; 8*1023 a lane each)
+%macro SAD_SPLIT_ACC 2 ; row, odd accumulator
+%if %1 == 0
+    pabsw          m0, m1
+%elif %1 == 1
+    pabsw         m%2, m1
+%else
+    pabsw          m1, m1
+%if %1 & 1
+    paddw         m%2, m1
+%else
+    paddw          m0, m1
+%endif
+%endif
+%endmacro
+
+; m0 + m%1 (words, at most 16*1023) -> eax
+%macro SAD_SPLIT_END 1
+    paddw          m0, m%1
+    HADDW          m0, m1
+    movd          eax, xm0
+    RET
+%endmacro
+
+INIT_YMM avx512
+%macro SAD_SPLIT_16 1 ; height
+cglobal pixel_sad_16x%1, 4,7,4
+    mov           r6d, r2d
+    and           r6d, 63
+    cmp           r6d, 32
+    jbe .avx2
+    test          r3d, 15
+    jnz .avx2
+    SAD_SPLIT_IDX  3, r2, r6
+    and            r2, -32
+    lea            r4, [r1+2*r1]
+    lea            r5, [r3+2*r3]
+%assign sad_split_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_split_k&3, r3, r5
+    movu           m1, [r2+sad_off]
+    vpermt2w       m1, m3, [r2+sad_off+32]
+    SAD_HBD_ROWOFF sad_split_k&3, r1, r4
+    psubw          m1, [r0+sad_off]
+    SAD_SPLIT_ACC  sad_split_k, 2
+%if (sad_split_k&3) == 3 && sad_split_k < %1-1
+    lea            r0, [r0+8*r1]
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_split_k sad_split_k+1
+%endrep
+    SAD_SPLIT_END  2
+.avx2:
+    jmp mangle(private_prefix %+ _pixel_sad_16x%1_avx2)
+%endmacro
+
+SAD_SPLIT_16 16
+SAD_SPLIT_16  8
+
+; src1 and src2 at the same offset in their 32 B chunks: average the chunks,
+; one vpermt2w a row; otherwise one vpermt2w a source (b = (p + 31) & -32, so
+; an aligned source reads its own chunk twice)
+%macro SAD_AVG2_SPLIT 1 ; height
+cglobal pixel_sad_avg2_16x%1, 4,7,6
+    mov           r5d, r1d
+    mov           r6d, r2d
+    and           r5d, 63
+    and           r6d, 63
+    cmp           r5d, r6d
+    cmovb         r5d, r6d
+    cmp           r5d, 32
+    jbe .avx2
+    test          r3d, 15
+    jnz .avx2
+    lea            r4, [r3+2*r3]
+    mov           r5d, r1d
+    xor           r5d, r2d
+    test          r5d, 31
+    jnz .diff
+    SAD_SPLIT_IDX  5, r1, r5
+    and            r1, -32
+    and            r2, -32
+%assign sad_split_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_split_k&3, r3, r4
+    movu           m1, [r1+sad_off]
+    pavgw          m1, [r2+sad_off]
+    movu           m2, [r1+sad_off+32]
+    pavgw          m2, [r2+sad_off+32]
+    vpermt2w       m1, m5, m2
+    psubw          m1, [r0+sad_split_k*FENC_STRIDEB]
+    SAD_SPLIT_ACC  sad_split_k, 3
+%if (sad_split_k&3) == 3 && sad_split_k < %1-1
+    lea            r1, [r1+8*r3]
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_split_k sad_split_k+1
+%endrep
+    SAD_SPLIT_END  3
+.diff:
+    SAD_SPLIT_IDX  5, r1, r5
+    SAD_SPLIT_IDX  4, r2, r6
+    lea            r5, [r1+31]
+    lea            r6, [r2+31]
+    and            r1, -32
+    and            r2, -32
+    and            r5, -32
+    and            r6, -32
+%assign sad_split_k 0
+%rep %1
+    SAD_HBD_ROWOFF sad_split_k&3, r3, r4
+    movu           m1, [r1+sad_off]
+    vpermt2w       m1, m5, [r5+sad_off]
+    movu           m2, [r2+sad_off]
+    vpermt2w       m2, m4, [r6+sad_off]
+    pavgw          m1, m2
+    psubw          m1, [r0+sad_split_k*FENC_STRIDEB]
+    SAD_SPLIT_ACC  sad_split_k, 3
+%if (sad_split_k&3) == 3 && sad_split_k < %1-1
+    lea            r1, [r1+8*r3]
+    lea            r2, [r2+8*r3]
+    lea            r5, [r5+8*r3]
+    lea            r6, [r6+8*r3]
+%endif
+%assign sad_split_k sad_split_k+1
+%endrep
+    SAD_SPLIT_END  3
+.avx2:
+    jmp mangle(private_prefix %+ _pixel_sad_avg2_16x%1_avx2)
+%endmacro
+
+SAD_AVG2_SPLIT 16
+SAD_AVG2_SPLIT  8
+%undef sad_split_k
+%endif ; ARCH_X86_64

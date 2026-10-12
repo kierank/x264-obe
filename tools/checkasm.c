@@ -312,6 +312,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     for( int i = 0; i < ARRAY_ELEMS(pixel_c.name); i++ ) \
     { \
         int res_c, res_asm; \
+        ALIGNED_64( pixel ovf[256+128] ); \
         if( pixel_asm.name[i] != pixel_ref.name[i] ) \
         { \
             set_func_name( "%s_%s", #name, pixel_names[i] ); \
@@ -338,6 +339,18 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     fprintf( stderr, #name "[%d]: overflow %d != %d\n", i, res_c, res_asm ); \
                 } \
             } \
+            for( int j = 0; j < 0x1000 && !align && ok; j += 256 ) \
+                for( int k = 1; k < 32 && ok; k += 6 ) \
+                { \
+                    memcpy( ovf+k, pbuf4+j, 256*sizeof(pixel) ); \
+                    res_c   = pixel_c  .name[i]( pbuf3+j, 16, ovf+k, 16 ); \
+                    res_asm = pixel_asm.name[i]( pbuf3+j, 16, ovf+k, 16 ); \
+                    if( res_c != res_asm ) \
+                    { \
+                        ok = 0; \
+                        fprintf( stderr, #name "[%d]: unaligned overflow %d != %d\n", i, res_c, res_asm ); \
+                    } \
+                } \
         } \
     } \
     report( "pixel " #name " :" );
@@ -355,13 +368,14 @@ static int check_pixel( int cpu_ref, int cpu_new )
         { \
             int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h; \
             ALIGNED_16( pixel avg[16*16] ); \
+            ALIGNED_64( pixel ovf[256+128] ); \
             int res_c, res_asm; \
             set_func_name( "%s_%s", #name, pixel_names[i] ); \
             used_asm = 1; \
-            for( int j = 0; j < 64 && ok; j++ ) \
+            for( int j = 0; j < 192 && ok; j++ ) \
             { \
-                pixel *src1 = pbuf2 + j; \
-                pixel *src2 = pbuf2 + 1280 + (j^5); \
+                pixel *src1 = pbuf2 + (j&63); \
+                pixel *src2 = pbuf2 + 1280 + (j < 64 ? j^5 : j < 128 ? j&63 : (j&63)+1); \
                 for( int y = 0; y < hgt; y++ ) \
                     for( int x = 0; x < w; x++ ) \
                         avg[y*16+x] = (src1[y*64+x] + src2[y*64+x] + 1) >> 1; \
@@ -383,6 +397,18 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     fprintf( stderr, #name "[%d]: overflow %d != %d\n", i, res_c, res_asm ); \
                 } \
             } \
+            for( int j = 0; j < 0x1000 && ok; j += 256 ) \
+                for( int k = 1; k < 32 && ok; k += 6 ) \
+                { \
+                    memcpy( ovf+k, pbuf4+j, 256*sizeof(pixel) ); \
+                    res_c   = pixel_c.cmp[i]( pbuf3+j, 16, pbuf4+j, 16 ); \
+                    res_asm = pixel_asm.name[i]( pbuf3+j, ovf+k, ovf+k, 16 ); \
+                    if( res_c != res_asm ) \
+                    { \
+                        ok = 0; \
+                        fprintf( stderr, #name "[%d]: unaligned overflow %d != %d\n", i, res_c, res_asm ); \
+                    } \
+                } \
         } \
     } \
     report( "pixel " #name " :" );
