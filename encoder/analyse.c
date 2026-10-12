@@ -1223,7 +1223,11 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
         (m)->p_fref[11] = &(src)[11][(xoff)+(yoff)*(m)->i_stride[2]]; \
     } \
     else \
+    { \
         (m)->p_fref[4] = &(src)[4][(xoff)+((yoff)>>CHROMA_V_SHIFT)*(m)->i_stride[1]]; \
+        (m)->p_fref[5] = &(src)[5][(xoff)+((yoff)>>CHROMA_V_SHIFT)*(m)->i_stride[1]]; \
+        (m)->i_fld_uv_y = h->mb.pic.i_fld_uv_y + ((yoff)>>CHROMA_V_SHIFT); \
+    } \
     (m)->integral = &h->mb.pic.p_integral[list][ref][(xoff)+(yoff)*(m)->i_stride[0]]; \
     (m)->weight = x264_weight_none; \
     (m)->i_ref = ref; \
@@ -1645,8 +1649,11 @@ static ALWAYS_INLINE int x264_mb_analyse_inter_p4x4_chroma_internal( x264_t *h, 
     { \
         int offset = x + (2>>chroma_v_shift)*16*y; \
         int chroma_height = (2>>chroma_v_shift)*height; \
-        h->mc.mc_chroma( &pix1[offset], &pix2[offset], 16, &p_fref[4][or+2*x+(2>>chroma_v_shift)*y*i_stride], i_stride, \
-                         (me).mv[0], (2>>chroma_v_shift)*((me).mv[1]+mvy_offset), width, chroma_height ); \
+        int uv_dy = (2>>chroma_v_shift)*((me).mv[1]+mvy_offset); \
+        pixel *uv_src = x264_mb_fref_uv( h, p_fref, h->mb.pic.i_fld_uv_y + (4>>chroma_v_shift)*(i8x8&2) + (2>>chroma_v_shift)*y, \
+                                         uv_dy, chroma_height ); \
+        h->mc.mc_chroma( &pix1[offset], &pix2[offset], 16, &uv_src[or+2*x+(2>>chroma_v_shift)*y*i_stride], i_stride, \
+                         (me).mv[0], uv_dy, width, chroma_height ); \
         if( weight[1].weightfn ) \
             weight[1].weightfn[width>>2]( &pix1[offset], 16, &pix1[offset], 16, &weight[1], chroma_height ); \
         if( weight[2].weightfn ) \
@@ -1827,10 +1834,12 @@ static ALWAYS_INLINE int x264_analyse_bi_chroma( x264_t *h, x264_mb_analysis_t *
         int v_shift = CHROMA_V_SHIFT; \
         int l0_mvy_offset = v_shift & MB_INTERLACED & m0.i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0; \
         int l1_mvy_offset = v_shift & MB_INTERLACED & m1.i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0; \
-        h->mc.mc_chroma( pix[0], pix[1], 16, m0.p_fref[4], m0.i_stride[1], \
-                         m0.mv[0], 2*(m0.mv[1]+l0_mvy_offset)>>v_shift, width>>1, height>>v_shift ); \
-        h->mc.mc_chroma( pix[2], pix[3], 16, m1.p_fref[4], m1.i_stride[1], \
-                         m1.mv[0], 2*(m1.mv[1]+l1_mvy_offset)>>v_shift, width>>1, height>>v_shift ); \
+        int uv_dy0 = 2*(m0.mv[1]+l0_mvy_offset)>>v_shift; \
+        int uv_dy1 = 2*(m1.mv[1]+l1_mvy_offset)>>v_shift; \
+        h->mc.mc_chroma( pix[0], pix[1], 16, x264_mb_fref_uv( h, m0.p_fref, m0.i_fld_uv_y, uv_dy0, height>>v_shift ), \
+                         m0.i_stride[1], m0.mv[0], uv_dy0, width>>1, height>>v_shift ); \
+        h->mc.mc_chroma( pix[2], pix[3], 16, x264_mb_fref_uv( h, m1.p_fref, m1.i_fld_uv_y, uv_dy1, height>>v_shift ), \
+                         m1.i_stride[1], m1.mv[0], uv_dy1, width>>1, height>>v_shift ); \
     } \
     h->mc.avg[chromapix]( bi[0], 16, pix[0], 16, pix[2], 16, h->mb.bipred_weight[m0.i_ref][m1.i_ref] ); \
     h->mc.avg[chromapix]( bi[1], 16, pix[1], 16, pix[3], 16, h->mb.bipred_weight[m0.i_ref][m1.i_ref] ); \
@@ -2065,7 +2074,8 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
                 if( v_shift & MB_INTERLACED & a->l0.bi16x16.i_ref )
                 {
                     int l0_mvy_offset = (h->mb.i_mb_y & 1)*4 - 2;
-                    h->mc.mc_chroma( pixuv[0], pixuv[0]+8, FENC_STRIDE, h->mb.pic.p_fref[0][a->l0.bi16x16.i_ref][4],
+                    h->mc.mc_chroma( pixuv[0], pixuv[0]+8, FENC_STRIDE,
+                                     x264_mb_fref_uv( h, h->mb.pic.p_fref[0][a->l0.bi16x16.i_ref], h->mb.pic.i_fld_uv_y, l0_mvy_offset, 8 ),
                                      h->mb.pic.i_stride[1], 0, 0 + l0_mvy_offset, 8, 8 );
                 }
                 else
@@ -2075,7 +2085,8 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
                 if( v_shift & MB_INTERLACED & a->l1.bi16x16.i_ref )
                 {
                     int l1_mvy_offset = (h->mb.i_mb_y & 1)*4 - 2;
-                    h->mc.mc_chroma( pixuv[1], pixuv[1]+8, FENC_STRIDE, h->mb.pic.p_fref[1][a->l1.bi16x16.i_ref][4],
+                    h->mc.mc_chroma( pixuv[1], pixuv[1]+8, FENC_STRIDE,
+                                     x264_mb_fref_uv( h, h->mb.pic.p_fref[1][a->l1.bi16x16.i_ref], h->mb.pic.i_fld_uv_y, l1_mvy_offset, 8 ),
                                      h->mb.pic.i_stride[1], 0, 0 + l1_mvy_offset, 8, 8 );
                 }
                 else
