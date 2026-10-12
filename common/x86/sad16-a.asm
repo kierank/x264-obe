@@ -1296,7 +1296,8 @@ cglobal intra_sad_x3_8x8, 3,3,8
 
 ;=============================================================================
 ; me_hex_16x16, 10-bit: sads as in sad_x3/sad_x4 16x16 (fenc - ref, pabsw, word sums),
-; AVX2 reloads fenc a row at a time, AVX-512 (ymm) keeps it in m0-m15 (ymm16-31)
+; AVX2 keeps fenc rows 0-11 in m4-m15 (12-15 reloaded), AVX-512 (ymm) all 16 in m0-m15
+; (ymm16-31)
 ;=============================================================================
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
@@ -1472,8 +1473,7 @@ cglobal intra_sad_x3_8x8, 3,3,8
     %define hxA0 m0
     %define hxA1 m1
     %define hxT0 m2
-    %define hxF  m3
-    %define hxPW m4
+    %define hxPW m3
     %define xhxA0 xm0
     %define xhxT0 xm2
     %define hxC  r7
@@ -1485,6 +1485,13 @@ cglobal intra_sad_x3_8x8, 3,3,8
 %assign hx_r 0
 %rep 16
     mova      m %+ hx_r, [r0+hx_r*FENC_STRIDEB]
+%assign hx_r hx_r+1
+%endrep
+%else
+%assign hx_r 0
+%rep 12
+%assign hx_m hx_r+4
+    mova      m %+ hx_m, [r0+hx_r*FENC_STRIDEB]
 %assign hx_r hx_r+1
 %endrep
 %endif
@@ -1504,9 +1511,12 @@ cglobal intra_sad_x3_8x8, 3,3,8
 %endif
 %if cpuflag(avx512)
     %xdefine hx_f m %+ hx_r
+%elif hx_r < 12
+%assign hx_m hx_r+4
+    %xdefine hx_f m %+ hx_m
 %else
-    mova          hxF, [r0+hx_r*FENC_STRIDEB]
-    %xdefine hx_f hxF
+    mova         hxT0, [r0+hx_r*FENC_STRIDEB]
+    %xdefine hx_f hxT0
 %endif
 %endmacro
 
@@ -1545,7 +1555,7 @@ cglobal intra_sad_x3_8x8, 3,3,8
 
 INIT_YMM avx2
 HX10_REGS
-cglobal me_hex_16x16, 5,15,5
+cglobal me_hex_16x16, 5,15,16
     HX_BODY
 
 INIT_YMM avx512
