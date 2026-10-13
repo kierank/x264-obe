@@ -35,6 +35,10 @@ int x264_analyse_init_costs( x264_t *h, float *logs, int qp );
 void x264_analyse_free_costs( x264_t *h );
 #define x264_analyse_weight_frame x264_template(analyse_weight_frame)
 void x264_analyse_weight_frame( x264_t *h, int end );
+#define x264_analyse_weight_height x264_template(analyse_weight_height)
+int x264_analyse_weight_height( x264_t *h );
+#define x264_analyse_weight_rows x264_template(analyse_weight_rows)
+void x264_analyse_weight_rows( x264_t *h, int y0, int y1 );
 #define x264_macroblock_analyse x264_template(macroblock_analyse)
 void x264_macroblock_analyse( x264_t *h );
 #define x264_slicetype_decide x264_template(slicetype_decide)
