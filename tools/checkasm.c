@@ -206,7 +206,7 @@ static void print_bench(void)
         }
 }
 
-#if ARCH_X86 || ARCH_X86_64
+#if HAVE_MMX
 int x264_stack_pagealign( int (*func)(), int align );
 
 /* detect when callee-saved regs aren't saved
@@ -218,7 +218,7 @@ intptr_t x264_checkasm_call( intptr_t (*func)(), int *ok, ... );
 
 #define call_c1(func,...) func(__VA_ARGS__)
 
-#if ARCH_X86_64
+#if HAVE_MMX && ARCH_X86_64
 /* Evil hack: detect incorrect assumptions that 32-bit ints are zero-extended to 64-bit.
  * This is done by clobbering the stack with junk around the stack pointer and calling the
  * assembly function through x264_checkasm_call with added dummy arguments which forces all
@@ -233,7 +233,7 @@ void x264_checkasm_stack_clobber( uint64_t clobber, ... );
     uint64_t r = (rand() & 0xffff) * 0x0001000100010001ULL; \
     x264_checkasm_stack_clobber( r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r ); /* max_args+6 */ \
     x264_checkasm_call(( intptr_t(*)())func, &ok, 0, 0, 0, 0, __VA_ARGS__ ); })
-#elif ARCH_X86
+#elif HAVE_MMX && ARCH_X86
 #define call_a1(func,...) x264_checkasm_call( (intptr_t(*)())func, &ok, __VA_ARGS__ )
 #else
 #define call_a1 call_c1
