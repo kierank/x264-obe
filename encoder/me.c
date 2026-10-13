@@ -56,10 +56,18 @@ static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
 static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
 static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
 
-/* x264_me_search_ref and refine_subpel are one body each, instantiated twice:
- * me8 0, the 16-bit search as it was before --me-8bit (h->me8 NULL: no ref
- * has msb8 planes), and me8 1, where an encode with --me-8bit chooses per
- * partition (b8) between the 8-bit and the 16-bit search. */
+/* me_search_ref and refine_subpel_body: me8 and b8 are constants, three
+ * instances each, picked once a call:
+ * - me8 0 (x264_me_search_ref's own body, refine_subpel_16): the code of
+ *   before --me-8bit, split8 NULL. Refs without split planes: all at level 0
+ *   and 1, the lookahead's at 2.
+ * - me8 1, b8 0 (me_search_ref_split, refine_subpel_split): 16-bit on a split
+ *   ref, level 2 only: weighted refs, ESA/TESA.
+ * - b8 1: me_search_ref_me8, levels 1 and 2 (unweighted refs, DIA/HEX/UMH);
+ *   refine_subpel_me8, level 2 (unweighted refs).
+ * LOAD_HPELS8 sets p_fref8[1] and p_split8[1] from the same plane, LOAD_WPELS
+ * and the lookahead clear p_fref8[1] with [0]: p_fref8[1] implies p_split8[1],
+ * and p_fref8[0] without [1] (level 1) has no split planes. */
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
 #define ME8_BUILD 1
 #else
@@ -68,6 +76,7 @@ static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1
 
 static NOINLINE void refine_subpel_16( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 #if ME8_BUILD
+static NOINLINE void refine_subpel_split( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 static NOINLINE void refine_subpel_me8( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 #endif
 
@@ -75,9 +84,14 @@ static ALWAYS_INLINE void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters
                                          int b_refine_qpel, int me8 )
 {
 #if ME8_BUILD
-    if( me8 )
+    if( me8 && m->p_fref8[1] )
     {
         refine_subpel_me8( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel );
+        return;
+    }
+    if( me8 && m->p_split8[1] )
+    {
+        refine_subpel_split( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel );
         return;
     }
 #endif
@@ -90,13 +104,14 @@ static ALWAYS_INLINE void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters
 /* The fullpel search's planes and cmps, x264_me_search_ref's s_*: the 16-bit
  * ones, or with analyse.i_me_8bit (b8) the msb8 planes (p_fref8, p_fenc8) and
  * the 8-bit cmps, their sad scaled by 4 (s_shift) to the high bit depth units
- * of the mv costs. One body for both: s_fenc and s_ref are bytes, a pixel
- * 1 << s_psh of them, and the 16-bit cmps are called through the 8-bit
- * prototypes (pointer arguments only). me8 0 reads h->pixf at each call. */
+ * of the mv costs. s_fenc and s_ref are bytes, a pixel 1 << s_psh of them, and
+ * the 16-bit cmps are called through the 8-bit prototypes (pointer arguments
+ * only). b8 is a constant of the instance: b8 0 reads h->pixf at each call,
+ * b8 1 loads pf8's cmps once. */
 #define SREF( off ) (s_ref + ((intptr_t)(off) << s_psh))
-#define S_CMP (me8 ? s_cmp : (x264_me8_cmp_t)h->pixf.fpelcmp[i_pixel])
-#define S_X3  (me8 ? s_x3 : (x264_me8_cmp_x3_t)h->pixf.fpelcmp_x3[i_pixel])
-#define S_X4  (me8 ? s_x4 : (x264_me8_cmp_x4_t)h->pixf.fpelcmp_x4[i_pixel])
+#define S_CMP (b8 ? s_cmp : (x264_me8_cmp_t)h->pixf.fpelcmp[i_pixel])
+#define S_X3  (b8 ? s_x3 : (x264_me8_cmp_x3_t)h->pixf.fpelcmp_x3[i_pixel])
+#define S_X4  (b8 ? s_x4 : (x264_me8_cmp_x4_t)h->pixf.fpelcmp_x4[i_pixel])
 
 #define FPEL_CMP( mx, my )\
     (S_CMP( s_fenc, FENC_STRIDE, SREF( (my)*stride+(mx) ), stride ) << s_shift)
@@ -112,7 +127,8 @@ do\
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );\
 } while(0)
 
-/* split8: m->p_split8, or NULL where no ref can be split (me8 0). With
+/* split8: m->p_split8, or NULL where m cannot be split (me8 0, the b8
+ * search's 16-bit predictors: level 1). With
  * split8[1] (i_me_8bit 2) m's luma h, v and c planes are msb8/lsb8 only,
  * p_fref[1..3] NULL. */
 #if HIGH_BIT_DEPTH
@@ -173,13 +189,29 @@ static ALWAYS_INLINE int subpel_cmp8( x264_t *h, x264_me_t *m, uint8_t *pix8, in
     return cmp( m->p_fenc8, FENC_STRIDE, src, stride8 );
 }
 
+#if ME8_BUILD
+/* COST_MV_HPEL's cmp of a ref that may be split (me8 1, b8 0), with the
+ * unpack buffer out of me_search_ref's frame */
+static NOINLINE int subpel_cmp_split( x264_t *h, x264_me_t *m, int bw, int bh, int mx, int my )
+{
+    ALIGNED_ARRAY_N( pixel, pix,[2*X264_SPLIT8_STRIDE*16] );
+    const int i_pixel = m->i_pixel;
+    return subpel_cmp( h, m, m->p_split8, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel],
+                       h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] );
+}
+#define SUBPEL_CMP_SPLIT( mx, my ) subpel_cmp_split( h, m, bw, bh, mx, my )
+#else
+#define SUBPEL_CMP_SPLIT( mx, my ) 0
+#endif
+
 /* b8h: on the msb8 hpel planes, scaled by 4 as in the fullpel search */
 #define COST_MV_HPEL( mx, my, cost )\
 do\
 {\
     cost = (b8h ? subpel_cmp8( h, m, (uint8_t*)pix, bw, bh, mx, my, pf8->fpelcmp_avg2[i_pixel], pf8->fpelcmp[i_pixel] ) << 2\
-                : subpel_cmp( h, m, split8, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel],\
-                              h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] ))\
+          : me8 && !b8 ? SUBPEL_CMP_SPLIT( mx, my )\
+          : subpel_cmp( h, m, NULL, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel],\
+                        h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] ))\
          + p_cost_mvx[ mx ] + p_cost_mvy[ my ];\
 } while(0)
 
@@ -369,8 +401,9 @@ static NOINLINE void me8_prefetch_refine( x264_t *h, x264_me_t *m, int x, int y,
     }
 }
 
+/* b8: analyse.i_me_8bit's fullpel search (me8 1, p_fref8[0], DIA, HEX and UMH) */
 static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh,
-                                         const int me8 )
+                                         const int me8, const int b8 )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
@@ -382,16 +415,13 @@ static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)
     int omx, omy, pmx, pmy;
     pixel *p_fenc = m->p_fenc[0];
     pixel *p_fref_w = m->p_fref_w;
-    ALIGNED_ARRAY_N( pixel, pix,[2*X264_SPLIT8_STRIDE*16] ); // 16x16, or subpel_cmp's unpacked pair
+    ALIGNED_ARRAY_N( pixel, pix,[16*16] ); // split refs unpack in subpel_cmp_split
     ALIGNED_ARRAY_8( int16_t, mvc_temp,[16],[2] );
 
     ALIGNED_ARRAY_16( int, costs,[16] );
-    /* b8: analyse.i_me_8bit's fullpel search, DIA, HEX and UMH only */
-    const int b8 = ME8_BUILD && me8 && m->p_fref8[0] && h->mb.i_me_method <= X264_ME_UMH;
     /* b8h: i_me_8bit 2, the subpel predictors on the msb8 hpel planes and no
      * 16-bit rescore of the fullpel result before refine_subpel (see below) */
     const int b8h = b8 && m->p_fref8[1];
-    uint8_t **split8 = ME8_BUILD && me8 ? m->p_split8 : NULL;
     const x264_me8_func_t *pf8 = h->me8;
     uint8_t *s_fenc = b8 ? m->p_fenc8 : (uint8_t*)p_fenc;
     uint8_t *s_ref = b8 ? m->p_fref8[0] : (uint8_t*)p_fref_w;
@@ -399,9 +429,9 @@ static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)
     const int s_shift = b8 ? 2 : 0;
     const int s_pack = b8 ? 4 : 6;
     const int s_mask = (1 << s_pack) - 1;
-    x264_me8_cmp_t s_cmp = b8 ? pf8->fpelcmp[i_pixel] : (x264_me8_cmp_t)h->pixf.fpelcmp[i_pixel];
-    x264_me8_cmp_x3_t s_x3 = b8 ? pf8->fpelcmp_x3[i_pixel] : (x264_me8_cmp_x3_t)h->pixf.fpelcmp_x3[i_pixel];
-    x264_me8_cmp_x4_t s_x4 = b8 ? pf8->fpelcmp_x4[i_pixel] : (x264_me8_cmp_x4_t)h->pixf.fpelcmp_x4[i_pixel];
+    x264_me8_cmp_t s_cmp = b8 ? pf8->fpelcmp[i_pixel] : NULL;
+    x264_me8_cmp_x3_t s_x3 = b8 ? pf8->fpelcmp_x3[i_pixel] : NULL;
+    x264_me8_cmp_x4_t s_x4 = b8 ? pf8->fpelcmp_x4[i_pixel] : NULL;
     x264_me8_cmp_x3_min_t s_x3_min = b8 ? pf8->fpelcmp_x3_min[i_pixel]
                                         : (x264_me8_cmp_x3_min_t)h->pixf.fpelcmp_x3_min[i_pixel];
     x264_me8_cmp_x4_min_t s_x4_min = b8 ? pf8->fpelcmp_x4_min[i_pixel]
@@ -829,6 +859,7 @@ static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)
 
         case X264_ME_ESA:
         case X264_ME_TESA:
+        if( !b8 ) /* not in the b8 instance */
         {
             const int min_x = X264_MAX( bmx - i_me_range, mv_x_min );
             const int min_y = X264_MAX( bmy - i_me_range, mv_y_min );
@@ -1023,9 +1054,14 @@ static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)
 #undef COST_MV
 
 #if ME8_BUILD
+static NOINLINE void me_search_ref_split( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+{
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 1, 0 );
+}
+
 static NOINLINE void me_search_ref_me8( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
-    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 1 );
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 1, 1 );
 }
 #endif
 
@@ -1034,11 +1070,19 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #if ME8_BUILD
     if( h->me8 )
     {
-        me_search_ref_me8( h, m, mvc, i_mvc, p_halfpel_thresh );
-        return;
+        if( m->p_fref8[0] && h->mb.i_me_method <= X264_ME_UMH )
+        {
+            me_search_ref_me8( h, m, mvc, i_mvc, p_halfpel_thresh );
+            return;
+        }
+        if( m->p_split8[1] )
+        {
+            me_search_ref_split( h, m, mvc, i_mvc, p_halfpel_thresh );
+            return;
+        }
     }
 #endif
-    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 0 );
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 0, 0 );
 }
 
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
@@ -1264,11 +1308,10 @@ if( b8 && (b_rebased || bmx != m->mv[0] || bmy != m->mv[1]) ) \
         bcost = luma + p_cost_mvx[bmx] + p_cost_mvy[bmy]; \
 }
 
-/* b8: i_me_8bit 2 (p_fref8[1], unweighted refs), the luma costs on the msb8 planes */
+/* b8: i_me_8bit 2 (me8 1, p_fref8[1]: unweighted refs), the luma costs on the msb8 planes */
 static ALWAYS_INLINE void refine_subpel_body( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh,
-                                              int b_refine_qpel, const int me8 )
+                                              int b_refine_qpel, const int me8, const int b8 )
 {
-    const int b8 = ME8_BUILD && me8 && m->p_fref8[1] != NULL;
     uint8_t **split8 = ME8_BUILD && me8 ? m->p_split8 : NULL;
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
@@ -1549,13 +1592,18 @@ static ALWAYS_INLINE void refine_subpel_body( x264_t *h, x264_me_t *m, int hpel_
 
 static NOINLINE void refine_subpel_16( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
-    refine_subpel_body( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, 0 );
+    refine_subpel_body( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, 0, 0 );
 }
 
 #if ME8_BUILD
+static NOINLINE void refine_subpel_split( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
+{
+    refine_subpel_body( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, 1, 0 );
+}
+
 static NOINLINE void refine_subpel_me8( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
-    refine_subpel_body( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, 1 );
+    refine_subpel_body( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, 1, 1 );
 }
 #endif
 
