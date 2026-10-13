@@ -167,7 +167,35 @@ then deletes it once md5 identity holds across the test matrix.
    (`common/macroblock.h`), which unpack (`plane_unpack8`) the windows the
    unchanged 16-bit kernels read into a 32 pixel stride temp; fullpel mvs
    still read the 16-bit `plane[0]`, but for mbcmp_bi4's shared stride.
-   No reader is fused yet.
+   Readers fused (x86_64 AVX2 and AVX-512 ymm, `common/x86/pixel-a.asm`
+   "packed readers"): the dispatchers call kernels that read msb8/lsb8 in
+   place, the unpack in their loads, the column phase from the msb address
+   (`msb & 3`, per-phase pshufb/multiplier rows of `pk8_tab` loaded once a
+   call, so every x alignment is native): `copy_pk`/`avg2_pk` (mc_copy and
+   pixel_avg2, widths 4-20: mc_luma, get_ref, qpel RD, BIME, weighted refs
+   with the weight in place), `sad/satd(_avg2)_pk` (subpel_cmp: ME8_EXACT,
+   COST_MV_HPEL) and `satd_bi4_pk` (B BI costs). The temp path remains for
+   C/no-asm, x86_32 and pre-AVX2 CPUs; sizes below 8x8 in subpel_cmp go
+   through get_ref (copy_pk/avg2_pk) and the 16-bit cmp.
+
+   Test plan for the readers (output must be md5-identical to b1cd784d at
+   `--me-8bit 2`, which is identical to bf65074f's level 2):
+   - build AVX2 (Zen 2), avx512 (Zen 4 rack01), `--disable-asm`, x86_32 if
+     available; `checkasm10` ("mc pk", "pixel pk", "pixel bi4 pk" incl.
+     their in-code positive controls) on Zen 2 and Zen 4, several seeds; the
+     manual controls in the commit messages (swap pk8_tab mul rows, swap two
+     PK_BI_TAB copies) must fail checkasm.
+   - `-DX264_ME8_VERIFY` build clean over the matrix; `-DX264_ME8_VERIFY_CONTROL`
+     must report and change the md5.
+   - md5 of `--me-8bit 2` at HEAD vs b1cd784d and vs bf65074f per build
+     (AVX2, avx512, `--disable-asm`; across builds only with
+     `--cpu-independent`); `--asm avx2` on Zen 4 too: progressive and MBAFF
+     (true 1080i) 10-bit 4:2:0 and 4:2:2; subme 0/1/2/7/9; weightp 0/2;
+     refs 1/4; bframes 0/3 (b-adapt as production); `--threads 1` and
+     sliced threads; recon (`-o` + `--dump-yuv`) equal to a decode.
+   - cycles: perf stat and a per-symbol profile of L2 at HEAD vs L2 at
+     b1cd784d vs L2 at bf65074f vs L0, lowlat and subme 7/9, 1080p and
+     1080i, realtime-paced per-frame CPU (not file fps).
 2. **4:4:4 chroma hpel planes** if 4:4:4 matters (same code as 1).
 3. **Fullpel luma**: writers recon store (1), deblock band helper (2),
    expansion (3), field copies (5); readers hpel input (4, the hard one),
