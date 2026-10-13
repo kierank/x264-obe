@@ -74,6 +74,9 @@ int x264_quant_chroma_dc_trellis( x264_t *h, dctcoef *dct, int i_qp, int b_intra
 #define x264_quant_4x4_trellis x264_template(quant_4x4_trellis)
 int x264_quant_4x4_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
                              int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx );
+#define x264_quant_4x4x4_trellis x264_template(quant_4x4x4_trellis)
+int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
+                              int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx );
 #define x264_quant_8x8_trellis x264_template(quant_8x8_trellis)
 int x264_quant_8x8_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
                              int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx );
