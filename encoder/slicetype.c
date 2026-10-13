@@ -599,6 +599,40 @@ static NOINLINE void x264_weight_luma_search( x264_t *h, const x264_weight_ops_t
     }
 }
 
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+/* Pre-check of the luma search on lowres8[] (lookahead-8bit), before the 16-bit
+ * lowres[] it needs is built: the same weights, at 8-bit. Hopeless if none costs
+ * less than the unweighted ref there, slice header cost aside; the full depth
+ * search then rejects them too, but for gains below the 8-bit resolution. */
+static NOINLINE int x264_weight_luma_hopeless8( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref,
+                                                float fenc_mean, float ref_mean, int minscale, int mindenom,
+                                                int scale_dist, int offset_dist, int b_lookahead )
+{
+    x264_weight_ops_t ops8;
+    memset( &ops8, 0, sizeof(ops8) );
+    ops8.k = h->lowres8;
+    ops8.weight_cache = x264_lowres8_weight_cache;
+    ops8.luma_search_rows = x264_lowres8_weight_luma_search_rows;
+    x264_weight_src_t s8;
+    void *src = x264_weight_cost_init_luma( h, &s8, fenc, ref, h->mb.p_weight_buf[0] );
+    s8.fenc_luma = fenc->lowres8[0];
+    for( int i = 0; i < 4; i++ )
+        s8.ref_luma[i] = ref->lowres8[i];
+    if( !s8.mvs )
+        src = s8.ref_luma[0];
+    x264_weight_trials_t t8;
+    unsigned int cost[X264_WEIGHT_COSTS];
+    x264_weight_trials_luma( h, &ops8, &t8, fenc_mean, ref_mean, minscale, mindenom,
+                             scale_dist, offset_dist, b_lookahead );
+    x264_weight_luma_search( h, &ops8, &s8, src, &t8, cost );
+    for( int k = 0; k < t8.i_scales; k++ )
+        for( int j = 0; j < t8.i_offsets[k]; j++ )
+            if( cost[1 + k*X264_WEIGHT_OFFSETS_MAX + j] < cost[0] )
+                return 0;
+    return 1;
+}
+#endif
+
 /* The chroma planes and arrays of x264_weight_src_t, the ref motion compensated into
  * p_weight_buf[0]: u, then v at + stride * chroma height. scales: per plane, those of
  * the slots to fill in the same pass, -1 for none. */
@@ -898,6 +932,14 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                 x264_lowres_context_init( h, &a );
                 x264_slicetype_frame_cost( h, &a, &fenc, 0, 0, 0, 0 );
             }
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+            if( h->lowres8 && x264_weight_luma_hopeless8( h, fenc, ref, fenc_mean[plane], ref_mean[plane], minscale,
+                                                          mindenom, scale_dist, offset_dist, b_lookahead ) )
+            {
+                SET_WEIGHT( weights[plane], 0, 1, 0, 0 );
+                continue;
+            }
+#endif
 #if HIGH_BIT_DEPTH
             x264_weight_lowres_init( h, fenc );
             x264_weight_lowres_init( h, ref );

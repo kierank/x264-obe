@@ -33,6 +33,8 @@
  * LOWRES8_COST_SHIFT maps high bit depth thresholds to 8-bit. */
 #define LOWRES8_COST_SHIFT 2
 
+#include "weightp.h"
+
 /* One per x264_t that runs lowres analysis. stride/lines are the lowres plane
  * geometry (i_stride_lowres, i_lines_lowres), for the weighted plane buffer. */
 void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height, int stride, int lines );
@@ -49,5 +51,11 @@ void  x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
 /* Weight ref's 8-bit lowres plane (padding included) into the context's buffer
  * and point fenc->weighted8 at it, like the high bit depth weighted[0]. */
 void  x264_lowres8_weight_plane( void *ctx, void *fenc, void *ref, const void *weight );
+
+/* The luma search pass of encoder/weightp.h at 8-bit, on lowres8[], for the
+ * x264_weights_analyse pre-check; weight_cache re-caches a high bit depth weight. */
+void x264_lowres8_weight_cache( void *ctx, x264_weight_t *w );
+void x264_lowres8_weight_luma_search_rows( void *ctx, x264_weight_src_t *s, void *src, const x264_weight_trials_t *t,
+                                           unsigned int *cost, int mb_y0, int mb_y1 );
 
 #endif

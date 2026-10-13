@@ -137,6 +137,18 @@ void x264_lowres8_weight_plane( void *ctx, void *fenc_, void *ref_, const void *
     fenc->weighted8 = c->weight_buf + PADH + ref->i_stride_lowres * PADV;
 }
 
+void x264_lowres8_weight_cache( void *ctx, x264_weight_t *w )
+{
+    x264_t *h = &((lowres8_t*)ctx)->h;
+    h->mc.weight_cache( h, w );
+}
+
+void x264_lowres8_weight_luma_search_rows( void *ctx, x264_weight_src_t *s, void *src, const x264_weight_trials_t *t,
+                                           unsigned int *cost, int mb_y0, int mb_y1 )
+{
+    x264_weight_luma_search_rows( &((lowres8_t*)ctx)->h, s, src, t, cost, mb_y0, mb_y1 );
+}
+
 /* As in slicetype.c */
 #define NUM_INTS 4
 #define COST_EST 0
