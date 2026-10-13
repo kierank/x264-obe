@@ -42,6 +42,14 @@ static int align_plane_size( int x, int disalign )
     return x;
 }
 
+/* 16-bit luma planes of an fdec frame with hpel: analyse.i_me_8bit 2 keeps h, v
+ * and c only as msb8/lsb8, but for X264_ME8_VERIFY's shadow of them */
+#ifdef X264_ME8_VERIFY
+#define HPEL16_PLANES( h, p ) 4
+#else
+#define HPEL16_PLANES( h, p ) (!(p) && HIGH_BIT_DEPTH && (h)->param.analyse.i_me_8bit > 1 ? 1 : 4)
+#endif
+
 static int x264_frame_internal_csp( int external_csp )
 {
     switch( external_csp & X264_CSP_MASK )
@@ -168,9 +176,10 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
         if( h->param.analyse.i_subpel_refine && b_fdec )
         {
             /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
-            PREALLOC( frame->buffer[p], (4*luma_plane_size + padh_align) * sizeof(pixel) );
+            int planes = HPEL16_PLANES( h, p );
+            PREALLOC( frame->buffer[p], (planes*luma_plane_size + padh_align) * sizeof(pixel) );
             if( PARAM_INTERLACED )
-                PREALLOC( frame->buffer_fld[p], (4*luma_plane_size + padh_align) * sizeof(pixel) );
+                PREALLOC( frame->buffer_fld[p], (planes*luma_plane_size + padh_align) * sizeof(pixel) );
         }
         else
         {
@@ -272,7 +281,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
         int luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
         if( h->param.analyse.i_subpel_refine && b_fdec )
         {
-            for( int i = 0; i < 4; i++ )
+            for( int i = 0; i < HPEL16_PLANES( h, p ); i++ )
             {
                 frame->filtered[p][i] = frame->buffer[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
                 frame->filtered_fld[p][i] = frame->buffer_fld[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
@@ -781,9 +790,9 @@ void x264_frame_verify8( x264_t *h, x264_frame_t *frame )
     intptr_t stride = frame->i_stride[0];
     for( int i = 0; i < 4; i++ )
     {
-        if( frame->msb8[i] )
+        if( frame->msb8[i] && frame->filtered[0][i] )
             plane_verify8( h, frame, frame->msb8[i], frame->lsb8[i], frame->filtered[0][i], stride, -PADV, lines + PADV );
-        if( frame->msb8_fld[i] )
+        if( frame->msb8_fld[i] && frame->filtered_fld[0][i] )
             plane_verify8( h, frame, frame->msb8_fld[i], frame->lsb8_fld[i], frame->filtered_fld[0][i], stride, -2*PADV, lines + 2*PADV );
     }
 #endif
@@ -807,9 +816,12 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
             pixel *pix;
             if( SLICE_MBAFF )
             {
-                pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
-                plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
-                plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                if( frame->filtered_fld[p][i] )
+                {
+                    pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
+                    plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                    plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                }
 #if HIGH_BIT_DEPTH
                 if( !p && frame->msb8_fld[i] )
                     for( int f = 0; f < 2; f++ )
@@ -821,8 +833,11 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
 #endif
             }
 
-            pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
-            plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+            if( frame->filtered[p][i] )
+            {
+                pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
+                plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+            }
 #if HIGH_BIT_DEPTH
             if( !p && frame->msb8[i] )
             {

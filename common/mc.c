@@ -541,6 +541,18 @@ static void plane_split8( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_str
         src += i_stride;
     }
 }
+
+static void plane_unpack8( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h )
+{
+    for( int y = 0; y < h; y++ )
+    {
+        for( int x = 0; x < w; x++ )
+            dst[x] = msb[x] << (BIT_DEPTH-8) | ((lsb[x>>2] >> (2*(x&3))) & ((1 << (BIT_DEPTH-8)) - 1));
+        dst += i_dst;
+        msb += i_src;
+        lsb += i_src >> 2;
+    }
+}
 #endif
 
 static void frame_init_lowres_core( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
@@ -714,6 +726,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 #if HIGH_BIT_DEPTH
     pf->lowres8_convert = lowres8_convert;
     pf->plane_split8 = plane_split8;
+    pf->plane_unpack8 = plane_unpack8;
 #endif
 
     pf->integral_init4h = integral_init4h;
@@ -743,13 +756,132 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 }
 
 #if HIGH_BIT_DEPTH
-/* analyse.i_me_8bit 2: the msb8/lsb8 split of the rows the hpel filter just
- * wrote, offs and lsb_offs those of its first pixel, rows stride apart */
-static void hpel_split8( x264_t *h, uint8_t **msb8, uint8_t **lsb8, pixel **filtered, intptr_t stride,
-                         int offs, int lsb_offs, int width, int height )
+/* analyse.i_me_8bit 2: hpel of rows [0, height) of src writing only the
+ * msb8/lsb8 split of h, v and c (msb8[1..3] + offs, lsb8[1..3] + lsb_offs).
+ * With dstf, hpel_filter_copy's copy of src to dstf. Without the asm, or with
+ * the copy, row by row through scratch rows of 16-bit h, v and c. */
+static void hpel_filter_split8( x264_t *h, uint8_t **msb8, uint8_t **lsb8, pixel *src, intptr_t stride,
+                                int offs, int lsb_offs, int width, int height, pixel *dstf )
 {
-    for( int k = 1; k < 4; k++ )
-        h->mc.plane_split8( msb8[k] + offs, lsb8[k] + lsb_offs, filtered[k] + offs, stride, width, height );
+    uint8_t *msb = msb8[1] + offs;
+    uint8_t *lsb = lsb8[1] + lsb_offs;
+    intptr_t plane8 = msb8[2] - msb8[1];
+    if( !dstf && h->mc.hpel_filter8 )
+        h->mc.hpel_filter8( msb, lsb, plane8, src, stride, width, height, h->scratch_buffer );
+    else
+    {
+        /* in phase with src mod 64 bytes: the kernels realign src and store aligned */
+        intptr_t rs = X264_SPLIT8_ROW_STRIDE( width );
+        pixel *rh = (pixel*)((uint8_t*)h->scratch_buffer + X264_SPLIT8_ROWS_OFFSET( width ) + ((intptr_t)src & 63));
+        pixel *rv = rh + rs;
+        pixel *rc = rh + 2*rs;
+        for( int y = 0; y < height; y++ )
+        {
+            if( !dstf )
+                h->mc.hpel_filter( rh, rv, rc, src, stride, width, 1, h->scratch_buffer );
+            else if( h->mc.hpel_filter_copy )
+                h->mc.hpel_filter_copy( rh, rv, rc, src, stride, width, 1, h->scratch_buffer, dstf );
+            else
+            {
+                h->mc.hpel_filter( rh, rv, rc, src, stride, width, 1, h->scratch_buffer );
+                memcpy( dstf, src, width * sizeof(pixel) );
+            }
+            h->mc.plane_split8( msb, lsb, rh, 0, width, 1 );
+            h->mc.plane_split8( msb + plane8, lsb + plane8, rv, 0, width, 1 );
+            h->mc.plane_split8( msb + 2*plane8, lsb + 2*plane8, rc, 0, width, 1 );
+            src += stride;
+            msb += stride;
+            lsb += stride >> 2;
+            if( dstf )
+                dstf += stride;
+        }
+    }
+#ifdef X264_ME8_VERIFY_CONTROL
+    /* positive control of the verifier and the md5 identity: h's pixel 16
+     * (lsb byte 6 after x = -8) gets lsb 3 in every row */
+    for( int y = 0; y < height; y++ )
+        lsb8[1][lsb_offs + y*(stride>>2) + 6] |= 3;
+#endif
+}
+
+/* rows of a temp plane window: 19 for get_ref's 17 rows read 2 at a time from row 1 */
+#define SPLIT8_ROWS 20
+
+/* plane k's i_width x i_height window at pixel offset o from src8's block,
+ * unpacked into buf; columns from o&~3, rounded up to 16 */
+static ALWAYS_INLINE pixel *split8_window( x264_t *h, pixel *buf, uint8_t **src8, int k, intptr_t i_src,
+                                           intptr_t o, int i_width, int i_height )
+{
+    int ph = o & 3;
+    h->mc.plane_unpack8( buf, X264_SPLIT8_STRIDE, src8[k] + o - ph, src8[4+k] + (o >> 2), i_src,
+                         ALIGN( ph + i_width, 16 ), i_height );
+    return buf + ph;
+}
+
+/* mc_luma/get_ref's planes at mv as seen from (mvx&3, mvy&3) with stride
+ * X264_SPLIT8_STRIDE: each plane they read, over what their kernels can reach
+ * (pixel_avg2_w16 for width 12, w18 or mc_weight_w20 for 20, plus the column
+ * and row of the second source, rows read two at a time) */
+static void split8_view( x264_t *h, pixel *view[4], pixel *buf, uint8_t **src8, intptr_t i_src,
+                         int mvx, int mvy, int i_width, int i_height )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    intptr_t o = (mvy>>2)*i_src + (mvx>>2);
+    int w = (i_width == 12 ? 16 : i_width) + 1;
+    int rows = i_height + 1 + (i_height&1);
+    int k0 = x264_hpel_ref0[qpel_idx];
+    view[k0] = split8_window( h, buf, src8, k0, i_src, o, w, rows );
+    if( qpel_idx & 5 )
+    {
+        int k1 = x264_hpel_ref1[qpel_idx];
+        view[k1] = split8_window( h, buf + X264_SPLIT8_STRIDE*SPLIT8_ROWS, src8, k1, i_src, o, w, rows );
+    }
+}
+
+void x264_mc_luma_split8( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
+                          int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    if( !((mvx|mvy)&3) )
+    {
+        h->mc.mc_luma( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+        return;
+    }
+    ALIGNED_ARRAY_64( pixel, buf,[2*X264_SPLIT8_STRIDE*SPLIT8_ROWS] );
+    pixel *view[4];
+    split8_view( h, view, buf, src8, i_src, mvx, mvy, i_width, i_height );
+    h->mc.mc_luma( dst, i_dst, view, X264_SPLIT8_STRIDE, mvx&3, mvy&3, i_width, i_height, weight );
+}
+
+pixel *x264_get_ref_split8( x264_t *h, pixel *dst, intptr_t *i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
+                            int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    if( !((mvx|mvy)&3) )
+        return h->mc.get_ref( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+    ALIGNED_ARRAY_64( pixel, buf,[2*X264_SPLIT8_STRIDE*SPLIT8_ROWS] );
+    pixel *view[4];
+    intptr_t stride = *i_dst;
+    split8_view( h, view, buf, src8, i_src, mvx, mvy, i_width, i_height );
+    pixel *ret = h->mc.get_ref( dst, i_dst, view, X264_SPLIT8_STRIDE, mvx&3, mvy&3, i_width, i_height, weight );
+    if( ret != dst )
+    {
+        /* an unweighted hpel plane, in buf */
+        for( int y = 0; y < i_height; y++ )
+            memcpy( dst + y*stride, ret + y*X264_SPLIT8_STRIDE, i_width * sizeof(pixel) );
+        *i_dst = stride;
+    }
+    return dst;
+}
+
+void x264_mc_hpel_pair_split8( x264_t *h, pixel *dst[2], pixel *buf, uint8_t **src8, intptr_t i_src,
+                               int mvx, int mvy, int i_width, int i_height )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    intptr_t o = (mvy>>2)*i_src + (mvx>>2);
+    dst[0] = split8_window( h, buf, src8, x264_hpel_ref0[qpel_idx], i_src, o + ((mvy&3) == 3) * i_src,
+                            i_width, i_height );
+    dst[1] = qpel_idx & 5 ? split8_window( h, buf + X264_SPLIT8_STRIDE*i_height, src8, x264_hpel_ref1[qpel_idx],
+                                           i_src, o + ((mvx&3) == 3), i_width, i_height )
+                          : dst[0];
 }
 #endif
 
@@ -760,26 +892,31 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     intptr_t stride = frame->i_stride[p] << 1;
     int width = frame->i_width[p] + 16;
     int offs = y0*stride + i*frame->i_stride[p] - 8;
-    pixel *dsth = frame->filtered_fld[p][1] + offs;
-    pixel *dstv = frame->filtered_fld[p][2] + offs;
-    pixel *dstc = frame->filtered_fld[p][3] + offs;
     if( y1 <= y0 )
         return;
-    if( !b_copy )
-        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
-    else if( h->mc.hpel_filter_copy )
-        h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer,
-                                frame->plane_fld[p] + offs );
-    else
+    /* the 16-bit h, v and c, but for i_me_8bit 2's luma (X264_ME8_VERIFY's shadow) */
+    if( frame->filtered_fld[p][1] )
     {
-        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
-        for( int y = 0; y < y1 - y0; y++ )
-            memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
+        pixel *dsth = frame->filtered_fld[p][1] + offs;
+        pixel *dstv = frame->filtered_fld[p][2] + offs;
+        pixel *dstc = frame->filtered_fld[p][3] + offs;
+        if( !b_copy )
+            h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
+        else if( h->mc.hpel_filter_copy )
+            h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer,
+                                    frame->plane_fld[p] + offs );
+        else
+        {
+            h->mc.hpel_filter( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
+            for( int y = 0; y < y1 - y0; y++ )
+                memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
+        }
     }
 #if HIGH_BIT_DEPTH
     if( !p && frame->msb8_fld[1] )
-        hpel_split8( h, frame->msb8_fld, frame->lsb8_fld, frame->filtered_fld[0], stride, offs,
-                     y0*(stride>>2) + i*(frame->i_stride[0]>>2) - 2, width, y1 - y0 );
+        hpel_filter_split8( h, frame->msb8_fld, frame->lsb8_fld, (b_copy ? frame->plane[0] : frame->plane_fld[0]) + offs,
+                            stride, offs, y0*(stride>>2) + i*(frame->i_stride[0]>>2) - 2, width, y1 - y0,
+                            b_copy ? frame->plane_fld[0] + offs : NULL );
 #endif
 }
 
@@ -800,19 +937,7 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 
         if( !b_interlaced || h->mb.b_adaptive_mbaff )
         {
-#if HIGH_BIT_DEPTH
-            if( !p && frame->msb8[1] && h->mc.hpel_filter8 )
-                h->mc.hpel_filter8(
-                    frame->filtered[p][1] + offs,
-                    frame->filtered[p][2] + offs,
-                    frame->filtered[p][3] + offs,
-                    frame->plane[p] + offs,
-                    stride, width + 16, height - start,
-                    h->scratch_buffer,
-                    frame->msb8[1] + offs, frame->lsb8[1] + start*(stride>>2) - 2,
-                    frame->msb8[2] - frame->msb8[1] );
-            else
-#endif
+            if( frame->filtered[p][1] )
                 h->mc.hpel_filter(
                     frame->filtered[p][1] + offs,
                     frame->filtered[p][2] + offs,
@@ -821,9 +946,9 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
                     stride, width + 16, height - start,
                     h->scratch_buffer );
 #if HIGH_BIT_DEPTH
-            if( !p && frame->msb8[1] && !h->mc.hpel_filter8 )
-                hpel_split8( h, frame->msb8, frame->lsb8, frame->filtered[0], stride, offs,
-                             start*(stride>>2) - 2, width + 16, height - start );
+            if( !p && frame->msb8[1] )
+                hpel_filter_split8( h, frame->msb8, frame->lsb8, frame->plane[0] + offs, stride,
+                                    offs, start*(stride>>2) - 2, width + 16, height - start, NULL );
 #endif
         }
 

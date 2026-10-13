@@ -460,5 +460,49 @@ static ALWAYS_INLINE int x264_mb_transform_8x8_allowed( x264_t *h )
     return M32( h->mb.i_sub_partition ) == D_L0_8x8*0x01010101;
 }
 
+/* mc_luma, get_ref and x264_mc_hpel_pair of a luma ref, src its p_fref and src8
+ * its p_fref8 (or NULL): with src8[1], analyse.i_me_8bit 2, the h, v and c
+ * planes exist only as msb8/lsb8 and are unpacked (x264_mc_luma_split8) */
+static ALWAYS_INLINE void x264_ref_mc_luma( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8,
+                                            intptr_t i_src, int mvx, int mvy, int i_width, int i_height,
+                                            const x264_weight_t *weight )
+{
+#if HIGH_BIT_DEPTH
+    if( src8 && src8[1] )
+    {
+        x264_mc_luma_split8( h, dst, i_dst, src, src8, i_src, mvx, mvy, i_width, i_height, weight );
+        return;
+    }
+#endif
+    h->mc.mc_luma( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
+
+static ALWAYS_INLINE pixel *x264_ref_get_ref( x264_t *h, pixel *dst, intptr_t *i_dst, pixel **src, uint8_t **src8,
+                                              intptr_t i_src, int mvx, int mvy, int i_width, int i_height,
+                                              const x264_weight_t *weight )
+{
+#if HIGH_BIT_DEPTH
+    if( src8 && src8[1] )
+        return x264_get_ref_split8( h, dst, i_dst, src, src8, i_src, mvx, mvy, i_width, i_height, weight );
+#endif
+    return h->mc.get_ref( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
+
+/* buf: 2*X264_SPLIT8_STRIDE*i_height pixels, used for a subpel mv of a split
+ * ref; returns the pair's stride */
+static ALWAYS_INLINE intptr_t x264_ref_hpel_pair( x264_t *h, pixel *dst[2], pixel *buf, pixel **src, uint8_t **src8,
+                                                  intptr_t i_src, int mvx, int mvy, int i_width, int i_height )
+{
+#if HIGH_BIT_DEPTH
+    if( src8 && src8[1] && ((mvx|mvy)&3) )
+    {
+        x264_mc_hpel_pair_split8( h, dst, buf, src8, i_src, mvx, mvy, i_width, i_height );
+        return X264_SPLIT8_STRIDE;
+    }
+#endif
+    x264_mc_hpel_pair( dst, src, i_src, mvx, mvy );
+    return i_src;
+}
+
 #endif
 

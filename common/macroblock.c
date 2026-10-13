@@ -30,10 +30,10 @@
 #include "encoder/me.h"
 
 #define MC_LUMA(list,p) \
-    h->mc.mc_luma( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
-                   &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
-                   mvx, mvy, 4*width, 4*height, \
-                   list ? x264_weight_none : &h->sh.weight[i_ref][p] );
+    x264_ref_mc_luma( h, &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
+                      &h->mb.pic.p_fref[list][i_ref][p*4], p ? NULL : h->mb.pic.p_fref8[list][i_ref], \
+                      h->mb.pic.i_stride[p], mvx, mvy, 4*width, 4*height, \
+                      list ? x264_weight_none : &h->sh.weight[i_ref][p] );
 
 static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
 {
@@ -103,10 +103,12 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
 }
 
 #define MC_LUMA_BI(p) \
-    src0 = h->mc.get_ref( tmp0, &i_stride0, &h->mb.pic.p_fref[0][i_ref0][p*4], h->mb.pic.i_stride[p], \
-                          mvx0, mvy0, 4*width, 4*height, x264_weight_none ); \
-    src1 = h->mc.get_ref( tmp1, &i_stride1, &h->mb.pic.p_fref[1][i_ref1][p*4], h->mb.pic.i_stride[p], \
-                          mvx1, mvy1, 4*width, 4*height, x264_weight_none ); \
+    src0 = x264_ref_get_ref( h, tmp0, &i_stride0, &h->mb.pic.p_fref[0][i_ref0][p*4], \
+                             p ? NULL : h->mb.pic.p_fref8[0][i_ref0], h->mb.pic.i_stride[p], \
+                             mvx0, mvy0, 4*width, 4*height, x264_weight_none ); \
+    src1 = x264_ref_get_ref( h, tmp1, &i_stride1, &h->mb.pic.p_fref[1][i_ref1][p*4], \
+                             p ? NULL : h->mb.pic.p_fref8[1][i_ref1], h->mb.pic.i_stride[p], \
+                             mvx1, mvy1, 4*width, 4*height, x264_weight_none ); \
     h->mc.avg[i_mode]( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
                        src0, i_stride0, src1, i_stride1, weight );
 
@@ -383,6 +385,9 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
     if( !b_lookahead )
     {
         int buf_hpel = (h->thread[0]->fdec->i_width[0]+48+32) * sizeof(int16_t);
+        /* i_me_8bit 2: x264_frame_filter's rows of h, v and c after it */
+        if( h->param.analyse.i_me_8bit > 1 )
+            buf_hpel = X264_SPLIT8_SCRATCH( h->thread[0]->fdec->i_width[0] + 16 );
         int buf_ssim = h->param.analyse.b_ssim * 8 * (h->param.i_width/4+3) * sizeof(int);
         int me_range = X264_MIN(h->param.analyse.i_me_range, h->param.analyse.i_mv_range);
         int buf_tesa = (h->param.analyse.i_me_method >= X264_ME_ESA) *
@@ -563,6 +568,19 @@ NOINLINE void x264_copy_column8( pixel *dst, pixel *src )
         dst[i*FDEC_STRIDE] = src[i*FDEC_STRIDE];
 }
 
+/* analyse.i_me_8bit: msb8 and lsb8 of a luma ref at offset (a multiple of 4
+ * pixels), NULL where the frame has none */
+static void ALWAYS_INLINE x264_macroblock_load_fref8( uint8_t **fref8, x264_frame_t *frame, int b_fld, int offset )
+{
+    uint8_t **msb8 = b_fld ? frame->msb8_fld : frame->msb8;
+    uint8_t **lsb8 = b_fld ? frame->lsb8_fld : frame->lsb8;
+    for( int k = 0; k < 4; k++ )
+    {
+        fref8[k]   = msb8[k] ? msb8[k] + offset : NULL;
+        fref8[4+k] = lsb8[k] ? lsb8[k] + (offset >> 2) : NULL;
+    }
+}
+
 static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )
 {
     int mb_interlaced = b_mbaff && MB_INTERLACED;
@@ -625,20 +643,18 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
 
         if( !b_chroma )
         {
+            if( !i && h->me8 )
+                x264_macroblock_load_fref8( h->mb.pic.p_fref8[0][j], h->fref[0][j >> mb_interlaced],
+                                            mb_interlaced, ref_pix_offset[j&1] );
             for( int k = 1; k < 4; k++ )
-                h->mb.pic.p_fref[0][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
+                h->mb.pic.p_fref[0][j][i*4+k] = !i && h->mb.pic.p_fref8[0][j][1] ? NULL
+                                              : filtered_src[k] + ref_pix_offset[j&1];
             if( !i )
             {
                 if( h->sh.weight[j][0].weightfn )
                     h->mb.pic.p_fref_w[j] = &h->fenc->weighted[j >> mb_interlaced][ref_pix_offset[j&1]];
                 else
                     h->mb.pic.p_fref_w[j] = h->mb.pic.p_fref[0][j][0];
-                if( h->me8 )
-                {
-                    uint8_t **msb8 = mb_interlaced ? h->fref[0][j>>1]->msb8_fld : h->fref[0][j]->msb8;
-                    for( int k = 0; k < 4; k++ )
-                        h->mb.pic.p_fref8[0][j][k] = msb8[k] ? msb8[k] + ref_pix_offset[j&1] : NULL;
-                }
             }
         }
     }
@@ -657,15 +673,13 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             }
             h->mb.pic.p_fref[1][j][i*4] = plane_src + ref_pix_offset[j&1];
 
+            if( !i && h->me8 )
+                x264_macroblock_load_fref8( h->mb.pic.p_fref8[1][j], h->fref[1][j >> mb_interlaced],
+                                            mb_interlaced, ref_pix_offset[j&1] );
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )
-                    h->mb.pic.p_fref[1][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
-            if( !i && h->me8 )
-            {
-                uint8_t **msb8 = mb_interlaced ? h->fref[1][j>>1]->msb8_fld : h->fref[1][j]->msb8;
-                for( int k = 0; k < 4; k++ )
-                    h->mb.pic.p_fref8[1][j][k] = msb8[k] ? msb8[k] + ref_pix_offset[j&1] : NULL;
-            }
+                    h->mb.pic.p_fref[1][j][i*4+k] = !i && h->mb.pic.p_fref8[1][j][1] ? NULL
+                                                  : filtered_src[k] + ref_pix_offset[j&1];
         }
 }
 

@@ -159,6 +159,15 @@ then deletes it once md5 identity holds across the test matrix.
    `*_avg2` kernels/qpel RD/bidir (8, 9). Drop `filtered[0][1..3]`
    16-bit stores; unpack in get_ref's temp and in `pixel_avg2` and the
    fused avg2-cmp kernels. Field versions with them.
+   As built: `filtered[0][1..3]` are not allocated at level 2 (the VERIFY
+   build keeps them as a shadow written by the plain hpel filter);
+   `hpel_filter8` writes only the split (frame pass), the field pass and
+   non-AVX2 go row by row through scratch rows. Every reader goes through
+   `x264_ref_mc_luma`/`x264_ref_get_ref`/`x264_ref_hpel_pair`
+   (`common/macroblock.h`), which unpack (`plane_unpack8`) the windows the
+   unchanged 16-bit kernels read into a 32 pixel stride temp; fullpel mvs
+   still read the 16-bit `plane[0]`, but for mbcmp_bi4's shared stride.
+   No reader is fused yet.
 2. **4:4:4 chroma hpel planes** if 4:4:4 matters (same code as 1).
 3. **Fullpel luma**: writers recon store (1), deblock band helper (2),
    expansion (3), field copies (5); readers hpel input (4, the hard one),

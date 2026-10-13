@@ -79,12 +79,13 @@ typedef struct x264_frame
     int     i_lines_lowres;
     pixel *plane[3];
     pixel *plane_fld[3];
-    pixel *filtered[3][4]; /* plane[0], H, V, HV */
+    pixel *filtered[3][4]; /* plane[0], H, V, HV; luma H, V, HV NULL at analyse.i_me_8bit 2 */
     pixel *filtered_fld[3][4];
     pixel *lowres[4]; /* half-size copy of input frame: Orig, H, V, HV */
     uint8_t *lowres8[4]; /* 8-bit copies of lowres for rc.b_lookahead_8bit, same layout */
     /* analyse.i_me_8bit, high bit depth: SVT style split of filtered[0][0] and
-     * filtered_fld[0][0]. msb8 = v >> 2 in the layout of the 16-bit plane, its
+     * filtered_fld[0][0], and at level 2 of [1..3], which then exist only as
+     * this (X264_ME8_VERIFY keeps the 16-bit ones as a shadow). msb8 = v >> 2 in the layout of the 16-bit plane, its
      * stride i_stride[0] bytes; lsb8 = v & 3, four pixels a byte (pixel x in bits
      * 2*(x&3) of byte x>>2), rows of i_stride[0]/4 bytes. msb8 + lsb8 is exactly
      * the 16-bit plane, padding included. Each plane is one block of buffer8,

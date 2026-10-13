@@ -2101,9 +2101,11 @@ static int check_mc( int cpu_ref, int cpu_new )
 #if HIGH_BIT_DEPTH
     if( mc_a.hpel_filter8 && mc_a.hpel_filter8 != mc_ref.hpel_filter8 )
     {
-        /* as hpel_filter, plus the msb8/lsb8 split of what it writes: three
+        /* the msb8/lsb8 split of hpel_filter's output, and nothing else: three
          * planes 2048 bytes apart, rows of 64 msb bytes, lsb rows 1024 bytes
-         * after them; the kernel starts up to 8 pixels left of dst */
+         * after them; the kernel starts up to 8 pixels left of src's column.
+         * Every pixel of a row is the split of the asm hpel_filter's output
+         * (the C one's columns [2, 45) included), its wrong edge columns too. */
         pixel *srchpel = pbuf1+8+2*64;
         pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
         pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
@@ -2136,15 +2138,15 @@ static int check_mc( int cpu_ref, int cpu_new )
             memset( pbuf4, 0, 4096 * sizeof(pixel) );
             memset( buf8, 0xaa, 3*2048 + 64 );
             mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, src+o, 64, 48, 10, tmp );
-            call_a( mc_a.hpel_filter8, dsta[0]+o, dsta[1]+o, dsta[2]+o, src+o, (intptr_t)64, 48, 10, tmp,
-                    msb, lsb, (intptr_t)2048 );
+            mc_a.hpel_filter( dsta[0]+o, dsta[1]+o, dsta[2]+o, src+o, 64, 48, 10, tmp );
+            call_a( mc_a.hpel_filter8, msb, lsb, (intptr_t)2048, src+o, (intptr_t)64, 48, 10, tmp );
             for( int i = 0; i < 3 && ok; i++ )
                 for( int j = 0; j < 10 && ok; j++ )
                 {
                     if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
                     {
                         ok = 0;
-                        fprintf( stderr, "hpel filter8 differs at plane %c line %d pass %d\n", "hvc"[i], j, pass );
+                        fprintf( stderr, "hpel filter8: hpel_filter differs at plane %c line %d pass %d\n", "hvc"[i], j, pass );
                     }
                     /* msb << 2 | lsb is the 16-bit output, every pixel of the row */
                     for( int x = 0; x < 48 && ok; x++ )

@@ -627,7 +627,9 @@ struct x264_t
             /* [12]: yN, yH, yV, yHV, (NV12 ? uv : I444 ? (uN, uH, uV, uHV, vN, ...)) */
             pixel *p_fref[2][X264_REF_MAX*2][12];
             pixel *p_fref_w[X264_REF_MAX*2];  /* weighted fullpel luma */
-            uint8_t *p_fref8[2][X264_REF_MAX*2][4]; /* msb8 of the luma p_fref, NULL without */
+            /* msb8 [0..3] and lsb8 [4..7] of the luma p_fref, NULL without; with
+             * [1] (i_me_8bit 2) p_fref[1..3] are NULL, see x264_ref_mc_luma */
+            uint8_t *p_fref8[2][X264_REF_MAX*2][8];
             uint16_t *p_integral[2][X264_REF_MAX];
 
             /* fref stride */

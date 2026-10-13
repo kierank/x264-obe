@@ -111,14 +111,13 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
-    /* analyse.i_me_8bit 2, high bit depth: hpel_filter that also writes the
-     * plane_split8 of the pixels it writes; msb and lsb are those of dsth's
-     * first pixel (a multiple of 4 pixels from a 32 byte boundary in src),
-     * dstv's and dstc's plane8 and 2*plane8 bytes after them. NULL if there
-     * is no asm. */
-    void (*hpel_filter8)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
-                          intptr_t i_stride, int i_width, int i_height, int16_t *buf,
-                          uint8_t *msb, uint8_t *lsb, intptr_t plane8 );
+    /* analyse.i_me_8bit 2, high bit depth: hpel_filter writing only the
+     * plane_split8 of its h, v and c output, no 16-bit planes; msb and lsb are
+     * those of h at src's first pixel (a multiple of 4 pixels from a 32 byte
+     * boundary), v's and c's plane8 and 2*plane8 bytes after them. Writes the
+     * split of the pixels hpel_filter would write. NULL if there is no asm. */
+    void (*hpel_filter8)( uint8_t *msb, uint8_t *lsb, intptr_t plane8, pixel *src,
+                          intptr_t i_stride, int i_width, int i_height, int16_t *buf );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );
@@ -145,6 +144,10 @@ typedef struct
      * pixels (a multiple of 16), rows i_stride pixels (src), bytes (msb) and
      * i_stride/4 bytes (lsb) apart. */
     void (*plane_split8)( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_stride, int w, int h );
+    /* plane_split8's inverse, dst[x] = msb[x] << 2 | lsb bits of x: h rows of w
+     * pixels (a multiple of 16), msb and lsb at an x that is a multiple of 4,
+     * rows i_dst pixels (dst), i_src bytes (msb) and i_src/4 bytes (lsb) apart */
+    void (*plane_unpack8)( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
     weight_fn_t *weight;
     weight_fn_t *offsetadd;
     weight_fn_t *offsetsub;
@@ -170,5 +173,31 @@ static ALWAYS_INLINE void x264_mc_hpel_pair( pixel *dst[2], pixel **src, intptr_
     dst[0] = src[x264_hpel_ref0[qpel_idx]] + offset + ((mvy&3) == 3) * i_stride;
     dst[1] = qpel_idx & 5 ? src[x264_hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3) : dst[0];
 }
+
+/* analyse.i_me_8bit 2 stores the luma h, v and c planes only as msb8/lsb8. Their
+ * readers take src8, msb8 of planes 0-3 in [0..3] and lsb8 in [4..7] at a block
+ * a multiple of 4 pixels from x = 0, and unpack what the 16-bit kernels would
+ * read into temps of X264_SPLIT8_STRIDE pixels a row. */
+#define X264_SPLIT8_STRIDE 32
+/* mc_luma and get_ref of src/src8, src[0] the 16-bit fullpel plane; get_ref
+ * returns dst (stride *i_dst) where it would return an hpel plane */
+#define x264_mc_luma_split8 x264_template(mc_luma_split8)
+void x264_mc_luma_split8( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
+                          int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+#define x264_get_ref_split8 x264_template(get_ref_split8)
+pixel *x264_get_ref_split8( x264_t *h, pixel *dst, intptr_t *i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
+                            int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+/* x264_mc_hpel_pair, i_width x i_height (up to 16x16) unpacked into buf
+ * (2*X264_SPLIT8_STRIDE*i_height pixels), fullpel too; stride X264_SPLIT8_STRIDE */
+#define x264_mc_hpel_pair_split8 x264_template(mc_hpel_pair_split8)
+void x264_mc_hpel_pair_split8( x264_t *h, pixel *dst[2], pixel *buf, uint8_t **src8, intptr_t i_src,
+                               int mvx, int mvy, int i_width, int i_height );
+
+/* i_me_8bit 2: x264_frame_filter's scratch rows of h, v and c before their
+ * split, w the hpel width (frame width + 16), in h->scratch_buffer after the
+ * filter's int16 buf */
+#define X264_SPLIT8_ROWS_OFFSET( w ) (ALIGN( ((w)+64) * (int)sizeof(int16_t), 64 ) + 64)
+#define X264_SPLIT8_ROW_STRIDE( w ) ALIGN( (w)+96, 32 )
+#define X264_SPLIT8_SCRATCH( w ) (X264_SPLIT8_ROWS_OFFSET( w ) + 3 * X264_SPLIT8_ROW_STRIDE( w ) * (int)sizeof(pixel) + 64)
 
 #endif

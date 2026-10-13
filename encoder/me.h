@@ -50,6 +50,10 @@ typedef struct
      * NULL for a search on the 16-bit planes. p_fenc8: the fenc's msb8. */
     uint8_t *p_fref8[4];
     uint8_t *p_fenc8;
+    /* i_me_8bit 2: msb8 [0..3] and lsb8 [4..7] of p_fref[0..3] for reading the
+     * luma planes (x264_ref_mc_luma), weighted refs too; with [1], p_fref[1..3]
+     * are NULL. [1] NULL without. */
+    uint8_t *p_split8[8];
 
     ALIGNED_4( int16_t mvp[2] );
 
