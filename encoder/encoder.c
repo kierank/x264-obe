@@ -3142,6 +3142,8 @@ static intptr_t x264_slice_write( x264_t *h )
         {
             if( h->mb.b_adaptive_mbaff )
             {
+                if( h->mb.fenc_bot[0] && !h->mb.b_fenc_bot && i_mb_y >= h->mb.i_mb_height - 2 )
+                    x264_fenc_bot_copy( h );
                 if( !(i_mb_y&1) )
                 {
                     /* FIXME: VSAD is fast but fairly poor at choosing the best interlace type. */
@@ -3462,6 +3464,7 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
+    h->mb.b_fenc_bot = 0;
     if( h->param.b_sliced_threads )
     {
         h->i_threadslice_nal = h->out.i_nal;

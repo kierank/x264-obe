@@ -385,6 +385,13 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 CHECKED_MALLOC( h->deblock_strength[i], sizeof(**h->deblock_strength) * h->mb.i_mb_width );
             h->deblock_strength[1] = h->deblock_strength[i];
         }
+        if( PARAM_INTERLACED && h->mb.b_adaptive_mbaff && h->param.analyse.i_weighted_pred > 0
+            && h->i_thread_frames > 1 && h->mb.i_mb_height*16 > h->param.i_height )
+            for( int i = 0; i < (CHROMA444 ? 3 : 2); i++ )
+            {
+                int rows = 2*(16 >> (i && CHROMA_V_SHIFT)) + 2;
+                CHECKED_MALLOCZERO( h->mb.fenc_bot[i], h->thread[0]->fdec->i_stride[i] * rows * sizeof(pixel) );
+            }
     }
 
     /* Allocate scratch buffer */
@@ -425,6 +432,8 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
         for( int i = 0; i < (PARAM_INTERLACED ? 5 : 2); i++ )
             for( int j = 0; j < (CHROMA444 ? 3 : 2); j++ )
                 x264_free( h->intra_border_backup[i][j] - 16 );
+        for( int i = 0; i < 3; i++ )
+            x264_free( h->mb.fenc_bot[i] );
     }
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );
@@ -590,6 +599,8 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
         ref_pix_offset[1] += (1-2*(mb_y&1)) * i_stride;
     h->mb.pic.i_stride[i] = i_stride2;
     h->mb.pic.p_fenc_plane[i] = &h->fenc->plane[i][i_pix_offset];
+    if( b_mbaff && h->mb.b_fenc_bot && mb_y >= h->mb.i_mb_height - 2 )
+        h->mb.pic.p_fenc_plane[i] = h->mb.fenc_bot[i] + PADH + i_pix_offset - (height*(h->mb.i_mb_height-2) - 2) * i_stride;
     h->mb.pic.i_fenc_pre = 0;
     if( b_chroma )
     {

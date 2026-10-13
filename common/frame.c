@@ -755,6 +755,25 @@ void x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0
     }
 }
 
+/* The padding below the picture is per field, and x264_expand_border_mbpair
+ * makes it per frame under frame mbpairs. With weightp and frame threads the
+ * lookahead may read this frame's source as a reference meanwhile, so the
+ * bottom mbpair row (and the 2 rows above it, for intra prediction from the
+ * source) is copied to fenc_bot and padded there. */
+void x264_fenc_bot_copy( x264_t *h )
+{
+    for( int i = 0; i < h->fenc->i_plane; i++ )
+    {
+        int height = 16 >> (i && CHROMA_V_SHIFT);
+        int stride = h->fenc->i_stride[i];
+        int y0 = height*(h->mb.i_mb_height-2) - 2;
+        for( int y = 0; y < 2*height+2; y++ )
+            memcpy( h->mb.fenc_bot[i] + PADH + y*stride, h->fenc->plane[i] + (y0+y)*stride,
+                    16*h->mb.i_mb_width*sizeof(pixel) );
+    }
+    h->mb.b_fenc_bot = 1;
+}
+
 void x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y )
 {
     for( int i = 0; i < h->fenc->i_plane; i++ )
@@ -763,9 +782,11 @@ void x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y )
         int stride = h->fenc->i_stride[i];
         int height = h->param.i_height >> v_shift;
         int pady = (h->mb.i_mb_height * 16 - h->param.i_height) >> v_shift;
-        pixel *fenc = h->fenc->plane[i] + 16*mb_x;
-        for( int y = height; y < height + pady; y++ )
-            memcpy( fenc + y*stride, fenc + (height-1)*stride, 16*sizeof(pixel) );
+        pixel *fenc = h->fenc->plane[i] + 16*mb_x + height*stride;
+        if( h->mb.b_fenc_bot )
+            fenc = h->mb.fenc_bot[i] + PADH + 16*mb_x + (height - ((16 >> v_shift)*(h->mb.i_mb_height-2) - 2))*stride;
+        for( int y = 0; y < pady; y++ )
+            memcpy( fenc + y*stride, fenc - stride, 16*sizeof(pixel) );
     }
 }
 

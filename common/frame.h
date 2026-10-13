@@ -262,6 +262,8 @@ void          x264_frame_expand_border_mod16( x264_t *h, x264_frame_t *frame );
 void          x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 );
 #define x264_expand_border_mbpair x264_template(expand_border_mbpair)
 void          x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y );
+#define x264_fenc_bot_copy x264_template(fenc_bot_copy)
+void          x264_fenc_bot_copy( x264_t *h );
 
 #define x264_frame_deblock_row x264_template(frame_deblock_row)
 void          x264_frame_deblock_row( x264_t *h, int mb_y );
