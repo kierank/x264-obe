@@ -3145,4 +3145,105 @@ INIT_XMM ssse3
 FRAME_INIT_LOWRES8
 INIT_YMM avx2
 FRAME_INIT_LOWRES8
+
+;-----------------------------------------------------------------------------
+; void plane_copy_16to8( uint8_t *dst, intptr_t i_dst, uint16_t *src, intptr_t i_src, int w, int h )
+;-----------------------------------------------------------------------------
+; --weightp-8bit: min( (x+2)>>2, 255 ), w rounded up to mmsize. m2 = pw_2.
+%macro PLANE_COPY_16TO8 0
+cglobal plane_copy_16to8, 6,7,3
+    FIX_STRIDES r3
+%if mmsize == 32
+    vpbroadcastd m2, [pw_2]
+%else
+    mova     m2, [pw_2]
+%endif
+.loopy:
+    xor     r6d, r6d
+.loopx:
+    movu     m0, [r2+r6*2]
+    movu     m1, [r2+r6*2+mmsize]
+    paddw    m0, m2
+    paddw    m1, m2
+    psrlw    m0, 2
+    psrlw    m1, 2
+    packuswb m0, m1                 ; 256 saturates to 255
+%if mmsize == 32
+    vpermq   m0, m0, q3120
+%endif
+    movu [r0+r6], m0
+    add     r6d, mmsize
+    cmp     r6d, r4d
+    jl .loopx
+    add      r0, r1
+    add      r2, r3
+    dec     r5d
+    jg .loopy
+    RET
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void plane_copy_deinterleave_16to8( uint8_t *dstu, intptr_t i_dstu, uint8_t *dstv, intptr_t i_dstv,
+;                                     uint16_t *src, intptr_t i_src, int w, int h )
+;-----------------------------------------------------------------------------
+; --weightp-8bit: plane_copy_deinterleave then min( (x+2)>>2, 255 ), w rounded up to
+; mmsize. packuswb interleaves the bytes, the low ones are u, the high ones v.
+; m4 = pw_2, m5 = pw_00ff, m6 = dword order.
+%macro PLANE_COPY_DEINTERLEAVE_16TO8 0
+cglobal plane_copy_deinterleave_16to8, 8,9,7
+    FIX_STRIDES r5
+%if mmsize == 32
+    vpbroadcastd m4, [pw_2]
+    vpbroadcastd m5, [pw_00ff]
+    pmovzxbd     m6, [lowres8_perm]
+%else
+    mova     m4, [pw_2]
+    mova     m5, [pw_00ff]
+%endif
+.loopy:
+    xor     r8d, r8d
+.loopx:
+    movu     m0, [r4+r8*4+0*mmsize]
+    movu     m1, [r4+r8*4+1*mmsize]
+    movu     m2, [r4+r8*4+2*mmsize]
+    movu     m3, [r4+r8*4+3*mmsize]
+    paddw    m0, m4
+    paddw    m1, m4
+    paddw    m2, m4
+    paddw    m3, m4
+    psrlw    m0, 2
+    psrlw    m1, 2
+    psrlw    m2, 2
+    psrlw    m3, 2
+    packuswb m0, m1                 ; u v, 256 saturates to 255
+    packuswb m2, m3
+    psrlw    m1, m0, 8
+    psrlw    m3, m2, 8
+    pand     m0, m5
+    pand     m2, m5
+    packuswb m0, m2                 ; u
+    packuswb m1, m3                 ; v
+%if mmsize == 32
+    vpermd   m0, m6, m0
+    vpermd   m1, m6, m1
+%endif
+    movu [r0+r8], m0
+    movu [r2+r8], m1
+    add     r8d, mmsize
+    cmp     r8d, r6d
+    jl .loopx
+    add      r0, r1
+    add      r2, r3
+    add      r4, r5
+    dec     r7d
+    jg .loopy
+    RET
+%endmacro
+
+INIT_XMM sse2
+PLANE_COPY_16TO8
+PLANE_COPY_DEINTERLEAVE_16TO8
+INIT_YMM avx2
+PLANE_COPY_16TO8
+PLANE_COPY_DEINTERLEAVE_16TO8
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
