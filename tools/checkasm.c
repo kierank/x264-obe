@@ -930,6 +930,77 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel asd :" );
 
+    ok = 1; used_asm = 0;
+    if( pixel_asm.weightp_stats8 != pixel_ref.weightp_stats8 ||
+        pixel_asm.weightp_sum8 != pixel_ref.weightp_sum8 ||
+        pixel_asm.weightp_sum8_nv != pixel_ref.weightp_sum8_nv )
+    {
+        /* random and near PIXEL_MAX; outputs compared up to n, as the asm may do n
+         * rounded up to 16 (src and outputs have room for that) */
+        intptr_t stride = 16*48 + 64;
+        pixel *src = x264_malloc( 16*stride*sizeof(pixel) );
+        int32_t *out = x264_malloc( 4*64*sizeof(int32_t) );
+        int32_t *outc[2] = { out, out+64 };
+        int32_t *outa[2] = { out+128, out+192 };
+        ok = src && out;
+        for( int k = 0; k < 2 && ok; k++ )
+        {
+            for( int i = 0; i < 16*stride; i++ )
+                src[i] = k ? PIXEL_MAX - (rand()&3) : rand() & PIXEL_MAX;
+            for( int height = 8; height <= 16 && ok; height += 8 )
+                for( int n = 1; n <= 40 && ok; n += 3 )
+                {
+                    if( pixel_asm.weightp_stats8 != pixel_ref.weightp_stats8 )
+                    {
+                        set_func_name( "weightp_stats8" );
+                        used_asm = 1;
+                        memset( out, 0, 4*64*sizeof(int32_t) );
+                        call_c( pixel_c.weightp_stats8, outc[0], (uint32_t*)outc[1], src, stride, n, height );
+                        call_a( pixel_asm.weightp_stats8, outa[0], (uint32_t*)outa[1], src, stride, n, height );
+                        if( memcmp( outc[0], outa[0], n*sizeof(int32_t) ) || memcmp( outc[1], outa[1], n*sizeof(int32_t) ) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "weightp_stats8 FAILED: src %d n %d height %d\n", k, n, height );
+                        }
+                    }
+                    if( pixel_asm.weightp_sum8 != pixel_ref.weightp_sum8 )
+                    {
+                        set_func_name( "weightp_sum8" );
+                        used_asm = 1;
+                        for( int denom = 0; denom <= 7 && ok; denom++ )
+                        {
+                            int scale = denom == 7 ? 127 : denom == 6 ? 0 : rand() & 127;
+                            memset( out, 0, 4*64*sizeof(int32_t) );
+                            call_c( pixel_c.weightp_sum8, outc[0], src, stride, n, height, scale, denom );
+                            call_a( pixel_asm.weightp_sum8, outa[0], src, stride, n, height, scale, denom );
+                            if( memcmp( outc[0], outa[0], n*sizeof(int32_t) ) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "weightp_sum8 FAILED: src %d n %d height %d scale %d denom %d\n",
+                                         k, n, height, scale, denom );
+                            }
+                        }
+                    }
+                    if( pixel_asm.weightp_sum8_nv != pixel_ref.weightp_sum8_nv )
+                    {
+                        set_func_name( "weightp_sum8_nv" );
+                        used_asm = 1;
+                        memset( out, 0, 4*64*sizeof(int32_t) );
+                        call_c( pixel_c.weightp_sum8_nv, outc[0], outc[1], src, stride, n, height );
+                        call_a( pixel_asm.weightp_sum8_nv, outa[0], outa[1], src, stride, n, height );
+                        if( memcmp( outc[0], outa[0], n*sizeof(int32_t) ) || memcmp( outc[1], outa[1], n*sizeof(int32_t) ) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "weightp_sum8_nv FAILED: src %d n %d height %d\n", k, n, height );
+                        }
+                    }
+                }
+        }
+        x264_free( src );
+        x264_free( out );
+    }
+    report( "weightp stats :" );
+
 #define TEST_INTRA_X3( name, i8x8, ... ) \
     if( pixel_asm.name && pixel_asm.name != pixel_ref.name ) \
     { \

@@ -1118,6 +1118,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     }
     if( cpu&X264_CPU_AVX2 )
     {
+#if ARCH_X86_64
+        pixf->weightp_stats8 = x264_weightp_stats8_avx2;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx2;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
+#endif
         INIT2( ssd, _avx2 );
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx2;
@@ -1465,6 +1470,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 
     if( cpu&X264_CPU_AVX2 )
     {
+#if ARCH_X86_64
+        pixf->weightp_stats8 = x264_weightp_stats8_avx2;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx2;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
+#endif
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
         pixf->sad[PIXEL_8x16] = pixf->sad_aligned[PIXEL_8x16] = x264_pixel_sad_8x16_avx2;

@@ -183,7 +183,7 @@ typedef struct
     x264_frame_t *ref;
     pixel *dst[2];
     int b_mc;
-    int n8;             /* array row stride */
+    int n16;            /* array row stride, asm may do n rounded up to 16 */
     int32_t *fsum[2];
     int32_t *rsum[2];
     uint32_t *minmax[2];
@@ -222,9 +222,9 @@ static void x264_weight_init_chroma_rows( x264_weight_band_t *b )
             h->mc.plane_copy_deinterleave( c->dst[0] + pel_offset_y, i_stride, c->dst[1] + pel_offset_y, i_stride,
                                            ref->plane[1] + pel_offset_y, i_stride, 8*n, height );
         for( int p = 0; p < 2; p++ )
-            h->pixf.weightp_stats8( c->rsum[p] + mb_y*c->n8, c->minmax[p] + mb_y*c->n8,
+            h->pixf.weightp_stats8( c->rsum[p] + mb_y*c->n16, c->minmax[p] + mb_y*c->n16,
                                     c->dst[p] + pel_offset_y, i_stride, n, height );
-        h->pixf.weightp_sum8_nv( c->fsum[0] + mb_y*c->n8, c->fsum[1] + mb_y*c->n8,
+        h->pixf.weightp_sum8_nv( c->fsum[0] + mb_y*c->n16, c->fsum[1] + mb_y*c->n16,
                                  fenc->plane[1] + pel_offset_y, i_stride, n, height );
     }
 }
@@ -232,15 +232,15 @@ static void x264_weight_init_chroma_rows( x264_weight_band_t *b )
 static NOINLINE void x264_weight_cost_init_chroma( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, x264_weight_chroma_t *c )
 {
     int ref0_distance = fenc->i_frame - ref->i_frame - 1;
-    int n8 = (h->mb.i_mb_width + 7) & ~7;
-    int size = n8 * h->mb.i_mb_height;
+    int n16 = (h->mb.i_mb_width + 15) & ~15;
+    int size = n16 * h->mb.i_mb_height;
     c->h = h;
     c->fenc = fenc;
     c->ref = ref;
     c->dst[0] = h->mb.p_weight_buf[0];
     c->dst[1] = h->mb.p_weight_buf[0] + fenc->i_stride[1]*fenc->i_lines[1];
     c->b_mc = fenc->lowres_mvs[0][ref0_distance][0][0] != 0x7FFF;
-    c->n8 = n8;
+    c->n16 = n16;
     for( int p = 0; p < 2; p++ )
     {
         c->fsum[p] = h->mb.p_weight_sums + (0+p)*size;
@@ -355,7 +355,7 @@ static void x264_weight_sum_chroma_rows( x264_weight_band_t *b )
     int i_stride = c->fenc->i_stride[1];
     int height = 16 >> CHROMA_V_SHIFT;
     for( int mb_y = b->mb_y0; mb_y < b->mb_y1; mb_y++ )
-        h->pixf.weightp_sum8( c->wsum[p] + mb_y*c->n8, c->dst[p] + mb_y*height*i_stride, i_stride,
+        h->pixf.weightp_sum8( c->wsum[p] + mb_y*c->n16, c->dst[p] + mb_y*height*i_stride, i_stride,
                               h->mb.i_mb_width, height, c->wscale[p], c->wdenom[p] );
 }
 
@@ -374,7 +374,7 @@ static NOINLINE unsigned int x264_weight_cost_chroma( x264_t *h, x264_weight_chr
     if( !w )
     {
         int32_t *rsum = c->rsum[p];
-        for( int mb_y = 0; mb_y < h->mb.i_mb_height; mb_y++, fsum += c->n8, rsum += c->n8 )
+        for( int mb_y = 0; mb_y < h->mb.i_mb_height; mb_y++, fsum += c->n16, rsum += c->n16 )
             for( int x = 0; x < n; x++ )
                 cost += abs( rsum[x] - fsum[x] );
         return cost;
@@ -394,7 +394,7 @@ static NOINLINE unsigned int x264_weight_cost_chroma( x264_t *h, x264_weight_chr
     }
     int32_t *wsum = c->wsum[p];
     uint32_t *minmax = c->minmax[p];
-    for( int mb_y = 0; mb_y < h->mb.i_mb_height; mb_y++, fsum += c->n8, wsum += c->n8, minmax += c->n8 )
+    for( int mb_y = 0; mb_y < h->mb.i_mb_height; mb_y++, fsum += c->n16, wsum += c->n16, minmax += c->n16 )
         for( int x = 0; x < n; x++ )
         {
             int lo = ((int)(minmax[x] & 0xffff) * scale + round) >> denom;
