@@ -107,7 +107,6 @@ unsigned int x264_weight_luma_cost_rows( x264_t *h, x264_weight_src_t *s, void *
     unsigned int cost = 0;
     ALIGNED_ARRAY_16( pixel, buf,[8*8] );
 
-    /* cmp is at BIT_DEPTH, i_intra_cost at 8-bit scale */
     for( int y = 8*mb_y0; y < 8*mb_y1; y += 8 )
     {
         int pixoff = y*i_stride;
@@ -117,13 +116,13 @@ unsigned int x264_weight_luma_cost_rows( x264_t *h, x264_weight_src_t *s, void *
             {
                 w->weightfn[8>>2]( buf, 8, &src[pixoff], i_stride, w, 8 );
                 int cmp = h->pixf.mbcmp[PIXEL_8x8]( buf, 8, &fenc_plane[pixoff], i_stride );
-                cost += X264_MIN( cmp, s->intra_cost[i_mb] << (BIT_DEPTH-8) );
+                cost += X264_MIN( cmp, s->intra_cost[i_mb] );
             }
         else
             for( int x = 0; x < 8*s->mb_width; x += 8, i_mb++, pixoff += 8 )
             {
                 int cmp = h->pixf.mbcmp[PIXEL_8x8]( &src[pixoff], i_stride, &fenc_plane[pixoff], i_stride );
-                cost += X264_MIN( cmp, s->intra_cost[i_mb] << (BIT_DEPTH-8) );
+                cost += X264_MIN( cmp, s->intra_cost[i_mb] );
             }
     }
     x264_emms();
@@ -163,8 +162,7 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
         {
             pixel *r = src + y*i_stride + 8*x;
             pixel *f = fenc_plane + y*i_stride + 8*x;
-            /* cmp is at BIT_DEPTH, i_intra_cost at 8-bit scale */
-            int icost = s->intra_cost[i_mb] << (BIT_DEPTH-8);
+            int icost = s->intra_cost[i_mb];
             int cmp = h->pixf.mbcmp[PIXEL_8x8]( r, i_stride, f, i_stride );
             cost[0] += X264_MIN( cmp, icost );
             for( int k = 0; k < t->i_scales; k++ )
