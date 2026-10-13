@@ -836,7 +836,9 @@ void x264_frame_bind_fpel16( x264_t *h, x264_frame_t *frame )
     x264_frame_t *old = h->fpel16_frame;
     if( !h->fpel16_base )
         return;
-    if( old && old != frame )
+    /* with frame threads a non-ref old may have gone back to the unused pool and
+     * be another thread's fdec already, bound to that thread's fpel16 */
+    if( old && old != frame && old->plane[0] == h->fpel16[0] )
     {
 #ifdef X264_ME8_VERIFY
         int i_padv = PADV << PARAM_INTERLACED;
