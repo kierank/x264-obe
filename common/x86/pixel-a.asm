@@ -345,6 +345,8 @@ lowres_hu3:    db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
 %endif
 ; weightp: vpermd orders of 2 and 4 blocks a register, byte loads, last so nothing moves
 weightp_perm8:  db 0,4,1,5,2,6,3,7
+weightp_perm16: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
+weightp_perm_nv16: db 0,4,1,5,2,6,3,7,8,12,9,13,10,14,11,15
 
 SECTION .text
 
@@ -9332,6 +9334,23 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
 %endif
 %endmacro
 
+; vpermd order of the HADD4D lanes: blocks { 0 2 4 6 | 1 3 5 7 } (ymm), { 0 4 8 12 | 1 5 9 13 | ... } (zmm)
+%macro WEIGHTP_PERM 1
+%if mmsize == 64
+    pmovzxbd   %1, [weightp_perm16]
+%else
+    pmovzxbd   %1, [weightp_perm8]
+%endif
+%endmacro
+
+%macro ALL_ONES 1
+%if mmsize == 64
+    vpternlogd %1, %1, %1, 0xff
+%else
+    pcmpeqw    %1, %1
+%endif
+%endmacro
+
 ; %1 = per lane { sum of %1, of %2, of %3, of %4 }, from 4 dwords a lane each; clobbers %2 %3
 %macro HADD4D 6 ; a, b, c, d, tmp, tmp
     punpckldq  %5, %1, %2
@@ -9375,7 +9394,7 @@ cglobal weightp_sum8, 7,9,11
     vpbroadcastd m7, xm7
     movd      xm6, r6d
     vpbroadcastd m5, [pw_1]
-    pmovzxbd  m10, [weightp_perm8]
+    WEIGHTP_PERM m10
 .loopx:
     pxor       m0, m0
     pxor       m1, m1
@@ -9437,16 +9456,16 @@ cglobal weightp_sum8, 7,9,11
 cglobal weightp_stats8, 6,8,15
     FIX_STRIDES r3
     vpbroadcastd m13, [pw_1]
-    pmovzxbd  m14, [weightp_perm8]
+    WEIGHTP_PERM m14
 .loopx:
     pxor       m0, m0
     pxor       m1, m1
     pxor       m2, m2
     pxor       m3, m3
-    pcmpeqw    m4, m4
-    pcmpeqw    m5, m5
-    pcmpeqw    m6, m6
-    pcmpeqw    m7, m7
+    ALL_ONES   m4
+    ALL_ONES   m5
+    ALL_ONES   m6
+    ALL_ONES   m7
     pxor       m8, m8
     pxor       m9, m9
     pxor      m10, m10
@@ -9509,8 +9528,23 @@ cglobal weightp_stats8, 6,8,15
     HADD4D     %5, %6, %7, %8, %9, %10
 %endmacro
 
+; zmm: two blocks a register, in lanes 0 1 and 2 3. %1 %2: HADD4D of registers 0-3 and
+; 4-7 (blocks 0-7, 8-15); %1 = blocks 0 2 4 6 | 1 3 5 7 | 8 10 12 14 | 9 11 13 15
+%macro WEIGHTP_NV_LANES 3 ; lo, hi, tmp
+    vshufi32x4 %3, %1, %1, q2301
+    paddd      %1, %3
+    vshufi32x4 %3, %2, %2, q2301
+    paddd      %2, %3
+    vshufi32x4 %1, %1, %2, q2020
+%endmacro
+
 %macro WEIGHTP_SUM8_NV 0
+%if mmsize == 64
+cglobal weightp_sum8_nv, 6,8,20
+    pmovzxbd  m14, [weightp_perm_nv16]
+%else
 cglobal weightp_sum8_nv, 6,8,16
+%endif
     FIX_STRIDES r3
     vpbroadcastd m15, [pd_ffff]
 .loopx:
@@ -9536,6 +9570,16 @@ cglobal weightp_sum8_nv, 6,8,16
     add        r6, r3
     dec       r7d
     jg .loopy
+%if mmsize == 64
+    WEIGHTP_NV_SPLIT m0, m1, m2, m3, m8,  m9,  m10, m11, m12, m13
+    WEIGHTP_NV_SPLIT m4, m5, m6, m7, m16, m17, m18, m19, m12, m13
+    WEIGHTP_NV_LANES m0, m4,  m12
+    WEIGHTP_NV_LANES m8, m16, m12
+    vpermd     m0, m14, m0
+    vpermd     m8, m14, m8
+    movu     [r0], m0
+    movu     [r1], m8
+%else
     ; one block a register: blocks 0-3, then 4-7, each the sum of its two lanes
     WEIGHTP_NV_SPLIT m0, m1, m2, m3, m8, m9, m10, m11, m12, m13
     vextracti128 xm12, m0, 1
@@ -9551,6 +9595,7 @@ cglobal weightp_sum8_nv, 6,8,16
     paddd      xm8, xm12
     movu  [r0+16], xm4
     movu  [r1+16], xm8
+%endif
     add        r0, mmsize
     add        r1, mmsize
     add        r2, 4*mmsize*SIZEOF_PIXEL
@@ -9560,6 +9605,10 @@ cglobal weightp_sum8_nv, 6,8,16
 %endmacro
 
 INIT_YMM avx2
+WEIGHTP_SUM8
+WEIGHTP_STATS8
+WEIGHTP_SUM8_NV
+INIT_ZMM avx512
 WEIGHTP_SUM8
 WEIGHTP_STATS8
 WEIGHTP_SUM8_NV
