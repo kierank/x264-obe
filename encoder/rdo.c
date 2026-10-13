@@ -174,12 +174,14 @@ static inline int ssd_mb( x264_t *h )
  * contexts, which start from h->cabac and see only chroma and neighbour nnz.
  * So evaluations that differ only in luma (transform_rd, the intra_rd and
  * i16x16 refine candidates) restore the chroma state of an earlier one and
- * encode, MC and size luma only. Off where chroma sees luma (deblock RDO,
- * 4:4:4), has side effects (NR), or whose prediction comes from fdec (b_skip_mc). */
+ * encode, MC and size luma only. Deblock RDO filters only luma outside 4:4:4
+ * (x264_macroblock_deblock). Off in 4:4:4, while noise reduction runs in
+ * analysis (it updates the NR state; only at emergency QPs), or where the
+ * prediction comes from fdec (b_skip_mc). */
 static ALWAYS_INLINE int rdc_allowed( x264_t *h )
 {
     return (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) && h->param.b_cabac &&
-           !h->mb.b_deblock_rdo && !h->mb.b_noise_reduction && !h->param.analyse.i_noise_reduction &&
+           !h->mb.b_noise_reduction &&
            !h->mb.b_lossless && !IS_SKIP( h->mb.i_type ) && h->mb.i_type != I_PCM &&
            (IS_INTRA( h->mb.i_type ) || !h->mb.b_skip_mc);
 }

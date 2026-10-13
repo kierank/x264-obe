@@ -277,6 +277,8 @@ static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
 
     a->i_qp = h->mb.i_qp = qp;
     h->mb.i_chroma_qp = h->chroma_qp_table[qp];
+    /* the chroma RD memo's key leaves out the trellis lambdas and NR set here */
+    h->mb.rdc[0].b_valid = h->mb.rdc[1].b_valid = 0;
 }
 
 static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
@@ -293,7 +295,6 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     x264_mb_analyse_init_qp( h, a, qp );
 
     h->mb.b_transform_8x8 = 0;
-    h->mb.rdc[0].b_valid = h->mb.rdc[1].b_valid = 0;
 
     /* I: Intra part */
     a->i_satd_i16x16 =

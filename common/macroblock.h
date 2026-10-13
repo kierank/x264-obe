@@ -366,6 +366,7 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
 #define x264_mb_mc x264_template(mb_mc)
 void x264_mb_mc( x264_t *h );
 #define x264_mb_mc_luma x264_template(mb_mc_luma)
+/* 4:2:0 and 4:2:2 only: in 4:4:4 it would skip the Cb/Cr planes */
 void x264_mb_mc_luma( x264_t *h );
 #define x264_mb_mc_8x8 x264_template(mb_mc_8x8)
 void x264_mb_mc_8x8( x264_t *h, int i8 );
