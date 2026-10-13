@@ -922,16 +922,18 @@ if( b_refine_qpel || (dir^1) != odir ) \
         else if( b_chroma_mcc ) \
         { \
             int mcc[2]; \
-            h->pixf.mbcmp_mcc( p_fenc_uv, mcc, m->p_fref[4], m->i_stride[1], \
-                               mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+            int uv_dy = 2*(my+mvy_offset)>>chroma_v_shift; \
+            h->pixf.mbcmp_mcc( p_fenc_uv, mcc, x264_mb_fref_uv( h, m->p_fref, m->i_fld_uv_y, uv_dy, bh>>chroma_v_shift ), \
+                               m->i_stride[1], mx, uv_dy, bw>>1, bh>>chroma_v_shift ); \
             cost += mcc[0]; \
             if( cost < bcost ) \
                 cost += mcc[1]; \
         } \
         else \
         { \
-            h->mc.mc_chroma( pix, pix+8, 16, m->p_fref[4], m->i_stride[1], \
-                             mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+            int uv_dy = 2*(my+mvy_offset)>>chroma_v_shift; \
+            h->mc.mc_chroma( pix, pix+8, 16, x264_mb_fref_uv( h, m->p_fref, m->i_fld_uv_y, uv_dy, bh>>chroma_v_shift ), \
+                             m->i_stride[1], mx, uv_dy, bw>>1, bh>>chroma_v_shift ); \
             if( m->weight[1].weightfn ) \
                 m->weight[1].weightfn[bw>>3]( pix, 16, pix, 16, &m->weight[1], bh>>chroma_v_shift ); \
             cost += h->pixf.mbcmp[chromapix]( m->p_fenc[1], FENC_STRIDE, pix, 16 ); \
@@ -978,14 +980,16 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     else if( b_chroma_mcc ) \
     { \
         int mcc[2]; \
-        h->pixf.mbcmp_mcc( p_fenc_uv, mcc, m->p_fref[4], m->i_stride[1], \
-                           mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+        int uv_dy = 2*(my+mvy_offset)>>chroma_v_shift; \
+        h->pixf.mbcmp_mcc( p_fenc_uv, mcc, x264_mb_fref_uv( h, m->p_fref, m->i_fld_uv_y, uv_dy, bh>>chroma_v_shift ), \
+                           m->i_stride[1], mx, uv_dy, bw>>1, bh>>chroma_v_shift ); \
         cost += mcc[0] + mcc[1]; \
     } \
     else \
     { \
-        h->mc.mc_chroma( pix, pix+8, 16, m->p_fref[4], m->i_stride[1], \
-                         mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+        int uv_dy = 2*(my+mvy_offset)>>chroma_v_shift; \
+        h->mc.mc_chroma( pix, pix+8, 16, x264_mb_fref_uv( h, m->p_fref, m->i_fld_uv_y, uv_dy, bh>>chroma_v_shift ), \
+                         m->i_stride[1], mx, uv_dy, bw>>1, bh>>chroma_v_shift ); \
         if( m->weight[1].weightfn ) \
             m->weight[1].weightfn[bw>>3]( pix, 16, pix, 16, &m->weight[1], bh>>chroma_v_shift ); \
         cost += h->pixf.mbcmp[chromapix]( m->p_fenc[1], FENC_STRIDE, pix, 16 ); \
@@ -1219,8 +1223,12 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                                              m->i_stride[2], mvx, mvy, bw, bh, x264_weight_none );\
         }\
         else\
-            h->mc.mc_chroma( pixu_buf[list][i], pixv_buf[list][i], 8, m->p_fref[4], m->i_stride[1],\
-                             mvx, 2*(mvy+mv##list##y_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift );\
+        {\
+            int uv_dy = 2*(mvy+mv##list##y_offset)>>chroma_v_shift;\
+            h->mc.mc_chroma( pixu_buf[list][i], pixv_buf[list][i], 8,\
+                             x264_mb_fref_uv( h, m->p_fref, m->i_fld_uv_y, uv_dy, bh>>chroma_v_shift ), m->i_stride[1],\
+                             mvx, uv_dy, bw>>1, bh>>chroma_v_shift );\
+        }\
     }\
 }
 
@@ -1435,8 +1443,9 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
         } \
         else if( m->i_pixel <= PIXEL_8x8 ) \
         { \
-            h->mc.mc_chroma( pixu, pixv, FDEC_STRIDE, m->p_fref[4], m->i_stride[1], \
-                             mx, 2*(my+mvy_offset)>>chroma_v_shift, bw>>1, bh>>chroma_v_shift ); \
+            int uv_dy = 2*(my+mvy_offset)>>chroma_v_shift; \
+            h->mc.mc_chroma( pixu, pixv, FDEC_STRIDE, x264_mb_fref_uv( h, m->p_fref, m->i_fld_uv_y, uv_dy, bh>>chroma_v_shift ), \
+                             m->i_stride[1], mx, uv_dy, bw>>1, bh>>chroma_v_shift ); \
             if( m->weight[1].weightfn ) \
                 m->weight[1].weightfn[bw>>3]( pixu, FDEC_STRIDE, pixu, FDEC_STRIDE, &m->weight[1], bh>>chroma_v_shift ); \
             if( m->weight[2].weightfn ) \

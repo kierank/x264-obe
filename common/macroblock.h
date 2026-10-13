@@ -409,6 +409,17 @@ static ALWAYS_INLINE uint64_t pack32to64( uint32_t a, uint32_t b )
 #endif
 }
 
+/* NV12 ref chroma for mc_chroma( src, ..., dy, ..., i_height ) with src at
+ * field row y of a field mb: p_fref[4], the frame plane, while rows
+ * [y + (dy>>3), y + (dy>>3) + i_height] are inside the field, else p_fref[5],
+ * plane_fld, which is only filled at the field edges (x264_fdec_filter_row).
+ * Both are the frame plane in frame mbs. */
+static ALWAYS_INLINE pixel *x264_mb_fref_uv( x264_t *h, pixel **p_fref, int y, int dy, int i_height )
+{
+    y += dy >> 3;
+    return (unsigned)y < (unsigned)(h->mb.pic.i_fld_uv_lines - i_height) ? p_fref[4] : p_fref[5];
+}
+
 #if HIGH_BIT_DEPTH
 #   define pack_pixel_1to2 pack16to32
 #   define pack_pixel_2to4 pack32to64

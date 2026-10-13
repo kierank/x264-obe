@@ -645,8 +645,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 /* Special case for mv0, which is (of course) very common in P-skip mode. */
                 if( mvx | mvy )
                     h->mc.mc_chroma( h->mb.pic.p_fdec[1], h->mb.pic.p_fdec[2], FDEC_STRIDE,
-                                     h->mb.pic.p_fref[0][0][4], h->mb.pic.i_stride[1],
-                                     mvx, 2*mvy>>v_shift, 8, height );
+                                     x264_mb_fref_uv( h, h->mb.pic.p_fref[0][0], h->mb.pic.i_fld_uv_y, 2*mvy>>v_shift, height ),
+                                     h->mb.pic.i_stride[1], mvx, 2*mvy>>v_shift, 8, height );
                 else
                     h->mc.load_deinterleave_chroma_fdec( h->mb.pic.p_fdec[1], h->mb.pic.p_fref[0][0][4],
                                                          h->mb.pic.i_stride[1], height );
@@ -1002,8 +1002,8 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             /* Special case for mv0, which is (of course) very common in P-skip mode. */
             if( M32( mvp ) )
                 h->mc.mc_chroma( h->mb.pic.p_fdec[1], h->mb.pic.p_fdec[2], FDEC_STRIDE,
-                                 h->mb.pic.p_fref[0][0][4], h->mb.pic.i_stride[1],
-                                 mvp[0], mvp[1]<<chroma422, 8, chroma422?16:8 );
+                                 x264_mb_fref_uv( h, h->mb.pic.p_fref[0][0], h->mb.pic.i_fld_uv_y, mvp[1]<<chroma422, chroma422?16:8 ),
+                                 h->mb.pic.i_stride[1], mvp[0], mvp[1]<<chroma422, 8, chroma422?16:8 );
             else
                 h->mc.load_deinterleave_chroma_fdec( h->mb.pic.p_fdec[1], h->mb.pic.p_fref[0][0][4],
                                                      h->mb.pic.i_stride[1], chroma422?16:8 );
