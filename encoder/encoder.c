@@ -1730,9 +1730,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
     h->frames.b_have_sub8x8_esa = !!(h->param.analyse.inter & X264_ANALYSE_PSUB8x8);
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     h->param.rc.b_lookahead_8bit &= h->frames.b_have_lowres && !h->mb.b_lossless;
-    /* ESA and TESA search on the 16-bit planes */
+    /* ESA and TESA search on the 16-bit planes; subme 0 has no hpel planes */
     h->param.analyse.i_me_8bit = h->mb.b_lossless || h->param.analyse.i_me_method >= X264_ME_ESA ? 0
-                               : x264_clip3( h->param.analyse.i_me_8bit, 0, 1 );
+                               : x264_clip3( h->param.analyse.i_me_8bit, 0, h->param.analyse.i_subpel_refine ? 2 : 1 );
 #else
     h->param.rc.b_lookahead_8bit = 0;
     h->param.analyse.i_me_8bit = 0;

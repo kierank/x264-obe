@@ -182,7 +182,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
 
 #if HIGH_BIT_DEPTH
     /* analyse.i_me_8bit: msb rows then lsb rows, the rows of the 16-bit plane */
-    int me8_planes = h->param.analyse.i_me_8bit && b_fdec ? 1 : 0;
+    int me8_planes = !b_fdec ? 0 : h->param.analyse.i_me_8bit > 1 ? 4 : h->param.analyse.i_me_8bit;
     int me8_rows = frame->i_lines[0] + 2*i_padv;
     intptr_t me8_msb_size = (intptr_t)frame->i_stride[0] * me8_rows;
     intptr_t me8_plane_size = ALIGN( me8_msb_size + (frame->i_stride[0] >> 2) * me8_rows, NATIVE_ALIGN );
@@ -631,6 +631,40 @@ static void ALWAYS_INLINE plane_expand_border( pixel *pix, int i_stride, int i_w
     plane_expand_border_src( pix, pix, i_stride, i_width, i_height, i_padh, i_padv, b_pad_top, b_pad_bottom, b_chroma );
 }
 
+#if HIGH_BIT_DEPTH
+/* plane_expand_border of an msb8/lsb8 pair: msb and lsb at x = 0 of the first
+ * row, columns [x0,x1) padded; x0, x1 and padh multiples of 4 */
+static void plane_expand_border8( uint8_t *msb, uint8_t *lsb, intptr_t stride, int x0, int x1, int height,
+                                  int padh, int padv, int b_pad_top, int b_pad_bottom )
+{
+    intptr_t lstride = stride >> 2;
+    int lx0 = (x0 - padh) >> 2;
+    int w = x1 - x0 + 2*padh;
+    for( int y = 0; y < height; y++ )
+    {
+        uint8_t *m = msb + y*stride;
+        uint8_t *l = lsb + y*lstride;
+        memset( m + x0 - padh, m[x0], padh );
+        memset( m + x1, m[x1-1], padh );
+        memset( l + lx0, (l[x0>>2] & 3) * 0x55, padh >> 2 );
+        memset( l + (x1>>2), (l[(x1-1)>>2] >> 6) * 0x55, padh >> 2 );
+    }
+    for( int y = 0; y < padv; y++ )
+    {
+        if( b_pad_top )
+        {
+            memcpy( msb - (y+1)*stride + x0 - padh, msb + x0 - padh, w );
+            memcpy( lsb - (y+1)*lstride + lx0, lsb + lx0, w >> 2 );
+        }
+        if( b_pad_bottom )
+        {
+            memcpy( msb + (height+y)*stride + x0 - padh, msb + (height-1)*stride + x0 - padh, w );
+            memcpy( lsb + (height+y)*lstride + lx0, lsb + (height-1)*lstride + lx0, w >> 2 );
+        }
+    }
+}
+#endif
+
 void x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y )
 {
     int pad_top = mb_y == 0;
@@ -776,10 +810,27 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
                 pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
                 plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
                 plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+#if HIGH_BIT_DEPTH
+                if( !p && frame->msb8_fld[i] )
+                    for( int f = 0; f < 2; f++ )
+                    {
+                        int y = 16*mb_y - 16 + f;
+                        plane_expand_border8( frame->msb8_fld[i] + y*stride, frame->lsb8_fld[i] + y*(stride>>2),
+                                              stride*2, -4, width - 4, height, padh, padv, b_start, b_end );
+                    }
+#endif
             }
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
             plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+#if HIGH_BIT_DEPTH
+            if( !p && frame->msb8[i] )
+            {
+                int y = 16*mb_y - 8;
+                plane_expand_border8( frame->msb8[i] + y*stride, frame->lsb8[i] + y*(stride>>2),
+                                      stride, -4, width - 4, height << SLICE_MBAFF, padh, padv, b_start, b_end );
+            }
+#endif
         }
 }
 

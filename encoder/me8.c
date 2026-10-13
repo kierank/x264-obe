@@ -31,16 +31,34 @@ x264_me8_func_t *x264_me8_init( uint32_t cpu )
     if( !pf )
         return NULL;
     x264_pixel_function_t pixf;
+    x264_mc_functions_t mc;
     x264_pixel_init( cpu, &pixf );
+    x264_mc_init( cpu, &mc, 0 );
     for( int i = 0; i < 8; i++ )
+    {
         pf->fpelcmp[i] = pixf.sad[i];
+        pf->mbcmp[0][i] = pixf.sad[i];
+        pf->mbcmp[1][i] = pixf.satd[i];
+    }
     for( int i = 0; i < 7; i++ )
     {
         pf->fpelcmp_x3[i] = pixf.sad_x3[i];
         pf->fpelcmp_x4[i] = pixf.sad_x4[i];
         pf->fpelcmp_x3_min[i] = pixf.sad_x3_min[i];
         pf->fpelcmp_x4_min[i] = pixf.sad_x4_min[i];
+        pf->fpelcmp_avg2[i] = pixf.sad_avg2[i];
+        pf->mbcmp_avg2[0][i] = NULL;
+        pf->mbcmp_avg2[1][i] = pixf.satd_avg2[i];
     }
+    for( int i = 0; i < 2; i++ )
+        pf->satd_fenc_pre[i] = pixf.satd_fenc_pre[i];
+    for( int i = 0; i < 4; i++ )
+    {
+        pf->satd_pre[i] = pixf.satd_pre[i];
+        pf->satd_avg2_pre[i] = pixf.satd_avg2_pre[i];
+    }
+    pf->get_ref = mc.get_ref;
+    pf->mc_luma = mc.mc_luma;
     return pf;
 }
 

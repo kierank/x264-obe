@@ -741,6 +741,17 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     }
 }
 
+#if HIGH_BIT_DEPTH
+/* analyse.i_me_8bit 2: the msb8/lsb8 split of the rows the hpel filter just
+ * wrote, offs and lsb_offs those of its first pixel, rows stride apart */
+static void hpel_split8( x264_t *h, uint8_t **msb8, uint8_t **lsb8, pixel **filtered, intptr_t stride,
+                         int offs, int lsb_offs, int width, int height )
+{
+    for( int k = 1; k < 4; k++ )
+        h->mc.plane_split8( msb8[k] + offs, lsb8[k] + lsb_offs, filtered[k] + offs, stride, width, height );
+}
+#endif
+
 /* Field hpel of field rows [y0, y1) of parity i. With b_copy, read the frame
  * plane and copy it to plane_fld as we go. */
 static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int y0, int y1, int b_copy )
@@ -764,6 +775,11 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
         for( int y = 0; y < y1 - y0; y++ )
             memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
     }
+#if HIGH_BIT_DEPTH
+    if( !p && frame->msb8_fld[1] )
+        hpel_split8( h, frame->msb8_fld, frame->lsb8_fld, frame->filtered_fld[0], stride, offs,
+                     y0*(stride>>2) + i*(frame->i_stride[0]>>2) - 2, width, y1 - y0 );
+#endif
 }
 
 void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
@@ -782,6 +798,7 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         int offs = start*stride - 8; // buffer = 3 for 6tap, aligned to 8 for simd
 
         if( !b_interlaced || h->mb.b_adaptive_mbaff )
+        {
             h->mc.hpel_filter(
                 frame->filtered[p][1] + offs,
                 frame->filtered[p][2] + offs,
@@ -789,6 +806,12 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
                 frame->plane[p] + offs,
                 stride, width + 16, height - start,
                 h->scratch_buffer );
+#if HIGH_BIT_DEPTH
+            if( !p && frame->msb8[1] )
+                hpel_split8( h, frame->msb8, frame->lsb8, frame->filtered[0], stride, offs,
+                             start*(stride>>2) - 2, width + 16, height - start );
+#endif
+        }
 
         if( b_interlaced )
         {
