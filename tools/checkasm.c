@@ -1008,8 +1008,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
         ALIGNED_16( int res_asm[4] ); \
         set_func_name( #name ); \
         used_asm = 1; \
-        call_c( pixel_c.name, pbuf1+48, i8x8 ? edge : pbuf3+48, res_c ); \
-        call_a( pixel_asm.name, pbuf1+48, i8x8 ? edge : pbuf3+48, res_asm ); \
+        call_c( pixel_c.name, x9_fenc+48, i8x8 ? edge : pbuf3+48, res_c ); \
+        call_a( pixel_asm.name, x9_fenc+48, i8x8 ? edge : pbuf3+48, res_asm ); \
         if( memcmp(res_c, res_asm, 3 * sizeof(*res_c)) ) \
         { \
             ok = 0; \
@@ -1027,11 +1027,11 @@ static int check_pixel( int cpu_ref, int cpu_new )
         ALIGNED_ARRAY_64( uint16_t, bitcosts,[17] ); \
         for( int i=0; i<17; i++ ) \
             bitcosts[i] = 9*(i!=8); \
-        memcpy( pbuf3, pbuf2, 20*FDEC_STRIDE*sizeof(pixel) ); \
-        memcpy( pbuf4, pbuf2, 20*FDEC_STRIDE*sizeof(pixel) ); \
+        memcpy( pbuf3, x9_dec, 20*FDEC_STRIDE*sizeof(pixel) ); \
+        memcpy( pbuf4, x9_dec, 20*FDEC_STRIDE*sizeof(pixel) ); \
         for( int i=0; i<32; i++ ) \
         { \
-            pixel *fenc = pbuf1+48+i*12; \
+            pixel *fenc = x9_fenc+48+i*12; \
             pixel *fdec1 = pbuf3+48+i*12; \
             pixel *fdec2 = pbuf4+48+i*12; \
             int pred_mode = i%9; \
@@ -1078,9 +1078,11 @@ static int check_pixel( int cpu_ref, int cpu_new )
         memset( satds_a, 0, 16 * sizeof(*satds_a) ); \
         for( int i=0; i<17; i++ ) \
             bitcosts[i] = 9*(i!=8); \
+        memcpy( pbuf3, x9_dec, 20*FDEC_STRIDE*sizeof(pixel) ); \
+        memcpy( pbuf4, x9_dec, 20*FDEC_STRIDE*sizeof(pixel) ); \
         for( int i=0; i<32; i++ ) \
         { \
-            pixel *fenc = pbuf1+48+i*12; \
+            pixel *fenc = x9_fenc+48+i*12; \
             pixel *fdec1 = pbuf3+48+i*12; \
             pixel *fdec2 = pbuf4+48+i*12; \
             int pred_mode = i%9; \
@@ -1089,7 +1091,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
             for( int j=0; j<9; j++ ) \
             { \
                 predict_8x8[j]( fdec1, edge ); \
-                satds_c[j] = pixel_c.cmp[PIXEL_8x8]( fenc, FENC_STRIDE, fdec1, FDEC_STRIDE ) + 9*(j!=pred_mode); \
+                satds_c[j] = X264_MIN( pixel_c.cmp[PIXEL_8x8]( fenc, FENC_STRIDE, fdec1, FDEC_STRIDE ) + 9*(j!=pred_mode), 0xffff ); \
                 if( satds_c[j] < (uint16_t)res_c ) \
                     res_c = satds_c[j] + (j<<16); \
             } \
@@ -1132,28 +1134,63 @@ static int check_pixel( int cpu_ref, int cpu_new )
         } \
     }
 
-    memcpy( pbuf3, pbuf2, 20*FDEC_STRIDE*sizeof(pixel) );
+    /* pat = 0: random fenc and neighbours; 1: fenc PIXEL_MAX, neighbours 0;
+     * 2: fenc 0, neighbours PIXEL_MAX; 3: both a random mix of 0 and PIXEL_MAX */
+    pixel *x9_fenc, *x9_dec;
+    ALIGNED_ARRAY_64( pixel, x9_buf,[0x800] );
+#define INTRA_X_SOURCES( pat ) \
+    x9_fenc = pbuf1; \
+    x9_dec = pbuf2; \
+    if( pat ) \
+    { \
+        x9_fenc = x9_buf; \
+        x9_dec = x9_buf+0x400; \
+        for( int i = 0; i < 0x400; i++ ) \
+        { \
+            x9_fenc[i] = pat == 1 ? PIXEL_MAX : pat == 2 ? 0 : (rand()&1)*PIXEL_MAX; \
+            x9_dec[i]  = pat == 1 ? 0 : pat == 2 ? PIXEL_MAX : (rand()&1)*PIXEL_MAX; \
+        } \
+    } \
+    predict_8x8_filter( x9_dec+40, edge, ALL_NEIGHBORS, ALL_NEIGHBORS ); \
+    memcpy( pbuf3, x9_dec, 20*FDEC_STRIDE*sizeof(pixel) );
+
     ok = 1; used_asm = 0;
-    TEST_INTRA_X3( intra_satd_x3_16x16, 0 );
-    TEST_INTRA_X3( intra_satd_x3_8x16c, 0 );
-    TEST_INTRA_X3( intra_satd_x3_8x8c, 0 );
-    TEST_INTRA_X3( intra_sa8d_x3_8x8, 1, edge );
-    TEST_INTRA_X3( intra_satd_x3_4x4, 0 );
+    for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
+    {
+        INTRA_X_SOURCES( pat );
+        TEST_INTRA_X3( intra_satd_x3_16x16, 0 );
+        TEST_INTRA_X3( intra_satd_x3_8x16c, 0 );
+        TEST_INTRA_X3( intra_satd_x3_8x8c, 0 );
+        TEST_INTRA_X3( intra_sa8d_x3_8x8, 1, edge );
+        TEST_INTRA_X3( intra_satd_x3_4x4, 0 );
+    }
     report( "intra satd_x3 :" );
     ok = 1; used_asm = 0;
-    TEST_INTRA_X3( intra_sad_x3_16x16, 0 );
-    TEST_INTRA_X3( intra_sad_x3_8x16c, 0 );
-    TEST_INTRA_X3( intra_sad_x3_8x8c, 0 );
-    TEST_INTRA_X3( intra_sad_x3_8x8, 1, edge );
-    TEST_INTRA_X3( intra_sad_x3_4x4, 0 );
+    for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
+    {
+        INTRA_X_SOURCES( pat );
+        TEST_INTRA_X3( intra_sad_x3_16x16, 0 );
+        TEST_INTRA_X3( intra_sad_x3_8x16c, 0 );
+        TEST_INTRA_X3( intra_sad_x3_8x8c, 0 );
+        TEST_INTRA_X3( intra_sad_x3_8x8, 1, edge );
+        TEST_INTRA_X3( intra_sad_x3_4x4, 0 );
+    }
     report( "intra sad_x3 :" );
     ok = 1; used_asm = 0;
-    TEST_INTRA_X9( intra_satd_x9_4x4, satd );
-    TEST_INTRA8_X9( intra_sa8d_x9_8x8, sa8d );
+    for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
+    {
+        INTRA_X_SOURCES( pat );
+        TEST_INTRA_X9( intra_satd_x9_4x4, satd );
+        TEST_INTRA8_X9( intra_sa8d_x9_8x8, sa8d );
+    }
     report( "intra satd_x9 :" );
     ok = 1; used_asm = 0;
-    TEST_INTRA_X9( intra_sad_x9_4x4, sad );
-    TEST_INTRA8_X9( intra_sad_x9_8x8, sad );
+    for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
+    {
+        INTRA_X_SOURCES( pat );
+        TEST_INTRA_X9( intra_sad_x9_4x4, sad );
+        TEST_INTRA8_X9( intra_sad_x9_8x8, sad );
+    }
     report( "intra sad_x9 :" );
 
     ok = 1; used_asm = 0;
@@ -3305,39 +3342,51 @@ static int check_intra( int cpu_ref, int cpu_new )
         }\
     }
 
-    for( int i = 0; i < 12; i++ )
-        INTRA_TEST(   predict_4x4, i,  4,  4,  4, );
-    for( int i = 0; i < 7; i++ )
-        INTRA_TEST(  predict_8x8c, i,  8,  8, 16, );
-    for( int i = 0; i < 7; i++ )
-        INTRA_TEST( predict_8x16c, i,  8, 16, 16, );
-    for( int i = 0; i < 7; i++ )
-        INTRA_TEST( predict_16x16, i, 16, 16, 16, );
-    for( int i = 0; i < 12; i++ )
-        INTRA_TEST(   predict_8x8, i,  8,  8,  8, , edge );
-
-    set_func_name("intra_predict_8x8_filter");
-    if( ip_a.predict_8x8_filter != ip_ref.predict_8x8_filter )
+    /* pat = 0: random neighbours; 1: every sample PIXEL_MAX; 2: every sample 0;
+     * 3: a random mix of 0 and PIXEL_MAX */
+    for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
     {
-        used_asm = 1;
-        for( int i = 0; i < 32; i++ )
+        if( pat )
         {
-            if( !(i&7) || ((i&MB_TOPRIGHT) && !(i&MB_TOP)) )
-                continue;
-            int neighbor = (i&24)>>1;
-            memset( edge,  0, 36*sizeof(pixel) );
-            memset( edge2, 0, 36*sizeof(pixel) );
-            call_c( ip_c.predict_8x8_filter, pbuf1+48, edge,  neighbor, i&7 );
-            call_a( ip_a.predict_8x8_filter, pbuf1+48, edge2, neighbor, i&7 );
-            if( !(neighbor&MB_TOPLEFT) )
-                edge[15] = edge2[15] = 0;
-            if( memcmp( edge+7, edge2+7, (i&MB_TOPRIGHT ? 26 : i&MB_TOP ? 17 : 8) * sizeof(pixel) ) )
+            for( int i = 0; i < 32*20; i++ )
+                fdec[i] = pat == 1 ? PIXEL_MAX : pat == 2 ? 0 : (rand()&1)*PIXEL_MAX;
+            ip_c.predict_8x8_filter( fdec+48, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
+        }
+        for( int i = 0; i < 12; i++ )
+            INTRA_TEST(   predict_4x4, i,  4,  4,  4, );
+        for( int i = 0; i < 7; i++ )
+            INTRA_TEST(  predict_8x8c, i,  8,  8, 16, );
+        for( int i = 0; i < 7; i++ )
+            INTRA_TEST( predict_8x16c, i,  8, 16, 16, );
+        for( int i = 0; i < 7; i++ )
+            INTRA_TEST( predict_16x16, i, 16, 16, 16, );
+        for( int i = 0; i < 12; i++ )
+            INTRA_TEST(   predict_8x8, i,  8,  8,  8, , edge );
+
+        set_func_name("intra_predict_8x8_filter");
+        if( ip_a.predict_8x8_filter != ip_ref.predict_8x8_filter )
+        {
+            used_asm = 1;
+            for( int i = 0; i < 32; i++ )
             {
-                fprintf( stderr, "predict_8x8_filter :  [FAILED] %d %d\n", (i&24)>>1, i&7);
-                ok = 0;
+                if( !(i&7) || ((i&MB_TOPRIGHT) && !(i&MB_TOP)) )
+                    continue;
+                int neighbor = (i&24)>>1;
+                memset( edge,  0, 36*sizeof(pixel) );
+                memset( edge2, 0, 36*sizeof(pixel) );
+                call_c( ip_c.predict_8x8_filter, fdec+48, edge,  neighbor, i&7 );
+                call_a( ip_a.predict_8x8_filter, fdec+48, edge2, neighbor, i&7 );
+                if( !(neighbor&MB_TOPLEFT) )
+                    edge[15] = edge2[15] = 0;
+                if( memcmp( edge+7, edge2+7, (i&MB_TOPRIGHT ? 26 : i&MB_TOP ? 17 : 8) * sizeof(pixel) ) )
+                {
+                    fprintf( stderr, "predict_8x8_filter :  [FAILED] %d %d\n", (i&24)>>1, i&7);
+                    ok = 0;
+                }
             }
         }
     }
+    memcpy( fdec, pbuf1, 32*20 * sizeof(pixel) );
 
 #define EXTREMAL_PLANE( w, h ) \
     { \
