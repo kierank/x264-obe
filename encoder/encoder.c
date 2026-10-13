@@ -144,8 +144,9 @@ static void x264_slicepool_snapshot( x264_t *h )
 
 /* Multiple of 16, the x264_weight_scale_plane strip height. */
 #define WEIGHT_BAND_ROWS 64
-/* Pauses before a band waiter sleeps: about one band. */
-#define WEIGHT_SPIN (16*SLICE_SPIN)
+/* Pauses before a band waiter sleeps, as the other slice pool waits: rack01
+ * measured 16*SLICE_SPIN at +0.7..+2.8% CPU on fades. */
+#define WEIGHT_SPIN SLICE_SPIN
 
 /* Main thread, before dispatch. */
 static void x264_slicepool_weight_init( x264_t *h )
