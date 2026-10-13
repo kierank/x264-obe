@@ -42,6 +42,10 @@ shuf_nop:    db 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 shuf_hu:     db 7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0
 shuf_vr:     db 2,4,6,8,9,10,11,12,13,14,15,0,1,3,5,7
 pw_reverse:  db 14,15,12,13,10,11,8,9,6,7,4,5,2,3,0,1
+%if HIGH_BIT_DEPTH == 0
+ALIGN 16
+pb_128:      times 16 db 0x80
+%endif
 
 SECTION .text
 
@@ -2338,3 +2342,49 @@ cglobal predict_4x4_dc_128, 1,1
     STORE_ROWS   4, mov dword, 0x80808080
 %endif
     RET
+
+%if HIGH_BIT_DEPTH
+    %define pix_128 pw_512
+    %define MOVPIX8 mova ; one 8-pixel row
+%else
+    %define pix_128 pb_128
+    %define MOVPIX8 movq
+%endif
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc_128( pixel *src, pixel edge[36] )
+; void predict_8x8c_dc_128( pixel *src )
+; void predict_8x16c_dc_128( pixel *src )
+;-----------------------------------------------------------------------------
+%macro PREDICT_DC_128 2 ; name, rows
+cglobal %1, 1,1
+    mova         m0, [pix_128]
+    STORE_ROWS   %2, MOVPIX8, m0
+    RET
+%endmacro
+
+INIT_XMM sse2
+PREDICT_DC_128 predict_8x8_dc_128, 8
+PREDICT_DC_128 predict_8x8c_dc_128, 8
+PREDICT_DC_128 predict_8x16c_dc_128, 16
+
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_128( pixel *src )
+;-----------------------------------------------------------------------------
+%macro PREDICT_16x16_DC_128 0
+cglobal predict_16x16_dc_128, 1,2
+    mova         m0, [pix_128]
+%if HIGH_BIT_DEPTH && mmsize == 16
+    STORE16      m0, m0
+%else
+    STORE16      m0
+%endif
+    RET
+%endmacro
+
+INIT_XMM sse2
+PREDICT_16x16_DC_128
+%if HIGH_BIT_DEPTH
+INIT_YMM avx
+PREDICT_16x16_DC_128
+%endif
