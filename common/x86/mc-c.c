@@ -1181,7 +1181,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
             pf->plane_split8 = x264_plane_split8_avx512icl;
             pf->plane_unpack8 = x264_plane_unpack8_avx512icl;
         }
-        /* not PK_PRED_INIT( avx512 ), as INIT_PK in pixel.c */
+        PK_PRED_INIT( avx512 )
 #endif
     }
 #else // !HIGH_BIT_DEPTH

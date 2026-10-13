@@ -1152,8 +1152,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
-        /* not INIT_PK( avx512 ): no faster than avx2 in situ on Zen 4,
-         * dispatched on zen5/me8-pk-avx512 */
+        INIT_PK( avx512 )
 #endif
     }
 #endif // HAVE_MMX
