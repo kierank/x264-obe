@@ -343,6 +343,10 @@ lowres_hu2:    db  9, 8, 7, 6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2
 lowres_hu3:    db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
                db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
 %endif
+; weightp: vpermd orders of 2 and 4 blocks a register, byte loads, last so nothing moves
+weightp_perm8:  db 0,4,1,5,2,6,3,7
+weightp_perm16: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
+weightp_perm_nv16: db 0,4,1,5,2,6,3,7,8,12,9,13,10,14,11,15
 
 SECTION .text
 
@@ -361,6 +365,7 @@ cextern pw_pmmpzzzz
 cextern pw_512
 cextern pw_pixel_max
 cextern pd_1
+cextern pd_ffff
 cextern hsub_mul
 cextern popcnt_table
 
@@ -9315,4 +9320,292 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
     MCC_FENC_PRE    1, 0
     RET
 %endif ; !HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
+;=============================================================================
+; x264_weights_analyse chroma block statistics
+;=============================================================================
+%if ARCH_X86_64
+%macro LOAD_PIXW 2 ; dst, src: mmsize/2 pixels as words
+%if HIGH_BIT_DEPTH
+    movu       %1, %2
+%else
+    pmovzxbw   %1, %2
+%endif
+%endmacro
+
+; vpermd order of the HADD4D lanes: blocks { 0 2 4 6 | 1 3 5 7 } (ymm), { 0 4 8 12 | 1 5 9 13 | ... } (zmm)
+%macro WEIGHTP_PERM 1
+%if mmsize == 64
+    pmovzxbd   %1, [weightp_perm16]
+%else
+    pmovzxbd   %1, [weightp_perm8]
+%endif
+%endmacro
+
+%macro ALL_ONES 1
+%if mmsize == 64
+    vpternlogd %1, %1, %1, 0xff
+%else
+    pcmpeqw    %1, %1
+%endif
+%endmacro
+
+; %1 = per lane { sum of %1, of %2, of %3, of %4 }, from 4 dwords a lane each; clobbers %3
+%macro HADD4D 6 ; a, b, c, d, tmp, tmp
+    punpckldq  %5, %1, %2
+    punpckhdq  %1, %2
+    paddd      %1, %5
+    punpckldq  %6, %3, %4
+    punpckhdq  %3, %4
+    paddd      %3, %6
+    punpcklqdq %5, %1, %3
+    punpckhqdq %1, %3
+    paddd      %1, %5
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void weightp_sum8( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom )
+;-----------------------------------------------------------------------------
+; Per 8 x height block, the sum of ( x * scale + ((1 << denom) >> 1) ) >> denom: pmaddwd
+; of { x, 1 } by { scale, round }. One block a lane, 4 registers a pass, n rounded up to
+; mmsize/4. m5 = pw_1, xm6 = denom, m7 = { scale, round }, m10 = block order.
+%macro WEIGHTP_SUM8_ROW 2 ; acc, offset
+    LOAD_PIXW  m4, [r7+%2]
+    punpckhwd  m8, m4, m5
+    punpcklwd  m4, m5
+    pmaddwd    m4, m7
+    pmaddwd    m8, m7
+    psrad      m4, xm6
+    psrad      m8, xm6
+    paddd      %1, m4
+    paddd      %1, m8
+%endmacro
+
+%macro WEIGHTP_SUM8 0
+cglobal weightp_sum8, 7,9,11
+    FIX_STRIDES r2
+    xor       r7d, r7d
+    bts       r7d, r6d
+    shr       r7d, 1
+    shl       r7d, 16
+    or        r7d, r5d
+    movd      xm7, r7d
+    vpbroadcastd m7, xm7
+    movd      xm6, r6d
+    vpbroadcastd m5, [pw_1]
+    WEIGHTP_PERM m10
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    mov        r7, r1
+    mov       r8d, r4d
+.loopy:
+    WEIGHTP_SUM8_ROW m0, 0
+    WEIGHTP_SUM8_ROW m1, mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_ROW m2, mmsize*SIZEOF_PIXEL
+    WEIGHTP_SUM8_ROW m3, mmsize*3/2*SIZEOF_PIXEL
+    add        r7, r2
+    dec       r8d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m4, m8
+    vpermd     m0, m10, m0
+    movu     [r0], m0
+    add        r0, mmsize
+    add        r1, 2*mmsize*SIZEOF_PIXEL
+    sub       r3d, mmsize/4
+    jg .loopx
+    RET
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void weightp_stats8( int32_t *sum, uint32_t *minmax, pixel *src, intptr_t i_src, int n, int height )
+;-----------------------------------------------------------------------------
+; Per 8 x height block, height <= 16 (word sums): the sum, min | max << 16. As weightp_sum8.
+; m13 = pw_1, m14 = block order.
+%macro WEIGHTP_STATS8_ROW 4 ; sum, min, max, offset
+    LOAD_PIXW  m12, [r6+%4]
+    paddw      %1, m12
+    pminuw     %2, m12
+    pmaxuw     %3, m12
+%endmacro
+
+; min | max << 16 in dword 0 of each lane, from 8 words a lane
+%macro WEIGHTP_MINMAX 3 ; min, max, tmp
+    pshufd     %3, %1, q1032
+    pminuw     %1, %3
+    pshufd     %3, %1, q2301
+    pminuw     %1, %3
+    psrld      %3, %1, 16
+    pminuw     %1, %3
+    pshufd     %3, %2, q1032
+    pmaxuw     %2, %3
+    pshufd     %3, %2, q2301
+    pmaxuw     %2, %3
+    psrld      %3, %2, 16
+    pmaxuw     %2, %3
+    pslld      %1, 16
+    psrld      %1, 16
+    pslld      %2, 16
+    por        %1, %2
+%endmacro
+
+%macro WEIGHTP_STATS8 0
+cglobal weightp_stats8, 6,8,15
+    FIX_STRIDES r3
+    vpbroadcastd m13, [pw_1]
+    WEIGHTP_PERM m14
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    ALL_ONES   m4
+    ALL_ONES   m5
+    ALL_ONES   m6
+    ALL_ONES   m7
+    pxor       m8, m8
+    pxor       m9, m9
+    pxor      m10, m10
+    pxor      m11, m11
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    WEIGHTP_STATS8_ROW m0, m4, m8,  0
+    WEIGHTP_STATS8_ROW m1, m5, m9,  mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_STATS8_ROW m2, m6, m10, mmsize*SIZEOF_PIXEL
+    WEIGHTP_STATS8_ROW m3, m7, m11, mmsize*3/2*SIZEOF_PIXEL
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+    WEIGHTP_MINMAX m4, m8,  m12
+    WEIGHTP_MINMAX m5, m9,  m12
+    WEIGHTP_MINMAX m6, m10, m12
+    WEIGHTP_MINMAX m7, m11, m12
+    punpckldq  m4, m5
+    punpckldq  m6, m7
+    punpcklqdq m4, m6
+    vpermd     m4, m14, m4
+    movu     [r1], m4
+    pmaddwd    m0, m13
+    pmaddwd    m1, m13
+    pmaddwd    m2, m13
+    pmaddwd    m3, m13
+    HADD4D     m0, m1, m2, m3, m8, m9
+    vpermd     m0, m14, m0
+    movu     [r0], m0
+    add        r0, mmsize
+    add        r1, mmsize
+    add        r2, 2*mmsize*SIZEOF_PIXEL
+    sub       r4d, mmsize/4
+    jg .loopx
+    RET
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void weightp_sum8_nv( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height )
+;-----------------------------------------------------------------------------
+; Per block of 8 interleaved u v pairs x height, height <= 16 (word sums): the u and v
+; sums. A block is 16 words, 8 registers a pass, n rounded up to mmsize/4. m15 = pd_ffff.
+%macro WEIGHTP_SUM8_NV_ROW 2 ; acc, offset
+    LOAD_PIXW  m8, [r6+%2]
+    paddw      %1, m8
+%endmacro
+
+; u (low words) and v (high words) of 4 accumulators, %1-%4 = u, %5-%8 = v, per lane sums in %1, %5
+%macro WEIGHTP_NV_SPLIT 10 ; u0-3, v0-3, tmp, tmp
+    psrld      %5, %1, 16
+    psrld      %6, %2, 16
+    psrld      %7, %3, 16
+    psrld      %8, %4, 16
+    pand       %1, m15
+    pand       %2, m15
+    pand       %3, m15
+    pand       %4, m15
+    HADD4D     %1, %2, %3, %4, %9, %10
+    HADD4D     %5, %6, %7, %8, %9, %10
+%endmacro
+
+; zmm: two blocks a register, in lanes 0 1 and 2 3. %1 %2: HADD4D of registers 0-3 and
+; 4-7 (blocks 0-7, 8-15); %1 = blocks 0 2 4 6 | 1 3 5 7 | 8 10 12 14 | 9 11 13 15
+%macro WEIGHTP_NV_LANES 3 ; lo, hi, tmp
+    vshufi32x4 %3, %1, %1, q2301
+    paddd      %1, %3
+    vshufi32x4 %3, %2, %2, q2301
+    paddd      %2, %3
+    vshufi32x4 %1, %1, %2, q2020
+%endmacro
+
+%macro WEIGHTP_SUM8_NV 0
+%if mmsize == 64
+cglobal weightp_sum8_nv, 6,8,20
+    pmovzxbd  m14, [weightp_perm_nv16]
+%else
+cglobal weightp_sum8_nv, 6,8,16
+%endif
+    FIX_STRIDES r3
+    vpbroadcastd m15, [pd_ffff]
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    pxor       m4, m4
+    pxor       m5, m5
+    pxor       m6, m6
+    pxor       m7, m7
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    WEIGHTP_SUM8_NV_ROW m0, 0*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m1, 1*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m2, 2*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m3, 3*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m4, 4*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m5, 5*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m6, 6*mmsize/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_NV_ROW m7, 7*mmsize/2*SIZEOF_PIXEL
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+%if mmsize == 64
+    WEIGHTP_NV_SPLIT m0, m1, m2, m3, m8,  m9,  m10, m11, m12, m13
+    WEIGHTP_NV_SPLIT m4, m5, m6, m7, m16, m17, m18, m19, m12, m13
+    WEIGHTP_NV_LANES m0, m4,  m12
+    WEIGHTP_NV_LANES m8, m16, m12
+    vpermd     m0, m14, m0
+    vpermd     m8, m14, m8
+    movu     [r0], m0
+    movu     [r1], m8
+%else
+    ; one block a register: blocks 0-3, then 4-7, each the sum of its two lanes
+    WEIGHTP_NV_SPLIT m0, m1, m2, m3, m8, m9, m10, m11, m12, m13
+    vextracti128 xm12, m0, 1
+    paddd      xm0, xm12
+    vextracti128 xm12, m8, 1
+    paddd      xm8, xm12
+    movu     [r0], xm0
+    movu     [r1], xm8
+    WEIGHTP_NV_SPLIT m4, m5, m6, m7, m8, m9, m10, m11, m12, m13
+    vextracti128 xm12, m4, 1
+    paddd      xm4, xm12
+    vextracti128 xm12, m8, 1
+    paddd      xm8, xm12
+    movu  [r0+16], xm4
+    movu  [r1+16], xm8
+%endif
+    add        r0, mmsize
+    add        r1, mmsize
+    add        r2, 4*mmsize*SIZEOF_PIXEL
+    sub       r4d, mmsize/4
+    jg .loopx
+    RET
+%endmacro
+
+INIT_YMM avx2
+WEIGHTP_SUM8
+WEIGHTP_STATS8
+WEIGHTP_SUM8_NV
 %endif ; ARCH_X86_64
