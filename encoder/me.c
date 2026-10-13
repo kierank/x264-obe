@@ -399,6 +399,20 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         pmx = FPEL( bpred_mx );
         pmy = FPEL( bpred_my );
 
+        /* b8: the msb8 lines the search starts on, around pmv (the usual best
+         * predictor; HEX steps 2, DIA and UMH's DIA1 1) and 0 (COST_MV, UMH's
+         * DIA1), ahead of the 16-bit predictor costs */
+        if( b8 )
+        {
+            int r = h->mb.i_me_method == X264_ME_HEX ? 2 : 1;
+            me8_prefetch_rect( SREF( pmx + pmy*stride ), stride, -r, bw+r, -r, bh+r );
+            if( pmx|pmy )
+            {
+                r = h->mb.i_me_method == X264_ME_UMH;
+                me8_prefetch_rect( s_ref, stride, -r, bw+r, -r, bh+r );
+            }
+        }
+
         COST_MV_HPEL( bpred_mx, bpred_my, bpred_cost );
         int pmv_cost = bpred_cost;
 
