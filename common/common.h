@@ -64,6 +64,23 @@
 #define X264_LOOKAHEAD_QP (12+QP_BD_OFFSET)
 #define SPEC_QP(x) X264_MIN((x), QP_MAX_SPEC)
 
+/* exp/flash-levers census slots, x264_t.exp_flash.census */
+enum
+{
+    EXPF_REENC_ROW,          /* row VBV re-encodes taken, not the last row */
+    EXPF_REENC_LAST,         /* last-row re-encodes taken */
+    EXPF_REENC_DECLINED,     /* re-encodes declined by the REENC cap */
+    EXPF_REENC_FORCED,       /* re-encodes past the cap: no qp fits max_frame_size */
+    EXPF_REENC_SLICES,       /* slices with at least one re-encode */
+    EXPF_INTRA_GATED,        /* P mbs the lowres coded intra */
+    EXPF_INTRA_PRUNED,       /* gated mbs with the sub-16x16 search skipped */
+    EXPF_INTRA_PRUNED_INTRA, /* pruned mbs that ended intra */
+    EXPF_IRD_MBS,            /* I mbs through the IRD threshold */
+    EXPF_IRD_SKIPPED,        /* intra RD evaluations IRD skipped */
+    EXPF_LKA,                /* keyframe analyses run before the ofbuf lock */
+    EXPF_CENSUS_MAX
+};
+
 #define NALU_OVERHEAD 5 // startcode + NAL type costs 5 bytes per frame
 #define FILLER_OVERHEAD (NALU_OVERHEAD+1)
 #define SEI_OVERHEAD (NALU_OVERHEAD - (h->param.b_annexb && !h->param.i_avcintra_class && (h->out.i_nal-1)))
@@ -742,6 +759,19 @@ struct x264_t
         int     i_wpred[2];
 
     } stat;
+
+    /* exp/flash-levers: X264_EXP_FLASH_* knobs, read once in encoder_open, and a
+     * per-thread census summed at close. Outside the memcpy'd thread state. */
+    struct
+    {
+        int     i_reenc;        /* REENC: row VBV re-encodes per slice per frame, -1 no cap */
+        int     i_intra;        /* INTRA: P, lowres intra mb: skip sub-16x16 if intra*8 < inter16x16*n */
+        int     i_ird;          /* IRD: I slice, intra RD only within min satd*n/8 */
+        int     b_lka;          /* LKA: keyframe lookahead analyse before the ofbuf lock */
+        int     b_census;       /* any knob set: log the census at close */
+        int     i_reenc_slice;  /* re-encodes taken in the current slice */
+        int64_t census[EXPF_CENSUS_MAX];
+    } exp_flash;
 
     /* 0 = luma 4x4, 1 = luma 8x8, 2 = chroma 4x4, 3 = chroma 8x8 */
     udctcoef (*nr_offset)[64];

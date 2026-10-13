@@ -1767,6 +1767,26 @@ x264_t *x264_encoder_open( x264_param_t *param )
      * The chosen solution is to make MBAFF non-adaptive in this case. */
     h->mb.b_adaptive_mbaff = PARAM_INTERLACED && h->param.analyse.i_subpel_refine;
 
+    {
+        /* exp/flash-levers knobs, all off when unset */
+        const char *e = getenv( "X264_EXP_FLASH_REENC" );
+        h->exp_flash.i_reenc = e ? X264_MAX( atoi( e ), 0 ) : -1;
+        e = getenv( "X264_EXP_FLASH_INTRA" );
+        h->exp_flash.i_intra = e ? x264_clip3( atoi( e ), 0, 8 ) : 0;
+        e = getenv( "X264_EXP_FLASH_IRD" );
+        h->exp_flash.i_ird = e ? x264_clip3( atoi( e ), 0, 64 ) : 0;
+        if( h->exp_flash.i_ird && h->exp_flash.i_ird < 8 )
+            h->exp_flash.i_ird = 8;
+        e = getenv( "X264_EXP_FLASH_LKA" );
+        h->exp_flash.b_lka = e && atoi( e );
+        e = getenv( "X264_EXP_FLASH_CENSUS" );
+        h->exp_flash.b_census = (e && atoi( e )) || h->exp_flash.i_reenc >= 0 || h->exp_flash.i_intra
+                                || h->exp_flash.i_ird || h->exp_flash.b_lka;
+        if( h->exp_flash.b_census )
+            x264_log( h, X264_LOG_INFO, "flash-levers: reenc %d intra %d/8 ird %d/8 lka %d\n",
+                      h->exp_flash.i_reenc, h->exp_flash.i_intra, h->exp_flash.i_ird, h->exp_flash.b_lka );
+    }
+
     /* Init frames. */
     if( h->param.i_bframe_adaptive == X264_B_ADAPT_TRELLIS && !h->param.rc.b_stat_read )
         h->frames.i_delay = X264_MAX(h->param.i_bframe,3)*4;
@@ -3076,6 +3096,7 @@ static intptr_t x264_slice_write( x264_t *h )
     x264_bs_bak_t bs_bak[4];
     b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv;
     bs_realign( &h->out.bs );
+    h->exp_flash.i_reenc_slice = 0;
 
     /* Slice */
     x264_nal_start( h, h->i_nal_type, h->i_nal_ref_idc );
@@ -4648,6 +4669,18 @@ void    x264_encoder_close  ( x264_t *h )
         h->i_frame = thread_prev->i_frame + 1 - h->i_thread_frames;
     }
     h->i_frame++;
+
+    if( h->exp_flash.b_census )
+    {
+        int64_t c[EXPF_CENSUS_MAX] = {0};
+        for( int i = 0; i < h->param.i_threads; i++ )
+            for( int j = 0; j < EXPF_CENSUS_MAX; j++ )
+                c[j] += h->thread[i]->exp_flash.census[j];
+        x264_log( h, X264_LOG_INFO, "flash-census reenc: row %"PRId64" last %"PRId64" declined %"PRId64" forced %"PRId64" slices %"PRId64"\n",
+                  c[EXPF_REENC_ROW], c[EXPF_REENC_LAST], c[EXPF_REENC_DECLINED], c[EXPF_REENC_FORCED], c[EXPF_REENC_SLICES] );
+        x264_log( h, X264_LOG_INFO, "flash-census intra: gated %"PRId64" pruned %"PRId64" pruned-intra %"PRId64"  ird: mbs %"PRId64" skipped %"PRId64"  lka: %"PRId64"\n",
+                  c[EXPF_INTRA_GATED], c[EXPF_INTRA_PRUNED], c[EXPF_INTRA_PRUNED_INTRA], c[EXPF_IRD_MBS], c[EXPF_IRD_SKIPPED], c[EXPF_LKA] );
+    }
 
     /* Slices used and PSNR */
     for( int i = 0; i < 3; i++ )

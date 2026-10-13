@@ -1752,8 +1752,23 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         h->rc->frame_size_estimated = b1 - size_of_other_slices;
 
         /* If the current row was large enough to cause a large QP jump, try re-encoding it. */
-        if( rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row )
+        int b_reenc = rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row;
+        if( b_reenc && h->exp_flash.i_reenc >= 0 && h->exp_flash.i_reenc_slice >= h->exp_flash.i_reenc )
         {
+            /* REENC cap: keep the row when the rows below fit max_frame_size at qpm */
+            if( b1 <= max_frame_size )
+            {
+                b_reenc = 0;
+                h->exp_flash.census[EXPF_REENC_DECLINED]++;
+            }
+            else
+                h->exp_flash.census[EXPF_REENC_FORCED]++;
+        }
+        if( b_reenc )
+        {
+            h->exp_flash.census[EXPF_REENC_SLICES] += !h->exp_flash.i_reenc_slice;
+            h->exp_flash.census[EXPF_REENC_ROW]++;
+            h->exp_flash.i_reenc_slice++;
             /* Bump QP to halfway in between... close enough. */
             rc->qpm = x264_clip3f( (prev_row_qp + rc->qpm)*0.5f, prev_row_qp + 1.0f, qp_max );
             rc->qpa_rc = rc->qpa_rc_prev;
@@ -1772,6 +1787,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( rc->qpm < qp_max && can_reencode_row
             && (bits_so_far + size_of_other_slices > X264_MIN( rc->frame_size_maximum, rc->buffer_fill )) )
         {
+            h->exp_flash.census[EXPF_REENC_SLICES] += !h->exp_flash.i_reenc_slice;
+            h->exp_flash.census[EXPF_REENC_LAST]++;
+            h->exp_flash.i_reenc_slice++;
             rc->qpm = qp_max;
             rc->qpa_rc = rc->qpa_rc_prev;
             rc->qpa_aq = rc->qpa_aq_prev;
