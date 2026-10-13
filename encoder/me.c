@@ -1093,8 +1093,8 @@ if( b_refine_qpel || (dir^1) != odir ) \
 { \
     intptr_t stride; \
     pixel *src; \
-    int cost = SUBPEL_LUMA_COST( mx, my ) \
-             + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
+    int luma = SUBPEL_LUMA_COST( mx, my ); \
+    int cost = luma + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
     if( b_chroma_me && cost < bcost ) \
     { \
         if( CHROMA444 ) \
@@ -1133,7 +1133,14 @@ if( b_refine_qpel || (dir^1) != odir ) \
             } \
         } \
     } \
-    COPY4_IF_LT( bcost, cost, bmx, mx, bmy, my, bdir, dir ); \
+    if( cost < bcost ) \
+    { \
+        bcost = cost; \
+        bmx = mx; \
+        bmy = my; \
+        bdir = dir; \
+        bluma = luma; \
+    } \
 }
 
 /* Luma-only COST_MV_SATD: the cost does not depend on bcost, so candidates
@@ -1187,13 +1194,16 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
 
 /* b8: bcost with its 8-bit luma cost replaced by the high bit depth one at
  * (bmx,bmy), once the search has moved or rebased; bcost holds chroma iff
- * b_chroma_me. m->cost is then what the 16-bit refine would give that mv. */
+ * b_chroma_me. m->cost is then what the 16-bit refine would give that mv.
+ * With chroma, bcost's 8-bit luma is bluma if a COST_MV_SATD set it (the rebase
+ * or a qpel winner, i.e. always where chroma ME is on), else recomputed. */
 #define ME8_EXACT() \
 if( b8 && (b_rebased || bmx != m->mv[0] || bmy != m->mv[1]) ) \
 { \
     int luma = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, bmx, bmy, fenc_pre ); \
     if( b_chroma_me ) \
-        bcost += luma - (subpel_luma_cost8( h, m, pix8, i_pixel, bw, bh, bmx, bmy, fenc_pre8, b8_satd ) << 2); \
+        bcost += luma - (bluma >= 0 ? bluma \
+                         : subpel_luma_cost8( h, m, pix8, i_pixel, bw, bh, bmx, bmy, fenc_pre8, b8_satd ) << 2); \
     else \
         bcost = luma + p_cost_mvx[bmx] + p_cost_mvy[bmy]; \
 }
@@ -1254,6 +1264,9 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     ALIGNED_ARRAY_N( uint8_t, pix8,[64*18] );
     int16_t *fenc_pre8 = b8 ? me_fenc_pre8( h, i_pixel, m->p_fenc8, b8_satd ) : NULL;
     int b_rebased = 0;
+    /* bcost's luma while bcost comes from a COST_MV_SATD (the luma-only qpel
+     * loop leaves it stale, but runs without chroma), else -1 */
+    int bluma = -1;
 
     /* halfpel diamond search */
     if( hpel_iters )
@@ -1460,6 +1473,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         bmx -= (bcost<<28)>>30;
         bmy -= (bcost<<30)>>30;
         bcost >>= 4;
+        bluma = -1;
     }
 
     ME8_EXACT();
