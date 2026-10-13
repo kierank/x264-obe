@@ -919,6 +919,8 @@ x264_frame_t *x264_frame_pop_blank_unused( x264_t *h )
 void x264_weight_scale_plane( x264_t *h, pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride,
                               int i_width, int i_height, x264_weight_t *w )
 {
+    if( h->mc.weight_plane && h->mc.weight_plane( dst, i_dst_stride, src, i_src_stride, w, i_width, i_height ) )
+        return;
     /* Weight horizontal strips of height 16. This was found to be the optimal height
      * in terms of the cache loads. */
     while( i_height > 0 )

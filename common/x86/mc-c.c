@@ -97,6 +97,14 @@
 #define x264_mc_copy_w4_mmx x264_template(mc_copy_w4_mmx)
 #define x264_mc_copy_w8_mmx x264_template(mc_copy_w8_mmx)
 #define x264_mc_copy_w8_sse x264_template(mc_copy_w8_sse)
+#define x264_mc_offsetadd_plane_avx2 x264_template(mc_offsetadd_plane_avx2)
+#define x264_mc_offsetadd_plane_avx512 x264_template(mc_offsetadd_plane_avx512)
+#define x264_mc_offsetsub_plane_avx2 x264_template(mc_offsetsub_plane_avx2)
+#define x264_mc_offsetsub_plane_avx512 x264_template(mc_offsetsub_plane_avx512)
+#define x264_mc_weight_ns_plane_avx2 x264_template(mc_weight_ns_plane_avx2)
+#define x264_mc_weight_ns_plane_avx512 x264_template(mc_weight_ns_plane_avx512)
+#define x264_mc_weight_plane_avx2 x264_template(mc_weight_plane_avx2)
+#define x264_mc_weight_plane_avx512 x264_template(mc_weight_plane_avx512)
 #define x264_mc_offsetadd_w4_avx2 x264_template(mc_offsetadd_w4_avx2)
 #define x264_mc_offsetadd_w8_avx2 x264_template(mc_offsetadd_w8_avx2)
 #define x264_mc_offsetadd_w16_avx2 x264_template(mc_offsetadd_w16_avx2)
@@ -342,6 +350,14 @@ MC_WEIGHT( 12, avx512 )
 MC_WEIGHT( 16, avx512 )
 MC_WEIGHT( 20, avx512 )
 void x264_mc_weight_ns_w12_avx512( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int );
+#define MC_WEIGHT_PLANE(cpu) \
+    void x264_mc_weight_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int ); \
+    void x264_mc_weight_ns_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int ); \
+    void x264_mc_offsetadd_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int ); \
+    void x264_mc_offsetsub_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+MC_WEIGHT_PLANE( avx2 )
+MC_WEIGHT_PLANE( avx512 )
+#undef MC_WEIGHT_PLANE
 #endif
 #undef MC_OFFSET
 #undef MC_WEIGHT
@@ -658,6 +674,35 @@ static void x264_weight_cache_avx512( x264_t *h, x264_weight_t *w )
 {
     weight_cache_mulhrs( h, w, x264_mc_weight_ns_wtab_avx512 );
 }
+
+#if ARCH_X86_64
+/* x264_weight_scale_plane row by row over what its w16/w8 strips write (width
+ * up to a multiple of 8, height up to even), for the weights whose w16/w8
+ * kernels share the plane kernel's cache and op; 0 for the others (SSE2). */
+#define WEIGHT_PLANE(cpu, wtab, ns_wtab)\
+static int weight_plane_##cpu( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,\
+                               const x264_weight_t *w, int width, int height )\
+{\
+    void (*f)( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );\
+    if( w->weightfn == wtab )\
+        f = x264_mc_weight_plane_##cpu;\
+    else if( w->weightfn == ns_wtab )\
+        f = x264_mc_weight_ns_plane_##cpu;\
+    else if( w->weightfn == x264_mc_offsetadd_wtab_avx2 )\
+        f = x264_mc_offsetadd_plane_##cpu;\
+    else if( w->weightfn == x264_mc_offsetsub_wtab_avx2 )\
+        f = x264_mc_offsetsub_plane_##cpu;\
+    else\
+        return 0;\
+    if( width > 0 && height > 0 )\
+        f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );\
+    return 1;\
+}
+
+WEIGHT_PLANE( avx2, x264_mc_weight_wtab_avx2, x264_mc_weight_ns_wtab_avx2 )
+WEIGHT_PLANE( avx512, x264_mc_weight_wtab_avx512, x264_mc_weight_ns_wtab_avx512 )
+#undef WEIGHT_PLANE
+#endif
 #else
 MC_WEIGHT_WTAB(weight,mmx2,mmx2,mmx2,12)
 MC_WEIGHT_WTAB(offsetadd,mmx2,mmx2,mmx2,12)
@@ -1210,6 +1255,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight_cache = x264_weight_cache_avx2;
         pf->offsetadd = x264_mc_offsetadd_wtab_avx2;
         pf->offsetsub = x264_mc_offsetsub_wtab_avx2;
+#if ARCH_X86_64
+        pf->weight_plane = weight_plane_avx2;
+#endif
     }
 
     if( cpu&X264_CPU_AVX512 )
@@ -1217,6 +1265,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
         pf->weight = x264_mc_weight_wtab_avx512;
         pf->weight_cache = x264_weight_cache_avx512;
+#if ARCH_X86_64
+        pf->weight_plane = weight_plane_avx512;
+#endif
     }
 #else // !HIGH_BIT_DEPTH
 
