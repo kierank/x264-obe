@@ -2543,42 +2543,78 @@ static int check_deblock( int cpu_ref, int cpu_new )
 
     if( db_a.deblock_luma_mb && db_a.deblock_luma_mb != db_ref.deblock_luma_mb )
     {
+        static const char *mb_names[3] = { "deblock_luma_mb", "deblock_luma_mb_intra", "deblock_luma_mb_intra_edges" };
         ALIGNED_ARRAY_16( uint8_t, bs, [2],[8][4] );
         x264_deblock_edge_t e[3];
-        set_func_name( "deblock_luma_mb" );
         used_asm = 1;
-        for( int i = 0; i < 200; i++ )
+        for( int i = 0; i < 600; i++ )
         {
-            /* frame and field (2x) strides; the block has 4 rows above and 16 columns left */
-            intptr_t stride = 32 << (i&1);
+            /* frame and field (2x) strides; 4 rows above, 16 columns left, 32 right and
+             * the rows below the block are guard, compared as well */
+            intptr_t stride = 64 << (i&1);
             intptr_t off = 4*stride + 16;
+            int size = 24*stride;
+            /* 0: inter MB, 1: intra MB, 2: intra left/top edges, also without the edge bit */
+            int mode = (i>>3)%3;
             int edges = rand() & 0xff;
-            for( int j = 0; j < 1280; j++ )
-                pbuf3[j] = rand() & (i&2 ? 0xf : PIXEL_MAX);
-            memcpy( pbuf4, pbuf3, 1280 * sizeof(pixel) );
+            set_func_name( "%s", mb_names[mode] );
+            if( mode == 1 )
+                edges = (rand() & 0x11) | (rand()&1 ? 0x44 : 0xee);
+            if( (i&6) == 6 )
+            {
+                /* flat 4x4 blocks: the strong filter and its alpha/4+2, beta conditions both ways */
+                for( int j = 0; j < size; j++ )
+                {
+                    int x = (j % stride) >> 2, y = j / stride >> 2;
+                    int lvl = (PIXEL_MAX+1)/2 + ((int)((x*7 + y*13) * 2654435761u >> 26) - 32) * (1 << (BIT_DEPTH-8));
+                    pbuf3[j] = x264_clip3( lvl + (rand()&1) - (rand()&1), 0, PIXEL_MAX );
+                }
+            }
+            else
+                for( int j = 0; j < size; j++ )
+                    pbuf3[j] = rand() & (i&2 ? 0xf : PIXEL_MAX);
+            memcpy( pbuf4, pbuf3, size * sizeof(pixel) );
             for( int j = 0; j < 2*8*4; j++ )
                 ((uint8_t*)bs)[j] = (rand()&3) ? rand()&3 : 0;
             if( i&4 )
                 for( int j = 0; j < 2*8; j++ )
                     if( !(rand()&3) )
                         M32( (uint8_t*)bs + 4*j ) = 0;
+            if( mode == 1 )
+            {
+                /* bs[0][0] and bs[1][0] stay stale, as for an intra MB */
+                memset( bs[0][1], 3, 3*4 );
+                memset( bs[1][1], 3, 3*4 );
+            }
             for( int c = 0; c < 3; c++ )
             {
                 int k = rand()%36;
                 e[c].tc0[0] = -(1 << (BIT_DEPTH-8));
                 for( int j = 1; j < 4; j++ )
                     e[c].tc0[j] = tcs[k][j];
+                if( !(rand()&7) )
+                    k = rand()&1 ? 35 : 1 + (rand()&1);
                 e[c].alpha = alphas[k];
                 e[c].beta = betas[k];
-                if( !alphas[k] || !betas[k] )
+                if( !(rand()&7) )
+                {
+                    /* the extremes of the real tables */
+                    e[c].alpha = (rand()&1 ? 255 : 4) << (BIT_DEPTH-8);
+                    e[c].beta = (rand()&1 ? 18 : 2) << (BIT_DEPTH-8);
+                }
+                if( !e[c].alpha || !e[c].beta )
                     edges &= c == 2 ? 0x11 : ~(c ? 0x10 : 0x01);
             }
+            if( mode == 1 )
+                edges |= (edges & 0x11) << 8;
+            else if( mode == 2 )
+                edges |= (rand() & 0x11) << 8;
             call_c1( db_c.deblock_luma_mb, pbuf3+off, stride, bs, e, edges );
             call_a1( db_a.deblock_luma_mb, pbuf4+off, stride, bs, e, edges );
-            if( memcmp( pbuf3, pbuf4, 1280 * sizeof(pixel) ) )
+            if( memcmp( pbuf3, pbuf4, size * sizeof(pixel) ) )
             {
                 ok = 0;
-                fprintf( stderr, "deblock_luma_mb (stride=%d, edges=%#x): [FAILED]\n", (int)stride, edges );
+                fprintf( stderr, "%s (stride=%d, edges=%#x): [FAILED]\n", mb_names[mode], (int)stride, edges );
                 break;
             }
             call_c2( db_c.deblock_luma_mb, pbuf3+off, stride, bs, e, edges );
