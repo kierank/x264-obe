@@ -802,20 +802,31 @@ OFFSETPN  8
 %endmacro
 
 ; pmulhrsw rounds (pix*scale)>>denom exactly; for 0 <= scale the paddsw of
-; offset+wclip saturates at PIXEL_MAX and psubusw wclip clips at 0
-%macro WEIGHT_NS_OP_AVX2 5 ; dst, src, scale<<(15-denom), offset+wclip, wclip
+; offset+wclip saturates at PIXEL_MAX and psubusw wclip clips at 0.
+; masked: the source is loaded under k1, zeroing the other lanes.
+%macro WEIGHT_NS_OP_AVX2 5-6 0 ; dst, src, scale<<(15-denom), offset+wclip, wclip, masked
+%if %6
+    vpmulhrsw    %1 {k1}{z}, %3, %2
+%else
     pmulhrsw     %1, %3, %2
+%endif
     paddsw       %1, %4
     psubusw      %1, %5
 %endmacro
 
 %assign WEIGHT_PRESHIFT 15-BIT_DEPTH
-%macro WEIGHT_OP_AVX2 5 ; dst, src, scale<<(BIT_DEPTH-denom), offset+wclip, wclip
+%macro WEIGHT_OP_AVX2 5-6 0 ; dst, src, scale<<(BIT_DEPTH-denom), offset+wclip, wclip, masked
+%if %6
+    vpsllw       %1 {k1}{z}, %2, WEIGHT_PRESHIFT
+%else
 %ifnum sizeof%2
     psllw        %1, %2, WEIGHT_PRESHIFT
+%elif cpuflag(avx512)
+    vpsllw       %1, %2, WEIGHT_PRESHIFT ; EVEX only: memory source
 %else
     movu         %1, %2
     psllw        %1, WEIGHT_PRESHIFT
+%endif
 %endif
     WEIGHT_NS_OP_AVX2 %1, %1, %3, %4, %5
 %endmacro
@@ -889,6 +900,35 @@ OFFSET_AVX2  4, sub
 OFFSET_AVX2  8, sub
 OFFSET_AVX2 16, sub
 OFFSET_AVX2 20, sub
+
+; AVX-512 (EVEX ymm): 12 px rows one per ymm under k1, loaded by the op
+%macro WEIGHTER12_AVX512 2 ; name, op
+cglobal mc_%1_w12, 6,7,6
+    FIX_STRIDES r1, r3
+    vbroadcasti128 m3, [r4]
+    vbroadcasti128 m4, [r4+16]
+    mova         m5, [pw_wclip]
+    mov         r6d, 0xfff
+    kmovw        k1, r6d
+.loop:
+    %2           m0, [r2], m3, m4, m5, 1
+    %2           m1, [r2+r3], m3, m4, m5, 1
+    vmovdqu16 [r0] {k1}, m0
+    vmovdqu16 [r0+r1] {k1}, m1
+    lea          r0, [r0+r1*2]
+    lea          r2, [r2+r3*2]
+    sub         r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+; w16/w20: the AVX2 rows with psllw from memory; ns w16/w20, w4/w8 and the
+; offsets gain nothing from EVEX and stay AVX2
+INIT_YMM avx512
+WEIGHTER_AVX2 16, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2 20, weight, WEIGHT_OP_AVX2
+WEIGHTER12_AVX512 weight, WEIGHT_OP_AVX2
+WEIGHTER12_AVX512 weight_ns, WEIGHT_NS_OP_AVX2
 %endif
 
 
