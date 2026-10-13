@@ -2683,7 +2683,10 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
      * plane_fld is only read through references (field mc, its borders and
      * hpel), so frames that aren't kept as references don't need it.
      * Planes that get hpel are copied by the field hpel pass instead, except
-     * for the top and bottom 16 rows (see x264_frame_filter). */
+     * for the top and bottom 16 rows (see x264_frame_filter).
+     * NV12 chroma mc reads plane_fld only when its rows (at most 16 >> v_shift,
+     * plus one) cross a field edge (x264_mb_fref_uv), so at most 16 >> v_shift
+     * rows into each field: the top and bottom 32 >> v_shift rows. */
     if( PARAM_INTERLACED && h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
     {
         int hpel_planes = h->param.analyse.i_subpel_refine ? (CHROMA444 ? 3 : 1) : 0;
@@ -2692,10 +2695,11 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
             int v_shift = CHROMA_V_SHIFT && p;
             int y0 = minpix_y >> v_shift;
             int y1 = maxpix_y >> v_shift;
-            if( p < hpel_planes )
+            int edge = p < hpel_planes ? 16 : p && !CHROMA444 ? 32 >> v_shift : 0;
+            if( edge )
             {
-                fdec_copy_fld_rows( h, p, y0, X264_MIN( y1, 16 ) );
-                fdec_copy_fld_rows( h, p, X264_MAX( y0, h->fdec->i_lines[p] - 16 ), y1 );
+                fdec_copy_fld_rows( h, p, y0, X264_MIN( y1, edge ) );
+                fdec_copy_fld_rows( h, p, X264_MAX( y0, h->fdec->i_lines[p] - edge ), y1 );
             }
             else
                 fdec_copy_fld_rows( h, p, y0, y1 );

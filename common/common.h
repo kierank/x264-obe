@@ -615,10 +615,14 @@ struct x264_t
 
             /* pointer over mb of the references */
             int i_fref[2];
-            /* [12]: yN, yH, yV, yHV, (NV12 ? uv : I444 ? (uN, uH, uV, uHV, vN, ...)) */
+            /* [12]: yN, yH, yV, yHV, (NV12 ? uv, uv of plane_fld : I444 ? (uN, uH, uV, uHV, vN, ...)),
+             * see x264_mb_fref_uv */
             pixel *p_fref[2][X264_REF_MAX*2][12];
             pixel *p_fref_w[X264_REF_MAX*2];  /* weighted fullpel luma */
             uint16_t *p_integral[2][X264_REF_MAX];
+            /* NV12: field row of the mb's chroma and chroma rows of a field, for field mbs */
+            int i_fld_uv_y;
+            int i_fld_uv_lines;
 
             /* fref stride */
             int     i_stride[3];

@@ -46,6 +46,7 @@ typedef struct
     pixel *p_fenc[3];
     uint16_t *integral;
     int      i_stride[3];
+    int      i_fld_uv_y; /* NV12: field row of p_fref[4], see x264_mb_fref_uv */
 
     ALIGNED_4( int16_t mvp[2] );
 
