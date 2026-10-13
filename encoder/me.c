@@ -86,7 +86,7 @@ do\
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );\
 } while(0)
 
-/* i_me_8bit 2: m's luma h, v and c planes are msb8/lsb8 only, p_fref[1..3] NULL */
+/* X264_ME8_HPEL8: m's luma h, v and c planes are msb8/lsb8 only, p_fref[1..3] NULL */
 #if HIGH_BIT_DEPTH
 #define SPLIT8_REF( m ) ((m)->p_split8[1] != NULL)
 #else
@@ -96,13 +96,14 @@ do\
 /* cmp of the luma prediction at a qpel mv. Where get_ref would average two
  * hpel planes, cmp_avg2 (if any) does it without storing the average. pix:
  * 2*X264_SPLIT8_STRIDE*16 pixels, for i_me_8bit 2's unpacked planes. A split
- * ref's subpel mvs: cmp_pk/cmp_avg2_pk read its msb8/lsb8 in place (if any). */
+ * ref's subpel mvs, and its fullpel ones without p_fref[0]: cmp_pk/cmp_avg2_pk
+ * read its msb8/lsb8 in place (if any). */
 static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw, int bh, int mx, int my,
                                      x264_pixel_cmp_avg2_t cmp_avg2, x264_pixel_cmp_t cmp,
                                      x264_pixel_cmp_avg2_pk_t cmp_avg2_pk, x264_pixel_cmp_pk_t cmp_pk )
 {
 #if HIGH_BIT_DEPTH
-    if( cmp_avg2_pk && SPLIT8_REF( m ) && !m->weight[0].weightfn && ((mx|my)&3) )
+    if( cmp_avg2_pk && !m->weight[0].weightfn && (((mx|my)&3) ? SPLIT8_REF( m ) : !m->p_fref[0]) )
     {
         uint8_t *pk[4];
         if( x264_pk_hpel_pair( pk, m->p_split8, m->i_stride[0], mx, my ) )
@@ -935,7 +936,10 @@ static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)
      * predictors, the subpel search and m->cost */
     if( b8 )
     {
-        bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride );
+        /* unweighted, so p_fref_w is p_fref[0] or NULL */
+        bcost = p_fref_w ? h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride )
+                         : subpel_cmp( h, m, pix, bw, bh, SPEL(bmx), SPEL(bmy), NULL, h->pixf.fpelcmp[i_pixel],
+                                       h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] );
         if( h->mb.i_subpel_refine >= 3 || bmv != pmv )
             bcost += BITS_MVD( bmx, bmy );
     }

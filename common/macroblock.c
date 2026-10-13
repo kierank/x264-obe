@@ -626,10 +626,18 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                 h->mb.pic.p_fdec[i][-1+j*FDEC_STRIDE] = plane_fdec[-1+j*i_stride2];
     }
     pixel *plane_src, **filtered_src;
+    /* h->b_fpel8: no 16-bit luma planes of the refs (nor their pointers, which
+     * the encoding thread may change), p_fref8 instead */
+    int b_pk = !i && h->b_fpel8;
     for( int j = 0; j < h->mb.pic.i_fref[0]; j++ )
     {
         // Interpolate between pixels in same field.
-        if( mb_interlaced )
+        if( b_pk )
+        {
+            plane_src = NULL;
+            filtered_src = NULL;
+        }
+        else if( mb_interlaced )
         {
             plane_src = h->fref[0][j>>1]->plane_fld[i];
             filtered_src = h->fref[0][j>>1]->filtered_fld[i];
@@ -639,7 +647,7 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             plane_src = h->fref[0][j]->plane[i];
             filtered_src = h->fref[0][j]->filtered[i];
         }
-        h->mb.pic.p_fref[0][j][i*4] = plane_src + ref_pix_offset[j&1];
+        h->mb.pic.p_fref[0][j][i*4] = b_pk ? NULL : plane_src + ref_pix_offset[j&1];
 
         if( !b_chroma )
         {
@@ -647,7 +655,7 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                 x264_macroblock_load_fref8( h->mb.pic.p_fref8[0][j], h->fref[0][j >> mb_interlaced],
                                             mb_interlaced, ref_pix_offset[j&1] );
             for( int k = 1; k < 4; k++ )
-                h->mb.pic.p_fref[0][j][i*4+k] = !i && h->mb.pic.p_fref8[0][j][1] ? NULL
+                h->mb.pic.p_fref[0][j][i*4+k] = b_pk || (!i && h->mb.pic.p_fref8[0][j][1]) ? NULL
                                               : filtered_src[k] + ref_pix_offset[j&1];
             if( !i )
             {
@@ -661,7 +669,12 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     if( h->sh.i_type == SLICE_TYPE_B )
         for( int j = 0; j < h->mb.pic.i_fref[1]; j++ )
         {
-            if( mb_interlaced )
+            if( b_pk )
+            {
+                plane_src = NULL;
+                filtered_src = NULL;
+            }
+            else if( mb_interlaced )
             {
                 plane_src = h->fref[1][j>>1]->plane_fld[i];
                 filtered_src = h->fref[1][j>>1]->filtered_fld[i];
@@ -671,14 +684,14 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                 plane_src = h->fref[1][j]->plane[i];
                 filtered_src = h->fref[1][j]->filtered[i];
             }
-            h->mb.pic.p_fref[1][j][i*4] = plane_src + ref_pix_offset[j&1];
+            h->mb.pic.p_fref[1][j][i*4] = b_pk ? NULL : plane_src + ref_pix_offset[j&1];
 
             if( !i && h->me8 )
                 x264_macroblock_load_fref8( h->mb.pic.p_fref8[1][j], h->fref[1][j >> mb_interlaced],
                                             mb_interlaced, ref_pix_offset[j&1] );
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )
-                    h->mb.pic.p_fref[1][j][i*4+k] = !i && h->mb.pic.p_fref8[1][j][1] ? NULL
+                    h->mb.pic.p_fref[1][j][i*4+k] = b_pk || (!i && h->mb.pic.p_fref8[1][j][1]) ? NULL
                                                   : filtered_src[k] + ref_pix_offset[j&1];
         }
 }

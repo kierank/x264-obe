@@ -746,6 +746,13 @@ void x264_frame_split8( x264_t *h, x264_frame_t *frame, int mb_y )
         height += 4;
     int y0 = 16*mb_y - 4*!b_start;
     plane_split8_rows( h, frame, frame->msb8[0], frame->lsb8[0], frame->plane[0], y0, y0 + height );
+#ifdef X264_ME8_VERIFY_CONTROL
+    /* positive control of the verifier and of the h->b_fpel8 readers: pixel 16
+     * (lsb byte 4) of these rows gets lsb 3 */
+    if( h->b_fpel8 )
+        for( int y = y0; y < y0 + height; y++ )
+            frame->lsb8[0][y*(frame->i_stride[0]>>2) + 4] |= 3;
+#endif
     if( pad_top )
         plane_split8_rows( h, frame, frame->msb8[0], frame->lsb8[0], frame->plane[0], -PADV, 0 );
     if( pad_bot )
@@ -1091,6 +1098,33 @@ void x264_weight_scale_plane( x264_t *h, pixel *dst, intptr_t i_dst_stride, pixe
         dst += 16 * i_dst_stride;
         src += 16 * i_src_stride;
     }
+}
+
+/* rows [y, y+height) of a ref's padded fullpel luma (row 0 is -i_padv) weighted
+ * into the same rows of dst, a plane of its geometry; h->b_fpel8 refs are
+ * unpacked from msb8/lsb8[0] into dst and weighted in place, 16 rows at a time */
+void x264_weight_scale_ref( x264_t *h, pixel *dst, x264_frame_t *ref, int y, int height, x264_weight_t *w )
+{
+    int i_padv = PADV << PARAM_INTERLACED;
+    intptr_t stride = ref->i_stride[0];
+    int width = ref->i_width[0] + 2*PADH;
+    intptr_t offset = (y - i_padv) * stride - PADH;
+#if HIGH_BIT_DEPTH
+    if( h->b_fpel8 )
+    {
+        uint8_t *msb = ref->msb8[0] + offset;
+        uint8_t *lsb = ref->lsb8[0] + (y - i_padv) * (stride >> 2) - PADH/4;
+        dst += offset;
+        for( int y0 = 0; y0 < height; y0 += 16 )
+        {
+            int rows = X264_MIN( height - y0, 16 );
+            h->mc.plane_unpack8( dst + y0*stride, stride, msb + y0*stride, lsb + y0*(stride >> 2), stride, width, rows );
+            x264_weight_scale_plane( h, dst + y0*stride, stride, dst + y0*stride, stride, width, rows, w );
+        }
+        return;
+    }
+#endif
+    x264_weight_scale_plane( h, dst + offset, stride, ref->filtered[0][0] + offset, stride, width, height, w );
 }
 
 void x264_frame_delete_list( x264_frame_t **list )

@@ -186,8 +186,9 @@ static ALWAYS_INLINE void x264_mc_hpel_pair( pixel *dst[2], pixel **src, intptr_
  * a multiple of 4 pixels from x = 0, and unpack what the 16-bit kernels would
  * read into temps of X264_SPLIT8_STRIDE pixels a row. */
 #define X264_SPLIT8_STRIDE 32
-/* mc_luma and get_ref of src/src8, src[0] the 16-bit fullpel plane; get_ref
- * returns dst (stride *i_dst) where it would return an hpel plane */
+/* mc_luma and get_ref of src/src8, src[0] the 16-bit fullpel plane or NULL
+ * (h->b_fpel8: fullpel mvs read src8 too); get_ref returns dst (stride *i_dst)
+ * where it would return a plane of src8 */
 #define x264_mc_luma_split8 x264_template(mc_luma_split8)
 void x264_mc_luma_split8( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
                           int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );

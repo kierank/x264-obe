@@ -854,7 +854,7 @@ static ALWAYS_INLINE void mc_pred_pk( x264_t *h, pixel *dst, intptr_t i_dst, uin
 void x264_mc_luma_split8( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
                           int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
 {
-    if( !((mvx|mvy)&3) )
+    if( !((mvx|mvy)&3) && src[0] )
     {
         h->mc.mc_luma( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
         return;
@@ -876,7 +876,7 @@ void x264_mc_luma_split8( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, ui
 pixel *x264_get_ref_split8( x264_t *h, pixel *dst, intptr_t *i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
                             int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
 {
-    if( !((mvx|mvy)&3) )
+    if( !((mvx|mvy)&3) && src[0] )
         return h->mc.get_ref( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
     if( h->mc.copy_pk[1] )
     {

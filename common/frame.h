@@ -345,6 +345,8 @@ x264_frame_t *x264_frame_pop_blank_unused( x264_t *h );
 #define x264_weight_scale_plane x264_template(weight_scale_plane)
 void x264_weight_scale_plane( x264_t *h, pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride,
                               int i_width, int i_height, x264_weight_t *w );
+#define x264_weight_scale_ref x264_template(weight_scale_ref)
+void x264_weight_scale_ref( x264_t *h, pixel *dst, x264_frame_t *ref, int y, int height, x264_weight_t *w );
 #define x264_frame_pop_unused x264_template(frame_pop_unused)
 x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec );
 #define x264_frame_delete_list x264_template(frame_delete_list)
