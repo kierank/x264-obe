@@ -53,6 +53,7 @@ cextern pw_2
 cextern pw_4
 cextern pw_8
 cextern pw_16
+cextern pw_512
 cextern pw_00ff
 cextern pw_pixel_max
 cextern pw_0to15
@@ -2209,3 +2210,131 @@ PREDICT_16x16_DC_CORE
 INIT_XMM avx2
 PREDICT_16x16_DC_CORE
 %endif
+
+; %1 rows of %3 at FDEC_STRIDE, using %2. More than 4 rows moves r0.
+%macro STORE_ROWS 3
+%if %1 == 4
+    %2 [r0+0*FDEC_STRIDEB], %3
+    %2 [r0+1*FDEC_STRIDEB], %3
+    %2 [r0+2*FDEC_STRIDEB], %3
+    %2 [r0+3*FDEC_STRIDEB], %3
+%else
+    add  r0, 4*FDEC_STRIDEB
+%assign %%i 0
+%rep %1/8
+%if %%i
+    add  r0, 8*FDEC_STRIDEB
+%endif
+    %2 [r0-4*FDEC_STRIDEB], %3
+    %2 [r0-3*FDEC_STRIDEB], %3
+    %2 [r0-2*FDEC_STRIDEB], %3
+    %2 [r0-1*FDEC_STRIDEB], %3
+    %2 [r0+0*FDEC_STRIDEB], %3
+    %2 [r0+1*FDEC_STRIDEB], %3
+    %2 [r0+2*FDEC_STRIDEB], %3
+    %2 [r0+3*FDEC_STRIDEB], %3
+%assign %%i %%i+1
+%endrep
+%endif
+%endmacro
+
+; r1d = (left neighbours of rows %1..%1+3 + 2) >> 2
+%macro PRED_LEFT4 1
+    movzx      r1d, pixel [r0+(%1+0)*FDEC_STRIDEB-SIZEOF_PIXEL]
+    movzx      r2d, pixel [r0+(%1+1)*FDEC_STRIDEB-SIZEOF_PIXEL]
+    add        r1d, r2d
+    movzx      r2d, pixel [r0+(%1+2)*FDEC_STRIDEB-SIZEOF_PIXEL]
+    add        r1d, r2d
+    movzx      r2d, pixel [r0+(%1+3)*FDEC_STRIDEB-SIZEOF_PIXEL]
+    lea        r1d, [r1+r2+2]
+    shr        r1d, 2
+%endmacro
+
+%if HIGH_BIT_DEPTH
+    %define MOVPIX4 movq ; one 4-pixel row
+%else
+    %define MOVPIX4 movd
+%endif
+
+; 4x4 block of r1d
+%macro PRED4x4_DC_STORE 0
+%if HIGH_BIT_DEPTH
+    movd        m0, r1d
+    pshuflw     m0, m0, q0000
+    STORE_ROWS   4, movq, m0
+%else
+    imul       r1d, 0x01010101
+    STORE_ROWS   4, mov, r1d
+%endif
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void predict_4x4_v( pixel *src )
+;-----------------------------------------------------------------------------
+INIT_XMM sse2
+cglobal predict_4x4_v, 1,1
+    MOVPIX4     m0, [r0-FDEC_STRIDEB]
+    STORE_ROWS   4, MOVPIX4, m0
+    RET
+
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void predict_4x4_h( uint8_t *src )
+;-----------------------------------------------------------------------------
+%macro PRED4x4_H_ROW 1
+    movzx      r1d, byte [r0+%1*FDEC_STRIDE-1]
+    imul       r1d, 0x01010101
+    mov [r0+%1*FDEC_STRIDE], r1d
+%endmacro
+
+cglobal predict_4x4_h, 1,2
+    PRED4x4_H_ROW 0
+    PRED4x4_H_ROW 1
+    PRED4x4_H_ROW 2
+    PRED4x4_H_ROW 3
+    RET
+%endif
+
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc_left( pixel *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc_left, 1,3
+    PRED_LEFT4   0
+    PRED4x4_DC_STORE
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc_top( pixel *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc_top, 1,2
+%if HIGH_BIT_DEPTH
+    movq        m0, [r0-FDEC_STRIDEB]
+    pmaddwd     m0, [pw_1]
+    pshuflw     m1, m0, q1032
+    paddd       m0, m1
+    paddw       m0, [pw_2]
+    psrlw       m0, 2
+    pshuflw     m0, m0, q0000
+    STORE_ROWS   4, movq, m0
+%else
+    pxor        m1, m1
+    movd        m0, [r0-FDEC_STRIDE]
+    psadbw      m0, m1
+    movd       r1d, m0
+    add        r1d, 2
+    shr        r1d, 2
+    PRED4x4_DC_STORE
+%endif
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc_128( pixel *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc_128, 1,1
+%if HIGH_BIT_DEPTH
+    movq        m0, [pw_512]
+    STORE_ROWS   4, movq, m0
+%else
+    STORE_ROWS   4, mov dword, 0x80808080
+%endif
+    RET
