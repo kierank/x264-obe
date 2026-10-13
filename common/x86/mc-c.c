@@ -39,6 +39,7 @@
 #define x264_plane_split8_avx512icl x264_template(plane_split8_avx512icl)
 #define x264_plane_unpack8_avx2 x264_template(plane_unpack8_avx2)
 #define x264_plane_unpack8_avx512icl x264_template(plane_unpack8_avx512icl)
+#define x264_mc_copy_16x16_msb8_avx2 x264_template(mc_copy_16x16_msb8_avx2)
 #define x264_frame_init_lowres_core_cache32_mmx2 x264_template(frame_init_lowres_core_cache32_mmx2)
 #define x264_frame_init_lowres_core_mmx2 x264_template(frame_init_lowres_core_mmx2)
 #define x264_frame_init_lowres_core_sse2 x264_template(frame_init_lowres_core_sse2)
@@ -450,6 +451,7 @@ void x264_plane_split8_avx2( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_
 void x264_plane_split8_avx512icl( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_stride, int w, int h );
 void x264_plane_unpack8_avx2( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
 void x264_plane_unpack8_avx512icl( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
+void x264_mc_copy_16x16_msb8_avx2( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src );
 #define PK_PRED_DECL( cpu )\
 void x264_mc_copy_pk_w4_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, intptr_t, int );\
 void x264_mc_copy_pk_w8_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, intptr_t, int );\
@@ -1152,6 +1154,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
         pf->lowres8_convert = x264_lowres8_convert_avx2;
+        pf->copy_16x16_msb8 = x264_mc_copy_16x16_msb8_avx2;
 #if ARCH_X86_64
         pf->plane_split8 = x264_plane_split8_avx2;
         pf->plane_unpack8 = x264_plane_unpack8_avx2;

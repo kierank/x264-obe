@@ -144,6 +144,9 @@ typedef struct
      * pixels (a multiple of 16), rows i_stride pixels (src), bytes (msb) and
      * i_stride/4 bytes (lsb) apart. */
     void (*plane_split8)( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_stride, int w, int h );
+    /* copy[PIXEL_16x16] of the luma fenc into dst (FENC_STRIDE) that also writes
+     * its msb8, src >> 2, to msb (FENC_STRIDE bytes a row); high bit depth only */
+    void (*copy_16x16_msb8)( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src );
     /* plane_split8's inverse, dst[x] = msb[x] << 2 | lsb bits of x: h rows of w
      * pixels (a multiple of 16), msb and lsb at an x that is a multiple of 4,
      * rows i_dst pixels (dst), i_src bytes (msb) and i_src/4 bytes (lsb) apart */

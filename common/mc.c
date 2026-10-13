@@ -542,6 +542,21 @@ static void plane_split8( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_str
     }
 }
 
+static void copy_16x16_msb8( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src )
+{
+    for( int y = 0; y < 16; y++ )
+    {
+        for( int x = 0; x < 16; x++ )
+        {
+            dst[x] = src[x];
+            msb[x] = src[x] >> (BIT_DEPTH-8);
+        }
+        dst += FENC_STRIDE;
+        msb += FENC_STRIDE;
+        src += i_src;
+    }
+}
+
 static void plane_unpack8( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h )
 {
     for( int y = 0; y < h; y++ )
@@ -727,6 +742,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->lowres8_convert = lowres8_convert;
     pf->plane_split8 = plane_split8;
     pf->plane_unpack8 = plane_unpack8;
+    pf->copy_16x16_msb8 = copy_16x16_msb8;
 #endif
     memset( pf->copy_pk, 0, sizeof(pf->copy_pk) );
     memset( pf->avg2_pk, 0, sizeof(pf->avg2_pk) );

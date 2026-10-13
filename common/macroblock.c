@@ -610,6 +610,15 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     }
     else
     {
+#if HIGH_BIT_DEPTH
+        /* analyse.i_me_8bit: the fenc's msb8 for the 8-bit search, in the copy */
+        if( !i && h->me8 && h->sh.i_type != SLICE_TYPE_I )
+        {
+            h->mc.copy_16x16_msb8( h->mb.pic.p_fenc[0], h->mb.pic.fenc8, h->mb.pic.p_fenc_plane[0], i_stride2 );
+            h->mb.pic.i_fenc8_pre = 0;
+        }
+        else
+#endif
         h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[i], FENC_STRIDE, h->mb.pic.p_fenc_plane[i], i_stride2, 16 );
         memcpy( h->mb.pic.p_fdec[i]-FDEC_STRIDE, intra_fdec, 24*sizeof(pixel) );
         h->mb.pic.p_fdec[i][-FDEC_STRIDE-1] = intra_fdec[-1];

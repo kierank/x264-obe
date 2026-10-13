@@ -3120,14 +3120,6 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
-#if HIGH_BIT_DEPTH
-    /* fenc is contiguous at FENC_STRIDE 16, so one 256 pixel row */
-    if( h->me8 && h->sh.i_type != SLICE_TYPE_I )
-    {
-        h->mc.plane_split8( h->mb.pic.fenc8, h->mb.pic.fenc8_lsb, h->mb.pic.p_fenc[0], 0, 16*FENC_STRIDE, 1 );
-        h->mb.pic.i_fenc8_pre = 0;
-    }
-#endif
 
     /*--------------------------- Do the analysis ---------------------------*/
     if( h->sh.i_type == SLICE_TYPE_I )

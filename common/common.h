@@ -602,10 +602,9 @@ struct x264_t
 #endif
             int i_fenc_pre;
 
-            /* analyse.i_me_8bit: msb8 of the luma fenc (FENC_STRIDE) and its
-             * unused lsb8 */
+            /* analyse.i_me_8bit: msb8 of the luma fenc (FENC_STRIDE), written
+             * by its load (copy_16x16_msb8) in P/B slices */
             ALIGNED_64( uint8_t fenc8[16*FENC_STRIDE] );
-            ALIGNED_16( uint8_t fenc8_lsb[4*FENC_STRIDE] );
             /* i_me_8bit 2: fenc_pre and i_fenc_pre bits 0-4 of fenc8, zeroed
              * when fenc8 is written */
             ALIGNED_64( int16_t fenc8_pre[512] );

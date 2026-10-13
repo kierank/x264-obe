@@ -2554,6 +2554,58 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "plane split8 :" );
     }
 
+    if( mc_a.copy_16x16_msb8 != mc_ref.copy_16x16_msb8 )
+    {
+        /* the luma fenc load and its msb8: src 0-7 pixels past alignment at
+         * strides 64 and 80, with 0 and PIXEL_MAX runs; dst and msb in 0xaa
+         * buffers one row longer, compared whole (stray writes fail) */
+        ALIGNED_ARRAY_64( pixel, s16,[16*80+8] );
+        ALIGNED_ARRAY_64( pixel, dc,[17*FENC_STRIDE] );
+        ALIGNED_ARRAY_64( pixel, da,[17*FENC_STRIDE] );
+        ALIGNED_ARRAY_64( uint8_t, mc8,[17*FENC_STRIDE] );
+        ALIGNED_ARRAY_64( uint8_t, ma8,[17*FENC_STRIDE] );
+        for( int i = 0; i < 16*80+8; i++ )
+            s16[i] = i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+        set_func_name( "mc_copy_16x16_msb8" );
+        ok = 1; used_asm = 1;
+        for( int k = 0; k < 16 && ok; k++ )
+        {
+            intptr_t stride = k&8 ? 80 : 64;
+            pixel *s = s16 + (k&7);
+            memset( dc, 0xaa, 17*FENC_STRIDE*sizeof(pixel) );
+            memset( da, 0xaa, 17*FENC_STRIDE*sizeof(pixel) );
+            memset( mc8, 0xaa, 17*FENC_STRIDE );
+            memset( ma8, 0xaa, 17*FENC_STRIDE );
+            call_c( mc_c.copy_16x16_msb8, dc, mc8, s, stride );
+            call_a( mc_a.copy_16x16_msb8, da, ma8, s, stride );
+            if( memcmp( dc, da, 17*FENC_STRIDE*sizeof(pixel) ) || memcmp( mc8, ma8, 17*FENC_STRIDE ) )
+            {
+                ok = 0;
+                fprintf( stderr, "copy_16x16_msb8 differs, offset %d stride %d [FAILED]\n", k&7, (int)stride );
+            }
+            /* the copy is src and msb is src >> 2, exactly */
+            for( int y = 0; y < 16 && ok; y++ )
+                for( int x = 0; x < 16; x++ )
+                    if( da[y*FENC_STRIDE+x] != s[y*stride+x] || ma8[y*FENC_STRIDE+x] != s[y*stride+x] >> (BIT_DEPTH-8) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "copy_16x16_msb8 x %d y %d offset %d [FAILED]\n", x, y, k&7 );
+                        break;
+                    }
+        }
+        /* positive control: one msb bit off must fail the exact check */
+        if( ok )
+        {
+            ma8[5*FENC_STRIDE+3] ^= 1;
+            if( ma8[5*FENC_STRIDE+3] == (s16[7+5*80+3] >> (BIT_DEPTH-8)) )
+            {
+                ok = 0;
+                fprintf( stderr, "copy_16x16_msb8 check is blind\n" );
+            }
+        }
+        report( "mc copy msb8 :" );
+    }
+
     if( mc_a.plane_unpack8 != mc_ref.plane_unpack8 )
     {
         /* the --me-8bit readers' windows (w 16 and 32, 1 to 20 rows) and wider,
