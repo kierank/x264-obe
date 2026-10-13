@@ -618,6 +618,7 @@ DEBLOCK_LUMA_64_AVX2
 ; All luma edges of one macroblock: vertical edges left to right on a transposed
 ; copy of the block, then horizontal edges top to bottom.
 ; e[0] left edge, e[1] top edge, e[2] inner edges; edges bit dir*4+edge.
+; Bits 8 and 12: the left and top edge take the bS 4 intra filter.
 ;-----------------------------------------------------------------------------
 ; %1-%6: p2 p1 p0 q0 q1 q2 addresses; m12=alpha, m13=beta, xm14=tc0
 %macro LUMA_MB_EDGE16 6
@@ -634,6 +635,72 @@ DEBLOCK_LUMA_64_AVX2
     movu      [%5], m3
     SWAP         3, 9
     SWAP         0, 8
+%endmacro
+
+; LUMA_INTRA_P012 with unaligned stores
+; %1=p0 %2=p1 %3=p2 %4=p3 address %5=q0 %6=q1 %7=mask0 %8=mask1p %9=pw_2
+; %10-%12: p0' p1' p2' addresses; clobbers m1, m2, m4
+%macro LUMA_MB_INTRA_P012 12
+    paddw       m1, %3, %2
+    movu        m4, [%4]
+    paddw       m4, %3
+    paddw       m1, %1
+    paddw       m4, m4
+    paddw       m1, %5
+    paddw       m4, %9
+    paddw       m1, %9        ; p2 + p1 + p0 + q0 + 2
+    paddw       m4, m1        ; 2*p3 + 3*p2 + p1 + p0 + q0 + 4
+    psrlw       m4, 3
+    psrlw       m2, m1, 2
+    psubw       m4, %3
+    psubw       m2, %2
+    pand        m4, %8
+    pand        m2, %8
+    paddw       m4, %3
+    paddw       m2, %2
+    movu     [%11], m2
+    psubw       m2, m1, %3
+    paddw       m1, m1
+    psubw       m2, %5
+    psubw       m1, %3
+    paddw       m2, %6
+    paddw       m2, %2
+    paddw       m1, %6
+    psrlw       m2, 2         ; (2*p1 + p0 + q1 + 2)/4
+    psrlw       m1, 3         ; (p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4)>>3
+    pxor        m1, m2
+    pxor        m2, %1
+    pand        m1, %8
+    pand        m2, %7
+    pxor        m1, m2
+    pxor        m1, %1
+    movu     [%10], m1
+    movu     [%12], m4
+%endmacro
+
+; bS 4 edge, as deblock_v_luma_intra
+; %1-%8: p3 p2 p1 p0 q0 q1 q2 q3 addresses, %9: x264_deblock_edge_t address
+%macro LUMA_MB_INTRA16 9
+    vpbroadcastw m5, [%9+4]   ; alpha
+    vpbroadcastw m14, [%9+6]  ; beta
+    vpbroadcastd m0, [pw_2]
+    movu        m8, [%2]
+    movu        m9, [%3]
+    movu       m10, [%4]
+    movu       m11, [%5]
+    movu       m12, [%6]
+    movu       m13, [%7]
+    LOAD_MASK   m9, m10, m11, m12, m5, m14, m3, m1, m2
+    psrlw       m4, m5, 2
+    paddw       m4, m0         ; alpha/4+2
+    DIFF_LT    m10, m11, m4, m6, m1 ; |p0-q0| < alpha/4+2
+    DIFF_LT     m8, m10, m14, m2, m1 ; |p2-p0| < beta
+    DIFF_LT    m13, m11, m14, m7, m1 ; |q2-q0| < beta
+    pand        m6, m3
+    pand        m7, m6         ; mask1q
+    pand        m6, m2         ; mask1p
+    LUMA_MB_INTRA_P012 m10, m9, m8, %1, m11, m12, m3, m6, m0, %4, %3, %2
+    LUMA_MB_INTRA_P012 m11, m12, m13, %8, m10, m9, m3, m7, m0, %5, %6, %7
 %endmacro
 
 ; in: m0-m7 = rows 0-7 | rows 8-15 of 8 words
@@ -717,6 +784,9 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     shl        r10d, 4
     or          r9d, r10d
     not         r9d
+    mov        r10d, r4d
+    shr        r10d, 8
+    or          r9d, r10d         ; intra MB edges whatever their bS
     and         r4d, r9d          ; drop edges with bS 0
     test        r4d, 15
     jz .horizontal
@@ -760,6 +830,12 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     xor        r10d, r10d         ; bs offset
     xor        r11d, r11d         ; class*8
     lea         r12, [COL16(-3)]
+    test        r4d, 0x100
+    jz .vloop
+    test        r9d, 1
+    jz .vloop
+    LUMA_MB_INTRA16 COL16(-4), COL16(-3), COL16(-2), COL16(-1), COL16(0), COL16(1), COL16(2), COL16(3), r3
+    and         r9d, 14
 .vloop:
     test        r9d, 1
     jz .vnext
@@ -824,10 +900,20 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
 .horizontal:
     mov         r9d, r4d
     shr         r9d, 4
+    and         r9d, 15
     jz .end
     mov        r10d, 32
     mov        r11d, 8
     sub         r0, r5            ; row -3
+    test        r4d, 0x1000
+    jz .hloop
+    test        r9d, 1
+    jz .hloop
+    mov         r7, r0
+    sub         r7, r1            ; row -4
+    lea         r12, [r0+r5]
+    LUMA_MB_INTRA16 r7, r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2, r12+r5, r3+8
+    and         r9d, 14
 .hloop:
     test        r9d, 1
     jz .hnext
@@ -1784,6 +1870,7 @@ DEBLOCK_LUMA
 ; All luma edges of one macroblock: vertical edges left to right on a transposed
 ; copy of the block, then horizontal edges top to bottom.
 ; e[0] left edge, e[1] top edge, e[2] inner edges; edges bit dir*4+edge.
+; Bits 8 and 12: the left and top edge take the bS 4 intra filter.
 ;-----------------------------------------------------------------------------
 ; LUMA_Q1 on xmm
 %macro LUMA_MB_Q1 6
@@ -1849,6 +1936,100 @@ DEBLOCK_LUMA
     paddusb  xm2, xm6
     mova     [%3], xm1
     mova     [%4], xm2
+%endmacro
+
+; LUMA_INTRA_P012 on xmm
+; %1-%4: p0 p1 p2 p3 addresses, p0'-p2' stored; %5-%9: p2 p1 p0 q0 q1; %10: mask1p
+; xm12: mask0, xm15: pb_1; clobbers xm4-xm7, xm10, xm11
+%macro LUMA_MB_INTRA_P012 10
+    pavgb    xm4, %5, %6
+    pavgb    xm5, %7, %8
+    pavgb    xm4, xm5         ; ((p2+p1+1)/2 + (p0+q0+1)/2 + 1)/2
+    mova    xm11, xm5
+    paddb    xm6, %5, %6
+    paddb    xm7, %7, %8
+    paddb    xm6, xm7
+    mova     xm7, xm6
+    mova    xm10, xm6
+    psrlw    xm6, 1
+    pavgb    xm6, [pb_0]
+    pxor     xm6, xm4
+    pand     xm6, xm15
+    psubb    xm4, xm6         ; p1' = (p2+p1+p0+q0+2)/4
+    pavgb    xm5, %5, %9
+    psubb    xm6, %5, %9
+    paddb    xm7, xm7
+    psubb    xm7, xm6         ; p2+2*p1+2*p0+2*q0+q1
+    pand     xm6, xm15
+    psubb    xm5, xm6
+    pavgb    xm5, %6
+    pavgb    xm5, xm11        ; (((p2+q1)/2 + p1+1)/2 + (p0+q0+1)/2 + 1)/2
+    psrlw    xm7, 2
+    pavgb    xm7, [pb_0]
+    pxor     xm7, xm5
+    pand     xm7, xm15
+    psubb    xm5, xm7         ; p0'a = (p2+2*p1+2*p0+2*q0+q1+4)/8
+    pxor     xm7, %7, %9
+    pavgb    xm6, %7, %9
+    pand     xm7, xm15
+    psubb    xm6, xm7
+    pavgb    xm6, %6          ; p0'b = (2*p1+p0+q1+2)/4
+    pxor     xm5, xm6
+    pxor     xm6, %7
+    pand     xm5, %10
+    pand     xm6, xm12
+    pxor     xm5, xm6
+    pxor     xm5, %7
+    mova    [%1], xm5         ; p0'
+    mova     xm5, [%4]        ; p3
+    paddb    xm6, xm5, %5
+    pavgb    xm5, %5
+    pavgb    xm5, xm4         ; (p3+p2+1)/2 + (p2+p1+p0+q0+2)/4
+    paddb    xm6, xm6
+    paddb    xm6, xm10        ; 2*p3+3*p2+p1+p0+q0
+    psrlw    xm6, 2
+    pavgb    xm6, [pb_0]
+    pxor     xm6, xm5
+    pand     xm6, xm15
+    psubb    xm5, xm6         ; p2' = (2*p3+3*p2+p1+p0+q0+4)/8
+    pxor     xm4, %6
+    pxor     xm5, %5
+    pand     xm4, %10
+    pand     xm5, %10
+    pxor     xm4, %6
+    pxor     xm5, %5
+    mova    [%2], xm4         ; p1'
+    mova    [%3], xm5         ; p2'
+%endmacro
+
+; bS 4 edge, as deblock_v_luma_intra
+; %1-%8: p3 p2 p1 p0 q0 q1 q2 q3 addresses, [%9]: alpha-1, beta-1
+%macro LUMA_MB_INTRA_EDGE 9
+    mova     xm0, [%3]        ; p1
+    mova     xm1, [%4]        ; p0
+    mova     xm2, [%5]        ; q0
+    mova     xm3, [%6]        ; q1
+    mova     xm5, [%9+16]
+    DIFF_GT  xm1, xm2, [%9], xm7, xm6 ; |p0-q0| > alpha-1
+    DIFF_GT  xm0, xm1, xm5, xm4, xm6  ; |p1-p0| > beta-1
+    por      xm7, xm4
+    DIFF_GT  xm3, xm2, xm5, xm4, xm6  ; |q1-q0| > beta-1
+    por      xm7, xm4
+    pxor     xm6, xm6
+    pcmpeqb xm12, xm7, xm6    ; mask0
+    mova    xm15, [pb_1]
+    pavgb   xm11, xm6, [%9]
+    pavgb   xm11, xm15        ; alpha/4+1
+    mova     xm8, [%2]        ; p2
+    mova     xm9, [%7]        ; q2
+    DIFF_GT2 xm1, xm2, xm11, xm4, xm7  ; |p0-q0| <= alpha/4+1
+    DIFF_GT2 xm1, xm8, xm5, xm6, xm11  ; |p2-p0| <= beta-1
+    DIFF_GT2 xm2, xm9, xm5, xm10, xm11 ; |q2-q0| <= beta-1
+    pand     xm4, xm12
+    pand    xm13, xm6, xm4    ; mask1p
+    pand    xm14, xm10, xm4   ; mask1q
+    LUMA_MB_INTRA_P012 %4, %3, %2, %1, xm8, xm0, xm1, xm2, xm3, xm13
+    LUMA_MB_INTRA_P012 %5, %6, %7, %8, xm9, xm3, xm2, xm1, xm0, xm14
 %endmacro
 
 ; in: m0-m7 = rows 0-7 | rows 8-15 of 16 bytes
@@ -1928,6 +2109,9 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     shl        r10d, 4
     or          r9d, r10d
     not         r9d
+    mov        r10d, r4d
+    shr        r10d, 8
+    or          r9d, r10d         ; intra MB edges whatever their bS
     and         r4d, r9d          ; drop edges with bS 0
     test        r4d, 15
     jz .horizontal
@@ -1959,6 +2143,12 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     xor        r10d, r10d         ; bs offset
     xor        r11d, r11d         ; class*8
     lea         r12, [COL(-3)]
+    test        r4d, 0x100
+    jz .vloop
+    test        r9d, 1
+    jz .vloop
+    LUMA_MB_INTRA_EDGE COL(-4), COL(-3), COL(-2), COL(-1), COL(0), COL(1), COL(2), COL(3), rsp
+    and         r9d, 14
 .vloop:
     test        r9d, 1
     jz .vnext
@@ -2010,10 +2200,20 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
 .horizontal:
     mov         r9d, r4d
     shr         r9d, 4
+    and         r9d, 15
     jz .end
     mov        r10d, 32
     mov        r11d, 8
     sub         r0, r5            ; row -3
+    test        r4d, 0x1000
+    jz .hloop
+    test        r9d, 1
+    jz .hloop
+    mov         r7, r0
+    sub         r7, r1            ; row -4
+    lea         r12, [r0+r5]
+    LUMA_MB_INTRA_EDGE r7, r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2, r12+r5, rsp+32
+    and         r9d, 14
 .hloop:
     test        r9d, 1
     jz .hnext
