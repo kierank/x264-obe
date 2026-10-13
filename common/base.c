@@ -885,7 +885,7 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
             p->i_lookahead_threads = atoi(value);
     }
     OPT("sliced-threads")
-        p->b_sliced_threads = atobool(value);
+        p->b_sliced_threads = !strcasecmp( value, "balanced" ) || !strcmp( value, "2" ) ? 2 : atobool(value);
     OPT("sync-lookahead")
     {
         if( !strcasecmp(value, "auto") )
