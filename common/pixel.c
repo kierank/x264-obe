@@ -848,7 +848,11 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     pixf->satd_avg2_pk[PIXEL_16x16] = x264_pixel_satd_avg2_pk_16x16_##cpu;\
     pixf->satd_avg2_pk[PIXEL_16x8]  = x264_pixel_satd_avg2_pk_16x8_##cpu;\
     pixf->satd_avg2_pk[PIXEL_8x16]  = x264_pixel_satd_avg2_pk_8x16_##cpu;\
-    pixf->satd_avg2_pk[PIXEL_8x8]   = x264_pixel_satd_avg2_pk_8x8_##cpu;
+    pixf->satd_avg2_pk[PIXEL_8x8]   = x264_pixel_satd_avg2_pk_8x8_##cpu;\
+    pixf->satd_bi4_pk[PIXEL_16x16] = x264_pixel_satd_bi4_pk_16x16_##cpu;\
+    pixf->satd_bi4_pk[PIXEL_16x8]  = x264_pixel_satd_bi4_pk_16x8_##cpu;\
+    pixf->satd_bi4_pk[PIXEL_8x16]  = x264_pixel_satd_bi4_pk_8x16_##cpu;\
+    pixf->satd_bi4_pk[PIXEL_8x8]   = x264_pixel_satd_bi4_pk_8x8_##cpu;
 
 /****************************************************************************
  * x264_pixel_init:

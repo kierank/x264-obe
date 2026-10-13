@@ -1928,7 +1928,15 @@ static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fen
     pixel *src0[2], *src1[2];
     intptr_t stride = m0->i_stride[0];
 #if HIGH_BIT_DEPTH
-    /* split refs: all four sources unpacked, fullpel too, for the one stride */
+    /* split refs: all four sources read in place (mbcmp_bi4_pk), fullpel from
+     * msb8/lsb8[0] too, for the one stride; else unpacked */
+    if( m0->p_split8[1] && h->pixf.mbcmp_bi4_pk[i_pixel] )
+    {
+        uint8_t *pk[8];
+        x264_pk_hpel_pair( pk, m0->p_split8, stride, m0->mv[0], m0->mv[1] );
+        x264_pk_hpel_pair( pk+4, m1->p_split8, stride, m1->mv[0], m1->mv[1] );
+        return h->pixf.mbcmp_bi4_pk[i_pixel]( bi_fenc, pk, stride, h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
+    }
     ALIGNED_ARRAY_64( pixel, buf,[4*X264_SPLIT8_STRIDE*16] );
     if( m0->p_split8[1] )
     {

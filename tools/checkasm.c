@@ -751,6 +751,136 @@ static int check_pixel( int cpu_ref, int cpu_new )
         x264_free( pl );
     }
     report( "pixel pk :" );
+
+    ok = 1, used_asm = 0;
+    if( pixel_asm.satd_bi4_pk[PIXEL_16x16] != pixel_ref.satd_bi4_pk[PIXEL_16x16] )
+    {
+        /* satd_bi4_pk: plane sets (4 hpel planes, 64x40, and their C split) s = 0
+         * random, 1 PIXEL_MAX, 2 zero; k = 0 both lists on set 0 against a random
+         * fenc, k = 1 set 1 against 0, k = 2 list 0 on set 2 and list 1 on set 1
+         * (clipped weights); every partition of a 16x16 at (8, 8), mvs of every
+         * fraction pair and fullpel offset -1..1, every weight at k = 0; against
+         * C get_ref + avg + satd on the 16-bit planes */
+        static const uint8_t pk_parts[9][3] = { {PIXEL_16x16, 0, 0}, {PIXEL_16x8, 0, 0}, {PIXEL_16x8, 0, 8},
+                                                {PIXEL_8x16, 0, 0}, {PIXEL_8x16, 8, 0}, {PIXEL_8x8, 0, 0},
+                                                {PIXEL_8x8, 8, 0}, {PIXEL_8x8, 0, 8}, {PIXEL_8x8, 8, 8} };
+        static const int8_t pk_weights[9] = { 32, -63, -1, 0, 1, 63, 64, 65, 127 };
+        enum { PW = 64, PH = 40, PS = PW*PH + PW/4*PH };
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+        uint8_t *pk8 = x264_malloc( 12*PS );
+        pixel *pl = x264_malloc( 12*PW*PH*sizeof(pixel) );
+        if( !pk8 || !pl )
+            return -1;
+        ALIGNED_16( pixel fenc[16*FENC_STRIDE] );
+        ALIGNED_16( pixel avg[16*16] );
+        ALIGNED_16( pixel ref0[16*16] );
+        ALIGNED_16( pixel ref1[16*16] );
+        used_asm = 1;
+        for( int q = 0; q < 12; q++ )
+        {
+            for( int i = 0; i < PW*PH; i++ )
+                pl[q*PW*PH+i] = q >= 8 ? 0 : q >= 4 ? PIXEL_MAX : i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+            mc_c.plane_split8( pk8 + q*PS, pk8 + q*PS + PW*PH, pl + q*PW*PH, PW, PW, PH );
+        }
+        for( int k = 0; k < 3 && ok; k++ )
+        {
+            for( int i = 0; i < 16*FENC_STRIDE; i++ )
+                fenc[i] = k == 1 ? 0 : pbuf1[i];
+            for( int j = 0; j < (k ? 16 : 256) && ok; j++ )
+            {
+                int mv[2][2];
+                mv[0][0] = 4*(j%3-1) + (j&3);
+                mv[0][1] = 4*(j/3%3-1) + ((j>>2)&3);
+                mv[1][0] = 4*(j/9%3-1) + ((j>>4)&3);
+                mv[1][1] = 4*(j/27%3-1) + (((j>>1)^j)&3);
+                for( int p = 0; p < 9 && ok; p++ )
+                {
+                    int i = pk_parts[p][0], x = pk_parts[p][1], y = pk_parts[p][2];
+                    int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                    intptr_t o = (8 + y)*PW + 8 + x;
+                    pixel *f = fenc + x + y*FENC_STRIDE;
+                    pixel *r[2];
+                    uint8_t *pk[8];
+                    for( int l = 0; l < 2; l++ )
+                    {
+                        int s = k == 0 ? 0 : k == 1 ? 1 : 2 - l;
+                        pixel *pl16[4];
+                        uint8_t *src8[8];
+                        intptr_t rstride = 16;
+                        for( int q = 0; q < 4; q++ )
+                        {
+                            pl16[q] = pl + (4*s+q)*PW*PH + o;
+                            src8[q] = pk8 + (4*s+q)*PS + o;
+                            src8[4+q] = pk8 + (4*s+q)*PS + PW*PH + (o >> 2);
+                        }
+                        r[l] = mc_c.get_ref( l ? ref1 : ref0, &rstride, pl16, PW, mv[l][0], mv[l][1], w, hgt, x264_weight_none );
+                        if( rstride != 16 )
+                        {
+                            for( int yy = 0; yy < hgt; yy++ )
+                                memcpy( (l ? ref1 : ref0) + yy*16, r[l] + yy*rstride, w * sizeof(pixel) );
+                            r[l] = l ? ref1 : ref0;
+                        }
+                        x264_pk_hpel_pair( pk + 4*l, src8, PW, mv[l][0], mv[l][1] );
+                    }
+                    for( int wi = 0; wi < (k ? 9 : 191) && ok; wi++ )
+                    {
+                        int weight = k ? pk_weights[wi] : wi - 63;
+                        int res_c, res_asm;
+                        mc_c.avg[i]( avg, 16, r[0], 16, r[1], 16, weight );
+                        res_c = pixel_c.satd[i]( f, FENC_STRIDE, avg, 16 );
+                        if( weight == 32 || weight == 65 )
+                        {
+                            set_func_name( "satd_bi4%s_pk_%s", weight == 32 ? "" : "w", pixel_names[i] );
+                            res_asm = call_a( pixel_asm.satd_bi4_pk[i], f, pk, (intptr_t)PW, weight );
+                        }
+                        else
+                            res_asm = pixel_asm.satd_bi4_pk[i]( f, pk, PW, weight );
+                        if( res_c != res_asm )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "satd_bi4_pk[%d] %d,%d mv %d,%d %d,%d weight %d k %d: %d != %d [FAILED]\n", i, x, y,
+                                     mv[0][0], mv[0][1], mv[1][0], mv[1][1], weight, k, res_c, res_asm );
+                        }
+                    }
+                }
+            }
+        }
+        /* positive control: fullpel mvs, all four sources on set 0's plane 0 and
+         * fenc that plane give 0; lsb bit 1 of the block's last pixel must not */
+        for( int p = 0; p < 9 && ok; p++ )
+        {
+            int i = pk_parts[p][0], x = pk_parts[p][1], y = pk_parts[p][2];
+            int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+            intptr_t o = (8 + y)*PW + 8 + x + 3, f = o + (hgt-1)*PW + w-1;
+            uint8_t *pk[8];
+            int res[2];
+            for( int l = 0; l < 8; l += 2 )
+            {
+                pk[l] = pk8 + o;
+                pk[l+1] = pk8 + PW*PH + (o >> 2);
+            }
+            for( int yy = 0; yy < hgt; yy++ )
+                for( int xx = 0; xx < w; xx++ )
+                    fenc[yy*FENC_STRIDE+xx] = pl[o+yy*PW+xx];
+            for( int f2 = 0; f2 < 2; f2++ )
+            {
+                if( f2 )
+                    pk8[PW*PH + (f>>2)] ^= 2 << (2*(f&3));
+                res[f2] = pixel_asm.satd_bi4_pk[i]( fenc, pk, PW, 32 );
+                if( f2 )
+                    pk8[PW*PH + (f>>2)] ^= 2 << (2*(f&3));
+            }
+            if( res[0] || !res[1] )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_bi4_pk[%d] control: %d, %d [FAILED]\n", i, res[0], res[1] );
+            }
+        }
+        x264_free( pk8 );
+        x264_free( pl );
+    }
+    report( "pixel bi4 pk :" );
 #endif
 
     TEST_PIXEL( sa8d, 1 );

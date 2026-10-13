@@ -5667,12 +5667,187 @@ cglobal pixel_%1_pk_%2x%3, 4,11,13
     PK_CMP  sad,  8,  8, 1
 %endmacro
 
+;-----------------------------------------------------------------------------
+; int pixel_satd_bi4_pk_WxH( pixel *fenc, uint8_t **src, intptr_t stride, int weight )
+; satd_bi4 (see SATD_BI) of packed sources, src[] = msb, lsb of src0a, src0b,
+; src1a, src1b. r1-r8 those, r9 stride, r10d weight, r11 lsb stride, r12/r13
+; 3x them (16 wide; 8 wide moves the sources a row at a time). The phase
+; tables of the four on the stack: shuf at 64*i, mul|sft at 64*i+32.
+;-----------------------------------------------------------------------------
+%macro PK_BI_OFF 1
+%if %1 == 0
+    %define pk_mr 0
+    %define pk_lr 0
+%elif %1 == 1
+    %define pk_mr r9
+    %define pk_lr r11
+%elif %1 == 2
+    %define pk_mr 2*r9
+    %define pk_lr 2*r11
+%else
+    %define pk_mr r12
+    %define pk_lr r13
+%endif
+%endmacro
+
+%macro PK_BI_TAB 2 ; source, its msb
+    mov          r12, %2
+    and         r12d, 3
+    shl         r12d, 7
+    movu          m7, [r11+r12+pk_so]
+    movu [rsp+64*%1], m7
+    movu          m7, [r11+r12+pk_mo]
+    movu [rsp+64*%1+32], m7
+%endmacro
+
+; m%1 = source %4 (msb %2, lsb %3) at row %5 (16 wide) or the current rows k, k+4
+%macro PK_BI_LOAD 5
+%if pk_w == 16
+    PK_BI_OFF %5
+    PK_LOAD16     %1, [%2+pk_mr], [%3+pk_lr], [rsp+64*%4], [rsp+64*%4+32], 7
+%else
+    PK_LOAD8x2    %1, [%2], [%2+4*r9], [%3], [%3+r9], [rsp+64*%4], [rsp+64*%4+32], 7
+%endif
+%endmacro
+
+; m%1 = the bipred average less fenc, row %2 (16 wide) or rows %2, %2+4 (8 wide)
+%macro PK_BI_ROW 2
+    PK_BI_LOAD    %1, r1, r2, 0, %2
+    PK_BI_LOAD     5, r3, r4, 1, %2
+    pavgw        m%1, m5
+    PK_BI_LOAD     4, r5, r6, 2, %2
+    PK_BI_LOAD     5, r7, r8, 3, %2
+    pavgw         m4, m5
+%if pk_bw
+    psubw        m%1, m4
+    psllw        m%1, 5
+    pmulhrsw     m%1, m8
+    paddw        m%1, m4
+    pmaxsw       m%1, m9
+    pminsw       m%1, m10
+%else
+    pavgw        m%1, m4
+%endif
+%if pk_w == 16
+    psubw        m%1, [r0+%2*FENC_STRIDEB]
+%else
+    movu         xm5, [r0+%2*FENC_STRIDEB]
+    vinserti128   m5, m5, [r0+(%2+4)*FENC_STRIDEB], 1
+    psubw        m%1, m5
+    add           r1, r9
+    add           r3, r9
+    add           r5, r9
+    add           r7, r9
+    add           r2, r11
+    add           r4, r11
+    add           r6, r11
+    add           r8, r11
+%endif
+%endmacro
+
+; four rows further (8 wide: from row 4 to row 8)
+%macro PK_BI_NEXT 0
+    lea           r1, [r1+4*r9]
+    lea           r3, [r3+4*r9]
+    lea           r5, [r5+4*r9]
+    lea           r7, [r7+4*r9]
+    add           r2, r9
+    add           r4, r9
+    add           r6, r9
+    add           r8, r9
+%if pk_w == 16
+    add           r0, 4*FENC_STRIDEB
+%else
+    add           r0, 8*FENC_STRIDEB
+%endif
+%endmacro
+
+%macro PK_BI_BODY 2 ; height, weighted
+%assign pk_bw %2
+%if pk_bw
+    shl         r10d, 4
+    movd         xm8, r10d
+    vpbroadcastw  m8, xm8
+    pxor          m9, m9
+    vbroadcasti128 m10, [pw_pixel_max]
+%endif
+%assign pk_pass 0
+%rep pk_w*%1/64
+%if pk_pass
+    PK_BI_NEXT
+%endif
+    PK_BI_ROW      0, 0
+    PK_BI_ROW      1, 1
+    PK_BI_ROW      2, 2
+    PK_BI_ROW      3, 3
+%if pk_pass
+    SATD_8x4_SSE   1, 0, 1, 2, 3, 4, 5, 6
+%else
+    SATD_8x4_SSE   1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%assign pk_pass pk_pass+1
+%endrep
+%if pk_w*%1 == 256
+    SATD_HBD_END 1
+%else
+    SATD_HBD_END 0
+%endif
+%endmacro
+
+%macro PK_BI 2 ; width, height
+%assign pk_w %1
+cglobal pixel_satd_bi4_pk_%1x%2, 4,14,12, 0-256
+    %define pk_m3 m11
+    %define pk_xm3 xm11
+%if %1 == 16
+    PK_INIT 0
+%else
+    PK_INIT 32
+%endif
+    mov           r9, r2
+    mov         r10d, r3d
+    mov           r2, [r1+8]
+    mov           r3, [r1+16]
+    mov           r4, [r1+24]
+    mov           r5, [r1+32]
+    mov           r6, [r1+40]
+    mov           r7, [r1+48]
+    mov           r8, [r1+56]
+    mov           r1, [r1]
+    lea          r11, [pk8_tab]
+    PK_BI_TAB      0, r1
+    PK_BI_TAB      1, r3
+    PK_BI_TAB      2, r5
+    PK_BI_TAB      3, r7
+%if cpuflag(avx512)
+    vpbroadcastd m11, [pk8_pw3]
+%endif
+    mov          r11, r9
+    shr          r11, 2
+    lea          r12, [3*r9]
+    lea          r13, [3*r11]
+    cmp         r10d, 32
+    jne .weight
+    PK_BI_BODY    %2, 0
+.weight:
+    PK_BI_BODY    %2, 1
+%endmacro
+
+%macro PK_BI_ALL 0
+    PK_BI 16, 16
+    PK_BI 16,  8
+    PK_BI  8, 16
+    PK_BI  8,  8
+%endmacro
+
 INIT_YMM avx2
 PK_PRED_ALL
 PK_CMP_ALL
+PK_BI_ALL
 INIT_YMM avx512
 PK_PRED_ALL
 PK_CMP_ALL
+PK_BI_ALL
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 

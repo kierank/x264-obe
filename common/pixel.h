@@ -73,6 +73,8 @@ typedef int  (*x264_pixel_satd_bi4_t) ( x264_bi_fenc_t *fenc, pixel *src0a, pixe
 typedef int  (*x264_pixel_cmp_pk_t) ( pixel *fenc, uint8_t *msb, uint8_t *lsb, intptr_t stride );
 typedef int  (*x264_pixel_cmp_avg2_pk_t) ( pixel *fenc, uint8_t *msb1, uint8_t *lsb1,
                                            uint8_t *msb2, uint8_t *lsb2, intptr_t stride );
+/* satd_bi4 of src[] = msb, lsb of src0a, src0b, src1a, src1b read in place */
+typedef int  (*x264_pixel_satd_bi4_pk_t) ( x264_bi_fenc_t *fenc, uint8_t **src, intptr_t stride, int weight );
 
 enum
 {
@@ -152,11 +154,13 @@ typedef struct
     x264_pixel_cmp_pk_t satd_pk[4];
     x264_pixel_cmp_avg2_pk_t sad_avg2_pk[4];
     x264_pixel_cmp_avg2_pk_t satd_avg2_pk[4];
+    x264_pixel_satd_bi4_pk_t satd_bi4_pk[4];
     /* the mbcmp and fpelcmp of those, NULL past 8x8 */
     x264_pixel_cmp_pk_t mbcmp_pk[7];
     x264_pixel_cmp_avg2_pk_t mbcmp_avg2_pk[7];
     x264_pixel_cmp_pk_t fpelcmp_pk[7];
     x264_pixel_cmp_avg2_pk_t fpelcmp_avg2_pk[7];
+    x264_pixel_satd_bi4_pk_t mbcmp_bi4_pk[4];
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];

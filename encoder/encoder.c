@@ -1550,6 +1550,10 @@ static void mbcmp_init( x264_t *h )
     memset( h->pixf.fpelcmp_avg2_pk, 0, sizeof(h->pixf.fpelcmp_avg2_pk) );
     memcpy( h->pixf.mbcmp_pk, satd ? h->pixf.satd_pk : h->pixf.sad_pk, sizeof(h->pixf.satd_pk) );
     memcpy( h->pixf.mbcmp_avg2_pk, satd ? h->pixf.satd_avg2_pk : h->pixf.sad_avg2_pk, sizeof(h->pixf.satd_avg2_pk) );
+    if( satd )
+        memcpy( h->pixf.mbcmp_bi4_pk, h->pixf.satd_bi4_pk, sizeof(h->pixf.mbcmp_bi4_pk) );
+    else
+        memset( h->pixf.mbcmp_bi4_pk, 0, sizeof(h->pixf.mbcmp_bi4_pk) );
     satd &= h->param.analyse.i_me_method == X264_ME_TESA;
     memcpy( h->pixf.fpelcmp_pk, satd ? h->pixf.satd_pk : h->pixf.sad_pk, sizeof(h->pixf.satd_pk) );
     memcpy( h->pixf.fpelcmp_avg2_pk, satd ? h->pixf.satd_avg2_pk : h->pixf.sad_avg2_pk, sizeof(h->pixf.satd_avg2_pk) );
