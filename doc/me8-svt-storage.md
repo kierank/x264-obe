@@ -201,6 +201,75 @@ then deletes it once md5 identity holds across the test matrix.
    expansion (3), field copies (5); readers hpel input (4, the hard one),
    MC (8), PSNR (13), recon output (14), weightp (6), integral (7),
    intra reload (12).
+   As built (wip/me8-s3, 04b558e7, fbc86a0c, fcd75109), at both levels
+   outside 4:4:4 (`h->b_fpel8`; 4:4:4 keeps its 16-bit planes):
+   - Level 1 stores h, v and c split too (`X264_ME8_HPEL8`): the readers
+     that average the fullpel plane with h or v take one stride for both,
+     so a packed fullpel next to 16-bit h/v/c would need mixed-source
+     kernels; with all four split, level 2's readers serve both levels.
+     `m->p_fref8[1..3]` (the level 2 subpel search) are set at level 2 only.
+   - The references' fullpel luma is read only from msb8/lsb8[0]:
+     `p_fref[0]` and the unweighted `p_fref_w` are NULL, and every reader at
+     a fullpel mv takes the split path (`X264_REF_SPLIT8`, subpel_cmp, the
+     b8 exact cost, the BI costs incl. the zero mv, `x264_weight_scale_ref`
+     for weighted planes: `plane_unpack8` 16 rows then the weight in place).
+   - The writers are not converted. The frame being encoded keeps a 16-bit
+     fullpel plane, but it is its frame thread's (`h->fpel16`, frame and
+     MBAFF field, one per frame thread), not its own:
+     `x264_frame_bind_fpel16` hands it to each new fdec after
+     `x264_reference_update` and takes it from the previous frame (NULL;
+     `X264_ME8_VERIFY`: copied into that frame's shadow). So recon store,
+     deblock (MBAFF, sliced passes), borders, field copies,
+     `x264_frame_split8`, hpel input, intra reload, PSNR/SSIM, dump and
+     pic_out run unchanged on 16-bit rows, and the split is stage 1's, after
+     every expand_border and before the frame thread broadcast.
+   Why not the band design of (1)-(4): the frame being encoded is read at
+   16 bits only by its own thread and only within a few MB rows of where it
+   is written, so packing it would add a band unpack + repack per deblocked
+   row and a strip unpack per hpel row (~2.5 plane passes a reference frame,
+   derived) to save the write-back of a plane nobody else reads. The
+   references, which the search, MC and refine read, are packed either way.
+   The cost of this design is footprint: one 16-bit plane per frame thread
+   (4.6 MB at 1080p, derived) instead of none.
+   Lifetime: a frame bound to thread T is T's fdec, or its previous one
+   between T's `x264_thread_sync_context` and its `x264_reference_update`
+   (one caller-thread call; only `x264_reference_update` pops fdec frames),
+   so nobody else can pop it; that previous frame's frame_end (dump,
+   pic_out) ran in an earlier call (thread_oldest never rebinds in the call
+   that outputs it unless there is one frame thread, where the encode
+   precedes frame_end), and with sliced threads worker 0's trailing
+   `x264_threadslice_filter` is awaited by `x264_slicepool_wait_all` before
+   `x264_reference_update`. Worker threads never read a reference's 16-bit
+   plane pointers (`x264_macroblock_load_pic_pointers` skips them), so the
+   caller thread changing them at bind is not a race.
+   API: `pic_out->img` is valid until the next `x264_encoder_encode` /
+   `x264_encoder_close` (x264.h), reference frames included.
+   Rows [-2*PADV, -PADV) of the MBAFF frame plane are never written (frame
+   pads are PADV rows) in either layout; the weighted plane build copies
+   them as before (zero pages from the allocator in both).
+
+   Test plan (nothing here was built or measured):
+   - builds: AVX2 (Zen 2), avx512 (Zen 4 rack01), `--disable-asm`,
+     `--bit-depth=all` and 10 only, x86_32 if available; checkasm10 and
+     checkasm8 several seeds ("mc pk", "pixel pk", "pixel bi4 pk",
+     plane_split8/unpack8, hpel_filter8 with their in-code and manual
+     controls, as in steps 1 and 2).
+   - `-DX264_ME8_VERIFY` clean over the matrix below (the verifier now also
+     compares frame and field fullpel against the copy made at release);
+     `-DX264_ME8_VERIFY_CONTROL` must report plane 0 (and h) and change the
+     md5.
+   - md5 at HEAD = cefc5c06 per level (0, 1, 2), per build, `--asm avx2` on
+     Zen 4 too: progressive and MBAFF (true 1080i) 10-bit 4:2:0 and 4:2:2,
+     subme 0/1/2/7/9, weightp 0/2, refs 1/4, bframes 0/3 (b-adapt as
+     production), `--threads 1`, sliced threads, frame threads (threaded
+     output varies run to run: there compare recon with a decode, and md5
+     at `--threads 1` only), `--psnr --ssim` values equal, `--dump-yuv`
+     equal to a decode; 4:4:4 at levels 1/2 unchanged too.
+   - cycles (perf stat, per-symbol profile, realtime-paced per-frame CPU):
+     L1 and L2 at HEAD vs L0 and vs cefc5c06 L1/L2, lowlat and subme 7/9,
+     1080p and 1080i: refine_subpel's and ME8_EXACT's share at L1 (the
+     reference reads now 10 bits a pixel), the level 1 cost of reading h, v
+     and c through the pk kernels, `x264_weight_scale_ref`, and RSS.
 4. **NV12/NV16 chroma** last: mc_chroma and satd_mcc have the most
    irregular access (2x2 bilinear on interleaved uv, field-edge plane
    choice of 613552d9), deblock chroma, and the smallest saving.
@@ -208,10 +277,17 @@ then deletes it once md5 identity holds across the test matrix.
 ## Riskiest parts
 
 - hpel input unpack (4): the one-pass AVX2 kernel is register-full; the
-  unpack needs 3-4 more registers or a strip-mined 16-bit ring.
+  unpack needs 3-4 more registers or a strip-mined 16-bit ring. (Step 3 as
+  built avoids it: see the per-thread plane.)
 - Deblock (2): in-place RMW on a packed format; the band helper avoids
   touching the 15 deblock kernels but needs exact band bookkeeping for
   MBAFF (field/frame edges, `deblock_h_luma_mbaff`) and the 4 rows above.
+  (Avoided likewise.)
+- Step 3 as built: a reader of a reference's 16-bit fullpel. Through
+  `p_fref` it gets NULL; a direct `fref->plane[0]` read added later gets
+  NULL once the frame is released (always at --threads 1) but the live
+  plane of the thread still encoding it with frame threads. And the
+  per-thread plane's lifetime (bind after `x264_reference_update`, step 3).
 - API recon (14): behaviour change for callers that read pic_out.
 - mc_chroma (8, step 4): source windows crossing the field-edge rule.
 - Every reader must see bit-exact values: any reader left on a stale or
