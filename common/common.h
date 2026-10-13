@@ -699,8 +699,8 @@ struct x264_t
 #define map_col_to_list0(col) h->mb.map_col_to_list0[(col)+2]
         int8_t  map_col_to_list0[X264_REF_MAX+2];
         int ref_blind_dupe; /* The index of the blind reference frame duplicate. */
-        int8_t deblock_ref_table[X264_REF_MAX*2+2];
-#define deblock_ref_table(x) h->mb.deblock_ref_table[(x)+2]
+        int8_t deblock_ref_table[2][X264_REF_MAX*2+2]; /* [MB_INTERLACED] */
+#define deblock_ref_table(x) h->mb.deblock_ref_table[MB_INTERLACED][(x)+2]
 
         /* 16x16 mvp of the current MB per list and ref, saved by analysis for
          * mvd coding; bit i_ref of mvp16_valid[l] marks mvp16[l][i_ref] set.

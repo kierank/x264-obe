@@ -289,9 +289,10 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
     for( int i = 0; i < 2; i++ )
     {
-        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) ) << PARAM_INTERLACED;
+        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) );
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
             i_refs = X264_MIN(X264_REF_MAX, i_refs + 1 + (BIT_DEPTH == 8)); //smart weights add two duplicate frames, one in >8-bit
+        i_refs <<= PARAM_INTERLACED; /* field refs */
 
         for( int j = !i; j < i_refs; j++ )
             PREALLOC( h->mb.mvr[i][j], 2 * (i_mb_count + 1) * sizeof(int16_t) );
@@ -342,9 +343,10 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
     for( int i = 0; i < 2; i++ )
     {
-        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) ) << PARAM_INTERLACED;
+        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) );
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
             i_refs = X264_MIN(X264_REF_MAX, i_refs + 1 + (BIT_DEPTH == 8)); //smart weights add two duplicate frames, one in >8-bit
+        i_refs <<= PARAM_INTERLACED; /* field refs */
 
         for( int j = !i; j < i_refs; j++ )
         {
@@ -479,18 +481,23 @@ void x264_macroblock_slice_init( x264_t *h )
     {
         if( h->sh.i_disable_deblocking_filter_idc != 1 && h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
         {
-            deblock_ref_table(-2) = -2;
-            deblock_ref_table(-1) = -1;
-            for( int i = 0; i < h->i_ref[0] << SLICE_MBAFF; i++ )
+            /* [0] frame mbs, [1] field mbs: field ref i is field i&1 (same or
+             * opposite parity) of frame ref i>>1. Edges between a frame and a
+             * field mb don't compare refs (x264_macroblock_deblock_strength_mbaff);
+             * the others are between frame mbs or same parity field mbs. */
+            for( int f = 0; f <= SLICE_MBAFF; f++ )
             {
-                /* Mask off high bits to avoid frame num collisions with -1/-2.
-                 * In current x264 frame num values don't cover a range of more
-                 * than 32, so 6 bits is enough for uniqueness. */
-                if( !MB_INTERLACED )
-                    deblock_ref_table(i) = h->fref[0][i]->i_frame_num&63;
-                else
-                    deblock_ref_table(i) = ((h->fref[0][i>>1]->i_frame_num&63)<<1) + (i&1);
+                h->mb.deblock_ref_table[f][0] = -2;
+                h->mb.deblock_ref_table[f][1] = -1;
             }
+            /* Mask off high bits to avoid frame num collisions with -1/-2.
+             * In current x264 frame num values don't cover a range of more
+             * than 32, so 6 bits is enough for uniqueness. */
+            for( int i = 0; i < h->i_ref[0]; i++ )
+                h->mb.deblock_ref_table[0][i+2] = h->fref[0][i]->i_frame_num&63;
+            if( SLICE_MBAFF )
+                for( int i = 0; i < h->i_ref[0] << 1; i++ )
+                    h->mb.deblock_ref_table[1][i+2] = ((h->fref[0][i>>1]->i_frame_num&63)<<1) + (i&1);
         }
     }
 
