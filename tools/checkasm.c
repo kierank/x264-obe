@@ -2152,6 +2152,60 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
         report( "lowres8 convert :" );
     }
+
+    if( mc_a.plane_split8 != mc_ref.plane_split8 )
+    {
+        /* rows of w pixels, stride - w pixels of gap that must stay untouched */
+        ALIGNED_ARRAY_16( pixel, src,[3*352] );
+        uint8_t *msbc = buf3, *msba = buf3 + 2048, *lsbc = buf4, *lsba = buf4 + 1024;
+        set_func_name( "plane_split8" );
+        ok = 1; used_asm = 1;
+        for( int i = 0; i < 3*352; i++ )
+            src[i] = i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+        src[0] = 0;
+        src[1] = PIXEL_MAX;
+        for( int w = 16; w <= 320 && ok; w += 16 )
+            for( int hgt = 1; hgt <= 3 && ok; hgt++ )
+            {
+                intptr_t stride = w + 16 * (w % 48 == 16 ? 2 : 0) + 16;
+                memset( msbc, 0xaa, 2048 );
+                memset( msba, 0xaa, 2048 );
+                memset( lsbc, 0xaa, 1024 );
+                memset( lsba, 0xaa, 1024 );
+                call_c( mc_c.plane_split8, msbc, lsbc, src, stride, w, hgt );
+                call_a( mc_a.plane_split8, msba, lsba, src, stride, w, hgt );
+                if( memcmp( msbc, msba, 2048 ) || memcmp( lsbc, lsba, 1024 ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "plane_split8 differs, w=%d h=%d\n", w, hgt );
+                    break;
+                }
+                /* msb << 2 | lsb is src, exactly */
+                for( int y = 0; y < hgt && ok; y++ )
+                    for( int x = 0; x < w; x++ )
+                    {
+                        int v = msba[y*stride+x] << 2 | ((lsba[y*(stride>>2)+(x>>2)] >> (2*(x&3))) & 3);
+                        if( v != src[y*stride+x] )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "plane_split8 unpack differs, w=%d h=%d x=%d y=%d: %d != %d\n",
+                                     w, hgt, x, y, v, src[y*stride+x] );
+                            break;
+                        }
+                    }
+            }
+        /* positive control: the unpack check sees a single lsb bit */
+        if( ok )
+        {
+            lsba[0] ^= 1 << (2*1);
+            if( (msba[1] << 2 | ((lsba[0] >> 2) & 3)) == src[1] )
+            {
+                ok = 0;
+                fprintf( stderr, "plane_split8 unpack check is blind\n" );
+            }
+        }
+        report( "plane split8 :" );
+    }
 #endif
 
 #define INTEGRAL_INIT( name, size, ... )\

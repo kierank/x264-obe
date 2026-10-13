@@ -88,6 +88,17 @@ pd_4: times 4 dd 4
 pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4567
 pd_8: times 4 dd 8
 
+%if HIGH_BIT_DEPTH
+; plane_split8, broadcast or unaligned loads only
+split8_const: db 1, 4, 1, 4   ; pmaddubsw: t0 + 4*t1
+              dw 1, 16        ; pmaddwd: + 16*(t2 + 4*t3)
+              db 0, 4, 8, 12  ; pshufb: byte 0 of each dword
+              dw 3, 3         ; avx2 lsb mask
+              db 3, 3, 3, 3   ; avx512icl lsb mask
+split8_even:  db  0,  2,  4,  6,  8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
+              db 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62
+%endif
+
 SECTION .text
 
 cextern pb_0
@@ -3085,4 +3096,117 @@ INIT_XMM sse2
 LOWRES8_CONVERT
 INIT_YMM avx2
 LOWRES8_CONVERT
+
+;-----------------------------------------------------------------------------
+; void plane_split8( uint8_t *msb, uint8_t *lsb, uint16_t *src, intptr_t stride, int w, int h )
+; msb = src >> 2, lsb = src & 3 four pixels a byte (pixel x in bits 2*(x&3)), for
+; --me-8bit. w a multiple of 16, h >= 1; rows stride pixels, bytes and stride/4 bytes apart.
+; avx2: m4 = pw 3, m5 = pb 1,4, m6 = pw 1,16, m7 = byte 0 of each dword.
+; avx512icl: m4 = pb 3, m5, m6 as avx2, m7 = the even bytes of two registers.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%macro PLANE_SPLIT8_LSB 1 ; pixels: m0 = the lsbs as bytes, pixel order but for avx2's lanes
+    pmaddubsw    m0, m5              ; t0 + 4*t1
+    pmaddwd      m0, m6              ; + 16*(t2 + 4*t3), one lsb byte a dword
+%if cpuflag(avx512icl)
+    vpmovdb     xm0, m0
+%else
+    pshufb       m0, m7              ; 32: 0-3 4-7 16-19 20-23 | 8-11 12-15 24-27 28-31
+    vextracti128 xm1, m0, 1
+    punpcklwd   xm0, xm1
+%endif
+%if %1 == 32
+    movq   [r1+r7], xm0
+%else
+    movd   [r1+r7], xm0
+%endif
+%endmacro
+
+%macro PLANE_SPLIT8_32 0
+    movu         m0, [r2+r6*2]
+    movu         m1, [r2+r6*2+32]
+    psrlw        m2, m0, 2
+    psrlw        m3, m1, 2
+%if cpuflag(avx512icl)
+    vpermt2b     m2, m7, m3          ; low bytes of the 32 words
+    vpermt2b     m0, m7, m1
+    pand         m0, m4
+%else
+    pand         m0, m4
+    pand         m1, m4
+    packuswb     m2, m3              ; 0-7 16-23 | 8-15 24-31
+    packuswb     m0, m1
+    vpermq       m2, m2, q3120
+%endif
+    movu   [r0+r6], m2
+    PLANE_SPLIT8_LSB 32
+%endmacro
+
+%macro PLANE_SPLIT8_16 0
+    movu         m0, [r2+r6*2]
+    psrlw        m2, m0, 2
+%if cpuflag(avx512icl)
+    vpermt2b     m2, m7, m2
+    vpermt2b     m0, m7, m0
+    pand         m0, m4
+%else
+    pand         m0, m4
+    packuswb     m2, m2              ; 0-7 0-7 | 8-15 8-15
+    packuswb     m0, m0
+    vpermq       m2, m2, q3120
+%endif
+    movu   [r0+r6], xm2
+    PLANE_SPLIT8_LSB 16
+%endmacro
+
+%macro PLANE_SPLIT8 0
+cglobal plane_split8, 6,8,8
+    movsxdifnidn r4, r4d
+    add          r0, r4
+    lea          r2, [r2+r4*2]
+    mov          r6, r4
+    shr          r6, 2
+    add          r1, r6
+    neg          r4
+%if cpuflag(avx512icl)
+    vpbroadcastd m4, [split8_const+16]
+    movu         m7, [split8_even]
+%else
+    vpbroadcastd m4, [split8_const+12]
+    vpbroadcastd m7, [split8_const+8]
+%endif
+    vpbroadcastd m5, [split8_const]
+    vpbroadcastd m6, [split8_const+4]
+.loopy:
+    mov          r6, r4              ; -w
+    mov          r7, r4
+    sar          r7, 2
+    cmp          r6, -32
+    jg .tail
+.loopx:
+    PLANE_SPLIT8_32
+    add          r7, 8
+    add          r6, 32
+    cmp          r6, -32
+    jle .loopx
+.tail:
+    test         r6, r6
+    jz .next
+    PLANE_SPLIT8_16
+.next:
+    lea          r2, [r2+r3*2]
+    add          r0, r3
+    mov          r7, r3
+    shr          r7, 2
+    add          r1, r7
+    dec         r5d
+    jg .loopy
+    RET
+%endmacro
+
+INIT_YMM avx2
+PLANE_SPLIT8
+INIT_YMM avx512icl
+PLANE_SPLIT8
+%endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
