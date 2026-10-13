@@ -544,6 +544,11 @@ struct x264_t
         /* x264_weights_analyse chroma block sums, see x264_weight_chroma_t */
         int32_t *p_weight_sums;
 
+        /* MBAFF weightp with frame threads: copy of fenc's bottom mbpair row and
+         * the 2 rows above it, see x264_fenc_bot_copy. NULL if unused. */
+        pixel *fenc_bot[3];
+        int    b_fenc_bot; /* fenc_bot holds this frame */
+
         /* current value */
         int     i_type;
         int     i_partition;
