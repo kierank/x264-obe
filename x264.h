@@ -845,7 +845,10 @@ typedef struct
     /* In: raw image data */
     /* Out: reconstructed image data.  x264 may skip part of the reconstruction process,
             e.g. deblocking, in frames where it isn't necessary.  To force complete
-            reconstruction, at a small speed cost, set b_full_recon. */
+            reconstruction, at a small speed cost, set b_full_recon.
+            Valid until the next call to x264_encoder_encode or x264_encoder_close:
+            with analyse.i_me_8bit (high bit depth, not 4:4:4) the luma plane is
+            then reused for another frame, even for reference frames. */
     x264_image_t img;
     /* In: optional information to modify encoder decisions for this frame
      * Out: information about the encoded frame */

@@ -42,13 +42,21 @@ static int align_plane_size( int x, int disalign )
     return x;
 }
 
-/* 16-bit luma planes of an fdec frame with hpel: X264_ME8_HPEL8 keeps h, v and
- * c only as msb8/lsb8, but for X264_ME8_VERIFY's shadow of them */
-#ifdef X264_ME8_VERIFY
-#define HPEL16_PLANES( h, p ) 4
-#else
-#define HPEL16_PLANES( h, p ) (!(p) && HIGH_BIT_DEPTH && X264_ME8_HPEL8( h ) ? 1 : 4)
+/* 16-bit planes of buffer[p]: fullpel, and h, v and c of an fdec frame with
+ * hpel. X264_ME8_HPEL8 keeps luma h, v and c only as msb8/lsb8, h->b_fpel8 the
+ * fullpel luma too (x264_frame_bind_fpel16); X264_ME8_VERIFY keeps them all as
+ * a shadow. */
+static int luma16_planes( x264_t *h, int p, int b_fdec )
+{
+    int planes = h->param.analyse.i_subpel_refine && b_fdec ? 4 : 1;
+#if HIGH_BIT_DEPTH && !defined(X264_ME8_VERIFY)
+    if( !p && b_fdec && h->b_fpel8 )
+        return 0;
+    if( !p && planes == 4 && X264_ME8_HPEL8( h ) )
+        return 1;
 #endif
+    return planes;
+}
 
 static int x264_frame_internal_csp( int external_csp )
 {
@@ -173,19 +181,13 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
     for( int p = 0; p < luma_plane_count; p++ )
     {
         int luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
-        if( h->param.analyse.i_subpel_refine && b_fdec )
+        /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
+        int planes = luma16_planes( h, p, b_fdec );
+        if( planes )
         {
-            /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
-            int planes = HPEL16_PLANES( h, p );
             PREALLOC( frame->buffer[p], (planes*luma_plane_size + padh_align) * sizeof(pixel) );
             if( PARAM_INTERLACED )
                 PREALLOC( frame->buffer_fld[p], (planes*luma_plane_size + padh_align) * sizeof(pixel) );
-        }
-        else
-        {
-            PREALLOC( frame->buffer[p], (luma_plane_size + padh_align) * sizeof(pixel) );
-            if( PARAM_INTERLACED )
-                PREALLOC( frame->buffer_fld[p], (luma_plane_size + padh_align) * sizeof(pixel) );
         }
     }
 
@@ -279,22 +281,22 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
     for( int p = 0; p < luma_plane_count; p++ )
     {
         int luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
-        if( h->param.analyse.i_subpel_refine && b_fdec )
+        /* none: NULL until x264_frame_bind_fpel16 */
+        for( int i = 0; i < luma16_planes( h, p, b_fdec ); i++ )
         {
-            for( int i = 0; i < HPEL16_PLANES( h, p ); i++ )
-            {
-                frame->filtered[p][i] = frame->buffer[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
-                frame->filtered_fld[p][i] = frame->buffer_fld[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
-            }
-            frame->plane[p] = frame->filtered[p][0];
-            frame->plane_fld[p] = frame->filtered_fld[p][0];
+            frame->filtered[p][i] = frame->buffer[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
+            frame->filtered_fld[p][i] = frame->buffer_fld[p] + i*luma_plane_size + frame->i_stride[p] * i_padv + PADH + padh_align;
         }
-        else
-        {
-            frame->filtered[p][0] = frame->plane[p] = frame->buffer[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
-            frame->filtered_fld[p][0] = frame->plane_fld[p] = frame->buffer_fld[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
-        }
+        frame->plane[p] = frame->filtered[p][0];
+        frame->plane_fld[p] = frame->filtered_fld[p][0];
     }
+#ifdef X264_ME8_VERIFY
+    if( b_fdec && h->b_fpel8 )
+    {
+        frame->fpel16_shadow[0] = frame->plane[0];
+        frame->fpel16_shadow[1] = PARAM_INTERLACED ? frame->plane_fld[0] : NULL;
+    }
+#endif
 
 #if HIGH_BIT_DEPTH
     /* padh_align is 0 at high bit depth, so pixel x of a row is at x + PADH in
@@ -803,6 +805,52 @@ void x264_frame_verify8( x264_t *h, x264_frame_t *frame )
             plane_verify8( h, frame, frame->msb8_fld[i], frame->lsb8_fld[i], frame->filtered_fld[0][i], stride, -2*PADV, lines + 2*PADV );
     }
 #endif
+}
+
+/* h->b_fpel8: h's 16-bit fullpel luma (frame, MBAFF field) in the layout of
+ * x264_frame_new's planes (padh_align is 0 at high bit depth), 2 spare rows
+ * above and below, frame the geometry */
+int x264_frame_fpel16_alloc( x264_t *h, x264_frame_t *frame )
+{
+    int i_padv = PADV << PARAM_INTERLACED;
+    intptr_t stride = frame->i_stride[0];
+    int size = ALIGN( stride * (frame->i_lines[0] + 2*i_padv + 4) * (int)sizeof(pixel), NATIVE_ALIGN );
+    h->fpel16_frame = NULL;
+    h->fpel16[0] = h->fpel16[1] = NULL;
+    CHECKED_MALLOC( h->fpel16_base, size << PARAM_INTERLACED );
+    for( int i = 0; i <= PARAM_INTERLACED; i++ )
+        h->fpel16[i] = (pixel*)((uint8_t*)h->fpel16_base + i*size) + stride * (i_padv + 2) + PADH;
+    return 0;
+fail:
+    return -1;
+}
+
+/* h->b_fpel8: the fullpel luma (plane[0], filtered[0][0] and their _fld) of the
+ * frame h encodes is h->fpel16, written and read by h alone (recon store,
+ * deblock, borders, field copies, x264_frame_split8, hpel input, PSNR/SSIM,
+ * dump, pic_out); references read the split. Called once h has a new fdec
+ * (x264_reference_update): the frame h encoded before is done and loses it,
+ * NULL, or with X264_ME8_VERIFY a copy in its shadow for x264_frame_verify8. */
+void x264_frame_bind_fpel16( x264_t *h, x264_frame_t *frame )
+{
+    x264_frame_t *old = h->fpel16_frame;
+    if( !h->fpel16_base )
+        return;
+    if( old && old != frame )
+    {
+#ifdef X264_ME8_VERIFY
+        int i_padv = PADV << PARAM_INTERLACED;
+        intptr_t stride = old->i_stride[0];
+        for( int i = 0; i <= PARAM_INTERLACED; i++ )
+            memcpy( old->fpel16_shadow[i] - stride*i_padv - PADH, h->fpel16[i] - stride*i_padv - PADH,
+                    stride * (old->i_lines[0] + 2*i_padv) * sizeof(pixel) );
+#endif
+        old->plane[0] = old->filtered[0][0] = old->fpel16_shadow[0];
+        old->plane_fld[0] = old->filtered_fld[0][0] = old->fpel16_shadow[1];
+    }
+    frame->plane[0] = frame->filtered[0][0] = h->fpel16[0];
+    frame->plane_fld[0] = frame->filtered_fld[0][0] = h->fpel16[1];
+    h->fpel16_frame = frame;
 }
 
 void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )

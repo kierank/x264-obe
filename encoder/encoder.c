@@ -1918,6 +1918,11 @@ x264_t *x264_encoder_open( x264_param_t *param )
             h->thread[i]->fdec = x264_frame_pop_unused( h, 1 );
             if( !h->thread[i]->fdec )
                 goto fail;
+            /* each frame thread's 16-bit fullpel luma */
+            h->thread[i]->fpel16_base = NULL;
+            if( h->b_fpel8 && x264_frame_fpel16_alloc( h->thread[i], h->thread[i]->fdec ) < 0 )
+                goto fail;
+            x264_frame_bind_fpel16( h->thread[i], h->thread[i]->fdec );
         }
         else
             h->thread[i]->fdec = h->thread[0]->fdec;
@@ -3884,6 +3889,7 @@ int     x264_encoder_encode( x264_t *h,
     if( x264_reference_update( h ) )
         return -1;
     h->fdec->i_lines_completed = -1;
+    x264_frame_bind_fpel16( h, h->fdec );
 
     if( !IS_X264_TYPE_I( h->fenc->i_type ) )
     {
@@ -4929,6 +4935,7 @@ void    x264_encoder_close  ( x264_t *h )
                     x264_frame_delete( *frame );
             }
             x264_macroblock_cache_free( h->thread[i] );
+            x264_free( h->thread[i]->fpel16_base );
         }
         x264_macroblock_thread_free( h->thread[i], 0 );
         x264_free( h->thread[i]->out.p_bitstream );

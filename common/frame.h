@@ -98,6 +98,9 @@ typedef struct x264_frame
     uint8_t *lsb8[4];
     uint8_t *msb8_fld[4];
     uint8_t *lsb8_fld[4];
+    /* h->b_fpel8, X264_ME8_VERIFY only: the frame's own 16-bit fullpel luma
+     * (frame, field), a copy of what it was split from; NULL else */
+    pixel *fpel16_shadow[2];
     uint16_t *integral;
 
     /* for unrestricted mv we allocate more data than needed
@@ -264,6 +267,10 @@ void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y
 void          x264_frame_split8( x264_t *h, x264_frame_t *frame, int mb_y );
 #define x264_frame_verify8 x264_template(frame_verify8)
 void          x264_frame_verify8( x264_t *h, x264_frame_t *frame );
+#define x264_frame_fpel16_alloc x264_template(frame_fpel16_alloc)
+int           x264_frame_fpel16_alloc( x264_t *h, x264_frame_t *frame );
+#define x264_frame_bind_fpel16 x264_template(frame_bind_fpel16)
+void          x264_frame_bind_fpel16( x264_t *h, x264_frame_t *frame );
 #define x264_frame_expand_border_filtered x264_template(frame_expand_border_filtered)
 void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 #define x264_frame_expand_border_lowres x264_template(frame_expand_border_lowres)

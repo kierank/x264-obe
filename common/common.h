@@ -800,8 +800,13 @@ struct x264_t
      * (encoder/me8.h), shared by all threads; NULL without */
     const struct x264_me8_func_t *me8;
     /* analyse.i_me_8bit but 4:4:4: luma h, v and c only as msb8/lsb8 at
-     * level 1 too (X264_ME8_HPEL8) */
+     * level 1 too (X264_ME8_HPEL8), and the refs' fullpel luma: an fdec
+     * frame has a 16-bit one only while a frame thread encodes it, the
+     * thread's fpel16 (frame, MBAFF field; x264_frame_bind_fpel16) */
     int b_fpel8;
+    pixel *fpel16[2];
+    void *fpel16_base;
+    x264_frame_t *fpel16_frame; /* the frame bound to fpel16 */
 
 #if HAVE_OPENCL
     x264_opencl_t opencl;
