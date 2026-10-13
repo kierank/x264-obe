@@ -138,6 +138,9 @@ typedef struct
     weight_fn_t *offsetadd;
     weight_fn_t *offsetsub;
     void (*weight_cache)( x264_t *, x264_weight_t * );
+    /* x264_weight_scale_plane in whole rows, same output; 0: not this weight, use the strips */
+    int (*weight_plane)( pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride,
+                         const x264_weight_t *w, int i_width, int i_height );
 
     void (*mbtree_propagate_cost)( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
                                    uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );

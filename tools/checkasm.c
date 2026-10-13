@@ -1583,6 +1583,30 @@ static int check_dct( int cpu_ref, int cpu_new )
     return ret;
 }
 
+/* weight_plane references: the area x264_weight_scale_plane's strips write
+ * (width up to a multiple of 8, height up to even), in C w8 columns, and the
+ * strips themselves with the asm kernels of the weight (benchmark only) */
+static weight_fn_t *wp_c_wtab;
+static void weight_plane_c( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+                            const x264_weight_t *w, int width, int height )
+{
+    for( int x = 0; x < width; x += 8 )
+        wp_c_wtab[8>>2]( dst+x, i_dst, src+x, i_src, w, (height+1)&~1 );
+}
+
+static void weight_plane_strips( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+                                 const x264_weight_t *w, int width, int height )
+{
+    for( ; height > 0; height -= 16, dst += 16*i_dst, src += 16*i_src )
+    {
+        int x;
+        for( x = 0; x < width-8; x += 16 )
+            w->weightfn[16>>2]( dst+x, i_dst, src+x, i_src, w, X264_MIN( height, 16 ) );
+        if( x < width )
+            w->weightfn[8>>2]( dst+x, i_dst, src+x, i_src, w, X264_MIN( height, 16 ) );
+    }
+}
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -1821,6 +1845,93 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
     }
     report( "mc offsetsub :" );
+
+    ok = 1; used_asm = 0;
+    if( mc_a.weight_plane != mc_ref.weight_plane )
+    {
+        /* every register/tail split of a row, odd heights, the 1080p luma and
+         * lowres rows; edge scales, extreme pixels, guards around the area */
+        enum { WP_STRIDE = 2048+64, WP_ROWS = 20 };
+        static const int wp_w[] = { 1, 7, 8, 9, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 120, 136, 1024, 1984 };
+        static const int wp_h[] = { 1, 2, 3, 16, 17 };
+        pixel *wp_src = x264_malloc( WP_STRIDE*WP_ROWS*sizeof(pixel) );
+        pixel *wp_c = x264_malloc( WP_STRIDE*WP_ROWS*sizeof(pixel) );
+        pixel *wp_a = x264_malloc( WP_STRIDE*WP_ROWS*sizeof(pixel) );
+        x264_t ha;
+        ha.mc = mc_a;
+        wp_c_wtab = mc_c.weight;
+        used_asm = 1;
+        ok = wp_src && wp_c && wp_a;
+        for( int i = 0; ok && i < WP_STRIDE*WP_ROWS; i++ )
+        {
+            int r = rand();
+            wp_src[i] = r&8 ? -(r&1) & PIXEL_MAX : r&4 ? (r&1 ? PIXEL_MAX-1 : 1) : rand() & PIXEL_MAX;
+        }
+        for( int i = 0; ok && i < WP_STRIDE*WP_ROWS; i++ )
+            wp_c[i] = wp_a[i] = rand() & PIXEL_MAX;
+        int bench_done[4] = {0};
+        for( int d = 0; d <= 7 && ok; d++ )
+            for( int si = 0; si < 11 && ok; si++ )
+            {
+                /* (a, b): s = (a<<d) + b */
+                static const int sc[11][2] = { {0,0}, {0,1}, {1,-1}, {1,0}, {1,1}, {2,-1}, {32,-1}, {32,0},
+                                               {0,127}, {0,-1}, {0,-128} };
+                int s = (sc[si][0]<<d) + sc[si][1];
+                if( s > 127 )
+                    continue;
+                for( int oi = 0; oi < 5 && ok; oi++ )
+                {
+                    static const int of[5] = { -128, -1, 0, 1, 127 };
+                    x264_weight_t weight = { .i_scale = s, .i_denom = d, .i_offset = of[oi] };
+                    mc_a.weight_cache( &ha, &weight );
+                    /* what x264_weight_cache_avx2/avx512 do not send to SSE2 */
+                    int handled = s == 1<<d || (s >= 0 && s <= 0x7fff >> (BIT_DEPTH-d));
+                    int kind = s == 1<<d ? 2 + (of[oi] < 0) : s < 1<<d;
+                    for( int wi = 0; wi < ARRAY_ELEMS(wp_w) && ok; wi++ )
+                        for( int hi = 0; hi < ARRAY_ELEMS(wp_h) && ok; hi++ )
+                        {
+                            int width = wp_w[wi], height = wp_h[hi];
+                            int soff = rand()&1 ? rand()&15 : 0;
+                            int doff = rand()&1 ? rand()&15 : 0;
+                            intptr_t sstride = WP_STRIDE - 32;
+                            pixel *src_p = wp_src + soff;
+                            /* fresh guards: the written rows plus two, columns to a zmm past the area */
+                            int gw = X264_MIN( doff + ((width+7)&~7) + 64, WP_STRIDE );
+                            for( int y = 0; y < ((height+1)&~1) + 2; y++ )
+                                for( int x = 0; x < gw; x++ )
+                                    wp_c[y*WP_STRIDE+x] = wp_a[y*WP_STRIDE+x] = rand() & PIXEL_MAX;
+                            if( handled )
+                                weight_plane_c( wp_c+doff, WP_STRIDE, src_p, sstride, &weight, width, height );
+                            set_func_name( "weight_plane" );
+                            int ret_a = (int)call_a1( mc_a.weight_plane, wp_a+doff, (intptr_t)WP_STRIDE, src_p, sstride,
+                                                      &weight, width, height );
+                            if( ret_a != handled || memcmp( wp_c, wp_a, WP_STRIDE*WP_ROWS*sizeof(pixel) ) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "weight_plane [FAILED] s:%d o:%d d:%d w:%d h:%d ret:%d\n",
+                                         s, of[oi], d, width, height, ret_a );
+                            }
+                        }
+                    /* 1080p luma row width, one 16 row strip: C, the asm strips, the plane */
+                    if( handled && !bench_done[kind] && s >= 0 && s * (1<<(8-d)) < 512 )
+                    {
+                        static const char *kname[4] = { "weight", "weight_ns", "offsetadd", "offsetsub" };
+                        bench_done[kind] = 1;
+                        set_func_name( "weight_plane_%s_1984x16", kname[kind] );
+                        call_c2( weight_plane_c, wp_c, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
+                        call_a2( mc_a.weight_plane, wp_a, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
+                        set_func_name( "weight_plane_%s_1984x16_strips", kname[kind] );
+                        call_a2( weight_plane_strips, wp_a, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
+                        /* both wrote the same; keep the buffers equal */
+                        memcpy( wp_c, wp_a, WP_STRIDE*WP_ROWS*sizeof(pixel) );
+                    }
+                }
+            }
+        x264_free( wp_src );
+        x264_free( wp_c );
+        x264_free( wp_a );
+    }
+    report( "mc weight_plane :" );
 
     ok = 1; used_asm = 0;
     for( int height = 8; height <= 16; height += 8 )

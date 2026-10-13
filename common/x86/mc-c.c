@@ -97,6 +97,14 @@
 #define x264_mc_copy_w4_mmx x264_template(mc_copy_w4_mmx)
 #define x264_mc_copy_w8_mmx x264_template(mc_copy_w8_mmx)
 #define x264_mc_copy_w8_sse x264_template(mc_copy_w8_sse)
+#define x264_mc_offsetadd_plane_avx2 x264_template(mc_offsetadd_plane_avx2)
+#define x264_mc_offsetadd_plane_avx512 x264_template(mc_offsetadd_plane_avx512)
+#define x264_mc_offsetsub_plane_avx2 x264_template(mc_offsetsub_plane_avx2)
+#define x264_mc_offsetsub_plane_avx512 x264_template(mc_offsetsub_plane_avx512)
+#define x264_mc_weight_ns_plane_avx2 x264_template(mc_weight_ns_plane_avx2)
+#define x264_mc_weight_ns_plane_avx512 x264_template(mc_weight_ns_plane_avx512)
+#define x264_mc_weight_plane_avx2 x264_template(mc_weight_plane_avx2)
+#define x264_mc_weight_plane_avx512 x264_template(mc_weight_plane_avx512)
 #define x264_mc_offsetadd_w4_avx2 x264_template(mc_offsetadd_w4_avx2)
 #define x264_mc_offsetadd_w8_avx2 x264_template(mc_offsetadd_w8_avx2)
 #define x264_mc_offsetadd_w16_avx2 x264_template(mc_offsetadd_w16_avx2)
@@ -128,7 +136,11 @@
 #define x264_mc_weight_ns_w12_avx2 x264_template(mc_weight_ns_w12_avx2)
 #define x264_mc_weight_ns_w16_avx2 x264_template(mc_weight_ns_w16_avx2)
 #define x264_mc_weight_ns_w20_avx2 x264_template(mc_weight_ns_w20_avx2)
+#define x264_mc_weight_ns_w12_avx512 x264_template(mc_weight_ns_w12_avx512)
 #define x264_mc_weight_w12_avx2 x264_template(mc_weight_w12_avx2)
+#define x264_mc_weight_w12_avx512 x264_template(mc_weight_w12_avx512)
+#define x264_mc_weight_w16_avx512 x264_template(mc_weight_w16_avx512)
+#define x264_mc_weight_w20_avx512 x264_template(mc_weight_w20_avx512)
 #define x264_mc_weight_w12_mmx2 x264_template(mc_weight_w12_mmx2)
 #define x264_mc_weight_w12_sse2 x264_template(mc_weight_w12_sse2)
 #define x264_mc_weight_w12_ssse3 x264_template(mc_weight_w12_ssse3)
@@ -334,6 +346,18 @@ MC_WEIGHT_NS( 12 )
 MC_WEIGHT_NS( 16 )
 MC_WEIGHT_NS( 20 )
 #undef MC_WEIGHT_NS
+MC_WEIGHT( 12, avx512 )
+MC_WEIGHT( 16, avx512 )
+MC_WEIGHT( 20, avx512 )
+void x264_mc_weight_ns_w12_avx512( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int );
+#define MC_WEIGHT_PLANE(cpu) \
+    void x264_mc_weight_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int ); \
+    void x264_mc_weight_ns_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int ); \
+    void x264_mc_offsetadd_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int ); \
+    void x264_mc_offsetsub_plane_##cpu( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+MC_WEIGHT_PLANE( avx2 )
+MC_WEIGHT_PLANE( avx512 )
+#undef MC_WEIGHT_PLANE
 #endif
 #undef MC_OFFSET
 #undef MC_WEIGHT
@@ -605,11 +629,21 @@ MC_WEIGHT_WTAB(weight,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(weight_ns,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(offsetadd,avx2,avx2,avx2,16)
 MC_WEIGHT_WTAB(offsetsub,avx2,avx2,sse2,16)
+MC_WEIGHT_WTAB(weight,avx512,avx2,avx2,12)
+static weight_fn_t x264_mc_weight_ns_wtab_avx512[6] =
+{
+    x264_mc_weight_ns_w4_avx2,
+    x264_mc_weight_ns_w4_avx2,
+    x264_mc_weight_ns_w8_avx2,
+    x264_mc_weight_ns_w12_avx512,
+    x264_mc_weight_ns_w16_avx2,
+    x264_mc_weight_ns_w20_avx2,
+};
 
 /* pmulhrsw( pix<<(15-BIT_DEPTH), scale<<(BIT_DEPTH-denom) ), or pix by scale<<(15-denom)
  * when scale < 1<<denom; cacheb = offset + 0x7fff-PIXEL_MAX for the paddsw/psubusw clip.
  * Negative scales and scale<<(BIT_DEPTH-denom) > 0x7fff stay on SSE2. */
-static void x264_weight_cache_avx2( x264_t *h, x264_weight_t *w )
+static ALWAYS_INLINE void weight_cache_mulhrs( x264_t *h, x264_weight_t *w, weight_fn_t *ns_wtab )
 {
     int scale = w->i_scale;
     int denom = w->i_denom;
@@ -623,13 +657,52 @@ static void x264_weight_cache_avx2( x264_t *h, x264_weight_t *w )
     int ns = scale < 1<<denom;
     int mul = scale << (ns ? 15-denom : BIT_DEPTH-denom);
     int offset = w->i_offset * (1<<(BIT_DEPTH-8)) + 0x7fff - PIXEL_MAX;
-    w->weightfn = ns ? x264_mc_weight_ns_wtab_avx2 : h->mc.weight;
+    w->weightfn = ns ? ns_wtab : h->mc.weight;
     for( int i = 0; i < 8; i++ )
     {
         w->cachea[i] = mul;
         w->cacheb[i] = offset;
     }
 }
+
+static void x264_weight_cache_avx2( x264_t *h, x264_weight_t *w )
+{
+    weight_cache_mulhrs( h, w, x264_mc_weight_ns_wtab_avx2 );
+}
+
+static void x264_weight_cache_avx512( x264_t *h, x264_weight_t *w )
+{
+    weight_cache_mulhrs( h, w, x264_mc_weight_ns_wtab_avx512 );
+}
+
+#if ARCH_X86_64
+/* x264_weight_scale_plane row by row over what its w16/w8 strips write (width
+ * up to a multiple of 8, height up to even), for the weights whose w16/w8
+ * kernels share the plane kernel's cache and op; 0 for the others (SSE2). */
+#define WEIGHT_PLANE(cpu, wtab, ns_wtab)\
+static int weight_plane_##cpu( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,\
+                               const x264_weight_t *w, int width, int height )\
+{\
+    void (*f)( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );\
+    if( w->weightfn == wtab )\
+        f = x264_mc_weight_plane_##cpu;\
+    else if( w->weightfn == ns_wtab )\
+        f = x264_mc_weight_ns_plane_##cpu;\
+    else if( w->weightfn == x264_mc_offsetadd_wtab_avx2 )\
+        f = x264_mc_offsetadd_plane_##cpu;\
+    else if( w->weightfn == x264_mc_offsetsub_wtab_avx2 )\
+        f = x264_mc_offsetsub_plane_##cpu;\
+    else\
+        return 0;\
+    if( width > 0 && height > 0 )\
+        f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );\
+    return 1;\
+}
+
+WEIGHT_PLANE( avx2, x264_mc_weight_wtab_avx2, x264_mc_weight_ns_wtab_avx2 )
+WEIGHT_PLANE( avx512, x264_mc_weight_wtab_avx512, x264_mc_weight_ns_wtab_avx512 )
+#undef WEIGHT_PLANE
+#endif
 #else
 MC_WEIGHT_WTAB(weight,mmx2,mmx2,mmx2,12)
 MC_WEIGHT_WTAB(offsetadd,mmx2,mmx2,mmx2,12)
@@ -1182,11 +1255,19 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight_cache = x264_weight_cache_avx2;
         pf->offsetadd = x264_mc_offsetadd_wtab_avx2;
         pf->offsetsub = x264_mc_offsetsub_wtab_avx2;
+#if ARCH_X86_64
+        pf->weight_plane = weight_plane_avx2;
+#endif
     }
 
     if( cpu&X264_CPU_AVX512 )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
+        pf->weight = x264_mc_weight_wtab_avx512;
+        pf->weight_cache = x264_weight_cache_avx512;
+#if ARCH_X86_64
+        pf->weight_plane = weight_plane_avx512;
+#endif
     }
 #else // !HIGH_BIT_DEPTH
 
