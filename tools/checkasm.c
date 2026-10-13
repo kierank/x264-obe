@@ -2131,26 +2131,49 @@ static int check_mc( int cpu_ref, int cpu_new )
     }
 
 #if HIGH_BIT_DEPTH
-    if( mc_a.lowres8_convert != mc_ref.lowres8_convert )
+    if( mc_a.frame_init_lowres_core8 != mc_ref.frame_init_lowres_core8 )
     {
-        uint8_t *dstc8 = (uint8_t*)pbuf3;
-        uint8_t *dsta8 = (uint8_t*)pbuf4;
-        set_func_name( "lowres8_convert" );
-        ok = 1; used_asm = 1;
-        for( int n = 64; n <= 1024 && ok; n += 64 )
+        /* against frame_init_lowres_core then the 8-bit conversion, on pbuf1 and on
+         * a source near PIXEL_MAX, where 1022 and 1023 round to 256 and clip */
+        pixel *src_max = x264_malloc( 0x1e00*sizeof(pixel) );
+        pixel *ref[4] = { pbuf3, pbuf3+1024, pbuf3+2048, pbuf3+3072 };
+        uint8_t *dstc[4], *dsta[4];
+        for( int j = 0; j < 4; j++ )
         {
-            /* also checks that nothing past n is written */
-            memset( dstc8, 0xaa, 1024+64 );
-            memset( dsta8, 0xaa, 1024+64 );
-            call_c( mc_c.lowres8_convert, dstc8, pbuf1, (intptr_t)n );
-            call_a( mc_a.lowres8_convert, dsta8, pbuf1, (intptr_t)n );
-            if( memcmp( dstc8, dsta8, 1024+64 ) )
-            {
-                ok = 0;
-                fprintf( stderr, "lowres8_convert differs, n=%d\n", n );
-            }
+            dstc[j] = (uint8_t*)pbuf4 + j*1024;
+            dsta[j] = (uint8_t*)pbuf4 + 4096 + j*1024;
         }
-        report( "lowres8 convert :" );
+        set_func_name( "lowres_init8" );
+        ok = !!src_max; used_asm = 1;
+        if( src_max )
+            for( int i = 0; i < 0x1e00; i++ )
+                src_max[i] = PIXEL_MAX - (rand()&3);
+        for( int k = 0; k < 2 && ok; k++ )
+            for( int w = 96; w <= 96+24 && ok; w += 8 )
+            {
+                pixel *src = k ? src_max : pbuf1;
+                intptr_t stride = (w*2+31)&~31;
+                intptr_t stride_lowres = (w+31)&~31;
+                mc_c.frame_init_lowres_core( src, ref[0], ref[1], ref[2], ref[3], stride, stride_lowres, w, 8 );
+                call_c( mc_c.frame_init_lowres_core8, src, dstc[0], dstc[1], dstc[2], dstc[3], stride, stride_lowres, w, 8 );
+                call_a( mc_a.frame_init_lowres_core8, src, dsta[0], dsta[1], dsta[2], dsta[3], stride, stride_lowres, w, 8 );
+                for( int j = 0; j < 4 && ok; j++ )
+                    for( int i = 0; i < 8 && ok; i++ )
+                        for( int x = 0; x < w; x++ )
+                        {
+                            int o = x + i*stride_lowres;
+                            int v = X264_MIN( (ref[j][o] + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 );
+                            if( dstc[j][o] != v || dsta[j][o] != v )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "frame_init_lowres8 differs: src %d w %d plane %d line %d x %d: %d c %d asm %d\n",
+                                         k, w, j, i, x, v, dstc[j][o], dsta[j][o] );
+                                break;
+                            }
+                        }
+            }
+        x264_free( src_max );
+        report( "lowres init8 :" );
     }
 #endif
 
