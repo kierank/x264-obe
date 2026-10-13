@@ -3,6 +3,10 @@
 # usage: [BD_RC=crf] bd-encode.sh <x264> <arm label> <normal|lowlat> <8|10> <source> <out.tsv> <kbps...> [-- extra x264 options]
 # <source>: .y4m (8-bit 4:2:0), or raw 10-bit 4:2:2 1920x1080 (.yuv); set
 #   BD_INPUT to override the input options, BD_FRAMES (default 300) the length.
+# BD_TUNE=psnr|ssim: metric-tuned encodes for true BD-rate (PSNR BD from the psnr
+#   set, SSIM BD from the ssim set; write each set to its own <out.tsv> and pass
+#   the ssim one to bd-table.sh as BD_SSIM_TSV). lowlat merges it into the one
+#   --tune (zerolatency,psnr), as a second --tune would replace the first.
 # Output, tab separated, appended to <out.tsv>:
 #   arm config depth source target_kbps kbps psnr_y psnr_u psnr_v psnr_yuv611 ssim_y_db fps md5
 # psnr_yuv611 = (6Y + U + V) / 8 of the per-plane mean PSNRs.
@@ -34,8 +38,8 @@ for R in $RATES; do
         RCL="--bitrate $R --vbv-maxrate $R --vbv-bufsize $((R / 2))"
     fi
     case $CFG in
-        normal) OPTS="$COMMON $RC --ref 4 --bframes 3 --rc-lookahead 24" ;;
-        lowlat) OPTS="$COMMON --preset veryfast --tune zerolatency $RCL" ;;
+        normal) OPTS="$COMMON $RC --ref 4 --bframes 3 --rc-lookahead 24${BD_TUNE:+ --tune $BD_TUNE}" ;;
+        lowlat) OPTS="$COMMON --preset veryfast --tune zerolatency${BD_TUNE:+,$BD_TUNE} $RCL" ;;
         *) echo "bd-encode.sh: config must be normal or lowlat" >&2; exit 1 ;;
     esac
     LOG=$(mktemp)
