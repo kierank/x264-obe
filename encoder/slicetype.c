@@ -202,6 +202,7 @@ static NOINLINE unsigned int x264_weight_cost_luma( x264_t *h, x264_frame_t *fen
     int pixoff = 0;
     int i_mb = 0;
 
+    /* cmp is at BIT_DEPTH, i_intra_cost at 8-bit scale */
     if( w )
     {
         for( int y = 0; y < i_lines; y += 8, pixoff = y*i_stride )
@@ -209,7 +210,7 @@ static NOINLINE unsigned int x264_weight_cost_luma( x264_t *h, x264_frame_t *fen
             {
                 w->weightfn[8>>2]( buf, 8, &src[pixoff], i_stride, w, 8 );
                 int cmp = h->pixf.mbcmp[PIXEL_8x8]( buf, 8, &fenc_plane[pixoff], i_stride );
-                cost += X264_MIN( cmp, fenc->i_intra_cost[i_mb] );
+                cost += X264_MIN( cmp, fenc->i_intra_cost[i_mb] << (BIT_DEPTH-8) );
             }
         cost += x264_weight_slice_header_cost( h, w, 0 );
     }
@@ -218,7 +219,7 @@ static NOINLINE unsigned int x264_weight_cost_luma( x264_t *h, x264_frame_t *fen
             for( int x = 0; x < i_width; x += 8, i_mb++, pixoff += 8 )
             {
                 int cmp = h->pixf.mbcmp[PIXEL_8x8]( &src[pixoff], i_stride, &fenc_plane[pixoff], i_stride );
-                cost += X264_MIN( cmp, fenc->i_intra_cost[i_mb] );
+                cost += X264_MIN( cmp, fenc->i_intra_cost[i_mb] << (BIT_DEPTH-8) );
             }
     x264_emms();
     return cost;
