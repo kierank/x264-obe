@@ -2742,7 +2742,8 @@ static int check_mc( int cpu_ref, int cpu_new )
         /* the --me-8bit 2 readers' C glue on split planes (p_fref[1..3] NULL as in
          * the encoder): x264_ref_mc_luma, x264_ref_get_ref and x264_ref_hpel_pair
          * against C mc_luma, get_ref and x264_mc_hpel_pair on the 16-bit planes;
-         * every fraction at fullpel offsets -2..1, widths 4-20, heights 4-17,
+         * every fraction at fullpel offsets -2..1, widths 4-20 (mc_luma 4, 8,
+         * 16, as the encoder calls it; hpel_pair to 16), heights 4-17,
          * unweighted and weighted (C weightfn), through mc_a (pk kernels where
          * there are any), mc_a without copy_pk/avg2_pk (the unpack temps) and C */
         enum { PW = 128, PH = 64, PS = PW*PH + PW/4*PH, PO = 24*PW + 48 };
@@ -2794,13 +2795,18 @@ static int check_mc( int cpu_ref, int cpu_new )
                             int w = gw[wi], hgt = gh[hi];
                             intptr_t sref = 32, sglue = 32;
                             pixel *pr, *pg;
-                            mc_c.mc_luma( dref, 32, src16, PW, mvx, mvy, w, hgt, &wt[k] );
-                            x264_ref_mc_luma( hg, dglue, 32, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
-                            if( split8_block_differs( dref, 32, dglue, 32, w, hgt ) )
+                            /* mc_luma at the widths it is called with (the x86 fullpel
+                             * copy has no 12 or 20) */
+                            if( w != 12 && w != 20 )
                             {
-                                ok = 0;
-                                fprintf( stderr, "split8 glue mc_luma (%d) mv %d,%d %dx%d weight %d [FAILED]\n",
-                                         v, mvx, mvy, w, hgt, k );
+                                mc_c.mc_luma( dref, 32, src16, PW, mvx, mvy, w, hgt, &wt[k] );
+                                x264_ref_mc_luma( hg, dglue, 32, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
+                                if( split8_block_differs( dref, 32, dglue, 32, w, hgt ) )
+                                {
+                                    ok = 0;
+                                    fprintf( stderr, "split8 glue mc_luma (%d) mv %d,%d %dx%d weight %d [FAILED]\n",
+                                             v, mvx, mvy, w, hgt, k );
+                                }
                             }
                             pr = mc_c.get_ref( dref, &sref, src16, PW, mvx, mvy, w, hgt, &wt[k] );
                             pg = x264_ref_get_ref( hg, dglue, &sglue, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
