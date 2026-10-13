@@ -3063,6 +3063,47 @@ static int x264_mb_analyse_nb_sub16x16( x264_t *h )
 /* Sub-16x16 partition skip threshold in lambda, interlaced (MBAFF) encodes only */
 #define PARTGATE_THRESH 256
 
+/* Intra first in P: sub-16x16 partitions are skipped when the best intra satd
+ * is below the 16x16 cost * INTRA_FIRST_THRESH/8 */
+#define INTRA_FIRST_THRESH 8
+
+/* Whether the lowres P cost of this mb chose intra. Lowres mbs are full
+ * resolution mbs; edge mbs are costed only with VBV or mbtree. */
+static int x264_mb_lowres_intra( x264_t *h )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    if( !h->frames.b_have_lowres || d > h->param.i_bframe + 1 || f->i_cost_est[d][0] < 0 )
+        return 0;
+    if( !h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size &&
+        (!h->mb.i_mb_x || !h->mb.i_mb_y || h->mb.i_mb_x == h->mb.i_mb_width-1 || h->mb.i_mb_y == h->mb.i_mb_height-1) )
+        return 0;
+    return !(f->lowres_costs[d][0][h->mb.i_mb_xy] >> LOWRES_COST_SHIFT);
+}
+
+/* P intra analysis against an inter cost, chroma included with chroma ME */
+static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cost )
+{
+    if( h->mb.b_chroma_me )
+    {
+        if( CHROMA444 )
+        {
+            x264_mb_analyse_intra( h, a, i_cost );
+            x264_mb_analyse_intra_chroma( h, a );
+        }
+        else
+        {
+            x264_mb_analyse_intra_chroma( h, a );
+            x264_mb_analyse_intra( h, a, i_cost - a->i_satd_chroma );
+        }
+        a->i_satd_i16x16 += a->i_satd_chroma;
+        a->i_satd_i8x8   += a->i_satd_chroma;
+        a->i_satd_i4x4   += a->i_satd_chroma;
+    }
+    else
+        x264_mb_analyse_intra( h, a, i_cost );
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3202,7 +3243,19 @@ skip_analysis:
                 b_partgate = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv < PARTGATE_THRESH * analysis.i_lambda &&
                              !x264_mb_analyse_nb_sub16x16( h );
 
-            if( (flags & X264_ANALYSE_PSUB16x16) && !b_partgate )
+            /* Where the lowres coded the mb intra, analyse intra against the 16x16 first */
+            int b_intra_first = 0;
+            int b_intra_prune = 0;
+            if( x264_mb_lowres_intra( h ) )
+            {
+                x264_mb_analyse_intra_p( h, &analysis, analysis.l0.me16x16.cost );
+                b_intra_first = 1;
+                int i_intra = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
+                b_intra_prune = analysis.b_early_terminate &&
+                                (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_FIRST_THRESH;
+            }
+
+            if( (flags & X264_ANALYSE_PSUB16x16) && !b_partgate && !b_intra_prune )
             {
                 if( h->param.analyse.b_mixed_references )
                     x264_mb_analyse_inter_p8x8_mixed_ref( h, &analysis );
@@ -3251,8 +3304,8 @@ skip_analysis:
             }
 
             /* Now do 16x8/8x16 */
-            int i_thresh16x8 = b_partgate ? 0 : analysis.l0.me8x8[1].cost_mv + analysis.l0.me8x8[2].cost_mv;
-            if( ( flags & X264_ANALYSE_PSUB16x16 ) && !b_partgate && (!analysis.b_early_terminate ||
+            int i_thresh16x8 = b_partgate || b_intra_prune ? 0 : analysis.l0.me8x8[1].cost_mv + analysis.l0.me8x8[2].cost_mv;
+            if( ( flags & X264_ANALYSE_PSUB16x16 ) && !b_partgate && !b_intra_prune && (!analysis.b_early_terminate ||
                 analysis.l0.i_cost8x8 < analysis.l0.me16x16.cost + i_thresh16x8) )
             {
                 int i_avg_mv_ref_cost = (analysis.l0.me8x8[2].cost_mv + analysis.l0.me8x8[2].i_ref_cost
@@ -3336,24 +3389,8 @@ skip_analysis:
                 }
             }
 
-            if( h->mb.b_chroma_me )
-            {
-                if( CHROMA444 )
-                {
-                    x264_mb_analyse_intra( h, &analysis, i_cost );
-                    x264_mb_analyse_intra_chroma( h, &analysis );
-                }
-                else
-                {
-                    x264_mb_analyse_intra_chroma( h, &analysis );
-                    x264_mb_analyse_intra( h, &analysis, i_cost - analysis.i_satd_chroma );
-                }
-                analysis.i_satd_i16x16 += analysis.i_satd_chroma;
-                analysis.i_satd_i8x8   += analysis.i_satd_chroma;
-                analysis.i_satd_i4x4   += analysis.i_satd_chroma;
-            }
-            else
-                x264_mb_analyse_intra( h, &analysis, i_cost );
+            if( !b_intra_first )
+                x264_mb_analyse_intra_p( h, &analysis, i_cost );
 
             i_satd_inter = i_cost;
             i_satd_intra = X264_MIN3( analysis.i_satd_i16x16,
