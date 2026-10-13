@@ -344,6 +344,7 @@ void x264_param_default( x264_param_t *param )
     param->rc.i_aq_mode = X264_AQ_VARIANCE;
     param->rc.f_aq_strength = 1.0;
     param->rc.i_lookahead = 40;
+    param->rc.b_weightp_8bit = 1;
 
     param->rc.b_stat_write = 0;
     param->rc.psz_stat_out = "x264_2pass.log";
@@ -1205,6 +1206,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->rc.i_lookahead = atoi(value);
     OPT("lookahead-8bit")
         p->rc.b_lookahead_8bit = atobool(value);
+    OPT("weightp-8bit")
+        p->rc.b_weightp_8bit = atobool(value);
     OPT2("qpmin", "qp-min")
         p->rc.i_qp_min = atoi(value);
     OPT2("qpmax", "qp-max")
@@ -1395,6 +1398,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         s += sprintf( s, " rc_lookahead=%d", p->rc.i_lookahead );
     if( p->rc.b_lookahead_8bit )
         s += sprintf( s, " lookahead_8bit=1" );
+    if( p->rc.b_lookahead_8bit && p->rc.b_weightp_8bit && p->analyse.i_weighted_pred > 0 )
+        s += sprintf( s, " weightp_8bit=1" );
 
     s += sprintf( s, " rc=%s mbtree=%d", p->rc.i_rc_method == X264_RC_ABR ?
                                ( p->rc.b_stat_read ? "2pass" : p->rc.i_vbv_max_bitrate == p->rc.i_bitrate ? "cbr" : "abr" )

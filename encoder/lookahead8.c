@@ -137,6 +137,129 @@ void x264_lowres8_weight_plane( void *ctx, void *fenc_, void *ref_, const void *
     fenc->weighted8 = c->weight_buf + PADH + ref->i_stride_lowres * PADV;
 }
 
+/* As x264_weight_cost_init_luma, x264_weight_cost_luma, x264_weight_cost_init_chroma
+ * and x264_weight_cost_chroma in slicetype.c */
+uint8_t *x264_lowres8_weight_luma_mc( void *ctx, void *fenc_, void *ref_, uint8_t *dst )
+{
+    x264_t *h = &((lowres8_t*)ctx)->h;
+    x264_frame_t *fenc = fenc_;
+    x264_frame_t *ref = ref_;
+    int ref0_distance = fenc->i_frame - ref->i_frame - 1;
+    if( fenc->lowres_mvs[0][ref0_distance][0][0] != 0x7FFF )
+    {
+        int i_stride = fenc->i_stride_lowres;
+        int i_lines = fenc->i_lines_lowres;
+        int i_width = fenc->i_width_lowres;
+        int i_mb_xy = 0;
+        pixel *p = dst;
+
+        for( int y = 0; y < i_lines; y += 8, p += i_stride*8 )
+            for( int x = 0; x < i_width; x += 8, i_mb_xy++ )
+            {
+                int mvx = fenc->lowres_mvs[0][ref0_distance][i_mb_xy][0];
+                int mvy = fenc->lowres_mvs[0][ref0_distance][i_mb_xy][1];
+                h->mc.mc_luma( p+x, i_stride, ref->lowres8, i_stride,
+                               mvx+(x<<2), mvy+(y<<2), 8, 8, x264_weight_none );
+            }
+        x264_emms();
+        return dst;
+    }
+    return ref->lowres8[0];
+}
+
+unsigned x264_lowres8_weight_luma_cost( void *ctx, void *fenc_, uint8_t *src, const void *weight )
+{
+    x264_t *h = &((lowres8_t*)ctx)->h;
+    x264_frame_t *fenc = fenc_;
+    unsigned int cost = 0;
+    int i_stride = fenc->i_stride_lowres;
+    int i_lines = fenc->i_lines_lowres;
+    int i_width = fenc->i_width_lowres;
+    pixel *fenc_plane = fenc->lowres8[0];
+    ALIGNED_ARRAY_16( pixel, buf,[8*8] );
+    int pixoff = 0;
+    int i_mb = 0;
+
+    if( weight )
+    {
+        x264_weight_t w;
+        memcpy( &w, weight, sizeof(w) );
+        h->mc.weight_cache( h, &w );
+        for( int y = 0; y < i_lines; y += 8, pixoff = y*i_stride )
+            for( int x = 0; x < i_width; x += 8, i_mb++, pixoff += 8)
+            {
+                w.weightfn[8>>2]( buf, 8, &src[pixoff], i_stride, &w, 8 );
+                int cmp = h->pixf.mbcmp[PIXEL_8x8]( buf, 8, &fenc_plane[pixoff], i_stride );
+                cost += X264_MIN( cmp, fenc->i_intra_cost[i_mb] );
+            }
+    }
+    else
+        for( int y = 0; y < i_lines; y += 8, pixoff = y*i_stride )
+            for( int x = 0; x < i_width; x += 8, i_mb++, pixoff += 8 )
+            {
+                int cmp = h->pixf.mbcmp[PIXEL_8x8]( &src[pixoff], i_stride, &fenc_plane[pixoff], i_stride );
+                cost += X264_MIN( cmp, fenc->i_intra_cost[i_mb] );
+            }
+    x264_emms();
+    return cost;
+}
+
+void x264_lowres8_weight_chroma_mc( void *ctx, void *fenc_, void *ref_, uint8_t *ref,
+                                    uint8_t *dstu, uint8_t *dstv, int v_shift )
+{
+    x264_t *h = &((lowres8_t*)ctx)->h;
+    x264_frame_t *fenc = fenc_;
+    int ref0_distance = fenc->i_frame - ((x264_frame_t*)ref_)->i_frame - 1;
+    int i_stride = fenc->i_stride[1];
+    int i_lines = fenc->i_lines[1];
+    int i_width = fenc->i_width[1];
+    int height = 16 >> v_shift;
+
+    for( int y = 0, mb_xy = 0, pel_offset_y = 0; y < i_lines; y += height, pel_offset_y = y*i_stride )
+        for( int x = 0, pel_offset_x = 0; x < i_width; x += 8, mb_xy++, pel_offset_x += 8 )
+        {
+            pixel *pixu = dstu + pel_offset_y + pel_offset_x;
+            pixel *pixv = dstv + pel_offset_y + pel_offset_x;
+            pixel *src1 = ref + pel_offset_y + pel_offset_x*2; /* NV12/NV16 */
+            int mvx = fenc->lowres_mvs[0][ref0_distance][mb_xy][0];
+            int mvy = fenc->lowres_mvs[0][ref0_distance][mb_xy][1];
+            h->mc.mc_chroma( pixu, pixv, i_stride, src1, i_stride, mvx, 2*mvy>>v_shift, 8, height );
+        }
+    x264_emms();
+}
+
+unsigned x264_lowres8_weight_chroma_cost( void *ctx, void *fenc_, uint8_t *ref, const void *weight, int v_shift )
+{
+    x264_t *h = &((lowres8_t*)ctx)->h;
+    x264_frame_t *fenc = fenc_;
+    unsigned int cost = 0;
+    int i_stride = fenc->i_stride[1];
+    int i_lines = fenc->i_lines[1];
+    int i_width = fenc->i_width[1];
+    pixel *src = ref + (i_stride >> 1);
+    ALIGNED_ARRAY_16( pixel, buf, [8*16] );
+    int pixoff = 0;
+    int height = 16 >> v_shift;
+    if( weight )
+    {
+        x264_weight_t w;
+        memcpy( &w, weight, sizeof(w) );
+        h->mc.weight_cache( h, &w );
+        for( int y = 0; y < i_lines; y += height, pixoff = y*i_stride )
+            for( int x = 0; x < i_width; x += 8, pixoff += 8 )
+            {
+                w.weightfn[8>>2]( buf, 8, &ref[pixoff], i_stride, &w, height );
+                cost += h->pixf.asd8( buf, 8, &src[pixoff], i_stride, height );
+            }
+    }
+    else
+        for( int y = 0; y < i_lines; y += height, pixoff = y*i_stride )
+            for( int x = 0; x < i_width; x += 8, pixoff += 8 )
+                cost += h->pixf.asd8( &ref[pixoff], i_stride, &src[pixoff], i_stride, height );
+    x264_emms();
+    return cost;
+}
+
 /* As in slicetype.c */
 #define NUM_INTS 4
 #define COST_EST 0

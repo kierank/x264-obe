@@ -285,6 +285,55 @@ static NOINLINE unsigned int x264_weight_cost_chroma444( x264_t *h, x264_frame_t
     return cost;
 }
 
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+/* rc.b_weightp_8bit: x264_weight_cost_init_chroma on 8-bit copies rounded as
+ * lowres8[]. ref8: room for ref's chroma plane with its padding. */
+static NOINLINE void x264_weight_cost_init_chroma8( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref,
+                                                    uint8_t *dstu, uint8_t *dstv, uint8_t *ref8 )
+{
+    int ref0_distance = fenc->i_frame - ref->i_frame - 1;
+    int i_stride = fenc->i_stride[1];
+    int i_offset = i_stride / 2;
+    int v_shift = CHROMA_V_SHIFT;
+    int cw = 8*h->mb.i_mb_width;
+    int ch = 16*h->mb.i_mb_height >> v_shift;
+
+    if( fenc->lowres_mvs[0][ref0_distance][0][0] != 0x7FFF )
+    {
+        /* the area x264_frame_expand_border_chroma pads */
+        int padv = PADV >> v_shift;
+        x264_frame_expand_border_chroma( h, ref, 1 );
+        h->mc.plane_copy_16to8( ref8, i_stride, ref->plane[1] - PADH - padv*i_stride, i_stride,
+                                2*cw + 2*PADH, ch + 2*padv );
+        x264_lowres8_weight_chroma_mc( h->lowres8, fenc, ref, ref8 + PADH + padv*i_stride, dstu, dstv, v_shift );
+    }
+    else
+        h->mc.plane_copy_deinterleave_16to8( dstu, i_stride, dstv, i_stride, ref->plane[1], i_stride, cw, ch );
+    h->mc.plane_copy_deinterleave_16to8( dstu+i_offset, i_stride, dstv+i_offset, i_stride, fenc->plane[1], i_stride, cw, ch );
+    x264_emms();
+}
+#endif
+
+/* w8: the 8-bit context if this plane is analysed at 8-bit */
+static unsigned int x264_weight_cost( x264_t *h, x264_frame_t *fenc, void *mcbuf, x264_weight_t *w, int plane, void *w8 )
+{
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( w8 )
+    {
+        unsigned int cost = plane ? x264_lowres8_weight_chroma_cost( w8, fenc, mcbuf, w, CHROMA_V_SHIFT )
+                                  : x264_lowres8_weight_luma_cost( w8, fenc, mcbuf, w );
+        if( w )
+            cost += x264_weight_slice_header_cost( h, w, !!plane );
+        return cost;
+    }
+#endif
+    if( !plane )
+        return x264_weight_cost_luma( h, fenc, mcbuf, w );
+    if( CHROMA444 )
+        return x264_weight_cost_chroma444( h, fenc, mcbuf, w, plane );
+    return x264_weight_cost_chroma( h, fenc, mcbuf, w );
+}
+
 #if HIGH_BIT_DEPTH
 typedef struct
 {
@@ -335,6 +384,11 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
     SET_WEIGHT( weights[1], 0, 1, 0, 0 );
     SET_WEIGHT( weights[2], 0, 1, 0, 0 );
     int chroma_initted = 0;
+    void *w8 = NULL;
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( h->param.rc.b_weightp_8bit )
+        w8 = h->lowres8;
+#endif
     float guess_scale[3];
     float fenc_mean[3];
     float ref_mean[3];
@@ -392,7 +446,9 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
         minscale = weights[plane].i_scale;
         minoff = 0;
 
-        pixel *mcbuf;
+        void *mcbuf;
+        /* 4:4:4 chroma stays at full depth */
+        void *plane_w8 = plane && CHROMA444 ? NULL : w8;
         if( !plane )
         {
             if( !fenc->b_intra_calculated )
@@ -401,30 +457,41 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                 x264_lowres_context_init( h, &a );
                 x264_slicetype_frame_cost( h, &a, &fenc, 0, 0, 0, 0 );
             }
-#if HIGH_BIT_DEPTH
-            x264_weight_lowres_init( h, fenc );
-            x264_weight_lowres_init( h, ref );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+            if( w8 )
+                mcbuf = x264_lowres8_weight_luma_mc( w8, fenc, ref, (uint8_t*)h->mb.p_weight_buf[0] );
+            else
 #endif
-            mcbuf = x264_weight_cost_init_luma( h, fenc, ref, h->mb.p_weight_buf[0] );
-            origscore = minscore = x264_weight_cost_luma( h, fenc, mcbuf, NULL );
+            {
+#if HIGH_BIT_DEPTH
+                x264_weight_lowres_init( h, fenc );
+                x264_weight_lowres_init( h, ref );
+#endif
+                mcbuf = x264_weight_cost_init_luma( h, fenc, ref, h->mb.p_weight_buf[0] );
+            }
         }
+        else if( CHROMA444 )
+            mcbuf = x264_weight_cost_init_chroma444( h, fenc, ref, h->mb.p_weight_buf[0], plane );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+        else if( w8 )
+        {
+            /* in p_weight_buf[0], which holds twice that at full depth */
+            uint8_t *dstu = (uint8_t*)h->mb.p_weight_buf[0];
+            uint8_t *dstv = dstu + fenc->i_stride[1]*fenc->i_lines[1];
+            if( !chroma_initted++ )
+                x264_weight_cost_init_chroma8( h, fenc, ref, dstu, dstv, dstv + fenc->i_stride[1]*fenc->i_lines[1] );
+            mcbuf = plane == 1 ? dstu : dstv;
+        }
+#endif
         else
         {
-            if( CHROMA444 )
-            {
-                mcbuf = x264_weight_cost_init_chroma444( h, fenc, ref, h->mb.p_weight_buf[0], plane );
-                origscore = minscore = x264_weight_cost_chroma444( h, fenc, mcbuf, NULL, plane );
-            }
-            else
-            {
-                pixel *dstu = h->mb.p_weight_buf[0];
-                pixel *dstv = h->mb.p_weight_buf[0]+fenc->i_stride[1]*fenc->i_lines[1];
-                if( !chroma_initted++ )
-                    x264_weight_cost_init_chroma( h, fenc, ref, dstu, dstv );
-                mcbuf = plane == 1 ? dstu : dstv;
-                origscore = minscore = x264_weight_cost_chroma( h, fenc, mcbuf, NULL );
-            }
+            pixel *dstu = h->mb.p_weight_buf[0];
+            pixel *dstv = h->mb.p_weight_buf[0]+fenc->i_stride[1]*fenc->i_lines[1];
+            if( !chroma_initted++ )
+                x264_weight_cost_init_chroma( h, fenc, ref, dstu, dstv );
+            mcbuf = plane == 1 ? dstu : dstv;
         }
+        origscore = minscore = x264_weight_cost( h, fenc, mcbuf, NULL, plane, plane_w8 );
 
         if( !minscore )
             continue;
@@ -459,16 +526,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
             for( int i_off = start_offset; i_off <= end_offset; i_off++ )
             {
                 SET_WEIGHT( weights[plane], 1, cur_scale, mindenom, i_off );
-                unsigned int s;
-                if( plane )
-                {
-                    if( CHROMA444 )
-                        s = x264_weight_cost_chroma444( h, fenc, mcbuf, &weights[plane], plane );
-                    else
-                        s = x264_weight_cost_chroma( h, fenc, mcbuf, &weights[plane] );
-                }
-                else
-                    s = x264_weight_cost_luma( h, fenc, mcbuf, &weights[plane] );
+                unsigned int s = x264_weight_cost( h, fenc, mcbuf, &weights[plane], plane, plane_w8 );
                 COPY4_IF_LT( minscore, s, minscale, cur_scale, minoff, i_off, found, 1 );
 
                 // Don't check any more offsets if the previous one had a lower cost than the current one

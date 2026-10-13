@@ -50,4 +50,16 @@ void  x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
  * and point fenc->weighted8 at it, like the high bit depth weighted[0]. */
 void  x264_lowres8_weight_plane( void *ctx, void *fenc, void *ref, const void *weight );
 
+/* rc.b_weightp_8bit: the x264_weights_analyse cost functions at 8-bit, slice
+ * header cost excluded. weight is a high bit depth x264_weight_t, NULL for none.
+ * Luma: lowres8[], ref motion compensated into dst with the lowres MVs if any.
+ * Chroma (4:2:0/4:2:2): ref8 is the 8-bit copy of ref's interleaved chroma plane
+ * with its padding, motion compensated with the lowres MVs into dstu/dstv, the
+ * planar layout of the high bit depth cost with fenc at +stride/2. */
+uint8_t *x264_lowres8_weight_luma_mc( void *ctx, void *fenc, void *ref, uint8_t *dst );
+unsigned x264_lowres8_weight_luma_cost( void *ctx, void *fenc, uint8_t *src, const void *weight );
+void     x264_lowres8_weight_chroma_mc( void *ctx, void *fenc, void *ref, uint8_t *ref8,
+                                        uint8_t *dstu, uint8_t *dstv, int v_shift );
+unsigned x264_lowres8_weight_chroma_cost( void *ctx, void *fenc, uint8_t *src, const void *weight, int v_shift );
+
 #endif

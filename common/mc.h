@@ -134,6 +134,11 @@ typedef struct
      * output min( (x + 2) >> 2, 255 ) */
     void (*frame_init_lowres_core8)( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                      intptr_t src_stride, intptr_t dst_stride, int width, int height );
+    /* rc.b_weightp_8bit, high bit depth only: plane_copy and plane_copy_deinterleave
+     * with each output min( (x + 2) >> 2, 255 ) */
+    void (*plane_copy_16to8)( uint8_t *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int w, int h );
+    void (*plane_copy_deinterleave_16to8)( uint8_t *dstu, intptr_t i_dstu, uint8_t *dstv, intptr_t i_dstv,
+                                           pixel *src, intptr_t i_src, int w, int h );
     weight_fn_t *weight;
     weight_fn_t *offsetadd;
     weight_fn_t *offsetsub;
