@@ -232,6 +232,44 @@ void x264_analyse_weight_frame( x264_t *h, int end )
     }
 }
 
+/* Sliced threads: the rows x264_analyse_weight_frame( h, 16*i_mb_height + 16 )
+ * weights from i_lines_weighted == 0, counted from the top of the padding. */
+int x264_analyse_weight_height( x264_t *h )
+{
+    for( int j = 0; j < h->i_ref[0]; j++ )
+        if( h->sh.weight[j][0].weightfn )
+        {
+            int i_padv = PADV << PARAM_INTERLACED;
+            return X264_MIN( 16*h->mb.i_mb_height + 32 + i_padv, h->fref[0][j]->i_lines[0] + i_padv*2 );
+        }
+    return 0;
+}
+
+/* Rows [y0,y1) of those, y0 a multiple of 16 so the strips match the whole-frame call. */
+void x264_analyse_weight_rows( x264_t *h, int y0, int y1 )
+{
+    for( int j = 0; j < h->i_ref[0]; j++ )
+    {
+        if( h->sh.weight[j][0].weightfn )
+        {
+            x264_frame_t *frame = h->fref[0][j];
+            int width = frame->i_width[0] + 2*PADH;
+            int i_padv = PADV << PARAM_INTERLACED;
+            intptr_t offset = y0*frame->i_stride[0];
+            pixel *src = frame->filtered[0][0] - frame->i_stride[0]*i_padv - PADH;
+            for( int k = j; k < h->i_ref[0]; k++ )
+                if( h->sh.weight[k][0].weightfn )
+                {
+                    pixel *dst = h->fenc->weighted[k] - h->fenc->i_stride[0]*i_padv - PADH;
+                    x264_weight_scale_plane( h, dst + offset, frame->i_stride[0],
+                                             src + offset, frame->i_stride[0],
+                                             width, y1 - y0, &h->sh.weight[k][0] );
+                }
+            break;
+        }
+    }
+}
+
 /* initialize an array of lambda*nbits for all possible mvs */
 static void x264_mb_analyse_load_costs( x264_t *h, x264_mb_analysis_t *a )
 {
