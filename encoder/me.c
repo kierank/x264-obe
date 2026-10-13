@@ -304,6 +304,38 @@ do\
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* rows [y0, y1), bytes [x0, x1) of a plane at p (row 0) */
+static ALWAYS_INLINE void me8_prefetch_rect( uint8_t *p, intptr_t stride, intptr_t x0, intptr_t x1, int y0, int y1 )
+{
+    for( int y = y0; y < y1; y++ )
+    {
+        x264_prefetch( p + y*stride + x0 );
+        x264_prefetch( p + y*stride + x1 - 1 );
+    }
+}
+
+/* b8: what the 16-bit rescore of the fullpel result and refine_subpel's first
+ * hpel diamond read for a result within 1 of (x,y): plane 0, and v and h (16-bit
+ * at level 1, msb8 at level 2), none of which the 8-bit search touches */
+static NOINLINE void me8_prefetch_refine( x264_t *h, x264_me_t *m, int x, int y, int bw, int bh )
+{
+    const intptr_t stride = m->i_stride[0];
+    const intptr_t sp = sizeof(pixel);
+    me8_prefetch_rect( (uint8_t*)(m->p_fref[0] + x), stride*sp, -sp, (bw+1)*sp, y-1, y+bh+1 );
+    if( h->mb.i_subpel_refine < 2 )
+        return;
+    if( m->p_fref8[1] )
+    {
+        me8_prefetch_rect( m->p_fref8[2] + x, stride, -1, bw+1, y-2, y+bh+1 );
+        me8_prefetch_rect( m->p_fref8[1] + x, stride, -2, bw+2, y-1, y+bh+1 );
+    }
+    else
+    {
+        me8_prefetch_rect( (uint8_t*)(m->p_fref[2] + x), stride*sp, -sp, (bw+1)*sp, y-2, y+bh+1 );
+        me8_prefetch_rect( (uint8_t*)(m->p_fref[1] + x), stride*sp, -2*sp, (bw+2)*sp, y-1, y+bh+1 );
+    }
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -467,6 +499,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         case X264_ME_DIA:
         {
             /* diamond search, radius 1 */
+            /* most results are within a step of the start */
+            if( b8 )
+                me8_prefetch_refine( h, m, bmx, bmy, bw, bh );
             bcost <<= 4;
             int i = i_me_range;
             do
@@ -536,6 +571,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             }
             bcost >>= s_pack;
     #endif
+            /* the result is within 1 of here */
+            if( b8 )
+                me8_prefetch_refine( h, m, bmx, bmy, bw, bh );
             /* square refine */
             bcost <<= s_pack;
             COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
