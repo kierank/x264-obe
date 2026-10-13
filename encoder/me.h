@@ -46,14 +46,6 @@ typedef struct
     pixel *p_fenc[3];
     uint16_t *integral;
     int      i_stride[3];
-    /* analyse.i_me_8bit: msb8 of p_fref[0..3], the fullpel search on [0]; [0]
-     * NULL for a search on the 16-bit planes. p_fenc8: the fenc's msb8. */
-    uint8_t *p_fref8[4];
-    uint8_t *p_fenc8;
-    /* i_me_8bit 2: msb8 [0..3] and lsb8 [4..7] of p_fref[0..3] for reading the
-     * luma planes (x264_ref_mc_luma), weighted refs too; with [1], p_fref[1..3]
-     * are NULL. [1] NULL without. */
-    uint8_t *p_split8[8];
 
     ALIGNED_4( int16_t mvp[2] );
 
@@ -61,6 +53,18 @@ typedef struct
     int cost_mv;        /* lambda * nbits for the chosen mv */
     int cost;           /* satd + lambda * nbits */
     ALIGNED_4( int16_t mv[2] );
+
+    /* analyse.i_me_8bit, last so that the members above keep their offsets and
+     * cache lines: msb8 of p_fref[0..3], the fullpel search on [0]; [0] NULL for
+     * a search on the 16-bit planes; read only with h->me8 (LOAD_HPELS sets
+     * it only then).
+     * p_fenc8: the fenc's msb8. */
+    uint8_t *p_fref8[4];
+    uint8_t *p_fenc8;
+    /* i_me_8bit 2: msb8 [0..3] and lsb8 [4..7] of p_fref[0..3] for reading the
+     * luma planes (x264_ref_mc_luma), weighted refs too; with [1], p_fref[1..3]
+     * are NULL. [1] NULL without. */
+    uint8_t *p_split8[8];
 } ALIGNED_64( x264_me_t );
 
 typedef struct

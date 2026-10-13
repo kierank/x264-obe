@@ -602,14 +602,6 @@ struct x264_t
 #endif
             int i_fenc_pre;
 
-            /* analyse.i_me_8bit: msb8 of the luma fenc (FENC_STRIDE), written
-             * by its load (copy_16x16_msb8) in P/B slices */
-            ALIGNED_64( uint8_t fenc8[16*FENC_STRIDE] );
-            /* i_me_8bit 2: fenc_pre and i_fenc_pre bits 0-4 of fenc8, zeroed
-             * when fenc8 is written */
-            ALIGNED_64( int16_t fenc8_pre[512] );
-            int i_fenc8_pre;
-
             int i4x4_cbp;
             int i8x8_cbp;
 
@@ -626,13 +618,23 @@ struct x264_t
             /* [12]: yN, yH, yV, yHV, (NV12 ? uv : I444 ? (uN, uH, uV, uHV, vN, ...)) */
             pixel *p_fref[2][X264_REF_MAX*2][12];
             pixel *p_fref_w[X264_REF_MAX*2];  /* weighted fullpel luma */
-            /* msb8 [0..3] and lsb8 [4..7] of the luma p_fref, NULL without; with
-             * [1] (i_me_8bit 2) p_fref[1..3] are NULL, see x264_ref_mc_luma */
-            uint8_t *p_fref8[2][X264_REF_MAX*2][8];
             uint16_t *p_integral[2][X264_REF_MAX];
 
             /* fref stride */
             int     i_stride[3];
+
+            /* analyse.i_me_8bit, last so that the members above keep their
+             * offsets: msb8 of the luma fenc (FENC_STRIDE), written by its load
+             * (copy_16x16_msb8) in P/B slices */
+            ALIGNED_64( uint8_t fenc8[16*FENC_STRIDE] );
+            /* i_me_8bit 2: fenc_pre and i_fenc_pre bits 0-4 of fenc8, zeroed
+             * when fenc8 is written */
+            ALIGNED_64( int16_t fenc8_pre[512] );
+            int i_fenc8_pre;
+
+            /* msb8 [0..3] and lsb8 [4..7] of the luma p_fref, NULL without; with
+             * [1] (i_me_8bit 2) p_fref[1..3] are NULL, see x264_ref_mc_luma */
+            uint8_t *p_fref8[2][X264_REF_MAX*2][8];
         } pic;
 
         /* cache */

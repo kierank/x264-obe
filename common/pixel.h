@@ -149,18 +149,6 @@ typedef struct
     x264_pixel_cmp_avg2_pre_t mbcmp_avg2_pre[4];
     x264_pixel_satd_bi_t  mbcmp_bi[4];  /* satd_bi where mbcmp is satd, else NULL */
     x264_pixel_satd_bi4_t mbcmp_bi4[4];
-    /* x86_64 asm only, NULL otherwise (16x16 to 8x8) */
-    x264_pixel_cmp_pk_t sad_pk[4];
-    x264_pixel_cmp_pk_t satd_pk[4];
-    x264_pixel_cmp_avg2_pk_t sad_avg2_pk[4];
-    x264_pixel_cmp_avg2_pk_t satd_avg2_pk[4];
-    x264_pixel_satd_bi4_pk_t satd_bi4_pk[4];
-    /* the mbcmp and fpelcmp of those, NULL past 8x8 */
-    x264_pixel_cmp_pk_t mbcmp_pk[7];
-    x264_pixel_cmp_avg2_pk_t mbcmp_avg2_pk[7];
-    x264_pixel_cmp_pk_t fpelcmp_pk[7];
-    x264_pixel_cmp_avg2_pk_t fpelcmp_avg2_pk[7];
-    x264_pixel_satd_bi4_pk_t mbcmp_bi4_pk[4];
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
@@ -230,6 +218,21 @@ typedef struct
      * (8-bit) or the fenc at FENC_STRIDE (high bit depth). */
     int (*intra_satd_lowres) ( void *fenc, pixel *src, intptr_t i_stride );
     int (*intra_mbcmp_lowres)( void *fenc, pixel *src, intptr_t i_stride ); /* intra_satd_lowres where mbcmp is satd, else NULL */
+
+    /* analyse.i_me_8bit 2, last so that the members above keep their offsets.
+     * x86_64 asm only, NULL otherwise (16x16 to 8x8) */
+    x264_pixel_cmp_pk_t sad_pk[4];
+    x264_pixel_cmp_pk_t satd_pk[4];
+    x264_pixel_cmp_avg2_pk_t sad_avg2_pk[4];
+    x264_pixel_cmp_avg2_pk_t satd_avg2_pk[4];
+    x264_pixel_satd_bi4_pk_t satd_bi4_pk[4];
+    /* the mbcmp and fpelcmp of those, NULL past 8x8 */
+    x264_pixel_cmp_pk_t mbcmp_pk[7];
+    x264_pixel_cmp_avg2_pk_t mbcmp_avg2_pk[7];
+    x264_pixel_cmp_pk_t fpelcmp_pk[7];
+    x264_pixel_cmp_avg2_pk_t fpelcmp_avg2_pk[7];
+    x264_pixel_satd_bi4_pk_t mbcmp_bi4_pk[4];
+    void *pk_pad[4]; /* 56 pointers: what follows pixf in x264_t keeps its offsets mod 64 */
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)

@@ -111,13 +111,6 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
-    /* analyse.i_me_8bit 2, high bit depth: hpel_filter writing only the
-     * plane_split8 of its h, v and c output, no 16-bit planes; msb and lsb are
-     * those of h at src's first pixel (a multiple of 4 pixels from a 32 byte
-     * boundary), v's and c's plane8 and 2*plane8 bytes after them. Writes the
-     * split of the pixels hpel_filter would write. NULL if there is no asm. */
-    void (*hpel_filter8)( uint8_t *msb, uint8_t *lsb, intptr_t plane8, pixel *src,
-                          intptr_t i_stride, int i_width, int i_height, int16_t *buf );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );
@@ -139,6 +132,26 @@ typedef struct
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height );
     /* rc.b_lookahead_8bit: dst[i] = min( (src[i] + 2) >> 2, 255 ), high bit depth only */
     void (*lowres8_convert)( uint8_t *dst, pixel *src, intptr_t n );
+    weight_fn_t *weight;
+    weight_fn_t *offsetadd;
+    weight_fn_t *offsetsub;
+    void (*weight_cache)( x264_t *, x264_weight_t * );
+
+    void (*mbtree_propagate_cost)( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
+                                   uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
+
+    void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
+                                   int16_t *propagate_amount, uint16_t *lowres_costs,
+                                   int bipred_weight, int mb_y, int len, int list );
+
+    /* analyse.i_me_8bit, last so that the members above keep their offsets
+     * (16 pointers, 2 lines). i_me_8bit 2, high bit depth: hpel_filter writing only the
+     * plane_split8 of its h, v and c output, no 16-bit planes; msb and lsb are
+     * those of h at src's first pixel (a multiple of 4 pixels from a 32 byte
+     * boundary), v's and c's plane8 and 2*plane8 bytes after them. Writes the
+     * split of the pixels hpel_filter would write. NULL if there is no asm. */
+    void (*hpel_filter8)( uint8_t *msb, uint8_t *lsb, intptr_t plane8, pixel *src,
+                          intptr_t i_stride, int i_width, int i_height, int16_t *buf );
     /* analyse.i_me_8bit, high bit depth only: msb[x] = src[x] >> 2, and lsb[x>>2]
      * the src[x] & 3 of pixels x&~3 to x|3, pixel x in bits 2*(x&3). h rows of w
      * pixels (a multiple of 16), rows i_stride pixels (src), bytes (msb) and
@@ -158,17 +171,6 @@ typedef struct
     void (*copy_pk[6])( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int i_height );
     void (*avg2_pk[6])( pixel *dst, intptr_t i_dst, uint8_t *msb1, uint8_t *lsb1,
                         uint8_t *msb2, uint8_t *lsb2, intptr_t i_src, int i_height );
-    weight_fn_t *weight;
-    weight_fn_t *offsetadd;
-    weight_fn_t *offsetsub;
-    void (*weight_cache)( x264_t *, x264_weight_t * );
-
-    void (*mbtree_propagate_cost)( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
-                                   uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
-
-    void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
-                                   int16_t *propagate_amount, uint16_t *lowres_costs,
-                                   int bipred_weight, int mb_y, int len, int list );
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)
