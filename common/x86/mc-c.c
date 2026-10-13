@@ -33,8 +33,8 @@
 #include "mc.h"
 #define x264_frame_init_lowres_core_avx x264_template(frame_init_lowres_core_avx)
 #define x264_frame_init_lowres_core_avx2 x264_template(frame_init_lowres_core_avx2)
-#define x264_lowres8_convert_sse2 x264_template(lowres8_convert_sse2)
-#define x264_lowres8_convert_avx2 x264_template(lowres8_convert_avx2)
+#define x264_frame_init_lowres_core8_ssse3 x264_template(frame_init_lowres_core8_ssse3)
+#define x264_frame_init_lowres_core8_avx2 x264_template(frame_init_lowres_core8_avx2)
 #define x264_frame_init_lowres_core_cache32_mmx2 x264_template(frame_init_lowres_core_cache32_mmx2)
 #define x264_frame_init_lowres_core_mmx2 x264_template(frame_init_lowres_core_mmx2)
 #define x264_frame_init_lowres_core_sse2 x264_template(frame_init_lowres_core_sse2)
@@ -439,8 +439,10 @@ LOWRES(ssse3)
 LOWRES(avx)
 LOWRES(xop)
 LOWRES(avx2)
-void x264_lowres8_convert_sse2( uint8_t *dst, pixel *src, intptr_t n );
-void x264_lowres8_convert_avx2( uint8_t *dst, pixel *src, intptr_t n );
+void x264_frame_init_lowres_core8_ssse3( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+                                         intptr_t src_stride, intptr_t dst_stride, int width, int height );
+void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+                                        intptr_t src_stride, intptr_t dst_stride, int width, int height );
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
@@ -1026,7 +1028,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         return;
 
     pf->frame_init_lowres_core = x264_frame_init_lowres_core_sse2;
-    pf->lowres8_convert = x264_lowres8_convert_sse2;
 
     pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_sse2;
     pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_sse2;
@@ -1071,6 +1072,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         return;
 
     pf->frame_init_lowres_core = x264_frame_init_lowres_core_ssse3;
+#if ARCH_X86_64
+    pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_ssse3;
+#endif
     pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_ssse3;
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_ssse3;
 
@@ -1102,7 +1106,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->hpel_filter = x264_hpel_filter_avx2;
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
-        pf->lowres8_convert = x264_lowres8_convert_avx2;
+#if ARCH_X86_64
+        pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx2;
+#endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
         if( !(cpu&X264_CPU_STACK_MOD4) )

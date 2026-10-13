@@ -687,6 +687,30 @@ void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 )
                              PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
 }
 
+#if HIGH_BIT_DEPTH
+/* x264_frame_expand_border_lowres_rows on lowres8[] */
+void x264_frame_expand_border_lowres8_rows( x264_frame_t *frame, int y0, int y1 )
+{
+    int stride = frame->i_stride_lowres;
+    int width = frame->i_width_lowres;
+    for( int i = 0; i < 4; i++ )
+    {
+        uint8_t *pix = frame->lowres8[i];
+        for( int y = y0; y < y1; y++ )
+        {
+            memset( pix + y*stride - PADH, pix[y*stride], PADH );
+            memset( pix + y*stride + width, pix[y*stride + width-1], PADH );
+        }
+        if( !y0 )
+            for( int y = 0; y < PADV; y++ )
+                memcpy( pix - (y+1)*stride - PADH, pix - PADH, width + 2*PADH );
+        if( y1 == frame->i_lines_lowres )
+            for( int y = 0; y < PADV; y++ )
+                memcpy( pix + (y1+y)*stride - PADH, pix + (y1-1)*stride - PADH, width + 2*PADH );
+    }
+}
+#endif
+
 void x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane )
 {
     int v_shift = CHROMA_V_SHIFT;
