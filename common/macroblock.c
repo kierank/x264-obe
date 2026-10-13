@@ -652,12 +652,15 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
 
         if( !b_chroma )
         {
+            int b_split = 0;
             if( !i && h->me8 )
+            {
                 x264_macroblock_load_fref8( h->mb.pic.p_fref8[0][j], h->fref[0][j >> mb_interlaced],
                                             mb_interlaced, ref_pix_offset[j&1] );
+                b_split = h->mb.pic.p_fref8[0][j][1] != NULL;
+            }
             for( int k = 1; k < 4; k++ )
-                h->mb.pic.p_fref[0][j][i*4+k] = !i && h->mb.pic.p_fref8[0][j][1] ? NULL
-                                              : filtered_src[k] + ref_pix_offset[j&1];
+                h->mb.pic.p_fref[0][j][i*4+k] = b_split ? NULL : filtered_src[k] + ref_pix_offset[j&1];
             if( !i )
             {
                 if( h->sh.weight[j][0].weightfn )
@@ -682,13 +685,16 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             }
             h->mb.pic.p_fref[1][j][i*4] = plane_src + ref_pix_offset[j&1];
 
+            int b_split = 0;
             if( !i && h->me8 )
+            {
                 x264_macroblock_load_fref8( h->mb.pic.p_fref8[1][j], h->fref[1][j >> mb_interlaced],
                                             mb_interlaced, ref_pix_offset[j&1] );
+                b_split = h->mb.pic.p_fref8[1][j][1] != NULL;
+            }
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )
-                    h->mb.pic.p_fref[1][j][i*4+k] = !i && h->mb.pic.p_fref8[1][j][1] ? NULL
-                                                  : filtered_src[k] + ref_pix_offset[j&1];
+                    h->mb.pic.p_fref[1][j][i*4+k] = b_split ? NULL : filtered_src[k] + ref_pix_offset[j&1];
         }
 }
 

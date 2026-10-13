@@ -1206,12 +1206,22 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     (m)->p_fenc8 = &h->mb.pic.fenc8[(xoff)+(yoff)*FENC_STRIDE]; \
 }
 
-/* analyse.i_me_8bit: msb8 of p_fref[0..3] at the partition for the search, NULL
- * without; at level 2 also p_split8, msb8 and lsb8 of all four (see me.h) */
-#define LOAD_HPELS8(m, list, ref, xoff, yoff) \
+/* p_fref[1..3], and with analyse.i_me_8bit (h->me8) the msb8 of p_fref[0..3] at
+ * the partition for the search, at level 2 also p_split8, msb8 and lsb8 of all
+ * four (see me.h). Without h->me8 p_fref8 is not set: only the me8 searches
+ * read it. */
+#define LOAD_HPELS8(m, src, list, ref, xoff, yoff) \
     (m)->p_split8[1] = NULL; \
-    if( h->me8 ) \
+    if( !h->me8 ) \
     { \
+        (m)->p_fref[1] = &(src)[1][(xoff)+(yoff)*(m)->i_stride[0]]; \
+        (m)->p_fref[2] = &(src)[2][(xoff)+(yoff)*(m)->i_stride[0]]; \
+        (m)->p_fref[3] = &(src)[3][(xoff)+(yoff)*(m)->i_stride[0]]; \
+    } \
+    else \
+    { \
+        for( int kh = 1; kh < 4; kh++ ) /* NULL where i_me_8bit 2 reads p_split8 */ \
+            (m)->p_fref[kh] = (src)[kh] ? &(src)[kh][(xoff)+(yoff)*(m)->i_stride[0]] : NULL; \
         uint8_t **f8 = h->mb.pic.p_fref8[list][ref]; \
         intptr_t o8 = (xoff)+(yoff)*(m)->i_stride[0]; \
         for( int k8 = 0; k8 < 4; k8++ ) \
@@ -1222,15 +1232,12 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                 (m)->p_split8[k8] = f8[k8] + o8; \
                 (m)->p_split8[4+k8] = f8[4+k8] + (o8 >> 2); \
             } \
-    } \
-    else \
-        (m)->p_fref8[0] = (m)->p_fref8[1] = NULL;
+    }
 
 #define LOAD_HPELS(m, src, list, ref, xoff, yoff) \
 { \
     (m)->p_fref_w = (m)->p_fref[0] = &(src)[0][(xoff)+(yoff)*(m)->i_stride[0]]; \
-    for( int kh = 1; kh < 4; kh++ ) /* NULL where i_me_8bit 2 reads p_split8 */ \
-        (m)->p_fref[kh] = (src)[kh] ? &(src)[kh][(xoff)+(yoff)*(m)->i_stride[0]] : NULL; \
+    LOAD_HPELS8( m, src, list, ref, xoff, yoff ) \
     if( CHROMA444 ) \
     { \
         (m)->p_fref[ 4] = &(src)[ 4][(xoff)+(yoff)*(m)->i_stride[1]]; \
@@ -1247,7 +1254,6 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     (m)->integral = &h->mb.pic.p_integral[list][ref][(xoff)+(yoff)*(m)->i_stride[0]]; \
     (m)->weight = x264_weight_none; \
     (m)->i_ref = ref; \
-    LOAD_HPELS8( m, list, ref, xoff, yoff ) \
 }
 
 /* weighted refs search on the 16-bit planes */
@@ -1939,19 +1945,15 @@ static void x264_analyse_bi_pair( x264_t *h, pixel *dst[2], pixel *buf, x264_me_
             memcpy( dst[k] + y*X264_SPLIT8_STRIDE, src[k] + y*m->i_stride[0], bw * sizeof(pixel) );
     }
 }
-#endif
 
-/* mbcmp_bi4 of the bipred average of m0's and m1's unweighted predictions,
- * the partition's BI cost without get_ref and avg */
-static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fenc, int i_pixel,
-                                               x264_me_t *m0, x264_me_t *m1 )
+/* x264_analyse_bi_satd of a pair with a split ref: all four sources read in
+ * place (mbcmp_bi4_pk), fullpel from msb8/lsb8[0] too, for the one stride;
+ * else unpacked. An encode's refs are all split or none, but a mixed pair must
+ * not reach either path. */
+static NOINLINE int x264_analyse_bi_satd_split8( x264_t *h, x264_bi_fenc_t *bi_fenc, int i_pixel,
+                                                 x264_me_t *m0, x264_me_t *m1 )
 {
-    pixel *src0[2], *src1[2];
     intptr_t stride = m0->i_stride[0];
-#if HIGH_BIT_DEPTH
-    /* split refs: all four sources read in place (mbcmp_bi4_pk), fullpel from
-     * msb8/lsb8[0] too, for the one stride; else unpacked. An encode's refs are
-     * all split or none, but a mixed pair must not reach either path. */
     if( m0->p_split8[1] && m1->p_split8[1] && h->pixf.mbcmp_bi4_pk[i_pixel] )
     {
         uint8_t *pk[8];
@@ -1960,21 +1962,29 @@ static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fen
         return h->pixf.mbcmp_bi4_pk[i_pixel]( bi_fenc, pk, stride, h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
     }
     ALIGNED_ARRAY_64( pixel, buf,[4*X264_SPLIT8_STRIDE*16] );
-    if( m0->p_split8[1] || m1->p_split8[1] )
-    {
-        int bw = x264_pixel_size[i_pixel].w;
-        int bh = x264_pixel_size[i_pixel].h;
-        x264_analyse_bi_pair( h, src0, buf, m0, bw, bh );
-        x264_analyse_bi_pair( h, src1, buf + 2*X264_SPLIT8_STRIDE*bh, m1, bw, bh );
-        stride = X264_SPLIT8_STRIDE;
-    }
-    else
+    pixel *src0[2], *src1[2];
+    int bw = x264_pixel_size[i_pixel].w;
+    int bh = x264_pixel_size[i_pixel].h;
+    x264_analyse_bi_pair( h, src0, buf, m0, bw, bh );
+    x264_analyse_bi_pair( h, src1, buf + 2*X264_SPLIT8_STRIDE*bh, m1, bw, bh );
+    return h->pixf.mbcmp_bi4[i_pixel]( bi_fenc, src0[0], src0[1], src1[0], src1[1], X264_SPLIT8_STRIDE,
+                                       h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
+}
 #endif
-    {
-        x264_mc_hpel_pair( src0, m0->p_fref, stride, m0->mv[0], m0->mv[1] );
-        x264_mc_hpel_pair( src1, m1->p_fref, stride, m1->mv[0], m1->mv[1] );
-    }
-    return h->pixf.mbcmp_bi4[i_pixel]( bi_fenc, src0[0], src0[1], src1[0], src1[1], stride,
+
+/* mbcmp_bi4 of the bipred average of m0's and m1's unweighted predictions,
+ * the partition's BI cost without get_ref and avg */
+static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fenc, int i_pixel,
+                                               x264_me_t *m0, x264_me_t *m1 )
+{
+    pixel *src0[2], *src1[2];
+#if HIGH_BIT_DEPTH
+    if( m0->p_split8[1] || m1->p_split8[1] )
+        return x264_analyse_bi_satd_split8( h, bi_fenc, i_pixel, m0, m1 );
+#endif
+    x264_mc_hpel_pair( src0, m0->p_fref, m0->i_stride[0], m0->mv[0], m0->mv[1] );
+    x264_mc_hpel_pair( src1, m1->p_fref, m1->i_stride[0], m1->mv[0], m1->mv[1] );
+    return h->pixf.mbcmp_bi4[i_pixel]( bi_fenc, src0[0], src0[1], src1[0], src1[1], m0->i_stride[0],
                                        h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
 }
 
@@ -3145,7 +3155,7 @@ intra_analysis:
     {
         int b_skip = 0;
 
-        h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->mb.pic.p_fref8[0][0][1] ? 0 : h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 0 );
+        h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->me8 && h->mb.pic.p_fref8[0][0][1] ? 0 : h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 0 );
 #if HIGH_BIT_DEPTH
         if( h->me8 )
             x264_mb_prefetch_ref8( h );
@@ -3209,7 +3219,7 @@ intra_analysis:
             }
         }
 
-        h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->mb.pic.p_fref8[0][0][1] ? 0 : h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 1 );
+        h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->me8 && h->mb.pic.p_fref8[0][0][1] ? 0 : h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 1 );
 
         if( b_skip )
         {
