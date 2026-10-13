@@ -3089,7 +3089,20 @@ intra_analysis:
             x264_mb_init_fenc_cache( h, analysis.i_mbrd >= 2 );
         x264_mb_analyse_intra( h, &analysis, COST_MAX );
         if( analysis.i_mbrd )
-            x264_intra_rd( h, &analysis, COST_MAX );
+        {
+            int i_rd_thresh = COST_MAX;
+            if( h->exp_flash.i_ird && h->sh.i_type == SLICE_TYPE_I )
+            {
+                /* IRD: RD only the types within n/8 of the best satd */
+                int i_best = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
+                i_rd_thresh = X264_MIN( (int)(((int64_t)i_best * h->exp_flash.i_ird) >> 3) + 1, COST_MAX );
+                h->exp_flash.census[EXPF_IRD_MBS]++;
+                h->exp_flash.census[EXPF_IRD_SKIPPED] += (analysis.i_satd_i16x16 < COST_MAX && analysis.i_satd_i16x16 >= i_rd_thresh)
+                                                       + (analysis.i_satd_i8x8   < COST_MAX && analysis.i_satd_i8x8   >= i_rd_thresh)
+                                                       + (analysis.i_satd_i4x4   < COST_MAX && analysis.i_satd_i4x4   >= i_rd_thresh);
+            }
+            x264_intra_rd( h, &analysis, i_rd_thresh );
+        }
 
         i_cost = analysis.i_satd_i16x16;
         h->mb.i_type = I_16x16;
