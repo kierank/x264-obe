@@ -541,6 +541,8 @@ struct x264_t
 
          /* buffer for weighted versions of the reference frames */
         pixel *p_weight_buf[X264_REF_MAX];
+        /* x264_weights_analyse chroma block sums, see x264_weight_chroma_t */
+        int32_t *p_weight_sums;
 
         /* current value */
         int     i_type;
