@@ -35,7 +35,7 @@
                    mvx, mvy, 4*width, 4*height, \
                    list ? x264_weight_none : &h->sh.weight[i_ref][p] );
 
-static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
+static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height, int b_chroma )
 {
     int i8    = x264_scan8[0]+x+8*y;
     int i_ref = h->mb.cache.ref[0][i8];
@@ -43,6 +43,9 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     int mvy   = x264_clip3( h->mb.cache.mv[0][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
 
     MC_LUMA( 0, 0 );
+
+    if( !b_chroma )
+        return;
 
     if( CHROMA444 )
     {
@@ -75,7 +78,7 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
                                                        &h->sh.weight[i_ref][2], height );
     }
 }
-static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int height )
+static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int height, int b_chroma )
 {
     int i8    = x264_scan8[0]+x+8*y;
     int i_ref = h->mb.cache.ref[1][i8];
@@ -83,6 +86,9 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     int mvy   = x264_clip3( h->mb.cache.mv[1][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
 
     MC_LUMA( 1, 0 );
+
+    if( !b_chroma )
+        return;
 
     if( CHROMA444 )
     {
@@ -113,7 +119,7 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     h->mc.avg[i_mode]( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
                        src0, i_stride0, src1, i_stride1, weight );
 
-static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int height )
+static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int height, int b_chroma )
 {
     int i8 = x264_scan8[0]+x+8*y;
     int i_ref0 = h->mb.cache.ref[0][i8];
@@ -130,6 +136,9 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
     pixel *src0, *src1;
 
     MC_LUMA_BI( 0 );
+
+    if( !b_chroma )
+        return;
 
     if( CHROMA444 )
     {
@@ -164,7 +173,7 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
 #undef MC_LUMA
 #undef MC_LUMA_BI
 
-void x264_mb_mc_8x8( x264_t *h, int i8 )
+static ALWAYS_INLINE void x264_mb_mc_8x8_internal( x264_t *h, int i8, int c )
 {
     int x = 2*(i8&1);
     int y = 2*(i8>>1);
@@ -174,21 +183,21 @@ void x264_mb_mc_8x8( x264_t *h, int i8 )
         switch( h->mb.i_sub_partition[i8] )
         {
             case D_L0_8x8:
-                x264_mb_mc_0xywh( h, x, y, 2, 2 );
+                x264_mb_mc_0xywh( h, x, y, 2, 2, c );
                 break;
             case D_L0_8x4:
-                x264_mb_mc_0xywh( h, x, y+0, 2, 1 );
-                x264_mb_mc_0xywh( h, x, y+1, 2, 1 );
+                x264_mb_mc_0xywh( h, x, y+0, 2, 1, c );
+                x264_mb_mc_0xywh( h, x, y+1, 2, 1, c );
                 break;
             case D_L0_4x8:
-                x264_mb_mc_0xywh( h, x+0, y, 1, 2 );
-                x264_mb_mc_0xywh( h, x+1, y, 1, 2 );
+                x264_mb_mc_0xywh( h, x+0, y, 1, 2, c );
+                x264_mb_mc_0xywh( h, x+1, y, 1, 2, c );
                 break;
             case D_L0_4x4:
-                x264_mb_mc_0xywh( h, x+0, y+0, 1, 1 );
-                x264_mb_mc_0xywh( h, x+1, y+0, 1, 1 );
-                x264_mb_mc_0xywh( h, x+0, y+1, 1, 1 );
-                x264_mb_mc_0xywh( h, x+1, y+1, 1, 1 );
+                x264_mb_mc_0xywh( h, x+0, y+0, 1, 1, c );
+                x264_mb_mc_0xywh( h, x+1, y+0, 1, 1, c );
+                x264_mb_mc_0xywh( h, x+0, y+1, 1, 1, c );
+                x264_mb_mc_0xywh( h, x+1, y+1, 1, 1, c );
                 break;
         }
     }
@@ -198,20 +207,25 @@ void x264_mb_mc_8x8( x264_t *h, int i8 )
 
         if( h->mb.cache.ref[0][scan8] >= 0 )
             if( h->mb.cache.ref[1][scan8] >= 0 )
-                x264_mb_mc_01xywh( h, x, y, 2, 2 );
+                x264_mb_mc_01xywh( h, x, y, 2, 2, c );
             else
-                x264_mb_mc_0xywh( h, x, y, 2, 2 );
+                x264_mb_mc_0xywh( h, x, y, 2, 2, c );
         else
-            x264_mb_mc_1xywh( h, x, y, 2, 2 );
+            x264_mb_mc_1xywh( h, x, y, 2, 2, c );
     }
 }
 
-void x264_mb_mc( x264_t *h )
+void x264_mb_mc_8x8( x264_t *h, int i8 )
+{
+    x264_mb_mc_8x8_internal( h, i8, 1 );
+}
+
+static ALWAYS_INLINE void x264_mb_mc_internal( x264_t *h, int c )
 {
     if( h->mb.i_partition == D_8x8 )
     {
         for( int i = 0; i < 4; i++ )
-            x264_mb_mc_8x8( h, i );
+            x264_mb_mc_8x8_internal( h, i, c );
     }
     else
     {
@@ -223,35 +237,46 @@ void x264_mb_mc( x264_t *h )
         if( h->mb.i_partition == D_16x16 )
         {
             if( ref0a >= 0 )
-                if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 4, 4 );
-                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 4 );
-            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 4 );
+                if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 4, 4, c );
+                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 4, c );
+            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 4, c );
         }
         else if( h->mb.i_partition == D_16x8 )
         {
             if( ref0a >= 0 )
-                if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 4, 2 );
-                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 2 );
-            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 2 );
+                if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 4, 2, c );
+                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 2, c );
+            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 2, c );
 
             if( ref0b >= 0 )
-                if( ref1b >= 0 ) x264_mb_mc_01xywh( h, 0, 2, 4, 2 );
-                else             x264_mb_mc_0xywh ( h, 0, 2, 4, 2 );
-            else                 x264_mb_mc_1xywh ( h, 0, 2, 4, 2 );
+                if( ref1b >= 0 ) x264_mb_mc_01xywh( h, 0, 2, 4, 2, c );
+                else             x264_mb_mc_0xywh ( h, 0, 2, 4, 2, c );
+            else                 x264_mb_mc_1xywh ( h, 0, 2, 4, 2, c );
         }
         else if( h->mb.i_partition == D_8x16 )
         {
             if( ref0a >= 0 )
-                if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 2, 4 );
-                else             x264_mb_mc_0xywh ( h, 0, 0, 2, 4 );
-            else                 x264_mb_mc_1xywh ( h, 0, 0, 2, 4 );
+                if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 2, 4, c );
+                else             x264_mb_mc_0xywh ( h, 0, 0, 2, 4, c );
+            else                 x264_mb_mc_1xywh ( h, 0, 0, 2, 4, c );
 
             if( ref0b >= 0 )
-                if( ref1b >= 0 ) x264_mb_mc_01xywh( h, 2, 0, 2, 4 );
-                else             x264_mb_mc_0xywh ( h, 2, 0, 2, 4 );
-            else                 x264_mb_mc_1xywh ( h, 2, 0, 2, 4 );
+                if( ref1b >= 0 ) x264_mb_mc_01xywh( h, 2, 0, 2, 4, c );
+                else             x264_mb_mc_0xywh ( h, 2, 0, 2, 4, c );
+            else                 x264_mb_mc_1xywh ( h, 2, 0, 2, 4, c );
         }
     }
+}
+
+void x264_mb_mc( x264_t *h )
+{
+    x264_mb_mc_internal( h, 1 );
+}
+
+/* RD: the caller supplies the chroma */
+void x264_mb_mc_luma( x264_t *h )
+{
+    x264_mb_mc_internal( h, 0 );
 }
 
 int x264_macroblock_cache_allocate( x264_t *h )

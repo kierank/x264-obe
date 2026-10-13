@@ -267,6 +267,32 @@ typedef struct
     int i_ssim_cnt;
 } x264_frame_stat_t;
 
+/* 4:2:0/4:2:2 chroma state left by an x264_rd_cost_mb, see rdo.c */
+typedef struct
+{
+    ALIGNED_64( dctcoef ac[2][2][4][16] ); /* [ch][8x8 of 4:2:2][4x4] */
+    ALIGNED_64( pixel fdec[2][16*8] );
+    ALIGNED_16( dctcoef dc[2][8] );
+    /* key */
+    ALIGNED_16( int16_t mv[2][16][2] );
+    ALIGNED_4( int8_t ref[2][16] );
+    uint32_t sub_partition;
+    int b_valid;
+    int i_type;
+    int i_partition;
+    int i_qp;
+    int i_chroma_qp;
+    int i_chroma_pred_mode;
+    int b_trellis;
+    /* result */
+    uint16_t nnz[2][4];
+    uint8_t nnz_dc[2];
+    int i_cbp_chroma;
+    int i_ssd; /* before i_chroma_lambda2_offset */
+    int i_f8;  /* chroma residual */
+    int i_cost;
+} x264_rd_chroma_t;
+
 struct x264_t
 {
     /* encoder parameters */
@@ -700,6 +726,10 @@ struct x264_t
          * Cleared in cache_load. */
         ALIGNED_4( int16_t mvp16[2][X264_REF_MAX*2][2] );
         uint32_t mvp16_valid[2];
+
+        /* RD chroma of the last intra [0] and the cheapest inter [1] x264_rd_cost_mb
+         * of the current MB. Cleared in x264_mb_analyse_init. */
+        x264_rd_chroma_t rdc[2];
     } mb;
 
     /* rate control encoding only */

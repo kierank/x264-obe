@@ -926,7 +926,31 @@ do\
 #define x264_cabac_block_residual_422_dc_cbf( h, cb, ch, b_intra )\
     x264_cabac_block_residual_cbf_internal( h, cb, DCT_CHROMA_DC, CHROMA_DC+(ch), h->dct.chroma_dc[ch], b_intra, 1, _422_dc )
 
-static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_cabac_t *cb, int plane_count, int chroma )
+/* 4:2:0/4:2:2 chroma residual, i_cbp_chroma != 0 */
+static ALWAYS_INLINE void x264_cabac_chroma_residual( x264_t *h, x264_cabac_t *cb, int b_intra )
+{
+    if( CHROMA_FORMAT == CHROMA_422 )
+    {
+        x264_cabac_block_residual_422_dc_cbf( h, cb, 0, b_intra );
+        x264_cabac_block_residual_422_dc_cbf( h, cb, 1, b_intra );
+    }
+    else
+    {
+        x264_cabac_block_residual_dc_cbf( h, cb, DCT_CHROMA_DC, CHROMA_DC+0, h->dct.chroma_dc[0], b_intra );
+        x264_cabac_block_residual_dc_cbf( h, cb, DCT_CHROMA_DC, CHROMA_DC+1, h->dct.chroma_dc[1], b_intra );
+    }
+
+    if( h->mb.i_cbp_chroma == 2 ) /* Chroma AC residual present */
+    {
+        int step = 8 << CHROMA_V_SHIFT;
+        for( int i = 16; i < 3*16; i += step )
+            for( int j = i; j < i+4; j++ )
+                x264_cabac_block_residual_cbf( h, cb, DCT_CHROMA_AC, j, h->dct.luma4x4[j]+1, b_intra );
+    }
+}
+
+/* chroma_res = 0 (RD only): leave out the chroma residual */
+static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_cabac_t *cb, int plane_count, int chroma, int chroma_res )
 {
     const int i_mb_type = h->mb.i_type;
 
@@ -1069,27 +1093,8 @@ if( (h->mb.i_neighbour & MB_TOP) && !h->mb.mb_transform_size[h->mb.i_mb_top_xy] 
                         x264_cabac_block_residual_cbf( h, cb, ctx_cat_plane[DCT_LUMA_4x4][p], i+i8x8*4+p*16, h->dct.luma4x4[i+i8x8*4+p*16], b_intra );
         }
 
-        if( chroma && h->mb.i_cbp_chroma ) /* Chroma DC residual present */
-        {
-            if( CHROMA_FORMAT == CHROMA_422 )
-            {
-                x264_cabac_block_residual_422_dc_cbf( h, cb, 0, b_intra );
-                x264_cabac_block_residual_422_dc_cbf( h, cb, 1, b_intra );
-            }
-            else
-            {
-                x264_cabac_block_residual_dc_cbf( h, cb, DCT_CHROMA_DC, CHROMA_DC+0, h->dct.chroma_dc[0], b_intra );
-                x264_cabac_block_residual_dc_cbf( h, cb, DCT_CHROMA_DC, CHROMA_DC+1, h->dct.chroma_dc[1], b_intra );
-            }
-
-            if( h->mb.i_cbp_chroma == 2 ) /* Chroma AC residual present */
-            {
-                int step = 8 << CHROMA_V_SHIFT;
-                for( int i = 16; i < 3*16; i += step )
-                    for( int j = i; j < i+4; j++ )
-                        x264_cabac_block_residual_cbf( h, cb, DCT_CHROMA_AC, j, h->dct.luma4x4[j]+1, b_intra );
-            }
-        }
+        if( chroma_res && chroma && h->mb.i_cbp_chroma ) /* Chroma DC residual present */
+            x264_cabac_chroma_residual( h, cb, b_intra );
     }
 
 #if !RDO_SKIP_BS
@@ -1100,12 +1105,28 @@ if( (h->mb.i_neighbour & MB_TOP) && !h->mb.mb_transform_size[h->mb.i_mb_top_xy] 
 void x264_macroblock_write_cabac( x264_t *h, x264_cabac_t *cb )
 {
     if( CHROMA444 )
-        x264_macroblock_write_cabac_internal( h, cb, 3, 0 );
+        x264_macroblock_write_cabac_internal( h, cb, 3, 0, 1 );
     else
-        x264_macroblock_write_cabac_internal( h, cb, 1, 1 );
+        x264_macroblock_write_cabac_internal( h, cb, 1, 1, 1 );
 }
 
 #if RDO_SKIP_BS
+/*****************************************************************************
+ * RD only, 4:2:0/4:2:2: x264_macroblock_size_cabac in two parts, all but the
+ * chroma residual, then the chroma residual. It is coded last and with its
+ * own contexts only, so the two sum to the whole.
+ *****************************************************************************/
+static void x264_macroblock_size_cabac_luma( x264_t *h, x264_cabac_t *cb )
+{
+    x264_macroblock_write_cabac_internal( h, cb, 1, 1, 0 );
+}
+
+static void x264_chroma_residual_size_cabac( x264_t *h, x264_cabac_t *cb )
+{
+    if( h->mb.i_cbp_chroma )
+        x264_cabac_chroma_residual( h, cb, IS_INTRA( h->mb.i_type ) );
+}
+
 /*****************************************************************************
  * RD only; doesn't generate a valid bitstream
  * doesn't write cbp or chroma dc (I don't know how much this matters)

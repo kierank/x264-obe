@@ -293,6 +293,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     x264_mb_analyse_init_qp( h, a, qp );
 
     h->mb.b_transform_8x8 = 0;
+    h->mb.rdc[0].b_valid = h->mb.rdc[1].b_valid = 0;
 
     /* I: Intra part */
     a->i_satd_i16x16 =
@@ -3047,6 +3048,8 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->sh.i_type == SLICE_TYPE_I )
     {
 intra_analysis:
+        /* intra masking rewrote fenc */
+        h->mb.rdc[0].b_valid = h->mb.rdc[1].b_valid = 0;
         if( analysis.i_mbrd )
             x264_mb_init_fenc_cache( h, analysis.i_mbrd >= 2 );
         x264_mb_analyse_intra( h, &analysis, COST_MAX );

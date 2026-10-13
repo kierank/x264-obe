@@ -149,12 +149,119 @@ static inline int ssd_plane( x264_t *h, int size, int p, int x, int y )
     return h->pixf.ssd[size](fenc, FENC_STRIDE, fdec, FDEC_STRIDE) + satd;
 }
 
-static inline int ssd_mb( x264_t *h )
+static inline int ssd_chroma( x264_t *h )
 {
     int chroma_size = h->luma2chroma_pixel[PIXEL_16x16];
-    int chroma_ssd = ssd_plane(h, chroma_size, 1, 0, 0) + ssd_plane(h, chroma_size, 2, 0, 0);
+    return ssd_plane(h, chroma_size, 1, 0, 0) + ssd_plane(h, chroma_size, 2, 0, 0);
+}
+
+static inline int ssd_mb_with_chroma( x264_t *h, int chroma_ssd )
+{
     chroma_ssd = ((uint64_t)chroma_ssd * h->mb.i_chroma_lambda2_offset + 128) >> 8;
     return ssd_plane(h, PIXEL_16x16, 0, 0, 0) + chroma_ssd;
+}
+
+static inline int ssd_mb( x264_t *h )
+{
+    return ssd_mb_with_chroma( h, ssd_chroma( h ) );
+}
+
+/* RD chroma reuse.
+ * A 4:2:0/4:2:2 MB's chroma prediction, coefs, nnz, cbp, recon and SSD are a
+ * function of the chroma prediction inputs (MC partition, refs and MVs, or
+ * the intra chroma mode), QP, chroma QP and trellis, never of the transform
+ * size or the intra luma type; its CABAC residual codes only the chroma
+ * contexts, which start from h->cabac and see only chroma and neighbour nnz.
+ * So evaluations that differ only in luma (transform_rd, the intra_rd and
+ * i16x16 refine candidates) restore the chroma state of an earlier one and
+ * encode, MC and size luma only. Off where chroma sees luma (deblock RDO,
+ * 4:4:4), has side effects (NR), or whose prediction comes from fdec (b_skip_mc). */
+static ALWAYS_INLINE int rdc_allowed( x264_t *h )
+{
+    return (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) && h->param.b_cabac &&
+           !h->mb.b_deblock_rdo && !h->mb.b_noise_reduction && !h->param.analyse.i_noise_reduction &&
+           !h->mb.b_lossless && !IS_SKIP( h->mb.i_type ) && h->mb.i_type != I_PCM &&
+           (IS_INTRA( h->mb.i_type ) || !h->mb.b_skip_mc);
+}
+
+static int rdc_match( x264_t *h, x264_rd_chroma_t *c )
+{
+    if( !c->b_valid || c->i_qp != h->mb.i_qp || c->i_chroma_qp != h->mb.i_chroma_qp || c->b_trellis != h->mb.b_trellis )
+        return 0;
+    if( IS_INTRA( h->mb.i_type ) )
+        return c->i_chroma_pred_mode == h->mb.i_chroma_pred_mode;
+    if( c->i_type != h->mb.i_type || c->i_partition != h->mb.i_partition ||
+        (h->mb.i_partition == D_8x8 && c->sub_partition != M32( h->mb.i_sub_partition )) )
+        return 0;
+    uint64_t diff = 0;
+    for( int l = 0; l < 2; l++ )
+        for( int y = 0; y < 4; y++ )
+        {
+            int s8 = x264_scan8[0] + 8*y;
+            diff |= M64( c->mv[l][4*y+0] ) ^ M64( h->mb.cache.mv[l][s8+0] );
+            diff |= M64( c->mv[l][4*y+2] ) ^ M64( h->mb.cache.mv[l][s8+2] );
+            diff |= M32( &c->ref[l][4*y] ) ^ M32( &h->mb.cache.ref[l][s8] );
+        }
+    return !diff;
+}
+
+/* Readers of chroma coefs check i_cbp_chroma and nnz first, so only coded ones are kept. */
+#define RDC_COPY( dir )\
+{\
+    int chroma422 = CHROMA_FORMAT == CHROMA_422;\
+    uint8_t *nnz = h->mb.cache.non_zero_count;\
+    for( int ch = 0; ch < 2; ch++ )\
+    {\
+        for( int i = 0; i < 2+2*chroma422; i++ )\
+            RDC_##dir( c->nnz[ch][i], M16( &nnz[x264_scan8[16+16*ch+8*(i>>1)+2*(i&1)]] ) );\
+        RDC_##dir( c->nnz_dc[ch], nnz[x264_scan8[CHROMA_DC+ch]] );\
+        for( int y = 0; y < 16>>CHROMA_V_SHIFT; y++ )\
+            RDC_##dir##_MEM( &c->fdec[ch][8*y], &h->mb.pic.p_fdec[1+ch][y*FDEC_STRIDE], 8*sizeof(pixel) );\
+        if( c->i_cbp_chroma == 2 )\
+            for( int i = 0; i <= chroma422; i++ )\
+                RDC_##dir##_AC( c->ac[ch][i], h->dct.luma4x4[16+16*ch+8*i], sizeof(c->ac[ch][i]) );\
+    }\
+    if( c->i_cbp_chroma )\
+        RDC_##dir##_MEM( c->dc, h->dct.chroma_dc, sizeof(c->dc) );\
+}
+#define RDC_STORE( m, s ) m = s
+#define RDC_STORE_MEM( m, s, n ) memcpy( m, s, n )
+#define RDC_STORE_AC( m, s, n ) h->mc.memcpy_aligned( m, s, n )
+#define RDC_LOAD( m, s ) s = m
+#define RDC_LOAD_MEM( m, s, n ) memcpy( s, m, n )
+#define RDC_LOAD_AC( m, s, n ) h->mc.memcpy_aligned( s, m, n )
+
+/* Called with the MB as it was entered (type, transform restored) */
+static void rdc_store( x264_t *h, x264_rd_chroma_t *c, int i_ssd, int i_f8, int i_cost )
+{
+    c->b_valid = 1;
+    c->i_type = h->mb.i_type;
+    c->i_partition = h->mb.i_partition;
+    c->sub_partition = h->mb.i_partition == D_8x8 ? M32( h->mb.i_sub_partition ) : 0;
+    c->i_qp = h->mb.i_qp;
+    c->i_chroma_qp = h->mb.i_chroma_qp;
+    c->i_chroma_pred_mode = h->mb.i_chroma_pred_mode;
+    c->b_trellis = h->mb.b_trellis;
+    if( !IS_INTRA( h->mb.i_type ) )
+        for( int l = 0; l < 2; l++ )
+            for( int y = 0; y < 4; y++ )
+            {
+                int s8 = x264_scan8[0] + 8*y;
+                M64( c->mv[l][4*y+0] ) = M64( h->mb.cache.mv[l][s8+0] );
+                M64( c->mv[l][4*y+2] ) = M64( h->mb.cache.mv[l][s8+2] );
+                M32( &c->ref[l][4*y] ) = M32( &h->mb.cache.ref[l][s8] );
+            }
+    c->i_cbp_chroma = h->mb.i_cbp_chroma;
+    c->i_ssd = i_ssd;
+    c->i_f8 = i_f8;
+    c->i_cost = i_cost;
+    RDC_COPY( STORE )
+}
+
+static void rdc_load( x264_t *h, x264_rd_chroma_t *c )
+{
+    h->mb.i_cbp_chroma = c->i_cbp_chroma;
+    RDC_COPY( LOAD )
 }
 
 static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
@@ -163,13 +270,35 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     int i_ssd;
     int i_bits;
     int type_bak = h->mb.i_type;
+    x264_rd_chroma_t *rdc = NULL;
+    int b_reuse = 0;
+    int chroma_ssd = 0;
+    int chroma_f8 = 0;
 
-    x264_macroblock_encode( h );
+    if( rdc_allowed( h ) )
+    {
+        rdc = &h->mb.rdc[!IS_INTRA( type_bak )];
+        b_reuse = rdc_match( h, rdc );
+    }
+
+    if( b_reuse )
+    {
+        rdc_load( h, rdc );
+        x264_macroblock_encode_luma( h );
+    }
+    else
+        x264_macroblock_encode( h );
 
     if( h->mb.b_deblock_rdo )
         x264_macroblock_deblock( h );
 
-    i_ssd = ssd_mb( h );
+    if( rdc )
+    {
+        chroma_ssd = b_reuse ? rdc->i_ssd : ssd_chroma( h );
+        i_ssd = ssd_mb_with_chroma( h, chroma_ssd );
+    }
+    else
+        i_ssd = ssd_mb( h );
 
     if( IS_SKIP( h->mb.i_type ) )
     {
@@ -179,7 +308,20 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     {
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
-        x264_macroblock_size_cabac( h, &cabac_tmp );
+        if( rdc )
+        {
+            x264_macroblock_size_cabac_luma( h, &cabac_tmp );
+            if( b_reuse )
+                cabac_tmp.f8_bits_encoded += rdc->i_f8;
+            else
+            {
+                chroma_f8 = cabac_tmp.f8_bits_encoded;
+                x264_chroma_residual_size_cabac( h, &cabac_tmp );
+                chroma_f8 = cabac_tmp.f8_bits_encoded - chroma_f8;
+            }
+        }
+        else
+            x264_macroblock_size_cabac( h, &cabac_tmp );
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 32768 ) >> 16;
     }
     else
@@ -191,7 +333,12 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     h->mb.b_transform_8x8 = b_transform_bak;
     h->mb.i_type = type_bak;
 
-    return X264_MIN( i_ssd + i_bits, COST_MAX );
+    int i_cost = X264_MIN( i_ssd + i_bits, COST_MAX );
+    /* A skip conversion means i_cbp_chroma == 0, so chroma_f8 == 0 is right. */
+    if( rdc && !b_reuse && (IS_INTRA( type_bak ) || !rdc->b_valid || i_cost < rdc->i_cost) )
+        rdc_store( h, rdc, chroma_ssd, chroma_f8, i_cost );
+
+    return i_cost;
 }
 
 /* partition RD functions use 8 bits more precision to avoid large rounding errors at low QPs */

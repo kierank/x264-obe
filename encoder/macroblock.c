@@ -586,7 +586,9 @@ void x264_predict_lossless_16x16( x264_t *h, int p, int i_mode )
 /*****************************************************************************
  * x264_macroblock_encode:
  *****************************************************************************/
-static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_count, int chroma )
+/* b_luma_only: RD of a 4:2:0/4:2:2 MB, not skip or PCM, whose chroma state
+ * (fdec, coefs, nnz, i_cbp_chroma) the caller has already restored */
+static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_count, int chroma, int b_luma_only )
 {
     int i_qp = h->mb.i_qp;
     int b_decimate = h->mb.b_dct_decimate;
@@ -743,7 +745,12 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
         /* Don't repeat motion compensation if it was already done in non-RD transform analysis */
         if( !h->mb.b_skip_mc )
-            x264_mb_mc( h );
+        {
+            if( b_luma_only )
+                x264_mb_mc_luma( h );
+            else
+                x264_mb_mc( h );
+        }
 
         if( h->mb.b_lossless )
         {
@@ -886,8 +893,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         }
     }
 
-    /* encode chroma */
-    if( chroma )
+    /* encode chroma, unless restored by the caller */
+    if( chroma && !b_luma_only )
     {
         if( IS_INTRA( h->mb.i_type ) )
         {
@@ -904,7 +911,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         /* encode the 8x8 blocks */
         x264_mb_encode_chroma( h, !IS_INTRA( h->mb.i_type ), h->mb.i_chroma_qp );
     }
-    else
+    else if( !chroma )
         h->mb.i_cbp_chroma = 0;
 
     /* store cbp */
@@ -936,12 +943,22 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
     }
 }
 
+static NOINLINE void x264_macroblock_encode_c( x264_t *h, int b_luma_only )
+{
+    x264_macroblock_encode_internal( h, 1, 1, b_luma_only );
+}
+
 void x264_macroblock_encode( x264_t *h )
 {
     if( CHROMA444 )
-        x264_macroblock_encode_internal( h, 3, 0 );
+        x264_macroblock_encode_internal( h, 3, 0, 0 );
     else
-        x264_macroblock_encode_internal( h, 1, 1 );
+        x264_macroblock_encode_c( h, 0 );
+}
+
+void x264_macroblock_encode_luma( x264_t *h )
+{
+    x264_macroblock_encode_c( h, 1 );
 }
 
 /*****************************************************************************
