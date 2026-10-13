@@ -148,8 +148,7 @@ int x264_lookahead_init( x264_t *h, int i_slicetype_length )
         goto fail;
 
     if( x264_pthread_mutex_init( &look->prologue_mutex, NULL ) ||
-        x264_pthread_cond_init( &look->prologue_cv, NULL ) ||
-        x264_lowres_pre_init( h ) )
+        x264_pthread_cond_init( &look->prologue_cv, NULL ) )
         goto fail;
 
     if( !h->param.i_sync_lookahead )
@@ -196,7 +195,6 @@ void x264_lookahead_delete( x264_t *h )
     x264_sync_frame_list_delete( &h->lookahead->ofbuf );
     x264_pthread_mutex_destroy( &h->lookahead->prologue_mutex );
     x264_pthread_cond_destroy( &h->lookahead->prologue_cv );
-    x264_lowres_pre_free( h );
     x264_free( h->lookahead );
 }
 

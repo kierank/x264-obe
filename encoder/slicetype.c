@@ -876,167 +876,6 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
                                     s->do_search, s->w, s->output_inter, s->output_intra );
 }
 
-/* Lookahead thread slice i of a frame cost; output_inter[0] and output_intra[0]
- * point to buffers of x264_slicetype_output_size ints, and slice i+1's outputs
- * are placed after slice i's. */
-static void x264_slicetype_slice_init( x264_t *h, x264_slicetype_slice_t *s, int i, x264_mb_analysis_t *a,
-                                       x264_frame_t **frames, int p0, int p1, int b, int dist_scale_factor,
-                                       int *do_search, const x264_weight_t *w,
-                                       int **output_inter, int **output_intra )
-{
-    x264_t *t = h->lookahead_thread[i];
-
-    /* FIXME move this somewhere else */
-    t->mb.i_me_method = h->mb.i_me_method;
-    t->mb.i_subpel_refine = h->mb.i_subpel_refine;
-    t->mb.b_chroma_me = h->mb.b_chroma_me;
-
-    s[i] = (x264_slicetype_slice_t){ t, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
-        output_inter[i], output_intra[i] };
-
-    t->i_threadslice_start = ((h->mb.i_mb_height *  i    + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
-    t->i_threadslice_end   = ((h->mb.i_mb_height * (i+1) + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
-
-    int thread_height = t->i_threadslice_end - t->i_threadslice_start;
-    int thread_output_size = thread_height + NUM_INTS;
-    memset( output_inter[i], 0, thread_output_size * sizeof(int) );
-    memset( output_intra[i], 0, thread_output_size * sizeof(int) );
-    output_inter[i][NUM_ROWS] = output_intra[i][NUM_ROWS] = thread_height;
-
-    output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
-    output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
-}
-
-#define x264_slicetype_output_size(h) ((h)->mb.i_mb_height + (NUM_INTS + PAD_SIZE) * (h)->param.i_lookahead_threads)
-
-/* Sliced threads: the lowres cost of a new frame against the last non-B frame,
- * which x264_slicetype_frame_cost would fan out once the whole frame had been
- * prepared, runs instead in the prologue's MB row bands (encoder.c), each as
- * soon as its band and the lowres row above it are ready. Same slices, same
- * lookahead thread contexts, same output layout; the sums are left to the
- * x264_slicetype_frame_cost call that asks for that cost, so they happen in the
- * same order. Until then the MVs stay behind the 0x7FFF marker, so a frame
- * whose cost is never asked for encodes as before. */
-typedef struct
-{
-    x264_mb_analysis_t a;
-    x264_frame_t *frames[2];
-    int do_search[2];
-    ALIGNED_4( int16_t mv0[2] ); /* frames[1]->lowres_mvs[0][0][0], under the marker */
-    int b_done;
-    x264_slicetype_slice_t s[X264_LOOKAHEAD_THREAD_MAX];
-    int *output_inter[X264_LOOKAHEAD_THREAD_MAX+1];
-    int *output_intra[X264_LOOKAHEAD_THREAD_MAX+1];
-    int *output;
-} x264_lowres_pre_t;
-
-int x264_lowres_pre_init( x264_t *h )
-{
-    h->lookahead->lowres_pre = NULL;
-    if( !h->param.b_sliced_threads || h->param.i_lookahead_threads < 2 || h->param.i_sync_lookahead )
-        return 0;
-    x264_lowres_pre_t *pre;
-    CHECKED_MALLOCZERO( pre, sizeof(x264_lowres_pre_t) );
-    h->lookahead->lowres_pre = pre;
-    CHECKED_MALLOC( pre->output, 2 * x264_slicetype_output_size( h ) * sizeof(int) );
-    return 0;
-fail:
-    return -1;
-}
-
-void x264_lowres_pre_free( x264_t *h )
-{
-    x264_lowres_pre_t *pre = h->lookahead->lowres_pre;
-    if( pre )
-    {
-        x264_free( pre->output );
-        x264_free( pre );
-    }
-}
-
-/* Set up the cost of fenc against the last non-B frame for x264_lowres_pre_band
- * on each of bands MB row bands, before any band runs and after fenc's lowres
- * markers were reset; returns 0 if it is not to be run. */
-int x264_lowres_pre_start( x264_t *h, x264_frame_t *fenc, int bands )
-{
-    x264_lowres_pre_t *pre = h->lookahead->lowres_pre;
-    if( !pre )
-        return 0;
-    pre->b_done = 0;
-    /* Only when the next x264_slicetype_decide will be on fenc alone with the
-     * last non-B frame as frames[0], and will (almost always) ask for this cost
-     * with nothing that needs the whole frame first: weightp analyses the whole
-     * frame, aq-mode 2 and aq-strength 0 set the AQ factors after all bands. */
-    if( bands != h->param.i_lookahead_threads || !h->lookahead->last_nonb ||
-        h->param.i_bframe || h->frames.i_delay || h->lookahead->next.i_size ||
-        h->param.rc.b_stat_read || h->param.rc.b_mb_tree || h->param.analyse.i_weighted_pred ||
-        h->param.i_keyint_max == 1 ||
-        (h->param.rc.i_rc_method == X264_RC_CQP && !h->param.i_scenecut_threshold) ||
-        !(h->param.rc.i_aq_mode == X264_AQ_NONE ||
-          (h->param.rc.i_aq_mode == X264_AQ_VARIANCE && h->param.rc.f_aq_strength != 0)) )
-        return 0;
-#if HAVE_OPENCL
-    if( h->param.b_opencl )
-        return 0;
-#endif
-
-    /* As x264_slicetype_frame_cost( h, &a, frames, 0, 1, 1, 0 ) up to its fan-out */
-    x264_lowres_context_init( h, &pre->a );
-    pre->frames[0] = h->lookahead->last_nonb;
-    pre->frames[1] = fenc;
-    pre->do_search[0] = fenc->lowres_mvs[0][0][0][0] == 0x7FFF;
-    pre->do_search[1] = 0;
-    if( !pre->do_search[0] )
-        return 0;
-    fenc->lowres_mvs[0][0][0][0] = 0;
-    int dist_scale_factor = 256; /* p0 = 0, p1 = b = 1 */
-    pre->output_inter[0] = pre->output;
-    pre->output_intra[0] = pre->output + x264_slicetype_output_size( h );
-    for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-        x264_slicetype_slice_init( h, pre->s, i, &pre->a, pre->frames, 0, 1, 1, dist_scale_factor,
-                                   pre->do_search, x264_weight_none, pre->output_inter, pre->output_intra );
-    return 1;
-}
-
-/* Lookahead thread slice i: MB rows of band i, after band i's lowres and AQ and
- * the lowres rows above them */
-void x264_lowres_pre_band( x264_t *h, int i )
-{
-    x264_lowres_pre_t *pre = h->lookahead->lowres_pre;
-    x264_slicetype_slice_cost( &pre->s[i] );
-}
-
-/* After every band */
-void x264_lowres_pre_end( x264_t *h )
-{
-    x264_lowres_pre_t *pre = h->lookahead->lowres_pre;
-    x264_frame_t *fenc = pre->frames[1];
-    CP32( pre->mv0, fenc->lowres_mvs[0][0][0] );
-    fenc->lowres_mvs[0][0][0][0] = 0x7FFF;
-    pre->b_done = 1;
-    x264_emms();
-}
-
-/* In x264_slicetype_frame_cost at its fan-out: if the prologue ran this cost,
- * take its outputs instead */
-static int x264_lowres_pre_claim( x264_t *h, x264_frame_t **frames, int p0, int p1, int b,
-                                  int *do_search, const x264_weight_t *w,
-                                  int **output_inter, int **output_intra )
-{
-    x264_lowres_pre_t *pre = h->lookahead->lowres_pre;
-    if( !pre || !pre->b_done || frames[b] != pre->frames[1] || frames[p0] != pre->frames[0] ||
-        b - p0 != 1 || p1 != b || !do_search[0] || w != x264_weight_none )
-        return 0;
-    pre->b_done = 0;
-    CP32( frames[b]->lowres_mvs[0][0][0], pre->mv0 );
-    for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-    {
-        output_inter[i] = pre->output_inter[i];
-        output_intra[i] = pre->output_intra[i];
-    }
-    return 1;
-}
-
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                                       x264_frame_t **frames, int p0, int p1, int b,
                                       int b_intra_penalty )
@@ -1107,17 +946,34 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
             {
                 x264_slicetype_slice_t s[X264_LOOKAHEAD_THREAD_MAX];
 
-                if( !x264_lowres_pre_claim( h, frames, p0, p1, b, do_search, w, output_inter, output_intra ) )
+                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
                 {
-                    for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-                    {
-                        x264_slicetype_slice_init( h, s, i, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
-                                                   output_inter, output_intra );
-                        x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
-                    }
-                    for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-                        x264_threadpool_wait( h->lookaheadpool, &s[i] );
+                    x264_t *t = h->lookahead_thread[i];
+
+                    /* FIXME move this somewhere else */
+                    t->mb.i_me_method = h->mb.i_me_method;
+                    t->mb.i_subpel_refine = h->mb.i_subpel_refine;
+                    t->mb.b_chroma_me = h->mb.b_chroma_me;
+
+                    s[i] = (x264_slicetype_slice_t){ t, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
+                        output_inter[i], output_intra[i] };
+
+                    t->i_threadslice_start = ((h->mb.i_mb_height *  i    + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
+                    t->i_threadslice_end   = ((h->mb.i_mb_height * (i+1) + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
+
+                    int thread_height = t->i_threadslice_end - t->i_threadslice_start;
+                    int thread_output_size = thread_height + NUM_INTS;
+                    memset( output_inter[i], 0, thread_output_size * sizeof(int) );
+                    memset( output_intra[i], 0, thread_output_size * sizeof(int) );
+                    output_inter[i][NUM_ROWS] = output_intra[i][NUM_ROWS] = thread_height;
+
+                    output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
+                    output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
+
+                    x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
                 }
+                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+                    x264_threadpool_wait( h->lookaheadpool, &s[i] );
             }
             else
             {

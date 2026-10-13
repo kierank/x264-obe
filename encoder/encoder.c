@@ -3530,15 +3530,14 @@ static int x264_threaded_slices_write( x264_t *h )
 }
 
 /* With sliced threads the per-frame input work (picture copy, AQ energy,
- * lowres and, from x264_lowres_pre_start, the lowres cost of the frame) runs in
- * MB row bands on the lookahead pool, which is idle at that point; the main
- * thread takes band 0 and keeps every decision. The slice pool is not used: its
- * job slots stay taken by the previous frame's slices until
- * x264_threadpool_wait_all. Each band runs its steps in turn and waits only for
- * the neighbouring rows a step reads: lowres reads the first source row of the
- * band below, field AQ energy of an MB pair split by a band edge reads the
- * other band's rows, and the lowres cost reads the lowres row above. The frame
- * sums wait for every band and are taken in the same order as before. */
+ * lowres) runs in MB row bands on the lookahead pool, which is idle at that
+ * point; the main thread takes band 0 and keeps every decision. The slice pool
+ * is not used: its job slots stay taken by the previous frame's slices until
+ * x264_threadpool_wait_all. Each band copies its rows, then runs AQ and lowres
+ * once the neighbouring rows they read are copied: lowres reads the first source
+ * row of the band below, field AQ energy of an MB pair split by a band edge the
+ * other band's rows. Every band signals before it waits and has its own thread
+ * (bands <= pool size), so there is no wait cycle. */
 typedef struct
 {
     x264_t *h;
@@ -3549,18 +3548,11 @@ typedef struct
     int mb_y0;
     int mb_y1;
     int b_aq;
-    int b_cost;
     float *quant_offsets;
-    int stage; /* under lookahead->prologue_mutex */
+    int b_copied; /* under lookahead->prologue_mutex */
     uint32_t pixel_sum[3];
     uint64_t pixel_ssd[3];
 } x264_prologue_band_t;
-
-enum
-{
-    PROLOGUE_COPIED = 1, /* source rows, mod16 padding, lowres source edge */
-    PROLOGUE_LOWRES = 2, /* lowres rows with their padding, lowres8, AQ */
-};
 
 static int x264_prologue_band_count( x264_t *h )
 {
@@ -3572,86 +3564,9 @@ static int x264_prologue_band_count( x264_t *h )
     return bands;
 }
 
-static void x264_prologue_signal( x264_prologue_band_t *band, int stage )
+static void x264_prologue_bands_init( x264_t *h, x264_prologue_band_t *band, int bands,
+                                      x264_frame_t *fenc, x264_picture_t *pic )
 {
-    x264_lookahead_t *look = band->h->lookahead;
-    x264_pthread_mutex_lock( &look->prologue_mutex );
-    band->stage = stage;
-    x264_pthread_cond_broadcast( &look->prologue_cv );
-    x264_pthread_mutex_unlock( &look->prologue_mutex );
-}
-
-static void x264_prologue_wait( x264_prologue_band_t *band, int stage )
-{
-    x264_lookahead_t *look = band->h->lookahead;
-    x264_pthread_mutex_lock( &look->prologue_mutex );
-    while( band->stage < stage )
-        x264_pthread_cond_wait( &look->prologue_cv, &look->prologue_mutex );
-    x264_pthread_mutex_unlock( &look->prologue_mutex );
-}
-
-static void *x264_prologue_band( x264_prologue_band_t *band )
-{
-    x264_t *h = band->h;
-    int y0 = 16 * band->mb_y0;
-    int y1 = 16 * band->mb_y1;
-    x264_prologue_band_t *above = band->i ? band - 1 : NULL;
-    x264_prologue_band_t *below = band->i < band->bands - 1 ? band + 1 : NULL;
-
-    x264_frame_copy_picture_rows( h, band->fenc, band->pic, y0, y1 );
-    if( h->param.i_width != 16 * h->mb.i_mb_width ||
-        h->param.i_height != 16 * h->mb.i_mb_height )
-        x264_frame_expand_border_mod16_rows( h, band->fenc, y0, y1 );
-    if( h->frames.b_have_lowres )
-        x264_frame_init_lowres_edge( band->fenc, y0, y1 );
-    x264_prologue_signal( band, PROLOGUE_COPIED );
-
-    for( int i = 0; i < 3; i++ )
-    {
-        band->pixel_sum[i] = 0;
-        band->pixel_ssd[i] = 0;
-    }
-    if( band->b_aq )
-    {
-        /* field energy of MB y reads the rows of MB y^1 */
-        if( PARAM_INTERLACED && (band->mb_y0&1) )
-            x264_prologue_wait( above, PROLOGUE_COPIED );
-        if( PARAM_INTERLACED && (band->mb_y1&1) && below )
-            x264_prologue_wait( below, PROLOGUE_COPIED );
-        x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, band->mb_y0, band->mb_y1,
-                                        band->pixel_sum, band->pixel_ssd );
-    }
-    if( h->frames.b_have_lowres )
-    {
-        if( below )
-            x264_prologue_wait( below, PROLOGUE_COPIED );
-        x264_frame_init_lowres_rows( h, band->fenc, band->mb_y0, band->mb_y1 );
-    }
-
-    if( band->b_cost )
-    {
-        x264_prologue_signal( band, PROLOGUE_LOWRES );
-        if( above )
-            x264_prologue_wait( above, PROLOGUE_LOWRES );
-        x264_lowres_pre_band( h, band->i );
-    }
-    return NULL;
-}
-
-/* x264_frame_copy_picture after its _init, x264_adaptive_quant_frame (or
- * x264_macroblock_tree_read), x264_frame_init_lowres and maybe the lowres cost */
-static int x264_prologue( x264_t *h, x264_prologue_band_t *band, int bands,
-                          x264_frame_t *fenc, x264_picture_t *pic )
-{
-    float *quant_offsets = pic->prop.quant_offsets;
-    int b_aq = !(h->param.rc.b_mb_tree && h->param.rc.b_stat_read);
-    if( !b_aq && x264_macroblock_tree_read( h, fenc, quant_offsets ) )
-        return -1;
-    /* frame state only, before the lowres cost marks its own */
-    if( h->frames.b_have_lowres )
-        x264_frame_init_lowres_finish( h, fenc );
-    int b_cost = h->frames.b_have_lowres && x264_lowres_pre_start( h, fenc, bands );
-
     for( int i = 0; i < bands; i++ )
     {
         band[i].h = h;
@@ -3661,19 +3576,106 @@ static int x264_prologue( x264_t *h, x264_prologue_band_t *band, int bands,
         band[i].bands = bands;
         band[i].mb_y0 = (h->mb.i_mb_height *  i    + bands/2) / bands;
         band[i].mb_y1 = (h->mb.i_mb_height * (i+1) + bands/2) / bands;
-        band[i].b_aq = b_aq;
-        band[i].b_cost = b_cost;
-        band[i].quant_offsets = quant_offsets;
-        band[i].stage = 0;
+        band[i].b_copied = 0;
     }
+}
+
+static void x264_prologue_run( x264_t *h, x264_prologue_band_t *band, int bands, void *(*func)( x264_prologue_band_t * ) )
+{
     for( int i = 1; i < bands; i++ )
-        x264_threadpool_run( h->lookaheadpool, (void*)x264_prologue_band, &band[i] );
-    x264_stack_align( x264_prologue_band, &band[0] );
+        x264_threadpool_run( h->lookaheadpool, (void*)func, &band[i] );
+    x264_stack_align( func, &band[0] );
     for( int i = 1; i < bands; i++ )
         x264_threadpool_wait( h->lookaheadpool, &band[i] );
-    if( b_cost )
-        x264_lowres_pre_end( h );
+}
 
+static void x264_prologue_signal_copied( x264_prologue_band_t *band )
+{
+    x264_lookahead_t *look = band->h->lookahead;
+    x264_pthread_mutex_lock( &look->prologue_mutex );
+    band->b_copied = 1;
+    x264_pthread_cond_broadcast( &look->prologue_cv );
+    x264_pthread_mutex_unlock( &look->prologue_mutex );
+}
+
+static void x264_prologue_wait_copied( x264_prologue_band_t *band )
+{
+    x264_lookahead_t *look = band->h->lookahead;
+    x264_pthread_mutex_lock( &look->prologue_mutex );
+    while( !band->b_copied )
+        x264_pthread_cond_wait( &look->prologue_cv, &look->prologue_mutex );
+    x264_pthread_mutex_unlock( &look->prologue_mutex );
+}
+
+static void x264_prologue_copy_band( x264_prologue_band_t *band )
+{
+    x264_t *h = band->h;
+    int y0 = 16 * band->mb_y0;
+    int y1 = 16 * band->mb_y1;
+    x264_frame_copy_picture_rows( h, band->fenc, band->pic, y0, y1 );
+    if( h->param.i_width != 16 * h->mb.i_mb_width ||
+        h->param.i_height != 16 * h->mb.i_mb_height )
+        x264_frame_expand_border_mod16_rows( h, band->fenc, y0, y1 );
+    /* the lowres source edge, read by the lowres of the band above */
+    if( h->frames.b_have_lowres )
+        x264_frame_init_lowres_edge( band->fenc, y0, y1 );
+    x264_prologue_signal_copied( band );
+}
+
+static void x264_prologue_analyse_band( x264_prologue_band_t *band )
+{
+    x264_t *h = band->h;
+    x264_prologue_band_t *above = band->i ? band - 1 : NULL;
+    x264_prologue_band_t *below = band->i < band->bands - 1 ? band + 1 : NULL;
+    for( int i = 0; i < 3; i++ )
+    {
+        band->pixel_sum[i] = 0;
+        band->pixel_ssd[i] = 0;
+    }
+    if( band->b_aq )
+    {
+        /* field energy of MB y reads the rows of MB y^1 */
+        if( PARAM_INTERLACED && (band->mb_y0&1) )
+            x264_prologue_wait_copied( above );
+        if( PARAM_INTERLACED && (band->mb_y1&1) && below )
+            x264_prologue_wait_copied( below );
+        x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, band->mb_y0, band->mb_y1,
+                                        band->pixel_sum, band->pixel_ssd );
+    }
+    if( h->frames.b_have_lowres )
+    {
+        if( below )
+            x264_prologue_wait_copied( below );
+        x264_frame_init_lowres_rows( h, band->fenc, band->mb_y0, band->mb_y1 );
+    }
+}
+
+static void *x264_prologue_band( x264_prologue_band_t *band )
+{
+    x264_prologue_copy_band( band );
+    x264_prologue_analyse_band( band );
+    return NULL;
+}
+
+/* x264_frame_copy_picture after its _init, x264_adaptive_quant_frame (or
+ * x264_macroblock_tree_read) and x264_frame_init_lowres */
+static int x264_prologue( x264_t *h, x264_prologue_band_t *band, int bands,
+                          x264_frame_t *fenc, x264_picture_t *pic )
+{
+    float *quant_offsets = pic->prop.quant_offsets;
+    int b_aq = !(h->param.rc.b_mb_tree && h->param.rc.b_stat_read);
+
+    x264_prologue_bands_init( h, band, bands, fenc, pic );
+    for( int i = 0; i < bands; i++ )
+    {
+        band[i].b_aq = b_aq;
+        band[i].quant_offsets = quant_offsets;
+    }
+    x264_prologue_run( h, band, bands, x264_prologue_band );
+
+    /* after the copy: a frame not kept as ref gets whole-frame AQ */
+    if( !b_aq && x264_macroblock_tree_read( h, fenc, quant_offsets ) )
+        return -1;
     if( b_aq )
     {
         /* integer sums, so the band order does not matter */
@@ -3689,6 +3691,8 @@ static int x264_prologue( x264_t *h, x264_prologue_band_t *band, int bands,
         }
         x264_adaptive_quant_frame_end( h, fenc, quant_offsets );
     }
+    if( h->frames.b_have_lowres )
+        x264_frame_init_lowres_finish( h, fenc );
     return 0;
 }
 

@@ -225,11 +225,9 @@ typedef struct x264_lookahead_t
     x264_sync_frame_list_t        ifbuf;
     x264_sync_frame_list_t        next;
     x264_sync_frame_list_t        ofbuf;
-    /* sliced threads prologue (encoder.c): band progress, and the lowres cost
-     * it runs ahead of x264_slicetype_decide (slicetype.c) */
+    /* sliced threads prologue (encoder.c): band progress */
     x264_pthread_mutex_t          prologue_mutex;
     x264_pthread_cond_t           prologue_cv;
-    void                          *lowres_pre;
 } x264_lookahead_t;
 
 typedef struct x264_ratecontrol_t   x264_ratecontrol_t;

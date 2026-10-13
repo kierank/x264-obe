@@ -43,17 +43,6 @@ void x264_slicetype_decide( x264_t *h );
 #define x264_slicetype_analyse x264_template(slicetype_analyse)
 void x264_slicetype_analyse( x264_t *h, int intra_minigop );
 
-#define x264_lowres_pre_init x264_template(lowres_pre_init)
-int  x264_lowres_pre_init( x264_t *h );
-#define x264_lowres_pre_free x264_template(lowres_pre_free)
-void x264_lowres_pre_free( x264_t *h );
-#define x264_lowres_pre_start x264_template(lowres_pre_start)
-int  x264_lowres_pre_start( x264_t *h, x264_frame_t *fenc, int bands );
-#define x264_lowres_pre_band x264_template(lowres_pre_band)
-void x264_lowres_pre_band( x264_t *h, int i );
-#define x264_lowres_pre_end x264_template(lowres_pre_end)
-void x264_lowres_pre_end( x264_t *h );
-
 #define x264_weighted_reference_duplicate x264_template(weighted_reference_duplicate)
 int x264_weighted_reference_duplicate( x264_t *h, int i_ref, const x264_weight_t *w );
 
