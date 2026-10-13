@@ -41,7 +41,12 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     int mvx   = x264_clip3( h->mb.cache.mv[0][i8][0], h->mb.mv_min[0], h->mb.mv_max[0] ) + 4*4*x;
     int mvy   = x264_clip3( h->mb.cache.mv[0][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
     /* H.264 8.4.3: a field mb's explicit weights are those of refIdxL0 >> 1 */
+#if MBWP_CTL == 1
+    /* TEST ONLY: positive control, field mbs MC with weight[refIdxL0] */
+    x264_weight_t *weight = h->sh.weight[i_ref];
+#else
     x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
+#endif
 
     MC_LUMA( 0, 0, &weight[0] );
 
@@ -387,8 +392,13 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 CHECKED_MALLOC( h->deblock_strength[i], sizeof(**h->deblock_strength) * h->mb.i_mb_width );
             h->deblock_strength[1] = h->deblock_strength[i];
         }
+#if MBWP_CTL == 3
+        /* TEST ONLY: fenc_bot in every adaptive MBAFF encode, to check it against the source padding */
+        if( PARAM_INTERLACED && h->mb.b_adaptive_mbaff && !h->param.b_sliced_threads && h->mb.i_mb_height*16 > h->param.i_height )
+#else
         if( PARAM_INTERLACED && h->mb.b_adaptive_mbaff && h->param.analyse.i_weighted_pred > 0
             && h->i_thread_frames > 1 && h->mb.i_mb_height*16 > h->param.i_height )
+#endif
             for( int i = 0; i < (CHROMA444 ? 3 : 2); i++ )
             {
                 int rows = 2*(16 >> (i && CHROMA_V_SHIFT)) + 2;

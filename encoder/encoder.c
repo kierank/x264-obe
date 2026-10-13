@@ -46,6 +46,44 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
                                    x264_nal_t **pp_nal, int *pi_nal,
                                    x264_picture_t *pic_out );
 
+/* TEST ONLY (test/mbaff-weightp-ctl): MBAFF weightp coverage counters, printed
+ * by x264_encoder_close. Use without VBV (row re-encodes count twice). */
+#ifndef MBWP_CTL
+#define MBWP_CTL 0
+#endif
+enum { MBWP_PFRAMES, MBWP_PFRAMES_W, MBWP_MB_FIELD, MBWP_MB_FRAME, MBWP_MB_FIELD_W, MBWP_MB_FRAME_W,
+       MBWP_MB_FIELD_OPP_W, MBWP_MB_FIELD_DUPE, MBWP_N };
+static int64_t mbwp_stat[MBWP_N];
+#define MBWP_ADD(i) __atomic_fetch_add( &mbwp_stat[i], 1, __ATOMIC_RELAXED )
+
+static void mbwp_count_mb( x264_t *h )
+{
+    int w = 0;
+    for( int i = 0; i < h->i_ref[0]; i++ )
+        w |= !!h->sh.weight[i][0].weightfn | !!h->sh.weight[i][1].weightfn | !!h->sh.weight[i][2].weightfn;
+    if( !w )
+        return;
+    MBWP_ADD( MB_INTERLACED ? MBWP_MB_FIELD : MBWP_MB_FRAME );
+    int used = 0, opp = 0, dupe = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        int ref = h->mb.cache.ref[0][x264_scan8[4*i]];
+        if( ref < 0 )
+            continue;
+        x264_weight_t *wt = h->sh.weight[ref >> MB_INTERLACED];
+        int wr = wt[0].weightfn || wt[1].weightfn || wt[2].weightfn;
+        used |= wr;
+        opp |= wr && MB_INTERLACED && (ref & 1);
+        dupe |= MB_INTERLACED && h->fref[0][ref >> 1]->b_duplicate;
+    }
+    if( used )
+        MBWP_ADD( MB_INTERLACED ? MBWP_MB_FIELD_W : MBWP_MB_FRAME_W );
+    if( opp )
+        MBWP_ADD( MBWP_MB_FIELD_OPP_W );
+    if( dupe )
+        MBWP_ADD( MBWP_MB_FIELD_DUPE );
+}
+
 /****************************************************************************
  *
  ******************************* x264 libs **********************************
@@ -3286,6 +3324,8 @@ cont:
 
         int b_intra = IS_INTRA( h->mb.i_type );
         int b_skip = IS_SKIP( h->mb.i_type );
+        if( h->sh.i_type == SLICE_TYPE_P && !b_intra )
+            mbwp_count_mb( h );
         if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
         {
             if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )
@@ -3460,6 +3500,15 @@ static void *x264_slices_write( x264_t *h )
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
     h->mb.b_fenc_bot = 0;
+    if( h->sh.i_type == SLICE_TYPE_P && (!h->param.b_sliced_threads || h == h->thread[0]) )
+    {
+        int w = 0;
+        for( int i = 0; i < h->i_ref[0]; i++ )
+            w |= !!h->sh.weight[i][0].weightfn | !!h->sh.weight[i][1].weightfn | !!h->sh.weight[i][2].weightfn;
+        MBWP_ADD( MBWP_PFRAMES );
+        if( w )
+            MBWP_ADD( MBWP_PFRAMES_W );
+    }
     if( h->param.b_sliced_threads )
     {
         h->i_threadslice_nal = h->out.i_nal;
@@ -4613,6 +4662,13 @@ void    x264_encoder_close  ( x264_t *h )
     int b_print_pcm = h->stat.i_mb_count[SLICE_TYPE_I][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_P][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
+
+    x264_log( h, X264_LOG_INFO, "mbwp: ctl %d; P frames %"PRId64", weighted %"PRId64"; inter mbs in weighted P: "
+              "field %"PRId64" frame %"PRId64"; using a weighted ref: field %"PRId64" frame %"PRId64"; "
+              "field mbs using an opposite parity weighted field %"PRId64", a dupe frame's field %"PRId64"\n",
+              MBWP_CTL, mbwp_stat[MBWP_PFRAMES], mbwp_stat[MBWP_PFRAMES_W],
+              mbwp_stat[MBWP_MB_FIELD], mbwp_stat[MBWP_MB_FRAME], mbwp_stat[MBWP_MB_FIELD_W], mbwp_stat[MBWP_MB_FRAME_W],
+              mbwp_stat[MBWP_MB_FIELD_OPP_W], mbwp_stat[MBWP_MB_FIELD_DUPE] );
 
     x264_lookahead_delete( h );
 
