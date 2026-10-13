@@ -46,6 +46,9 @@ chroma_deint_perm: dw  0, 2, 4, 6, 8,10,12,14, 16,18,20,22,24,26,28,30
 pw_wclip: times 16 dw 0x7fff-((1 << BIT_DEPTH)-1) ; weight clip: 0x7fff-PIXEL_MAX
 %endif
 sq_1: times 1 dq 1
+%if HIGH_BIT_DEPTH
+plane_tail: dd 0, 0xff, 0xffff, 0xffffff ; weight plane zmm tail, by tail bytes/16
+%endif
 
 SECTION .text
 
@@ -775,13 +778,11 @@ INIT_XMM sse2
 OFFSETPN  8
 
 ; AVX2, two rows per iteration: 16 px per ymm row, 8 px rows paired in a ymm,
-; 4 px rows paired in an xmm. %2 is the per-register op with operands m3-m5.
+; 4 px rows paired in an xmm. %2 is the op: dst, src (register or memory), m3-m5.
 %macro WEIGHT_ROWS_AVX2 2 ; width, op
 %if %1 & 16
-    movu         m0, [r2]
-    movu         m1, [r2+r3]
-    %2           m0, m3, m4, m5
-    %2           m1, m3, m4, m5
+    %2           m0, [r2], m3, m4, m5
+    %2           m1, [r2+r3], m3, m4, m5
     movu       [r0], m0
     movu    [r0+r1], m1
 %endif
@@ -789,7 +790,7 @@ OFFSETPN  8
     %assign wx (%1 & 16)*2
     movu        xm0, [r2+wx]
     vinserti128  m0, m0, [r2+r3+wx], 1
-    %2           m0, m3, m4, m5
+    %2           m0, m0, m3, m4, m5
     movu    [r0+wx], xm0
     vextracti128 [r0+r1+wx], m0, 1
 %endif
@@ -797,33 +798,63 @@ OFFSETPN  8
     %assign wx (%1-4)*2
     movq        xm2, [r2+wx]
     movhps      xm2, [r2+r3+wx]
-    %2          xm2, xm3, xm4, xm5
+    %2          xm2, xm2, xm3, xm4, xm5
     movq    [r0+wx], xm2
     movhps [r0+r1+wx], xm2
 %endif
 %endmacro
 
 ; pmulhrsw rounds (pix*scale)>>denom exactly; for 0 <= scale the paddsw of
-; offset+wclip saturates at PIXEL_MAX and psubusw wclip clips at 0
-%macro WEIGHT_NS_OP_AVX2 4 ; pix, scale<<(15-denom), offset+wclip, wclip
-    pmulhrsw     %1, %2
-    paddsw       %1, %3
-    psubusw      %1, %4
+; offset+wclip saturates at PIXEL_MAX and psubusw wclip clips at 0.
+; masked: the source is loaded under k1, zeroing the other lanes.
+%macro WEIGHT_NS_OP_AVX2 5-6 0 ; dst, src, scale<<(15-denom), offset+wclip, wclip, masked
+%if %6
+    vpmulhrsw    %1 {k1}{z}, %3, %2
+%else
+    pmulhrsw     %1, %3, %2
+%endif
+    paddsw       %1, %4
+    psubusw      %1, %5
 %endmacro
 
 %assign WEIGHT_PRESHIFT 15-BIT_DEPTH
-%macro WEIGHT_OP_AVX2 4 ; pix, scale<<(BIT_DEPTH-denom), offset+wclip, wclip
+%macro WEIGHT_OP_AVX2 5-6 0 ; dst, src, scale<<(BIT_DEPTH-denom), offset+wclip, wclip, masked
+%if %6
+    vpsllw       %1 {k1}{z}, %2, WEIGHT_PRESHIFT
+%else
+%ifnum sizeof%2
+    psllw        %1, %2, WEIGHT_PRESHIFT
+%elif cpuflag(avx512)
+    vpsllw       %1, %2, WEIGHT_PRESHIFT ; EVEX only: memory source
+%else
+    movu         %1, %2
     psllw        %1, WEIGHT_PRESHIFT
-    WEIGHT_NS_OP_AVX2 %1, %2, %3, %4
+%endif
+%endif
+    WEIGHT_NS_OP_AVX2 %1, %1, %3, %4, %5
 %endmacro
 
-%macro OFFSET_add_AVX2 4 ; pix, offset, pixel_max, unused
-    paddusw      %1, %2
-    pminsw       %1, %3
+%macro OFFSET_add_AVX2 5-6 0 ; dst, src, offset, pixel_max, unused, masked
+%if %6
+    vpaddusw     %1 {k1}{z}, %3, %2
+%else
+    paddusw      %1, %3, %2
+%endif
+    pminsw       %1, %4
 %endmacro
 
-%macro OFFSET_sub_AVX2 4 ; pix, -offset, unused, unused
-    psubusw      %1, %2
+%macro OFFSET_sub_AVX2 5-6 0 ; dst, src, -offset, unused, unused, masked
+%if %6
+    vmovdqu16    %1 {k1}{z}, %2
+    psubusw      %1, %3
+%else
+%ifnum sizeof%2
+    psubusw      %1, %2, %3
+%else
+    movu         %1, %2
+    psubusw      %1, %3
+%endif
+%endif
 %endmacro
 
 ;-----------------------------------------------------------------------------
@@ -881,6 +912,106 @@ OFFSET_AVX2  4, sub
 OFFSET_AVX2  8, sub
 OFFSET_AVX2 16, sub
 OFFSET_AVX2 20, sub
+
+; AVX-512 (EVEX ymm): 12 px rows one per ymm under k1, loaded by the op
+%macro WEIGHTER12_AVX512 2 ; name, op
+cglobal mc_%1_w12, 6,7,6
+    FIX_STRIDES r1, r3
+    vbroadcasti128 m3, [r4]
+    vbroadcasti128 m4, [r4+16]
+    mova         m5, [pw_wclip]
+    mov         r6d, 0xfff
+    kmovw        k1, r6d
+.loop:
+    %2           m0, [r2], m3, m4, m5, 1
+    %2           m1, [r2+r3], m3, m4, m5, 1
+    vmovdqu16 [r0] {k1}, m0
+    vmovdqu16 [r0+r1] {k1}, m1
+    lea          r0, [r0+r1*2]
+    lea          r2, [r2+r3*2]
+    sub         r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+; w16/w20: the AVX2 rows with psllw from memory; ns w16/w20, w4/w8 and the
+; offsets gain nothing from EVEX and stay AVX2
+INIT_YMM avx512
+WEIGHTER_AVX2 16, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2 20, weight, WEIGHT_OP_AVX2
+WEIGHTER12_AVX512 weight, WEIGHT_OP_AVX2
+WEIGHTER12_AVX512 weight_ns, WEIGHT_NS_OP_AVX2
+
+;-----------------------------------------------------------------------------
+; void mc_X_plane( pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride,
+;                  weight_t *weight, int width, int height )
+; x264_weight_scale_plane row by row: width a multiple of 8, height > 0, the
+; cache and per-pixel op of the mc_X_w16/w8 kernels. The last width%(mmsize/2)
+; px of a row: an xmm (ymm), or a zmm under k1.
+;-----------------------------------------------------------------------------
+%macro WEIGHT_PLANE 2 ; name, op
+cglobal mc_%1_plane, 7,8,6
+    FIX_STRIDES r1, r3
+    vpbroadcastw m3, [r4]
+%ifidn %1, offsetadd
+    vpbroadcastw m4, [pw_pixel_max]
+%elifidn %1, offsetsub
+%else
+    vpbroadcastw m4, [r4+16]
+    vpbroadcastw m5, [pw_wclip]
+%endif
+    movsxdifnidn r5, r5d
+    add          r5, r5
+    mov         r4d, r5d
+    and         r4d, mmsize-16
+    sub          r5, r4
+%if mmsize == 64
+    lea          r7, [plane_tail]
+    shr         r4d, 2
+    kmovd        k1, [r7+r4]
+%endif
+    add          r0, r5
+    add          r2, r5
+    neg          r5
+.row:
+    mov          r7, r5
+    test         r7, r7
+    jz .tail
+.col:
+    %2           m0, [r2+r7], m3, m4, m5
+    movu    [r0+r7], m0
+    add          r7, mmsize
+    jl .col
+.tail:
+    test        r4d, r4d
+    jz .next
+%if mmsize == 64
+    %2           m0, [r2], m3, m4, m5, 1
+    vmovdqu16 [r0] {k1}, m0
+%else
+    %2          xm0, [r2], xm3, xm4, xm5
+    movu       [r0], xm0
+%endif
+.next:
+    add          r0, r1
+    add          r2, r3
+    dec         r6d
+    jg .row
+    RET
+%endmacro
+
+%if ARCH_X86_64
+INIT_YMM avx2
+WEIGHT_PLANE weight, WEIGHT_OP_AVX2
+WEIGHT_PLANE weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHT_PLANE offsetadd, OFFSET_add_AVX2
+WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
+INIT_ZMM avx512
+WEIGHT_PLANE weight, WEIGHT_OP_AVX2
+WEIGHT_PLANE weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHT_PLANE offsetadd, OFFSET_add_AVX2
+WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
+%endif
 %endif
 
 

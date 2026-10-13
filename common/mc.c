@@ -709,6 +709,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->offsetadd = x264_mc_weight_wtab;
     pf->offsetsub = x264_mc_weight_wtab;
     pf->weight_cache = x264_weight_cache;
+    pf->weight_plane = NULL;
 
     pf->copy_16x16_unaligned = mc_copy_w16;
     pf->copy[PIXEL_16x16] = mc_copy_w16;
