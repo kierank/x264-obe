@@ -83,6 +83,7 @@ typedef struct x264_frame
     pixel *filtered_fld[3][4];
     pixel *lowres[4]; /* half-size copy of input frame: Orig, H, V, HV */
     uint8_t *lowres8[4]; /* 8-bit copies of lowres for rc.b_lookahead_8bit, same layout */
+    int     b_lowres_pending; /* rc.b_lookahead_8bit: lowres[] not computed yet, see x264_weights_analyse */
     uint16_t *integral;
 
     /* for unrestricted mv we allocate more data than needed
@@ -249,6 +250,10 @@ void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame,
 void          x264_frame_expand_border_lowres( x264_frame_t *frame );
 #define x264_frame_expand_border_lowres_rows x264_template(frame_expand_border_lowres_rows)
 void          x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 );
+#if HIGH_BIT_DEPTH
+#define x264_frame_expand_border_lowres8_rows x264_template(frame_expand_border_lowres8_rows)
+void          x264_frame_expand_border_lowres8_rows( x264_frame_t *frame, int y0, int y1 );
+#endif
 #define x264_frame_expand_border_chroma x264_template(frame_expand_border_chroma)
 void          x264_frame_expand_border_chroma( x264_t *h, x264_frame_t *frame, int plane );
 #define x264_frame_expand_border_mod16 x264_template(frame_expand_border_mod16)
@@ -271,6 +276,8 @@ void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 void          x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 );
 #define x264_frame_init_lowres_rows x264_template(frame_init_lowres_rows)
 void          x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 );
+#define x264_frame_init_lowres_pixel_rows x264_template(frame_init_lowres_pixel_rows)
+void          x264_frame_init_lowres_pixel_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 );
 #define x264_frame_init_lowres_finish x264_template(frame_init_lowres_finish)
 void          x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame );
 

@@ -87,6 +87,9 @@ pw_31: times 8 dw 31
 pd_4: times 4 dd 4
 pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4567
 pd_8: times 4 dd 8
+%if HIGH_BIT_DEPTH
+lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
+%endif
 
 SECTION .text
 
@@ -3049,40 +3052,97 @@ cglobal mbtree_propagate_list_internal, 7,7,14
     RET
 %endif
 
-%if HIGH_BIT_DEPTH
+%if HIGH_BIT_DEPTH && ARCH_X86_64
 ;-----------------------------------------------------------------------------
-; void lowres8_convert( uint8_t *dst, uint16_t *src, intptr_t n )
-; dst[i] = min( (src[i]+2)>>2, 255 ) for --lookahead-8bit, n a multiple of mmsize
+; void frame_init_lowres_core8( uint16_t *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+;                               intptr_t src_stride, intptr_t dst_stride, int width, int height )
 ;-----------------------------------------------------------------------------
-%macro LOWRES8_CONVERT 0
-cglobal lowres8_convert, 3,3,4
-%if mmsize == 32
-    vpbroadcastd m3, [pw_2]
+; --lookahead-8bit: frame_init_lowres_core then min( (x+2)>>2, 255 ), mmsize/2 pixels of
+; each plane an iteration (width rounded up to that). H = pavgw(V, V shifted one word),
+; V the vertical average, holds dst0 (dstv) in its even words and dsth (dstc) in its
+; odd ones; packuswb then pshufb split those into bytes. m7 = pw_2, m9 = byte split.
+%macro PAVGW_U 3 ; dst, src, mem (unaligned)
+%if cpuflag(avx)
+    pavgw     %1, %2, %3
 %else
-    mova      m3, [pw_2]
+    movu      %1, %3
+    pavgw     %1, %2
 %endif
-    lea       r1, [r1+2*r2]
-    add       r0, r2
-    neg       r2
-.loop:
-    movu      m0, [r1+2*r2]
-    movu      m1, [r1+2*r2+mmsize]
-    paddw     m0, m3
-    paddw     m1, m3
-    psrlw     m0, 2
-    psrlw     m1, 2
-    packuswb  m0, m1 ; 256 saturates to 255
+%endmacro
+
+%macro FRAME_INIT_LOWRES8 0
+cglobal frame_init_lowres_core8, 9,12,11
+    FIX_STRIDES r5
 %if mmsize == 32
-    vpermq    m0, m0, q3120
+    vpbroadcastd   m7, [pw_2]
+    vbroadcasti128 m9, [deinterleave_shuf]
+    pmovzxbd      m10, [lowres8_perm]
+%else
+    mova      m7, [pw_2]
+    mova      m9, [deinterleave_shuf]
 %endif
-    movu [r0+r2], m0
-    add       r2, mmsize
-    jl .loop
+.vloop:
+    lea       r9, [r0+r5]
+    lea      r10, [r0+r5*2]
+    xor     r11d, r11d
+.hloop:
+    movu      m0, [r9+r11*4]
+    movu      m1, [r9+r11*4+mmsize]
+    movu      m2, [r9+r11*4+2]
+    movu      m3, [r9+r11*4+mmsize+2]
+    PAVGW_U   m4, m0, [r0+r11*4]
+    PAVGW_U   m5, m1, [r0+r11*4+mmsize]
+    PAVGW_U   m6, m2, [r0+r11*4+2]
+    PAVGW_U   m8, m3, [r0+r11*4+mmsize+2]
+    pavgw     m4, m6
+    pavgw     m5, m8                ; rows 0, 1
+    PAVGW_U   m6, m0, [r10+r11*4]
+    PAVGW_U   m8, m1, [r10+r11*4+mmsize]
+    PAVGW_U   m0, m2, [r10+r11*4+2]
+    PAVGW_U   m1, m3, [r10+r11*4+mmsize+2]
+    pavgw     m6, m0
+    pavgw     m8, m1                ; rows 1, 2
+    paddw     m4, m7
+    paddw     m5, m7
+    paddw     m6, m7
+    paddw     m8, m7
+    psrlw     m4, 2
+    psrlw     m5, 2
+    psrlw     m6, 2
+    psrlw     m8, 2
+    packuswb  m4, m5                ; 256 saturates to 255
+    packuswb  m6, m8
+    pshufb    m4, m9
+    pshufb    m6, m9
+%if mmsize == 32
+    ; dwords per lane: even of the low half, even of the high half, then odd
+    vpermd    m4, m10, m4
+    vpermd    m6, m10, m6
+    movu      [r1+r11], xm4
+    vextracti128 [r2+r11], m4, 1
+    movu      [r3+r11], xm6
+    vextracti128 [r4+r11], m6, 1
+%else
+    movq      [r1+r11], m4
+    movhps    [r2+r11], m4
+    movq      [r3+r11], m6
+    movhps    [r4+r11], m6
+%endif
+    add      r11, mmsize/2
+    cmp     r11d, r7d
+    jl .hloop
+    lea       r0, [r0+r5*2]
+    add       r1, r6
+    add       r2, r6
+    add       r3, r6
+    add       r4, r6
+    dec      r8d
+    jg .vloop
     RET
 %endmacro
 
-INIT_XMM sse2
-LOWRES8_CONVERT
+INIT_XMM ssse3
+FRAME_INIT_LOWRES8
 INIT_YMM avx2
-LOWRES8_CONVERT
-%endif ; HIGH_BIT_DEPTH
+FRAME_INIT_LOWRES8
+%endif ; HIGH_BIT_DEPTH && ARCH_X86_64

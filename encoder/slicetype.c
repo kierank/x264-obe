@@ -284,6 +284,46 @@ static NOINLINE unsigned int x264_weight_cost_chroma444( x264_t *h, x264_frame_t
     return cost;
 }
 
+#if HIGH_BIT_DEPTH
+typedef struct
+{
+    x264_t *h;
+    x264_frame_t *frame;
+    int mb_y0;
+    int mb_y1;
+} x264_lowres_band_t;
+
+static void *x264_lowres_band( x264_lowres_band_t *band )
+{
+    x264_frame_init_lowres_pixel_rows( band->h, band->frame, band->mb_y0, band->mb_y1 );
+    return NULL;
+}
+
+/* rc.b_lookahead_8bit leaves lowres[] to its only reader, the weightp cost below.
+ * In MB row bands on the lookahead pool, idle here, like the sliced prologue. */
+static NOINLINE void x264_weight_lowres_init( x264_t *h, x264_frame_t *frame )
+{
+    if( !frame->b_lowres_pending )
+        return;
+    frame->b_lowres_pending = 0;
+    int bands = h->lookaheadpool ? X264_MIN( h->param.i_lookahead_threads, h->mb.i_mb_height / 4 ) : 1;
+    bands = X264_MAX( bands, 1 );
+    x264_lowres_band_t band[X264_LOOKAHEAD_THREAD_MAX];
+    for( int i = 0; i < bands; i++ )
+    {
+        band[i].h = h;
+        band[i].frame = frame;
+        band[i].mb_y0 = (h->mb.i_mb_height *  i    + bands/2) / bands;
+        band[i].mb_y1 = (h->mb.i_mb_height * (i+1) + bands/2) / bands;
+    }
+    for( int i = 1; i < bands; i++ )
+        x264_threadpool_run( h->lookaheadpool, (void*)x264_lowres_band, &band[i] );
+    x264_lowres_band( &band[0] );
+    for( int i = 1; i < bands; i++ )
+        x264_threadpool_wait( h->lookaheadpool, &band[i] );
+}
+#endif
+
 void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int b_lookahead )
 {
     int i_delta_index = fenc->i_frame - ref->i_frame - 1;
@@ -360,6 +400,10 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                 x264_lowres_context_init( h, &a );
                 x264_slicetype_frame_cost( h, &a, &fenc, 0, 0, 0, 0 );
             }
+#if HIGH_BIT_DEPTH
+            x264_weight_lowres_init( h, fenc );
+            x264_weight_lowres_init( h, ref );
+#endif
             mcbuf = x264_weight_cost_init_luma( h, fenc, ref, h->mb.p_weight_buf[0] );
             origscore = minscore = x264_weight_cost_luma( h, fenc, mcbuf, NULL );
         }

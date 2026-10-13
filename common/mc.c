@@ -430,6 +430,32 @@ static void integral_init8v( uint16_t *sum8, intptr_t stride )
         sum8[x] = sum8[x+8*stride] - sum8[x];
 }
 
+#if HIGH_BIT_DEPTH
+/* rc.b_lookahead_8bit: the lookahead runs on lowres8[], and lowres[] is only read
+ * by x264_weights_analyse past its early termination, so it computes lowres[] then,
+ * from the source. Not with interlaced weightp: adaptive MBAFF rewrites the source
+ * padding while encoding (x264_expand_border_mbpair). */
+static int lowres_deferred( x264_t *h, x264_frame_t *frame )
+{
+    return frame->buffer_lowres8 && !(PARAM_INTERLACED && h->param.analyse.i_weighted_pred);
+}
+
+/* lowres8[] on lowres rows [y0,y1) with their padding, straight from the source:
+ * lowres[] converted, as the conversion is per pixel */
+static void frame_init_lowres8_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 )
+{
+    int i_stride = frame->i_stride[0];
+    int i_stride_lowres = frame->i_stride_lowres;
+    int offset = y0 * i_stride_lowres;
+
+    h->mc.frame_init_lowres_core8( frame->plane[0] + 2*y0*i_stride,
+                                   frame->lowres8[0] + offset, frame->lowres8[1] + offset,
+                                   frame->lowres8[2] + offset, frame->lowres8[3] + offset,
+                                   i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+    x264_frame_expand_border_lowres8_rows( frame, y0, y1 );
+}
+#endif
+
 void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
 {
     pixel *src = frame->plane[0];
@@ -441,17 +467,16 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
     for( int y = 0; y < i_height; y++ )
         src[i_width+y*i_stride] = src[i_width-1+y*i_stride];
     memcpy( src+i_stride*i_height, src+i_stride*(i_height-1), (i_width+1) * sizeof(pixel) );
-    h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
-                                  i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
-    x264_frame_expand_border_lowres( frame );
 #if HIGH_BIT_DEPTH
-    /* rc.b_lookahead_8bit: the 8-bit buffer has the same layout, so convert all
-     * four planes, padding included, in one go. The plane size is a multiple of
-     * 16 pixels, so the total is a multiple of 64. */
     if( frame->buffer_lowres8 )
-        h->mc.lowres8_convert( frame->buffer_lowres8, frame->buffer_lowres[0],
-                               4 * (frame->lowres[1] - frame->lowres[0]) );
+        frame_init_lowres8_rows( h, frame, 0, frame->i_lines_lowres );
+    if( !lowres_deferred( h, frame ) )
 #endif
+    {
+        h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
+                                      i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
+        x264_frame_expand_border_lowres( frame );
+    }
 
     x264_frame_init_lowres_finish( h, frame );
 }
@@ -474,6 +499,17 @@ void x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 )
 
 void x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 )
 {
+#if HIGH_BIT_DEPTH
+    if( frame->buffer_lowres8 )
+        frame_init_lowres8_rows( h, frame, 8 * mb_y0, 8 * mb_y1 );
+    if( !lowres_deferred( h, frame ) )
+#endif
+        x264_frame_init_lowres_pixel_rows( h, frame, mb_y0, mb_y1 );
+}
+
+/* lowres[] on MB rows [mb_y0,mb_y1) with their padding, after _edge */
+void x264_frame_init_lowres_pixel_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 )
+{
     int i_stride = frame->i_stride[0];
     int i_stride_lowres = frame->i_stride_lowres;
     int y0 = 8 * mb_y0;
@@ -486,20 +522,6 @@ void x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int
                                   frame->lowres[2] + offset, frame->lowres[3] + offset,
                                   i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
     x264_frame_expand_border_lowres_rows( frame, y0, y1 );
-#if HIGH_BIT_DEPTH
-    /* This band's rows of the four planes with their side padding, plus the
-     * padding above the first row or below the last one; offsets are whole
-     * rows, so every piece is a multiple of the stride alignment. */
-    if( frame->buffer_lowres8 )
-    {
-        intptr_t plane_size = frame->lowres[1] - frame->lowres[0];
-        intptr_t start = y0 ? (intptr_t)(PADV + y0) * i_stride_lowres : 0;
-        intptr_t end   = y1 < frame->i_lines_lowres ? (intptr_t)(PADV + y1) * i_stride_lowres : plane_size;
-        for( int i = 0; i < 4; i++ )
-            h->mc.lowres8_convert( frame->buffer_lowres8 + i*plane_size + start,
-                                   frame->buffer_lowres[0] + i*plane_size + start, end - start );
-    }
-#endif
 }
 
 void x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame )
@@ -513,15 +535,10 @@ void x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame )
     for( int y = 0; y <= !!h->param.i_bframe; y++ )
         for( int x = 0; x <= h->param.i_bframe; x++ )
             frame->lowres_mvs[y][x][0][0] = 0x7FFF;
-}
-
 #if HIGH_BIT_DEPTH
-static void lowres8_convert( uint8_t *dst, pixel *src, intptr_t n )
-{
-    for( intptr_t i = 0; i < n; i++ )
-        dst[i] = X264_MIN( (src[i] + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 );
-}
+    frame->b_lowres_pending = lowres_deferred( h, frame );
 #endif
+}
 
 static void frame_init_lowres_core( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height )
@@ -547,6 +564,33 @@ static void frame_init_lowres_core( pixel *src0, pixel *dst0, pixel *dsth, pixel
         dstc += dst_stride;
     }
 }
+
+#if HIGH_BIT_DEPTH
+/* frame_init_lowres_core then min( (x + 2) >> 2, 255 ) at 10-bit */
+static void frame_init_lowres_core8( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+                                     intptr_t src_stride, intptr_t dst_stride, int width, int height )
+{
+    for( int y = 0; y < height; y++ )
+    {
+        pixel *src1 = src0+src_stride;
+        pixel *src2 = src1+src_stride;
+        for( int x = 0; x<width; x++ )
+        {
+#define FILTER(a,b,c,d) X264_MIN( (((((a+b+1)>>1)+((c+d+1)>>1)+1)>>1) + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 )
+            dst0[x] = FILTER(src0[2*x  ], src1[2*x  ], src0[2*x+1], src1[2*x+1]);
+            dsth[x] = FILTER(src0[2*x+1], src1[2*x+1], src0[2*x+2], src1[2*x+2]);
+            dstv[x] = FILTER(src1[2*x  ], src2[2*x  ], src1[2*x+1], src2[2*x+1]);
+            dstc[x] = FILTER(src1[2*x+1], src2[2*x+1], src1[2*x+2], src2[2*x+2]);
+#undef FILTER
+        }
+        src0 += src_stride*2;
+        dst0 += dst_stride;
+        dsth += dst_stride;
+        dstv += dst_stride;
+        dstc += dst_stride;
+    }
+}
+#endif
 
 /* Estimate the total amount of influence on future quality that could be had if we
  * were to improve the reference samples used to inter predict any given macroblock. */
@@ -691,7 +735,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->memzero_aligned = memzero_aligned;
     pf->frame_init_lowres_core = frame_init_lowres_core;
 #if HIGH_BIT_DEPTH
-    pf->lowres8_convert = lowres8_convert;
+    pf->frame_init_lowres_core8 = frame_init_lowres_core8;
 #endif
 
     pf->integral_init4h = integral_init4h;
