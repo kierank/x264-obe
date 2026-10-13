@@ -2359,6 +2359,82 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_free( src8 );
         report( "plane unpack8 :" );
     }
+
+    if( mc_a.copy_pk[1] != mc_ref.copy_pk[1] )
+    {
+        /* a 64x40 plane (0 and PIXEL_MAX runs) and its split; sources at every
+         * phase pair, every width and height 1-17; dst rows 48 pixels apart,
+         * 0xaa elsewhere, compared whole: stray writes fail */
+        enum { PW = 64, PH = 40, DS = 48 };
+        uint8_t *msb = x264_malloc( PW*PH + PW/4*PH );
+        pixel *pl = x264_malloc( PW*PH*sizeof(pixel) );
+        if( !msb || !pl )
+            return -1;
+        uint8_t *lsb = msb + PW*PH;
+        for( int i = 0; i < PW*PH; i++ )
+            pl[i] = i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+        mc_c.plane_split8( msb, lsb, pl, PW, PW, PH );
+        ok = 1; used_asm = 1;
+        for( int wi = 1; wi <= 5 && ok; wi++ )
+            for( int hgt = 1; hgt <= 17 && ok; hgt++ )
+                for( int p = 0; p < 16 && ok; p++ )
+                {
+                    /* columns the kernel writes: width 12 is the w16 kernel */
+                    int w = wi == 3 ? 16 : 4*wi;
+                    intptr_t o1 = (1 + (p&1))*PW + 4 + (p&3);
+                    intptr_t o2 = (3 - (p&1))*PW + 8 + (p>>2);
+                    for( int k = 0; k < 2 && ok; k++ )
+                    {
+                        memset( pbuf3, 0xaa, 18*DS*sizeof(pixel) );
+                        memset( pbuf4, 0xaa, 18*DS*sizeof(pixel) );
+                        for( int y = 0; y < hgt; y++ )
+                            for( int x = 0; x < w; x++ )
+                                pbuf3[y*DS+x] = k ? (pl[o1+y*PW+x] + pl[o2+y*PW+x] + 1) >> 1 : pl[o1+y*PW+x];
+                        if( k )
+                        {
+                            set_func_name( "pixel_avg2_pk_w%d", 4*wi );
+                            call_a( mc_a.avg2_pk[wi], pbuf4, (intptr_t)DS, msb+o1, lsb+(o1>>2), msb+o2, lsb+(o2>>2),
+                                    (intptr_t)PW, hgt );
+                        }
+                        else
+                        {
+                            set_func_name( "mc_copy_pk_w%d", 4*wi );
+                            call_a( mc_a.copy_pk[wi], pbuf4, (intptr_t)DS, msb+o1, lsb+(o1>>2), (intptr_t)PW, hgt );
+                        }
+                        if( memcmp( pbuf3, pbuf4, 18*DS*sizeof(pixel) ) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "%s_pk w%d h%d phases %d,%d: differs [FAILED]\n", k ? "avg2" : "copy",
+                                     4*wi, hgt, (int)(o1&3), (int)(o2&3) );
+                        }
+                    }
+                }
+        /* positive control: lsb bit 1 (a step of 2, 1 in the average) of the last
+         * pixel of the last row of source 1 */
+        for( int k = 0; k < 2 && ok; k++ )
+        {
+            intptr_t o1 = PW + 7, o2 = 2*PW + 8, f = o1 + 15*PW + 19;
+            memset( pbuf3, 0xaa, 18*DS*sizeof(pixel) );
+            memset( pbuf4, 0xaa, 18*DS*sizeof(pixel) );
+            for( int y = 0; y < 16; y++ )
+                for( int x = 0; x < 20; x++ )
+                    pbuf3[y*DS+x] = k ? (pl[o1+y*PW+x] + pl[o2+y*PW+x] + 1) >> 1 : pl[o1+y*PW+x];
+            lsb[f>>2] ^= 2 << (2*(f&3));
+            if( k )
+                mc_a.avg2_pk[5]( pbuf4, DS, msb+o1, lsb+(o1>>2), msb+o2, lsb+(o2>>2), PW, 16 );
+            else
+                mc_a.copy_pk[5]( pbuf4, DS, msb+o1, lsb+(o1>>2), PW, 16 );
+            lsb[f>>2] ^= 2 << (2*(f&3));
+            if( !memcmp( pbuf3, pbuf4, 18*DS*sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "%s_pk check is blind\n", k ? "avg2" : "copy" );
+            }
+        }
+        x264_free( msb );
+        x264_free( pl );
+        report( "mc pk :" );
+    }
 #endif
 
 #define INTEGRAL_INIT( name, size, ... )\

@@ -450,6 +450,45 @@ void x264_plane_split8_avx2( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_
 void x264_plane_split8_avx512icl( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_stride, int w, int h );
 void x264_plane_unpack8_avx2( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
 void x264_plane_unpack8_avx512icl( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
+#define PK_PRED_DECL( cpu )\
+void x264_mc_copy_pk_w4_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_mc_copy_pk_w8_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_mc_copy_pk_w16_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_mc_copy_pk_w20_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_pixel_avg2_pk_w4_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_pixel_avg2_pk_w8_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_pixel_avg2_pk_w16_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, uint8_t *, uint8_t *, intptr_t, int );\
+void x264_pixel_avg2_pk_w20_##cpu( pixel *, intptr_t, uint8_t *, uint8_t *, uint8_t *, uint8_t *, intptr_t, int );
+#define x264_mc_copy_pk_w4_avx2 x264_template(mc_copy_pk_w4_avx2)
+#define x264_mc_copy_pk_w8_avx2 x264_template(mc_copy_pk_w8_avx2)
+#define x264_mc_copy_pk_w16_avx2 x264_template(mc_copy_pk_w16_avx2)
+#define x264_mc_copy_pk_w20_avx2 x264_template(mc_copy_pk_w20_avx2)
+#define x264_pixel_avg2_pk_w4_avx2 x264_template(pixel_avg2_pk_w4_avx2)
+#define x264_pixel_avg2_pk_w8_avx2 x264_template(pixel_avg2_pk_w8_avx2)
+#define x264_pixel_avg2_pk_w16_avx2 x264_template(pixel_avg2_pk_w16_avx2)
+#define x264_pixel_avg2_pk_w20_avx2 x264_template(pixel_avg2_pk_w20_avx2)
+#define x264_mc_copy_pk_w4_avx512 x264_template(mc_copy_pk_w4_avx512)
+#define x264_mc_copy_pk_w8_avx512 x264_template(mc_copy_pk_w8_avx512)
+#define x264_mc_copy_pk_w16_avx512 x264_template(mc_copy_pk_w16_avx512)
+#define x264_mc_copy_pk_w20_avx512 x264_template(mc_copy_pk_w20_avx512)
+#define x264_pixel_avg2_pk_w4_avx512 x264_template(pixel_avg2_pk_w4_avx512)
+#define x264_pixel_avg2_pk_w8_avx512 x264_template(pixel_avg2_pk_w8_avx512)
+#define x264_pixel_avg2_pk_w16_avx512 x264_template(pixel_avg2_pk_w16_avx512)
+#define x264_pixel_avg2_pk_w20_avx512 x264_template(pixel_avg2_pk_w20_avx512)
+PK_PRED_DECL( avx2 )
+PK_PRED_DECL( avx512 )
+#undef PK_PRED_DECL
+#define PK_PRED_INIT( cpu )\
+    pf->copy_pk[1] = x264_mc_copy_pk_w4_##cpu;\
+    pf->copy_pk[2] = x264_mc_copy_pk_w8_##cpu;\
+    pf->copy_pk[3] = x264_mc_copy_pk_w16_##cpu;\
+    pf->copy_pk[4] = x264_mc_copy_pk_w16_##cpu;\
+    pf->copy_pk[5] = x264_mc_copy_pk_w20_##cpu;\
+    pf->avg2_pk[1] = x264_pixel_avg2_pk_w4_##cpu;\
+    pf->avg2_pk[2] = x264_pixel_avg2_pk_w8_##cpu;\
+    pf->avg2_pk[3] = x264_pixel_avg2_pk_w16_##cpu;\
+    pf->avg2_pk[4] = x264_pixel_avg2_pk_w16_##cpu;\
+    pf->avg2_pk[5] = x264_pixel_avg2_pk_w20_##cpu;
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
@@ -1117,6 +1156,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->plane_split8 = x264_plane_split8_avx2;
         pf->plane_unpack8 = x264_plane_unpack8_avx2;
         pf->hpel_filter8 = x264_hpel_filter8_avx2;
+        PK_PRED_INIT( avx2 )
 #endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
@@ -1138,6 +1178,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
             pf->plane_split8 = x264_plane_split8_avx512icl;
             pf->plane_unpack8 = x264_plane_unpack8_avx512icl;
         }
+        PK_PRED_INIT( avx512 )
 #endif
     }
 #else // !HIGH_BIT_DEPTH

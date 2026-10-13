@@ -344,6 +344,38 @@ lowres_hu3:    db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
                db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
 %endif
 
+%if HIGH_BIT_DEPTH
+; --me-8bit 2 packed readers: one 128 byte record per column phase p, s = (p+i)&3
+; +0  shuf16: word i = lsb byte (p+i)>>2, i = 0-15 (lanes: pixels 0-7, 8-15)
+; +32 shuf8:  the same for i = 0-7 in both lanes (lanes: two rows)
+; +64 avx2:   word i * 2^(14-2s), then >> 14
+; +96 avx512: word i >> 2s
+%macro PK8_SHUF 16
+    %rep 16
+        db %1, -1
+        %rotate 1
+    %endrep
+%endmacro
+ALIGN 32
+pk8_tab: PK8_SHUF 0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3
+         PK8_SHUF 0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1
+         times 4 dw 16384, 4096, 1024, 256
+         times 4 dw 0, 2, 4, 6
+         PK8_SHUF 0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4
+         PK8_SHUF 0,0,0,1,1,1,1,2,0,0,0,1,1,1,1,2
+         times 4 dw 4096, 1024, 256, 16384
+         times 4 dw 2, 4, 6, 0
+         PK8_SHUF 0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4
+         PK8_SHUF 0,0,1,1,1,1,2,2,0,0,1,1,1,1,2,2
+         times 4 dw 1024, 256, 16384, 4096
+         times 4 dw 4, 6, 0, 2
+         PK8_SHUF 0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4
+         PK8_SHUF 0,1,1,1,1,2,2,2,0,1,1,1,1,2,2,2
+         times 4 dw 256, 16384, 4096, 1024
+         times 4 dw 6, 0, 2, 4
+pk8_pw3: times 2 dw 3
+%endif
+
 SECTION .text
 
 cextern pb_0
@@ -5288,6 +5320,168 @@ SATD_BI 16, 16, 1
 SATD_BI 16,  8, 1
 SATD_BI  8, 16, 1
 SATD_BI  8,  8, 1
+%endif ; ARCH_X86_64
+
+;=============================================================================
+; --me-8bit 2 packed readers: the msb8/lsb8 planes read in place, pixel = msb << 2
+; | its 2 lsb bits. A source is (msb, lsb): msb at its pixel, lsb at the byte
+; holding it; its column phase is msb & 3 (x264_frame_new's planes keep x & 3
+; in the msb address). Rows are stride bytes (msb) and stride/4 (lsb) apart.
+; 16 pixels: avx2 vpbroadcastq, pshufb, pmullw, psrlw, pmovzxbw, psllw, por;
+; avx512 (ymm) vpbroadcastq, pshufb, vpsrlvw, pmovzxbw, psllw, vpternlogd.
+;=============================================================================
+%if ARCH_X86_64
+
+; %1 = %3 << 2 | (%1 >> 2s) & 3: %1 lsb bytes as words, %2 mul|sft, %3 msb words,
+; %4 pw 3 (avx512)
+%macro PK_MERGE 4
+%if cpuflag(avx512)
+    vpsrlvw       %1, %1, %2
+    psllw         %3, 2
+    vpternlogd    %1, %3, %4, 0xec
+%else
+    pmullw        %1, %2
+    psrlw         %1, 14
+    psllw         %3, 2
+    por           %1, %3
+%endif
+%endmacro
+
+; m%1 = 16 pixels of a row, msb at %2, lsb at %3 (8 bytes read); %4 shuf16 and
+; %5 mul|sft of the source's phase; m%6 tmp
+%macro PK_LOAD16 6
+    vpbroadcastq m%1, %3
+    pshufb       m%1, %4
+    pmovzxbw     m%6, %2
+    PK_MERGE     m%1, %5, m%6, pk_m3
+%endmacro
+
+; xm%1 = 8 pixels of a row, msb at %2 (8 bytes), lsb at %3 (4 bytes); %4/%5 xmm
+%macro PK_LOAD8 6
+    movd        xm%1, %3
+    pshufb      xm%1, %4
+    pmovzxbw    xm%6, %2
+    PK_MERGE    xm%1, %5, xm%6, pk_xm3
+%endmacro
+
+; m%1 = 8 pixels of row a (lane 0) and row b (lane 1): msb at %2/%3, lsb at
+; %4/%5; %6 shuf8, %7 mul|sft; m%8 tmp
+%macro PK_LOAD8x2 8
+    movd        xm%1, %4
+    movd        xm%8, %5
+    vinserti128  m%1, m%1, xm%8, 1
+    pshufb       m%1, %6
+    movq        xm%8, %2
+    movhps      xm%8, %3
+    pmovzxbw     m%8, xm%8
+    PK_MERGE     m%1, %7, m%8, pk_m3
+%endmacro
+
+; pk_so: the shuf in a pk8_tab record (0 shuf16, 32 shuf8), pk_mo: mul|sft
+%macro PK_INIT 1
+%if cpuflag(avx512)
+    %define pk_mo 96
+%else
+    %define pk_mo 64
+%endif
+    %define pk_so %1
+%endmacro
+
+; %1, %2 = shuf, mul|sft of the source whose msb is %3; %4 = pk8_tab, %5/%6 tmp (q/d)
+%macro PK_TABS 6
+    mov           %5, %3
+    and           %6, 3
+    shl           %6, 7
+    movu          %1, [%4+%5+pk_so]
+    movu          %2, [%4+%5+pk_mo]
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void mc_copy_pk_wW( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int h )
+; void pixel_avg2_pk_wW( pixel *dst, intptr_t i_dst, uint8_t *msb1, uint8_t *lsb1,
+;                        uint8_t *msb2, uint8_t *lsb2, intptr_t i_src, int h )
+; mc_copy and pixel_avg2 (pavgw) of packed sources, W = 4, 8, 16, 20, h >= 1
+;-----------------------------------------------------------------------------
+%macro PK_PRED 2 ; width, avg2
+%if %2
+cglobal pixel_avg2_pk_w%1, 8,11,8
+    %define pk_s r6
+    %define pk_h r7d
+%else
+cglobal mc_copy_pk_w%1, 6,11,8
+    %define pk_s r4
+    %define pk_h r5d
+%endif
+    %define pk_m3 m7
+    %define pk_xm3 xm7
+    PK_INIT 0
+    FIX_STRIDES   r1
+    lea           r9, [pk8_tab]
+    PK_TABS       m2, m3, r2, r9, r10, r10d
+%if %2
+    PK_TABS       m5, m6, r4, r9, r10, r10d
+%endif
+%if cpuflag(avx512)
+    vpbroadcastd  m7, [pk8_pw3]
+%endif
+    mov           r8, pk_s
+    shr           r8, 2
+.loop:
+%if %1 >= 16
+    PK_LOAD16      0, [r2], [r3], m2, m3, 1
+%if %2
+    PK_LOAD16      4, [r4], [r5], m5, m6, 1
+    pavgw         m0, m4
+%endif
+    movu        [r0], m0
+%if %1 == 20
+    PK_LOAD8       0, [r2+16], [r3+4], xm2, xm3, 1
+%if %2
+    PK_LOAD8       4, [r4+16], [r5+4], xm5, xm6, 1
+    pavgw        xm0, xm4
+%endif
+    movq     [r0+32], xm0
+%endif
+%else
+    PK_LOAD8       0, [r2], [r3], xm2, xm3, 1
+%if %2
+    PK_LOAD8       4, [r4], [r5], xm5, xm6, 1
+    pavgw        xm0, xm4
+%endif
+%if %1 == 8
+    movu        [r0], xm0
+%else
+    movq        [r0], xm0
+%endif
+%endif
+    add           r0, r1
+    add           r2, pk_s
+    add           r3, r8
+%if %2
+    add           r4, pk_s
+    add           r5, r8
+%endif
+    dec         pk_h
+    jg .loop
+    RET
+%endmacro
+
+%macro PK_PRED_ALL 0
+    PK_PRED  4, 0
+    PK_PRED  8, 0
+    PK_PRED 16, 0
+    PK_PRED 20, 0
+    PK_PRED  4, 1
+    PK_PRED  8, 1
+    PK_PRED 16, 1
+    PK_PRED 20, 1
+%endmacro
+
+INIT_YMM avx2
+PK_PRED_ALL
+INIT_YMM avx512
+PK_PRED_ALL
+INIT_YMM avx2
 %endif ; ARCH_X86_64
 
 %if ARCH_X86_64

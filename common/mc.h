@@ -148,6 +148,13 @@ typedef struct
      * pixels (a multiple of 16), msb and lsb at an x that is a multiple of 4,
      * rows i_dst pixels (dst), i_src bytes (msb) and i_src/4 bytes (lsb) apart */
     void (*plane_unpack8)( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
+    /* analyse.i_me_8bit 2, high bit depth, x86_64 asm only (NULL otherwise):
+     * mc_copy and pixel_avg2 of sources read in place from msb8/lsb8 planes
+     * (x264_pk_hpel_pair), [i_width>>2] for widths 4, 8, 12 (writes 16), 16
+     * and 20; i_src is the msb stride */
+    void (*copy_pk[6])( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int i_height );
+    void (*avg2_pk[6])( pixel *dst, intptr_t i_dst, uint8_t *msb1, uint8_t *lsb1,
+                        uint8_t *msb2, uint8_t *lsb2, intptr_t i_src, int i_height );
     weight_fn_t *weight;
     weight_fn_t *offsetadd;
     weight_fn_t *offsetsub;
@@ -192,6 +199,32 @@ pixel *x264_get_ref_split8( x264_t *h, pixel *dst, intptr_t *i_dst, pixel **src,
 #define x264_mc_hpel_pair_split8 x264_template(mc_hpel_pair_split8)
 void x264_mc_hpel_pair_split8( x264_t *h, pixel *dst[2], pixel *buf, uint8_t **src8, intptr_t i_src,
                                int mvx, int mvy, int i_width, int i_height );
+
+/* x264_mc_hpel_pair read in place from src8 by the packed readers (copy_pk,
+ * avg2_pk, the *_pk cmps): pk = msb and lsb of the first source, then of the
+ * second (the first again where there is none); returns whether there is one.
+ * A source's column phase is its msb address & 3: x264_frame_new's msb8 planes
+ * keep x & 3 in it (64-aligned blocks, strides and PADH multiples of 4). */
+static ALWAYS_INLINE int x264_pk_hpel_pair( uint8_t *pk[4], uint8_t **src8, intptr_t i_src, int mvx, int mvy )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    intptr_t offset = (mvy>>2)*i_src + (mvx>>2);
+    intptr_t o0 = offset + ((mvy&3) == 3) * i_src;
+    int k0 = x264_hpel_ref0[qpel_idx];
+    pk[0] = src8[k0] + o0;
+    pk[1] = src8[4+k0] + (o0 >> 2);
+    if( !(qpel_idx & 5) )
+    {
+        pk[2] = pk[0];
+        pk[3] = pk[1];
+        return 0;
+    }
+    intptr_t o1 = offset + ((mvx&3) == 3);
+    int k1 = x264_hpel_ref1[qpel_idx];
+    pk[2] = src8[k1] + o1;
+    pk[3] = src8[4+k1] + (o1 >> 2);
+    return 1;
+}
 
 /* i_me_8bit 2: x264_frame_filter's scratch rows of h, v and c before their
  * split, w the hpel width (frame width + 16), in h->scratch_buffer after the

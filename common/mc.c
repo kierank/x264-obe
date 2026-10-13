@@ -728,6 +728,8 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->plane_split8 = plane_split8;
     pf->plane_unpack8 = plane_unpack8;
 #endif
+    memset( pf->copy_pk, 0, sizeof(pf->copy_pk) );
+    memset( pf->avg2_pk, 0, sizeof(pf->avg2_pk) );
 
     pf->integral_init4h = integral_init4h;
     pf->integral_init8h = integral_init8h;
@@ -838,12 +840,31 @@ static void split8_view( x264_t *h, pixel *view[4], pixel *buf, uint8_t **src8, 
     }
 }
 
+/* mc_luma's unweighted prediction at a subpel mv, read in place (copy_pk/avg2_pk) */
+static ALWAYS_INLINE void mc_pred_pk( x264_t *h, pixel *dst, intptr_t i_dst, uint8_t **src8, intptr_t i_src,
+                                      int mvx, int mvy, int i_width, int i_height )
+{
+    uint8_t *pk[4];
+    if( x264_pk_hpel_pair( pk, src8, i_src, mvx, mvy ) )
+        h->mc.avg2_pk[i_width>>2]( dst, i_dst, pk[0], pk[1], pk[2], pk[3], i_src, i_height );
+    else
+        h->mc.copy_pk[i_width>>2]( dst, i_dst, pk[0], pk[1], i_src, i_height );
+}
+
 void x264_mc_luma_split8( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8, intptr_t i_src,
                           int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
 {
     if( !((mvx|mvy)&3) )
     {
         h->mc.mc_luma( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+        return;
+    }
+    if( h->mc.copy_pk[1] )
+    {
+        /* weighted: in place, as mc_luma weights its qpel average */
+        mc_pred_pk( h, dst, i_dst, src8, i_src, mvx, mvy, i_width, i_height );
+        if( weight->weightfn )
+            weight->weightfn[i_width>>2]( dst, i_dst, dst, i_dst, weight, i_height );
         return;
     }
     ALIGNED_ARRAY_64( pixel, buf,[2*X264_SPLIT8_STRIDE*SPLIT8_ROWS] );
@@ -857,6 +878,14 @@ pixel *x264_get_ref_split8( x264_t *h, pixel *dst, intptr_t *i_dst, pixel **src,
 {
     if( !((mvx|mvy)&3) )
         return h->mc.get_ref( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+    if( h->mc.copy_pk[1] )
+    {
+        /* dst also where get_ref would return an hpel plane */
+        mc_pred_pk( h, dst, *i_dst, src8, i_src, mvx, mvy, i_width, i_height );
+        if( weight->weightfn )
+            weight->weightfn[i_width>>2]( dst, *i_dst, dst, *i_dst, weight, i_height );
+        return dst;
+    }
     ALIGNED_ARRAY_64( pixel, buf,[2*X264_SPLIT8_STRIDE*SPLIT8_ROWS] );
     pixel *view[4];
     intptr_t stride = *i_dst;
