@@ -2388,3 +2388,57 @@ PREDICT_16x16_DC_128
 INIT_YMM avx
 PREDICT_16x16_DC_128
 %endif
+
+;-----------------------------------------------------------------------------
+; void predict_8x8c_dc_left( pixel *src )
+; void predict_8x16c_dc_left( pixel *src )
+;-----------------------------------------------------------------------------
+; rows %1..%1+3 of r1d; 8-bit splats with r3 = 0x0101010101010101
+%macro PRED_C_DC_LEFT_STORE 1
+%if HIGH_BIT_DEPTH
+    movd         m0, r1d
+%if cpuflag(avx2)
+    vpbroadcastw m0, m0
+%else
+    pshuflw      m0, m0, q0000
+    punpcklqdq   m0, m0
+%endif
+    mova [r0+(%1+0)*FDEC_STRIDEB], m0
+    mova [r0+(%1+1)*FDEC_STRIDEB], m0
+    mova [r0+(%1+2)*FDEC_STRIDEB], m0
+    mova [r0+(%1+3)*FDEC_STRIDEB], m0
+%else
+    imul         r1, r3
+    mov  [r0+(%1+0)*FDEC_STRIDE], r1
+    mov  [r0+(%1+1)*FDEC_STRIDE], r1
+    mov  [r0+(%1+2)*FDEC_STRIDE], r1
+    mov  [r0+(%1+3)*FDEC_STRIDE], r1
+%endif
+%endmacro
+
+; each 4-row group is the rounded mean of its own 4 left neighbours
+%macro PREDICT_C_DC_LEFT 1 ; height
+cglobal predict_8x%1c_dc_left, 1,4
+%if HIGH_BIT_DEPTH == 0
+    mov          r3, 0x0101010101010101
+%endif
+%assign %%y 0
+%rep %1/4
+    PRED_LEFT4   %%y
+    PRED_C_DC_LEFT_STORE %%y
+%assign %%y %%y+4
+%endrep
+    RET
+%endmacro
+
+%if HIGH_BIT_DEPTH
+INIT_XMM sse2
+PREDICT_C_DC_LEFT 8
+PREDICT_C_DC_LEFT 16
+INIT_XMM avx2
+PREDICT_C_DC_LEFT 8
+PREDICT_C_DC_LEFT 16
+%elif ARCH_X86_64
+INIT_XMM sse2
+PREDICT_C_DC_LEFT 16
+%endif
