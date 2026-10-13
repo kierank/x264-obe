@@ -604,7 +604,7 @@ static void x264_weight_cache_mmx2( x264_t *h, x264_weight_t *w )
 MC_WEIGHT_WTAB(weight,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(weight_ns,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(offsetadd,avx2,avx2,avx2,16)
-MC_WEIGHT_WTAB(offsetsub,avx2,avx2,avx2,16)
+MC_WEIGHT_WTAB(offsetsub,avx2,avx2,sse2,16)
 
 /* pmulhrsw( pix<<(15-BIT_DEPTH), scale<<(BIT_DEPTH-denom) ), or pix by scale<<(15-denom)
  * when scale < 1<<denom; cacheb = offset + 0x7fff-PIXEL_MAX for the paddsw/psubusw clip.
