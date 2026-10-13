@@ -89,6 +89,8 @@ pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4
 pd_8: times 4 dd 8
 %if HIGH_BIT_DEPTH
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
+deint16to8_permq: db 0,2,4,6,1,3,5,7 ; zmm vpermq/vpermd indices, byte loads, after it for the same reason
+deint16to8_permd: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 %endif
 
 SECTION .text
@@ -3149,14 +3151,17 @@ FRAME_INIT_LOWRES8
 ;-----------------------------------------------------------------------------
 ; void plane_copy_16to8( uint8_t *dst, intptr_t i_dst, uint16_t *src, intptr_t i_src, int w, int h )
 ;-----------------------------------------------------------------------------
-; --weightp-8bit: min( (x+2)>>2, 255 ), w rounded up to mmsize. m2 = pw_2.
+; --weightp-8bit: min( (x+2)>>2, 255 ), w rounded up to mmsize. m2 = pw_2, m3 = qword order.
 %macro PLANE_COPY_16TO8 0
-cglobal plane_copy_16to8, 6,7,3
+cglobal plane_copy_16to8, 6,7,4
     FIX_STRIDES r3
-%if mmsize == 32
+%if mmsize >= 32
     vpbroadcastd m2, [pw_2]
 %else
     mova     m2, [pw_2]
+%endif
+%if mmsize == 64
+    pmovzxbq m3, [deint16to8_permq]
 %endif
 .loopy:
     xor     r6d, r6d
@@ -3168,7 +3173,9 @@ cglobal plane_copy_16to8, 6,7,3
     psrlw    m0, 2
     psrlw    m1, 2
     packuswb m0, m1                 ; 256 saturates to 255
-%if mmsize == 32
+%if mmsize == 64
+    vpermq   m0, m3, m0
+%elif mmsize == 32
     vpermq   m0, m0, q3120
 %endif
     movu [r0+r6], m0
@@ -3187,18 +3194,27 @@ cglobal plane_copy_16to8, 6,7,3
 ;                                     uint16_t *src, intptr_t i_src, int w, int h )
 ;-----------------------------------------------------------------------------
 ; --weightp-8bit: plane_copy_deinterleave then min( (x+2)>>2, 255 ), w rounded up to
-; mmsize. packuswb interleaves the bytes, the low ones are u, the high ones v.
-; m4 = pw_2, m5 = pw_00ff, m6 = dword order.
+; mmsize (sse2, avx2) or exact (avx512: masked last stores, as an overrun of 63 would
+; reach the next row of the weightp layout). packuswb interleaves the bytes, the low
+; ones are u, the high ones v. m4 = pw_2, m5 = pw_00ff, m6 = dword order.
 %macro PLANE_COPY_DEINTERLEAVE_16TO8 0
+%if mmsize == 64
+cglobal plane_copy_deinterleave_16to8, 8,11,7
+%else
 cglobal plane_copy_deinterleave_16to8, 8,9,7
+%endif
     FIX_STRIDES r5
-%if mmsize == 32
+%if mmsize >= 32
     vpbroadcastd m4, [pw_2]
     vpbroadcastd m5, [pw_00ff]
-    pmovzxbd     m6, [lowres8_perm]
 %else
     mova     m4, [pw_2]
     mova     m5, [pw_00ff]
+%endif
+%if mmsize == 64
+    pmovzxbd     m6, [deint16to8_permd]
+%elif mmsize == 32
+    pmovzxbd     m6, [lowres8_perm]
 %endif
 .loopy:
     xor     r8d, r8d
@@ -3223,15 +3239,31 @@ cglobal plane_copy_deinterleave_16to8, 8,9,7
     pand     m2, m5
     packuswb m0, m2                 ; u
     packuswb m1, m3                 ; v
-%if mmsize == 32
+%if mmsize >= 32
     vpermd   m0, m6, m0
     vpermd   m1, m6, m1
+%endif
+%if mmsize == 64
+    mov     r9d, r6d
+    sub     r9d, r8d
+    cmp     r9d, mmsize
+    jl .tail
 %endif
     movu [r0+r8], m0
     movu [r2+r8], m1
     add     r8d, mmsize
     cmp     r8d, r6d
     jl .loopx
+%if mmsize == 64
+    jmp .nexty
+.tail:
+    mov      r10, -1
+    bzhi     r10, r10, r9
+    kmovq     k1, r10
+    vmovdqu8 [r0+r8]{k1}, m0
+    vmovdqu8 [r2+r8]{k1}, m1
+.nexty:
+%endif
     add      r0, r1
     add      r2, r3
     add      r4, r5
@@ -3244,6 +3276,9 @@ INIT_XMM sse2
 PLANE_COPY_16TO8
 PLANE_COPY_DEINTERLEAVE_16TO8
 INIT_YMM avx2
+PLANE_COPY_16TO8
+PLANE_COPY_DEINTERLEAVE_16TO8
+INIT_ZMM avx512
 PLANE_COPY_16TO8
 PLANE_COPY_DEINTERLEAVE_16TO8
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64

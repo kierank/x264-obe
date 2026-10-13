@@ -256,8 +256,10 @@
 #define x264_plane_copy_core_mmx2 x264_template(plane_copy_core_mmx2)
 #define x264_plane_copy_16to8_sse2 x264_template(plane_copy_16to8_sse2)
 #define x264_plane_copy_16to8_avx2 x264_template(plane_copy_16to8_avx2)
+#define x264_plane_copy_16to8_avx512 x264_template(plane_copy_16to8_avx512)
 #define x264_plane_copy_deinterleave_16to8_sse2 x264_template(plane_copy_deinterleave_16to8_sse2)
 #define x264_plane_copy_deinterleave_16to8_avx2 x264_template(plane_copy_deinterleave_16to8_avx2)
+#define x264_plane_copy_deinterleave_16to8_avx512 x264_template(plane_copy_deinterleave_16to8_avx512)
 #define x264_plane_copy_deinterleave_avx x264_template(plane_copy_deinterleave_avx)
 #define x264_plane_copy_deinterleave_mmx x264_template(plane_copy_deinterleave_mmx)
 #define x264_plane_copy_deinterleave_rgb_sse2 x264_template(plane_copy_deinterleave_rgb_sse2)
@@ -483,6 +485,7 @@ void x264_plane_copy_deinterleave_16to8_##cpu( uint8_t *dstu, intptr_t i_dstu, u
                                                pixel *src, intptr_t i_src, int w, int h );
 PLANE_COPY_16TO8( sse2 )
 PLANE_COPY_16TO8( avx2 )
+PLANE_COPY_16TO8( avx512 )
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
@@ -1203,6 +1206,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512 )
     {
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx512;
+#if ARCH_X86_64
+        pf->plane_copy_16to8 = x264_plane_copy_16to8_avx512;
+        pf->plane_copy_deinterleave_16to8 = x264_plane_copy_deinterleave_16to8_avx512;
+#endif
     }
 #else // !HIGH_BIT_DEPTH
 
