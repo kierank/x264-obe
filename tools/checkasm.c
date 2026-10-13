@@ -2158,15 +2158,18 @@ static int check_mc( int cpu_ref, int cpu_new )
                         }
                     }
                 }
-            /* nothing outside each plane's msb [-8, 640) and lsb [-2, 160) */
+            /* nothing outside each plane's msb [-8, 640) and lsb [-2, 160); a
+             * plane's left margin lies in the previous plane's 2048 bytes */
             for( int k = 0; k < 3*2048 + 64 && ok; k++ )
             {
                 int rel = k - 32;
-                int pl = rel >= 0 ? rel >> 11 : 0;
-                int in = rel - (pl << 11);
-                int b_msb = in >= o - 8 && in < o + 640;
-                int b_lsb = in >= 1024 + o/4 - 2 && in < 1024 + o/4 + 160;
-                if( buf8[k] != 0xaa && (pl > 2 || !(b_msb || b_lsb)) )
+                int allowed = 0;
+                for( int pl = 0; pl < 3; pl++ )
+                {
+                    int in = rel - (pl << 11);
+                    allowed |= (in >= o - 8 && in < o + 640) || (in >= 1024 + o/4 - 2 && in < 1024 + o/4 + 160);
+                }
+                if( buf8[k] != 0xaa && !allowed )
                 {
                     ok = 0;
                     fprintf( stderr, "hpel filter8: stray write at %d pass %d\n", k, pass );
