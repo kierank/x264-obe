@@ -140,10 +140,10 @@ enum sei_payload_type_e
  * real weights are being used. */
 
 #define X264_WEIGHTP_FAKE (-1)
-/* x264_weights_analyse chroma arrays of MB row stride (mb_width + 15) & ~15: fenc sum,
- * ref sum, ref min|max, weighted ref sum - fenc sum (u and v of each), then the
- * offset ranges per MB row */
-#define X264_WEIGHT_SUMS 9
+/* x264_weights_analyse arrays of MB row stride (mb_width + 15) & ~15: chroma fenc sum,
+ * ref sum, ref min|max (u and v of each), the 2*X264_WEIGHT_WSLOTS (3) weighted ref sums,
+ * their offset ranges, luma ref sum and min|max (encoder/weightp.h) */
+#define X264_WEIGHT_SUMS (6 + 6 + 1 + 2)
 
 #define X264_SCAN8_LUMA_SIZE (5*8)
 #define X264_SCAN8_SIZE (X264_SCAN8_LUMA_SIZE*3)
