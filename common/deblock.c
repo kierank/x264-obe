@@ -134,22 +134,6 @@ static void deblock_h_luma_c( pixel *pix, intptr_t stride, int alpha, int beta, 
 {
     deblock_luma_c( pix, 1, stride, alpha, beta, tc0 );
 }
-static void deblock_luma_mb_c( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges )
-{
-    for( int dir = 0; dir < 2; dir++ )
-        for( int edge = 0; edge < 4; edge++ )
-            if( (edges & (1 << (dir*4+edge))) && M32( bs[dir][edge] ) )
-            {
-                x264_deblock_edge_t *p = &e[edge ? 2 : dir];
-                int8_t tc[4];
-                for( int i = 0; i < 4; i++ )
-                    tc[i] = p->tc0[bs[dir][edge][i]];
-                if( dir )
-                    deblock_v_luma_c( pix + 4*edge*stride, stride, p->alpha, p->beta, tc );
-                else
-                    deblock_h_luma_c( pix + 4*edge, stride, p->alpha, p->beta, tc );
-            }
-}
 
 static ALWAYS_INLINE void deblock_edge_chroma_c( pixel *pix, intptr_t xstride, int alpha, int beta, int8_t tc )
 {
@@ -253,6 +237,34 @@ static void deblock_v_luma_intra_c( pixel *pix, intptr_t stride, int alpha, int 
 static void deblock_h_luma_intra_c( pixel *pix, intptr_t stride, int alpha, int beta )
 {
     deblock_luma_intra_c( pix, 1, stride, alpha, beta );
+}
+static void deblock_luma_mb_c( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges )
+{
+    for( int dir = 0; dir < 2; dir++ )
+        for( int edge = 0; edge < 4; edge++ )
+        {
+            int bit = 1 << (dir*4+edge);
+            x264_deblock_edge_t *p = &e[edge ? 2 : dir];
+            if( !(edges & bit) )
+                continue;
+            if( !edge && (edges & (bit << 8)) )
+            {
+                if( dir )
+                    deblock_v_luma_intra_c( pix, stride, p->alpha, p->beta );
+                else
+                    deblock_h_luma_intra_c( pix, stride, p->alpha, p->beta );
+            }
+            else if( M32( bs[dir][edge] ) )
+            {
+                int8_t tc[4];
+                for( int i = 0; i < 4; i++ )
+                    tc[i] = p->tc0[bs[dir][edge][i]];
+                if( dir )
+                    deblock_v_luma_c( pix + 4*edge*stride, stride, p->alpha, p->beta, tc );
+                else
+                    deblock_h_luma_c( pix + 4*edge, stride, p->alpha, p->beta, tc );
+            }
+        }
 }
 
 static ALWAYS_INLINE void deblock_edge_chroma_intra_c( pixel *pix, intptr_t xstride, int alpha, int beta )

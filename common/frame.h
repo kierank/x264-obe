@@ -206,7 +206,8 @@ typedef struct
     int16_t alpha;
     int16_t beta;
 } x264_deblock_edge_t;
-/* edges: bit dir*4+edge; set only for edges whose class has nonzero alpha and beta */
+/* edges: bit dir*4+edge; set only for edges whose class has nonzero alpha and beta.
+ * Bits 8 and 12 (with bits 0 and 4): the left and top edge take the bS 4 intra filter, whatever their bS. */
 typedef void (*x264_deblock_mb_t)( pixel *pix, intptr_t stride, uint8_t bs[2][8][4], x264_deblock_edge_t e[3], int edges );
 typedef struct
 {
