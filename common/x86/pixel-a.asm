@@ -9351,7 +9351,7 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
 %endif
 %endmacro
 
-; %1 = per lane { sum of %1, of %2, of %3, of %4 }, from 4 dwords a lane each; clobbers %2 %3
+; %1 = per lane { sum of %1, of %2, of %3, of %4 }, from 4 dwords a lane each; clobbers %3
 %macro HADD4D 6 ; a, b, c, d, tmp, tmp
     punpckldq  %5, %1, %2
     punpckhdq  %1, %2
