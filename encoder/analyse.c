@@ -1279,6 +1279,16 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
 
+/* The ref that list0 ref i_ref is a blind duplicate of, else -1. In a field mb
+ * the duplicate frame gives two refs, copies of field refs 0 and 1. */
+static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
+{
+    int dupe = h->mb.ref_blind_dupe;
+    if( MB_INTERLACED )
+        return dupe >= 0 && (i_ref >> 1) == dupe ? i_ref & 1 : -1;
+    return i_ref == dupe ? 0 : -1;
+}
+
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
@@ -1305,9 +1315,10 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         CP32( h->mb.mvp16[0][i_ref], m.mvp );
         h->mb.mvp16_valid[0] |= 1U << i_ref;
 
-        if( h->mb.ref_blind_dupe == i_ref )
+        int i_dupe_src = x264_mb_blind_dupe_src( h, i_ref );
+        if( i_dupe_src >= 0 )
         {
-            CP32( m.mv, a->l0.mvc[0][0] );
+            CP32( m.mv, a->l0.mvc[i_dupe_src][0] );
             x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
         }
         else
@@ -1383,20 +1394,21 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
     #define CHECK_NEIGHBOUR(i)\
     {\
         int ref = h->mb.cache.ref[0][X264_SCAN8_0+i];\
-        if( ref > i_maxref && ref != h->mb.ref_blind_dupe )\
+        if( ref > i_maxref && x264_mb_blind_dupe_src( h, ref ) < 0 )\
             i_maxref = ref;\
     }
 
     /* early termination: if 16x16 chose ref 0, then evalute no refs older
      * than those used by the neighbors. In a field MB also if it chose ref 1,
      * the other field of the nearest frame, and keep the nearer field. */
-    if( a->b_early_terminate && (i_maxref > 0 && (a->l0.me16x16.i_ref == 0 || a->l0.me16x16.i_ref == h->mb.ref_blind_dupe ||
+    int i_ref16_src = x264_mb_blind_dupe_src( h, a->l0.me16x16.i_ref );
+    if( a->b_early_terminate && (i_maxref > 0 && (a->l0.me16x16.i_ref == 0 || i_ref16_src >= 0 ||
         (b_field && a->l0.me16x16.i_ref == 1)) &&
         h->mb.i_mb_type_top > 0 && h->mb.i_mb_type_left[0] > 0) )
     {
         i_maxref = 0;
         if( b_field )
-            i_maxref = x264_mb_field_ref1_nearer( h, 0 ) ? 1 : a->l0.me16x16.i_ref;
+            i_maxref = x264_mb_field_ref1_nearer( h, 0 ) ? 1 : i_ref16_src >= 0 ? i_ref16_src : a->l0.me16x16.i_ref;
         CHECK_NEIGHBOUR(  -8 - 1 );
         CHECK_NEIGHBOUR(  -8 + 0 );
         CHECK_NEIGHBOUR(  -8 + 2 );
@@ -1408,6 +1420,17 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
     for( int i_ref = 0; i_ref <= i_maxref; i_ref++ )
         CP32( a->l0.mvc[i_ref][0], h->mb.mvr[0][i_ref][h->mb.i_mb_xy] );
+
+    /* refs 0..i_maxref, then the blind dupes past them whose source (searched
+     * first, its mv reused) is among those */
+    int refs[X264_REF_MAX*2];
+    int i_refs = 0;
+    for( int i_ref = 0; i_ref <= i_maxref; i_ref++ )
+        refs[i_refs++] = i_ref;
+    if( h->mb.ref_blind_dupe >= 0 )
+        for( int i_ref = h->mb.ref_blind_dupe << b_field; i_ref < (h->mb.ref_blind_dupe+1) << b_field; i_ref++ )
+            if( i_ref > i_maxref && x264_mb_blind_dupe_src( h, i_ref ) <= i_maxref )
+                refs[i_refs++] = i_ref;
 
     for( int i = 0; i < 4; i++ )
     {
@@ -1422,8 +1445,9 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
         LOAD_FENC( &m, p_fenc, 8*x8, 8*y8 );
         l0m->cost = INT_MAX;
-        for( int i_ref = 0; i_ref <= i_maxref || i_ref == h->mb.ref_blind_dupe; )
+        for( int k = 0; k < i_refs; k++ )
         {
+            int i_ref = refs[k];
             m.i_ref_cost = REF_COST( 0, i_ref );
             i_halfpel_thresh -= m.i_ref_cost;
 
@@ -1432,9 +1456,10 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
             x264_macroblock_cache_ref( h, 2*x8, 2*y8, 2, 2, 0, i_ref );
             x264_mb_predict_mv( h, 0, 4*i, 2, m.mvp );
-            if( h->mb.ref_blind_dupe == i_ref )
+            int i_dupe_src = x264_mb_blind_dupe_src( h, i_ref );
+            if( i_dupe_src >= 0 )
             {
-                CP32( m.mv, a->l0.mvc[0][i+1] );
+                CP32( m.mv, a->l0.mvc[i_dupe_src][i+1] );
                 x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
             }
             else
@@ -1447,10 +1472,6 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
             if( m.cost < l0m->cost )
                 h->mc.memcpy_aligned( l0m, &m, sizeof(x264_me_t) );
-            if( i_ref == i_maxref && i_maxref < h->mb.ref_blind_dupe )
-                i_ref = h->mb.ref_blind_dupe;
-            else
-                i_ref++;
         }
         x264_macroblock_cache_mv_ptr( h, 2*x8, 2*y8, 2, 2, 0, l0m->mv );
         x264_macroblock_cache_ref( h, 2*x8, 2*y8, 2, 2, 0, l0m->i_ref );
@@ -1478,7 +1499,8 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
     /* Duplicate refs are rarely useful in p8x8 due to the high cost of the
      * reference frame flags.  Thus, if we're not doing mixedrefs, just
      * don't bother analysing the dupes. */
-    const int i_ref = h->mb.ref_blind_dupe == a->l0.me16x16.i_ref ? 0 : a->l0.me16x16.i_ref;
+    const int i_ref16_src = x264_mb_blind_dupe_src( h, a->l0.me16x16.i_ref );
+    const int i_ref = i_ref16_src >= 0 ? i_ref16_src : a->l0.me16x16.i_ref;
     const int i_ref_cost = h->param.b_cabac || i_ref ? REF_COST( 0, i_ref ) : 0;
     pixel **p_fenc = h->mb.pic.p_fenc;
     int i_mvc;
@@ -1566,7 +1588,7 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
             x264_macroblock_cache_ref( h, 0, 2*i, 4, 2, 0, i_ref );
             x264_mb_predict_mv( h, 0, 8*i, 4, m.mvp );
             /* We can only take this shortcut if the first search was performed on ref0. */
-            if( h->mb.ref_blind_dupe == i_ref && !ref8[0] )
+            if( x264_mb_blind_dupe_src( h, i_ref ) == ref8[0] && i_ref != ref8[0] )
             {
                 /* We can just leave the MV from the previous ref search. */
                 x264_me_refine_qpel_refdupe( h, &m, NULL );
@@ -1631,7 +1653,7 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
             x264_macroblock_cache_ref( h, 2*i, 0, 2, 4, 0, i_ref );
             x264_mb_predict_mv( h, 0, 4*i, 2, m.mvp );
             /* We can only take this shortcut if the first search was performed on ref0. */
-            if( h->mb.ref_blind_dupe == i_ref && !ref8[0] )
+            if( x264_mb_blind_dupe_src( h, i_ref ) == ref8[0] && i_ref != ref8[0] )
             {
                 /* We can just leave the MV from the previous ref search. */
                 x264_me_refine_qpel_refdupe( h, &m, NULL );

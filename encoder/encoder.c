@@ -1471,11 +1471,6 @@ static int x264_validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_WARNING, "interlace + me=esa is not implemented\n" );
             h->param.analyse.i_me_method = X264_ME_UMH;
         }
-        if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
-        {
-            x264_log( h, X264_LOG_WARNING, "interlace + weightp 2 is not implemented, using weightp 1\n" );
-            h->param.analyse.i_weighted_pred = X264_WEIGHTP_SIMPLE;
-        }
     }
 
     if( !h->param.analyse.i_weighted_pred && h->param.rc.b_mb_tree && h->param.analyse.b_psy )
