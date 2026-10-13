@@ -2742,8 +2742,8 @@ static int check_mc( int cpu_ref, int cpu_new )
         /* the --me-8bit 2 readers' C glue on split planes (p_fref[1..3] NULL as in
          * the encoder): x264_ref_mc_luma, x264_ref_get_ref and x264_ref_hpel_pair
          * against C mc_luma, get_ref and x264_mc_hpel_pair on the 16-bit planes;
-         * every fraction at fullpel offsets -2..1, widths 4-20 (mc_luma 4, 8,
-         * 16, as the encoder calls it; hpel_pair to 16), heights 4-17,
+         * every fraction at fullpel offsets -2..1, widths 4-20 (mc_luma at the
+         * luma partition sizes, as the encoder calls it; hpel_pair to 16), heights 4-17,
          * unweighted and weighted (C weightfn), through mc_a (pk kernels where
          * there are any), mc_a without copy_pk/avg2_pk (the unpack temps) and C */
         enum { PW = 128, PH = 64, PS = PW*PH + PW/4*PH, PO = 24*PW + 48 };
@@ -2795,9 +2795,14 @@ static int check_mc( int cpu_ref, int cpu_new )
                             int w = gw[wi], hgt = gh[hi];
                             intptr_t sref = 32, sglue = 32;
                             pixel *pr, *pg;
-                            /* mc_luma at the widths it is called with (the x86 fullpel
-                             * copy has no 12 or 20) */
-                            if( w != 12 && w != 20 )
+                            /* at widths 12 and 20 the x86 high bit depth get_ref averages
+                             * only what the hpel diamond (bw+4) reads, bw+1 columns
+                             * (pixel_avg2_w10, w18; mc-c.c), and v 1 is it on the temps */
+                            int wc = v == 1 && (w == 12 || w == 20) ? w - 3 : w;
+                            /* mc_luma at the luma partition sizes, as it is called (x86
+                             * mc_copy_w4 copies 4 or 8 rows; no w12 or w20 copy) */
+                            if( (w == 16 && (hgt == 8 || hgt == 16)) || (w == 8 && !(hgt&3)) ||
+                                (w == 4 && (hgt == 4 || hgt == 8)) )
                             {
                                 mc_c.mc_luma( dref, 32, src16, PW, mvx, mvy, w, hgt, &wt[k] );
                                 x264_ref_mc_luma( hg, dglue, 32, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
@@ -2810,11 +2815,24 @@ static int check_mc( int cpu_ref, int cpu_new )
                             }
                             pr = mc_c.get_ref( dref, &sref, src16, PW, mvx, mvy, w, hgt, &wt[k] );
                             pg = x264_ref_get_ref( hg, dglue, &sglue, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
-                            if( split8_block_differs( pr, sref, pg, sglue, w, hgt ) )
+                            if( split8_block_differs( pr, sref, pg, sglue, wc, hgt ) )
                             {
                                 ok = 0;
                                 fprintf( stderr, "split8 glue get_ref (%d) mv %d,%d %dx%d weight %d [FAILED]\n",
                                          v, mvx, mvy, w, hgt, k );
+                            }
+                            /* the b08e023b failures (v 1, w 20, every height): the glue
+                             * is the x86 get_ref of the 16-bit planes, its 18 columns */
+                            if( v == 1 && w == 20 )
+                            {
+                                intptr_t sx = 32;
+                                pixel *px = hg->mc.get_ref( dref, &sx, src16, PW, mvx, mvy, w, hgt, &wt[k] );
+                                if( split8_block_differs( px, sx, pg, sglue, 18, hgt ) )
+                                {
+                                    ok = 0;
+                                    fprintf( stderr, "split8 glue get_ref (1) vs x86 mv %d,%d %dx%d weight %d [FAILED]\n",
+                                             mvx, mvy, w, hgt, k );
+                                }
                             }
                             if( !k && w <= 16 )
                             {
