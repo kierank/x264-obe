@@ -28,20 +28,25 @@
  * uint8_t and is the same at both depths. Indices are PIXEL_*. */
 typedef int (*x264_me8_cmp_t)( uint8_t *fenc, intptr_t i_fenc, uint8_t *pix, intptr_t i_pix );
 typedef int (*x264_me8_cmp_avg2_t)( uint8_t *fenc, uint8_t *src1, uint8_t *src2, intptr_t i_stride );
+typedef void (*x264_me8_cmp_x3_t)( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
+                                   intptr_t i_stride, int scores[3] );
+typedef void (*x264_me8_cmp_x4_t)( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2, uint8_t *pix3,
+                                   intptr_t i_stride, int scores[4] );
+/* as x264_pixel_cmp_x3/x4_min_t */
+typedef int (*x264_me8_cmp_x3_min_t)( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
+                                      intptr_t i_stride, uint64_t bias01, uint64_t bias2_best );
+typedef int (*x264_me8_cmp_x4_min_t)( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2, uint8_t *pix3,
+                                      intptr_t i_stride, uint64_t bias01, uint64_t bias23, int best );
 
 typedef struct x264_me8_func_t
 {
     /* sad: the fullpel search runs on DIA, HEX and UMH only, where fpelcmp is sad */
-    int  (*fpelcmp[8])( uint8_t *fenc, intptr_t i_fenc, uint8_t *pix, intptr_t i_pix );
-    void (*fpelcmp_x3[7])( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
-                           intptr_t i_stride, int scores[3] );
-    void (*fpelcmp_x4[7])( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2, uint8_t *pix3,
-                           intptr_t i_stride, int scores[4] );
-    /* as x264_pixel_cmp_x3/x4_min_t, NULL without asm */
-    int  (*fpelcmp_x3_min[7])( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
-                               intptr_t i_stride, uint64_t bias01, uint64_t bias2_best );
-    int  (*fpelcmp_x4_min[7])( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2, uint8_t *pix3,
-                               intptr_t i_stride, uint64_t bias01, uint64_t bias23, int best );
+    x264_me8_cmp_t fpelcmp[8];
+    x264_me8_cmp_x3_t fpelcmp_x3[7];
+    x264_me8_cmp_x4_t fpelcmp_x4[7];
+    /* NULL without asm */
+    x264_me8_cmp_x3_min_t fpelcmp_x3_min[7];
+    x264_me8_cmp_x4_min_t fpelcmp_x4_min[7];
 
     /* i_me_8bit 2, refine_subpel. [b_satd]: 0 where mbcmp is sad, 1 satd, as
      * mbcmp_init chooses at high bit depth; mbcmp_avg2[0] is all NULL there. */
