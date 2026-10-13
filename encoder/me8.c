@@ -50,6 +50,12 @@ x264_me8_func_t *x264_me8_init( uint32_t cpu )
         pf->mbcmp_avg2[0][i] = NULL;
         pf->mbcmp_avg2[1][i] = pixf.satd_avg2[i];
     }
+    /* Every _min call of the fullpel search is a step of a serial chain (hex
+     * steps, square refine). Chained, 16x16 sad_x3/x4 + the C argmin beats the
+     * _min kernels (rack01 lat9: 73-75 vs 109 ticks); the other sizes keep
+     * _min (in situ 8x8 28-31 cycles a call, no chained measurement). */
+    pf->fpelcmp_x3_min[PIXEL_16x16] = NULL;
+    pf->fpelcmp_x4_min[PIXEL_16x16] = NULL;
     for( int i = 0; i < 2; i++ )
         pf->satd_fenc_pre[i] = pixf.satd_fenc_pre[i];
     for( int i = 0; i < 4; i++ )
