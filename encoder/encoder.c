@@ -1743,12 +1743,20 @@ x264_t *x264_encoder_open( x264_param_t *param )
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     h->param.rc.b_lookahead_8bit &= h->frames.b_have_lowres && !h->mb.b_lossless;
     /* ESA and TESA search on the 16-bit planes; subme 0 has no hpel planes */
-    h->param.analyse.i_me_8bit = h->mb.b_lossless || h->param.analyse.i_me_method >= X264_ME_ESA ? 0
-                               : x264_clip3( h->param.analyse.i_me_8bit, 0, h->param.analyse.i_subpel_refine ? 2 : 1 );
+    const char *me8_off = h->mb.b_lossless ? "lossless"
+                        : h->param.analyse.i_me_method >= X264_ME_ESA ? "--me esa/tesa" : NULL;
+#elif HIGH_BIT_DEPTH
+    h->param.rc.b_lookahead_8bit = 0;
+    const char *me8_off = "a build without the 8-bit pass (configure --bit-depth=all)";
 #else
     h->param.rc.b_lookahead_8bit = 0;
-    h->param.analyse.i_me_8bit = 0;
+    const char *me8_off = "an 8-bit encode";
 #endif
+    if( h->param.analyse.i_me_8bit > 0 && me8_off )
+        x264_log( h, X264_LOG_WARNING, "--me-8bit %d is off with %s\n", h->param.analyse.i_me_8bit, me8_off );
+    else if( h->param.analyse.i_me_8bit > 1 && !h->param.analyse.i_subpel_refine )
+        x264_log( h, X264_LOG_WARNING, "--me-8bit %d needs subme > 0, using 1\n", h->param.analyse.i_me_8bit );
+    h->param.analyse.i_me_8bit = me8_off ? 0 : x264_clip3( h->param.analyse.i_me_8bit, 0, h->param.analyse.i_subpel_refine ? 2 : 1 );
 
     h->frames.i_last_idr =
     h->frames.i_last_keyframe = - h->param.i_keyint_max;

@@ -800,7 +800,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
                     intptr_t o = (8 + y)*PW + 8 + x;
                     pixel *f = fenc + x + y*FENC_STRIDE;
-                    pixel *r[2];
+                    pixel *pred[2];
                     uint8_t *pk[8];
                     for( int l = 0; l < 2; l++ )
                     {
@@ -814,12 +814,12 @@ static int check_pixel( int cpu_ref, int cpu_new )
                             src8[q] = pk8 + (4*s+q)*PS + o;
                             src8[4+q] = pk8 + (4*s+q)*PS + PW*PH + (o >> 2);
                         }
-                        r[l] = mc_c.get_ref( l ? ref1 : ref0, &rstride, pl16, PW, mv[l][0], mv[l][1], w, hgt, x264_weight_none );
+                        pred[l] = mc_c.get_ref( l ? ref1 : ref0, &rstride, pl16, PW, mv[l][0], mv[l][1], w, hgt, x264_weight_none );
                         if( rstride != 16 )
                         {
                             for( int yy = 0; yy < hgt; yy++ )
-                                memcpy( (l ? ref1 : ref0) + yy*16, r[l] + yy*rstride, w * sizeof(pixel) );
-                            r[l] = l ? ref1 : ref0;
+                                memcpy( (l ? ref1 : ref0) + yy*16, pred[l] + yy*rstride, w * sizeof(pixel) );
+                            pred[l] = l ? ref1 : ref0;
                         }
                         x264_pk_hpel_pair( pk + 4*l, src8, PW, mv[l][0], mv[l][1] );
                     }
@@ -827,7 +827,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     {
                         int weight = k ? pk_weights[wi] : wi - 63;
                         int res_c, res_asm;
-                        mc_c.avg[i]( avg, 16, r[0], 16, r[1], 16, weight );
+                        mc_c.avg[i]( avg, 16, pred[0], 16, pred[1], 16, weight );
                         res_c = pixel_c.satd[i]( f, FENC_STRIDE, avg, 16 );
                         if( weight == 32 || weight == 65 )
                         {
