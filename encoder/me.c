@@ -142,11 +142,13 @@ static ALWAYS_INLINE int subpel_cmp8( x264_t *h, x264_me_t *m, uint8_t *pix8, in
     return cmp( m->p_fenc8, FENC_STRIDE, src, stride8 );
 }
 
+/* b8h: on the msb8 hpel planes, scaled by 4 as in the fullpel search */
 #define COST_MV_HPEL( mx, my, cost )\
 do\
 {\
-    cost = subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel],\
-                       h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] )\
+    cost = (b8h ? subpel_cmp8( h, m, (uint8_t*)pix, bw, bh, mx, my, pf8->fpelcmp_avg2[i_pixel], pf8->fpelcmp[i_pixel] ) << 2\
+                : subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel],\
+                              h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] ))\
          + p_cost_mvx[ mx ] + p_cost_mvy[ my ];\
 } while(0)
 
@@ -358,6 +360,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #else
     const int b8 = 0;
 #endif
+    /* b8h: i_me_8bit 2, the subpel predictors on the msb8 hpel planes and no
+     * 16-bit rescore of the fullpel result before refine_subpel (see below) */
+    const int b8h = b8 && m->p_fref8[1];
     const x264_me8_func_t *pf8 = h->me8;
     uint8_t *s_fenc = b8 ? m->p_fenc8 : (uint8_t*)p_fenc;
     uint8_t *s_ref = b8 ? m->p_fref8[0] : (uint8_t*)p_fref_w;
@@ -401,7 +406,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         /* b8: the msb8 lines the search starts on, around pmv (the usual best
          * predictor; HEX steps 2, DIA and UMH's DIA1 1) and 0 (COST_MV, UMH's
-         * DIA1), ahead of the 16-bit predictor costs */
+         * DIA1), ahead of the predictor costs */
         if( b8 )
         {
             int r = h->mb.i_me_method == X264_ME_HEX ? 2 : 1;
@@ -954,8 +959,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     uint32_t bmv_spel = SPELx2(bmv);
     /* b8: the high bit depth cost of the result, as the 16-bit search has it
      * (without the mv cost at the rounded mvp below subme 3), for the subpel
-     * predictors, the subpel search and m->cost */
-    if( b8 )
+     * predictors, the subpel search and m->cost. b8h from subme 2 keeps the
+     * scaled 8-bit cost, as its predictors and refine_subpel's hpel steps have:
+     * refine_subpel rebases (mbcmp satd) and ME8_EXACT rescores its result. */
+    if( b8 && !(b8h && h->mb.i_subpel_refine >= 2) )
     {
         bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride );
         if( h->mb.i_subpel_refine >= 3 || bmv != pmv )
