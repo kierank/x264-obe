@@ -1183,9 +1183,6 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
-        pixf->weightp_stats8 = x264_weightp_stats8_avx512;
-        pixf->weightp_sum8 = x264_weightp_sum8_avx512;
-        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512;
 #endif
     }
 #endif // HAVE_MMX
@@ -1540,16 +1537,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     }
 
     /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
-     * (rack01 ablation, obed low latency), although most win in checkasm. Except the
-     * weightp chroma statistics, once per weighted frame, to be measured on their own. */
-#if ARCH_X86_64
-    if( cpu&X264_CPU_AVX512 )
-    {
-        pixf->weightp_stats8 = x264_weightp_stats8_avx512;
-        pixf->weightp_sum8 = x264_weightp_sum8_avx512;
-        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512;
-    }
-#endif
+     * (rack01 ablation, obed low latency), although most win in checkasm. */
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6
