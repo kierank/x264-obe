@@ -1960,6 +1960,83 @@ static int check_mc( int cpu_ref, int cpu_new )
     }
     report( "mc offsetsub :" );
 
+    /* weightavgfn against C: (src1+src2+1)>>1, then mc_c.weight. Every width,
+     * the subpel ME's odd heights, unaligned sources and destination, edge
+     * weights (each kernel x264_weight_cache picks, the edges of the SSE2
+     * fallback and of the 8-bit fast path), and nothing written past the
+     * w (8-bit w12: 16) x even-height area of 32-stride rows */
+    ok = 1; used_asm = 0;
+    {
+        enum { WA_SS = 64, WA_DS = 32, WA_SRC = WA_SS*20+64, WA_DST = WA_DS*20+64 };
+        ALIGNED_16( pixel wa_src[2][WA_SRC] );
+        ALIGNED_16( pixel wa_avg[WA_DST] );
+        ALIGNED_16( pixel wa_c[WA_DST] );
+        ALIGNED_16( pixel wa_a[WA_DST] );
+        static const int wa_h[] = { 2, 4, 5, 8, 9, 16, 17 };
+        x264_t *hwa = x264_malloc( sizeof(x264_t) );
+        x264_t *hwr = x264_malloc( sizeof(x264_t) );
+        if( !hwa || !hwr )
+            return -1;
+        hwa->mc = mc_a;
+        hwr->mc = mc_ref;
+        for( int j = 0; j < 2; j++ )
+            for( int i = 0; i < WA_SRC; i++ )
+            {
+                int r = rand();
+                wa_src[j][i] = r&8 ? -(r&1) & PIXEL_MAX : r&4 ? (r&1 ? PIXEL_MAX-1 : 1) : rand() & PIXEL_MAX;
+            }
+        int bench_done[3] = {0};
+        for( int s = HIGH_BIT_DEPTH ? -128 : 0; s <= 127 && ok; s++ )
+            for( int o = -128; o <= 127 && ok; o++ )
+                for( int d = 0; d <= 7 && ok; d++ )
+                {
+                    int edge = (s == 0 || s == -1 || s == -128 || s == 127 || s == (1<<d)-1 || s == 1<<d || s == (1<<d)+1 ||
+                                s == (32<<d)-1 || s == 32<<d || s == 0x7fff >> (BIT_DEPTH-d) || s == (0x7fff >> (BIT_DEPTH-d))+1) &&
+                               (o == -128 || o == -1 || o == 0 || o == 1 || o == 127);
+                    if( !edge && (rand() & 1023) )
+                        continue;
+                    x264_weight_t wa = { .i_scale = s, .i_denom = d, .i_offset = o };
+                    x264_weight_t wr = wa;
+                    mc_a.weight_cache( hwa, &wa );
+                    mc_ref.weight_cache( hwr, &wr );
+                    if( !wa.weightavgfn || wa.weightavgfn == wr.weightavgfn )
+                        continue;
+                    used_asm = 1;
+                    int kind = s == 1<<d ? 1 + (o < 0) : 0;
+                    for( int i = 1; i <= 5 && ok; i++ )
+                        for( int hi = 0; hi < ARRAY_ELEMS(wa_h) && ok; hi++ )
+                        {
+                            int w = X264_MAX( i*4, 4 );
+                            int fw = !HIGH_BIT_DEPTH && w == 12 ? 16 : w;
+                            int h = wa_h[hi];
+                            int rows = (h+1)&~1;
+                            pixel *s1 = wa_src[0] + (rand()&15) + (rand()&1)*WA_SS;
+                            pixel *s2 = wa_src[1] + (rand()&15) + (rand()&1)*WA_SS;
+                            int doff = WA_DS + (rand()&1 ? rand()&7 : 0);
+                            for( int k = 0; k < WA_DST; k++ )
+                                wa_c[k] = wa_a[k] = rand() & PIXEL_MAX;
+                            for( int y = 0; y < rows; y++ )
+                                for( int x = 0; x < fw; x++ )
+                                    wa_avg[y*WA_DS+x] = (s1[y*WA_SS+x] + s2[y*WA_SS+x] + 1) >> 1;
+                            mc_c.weight[fw>>2]( wa_c+doff, WA_DS, wa_avg, WA_DS, &wa, rows );
+                            set_func_name( "%s_avg_w%d", kind == 0 ? "weight" : kind == 1 ? "offsetadd" : "offsetsub", w );
+                            call_a1( wa.weightavgfn[i], wa_a+doff, (intptr_t)WA_DS, s1, (intptr_t)WA_SS, &wa, h, s2 );
+                            if( memcmp( wa_c, wa_a, WA_DST*sizeof(pixel) ) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "weightavgfn[%d] [FAILED] s:%d o:%d d:%d h:%d doff:%d\n", i, s, o, d, h, doff );
+                            }
+                            if( h == 16 && !bench_done[kind] && s >= 0 && s * (1<<(8-d)) < 512 )
+                                call_a2( wa.weightavgfn[i], wa_a+doff, (intptr_t)WA_DS, s1, (intptr_t)WA_SS, &wa, h, s2 );
+                        }
+                    if( s >= 0 && s * (1<<(8-d)) < 512 )
+                        bench_done[kind] = 1;
+                }
+        x264_free( hwa );
+        x264_free( hwr );
+    }
+    report( "mc weight_avg :" );
+
     ok = 1; used_asm = 0;
     if( mc_a.weight_plane != mc_ref.weight_plane )
     {

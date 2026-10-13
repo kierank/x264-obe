@@ -362,6 +362,60 @@ MC_WEIGHT_PLANE( avx512 )
 #undef MC_OFFSET
 #undef MC_WEIGHT
 
+#if ARCH_X86_64
+#if HIGH_BIT_DEPTH
+#define x264_mc_weight_avg_w4_avx2 x264_template(mc_weight_avg_w4_avx2)
+#define x264_mc_weight_avg_w8_avx2 x264_template(mc_weight_avg_w8_avx2)
+#define x264_mc_weight_avg_w12_avx2 x264_template(mc_weight_avg_w12_avx2)
+#define x264_mc_weight_avg_w16_avx2 x264_template(mc_weight_avg_w16_avx2)
+#define x264_mc_weight_avg_w20_avx2 x264_template(mc_weight_avg_w20_avx2)
+#define x264_mc_weight_ns_avg_w4_avx2 x264_template(mc_weight_ns_avg_w4_avx2)
+#define x264_mc_weight_ns_avg_w8_avx2 x264_template(mc_weight_ns_avg_w8_avx2)
+#define x264_mc_weight_ns_avg_w12_avx2 x264_template(mc_weight_ns_avg_w12_avx2)
+#define x264_mc_weight_ns_avg_w16_avx2 x264_template(mc_weight_ns_avg_w16_avx2)
+#define x264_mc_weight_ns_avg_w20_avx2 x264_template(mc_weight_ns_avg_w20_avx2)
+#define x264_mc_offsetadd_avg_w4_avx2 x264_template(mc_offsetadd_avg_w4_avx2)
+#define x264_mc_offsetadd_avg_w8_avx2 x264_template(mc_offsetadd_avg_w8_avx2)
+#define x264_mc_offsetadd_avg_w12_avx2 x264_template(mc_offsetadd_avg_w12_avx2)
+#define x264_mc_offsetadd_avg_w16_avx2 x264_template(mc_offsetadd_avg_w16_avx2)
+#define x264_mc_offsetadd_avg_w20_avx2 x264_template(mc_offsetadd_avg_w20_avx2)
+#define x264_mc_offsetsub_avg_w4_avx2 x264_template(mc_offsetsub_avg_w4_avx2)
+#define x264_mc_offsetsub_avg_w8_avx2 x264_template(mc_offsetsub_avg_w8_avx2)
+#define x264_mc_offsetsub_avg_w12_avx2 x264_template(mc_offsetsub_avg_w12_avx2)
+#define x264_mc_offsetsub_avg_w16_avx2 x264_template(mc_offsetsub_avg_w16_avx2)
+#define x264_mc_offsetsub_avg_w20_avx2 x264_template(mc_offsetsub_avg_w20_avx2)
+#else
+#define x264_mc_weight_avg_w4_avx2 x264_template(mc_weight_avg_w4_avx2)
+#define x264_mc_weight_avg_w8_avx2 x264_template(mc_weight_avg_w8_avx2)
+#define x264_mc_weight_avg_w16_avx2 x264_template(mc_weight_avg_w16_avx2)
+#define x264_mc_weight_avg_w20_avx2 x264_template(mc_weight_avg_w20_avx2)
+#define x264_mc_offsetadd_avg_w4_avx2 x264_template(mc_offsetadd_avg_w4_avx2)
+#define x264_mc_offsetadd_avg_w8_avx2 x264_template(mc_offsetadd_avg_w8_avx2)
+#define x264_mc_offsetadd_avg_w16_avx2 x264_template(mc_offsetadd_avg_w16_avx2)
+#define x264_mc_offsetadd_avg_w20_avx2 x264_template(mc_offsetadd_avg_w20_avx2)
+#define x264_mc_offsetsub_avg_w4_avx2 x264_template(mc_offsetsub_avg_w4_avx2)
+#define x264_mc_offsetsub_avg_w8_avx2 x264_template(mc_offsetsub_avg_w8_avx2)
+#define x264_mc_offsetsub_avg_w16_avx2 x264_template(mc_offsetsub_avg_w16_avx2)
+#define x264_mc_offsetsub_avg_w20_avx2 x264_template(mc_offsetsub_avg_w20_avx2)
+#endif
+/* mc_X_avg_wN: mc_X_wN of pixel_avg2_wN( src1, src2 ), without storing the average */
+#define MC_WEIGHT_AVG(name, w) \
+    void x264_mc_##name##_avg_w##w##_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
+#define MC_WEIGHT_AVG_ALL(name) MC_WEIGHT_AVG(name, 4) MC_WEIGHT_AVG(name, 8) MC_WEIGHT_AVG(name, 16) MC_WEIGHT_AVG(name, 20)
+MC_WEIGHT_AVG_ALL( weight )
+MC_WEIGHT_AVG_ALL( offsetadd )
+MC_WEIGHT_AVG_ALL( offsetsub )
+#if HIGH_BIT_DEPTH
+MC_WEIGHT_AVG_ALL( weight_ns )
+MC_WEIGHT_AVG( weight, 12 )
+MC_WEIGHT_AVG( weight_ns, 12 )
+MC_WEIGHT_AVG( offsetadd, 12 )
+MC_WEIGHT_AVG( offsetsub, 12 )
+#endif
+#undef MC_WEIGHT_AVG_ALL
+#undef MC_WEIGHT_AVG
+#endif // ARCH_X86_64
+
 void x264_mc_copy_w4_mmx ( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_mc_copy_w8_mmx ( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_mc_copy_w8_sse ( pixel *, intptr_t, pixel *, intptr_t, int );
@@ -594,6 +648,30 @@ MC_COPY_WTAB(sse,mmx,mmx,sse)
     x264_mc_##function##_w20_##instr,\
 };
 
+#if ARCH_X86_64
+#define MC_WEIGHT_AVG_WTAB(function, w12version)\
+static weight_avg_fn_t x264_mc_##function##_avg_wtab_avx2[6] =\
+{\
+    x264_mc_##function##_avg_w4_avx2,\
+    x264_mc_##function##_avg_w4_avx2,\
+    x264_mc_##function##_avg_w8_avx2,\
+    x264_mc_##function##_avg_w##w12version##_avx2,\
+    x264_mc_##function##_avg_w16_avx2,\
+    x264_mc_##function##_avg_w20_avx2,\
+};
+#if HIGH_BIT_DEPTH
+MC_WEIGHT_AVG_WTAB(weight,12)
+MC_WEIGHT_AVG_WTAB(weight_ns,12)
+MC_WEIGHT_AVG_WTAB(offsetadd,12)
+MC_WEIGHT_AVG_WTAB(offsetsub,12)
+#else
+MC_WEIGHT_AVG_WTAB(weight,16)
+MC_WEIGHT_AVG_WTAB(offsetadd,16)
+MC_WEIGHT_AVG_WTAB(offsetsub,16)
+#endif
+#undef MC_WEIGHT_AVG_WTAB
+#endif
+
 #if HIGH_BIT_DEPTH
 MC_WEIGHT_WTAB(weight,mmx2,mmx2,mmx2,12)
 MC_WEIGHT_WTAB(offsetadd,mmx2,mmx2,mmx2,12)
@@ -604,6 +682,7 @@ MC_WEIGHT_WTAB(offsetsub,sse2,mmx2,sse2,16)
 
 static void x264_weight_cache_mmx2( x264_t *h, x264_weight_t *w )
 {
+    w->weightavgfn = NULL;
     if( w->i_scale == 1<<w->i_denom )
     {
         if( w->i_offset < 0 )
@@ -652,12 +731,21 @@ static ALWAYS_INLINE void weight_cache_mulhrs( x264_t *h, x264_weight_t *w, weig
         x264_weight_cache_mmx2( h, w );
         if( scale != 1<<denom )
             w->weightfn = x264_mc_weight_wtab_sse2;
+#if ARCH_X86_64
+        else
+            w->weightavgfn = w->i_offset < 0 ? x264_mc_offsetsub_avg_wtab_avx2 : x264_mc_offsetadd_avg_wtab_avx2;
+#endif
         return;
     }
     int ns = scale < 1<<denom;
     int mul = scale << (ns ? 15-denom : BIT_DEPTH-denom);
     int offset = w->i_offset * (1<<(BIT_DEPTH-8)) + 0x7fff - PIXEL_MAX;
     w->weightfn = ns ? ns_wtab : h->mc.weight;
+#if ARCH_X86_64
+    w->weightavgfn = ns ? x264_mc_weight_ns_avg_wtab_avx2 : x264_mc_weight_avg_wtab_avx2;
+#else
+    w->weightavgfn = NULL;
+#endif
     for( int i = 0; i < 8; i++ )
     {
         w->cachea[i] = mul;
@@ -718,6 +806,7 @@ static void x264_weight_cache_mmx2( x264_t *h, x264_weight_t *w )
     int i;
     int16_t den1;
 
+    w->weightavgfn = NULL;
     if( w->i_scale == 1<<w->i_denom )
     {
         if( w->i_offset < 0 )
@@ -739,6 +828,7 @@ static void x264_weight_cache_mmx2( x264_t *h, x264_weight_t *w )
 static void x264_weight_cache_ssse3( x264_t *h, x264_weight_t *w )
 {
     int i, den1;
+    w->weightavgfn = NULL;
     if( w->i_scale == 1<<w->i_denom )
     {
         if( w->i_offset < 0 )
@@ -757,6 +847,18 @@ static void x264_weight_cache_ssse3( x264_t *h, x264_weight_t *w )
         w->cacheb[i] = w->i_offset;
     }
 }
+
+#if ARCH_X86_64
+/* the ssse3 cache, and the kernels of the qpel average for its weight's op */
+static void x264_weight_cache_avx2( x264_t *h, x264_weight_t *w )
+{
+    x264_weight_cache_ssse3( h, w );
+    if( w->i_scale != 1<<w->i_denom )
+        w->weightavgfn = x264_mc_weight_avg_wtab_avx2;
+    else
+        w->weightavgfn = w->i_offset < 0 ? x264_mc_offsetsub_avg_wtab_avx2 : x264_mc_offsetadd_avg_wtab_avx2;
+}
+#endif
 #endif // !HIGH_BIT_DEPTH
 
 static const uint8_t hpel_ref0[16] = {0,1,1,1,0,1,1,1,2,3,3,3,0,1,1,1};
@@ -1422,6 +1524,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #endif
         pf->mc_chroma = x264_mc_chroma_avx2;
         pf->weight = x264_mc_weight_wtab_avx2;
+#if ARCH_X86_64
+        pf->weight_cache = x264_weight_cache_avx2;
+#endif
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
         pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx2;
         pf->avg[PIXEL_8x16]  = x264_pixel_avg_8x16_avx2;

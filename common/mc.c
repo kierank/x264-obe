@@ -104,6 +104,7 @@ PIXEL_AVG_C( pixel_avg_2x2,   2, 2 )
 static void x264_weight_cache( x264_t *h, x264_weight_t *w )
 {
     w->weightfn = h->mc.weight;
+    w->weightavgfn = NULL;
 }
 #define opscale(x) dst[x] = x264_clip_pixel( ((src[x] * scale + (1<<(denom - 1))) >> denom) + offset )
 #define opscale_noden(x) dst[x] = x264_clip_pixel( src[x] * scale + offset )
