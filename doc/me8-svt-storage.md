@@ -174,10 +174,21 @@ then deletes it once md5 identity holds across the test matrix.
    (`msb & 3`, per-phase pshufb/multiplier rows of `pk8_tab` loaded once a
    call, so every x alignment is native): `copy_pk`/`avg2_pk` (mc_copy and
    pixel_avg2, widths 4-20: mc_luma, get_ref, qpel RD, BIME, weighted refs
-   with the weight in place), `sad/satd(_avg2)_pk` (subpel_cmp: ME8_EXACT,
-   COST_MV_HPEL) and `satd_bi4_pk` (B BI costs). The temp path remains for
+   with the weight in place), `sad/satd(_avg2)_pk` (subpel_cmp: ME8_EXACT;
+   COST_MV_HPEL until c1b5ebbf, which moved level 2's subpel predictor
+   costs to the msb8 planes and changed level 2's output) and `satd_bi4_pk`
+   (B BI costs). The temp path remains for
    C/no-asm, x86_32 and pre-AVX2 CPUs; sizes below 8x8 in subpel_cmp go
    through get_ref (copy_pk/avg2_pk) and the 16-bit cmp.
+
+   Not done: a per-mb and ref cache of the unpacked 16-bit h/v/c window for
+   the exact costs. Derived from rack01's n.fb10 per-symbol cycles at
+   cefc5c06: after c1b5ebbf the packed readers' overhead over 16-bit kernels
+   is ~4-6 Mcyc a frame (ME8_EXACT's satd_avg2_pk/satd_pk once a refine
+   call, avg2_pk in MC and qpel RD, the split8 glue), while unpacking three
+   24-row x 32-pixel windows costs ~144 plane_unpack8 iterations, ~500 cycles
+   an mb and ref, ~4-12 Mcyc a frame at 8160 mbs and 1-3 refs; and the
+   partitions' winners (16x16 to 8x8, per ref) need not lie in one window.
 
    Test plan for the readers (output must be md5-identical to b1cd784d at
    `--me-8bit 2`, which is identical to bf65074f's level 2):
