@@ -781,6 +781,53 @@ static int pixel_asd8( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stri
     return abs( sum );
 }
 
+static void pixel_weightp_stats8( int32_t *sum, uint32_t *minmax, pixel *src, intptr_t i_src, int n, int height )
+{
+    for( int i = 0; i < n; i++, src += 8 )
+    {
+        int s = 0, mn = PIXEL_MAX, mx = 0;
+        for( int y = 0; y < height; y++ )
+            for( int x = 0; x < 8; x++ )
+            {
+                int v = src[x+y*i_src];
+                s += v;
+                mn = X264_MIN( mn, v );
+                mx = X264_MAX( mx, v );
+            }
+        sum[i] = s;
+        minmax[i] = mn | (uint32_t)mx << 16;
+    }
+}
+
+static void pixel_weightp_sum8( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom )
+{
+    int round = (1 << denom) >> 1;
+    for( int i = 0; i < n; i++, src += 8 )
+    {
+        int s = 0;
+        for( int y = 0; y < height; y++ )
+            for( int x = 0; x < 8; x++ )
+                s += (src[x+y*i_src] * scale + round) >> denom;
+        sum[i] = s;
+    }
+}
+
+static void pixel_weightp_sum8_nv( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height )
+{
+    for( int i = 0; i < n; i++, src += 16 )
+    {
+        int su = 0, sv = 0;
+        for( int y = 0; y < height; y++ )
+            for( int x = 0; x < 8; x++ )
+            {
+                su += src[2*x  +y*i_src];
+                sv += src[2*x+1+y*i_src];
+            }
+        sumu[i] = su;
+        sumv[i] = sv;
+    }
+}
+
 /****************************************************************************
  * successive elimination
  ****************************************************************************/
@@ -893,6 +940,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->ssim_end4 = ssim_end4;
     pixf->vsad = pixel_vsad;
     pixf->asd8 = pixel_asd8;
+    pixf->weightp_stats8 = pixel_weightp_stats8;
+    pixf->weightp_sum8 = pixel_weightp_sum8;
+    pixf->weightp_sum8_nv = pixel_weightp_sum8_nv;
 
     pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4;
     pixf->intra_satd_x3_4x4   = x264_intra_satd_x3_4x4;
@@ -1068,6 +1118,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     }
     if( cpu&X264_CPU_AVX2 )
     {
+#if ARCH_X86_64
+        pixf->weightp_stats8 = x264_weightp_stats8_avx2;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx2;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
+#endif
         INIT2( ssd, _avx2 );
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx2;
@@ -1415,6 +1470,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 
     if( cpu&X264_CPU_AVX2 )
     {
+#if ARCH_X86_64
+        pixf->weightp_stats8 = x264_weightp_stats8_avx2;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx2;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
+#endif
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
         pixf->sad[PIXEL_8x16] = pixf->sad_aligned[PIXEL_8x16] = x264_pixel_sad_8x16_avx2;

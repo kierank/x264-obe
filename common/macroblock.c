@@ -331,6 +331,8 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
         for( int i = 0; i < numweightbuf; i++ )
             PREALLOC( h->mb.p_weight_buf[i], luma_plane_size * sizeof(pixel) );
+        if( h->param.analyse.i_weighted_pred != X264_WEIGHTP_FAKE )
+            PREALLOC( h->mb.p_weight_sums, X264_WEIGHT_SUMS * ((h->mb.i_mb_width + 15) & ~15) * h->mb.i_mb_height * sizeof(int32_t) );
     }
 
     PREALLOC_END( h->mb.base );
