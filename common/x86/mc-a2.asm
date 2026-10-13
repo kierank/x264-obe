@@ -97,6 +97,11 @@ split8_const: db 1, 4, 1, 4   ; pmaddubsw: t0 + 4*t1
               db 3, 3, 3, 3   ; avx512icl lsb mask
 split8_even:  db  0,  2,  4,  6,  8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
               db 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62
+; hpel_filter8, as memory operands (VEX, unaligned)
+split8_pw3:    times 16 dw 3
+split8_mul_b:  times 8 db 1, 4
+split8_mul_w:  times 4 dw 1, 16
+split8_shuf_d: db 0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 %endif
 
 SECTION .text
@@ -642,6 +647,158 @@ cglobal hpel_filter, 7,13,16
     add         r11, r4
     add         r12, r4
     dec         r6d
+    jg .loopy
+    RET
+
+;-----------------------------------------------------------------------------
+; hpel_filter that also writes the --me-8bit msb8/lsb8 split of its three
+; outputs (plane_split8 of each), stored right after each 16-bit chunk:
+; void hpel_filter8( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src,
+;                    intptr_t stride, int width, int height, int16_t *buf,
+;                    uint8_t *msb, uint8_t *lsb, intptr_t plane8 )
+; msb and lsb are dsth's at its first pixel, which src and the dsts have a
+; multiple of 4 pixels past a 32 byte boundary; dstv's and dstc's are plane8
+; and 2*plane8 bytes after them. Writes the 8-bit split of exactly the pixels
+; it writes in 16-bit.
+; r4/r5: the msb/lsb of chunk r7 of the h plane, r6 = plane8, r13 = stride
+; (bytes), r14 = -row bytes; stack: msb row, lsb row, msb stride, lsb stride,
+; rows left.
+;-----------------------------------------------------------------------------
+; split of the 16 words in m%1 (clobbered) with m%2 to msb %3 and lsb %4
+%macro HPEL_SPLIT8 4
+    psrlw        m%2, m%1, 2
+    pand         m%1, [split8_pw3]
+    packuswb     m%2, m%1                   ; msb 0-7, lsb 0-7 | msb 8-15, lsb 8-15
+    vpermq       m%2, m%2, q3120
+    movu          %3, xm%2
+    vextracti128 xm%1, m%2, 1
+    pmaddubsw    xm%1, [split8_mul_b]       ; t0 + 4*t1
+    pmaddwd      xm%1, [split8_mul_w]       ; + 16*(t2 + 4*t3)
+    pshufb       xm%1, [split8_shuf_d]
+    movd          %4, xm%1
+%endmacro
+
+%macro HPEL_VH_HBD8 4 ; offset, v out, msb offset, lsb offset
+    mova         m6, [r3+r7+%1]             ; row 0
+    mova         %2, [r8+r7+%1]
+    paddw        %2, [r12+r7+%1]            ; a
+    mova         m4, [r9+r7+%1]
+    paddw        m4, [r11+r7+%1]            ; b
+    paddw        m5, m6, [r10+r7+%1]        ; c
+    HPEL_FILT_HBD %2, m4, m5
+    paddw        m4, %2, m12
+    psubusw      m4, m11
+    psrlw        m4, 5
+    pminsw       m4, m10
+    mova  [r1+r7+%1], m4
+    HPEL_SPLIT8   4, 5, [r4+r6+%3], [r5+r6+%4]
+    psubw        %2, m13
+    movu         m4, [r3+r7+%1-4]
+    paddw        m4, [r3+r7+%1+6]           ; a
+    movu         m5, [r3+r7+%1-2]
+    paddw        m5, [r3+r7+%1+4]           ; b
+    paddw        m6, [r3+r7+%1+2]           ; c
+    HPEL_FILT_HBD m4, m5, m6
+    paddw        m4, m12
+    psubusw      m4, m11
+    psrlw        m4, 5
+    pminsw       m4, m10
+    mova  [r0+r7+%1], m4
+    HPEL_SPLIT8   4, 5, [r4+%3], [r5+%4]
+%endmacro
+
+%macro HPEL_C_HBD8 7 ; HPEL_C_HBD's, msb offset, lsb offset
+    HPEL_C_HBD   %1, %2, %3, %4, %5
+    HPEL_SPLIT8   4, 5, [r4+r6*2+%6], [r5+r6*2+%7]
+%endmacro
+
+INIT_YMM avx2
+cglobal hpel_filter8, 7,15,16,-5*8
+    FIX_STRIDES  r4
+    mov         r13, r4
+    shr         r13, 1
+    mov   [rsp+16], r13                     ; msb stride
+    shr         r13, 2
+    mov   [rsp+24], r13                     ; lsb stride
+    mov   [rsp+32], r6
+    mov         r7d, r3d
+    and         r7d, 31                     ; realign to 32 bytes, as hpel_filter
+    sub          r0, r7
+    sub          r1, r7
+    sub          r2, r7
+    sub          r3, r7
+    mov         r13, r7
+    shr         r13, 1                      ; pixels
+    mov          r6, r8mp
+    sub          r6, r13
+    mov    [rsp+0], r6
+    shr         r13, 2
+    mov          r6, r9mp
+    sub          r6, r13
+    mov    [rsp+8], r6
+    mov          r6, r10mp
+    lea         r5d, [r5+r5+r7+63]
+    and         r5d, ~63
+    add          r0, r5
+    add          r1, r5
+    add          r2, r5
+    add          r3, r5
+    neg          r5
+    mov         r14, r5
+    mov         r13, r4
+    lea         r10, [r3+r4]
+    lea         r11, [r3+r4*2]
+    lea         r12, [r10+r4*2]
+    mov          r9, r3
+    sub          r9, r4
+    mov          r8, r9
+    sub          r8, r4
+    vpbroadcastd m7, [tap1]
+    vpbroadcastd m8, [tap2]
+    vpbroadcastd m9, [tap3]
+    vpbroadcastw m10, [pw_pixel_max]
+    vpbroadcastw m11, [pad10]
+    vpbroadcastw m12, [pw_pad10_16]
+    vpbroadcastw m13, [hpel_c_bias+0]
+    vpbroadcastw m14, [hpel_c_bias+2]
+    vpbroadcastw m15, [hpel_c_bias+4]
+.loopy:
+    mov          r7, r14
+    mov          r4, [rsp+0]
+    mov          r5, [rsp+8]
+    HPEL_VH_HBD8   0, m0, 0, 0
+    vinserti128  m1, m0, xm0, 1              ; [-, v.lo]: the high lane is used
+    add          r4, 32
+    add          r5, 8
+    add          r7, 64
+    jge .tail
+.loopx:
+    HPEL_VH_HBD8 -32, m2, -16, -4
+    HPEL_C_HBD8  -64, m0, m1, m2, m3, -32, -8
+    HPEL_VH_HBD8   0, m0, 0, 0
+    HPEL_C_HBD8  -32, m2, m3, m0, m1, -16, -4
+    add          r4, 32
+    add          r5, 8
+    add          r7, 64
+    jl .loopx
+.tail:
+    HPEL_VH_HBD8 -32, m2, -16, -4
+    HPEL_C_HBD8  -64, m0, m1, m2, m3, -32, -8
+    HPEL_C_HBD8  -32, m2, m3, m2, m1, -16, -4
+    add          r0, r13
+    add          r1, r13
+    add          r2, r13
+    add          r3, r13
+    add          r8, r13
+    add          r9, r13
+    add         r10, r13
+    add         r11, r13
+    add         r12, r13
+    mov          r7, [rsp+16]
+    add    [rsp+0], r7
+    mov          r7, [rsp+24]
+    add    [rsp+8], r7
+    dec dword [rsp+32]
     jg .loopy
     RET
 %endif ; ARCH_X86_64

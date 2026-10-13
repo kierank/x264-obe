@@ -703,6 +703,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 
     pf->hpel_filter = hpel_filter;
     pf->hpel_filter_copy = NULL;
+    pf->hpel_filter8 = NULL;
 
     pf->prefetch_fenc_420 = prefetch_fenc_null;
     pf->prefetch_fenc_422 = prefetch_fenc_null;
@@ -799,15 +800,28 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 
         if( !b_interlaced || h->mb.b_adaptive_mbaff )
         {
-            h->mc.hpel_filter(
-                frame->filtered[p][1] + offs,
-                frame->filtered[p][2] + offs,
-                frame->filtered[p][3] + offs,
-                frame->plane[p] + offs,
-                stride, width + 16, height - start,
-                h->scratch_buffer );
 #if HIGH_BIT_DEPTH
-            if( !p && frame->msb8[1] )
+            if( !p && frame->msb8[1] && h->mc.hpel_filter8 )
+                h->mc.hpel_filter8(
+                    frame->filtered[p][1] + offs,
+                    frame->filtered[p][2] + offs,
+                    frame->filtered[p][3] + offs,
+                    frame->plane[p] + offs,
+                    stride, width + 16, height - start,
+                    h->scratch_buffer,
+                    frame->msb8[1] + offs, frame->lsb8[1] + start*(stride>>2) - 2,
+                    frame->msb8[2] - frame->msb8[1] );
+            else
+#endif
+                h->mc.hpel_filter(
+                    frame->filtered[p][1] + offs,
+                    frame->filtered[p][2] + offs,
+                    frame->filtered[p][3] + offs,
+                    frame->plane[p] + offs,
+                    stride, width + 16, height - start,
+                    h->scratch_buffer );
+#if HIGH_BIT_DEPTH
+            if( !p && frame->msb8[1] && !h->mc.hpel_filter8 )
                 hpel_split8( h, frame->msb8, frame->lsb8, frame->filtered[0], stride, offs,
                              start*(stride>>2) - 2, width + 16, height - start );
 #endif

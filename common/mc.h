@@ -111,6 +111,14 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* analyse.i_me_8bit 2, high bit depth: hpel_filter that also writes the
+     * plane_split8 of the pixels it writes; msb and lsb are those of dsth's
+     * first pixel (a multiple of 4 pixels from a 32 byte boundary in src),
+     * dstv's and dstc's plane8 and 2*plane8 bytes after them. NULL if there
+     * is no asm. */
+    void (*hpel_filter8)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                          intptr_t i_stride, int i_width, int i_height, int16_t *buf,
+                          uint8_t *msb, uint8_t *lsb, intptr_t plane8 );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );

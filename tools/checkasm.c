@@ -2098,6 +2098,99 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "hpel filter copy :" );
     }
 
+#if HIGH_BIT_DEPTH
+    if( mc_a.hpel_filter8 && mc_a.hpel_filter8 != mc_ref.hpel_filter8 )
+    {
+        /* as hpel_filter, plus the msb8/lsb8 split of what it writes: three
+         * planes 2048 bytes apart, rows of 64 msb bytes, lsb rows 1024 bytes
+         * after them; the kernel starts up to 8 pixels left of dst */
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        void *tmp = pbuf3+49*64;
+        uint8_t *buf8 = x264_malloc( 3*2048 + 64 );
+        if( !buf8 )
+            return -1;
+        set_func_name( "hpel_filter8" );
+        ok = 1; used_asm = 1;
+        for( int pass = 0; pass < 2*3 && ok; pass++ )
+        {
+            /* random, then the extreme vertical stripes of the hpel_filter test */
+            ALIGNED_ARRAY_32( pixel, stripe,[16*64] );
+            pixel *src = srchpel;
+            if( pass >= 3 )
+            {
+                src = stripe+8+2*64;
+                for( int y = 0; y < 16; y++ )
+                    for( int x = 0; x < 64; x++ )
+                    {
+                        int p = "010010"[(x+pass)%6] - '0';
+                        stripe[y*64+x] = ((y%3 == 1) ^ p) ? PIXEL_MAX : 0;
+                    }
+            }
+            /* src a multiple of 4 pixels past a 32 byte boundary */
+            int o = (int[]){ 0, 8, 24 }[pass%3];
+            uint8_t *msb = buf8 + 32 + o;
+            uint8_t *lsb = buf8 + 32 + 1024 + o/4;
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            memset( buf8, 0xaa, 3*2048 + 64 );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, src+o, 64, 48, 10, tmp );
+            call_a( mc_a.hpel_filter8, dsta[0]+o, dsta[1]+o, dsta[2]+o, src+o, (intptr_t)64, 48, 10, tmp,
+                    msb, lsb, (intptr_t)2048 );
+            for( int i = 0; i < 3 && ok; i++ )
+                for( int j = 0; j < 10 && ok; j++ )
+                {
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter8 differs at plane %c line %d pass %d\n", "hvc"[i], j, pass );
+                    }
+                    /* msb << 2 | lsb is the 16-bit output, every pixel of the row */
+                    for( int x = 0; x < 48 && ok; x++ )
+                    {
+                        int v = msb[i*2048+j*64+x] << 2 | ((lsb[i*2048+j*16+(x>>2)] >> (2*(x&3))) & 3);
+                        if( v != dsta[i][o+j*64+x] )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "hpel filter8: split differs at plane %c line %d x %d pass %d: %d != %d\n",
+                                     "hvc"[i], j, x, pass, v, dsta[i][o+j*64+x] );
+                        }
+                    }
+                }
+            /* nothing outside each plane's msb [-8, 640) and lsb [-2, 160) */
+            for( int k = 0; k < 3*2048 + 64 && ok; k++ )
+            {
+                int rel = k - 32;
+                int pl = rel >= 0 ? rel >> 11 : 0;
+                int in = rel - (pl << 11);
+                int b_msb = in >= o - 8 && in < o + 640;
+                int b_lsb = in >= 1024 + o/4 - 2 && in < 1024 + o/4 + 160;
+                if( buf8[k] != 0xaa && (pl > 2 || !(b_msb || b_lsb)) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter8: stray write at %d pass %d\n", k, pass );
+                }
+            }
+        }
+        /* positive control: the split check sees a single lsb bit */
+        if( ok )
+        {
+            int x = 5;
+            uint8_t *lsb = buf8 + 32 + 1024 + 24/4;
+            lsb[x>>2] ^= 1 << (2*(x&3));
+            int v = (buf8[32+24+x] << 2) | ((lsb[x>>2] >> (2*(x&3))) & 3);
+            if( v == dsta[0][24+x] )
+            {
+                ok = 0;
+                fprintf( stderr, "hpel filter8: split check is blind\n" );
+            }
+        }
+        x264_free( buf8 );
+        report( "hpel filter8 :" );
+    }
+#endif
+
     if( mc_a.frame_init_lowres_core != mc_ref.frame_init_lowres_core )
     {
         pixel *dstc[4] = { pbuf3, pbuf3+1024, pbuf3+2048, pbuf3+3072 };

@@ -44,6 +44,7 @@
 #define x264_frame_init_lowres_core_xop x264_template(frame_init_lowres_core_xop)
 #define x264_hpel_filter_avx x264_template(hpel_filter_avx)
 #define x264_hpel_filter_avx2 x264_template(hpel_filter_avx2)
+#define x264_hpel_filter8_avx2 x264_template(hpel_filter8_avx2)
 #define x264_hpel_filter_c_avx2 x264_template(hpel_filter_c_avx2)
 #define x264_hpel_filter_copy_avx x264_template(hpel_filter_copy_avx)
 #define x264_hpel_filter_copy_avx2 x264_template(hpel_filter_copy_avx2)
@@ -770,6 +771,8 @@ HPEL(8, mmx2, mmx2, mmx2, mmx2)
 HPEL(16, sse2, sse2, sse2, sse2)
 #if ARCH_X86_64
 void x264_hpel_filter_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf );
+void x264_hpel_filter8_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf,
+                             uint8_t *msb, uint8_t *lsb, intptr_t plane8 );
 /* the field pass copy still uses the 3-pass kernels */
 void x264_hpel_filter_v_avx2( pixel *dst, pixel *src, int16_t *buf, intptr_t stride, intptr_t width );
 void x264_hpel_filter_c_avx2( pixel *dst, int16_t *buf, intptr_t width );
@@ -1109,6 +1112,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->lowres8_convert = x264_lowres8_convert_avx2;
 #if ARCH_X86_64
         pf->plane_split8 = x264_plane_split8_avx2;
+        pf->hpel_filter8 = x264_hpel_filter8_avx2;
 #endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
