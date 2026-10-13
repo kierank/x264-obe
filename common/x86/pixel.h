@@ -86,9 +86,6 @@
 #define x264_weightp_stats8_avx2 x264_template(weightp_stats8_avx2)
 #define x264_weightp_sum8_avx2 x264_template(weightp_sum8_avx2)
 #define x264_weightp_sum8_nv_avx2 x264_template(weightp_sum8_nv_avx2)
-#define x264_weightp_stats8_avx512 x264_template(weightp_stats8_avx512)
-#define x264_weightp_sum8_avx512 x264_template(weightp_sum8_avx512)
-#define x264_weightp_sum8_nv_avx512 x264_template(weightp_sum8_nv_avx512)
 #define x264_pixel_hadamard_ac_16x16_avx x264_template(pixel_hadamard_ac_16x16_avx)
 #define x264_pixel_hadamard_ac_16x16_avx2 x264_template(pixel_hadamard_ac_16x16_avx2)
 #define x264_pixel_hadamard_ac_16x16_mmx2 x264_template(pixel_hadamard_ac_16x16_mmx2)
@@ -964,7 +961,6 @@ void x264_weightp_stats8_##cpu( int32_t *sum, uint32_t *minmax, pixel *src, intp
 void x264_weightp_sum8_##cpu( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom );\
 void x264_weightp_sum8_nv_##cpu( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height );
 DECL_WEIGHTP( avx2 )
-DECL_WEIGHTP( avx512 )
 #undef DECL_WEIGHTP
 uint64_t x264_pixel_sa8d_satd_16x16_sse2      ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
 uint64_t x264_pixel_sa8d_satd_16x16_ssse3     ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
