@@ -3659,13 +3659,151 @@ static int x264_slice_balance_ratio( const int64_t *w, const int *b, int n )
     return (max * n << 10) / w[b[n]];
 }
 
+/* Split b[0..n] (b[0] = 0, b[n] = units, slices within the size bounds) with
+ * the least predicted max slice weight; of the splits within 1/32 of the mean
+ * slice weight of that, the one with the least boundary movement from the
+ * even split.  Ties go to the earliest boundary. */
+static void x264_slice_balance_split( x264_slice_balance_t *sb, int n, const int *even, int *b )
+{
+    int units = sb->i_units;
+    int lo = sb->i_min;
+    int hi = sb->i_max;
+    int stride = units + 1;
+    const int64_t *w = sb->weight;
+    int64_t *f = sb->dp_max;
+    int *g = sb->dp_move;
+    int *from = sb->dp_from;
+    const int64_t inf = (int64_t)1 << 62;
+
+    for( int i = 0; i < (n+1) * stride; i++ )
+    {
+        f[i] = inf;
+        g[i] = INT_MAX;
+    }
+    /* f[k][u]: least max weight of k slices over units [0,u) */
+    f[0] = 0;
+    for( int k = 1; k <= n; k++ )
+    {
+        int u0 = X264_MAX( k * lo, units - (n-k) * hi );
+        int u1 = X264_MIN( k * hi, units - (n-k) * lo );
+        for( int u = u0; u <= u1; u++ )
+        {
+            int64_t best = inf;
+            for( int p = X264_MAX( 0, u - hi ); p <= u - lo; p++ )
+                if( f[(k-1)*stride+p] < inf )
+                    best = X264_MIN( best, X264_MAX( f[(k-1)*stride+p], w[u] - w[p] ) );
+            f[k*stride+u] = best;
+        }
+    }
+    int64_t cap = f[n*stride+units] + w[units] / (32 * n);
+    /* g[k][u]: least sum of |b[i] - even[i]| over i <= k, b[k] = u, slices <= cap */
+    g[0] = 0;
+    for( int k = 1; k <= n; k++ )
+    {
+        int u0 = X264_MAX( k * lo, units - (n-k) * hi );
+        int u1 = X264_MIN( k * hi, units - (n-k) * lo );
+        for( int u = u0; u <= u1; u++ )
+        {
+            int best = INT_MAX;
+            int arg = -1;
+            for( int p = X264_MAX( 0, u - hi ); p <= u - lo; p++ )
+                if( g[(k-1)*stride+p] < best && w[u] - w[p] <= cap )
+                {
+                    best = g[(k-1)*stride+p];
+                    arg = p;
+                }
+            if( arg >= 0 )
+            {
+                g[k*stride+u] = best + abs( u - even[k] );
+                from[k*stride+u] = arg;
+            }
+        }
+    }
+    b[n] = units;
+    for( int k = n; k > 0; k-- )
+        b[k-1] = from[k*stride+b[k]];
+}
+
+/* Guard, as Q10 predicted max/mean slice weight */
+#define SLICE_BALANCE_ON   1280 /* 1.25: leave the even split above this */
+#define SLICE_BALANCE_OFF  1147 /* 1.12: back to the even split at or below this */
+#define SLICE_BALANCE_GAIN  102 /* 0.10: least gain over the even split */
+#define SLICE_BALANCE_HYST  102 /* 0.10: least gain over the split in use */
+
+/* This frame's thread slice boundaries in units into b.  0: the even split.
+ * Per frame type: the even split until it predicts max/mean > ON, then the
+ * balanced split if it gains GAIN; that split stays until a new one gains
+ * HYST over it, or until the even split predicts <= OFF. */
+static int x264_slice_balance_bounds( x264_t *h, int *b )
+{
+    x264_slice_balance_t *sb = h->slice_balance;
+    int n = h->param.i_threads;
+    int units = sb->i_units;
+    int t = !IS_X264_TYPE_I( h->fenc->i_type );
+    int even[X264_THREAD_MAX+1];
+    for( int i = 0; i <= n; i++ )
+        even[i] = (units * i + h->param.i_slice_count/2) / n;
+    if( !x264_slice_balance_weights( h, sb, t ) )
+        return 0;
+
+    const int64_t *w = sb->weight;
+    int *last = sb->last[t];
+    int b_moved = sb->b_moved[t];
+    int r_even = x264_slice_balance_ratio( w, even, n );
+    int r_last = b_moved ? x264_slice_balance_ratio( w, last, n ) : r_even;
+    int r_new = 0;
+    int b_keep = b_moved && r_last + SLICE_BALANCE_GAIN <= r_even;
+    const int *use = even;
+    if( r_even > (b_moved ? SLICE_BALANCE_OFF : SLICE_BALANCE_ON) )
+    {
+        /* no split beats max/mean 1 */
+        if( b_keep && r_last <= 1024 + SLICE_BALANCE_HYST )
+            use = last;
+        else
+        {
+            x264_slice_balance_split( sb, n, even, b );
+            r_new = x264_slice_balance_ratio( w, b, n );
+            if( b_keep && r_last <= r_new + SLICE_BALANCE_HYST )
+                use = last;
+            else if( r_new + SLICE_BALANCE_GAIN <= r_even )
+                use = b;
+        }
+    }
+    if( use != b )
+        memcpy( b, use, (n+1) * sizeof(int) );
+    if( use != last )
+        memcpy( last, b, (n+1) * sizeof(int) );
+    sb->b_moved[t] = use != even;
+
+    if( h->param.i_log_level >= X264_LOG_DEBUG )
+    {
+        char buf[12 * (X264_THREAD_MAX+1)];
+        char *s = buf;
+        int64_t mean = w[units] / n;
+        for( int i = 0; i < n; i++ )
+            s += sprintf( s, " %d:%.2f", b[i] << PARAM_INTERLACED, (double)(w[b[i+1]] - w[b[i]]) / mean );
+        x264_log( h, X264_LOG_DEBUG, "slice balance: frame %d %c even %.3f split %.3f used %.3f rows:pred%s\n",
+                  h->fenc->i_frame, t ? 'P' : 'I', r_even / 1024., r_new / 1024.,
+                  x264_slice_balance_ratio( w, b, n ) / 1024., buf );
+    }
+    return sb->b_moved[t];
+}
+
 static int x264_threaded_slices_write( x264_t *h )
 {
+    int bounds[X264_THREAD_MAX+1];
+    int b_balance = h->slice_balance && x264_slice_balance_bounds( h, bounds );
     /* set first/last mb */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         x264_t *t = h->thread[i];
         int height = h->mb.i_mb_height >> PARAM_INTERLACED;
+        if( b_balance )
+        {
+            t->i_threadslice_start = bounds[i]   << PARAM_INTERLACED;
+            t->i_threadslice_end   = bounds[i+1] << PARAM_INTERLACED;
+            continue;
+        }
         t->i_threadslice_start = ((height *  i    + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
         t->i_threadslice_end   = ((height * (i+1) + h->param.i_slice_count/2) / h->param.i_threads) << PARAM_INTERLACED;
     }
