@@ -874,7 +874,7 @@ int x264_ratecontrol_new( x264_t *h )
 
     rc->lstep = pow( 2, h->param.rc.i_qp_step / 6.0 );
     rc->last_qscale = qp2qscale( 26 + QP_BD_OFFSET );
-    int num_preds = h->param.b_sliced_threads * h->param.i_threads + 1;
+    int num_preds = !!h->param.b_sliced_threads * h->param.i_threads + 1;
     CHECKED_MALLOC( rc->pred, 5 * sizeof(predictor_t) * num_preds );
     CHECKED_MALLOC( rc->pred_b_from_p, sizeof(predictor_t) );
     static const float pred_coeff_table[3] = { 1.0, 1.0, 1.5 };

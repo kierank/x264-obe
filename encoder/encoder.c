@@ -1540,7 +1540,14 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     BOOLIFY( b_constrained_intra );
     BOOLIFY( b_deblocking_filter );
     BOOLIFY( b_deterministic );
-    BOOLIFY( b_sliced_threads );
+    /* 2: balanced thread slices; needs the lowres costs, leaves the
+     * slice-max-size/mbs splits alone */
+    if( h->param.b_sliced_threads == 2 &&
+        (h->param.rc.i_rc_method == X264_RC_CQP || h->param.rc.b_stat_read ||
+         h->param.i_slice_max_size || h->param.i_slice_max_mbs) )
+        h->param.b_sliced_threads = 1;
+    if( h->param.b_sliced_threads != 2 )
+        BOOLIFY( b_sliced_threads );
     BOOLIFY( b_interlaced );
     BOOLIFY( b_intra_refresh );
     BOOLIFY( b_aud );
