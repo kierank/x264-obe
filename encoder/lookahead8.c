@@ -26,6 +26,7 @@
 #include "me.h"
 #include "analyse.h"
 #include "lookahead8.h"
+#include "weightp.h"
 
 #if BIT_DEPTH == 8
 
@@ -135,6 +136,44 @@ void x264_lowres8_weight_plane( void *ctx, void *fenc_, void *ref_, const void *
     x264_weight_scale_plane( h, c->weight_buf, ref->i_stride_lowres, ref->buffer_lowres8, ref->i_stride_lowres,
                              width, height, &w );
     fenc->weighted8 = c->weight_buf + PADH + ref->i_stride_lowres * PADV;
+}
+
+/* rc.b_weightp_8bit: the x264_weights_analyse passes of encoder/weightp.h at 8-bit */
+void x264_lowres8_weight_cache( void *ctx, x264_weight_t *w )
+{
+    x264_t *h = &((lowres8_t*)ctx)->h;
+    h->mc.weight_cache( h, w );
+}
+
+void x264_lowres8_weight_luma_mc_rows( void *ctx, x264_weight_src_t *s, int mb_y0, int mb_y1 )
+{
+    x264_weight_luma_mc_rows( &((lowres8_t*)ctx)->h, s, mb_y0, mb_y1 );
+}
+
+unsigned int x264_lowres8_weight_luma_cost_rows( void *ctx, x264_weight_src_t *s, void *src, const x264_weight_t *w,
+                                                 int mb_y0, int mb_y1 )
+{
+    return x264_weight_luma_cost_rows( &((lowres8_t*)ctx)->h, s, src, w, mb_y0, mb_y1 );
+}
+
+void x264_lowres8_weight_chroma_fenc_rows( void *ctx, x264_weight_src_t *s, int mb_y0, int mb_y1 )
+{
+    x264_weight_chroma_fenc_rows( &((lowres8_t*)ctx)->h, s, mb_y0, mb_y1 );
+}
+
+void x264_lowres8_weight_chroma_ref_rows( void *ctx, x264_weight_src_t *s, int mb_y0, int mb_y1 )
+{
+    x264_weight_chroma_ref_rows( &((lowres8_t*)ctx)->h, s, mb_y0, mb_y1 );
+}
+
+void x264_lowres8_weight_chroma_wsum_rows( void *ctx, x264_weight_src_t *s, int p, int mb_y0, int mb_y1 )
+{
+    x264_weight_chroma_wsum_rows( &((lowres8_t*)ctx)->h, s, p, mb_y0, mb_y1 );
+}
+
+unsigned int x264_lowres8_weight_chroma_cost( void *ctx, x264_weight_src_t *s, int p, const x264_weight_t *w )
+{
+    return x264_weight_chroma_cost( &((lowres8_t*)ctx)->h, s, p, w );
 }
 
 /* As in slicetype.c */

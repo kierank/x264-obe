@@ -1797,6 +1797,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
 #else
     h->param.rc.b_lookahead_8bit = 0;
 #endif
+    h->param.rc.b_weightp_8bit &= h->param.rc.b_lookahead_8bit;
 
     h->frames.i_last_idr =
     h->frames.i_last_keyframe = - h->param.i_keyint_max;

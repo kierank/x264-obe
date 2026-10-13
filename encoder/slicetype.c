@@ -323,6 +323,21 @@ static void x264_weight_ops_init( x264_t *h, x264_weight_ops_t *ops )
     ops->chroma_cost = x264_weight_chroma_cost_k;
 }
 
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+/* rc.b_weightp_8bit: the 8-bit passes, on lowres8[] and the 8-bit chroma */
+static void x264_weight_ops_init8( x264_t *h, x264_weight_ops_t *ops )
+{
+    ops->k = h->lowres8;
+    ops->weight_cache = x264_lowres8_weight_cache;
+    ops->luma_mc_rows = x264_lowres8_weight_luma_mc_rows;
+    ops->luma_cost_rows = x264_lowres8_weight_luma_cost_rows;
+    ops->chroma_fenc_rows = x264_lowres8_weight_chroma_fenc_rows;
+    ops->chroma_ref_rows = x264_lowres8_weight_chroma_ref_rows;
+    ops->chroma_wsum_rows = x264_lowres8_weight_chroma_wsum_rows;
+    ops->chroma_cost = x264_lowres8_weight_chroma_cost;
+}
+#endif
+
 /* The passes in MB row bands on the lookahead pool, idle here like for
  * x264_weight_lowres_init. Bands only write their own rows (the motion compensation
  * reads any row of the ref, which no band writes), and their costs are unsigned
@@ -334,6 +349,7 @@ typedef struct
     int p;
     void *src;
     const x264_weight_t *w;
+    void *ctx;
 } x264_weight_pass_t;
 
 typedef struct x264_weight_band_t
@@ -404,7 +420,7 @@ static void x264_weight_chroma_wsum_band( x264_weight_band_t *b )
 /* The luma planes of x264_weight_src_t: lowres[] and the lowres MVs. Returns the ref
  * to cost, motion compensated into dst if there are MVs. */
 static NOINLINE void *x264_weight_cost_init_luma( x264_t *h, const x264_weight_ops_t *ops, x264_weight_src_t *s,
-                                                  x264_frame_t *fenc, x264_frame_t *ref, void *dst )
+                                                  x264_frame_t *fenc, x264_frame_t *ref, void *dst, int b8 )
 {
     int ref0_distance = fenc->i_frame - ref->i_frame - 1;
     s->mb_width = h->mb.i_mb_width;
@@ -412,9 +428,20 @@ static NOINLINE void *x264_weight_cost_init_luma( x264_t *h, const x264_weight_o
     /* Note: this will never run during lookahead as weights_analyse is only called if no
      * motion search has been done. */
     s->mvs = fenc->lowres_mvs[0][ref0_distance][0][0] != 0x7FFF ? fenc->lowres_mvs[0][ref0_distance] : NULL;
-    s->fenc_luma = fenc->lowres[0];
-    for( int i = 0; i < 4; i++ )
-        s->ref_luma[i] = ref->lowres[i];
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( b8 )
+    {
+        s->fenc_luma = fenc->lowres8[0];
+        for( int i = 0; i < 4; i++ )
+            s->ref_luma[i] = ref->lowres8[i];
+    }
+    else
+#endif
+    {
+        s->fenc_luma = fenc->lowres[0];
+        for( int i = 0; i < 4; i++ )
+            s->ref_luma[i] = ref->lowres[i];
+    }
     s->mc_luma = dst;
     s->stride_luma = fenc->i_stride_lowres;
     s->intra_cost = fenc->i_intra_cost;
@@ -427,10 +454,53 @@ static NOINLINE void *x264_weight_cost_init_luma( x264_t *h, const x264_weight_o
     return s->ref_luma[0];
 }
 
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+/* rc.b_weightp_8bit: the ref chroma, with the padding x264_frame_expand_border_chroma
+ * writes, and fenc's, converted as lowres8[]: min( (x + 2) >> 2, 255 ) */
+typedef struct
+{
+    x264_t *h;
+    x264_frame_t *fenc;
+    x264_frame_t *ref;
+    uint8_t *ref8;
+    uint8_t *fenc8;
+    int padv;
+} x264_weight_conv8_t;
+
+static void x264_weight_chroma_conv8_band( x264_weight_band_t *b )
+{
+    x264_weight_pass_t *a = b->pass;
+    x264_weight_conv8_t *c = a->ctx;
+    x264_t *h = c->h;
+    intptr_t stride = a->s->stride_chroma;
+    int height = 16 >> a->s->v_shift;
+    int y0 = b->mb_y0 * height;
+    int y1 = b->mb_y1 * height;
+    /* the padding rows with the first and the last band */
+    int r0 = b->mb_y0 ? y0 : -c->padv;
+    int r1 = b->mb_y1 == h->mb.i_mb_height ? y1 + c->padv : y1;
+    h->mc.plane_copy_16to8( c->ref8 - PADH + r0*stride, stride, c->ref->plane[1] - PADH + r0*stride, stride,
+                            16*h->mb.i_mb_width + 2*PADH, r1 - r0 );
+    h->mc.plane_copy_16to8( c->fenc8 + y0*stride, stride, c->fenc->plane[1] + y0*stride, stride,
+                            16*h->mb.i_mb_width, y1 - y0 );
+    x264_emms();
+    a->ops->chroma_fenc_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
+}
+
+static void x264_weight_chroma_ref_band( x264_weight_band_t *b )
+{
+    x264_weight_pass_t *a = b->pass;
+    a->ops->chroma_ref_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
+}
+#endif
+
 /* The chroma planes and arrays of x264_weight_src_t, the ref motion compensated into
- * p_weight_buf[0]: u, then v at + stride * chroma height. */
+ * p_weight_buf[0]: u, then v at + stride * chroma height. b8: as bytes, followed by
+ * the 8-bit ref (rows -padv to lines + padv) and fenc, all converted before the
+ * motion compensation reads any row. p_weight_buf[0] holds 2*stride*(chroma lines
+ * + 2*PADV) bytes at least, 4*stride*lines + 2*stride*padv are used. */
 static NOINLINE void x264_weight_cost_init_chroma( x264_t *h, const x264_weight_ops_t *ops, x264_weight_src_t *s,
-                                                   x264_frame_t *fenc, x264_frame_t *ref )
+                                                   x264_frame_t *fenc, x264_frame_t *ref, int b8 )
 {
     int ref0_distance = fenc->i_frame - ref->i_frame - 1;
     int n16 = (h->mb.i_mb_width + 15) & ~15;
@@ -456,6 +526,24 @@ static NOINLINE void x264_weight_cost_init_chroma( x264_t *h, const x264_weight_
     }
     if( s->mvs )
         x264_frame_expand_border_chroma( h, ref, 1 );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( b8 )
+    {
+        intptr_t stride = fenc->i_stride[1];
+        int lines = fenc->i_lines[1];
+        int padv = PADV >> CHROMA_V_SHIFT;
+        uint8_t *buf = (uint8_t*)h->mb.p_weight_buf[0];
+        x264_weight_conv8_t c = { h, fenc, ref, buf + stride*(2*lines + padv) + PADH, buf + stride*(3*lines + 2*padv), padv };
+        s->dst[0] = buf;
+        s->dst[1] = buf + stride*lines;
+        s->ref_chroma = c.ref8;
+        s->fenc_chroma = c.fenc8;
+        x264_weight_pass_t a = { ops, s, 0, NULL, NULL, &c };
+        x264_weight_bands( h, x264_weight_chroma_conv8_band, &a );
+        x264_weight_bands( h, x264_weight_chroma_ref_band, &a );
+        return;
+    }
+#endif
     x264_weight_pass_t a = { ops, s, 0, NULL, NULL };
     x264_weight_bands( h, x264_weight_chroma_init_band, &a );
 }
@@ -630,7 +718,17 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
     int chroma_initted = 0;
     x264_weight_src_t ws;
     x264_weight_ops_t ops;
-    x264_weight_ops_init( h, &ops );
+    int b8 = 0;
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    /* rc.b_weightp_8bit: luma and 4:2:0/4:2:2 chroma at 8-bit, 4:4:4 chroma at full depth */
+    if( h->param.rc.b_weightp_8bit && h->lowres8 )
+    {
+        x264_weight_ops_init8( h, &ops );
+        b8 = 1;
+    }
+    else
+#endif
+        x264_weight_ops_init( h, &ops );
     float guess_scale[3];
     float fenc_mean[3];
     float ref_mean[3];
@@ -698,10 +796,13 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                 x264_slicetype_frame_cost( h, &a, &fenc, 0, 0, 0, 0 );
             }
 #if HIGH_BIT_DEPTH
-            x264_weight_lowres_init( h, fenc );
-            x264_weight_lowres_init( h, ref );
+            if( !b8 )
+            {
+                x264_weight_lowres_init( h, fenc );
+                x264_weight_lowres_init( h, ref );
+            }
 #endif
-            mcbuf = x264_weight_cost_init_luma( h, &ops, &ws, fenc, ref, h->mb.p_weight_buf[0] );
+            mcbuf = x264_weight_cost_init_luma( h, &ops, &ws, fenc, ref, h->mb.p_weight_buf[0], b8 );
             origscore = minscore = x264_weight_cost_luma( h, &ops, &ws, mcbuf, NULL );
         }
         else
@@ -714,7 +815,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
             else
             {
                 if( !chroma_initted++ )
-                    x264_weight_cost_init_chroma( h, &ops, &ws, fenc, ref );
+                    x264_weight_cost_init_chroma( h, &ops, &ws, fenc, ref, b8 );
                 mcbuf = NULL;
                 origscore = minscore = x264_weight_cost_chroma( h, &ops, &ws, plane-1, NULL );
             }

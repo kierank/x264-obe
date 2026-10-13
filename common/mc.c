@@ -434,10 +434,11 @@ static void integral_init8v( uint16_t *sum8, intptr_t stride )
 /* rc.b_lookahead_8bit: the lookahead runs on lowres8[], and lowres[] is only read
  * by x264_weights_analyse past its early termination, so it computes lowres[] then,
  * from the source. Not with interlaced weightp: adaptive MBAFF rewrites the source
- * padding while encoding (x264_expand_border_mbpair). */
+ * padding while encoding (x264_expand_border_mbpair). With rc.b_weightp_8bit
+ * nothing reads lowres[]. */
 static int lowres_deferred( x264_t *h, x264_frame_t *frame )
 {
-    return frame->buffer_lowres8 && !(PARAM_INTERLACED && h->param.analyse.i_weighted_pred);
+    return frame->buffer_lowres8 && (h->param.rc.b_weightp_8bit || !(PARAM_INTERLACED && h->param.analyse.i_weighted_pred));
 }
 
 /* lowres8[] on lowres rows [y0,y1) with their padding, straight from the source:
@@ -590,6 +591,26 @@ static void frame_init_lowres_core8( pixel *src0, uint8_t *dst0, uint8_t *dsth, 
         dstc += dst_stride;
     }
 }
+
+#define TO8(x) X264_MIN( ((x) + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 )
+static void plane_copy_16to8( uint8_t *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int w, int h )
+{
+    for( int y = 0; y < h; y++, dst += i_dst, src += i_src )
+        for( int x = 0; x < w; x++ )
+            dst[x] = TO8( src[x] );
+}
+
+static void plane_copy_deinterleave_16to8( uint8_t *dstu, intptr_t i_dstu, uint8_t *dstv, intptr_t i_dstv,
+                                           pixel *src, intptr_t i_src, int w, int h )
+{
+    for( int y = 0; y < h; y++, dstu += i_dstu, dstv += i_dstv, src += i_src )
+        for( int x = 0; x < w; x++ )
+        {
+            dstu[x] = TO8( src[2*x] );
+            dstv[x] = TO8( src[2*x+1] );
+        }
+}
+#undef TO8
 #endif
 
 /* Estimate the total amount of influence on future quality that could be had if we
@@ -736,6 +757,8 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->frame_init_lowres_core = frame_init_lowres_core;
 #if HIGH_BIT_DEPTH
     pf->frame_init_lowres_core8 = frame_init_lowres_core8;
+    pf->plane_copy_16to8 = plane_copy_16to8;
+    pf->plane_copy_deinterleave_16to8 = plane_copy_deinterleave_16to8;
 #endif
 
     pf->integral_init4h = integral_init4h;
