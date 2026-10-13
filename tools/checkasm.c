@@ -2304,6 +2304,61 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
         report( "plane split8 :" );
     }
+
+    if( mc_a.plane_unpack8 != mc_ref.plane_unpack8 )
+    {
+        /* the --me-8bit readers' windows (w 16 and 32, 1 to 20 rows) and wider,
+         * msb and lsb 0, 4 and 12 bytes past alignment; dst rows have a 16 pixel gap
+         * that must stay untouched (C and asm buffers compared whole) */
+        uint8_t *src8 = x264_malloc( 4096 + 64 );
+        if( !src8 )
+            return -1;
+        set_func_name( "plane_unpack8" );
+        ok = 1; used_asm = 1;
+        for( int i = 0; i < 4096 + 64; i++ )
+            src8[i] = i % 7 == 3 ? 255 : i % 11 == 5 ? 0 : rand();
+        for( int w = 16; w <= 64 && ok; w += 16 )
+            for( int hgt = 1; hgt <= 20 && ok; hgt++ )
+                for( int k = 0; k < 3 && ok; k++ )
+                {
+                    int off = (int[]){ 0, 4, 12 }[k];
+                    /* msb rows 128 bytes apart, lsb rows 32 */
+                    uint8_t *msb = src8 + off;
+                    uint8_t *lsb = src8 + 2560 + off + (hgt & 3);
+                    intptr_t i_dst = w + 16;
+                    memset( pbuf3, 0xaa, 20 * 80 * sizeof(pixel) );
+                    memset( pbuf4, 0xaa, 20 * 80 * sizeof(pixel) );
+                    call_c( mc_c.plane_unpack8, pbuf3, i_dst, msb, lsb, (intptr_t)128, w, hgt );
+                    call_a( mc_a.plane_unpack8, pbuf4, i_dst, msb, lsb, (intptr_t)128, w, hgt );
+                    if( memcmp( pbuf3, pbuf4, 20 * 80 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "plane_unpack8 differs, w=%d h=%d off=%d\n", w, hgt, off );
+                    }
+                }
+        /* the inverse of plane_split8, exactly: split then unpack is src */
+        if( ok )
+        {
+            uint8_t *msb = src8, *lsb = src8 + 3*64;
+            mc_c.plane_split8( msb, lsb, pbuf1, 64, 64, 3 );
+            call_a( mc_a.plane_unpack8, pbuf4, (intptr_t)64, msb, lsb, (intptr_t)64, 64, 3 );
+            if( memcmp( pbuf4, pbuf1, 3 * 64 * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "plane_unpack8 is not plane_split8's inverse\n" );
+            }
+            /* positive control: one lsb bit of the input */
+            lsb[17] ^= 1 << 4;
+            mc_a.plane_unpack8( pbuf4, 64, msb, lsb, 64, 64, 3 );
+            if( !memcmp( pbuf4, pbuf1, 3 * 64 * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "plane_unpack8 inverse check is blind\n" );
+            }
+        }
+        x264_free( src8 );
+        report( "plane unpack8 :" );
+    }
 #endif
 
 #define INTEGRAL_INIT( name, size, ... )\
