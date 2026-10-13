@@ -260,6 +260,7 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
     m[0].p_cost_mv = c->p_cost_mv;
     m[0].i_stride[0] = i_stride;
     m[0].p_fenc[0] = h->mb.pic.p_fenc[0];
+    m[0].p_fref8[0] = m[0].p_fref8[1] = m[0].p_split8[1] = NULL;
     m[0].weight = w;
     m[0].i_ref = 0;
     LOAD_HPELS_LUMA( m[0].p_fref, fref0->lowres8 );
@@ -275,6 +276,7 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
         m[1].p_cost_mv = c->p_cost_mv;
         m[1].i_stride[0] = i_stride;
         m[1].p_fenc[0] = h->mb.pic.p_fenc[0];
+        m[1].p_fref8[0] = m[1].p_fref8[1] = m[1].p_split8[1] = NULL;
         m[1].i_ref = 0;
         m[1].weight = x264_weight_none;
         LOAD_HPELS_LUMA( m[1].p_fref, fref1->lowres8 );

@@ -1293,10 +1293,27 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 }
                 else
                 {
-                    src0 = x264_ref_get_ref( h, pix,    &stride, m->p_fref, m->p_split8, m->i_stride[0],
+                    /* An unweighted split ref with an hpel centre has one fullpel
+                     * pair, which get_ref returns as the 16-bit plane at its stride:
+                     * copy such a pair into pix for the x4's one stride. */
+                    intptr_t stride2 = 64;
+                    src0 = x264_ref_get_ref( h, pix,    &stride,  m->p_fref, m->p_split8, m->i_stride[0],
                                              omx, omy-2, bw, bh+1, &m->weight[0] );
-                    src2 = x264_ref_get_ref( h, pix+32, &stride, m->p_fref, m->p_split8, m->i_stride[0],
+                    src2 = x264_ref_get_ref( h, pix+32, &stride2, m->p_fref, m->p_split8, m->i_stride[0],
                                              omx-2, omy, bw+4, bh, &m->weight[0] );
+                    if( stride != 64 )
+                    {
+                        for( int y = 0; y < bh+1; y++ )
+                            memcpy( pix + y*64, src0 + y*stride, bw * sizeof(pixel) );
+                        src0 = pix;
+                    }
+                    if( stride2 != 64 )
+                    {
+                        for( int y = 0; y < bh; y++ )
+                            memcpy( pix + 32 + y*64, src2 + y*stride2, (bw+1) * sizeof(pixel) );
+                        src2 = pix + 32;
+                    }
+                    stride = 64;
                 }
                 src1 = src0 + stride;
                 src3 = src2 + 1;

@@ -1920,6 +1920,27 @@ static void x264_mb_analyse_inter_direct( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+#if HIGH_BIT_DEPTH
+/* x264_mc_hpel_pair of m in buf (2*X264_SPLIT8_STRIDE*bh pixels at stride
+ * X264_SPLIT8_STRIDE): unpacked from a split ref, else copied */
+static void x264_analyse_bi_pair( x264_t *h, pixel *dst[2], pixel *buf, x264_me_t *m, int bw, int bh )
+{
+    if( m->p_split8[1] )
+    {
+        x264_mc_hpel_pair_split8( h, dst, buf, m->p_split8, m->i_stride[0], m->mv[0], m->mv[1], bw, bh );
+        return;
+    }
+    pixel *src[2];
+    x264_mc_hpel_pair( src, m->p_fref, m->i_stride[0], m->mv[0], m->mv[1] );
+    for( int k = 0; k < 2; k++ )
+    {
+        dst[k] = buf + k*X264_SPLIT8_STRIDE*bh;
+        for( int y = 0; y < bh; y++ )
+            memcpy( dst[k] + y*X264_SPLIT8_STRIDE, src[k] + y*m->i_stride[0], bw * sizeof(pixel) );
+    }
+}
+#endif
+
 /* mbcmp_bi4 of the bipred average of m0's and m1's unweighted predictions,
  * the partition's BI cost without get_ref and avg */
 static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fenc, int i_pixel,
@@ -1929,8 +1950,9 @@ static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fen
     intptr_t stride = m0->i_stride[0];
 #if HIGH_BIT_DEPTH
     /* split refs: all four sources read in place (mbcmp_bi4_pk), fullpel from
-     * msb8/lsb8[0] too, for the one stride; else unpacked */
-    if( m0->p_split8[1] && h->pixf.mbcmp_bi4_pk[i_pixel] )
+     * msb8/lsb8[0] too, for the one stride; else unpacked. An encode's refs are
+     * all split or none, but a mixed pair must not reach either path. */
+    if( m0->p_split8[1] && m1->p_split8[1] && h->pixf.mbcmp_bi4_pk[i_pixel] )
     {
         uint8_t *pk[8];
         x264_pk_hpel_pair( pk, m0->p_split8, stride, m0->mv[0], m0->mv[1] );
@@ -1938,13 +1960,12 @@ static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fen
         return h->pixf.mbcmp_bi4_pk[i_pixel]( bi_fenc, pk, stride, h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
     }
     ALIGNED_ARRAY_64( pixel, buf,[4*X264_SPLIT8_STRIDE*16] );
-    if( m0->p_split8[1] )
+    if( m0->p_split8[1] || m1->p_split8[1] )
     {
         int bw = x264_pixel_size[i_pixel].w;
         int bh = x264_pixel_size[i_pixel].h;
-        x264_mc_hpel_pair_split8( h, src0, buf, m0->p_split8, stride, m0->mv[0], m0->mv[1], bw, bh );
-        x264_mc_hpel_pair_split8( h, src1, buf + 2*X264_SPLIT8_STRIDE*bh, m1->p_split8, stride,
-                                  m1->mv[0], m1->mv[1], bw, bh );
+        x264_analyse_bi_pair( h, src0, buf, m0, bw, bh );
+        x264_analyse_bi_pair( h, src1, buf + 2*X264_SPLIT8_STRIDE*bh, m1, bw, bh );
         stride = X264_SPLIT8_STRIDE;
     }
     else

@@ -5329,6 +5329,10 @@ SATD_BI  8,  8, 1
 ; in the msb address). Rows are stride bytes (msb) and stride/4 (lsb) apart.
 ; 16 pixels: avx2 vpbroadcastq, pshufb, pmullw, psrlw, pmovzxbw, psllw, por;
 ; avx512 (ymm) vpbroadcastq, pshufb, vpsrlvw, pmovzxbw, psllw, vpternlogd.
+; The lsb loads are wider than the bytes used (8 for at most 5, movd 4 for 3):
+; at a row's right edge they read into the next row's left padding, inside the
+; plane, which under frame threads may not be written yet (a benign race for
+; TSan/helgrind); pshufb never selects those bytes.
 ;=============================================================================
 %if ARCH_X86_64
 

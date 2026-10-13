@@ -1822,6 +1822,16 @@ static int check_dct( int cpu_ref, int cpu_new )
     return ret;
 }
 
+#if HIGH_BIT_DEPTH
+static int split8_block_differs( pixel *a, intptr_t sa, pixel *b, intptr_t sb, int w, int h )
+{
+    for( int y = 0; y < h; y++ )
+        if( memcmp( a + y*sa, b + y*sb, w * sizeof(pixel) ) )
+            return 1;
+    return 0;
+}
+#endif
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -2673,6 +2683,115 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_free( msb );
         x264_free( pl );
         report( "mc pk :" );
+    }
+
+    if( mc_a.plane_unpack8 != mc_ref.plane_unpack8 || mc_a.copy_pk[1] != mc_ref.copy_pk[1] )
+    {
+        /* the --me-8bit 2 readers' C glue on split planes (p_fref[1..3] NULL as in
+         * the encoder): x264_ref_mc_luma, x264_ref_get_ref and x264_ref_hpel_pair
+         * against C mc_luma, get_ref and x264_mc_hpel_pair on the 16-bit planes;
+         * every fraction at fullpel offsets -2..1, widths 4-20, heights 4-17,
+         * unweighted and weighted (C weightfn), through mc_a (pk kernels where
+         * there are any), mc_a without copy_pk/avg2_pk (the unpack temps) and C */
+        enum { PW = 128, PH = 64, PS = PW*PH + PW/4*PH, PO = 24*PW + 48 };
+        static const uint8_t gw[5] = { 4, 8, 12, 16, 20 };
+        static const uint8_t gh[6] = { 4, 5, 8, 9, 16, 17 };
+        pixel *pl = x264_malloc( 4*PW*PH*sizeof(pixel) );
+        uint8_t *pk8 = x264_malloc( 4*PS );
+        x264_t *hg = x264_malloc( sizeof(x264_t) );
+        if( !pl || !pk8 || !hg )
+            return -1;
+        ALIGNED_ARRAY_64( pixel, dref,[20*32] );
+        ALIGNED_ARRAY_64( pixel, dglue,[20*32] );
+        ALIGNED_ARRAY_64( pixel, pairbuf,[2*X264_SPLIT8_STRIDE*17] );
+        pixel *src16[4], *srcs[4];
+        uint8_t *src8[8];
+        x264_weight_t wt[2];
+        for( int i = 0; i < 4*PW*PH; i++ )
+            pl[i] = i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+        for( int k = 0; k < 4; k++ )
+        {
+            mc_c.plane_split8( pk8 + k*PS, pk8 + k*PS + PW*PH, pl + k*PW*PH, PW, PW, PH );
+            src16[k] = pl + k*PW*PH + PO;
+            srcs[k] = k ? NULL : src16[0];
+            src8[k] = pk8 + k*PS + PO;
+            src8[4+k] = pk8 + k*PS + PW*PH + PO/4;
+        }
+        memset( hg, 0, sizeof(x264_t) );
+        hg->mc = mc_c;
+        wt[0] = x264_weight_none[0];
+        wt[1] = (x264_weight_t){ .i_scale = 25, .i_denom = 4, .i_offset = -7 };
+        mc_c.weight_cache( hg, &wt[1] );
+        ok = 1; used_asm = 1;
+        for( int v = 0; v < 3 && ok; v++ )
+        {
+            hg->mc = v == 2 ? mc_c : mc_a;
+            if( v == 1 )
+            {
+                memset( hg->mc.copy_pk, 0, sizeof(hg->mc.copy_pk) );
+                memset( hg->mc.avg2_pk, 0, sizeof(hg->mc.avg2_pk) );
+            }
+            for( int j = 0; j < 256 && ok; j++ )
+            {
+                int mvx = 4*((j&3)-2) + ((j>>2)&3);
+                int mvy = 4*(((j>>4)&3)-2) + (j>>6);
+                for( int wi = 0; wi < 5 && ok; wi++ )
+                    for( int hi = 0; hi < 6 && ok; hi++ )
+                        for( int k = 0; k < 2 && ok; k++ )
+                        {
+                            int w = gw[wi], hgt = gh[hi];
+                            intptr_t sref = 32, sglue = 32;
+                            pixel *pr, *pg;
+                            mc_c.mc_luma( dref, 32, src16, PW, mvx, mvy, w, hgt, &wt[k] );
+                            x264_ref_mc_luma( hg, dglue, 32, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
+                            if( split8_block_differs( dref, 32, dglue, 32, w, hgt ) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "split8 glue mc_luma (%d) mv %d,%d %dx%d weight %d [FAILED]\n",
+                                         v, mvx, mvy, w, hgt, k );
+                            }
+                            pr = mc_c.get_ref( dref, &sref, src16, PW, mvx, mvy, w, hgt, &wt[k] );
+                            pg = x264_ref_get_ref( hg, dglue, &sglue, srcs, src8, PW, mvx, mvy, w, hgt, &wt[k] );
+                            if( split8_block_differs( pr, sref, pg, sglue, w, hgt ) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "split8 glue get_ref (%d) mv %d,%d %dx%d weight %d [FAILED]\n",
+                                         v, mvx, mvy, w, hgt, k );
+                            }
+                            if( !k && w <= 16 )
+                            {
+                                pixel *pref[2], *pglue[2];
+                                x264_mc_hpel_pair( pref, src16, PW, mvx, mvy );
+                                intptr_t sp = x264_ref_hpel_pair( hg, pglue, pairbuf, srcs, src8, PW, mvx, mvy, w, hgt );
+                                if( split8_block_differs( pref[0], PW, pglue[0], sp, w, hgt ) ||
+                                    split8_block_differs( pref[1], PW, pglue[1], sp, w, hgt ) )
+                                {
+                                    ok = 0;
+                                    fprintf( stderr, "split8 glue hpel_pair (%d) mv %d,%d %dx%d [FAILED]\n",
+                                             v, mvx, mvy, w, hgt );
+                                }
+                            }
+                        }
+            }
+            /* positive control: lsb bit 1 of the h plane's first pixel must show
+             * in an hpel mc_luma */
+            if( ok )
+            {
+                src8[5][0] ^= 2;
+                mc_c.mc_luma( dref, 32, src16, PW, 2, 0, 16, 16, &wt[0] );
+                x264_ref_mc_luma( hg, dglue, 32, srcs, src8, PW, 2, 0, 16, 16, &wt[0] );
+                src8[5][0] ^= 2;
+                if( !split8_block_differs( dref, 32, dglue, 32, 16, 16 ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "split8 glue check is blind (%d)\n", v );
+                }
+            }
+        }
+        x264_free( hg );
+        x264_free( pk8 );
+        x264_free( pl );
+        report( "mc split8 glue :" );
     }
 #endif
 
