@@ -775,13 +775,11 @@ INIT_XMM sse2
 OFFSETPN  8
 
 ; AVX2, two rows per iteration: 16 px per ymm row, 8 px rows paired in a ymm,
-; 4 px rows paired in an xmm. %2 is the per-register op with operands m3-m5.
+; 4 px rows paired in an xmm. %2 is the op: dst, src (register or memory), m3-m5.
 %macro WEIGHT_ROWS_AVX2 2 ; width, op
 %if %1 & 16
-    movu         m0, [r2]
-    movu         m1, [r2+r3]
-    %2           m0, m3, m4, m5
-    %2           m1, m3, m4, m5
+    %2           m0, [r2], m3, m4, m5
+    %2           m1, [r2+r3], m3, m4, m5
     movu       [r0], m0
     movu    [r0+r1], m1
 %endif
@@ -789,7 +787,7 @@ OFFSETPN  8
     %assign wx (%1 & 16)*2
     movu        xm0, [r2+wx]
     vinserti128  m0, m0, [r2+r3+wx], 1
-    %2           m0, m3, m4, m5
+    %2           m0, m0, m3, m4, m5
     movu    [r0+wx], xm0
     vextracti128 [r0+r1+wx], m0, 1
 %endif
@@ -797,7 +795,7 @@ OFFSETPN  8
     %assign wx (%1-4)*2
     movq        xm2, [r2+wx]
     movhps      xm2, [r2+r3+wx]
-    %2          xm2, xm3, xm4, xm5
+    %2          xm2, xm2, xm3, xm4, xm5
     movq    [r0+wx], xm2
     movhps [r0+r1+wx], xm2
 %endif
@@ -805,25 +803,35 @@ OFFSETPN  8
 
 ; pmulhrsw rounds (pix*scale)>>denom exactly; for 0 <= scale the paddsw of
 ; offset+wclip saturates at PIXEL_MAX and psubusw wclip clips at 0
-%macro WEIGHT_NS_OP_AVX2 4 ; pix, scale<<(15-denom), offset+wclip, wclip
-    pmulhrsw     %1, %2
-    paddsw       %1, %3
-    psubusw      %1, %4
+%macro WEIGHT_NS_OP_AVX2 5 ; dst, src, scale<<(15-denom), offset+wclip, wclip
+    pmulhrsw     %1, %3, %2
+    paddsw       %1, %4
+    psubusw      %1, %5
 %endmacro
 
 %assign WEIGHT_PRESHIFT 15-BIT_DEPTH
-%macro WEIGHT_OP_AVX2 4 ; pix, scale<<(BIT_DEPTH-denom), offset+wclip, wclip
+%macro WEIGHT_OP_AVX2 5 ; dst, src, scale<<(BIT_DEPTH-denom), offset+wclip, wclip
+%ifnum sizeof%2
+    psllw        %1, %2, WEIGHT_PRESHIFT
+%else
+    movu         %1, %2
     psllw        %1, WEIGHT_PRESHIFT
-    WEIGHT_NS_OP_AVX2 %1, %2, %3, %4
+%endif
+    WEIGHT_NS_OP_AVX2 %1, %1, %3, %4, %5
 %endmacro
 
-%macro OFFSET_add_AVX2 4 ; pix, offset, pixel_max, unused
-    paddusw      %1, %2
-    pminsw       %1, %3
+%macro OFFSET_add_AVX2 5 ; dst, src, offset, pixel_max, unused
+    paddusw      %1, %3, %2
+    pminsw       %1, %4
 %endmacro
 
-%macro OFFSET_sub_AVX2 4 ; pix, -offset, unused, unused
-    psubusw      %1, %2
+%macro OFFSET_sub_AVX2 5 ; dst, src, -offset, unused, unused
+%ifnum sizeof%2
+    psubusw      %1, %2, %3
+%else
+    movu         %1, %2
+    psubusw      %1, %3
+%endif
 %endmacro
 
 ;-----------------------------------------------------------------------------
