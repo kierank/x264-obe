@@ -47,9 +47,10 @@ typedef struct
     int32_t *fsum[2];       /* fenc */
     int32_t *rsum[2];       /* ref */
     uint32_t *minmax[2];    /* ref, min | max << 16 */
-    int32_t *wsum[2];       /* ref weighted at wscale[] and wdenom[], unclipped */
+    int32_t *wsum[2];       /* ref weighted at wscale[] and wdenom[], unclipped, - fsum[] */
     int wscale[2];
     int wdenom[2];
+    int32_t *orange[2];     /* per MB row, the offsets (<< BIT_DEPTH-8) no block clips at: min, max */
 } x264_weight_src_t;
 
 #define x264_weight_luma_mc_rows x264_template(weight_luma_mc_rows)
@@ -64,7 +65,7 @@ void x264_weight_chroma_fenc_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, i
 /* dst[], rsum[], minmax[] */
 #define x264_weight_chroma_ref_rows x264_template(weight_chroma_ref_rows)
 void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, int mb_y1 );
-/* wsum[p] at wscale[p], wdenom[p] */
+/* wsum[p] and orange[p] at wscale[p], wdenom[p] */
 #define x264_weight_chroma_wsum_rows x264_template(weight_chroma_wsum_rows)
 void x264_weight_chroma_wsum_rows( x264_t *h, x264_weight_src_t *s, int p, int mb_y0, int mb_y1 );
 /* The whole plane p; w: NULL or cached for this depth, wsum[p] at its scale and denom;
