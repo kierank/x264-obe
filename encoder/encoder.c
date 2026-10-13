@@ -1471,10 +1471,10 @@ static int x264_validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_WARNING, "interlace + me=esa is not implemented\n" );
             h->param.analyse.i_me_method = X264_ME_UMH;
         }
-        if( h->param.analyse.i_weighted_pred > 0 )
+        if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
         {
-            x264_log( h, X264_LOG_WARNING, "interlace + weightp is not implemented\n" );
-            h->param.analyse.i_weighted_pred = X264_WEIGHTP_NONE;
+            x264_log( h, X264_LOG_WARNING, "interlace + weightp 2 is not implemented, using weightp 1\n" );
+            h->param.analyse.i_weighted_pred = X264_WEIGHTP_SIMPLE;
         }
     }
 
@@ -2541,7 +2541,7 @@ static void x264_weighted_pred_init( x264_t *h )
                         //scale full resolution frame
                         if( h->param.i_threads == 1 )
                         {
-                            pixel *src = h->fref[0][j]->filtered[0][0] - h->fref[0][j]->i_stride[0]*i_padv - PADH;
+                            pixel *src = x264_weight_src_plane( h, h->fref[0][j] ) - h->fref[0][j]->i_stride[0]*i_padv - PADH;
                             pixel *dst = h->fenc->weighted[j] - h->fenc->i_stride[0]*i_padv - PADH;
                             int stride = h->fenc->i_stride[0];
                             int width = h->fenc->i_width[0] + PADH*2;
