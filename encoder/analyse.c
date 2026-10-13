@@ -215,7 +215,7 @@ void x264_analyse_weight_frame( x264_t *h, int end )
             int width = frame->i_width[0] + 2*PADH;
             int i_padv = PADV << PARAM_INTERLACED;
             int offset, height;
-            pixel *src = frame->filtered[0][0] - frame->i_stride[0]*i_padv - PADH;
+            pixel *src = x264_weight_src_plane( h, frame ) - frame->i_stride[0]*i_padv - PADH;
             height = X264_MIN( 16 + end + i_padv, h->fref[0][j]->i_lines[0] + i_padv*2 ) - h->fenc->i_lines_weighted;
             offset = h->fenc->i_lines_weighted*frame->i_stride[0];
             h->fenc->i_lines_weighted += height;
@@ -257,7 +257,7 @@ void x264_analyse_weight_rows( x264_t *h, int y0, int y1 )
             int width = frame->i_width[0] + 2*PADH;
             int i_padv = PADV << PARAM_INTERLACED;
             intptr_t offset = y0*frame->i_stride[0];
-            pixel *src = frame->filtered[0][0] - frame->i_stride[0]*i_padv - PADH;
+            pixel *src = x264_weight_src_plane( h, frame ) - frame->i_stride[0]*i_padv - PADH;
             for( int k = j; k < h->i_ref[0]; k++ )
                 if( h->sh.weight[k][0].weightfn )
                 {
@@ -411,7 +411,8 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 if( PARAM_INTERLACED )
                     thread_mvy_range >>= 1;
 
-                x264_analyse_weight_frame( h, pix_y + thread_mvy_range );
+                /* field mbs: the range is in field rows */
+                x264_analyse_weight_frame( h, pix_y + (thread_mvy_range << PARAM_INTERLACED) );
             }
 
             if( PARAM_INTERLACED )
@@ -1289,7 +1290,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 
 #define LOAD_WPELS(m, src, list, ref, xoff, yoff) \
     (m)->p_fref_w = &(src)[(xoff)+(yoff)*(m)->i_stride[0]]; \
-    (m)->weight = h->sh.weight[i_ref];
+    (m)->weight = h->sh.weight[(ref) >> MB_INTERLACED];
 
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
@@ -1747,7 +1748,7 @@ static ALWAYS_INLINE int x264_mb_analyse_inter_p4x4_chroma_internal( x264_t *h, 
     int or = 8*(i8x8&1) + (4>>chroma_v_shift)*(i8x8&2)*i_stride;
     int i_ref = a->l0.me8x8[i8x8].i_ref;
     int mvy_offset = chroma_v_shift && MB_INTERLACED & i_ref ? (h->mb.i_mb_y & 1)*4 - 2 : 0;
-    x264_weight_t *weight = h->sh.weight[i_ref];
+    x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
 
     // FIXME weight can be done on 4x4 blocks even if mc is smaller
 #define CHROMA4x4MC( width, height, me, x, y ) \
@@ -1756,9 +1757,9 @@ static ALWAYS_INLINE int x264_mb_analyse_inter_p4x4_chroma_internal( x264_t *h, 
         int mvx = (me).mv[0] + 4*2*x; \
         int mvy = (me).mv[1] + 4*2*y; \
         h->mc.mc_luma( &pix1[2*x+2*y*16], 16, &h->mb.pic.p_fref[0][i_ref][4], i_stride, \
-                       mvx, mvy, 2*width, 2*height, &h->sh.weight[i_ref][1] ); \
+                       mvx, mvy, 2*width, 2*height, &weight[1] ); \
         h->mc.mc_luma( &pix2[2*x+2*y*16], 16, &h->mb.pic.p_fref[0][i_ref][8], i_stride, \
-                       mvx, mvy, 2*width, 2*height, &h->sh.weight[i_ref][2] ); \
+                       mvx, mvy, 2*width, 2*height, &weight[2] ); \
     } \
     else \
     { \
