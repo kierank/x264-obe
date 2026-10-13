@@ -3574,8 +3574,11 @@ static void x264_prologue_bands_init( x264_t *h, x264_prologue_band_t *band, int
         band[i].pic = pic;
         band[i].i = i;
         band[i].bands = bands;
-        band[i].mb_y0 = (h->mb.i_mb_height *  i    + bands/2) / bands;
-        band[i].mb_y1 = (h->mb.i_mb_height * (i+1) + bands/2) / bands;
+        /* whole mb pairs when interlaced, so field AQ needs no neighbour band */
+        int unit = 1 << PARAM_INTERLACED;
+        int rows = h->mb.i_mb_height / unit;
+        band[i].mb_y0 = unit * ((rows *  i    + bands/2) / bands);
+        band[i].mb_y1 = unit * ((rows * (i+1) + bands/2) / bands);
         band[i].b_copied = 0;
     }
 }
