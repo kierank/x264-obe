@@ -167,8 +167,9 @@ then deletes it once md5 identity holds across the test matrix.
    (`common/macroblock.h`), which unpack (`plane_unpack8`) the windows the
    unchanged 16-bit kernels read into a 32 pixel stride temp; fullpel mvs
    still read the 16-bit `plane[0]`, but for mbcmp_bi4's shared stride.
-   Readers fused (x86_64 AVX2 and AVX-512 ymm, `common/x86/pixel-a.asm`
-   "packed readers"): the dispatchers call kernels that read msb8/lsb8 in
+   Readers fused (x86_64 AVX2; the AVX-512 ymm versions are assembled but
+   dispatched only on zen5/me8-pk-avx512, no faster on Zen 4 in situ;
+   `common/x86/pixel-a.asm` "packed readers"): the dispatchers call kernels that read msb8/lsb8 in
    place, the unpack in their loads, the column phase from the msb address
    (`msb & 3`, per-phase pshufb/multiplier rows of `pk8_tab` loaded once a
    call, so every x alignment is native): `copy_pk`/`avg2_pk` (mc_copy and
