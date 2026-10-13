@@ -365,6 +365,9 @@ static int x264_slicepool_wait_all( x264_t *h )
     return 0;
 }
 
+static int x264_slice_balance_init( x264_t *h );
+static void x264_slice_balance_delete( x264_t *h );
+
 static void x264_frame_dump( x264_t *h )
 {
     FILE *f = x264_fopen( h->param.psz_dump_yuv, "r+b" );
@@ -1998,6 +2001,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
     if( h->param.b_sliced_threads && x264_slicepool_init( h ) < 0 )
         goto fail;
 
+    if( h->param.b_sliced_threads == 2 && x264_slice_balance_init( h ) < 0 )
+        goto fail;
+
     if( h->param.i_nal_hrd )
     {
         x264_log( h, X264_LOG_DEBUG, "HRD bitrate: %i bits/sec\n", h->sps->vui.hrd.i_bit_rate_unscaled );
@@ -3525,6 +3531,134 @@ fail:
     return (void *)-1;
 }
 
+/* b_sliced_threads 2: thread slice boundaries that balance the predicted
+ * encode time of the slices, from this frame's lowres costs only.
+ *
+ * Per mb time, in 1/256 of an mb of lowres cost 0:
+ *     256 + r * min(cost, csat) / csat
+ * cost: lowres intra cost on I frames, lowres P cost (inter or intra) on P
+ * frames, 8-bit scale, no AQ weight.  An mb costs at most (256 + r)/256
+ * times an empty one, so no row is priced like the lowres cost ratio. */
+typedef struct
+{
+    int r;          /* extra time of a saturated mb, 1/256 */
+    int csat_log2;  /* lowres cost that saturates */
+} x264_slice_balance_model_t;
+
+static const x264_slice_balance_model_t slice_balance_model[2] =
+{
+    { 640, 11 },    /* I: 3.5x at cost >= 2048 */
+    { 640, 10 },    /* P: 3.5x at cost >= 1024 */
+};
+#define SLICE_BALANCE_MB 256
+
+typedef struct x264_slice_balance_t
+{
+    int i_units;        /* mb rows, mb pair rows if interlaced */
+    int i_min;          /* slice size bounds in units */
+    int i_max;
+    int64_t *weight;    /* [i_units+1] prefix sums of the unit weights */
+    int64_t *dp_max;    /* [(n+1)*(i_units+1)] */
+    int *dp_move;
+    int *dp_from;
+    /* per frame type (0 I, 1 P): the split in use, and whether it isn't the even split */
+    int last[2][X264_THREAD_MAX+1];
+    int b_moved[2];
+} x264_slice_balance_t;
+
+static int x264_slice_balance_init( x264_t *h )
+{
+    x264_slice_balance_t *sb;
+    int n = h->param.i_threads;
+    int units = h->mb.i_mb_height >> PARAM_INTERLACED;
+    int cells = (n + 1) * (units + 1);
+    CHECKED_MALLOCZERO( sb, sizeof(x264_slice_balance_t) );
+    h->slice_balance = sb;
+    sb->i_units = units;
+    /* At least 4 mb rows (the even split's floor at the most sliced threads)
+     * or a third of the even size, at most twice the even size. */
+    sb->i_min = X264_MIN( X264_MAX( 4 >> PARAM_INTERLACED, units / n / 3 ), units / n );
+    sb->i_max = 2 * ((units + n - 1) / n);
+    CHECKED_MALLOC( sb->weight, (units + 1) * sizeof(int64_t) );
+    CHECKED_MALLOC( sb->dp_max, cells * sizeof(int64_t) );
+    CHECKED_MALLOC( sb->dp_move, cells * sizeof(int) );
+    CHECKED_MALLOC( sb->dp_from, cells * sizeof(int) );
+    return 0;
+fail:
+    return -1;
+}
+
+static void x264_slice_balance_delete( x264_t *h )
+{
+    x264_slice_balance_t *sb = h->slice_balance;
+    if( !sb )
+        return;
+    x264_free( sb->weight );
+    x264_free( sb->dp_max );
+    x264_free( sb->dp_move );
+    x264_free( sb->dp_from );
+    x264_free( sb );
+    h->slice_balance = NULL;
+}
+
+/* Unit weights of this frame (t: 0 I, 1 P) as prefix sums in sb->weight.
+ * 0: no lowres costs (B frames), so the even split. */
+static int x264_slice_balance_weights( x264_t *h, x264_slice_balance_t *sb, int t )
+{
+    x264_frame_t *fenc = h->fenc;
+    const uint16_t *cost;
+    int mask;
+    if( !t )
+    {
+        if( !fenc->b_intra_calculated )
+            return 0;
+        cost = fenc->i_intra_cost;
+        mask = 0xffff;
+    }
+    else
+    {
+        int b = fenc->i_bframes + 1;
+        if( fenc->i_type != X264_TYPE_P || fenc->i_cost_est[b][0] < 0 )
+            return 0;
+        cost = fenc->lowres_costs[b][0];
+        mask = LOWRES_COST_MASK;
+    }
+
+    const x264_slice_balance_model_t *m = &slice_balance_model[t];
+    int shift = m->csat_log2 + (h->param.rc.b_lookahead_8bit ? 0 : BIT_DEPTH - 8);
+    int csat = 1 << shift;
+    /* Without VBV or mb-tree the lookahead skips the edge mbs: leave out
+     * the edge columns, edge rows take their neighbour's. */
+    int do_edges = h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size || h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2;
+    int x0 = !do_edges;
+    int x1 = h->mb.i_mb_width - !do_edges;
+    int y0 = !do_edges;
+    int y1 = h->mb.i_mb_height - 1 - !do_edges;
+    int64_t *w = sb->weight;
+    memset( w, 0, (sb->i_units + 1) * sizeof(int64_t) );
+    for( int y = 0; y < h->mb.i_mb_height; y++ )
+    {
+        const uint16_t *c = cost + x264_clip3( y, y0, y1 ) * h->mb.i_mb_stride;
+        int64_t busy = 0;
+        for( int x = x0; x < x1; x++ )
+            busy += X264_MIN( c[x] & mask, csat );
+        busy = busy * h->mb.i_mb_width / (x1 - x0);
+        w[(y >> PARAM_INTERLACED) + 1] += (int64_t)SLICE_BALANCE_MB * h->mb.i_mb_width + ((m->r * busy) >> shift);
+    }
+    for( int u = 0; u < sb->i_units; u++ )
+        w[u+1] += w[u];
+    return 1;
+}
+
+/* Predicted max slice weight * n / total of split b, Q10 */
+static int x264_slice_balance_ratio( const int64_t *w, const int *b, int n )
+{
+    int64_t max = 0;
+    for( int i = 0; i < n; i++ )
+        max = X264_MAX( max, w[b[i+1]] - w[b[i]] );
+    return (max * n << 10) / w[b[n]];
+}
+
 static int x264_threaded_slices_write( x264_t *h )
 {
     /* set first/last mb */
@@ -4932,6 +5066,7 @@ void    x264_encoder_close  ( x264_t *h )
     x264_cqm_delete( h );
     x264_free( h->nal_buffer );
     x264_free( h->reconfig_h );
+    x264_slice_balance_delete( h );
     x264_analyse_free_costs( h );
 
     if( h->i_thread_frames > 1 )
