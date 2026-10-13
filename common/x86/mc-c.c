@@ -97,6 +97,10 @@
 #define x264_mc_copy_w4_mmx x264_template(mc_copy_w4_mmx)
 #define x264_mc_copy_w8_mmx x264_template(mc_copy_w8_mmx)
 #define x264_mc_copy_w8_sse x264_template(mc_copy_w8_sse)
+#define x264_mc_offsetadd_w4_avx2 x264_template(mc_offsetadd_w4_avx2)
+#define x264_mc_offsetadd_w8_avx2 x264_template(mc_offsetadd_w8_avx2)
+#define x264_mc_offsetadd_w16_avx2 x264_template(mc_offsetadd_w16_avx2)
+#define x264_mc_offsetadd_w20_avx2 x264_template(mc_offsetadd_w20_avx2)
 #define x264_mc_offsetadd_w12_mmx2 x264_template(mc_offsetadd_w12_mmx2)
 #define x264_mc_offsetadd_w12_sse2 x264_template(mc_offsetadd_w12_sse2)
 #define x264_mc_offsetadd_w16_mmx2 x264_template(mc_offsetadd_w16_mmx2)
@@ -106,6 +110,10 @@
 #define x264_mc_offsetadd_w4_mmx2 x264_template(mc_offsetadd_w4_mmx2)
 #define x264_mc_offsetadd_w8_mmx2 x264_template(mc_offsetadd_w8_mmx2)
 #define x264_mc_offsetadd_w8_sse2 x264_template(mc_offsetadd_w8_sse2)
+#define x264_mc_offsetsub_w4_avx2 x264_template(mc_offsetsub_w4_avx2)
+#define x264_mc_offsetsub_w8_avx2 x264_template(mc_offsetsub_w8_avx2)
+#define x264_mc_offsetsub_w16_avx2 x264_template(mc_offsetsub_w16_avx2)
+#define x264_mc_offsetsub_w20_avx2 x264_template(mc_offsetsub_w20_avx2)
 #define x264_mc_offsetsub_w12_mmx2 x264_template(mc_offsetsub_w12_mmx2)
 #define x264_mc_offsetsub_w12_sse2 x264_template(mc_offsetsub_w12_sse2)
 #define x264_mc_offsetsub_w16_mmx2 x264_template(mc_offsetsub_w16_mmx2)
@@ -115,6 +123,12 @@
 #define x264_mc_offsetsub_w4_mmx2 x264_template(mc_offsetsub_w4_mmx2)
 #define x264_mc_offsetsub_w8_mmx2 x264_template(mc_offsetsub_w8_mmx2)
 #define x264_mc_offsetsub_w8_sse2 x264_template(mc_offsetsub_w8_sse2)
+#define x264_mc_weight_ns_w4_avx2 x264_template(mc_weight_ns_w4_avx2)
+#define x264_mc_weight_ns_w8_avx2 x264_template(mc_weight_ns_w8_avx2)
+#define x264_mc_weight_ns_w12_avx2 x264_template(mc_weight_ns_w12_avx2)
+#define x264_mc_weight_ns_w16_avx2 x264_template(mc_weight_ns_w16_avx2)
+#define x264_mc_weight_ns_w20_avx2 x264_template(mc_weight_ns_w20_avx2)
+#define x264_mc_weight_w12_avx2 x264_template(mc_weight_w12_avx2)
 #define x264_mc_weight_w12_mmx2 x264_template(mc_weight_w12_mmx2)
 #define x264_mc_weight_w12_sse2 x264_template(mc_weight_w12_sse2)
 #define x264_mc_weight_w12_ssse3 x264_template(mc_weight_w12_ssse3)
@@ -126,6 +140,7 @@
 #define x264_mc_weight_w20_mmx2 x264_template(mc_weight_w20_mmx2)
 #define x264_mc_weight_w20_sse2 x264_template(mc_weight_w20_sse2)
 #define x264_mc_weight_w20_ssse3 x264_template(mc_weight_w20_ssse3)
+#define x264_mc_weight_w4_avx2 x264_template(mc_weight_w4_avx2)
 #define x264_mc_weight_w4_mmx2 x264_template(mc_weight_w4_mmx2)
 #define x264_mc_weight_w4_ssse3 x264_template(mc_weight_w4_ssse3)
 #define x264_mc_weight_w8_avx2 x264_template(mc_weight_w8_avx2)
@@ -305,6 +320,21 @@ MC_WEIGHT( 20, ssse3 )
 MC_WEIGHT( 8, avx2 )
 MC_WEIGHT( 16, avx2 )
 MC_WEIGHT( 20, avx2 )
+#if HIGH_BIT_DEPTH
+MC_WEIGHT_OFFSET( 4, avx2 )
+MC_WEIGHT_OFFSET( 8, avx2 )
+MC_WEIGHT_OFFSET( 16, avx2 )
+MC_WEIGHT_OFFSET( 20, avx2 )
+MC_WEIGHT( 12, avx2 )
+#define MC_WEIGHT_NS(w) \
+    void x264_mc_weight_ns_w##w##_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int );
+MC_WEIGHT_NS( 4 )
+MC_WEIGHT_NS( 8 )
+MC_WEIGHT_NS( 12 )
+MC_WEIGHT_NS( 16 )
+MC_WEIGHT_NS( 20 )
+#undef MC_WEIGHT_NS
+#endif
 #undef MC_OFFSET
 #undef MC_WEIGHT
 
@@ -568,6 +598,36 @@ static void x264_weight_cache_mmx2( x264_t *h, x264_weight_t *w )
     {
         w->cachea[i] = den1;
         w->cacheb[i] = i&1 ? den3 : den2;
+    }
+}
+
+MC_WEIGHT_WTAB(weight,avx2,avx2,avx2,12)
+MC_WEIGHT_WTAB(weight_ns,avx2,avx2,avx2,12)
+MC_WEIGHT_WTAB(offsetadd,avx2,avx2,avx2,16)
+MC_WEIGHT_WTAB(offsetsub,avx2,avx2,avx2,16)
+
+/* pmulhrsw( pix<<(15-BIT_DEPTH), scale<<(BIT_DEPTH-denom) ), or pix by scale<<(15-denom)
+ * when scale < 1<<denom; cacheb = offset + 0x7fff-PIXEL_MAX for the paddsw/psubusw clip.
+ * Negative scales and scale<<(BIT_DEPTH-denom) > 0x7fff stay on SSE2. */
+static void x264_weight_cache_avx2( x264_t *h, x264_weight_t *w )
+{
+    int scale = w->i_scale;
+    int denom = w->i_denom;
+    if( scale == 1<<denom || scale < 0 || scale > 0x7fff >> (BIT_DEPTH-denom) )
+    {
+        x264_weight_cache_mmx2( h, w );
+        if( scale != 1<<denom )
+            w->weightfn = x264_mc_weight_wtab_sse2;
+        return;
+    }
+    int ns = scale < 1<<denom;
+    int mul = scale << (ns ? 15-denom : BIT_DEPTH-denom);
+    int offset = w->i_offset * (1<<(BIT_DEPTH-8)) + 0x7fff - PIXEL_MAX;
+    w->weightfn = ns ? x264_mc_weight_ns_wtab_avx2 : h->mc.weight;
+    for( int i = 0; i < 8; i++ )
+    {
+        w->cachea[i] = mul;
+        w->cacheb[i] = offset;
     }
 }
 #else
@@ -1118,6 +1178,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg[PIXEL_8x16]  = x264_pixel_avg_8x16_avx2;
         pf->avg[PIXEL_8x8]   = x264_pixel_avg_8x8_avx2;
         pf->avg[PIXEL_8x4]   = x264_pixel_avg_8x4_avx2;
+        pf->weight = x264_mc_weight_wtab_avx2;
+        pf->weight_cache = x264_weight_cache_avx2;
+        pf->offsetadd = x264_mc_offsetadd_wtab_avx2;
+        pf->offsetsub = x264_mc_offsetsub_wtab_avx2;
     }
 
     if( cpu&X264_CPU_AVX512 )

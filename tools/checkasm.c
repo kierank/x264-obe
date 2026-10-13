@@ -1724,7 +1724,7 @@ static int check_mc( int cpu_ref, int cpu_new )
         MC_TEST_AVG( avg, w );
     report( "mc wpredb :" );
 
-#define MC_TEST_WEIGHT( name, weight, aligned ) \
+#define MC_TEST_WEIGHT( name, weight, aligned, src, height, bench ) \
     int align_off = (aligned ? 0 : rand()%16); \
     for( int i = 1; i <= 5; i++ ) \
     { \
@@ -1742,42 +1742,58 @@ static int check_mc( int cpu_ref, int cpu_new )
         { \
             set_func_name( "%s_w%d", #name, j ); \
             used_asm = 1; \
-            call_c1( mc_c.weight[i],     buffC, (intptr_t)32, pbuf2+align_off, (intptr_t)32, &weight, 16 ); \
+            call_c1( mc_c.weight[i],     buffC, (intptr_t)32, src+align_off, (intptr_t)32, &weight, height ); \
             mc_a.weight_cache(&ha, &weight); \
-            call_a1( weight.weightfn[i], buffA, (intptr_t)32, pbuf2+align_off, (intptr_t)32, &weight, 16 ); \
-            for( int k = 0; k < 16; k++ ) \
-                if( memcmp( &buffC[k*32], &buffA[k*32], j * sizeof(pixel) ) ) \
-                { \
-                    ok = 0; \
-                    fprintf( stderr, #name "[%d]: [FAILED] s:%d o:%d d%d\n", i, s, o, d ); \
-                    break; \
-                } \
-            /* omit unlikely high scales for benchmarking */ \
-            if( (s << (8-d)) < 512 ) \
+            call_a1( weight.weightfn[i], buffA, (intptr_t)32, src+align_off, (intptr_t)32, &weight, height ); \
+            /* all 16 rows of 32: nothing written past the width or the height */ \
+            if( memcmp( buffC, buffA, 16*32*sizeof(pixel) ) ) \
             { \
-                call_c2( mc_c.weight[i],     buffC, (intptr_t)32, pbuf2+align_off, (intptr_t)32, &weight, 16 ); \
-                call_a2( weight.weightfn[i], buffA, (intptr_t)32, pbuf2+align_off, (intptr_t)32, &weight, 16 ); \
+                ok = 0; \
+                fprintf( stderr, #name "[%d]: [FAILED] s:%d o:%d d:%d h:%d\n", i, s, o, d, height ); \
+            } \
+            if( bench ) \
+            { \
+                call_c2( mc_c.weight[i],     buffC, (intptr_t)32, src+align_off, (intptr_t)32, &weight, 16 ); \
+                call_a2( weight.weightfn[i], buffA, (intptr_t)32, src+align_off, (intptr_t)32, &weight, 16 ); \
             } \
         } \
     }
 
+    /* weight sources: pbuf2, and one dense in 0, 1, PIXEL_MAX-1 and PIXEL_MAX */
+    ALIGNED_16( pixel wsrc_ext[16*32+64] );
+    for( int i = 0; i < 16*32+64; i++ )
+    {
+        int r = rand();
+        wsrc_ext[i] = r&8 ? -(r&1) & PIXEL_MAX : r&4 ? (r&1 ? PIXEL_MAX-1 : 1) : rand() & PIXEL_MAX;
+    }
+    pixel *wsrc[2] = { pbuf2, wsrc_ext };
+    static const int wheight[4] = { 16, 8, 4, 2 };
+
     ok = 1; used_asm = 0;
 
     int align_cnt = 0;
-    for( int s = 0; s <= 127 && ok; s++ )
+    for( int s = HIGH_BIT_DEPTH ? -128 : 0; s <= 127 && ok; s++ )
     {
         for( int o = -128; o <= 127 && ok; o++ )
         {
-            if( rand() & 2047 ) continue;
             for( int d = 0; d <= 7 && ok; d++ )
             {
                 if( s == 1<<d )
                     continue;
-                x264_weight_t weight = { .i_scale = s, .i_denom = d, .i_offset = o };
-                MC_TEST_WEIGHT( weight, weight, (align_cnt++ % 4) );
+                /* edges of the asm ranges: s next to 1<<d and 32<<d, extreme offsets */
+                int edge = (s == 0 || s == -1 || s == -128 || s == 127 || s == (1<<d)-1 || s == (1<<d)+1 ||
+                            s == (32<<d)-1 || s == 32<<d) && (o == -128 || o == -1 || o == 0 || o == 127);
+                if( !edge && (rand() & 2047) )
+                    continue;
+                for( int k = 0; k < 8 && ok; k++ )
+                {
+                    x264_weight_t weight = { .i_scale = s, .i_denom = d, .i_offset = o };
+                    /* omit unlikely high scales for benchmarking */
+                    MC_TEST_WEIGHT( weight, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1],
+                                    !k && s >= 0 && s * (1<<(8-d)) < 512 );
+                }
             }
         }
-
     }
     report( "mc weight :" );
 
@@ -1785,18 +1801,24 @@ static int check_mc( int cpu_ref, int cpu_new )
     for( int o = 0; o <= 127 && ok; o++ )
     {
         int s = 1, d = 0;
-        if( rand() & 15 ) continue;
-        x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
-        MC_TEST_WEIGHT( offsetadd, weight, (align_cnt++ % 4) );
+        if( o != 0 && o != 1 && o != 127 && (rand() & 15) ) continue;
+        for( int k = 0; k < 8 && ok; k++ )
+        {
+            x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
+            MC_TEST_WEIGHT( offsetadd, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1], !k );
+        }
     }
     report( "mc offsetadd :" );
     ok = 1; used_asm = 0;
     for( int o = -128; o < 0 && ok; o++ )
     {
         int s = 1, d = 0;
-        if( rand() & 15 ) continue;
-        x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
-        MC_TEST_WEIGHT( offsetsub, weight, (align_cnt++ % 4) );
+        if( o != -128 && o != -1 && (rand() & 15) ) continue;
+        for( int k = 0; k < 8 && ok; k++ )
+        {
+            x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
+            MC_TEST_WEIGHT( offsetsub, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1], !k );
+        }
     }
     report( "mc offsetsub :" );
 

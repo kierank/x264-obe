@@ -42,6 +42,9 @@ ch_shuf_adj: times 8 db 0
 chroma_deint_shuf: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
 chroma_deint_perm: dw  0, 2, 4, 6, 8,10,12,14, 16,18,20,22,24,26,28,30
                    dw  1, 3, 5, 7, 9,11,13,15, 17,19,21,23,25,27,29,31
+%if HIGH_BIT_DEPTH
+pw_wclip: times 16 dw 0x7fff-((1 << BIT_DEPTH)-1) ; weight clip: 0x7fff-PIXEL_MAX
+%endif
 sq_1: times 1 dq 1
 
 SECTION .text
@@ -770,6 +773,114 @@ OFFSETPN 20
 %if HIGH_BIT_DEPTH
 INIT_XMM sse2
 OFFSETPN  8
+
+; AVX2, two rows per iteration: 16 px per ymm row, 8 px rows paired in a ymm,
+; 4 px rows paired in an xmm. %2 is the per-register op with operands m3-m5.
+%macro WEIGHT_ROWS_AVX2 2 ; width, op
+%if %1 & 16
+    movu         m0, [r2]
+    movu         m1, [r2+r3]
+    %2           m0, m3, m4, m5
+    %2           m1, m3, m4, m5
+    movu       [r0], m0
+    movu    [r0+r1], m1
+%endif
+%if %1 & 8
+    %assign wx (%1 & 16)*2
+    movu        xm0, [r2+wx]
+    vinserti128  m0, m0, [r2+r3+wx], 1
+    %2           m0, m3, m4, m5
+    movu    [r0+wx], xm0
+    vextracti128 [r0+r1+wx], m0, 1
+%endif
+%if %1 & 4
+    %assign wx (%1-4)*2
+    movq        xm2, [r2+wx]
+    movhps      xm2, [r2+r3+wx]
+    %2          xm2, xm3, xm4, xm5
+    movq    [r0+wx], xm2
+    movhps [r0+r1+wx], xm2
+%endif
+%endmacro
+
+; pmulhrsw rounds (pix*scale)>>denom exactly; for 0 <= scale the paddsw of
+; offset+wclip saturates at PIXEL_MAX and psubusw wclip clips at 0
+%macro WEIGHT_NS_OP_AVX2 4 ; pix, scale<<(15-denom), offset+wclip, wclip
+    pmulhrsw     %1, %2
+    paddsw       %1, %3
+    psubusw      %1, %4
+%endmacro
+
+%assign WEIGHT_PRESHIFT 15-BIT_DEPTH
+%macro WEIGHT_OP_AVX2 4 ; pix, scale<<(BIT_DEPTH-denom), offset+wclip, wclip
+    psllw        %1, WEIGHT_PRESHIFT
+    WEIGHT_NS_OP_AVX2 %1, %2, %3, %4
+%endmacro
+
+%macro OFFSET_add_AVX2 4 ; pix, offset, pixel_max, unused
+    paddusw      %1, %2
+    pminsw       %1, %3
+%endmacro
+
+%macro OFFSET_sub_AVX2 4 ; pix, -offset, unused, unused
+    psubusw      %1, %2
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void mc_weight_wX( pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride, weight_t *weight, int h )
+; x264_weight_cache_avx2 layout: cachea = scale<<(BIT_DEPTH-denom) (weight),
+; scale<<(15-denom) (weight_ns: scale < 1<<denom); cacheb = offset+wclip
+;-----------------------------------------------------------------------------
+%macro WEIGHTER_AVX2 3 ; width, name, op
+cglobal mc_%2_w%1, 6,6,6
+    FIX_STRIDES r1, r3
+    vbroadcasti128 m3, [r4]
+    vbroadcasti128 m4, [r4+16]
+    mova         m5, [pw_wclip]
+.loop:
+    WEIGHT_ROWS_AVX2 %1, %3
+    lea          r0, [r0+r1*2]
+    lea          r2, [r2+r3*2]
+    sub         r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+%macro OFFSET_AVX2 2 ; width, add/sub
+cglobal mc_offset%2_w%1, 6,6,6
+    FIX_STRIDES r1, r3
+    vbroadcasti128 m3, [r4]
+%ifidn %2,add
+    mova         m4, [pw_pixel_max]
+%endif
+.loop:
+    WEIGHT_ROWS_AVX2 %1, OFFSET_%2_AVX2
+    lea          r0, [r0+r1*2]
+    lea          r2, [r2+r3*2]
+    sub         r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+INIT_YMM avx2
+WEIGHTER_AVX2  4, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2  8, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2 12, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2 16, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2 20, weight, WEIGHT_OP_AVX2
+WEIGHTER_AVX2  4, weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHTER_AVX2  8, weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHTER_AVX2 12, weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHTER_AVX2 16, weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHTER_AVX2 20, weight_ns, WEIGHT_NS_OP_AVX2
+OFFSET_AVX2  4, add
+OFFSET_AVX2  8, add
+OFFSET_AVX2 16, add
+OFFSET_AVX2 20, add
+OFFSET_AVX2  4, sub
+OFFSET_AVX2  8, sub
+OFFSET_AVX2 16, sub
+OFFSET_AVX2 20, sub
 %endif
 
 
