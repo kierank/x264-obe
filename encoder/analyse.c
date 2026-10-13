@@ -1225,8 +1225,11 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     else \
     { \
         (m)->p_fref[4] = &(src)[4][(xoff)+((yoff)>>CHROMA_V_SHIFT)*(m)->i_stride[1]]; \
-        (m)->p_fref[5] = &(src)[5][(xoff)+((yoff)>>CHROMA_V_SHIFT)*(m)->i_stride[1]]; \
-        (m)->i_fld_uv_y = h->mb.pic.i_fld_uv_y + ((yoff)>>CHROMA_V_SHIFT); \
+        if( MB_INTERLACED ) \
+        { \
+            (m)->p_fref[5] = &(src)[5][(xoff)+((yoff)>>CHROMA_V_SHIFT)*(m)->i_stride[1]]; \
+            (m)->i_fld_uv_y = h->mb.pic.i_fld_uv_y + ((yoff)>>CHROMA_V_SHIFT); \
+        } \
     } \
     (m)->integral = &h->mb.pic.p_integral[list][ref][(xoff)+(yoff)*(m)->i_stride[0]]; \
     (m)->weight = x264_weight_none; \

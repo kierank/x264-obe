@@ -597,8 +597,11 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
         memcpy( h->mb.pic.p_fdec[2]-FDEC_STRIDE, intra_fdec+8, 8*sizeof(pixel) );
         h->mb.pic.p_fdec[1][-FDEC_STRIDE-1] = intra_fdec[-1-8];
         h->mb.pic.p_fdec[2][-FDEC_STRIDE-1] = intra_fdec[-1];
-        h->mb.pic.i_fld_uv_y = height * (mb_y >> 1);
-        h->mb.pic.i_fld_uv_lines = height * h->mb.i_mb_height >> 1;
+        if( mb_interlaced )
+        {
+            h->mb.pic.i_fld_uv_y = height * (mb_y >> 1);
+            h->mb.pic.i_fld_uv_lines = height * h->mb.i_mb_height >> 1;
+        }
     }
     else
     {
@@ -645,10 +648,10 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                     h->mb.pic.p_fref_w[j] = h->mb.pic.p_fref[0][j][0];
             }
         }
-        else
+        else if( mb_interlaced )
         {
             h->mb.pic.p_fref[0][j][5] = plane_src + ref_pix_offset[j&1];
-            h->mb.pic.p_fref[0][j][4] = h->fref[0][j >> mb_interlaced]->plane[i] + ref_pix_offset[j&1];
+            h->mb.pic.p_fref[0][j][4] = h->fref[0][j>>1]->plane[i] + ref_pix_offset[j&1];
         }
     }
     if( h->sh.i_type == SLICE_TYPE_B )
@@ -669,10 +672,10 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )
                     h->mb.pic.p_fref[1][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
-            else
+            else if( mb_interlaced )
             {
                 h->mb.pic.p_fref[1][j][5] = plane_src + ref_pix_offset[j&1];
-                h->mb.pic.p_fref[1][j][4] = h->fref[1][j >> mb_interlaced]->plane[i] + ref_pix_offset[j&1];
+                h->mb.pic.p_fref[1][j][4] = h->fref[1][j>>1]->plane[i] + ref_pix_offset[j&1];
             }
         }
 }
