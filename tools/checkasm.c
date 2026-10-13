@@ -2268,6 +2268,85 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_free( src_max );
         report( "lowres init8 :" );
     }
+
+#define TO8(x) X264_MIN( ((x) + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 )
+    if( mc_a.plane_copy_16to8 != mc_ref.plane_copy_16to8 )
+    {
+        /* on pbuf1 and on a source near PIXEL_MAX, as lowres init8 */
+        pixel *src_max = x264_malloc( 0x1e00*sizeof(pixel) );
+        uint8_t *dstc = (uint8_t*)pbuf3;
+        uint8_t *dsta = (uint8_t*)pbuf4;
+        set_func_name( "plane_copy_16to8" );
+        ok = !!src_max; used_asm = 1;
+        if( src_max )
+            for( int i = 0; i < 0x1e00; i++ )
+                src_max[i] = PIXEL_MAX - (rand()&3);
+        for( int k = 0; k < 2 && ok; k++ )
+            for( int w = 1; w <= 400 && ok; w += 23 )
+            {
+                pixel *src = k ? src_max : pbuf1;
+                intptr_t stride = (w + 127) & ~63;
+                memset( dstc, 0, 0x1000 );
+                memset( dsta, 0, 0x1000 );
+                call_c( mc_c.plane_copy_16to8, dstc, stride, src, stride, w, 4 );
+                call_a( mc_a.plane_copy_16to8, dsta, stride, src, stride, w, 4 );
+                for( int y = 0; y < 4 && ok; y++ )
+                    for( int x = 0; x < w; x++ )
+                    {
+                        int o = x + y*stride;
+                        int v = TO8( src[o] );
+                        if( dstc[o] != v || dsta[o] != v )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "plane_copy_16to8 FAILED: src %d w %d line %d x %d: %d c %d asm %d\n",
+                                     k, w, y, x, v, dstc[o], dsta[o] );
+                            break;
+                        }
+                    }
+            }
+        x264_free( src_max );
+        report( "plane_copy_16to8 :" );
+    }
+
+    if( mc_a.plane_copy_deinterleave_16to8 != mc_ref.plane_copy_deinterleave_16to8 )
+    {
+        pixel *src_max = x264_malloc( 0x1e00*sizeof(pixel) );
+        set_func_name( "plane_copy_deinterleave_16to8" );
+        ok = !!src_max; used_asm = 1;
+        if( src_max )
+            for( int i = 0; i < 0x1e00; i++ )
+                src_max[i] = PIXEL_MAX - (rand()&3);
+        for( int k = 0; k < 2 && ok; k++ )
+            for( int w = 1; w <= 200 && ok; w += 13 )
+            {
+                pixel *src = k ? src_max : pbuf1;
+                intptr_t dst_stride = (w + 127) & ~63;
+                intptr_t src_stride = 2*dst_stride;
+                uint8_t *dstc[2] = { (uint8_t*)pbuf3, (uint8_t*)pbuf3 + 4*dst_stride };
+                uint8_t *dsta[2] = { (uint8_t*)pbuf4, (uint8_t*)pbuf4 + 4*dst_stride };
+                memset( pbuf3, 0, 0x1000 );
+                memset( pbuf4, 0, 0x1000 );
+                call_c( mc_c.plane_copy_deinterleave_16to8, dstc[0], dst_stride, dstc[1], dst_stride, src, src_stride, w, 4 );
+                call_a( mc_a.plane_copy_deinterleave_16to8, dsta[0], dst_stride, dsta[1], dst_stride, src, src_stride, w, 4 );
+                for( int p = 0; p < 2 && ok; p++ )
+                    for( int y = 0; y < 4 && ok; y++ )
+                        for( int x = 0; x < w; x++ )
+                        {
+                            int o = x + y*dst_stride;
+                            int v = TO8( src[2*x+p + y*src_stride] );
+                            if( dstc[p][o] != v || dsta[p][o] != v )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "plane_copy_deinterleave_16to8 FAILED: src %d w %d plane %d line %d x %d: %d c %d asm %d\n",
+                                         k, w, p, y, x, v, dstc[p][o], dsta[p][o] );
+                                break;
+                            }
+                        }
+            }
+        x264_free( src_max );
+        report( "plane_copy_deinterleave_16to8 :" );
+    }
+#undef TO8
 #endif
 
 #define INTEGRAL_INIT( name, size, ... )\
