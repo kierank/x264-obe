@@ -5477,10 +5477,202 @@ cglobal mc_copy_pk_w%1, 6,11,8
     PK_PRED 20, 1
 %endmacro
 
+;-----------------------------------------------------------------------------
+; int pixel_{sad,satd}_pk_WxH( pixel *fenc, uint8_t *msb, uint8_t *lsb, intptr_t stride )
+; int pixel_{sad,satd}_avg2_pk_WxH( pixel *fenc, uint8_t *msb1, uint8_t *lsb1,
+;                                   uint8_t *msb2, uint8_t *lsb2, intptr_t stride )
+; sad/satd of fenc (FENC_STRIDE) against a packed source or the pavgw of two,
+; in the 10-bit satd's layout: 16 wide a row a register, 8 wide rows k | k+4.
+; r5 stride, r6 lsb stride, r7/r8 3x them; 8 wide: r9-r12 the sources four
+; rows down. m8/m9 (m10/m11) phase tables, m12 pw 3 (avx512).
+;-----------------------------------------------------------------------------
+; pk_mr/pk_lr = msb/lsb offsets of row %1 (0-3)
+%macro PK_OFF 1
+%if %1 == 0
+    %define pk_mr 0
+    %define pk_lr 0
+%elif %1 == 1
+    %define pk_mr r5
+    %define pk_lr r6
+%elif %1 == 2
+    %define pk_mr 2*r5
+    %define pk_lr 2*r6
+%else
+    %define pk_mr r7
+    %define pk_lr r8
+%endif
+%endmacro
+
+; m%1 = row %2 (16 wide) or rows %2, %2+4 (8 wide) less fenc's; m4, m5 tmp
+%macro PK_CMP_ROW 2
+    PK_OFF %2
+%if pk_w == 16
+    PK_LOAD16     %1, [r1+pk_mr], [r2+pk_lr], m8, m9, 4
+%if pk_two
+    PK_LOAD16      5, [r3+pk_mr], [r4+pk_lr], m10, m11, 4
+    pavgw        m%1, m5
+%endif
+    psubw        m%1, [r0+%2*FENC_STRIDEB]
+%else
+    PK_LOAD8x2    %1, [r1+pk_mr], [r9+pk_mr], [r2+pk_lr], [r10+pk_lr], m8, m9, 4
+%if pk_two
+    PK_LOAD8x2     5, [r3+pk_mr], [r11+pk_mr], [r4+pk_lr], [r12+pk_lr], m10, m11, 4
+    pavgw        m%1, m5
+%endif
+    movu         xm4, [r0+%2*FENC_STRIDEB]
+    vinserti128   m4, m4, [r0+(%2+4)*FENC_STRIDEB], 1
+    psubw        m%1, m4
+%endif
+%endmacro
+
+%macro PK_CMP_NEXT 0
+%if pk_w == 16
+    lea           r1, [r1+4*r5]
+    add           r2, r5
+%if pk_two
+    lea           r3, [r3+4*r5]
+    add           r4, r5
+%endif
+    add           r0, 4*FENC_STRIDEB
+%else
+    lea           r1, [r1+8*r5]
+    lea           r9, [r9+8*r5]
+    lea           r2, [r2+2*r5]
+    lea          r10, [r10+2*r5]
+%if pk_two
+    lea           r3, [r3+8*r5]
+    lea          r11, [r11+8*r5]
+    lea           r4, [r4+2*r5]
+    lea          r12, [r12+2*r5]
+%endif
+    add           r0, 8*FENC_STRIDEB
+%endif
+%endmacro
+
+; 4 rows (16 wide) or 8 (8 wide) into m6
+%macro PK_SAD_PASS 0
+    PK_CMP_ROW     0, 0
+    PK_CMP_ROW     1, 1
+    pabsw         m0, m0
+    pabsw         m1, m1
+%if pk_pass
+    paddw         m6, m0
+    paddw         m6, m1
+%else
+    paddw         m6, m0, m1
+%endif
+    PK_CMP_ROW     0, 2
+    PK_CMP_ROW     1, 3
+    pabsw         m0, m0
+    pabsw         m1, m1
+    paddw         m6, m0
+    paddw         m6, m1
+%endmacro
+
+%macro PK_SATD_PASS 0
+    PK_CMP_ROW     0, 0
+    PK_CMP_ROW     1, 1
+    PK_CMP_ROW     2, 2
+    PK_CMP_ROW     3, 3
+%if pk_pass
+    SATD_8x4_SSE   1, 0, 1, 2, 3, 4, 5, 6
+%else
+    SATD_8x4_SSE   1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%endmacro
+
+%macro PK_CMP 4 ; sad|satd, width, height, avg2
+%assign pk_two %4
+%assign pk_w %2
+%if %4
+%if %2 == 16
+cglobal pixel_%1_avg2_pk_%2x%3, 6,9,13
+%else
+cglobal pixel_%1_avg2_pk_%2x%3, 6,13,13
+%endif
+%else
+%if %2 == 16
+cglobal pixel_%1_pk_%2x%3, 4,9,13
+%else
+cglobal pixel_%1_pk_%2x%3, 4,11,13
+%endif
+    mov           r5, r3
+%endif
+    %define pk_m3 m12
+    %define pk_xm3 xm12
+%if %2 == 16
+    PK_INIT 0
+%else
+    PK_INIT 32
+%endif
+    lea           r7, [pk8_tab]
+    PK_TABS       m8, m9, r1, r7, r8, r8d
+%if %4
+    PK_TABS      m10, m11, r3, r7, r8, r8d
+%endif
+%if cpuflag(avx512)
+    vpbroadcastd m12, [pk8_pw3]
+%endif
+    mov           r6, r5
+    shr           r6, 2
+    lea           r7, [3*r5]
+    lea           r8, [3*r6]
+%if %2 == 8
+    lea           r9, [r1+4*r5]
+    lea          r10, [r2+r5]
+%if %4
+    lea          r11, [r3+4*r5]
+    lea          r12, [r4+r5]
+%endif
+%endif
+%assign pk_pass 0
+%rep %2*%3/64
+%if pk_pass
+    PK_CMP_NEXT
+%endif
+%ifidn %1, satd
+    PK_SATD_PASS
+%else
+    PK_SAD_PASS
+%endif
+%assign pk_pass pk_pass+1
+%endrep
+%ifidn %1, satd
+%if %2*%3 == 256
+    SATD_HBD_END 1
+%else
+    SATD_HBD_END 0
+%endif
+%else
+    SATD_HBD_END 0
+%endif
+%endmacro
+
+%macro PK_CMP_ALL 0
+    PK_CMP satd, 16, 16, 0
+    PK_CMP satd, 16,  8, 0
+    PK_CMP satd,  8, 16, 0
+    PK_CMP satd,  8,  8, 0
+    PK_CMP satd, 16, 16, 1
+    PK_CMP satd, 16,  8, 1
+    PK_CMP satd,  8, 16, 1
+    PK_CMP satd,  8,  8, 1
+    PK_CMP  sad, 16, 16, 0
+    PK_CMP  sad, 16,  8, 0
+    PK_CMP  sad,  8, 16, 0
+    PK_CMP  sad,  8,  8, 0
+    PK_CMP  sad, 16, 16, 1
+    PK_CMP  sad, 16,  8, 1
+    PK_CMP  sad,  8, 16, 1
+    PK_CMP  sad,  8,  8, 1
+%endmacro
+
 INIT_YMM avx2
 PK_PRED_ALL
+PK_CMP_ALL
 INIT_YMM avx512
 PK_PRED_ALL
+PK_CMP_ALL
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 

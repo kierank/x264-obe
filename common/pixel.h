@@ -66,6 +66,13 @@ typedef int  (*x264_pixel_satd_bi_t) ( x264_bi_fenc_t *fenc, pixel *src0, intptr
                                        pixel *src1, intptr_t stride1, int weight );
 typedef int  (*x264_pixel_satd_bi4_t) ( x264_bi_fenc_t *fenc, pixel *src0a, pixel *src0b,
                                         pixel *src1a, pixel *src1b, intptr_t stride, int weight );
+/* analyse.i_me_8bit 2, high bit depth: cmp of fenc (FENC_STRIDE) against a
+ * prediction read in place from msb8/lsb8 planes, a source as x264_pk_hpel_pair
+ * gives it (msb at the pixel, lsb at its byte, column phase msb & 3), rows
+ * stride bytes (msb) and stride >> 2 (lsb) apart; avg2: of (src1 + src2 + 1) >> 1 */
+typedef int  (*x264_pixel_cmp_pk_t) ( pixel *fenc, uint8_t *msb, uint8_t *lsb, intptr_t stride );
+typedef int  (*x264_pixel_cmp_avg2_pk_t) ( pixel *fenc, uint8_t *msb1, uint8_t *lsb1,
+                                           uint8_t *msb2, uint8_t *lsb2, intptr_t stride );
 
 enum
 {
@@ -140,6 +147,16 @@ typedef struct
     x264_pixel_cmp_avg2_pre_t mbcmp_avg2_pre[4];
     x264_pixel_satd_bi_t  mbcmp_bi[4];  /* satd_bi where mbcmp is satd, else NULL */
     x264_pixel_satd_bi4_t mbcmp_bi4[4];
+    /* x86_64 asm only, NULL otherwise (16x16 to 8x8) */
+    x264_pixel_cmp_pk_t sad_pk[4];
+    x264_pixel_cmp_pk_t satd_pk[4];
+    x264_pixel_cmp_avg2_pk_t sad_avg2_pk[4];
+    x264_pixel_cmp_avg2_pk_t satd_avg2_pk[4];
+    /* the mbcmp and fpelcmp of those, NULL past 8x8 */
+    x264_pixel_cmp_pk_t mbcmp_pk[7];
+    x264_pixel_cmp_avg2_pk_t mbcmp_avg2_pk[7];
+    x264_pixel_cmp_pk_t fpelcmp_pk[7];
+    x264_pixel_cmp_avg2_pk_t fpelcmp_avg2_pk[7];
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];

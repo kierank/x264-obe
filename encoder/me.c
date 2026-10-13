@@ -95,10 +95,21 @@ do\
 
 /* cmp of the luma prediction at a qpel mv. Where get_ref would average two
  * hpel planes, cmp_avg2 (if any) does it without storing the average. pix:
- * 2*X264_SPLIT8_STRIDE*16 pixels, for i_me_8bit 2's unpacked planes. */
+ * 2*X264_SPLIT8_STRIDE*16 pixels, for i_me_8bit 2's unpacked planes. A split
+ * ref's subpel mvs: cmp_pk/cmp_avg2_pk read its msb8/lsb8 in place (if any). */
 static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw, int bh, int mx, int my,
-                                     x264_pixel_cmp_avg2_t cmp_avg2, x264_pixel_cmp_t cmp )
+                                     x264_pixel_cmp_avg2_t cmp_avg2, x264_pixel_cmp_t cmp,
+                                     x264_pixel_cmp_avg2_pk_t cmp_avg2_pk, x264_pixel_cmp_pk_t cmp_pk )
 {
+#if HIGH_BIT_DEPTH
+    if( cmp_avg2_pk && SPLIT8_REF( m ) && !m->weight[0].weightfn && ((mx|my)&3) )
+    {
+        uint8_t *pk[4];
+        if( x264_pk_hpel_pair( pk, m->p_split8, m->i_stride[0], mx, my ) )
+            return cmp_avg2_pk( m->p_fenc[0], pk[0], pk[1], pk[2], pk[3], m->i_stride[0] );
+        return cmp_pk( m->p_fenc[0], pk[0], pk[1], m->i_stride[0] );
+    }
+#endif
     if( cmp_avg2 && !m->weight[0].weightfn )
     {
         pixel *src[2];
@@ -137,7 +148,8 @@ static ALWAYS_INLINE int subpel_cmp8( x264_t *h, x264_me_t *m, uint8_t *pix8, in
 #define COST_MV_HPEL( mx, my, cost )\
 do\
 {\
-    cost = subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel] )\
+    cost = subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel],\
+                       h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] )\
          + p_cost_mvx[ mx ] + p_cost_mvy[ my ];\
 } while(0)
 
@@ -991,7 +1003,8 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
 #define COST_MV_SAD( mx, my ) \
 { \
     int cost = (b8 ? subpel_cmp8( h, m, pix8, bw, bh, mx, my, pf8->fpelcmp_avg2[i_pixel], pf8->fpelcmp[i_pixel] ) << 2 \
-                   : subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel] )) \
+                   : subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel], \
+                                 h->pixf.fpelcmp_avg2_pk[i_pixel], h->pixf.fpelcmp_pk[i_pixel] )) \
              + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my ); \
 }
@@ -1063,7 +1076,8 @@ static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, 
         }
         return h->pixf.mbcmp_pre[i_pixel]( fenc_pre, src, stride );
     }
-    return subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.mbcmp_avg2[i_pixel], h->pixf.mbcmp_unaligned[i_pixel] );
+    return subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.mbcmp_avg2[i_pixel], h->pixf.mbcmp_unaligned[i_pixel],
+                       h->pixf.mbcmp_avg2_pk[i_pixel], h->pixf.mbcmp_pk[i_pixel] );
 }
 
 #define SUBPEL_LUMA_COST( mx, my ) \

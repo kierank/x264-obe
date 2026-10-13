@@ -831,6 +831,25 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 }
 
 
+/* --me-8bit 2 packed cmps, x86_64 */
+#define INIT_PK( cpu )\
+    pixf->sad_pk[PIXEL_16x16] = x264_pixel_sad_pk_16x16_##cpu;\
+    pixf->sad_pk[PIXEL_16x8]  = x264_pixel_sad_pk_16x8_##cpu;\
+    pixf->sad_pk[PIXEL_8x16]  = x264_pixel_sad_pk_8x16_##cpu;\
+    pixf->sad_pk[PIXEL_8x8]   = x264_pixel_sad_pk_8x8_##cpu;\
+    pixf->satd_pk[PIXEL_16x16] = x264_pixel_satd_pk_16x16_##cpu;\
+    pixf->satd_pk[PIXEL_16x8]  = x264_pixel_satd_pk_16x8_##cpu;\
+    pixf->satd_pk[PIXEL_8x16]  = x264_pixel_satd_pk_8x16_##cpu;\
+    pixf->satd_pk[PIXEL_8x8]   = x264_pixel_satd_pk_8x8_##cpu;\
+    pixf->sad_avg2_pk[PIXEL_16x16] = x264_pixel_sad_avg2_pk_16x16_##cpu;\
+    pixf->sad_avg2_pk[PIXEL_16x8]  = x264_pixel_sad_avg2_pk_16x8_##cpu;\
+    pixf->sad_avg2_pk[PIXEL_8x16]  = x264_pixel_sad_avg2_pk_8x16_##cpu;\
+    pixf->sad_avg2_pk[PIXEL_8x8]   = x264_pixel_sad_avg2_pk_8x8_##cpu;\
+    pixf->satd_avg2_pk[PIXEL_16x16] = x264_pixel_satd_avg2_pk_16x16_##cpu;\
+    pixf->satd_avg2_pk[PIXEL_16x8]  = x264_pixel_satd_avg2_pk_16x8_##cpu;\
+    pixf->satd_avg2_pk[PIXEL_8x16]  = x264_pixel_satd_avg2_pk_8x16_##cpu;\
+    pixf->satd_avg2_pk[PIXEL_8x8]   = x264_pixel_satd_avg2_pk_8x8_##cpu;
+
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
@@ -1117,6 +1136,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
         pixf->sad_avg2[PIXEL_8x16]  = x264_pixel_sad_avg2_8x16_avx2;
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
+        INIT_PK( avx2 )
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
 #endif
@@ -1128,6 +1148,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
+        INIT_PK( avx512 )
 #endif
     }
 #endif // HAVE_MMX

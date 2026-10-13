@@ -644,6 +644,115 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel satd_bi :" );
 
+#if HIGH_BIT_DEPTH
+    ok = 1, used_asm = 0;
+    if( pixel_asm.satd_pk[PIXEL_16x16] != pixel_ref.satd_pk[PIXEL_16x16] )
+    {
+        /* --me-8bit 2 packed cmps: 64x40 planes and their C plane_split8, k = 0
+         * random with 0 and PIXEL_MAX runs against a random fenc, k = 1 PIXEL_MAX
+         * against 0, k = 2 0 against PIXEL_MAX; sources at every phase pair (rows
+         * 1-3, x 4-11), against C on the 16-bit plane */
+        enum { PW = 64, PH = 40 };
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+        uint8_t *msb = x264_malloc( 3*(PW*PH + PW/4*PH) );
+        pixel *pl = x264_malloc( 3*PW*PH*sizeof(pixel) );
+        if( !msb || !pl )
+            return -1;
+        ALIGNED_16( pixel fenc[16*FENC_STRIDE] );
+        ALIGNED_16( pixel avg[16*16] );
+        used_asm = 1;
+        for( int i = 0; i < PW*PH; i++ )
+        {
+            pl[i] = i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+            pl[PW*PH+i] = PIXEL_MAX;
+            pl[2*PW*PH+i] = 0;
+        }
+        for( int k = 0; k < 3; k++ )
+            mc_c.plane_split8( msb + k*(PW*PH + PW/4*PH), msb + k*(PW*PH + PW/4*PH) + PW*PH, pl + k*PW*PH, PW, PW, PH );
+        for( int k = 0; k < 3 && ok; k++ )
+        {
+            uint8_t *m8 = msb + k*(PW*PH + PW/4*PH), *l8 = m8 + PW*PH;
+            pixel *p16 = pl + k*PW*PH;
+            for( int i = 0; i < 16*FENC_STRIDE; i++ )
+                fenc[i] = k == 0 ? pbuf1[i] : k == 1 ? 0 : PIXEL_MAX;
+            for( int i = 0; i < 4 && ok; i++ )
+                for( int p = 0; p < 16 && ok; p++ )
+                {
+                    int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                    intptr_t o1 = (1 + (p&1))*PW + 4 + (p&3);
+                    intptr_t o2 = (3 - (p&1))*PW + 8 + (p>>2);
+                    for( int y = 0; y < hgt; y++ )
+                        for( int x = 0; x < w; x++ )
+                            avg[y*16+x] = (p16[o1+y*PW+x] + p16[o2+y*PW+x] + 1) >> 1;
+#define TEST_PK_CMP( name, cmp ) \
+                    { \
+                        int res_c, res_asm; \
+                        set_func_name( #name "_pk_%s", pixel_names[i] ); \
+                        res_c = pixel_c.cmp[i]( fenc, FENC_STRIDE, p16+o1, PW ); \
+                        res_asm = call_a( pixel_asm.name##_pk[i], fenc, m8+o1, l8+(o1>>2), (intptr_t)PW ); \
+                        if( res_c != res_asm ) \
+                        { \
+                            ok = 0; \
+                            fprintf( stderr, #name "_pk[%d] k %d phase %d: %d != %d [FAILED]\n", i, k, (int)(o1&3), res_c, res_asm ); \
+                        } \
+                        set_func_name( #name "_avg2_pk_%s", pixel_names[i] ); \
+                        res_c = pixel_c.cmp[i]( fenc, FENC_STRIDE, avg, 16 ); \
+                        res_asm = call_a( pixel_asm.name##_avg2_pk[i], fenc, m8+o1, l8+(o1>>2), m8+o2, l8+(o2>>2), (intptr_t)PW ); \
+                        if( res_c != res_asm ) \
+                        { \
+                            ok = 0; \
+                            fprintf( stderr, #name "_avg2_pk[%d] k %d phases %d,%d: %d != %d [FAILED]\n", i, k, \
+                                     (int)(o1&3), (int)(o2&3), res_c, res_asm ); \
+                        } \
+                    }
+                    TEST_PK_CMP( sad, sad )
+                    TEST_PK_CMP( satd, satd )
+#undef TEST_PK_CMP
+                }
+        }
+        /* positive control: fenc = the prediction gives 0, then lsb bit 1 of the
+         * block's last pixel (a step of 2, 1 in the average) must not */
+        for( int i = 0; i < 4 && ok; i++ )
+            for( int j = 0; j < 4 && ok; j++ )
+            {
+                int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                intptr_t o1 = PW + 7, o2 = 3*PW + 9;
+                intptr_t f = (j&1 ? o2 : o1) + (hgt-1)*PW + w-1;
+                uint8_t *l8 = msb + PW*PH;
+                int two = j >> 1;
+                for( int y = 0; y < hgt; y++ )
+                    for( int x = 0; x < w; x++ )
+                        fenc[y*FENC_STRIDE+x] = two ? (pl[o1+y*PW+x] + pl[o2+y*PW+x] + 1) >> 1 : pl[(j&1 ? o2 : o1)+y*PW+x];
+                for( int s = 0; s < 2 && ok; s++ )
+                {
+                    int res[2];
+                    for( int f2 = 0; f2 < 2; f2++ )
+                    {
+                        if( f2 )
+                            l8[f>>2] ^= 2 << (2*(f&3));
+                        uint8_t *m1 = msb + (j&1 && !two ? o2 : o1), *ls1 = l8 + ((j&1 && !two ? o2 : o1) >> 2);
+                        if( two )
+                            res[f2] = (s ? pixel_asm.satd_avg2_pk : pixel_asm.sad_avg2_pk)[i]( fenc, m1, ls1, msb+o2, l8+(o2>>2), PW );
+                        else
+                            res[f2] = (s ? pixel_asm.satd_pk : pixel_asm.sad_pk)[i]( fenc, m1, ls1, PW );
+                        if( f2 )
+                            l8[f>>2] ^= 2 << (2*(f&3));
+                    }
+                    if( res[0] || !res[1] )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "%s%s_pk[%d] control (source %d): %d, %d [FAILED]\n", s ? "satd" : "sad",
+                                 two ? "_avg2" : "", i, j&1, res[0], res[1] );
+                    }
+                }
+            }
+        x264_free( msb );
+        x264_free( pl );
+    }
+    report( "pixel pk :" );
+#endif
+
     TEST_PIXEL( sa8d, 1 );
 
     ok = 1, used_asm = 0;
