@@ -876,11 +876,16 @@ static void mc_luma_##name( pixel *dst,    intptr_t i_dst_stride,\
     if( qpel_idx & 5 ) /* qpel interpolation needed */\
     {\
         pixel *src2 = src[hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3);\
-        x264_pixel_avg_wtab_##instr1[i_width>>2](\
-                dst, i_dst_stride, src1, i_src_stride,\
-                src2, i_height );\
-        if( weight->weightfn )\
-            weight->weightfn[i_width>>2]( dst, i_dst_stride, dst, i_dst_stride, weight, i_height );\
+        if( weight->weightfn && weight->weightavgfn )\
+            weight->weightavgfn[i_width>>2]( dst, i_dst_stride, src1, i_src_stride, weight, i_height, src2 );\
+        else\
+        {\
+            x264_pixel_avg_wtab_##instr1[i_width>>2](\
+                    dst, i_dst_stride, src1, i_src_stride,\
+                    src2, i_height );\
+            if( weight->weightfn )\
+                weight->weightfn[i_width>>2]( dst, i_dst_stride, dst, i_dst_stride, weight, i_height );\
+        }\
     }\
     else if( weight->weightfn )\
         weight->weightfn[i_width>>2]( dst, i_dst_stride, src1, i_src_stride, weight, i_height );\
@@ -914,11 +919,16 @@ static pixel *get_ref_##name( pixel *dst,   intptr_t *i_dst_stride,\
     if( qpel_idx & 5 ) /* qpel interpolation needed */\
     {\
         pixel *src2 = src[hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3);\
-        x264_pixel_avg_wtab_##name[i_width>>2](\
-                dst, *i_dst_stride, src1, i_src_stride,\
-                src2, i_height );\
-        if( weight->weightfn )\
-            weight->weightfn[i_width>>2]( dst, *i_dst_stride, dst, *i_dst_stride, weight, i_height );\
+        if( weight->weightfn && weight->weightavgfn )\
+            weight->weightavgfn[i_width>>2]( dst, *i_dst_stride, src1, i_src_stride, weight, i_height, src2 );\
+        else\
+        {\
+            x264_pixel_avg_wtab_##name[i_width>>2](\
+                    dst, *i_dst_stride, src1, i_src_stride,\
+                    src2, i_height );\
+            if( weight->weightfn )\
+                weight->weightfn[i_width>>2]( dst, *i_dst_stride, dst, *i_dst_stride, weight, i_height );\
+        }\
         return dst;\
     }\
     else if( weight->weightfn )\
