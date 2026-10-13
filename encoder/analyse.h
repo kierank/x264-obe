@@ -46,6 +46,8 @@ void x264_slicetype_decide( x264_t *h );
 
 #define x264_slicetype_analyse x264_template(slicetype_analyse)
 void x264_slicetype_analyse( x264_t *h, int intra_minigop );
+#define x264_slicetype_analyse_offset x264_template(slicetype_analyse_offset)
+void x264_slicetype_analyse_offset( x264_t *h, int intra_minigop, int list_offset );
 
 #define x264_weighted_reference_duplicate x264_template(weighted_reference_duplicate)
 int x264_weighted_reference_duplicate( x264_t *h, int i_ref, const x264_weight_t *w );

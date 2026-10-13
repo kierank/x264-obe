@@ -73,6 +73,16 @@ static void x264_lookahead_slicetype_decide( x264_t *h )
     x264_lookahead_update_last_nonb( h, h->lookahead->next.list[0] );
     int shift_frames = h->lookahead->next.list[0]->i_bframes + 1;
 
+    /* LKA: the I-frame analysis below, run while the minigop is still in next, so
+     * the encoder can take earlier frames from ofbuf meanwhile */
+    int b_keyframe_analyse = h->lookahead->b_analyse_keyframe && IS_X264_TYPE_I( h->lookahead->last_nonb->i_type );
+    if( b_keyframe_analyse && h->exp_flash.b_lka )
+    {
+        x264_stack_align( x264_slicetype_analyse_offset, h, shift_frames, shift_frames );
+        h->thread[0]->exp_flash.census[EXPF_LKA]++;
+        b_keyframe_analyse = 0;
+    }
+
     x264_pthread_mutex_lock( &h->lookahead->ofbuf.mutex );
     while( h->lookahead->ofbuf.i_size == h->lookahead->ofbuf.i_max_size )
         x264_pthread_cond_wait( &h->lookahead->ofbuf.cv_empty, &h->lookahead->ofbuf.mutex );
@@ -82,7 +92,7 @@ static void x264_lookahead_slicetype_decide( x264_t *h )
     x264_pthread_mutex_unlock( &h->lookahead->next.mutex );
 
     /* For MB-tree and VBV lookahead, we have to perform propagation analysis on I-frames too. */
-    if( h->lookahead->b_analyse_keyframe && IS_X264_TYPE_I( h->lookahead->last_nonb->i_type ) )
+    if( b_keyframe_analyse )
         x264_stack_align( x264_slicetype_analyse, h, shift_frames );
 
     x264_pthread_mutex_unlock( &h->lookahead->ofbuf.mutex );

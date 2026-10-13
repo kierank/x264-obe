@@ -1566,11 +1566,17 @@ static int scenecut( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, in
 
 void x264_slicetype_analyse( x264_t *h, int intra_minigop )
 {
+    x264_slicetype_analyse_offset( h, intra_minigop, 0 );
+}
+
+/* list_offset: the minigop's frames are still at the head of next (LKA) */
+void x264_slicetype_analyse_offset( x264_t *h, int intra_minigop, int list_offset )
+{
     x264_mb_analysis_t a;
     x264_frame_t *frames[X264_LOOKAHEAD_MAX+3] = { NULL, };
     int num_frames, orig_num_frames, keyint_limit, framecnt;
     int i_mb_count = NUM_MBS;
-    int i_max_search = X264_MIN( h->lookahead->next.i_size, X264_LOOKAHEAD_MAX );
+    int i_max_search = X264_MIN( h->lookahead->next.i_size - list_offset, X264_LOOKAHEAD_MAX );
     int vbv_lookahead = h->param.rc.i_vbv_buffer_size && h->param.rc.i_lookahead;
     /* For determinism we should limit the search to the number of frames lookahead has for sure
      * in h->lookahead->next.list buffer, except at the end of stream.
@@ -1586,7 +1592,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
         return;
     frames[0] = h->lookahead->last_nonb;
     for( framecnt = 0; framecnt < i_max_search; framecnt++ )
-        frames[framecnt+1] = h->lookahead->next.list[framecnt];
+        frames[framecnt+1] = h->lookahead->next.list[framecnt + list_offset];
 
     x264_lowres_context_init( h, &a );
 
