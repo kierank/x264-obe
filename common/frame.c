@@ -180,6 +180,20 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
         }
     }
 
+#if HIGH_BIT_DEPTH
+    /* analyse.i_me_8bit: msb rows then lsb rows, the rows of the 16-bit plane */
+    int me8_planes = h->param.analyse.i_me_8bit && b_fdec ? 1 : 0;
+    int me8_rows = frame->i_lines[0] + 2*i_padv;
+    intptr_t me8_msb_size = (intptr_t)frame->i_stride[0] * me8_rows;
+    intptr_t me8_plane_size = ALIGN( me8_msb_size + (frame->i_stride[0] >> 2) * me8_rows, NATIVE_ALIGN );
+    if( me8_planes )
+    {
+        PREALLOC( frame->buffer8, me8_planes * me8_plane_size );
+        if( PARAM_INTERLACED )
+            PREALLOC( frame->buffer8_fld, me8_planes * me8_plane_size );
+    }
+#endif
+
     frame->b_duplicate = 0;
 
     if( b_fdec ) /* fdec frame */
@@ -272,6 +286,23 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
             frame->filtered_fld[p][0] = frame->plane_fld[p] = frame->buffer_fld[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
         }
     }
+
+#if HIGH_BIT_DEPTH
+    /* padh_align is 0 at high bit depth, so pixel x of a row is at x + PADH in
+     * both the 16-bit and the 8-bit row */
+    for( int i = 0; i < me8_planes; i++ )
+    {
+        intptr_t msb_offset = (intptr_t)frame->i_stride[0] * i_padv + PADH;
+        intptr_t lsb_offset = me8_msb_size + (intptr_t)(frame->i_stride[0] >> 2) * i_padv + PADH/4;
+        frame->msb8[i] = frame->buffer8 + i * me8_plane_size + msb_offset;
+        frame->lsb8[i] = frame->buffer8 + i * me8_plane_size + lsb_offset;
+        if( PARAM_INTERLACED )
+        {
+            frame->msb8_fld[i] = frame->buffer8_fld + i * me8_plane_size + msb_offset;
+            frame->lsb8_fld[i] = frame->buffer8_fld + i * me8_plane_size + lsb_offset;
+        }
+    }
+#endif
 
     if( b_fdec )
     {
@@ -644,6 +675,86 @@ void x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y )
     }
 }
 
+#if HIGH_BIT_DEPTH
+/* rows [y0,y1) of a 16-bit plane with their side padding into msb/lsb */
+static void plane_split8_rows( x264_t *h, x264_frame_t *frame, uint8_t *msb, uint8_t *lsb, pixel *src, int y0, int y1 )
+{
+    intptr_t stride = frame->i_stride[0];
+    h->mc.plane_split8( msb + y0*stride - PADH, lsb + y0*(stride>>2) - PADH/4, src + y0*stride - PADH,
+                        stride, 16*h->mb.i_mb_width + 2*PADH, y1 - y0 );
+}
+#endif
+
+/* analyse.i_me_8bit: msb8/lsb8 of the luma rows x264_frame_expand_border( mb_y )
+ * just padded, so that every row is split again whenever it changes. The field
+ * plane's rows are the frame plane's but for its vertical padding. */
+void x264_frame_split8( x264_t *h, x264_frame_t *frame, int mb_y )
+{
+#if HIGH_BIT_DEPTH
+    int pad_top = mb_y == 0;
+    int pad_bot = mb_y == h->mb.i_mb_height - (1 << SLICE_MBAFF);
+    int b_start = mb_y == h->i_threadslice_start;
+    int b_end   = mb_y == h->i_threadslice_end - (1 << SLICE_MBAFF);
+    int lines = 16*h->mb.i_mb_height;
+    if( mb_y & SLICE_MBAFF )
+        return;
+    int height = pad_bot ? 16*(h->mb.i_mb_height - mb_y) : 16 << SLICE_MBAFF;
+    if( b_end && !b_start )
+        height += 4;
+    int y0 = 16*mb_y - 4*!b_start;
+    plane_split8_rows( h, frame, frame->msb8[0], frame->lsb8[0], frame->plane[0], y0, y0 + height );
+    if( pad_top )
+        plane_split8_rows( h, frame, frame->msb8[0], frame->lsb8[0], frame->plane[0], -PADV, 0 );
+    if( pad_bot )
+        plane_split8_rows( h, frame, frame->msb8[0], frame->lsb8[0], frame->plane[0], lines, lines + PADV );
+    if( SLICE_MBAFF )
+    {
+        /* plane_fld may not have these rows yet, but they will be the frame's */
+        plane_split8_rows( h, frame, frame->msb8_fld[0], frame->lsb8_fld[0], frame->plane[0], y0, y0 + height );
+        if( pad_top )
+            plane_split8_rows( h, frame, frame->msb8_fld[0], frame->lsb8_fld[0], frame->plane_fld[0], -2*PADV, 0 );
+        if( pad_bot )
+            plane_split8_rows( h, frame, frame->msb8_fld[0], frame->lsb8_fld[0], frame->plane_fld[0], lines, lines + 2*PADV );
+    }
+#endif
+}
+
+#if HIGH_BIT_DEPTH
+static int plane_verify8( x264_t *h, x264_frame_t *frame, uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t stride, int y0, int y1 )
+{
+    int w = 16*h->mb.i_mb_width + PADH;
+    for( int y = y0; y < y1; y++ )
+        for( int x = -PADH; x < w; x++ )
+        {
+            int v = msb[y*stride+x] << 2 | ((lsb[y*(stride>>2)+(x>>2)] >> (2*(x&3))) & 3);
+            if( v != src[y*stride+x] )
+            {
+                x264_log( h, X264_LOG_ERROR, "me8 verify: frame %d x %d y %d: %d != %d\n",
+                          frame->i_frame, x, y, v, src[y*stride+x] );
+                return -1;
+            }
+        }
+    return 0;
+}
+#endif
+
+/* With -DX264_ME8_VERIFY, x264_frame_push_unused checks a reference's msb8+lsb8
+ * against its 16-bit planes over all their padding. */
+void x264_frame_verify8( x264_t *h, x264_frame_t *frame )
+{
+#if HIGH_BIT_DEPTH
+    int lines = 16*h->mb.i_mb_height;
+    intptr_t stride = frame->i_stride[0];
+    for( int i = 0; i < 4; i++ )
+    {
+        if( frame->msb8[i] )
+            plane_verify8( h, frame, frame->msb8[i], frame->lsb8[i], frame->filtered[0][i], stride, -PADV, lines + PADV );
+        if( frame->msb8_fld[i] )
+            plane_verify8( h, frame, frame->msb8_fld[i], frame->lsb8_fld[i], frame->filtered_fld[0][i], stride, -2*PADV, lines + 2*PADV );
+    }
+#endif
+}
+
 void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 {
     /* during filtering, 8 extra pixels were filtered on each edge,
@@ -844,7 +955,13 @@ void x264_frame_push_unused( x264_t *h, x264_frame_t *frame )
     assert( frame->i_reference_count > 0 );
     frame->i_reference_count--;
     if( frame->i_reference_count == 0 )
+    {
+#ifdef X264_ME8_VERIFY
+        if( frame->b_fdec && frame->b_kept_as_ref && !frame->b_duplicate )
+            x264_frame_verify8( h, frame );
+#endif
         x264_frame_push( h->frames.unused[frame->b_fdec], frame );
+    }
 }
 
 x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )

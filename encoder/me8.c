@@ -1,0 +1,47 @@
+/*****************************************************************************
+ * me8.c: 8-bit motion search functions for high bit depth encodes
+ *****************************************************************************
+ * Copyright (C) 2026 x264 project
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111, USA.
+ *****************************************************************************/
+
+/* Compiled into the 8-bit pass only (SRCS_8). */
+
+#include "common/common.h"
+#include "me8.h"
+
+#if BIT_DEPTH == 8
+
+x264_me8_func_t *x264_me8_init( uint32_t cpu )
+{
+    x264_me8_func_t *pf = x264_malloc( sizeof(x264_me8_func_t) );
+    if( !pf )
+        return NULL;
+    x264_pixel_function_t pixf;
+    x264_pixel_init( cpu, &pixf );
+    for( int i = 0; i < 8; i++ )
+        pf->fpelcmp[i] = pixf.sad[i];
+    for( int i = 0; i < 7; i++ )
+    {
+        pf->fpelcmp_x3[i] = pixf.sad_x3[i];
+        pf->fpelcmp_x4[i] = pixf.sad_x4[i];
+        pf->fpelcmp_x3_min[i] = pixf.sad_x3_min[i];
+        pf->fpelcmp_x4_min[i] = pixf.sad_x4_min[i];
+    }
+    return pf;
+}
+
+#endif

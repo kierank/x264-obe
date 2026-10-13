@@ -1203,7 +1203,19 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     (m)->p_fenc[0] = &(src)[0][(xoff)+(yoff)*FENC_STRIDE]; \
     (m)->p_fenc[1] = &(src)[1][((xoff)>>CHROMA_H_SHIFT)+((yoff)>>CHROMA_V_SHIFT)*FENC_STRIDE]; \
     (m)->p_fenc[2] = &(src)[2][((xoff)>>CHROMA_H_SHIFT)+((yoff)>>CHROMA_V_SHIFT)*FENC_STRIDE]; \
+    (m)->p_fenc8 = &h->mb.pic.fenc8[(xoff)+(yoff)*FENC_STRIDE]; \
 }
+
+/* analyse.i_me_8bit: msb8 of p_fref[0..3] at the partition, NULL without */
+#define LOAD_HPELS8(m, list, ref, xoff, yoff) \
+    if( h->me8 ) \
+        for( int k8 = 0; k8 < 4; k8++ ) \
+        { \
+            uint8_t *p8 = h->mb.pic.p_fref8[list][ref][k8]; \
+            (m)->p_fref8[k8] = p8 ? p8 + (xoff)+(yoff)*(m)->i_stride[0] : NULL; \
+        } \
+    else \
+        (m)->p_fref8[0] = (m)->p_fref8[1] = NULL;
 
 #define LOAD_HPELS(m, src, list, ref, xoff, yoff) \
 { \
@@ -1227,11 +1239,15 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     (m)->integral = &h->mb.pic.p_integral[list][ref][(xoff)+(yoff)*(m)->i_stride[0]]; \
     (m)->weight = x264_weight_none; \
     (m)->i_ref = ref; \
+    LOAD_HPELS8( m, list, ref, xoff, yoff ) \
 }
 
+/* weighted refs search on the 16-bit planes */
 #define LOAD_WPELS(m, src, list, ref, xoff, yoff) \
     (m)->p_fref_w = &(src)[(xoff)+(yoff)*(m)->i_stride[0]]; \
-    (m)->weight = h->sh.weight[i_ref];
+    (m)->weight = h->sh.weight[i_ref]; \
+    if( (m)->weight[0].weightfn ) \
+        (m)->p_fref8[0] = (m)->p_fref8[1] = NULL;
 
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
@@ -3031,6 +3047,11 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
+#if HIGH_BIT_DEPTH
+    /* fenc is contiguous at FENC_STRIDE 16, so one 256 pixel row */
+    if( h->me8 && h->sh.i_type != SLICE_TYPE_I )
+        h->mc.plane_split8( h->mb.pic.fenc8, h->mb.pic.fenc8_lsb, h->mb.pic.p_fenc[0], 0, 16*FENC_STRIDE, 1 );
+#endif
 
     /*--------------------------- Do the analysis ---------------------------*/
     if( h->sh.i_type == SLICE_TYPE_I )

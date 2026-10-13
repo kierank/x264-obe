@@ -602,6 +602,11 @@ struct x264_t
 #endif
             int i_fenc_pre;
 
+            /* analyse.i_me_8bit: msb8 of the luma fenc (FENC_STRIDE) and its
+             * unused lsb8 */
+            ALIGNED_64( uint8_t fenc8[16*FENC_STRIDE] );
+            ALIGNED_16( uint8_t fenc8_lsb[4*FENC_STRIDE] );
+
             int i4x4_cbp;
             int i8x8_cbp;
 
@@ -618,6 +623,7 @@ struct x264_t
             /* [12]: yN, yH, yV, yHV, (NV12 ? uv : I444 ? (uN, uH, uV, uHV, vN, ...)) */
             pixel *p_fref[2][X264_REF_MAX*2][12];
             pixel *p_fref_w[X264_REF_MAX*2];  /* weighted fullpel luma */
+            uint8_t *p_fref8[2][X264_REF_MAX*2][4]; /* msb8 of the luma p_fref, NULL without */
             uint16_t *p_integral[2][X264_REF_MAX];
 
             /* fref stride */
@@ -782,6 +788,10 @@ struct x264_t
     /* 8-bit lowres analysis context (encoder/lookahead8.h), created by
      * x264_encoder_open for every x264_t that can run the lookahead */
     void *lowres8;
+
+    /* analyse.i_me_8bit: 8-bit pixel functions of the motion search
+     * (encoder/me8.h), shared by all threads; NULL without */
+    const struct x264_me8_func_t *me8;
 
 #if HAVE_OPENCL
     x264_opencl_t opencl;

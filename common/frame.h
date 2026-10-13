@@ -83,6 +83,16 @@ typedef struct x264_frame
     pixel *filtered_fld[3][4];
     pixel *lowres[4]; /* half-size copy of input frame: Orig, H, V, HV */
     uint8_t *lowres8[4]; /* 8-bit copies of lowres for rc.b_lookahead_8bit, same layout */
+    /* analyse.i_me_8bit, high bit depth: SVT style split of filtered[0][0] and
+     * filtered_fld[0][0]. msb8 = v >> 2 in the layout of the 16-bit plane, its
+     * stride i_stride[0] bytes; lsb8 = v & 3, four pixels a byte (pixel x in bits
+     * 2*(x&3) of byte x>>2), rows of i_stride[0]/4 bytes. msb8 + lsb8 is exactly
+     * the 16-bit plane, padding included. Each plane is one block of buffer8,
+     * msb rows then lsb rows; NULL without. */
+    uint8_t *msb8[4];
+    uint8_t *lsb8[4];
+    uint8_t *msb8_fld[4];
+    uint8_t *lsb8_fld[4];
     uint16_t *integral;
 
     /* for unrestricted mv we allocate more data than needed
@@ -91,6 +101,8 @@ typedef struct x264_frame
     pixel *buffer_fld[4];
     pixel *buffer_lowres[4];
     uint8_t *buffer_lowres8;
+    uint8_t *buffer8;
+    uint8_t *buffer8_fld;
 
     x264_weight_t weight[X264_REF_MAX][3]; /* [ref_index][plane] */
     pixel *weighted[X264_REF_MAX]; /* plane[0] weighted of the reference frames */
@@ -243,6 +255,10 @@ void          x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_p
 
 #define x264_frame_expand_border x264_template(frame_expand_border)
 void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y );
+#define x264_frame_split8 x264_template(frame_split8)
+void          x264_frame_split8( x264_t *h, x264_frame_t *frame, int mb_y );
+#define x264_frame_verify8 x264_template(frame_verify8)
+void          x264_frame_verify8( x264_t *h, x264_frame_t *frame );
 #define x264_frame_expand_border_filtered x264_template(frame_expand_border_filtered)
 void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 #define x264_frame_expand_border_lowres x264_template(frame_expand_border_lowres)

@@ -33,6 +33,7 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#include "me8.h"
 
 //#define DEBUG_MB_TYPE
 
@@ -1729,8 +1730,12 @@ x264_t *x264_encoder_open( x264_param_t *param )
     h->frames.b_have_sub8x8_esa = !!(h->param.analyse.inter & X264_ANALYSE_PSUB8x8);
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     h->param.rc.b_lookahead_8bit &= h->frames.b_have_lowres && !h->mb.b_lossless;
+    /* ESA and TESA search on the 16-bit planes */
+    h->param.analyse.i_me_8bit = h->mb.b_lossless || h->param.analyse.i_me_method >= X264_ME_ESA ? 0
+                               : x264_clip3( h->param.analyse.i_me_8bit, 0, 1 );
 #else
     h->param.rc.b_lookahead_8bit = 0;
+    h->param.analyse.i_me_8bit = 0;
 #endif
 
     h->frames.i_last_idr =
@@ -1777,6 +1782,10 @@ x264_t *x264_encoder_open( x264_param_t *param )
 
     mbcmp_init( h );
     chroma_dsp_init( h );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( h->param.analyse.i_me_8bit && !(h->me8 = x264_me8_init( h->param.cpu )) )
+        goto fail;
+#endif
 
     if( h->param.sc.i_buffer_size )
         x264_speedcontrol_new( h );
@@ -2703,7 +2712,11 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
     }
 
     if( h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
+    {
         x264_frame_expand_border( h, h->fdec, min_y );
+        if( h->fdec->msb8[0] )
+            x264_frame_split8( h, h->fdec, min_y );
+    }
     if( b_hpel )
     {
         int end = mb_y == h->mb.i_mb_height;
@@ -4881,6 +4894,8 @@ void    x264_encoder_close  ( x264_t *h )
 #endif
             x264_free( h->lookahead_thread[i] );
         }
+
+    x264_free( (void*)h->me8 );
 
     for( int i = h->param.i_threads - 1; i >= 0; i-- )
     {

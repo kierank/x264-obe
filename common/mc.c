@@ -521,6 +521,26 @@ static void lowres8_convert( uint8_t *dst, pixel *src, intptr_t n )
     for( intptr_t i = 0; i < n; i++ )
         dst[i] = X264_MIN( (src[i] + (1 << (BIT_DEPTH-9))) >> (BIT_DEPTH-8), 255 );
 }
+
+static void plane_split8( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_stride, int w, int h )
+{
+    for( int y = 0; y < h; y++ )
+    {
+        for( int x = 0; x < w; x += 4 )
+        {
+            int l = 0;
+            for( int k = 0; k < 4; k++ )
+            {
+                msb[x+k] = src[x+k] >> (BIT_DEPTH-8);
+                l |= (src[x+k] & ((1 << (BIT_DEPTH-8)) - 1)) << (2*k);
+            }
+            lsb[x>>2] = l;
+        }
+        msb += i_stride;
+        lsb += i_stride >> 2;
+        src += i_stride;
+    }
+}
 #endif
 
 static void frame_init_lowres_core( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
@@ -692,6 +712,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->frame_init_lowres_core = frame_init_lowres_core;
 #if HIGH_BIT_DEPTH
     pf->lowres8_convert = lowres8_convert;
+    pf->plane_split8 = plane_split8;
 #endif
 
     pf->integral_init4h = integral_init4h;

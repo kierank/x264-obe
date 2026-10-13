@@ -1150,6 +1150,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->analyse.i_mv_range_thread = atoi(value);
     OPT2("subme", "subq")
         p->analyse.i_subpel_refine = atoi(value);
+    OPT("me-8bit")
+        p->analyse.i_me_8bit = atoi(value);
     OPT("psy-rd")
     {
         if( 2 == sscanf( value, "%f:%f", &p->analyse.f_psy_rd, &p->analyse.f_psy_trellis ) ||
@@ -1341,6 +1343,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
     s += sprintf( s, " analyse=%#x:%#x", p->analyse.intra, p->analyse.inter );
     s += sprintf( s, " me=%s", x264_motion_est_names[ p->analyse.i_me_method ] );
     s += sprintf( s, " subme=%d", p->analyse.i_subpel_refine );
+    if( p->analyse.i_me_8bit )
+        s += sprintf( s, " me_8bit=%d", p->analyse.i_me_8bit );
     s += sprintf( s, " psy=%d", p->analyse.b_psy );
     if( p->analyse.b_psy )
         s += sprintf( s, " psy_rd=%.2f:%.2f", p->analyse.f_psy_rd, p->analyse.f_psy_trellis );

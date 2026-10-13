@@ -132,6 +132,11 @@ typedef struct
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height );
     /* rc.b_lookahead_8bit: dst[i] = min( (src[i] + 2) >> 2, 255 ), high bit depth only */
     void (*lowres8_convert)( uint8_t *dst, pixel *src, intptr_t n );
+    /* analyse.i_me_8bit, high bit depth only: msb[x] = src[x] >> 2, and lsb[x>>2]
+     * the src[x] & 3 of pixels x&~3 to x|3, pixel x in bits 2*(x&3). h rows of w
+     * pixels (a multiple of 16), rows i_stride pixels (src), bytes (msb) and
+     * i_stride/4 bytes (lsb) apart. */
+    void (*plane_split8)( uint8_t *msb, uint8_t *lsb, pixel *src, intptr_t i_stride, int w, int h );
     weight_fn_t *weight;
     weight_fn_t *offsetadd;
     weight_fn_t *offsetsub;

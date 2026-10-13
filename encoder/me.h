@@ -46,6 +46,10 @@ typedef struct
     pixel *p_fenc[3];
     uint16_t *integral;
     int      i_stride[3];
+    /* analyse.i_me_8bit: msb8 of p_fref[0..3], the fullpel search on [0]; [0]
+     * NULL for a search on the 16-bit planes. p_fenc8: the fenc's msb8. */
+    uint8_t *p_fref8[4];
+    uint8_t *p_fenc8;
 
     ALIGNED_4( int16_t mvp[2] );
 

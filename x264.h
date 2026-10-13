@@ -41,7 +41,7 @@
 
 #include "x264_config.h"
 
-#define X264_BUILD 146
+#define X264_BUILD 147
 
 /* Application developers planning to link against a shared library version of
  * libx264 from a Microsoft Visual Studio or similar development environment
@@ -374,6 +374,7 @@ typedef struct x264_param_t
         int          i_mv_range; /* maximum length of a mv (in pixels). -1 = auto, based on level */
         int          i_mv_range_thread; /* minimum space between threads. -1 = auto, based on number of threads. */
         int          i_subpel_refine; /* subpixel motion estimation quality */
+        int          i_me_8bit; /* high bit depth: motion search on 8-bit copies, 1 fullpel, 2 also subpel (changes output) */
         int          b_chroma_me; /* chroma ME for subpel and mode decision in P-frames */
         int          b_mixed_references; /* allow each mb partition to have its own reference number */
         int          i_trellis;  /* trellis RD quantization */

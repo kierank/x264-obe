@@ -633,6 +633,12 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                     h->mb.pic.p_fref_w[j] = &h->fenc->weighted[j >> mb_interlaced][ref_pix_offset[j&1]];
                 else
                     h->mb.pic.p_fref_w[j] = h->mb.pic.p_fref[0][j][0];
+                if( h->me8 )
+                {
+                    uint8_t **msb8 = mb_interlaced ? h->fref[0][j>>1]->msb8_fld : h->fref[0][j]->msb8;
+                    for( int k = 0; k < 4; k++ )
+                        h->mb.pic.p_fref8[0][j][k] = msb8[k] ? msb8[k] + ref_pix_offset[j&1] : NULL;
+                }
             }
         }
     }
@@ -654,6 +660,12 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )
                     h->mb.pic.p_fref[1][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
+            if( !i && h->me8 )
+            {
+                uint8_t **msb8 = mb_interlaced ? h->fref[1][j>>1]->msb8_fld : h->fref[1][j]->msb8;
+                for( int k = 0; k < 4; k++ )
+                    h->mb.pic.p_fref8[1][j][k] = msb8[k] ? msb8[k] + ref_pix_offset[j&1] : NULL;
+            }
         }
 }
 
