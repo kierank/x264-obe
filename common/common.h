@@ -288,6 +288,12 @@ struct x264_t
     x264_threadpool_t *threadpool;
     x264_threadpool_t *lookaheadpool;
     struct x264_slicepool_t *slicepool; /* sliced threads: one worker per thread slice */
+    /* sliced threads, weighted P: the pool while this thread's frame has weighted
+     * bands (else NULL), and the frame rows [lo,hi) of the weighted plane it knows
+     * are done; see x264_slicepool_weight_need */
+    struct x264_slicepool_t *weight_pool;
+    int             i_weight_ready_lo;
+    int             i_weight_ready_hi;
     x264_pthread_mutex_t mutex;
     x264_pthread_cond_t cv;
 

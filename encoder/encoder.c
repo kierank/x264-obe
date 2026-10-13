@@ -128,10 +128,11 @@ typedef struct x264_slicepool_t
     /* weighted P: the reference weighting, in row bands claimed by the slice threads */
     x264_pthread_mutex_t weight_mutex;
     x264_pthread_cond_t weight_cv;
-    int i_weight_height;
+    int i_weight_height;        /* rows of the weighted plane, from the top of the padding */
+    int i_weight_padv;          /* padding rows above frame row 0 in it */
     int i_weight_bands;
-    int i_weight_next;          /* next band to claim */
-    int i_weight_done;          /* bands finished; read unlocked while spinning */
+    int i_weight_waiters;       /* threads blocked on weight_cv */
+    int *weight_state;          /* per band, WEIGHT_*; read unlocked while spinning */
 } x264_slicepool_t;
 
 /* Main thread, before dispatch: thread 0 changes once it encodes slice 0. */
@@ -148,46 +149,109 @@ static void x264_slicepool_snapshot( x264_t *h )
  * measured 16*SLICE_SPIN at +0.7..+2.8% CPU on fades. */
 #define WEIGHT_SPIN SLICE_SPIN
 
-/* Main thread, before dispatch. */
+/* Band states. A claimed band is always finished by its claimer, which never
+ * waits while weighting, so a waiter on a claimed band can't deadlock. */
+enum { WEIGHT_FREE = 0, WEIGHT_BUSY, WEIGHT_DONE };
+
+/* Main thread, before dispatch: the workers are idle, so the band states can be reset. */
 static void x264_slicepool_weight_init( x264_t *h )
 {
     x264_slicepool_t *pool = h->slicepool;
     int height = x264_analyse_weight_height( h );
     pool->i_weight_height = height;
+    pool->i_weight_padv = PADV << PARAM_INTERLACED;
     pool->i_weight_bands = (height + WEIGHT_BAND_ROWS - 1) / WEIGHT_BAND_ROWS;
-    pool->i_weight_next = 0;
-    pool->i_weight_done = 0;
+    pool->i_weight_waiters = 0;
+    memset( pool->weight_state, 0, pool->i_weight_bands * sizeof(int) );
     h->fenc->i_lines_weighted = height;
 }
 
-/* Every slice thread before its slice: weight bands until none is left, then
- * wait for the rest, since ME may read any row of the weighted plane. */
+static int x264_slicepool_weight_claim( x264_slicepool_t *pool, int b )
+{
+    x264_pthread_mutex_lock( &pool->weight_mutex );
+    int b_claim = pool->weight_state[b] == WEIGHT_FREE;
+    if( b_claim )
+        SLICE_STORE( &pool->weight_state[b], WEIGHT_BUSY );
+    x264_pthread_mutex_unlock( &pool->weight_mutex );
+    return b_claim;
+}
+
+static void x264_slicepool_weight_band( x264_t *h, x264_slicepool_t *pool, int b )
+{
+    int y0 = WEIGHT_BAND_ROWS * b;
+    x264_analyse_weight_rows( h, y0, X264_MIN( y0 + WEIGHT_BAND_ROWS, pool->i_weight_height ) );
+    x264_pthread_mutex_lock( &pool->weight_mutex );
+    SLICE_STORE( &pool->weight_state[b], WEIGHT_DONE );
+    if( pool->i_weight_waiters )
+        x264_pthread_cond_broadcast( &pool->weight_cv );
+    x264_pthread_mutex_unlock( &pool->weight_mutex );
+}
+
+/* Every slice thread before its slice: weight its own bands, those starting in
+ * its rows of the weighted plane (the first and last thread also take the
+ * padding above and below the frame), and never wait. ME then waits only for
+ * the bands it reads, in x264_slicepool_weight_need. */
 static void x264_slicepool_weight( x264_t *h, x264_slicepool_t *pool )
 {
     int bands = pool->i_weight_bands;
+    h->weight_pool = NULL;
     if( !bands )
         return;
-    x264_pthread_mutex_lock( &pool->weight_mutex );
-    while( pool->i_weight_next < bands )
+    int padv = pool->i_weight_padv;
+    int y0 = h->i_threadslice_start ? 16*h->i_threadslice_start + padv : 0;
+    int y1 = h->i_threadslice_end < h->mb.i_mb_height ? 16*h->i_threadslice_end + padv : pool->i_weight_height;
+    for( int b = (y0 + WEIGHT_BAND_ROWS - 1) / WEIGHT_BAND_ROWS; b < bands && WEIGHT_BAND_ROWS*b < y1; b++ )
+        if( x264_slicepool_weight_claim( pool, b ) )
+            x264_slicepool_weight_band( h, pool, b );
+    h->weight_pool = pool;
+    h->i_weight_ready_lo = h->i_weight_ready_hi = 0;
+}
+
+/* ME, before reading frame rows [y0,y1) of the weighted plane: wait for the bands
+ * covering them, weighting any that no thread has claimed yet. MBAFF field MBs
+ * read with a doubled stride, so interlaced encodes wait for every band. */
+void x264_slicepool_weight_need( x264_t *h, int y0, int y1 )
+{
+    x264_slicepool_t *pool = h->weight_pool;
+    int bands = pool->i_weight_bands;
+    int padv = pool->i_weight_padv;
+    int b0 = 0, b1 = bands - 1;
+    if( !PARAM_INTERLACED )
     {
-        int y0 = WEIGHT_BAND_ROWS * pool->i_weight_next++;
-        x264_pthread_mutex_unlock( &pool->weight_mutex );
-        x264_analyse_weight_rows( h, y0, X264_MIN( y0 + WEIGHT_BAND_ROWS, pool->i_weight_height ) );
-        x264_pthread_mutex_lock( &pool->weight_mutex );
-        SLICE_STORE( &pool->i_weight_done, pool->i_weight_done + 1 );
-        if( pool->i_weight_done == bands )
-            x264_pthread_cond_broadcast( &pool->weight_cv );
+        b0 = x264_clip3( (y0 + padv) / WEIGHT_BAND_ROWS, 0, bands - 1 );
+        b1 = x264_clip3( (y1 + padv - 1) / WEIGHT_BAND_ROWS, 0, bands - 1 );
     }
-    x264_pthread_mutex_unlock( &pool->weight_mutex );
-    for( int spin = 0; spin < WEIGHT_SPIN && SLICE_LOAD( &pool->i_weight_done ) < bands; spin++ )
-        SLICE_PAUSE();
-    if( SLICE_LOAD( &pool->i_weight_done ) < bands )
+    for( int b = b0; b <= b1; b++ )
     {
-        x264_pthread_mutex_lock( &pool->weight_mutex );
-        while( pool->i_weight_done < bands )
-            x264_pthread_cond_wait( &pool->weight_cv, &pool->weight_mutex );
-        x264_pthread_mutex_unlock( &pool->weight_mutex );
+        if( SLICE_LOAD( &pool->weight_state[b] ) == WEIGHT_DONE )
+            continue;
+        if( x264_slicepool_weight_claim( pool, b ) )
+        {
+            x264_slicepool_weight_band( h, pool, b );
+            continue;
+        }
+        for( int spin = 0; spin < WEIGHT_SPIN && SLICE_LOAD( &pool->weight_state[b] ) != WEIGHT_DONE; spin++ )
+            SLICE_PAUSE();
+        if( SLICE_LOAD( &pool->weight_state[b] ) != WEIGHT_DONE )
+        {
+            x264_pthread_mutex_lock( &pool->weight_mutex );
+            pool->i_weight_waiters++;
+            while( pool->weight_state[b] != WEIGHT_DONE )
+                x264_pthread_cond_wait( &pool->weight_cv, &pool->weight_mutex );
+            pool->i_weight_waiters--;
+            x264_pthread_mutex_unlock( &pool->weight_mutex );
+        }
     }
+    /* bands b0..b1 are done; keep the known range contiguous */
+    int lo = b0 ? WEIGHT_BAND_ROWS*b0 - padv : INT_MIN;
+    int hi = b1 < bands - 1 ? WEIGHT_BAND_ROWS*(b1 + 1) - padv : INT_MAX;
+    if( lo <= h->i_weight_ready_hi && hi >= h->i_weight_ready_lo && h->i_weight_ready_lo < h->i_weight_ready_hi )
+    {
+        lo = X264_MIN( lo, h->i_weight_ready_lo );
+        hi = X264_MAX( hi, h->i_weight_ready_hi );
+    }
+    h->i_weight_ready_lo = lo;
+    h->i_weight_ready_hi = hi;
 }
 
 /* Worker, before encoding: sync context t to the frame. */
@@ -235,6 +299,7 @@ static void *x264_slice_worker_thread( void *arg )
             x264_threadslice_sync( w->h, w->snap );
             x264_stack_align( x264_slicepool_weight, w->h, w->pool );
             ret = (intptr_t)x264_stack_align( x264_slices_write, w->h );
+            w->h->weight_pool = NULL;
         }
         else
             x264_stack_align( x264_threadslice_filter, w->h );
@@ -300,6 +365,7 @@ static void x264_slicepool_delete( x264_slicepool_t *pool )
         x264_pthread_cond_destroy( &w->cv_done );
     }
     x264_free( pool->workers );
+    x264_free( pool->weight_state );
     x264_pthread_mutex_destroy( &pool->weight_mutex );
     x264_pthread_cond_destroy( &pool->weight_cv );
     x264_free( pool->snap );
@@ -315,6 +381,9 @@ static int x264_slicepool_init( x264_t *h )
         x264_pthread_cond_init( &pool->weight_cv, NULL ) )
         goto fail;
     CHECKED_MALLOC( pool->snap, sizeof(x264_t) );
+    /* the most rows x264_analyse_weight_height returns */
+    int max_height = 16*h->mb.i_mb_height + 32 + 2*(PADV << PARAM_INTERLACED);
+    CHECKED_MALLOCZERO( pool->weight_state, (max_height + WEIGHT_BAND_ROWS - 1) / WEIGHT_BAND_ROWS * sizeof(int) );
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         x264_slice_worker_t *w = &pool->workers[i].w;
@@ -351,6 +420,7 @@ static inline void x264_slicepool_delete( struct x264_slicepool_t *pool ) {}
 static inline void x264_slicepool_snapshot( x264_t *h ) {}
 static inline void x264_slicepool_weight_init( x264_t *h ) { x264_analyse_weight_frame( h, h->mb.i_mb_height*16 + 16 ); }
 static inline void x264_slicepool_weight( x264_t *h, struct x264_slicepool_t *pool ) {}
+void x264_slicepool_weight_need( x264_t *h, int y0, int y1 ) {}
 #endif
 
 static int x264_slicepool_wait_all( x264_t *h )
@@ -3551,6 +3621,8 @@ static int x264_threaded_slices_write( x264_t *h )
     x264_stack_align( x264_slicepool_weight, h, h->slicepool );
     /* encode slice 0 here, filter it on worker 0 */
     intptr_t ret = (intptr_t)x264_slices_write( h );
+    /* the lookahead's lowres ME runs on this context too */
+    h->weight_pool = NULL;
     if( ret )
         x264_slicepool_set_ret( h->slicepool, 0, ret );
     else

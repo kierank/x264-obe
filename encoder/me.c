@@ -280,6 +280,29 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
     const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
 
+    /* Sliced threads weight the reference in bands while they encode: wait for the
+     * rows this search can read. The fullpel search starts at the predictors or
+     * the zero mv, clipped to the mv limits, and moves at most i_me_range (UMH:
+     * 1.5x, then the hex refine) from there; probes and refines stay within
+     * i_fpel_border (6) of the limits. Subpel searches read p_fref, not p_fref_w. */
+    if( h->weight_pool && p_fref_w != m->p_fref[0] )
+    {
+        int lo = x264_clip3( FPEL(m->mvp[1]), mv_y_min, mv_y_max );
+        int hi = lo;
+        for( int i = 0; i < i_mvc; i++ )
+        {
+            int my = x264_clip3( FPEL(mvc[i][1]), mv_y_min, mv_y_max );
+            lo = X264_MIN( lo, my );
+            hi = X264_MAX( hi, my );
+        }
+        int reach = 4*i_me_range + 16;
+        lo = X264_MAX( X264_MIN( lo, 0 ) - reach, mv_y_min - 8 );
+        hi = X264_MIN( X264_MAX( hi, 0 ) + reach, mv_y_max + 8 );
+        int y = 16*h->mb.i_mb_y;
+        if( y + lo < h->i_weight_ready_lo || y + 16 + hi > h->i_weight_ready_hi )
+            x264_slicepool_weight_need( h, y + lo, y + 16 + hi );
+    }
+
     /* Try extra predictors if provided.  If subme >= 3, check subpel predictors,
      * otherwise round them to fullpel. */
     if( h->mb.i_subpel_refine >= 3 )
