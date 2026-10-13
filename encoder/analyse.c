@@ -3083,6 +3083,26 @@ static int x264_mb_analyse_nb_sub16x16( x264_t *h )
 /* Sub-16x16 partition skip threshold in lambda, interlaced (MBAFF) encodes only */
 #define PARTGATE_THRESH 256
 
+#if HIGH_BIT_DEPTH
+/* analyse.i_me_8bit: prefetch_ref for the 8-bit planes the search reads, ref 0
+ * of list 0. A 64 byte msb8 line holds 4 mbs, so each mb of a line fetches a
+ * quarter of the rows of the line after the next: msb8[0] rows -16..31 of the
+ * mb (the fullpel search's), at level 2 also msb8[1..3] rows 0..15 (refine). */
+static void x264_mb_prefetch_ref8( x264_t *h )
+{
+    uint8_t **f8 = h->mb.pic.p_fref8[0][0];
+    intptr_t stride = h->mb.pic.i_stride[0];
+    int q = ((intptr_t)f8[0] & 63) >> 4;
+    intptr_t x = 128 - ((intptr_t)f8[0] & 63);
+    for( int y = 12*q - 16; y < 12*q - 4; y++ )
+        x264_prefetch( f8[0] + y*stride + x );
+    if( f8[1] )
+        for( int k = 1; k < 4; k++ )
+            for( int y = 4*q; y < 4*q + 4; y++ )
+                x264_prefetch( f8[k] + y*stride + x );
+}
+#endif
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3134,6 +3154,10 @@ intra_analysis:
         int b_skip = 0;
 
         h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->mb.pic.p_fref8[0][0][1] ? 0 : h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 0 );
+#if HIGH_BIT_DEPTH
+        if( h->me8 )
+            x264_mb_prefetch_ref8( h );
+#endif
 
         analysis.b_try_skip = 0;
         if( analysis.b_force_intra )
