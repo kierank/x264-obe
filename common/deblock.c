@@ -441,19 +441,13 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         int qpc = h->chroma_qp_table[qp];
         int first_edge_only = (h->mb.partition[mb_xy] == D_16x16 && !h->mb.cbp[mb_xy] && !intra_cur) || qp <= qp_thresh;
 
-        /* Luma in one deblock_luma_mb call after the chroma edges; the left edge may
-         * stay per edge (intra or MBAFF mixed), it runs first either way. */
-        int luma_mb = h->loopf.deblock_luma_mb && !first_edge_only && !intra_cur;
+        /* Luma in one deblock_luma_mb call after the chroma edges, intra MB edges included.
+         * An MBAFF mixed left edge stays per edge and runs first. A frame MB under a field
+         * pair keeps its two top edges per edge, between a call for the vertical edges and
+         * one for the inner horizontal edges. */
+        int luma_mb = h->loopf.deblock_luma_mb && !first_edge_only;
         int mb_edges = 0;
         x264_deblock_edge_t mb_e[3];
-        if( luma_mb && (h->mb.i_neighbour & MB_TOP) )
-        {
-            int top_xy = h->mb.i_mb_top_xy;
-            if( b_interlaced && !(mb_y&1) && !MB_INTERLACED && h->mb.field[top_xy] )
-                luma_mb = 0;
-            else if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[top_xy])) && IS_INTRA( h->mb.type[top_xy] ) )
-                luma_mb = 0;
-        }
 
         #define MB_EDGE( c, qp, bits )\
         do\
@@ -468,6 +462,9 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
             if( alpha && beta )\
                 mb_edges |= bits;\
         } while(0)
+
+        if( luma_mb )
+            MB_EDGE( 2, qp, transform_8x8 ? 0x44 : 0xee );
 
         #define FILTER( intra, dir, edge, qp, chroma_qp, luma )\
         do\
@@ -572,13 +569,11 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                 }
 
                 if( intra_deblock )
-                    FILTER( _intra, 0, 0, qp_left, qpc_left, 1 );
+                    FILTER( _intra, 0, 0, qp_left, qpc_left, !luma_mb );
                 else
-                {
                     FILTER(       , 0, 0, qp_left, qpc_left, !luma_mb );
-                    if( luma_mb )
-                        MB_EDGE( 0, qp_left, 0x01 );
-                }
+                if( luma_mb )
+                    MB_EDGE( 0, qp_left, intra_deblock ? 0x101 : 0x01 );
             }
         }
         if( !first_edge_only )
@@ -593,6 +588,13 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
             if( b_interlaced && !(mb_y&1) && !MB_INTERLACED && h->mb.field[h->mb.i_mb_top_xy] )
             {
                 int mbn_xy = mb_xy - 2 * h->mb.i_mb_stride;
+
+                if( luma_mb )
+                {
+                    if( mb_edges & 0x0f )
+                        h->loopf.deblock_luma_mb( pixy, stride2y, bs, mb_e, mb_edges & 0x10f );
+                    mb_edges &= ~0x10f;
+                }
 
                 for( int j = 0; j < 2; j++, mbn_xy += h->mb.i_mb_stride )
                 {
@@ -631,7 +633,9 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
 
                 if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[h->mb.i_mb_top_xy])) && intra_deblock )
                 {
-                    FILTER( _intra, 1, 0, qp_top, qpc_top, 1 );
+                    FILTER( _intra, 1, 0, qp_top, qpc_top, !luma_mb );
+                    if( luma_mb )
+                        MB_EDGE( 1, qp_top, 0x1010 );
                 }
                 else
                 {
@@ -651,12 +655,8 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
             FILTER( , 1, 3, qp, qpc, !luma_mb );
         }
 
-        if( luma_mb )
-        {
-            MB_EDGE( 2, qp, transform_8x8 ? 0x44 : 0xee );
-            if( mb_edges )
-                h->loopf.deblock_luma_mb( pixy, stride2y, bs, mb_e, mb_edges );
-        }
+        if( luma_mb && mb_edges )
+            h->loopf.deblock_luma_mb( pixy, stride2y, bs, mb_e, mb_edges );
 
         #undef FILTER
         #undef MB_EDGE
