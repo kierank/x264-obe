@@ -66,7 +66,7 @@ typedef int  (*x264_pixel_satd_bi_t) ( x264_bi_fenc_t *fenc, pixel *src0, intptr
                                        pixel *src1, intptr_t stride1, int weight );
 typedef int  (*x264_pixel_satd_bi4_t) ( x264_bi_fenc_t *fenc, pixel *src0a, pixel *src0b,
                                         pixel *src1a, pixel *src1b, intptr_t stride, int weight );
-/* analyse.i_me_8bit 2, high bit depth: cmp of fenc (FENC_STRIDE) against a
+/* X264_ME8_HPEL8, high bit depth: cmp of fenc (FENC_STRIDE) against a
  * prediction read in place from msb8/lsb8 planes, a source as x264_pk_hpel_pair
  * gives it (msb at the pixel, lsb at its byte, column phase msb & 3), rows
  * stride bytes (msb) and stride >> 2 (lsb) apart; avg2: of (src1 + src2 + 1) >> 1 */

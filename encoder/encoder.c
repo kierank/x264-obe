@@ -1797,6 +1797,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     if( h->param.analyse.i_me_8bit && !(h->me8 = x264_me8_init( h->param.cpu )) )
         goto fail;
+    /* 4:4:4 keeps level 1's 16-bit luma planes */
+    h->b_fpel8 = h->param.analyse.i_me_8bit && !CHROMA444;
 #endif
 
     if( h->param.sc.i_buffer_size )

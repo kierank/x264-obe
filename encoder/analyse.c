@@ -1206,8 +1206,9 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     (m)->p_fenc8 = &h->mb.pic.fenc8[(xoff)+(yoff)*FENC_STRIDE]; \
 }
 
-/* analyse.i_me_8bit: msb8 of p_fref[0..3] at the partition for the search, NULL
- * without; at level 2 also p_split8, msb8 and lsb8 of all four (see me.h) */
+/* analyse.i_me_8bit: msb8 of p_fref[0] (and at level 2 of [1..3]) at the
+ * partition for the search, NULL without; with X264_ME8_HPEL8 also p_split8,
+ * msb8 and lsb8 of all four (see me.h) */
 #define LOAD_HPELS8(m, list, ref, xoff, yoff) \
     (m)->p_split8[1] = NULL; \
     if( h->me8 ) \
@@ -1215,7 +1216,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
         uint8_t **f8 = h->mb.pic.p_fref8[list][ref]; \
         intptr_t o8 = (xoff)+(yoff)*(m)->i_stride[0]; \
         for( int k8 = 0; k8 < 4; k8++ ) \
-            (m)->p_fref8[k8] = f8[k8] ? f8[k8] + o8 : NULL; \
+            (m)->p_fref8[k8] = f8[k8] && (!k8 || h->param.analyse.i_me_8bit > 1) ? f8[k8] + o8 : NULL; \
         if( f8[1] ) \
             for( int k8 = 0; k8 < 4; k8++ ) \
             { \
@@ -1229,7 +1230,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 #define LOAD_HPELS(m, src, list, ref, xoff, yoff) \
 { \
     (m)->p_fref_w = (m)->p_fref[0] = &(src)[0][(xoff)+(yoff)*(m)->i_stride[0]]; \
-    for( int kh = 1; kh < 4; kh++ ) /* NULL where i_me_8bit 2 reads p_split8 */ \
+    for( int kh = 1; kh < 4; kh++ ) /* NULL where X264_ME8_HPEL8 reads p_split8 */ \
         (m)->p_fref[kh] = (src)[kh] ? &(src)[kh][(xoff)+(yoff)*(m)->i_stride[0]] : NULL; \
     if( CHROMA444 ) \
     { \

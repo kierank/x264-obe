@@ -461,7 +461,7 @@ static ALWAYS_INLINE int x264_mb_transform_8x8_allowed( x264_t *h )
 }
 
 /* mc_luma, get_ref and x264_mc_hpel_pair of a luma ref, src its p_fref and src8
- * its p_fref8 (or NULL): with src8[1], analyse.i_me_8bit 2, the h, v and c
+ * its p_fref8 (or NULL): with src8[1], X264_ME8_HPEL8, the h, v and c
  * planes exist only as msb8/lsb8 and are unpacked (x264_mc_luma_split8) */
 static ALWAYS_INLINE void x264_ref_mc_luma( x264_t *h, pixel *dst, intptr_t i_dst, pixel **src, uint8_t **src8,
                                             intptr_t i_src, int mvx, int mvy, int i_width, int i_height,

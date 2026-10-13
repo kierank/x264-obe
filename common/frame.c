@@ -42,12 +42,12 @@ static int align_plane_size( int x, int disalign )
     return x;
 }
 
-/* 16-bit luma planes of an fdec frame with hpel: analyse.i_me_8bit 2 keeps h, v
- * and c only as msb8/lsb8, but for X264_ME8_VERIFY's shadow of them */
+/* 16-bit luma planes of an fdec frame with hpel: X264_ME8_HPEL8 keeps h, v and
+ * c only as msb8/lsb8, but for X264_ME8_VERIFY's shadow of them */
 #ifdef X264_ME8_VERIFY
 #define HPEL16_PLANES( h, p ) 4
 #else
-#define HPEL16_PLANES( h, p ) (!(p) && HIGH_BIT_DEPTH && (h)->param.analyse.i_me_8bit > 1 ? 1 : 4)
+#define HPEL16_PLANES( h, p ) (!(p) && HIGH_BIT_DEPTH && X264_ME8_HPEL8( h ) ? 1 : 4)
 #endif
 
 static int x264_frame_internal_csp( int external_csp )
@@ -191,7 +191,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
 
 #if HIGH_BIT_DEPTH
     /* analyse.i_me_8bit: msb rows then lsb rows, the rows of the 16-bit plane */
-    int me8_planes = !b_fdec ? 0 : h->param.analyse.i_me_8bit > 1 ? 4 : h->param.analyse.i_me_8bit;
+    int me8_planes = !b_fdec ? 0 : h->param.analyse.i_me_8bit > 1 || X264_ME8_HPEL8( h ) ? 4 : h->param.analyse.i_me_8bit;
     int me8_rows = frame->i_lines[0] + 2*i_padv;
     intptr_t me8_msb_size = (intptr_t)frame->i_stride[0] * me8_rows;
     intptr_t me8_plane_size = ALIGN( me8_msb_size + (frame->i_stride[0] >> 2) * me8_rows, NATIVE_ALIGN );

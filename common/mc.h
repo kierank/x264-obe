@@ -111,7 +111,7 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
-    /* analyse.i_me_8bit 2, high bit depth: hpel_filter writing only the
+    /* X264_ME8_HPEL8, high bit depth: hpel_filter writing only the
      * plane_split8 of its h, v and c output, no 16-bit planes; msb and lsb are
      * those of h at src's first pixel (a multiple of 4 pixels from a 32 byte
      * boundary), v's and c's plane8 and 2*plane8 bytes after them. Writes the
@@ -148,7 +148,7 @@ typedef struct
      * pixels (a multiple of 16), msb and lsb at an x that is a multiple of 4,
      * rows i_dst pixels (dst), i_src bytes (msb) and i_src/4 bytes (lsb) apart */
     void (*plane_unpack8)( pixel *dst, intptr_t i_dst, uint8_t *msb, uint8_t *lsb, intptr_t i_src, int w, int h );
-    /* analyse.i_me_8bit 2, high bit depth, x86_64 asm only (NULL otherwise):
+    /* X264_ME8_HPEL8, high bit depth, x86_64 asm only (NULL otherwise):
      * mc_copy and pixel_avg2 of sources read in place from msb8/lsb8 planes
      * (x264_pk_hpel_pair), [i_width>>2] for widths 4, 8, 12 (writes 16), 16
      * and 20; i_src is the msb stride */
@@ -181,7 +181,7 @@ static ALWAYS_INLINE void x264_mc_hpel_pair( pixel *dst[2], pixel **src, intptr_
     dst[1] = qpel_idx & 5 ? src[x264_hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3) : dst[0];
 }
 
-/* analyse.i_me_8bit 2 stores the luma h, v and c planes only as msb8/lsb8. Their
+/* X264_ME8_HPEL8 stores the luma h, v and c planes only as msb8/lsb8. Their
  * readers take src8, msb8 of planes 0-3 in [0..3] and lsb8 in [4..7] at a block
  * a multiple of 4 pixels from x = 0, and unpack what the 16-bit kernels would
  * read into temps of X264_SPLIT8_STRIDE pixels a row. */
@@ -226,7 +226,7 @@ static ALWAYS_INLINE int x264_pk_hpel_pair( uint8_t *pk[4], uint8_t **src8, intp
     return 1;
 }
 
-/* i_me_8bit 2: x264_frame_filter's scratch rows of h, v and c before their
+/* X264_ME8_HPEL8: x264_frame_filter's scratch rows of h, v and c before their
  * split, w the hpel width (frame width + 16), in h->scratch_buffer after the
  * filter's int16 buf */
 #define X264_SPLIT8_ROWS_OFFSET( w ) (ALIGN( ((w)+64) * (int)sizeof(int16_t), 64 ) + 64)

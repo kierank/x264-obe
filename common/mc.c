@@ -758,7 +758,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 }
 
 #if HIGH_BIT_DEPTH
-/* analyse.i_me_8bit 2: hpel of rows [0, height) of src writing only the
+/* X264_ME8_HPEL8: hpel of rows [0, height) of src writing only the
  * msb8/lsb8 split of h, v and c (msb8[1..3] + offs, lsb8[1..3] + lsb_offs).
  * With dstf, hpel_filter_copy's copy of src to dstf. Without the asm, or with
  * the copy, row by row through scratch rows of 16-bit h, v and c. */
@@ -923,7 +923,7 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     int offs = y0*stride + i*frame->i_stride[p] - 8;
     if( y1 <= y0 )
         return;
-    /* the 16-bit h, v and c, but for i_me_8bit 2's luma (X264_ME8_VERIFY's shadow) */
+    /* the 16-bit h, v and c, but for X264_ME8_HPEL8's luma (X264_ME8_VERIFY's shadow) */
     if( frame->filtered_fld[p][1] )
     {
         pixel *dsth = frame->filtered_fld[p][1] + offs;
