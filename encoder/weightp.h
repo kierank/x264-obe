@@ -76,6 +76,14 @@ typedef struct
     x264_weight_t w[X264_WEIGHT_SCALES_MAX][X264_WEIGHT_OFFSETS_MAX];
 } x264_weight_trials_t;
 
+/* Chroma 4:2:0/4:2:2, per plane: the trials and the slot of the scale of each, -1 for
+ * none (costed when tried). Costs as above, [0] that of the ref. */
+typedef struct
+{
+    x264_weight_trials_t t[2];
+    int slot[2][X264_WEIGHT_SCALES_MAX];
+} x264_weight_chroma_trials_t;
+
 #define x264_weight_luma_mc_rows x264_template(weight_luma_mc_rows)
 void x264_weight_luma_mc_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, int mb_y1 );
 /* src: ref_luma[0] or mc_luma, w: NULL or cached for this depth; no slice header cost */
@@ -100,5 +108,10 @@ void x264_weight_chroma_wsum_rows( x264_t *h, x264_weight_src_t *s, int q, int m
  * slot q; no slice header cost */
 #define x264_weight_chroma_cost x264_template(weight_chroma_cost)
 unsigned int x264_weight_chroma_cost( x264_t *h, x264_weight_src_t *s, int q, const x264_weight_t *w );
+/* Adds the costs of ct with a slot, and those of the refs, to cost[plane][X264_WEIGHT_COSTS],
+ * after the wsum of the slots; weights cached for this depth; no slice header cost */
+#define x264_weight_chroma_search_rows x264_template(weight_chroma_search_rows)
+void x264_weight_chroma_search_rows( x264_t *h, x264_weight_src_t *s, const x264_weight_chroma_trials_t *ct,
+                                     unsigned int (*cost)[X264_WEIGHT_COSTS], int mb_y0, int mb_y1 );
 
 #endif
