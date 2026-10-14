@@ -534,7 +534,8 @@ static void x264_weight_luma_search_band( x264_weight_band_t *b )
 static void x264_weight_chroma_init_band( x264_weight_band_t *b )
 {
     x264_weight_pass_t *a = b->pass;
-    a->ops->chroma_fenc_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
+    if( !a->s->b_fsum )
+        a->ops->chroma_fenc_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
     a->ops->chroma_ref_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
     for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
         if( a->s->wscale[q] >= 0 )
@@ -656,9 +657,11 @@ static NOINLINE void x264_weight_cost_init_chroma( x264_t *h, const x264_weight_
     s->stride_chroma = fenc->i_stride[1];
     s->v_shift = CHROMA_V_SHIFT;
     s->n16 = n16;
+    /* the fenc sums of the AQ pass, if at this depth */
+    s->b_fsum = fenc->b_weight_csum && ops->k == h;
     for( int p = 0; p < 2; p++ )
     {
-        s->fsum[p] = h->mb.p_weight_sums + (0+p)*size;
+        s->fsum[p] = s->b_fsum ? fenc->i_weight_csum + p*size : h->mb.p_weight_sums + (0+p)*size;
         s->rsum[p] = h->mb.p_weight_sums + (2+p)*size;
         s->minmax[p] = (uint32_t*)h->mb.p_weight_sums + (4+p)*size;
         for( int i = 0; i < X264_WEIGHT_WSLOTS; i++ )

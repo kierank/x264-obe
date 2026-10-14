@@ -51,6 +51,7 @@ typedef struct
     /* per MB, rows of n16 = (mb_width + 15) & ~15 (X264_WEIGHT_SUMS of them) */
     int n16;
     int32_t *fsum[2];       /* fenc */
+    int b_fsum;             /* fsum[] given (fenc->i_weight_csum), no chroma_fenc_rows */
     int32_t *rsum[2];       /* ref */
     uint32_t *minmax[2];    /* ref, min | max << 16 */
     /* slot q of plane q / X264_WEIGHT_WSLOTS: the ref weighted at wscale[q], wdenom[q] (-1:
