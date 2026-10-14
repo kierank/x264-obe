@@ -552,3 +552,15 @@ Report, per arm:
 - the branch, commit, config line, input file and format;
 - p50, p99 and max wall time, the overrun and late counts, CPU per frame;
 - for lowlat, the per-phase split.
+
+## Regression matrix (rack01, gen2)
+
+These scripts are copies of rack01's working files. They assume rack01's layout: clips in `wc/clips2`, xencp binaries in `qSL2`, `obed()` from `prof468/run.sh`, and `ftype.py`.
+
+- `gen2.sh`: 17 more stress cases: bcuts, dimcuts, dipcut, flash2/4, strobe3, halffade, fademotion, flicker2/10, ticker, static2move, textgfx, grain, xfade, shake, pfade.
+- `regmatrix.sh`: per-frame paced matrix over the arms in `ARMS` (master, speed-next, option 2…).
+  - Lowest latency: obed settings, intra refresh, one-frame VBV, t4 and t8.
+  - Normal: t8, unpaced.
+  - 3 rounds with the arm order rotated each round.
+- `regcount.sh` + `reenc_counter.py`: builds patched to count row VBV re-encodes, one lowest-latency t4 run per cell.
+- `regana.py`: mean, p99, max, overruns, CPU, frame types and re-encodes per cell. It flags any arm whose p99 or overruns are worse than master beyond noise (paired t-test, 95%).
