@@ -39,6 +39,7 @@ typedef struct
     void *mc_luma;          /* ref motion compensated, if mvs */
     intptr_t stride_luma;
     uint16_t *intra_cost;
+    int intra_cost_shift;   /* scale of intra_cost to the depth of the passes */
     int32_t *lsum;          /* per MB of the ref luma, sum and min | max << 16, or NULL */
     uint32_t *lminmax;
     /* chroma 4:2:0/4:2:2 */

@@ -117,13 +117,13 @@ unsigned int x264_weight_luma_cost_rows( x264_t *h, x264_weight_src_t *s, void *
             {
                 w->weightfn[8>>2]( buf, 8, &src[pixoff], i_stride, w, 8 );
                 int cmp = h->pixf.mbcmp[PIXEL_8x8]( buf, 8, &fenc_plane[pixoff], i_stride );
-                cost += X264_MIN( cmp, s->intra_cost[i_mb] << (BIT_DEPTH-8) );
+                cost += X264_MIN( cmp, s->intra_cost[i_mb] << s->intra_cost_shift );
             }
         else
             for( int x = 0; x < 8*s->mb_width; x += 8, i_mb++, pixoff += 8 )
             {
                 int cmp = h->pixf.mbcmp[PIXEL_8x8]( &src[pixoff], i_stride, &fenc_plane[pixoff], i_stride );
-                cost += X264_MIN( cmp, s->intra_cost[i_mb] << (BIT_DEPTH-8) );
+                cost += X264_MIN( cmp, s->intra_cost[i_mb] << s->intra_cost_shift );
             }
     }
     x264_emms();
@@ -163,8 +163,8 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
         {
             pixel *r = src + y*i_stride + 8*x;
             pixel *f = fenc_plane + y*i_stride + 8*x;
-            /* cmp is at BIT_DEPTH, i_intra_cost at 8-bit scale */
-            int icost = s->intra_cost[i_mb] << (BIT_DEPTH-8);
+            /* cmp is at BIT_DEPTH, i_intra_cost at 8-bit scale (see intra_cost_shift) */
+            int icost = s->intra_cost[i_mb] << s->intra_cost_shift;
             int cmp = h->pixf.mbcmp[PIXEL_8x8]( r, i_stride, f, i_stride );
             cost[0] += X264_MIN( cmp, icost );
             for( int k = 0; k < t->i_scales; k++ )
@@ -904,6 +904,11 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 #endif
             /* the unweighted cost and those of the weights tried below, in one pass */
             mcbuf = x264_weight_cost_init_luma( h, &ws, fenc, ref, h->mb.p_weight_buf[0] );
+            /* i_intra_cost is at 8-bit scale.  With intra refresh keep the clamp unscaled, as
+             * before 7418a30a: scenecut decides on the lookahead cost alone (bias
+             * f_thresh_min/4) and the scaled clamp turned cuts into weighted P frames, slower
+             * and worse under a one frame VBV. */
+            ws.intra_cost_shift = h->param.b_intra_refresh ? 0 : BIT_DEPTH - 8;
             x264_weight_trials_luma( h, &ops, &lt, fenc_mean[plane], ref_mean[plane], minscale, mindenom,
                                      scale_dist, offset_dist, b_lookahead );
             x264_weight_luma_search( h, &ops, &ws, mcbuf, &lt, lcost );
