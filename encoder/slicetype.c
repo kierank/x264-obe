@@ -338,24 +338,27 @@ static ALWAYS_INLINE unsigned int x264_weight_chroma_cost_row( x264_t *h, x264_w
             cost += abs( wdiff[x] + offset_sum );
         return cost;
     }
-    for( int x = 0; x < n; x++ )
+#define CLIPS( x ) ( (((int)(minmax[x] & 0xffff) * scale + round) >> denom) + offset < 0 ||\
+                     (((int)(minmax[x] >> 16) * scale + round) >> denom) + offset > PIXEL_MAX )
+    /* the blocks that may clip, weighted per pixel a run at a time */
+    int32_t csum[64];
+    for( int x = 0; x < n; )
     {
-        int lo = ((int)(minmax[x] & 0xffff) * scale + round) >> denom;
-        int hi = ((int)(minmax[x] >> 16) * scale + round) >> denom;
-        int diff;
-        if( lo + offset >= 0 && hi + offset <= PIXEL_MAX )
-            diff = wdiff[x] + offset_sum;
-        else
+        if( !CLIPS( x ) )
         {
-            ALIGNED_ARRAY_16( pixel, buf, [8*16] );
-            w->weightfn[8>>2]( buf, 8, dst + 8*x, i_stride, w, height );
-            int sum = 0;
-            for( int i = 0; i < 8*height; i++ )
-                sum += buf[i];
-            diff = sum - fsum[x];
+            cost += abs( wdiff[x] + offset_sum );
+            x++;
+            continue;
         }
-        cost += abs( diff );
+        int x1 = x + 1;
+        while( x1 < n && x1 - x < 64 && CLIPS( x1 ) )
+            x1++;
+        h->pixf.weightp_sum8_clip( csum, dst + 8*x, i_stride, x1 - x, height, scale, denom, offset );
+        for( int i = x; i < x1; i++ )
+            cost += abs( csum[i-x] - fsum[i] );
+        x = x1;
     }
+#undef CLIPS
     return cost;
 }
 

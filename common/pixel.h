@@ -153,9 +153,13 @@ typedef struct
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
     /* x264_weights_analyse chroma, per 8 x height block of a row of n: the sum and
      * min | max << 16; the sum of ( x * scale + ((1 << denom) >> 1) ) >> denom; the
-     * sums of the u and v of an interleaved row. asm may do n rounded up to 16. */
+     * sums of the u and v of an interleaved row; that of x264_clip_pixel( ( x * scale +
+     * ((1 << denom) >> 1) ) >> denom + offset ), as mc weight. asm may do n rounded up
+     * to 16. */
     void (*weightp_stats8)( int32_t *sum, uint32_t *minmax, pixel *src, intptr_t i_src, int n, int height );
     void (*weightp_sum8)( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom );
+    void (*weightp_sum8_clip)( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
+                               int offset );
     void (*weightp_sum8_nv)( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height );
     uint64_t (*sa8d_satd[1])( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
 
