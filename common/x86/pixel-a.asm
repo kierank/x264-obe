@@ -9366,11 +9366,15 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
 
 ;-----------------------------------------------------------------------------
 ; void weightp_sum8( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom )
+; void weightp_sum8_clip( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
+;                         int offset )
 ;-----------------------------------------------------------------------------
 ; Per 8 x height block, the sum of ( x * scale + ((1 << denom) >> 1) ) >> denom: pmaddwd
 ; of { x, 1 } by { scale, round }. One block a lane, 4 registers a pass, n rounded up to
 ; mmsize/4. m5 = pw_1, xm6 = denom, m7 = { scale, round }, m10 = block order.
-%macro WEIGHTP_SUM8_ROW 2 ; acc, offset
+; _clip: each + offset, clipped to [0,pixel_max] as by mc weight. m9 = offset,
+; m11 = pixel_max, m12 = 0.
+%macro WEIGHTP_SUM8_ROW 3 ; acc, offset, clip
     LOAD_PIXW  m4, [r7+%2]
     punpckhwd  m8, m4, m5
     punpcklwd  m4, m5
@@ -9378,12 +9382,29 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
     pmaddwd    m8, m7
     psrad      m4, xm6
     psrad      m8, xm6
+%if %3
+    paddd      m4, m9
+    paddd      m8, m9
+    pmaxsd     m4, m12
+    pmaxsd     m8, m12
+    pminsd     m4, m11
+    pminsd     m8, m11
+%endif
     paddd      %1, m4
     paddd      %1, m8
 %endmacro
 
-%macro WEIGHTP_SUM8 0
+%macro WEIGHTP_SUM8 1 ; clip
+%if %1
+cglobal weightp_sum8_clip, 8,9,13
+    movd      xm9, r7d
+    vpbroadcastd m9, xm9
+    pcmpeqd   m11, m11
+    psrld     m11, 32-BIT_DEPTH
+    pxor      m12, m12
+%else
 cglobal weightp_sum8, 7,9,11
+%endif
     FIX_STRIDES r2
     xor       r7d, r7d
     bts       r7d, r6d
@@ -9403,10 +9424,10 @@ cglobal weightp_sum8, 7,9,11
     mov        r7, r1
     mov       r8d, r4d
 .loopy:
-    WEIGHTP_SUM8_ROW m0, 0
-    WEIGHTP_SUM8_ROW m1, mmsize/2*SIZEOF_PIXEL
-    WEIGHTP_SUM8_ROW m2, mmsize*SIZEOF_PIXEL
-    WEIGHTP_SUM8_ROW m3, mmsize*3/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_ROW m0, 0, %1
+    WEIGHTP_SUM8_ROW m1, mmsize/2*SIZEOF_PIXEL, %1
+    WEIGHTP_SUM8_ROW m2, mmsize*SIZEOF_PIXEL, %1
+    WEIGHTP_SUM8_ROW m3, mmsize*3/2*SIZEOF_PIXEL, %1
     add        r7, r2
     dec       r8d
     jg .loopy
@@ -9605,7 +9626,8 @@ cglobal weightp_sum8_nv, 6,8,16
 %endmacro
 
 INIT_YMM avx2
-WEIGHTP_SUM8
+WEIGHTP_SUM8 0
+WEIGHTP_SUM8 1
 WEIGHTP_STATS8
 WEIGHTP_SUM8_NV
 %endif ; ARCH_X86_64

@@ -933,6 +933,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     ok = 1; used_asm = 0;
     if( pixel_asm.weightp_stats8 != pixel_ref.weightp_stats8 ||
         pixel_asm.weightp_sum8 != pixel_ref.weightp_sum8 ||
+        pixel_asm.weightp_sum8_clip != pixel_ref.weightp_sum8_clip ||
         pixel_asm.weightp_sum8_nv != pixel_ref.weightp_sum8_nv )
     {
         /* random and near PIXEL_MAX; outputs compared up to n, as the asm may do n
@@ -980,6 +981,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                                          k, n, height, scale, denom );
                             }
                         }
+                    }
+                    if( pixel_asm.weightp_sum8_clip != pixel_ref.weightp_sum8_clip )
+                    {
+                        set_func_name( "weightp_sum8_clip" );
+                        used_asm = 1;
+                        /* the extreme offsets, 0 and a random one */
+                        for( int denom = 0; denom <= 7 && ok; denom++ )
+                            for( int o = 0; o < 4 && ok; o++ )
+                            {
+                                int scale = denom == 7 ? 127 : denom == 6 ? 0 : rand() & 127;
+                                int offset = (o == 0 ? -128 : o == 1 ? 127 : o == 2 ? 0 : (rand() & 255) - 128) << (BIT_DEPTH-8);
+                                memset( out, 0, 4*64*sizeof(int32_t) );
+                                call_c( pixel_c.weightp_sum8_clip, outc[0], src, stride, n, height, scale, denom, offset );
+                                call_a( pixel_asm.weightp_sum8_clip, outa[0], src, stride, n, height, scale, denom, offset );
+                                if( memcmp( outc[0], outa[0], n*sizeof(int32_t) ) )
+                                {
+                                    ok = 0;
+                                    fprintf( stderr, "weightp_sum8_clip FAILED: src %d n %d height %d scale %d denom %d offset %d\n",
+                                             k, n, height, scale, denom, offset );
+                                }
+                            }
                     }
                     if( pixel_asm.weightp_sum8_nv != pixel_ref.weightp_sum8_nv )
                     {
