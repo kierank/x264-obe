@@ -3847,6 +3847,23 @@ skip_analysis:
         h->mb.i_skip_intra = 0;
 }
 
+static int x264_mb_ref_out_of_range( x264_t *h )
+{
+    for( int l = 0; l <= (h->sh.i_type == SLICE_TYPE_B); l++ )
+        for( int i = 0; i < 4; i++ )
+        {
+            int ref = h->mb.cache.ref[l][x264_scan8[4*i]];
+            if( ref >= 0 && (ref >= h->i_ref[l] << MB_INTERLACED || !h->fref[l][ref >> MB_INTERLACED]) )
+            {
+                x264_log( h, X264_LOG_ERROR, "internal error (ref out of range: l%dr%d of %d, block %d, mb type %d partition %d, mb_xy %d,%d, frame %d)\n",
+                          l, ref, h->i_ref[l] << MB_INTERLACED, i, h->mb.i_type, h->mb.i_partition,
+                          h->mb.i_mb_x, h->mb.i_mb_y, h->fenc->i_frame );
+                return 1;
+            }
+        }
+    return 0;
+}
+
 /*-------------------- Update MB from the analysis ----------------------*/
 static void x264_analyse_update_cache( x264_t *h, x264_mb_analysis_t *a  )
 {
@@ -3977,6 +3994,15 @@ static void x264_analyse_update_cache( x264_t *h, x264_mb_analysis_t *a  )
             }
     }
 
+    if( !IS_INTRA(h->mb.i_type) && x264_mb_ref_out_of_range( h ) )
+    {
+        x264_log( h, X264_LOG_WARNING, "recovering by using intra mode\n");
+        x264_mb_analyse_intra( h, a, COST_MAX );
+        h->mb.i_type = I_16x16;
+        h->mb.i_intra16x16_pred_mode = a->i_predict16x16;
+        x264_mb_analyse_intra_chroma( h, a );
+    }
+
 #ifndef NDEBUG
     if( h->i_thread_frames > 1 && !IS_INTRA(h->mb.i_type) )
     {
@@ -3986,18 +4012,6 @@ static void x264_analyse_update_cache( x264_t *h, x264_mb_analysis_t *a  )
             int ref = h->mb.cache.ref[l][x264_scan8[0]];
             if( ref < 0 )
                 continue;
-            if( ref >= h->i_ref[l] << MB_INTERLACED || !h->fref[l][ ref >> MB_INTERLACED ] )
-            {
-                x264_log( h, X264_LOG_ERROR, "internal error (ref out of range: l%dr%d of %d, mb type %d partition %d, mb_xy %d,%d, frame %d)\n",
-                          l, ref, h->i_ref[l] << MB_INTERLACED, h->mb.i_type, h->mb.i_partition,
-                          h->mb.i_mb_x, h->mb.i_mb_y, h->fenc->i_frame );
-                x264_log( h, X264_LOG_WARNING, "recovering by using intra mode\n");
-                x264_mb_analyse_intra( h, a, COST_MAX );
-                h->mb.i_type = I_16x16;
-                h->mb.i_intra16x16_pred_mode = a->i_predict16x16;
-                x264_mb_analyse_intra_chroma( h, a );
-                break;
-            }
             completed = h->fref[l][ ref >> MB_INTERLACED ]->orig->i_lines_completed;
             if( (h->mb.cache.mv[l][x264_scan8[15]][1] >> (2 - MB_INTERLACED)) + h->mb.i_mb_y*16 > completed )
             {
