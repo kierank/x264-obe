@@ -143,6 +143,10 @@ typedef struct x264_frame
     float   f_weighted_cost_delta[X264_BFRAME_MAX+2];
     uint32_t i_pixel_sum[3];
     uint64_t i_pixel_ssd[3];
+    /* weightp 4:2:0/4:2:2 progressive: the u then v sum of each MB, from the AQ pass,
+     * in rows of (mb_width + 15) & ~15; b_weight_csum: of this picture */
+    int32_t *i_weight_csum;
+    int     b_weight_csum;
 
     /* hrd */
     x264_hrd_t hrd_timing;
