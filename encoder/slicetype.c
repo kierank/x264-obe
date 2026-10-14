@@ -174,7 +174,8 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
                 w0->weightfn[8>>2]( buf, 8, r, i_stride, w0, 8 );
                 int base = h->pixf.mbcmp[PIXEL_8x8]( buf, 8, f, i_stride );
                 ck[0] += X264_MIN( base, icost );
-                int lo = 0, hi = 0, b_free = 0, dc[4];
+                int lo = 0, hi = 0, b_free = 0;
+                int32_t dc[4];
                 int o0 = w0->i_offset << (BIT_DEPTH-8);
                 if( b_dc && t->i_offsets[k] > 1 )
                 {
@@ -183,16 +184,7 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
                     hi = ((int)(mm[x] >> 16) * w0->i_scale + round) >> w0->i_denom;
                     b_free = lo + o0 >= 0 && hi + o0 <= PIXEL_MAX;
                     if( b_free )
-                        for( int q = 0; q < 4; q++ )
-                        {
-                            pixel *bq = buf + (q>>1)*4*8 + (q&1)*4;
-                            pixel *fq = f + (q>>1)*4*i_stride + (q&1)*4;
-                            int d = 0;
-                            for( int yy = 0; yy < 4; yy++ )
-                                for( int xx = 0; xx < 4; xx++ )
-                                    d += bq[xx+yy*8] - fq[xx+yy*i_stride];
-                            dc[q] = d;
-                        }
+                        h->pixf.weightp_dc8x8( dc, buf, 8, f, i_stride );
                 }
                 for( int j = 1; j < t->i_offsets[k]; j++ )
                 {

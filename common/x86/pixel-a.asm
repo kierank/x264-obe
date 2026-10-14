@@ -9323,6 +9323,54 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
 %endif ; ARCH_X86_64
 
 ;=============================================================================
+; x264_weights_analyse luma
+;=============================================================================
+;-----------------------------------------------------------------------------
+; void weightp_dc8x8( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 )
+;-----------------------------------------------------------------------------
+; The sums of pix1 - pix2 of the 4x4 blocks, in raster order: word column sums of rows
+; 0-3 and 4-7 (within +-4 * pixel_max), pmaddwd into pairs, then pairs of pairs.
+%macro WEIGHTP_DC_ROW 1 ; acc
+%if HIGH_BIT_DEPTH
+    movu       m2, [r1]
+    movu       m3, [r3]
+%else
+    movh       m2, [r1]
+    movh       m3, [r3]
+    punpcklbw  m2, m4
+    punpcklbw  m3, m4
+%endif
+    psubw      m2, m3
+    paddw      %1, m2
+    add        r1, r2
+    add        r3, r4
+%endmacro
+
+INIT_XMM sse2
+cglobal weightp_dc8x8, 5,5,6
+    FIX_STRIDES r2, r4
+    pxor       m0, m0
+    pxor       m1, m1
+%if HIGH_BIT_DEPTH == 0
+    pxor       m4, m4
+%endif
+%rep 4
+    WEIGHTP_DC_ROW m0
+%endrep
+%rep 4
+    WEIGHTP_DC_ROW m1
+%endrep
+    mova       m5, [pw_1]
+    pmaddwd    m0, m5
+    pmaddwd    m1, m5
+    mova       m2, m0
+    shufps     m0, m1, q2020
+    shufps     m2, m1, q3131
+    paddd      m0, m2
+    movu     [r0], m0
+    RET
+
+;=============================================================================
 ; x264_weights_analyse chroma block statistics
 ;=============================================================================
 %if ARCH_X86_64

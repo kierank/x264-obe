@@ -161,6 +161,9 @@ typedef struct
     void (*weightp_sum8_clip)( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
                                int offset );
     void (*weightp_sum8_nv)( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height );
+    /* x264_weights_analyse luma: the sums of pix1 - pix2 over the 4x4 blocks of an 8x8,
+     * in raster order */
+    void (*weightp_dc8x8)( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 );
     uint64_t (*sa8d_satd[1])( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
 
     uint64_t (*var[4])( pixel *pix, intptr_t stride );
