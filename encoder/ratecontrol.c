@@ -1673,7 +1673,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float slice_size_planned = h->param.b_sliced_threads ? rc->slice_size_planned : rc->frame_size_planned;
     float bits_so_far = row_bits_so_far( h, y );
     rc->bits_so_far = bits_so_far;
-    float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
+    float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.02, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
     max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
     float size_of_other_slices = 0;
