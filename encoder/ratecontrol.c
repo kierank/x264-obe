@@ -2397,6 +2397,11 @@ static ALWAYS_INLINE void update_predictor_fit( predictor_t *p, float q, float v
 
 static void update_predictor( predictor_t *p, float q, float var, float bits )
 {
+    /* The offset takes all the coefficient clip cuts, so one outlier frame could raise
+     * the next frames' predictions without bound. Once settled, learn at most the
+     * clip's range times the prediction at the frame's own q and var. */
+    if( p->count > 1.9f )
+        bits = X264_MIN( bits, 1.5f * predict_size( p, q, var ) );
     update_predictor_fit( p, q, var, bits, 1 );
 }
 
