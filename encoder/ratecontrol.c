@@ -159,6 +159,8 @@ struct x264_ratecontrol_t
     double frame_size_maximum;  /* Maximum frame size due to MinCR */
     double frame_size_planned;
     double slice_size_planned;
+    predictor_t *row_plan;      /* b_sliced_threads 2: [slice type][mb row], over frames; thread 0's */
+    int b_row_plan;             /* thread slices planned by row, since the first balanced split */
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
@@ -900,6 +902,18 @@ int x264_ratecontrol_new( x264_t *h )
             rc->row_preds[i][j].offset = 0.0;
         }
     }
+    if( h->param.b_sliced_threads == 2 )
+    {
+        CHECKED_MALLOC( rc->row_plan, 3 * h->mb.i_mb_height * sizeof(predictor_t) );
+        for( int i = 0; i < 3 * h->mb.i_mb_height; i++ )
+        {
+            rc->row_plan[i].coeff_min = .25 / 4;
+            rc->row_plan[i].coeff = .25;
+            rc->row_plan[i].count = 1.0;
+            rc->row_plan[i].decay = 0.5;
+            rc->row_plan[i].offset = 0.0;
+        }
+    }
     rc->pred_b_from_p->coeff_min = 0.5 / 2;
     rc->pred_b_from_p->coeff = 0.5;
     rc->pred_b_from_p->count = 1.0;
@@ -1419,6 +1433,7 @@ void x264_ratecontrol_delete( x264_t *h )
     if( rc->p_mbtree_stat_file_in )
         fclose( rc->p_mbtree_stat_file_in );
     x264_free( rc->pred );
+    x264_free( rc->row_plan );
     x264_free( rc->pred_b_from_p );
     x264_free( rc->entry );
     x264_macroblock_tree_rescale_destroy( rc );
@@ -2726,7 +2741,7 @@ static void x264_threads_normalize_predictors( x264_t *h )
         h->thread[i]->rc->slice_size_planned *= factor;
 }
 
-void x264_threads_distribute_ratecontrol( x264_t *h )
+void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
 {
     int row;
     x264_ratecontrol_t *rc = h->rc;
@@ -2742,6 +2757,10 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
                 memcpy( t->rc->row_preds, rc->row_preds, sizeof(rc->row_preds) );
         }
 
+    /* Once a split has moved, the per-slice predictors were fit to other rows. */
+    if( b_balanced )
+        rc->b_row_plan = 1;
+
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         x264_t *t = h->thread[i];
@@ -2749,7 +2768,15 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
             memcpy( t->rc, rc, offsetof(x264_ratecontrol_t, row_pred) );
         t->rc->row_pred = t->rc->row_preds[h->sh.i_type];
         /* Calculate the planned slice size. */
-        if( rc->b_vbv && rc->frame_size_planned )
+        if( rc->b_vbv && rc->frame_size_planned && rc->b_row_plan )
+        {
+            predictor_t *p = rc->row_plan + h->sh.i_type * h->mb.i_mb_height;
+            double size = 0;
+            for( row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
+                size += predict_size( &p[row], qscale, h->fdec->i_row_satd[row] );
+            t->rc->slice_size_planned = size;
+        }
+        else if( rc->b_vbv && rc->frame_size_planned )
         {
             int size = 0;
             for( row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
@@ -2769,7 +2796,12 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
             for( int i = 0; i < h->param.i_threads; i++ )
             {
                 x264_t *t = h->thread[i];
-                float max_frame_error = x264_clip3f( 1.0 / (t->i_threadslice_end - t->i_threadslice_start), 0.05, 0.25 );
+                int rows = t->i_threadslice_end - t->i_threadslice_start;
+                float max_frame_error = x264_clip3f( 1.0 / rows, 0.05, 0.25 );
+                /* By row: the even split's allowance, shared by the slices' rows */
+                if( rc->b_row_plan )
+                    max_frame_error = x264_clip3f( (double)h->param.i_threads / h->mb.i_mb_height, 0.05, 0.25 )
+                                    * rows * h->param.i_threads / h->mb.i_mb_height;
                 t->rc->slice_size_planned += 2 * max_frame_error * rc->frame_size_planned;
             }
             x264_threads_normalize_predictors( h );
@@ -2802,6 +2834,15 @@ void x264_threads_merge_ratecontrol( x264_t *h )
             continue;
         rc->qpa_rc += rct->qpa_rc;
         rc->qpa_aq += rct->qpa_aq;
+    }
+
+    /* Every frame, so the row predictors are ready when a split first moves */
+    if( rc->row_plan && rc->b_vbv )
+    {
+        predictor_t *p = rc->row_plan + h->sh.i_type * h->mb.i_mb_height;
+        for( int y = 0; y < h->mb.i_mb_height; y++ )
+            if( h->fdec->f_row_qscale[y] > 0 )
+                update_predictor( &p[y], h->fdec->f_row_qscale[y], h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
     }
 }
 
