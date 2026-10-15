@@ -870,6 +870,11 @@ static NOINLINE void x264_weight_lowres_init( x264_t *h, x264_frame_t *fenc, x26
 }
 #endif
 
+/* Unweighted cut: the unweighted luma cost of the final analysis, motion compensated
+ * by the lowres mvs and clamped at intra per mb, is at least UNWEIGHTED_CUT_THRESH/16
+ * of the lowres intra cost */
+#define UNWEIGHTED_CUT_THRESH 15
+
 void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int b_lookahead )
 {
     int i_delta_index = fenc->i_frame - ref->i_frame - 1;
@@ -974,6 +979,13 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                                 scale_dist, offset_dist, b_lookahead );
             x264_weight_luma_search( h, &ops, &ws, mcbuf, &lt, lcost );
             origscore = minscore = lcost[0];
+            if( !b_lookahead )
+            {
+                uint64_t i_intra = 0;
+                for( int i = 0; i < h->mb.i_mb_count; i++ )
+                    i_intra += fenc->i_intra_cost[i];
+                fenc->b_unweighted_cut = (uint64_t)lcost[0] * 16 >= (i_intra << ws.intra_cost_shift) * UNWEIGHTED_CUT_THRESH;
+            }
         }
         else
         {
