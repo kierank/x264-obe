@@ -1701,8 +1701,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         float pred = rc->row_plan_prior;
         for( int i = h->i_threadslice_start; i <= y; i++ )
             pred += predict_size( &p[i], h->fdec->f_row_qscale[i], h->fdec->i_row_satd[i] );
-        float bits = bits_so_far + rc->row_plan_prior * rc->row_plan_level;
-        rc->row_plan_scale = slice_size_planned > 0 && pred > 0 ? x264_clip3f( bits / pred, 0.125f, 8.0f ) : 1.0f;
+        float done = bits_so_far + rc->row_plan_prior * rc->row_plan_level;
+        rc->row_plan_scale = slice_size_planned > 0 && pred > 0 ? x264_clip3f( done / pred, 0.125f, 8.0f ) : 1.0f;
     }
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
