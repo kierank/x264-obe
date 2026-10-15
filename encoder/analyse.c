@@ -71,6 +71,7 @@ typedef struct
     int b_fast_intra;
     int b_force_intra; /* For Periodic Intra Refresh.  Only supported in P-frames. */
     int b_avoid_topright; /* For Periodic Intra Refresh: don't predict from top-right pixels. */
+    int b_pir_skip_invalid; /* For Periodic Intra Refresh: the P_SKIP mv reaches right of the reference's bar. */
     int b_try_skip;
 
     /* Luma part */
@@ -375,13 +376,17 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
         h->mb.mv_max[0] = 4*( 16*( h->mb.i_mb_width - h->mb.i_mb_x - 1 ) + 24 );
         h->mb.mv_min_spel[0] = CLIP_FMV( h->mb.mv_min[0] );
         h->mb.mv_max_spel[0] = CLIP_FMV( h->mb.mv_max[0] );
+        a->b_pir_skip_invalid = 0;
         if( h->param.b_intra_refresh && h->sh.i_type == SLICE_TYPE_P )
         {
             int max_x = (h->fref[0][0]->i_pir_end_col * 16 - 3)*4; /* 3 pixels of hpel border */
             int max_mv = max_x - 4*16*h->mb.i_mb_x;
             /* If we're left of the refresh bar, don't reference right of it. */
             if( max_mv > 0 && h->mb.i_mb_x < h->fdec->i_pir_start_col )
+            {
                 h->mb.mv_max_spel[0] = X264_MIN( h->mb.mv_max_spel[0], max_mv );
+                a->b_pir_skip_invalid = h->mb.cache.pskip_mv[0] > max_mv;
+            }
         }
         h->mb.mv_limit_fpel[0][0] = (h->mb.mv_min_spel[0]>>2) + i_fpel_border;
         h->mb.mv_limit_fpel[1][0] = (h->mb.mv_max_spel[0]>>2) - i_fpel_border;
@@ -3186,6 +3191,60 @@ static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cos
         x264_mb_analyse_intra( h, a, i_cost );
 }
 
+/* Fast P_SKIP: the probe passes when the residual quantises away, which at a
+ * high qp holds for a skip mv far from the motion.  Reject the skip where a
+ * candidate mv predicts the luma at under half the skip sad and by more than
+ * PSKIP_CAND_FLOOR. p_fdec holds the skip prediction. */
+#define PSKIP_CAND_FLOOR 1024
+
+static int x264_mb_pskip_cand_better( x264_t *h, int mvx, int mvy, int thresh )
+{
+    ALIGNED_ARRAY_32( pixel, pix,[16*16] );
+    intptr_t stride = 16;
+    pixel *src = h->mc.get_ref( pix, &stride, h->mb.pic.p_fref[0][0], h->mb.pic.i_stride[0],
+                                mvx, mvy, 16, 16, &h->sh.weight[0][0] );
+    return h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, src, stride ) < thresh;
+}
+
+/* The lookahead's mv of this frame mb against the previous frame, in qpel, where
+ * it searched one and it is neither zero nor the skip mv */
+static int x264_mb_pskip_lowres_mv( x264_t *h, int *mvx, int *mvy )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    if( MB_INTERLACED || !h->frames.b_have_lowres || d > h->param.i_bframe + 1 ||
+        f->lowres_mvs[0][d-1][0][0] == 0x7FFF )
+        return 0;
+    /* Edge mbs are searched only with VBV or mbtree */
+    if( !h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size &&
+        (!h->mb.i_mb_x || !h->mb.i_mb_y || h->mb.i_mb_x == h->mb.i_mb_width-1 || h->mb.i_mb_y == h->mb.i_mb_height-1) )
+        return 0;
+    int16_t *mv = f->lowres_mvs[0][d-1][h->mb.i_mb_xy];
+    *mvx = x264_clip3( 2*mv[0], h->mb.mv_min_spel[0], h->mb.mv_max_spel[0] );
+    *mvy = x264_clip3( 2*mv[1], h->mb.mv_min_spel[1], h->mb.mv_max_spel[1] );
+    return (*mvx | *mvy) && (*mvx != h->mb.cache.pskip_mv[0] || *mvy != h->mb.cache.pskip_mv[1]);
+}
+
+static int x264_mb_pskip_mispredicted( x264_t *h )
+{
+    /* Zero mv: a static mb whose skip mv came from moving neighbours */
+    int b_zero = !!M32( h->mb.cache.pskip_mv );
+    /* Lowres mv: a moving mb whose skip mv came from static neighbours */
+    int lmx = 0, lmy = 0;
+    int b_lowres = x264_mb_pskip_lowres_mv( h, &lmx, &lmy );
+    if( !b_zero && !b_lowres )
+        return 0;
+
+    int sad = h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, h->mb.pic.p_fdec[0], FDEC_STRIDE );
+    int thresh = X264_MIN( sad >> 1, sad - (PSKIP_CAND_FLOOR << (BIT_DEPTH-8)) );
+    if( thresh <= 0 )
+        return 0;
+
+    if( b_zero && x264_mb_pskip_cand_better( h, 0, 0, thresh ) )
+        return 1;
+    return b_lowres && x264_mb_pskip_cand_better( h, lmx, lmy, thresh );
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3268,7 +3327,8 @@ intra_analysis:
                     h->fdec->mb_info[h->mb.i_mb_xy] &= ~X264_MBINFO_CONSTANT;
             }
 
-            int skip_invalid = h->i_thread_frames > 1 && h->mb.cache.pskip_mv[1] > h->mb.mv_max_spel[1];
+            int skip_invalid = (h->i_thread_frames > 1 && h->mb.cache.pskip_mv[1] > h->mb.mv_max_spel[1]) ||
+                               analysis.b_pir_skip_invalid;
             /* If the current macroblock is off the frame, just skip it. */
             if( HAVE_INTERLACED && !MB_INTERLACED && h->mb.i_mb_y * 16 >= h->param.i_height && !skip_invalid )
                 b_skip = 1;
@@ -3284,7 +3344,11 @@ intra_analysis:
                          h->mb.i_mb_type_top == P_SKIP ||
                          h->mb.i_mb_type_topleft == P_SKIP ||
                          h->mb.i_mb_type_topright == P_SKIP )
+                {
                     b_skip = x264_macroblock_probe_pskip( h );
+                    if( b_skip && x264_mb_pskip_mispredicted( h ) )
+                        b_skip = h->mb.b_skip_mc = 0;
+                }
             }
         }
 
