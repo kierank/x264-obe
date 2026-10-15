@@ -3312,8 +3312,6 @@ skip_analysis:
                 x264_mb_analyse_inter_p16x16_pred( h, &analysis );
                 x264_mb_analyse_intra_p( h, &analysis, analysis.l0.me16x16.cost );
                 b_intra_first = 1;
-                int i_intra = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
-                b_intra_skip_me = (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_HEAVY_THRESH;
             }
 
             if( !b_intra_skip_me )
