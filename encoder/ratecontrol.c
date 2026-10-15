@@ -1968,8 +1968,14 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         /* If the current row was large enough to cause a large QP jump, try re-encoding it;
-         * with thread slices, only in one over its own room: the others' excess is theirs. */
+         * with thread slices, only in one over its own room: the others' excess is theirs.
+         * Not a row under half an average row of the plan: it saves next to nothing. */
+        float jump_row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+        float jump_row_plan = b_threadslices && rc->slice_size_planned > 0
+                            ? rc->slice_size_planned / (h->i_threadslice_end - h->i_threadslice_start)
+                            : rc->frame_size_planned / h->mb.i_mb_height;
         if( rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row
+            && jump_row_bits * (SLICE_MBAFF ? 1 : 2) >= jump_row_plan
             && (!b_own || bits_so_far + predict_row_size_to_end( h, y, prev_row_qp ) > own_budget) )
         {
             /* Bump QP to halfway in between... close enough. */
