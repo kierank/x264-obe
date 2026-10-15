@@ -50,6 +50,7 @@ P2="dip pfade xfade field fieldmix chroma spin shuffle"
 P3="baseline shake chromafade strobe qpfloor flickergrain bandflicker"
 P4="bcuts dimcuts dipcut flash2 flash4 strobe3 halffade fademotion flicker2 flicker10 ticker static2move textgfx"
 P5="lastband lastrows lastburst lastramp lastcut lastflash lastchroma sweep topbottom qpceil"
+P6="lowerthird scorebug tickerfast fullgfx pip splitscreen stinger logofade credits flashbox"
 CASES=${CASES:-$P1}
 
 [ "$SMOKE" = 1 ] && DUR=0.1
@@ -96,6 +97,17 @@ slate() {
 # A $1-row strip of fast-scrolling detail with temporal noise: the most expensive rows we make.
 hard() {
     printf '%s' "$(tex 2560x1440),crop=1920:$1:x='mod(t*1500,640)':y=600,noise=c0s=40:c0f=t+u:c1s=20:c1f=t+u:c2s=20:c2f=t+u"
+}
+
+# Static glyph-like "text": a $1x$2 binary cellular-automaton field, pixels doubled (2x2), seed $3.
+# Sharp black/white detail with no drawtext dependency.
+txt() {
+    printf '%s' "cellauto=s=$(( $1 / 2 ))x$(( $2 / 2 )):rule=30:random_fill_ratio=0.5:r=50:seed=$3,trim=end_frame=1,loop=loop=-1:size=1,setpts=N/(50*TB),scale=$1:$2:flags=neighbor,format=yuv444p"
+}
+
+# A $1x$2 graphics panel of colour $3 with white glyph text on it; $4 labels it (unique per graph).
+panel() {
+    printf '%s' "color=c=$3:s=$1x$2:r=50,format=yuv444p[pa$4];$(txt $1 $2 $4)[pb$4];[pa$4][pb$4]blend=c0_expr='if(gt(B,128),235,A)':c1_expr=A:c2_expr=A"
 }
 
 # Tails run per output format: $1 input label, $2 output label, $3 frame rate of that branch.
@@ -162,6 +174,16 @@ describe() {
     sweep)        echo "P5 static slate, a 136-row hard strip sweeping top to bottom once per second: load crosses every slice bound" ;;
     topbottom)    echo "P5 static slate, the hard strip alternates between the first and the last slice every frame: predictor whiplash" ;;
     qpceil)       echo "P5 full-frame extreme grain on a pan, harder in the last slice: run at 10 Mb/s to push QP to the ceiling" ;;
+    lowerthird)   echo "P6 news lower-third: text panel slides in over a pan (0.5 s), holds 3 s, slides out, every 5 s" ;;
+    scorebug)     echo "P6 sport: static score bug top-left on a moving pitch-like pan, clock digits changing every second" ;;
+    tickerfast)   echo "P6 news crawl: 72-row glyph ticker at 6 px/frame + static channel logo + flashing BREAKING tag" ;;
+    fullgfx)      echo "P6 full-screen graphic (gradient + text panels) pushed in over video in 0.4 s, held 2.6 s, pushed out" ;;
+    pip)          echo "P6 DVE: 640x360 bordered picture-in-picture of a second scene flying over a moving background" ;;
+    splitscreen)  echo "P6 two-way split screen of two moving scenes with a slowly moving hard divider" ;;
+    stinger)      echo "P6 12-frame stinger: diagonal colour bands sweep across and hide a cut between scenes, every 3 s" ;;
+    logofade)     echo "P6 semi-transparent DOG logo (top right) fading in and out over grainy moving video: local fade" ;;
+    credits)      echo "P6 end-credit roll: dense glyph text scrolling up 2.4 px/frame on black (vertical fine detail)" ;;
+    flashbox)     echo "P6 red LIVE/BREAKING box flashing on/off every 0.5 s over a pan, plus a static lower third" ;;
     *)            return 1 ;;
     esac
 }
@@ -256,6 +278,26 @@ setcase() {
         MAIN="$(slate)[tb0];$(hard "$LAST_H")[tb1];[tb1]split[tb2][tb3];[tb0][tb2]overlay=x=0:y=0:format=yuv444:enable='eq(mod(n,2),0)'[tb4];[tb4][tb3]overlay=x=0:y=$LAST_Y:format=yuv444:enable='eq(mod(n,2),1)'[m]" ;;
     qpceil)
         MAIN="$(pan),noise=c0s=60:c0f=t+u:c1s=30:c1f=t+u:c2s=30:c2f=t+u[qc0];$(hard "$LAST_H")[qc1];[qc0][qc1]overlay=x=0:y=$LAST_Y:format=yuv444[m]" ;;
+    lowerthird)
+        MAIN="$(pan)[lt0];$(panel 1400 140 0x183870 11)[lt1];[lt0][lt1]overlay=x='if(lt(mod(t,5),0.5),-1400+mod(t,5)*3120,if(lt(mod(t,5),4),160,160-(mod(t,5)-4)*3120))':y=840:format=yuv444[m]" ;;
+    scorebug)
+        MAIN="$(pan),eq=saturation=1.3[sb0];$(panel 420 60 0x101820 12)[sb1];cellauto=s=60x20:rule=30:random_fill_ratio=0.5:r=1:seed=13,scale=120:40:flags=neighbor,fps=50,format=yuv444p[sb2];[sb0][sb1]overlay=x=80:y=60:format=yuv444[sb3];[sb3][sb2]overlay=x=380:y=70:format=yuv444[m]" ;;
+    tickerfast)
+        MAIN="$(pan)[tk0];$(panel 3840 72 0x0a0a40 14),crop=1920:72:x='mod(t*300,1920)':y=0[tk1];$(panel 220 90 0x204060 15)[tk2];color=c=0xc01010:s=260x72:r=50,format=yuv444p[tk3];[tk0][tk1]overlay=x=0:y=990:format=yuv444[tk4];[tk4][tk2]overlay=x=1640:y=50:format=yuv444[tk5];[tk5][tk3]overlay=x=0:y=990:format=yuv444:enable='lt(mod(t,1),0.5)'[m]" ;;
+    fullgfx)
+        MAIN="$(pan)[fg0];color=c=black:s=1920x1080:r=50,format=yuv444p,geq=lum='40+X/16':cb='150-Y/12':cr='110+X/30'[fg1];$(panel 1600 120 0x1c2c6c 16)[fg2];$(panel 1600 360 0x203050 17)[fg3];[fg1][fg2]overlay=x=160:y=120:format=yuv444[fg4];[fg4][fg3]overlay=x=160:y=360:format=yuv444[fg5];[fg0][fg5]overlay=x='if(lt(mod(t,6),1),1920,if(lt(mod(t,6),1.4),1920-(mod(t,6)-1)*4800,if(lt(mod(t,6),4),0,if(lt(mod(t,6),4.4),-(mod(t,6)-4)*4800,1920))))':y=0:format=yuv444[m]" ;;
+    pip)
+        MAIN="$(pan)[pp0];$(ts),scale=640:360,drawbox=x=0:y=0:w=640:h=360:c=white:t=6[pp1];[pp0][pp1]overlay=x='640+560*sin(2*PI*t/4)':y='360+300*cos(2*PI*t/3)':format=yuv444[m]" ;;
+    splitscreen)
+        MAIN="$(pan)[ss0];$(ts)[ss1];[ss0][ss1]blend=all_expr='if(lt(X,W*(0.5+0.25*sin(2*PI*T/5))),A,B)',drawbox=x='960+480*sin(2*PI*t/5)-3':y=0:w=6:h=1080:c=white:t=fill[m]" ;;
+    stinger)
+        MAIN="$(pan)[st0];$(ts)[st1];[st0][st1]overlay=format=yuv444:enable='gte(mod(t,6),3)'[st2];color=c=black:s=2400x1080:r=50,format=yuv444p,geq=lum='if(lt(mod(X+Y,400),200),200,60)':cb='if(lt(mod(X+Y,400),200),60,200)':cr='if(lt(mod(X+Y,400),200),180,90)'[st3];[st2][st3]overlay=x='-2400+mod(t,3)/0.24*4320':y=0:format=yuv444:enable='lt(mod(t,3),0.24)'[m]" ;;
+    logofade)
+        MAIN="$(pan),noise=c0s=20:c0f=t+u[lf0];$(panel 300 120 0x305080 18),pad=1920:1080:1560:50:color=black[lf1];[lf0][lf1]blend=all_expr='if(between(X,1560,1859)*between(Y,50,169),A+(B-A)*0.6*(0.5+0.5*sin(2*PI*T/4)),A)'[m]" ;;
+    credits)
+        MAIN="color=c=black:s=1920x1080:r=50,format=yuv444p[cr0];$(txt 1200 4320 19)[cr1];[cr1]crop=1200:1080:x=0:y='mod(t*120,3240)'[cr2];[cr0][cr2]overlay=x=360:y=0:format=yuv444[m]" ;;
+    flashbox)
+        MAIN="$(pan)[fb0];color=c=0xd01010:s=300x80:r=50,format=yuv444p[fb1];$(panel 1400 140 0x183870 20)[fb2];[fb0][fb2]overlay=x=160:y=840:format=yuv444[fb3];[fb3][fb1]overlay=x=160:y=750:format=yuv444:enable='lt(mod(t,1),0.5)'[m]" ;;
     *)
         echo "unknown case: $1" >&2; exit 1 ;;
     esac
@@ -300,7 +342,7 @@ emit() {
 # ---------------------------------------------------------------- main
 
 if [ "$LIST" = 1 ]; then
-    for c in $P1 $P2 $P3 $P4 $P5; do printf '%-13s %s\n' "$c" "$(describe "$c")"; done
+    for c in $P1 $P2 $P3 $P4 $P5 $P6; do printf '%-13s %s\n' "$c" "$(describe "$c")"; done
     exit 0
 fi
 

@@ -574,3 +574,8 @@ These cases attack the one-frame-VBV row control under sliced threads, where the
 - sweep, topbottom: load moving across slice bounds, or alternating between the first and last slice.
 - qpceil: run at 10 Mb/s so QP reaches the ceiling and the last-row checks run out of room.
 They were written without an ffmpeg to test on, so run SMOKE=1 first.
+
+## P6: broadcast graphics (gen2.sh)
+Simulated broadcast graphics, with no drawtext dependency. "Text" is a 2x2-pixel binary cellular-automaton field (txt/panel helpers), so it's sharp and glyph-like.
+- lowerthird, scorebug (with a clock changing every second), tickerfast (crawl + logo + flashing tag), fullgfx (push-in/out full-screen graphic), pip (DVE), splitscreen, stinger (a band wipe hiding a cut), logofade (a semi-transparent DOG fading), credits (a vertical roll of fine text), flashbox.
+Written without an ffmpeg to test on, so run SMOKE=1 first.
