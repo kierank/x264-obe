@@ -3191,6 +3191,36 @@ static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cos
         x264_mb_analyse_intra( h, a, i_cost );
 }
 
+/* Fast P_SKIP: the probe passes when the residual quantises away, which at a
+ * high qp holds for a skip mv far from the motion.  Reject the skip where a
+ * candidate mv predicts the luma at under half the skip sad and by more than
+ * PSKIP_CAND_FLOOR. p_fdec holds the skip prediction. */
+#define PSKIP_CAND_FLOOR 1024
+
+static int x264_mb_pskip_cand_better( x264_t *h, int mvx, int mvy, int thresh )
+{
+    ALIGNED_ARRAY_32( pixel, pix,[16*16] );
+    intptr_t stride = 16;
+    pixel *src = h->mc.get_ref( pix, &stride, h->mb.pic.p_fref[0][0], h->mb.pic.i_stride[0],
+                                mvx, mvy, 16, 16, &h->sh.weight[0][0] );
+    return h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, src, stride ) < thresh;
+}
+
+static int x264_mb_pskip_mispredicted( x264_t *h )
+{
+    /* Zero mv: a static mb whose skip mv came from moving neighbours */
+    int b_zero = !!M32( h->mb.cache.pskip_mv );
+    if( !b_zero )
+        return 0;
+
+    int sad = h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, h->mb.pic.p_fdec[0], FDEC_STRIDE );
+    int thresh = X264_MIN( sad >> 1, sad - (PSKIP_CAND_FLOOR << (BIT_DEPTH-8)) );
+    if( thresh <= 0 )
+        return 0;
+
+    return x264_mb_pskip_cand_better( h, 0, 0, thresh );
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3290,7 +3320,11 @@ intra_analysis:
                          h->mb.i_mb_type_top == P_SKIP ||
                          h->mb.i_mb_type_topleft == P_SKIP ||
                          h->mb.i_mb_type_topright == P_SKIP )
+                {
                     b_skip = x264_macroblock_probe_pskip( h );
+                    if( b_skip && x264_mb_pskip_mispredicted( h ) )
+                        b_skip = h->mb.b_skip_mc = 0;
+                }
             }
         }
 
