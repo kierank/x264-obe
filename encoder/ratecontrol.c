@@ -165,6 +165,19 @@ struct x264_ratecontrol_t
      * (MBAFF alternates two rows); added at every row end. */
     int row_bits[2];
     int row_bits_y[2];
+    /* This thread's slice bits outside the MBs this frame: start codes, NAL and
+     * slice headers, trailing bits, and the emulation prevention bytes scanned. */
+    int slice_bits;
+    int epb_nal;                /* out.nal being scanned */
+    int epb_pos;                /* bytes of it scanned */
+    int epb_bytes;
+    float epb_scale;            /* 1 + escape bits per MB bit so far */
+    /* Sliced threads: once every other thread slice is final, the one left
+     * checks against their exact sizes. */
+    int slices_done;            /* thread 0's: thread slices with their final size */
+    int b_slice_done;           /* this one is counted */
+    int last_row_reencodes;
+    int room_reencodes;
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1618,7 +1631,120 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
     float bits = 0;
     for( int i = y+1; i < h->i_threadslice_end; i++ )
         bits += predict_row_size( h, i, qscale );
-    return bits;
+    return bits * h->rc->epb_scale;
+}
+
+/* Emulation prevention bytes x264_nal_encode adds to p[*pos..end), resumable. */
+static int epb_count( uint8_t *p, int *pos, int end )
+{
+    int n = 0;
+    int i = *pos;
+    for( ; i < end - 2; i++ )
+        if( !p[i] && !p[i+1] && p[i+2] <= 3 )
+        {
+            n++;
+            i++;
+        }
+    *pos = i;
+    return n;
+}
+
+int x264_ratecontrol_nal_epb( uint8_t *p, int size )
+{
+    int pos = 0;
+    return epb_count( p, &pos, size );
+}
+
+/* Escapes in this thread's slice NALs up to the bytes that can't change.
+ * Returns how many bytes after those may still add escapes. */
+static int epb_scan( x264_t *h, int *nal, int *pos, int *bytes, int b_end )
+{
+    for( ; *nal < h->out.i_nal; (*nal)++, *pos = 0 )
+        *bytes += epb_count( h->out.nal[*nal].p_payload, pos, h->out.nal[*nal].i_payload );
+    uint8_t *p = h->out.nal[*nal].p_payload;
+    /* CABAC carries into p[-1] */
+    int end = h->param.b_cabac ? h->cabac.p - 1 - p : h->out.bs.p - p;
+    *bytes += epb_count( p, pos, end );
+    int left = end - *pos;
+    if( !b_end )
+        return left;
+    /* CABAC: p[-1], bytes outstanding and the flush. CAVLC: cached bits,
+     * the last skip run and rbsp_slice_trailing_bits. */
+    return left + (h->param.b_cabac ? h->cabac.i_bytes_outstanding + 4 : 8);
+}
+
+/* Each thread, before its slices of a frame. */
+void x264_ratecontrol_slices_start( x264_t *h )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    rc->slice_bits = 0;
+    rc->epb_nal = h->out.i_nal;
+    rc->epb_pos = 0;
+    rc->epb_bytes = 0;
+    rc->epb_scale = 1.f;
+    rc->b_slice_done = 0;
+    rc->last_row_reencodes = 0;
+    rc->room_reencodes = 0;
+}
+
+#if defined(__ATOMIC_ACQUIRE)
+#define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
+#else
+#define RC_LOAD(p) (*(volatile int *)(p))
+#endif
+
+static float other_slices_size( x264_t *h )
+{
+    float size = 0;
+    for( int i = 0; i < h->param.i_threads; i++ )
+        if( h != h->thread[i] )
+            size += h->thread[i]->rc->frame_size_estimated;
+    return size;
+}
+
+/* QP that should take a row of bits at qp down by excess with bits ~ 1/qscale:
+ * rows shrink more slowly than that, so it is at most the QP needed. */
+static float reencode_qp( float qp, float bits, float excess )
+{
+    if( excess >= bits * 0.9f )
+        return qp + 100.f;
+    return qp + 6.f * log2f( bits / (bits - excess) );
+}
+
+static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
+{
+    rc->qpa_rc = rc->qpa_rc_prev;
+    rc->qpa_aq = rc->qpa_aq_prev;
+    h->fdec->i_row_bits[y] = 0;
+    h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
+    return -1;
+}
+
+/* Last row over the VBV: jump to the QP that should fit, the fourth time to the
+ * highest, so a frame waits for at most four more rows. */
+static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float excess, float qp_max, float qp_hard_max )
+{
+    if( excess <= 0 || rc->qpm >= qp_hard_max || rc->last_row_reencodes >= 4 )
+        return 0;
+    float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+    float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
+    rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
+    rc->last_row_reencodes++;
+    return reencode_row( h, rc, y );
+}
+
+/* After a slice header: the slice's bits that its MB bits miss. */
+void x264_ratecontrol_slice_header( x264_t *h, int header_bits )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    /* start code and NAL header byte; a 3-byte start code unless first in the AU */
+    int b_short = h->param.b_annexb && !h->param.i_avcintra_class
+                  && (h->out.i_nal || (h->param.b_sliced_threads && h->i_thread_idx));
+    /* CABAC: the flush ends at most 16 bits past the MB bits, which count from
+     * x264_cabac_pos -9. CAVLC: the last skip run and rbsp_slice_trailing_bits. */
+    int mbs = h->i_threadslice_end * h->mb.i_mb_width - h->sh.i_first_mb;
+    int tail = h->param.b_cabac ? 16 : bs_size_ue_big( mbs ) + 8;
+    rc->slice_bits += header_bits + (NALU_OVERHEAD - b_short) * 8 + tail;
 }
 
 static ALWAYS_INLINE void row_bits_flush( x264_t *h, x264_ratecontrol_t *rc, int k )
@@ -1683,11 +1809,22 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float qp_absolute_max = h->param.rc.i_qp_max;
     if( rc->rate_factor_max_increment )
         qp_absolute_max = X264_MIN( qp_absolute_max, rc->qp_novbv + rc->rate_factor_max_increment );
+    float qp_hard_max = qp_absolute_max;
     float qp_max = X264_MIN( prev_row_qp + h->param.rc.i_qp_step, qp_absolute_max );
     float qp_min = X264_MAX( prev_row_qp - h->param.rc.i_qp_step, h->param.rc.i_qp_min );
     float step_size = 0.5f;
     float slice_size_planned = h->param.b_sliced_threads ? rc->slice_size_planned : rc->frame_size_planned;
-    float bits_so_far = row_bits_so_far( h, y );
+    /* Slice overhead and escapes are this slice's bits, so other slices see them.
+     * The escape scan is kept only with the row. */
+    int b_last_row = y >= h->i_threadslice_end-1;
+    int epb_nal = rc->epb_nal, epb_pos = rc->epb_pos, epb_bytes = rc->epb_bytes;
+    int epb_left = epb_scan( h, &epb_nal, &epb_pos, &epb_bytes, b_last_row );
+    int mb_bits = row_bits_so_far( h, y );
+    float bits_so_far = mb_bits + rc->slice_bits + epb_bytes * 8;
+    /* at most one escape per two bytes not scanned */
+    if( b_last_row )
+        bits_so_far += (epb_left + 1) / 2 * 8;
+    rc->epb_scale = 1.f + (float)(epb_bytes * 8) / X264_MAX( mb_bits, 1 );
     rc->bits_so_far = bits_so_far;
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
@@ -1708,6 +1845,18 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         size_of_other_slices_planned = X264_MAX( size_of_other_slices_planned, bits_so_far_of_other_slices );
         size_of_other_slices = (size_of_other_slices - size_of_other_slices_planned) * weight + size_of_other_slices_planned;
     }
+    /* A one-frame VBV keeps half the frame error as headroom, also when the
+     * other thread slices are final: the last rows can't always give back more. */
+    float vbv_limit = rc->buffer_fill;
+    if( rc->single_frame_vbv )
+        vbv_limit -= rc->buffer_rate * max_frame_error * 0.5f;
+    vbv_limit = X264_MIN( rc->frame_size_maximum, vbv_limit );
+    /* Every other thread slice final: their sizes are exact. */
+    int b_threadslices = h->param.b_sliced_threads && h->param.i_threads > 1;
+    int others_final = b_threadslices
+                       && RC_LOAD( &h->thread[0]->rc->slices_done ) - rc->b_slice_done == h->param.i_threads - 1;
+    if( others_final )
+        size_of_other_slices = other_slices_size( h );
     if( y < h->i_threadslice_end-1 )
     {
         /* B-frames shouldn't use lower QP than their reference frames. */
@@ -1767,6 +1916,22 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
         h->rc->frame_size_estimated = b1 - size_of_other_slices;
 
+        /* Every other slice final, and the rest of this one can't fit the room left
+         * (less the last row's escape bound) even at the highest QP: this row too,
+         * twice at most. */
+        if( others_final && prev_row_qp < qp_hard_max && can_reencode_row && rc->room_reencodes < 2 )
+        {
+            float room = vbv_limit - size_of_other_slices - bits_so_far - 32;
+            float over = predict_row_size_to_end( h, y, qp_hard_max ) - room;
+            if( over > 0 )
+            {
+                float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+                rc->qpm = x264_clip3f( reencode_qp( prev_row_qp, row_bits, over ), prev_row_qp + 1.0f, qp_hard_max );
+                rc->room_reencodes++;
+                return reencode_row( h, rc, y );
+            }
+        }
+
         /* If the current row was large enough to cause a large QP jump, try re-encoding it. */
         if( rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row )
         {
@@ -1783,27 +1948,29 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     {
         h->rc->frame_size_estimated = bits_so_far;
 
-        /* A one-frame VBV keeps half the frame error as headroom. */
-        double last_row_max = rc->buffer_fill;
-        if( rc->single_frame_vbv )
-            last_row_max -= rc->buffer_rate * max_frame_error * 0.5f;
-
         /* Last-ditch attempt: if the last row of the frame underflowed the VBV,
          * try again. */
-        if( rc->qpm < qp_max && can_reencode_row
-            && (bits_so_far + size_of_other_slices > X264_MIN( rc->frame_size_maximum, last_row_max )) )
-        {
-            rc->qpm = qp_max;
-            rc->qpa_rc = rc->qpa_rc_prev;
-            rc->qpa_aq = rc->qpa_aq_prev;
-            h->fdec->i_row_bits[y] = 0;
-            h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
+        if( can_reencode_row
+            && last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, qp_max, qp_hard_max ) )
             return -1;
+
+        /* Final now. The slice counted last sees every other size final, as each
+         * published its size before counting; if they were not final above, check again. */
+        if( b_threadslices && !rc->b_slice_done )
+        {
+            rc->b_slice_done = 1;
+            int done = x264_pthread_fetch_and_add( &h->thread[0]->rc->slices_done, 1, &h->fdec->mutex ) + 1;
+            if( done == h->param.i_threads && !others_final && can_reencode_row
+                && last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_max, qp_hard_max ) )
+                return -1;
         }
     }
 
     rc->qpa_rc_prev = rc->qpa_rc;
     rc->qpa_aq_prev = rc->qpa_aq;
+    rc->epb_nal = epb_nal;
+    rc->epb_pos = epb_pos;
+    rc->epb_bytes = epb_bytes;
 
     return 0;
 }
@@ -2753,6 +2920,8 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
     x264_ratecontrol_t *rc = h->rc;
     x264_emms();
     float qscale = qp2qscale( rc->qpm );
+    /* before the workers start */
+    h->thread[0]->rc->slices_done = 0;
 
     /* Initialize row predictors */
     if( h->i_frame == 0 )
