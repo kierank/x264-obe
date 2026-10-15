@@ -1006,6 +1006,9 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                 for( int i = 0; i < h->mb.i_mb_count; i++ )
                     i_intra += fenc->i_intra_cost[i];
                 fenc->b_unweighted_cut = (uint64_t)lcost[0] * 16 >= (i_intra << ws.intra_cost_shift) * UNWEIGHTED_CUT_THRESH;
+                x264_log( h, X264_LOG_DEBUG, "weightp frame %d unweighted/intra %.4f cut %d (imb %d)\n", fenc->i_frame,
+                          i_intra ? (double)lcost[0] / (i_intra << ws.intra_cost_shift) : 0., fenc->b_unweighted_cut,
+                          fenc->i_intra_mbs[i_delta_index+1] );
             }
         }
         else
