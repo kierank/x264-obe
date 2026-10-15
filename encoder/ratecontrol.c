@@ -178,6 +178,7 @@ struct x264_ratecontrol_t
     int b_slice_done;           /* this one is counted */
     int last_row_reencodes;
     int room_reencodes;
+    volatile float slice_qp;    /* QP of its next row, 0 once final */
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1693,6 +1694,16 @@ void x264_ratecontrol_slices_start( x264_t *h )
 #define RC_LOAD(p) (*(volatile int *)(p))
 #endif
 
+/* Highest next-row QP of the other thread slices still running. */
+static float other_slices_max_qp( x264_t *h )
+{
+    float qp = 0;
+    for( int i = 0; i < h->param.i_threads; i++ )
+        if( h != h->thread[i] )
+            qp = X264_MAX( qp, h->thread[i]->rc->slice_qp );
+    return qp;
+}
+
 static float other_slices_size( x264_t *h )
 {
     float size = 0;
@@ -1884,6 +1895,12 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( !rc->b_vbv_min_rate )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
+        /* A one-frame VBV lowers QP into all the room the frame has left. Not more
+         * than one below the other running thread slices, so cheap slices, which get
+         * little for it, don't take the room a hard one needs. */
+        if( b_threadslices && rc->single_frame_vbv )
+            qp_min = X264_MAX( qp_min, other_slices_max_qp( h ) - 1.0f );
+
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
                    (b1 > rc->frame_size_planned && rc->qpm < rc->qp_novbv) ||
@@ -1976,6 +1993,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     rc->epb_nal = epb_nal;
     rc->epb_pos = epb_pos;
     rc->epb_bytes = epb_bytes;
+    rc->slice_qp = rc->b_slice_done ? 0 : rc->qpm;
 
     return 0;
 }
@@ -2943,6 +2961,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
         if( t != h )
             memcpy( t->rc, rc, offsetof(x264_ratecontrol_t, row_pred) );
         t->rc->row_pred = t->rc->row_preds[h->sh.i_type];
+        t->rc->slice_qp = rc->qpm;
         /* Calculate the planned slice size. */
         if( rc->b_vbv && rc->frame_size_planned )
         {
