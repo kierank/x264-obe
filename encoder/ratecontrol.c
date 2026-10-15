@@ -1807,11 +1807,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
         /* b_row_plan: a cheap next row (row_plan under 1/16 of the frame's mean row; both
-         * rows of the next pair in MBAFF, where the qp is decided per pair) is
-         * coded at most at the frame's qp, and at least at it with a one-frame VBV, else
-         * 2 qp_steps under it: it neither keeps the qp of expensive rows above it nor
-         * dives on frame room that the predictor, fit at higher qp, prices too low.  It
-         * comes down from above only while the frame stays within its plan and VBV. */
+         * rows of the next pair in MBAFF, where the qp is decided per pair) doesn't keep
+         * the qp of expensive rows above it: it comes down towards the frame's qp while
+         * the frame stays within its plan and VBV.  It doesn't dive on frame room that
+         * the predictor, fit at higher qp, prices too low: at least the frame's qp with a
+         * one-frame VBV, else 2 qp_steps under it.  The raise tests apply as to any row. */
         if( rc->b_row_plan && slice_size_planned > 0
             && X264_MAX( rc->row_plan_bits[y+1], rc->row_plan_bits[y+1+SLICE_MBAFF] ) * 16 < rc->row_plan_mean )
         {
@@ -1832,7 +1832,6 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 rc->qpm = qp_frame;
                 b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
             }
-            qp_max = X264_MIN( qp_max, X264_MAX( qp_frame, rc->qpm ) );
         }
 
         while( rc->qpm < qp_max
