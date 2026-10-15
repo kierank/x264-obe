@@ -950,6 +950,27 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                 weights[1].weightfn = weights[2].weightfn = NULL;
                 break;
             }
+            /* Cut: the guess, without the cost pass */
+            if( !b_lookahead && fenc->b_unweighted_cut )
+            {
+                int scale = weights[plane].i_scale;
+                int offset = fenc_mean[plane] - ref_mean[plane] * scale / (1 << chroma_denom);
+                if( offset < -128 || offset > 127 )
+                {
+                    offset = x264_clip3( offset, -128, 127 );
+                    scale = ref_mean[plane] > 0 ? (1 << chroma_denom) * (fenc_mean[plane] - offset) / ref_mean[plane] + 0.5f : 0;
+                    scale = x264_clip3( scale, 0, 127 );
+                }
+                if( scale == 1 << chroma_denom && !offset )
+                {
+                    SET_WEIGHT( weights[plane], 0, 1, 0, 0 );
+                }
+                else
+                {
+                    SET_WEIGHT( weights[plane], 1, scale, chroma_denom, offset );
+                }
+                continue;
+            }
         }
         else
             x264_weight_get_h264( round( guess_scale[plane] * 128 ), 0, &weights[plane] );
