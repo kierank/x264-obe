@@ -1851,6 +1851,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     if( rc->single_frame_vbv )
         vbv_limit -= rc->buffer_rate * max_frame_error * 0.5f;
     vbv_limit = X264_MIN( rc->frame_size_maximum, vbv_limit );
+    /* The last three rows (pairs) before the last plan a third more of it each,
+     * so the last row doesn't give it all back. */
+    int rows_left = (h->i_threadslice_end - 1 - y) >> SLICE_MBAFF;
+    if( rc->single_frame_vbv && rows_left > 0 && rows_left <= 3 )
+        max_frame_size -= rc->buffer_rate * max_frame_error * 0.5f * (4 - rows_left) / 3;
     /* Every other thread slice final: their sizes are exact. */
     int b_threadslices = h->param.b_sliced_threads && h->param.i_threads > 1;
     int others_final = b_threadslices
