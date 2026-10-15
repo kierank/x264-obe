@@ -387,8 +387,11 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
     if( mb_x > 0 && (deblock_on_slice_edges ||
         h->mb.slice_table[h->mb.i_mb_left_xy[0]] == h->mb.slice_table[h->mb.i_mb_xy]) )
         h->mb.i_neighbour |= MB_LEFT;
+    /* The previous threadslice may still be encoding the row above its end, so
+     * don't read its slice_table: it's another slice either way. */
     if( mb_y > MB_INTERLACED && (deblock_on_slice_edges
-        || h->mb.slice_table[h->mb.i_mb_top_xy] == h->mb.slice_table[h->mb.i_mb_xy]) )
+        || ((h->i_threadslice_start >> MB_INTERLACED) != (mb_y >> MB_INTERLACED)
+            && h->mb.slice_table[h->mb.i_mb_top_xy] == h->mb.slice_table[h->mb.i_mb_xy])) )
         h->mb.i_neighbour |= MB_TOP;
 }
 
