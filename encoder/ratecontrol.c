@@ -178,7 +178,7 @@ struct x264_ratecontrol_t
     int b_slice_done;           /* this one is counted */
     int last_row_reencodes;
     int room_reencodes;
-    volatile float slice_qp;    /* QP of its next row, 0 once final */
+    int slice_qp8;              /* QP*256 of its next row, 0 once final; atomic */
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1690,8 +1690,10 @@ void x264_ratecontrol_slices_start( x264_t *h )
 
 #if defined(__ATOMIC_ACQUIRE)
 #define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
+#define RC_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
 #else
 #define RC_LOAD(p) (*(volatile int *)(p))
+#define RC_STORE(p,v) (*(volatile int *)(p) = (v))
 #endif
 
 /* Highest next-row QP of the other thread slices still running. */
@@ -1700,7 +1702,7 @@ static float other_slices_max_qp( x264_t *h )
     float qp = 0;
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h != h->thread[i] )
-            qp = X264_MAX( qp, h->thread[i]->rc->slice_qp );
+            qp = X264_MAX( qp, RC_LOAD( &h->thread[i]->rc->slice_qp8 ) * (1.0f / 256) );
     return qp;
 }
 
@@ -1993,7 +1995,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     rc->epb_nal = epb_nal;
     rc->epb_pos = epb_pos;
     rc->epb_bytes = epb_bytes;
-    rc->slice_qp = rc->b_slice_done ? 0 : rc->qpm;
+    RC_STORE( &rc->slice_qp8, rc->b_slice_done ? 0 : (int)(rc->qpm * 256 + 0.5f) );
 
     return 0;
 }
@@ -2961,7 +2963,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
         if( t != h )
             memcpy( t->rc, rc, offsetof(x264_ratecontrol_t, row_pred) );
         t->rc->row_pred = t->rc->row_preds[h->sh.i_type];
-        t->rc->slice_qp = rc->qpm;
+        t->rc->slice_qp8 = (int)(rc->qpm * 256 + 0.5f);
         /* Calculate the planned slice size. */
         if( rc->b_vbv && rc->frame_size_planned )
         {
