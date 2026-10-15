@@ -160,7 +160,7 @@ struct x264_ratecontrol_t
     double frame_size_planned;
     double slice_size_planned;
     predictor_t *row_plan;      /* b_sliced_threads 2: [slice type][mb row], over frames; thread 0's */
-    int b_row_plan;             /* thread slices planned by row, since the first balanced split */
+    int b_row_plan;             /* thread slices planned by row: a moved split and the frames just after */
     float *row_plan_bits;       /* b_row_plan: [mb row] row_plan's bits at the frame's qp; thread 0's */
     float row_plan_mean;        /* b_row_plan: mean of row_plan_bits */
     float row_plan_qp_frame;    /* b_row_plan: qp at the frame start */
@@ -2847,7 +2847,7 @@ static void x264_threads_normalize_predictors( x264_t *h )
         h->thread[i]->rc->slice_size_planned *= factor;
 }
 
-void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
+void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan )
 {
     int row;
     x264_ratecontrol_t *rc = h->rc;
@@ -2863,9 +2863,8 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
                 memcpy( t->rc->row_preds, rc->row_preds, sizeof(rc->row_preds) );
         }
 
-    /* Once a split has moved, the per-slice predictors were fit to other rows. */
-    if( b_balanced )
-        rc->b_row_plan = 1;
+    /* By row while the per-slice predictors are fit to a moved split's rows; else as sliced 1. */
+    rc->b_row_plan = b_row_plan;
     rc->row_plan_qp_frame = rc->qpm;
 
     for( int i = 0; i < h->param.i_threads; i++ )

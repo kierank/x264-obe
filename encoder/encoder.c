@@ -3537,6 +3537,8 @@ static const x264_slice_balance_model_t slice_balance_model[2] =
     { 640, 10 },    /* P: 3.5x at cost >= 1024 */
 };
 #define SLICE_BALANCE_MB 256
+/* even-split frames of a type that stay planned by row after a move */
+#define SLICE_BALANCE_ROW_PLAN_HOLD 1
 
 typedef struct x264_slice_balance_t
 {
@@ -3550,6 +3552,7 @@ typedef struct x264_slice_balance_t
     /* per frame type (0 I, 1 P): the split in use, and whether it isn't the even split */
     int last[2][X264_THREAD_MAX+1];
     int b_moved[2];
+    int i_even[2];      /* per frame type: frames since the bounds last moved */
 } x264_slice_balance_t;
 
 static int x264_slice_balance_init( x264_t *h )
@@ -3565,6 +3568,7 @@ static int x264_slice_balance_init( x264_t *h )
      * or a third of the even size, at most twice the even size. */
     sb->i_min = X264_MIN( X264_MAX( 4 >> PARAM_INTERLACED, units / n / 3 ), units / n );
     sb->i_max = 2 * ((units + n - 1) / n);
+    sb->i_even[0] = sb->i_even[1] = SLICE_BALANCE_ROW_PLAN_HOLD + 1;
     CHECKED_MALLOC( sb->weight, (units + 1) * sizeof(int64_t) );
     CHECKED_MALLOC( sb->dp_max, cells * sizeof(int64_t) );
     CHECKED_MALLOC( sb->dp_move, cells * sizeof(int) );
@@ -3775,10 +3779,21 @@ static int x264_slice_balance_bounds( x264_t *h, int *b )
     return sb->b_moved[t];
 }
 
+/* Rate control by row on a frame whose bounds moved and the next HOLD frames of
+ * its type, while each slice's own predictors refit to the even split. */
+static int x264_slice_balance_row_plan( x264_t *h, int b_moved )
+{
+    x264_slice_balance_t *sb = h->slice_balance;
+    int t = !IS_X264_TYPE_I( h->fenc->i_type );
+    sb->i_even[t] = b_moved ? 0 : X264_MIN( sb->i_even[t] + 1, SLICE_BALANCE_ROW_PLAN_HOLD + 1 );
+    return sb->i_even[t] <= SLICE_BALANCE_ROW_PLAN_HOLD;
+}
+
 static int x264_threaded_slices_write( x264_t *h )
 {
     int bounds[X264_THREAD_MAX+1];
     int b_balance = h->slice_balance && x264_slice_balance_bounds( h, bounds );
+    int b_row_plan = h->slice_balance && x264_slice_balance_row_plan( h, b_balance );
     /* set first/last mb */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
@@ -3800,7 +3815,7 @@ static int x264_threaded_slices_write( x264_t *h )
 
     x264_slicepool_weight_init( h );
 
-    x264_threads_distribute_ratecontrol( h, b_balance );
+    x264_threads_distribute_ratecontrol( h, b_row_plan );
 
     /* setup */
     for( int i = 0; i < h->param.i_threads; i++ )
