@@ -162,6 +162,8 @@ struct x264_ratecontrol_t
     predictor_t *row_plan;      /* b_sliced_threads 2: [slice type][mb row], over frames; thread 0's */
     int b_row_plan;             /* thread slices planned by row, since the first balanced split */
     float *row_plan_bits;       /* b_row_plan: [mb row] row_plan's bits at the frame's qp; thread 0's */
+    float row_plan_mean;        /* b_row_plan: mean of row_plan_bits */
+    float row_plan_qp_frame;    /* b_row_plan: qp at the frame start */
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
     float row_plan_scale;       /* b_row_plan: the frame's bits / row_plan's, on the coded rows */
@@ -1789,8 +1791,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
         /* b_row_plan: bits the coded rows came in under their share of the slice plan
-         * aren't for this slice's other rows: the other slices see them through
-         * frame_size_estimated. */
+         * aren't for this slice's other rows (the other slices see them through
+         * frame_size_estimated), and cheap rows go at most 2 under the frame's qp. */
         float surplus = 0;
         if( rc->b_row_plan && slice_size_planned > 0 )
         {
@@ -1804,6 +1806,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             }
             if( all > 0 )
                 surplus = X264_MAX( slice_size_planned * done / all - bits_so_far, 0 );
+            if( rc->row_plan_bits[y+1] * 16 < rc->row_plan_mean )
+                qp_min = X264_MAX( qp_min, rc->row_plan_qp_frame - 2 );
         }
 
         while( rc->qpm < qp_max
@@ -2834,6 +2838,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
     /* Once a split has moved, the per-slice predictors were fit to other rows. */
     if( b_balanced )
         rc->b_row_plan = 1;
+    rc->row_plan_qp_frame = rc->qpm;
 
     for( int i = 0; i < h->param.i_threads; i++ )
     {
@@ -2879,6 +2884,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
                 total += h->thread[i]->rc->slice_size_planned;
             for( int i = 0; i < h->param.i_threads; i++ )
             {
+                h->thread[i]->rc->row_plan_mean = total / h->mb.i_mb_height;
                 h->thread[i]->rc->row_plan_level = total > 0 ? rc->frame_size_planned / total : 1;
                 h->thread[i]->rc->row_plan_prior = total * h->param.i_threads / h->mb.i_mb_height;
             }
