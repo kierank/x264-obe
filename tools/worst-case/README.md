@@ -564,3 +564,13 @@ These scripts are copies of rack01's working files. They assume rack01's layout:
   - 3 rounds with the arm order rotated each round.
 - `regcount.sh` + `reenc_counter.py`: builds patched to count row VBV re-encodes, one lowest-latency t4 run per cell.
 - `regana.py`: mean, p99, max, overruns, CPU, frame types and re-encodes per cell. It flags any arm whose p99 or overruns are worse than master beyond noise (paired t-test, 95%).
+
+## P5: VBV last-slice stress (gen2.sh)
+
+These cases attack the one-frame-VBV row control under sliced threads, where the slice that finishes last has to absorb every other slice's error. The hard region sits inside the last slice of 4 at both 1080p (MB rows 51..67) and 1080i (pair rows 26..33), at y 832, height 248 (LAST_Y, LAST_H).
+- lastband, lastrows, lastramp: the cost sits in the last slice, the last rows, or rises row by row.
+- lastburst, lastcut, lastflash: sudden changes in the last slice only; the predictors were trained on cheap rows.
+- lastchroma: chroma-heavy rows with flat luma.
+- sweep, topbottom: load moving across slice bounds, or alternating between the first and last slice.
+- qpceil: run at 10 Mb/s so QP reaches the ceiling and the last-row checks run out of room.
+They were written without an ffmpeg to test on, so run SMOKE=1 first.

@@ -27,6 +27,8 @@
 #   ILF      tinterlace flags for i422_10, e.g. vlpf; empty = no vertical filter (harder, the default)
 #   BAND_Y, BAND_H  band rows for "band" (default 272, 272: MB rows 17..33, slice 1 of 4 at
 #            1080p t4 and inside slice 1 of 4 at 1080i t4)
+#   LAST_Y, LAST_H  region for the P5 "last*" cases (default 832, 248: inside the last slice of 4
+#            at 1080p (MB rows 51..67, y >= 816) and at 1080i (pair rows 26..33, y >= 832))
 #   FFMPEG   ffmpeg binary (default ffmpeg)
 
 set -euf
@@ -37,6 +39,8 @@ FORMATS=${FORMATS:-"p420_8 p422_10 i422_10"}
 ILF=${ILF:-}
 BAND_Y=${BAND_Y:-272}
 BAND_H=${BAND_H:-272}
+LAST_Y=${LAST_Y:-832}
+LAST_H=${LAST_H:-248}
 FFMPEG=${FFMPEG:-ffmpeg}
 SMOKE=${SMOKE:-0}
 LIST=${LIST:-0}
@@ -45,6 +49,7 @@ P1="flicker blind band cuts grain"
 P2="dip pfade xfade field fieldmix chroma spin shuffle"
 P3="baseline shake chromafade strobe qpfloor flickergrain bandflicker"
 P4="bcuts dimcuts dipcut flash2 flash4 strobe3 halffade fademotion flicker2 flicker10 ticker static2move textgfx"
+P5="lastband lastrows lastburst lastramp lastcut lastflash lastchroma sweep topbottom qpceil"
 CASES=${CASES:-$P1}
 
 [ "$SMOKE" = 1 ] && DUR=0.1
@@ -81,6 +86,16 @@ GDIP='if(lt(mod(T,3),2),1,abs(mod(T,3)-2.5)*2)'
 # Displacement map for "shuffle": one random vector per 16x16 block per frame, +-30 px.
 dmap() {
     printf '%s' "color=c=black:s=120x68:r=50,format=yuv444p,lutyuv=y=128:u=128:v=128,noise=c0s=60:c0f=t+u:c0_seed=$1,scale=1920:1088:flags=neighbor,crop=1920:1080:0:0,geq=lum='lum(X,Y)':cb='lum(X,Y)':cr='lum(X,Y)'"
+}
+
+# Static studio slate with a fixed noise pattern: almost free after the first frame.
+slate() {
+    printf '%s' "color=c=0x304858:s=1920x1080:r=50,format=yuv444p,noise=c0s=6:c0f=u"
+}
+
+# A $1-row strip of fast-scrolling detail with temporal noise: the most expensive rows we make.
+hard() {
+    printf '%s' "$(tex 2560x1440),crop=1920:$1:x='mod(t*1500,640)':y=600,noise=c0s=40:c0f=t+u:c1s=20:c1f=t+u:c2s=20:c2f=t+u"
 }
 
 # Tails run per output format: $1 input label, $2 output label, $3 frame rate of that branch.
@@ -137,6 +152,16 @@ describe() {
     ticker)       echo "P4 static studio slate with a 108-row scrolling high-detail ticker at the bottom (1 slice carries it)" ;;
     static2move)  echo "P4 2 s of a static frame, then 1 s of full-frame fast motion, repeating: sudden full change" ;;
     textgfx)      echo "P4 intra-heavy fine graphics: 1:1 pixel cellular automaton + bars, scrolling slowly" ;;
+    lastband)     echo "P5 static slate, the hard strip in the LAST slice only: the slice that finishes last carries the frame" ;;
+    lastrows)     echo "P5 static slate, the hard strip in the last 4 MB rows only (y 1016..1079): all cost lands on the final rows" ;;
+    lastburst)    echo "P5 static detailed frame; the last slice bursts to the hard strip for 2 of every 11 frames: predictors trained cheap" ;;
+    lastramp)     echo "P5 static slate, last-slice strip whose detail/noise grows with y: each row costs more than the one above" ;;
+    lastcut)      echo "P5 moving pan; the last slice alone cuts to an unrelated scene every 0.5 s: partial scene change" ;;
+    lastflash)    echo "P5 moving pan; single-frame white flash of the last slice only, every 13 frames: no global weight helps" ;;
+    lastchroma)   echo "P5 static slate, last slice flat luma with saturated moving chroma + chroma noise: chroma-heavy rows (4:2:2)" ;;
+    sweep)        echo "P5 static slate, a 136-row hard strip sweeping top to bottom once per second: load crosses every slice bound" ;;
+    topbottom)    echo "P5 static slate, the hard strip alternates between the first and the last slice every frame: predictor whiplash" ;;
+    qpceil)       echo "P5 full-frame extreme grain on a pan, harder in the last slice: run at 10 Mb/s to push QP to the ceiling" ;;
     *)            return 1 ;;
     esac
 }
@@ -211,6 +236,26 @@ setcase() {
         MAIN="$(tex 2560x1440),crop=1920:1080:x='if(lt(mod(t,3),2),320,320+300*sin(2*PI*(t-2)*2))':y='if(lt(mod(t,3),2),180,180+170*sin(2*PI*(t-2)*1.5))'[m]" ;;
     textgfx)
         MAIN="cellauto=s=1920x1080:r=50:rule=30:random_fill_ratio=0.5:scroll=1,format=yuv444p[ca];smptehdbars=s=1920x270:r=50,format=yuv444p[sb];[ca][sb]overlay=x=0:y=810:format=yuv444[m]" ;;
+    lastband)
+        MAIN="$(slate)[lb0];$(hard "$LAST_H")[lb1];[lb0][lb1]overlay=x=0:y=$LAST_Y:format=yuv444[m]" ;;
+    lastrows)
+        MAIN="$(slate)[lr0];$(hard 64)[lr1];[lr0][lr1]overlay=x=0:y=1016:format=yuv444[m]" ;;
+    lastburst)
+        MAIN="$(tex 2560x1440),crop=1920:1080:x=320:y=180[lu0];$(hard "$LAST_H")[lu1];[lu0][lu1]overlay=x=0:y=$LAST_Y:format=yuv444:enable='lt(mod(n,11),2)'[m]" ;;
+    lastramp)
+        MAIN="$(slate)[lp0];$(hard "$LAST_H")[lp1];color=c=0x808080:s=1920x$LAST_H:r=50,format=yuv444p[lp2];[lp1][lp2]blend=all_expr='B+(A-B)*Y/H'[lp3];[lp0][lp3]overlay=x=0:y=$LAST_Y:format=yuv444[m]" ;;
+    lastcut)
+        MAIN="$(pan)[lc0];$(ts),crop=1920:$LAST_H:0:$LAST_Y[lc1];[lc0][lc1]overlay=x=0:y=$LAST_Y:format=yuv444:enable='lt(mod(t,1),0.5)'[m]" ;;
+    lastflash)
+        MAIN="$(pan)[lf0];color=c=white:s=1920x$LAST_H:r=50,format=yuv444p[lf1];[lf0][lf1]overlay=x=0:y=$LAST_Y:format=yuv444:enable='eq(mod(n,13),6)'[m]" ;;
+    lastchroma)
+        MAIN="$(slate)[lh0];color=c=0x808080:s=1920x$LAST_H:r=50,format=yuv444p,geq=lum='lum(X,Y)':cb='clip(128+110*sin(X*0.9+T*7)*sin(Y*0.35),0,255)':cr='clip(128+110*cos(X*0.45-T*5)*sin(Y*0.8+T*3),0,255)',noise=c1s=40:c1f=t+u:c2s=40:c2f=t+u[lh1];[lh0][lh1]overlay=x=0:y=$LAST_Y:format=yuv444[m]" ;;
+    sweep)
+        MAIN="$(slate)[sw0];$(hard 136)[sw1];[sw0][sw1]overlay=x=0:y='mod(t*944,944)':format=yuv444[m]" ;;
+    topbottom)
+        MAIN="$(slate)[tb0];$(hard "$LAST_H")[tb1];[tb1]split[tb2][tb3];[tb0][tb2]overlay=x=0:y=0:format=yuv444:enable='eq(mod(n,2),0)'[tb4];[tb4][tb3]overlay=x=0:y=$LAST_Y:format=yuv444:enable='eq(mod(n,2),1)'[m]" ;;
+    qpceil)
+        MAIN="$(pan),noise=c0s=60:c0f=t+u:c1s=30:c1f=t+u:c2s=30:c2f=t+u[qc0];$(hard "$LAST_H")[qc1];[qc0][qc1]overlay=x=0:y=$LAST_Y:format=yuv444[m]" ;;
     *)
         echo "unknown case: $1" >&2; exit 1 ;;
     esac
@@ -255,7 +300,7 @@ emit() {
 # ---------------------------------------------------------------- main
 
 if [ "$LIST" = 1 ]; then
-    for c in $P1 $P2 $P3 $P4; do printf '%-13s %s\n' "$c" "$(describe "$c")"; done
+    for c in $P1 $P2 $P3 $P4 $P5; do printf '%-13s %s\n' "$c" "$(describe "$c")"; done
     exit 0
 fi
 
