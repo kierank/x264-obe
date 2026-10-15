@@ -2034,6 +2034,7 @@ int x264_rc_analyse_slice( x264_t *h )
     if( !IS_X264_TYPE_I(h->fenc->i_type) )
         memcpy( h->fdec->i_row_satds[0][0], h->fenc->i_row_satds[0][0], h->mb.i_mb_height * sizeof(int) );
 
+    int dbg_pir_satd = 0, dbg_pir_intra = 0;
     if( h->param.b_intra_refresh && h->param.rc.i_vbv_buffer_size && h->fenc->i_type == X264_TYPE_P )
     {
         int ip_factor = 256 * h->param.rc.f_ip_factor; /* fix8 */
@@ -2050,10 +2051,14 @@ int x264_rc_analyse_slice( x264_t *h )
                 else
                     h->fdec->i_row_satd[y] += diff;
                 cost += diff;
+                dbg_pir_satd += diff;
+                dbg_pir_intra += intra_cost;
             }
         }
     }
 
+    h->fdec->i_dbg_pir_satd = dbg_pir_satd >> (BIT_DEPTH - 8);
+    h->fdec->i_dbg_pir_intra = dbg_pir_intra >> (BIT_DEPTH - 8);
     if( BIT_DEPTH > 8 )
         for( int y = 0; y < h->mb.i_mb_height; y++ )
             h->fdec->i_row_satd[y] >>= (BIT_DEPTH - 8);

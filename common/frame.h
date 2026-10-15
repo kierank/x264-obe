@@ -163,6 +163,8 @@ typedef struct x264_frame
     int     i_pir_start_col;
     int     i_pir_end_col;
     int     i_frames_since_pir;
+    int     i_dbg_pir_satd;  /* vbv pump debug: PIR column satd added to the frame cost */
+    int     i_dbg_pir_intra; /* vbv pump debug: PIR column intra satd * ip_factor */
 
     /* interactive encoder control */
     int     b_corrupt;
