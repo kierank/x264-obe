@@ -87,7 +87,7 @@ int  x264_rc_analyse_slice( x264_t *h );
 #define x264_weighted_reference_duplicate x264_template(weighted_reference_duplicate)
 int x264_weighted_reference_duplicate( x264_t *h, int i_ref, const x264_weight_t *w );
 #define x264_threads_distribute_ratecontrol x264_template(threads_distribute_ratecontrol)
-void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan );
+void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan, int b_moved );
 #define x264_threads_merge_ratecontrol x264_template(threads_merge_ratecontrol)
 void x264_threads_merge_ratecontrol( x264_t *h );
 #define x264_hrd_fullness x264_template(hrd_fullness)

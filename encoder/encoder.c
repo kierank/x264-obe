@@ -3815,7 +3815,7 @@ static int x264_threaded_slices_write( x264_t *h )
 
     x264_slicepool_weight_init( h );
 
-    x264_threads_distribute_ratecontrol( h, b_row_plan );
+    x264_threads_distribute_ratecontrol( h, b_row_plan, b_balance );
 
     /* setup */
     for( int i = 0; i < h->param.i_threads; i++ )

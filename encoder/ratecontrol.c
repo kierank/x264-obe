@@ -170,6 +170,7 @@ struct x264_ratecontrol_t
     float row_plan_level;       /* b_row_plan: frame plan / row_plan's, this frame */
     float row_plan_prior;       /* b_row_plan: threads mean rows of the frame, by row_plan */
     volatile float row_plan_done; /* b_row_plan: row_plan's bits for this slice's coded rows */
+    int b_hard_split;           /* moved split, rows of twice row_plan_mean in more than one slice */
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
      * (MBAFF alternates two rows); added at every row end. */
     int row_bits[2];
@@ -1857,10 +1858,15 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         float b_max = b1 + ((rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f - b1) * trust_coeff;
         rc->qpm -= step_size;
         float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
+        /* b_hard_split: a hard next row doesn't come down on room that the other
+         * slices' own estimates already spend. */
+        float lower_extra = rc->b_hard_split
+                            && X264_MAX( rc->row_plan_bits[y+1], rc->row_plan_bits[y+1+SLICE_MBAFF] ) >= 2 * rc->row_plan_mean
+                          ? vbv_extra : 0;
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
                && (rc->qpm > h->fdec->f_row_qp[0] || rc->single_frame_vbv)
-               && (b2 < max_frame_size)
-               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
+               && (b2 + lower_extra < max_frame_size)
+               && ((b2 + lower_extra < rc->frame_size_planned * 0.8f) || (b2 + lower_extra < b_max)) )
         {
             b1 = b2;
             rc->qpm -= step_size;
@@ -2860,7 +2866,7 @@ static void x264_threads_normalize_predictors( x264_t *h )
         h->thread[i]->rc->slice_size_planned *= factor;
 }
 
-void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan )
+void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan, int b_moved )
 {
     int row;
     x264_ratecontrol_t *rc = h->rc;
@@ -2886,6 +2892,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan )
         if( t != h )
             memcpy( t->rc, rc, offsetof(x264_ratecontrol_t, row_pred) );
         t->rc->row_pred = t->rc->row_preds[h->sh.i_type];
+        t->rc->b_hard_split = 0;
         /* not thread 0's from the last frame, read by the other slices until this one's first row */
         if( rc->b_row_plan )
         {
@@ -2928,6 +2935,20 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_row_plan )
                 h->thread[i]->rc->row_plan_level = total > 0 ? rc->frame_size_planned / total : 1;
                 h->thread[i]->rc->row_plan_prior = total * h->param.i_threads / h->mb.i_mb_height;
             }
+            /* a hard band split by the moved bounds */
+            int hard_slices = 0;
+            for( int i = 0; b_moved && i < h->param.i_threads; i++ )
+            {
+                x264_t *t = h->thread[i];
+                for( row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
+                    if( rc->row_plan_bits[row] >= 2 * h->thread[i]->rc->row_plan_mean )
+                    {
+                        hard_slices++;
+                        break;
+                    }
+            }
+            for( int i = 0; i < h->param.i_threads; i++ )
+                h->thread[i]->rc->b_hard_split = hard_slices > 1;
         }
         x264_threads_normalize_predictors( h );
 
