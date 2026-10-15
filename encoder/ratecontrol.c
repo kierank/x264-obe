@@ -1744,7 +1744,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
         }
 
-        float b_max = b1 + ((rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f - b1) * trust_coeff;
+        /* A one-frame VBV plans the whole buffer: lower QP up to the underflow limit. */
+        double b_max_target = rc->single_frame_vbv ? max_frame_size
+                            : (rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f;
+        float b_max = b1 + (b_max_target - b1) * trust_coeff;
         rc->qpm -= step_size;
         float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
