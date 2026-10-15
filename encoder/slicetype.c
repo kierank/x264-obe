@@ -2610,6 +2610,11 @@ void x264_slicetype_decide( x264_t *h )
 
         x264_slicetype_frame_cost( h, &a, frames, p0, p1, b, 0 );
 
+        /* Intra refresh codes a cut as P: flag a P cost within a fifth of the intra
+         * cost, where scenecut 40 cuts mid-GOP, for ratecontrol. */
+        frames[b]->b_pir_cut = h->param.b_intra_refresh && p0 != p1
+                               && (int64_t)frames[b]->i_cost_est[b-p0][0] * 5 >= (int64_t)frames[b]->i_cost_est[0][0] * 4;
+
         if( (p0 != p1 || bframes) && h->param.rc.i_vbv_buffer_size )
         {
             /* We need the intra costs for row SATDs. */

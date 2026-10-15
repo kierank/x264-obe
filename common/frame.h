@@ -140,6 +140,8 @@ typedef struct x264_frame
     uint16_t *i_propagate_cost;
     uint16_t *i_inv_qscale_factor;
     int     b_scenecut; /* Set to zero if the frame cannot possibly be part of a real scenecut. */
+    int     b_pir_cut; /* intra refresh: P cost close to the intra cost */
+    int     b_rc_cut; /* fdec: ratecontrol coded it as a cut */
     float   f_weighted_cost_delta[X264_BFRAME_MAX+2];
     uint32_t i_pixel_sum[3];
     uint64_t i_pixel_ssd[3];
