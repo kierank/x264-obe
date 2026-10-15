@@ -3206,11 +3206,33 @@ static int x264_mb_pskip_cand_better( x264_t *h, int mvx, int mvy, int thresh )
     return h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, src, stride ) < thresh;
 }
 
+/* The lookahead's mv of this frame mb against the previous frame, in qpel, where
+ * it searched one and it is neither zero nor the skip mv */
+static int x264_mb_pskip_lowres_mv( x264_t *h, int *mvx, int *mvy )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    if( MB_INTERLACED || !h->frames.b_have_lowres || d > h->param.i_bframe + 1 ||
+        f->lowres_mvs[0][d-1][0][0] == 0x7FFF )
+        return 0;
+    /* Edge mbs are searched only with VBV or mbtree */
+    if( !h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size &&
+        (!h->mb.i_mb_x || !h->mb.i_mb_y || h->mb.i_mb_x == h->mb.i_mb_width-1 || h->mb.i_mb_y == h->mb.i_mb_height-1) )
+        return 0;
+    int16_t *mv = f->lowres_mvs[0][d-1][h->mb.i_mb_xy];
+    *mvx = x264_clip3( 2*mv[0], h->mb.mv_min_spel[0], h->mb.mv_max_spel[0] );
+    *mvy = x264_clip3( 2*mv[1], h->mb.mv_min_spel[1], h->mb.mv_max_spel[1] );
+    return (*mvx | *mvy) && (*mvx != h->mb.cache.pskip_mv[0] || *mvy != h->mb.cache.pskip_mv[1]);
+}
+
 static int x264_mb_pskip_mispredicted( x264_t *h )
 {
     /* Zero mv: a static mb whose skip mv came from moving neighbours */
     int b_zero = !!M32( h->mb.cache.pskip_mv );
-    if( !b_zero )
+    /* Lowres mv: a moving mb whose skip mv came from static neighbours */
+    int lmx = 0, lmy = 0;
+    int b_lowres = x264_mb_pskip_lowres_mv( h, &lmx, &lmy );
+    if( !b_zero && !b_lowres )
         return 0;
 
     int sad = h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, h->mb.pic.p_fdec[0], FDEC_STRIDE );
@@ -3218,7 +3240,9 @@ static int x264_mb_pskip_mispredicted( x264_t *h )
     if( thresh <= 0 )
         return 0;
 
-    return x264_mb_pskip_cand_better( h, 0, 0, thresh );
+    if( b_zero && x264_mb_pskip_cand_better( h, 0, 0, thresh ) )
+        return 1;
+    return b_lowres && x264_mb_pskip_cand_better( h, lmx, lmy, thresh );
 }
 
 /*****************************************************************************
