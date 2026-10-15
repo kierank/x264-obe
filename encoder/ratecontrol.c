@@ -1953,11 +1953,16 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         float b_max = b1 + ((rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f - b1) * trust_coeff;
+        /* One-frame VBV, last three rows of a slice: lower QP only with an average
+         * row of this slice to spare, as a mispriced row there can't be made up. */
+        float tail_margin = 0;
+        if( rc->single_frame_vbv && h->i_threadslice_end - 1 - y <= 3 )
+            tail_margin = (float)mb_bits / (y + 1 - h->i_threadslice_start);
         rc->qpm -= step_size;
         float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
                && (rc->qpm > h->fdec->f_row_qp[0] || rc->single_frame_vbv)
-               && (b2 + others_extra < max_frame_size)
+               && (b2 + others_extra + tail_margin < max_frame_size)
                && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
         {
             b1 = b2;
