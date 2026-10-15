@@ -1359,6 +1359,67 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+/* l0.me16x16 at the best fullpel ref 0 predictor (mvp, mvc, zero), without a search:
+ * fpelcmp picks it, cost is mbcmp + mv + ref. No mbrd. */
+static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a )
+{
+    x264_me_t *m = &a->l0.me16x16;
+    int i_ref = 0;
+    int i_mvc;
+    ALIGNED_4( int16_t mvc[10][2] );
+    ALIGNED_4( int16_t mvc_fpel[11][2] );
+
+    m->i_pixel = PIXEL_16x16;
+    LOAD_FENC( m, h->mb.pic.p_fenc, 0, 0 );
+    m->i_ref_cost = REF_COST( 0, 0 );
+    LOAD_HPELS( m, h->mb.pic.p_fref[0][0], 0, 0, 0, 0 );
+    LOAD_WPELS( m, h->mb.pic.p_fref_w[0], 0, 0, 0, 0 );
+
+    x264_mb_predict_mv_16x16( h, 0, 0, m->mvp );
+    CP32( h->mb.mvp16[0][0], m->mvp );
+    h->mb.mvp16_valid[0] |= 1;
+    x264_mb_predict_mv_ref16x16( h, 0, 0, mvc, &i_mvc );
+
+    const int stride = m->i_stride[0];
+    const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
+    const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
+    int bmx = x264_clip3( (m->mvp[0] + 2) >> 2, h->mb.mv_limit_fpel[0][0], h->mb.mv_limit_fpel[1][0] );
+    int bmy = x264_clip3( (m->mvp[1] + 2) >> 2, h->mb.mv_limit_fpel[0][1], h->mb.mv_limit_fpel[1][1] );
+    uint32_t pmv = pack16to32_mask( bmx, bmy );
+    int i_fpel = x264_predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+    if( pmv )
+    {
+        M32( mvc_fpel[i_fpel] ) = 0;
+        i_fpel++;
+    }
+
+    int bcost = h->pixf.fpelcmp[PIXEL_16x16]( m->p_fenc[0], FENC_STRIDE, &m->p_fref_w[bmy*stride+bmx], stride )
+              + p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2];
+    for( int i = 0; i < i_fpel; i++ )
+    {
+        int mx = mvc_fpel[i][0];
+        int my = mvc_fpel[i][1];
+        int cost = h->pixf.fpelcmp[PIXEL_16x16]( m->p_fenc[0], FENC_STRIDE, &m->p_fref_w[my*stride+mx], stride )
+                 + p_cost_mvx[mx<<2] + p_cost_mvy[my<<2];
+        COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );
+    }
+
+    m->mv[0] = bmx << 2;
+    m->mv[1] = bmy << 2;
+    m->cost_mv = p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2];
+    m->cost = h->pixf.mbcmp[PIXEL_16x16]( m->p_fenc[0], FENC_STRIDE, &m->p_fref_w[bmy*stride+bmx], stride )
+            + m->cost_mv + m->i_ref_cost;
+
+    /* save mv for predicting neighbors */
+    CP32( h->mb.mvr[0][0][h->mb.i_mb_xy], m->mv );
+    CP32( a->l0.mvc[0][0], m->mv );
+    for( int i = 1; i < h->mb.pic.i_fref[0]; i++ )
+        M32( h->mb.mvr[0][i][h->mb.i_mb_xy] ) = 0;
+
+    x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, 0 );
+    h->mb.i_type = P_L0;
+}
+
 /* Field ref 2k is the same parity field of frame k and 2k+1 the opposite one,
  * so refs 0 and 1 are both fields of the nearest frame. Whether ref 1 is the
  * nearer one depends on the parity and the list. */
@@ -3081,6 +3142,21 @@ static int x264_mb_lowres_intra( x264_t *h )
     return !(f->lowres_costs[d][0][h->mb.i_mb_xy] >> LOWRES_COST_SHIFT);
 }
 
+/* Intra heavy P: no 16x16 search where the best intra satd is below the cost of
+ * the 16x16 predictors * INTRA_HEAVY_THRESH/8 */
+#define INTRA_HEAVY_THRESH 7
+
+/* Whether the lowres P cost coded more than half of the scored mbs intra */
+static int x264_mb_intra_heavy( x264_t *h )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    int i_scored = h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?
+                   (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
+    return h->frames.b_have_lowres && d <= h->param.i_bframe + 1 && f->i_cost_est[d][0] >= 0 &&
+           f->i_intra_mbs[d] * 2 > i_scored;
+}
+
 /* P intra analysis against an inter cost, chroma included with chroma ME */
 static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cost )
 {
@@ -3227,7 +3303,21 @@ skip_analysis:
 
             x264_mb_analyse_load_costs( h, &analysis );
 
-            x264_mb_analyse_inter_p16x16( h, &analysis );
+            /* Intra heavy: intra first against the 16x16 predictors, and the 16x16
+             * search only where they come close to the intra cost */
+            int b_intra_first = 0;
+            int b_intra_skip_me = 0;
+            if( !analysis.i_mbrd && analysis.b_early_terminate && !analysis.b_force_intra && x264_mb_intra_heavy( h ) )
+            {
+                x264_mb_analyse_inter_p16x16_pred( h, &analysis );
+                x264_mb_analyse_intra_p( h, &analysis, analysis.l0.me16x16.cost );
+                b_intra_first = 1;
+                int i_intra = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
+                b_intra_skip_me = (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_HEAVY_THRESH;
+            }
+
+            if( !b_intra_skip_me )
+                x264_mb_analyse_inter_p16x16( h, &analysis );
 
             if( h->mb.i_type == P_SKIP )
             {
@@ -3244,12 +3334,14 @@ skip_analysis:
                              !x264_mb_analyse_nb_sub16x16( h );
 
             /* Where the lowres coded the mb intra, analyse intra against the 16x16 first */
-            int b_intra_first = 0;
-            int b_intra_prune = 0;
-            if( x264_mb_lowres_intra( h ) )
+            if( !b_intra_first && x264_mb_lowres_intra( h ) )
             {
                 x264_mb_analyse_intra_p( h, &analysis, analysis.l0.me16x16.cost );
                 b_intra_first = 1;
+            }
+            int b_intra_prune = b_intra_skip_me;
+            if( b_intra_first && !b_intra_skip_me )
+            {
                 int i_intra = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
                 b_intra_prune = analysis.b_early_terminate &&
                                 (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_FIRST_THRESH;
@@ -3330,6 +3422,10 @@ skip_analysis:
             if( analysis.i_mbrd || !h->mb.i_subpel_refine )
             {
                 /* refine later */
+            }
+            else if( b_intra_skip_me )
+            {
+                /* intra is below the 16x16 predictors */
             }
             else if( i_partition == D_16x16 )
             {
