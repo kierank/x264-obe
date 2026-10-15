@@ -1702,13 +1702,13 @@ static float other_slices_size( x264_t *h )
     return size;
 }
 
-/* QP that should take a row of bits at qp down by excess: bits ~ 1/qscale,
- * half again as far since rows shrink more slowly than that. */
+/* QP that should take a row of bits at qp down by excess with bits ~ 1/qscale:
+ * rows shrink more slowly than that, so it is at most the QP needed. */
 static float reencode_qp( float qp, float bits, float excess )
 {
     if( excess >= bits * 0.9f )
         return qp + 100.f;
-    return qp + 9.f * log2f( bits / (bits - excess) );
+    return qp + 6.f * log2f( bits / (bits - excess) );
 }
 
 static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
@@ -1720,14 +1720,14 @@ static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
     return -1;
 }
 
-/* Last row over the VBV: jump to the QP that should fit, the third time to the
- * highest, so a frame waits for at most three more rows. */
+/* Last row over the VBV: jump to the QP that should fit, the fourth time to the
+ * highest, so a frame waits for at most four more rows. */
 static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float excess, float qp_max, float qp_hard_max )
 {
-    if( excess <= 0 || rc->qpm >= qp_hard_max || rc->last_row_reencodes >= 3 )
+    if( excess <= 0 || rc->qpm >= qp_hard_max || rc->last_row_reencodes >= 4 )
         return 0;
     float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
-    float qp = rc->last_row_reencodes == 2 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
+    float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
     rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
     rc->last_row_reencodes++;
     return reencode_row( h, rc, y );
