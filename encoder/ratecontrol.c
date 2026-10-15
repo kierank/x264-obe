@@ -178,6 +178,8 @@ struct x264_ratecontrol_t
     int b_slice_done;           /* this one is counted */
     int last_row_reencodes;
     int room_reencodes;
+    float last_row_bits;        /* the last row's previous try */
+    float last_row_qp;
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1720,15 +1722,28 @@ static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
     return -1;
 }
 
-/* Last row over the VBV: jump to the QP that should fit, the fourth time to the
- * highest, so a frame waits for at most four more rows. */
-static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float excess, float qp_max, float qp_hard_max )
+/* Last row over the VBV: jump to the QP that should fit, by bits ~ 1/qscale the
+ * first time, then by how the row shrank on the last jump, at least 1 each time;
+ * the fourth time, or if the row can't fit, to the highest, so a frame waits for
+ * at most four more rows. */
+static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float excess, float qp_hard_max )
 {
     if( excess <= 0 || rc->qpm >= qp_hard_max || rc->last_row_reencodes >= 4 )
         return 0;
     float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
-    float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
-    rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
+    float qp = qp_hard_max;
+    if( rc->last_row_reencodes < 3 && excess < row_bits )
+    {
+        /* log2 of the bits per QP */
+        float slope = 1.f/6;
+        if( rc->last_row_reencodes )
+            slope = x264_clip3f( log2f( X264_MAX( rc->last_row_bits / row_bits, 1.f ) ) / (rc->qpm - rc->last_row_qp),
+                                 1.f/24, 1.f/3 );
+        qp = rc->qpm + log2f( row_bits / (row_bits - excess) ) / slope;
+    }
+    rc->last_row_bits = row_bits;
+    rc->last_row_qp = rc->qpm;
+    rc->qpm = x264_clip3f( qp, X264_MIN( rc->qpm + 1.0f, qp_hard_max ), qp_hard_max );
     rc->last_row_reencodes++;
     return reencode_row( h, rc, y );
 }
@@ -1951,7 +1966,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         /* Last-ditch attempt: if the last row of the frame underflowed the VBV,
          * try again. */
         if( can_reencode_row
-            && last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, qp_max, qp_hard_max ) )
+            && last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, qp_hard_max ) )
             return -1;
 
         /* Final now. The slice counted last sees every other size final, as each
@@ -1961,7 +1976,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             rc->b_slice_done = 1;
             int done = x264_pthread_fetch_and_add( &h->thread[0]->rc->slices_done, 1, &h->fdec->mutex ) + 1;
             if( done == h->param.i_threads && !others_final && can_reencode_row
-                && last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_max, qp_hard_max ) )
+                && last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_hard_max ) )
                 return -1;
         }
     }
