@@ -3081,6 +3081,57 @@ static int x264_mb_lowres_intra( x264_t *h )
     return !(f->lowres_costs[d][0][h->mb.i_mb_xy] >> LOWRES_COST_SHIFT);
 }
 
+/* Whether the lowres P cost coded more than half of the scored mbs intra */
+static int x264_mb_intra_heavy( x264_t *h )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    int i_scored = h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?
+                   (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
+    return h->frames.b_have_lowres && d <= h->param.i_bframe + 1 && f->i_cost_est[d][0] >= 0 &&
+           f->i_intra_mbs[d] * 2 > i_scored;
+}
+
+/* mbcmp + mv + ref cost of the ref 0 16x16 predictor (mvp, mvc, zero) of least
+ * fpelcmp, at fullpel */
+static int x264_mb_analyse_p16x16_pred_cost( x264_t *h, x264_mb_analysis_t *a )
+{
+    ALIGNED_4( int16_t mvp[2] );
+    ALIGNED_4( int16_t mvc[10][2] );
+    ALIGNED_4( int16_t mvc_fpel[11][2] );
+    int i_mvc;
+    x264_mb_predict_mv_16x16( h, 0, 0, mvp );
+    x264_mb_predict_mv_ref16x16( h, 0, 0, mvc, &i_mvc );
+
+    pixel *p_fenc = h->mb.pic.p_fenc[0];
+    pixel *p_fref = h->mb.pic.p_fref_w[0];
+    const int stride = h->mb.pic.i_stride[0];
+    const uint16_t *p_cost_mvx = a->p_cost_mv - mvp[0];
+    const uint16_t *p_cost_mvy = a->p_cost_mv - mvp[1];
+    int bmx = x264_clip3( (mvp[0] + 2) >> 2, h->mb.mv_limit_fpel[0][0], h->mb.mv_limit_fpel[1][0] );
+    int bmy = x264_clip3( (mvp[1] + 2) >> 2, h->mb.mv_limit_fpel[0][1], h->mb.mv_limit_fpel[1][1] );
+    uint32_t pmv = pack16to32_mask( bmx, bmy );
+    int i_fpel = x264_predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+    if( pmv )
+    {
+        M32( mvc_fpel[i_fpel] ) = 0;
+        i_fpel++;
+    }
+
+    int bcost = h->pixf.fpelcmp[PIXEL_16x16]( p_fenc, FENC_STRIDE, &p_fref[bmy*stride+bmx], stride )
+              + p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2];
+    for( int i = 0; i < i_fpel; i++ )
+    {
+        int mx = mvc_fpel[i][0];
+        int my = mvc_fpel[i][1];
+        int cost = h->pixf.fpelcmp[PIXEL_16x16]( p_fenc, FENC_STRIDE, &p_fref[my*stride+mx], stride )
+                 + p_cost_mvx[mx<<2] + p_cost_mvy[my<<2];
+        COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );
+    }
+    return h->pixf.mbcmp[PIXEL_16x16]( p_fenc, FENC_STRIDE, &p_fref[bmy*stride+bmx], stride )
+         + p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2] + REF_COST( 0, 0 );
+}
+
 /* P intra analysis against an inter cost, chroma included with chroma ME */
 static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cost )
 {
@@ -3243,12 +3294,19 @@ skip_analysis:
                 b_partgate = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv < PARTGATE_THRESH * analysis.i_lambda &&
                              !x264_mb_analyse_nb_sub16x16( h );
 
-            /* Where the lowres coded the mb intra, analyse intra against the 16x16 first */
+            /* Where the lowres coded the mb intra, analyse intra against the 16x16 first.
+             * Intra heavy: against the 16x16 predictors where above, so fast intra
+             * tries i8x8/i4x4 more often */
             int b_intra_first = 0;
             int b_intra_prune = 0;
-            if( x264_mb_lowres_intra( h ) )
+            int b_intra_heavy = !analysis.i_mbrd && analysis.b_early_terminate && !analysis.b_force_intra &&
+                                x264_mb_intra_heavy( h );
+            if( b_intra_heavy || x264_mb_lowres_intra( h ) )
             {
-                x264_mb_analyse_intra_p( h, &analysis, analysis.l0.me16x16.cost );
+                int i_intra_bound = analysis.l0.me16x16.cost;
+                if( b_intra_heavy )
+                    i_intra_bound = X264_MAX( i_intra_bound, x264_mb_analyse_p16x16_pred_cost( h, &analysis ) );
+                x264_mb_analyse_intra_p( h, &analysis, i_intra_bound );
                 b_intra_first = 1;
                 int i_intra = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
                 b_intra_prune = analysis.b_early_terminate &&
