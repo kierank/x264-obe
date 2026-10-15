@@ -165,6 +165,13 @@ struct x264_ratecontrol_t
      * (MBAFF alternates two rows); added at every row end. */
     int row_bits[2];
     int row_bits_y[2];
+    /* This thread's slice bits outside the MBs this frame: start codes, NAL and
+     * slice headers, trailing bits, and the emulation prevention bytes scanned. */
+    int slice_bits;
+    int epb_nal;                /* out.nal being scanned */
+    int epb_pos;                /* bytes of it scanned */
+    int epb_bytes;
+    float epb_scale;            /* 1 + escape bits per MB bit so far */
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1618,7 +1625,71 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
     float bits = 0;
     for( int i = y+1; i < h->i_threadslice_end; i++ )
         bits += predict_row_size( h, i, qscale );
-    return bits;
+    return bits * h->rc->epb_scale;
+}
+
+/* Emulation prevention bytes x264_nal_encode adds to p[*pos..end), resumable. */
+static int epb_count( uint8_t *p, int *pos, int end )
+{
+    int n = 0;
+    int i = *pos;
+    for( ; i < end - 2; i++ )
+        if( !p[i] && !p[i+1] && p[i+2] <= 3 )
+        {
+            n++;
+            i++;
+        }
+    *pos = i;
+    return n;
+}
+
+int x264_ratecontrol_nal_epb( uint8_t *p, int size )
+{
+    int pos = 0;
+    return epb_count( p, &pos, size );
+}
+
+/* Escapes in this thread's slice NALs up to the bytes that can't change.
+ * Returns how many bytes after those may still add escapes. */
+static int epb_scan( x264_t *h, int *nal, int *pos, int *bytes, int b_end )
+{
+    for( ; *nal < h->out.i_nal; (*nal)++, *pos = 0 )
+        *bytes += epb_count( h->out.nal[*nal].p_payload, pos, h->out.nal[*nal].i_payload );
+    uint8_t *p = h->out.nal[*nal].p_payload;
+    /* CABAC carries into p[-1] */
+    int end = h->param.b_cabac ? h->cabac.p - 1 - p : h->out.bs.p - p;
+    *bytes += epb_count( p, pos, end );
+    int left = end - *pos;
+    if( !b_end )
+        return left;
+    /* CABAC: p[-1], bytes outstanding and the flush. CAVLC: cached bits,
+     * the last skip run and rbsp_slice_trailing_bits. */
+    return left + (h->param.b_cabac ? h->cabac.i_bytes_outstanding + 4 : 8);
+}
+
+/* Each thread, before its slices of a frame. */
+void x264_ratecontrol_slices_start( x264_t *h )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    rc->slice_bits = 0;
+    rc->epb_nal = h->out.i_nal;
+    rc->epb_pos = 0;
+    rc->epb_bytes = 0;
+    rc->epb_scale = 1.f;
+}
+
+/* After a slice header: the slice's bits that its MB bits miss. */
+void x264_ratecontrol_slice_header( x264_t *h, int header_bits )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    /* start code and NAL header byte; a 3-byte start code unless first in the AU */
+    int b_short = h->param.b_annexb && !h->param.i_avcintra_class
+                  && (h->out.i_nal || (h->param.b_sliced_threads && h->i_thread_idx));
+    /* CABAC: the flush ends at most 16 bits past the MB bits, which count from
+     * x264_cabac_pos -9. CAVLC: the last skip run and rbsp_slice_trailing_bits. */
+    int mbs = h->i_threadslice_end * h->mb.i_mb_width - h->sh.i_first_mb;
+    int tail = h->param.b_cabac ? 16 : bs_size_ue_big( mbs ) + 8;
+    rc->slice_bits += header_bits + (NALU_OVERHEAD - b_short) * 8 + tail;
 }
 
 static ALWAYS_INLINE void row_bits_flush( x264_t *h, x264_ratecontrol_t *rc, int k )
@@ -1687,7 +1758,17 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float qp_min = X264_MAX( prev_row_qp - h->param.rc.i_qp_step, h->param.rc.i_qp_min );
     float step_size = 0.5f;
     float slice_size_planned = h->param.b_sliced_threads ? rc->slice_size_planned : rc->frame_size_planned;
-    float bits_so_far = row_bits_so_far( h, y );
+    /* Slice overhead and escapes are this slice's bits, so other slices see them.
+     * The escape scan is kept only with the row. */
+    int b_last_row = y >= h->i_threadslice_end-1;
+    int epb_nal = rc->epb_nal, epb_pos = rc->epb_pos, epb_bytes = rc->epb_bytes;
+    int epb_left = epb_scan( h, &epb_nal, &epb_pos, &epb_bytes, b_last_row );
+    int mb_bits = row_bits_so_far( h, y );
+    float bits_so_far = mb_bits + rc->slice_bits + epb_bytes * 8;
+    /* at most one escape per two bytes not scanned */
+    if( b_last_row )
+        bits_so_far += (epb_left + 1) / 2 * 8;
+    rc->epb_scale = 1.f + (float)(epb_bytes * 8) / X264_MAX( mb_bits, 1 );
     rc->bits_so_far = bits_so_far;
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
@@ -1799,6 +1880,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
     rc->qpa_rc_prev = rc->qpa_rc;
     rc->qpa_aq_prev = rc->qpa_aq;
+    rc->epb_nal = epb_nal;
+    rc->epb_pos = epb_pos;
+    rc->epb_bytes = epb_bytes;
 
     return 0;
 }
