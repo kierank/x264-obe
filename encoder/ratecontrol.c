@@ -229,6 +229,12 @@ static inline float qscale2qp( float qscale )
 {
     return (12.0f + QP_BD_OFFSET) + 6.0f * log2f( qscale/0.85f );
 }
+/* QPs above QP_MAX_SPEC are coded at QP_MAX_SPEC and only change lambda and the
+ * deadzone, so the size predictors take them at QP_MAX_SPEC. */
+static inline float qp2qscale_spec( float qp )
+{
+    return qp2qscale( X264_MIN( qp, QP_MAX_SPEC ) );
+}
 
 /* Texture bitrate is not quite inversely proportional to qscale,
  * probably due the the changing number of SKIP blocks.
@@ -1628,7 +1634,7 @@ static int row_bits_so_far( x264_t *h, int y )
 
 static float predict_row_size_to_end( x264_t *h, int y, float qp )
 {
-    float qscale = qp2qscale( qp );
+    float qscale = qp2qscale_spec( qp );
     float bits = 0;
     for( int i = y+1; i < h->i_threadslice_end; i++ )
         bits += predict_row_size( h, i, qscale );
@@ -1740,7 +1746,7 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
     if( excess <= 0 || rc->qpm >= qp_hard_max || rc->last_row_reencodes >= 4 )
         return 0;
     float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
-    float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
+    float qp = rc->last_row_reencodes == 3 ? qp_hard_max : X264_MIN( reencode_qp( rc->qpm, row_bits, excess ), QP_MAX_SPEC );
     rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
     rc->last_row_reencodes++;
     return reencode_row( h, rc, y );
@@ -1801,7 +1807,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     if( !rc->b_vbv )
         return 0;
 
-    float qscale = qp2qscale( rc->qpm );
+    float qscale = qp2qscale_spec( rc->qpm );
     h->fdec->f_row_qp[y] = rc->qpm;
     h->fdec->f_row_qscale[y] = qscale;
 
@@ -1950,7 +1956,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             if( over > 0 )
             {
                 float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
-                rc->qpm = x264_clip3f( reencode_qp( prev_row_qp, row_bits, over ), prev_row_qp + 1.0f, qp_hard_max );
+                float qp = X264_MIN( reencode_qp( prev_row_qp, row_bits, over ), QP_MAX_SPEC );
+                rc->qpm = x264_clip3f( qp, prev_row_qp + 1.0f, qp_hard_max );
                 rc->room_reencodes++;
                 return reencode_row( h, rc, y );
             }
@@ -2419,7 +2426,7 @@ static int update_vbv( x264_t *h, int bits )
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
     if( rcc->last_satd >= h->mb.i_mb_count )
-        update_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
+        update_predictor( &rct->pred[h->sh.i_type], qp2qscale_spec( rcc->qpa_rc ), rcc->last_satd, bits );
 
     if( !rcc->b_vbv )
         return filler;
@@ -2944,7 +2951,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
     int row;
     x264_ratecontrol_t *rc = h->rc;
     x264_emms();
-    float qscale = qp2qscale( rc->qpm );
+    float qscale = qp2qscale_spec( rc->qpm );
     /* before the workers start */
     h->thread[0]->rc->slices_done = 0;
 
@@ -3012,7 +3019,7 @@ void x264_threads_merge_ratecontrol( x264_t *h )
                 size += h->fdec->i_row_satd[row];
             int bits = t->stat.frame.i_mv_bits + t->stat.frame.i_tex_bits + t->stat.frame.i_misc_bits;
             int mb_count = (t->i_threadslice_end - t->i_threadslice_start) * h->mb.i_mb_width;
-            update_predictor( &rc->pred[h->sh.i_type+(i+1)*5], qp2qscale( rct->qpa_rc/mb_count ), size, bits );
+            update_predictor( &rc->pred[h->sh.i_type+(i+1)*5], qp2qscale_spec( rct->qpa_rc/mb_count ), size, bits );
         }
         if( !i )
             continue;
