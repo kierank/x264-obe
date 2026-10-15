@@ -1902,6 +1902,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
          * little for it, don't take the room a hard one needs. */
         if( b_threadslices && rc->single_frame_vbv )
             qp_min = X264_MAX( qp_min, other_slices_max_qp( h ) - 1.0f );
+        /* Nor more than 6 below the frame's QP with any threading: rows after a hard
+         * band found its room and went to near-lossless QPs while the band starved. */
+        if( rc->single_frame_vbv )
+            qp_min = X264_MAX( qp_min, rc->qp - 6.0f );
 
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
