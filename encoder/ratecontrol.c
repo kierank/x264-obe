@@ -1885,6 +1885,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( !rc->b_vbv_min_rate )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
+        /* A one-frame VBV lowers no row more than 6 below the frame's QP: rows after a
+         * hard band found its room and went to near-lossless QPs while the band starved. */
+        if( rc->single_frame_vbv )
+            qp_min = X264_MAX( qp_min, rc->qp - 6.0f );
+
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
                    (b1 > rc->frame_size_planned && rc->qpm < rc->qp_novbv) ||
