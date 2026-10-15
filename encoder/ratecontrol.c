@@ -1625,12 +1625,28 @@ static int row_bits_so_far( x264_t *h, int y )
     return bits;
 }
 
+/* A one-frame VBV can't take rows priced at next to nothing: a P row costs at least
+ * half the colocated row of the last P frame, scaled by SATD and qscale. */
+static float predict_row_size_vbv( x264_t *h, int y, float qscale )
+{
+    float bits = X264_MAX( predict_row_size( h, y, qscale ), 0.f );
+    x264_frame_t *ref = h->fref[0][0];
+    if( h->rc->single_frame_vbv && h->sh.i_type == SLICE_TYPE_P && ref->i_type == h->fdec->i_type
+        && ref->f_row_qscale[y] > 0 && ref->i_row_satd[y] > 0 )
+    {
+        float floor = 0.5f * ref->i_row_bits[y] * h->fdec->i_row_satd[y] / ref->i_row_satd[y]
+                    * ref->f_row_qscale[y] / qscale;
+        bits = X264_MAX( bits, floor );
+    }
+    return bits;
+}
+
 static float predict_row_size_to_end( x264_t *h, int y, float qp )
 {
     float qscale = qp2qscale( qp );
     float bits = 0;
     for( int i = y+1; i < h->i_threadslice_end; i++ )
-        bits += predict_row_size( h, i, qscale );
+        bits += predict_row_size_vbv( h, i, qscale );
     return bits * h->rc->epb_scale;
 }
 
