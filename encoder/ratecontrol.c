@@ -2783,6 +2783,9 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
         if( t != h )
             memcpy( t->rc, rc, offsetof(x264_ratecontrol_t, row_pred) );
         t->rc->row_pred = t->rc->row_preds[h->sh.i_type];
+        /* not thread 0's from the last frame, read by the other slices until this one's first row */
+        if( rc->b_row_plan )
+            t->rc->bits_so_far = 0;
         /* Calculate the planned slice size. */
         if( rc->b_vbv && rc->frame_size_planned && rc->b_row_plan )
         {
