@@ -196,6 +196,15 @@ struct x264_ratecontrol_t
     int64_t previous_cpb_final_arrival_time_frac;
 
     uint64_t hrd_multiply_denom;
+
+    /* vbv pump debug, not copied to slice threads */
+    double dbg_last_q, dbg_q_abr, dbg_rf, dbg_cplxr, dbg_wbw, dbg_overflow;
+    double dbg_total_bits, dbg_wanted_bits, dbg_abr_buffer, dbg_q_lstep;
+    double dbg_q_react, dbg_bits_react, dbg_q_fill, dbg_q_vbv, dbg_q_clip, dbg_q_final, dbg_qp0, dbg_pred_bits;
+    float dbg_pc0, dbg_po0, dbg_pn0;
+    int dbg_pupd;
+    int dbg_reenc;
+    int64_t dbg_pir_bits, dbg_pir_rowacc;
 };
 
 
@@ -1545,6 +1554,12 @@ void x264_ratecontrol_start( x264_t *h, int i_force_qp, int overhead )
     if( h->sh.i_type != SLICE_TYPE_B )
         rc->bframes = h->fenc->i_bframes;
 
+    rc->dbg_last_q = rc->dbg_q_abr = rc->dbg_rf = rc->dbg_cplxr = rc->dbg_wbw = 0;
+    rc->dbg_overflow = rc->dbg_total_bits = rc->dbg_wanted_bits = rc->dbg_abr_buffer = rc->dbg_q_lstep = 0;
+    rc->dbg_q_react = rc->dbg_bits_react = rc->dbg_q_fill = rc->dbg_q_vbv = rc->dbg_q_clip = rc->dbg_q_final = rc->dbg_pred_bits = 0;
+    rc->dbg_reenc = 0;
+    rc->dbg_pir_bits = rc->dbg_pir_rowacc = 0;
+
     if( rc->b_abr )
     {
         q = qscale2qp( rate_estimate_qscale( h ) );
@@ -1573,6 +1588,7 @@ void x264_ratecontrol_start( x264_t *h, int i_force_qp, int overhead )
         q = i_force_qp - 1;
 
     q = x264_clip3f( q, h->param.rc.i_qp_min, h->param.rc.i_qp_max );
+    rc->dbg_qp0 = q;
 
     rc->qpa_rc = rc->qpa_rc_prev =
     rc->qpa_aq = rc->qpa_aq_prev = 0;
@@ -1686,6 +1702,8 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->b_slice_done = 0;
     rc->last_row_reencodes = 0;
     rc->room_reencodes = 0;
+    rc->dbg_reenc = 0;
+    rc->dbg_pir_bits = rc->dbg_pir_rowacc = 0;
 }
 
 #if defined(__ATOMIC_ACQUIRE)
@@ -1718,6 +1736,8 @@ static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
     rc->qpa_aq = rc->qpa_aq_prev;
     h->fdec->i_row_bits[y] = 0;
     h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
+    rc->dbg_reenc++;
+    rc->dbg_pir_rowacc = 0;
     return -1;
 }
 
@@ -1775,6 +1795,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     }
     rc->row_bits[k] += bits;
     rc->qpa_aq += h->mb.i_qp;
+    if( h->param.b_intra_refresh && h->mb.i_mb_x >= h->fdec->i_pir_start_col && h->mb.i_mb_x <= h->fdec->i_pir_end_col )
+        rc->dbg_pir_rowacc += bits;
 
     if( h->mb.i_mb_x != h->mb.i_mb_width - 1 )
         return 0;
@@ -1952,6 +1974,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             rc->qpa_aq = rc->qpa_aq_prev;
             h->fdec->i_row_bits[y] = 0;
             h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
+            rc->dbg_reenc++;
+            rc->dbg_pir_rowacc = 0;
             return -1;
         }
     }
@@ -1982,6 +2006,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     rc->epb_nal = epb_nal;
     rc->epb_pos = epb_pos;
     rc->epb_bytes = epb_bytes;
+    rc->dbg_pir_bits += rc->dbg_pir_rowacc;
+    rc->dbg_pir_rowacc = 0;
 
     return 0;
 }
@@ -2189,6 +2215,52 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
 
     *filler = update_vbv( h, bits );
     rc->filler_bits_sum += *filler * 8;
+
+    if( rc->b_vbv && h->param.i_log_level >= X264_LOG_DEBUG )
+    {
+#define DBGQP(x) ((x) > 0 ? qscale2qp( x ) : 0.0)
+        float rqmin = 1e9f, rqmax = -1e9f;
+        for( int y = 0; y < h->mb.i_mb_height; y++ )
+        {
+            rqmin = X264_MIN( rqmin, h->fdec->f_row_qp[y] );
+            rqmax = X264_MAX( rqmax, h->fdec->f_row_qp[y] );
+        }
+        int reenc = rc->dbg_reenc, lastrow = rc->last_row_reencodes, room = rc->room_reencodes;
+        int64_t pirbits = rc->dbg_pir_bits;
+        if( h->param.b_sliced_threads )
+        {
+            reenc = lastrow = room = 0;
+            pirbits = 0;
+            for( int i = 0; i < h->param.i_threads; i++ )
+            {
+                reenc += h->thread[i]->rc->dbg_reenc;
+                lastrow += h->thread[i]->rc->last_row_reencodes;
+                room += h->thread[i]->rc->room_reencodes;
+                pirbits += h->thread[i]->rc->dbg_pir_bits;
+            }
+        }
+        predictor_t *p = &h->thread[0]->rc->pred[h->sh.i_type];
+        x264_log( h, X264_LOG_DEBUG, "vbvdbg frm=%d %c kf=%d pir=%d-%d/%d satd=%d pird=%d piri=%d"
+                  " | lastq=%.2f abrq=%.2f rf=%.4g cplxr=%.4g wbw=%.4g ovf=%.3f tot=%.0f want=%.0f abrbuf=%.0f lstepq=%.2f"
+                  " | reactq=%.2f bpred=%.0f fillq=%.2f vbvq=%.2f clipq=%.2f finq=%.2f qp0=%.2f novbv=%.2f"
+                  " | fill=%.0f plan=%.0f pbits=%.0f est=%.0f"
+                  " | qpa=%.2f aq=%.2f rowqp=%.2f-%.2f bits=%d pirbits=%"PRId64" imb=%d reenc=%d/%d/%d fillend=%.0f"
+                  " | pred%s %.4g/%.4g/%.3f -> %.4g/%.4g/%.3f\n",
+                  h->i_frame, slice_type_to_char[h->sh.i_type], h->fenc->b_keyframe,
+                  h->fdec->i_pir_start_col, h->fdec->i_pir_end_col, h->fdec->i_frames_since_pir,
+                  rc->last_satd, h->fdec->i_dbg_pir_satd, h->fdec->i_dbg_pir_intra,
+                  DBGQP( rc->dbg_last_q ), DBGQP( rc->dbg_q_abr ), rc->dbg_rf, rc->dbg_cplxr, rc->dbg_wbw, rc->dbg_overflow,
+                  rc->dbg_total_bits, rc->dbg_wanted_bits, rc->dbg_abr_buffer, DBGQP( rc->dbg_q_lstep ),
+                  DBGQP( rc->dbg_q_react ), rc->dbg_bits_react, DBGQP( rc->dbg_q_fill ), DBGQP( rc->dbg_q_vbv ),
+                  DBGQP( rc->dbg_q_clip ), DBGQP( rc->dbg_q_final ), rc->dbg_qp0, rc->qp_novbv,
+                  rc->buffer_fill, rc->frame_size_planned, rc->dbg_pred_bits, rc->frame_size_estimated,
+                  rc->qpa_rc, h->fdec->f_qp_avg_aq, rqmin, rqmax, bits, pirbits, h->stat.frame.i_mb_count_i,
+                  reenc, lastrow, room,
+                  (double)h->thread[0]->rc->buffer_fill_final / h->sps->vui.i_time_scale,
+                  rc->dbg_pupd ? "" : "(noupd)", rc->dbg_pc0, rc->dbg_po0, rc->dbg_pn0,
+                  p->coeff / p->count, p->offset / p->count, p->count );
+#undef DBGQP
+    }
 
     if( h->param.i_nal_hrd )
     {
@@ -2415,6 +2487,10 @@ static int update_vbv( x264_t *h, int bits )
     x264_ratecontrol_t *rct = h->thread[0]->rc;
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
+    rcc->dbg_pc0 = rct->pred[h->sh.i_type].coeff / rct->pred[h->sh.i_type].count;
+    rcc->dbg_po0 = rct->pred[h->sh.i_type].offset / rct->pred[h->sh.i_type].count;
+    rcc->dbg_pn0 = rct->pred[h->sh.i_type].count;
+    rcc->dbg_pupd = rcc->last_satd >= h->mb.i_mb_count && rcc->qpa_rc <= rcc->qp + 6;
     /* Attribution: a frame the row VBV lifted far above its plan doesn't train. */
     if( rcc->last_satd >= h->mb.i_mb_count && rcc->qpa_rc <= rcc->qp + 6 )
         update_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
@@ -2593,6 +2669,8 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
             /* Now a hard threshold to make sure the frame fits in VBV.
              * This one is mostly for I-frames. */
             double bits = predict_size( &rcc->pred[h->sh.i_type], q, rcc->last_satd );
+            rcc->dbg_q_react = q;
+            rcc->dbg_bits_react = bits;
             /* For small VBVs, allow the frame to use up the entire VBV. */
             double max_fill_factor = h->param.rc.i_vbv_buffer_size >= 5*h->param.rc.i_vbv_max_bitrate / rcc->fps ? 2 : 1;
             /* For single-frame VBVs, request that the frame use up the entire VBV. */
@@ -2610,6 +2688,7 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
                 q *= qf;
             }
             q = X264_MAX( q0, q );
+            rcc->dbg_q_fill = q;
         }
 
         /* Check B-frame complexity, and use up any bits that would
@@ -2645,6 +2724,7 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
         if( !rcc->b_vbv_min_rate )
             q = X264_MAX( q0, q );
     }
+    rcc->dbg_q_vbv = q;
 
     return clip_qscale( h, pict_type, q );
 }
@@ -2822,6 +2902,13 @@ static float rate_estimate_qscale( x264_t *h )
             double wanted_bits, overflow = 1;
 
             rcc->last_satd = x264_rc_analyse_slice( h );
+            rcc->dbg_last_q = rcc->last_qscale_for[pict_type];
+            rcc->dbg_abr_buffer = abr_buffer;
+            rcc->dbg_total_bits = total_bits;
+            rcc->dbg_wanted_bits = (h->i_frame + 1 - h->i_thread_frames) / rcc->fps * rcc->bitrate;
+            rcc->dbg_wbw = rcc->wanted_bits_window;
+            rcc->dbg_cplxr = rcc->cplxr_sum;
+            rcc->dbg_rf = rcc->wanted_bits_window / rcc->cplxr_sum;
             rcc->short_term_cplxsum *= 0.5;
             rcc->short_term_cplxcount *= 0.5;
             rcc->short_term_cplxsum += rcc->last_satd / (CLIP_DURATION(h->fenc->f_duration) / BASE_FRAME_DURATION);
@@ -2844,6 +2931,7 @@ static float rate_estimate_qscale( x264_t *h )
             else
             {
                 q = get_qscale( h, &rce, rcc->wanted_bits_window / rcc->cplxr_sum, h->fenc->i_frame );
+                rcc->dbg_q_abr = q;
 
                 /* ABR code can potentially be counterproductive in CBR, so just don't bother.
                  * Don't run it if the frame complexity is zero either. */
@@ -2891,9 +2979,12 @@ static float rate_estimate_qscale( x264_t *h )
             {
                 q = qp2qscale( ABR_INIT_QP ) / fabs( h->param.rc.f_ip_factor );
             }
+            rcc->dbg_q_lstep = q;
+            rcc->dbg_overflow = overflow;
             rcc->qp_novbv = qscale2qp( q );
 
             q = vbv_pass1( h, pict_type, q );
+            rcc->dbg_q_clip = q;
         }
 
         rcc->last_qscale_for[pict_type] =
@@ -2906,6 +2997,7 @@ static float rate_estimate_qscale( x264_t *h )
             rcc->frame_size_planned = qscale2bits(&rce, q);
         else
             rcc->frame_size_planned = predict_size( &rcc->pred[h->sh.i_type], q, rcc->last_satd );
+        rcc->dbg_pred_bits = rcc->frame_size_planned;
 
         /* Apply MinCR and buffer fill restrictions */
         if( rcc->b_vbv )
@@ -2923,6 +3015,7 @@ static float rate_estimate_qscale( x264_t *h )
         }
 
         rcc->frame_size_estimated = rcc->frame_size_planned;
+        rcc->dbg_q_final = q;
         return q;
     }
 }
