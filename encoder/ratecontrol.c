@@ -207,6 +207,7 @@ static int update_vbv( x264_t *h, int bits );
 static void update_vbv_plan( x264_t *h, int overhead );
 static float predict_size( predictor_t *p, float q, float var );
 static void update_predictor( predictor_t *p, float q, float var, float bits );
+static void update_row_predictor( predictor_t *p, float q, float var, float bits );
 
 #define CMP_OPT_FIRST_PASS( opt, param_val )\
 {\
@@ -1805,9 +1806,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     h->fdec->f_row_qp[y] = rc->qpm;
     h->fdec->f_row_qscale[y] = qscale;
 
-    update_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
+    update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
     if( h->sh.i_type != SLICE_TYPE_I && rc->qpm < h->fref[0][0]->f_row_qp[y] )
-        update_predictor( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y] );
+        update_row_predictor( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y] );
 
     /* update ratecontrol per-mbpair in MBAFF */
     if( SLICE_MBAFF && !(y&1) )
@@ -2392,13 +2393,13 @@ static float predict_size( predictor_t *p, float q, float var )
     return (p->coeff*var + p->offset) / (q*p->count);
 }
 
-static void update_predictor( predictor_t *p, float q, float var, float bits )
+static ALWAYS_INLINE void update_predictor_fit( predictor_t *p, float q, float var, float bits, int b_old_offset )
 {
     float range = 1.5;
     if( var < 10 )
         return;
     float old_coeff = p->coeff / p->count;
-    float old_offset = p->offset / p->count;
+    float old_offset = b_old_offset ? p->offset / p->count : 0;
     float new_coeff = X264_MAX( (bits*q - old_offset) / var, p->coeff_min );
     float new_coeff_clipped = x264_clip3f( new_coeff, old_coeff/range, old_coeff*range );
     float new_offset = bits*q - new_coeff_clipped * var;
@@ -2412,6 +2413,17 @@ static void update_predictor( predictor_t *p, float q, float var, float bits )
     p->count  ++;
     p->coeff  += new_coeff;
     p->offset += new_offset;
+}
+
+static void update_predictor( predictor_t *p, float q, float var, float bits )
+{
+    update_predictor_fit( p, q, var, bits, 1 );
+}
+
+/* Rows of a frame differ too much in variance for the old-offset fit. */
+static void update_row_predictor( predictor_t *p, float q, float var, float bits )
+{
+    update_predictor_fit( p, q, var, bits, 0 );
 }
 
 // update VBV after encoding a frame
