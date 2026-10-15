@@ -161,6 +161,7 @@ struct x264_ratecontrol_t
     double slice_size_planned;
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
+    predictor_t row_pred_last[3]; /* the last row of this thread's slice */
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
      * (MBAFF alternates two rows); added at every row end. */
     int row_bits[2];
@@ -930,6 +931,7 @@ int x264_ratecontrol_new( x264_t *h )
             rc->row_preds[i][j].decay = 0.5;
             rc->row_preds[i][j].offset = 0.0;
         }
+        rc->row_pred_last[i] = rc->row_preds[i][0];
     }
     rc->pred_b_from_p->coeff_min = 0.5 / 2;
     rc->pred_b_from_p->coeff = 0.5;
@@ -1631,8 +1633,15 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
 {
     float qscale = qp2qscale( qp );
     float bits = 0;
+    int last = h->i_threadslice_end - 1 - SLICE_MBAFF;
     for( int i = y+1; i < h->i_threadslice_end; i++ )
-        bits += predict_row_size( h, i, qscale );
+    {
+        float pred = predict_row_size( h, i, qscale );
+        /* No row after the last takes up its error: its own predictor too. */
+        if( i >= last )
+            pred = X264_MAX( pred, predict_size( &h->rc->row_pred_last[h->sh.i_type], qscale, h->fdec->i_row_satd[i] ) );
+        bits += pred;
+    }
     return bits * h->rc->epb_scale;
 }
 
@@ -1997,6 +2006,12 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 return -1;
         }
     }
+
+    /* the last row as kept, not its re-encodes */
+    if( b_last_row )
+        for( int i = y - SLICE_MBAFF; i <= y; i++ )
+            update_predictor( &rc->row_pred_last[h->sh.i_type], h->fdec->f_row_qscale[i],
+                              h->fdec->i_row_satd[i], h->fdec->i_row_bits[i] );
 
     rc->qpa_rc_prev = rc->qpa_rc;
     rc->qpa_aq_prev = rc->qpa_aq;
@@ -2973,7 +2988,10 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
         {
             x264_t *t = h->thread[i];
             if( t != h )
+            {
                 memcpy( t->rc->row_preds, rc->row_preds, sizeof(rc->row_preds) );
+                memcpy( t->rc->row_pred_last, rc->row_pred_last, sizeof(rc->row_pred_last) );
+            }
         }
 
     for( int i = 0; i < h->param.i_threads; i++ )
