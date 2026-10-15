@@ -2037,7 +2037,7 @@ static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **f
      * weight's cost ratio reaches the bias) stays a cut unless weighted P clears
      * f_thresh_max, the bias of a GOP at keyint_max. */
     float f_weight_ratio = frame->f_lookahead_weight_ratio[p1-p0-1];
-    if( !res && h->param.b_intra_refresh && f_weight_ratio > 0 )
+    if( BIT_DEPTH > 8 && !res && h->param.b_intra_refresh && f_weight_ratio > 0 )
         res = pcost >= (1.0 - f_bias) * f_weight_ratio * icost && pcost >= (1.0 - f_thresh_max) * icost;
     if( res && real_scenecut )
     {
