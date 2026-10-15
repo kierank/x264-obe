@@ -1014,6 +1014,196 @@ WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
 %endif
 %endif
 
+;-----------------------------------------------------------------------------
+; void mc_X_avg_wN( pixel *dst, intptr_t i_dst_stride, pixel *src1, intptr_t i_src_stride,
+;                   const x264_weight_t *weight, int h, pixel *src2 )
+; mc_X_wN of pixel_avg2_wN( src1, src2 ): pavg, then the op and cache of mc_X_wN.
+; Two rows per iteration; each row writes N px (8-bit N=12: 16).
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+%macro AVG_WEIGHT_ROWS_AVX2 2 ; width, op
+%if %1 & 16
+    movu         m0, [r2]
+    movu         m1, [r2+r3]
+    pavgw        m0, [r6]
+    pavgw        m1, [r6+r3]
+    %2           m0, m0, m3, m4, m5
+    %2           m1, m1, m3, m4, m5
+    movu       [r0], m0
+    movu    [r0+r1], m1
+%endif
+%if %1 & 8
+    %assign wx (%1 & 16)*2
+    movu        xm0, [r2+wx]
+    vinserti128  m0, m0, [r2+r3+wx], 1
+    movu        xm1, [r6+wx]
+    vinserti128  m1, m1, [r6+r3+wx], 1
+    pavgw        m0, m1
+    %2           m0, m0, m3, m4, m5
+    movu    [r0+wx], xm0
+    vextracti128 [r0+r1+wx], m0, 1
+%endif
+%if %1 & 4
+    %assign wx (%1-4)*2
+    movq        xm2, [r2+wx]
+    movhps      xm2, [r2+r3+wx]
+    movq        xm1, [r6+wx]
+    movhps      xm1, [r6+r3+wx]
+    pavgw       xm2, xm1
+    %2          xm2, xm2, xm3, xm4, xm5
+    movq    [r0+wx], xm2
+    movhps [r0+r1+wx], xm2
+%endif
+%endmacro
+
+%macro WEIGHTER_AVG_AVX2 3 ; width, name, op
+cglobal mc_%2_avg_w%1, 7,7,6
+    FIX_STRIDES r1, r3
+    vbroadcasti128 m3, [r4]
+%ifidn %2, offsetadd
+    mova         m4, [pw_pixel_max]
+%elifnidn %2, offsetsub
+    vbroadcasti128 m4, [r4+16]
+    mova         m5, [pw_wclip]
+%endif
+.loop:
+    AVG_WEIGHT_ROWS_AVX2 %1, %3
+    lea          r0, [r0+r1*2]
+    lea          r2, [r2+r3*2]
+    lea          r6, [r6+r3*2]
+    sub         r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+%macro WEIGHTER_AVG_AVX2_ALL 2 ; name, op
+WEIGHTER_AVG_AVX2  4, %1, %2
+WEIGHTER_AVG_AVX2  8, %1, %2
+WEIGHTER_AVG_AVX2 12, %1, %2
+WEIGHTER_AVG_AVX2 16, %1, %2
+WEIGHTER_AVG_AVX2 20, %1, %2
+%endmacro
+
+INIT_YMM avx2
+WEIGHTER_AVG_AVX2_ALL weight, WEIGHT_OP_AVX2
+WEIGHTER_AVG_AVX2_ALL weight_ns, WEIGHT_NS_OP_AVX2
+WEIGHTER_AVG_AVX2_ALL offsetadd, OFFSET_add_AVX2
+WEIGHTER_AVG_AVX2_ALL offsetsub, OFFSET_sub_AVX2
+
+%else ; !HIGH_BIT_DEPTH
+; m2 = 0, m3 = scale<<(8-denom) (<<7 more on the fast path), m4 = offset;
+; offsets: m3 = |offset| bytes
+%macro AVG8_OP_AVX2 4 ; dst words, fast, scale, offset
+%if %2 == 0
+    psllw        %1, 7
+%endif
+    pmulhrsw     %1, %3
+    paddw        %1, %4
+%endmacro
+
+%macro AVG8_ROWS_AVX2 2 ; width, op: 0/1 weight (fast), add, sub
+%if %1 >= 16
+    movu        xm0, [r2]
+    vinserti128  m0, m0, [r2+r3], 1
+    movu        xm1, [r6]
+    vinserti128  m1, m1, [r6+r3], 1
+    pavgb        m0, m1
+%ifnum %2
+    punpckhbw    m1, m0, m2
+    punpcklbw    m0, m2
+    AVG8_OP_AVX2 m0, %2, m3, m4
+    AVG8_OP_AVX2 m1, %2, m3, m4
+    packuswb     m0, m1
+%else
+    p%2usb       m0, m3
+%endif
+    movu       [r0], xm0
+    vextracti128 [r0+r1], m0, 1
+%endif
+%if %1 == 8
+    movq        xm0, [r2]
+    movhps      xm0, [r2+r3]
+    movq        xm1, [r6]
+    movhps      xm1, [r6+r3]
+    pavgb       xm0, xm1
+%ifnum %2
+    pmovzxbw     m0, xm0
+    AVG8_OP_AVX2 m0, %2, m3, m4
+    vextracti128 xm1, m0, 1
+    packuswb    xm0, xm1
+%else
+    p%2usb      xm0, xm3
+%endif
+    movq       [r0], xm0
+    movhps  [r0+r1], xm0
+%endif
+%if %1 & 4
+    %assign wx %1-4
+    movd        xm0, [r2+wx]
+    pinsrd      xm0, xm0, [r2+r3+wx], 1
+    movd        xm1, [r6+wx]
+    pinsrd      xm1, xm1, [r6+r3+wx], 1
+    pavgb       xm0, xm1
+%ifnum %2
+    pmovzxbw    xm0, xm0
+    AVG8_OP_AVX2 xm0, %2, xm3, xm4
+    packuswb    xm0, xm0
+%else
+    p%2usb      xm0, xm3
+%endif
+    movd    [r0+wx], xm0
+    pextrd [r0+r1+wx], xm0, 1
+%endif
+%endmacro
+
+%macro AVG8_LOOP_AVX2 2 ; width, op
+.loop%2:
+    AVG8_ROWS_AVX2 %1, %2
+    lea          r0, [r0+r1*2]
+    lea          r2, [r2+r3*2]
+    lea          r6, [r6+r3*2]
+    sub         r5d, 2
+    jg .loop%2
+    RET
+%endmacro
+
+; mc_weight_wN's ssse3 cache: the fast path when cachea < 256
+%macro WEIGHTER_AVG8_AVX2 1 ; width
+cglobal mc_weight_avg_w%1, 7,7,5
+    vbroadcasti128 m3, [r4]
+    vbroadcasti128 m4, [r4+16]
+    pxor         m2, m2
+    cmp byte [r4+1], 0
+    jz .fast
+    AVG8_LOOP_AVX2 %1, 0
+.fast:
+    psllw        m3, 7
+    AVG8_LOOP_AVX2 %1, 1
+%endmacro
+
+%macro OFFSET_AVG8_AVX2 2 ; width, add/sub
+cglobal mc_offset%2_avg_w%1, 7,7,4
+    vbroadcasti128 m3, [r4]
+    AVG8_LOOP_AVX2 %1, %2
+%endmacro
+
+INIT_YMM avx2
+WEIGHTER_AVG8_AVX2  4
+WEIGHTER_AVG8_AVX2  8
+WEIGHTER_AVG8_AVX2 16
+WEIGHTER_AVG8_AVX2 20
+OFFSET_AVG8_AVX2  4, add
+OFFSET_AVG8_AVX2  8, add
+OFFSET_AVG8_AVX2 16, add
+OFFSET_AVG8_AVX2 20, add
+OFFSET_AVG8_AVX2  4, sub
+OFFSET_AVG8_AVX2  8, sub
+OFFSET_AVG8_AVX2 16, sub
+OFFSET_AVG8_AVX2 20, sub
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
 
 ;=============================================================================
 ; pixel avg

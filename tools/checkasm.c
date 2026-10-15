@@ -1811,6 +1811,120 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
     report( "mc luma :" );
 
+    /* weighted luma MC: mc_luma and get_ref with a weight against C at every
+     * qpel fraction, the sizes of MC and of the subpel ME (bw+4 x bh, bw x bh+1);
+     * the weights cover each kernel x264_weight_cache picks: weight, ns
+     * (scale < 1<<denom), offsetadd, offsetsub, the SSE2 fallback (high bit
+     * depth: scale<<(BIT_DEPTH-denom) > 0x7fff, scale < 0), the 8-bit fast path */
+    static const int16_t luma_w[][3] = /* scale, denom, offset */
+    {
+        { 45, 5, 5 }, { 127, 7, -128 }, { 33, 5, 127 }, { 31, 5, -1 }, { 20, 5, 7 }, { 1, 7, -1 },
+        { 0, 3, -128 }, { 32, 5, 9 }, { 1, 0, 127 }, { 4, 2, 0 }, { 1, 0, -9 }, { 16, 4, -128 },
+        { 31, 0, -3 }, { 32, 0, 3 }, { 127, 0, 127 }, { 2, 0, -128 }, { -5, 3, 10 }, { -128, 7, 127 },
+    };
+    x264_t *hlc = x264_malloc( sizeof(x264_t) );
+    x264_t *hla = x264_malloc( sizeof(x264_t) );
+    if( !hlc || !hla )
+        return -1;
+    hlc->mc = mc_c;
+    hla->mc = mc_a;
+    int luma_w_new = mc_a.mc_luma != mc_ref.mc_luma || mc_a.get_ref != mc_ref.get_ref ||
+                     mc_a.weight_cache != mc_ref.weight_cache || mc_a.weight != mc_ref.weight ||
+                     mc_a.offsetadd != mc_ref.offsetadd || mc_a.offsetsub != mc_ref.offsetsub;
+#define MC_TEST_LUMA_W( w, h ) \
+        if( !(w&(w-1)) && h<=16 && !(h&1) ) \
+        { \
+            set_func_name( "mc_luma_w_%dx%d", w, h ); \
+            for( int i = 0; i < 1024; i++ ) \
+                pbuf3[i] = pbuf4[i] = 0xCD; \
+            call_c1( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, &wc ); \
+            call_a1( mc_a.mc_luma, dst2, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, &wa ); \
+            if( memcmp( pbuf3, pbuf4, 1024 * sizeof(pixel) ) ) \
+            { \
+                fprintf( stderr, "mc_luma[mv(%d,%d) %2dx%-2d] s:%d d:%d o:%d [FAILED]\n", dx, dy, w, h, \
+                         wc.i_scale, wc.i_denom, wc.i_offset ); \
+                ok = 0; \
+            } \
+        } \
+        { \
+            pixel *ref = dst2; \
+            intptr_t ref_stride = 32; \
+            int w_checked = ( ( sizeof(pixel) == 2 && (w == 12 || w == 20)) ? w-2 : w ); \
+            set_func_name( "get_ref_w_%dx%d", w_checked, h ); \
+            for( int i = 0; i < 1024; i++ ) \
+                pbuf3[i] = pbuf4[i] = 0xCD; \
+            call_c1( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, &wc ); \
+            ref = (pixel*)call_a1( mc_a.get_ref, ref, &ref_stride, src2, (intptr_t)64, dx, dy, w, h, &wa ); \
+            for( int i = 0; i < h; i++ ) \
+                if( memcmp( dst1+i*32, ref+i*ref_stride, w_checked * sizeof(pixel) ) ) \
+                { \
+                    fprintf( stderr, "get_ref[mv(%d,%d) %2dx%-2d] s:%d d:%d o:%d [FAILED]\n", dx, dy, w_checked, h, \
+                             wc.i_scale, wc.i_denom, wc.i_offset ); \
+                    ok = 0; \
+                    break; \
+                } \
+        }
+    ok = 1; used_asm = 0;
+    if( luma_w_new )
+    {
+        used_asm = 1;
+        int wi = 0;
+        for( int dy = -8; dy < 8; dy++ )
+            for( int dx = -128; dx < 128; dx++ )
+            {
+                if( rand()&15 ) continue;
+                if( !HIGH_BIT_DEPTH && luma_w[wi][0] < 0 )
+                    wi = 0;
+                x264_weight_t wc = { .i_scale = luma_w[wi][0], .i_denom = luma_w[wi][1], .i_offset = luma_w[wi][2] };
+                x264_weight_t wa = wc;
+                wi = (wi + 1) % ARRAY_ELEMS(luma_w);
+                mc_c.weight_cache( hlc, &wc );
+                mc_a.weight_cache( hla, &wa );
+                MC_TEST_LUMA_W( 20, 16 );
+                MC_TEST_LUMA_W( 20, 8 );
+                MC_TEST_LUMA_W( 16, 17 );
+                MC_TEST_LUMA_W( 16, 16 );
+                MC_TEST_LUMA_W( 16, 9 );
+                MC_TEST_LUMA_W( 16, 8 );
+                MC_TEST_LUMA_W( 12, 16 );
+                MC_TEST_LUMA_W( 12, 8 );
+                MC_TEST_LUMA_W( 12, 4 );
+                MC_TEST_LUMA_W( 8, 17 );
+                MC_TEST_LUMA_W( 8, 16 );
+                MC_TEST_LUMA_W( 8, 9 );
+                MC_TEST_LUMA_W( 8, 8 );
+                MC_TEST_LUMA_W( 8, 5 );
+                MC_TEST_LUMA_W( 8, 4 );
+                MC_TEST_LUMA_W( 4, 9 );
+                MC_TEST_LUMA_W( 4, 8 );
+                MC_TEST_LUMA_W( 4, 5 );
+                MC_TEST_LUMA_W( 4, 4 );
+            }
+        /* benchmark: get_ref at a qpel mv (a two-plane average), per weight kind */
+        static const int16_t bench_w[4][3] = { { 45, 5, 5 }, { 20, 5, 7 }, { 32, 5, 9 }, { 32, 5, -9 } };
+        static const char *bench_name[4] = { "weight", "weight_ns", "offsetadd", "offsetsub" };
+        static const int8_t bench_size[8][2] = { {16,16}, {16,17}, {20,16}, {8,8}, {8,9}, {12,8}, {4,4}, {4,5} };
+        for( int k = 0; k < 4; k++ )
+        {
+            x264_weight_t wc = { .i_scale = bench_w[k][0], .i_denom = bench_w[k][1], .i_offset = bench_w[k][2] };
+            x264_weight_t wa = wc;
+            mc_c.weight_cache( hlc, &wc );
+            mc_a.weight_cache( hla, &wa );
+            for( int j = 0; j < 8; j++ )
+            {
+                int w = bench_size[j][0], h = bench_size[j][1];
+                intptr_t ref_stride = 64;
+                set_func_name( "get_ref_%s_%dx%d", bench_name[k], w, h );
+                call_c2( mc_c.mc_luma, dst1, (intptr_t)64, src2, (intptr_t)64, 1, 3, w, h, &wc );
+                call_a2( mc_a.get_ref, dst2, &ref_stride, src2, (intptr_t)64, 1, 3, w, h, &wa );
+            }
+        }
+    }
+    x264_free( hlc );
+    x264_free( hla );
+    report( "mc luma weighted :" );
+#undef MC_TEST_LUMA_W
+
     ok = 1; used_asm = 0;
     for( int dy = -1; dy < 9; dy++ )
         for( int dx = -128; dx < 128; dx++ )
@@ -1953,6 +2067,83 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
     }
     report( "mc offsetsub :" );
+
+    /* weightavgfn against C: (src1+src2+1)>>1, then mc_c.weight. Every width,
+     * the subpel ME's odd heights, unaligned sources and destination, edge
+     * weights (each kernel x264_weight_cache picks, the edges of the SSE2
+     * fallback and of the 8-bit fast path), and nothing written past the
+     * w (8-bit w12: 16) x even-height area of 32-stride rows */
+    ok = 1; used_asm = 0;
+    {
+        enum { WA_SS = 64, WA_DS = 32, WA_SRC = WA_SS*20+64, WA_DST = WA_DS*20+64 };
+        ALIGNED_16( pixel wa_src[2][WA_SRC] );
+        ALIGNED_16( pixel wa_avg[WA_DST] );
+        ALIGNED_16( pixel wa_c[WA_DST] );
+        ALIGNED_16( pixel wa_a[WA_DST] );
+        static const int wa_h[] = { 2, 4, 5, 8, 9, 16, 17 };
+        x264_t *hwa = x264_malloc( sizeof(x264_t) );
+        x264_t *hwr = x264_malloc( sizeof(x264_t) );
+        if( !hwa || !hwr )
+            return -1;
+        hwa->mc = mc_a;
+        hwr->mc = mc_ref;
+        for( int j = 0; j < 2; j++ )
+            for( int i = 0; i < WA_SRC; i++ )
+            {
+                int r = rand();
+                wa_src[j][i] = r&8 ? -(r&1) & PIXEL_MAX : r&4 ? (r&1 ? PIXEL_MAX-1 : 1) : rand() & PIXEL_MAX;
+            }
+        int bench_done[3] = {0};
+        for( int s = HIGH_BIT_DEPTH ? -128 : 0; s <= 127 && ok; s++ )
+            for( int o = -128; o <= 127 && ok; o++ )
+                for( int d = 0; d <= 7 && ok; d++ )
+                {
+                    int edge = (s == 0 || s == -1 || s == -128 || s == 127 || s == (1<<d)-1 || s == 1<<d || s == (1<<d)+1 ||
+                                s == (32<<d)-1 || s == 32<<d || s == 0x7fff >> (BIT_DEPTH-d) || s == (0x7fff >> (BIT_DEPTH-d))+1) &&
+                               (o == -128 || o == -1 || o == 0 || o == 1 || o == 127);
+                    if( !edge && (rand() & 1023) )
+                        continue;
+                    x264_weight_t wa = { .i_scale = s, .i_denom = d, .i_offset = o };
+                    x264_weight_t wr = wa;
+                    mc_a.weight_cache( hwa, &wa );
+                    mc_ref.weight_cache( hwr, &wr );
+                    if( !wa.weightavgfn || wa.weightavgfn == wr.weightavgfn )
+                        continue;
+                    used_asm = 1;
+                    int kind = s == 1<<d ? 1 + (o < 0) : 0;
+                    for( int i = 1; i <= 5 && ok; i++ )
+                        for( int hi = 0; hi < ARRAY_ELEMS(wa_h) && ok; hi++ )
+                        {
+                            int w = X264_MAX( i*4, 4 );
+                            int fw = !HIGH_BIT_DEPTH && w == 12 ? 16 : w;
+                            int h = wa_h[hi];
+                            int rows = (h+1)&~1;
+                            pixel *s1 = wa_src[0] + (rand()&15) + (rand()&1)*WA_SS;
+                            pixel *s2 = wa_src[1] + (rand()&15) + (rand()&1)*WA_SS;
+                            int doff = WA_DS + (rand()&1 ? rand()&7 : 0);
+                            for( int k = 0; k < WA_DST; k++ )
+                                wa_c[k] = wa_a[k] = rand() & PIXEL_MAX;
+                            for( int y = 0; y < rows; y++ )
+                                for( int x = 0; x < fw; x++ )
+                                    wa_avg[y*WA_DS+x] = (s1[y*WA_SS+x] + s2[y*WA_SS+x] + 1) >> 1;
+                            mc_c.weight[fw>>2]( wa_c+doff, WA_DS, wa_avg, WA_DS, &wa, rows );
+                            set_func_name( "%s_avg_w%d", kind == 0 ? "weight" : kind == 1 ? "offsetadd" : "offsetsub", w );
+                            call_a1( wa.weightavgfn[i], wa_a+doff, (intptr_t)WA_DS, s1, (intptr_t)WA_SS, &wa, h, s2 );
+                            if( memcmp( wa_c, wa_a, WA_DST*sizeof(pixel) ) )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "weightavgfn[%d] [FAILED] s:%d o:%d d:%d h:%d doff:%d\n", i, s, o, d, h, doff );
+                            }
+                            if( h == 16 && !bench_done[kind] && s >= 0 && s * (1<<(8-d)) < 512 )
+                                call_a2( wa.weightavgfn[i], wa_a+doff, (intptr_t)WA_DS, s1, (intptr_t)WA_SS, &wa, h, s2 );
+                        }
+                    if( s >= 0 && s * (1<<(8-d)) < 512 )
+                        bench_done[kind] = 1;
+                }
+        x264_free( hwa );
+        x264_free( hwr );
+    }
+    report( "mc weight_avg :" );
 
     ok = 1; used_asm = 0;
     if( mc_a.weight_plane != mc_ref.weight_plane )

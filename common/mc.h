@@ -35,6 +35,8 @@
 
 struct x264_weight_t;
 typedef void (* weight_fn_t)( pixel *, intptr_t, pixel *,intptr_t, const struct x264_weight_t *, int );
+/* ( dst, i_dst, src1, i_src, weight, height, src2 ) */
+typedef void (* weight_avg_fn_t)( pixel *, intptr_t, pixel *, intptr_t, const struct x264_weight_t *, int, pixel * );
 typedef struct x264_weight_t
 {
     /* aligning the first member is a gcc hack to force the struct to be
@@ -45,6 +47,9 @@ typedef struct x264_weight_t
     int32_t i_scale;
     int32_t i_offset;
     weight_fn_t *weightfn;
+    /* set by weight_cache, read only with weightfn: weightfn of the qpel average
+     * (src1+src2+1)>>1, the w x h of pixel_avg2 then weightfn in place, or NULL */
+    weight_avg_fn_t *weightavgfn;
 } ALIGNED_16( x264_weight_t );
 
 #define x264_weight_none x264_template(weight_none)
