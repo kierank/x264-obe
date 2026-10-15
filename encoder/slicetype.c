@@ -899,6 +899,14 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
         ref_mean[plane]  = (float) ref->i_pixel_sum[plane] / (fenc->i_lines[!!plane] * fenc->i_width[!!plane]) / (1 << (BIT_DEPTH - 8));
     }
 
+    /* Cut: the lowres P cost coded more than half of the scored mbs intra. Chroma
+     * weights are then the guess, without the cost pass. */
+    int d = i_delta_index + 1;
+    int i_scored = h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?
+                   (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
+    int b_cut = !b_lookahead && d <= X264_BFRAME_MAX+1 && fenc->i_cost_est[d][0] >= 0 &&
+                fenc->i_intra_mbs[d] * 2 > i_scored;
+
     int chroma_denom = 7;
     if( !b_lookahead )
     {
@@ -944,6 +952,26 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
             {
                 weights[1].weightfn = weights[2].weightfn = NULL;
                 break;
+            }
+            if( b_cut )
+            {
+                int scale = weights[plane].i_scale;
+                int offset = fenc_mean[plane] - ref_mean[plane] * scale / (1 << chroma_denom);
+                if( offset < -128 || offset > 127 )
+                {
+                    offset = x264_clip3( offset, -128, 127 );
+                    scale = ref_mean[plane] > 0 ? (1 << chroma_denom) * (fenc_mean[plane] - offset) / ref_mean[plane] + 0.5f : 0;
+                    scale = x264_clip3( scale, 0, 127 );
+                }
+                if( scale == 1 << chroma_denom && !offset )
+                {
+                    SET_WEIGHT( weights[plane], 0, 1, 0, 0 );
+                }
+                else
+                {
+                    SET_WEIGHT( weights[plane], 1, scale, chroma_denom, offset );
+                }
+                continue;
             }
         }
         else
