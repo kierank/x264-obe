@@ -1708,7 +1708,32 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
     max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
     float size_of_other_slices = 0;
-    if( h->param.b_sliced_threads )
+    if( h->param.b_sliced_threads && rc->b_row_plan )
+    {
+        /* Each other slice: its share of the others' plan, moved to its estimate
+         * by its own progress, since a slice still coding corrects its own error. */
+        float frame_size_planned = rc->frame_size_planned - rc->frame_size_planned * max_frame_error;
+        float size_of_other_slices_planned = X264_MIN( frame_size_planned, max_frame_size ) - rc->slice_size_planned;
+        float bits_so_far_of_other_slices = 0;
+        float planned_sum = 0;
+        for( int i = 0; i < h->param.i_threads; i++ )
+            if( h != h->thread[i] )
+            {
+                planned_sum += h->thread[i]->rc->slice_size_planned;
+                bits_so_far_of_other_slices += h->thread[i]->rc->bits_so_far;
+            }
+        size_of_other_slices_planned = X264_MAX( size_of_other_slices_planned, bits_so_far_of_other_slices );
+        for( int i = 0; i < h->param.i_threads; i++ )
+            if( h != h->thread[i] )
+            {
+                x264_ratecontrol_t *rct = h->thread[i]->rc;
+                float planned = planned_sum > 0 ? size_of_other_slices_planned * rct->slice_size_planned / planned_sum : 0;
+                float estimated = rct->frame_size_estimated;
+                float progress = estimated > 0 ? x264_clip3f( rct->bits_so_far / estimated, 0.0, 1.0 ) : 0;
+                size_of_other_slices += planned + (estimated - planned) * progress;
+            }
+    }
+    else if( h->param.b_sliced_threads )
     {
         float bits_so_far_of_other_slices = 0;
         for( int i = 0; i < h->param.i_threads; i++ )
