@@ -1810,13 +1810,14 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
          * rows of the next pair in MBAFF, where the qp is decided per pair) doesn't keep
          * the qp of expensive rows above it: it comes down towards the frame's qp while
          * the frame stays within its plan and VBV.  It doesn't dive on frame room that
-         * the predictor, fit at higher qp, prices too low: at least the frame's qp with a
-         * one-frame VBV, else 2 qp_steps under it.  The raise tests apply as to any row. */
+         * the predictor, fit at higher qp, prices too low: at least the frame's qp - 2 with
+         * a one-frame VBV, else 2 qp_steps under it.  The raise tests apply as to any row. */
         if( rc->b_row_plan && slice_size_planned > 0
             && X264_MAX( rc->row_plan_bits[y+1], rc->row_plan_bits[y+1+SLICE_MBAFF] ) * 16 < rc->row_plan_mean )
         {
             float qp_frame = rc->row_plan_qp_frame;
-            qp_min = X264_MAX( qp_min, rc->single_frame_vbv ? qp_frame : qp_frame - 2 * h->param.rc.i_qp_step );
+            float qp_floor = rc->single_frame_vbv ? qp_frame - 2 : qp_frame - 2 * h->param.rc.i_qp_step;
+            qp_min = X264_MAX( qp_min, qp_floor );
             while( rc->qpm - step_size >= qp_frame )
             {
                 float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm - step_size ) + size_of_other_slices;
@@ -1827,9 +1828,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 rc->qpm -= step_size;
                 b1 = b2;
             }
-            if( rc->single_frame_vbv && rc->qpm < qp_frame )
+            if( rc->single_frame_vbv && rc->qpm < qp_floor )
             {
-                rc->qpm = qp_frame;
+                rc->qpm = qp_floor;
                 b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
             }
         }
