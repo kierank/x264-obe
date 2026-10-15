@@ -1792,20 +1792,31 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
         /* b_row_plan: a cheap next row (row_plan under 1/16 of the frame's mean row; both
          * rows of the next pair in MBAFF, where the qp is decided per pair) is
-         * coded between the frame's qp - 2 qp_steps and the frame's qp: it neither keeps
-         * the qp of expensive rows above it nor dives on frame room that the predictor,
-         * fit at higher qp, prices too low.  Only the underflow loop goes above. */
+         * coded at most at the frame's qp, and at least at it with a one-frame VBV, else
+         * 2 qp_steps under it: it neither keeps the qp of expensive rows above it nor
+         * dives on frame room that the predictor, fit at higher qp, prices too low.  It
+         * comes down from above only while the frame stays within its plan and VBV. */
         if( rc->b_row_plan && slice_size_planned > 0
             && X264_MAX( rc->row_plan_bits[y+1], rc->row_plan_bits[y+1+SLICE_MBAFF] ) * 16 < rc->row_plan_mean )
         {
             float qp_frame = rc->row_plan_qp_frame;
-            qp_min = X264_MAX( qp_min, qp_frame - 2 * h->param.rc.i_qp_step );
-            qp_max = X264_MIN( qp_max, qp_frame );
-            if( rc->qpm > qp_frame )
+            qp_min = X264_MAX( qp_min, rc->single_frame_vbv ? qp_frame : qp_frame - 2 * h->param.rc.i_qp_step );
+            while( rc->qpm - step_size >= qp_frame )
+            {
+                float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm - step_size ) + size_of_other_slices;
+                if( b2 >= max_frame_size || b2 > rc->frame_size_planned + rc_tol
+                    || (b2 > rc->frame_size_planned && rc->qpm - step_size < rc->qp_novbv)
+                    || b2 > rc->buffer_fill - buffer_left_planned * 0.5f )
+                    break;
+                rc->qpm -= step_size;
+                b1 = b2;
+            }
+            if( rc->single_frame_vbv && rc->qpm < qp_frame )
             {
                 rc->qpm = qp_frame;
                 b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
             }
+            qp_max = X264_MIN( qp_max, X264_MAX( qp_frame, rc->qpm ) );
         }
 
         while( rc->qpm < qp_max
