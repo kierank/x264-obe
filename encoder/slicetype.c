@@ -816,6 +816,8 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
     SET_WEIGHT( weights[0], 0, 1, 0, 0 );
     SET_WEIGHT( weights[1], 0, 1, 0, 0 );
     SET_WEIGHT( weights[2], 0, 1, 0, 0 );
+    if( b_lookahead )
+        fenc->f_lookahead_weight_ratio[i_delta_index] = 0;
     int chroma_initted = 0;
     x264_weight_src_t ws;
     x264_weight_ops_t ops;
@@ -1017,6 +1019,8 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_FAKE && weights[0].weightfn && !plane )
             fenc->f_weighted_cost_delta[i_delta_index] = (float)minscore / origscore;
+        if( b_lookahead && !plane )
+            fenc->f_lookahead_weight_ratio[i_delta_index] = (float)minscore / origscore;
     }
 
     /* Optimize and unify denominator */
@@ -2027,6 +2031,14 @@ static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **f
     }
 
     res = pcost >= (1.0 - f_bias) * icost;
+    /* With intra refresh the bias leaves I frames to cuts P can't predict at all, and a
+     * weight matching a new scene's brightness gets a cut under it: P barely cheaper than I
+     * and slower.  So a frame the weight alone made P (the P cost over the lookahead
+     * weight's cost ratio reaches the bias) stays a cut unless weighted P clears
+     * f_thresh_max, the bias of a GOP at keyint_max. */
+    float f_weight_ratio = frame->f_lookahead_weight_ratio[p1-p0-1];
+    if( !res && h->param.b_intra_refresh && f_weight_ratio > 0 )
+        res = pcost >= (1.0 - f_bias) * f_weight_ratio * icost && pcost >= (1.0 - f_thresh_max) * icost;
     if( res && real_scenecut )
     {
         int imb = frame->i_intra_mbs[p1-p0];

@@ -890,6 +890,7 @@ x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )
 
     memset( frame->weight, 0, sizeof(frame->weight) );
     memset( frame->f_weighted_cost_delta, 0, sizeof(frame->f_weighted_cost_delta) );
+    memset( frame->f_lookahead_weight_ratio, 0, sizeof(frame->f_lookahead_weight_ratio) );
 
     return frame;
 }
