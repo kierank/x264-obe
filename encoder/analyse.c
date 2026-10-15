@@ -317,6 +317,17 @@ static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
     h->mb.i_chroma_qp = h->chroma_qp_table[qp];
 }
 
+/* Whether the lowres P cost coded more than half of the scored mbs intra */
+static int x264_mb_intra_heavy( x264_t *h )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    int i_scored = h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?
+                   (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
+    return h->frames.b_have_lowres && d <= h->param.i_bframe + 1 && f->i_cost_est[d][0] >= 0 &&
+           f->i_intra_mbs[d] * 2 > i_scored;
+}
+
 static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
 {
     int subme = h->param.analyse.i_subpel_refine - (h->sh.i_type == SLICE_TYPE_B);
@@ -475,7 +486,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
         /* Fast intra decision */
         if( a->b_early_terminate && h->mb.i_mb_xy - h->sh.i_first_mb > 4 )
         {
-            /* Always run in fast-intra mode for subme < 3 */
+            /* Always run in fast-intra mode for subme < 3, except in intra heavy P */
             if( h->mb.i_subpel_refine > 2 &&
               ( IS_INTRA( h->mb.i_mb_type_left[0] ) ||
                 IS_INTRA( h->mb.i_mb_type_top ) ||
@@ -484,7 +495,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 (h->sh.i_type == SLICE_TYPE_P && IS_INTRA( h->fref[0][0]->mb_type[h->mb.i_mb_xy] )) ||
                 (h->mb.i_mb_xy - h->sh.i_first_mb < 3*(h->stat.frame.i_mb_count[I_4x4] + h->stat.frame.i_mb_count[I_8x8] + h->stat.frame.i_mb_count[I_16x16] + h->stat.frame.i_mb_count[I_PCM])) ) )
             { /* intra is likely */ }
-            else
+            else if( h->mb.i_subpel_refine > 2 || h->sh.i_type != SLICE_TYPE_P || !x264_mb_intra_heavy( h ) )
             {
                 a->b_fast_intra = 1;
             }
