@@ -1739,6 +1739,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
     max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
     float size_of_other_slices = 0;
+    /* the other slices at their own estimates, not moved towards their plans: for the VBV limit */
+    float size_of_other_slices_vbv = 0;
     if( h->param.b_sliced_threads && rc->b_row_plan )
     {
         /* Each other slice: its share of the others' plan, moved to its estimate
@@ -1760,8 +1762,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 x264_ratecontrol_t *rct = h->thread[i]->rc;
                 float planned = planned_sum > 0 ? size_of_other_slices_planned * rct->slice_size_planned / planned_sum : 0;
                 float estimated = rct->frame_size_estimated;
-                float progress = estimated > 0 ? x264_clip3f( rct->bits_so_far / estimated, 0.0, 1.0 ) : 0;
-                size_of_other_slices += planned + (estimated - planned) * progress;
+                float coded = rct->bits_so_far;
+                float progress = estimated > 0 ? x264_clip3f( coded / estimated, 0.0, 1.0 ) : 0;
+                float size = planned + (estimated - planned) * progress;
+                size_of_other_slices += size;
+                size_of_other_slices_vbv += X264_MAX3( size, estimated, coded );
             }
     }
     else if( h->param.b_sliced_threads )
@@ -1770,8 +1775,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         for( int i = 0; i < h->param.i_threads; i++ )
             if( h != h->thread[i] )
             {
-                size_of_other_slices += h->thread[i]->rc->frame_size_estimated;
-                bits_so_far_of_other_slices += h->thread[i]->rc->bits_so_far;
+                float estimated = h->thread[i]->rc->frame_size_estimated;
+                float coded = h->thread[i]->rc->bits_so_far;
+                size_of_other_slices += estimated;
+                bits_so_far_of_other_slices += coded;
+                size_of_other_slices_vbv += X264_MAX( estimated, coded );
             }
         float weight = x264_clip3f( (bits_so_far_of_other_slices + rc->frame_size_estimated) / (size_of_other_slices + rc->frame_size_estimated), 0.0, 1.0 );
         float frame_size_planned = rc->frame_size_planned - rc->frame_size_planned * max_frame_error;
@@ -1779,6 +1787,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         size_of_other_slices_planned = X264_MAX( size_of_other_slices_planned, bits_so_far_of_other_slices );
         size_of_other_slices = (size_of_other_slices - size_of_other_slices_planned) * weight + size_of_other_slices_planned;
     }
+    /* 0 unless an other slice's estimate is over its share of the blend */
+    float vbv_extra = X264_MAX( size_of_other_slices_vbv - size_of_other_slices, 0.f );
     if( y < h->i_threadslice_end-1 )
     {
         /* B-frames shouldn't use lower QP than their reference frames. */
@@ -1821,7 +1831,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             while( rc->qpm - step_size >= qp_frame )
             {
                 float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm - step_size ) + size_of_other_slices;
-                if( b2 >= max_frame_size || b2 > rc->frame_size_planned + rc_tol
+                if( b2 + vbv_extra >= max_frame_size || b2 > rc->frame_size_planned + rc_tol
                     || (b2 > rc->frame_size_planned && rc->qpm - step_size < rc->qp_novbv)
                     || b2 > rc->buffer_fill - buffer_left_planned * 0.5f )
                     break;
@@ -1859,7 +1869,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         rc->qpm += step_size;
 
         /* avoid VBV underflow or MinCR violation */
-        while( rc->qpm < qp_absolute_max && (b1 > max_frame_size) )
+        while( rc->qpm < qp_absolute_max && (b1 + vbv_extra > max_frame_size) )
         {
             rc->qpm += step_size;
             b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
