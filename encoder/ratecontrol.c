@@ -1790,25 +1790,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( !rc->b_vbv_min_rate )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
-        /* b_row_plan: bits the coded rows came in under their share of the slice plan
-         * aren't for this slice's other rows (the other slices see them through
-         * frame_size_estimated), and cheap rows go at most 2 under the frame's qp. */
-        float surplus = 0;
-        if( rc->b_row_plan && slice_size_planned > 0 )
-        {
-            float done = 0;
-            float all = 0;
-            for( int i = h->i_threadslice_start; i < h->i_threadslice_end; i++ )
-            {
-                all += rc->row_plan_bits[i];
-                if( i <= y )
-                    done += rc->row_plan_bits[i];
-            }
-            if( all > 0 )
-                surplus = X264_MAX( slice_size_planned * done / all - bits_so_far, 0 );
-            if( rc->row_plan_bits[y+1] * 16 < rc->row_plan_mean )
-                qp_min = X264_MAX( qp_min, rc->row_plan_qp_frame - 2 );
-        }
+        /* b_row_plan: cheap rows go at most 2 under the frame's qp. */
+        if( rc->b_row_plan && slice_size_planned > 0 && rc->row_plan_bits[y+1] * 16 < rc->row_plan_mean )
+            qp_min = X264_MAX( qp_min, rc->row_plan_qp_frame - 2 );
 
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
@@ -1820,14 +1804,12 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         float b_max = b1 + ((rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f - b1) * trust_coeff;
-        if( surplus > 0 )
-            b_max = b1 + surplus + ((rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f - b1 - surplus) * trust_coeff;
         rc->qpm -= step_size;
         float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
                && (rc->qpm > h->fdec->f_row_qp[0] || rc->single_frame_vbv)
-               && (b2 + surplus < max_frame_size)
-               && ((b2 + surplus < rc->frame_size_planned * 0.8f) || (b2 + surplus < b_max)) )
+               && (b2 < max_frame_size)
+               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
         {
             b1 = b2;
             rc->qpm -= step_size;
