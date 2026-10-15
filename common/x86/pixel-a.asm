@@ -9323,6 +9323,54 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
 %endif ; ARCH_X86_64
 
 ;=============================================================================
+; x264_weights_analyse luma
+;=============================================================================
+;-----------------------------------------------------------------------------
+; void weightp_dc8x8( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 )
+;-----------------------------------------------------------------------------
+; The sums of pix1 - pix2 of the 4x4 blocks, in raster order: word column sums of rows
+; 0-3 and 4-7 (within +-4 * pixel_max), pmaddwd into pairs, then pairs of pairs.
+%macro WEIGHTP_DC_ROW 1 ; acc
+%if HIGH_BIT_DEPTH
+    movu       m2, [r1]
+    movu       m3, [r3]
+%else
+    movh       m2, [r1]
+    movh       m3, [r3]
+    punpcklbw  m2, m4
+    punpcklbw  m3, m4
+%endif
+    psubw      m2, m3
+    paddw      %1, m2
+    add        r1, r2
+    add        r3, r4
+%endmacro
+
+INIT_XMM sse2
+cglobal weightp_dc8x8, 5,5,6
+    FIX_STRIDES r2, r4
+    pxor       m0, m0
+    pxor       m1, m1
+%if HIGH_BIT_DEPTH == 0
+    pxor       m4, m4
+%endif
+%rep 4
+    WEIGHTP_DC_ROW m0
+%endrep
+%rep 4
+    WEIGHTP_DC_ROW m1
+%endrep
+    mova       m5, [pw_1]
+    pmaddwd    m0, m5
+    pmaddwd    m1, m5
+    mova       m2, m0
+    shufps     m0, m1, q2020
+    shufps     m2, m1, q3131
+    paddd      m0, m2
+    movu     [r0], m0
+    RET
+
+;=============================================================================
 ; x264_weights_analyse chroma block statistics
 ;=============================================================================
 %if ARCH_X86_64
@@ -9366,11 +9414,15 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
 
 ;-----------------------------------------------------------------------------
 ; void weightp_sum8( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom )
+; void weightp_sum8_clip( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
+;                         int offset )
 ;-----------------------------------------------------------------------------
 ; Per 8 x height block, the sum of ( x * scale + ((1 << denom) >> 1) ) >> denom: pmaddwd
 ; of { x, 1 } by { scale, round }. One block a lane, 4 registers a pass, n rounded up to
 ; mmsize/4. m5 = pw_1, xm6 = denom, m7 = { scale, round }, m10 = block order.
-%macro WEIGHTP_SUM8_ROW 2 ; acc, offset
+; _clip: each + offset, clipped to [0,pixel_max] as by mc weight. m9 = offset,
+; m11 = pixel_max, m12 = 0.
+%macro WEIGHTP_SUM8_ROW 3 ; acc, offset, clip
     LOAD_PIXW  m4, [r7+%2]
     punpckhwd  m8, m4, m5
     punpcklwd  m4, m5
@@ -9378,12 +9430,29 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
     pmaddwd    m8, m7
     psrad      m4, xm6
     psrad      m8, xm6
+%if %3
+    paddd      m4, m9
+    paddd      m8, m9
+    pmaxsd     m4, m12
+    pmaxsd     m8, m12
+    pminsd     m4, m11
+    pminsd     m8, m11
+%endif
     paddd      %1, m4
     paddd      %1, m8
 %endmacro
 
-%macro WEIGHTP_SUM8 0
+%macro WEIGHTP_SUM8 1 ; clip
+%if %1
+cglobal weightp_sum8_clip, 8,9,13
+    movd      xm9, r7d
+    vpbroadcastd m9, xm9
+    pcmpeqd   m11, m11
+    psrld     m11, 32-BIT_DEPTH
+    pxor      m12, m12
+%else
 cglobal weightp_sum8, 7,9,11
+%endif
     FIX_STRIDES r2
     xor       r7d, r7d
     bts       r7d, r6d
@@ -9403,10 +9472,10 @@ cglobal weightp_sum8, 7,9,11
     mov        r7, r1
     mov       r8d, r4d
 .loopy:
-    WEIGHTP_SUM8_ROW m0, 0
-    WEIGHTP_SUM8_ROW m1, mmsize/2*SIZEOF_PIXEL
-    WEIGHTP_SUM8_ROW m2, mmsize*SIZEOF_PIXEL
-    WEIGHTP_SUM8_ROW m3, mmsize*3/2*SIZEOF_PIXEL
+    WEIGHTP_SUM8_ROW m0, 0, %1
+    WEIGHTP_SUM8_ROW m1, mmsize/2*SIZEOF_PIXEL, %1
+    WEIGHTP_SUM8_ROW m2, mmsize*SIZEOF_PIXEL, %1
+    WEIGHTP_SUM8_ROW m3, mmsize*3/2*SIZEOF_PIXEL, %1
     add        r7, r2
     dec       r8d
     jg .loopy
@@ -9605,7 +9674,8 @@ cglobal weightp_sum8_nv, 6,8,16
 %endmacro
 
 INIT_YMM avx2
-WEIGHTP_SUM8
+WEIGHTP_SUM8 0
+WEIGHTP_SUM8 1
 WEIGHTP_STATS8
 WEIGHTP_SUM8_NV
 %endif ; ARCH_X86_64

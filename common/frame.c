@@ -238,6 +238,10 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
                 PREALLOC( frame->i_inv_qscale_factor, i_mb_count * sizeof(uint16_t) );
         }
 
+        if( h->param.analyse.i_weighted_pred && !PARAM_INTERLACED &&
+            (i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16) )
+            PREALLOC( frame->i_weight_csum, 2 * ((h->mb.i_mb_width + 15) & ~15) * h->mb.i_mb_height * sizeof(int32_t) );
+
         /* mbtree asm can overread the input buffers, make sure we don't read outside of allocated memory. */
         if( h->frames.b_have_lowres )
             prealloc_size += NATIVE_ALIGN;
@@ -883,6 +887,7 @@ x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )
     frame->b_last_minigop_bframe = 0;
     frame->i_reference_count = 1;
     frame->b_intra_calculated = 0;
+    frame->b_weight_csum = 0;
     frame->b_scenecut = 1;
     frame->b_keyframe = 0;
     frame->b_corrupt = 0;

@@ -933,6 +933,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     ok = 1; used_asm = 0;
     if( pixel_asm.weightp_stats8 != pixel_ref.weightp_stats8 ||
         pixel_asm.weightp_sum8 != pixel_ref.weightp_sum8 ||
+        pixel_asm.weightp_sum8_clip != pixel_ref.weightp_sum8_clip ||
         pixel_asm.weightp_sum8_nv != pixel_ref.weightp_sum8_nv )
     {
         /* random and near PIXEL_MAX; outputs compared up to n, as the asm may do n
@@ -981,6 +982,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                             }
                         }
                     }
+                    if( pixel_asm.weightp_sum8_clip != pixel_ref.weightp_sum8_clip )
+                    {
+                        set_func_name( "weightp_sum8_clip" );
+                        used_asm = 1;
+                        /* the extreme offsets, 0 and a random one */
+                        for( int denom = 0; denom <= 7 && ok; denom++ )
+                            for( int o = 0; o < 4 && ok; o++ )
+                            {
+                                int scale = denom == 7 ? 127 : denom == 6 ? 0 : rand() & 127;
+                                int offset = (o == 0 ? -128 : o == 1 ? 127 : o == 2 ? 0 : (rand() & 255) - 128) << (BIT_DEPTH-8);
+                                memset( out, 0, 4*64*sizeof(int32_t) );
+                                call_c( pixel_c.weightp_sum8_clip, outc[0], src, stride, n, height, scale, denom, offset );
+                                call_a( pixel_asm.weightp_sum8_clip, outa[0], src, stride, n, height, scale, denom, offset );
+                                if( memcmp( outc[0], outa[0], n*sizeof(int32_t) ) )
+                                {
+                                    ok = 0;
+                                    fprintf( stderr, "weightp_sum8_clip FAILED: src %d n %d height %d scale %d denom %d offset %d\n",
+                                             k, n, height, scale, denom, offset );
+                                }
+                            }
+                    }
                     if( pixel_asm.weightp_sum8_nv != pixel_ref.weightp_sum8_nv )
                     {
                         set_func_name( "weightp_sum8_nv" );
@@ -1000,6 +1022,39 @@ static int check_pixel( int cpu_ref, int cpu_new )
         x264_free( out );
     }
     report( "weightp stats :" );
+
+    ok = 1; used_asm = 0;
+    if( pixel_asm.weightp_dc8x8 != pixel_ref.weightp_dc8x8 )
+    {
+        ALIGNED_16( pixel lo[8*64] );
+        ALIGNED_16( pixel hi[8*64] );
+        for( int i = 0; i < 8*64; i++ )
+        {
+            lo[i] = rand() & 1;
+            hi[i] = PIXEL_MAX - (rand() & 1);
+        }
+        set_func_name( "weightp_dc8x8" );
+        used_asm = 1;
+        /* k = 0: random, k = 1, 2: differences near +-PIXEL_MAX; misaligned too */
+        for( int k = 0; k < 3 && ok; k++ )
+            for( int s = 0; s < 4 && ok; s++ )
+                for( int j = 0; j < 3 && ok; j++ )
+                {
+                    intptr_t i1 = s&1 ? 64 : 8;
+                    intptr_t i2 = s&2 ? 64 : 8;
+                    pixel *pix1 = (k == 0 ? pbuf1 : k == 1 ? hi : lo) + j;
+                    pixel *pix2 = (k == 0 ? pbuf2 : k == 1 ? lo : hi) + 3*j;
+                    int32_t dc_c[4], dc_a[4];
+                    call_c( pixel_c.weightp_dc8x8, dc_c, pix1, i1, pix2, i2 );
+                    call_a( pixel_asm.weightp_dc8x8, dc_a, pix1, i1, pix2, i2 );
+                    if( memcmp( dc_c, dc_a, sizeof(dc_c) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "weightp_dc8x8 FAILED: k %d i1 %d i2 %d j %d\n", k, (int)i1, (int)i2, j );
+                    }
+                }
+    }
+    report( "weightp dc :" );
 
 #define TEST_INTRA_X3( name, i8x8, ... ) \
     if( pixel_asm.name && pixel_asm.name != pixel_ref.name ) \
