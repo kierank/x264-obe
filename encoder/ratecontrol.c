@@ -2181,13 +2181,18 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
 
     if( rc->b_abr && !rc->b_pir_cut )
     {
+        /* A frame the row VBV lifted far above its plan counts at most 1.5x the plan's
+         * qscale: at its own, one outlier raised the next frames' ABR QP by 4. */
+        float qscale = qp2qscale( rc->qpa_rc );
+        if( rc->b_vbv )
+            qscale = X264_MIN( qscale, 1.5f * qp2qscale( rc->qp ) );
         if( h->sh.i_type != SLICE_TYPE_B )
-            rc->cplxr_sum += bits * qp2qscale( rc->qpa_rc ) / rc->last_rceq;
+            rc->cplxr_sum += bits * qscale / rc->last_rceq;
         else
         {
             /* Depends on the fact that B-frame's QP is an offset from the following P-frame's.
              * Not perfectly accurate with B-refs, but good enough. */
-            rc->cplxr_sum += bits * qp2qscale( rc->qpa_rc ) / (rc->last_rceq * fabs( h->param.rc.f_pb_factor ));
+            rc->cplxr_sum += bits * qscale / (rc->last_rceq * fabs( h->param.rc.f_pb_factor ));
         }
         rc->cplxr_sum *= rc->cbr_decay;
         rc->wanted_bits_window += h->fenc->f_duration * rc->bitrate;
