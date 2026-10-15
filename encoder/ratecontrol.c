@@ -1609,7 +1609,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float step_size = 0.5f;
     float buffer_left_planned = rc->buffer_fill - rc->frame_size_planned;
     float slice_size_planned = h->param.b_sliced_threads ? rc->slice_size_planned : rc->frame_size_planned;
-    float max_frame_error = X264_MAX( 0.05f, 1.0f / h->mb.i_mb_height );
+    float max_frame_error = X264_MAX( 0.02f, 1.0f / h->mb.i_mb_height );
     float size_of_other_slices = 0;
     if( h->param.b_sliced_threads )
     {
