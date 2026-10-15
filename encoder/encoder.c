@@ -3103,6 +3103,8 @@ static intptr_t x264_slice_write( x264_t *h )
     }
     else
         last_emu_check = h->out.bs.p;
+    if( h->param.rc.i_vbv_buffer_size )
+        x264_ratecontrol_slice_header( h, bs_pos( &h->out.bs ) - starting_bits );
     h->mb.i_last_qp = h->sh.i_qp;
     h->mb.i_last_dqp = 0;
     h->mb.field_decoding_flag = 0;
@@ -3462,6 +3464,8 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
+    if( h->param.rc.i_vbv_buffer_size )
+        x264_ratecontrol_slices_start( h );
     if( h->param.b_sliced_threads )
     {
         h->i_threadslice_nal = h->out.i_nal;
@@ -3769,7 +3773,7 @@ int     x264_encoder_encode( x264_t *h,
 {
     x264_t *thread_current, *thread_prev, *thread_oldest;
     int i_nal_type, i_nal_ref_idc, i_global_qp;
-    int overhead = NALU_OVERHEAD;
+    int overhead = 0;
 
 #if HAVE_OPENCL
     if( h->opencl.b_fatal_error )
@@ -4274,8 +4278,10 @@ int     x264_encoder_encode( x264_t *h,
         overhead += h->out.nal[h->out.i_nal-1].i_payload + h->out.nal[h->out.i_nal-1].i_padding + SEI_OVERHEAD;
     }
 
-    /* Init the rate control */
-    /* FIXME: Include slice header bit cost. */
+    /* Init the rate control. The row VBV counts the slice NALs. */
+    if( h->param.rc.i_vbv_buffer_size )
+        for( int i = 0; i < h->out.i_nal; i++ )
+            overhead += x264_ratecontrol_nal_epb( h->out.nal[i].p_payload, h->out.nal[i].i_payload );
     x264_ratecontrol_start( h, h->fenc->i_qpplus1, overhead*8 );
     i_global_qp = x264_ratecontrol_qp( h );
 
