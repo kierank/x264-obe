@@ -1690,8 +1690,10 @@ void x264_ratecontrol_slices_start( x264_t *h )
 
 #if defined(__ATOMIC_ACQUIRE)
 #define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
+#define RC_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
 #else
 #define RC_LOAD(p) (*(volatile int *)(p))
+#define RC_STORE(p,v) (*(volatile int *)(p) = (v))
 #endif
 
 static float other_slices_size( x264_t *h )
@@ -1701,6 +1703,22 @@ static float other_slices_size( x264_t *h )
         if( h != h->thread[i] )
             size += h->thread[i]->rc->frame_size_estimated;
     return size;
+}
+
+/* This thread slice's own room: its planned size and its share, by plan, of what
+ * the final thread slices left of theirs or took over them. */
+static float slice_budget( x264_t *h )
+{
+    float left = 0, running = 0;
+    for( int i = 0; i < h->param.i_threads; i++ )
+    {
+        x264_ratecontrol_t *rct = h->thread[i]->rc;
+        if( h != h->thread[i] && RC_LOAD( &rct->b_slice_done ) )
+            left += rct->slice_size_planned - rct->frame_size_estimated;
+        else
+            running += rct->slice_size_planned;
+    }
+    return h->rc->slice_size_planned * (1.f + left / X264_MAX( running, 1.f ));
 }
 
 /* QP that should take a row of bits at qp down by excess with bits ~ 1/qscale:
@@ -1890,6 +1908,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( rc->single_frame_vbv )
             qp_min = X264_MAX( qp_min, rc->qp - 6.0f );
 
+        /* A one-frame VBV with thread slices: each running slice owns the room it planned. */
+        int b_own = b_threadslices && rc->single_frame_vbv && rc->slice_size_planned > 0;
+        float own_budget = b_own ? slice_budget( h ) : 0;
+
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
                    (b1 > rc->frame_size_planned && rc->qpm < rc->qp_novbv) ||
@@ -1943,8 +1965,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             }
         }
 
-        /* If the current row was large enough to cause a large QP jump, try re-encoding it. */
-        if( rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row )
+        /* If the current row was large enough to cause a large QP jump, try re-encoding it;
+         * with thread slices, only in one over its own room: the others' excess is theirs. */
+        if( rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row
+            && (!b_own || bits_so_far + predict_row_size_to_end( h, y, prev_row_qp ) > own_budget) )
         {
             /* Bump QP to halfway in between... close enough. */
             rc->qpm = x264_clip3f( (prev_row_qp + rc->qpm)*0.5f, prev_row_qp + 1.0f, qp_max );
@@ -1969,7 +1993,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
          * published its size before counting; if they were not final above, check again. */
         if( b_threadslices && !rc->b_slice_done )
         {
-            rc->b_slice_done = 1;
+            RC_STORE( &rc->b_slice_done, 1 );
             int done = x264_pthread_fetch_and_add( &h->thread[0]->rc->slices_done, 1, &h->fdec->mutex ) + 1;
             if( done == h->param.i_threads && !others_final && can_reencode_row
                 && last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_max, qp_hard_max ) )
@@ -2944,6 +2968,8 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
     float qscale = qp2qscale( rc->qpm );
     /* before the workers start */
     h->thread[0]->rc->slices_done = 0;
+    for( int i = 0; i < h->param.i_threads; i++ )
+        h->thread[i]->rc->b_slice_done = 0;
 
     /* Initialize row predictors */
     if( h->i_frame == 0 )
