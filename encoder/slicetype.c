@@ -904,11 +904,8 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 #endif
             /* the unweighted cost and those of the weights tried below, in one pass */
             mcbuf = x264_weight_cost_init_luma( h, &ws, fenc, ref, h->mb.p_weight_buf[0] );
-            /* i_intra_cost is at 8-bit scale.  With intra refresh keep the clamp unscaled, as
-             * before 7418a30a: scenecut decides on the lookahead cost alone (bias
-             * f_thresh_min/4) and the scaled clamp turned cuts into weighted P frames, slower
-             * and worse under a one frame VBV. */
-            ws.intra_cost_shift = h->param.b_intra_refresh ? 0 : BIT_DEPTH - 8;
+            /* i_intra_cost is at 8-bit scale */
+            ws.intra_cost_shift = BIT_DEPTH - 8;
             x264_weight_trials_luma( h, &ops, &lt, fenc_mean[plane], ref_mean[plane], minscale, mindenom,
                                      scale_dist, offset_dist, b_lookahead );
             x264_weight_luma_search( h, &ops, &ws, mcbuf, &lt, lcost );
