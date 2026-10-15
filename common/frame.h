@@ -136,6 +136,7 @@ typedef struct x264_frame
     float   *f_qp_offset;
     float   *f_qp_offset_aq;
     int     b_intra_calculated;
+    int     b_unweighted_cut; /* P: the unweighted lowres cost of the final weightp analysis is near intra */
     uint16_t *i_intra_cost;
     uint16_t *i_propagate_cost;
     uint16_t *i_inv_qscale_factor;
