@@ -68,6 +68,12 @@ void x264_ratecontrol_start( x264_t *, int i_force_qp, int overhead );
 int  x264_ratecontrol_slice_type( x264_t *, int i_frame );
 #define x264_ratecontrol_set_weights x264_template(ratecontrol_set_weights)
 void x264_ratecontrol_set_weights( x264_t *h, x264_frame_t *frm );
+#define x264_ratecontrol_slices_start x264_template(ratecontrol_slices_start)
+void x264_ratecontrol_slices_start( x264_t *h );
+#define x264_ratecontrol_slice_header x264_template(ratecontrol_slice_header)
+void x264_ratecontrol_slice_header( x264_t *h, int header_bits );
+#define x264_ratecontrol_nal_epb x264_template(ratecontrol_nal_epb)
+int  x264_ratecontrol_nal_epb( uint8_t *p, int size );
 #define x264_ratecontrol_mb x264_template(ratecontrol_mb)
 int  x264_ratecontrol_mb( x264_t *, int bits );
 #define x264_ratecontrol_qp x264_template(ratecontrol_qp)
