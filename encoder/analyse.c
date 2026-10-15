@@ -318,7 +318,7 @@ static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
 }
 
 /* Whether the lowres P cost coded more than half of the scored mbs intra */
-static int x264_mb_intra_heavy( x264_t *h )
+static int x264_mb_lowres_intra_heavy( x264_t *h )
 {
     x264_frame_t *f = h->fenc;
     int d = f->i_bframes + 1;
@@ -495,7 +495,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 (h->sh.i_type == SLICE_TYPE_P && IS_INTRA( h->fref[0][0]->mb_type[h->mb.i_mb_xy] )) ||
                 (h->mb.i_mb_xy - h->sh.i_first_mb < 3*(h->stat.frame.i_mb_count[I_4x4] + h->stat.frame.i_mb_count[I_8x8] + h->stat.frame.i_mb_count[I_16x16] + h->stat.frame.i_mb_count[I_PCM])) ) )
             { /* intra is likely */ }
-            else if( h->mb.i_subpel_refine > 2 || h->sh.i_type != SLICE_TYPE_P || !x264_mb_intra_heavy( h ) )
+            else if( h->mb.i_subpel_refine > 2 || h->sh.i_type != SLICE_TYPE_P || !x264_mb_lowres_intra_heavy( h ) )
             {
                 a->b_fast_intra = 1;
             }
