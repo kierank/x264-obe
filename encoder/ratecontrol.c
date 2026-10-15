@@ -159,6 +159,7 @@ struct x264_ratecontrol_t
     double frame_size_maximum;  /* Maximum frame size due to MinCR */
     double frame_size_planned;
     double slice_size_planned;
+    int high_qp_frames;         /* consecutive frames planned near QP_MAX_SPEC */
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
@@ -1578,6 +1579,7 @@ void x264_ratecontrol_start( x264_t *h, int i_force_qp, int overhead )
     rc->qpa_rc = rc->qpa_rc_prev =
     rc->qpa_aq = rc->qpa_aq_prev = 0;
     rc->qp = x264_clip3( q + 0.5f, 0, QP_MAX );
+    rc->high_qp_frames = rc->qp >= QP_MAX_SPEC - 10 ? rc->high_qp_frames + 1 : 0;
     h->fdec->f_qp_avg_rc =
     h->fdec->f_qp_avg_aq =
     rc->qpm = q;
@@ -1902,9 +1904,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
          * than one below the other running thread slices, so cheap slices, which get
          * little for it, don't take the room a hard one needs; down to the frame's QP
          * in any case, so a hard slice at a high QP doesn't pin the others there. Not
-         * when the frame is planned near QP_MAX_SPEC: a frame full at a high QP needs one
-         * slice to lead the descent, or its references never get better. */
-        if( b_threadslices && rc->single_frame_vbv && rc->qp < QP_MAX_SPEC - 10 )
+         * once frames have been planned near QP_MAX_SPEC for 50 in a row: content full at a
+         * high QP needs one slice to lead the descent, or its references never get better;
+         * a fade passes through such QPs only briefly. */
+        if( b_threadslices && rc->single_frame_vbv && rc->high_qp_frames < 50 )
             qp_min = X264_MAX( qp_min, X264_MIN( other_slices_max_qp( h ) - 1.0f, rc->qp ) );
         /* Nor more than 6 below the frame's QP with any threading: rows after a hard
          * band found its room and went to near-lossless QPs while the band starved. */
