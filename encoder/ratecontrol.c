@@ -1854,7 +1854,12 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         size_of_other_slices_planned = X264_MAX( size_of_other_slices_planned, bits_so_far_of_other_slices );
         size_of_other_slices = (size_of_other_slices - size_of_other_slices_planned) * weight + size_of_other_slices_planned;
     }
-    float vbv_limit = X264_MIN( rc->frame_size_maximum, rc->buffer_fill );
+    /* A one-frame VBV keeps half the frame error as headroom, also when the
+     * other thread slices are final: the last rows can't always give back more. */
+    float vbv_limit = rc->buffer_fill;
+    if( rc->single_frame_vbv )
+        vbv_limit -= rc->buffer_rate * max_frame_error * 0.5f;
+    vbv_limit = X264_MIN( rc->frame_size_maximum, vbv_limit );
     /* Every other thread slice final: their sizes are exact. */
     int others_final = b_threadslices
                        && RC_LOAD( &h->thread[0]->rc->slices_done ) - rc->b_slice_done == h->param.i_threads - 1;
@@ -1966,17 +1971,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     {
         h->rc->frame_size_estimated = bits_so_far;
 
-        /* A one-frame VBV keeps half the frame error as headroom, unless every
-         * other thread slice is final and the room left is exact. */
-        double last_row_max = rc->buffer_fill;
-        if( rc->single_frame_vbv && !others_final )
-            last_row_max -= rc->buffer_rate * max_frame_error * 0.5f;
-
         /* Last-ditch attempt: if the last row of the frame underflowed the VBV,
          * try again. */
         if( can_reencode_row
-            && last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - X264_MIN( rc->frame_size_maximum, last_row_max ),
-                                  qp_max, qp_hard_max ) )
+            && last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, qp_max, qp_hard_max ) )
             return -1;
 
         /* Final now. The slice counted last sees every other size final, as each
