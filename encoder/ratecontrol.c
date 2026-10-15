@@ -241,8 +241,10 @@ static ALWAYS_INLINE uint32_t ac_energy_var( uint64_t sum_ssd, int shift, uint32
     return ssd - ((uint64_t)sum * sum >> shift);
 }
 
+/* csum: NULL, or where the u sum of the MB goes, and the v sum one plane of
+ * frame->i_weight_csum on */
 static ALWAYS_INLINE uint32_t ac_energy_plane( x264_t *h, int mb_x, int mb_y, x264_frame_t *frame, uint32_t *pixel_sum, uint64_t *pixel_ssd,
-                                               int i, int b_chroma, int b_field, int b_store )
+                                               int i, int b_chroma, int b_field, int b_store, int32_t *csum )
 {
     int height = b_chroma ? 16>>CHROMA_V_SHIFT : 16;
     int stride = frame->i_stride[i];
@@ -257,8 +259,15 @@ static ALWAYS_INLINE uint32_t ac_energy_plane( x264_t *h, int mb_x, int mb_y, x2
         int shift = 7 - CHROMA_V_SHIFT;
 
         h->mc.load_deinterleave_chroma_fenc( pix, frame->plane[1] + offset, stride, height );
-        return ac_energy_var( h->pixf.var[chromapix]( pix,               FENC_STRIDE ), shift, pixel_sum, pixel_ssd, 1, b_store )
-             + ac_energy_var( h->pixf.var[chromapix]( pix+FENC_STRIDE/2, FENC_STRIDE ), shift, pixel_sum, pixel_ssd, 2, b_store );
+        uint64_t u = h->pixf.var[chromapix]( pix,               FENC_STRIDE );
+        uint64_t v = h->pixf.var[chromapix]( pix+FENC_STRIDE/2, FENC_STRIDE );
+        if( csum )
+        {
+            csum[0] = (uint32_t)u;
+            csum[((h->mb.i_mb_width + 15) & ~15) * h->mb.i_mb_height] = (uint32_t)v;
+        }
+        return ac_energy_var( u, shift, pixel_sum, pixel_ssd, 1, b_store )
+             + ac_energy_var( v, shift, pixel_sum, pixel_ssd, 2, b_store );
     }
     else
         return ac_energy_var( h->pixf.var[PIXEL_16x16]( frame->plane[i] + offset, stride ), 8, pixel_sum, pixel_ssd, i, b_store );
@@ -279,32 +288,36 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
         /* We don't know the super-MB mode we're going to pick yet, so
          * simply try both and pick the lower of the two. */
         uint32_t var_interlaced, var_progressive;
-        var_interlaced   = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, 1, 1 );
-        var_progressive  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, 0, 0 );
+        var_interlaced   = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, 1, 1, NULL );
+        var_progressive  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, 0, 0, NULL );
         if( CHROMA444 )
         {
-            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, 1, 1 );
-            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, 0, 0 );
-            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, 1, 1 );
-            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, 0, 0 );
+            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, 1, 1, NULL );
+            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, 0, 0, NULL );
+            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, 1, 1, NULL );
+            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, 0, 0, NULL );
         }
         else
         {
-            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, 1, 1 );
-            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, 0, 0 );
+            var_interlaced  += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, 1, 1, NULL );
+            var_progressive += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, 0, 0, NULL );
         }
         var = X264_MIN( var_interlaced, var_progressive );
     }
     else
     {
-        var  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, PARAM_INTERLACED, 1 );
+        var  = ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 0, 0, PARAM_INTERLACED, 1, NULL );
         if( CHROMA444 )
         {
-            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, PARAM_INTERLACED, 1 );
-            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, PARAM_INTERLACED, 1 );
+            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 0, PARAM_INTERLACED, 1, NULL );
+            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 2, 0, PARAM_INTERLACED, 1, NULL );
         }
         else
-            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, PARAM_INTERLACED, 1 );
+        {
+            /* allocated progressive only */
+            int32_t *csum = frame->i_weight_csum ? frame->i_weight_csum + mb_y * ((h->mb.i_mb_width + 15) & ~15) + mb_x : NULL;
+            var += ac_energy_plane( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd, 1, 1, PARAM_INTERLACED, 1, csum );
+        }
     }
     x264_emms();
     return var;
@@ -362,6 +375,9 @@ void x264_adaptive_quant_frame_rows( x264_t *h, x264_frame_t *frame, float *quan
  * has run on every MB row and frame->i_pixel_sum/ssd hold the totals. */
 void x264_adaptive_quant_frame_end( x264_t *h, x264_frame_t *frame, float *quant_offsets )
 {
+    /* _rows filled it, as weightp makes them call x264_ac_energy_mb */
+    frame->b_weight_csum = !!frame->i_weight_csum;
+
     /* Degenerate cases */
     if( h->param.rc.i_aq_mode == X264_AQ_NONE || h->param.rc.f_aq_strength == 0 )
     {
