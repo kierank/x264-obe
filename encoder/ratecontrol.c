@@ -1790,9 +1790,21 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( !rc->b_vbv_min_rate )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
-        /* b_row_plan: cheap rows go at most 2 under the frame's qp. */
+        /* b_row_plan: a cheap next row (row_plan under 1/16 of the frame's mean row) is
+         * coded between the frame's qp - 2 qp_steps and the frame's qp: it neither keeps
+         * the qp of expensive rows above it nor dives on frame room that the predictor,
+         * fit at higher qp, prices too low.  Only the underflow loop goes above. */
         if( rc->b_row_plan && slice_size_planned > 0 && rc->row_plan_bits[y+1] * 16 < rc->row_plan_mean )
-            qp_min = X264_MAX( qp_min, rc->row_plan_qp_frame - 2 );
+        {
+            float qp_frame = rc->row_plan_qp_frame;
+            qp_min = X264_MAX( qp_min, qp_frame - 2 * h->param.rc.i_qp_step );
+            qp_max = X264_MIN( qp_max, qp_frame );
+            if( rc->qpm > qp_frame )
+            {
+                rc->qpm = qp_frame;
+                b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
+            }
+        }
 
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
