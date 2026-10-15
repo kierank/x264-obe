@@ -1903,14 +1903,15 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( !rc->b_vbv_min_rate )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
-        /* A one-frame VBV lowers no row more than 6 below the frame's QP: rows after a
-         * hard band found its room and went to near-lossless QPs while the band starved. */
-        if( rc->single_frame_vbv )
-            qp_min = X264_MAX( qp_min, rc->qp - 6.0f );
-
         /* A one-frame VBV with thread slices: each running slice owns the room it planned. */
         int b_own = b_threadslices && rc->single_frame_vbv && rc->slice_size_planned > 0;
         float own_budget = b_own ? slice_budget( h ) : 0;
+
+        /* A one-frame VBV lowers no row more than 6 below the frame's QP, 12 in a slice
+         * kept to its own room: rows after a hard band found its room and went to
+         * near-lossless QPs while the band starved. */
+        if( rc->single_frame_vbv )
+            qp_min = X264_MAX( qp_min, rc->qp - (b_own ? 12.0f : 6.0f) );
 
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
