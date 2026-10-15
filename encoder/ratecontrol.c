@@ -1900,10 +1900,13 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
         /* Last-ditch attempt: if the last row of the frame underflowed the VBV,
          * try again. */
+        double row_max = X264_MIN( rc->frame_size_maximum, last_row_max );
         if( rc->qpm < qp_max && can_reencode_row
-            && (bits_so_far + size_of_other_slices > X264_MIN( rc->frame_size_maximum, last_row_max )) )
+            && (bits_so_far + size_of_other_slices > row_max) )
         {
-            rc->qpm = qp_max;
+            /* Over by the whole row or more: every step would end at the max, so go there. */
+            float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+            rc->qpm = bits_so_far + size_of_other_slices - row_max >= row_bits ? qp_absolute_max : qp_max;
             rc->qpa_rc = rc->qpa_rc_prev;
             rc->qpa_aq = rc->qpa_aq_prev;
             h->fdec->i_row_bits[y] = 0;
