@@ -87,13 +87,6 @@ static void x264_encoder_thread_init( x264_t *h );
 #define SLICE_LOAD(p)    (*(volatile int *)(p))
 #define SLICE_STORE(p,v) (*(volatile int *)(p) = (v))
 #endif
-#if defined(__GNUC__) && (ARCH_X86 || ARCH_X86_64)
-#define SLICE_PAUSE()    __asm__ __volatile__( "pause" )
-#else
-#define SLICE_PAUSE()
-#endif
-/* Pauses before a worker sleeps: a few us. */
-#define SLICE_SPIN 256
 
 typedef struct
 {
@@ -144,9 +137,6 @@ static void x264_slicepool_snapshot( x264_t *h )
 
 /* Multiple of 16, the x264_weight_scale_plane strip height. */
 #define WEIGHT_BAND_ROWS 64
-/* Pauses before a band waiter sleeps, as the other slice pool waits: rack01
- * measured 16*SLICE_SPIN at +0.7..+2.8% CPU on fades. */
-#define WEIGHT_SPIN SLICE_SPIN
 
 /* Main thread, before dispatch. */
 static void x264_slicepool_weight_init( x264_t *h )
@@ -179,8 +169,6 @@ static void x264_slicepool_weight( x264_t *h, x264_slicepool_t *pool )
             x264_pthread_cond_broadcast( &pool->weight_cv );
     }
     x264_pthread_mutex_unlock( &pool->weight_mutex );
-    for( int spin = 0; spin < WEIGHT_SPIN && SLICE_LOAD( &pool->i_weight_done ) < bands; spin++ )
-        SLICE_PAUSE();
     if( SLICE_LOAD( &pool->i_weight_done ) < bands )
     {
         x264_pthread_mutex_lock( &pool->weight_mutex );
@@ -213,8 +201,6 @@ static void *x264_slice_worker_thread( void *arg )
 
     for( ;; )
     {
-        for( int spin = 0; spin < SLICE_SPIN && SLICE_LOAD( &w->i_go ) == gen && !SLICE_LOAD( &w->b_exit ); spin++ )
-            SLICE_PAUSE();
         x264_pthread_mutex_lock( &w->mutex );
         while( SLICE_LOAD( &w->i_go ) == gen && !SLICE_LOAD( &w->b_exit ) )
         {
