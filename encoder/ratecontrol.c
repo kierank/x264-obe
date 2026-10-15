@@ -2244,8 +2244,11 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
                 pirbits += h->thread[i]->rc->dbg_pir_bits;
             }
         }
+        int dbg_b = h->fenc->i_bframes + 1;
+        float dbg_pcr = h->sh.i_type == SLICE_TYPE_P && h->fenc->i_cost_est[0][0] > 0
+                      ? (float)h->fenc->i_cost_est[dbg_b][0] / h->fenc->i_cost_est[0][0] : 0;
         predictor_t *p = &h->thread[0]->rc->pred[h->sh.i_type];
-        x264_log( h, X264_LOG_DEBUG, "vbvdbg frm=%d %c kf=%d pir=%d-%d/%d satd=%d pird=%d piri=%d"
+        x264_log( h, X264_LOG_DEBUG, "vbvdbg frm=%d %c kf=%d pir=%d-%d/%d satd=%d pcr=%.3f pird=%d piri=%d"
                   " | lastq=%.2f abrq=%.2f rf=%.4g cplxr=%.4g wbw=%.4g ovf=%.3f tot=%.0f want=%.0f abrbuf=%.0f lstepq=%.2f"
                   " | reactq=%.2f bpred=%.0f fillq=%.2f vbvq=%.2f clipq=%.2f finq=%.2f qp0=%.2f novbv=%.2f"
                   " | fill=%.0f plan=%.0f pbits=%.0f est=%.0f"
@@ -2253,7 +2256,7 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
                   " | pred%s %.4g/%.4g/%.3f -> %.4g/%.4g/%.3f\n",
                   h->i_frame, slice_type_to_char[h->sh.i_type], h->fenc->b_keyframe,
                   h->fdec->i_pir_start_col, h->fdec->i_pir_end_col, h->fdec->i_frames_since_pir,
-                  rc->last_satd, h->fdec->i_dbg_pir_satd, h->fdec->i_dbg_pir_intra,
+                  rc->last_satd, dbg_pcr, h->fdec->i_dbg_pir_satd, h->fdec->i_dbg_pir_intra,
                   DBGQP( rc->dbg_last_q ), DBGQP( rc->dbg_q_abr ), rc->dbg_rf, rc->dbg_cplxr, rc->dbg_wbw, rc->dbg_overflow,
                   rc->dbg_total_bits, rc->dbg_wanted_bits, rc->dbg_abr_buffer, DBGQP( rc->dbg_q_lstep ),
                   DBGQP( rc->dbg_q_react ), rc->dbg_bits_react, DBGQP( rc->dbg_q_fill ), DBGQP( rc->dbg_q_vbv ),
