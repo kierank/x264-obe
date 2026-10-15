@@ -2304,8 +2304,25 @@ static int update_vbv( x264_t *h, int bits )
     x264_ratecontrol_t *rct = h->thread[0]->rc;
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
+    float qscale = qp2qscale( rcc->qpa_rc );
+    /* b_row_plan: the qscale the frame's SATD was coded at, as bits ~ satd / qscale
+     * sums over rows, not that of the mean mb qp, which counts the mbs of cheap rows
+     * that carry almost none of the bits. */
+    if( rcc->b_row_plan && rcc->b_vbv )
+    {
+        double satd = 0;
+        double satd_q = 0;
+        for( int y = 0; y < h->mb.i_mb_height; y++ )
+            if( h->fdec->f_row_qscale[y] > 0 )
+            {
+                satd += h->fdec->i_row_satd[y];
+                satd_q += h->fdec->i_row_satd[y] / h->fdec->f_row_qscale[y];
+            }
+        if( satd_q > 0 )
+            qscale = satd / satd_q;
+    }
     if( rcc->last_satd >= h->mb.i_mb_count )
-        update_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
+        update_predictor( &rct->pred[h->sh.i_type], qscale, rcc->last_satd, bits );
 
     if( !rcc->b_vbv )
         return filler;
