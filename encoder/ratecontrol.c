@@ -163,6 +163,9 @@ struct x264_ratecontrol_t
     int b_row_plan;             /* thread slices planned by row, since the first balanced split */
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
+    float row_plan_scale;       /* b_row_plan: this slice's bits / row_plan's, on its coded rows */
+    float row_plan_level;       /* b_row_plan: frame plan / row_plan's, this frame */
+    float row_plan_prior;       /* b_row_plan: mean row of this slice, by row_plan */
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
      * (MBAFF alternates two rows); added at every row end. */
     int row_bits[2];
@@ -1595,7 +1598,9 @@ static float predict_row_size( x264_t *h, int y, float qscale )
     /* average between two predictors:
      * absolute SATD, and scaled bit cost of the colocated row in the previous frame */
     x264_ratecontrol_t *rc = h->rc;
-    float pred_s = predict_size( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y] );
+    float pred_s = rc->b_row_plan
+                 ? predict_size( &rc->row_plan[h->sh.i_type * h->mb.i_mb_height + y], qscale, h->fdec->i_row_satd[y] ) * rc->row_plan_scale
+                 : predict_size( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y] );
     if( h->sh.i_type == SLICE_TYPE_I || qscale >= h->fref[0][0]->f_row_qscale[y] )
     {
         if( h->sh.i_type == SLICE_TYPE_P
@@ -1704,6 +1709,17 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float slice_size_planned = h->param.b_sliced_threads ? rc->slice_size_planned : rc->frame_size_planned;
     float bits_so_far = row_bits_so_far( h, y );
     rc->bits_so_far = bits_so_far;
+    if( rc->b_row_plan )
+    {
+        /* This frame's bits over the row predictors' on the rows coded so far,
+         * from one mean row of the slice at the frame plan's level */
+        predictor_t *p = rc->row_plan + h->sh.i_type * h->mb.i_mb_height;
+        float pred = rc->row_plan_prior;
+        for( int i = h->i_threadslice_start; i <= y; i++ )
+            pred += predict_size( &p[i], h->fdec->f_row_qscale[i], h->fdec->i_row_satd[i] );
+        float bits = bits_so_far + rc->row_plan_prior * rc->row_plan_level;
+        rc->row_plan_scale = slice_size_planned > 0 && pred > 0 ? x264_clip3f( bits / pred, 0.125f, 8.0f ) : 1.0f;
+    }
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
     max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
@@ -2796,6 +2812,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
             for( row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
                 size += predict_size( &p[row], qscale, h->fdec->i_row_satd[row] );
             t->rc->slice_size_planned = size;
+            t->rc->row_plan_prior = size / (t->i_threadslice_end - t->i_threadslice_start);
         }
         else if( rc->b_vbv && rc->frame_size_planned )
         {
@@ -2809,6 +2826,15 @@ void x264_threads_distribute_ratecontrol( x264_t *h, int b_balanced )
     }
     if( rc->b_vbv && rc->frame_size_planned )
     {
+        if( rc->b_row_plan )
+        {
+            /* the frame plan over the row predictors' */
+            double total = 0;
+            for( int i = 0; i < h->param.i_threads; i++ )
+                total += h->thread[i]->rc->slice_size_planned;
+            for( int i = 0; i < h->param.i_threads; i++ )
+                h->thread[i]->rc->row_plan_level = total > 0 ? rc->frame_size_planned / total : 1;
+        }
         x264_threads_normalize_predictors( h );
 
         if( rc->single_frame_vbv )
