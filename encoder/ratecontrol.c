@@ -210,6 +210,7 @@ static void update_vbv_plan( x264_t *h, int overhead );
 static float predict_size( predictor_t *p, float q, float var );
 static void update_predictor( predictor_t *p, float q, float var, float bits );
 static void update_row_predictor( predictor_t *p, float q, float var, float bits );
+static void update_frame_predictor( predictor_t *p, float q, float var, float bits );
 
 #define CMP_OPT_FIRST_PASS( opt, param_val )\
 {\
@@ -2226,8 +2227,8 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
             rc->bframe_bits += bits;
             if( h->fenc->b_last_minigop_bframe )
             {
-                update_predictor( rc->pred_b_from_p, qp2qscale( rc->qpa_rc ),
-                                  h->fref[1][h->i_ref[1]-1]->i_satd, rc->bframe_bits / rc->bframes );
+                update_frame_predictor( rc->pred_b_from_p, qp2qscale( rc->qpa_rc ),
+                                        h->fref[1][h->i_ref[1]-1]->i_satd, rc->bframe_bits / rc->bframes );
                 rc->bframe_bits = 0;
             }
         }
@@ -2452,6 +2453,14 @@ static void update_row_predictor( predictor_t *p, float q, float var, float bits
     update_predictor_fit( p, q, var, bits, 0 );
 }
 
+/* A frame that cost less than the offset alone shows the offset is too big. */
+static void update_frame_predictor( predictor_t *p, float q, float var, float bits )
+{
+    if( var >= 10 && bits*q*p->count < p->offset )
+        p->offset = bits*q*p->count;
+    update_predictor_fit( p, q, var, bits, 1 );
+}
+
 // update VBV after encoding a frame
 static int update_vbv( x264_t *h, int bits )
 {
@@ -2462,7 +2471,7 @@ static int update_vbv( x264_t *h, int bits )
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
     if( rcc->last_satd >= h->mb.i_mb_count )
-        update_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
+        update_frame_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
 
     if( !rcc->b_vbv )
         return filler;
@@ -3058,7 +3067,7 @@ void x264_threads_merge_ratecontrol( x264_t *h )
                 size += h->fdec->i_row_satd[row];
             int bits = t->stat.frame.i_mv_bits + t->stat.frame.i_tex_bits + t->stat.frame.i_misc_bits;
             int mb_count = (t->i_threadslice_end - t->i_threadslice_start) * h->mb.i_mb_width;
-            update_predictor( &rc->pred[h->sh.i_type+(i+1)*5], qp2qscale( rct->qpa_rc/mb_count ), size, bits );
+            update_frame_predictor( &rc->pred[h->sh.i_type+(i+1)*5], qp2qscale( rct->qpa_rc/mb_count ), size, bits );
         }
         if( !i )
             continue;
