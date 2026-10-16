@@ -1630,8 +1630,11 @@ static float predict_row_size( x264_t *h, int y, float qscale )
     else
     {
         /* A one-frame VBV whose colocated row matches: that row's bits scaled to this
-         * qscale, at least the satd prediction. The intra + inter sum overestimated
-         * every row of a frame planned below its reference, so the rows jumped. */
+         * qscale averaged with the satd prediction, as above the reference, at least
+         * the satd prediction. The intra + inter sum overestimated every row of a frame
+         * planned below its reference, so the rows jumped; the larger of the two kept
+         * every overestimate of the scaled row, whose skips and headers don't scale
+         * with 1/qscale, and the rows above static rows rose. */
         if( rc->single_frame_vbv && h->sh.i_type == SLICE_TYPE_P
             && h->fref[0][0]->i_type == h->fdec->i_type
             && h->fref[0][0]->f_row_qscale[y] > 0
@@ -1640,7 +1643,7 @@ static float predict_row_size( x264_t *h, int y, float qscale )
         {
             float pred_t = (int64_t)h->fref[0][0]->i_row_bits[y] * h->fdec->i_row_satd[y] / h->fref[0][0]->i_row_satd[y]
                          * h->fref[0][0]->f_row_qscale[y] / qscale;
-            return X264_MAX( pred_s, pred_t );
+            return X264_MAX( pred_s, (pred_s + pred_t) * 0.5f );
         }
         float pred_intra = predict_size( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y] );
         /* Sum: better to overestimate than underestimate by using only one of the two predictors. */
