@@ -108,6 +108,7 @@ struct x264_ratecontrol_t
     double vbv_err_count;
     int vbv_err_age;
     int b_vbv_err_sample;       /* this frame is one */
+    double vbv_ll[5];           /* P-frames, decayed: count, sums of x, y, x*x, x*y; x = log satd, y = log bits*qscale */
 
     /* ABR stuff */
     int    last_satd;
@@ -2515,6 +2516,18 @@ static int update_vbv( x264_t *h, int bits )
         }
         else if( rct->vbv_err_count && ++rct->vbv_err_age >= 4 )
             rct->vbv_err_sum = rct->vbv_err_count = 0;
+
+        if( rcc->last_satd >= h->mb.i_mb_count && bits > 0 )
+        {
+            double x = log( rcc->last_satd );
+            double y = log( bits * qp2qscale( rcc->qpa_rc ) );
+            double *s = rct->vbv_ll;
+            s[0] = s[0] * 0.8 + 1;
+            s[1] = s[1] * 0.8 + x;
+            s[2] = s[2] * 0.8 + y;
+            s[3] = s[3] * 0.8 + x*x;
+            s[4] = s[4] * 0.8 + x*y;
+        }
     }
 
     if( rcc->last_satd >= h->mb.i_mb_count )
@@ -2650,7 +2663,21 @@ static double vbv_err_scale( x264_t *h )
                  (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
     if( h->fenc->i_cost_est[d][0] < 0 || h->fenc->i_intra_mbs[d] * 4 > scored )
         return 1;
-    return x264_clip3f( 1.25 * rct->vbv_err_sum / rct->vbv_err_count, 0.25, 1 );
+    double scale = x264_clip3f( 1.25 * rct->vbv_err_sum / rct->vbv_err_count, 0.25, 1 );
+    /* Bits fit to satd in logs: bits less than linear in the lowres satd (scrolling
+     * text) are overestimated most where the satd is highest. */
+    double *s = rct->vbv_ll;
+    double lin = predict_size( &rcc->pred[SLICE_TYPE_P], 1, rcc->last_satd );
+    if( scale < 1 && s[0] >= 2 && rcc->last_satd > 0 && lin > 0 )
+    {
+        double mx = s[1] / s[0];
+        double my = s[2] / s[0];
+        double var = s[3] / s[0] - mx*mx;
+        double k = var > 0.01 ? x264_clip3f( (s[4] / s[0] - mx*my) / var, 0, 1 ) : 1;
+        double fit = exp( my + k * (log( rcc->last_satd ) - mx) );
+        scale = x264_clip3f( X264_MIN( scale, 1.25 * fit / lin ), 0.25, 1 );
+    }
+    return scale;
 }
 
 // apply VBV constraints
