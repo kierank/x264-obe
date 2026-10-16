@@ -594,6 +594,8 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->coeff_last[DCT_LUMA_4x4] = x264_coeff_last16_avx512;
         pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+        INIT_TRELLIS( avx512icl );
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -777,6 +779,8 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->coeff_last[DCT_LUMA_4x4] = x264_coeff_last16_avx512;
         pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+        INIT_TRELLIS( avx512icl );
 #endif // HAVE_MMX
 
 #if HAVE_ALTIVEC

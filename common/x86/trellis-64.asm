@@ -51,7 +51,7 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
-SECTION_RODATA
+SECTION_RODATA 64
 
 pd_8: times 4 dd 8
 pd_m16: times 4 dd -16
@@ -61,6 +61,105 @@ sq_1: dq 1, 0
 pq_128: times 2 dq 128
 pq_ffffffff: times 2 dq 0xffffffff
 pd_04152637: dd 0, 4, 1, 5, 2, 6, 3, 7
+
+; avx512icl
+ALIGN 64
+; node payload bytes for vpermi2b( payload, level_state ): per node
+; level1 state x2, levelgt1 state x2, level1 state x2, levelgt1 state, 0
+tr_idx:    db 65,65,69,69,65,65,69,127, 66,66,69,69,66,66,69,127
+           db 67,67,69,69,67,67,69,127, 25,25,69,69,25,25,69,127
+           db 32,32,70,70,32,32,70,127, 40,40,71,71,40,40,71,127
+           db 48,48,50,50,48,48,50,127, 56,56,59,59,56,56,59,127
+tr_idx422: db 65,65,69,69,65,65,69,127, 66,66,69,69,66,66,69,127
+           db 67,67,69,69,67,67,69,127, 25,25,69,69,25,25,69,127
+           db 32,32,70,70,32,32,70,127, 40,40,71,71,40,40,71,127
+           db 48,48,50,50,48,48,50,127, 56,56,58,58,56,56,58,127
+; vpermb( level_state ): ctx 0,4,8,9 into node 2 / nodes 0-3
+tr_pk1:    times 16 db 63
+           db 0,4,8,9,63,63,63,63
+           times 40 db 63
+tr_pkn:    times 4 db 0,4,8,9,63,63,63,63
+           times 32 db 63
+tr_m11:    dq -1, -1, 0xffffffff00000000, -1, -1, -1, -1, -1
+tr_m1n:    times 4 dq 0xffffffff00000000
+           times 4 dq -1
+tr_mt:     dq 0, 0, 0, 0xff00, 0xff, 0xff, 0xff, 0xff
+tr_mtu:    dq 0, 0, 0, 0, 0, 0, 0xff0000, 0xff000000
+tr_mtu422: dq 0, 0, 0, 0, 0, 0, 0xff0000, 0xff0000
+tr_w3lt:   times 8 dw 0, 0, 0, 64
+tr_w3ge:   times 8 dw -1, -1, -1, 64
+tr_iota:   dq 0, 1, 2, 3, 4, 5, 6, 7
+tr_inv:    dq -16, -15, -14, -13, -12, -11, -10, -9
+tr_iotahi1: dq 1<<32, 2<<32, 3<<32, 4<<32, 5<<32, 6<<32, 7<<32, 8<<32
+; vpermi2q( keys, -1 ): abs_level 1, abs_level > 1
+tr_p1a:    dq 8, 0, 1, 2, 4, 5, 6, 7
+tr_p1b:    dq 8, 8, 8, 3, 8, 8, 8, 8
+tr_pn1:    dq 1, 8, 3, 8, 8, 8, 7, 8
+tr_pn2:    dq 8, 8, 8, 8, 0, 4, 5, 6
+tr_pn3:    dq 8, 8, 8, 8, 2, 8, 8, 8
+; x264_cabac_entropy[s^b] low/high bytes, x264_cabac_transition[s][b]
+tr_e0lo:
+    db 7,189,7,169,8,150,8,131,9,112,9,92,10,73,10,54
+    db 11,35,11,15,12,252,12,233,13,214,14,194,15,175,15,156
+    db 16,137,17,117,18,98,19,79,20,60,21,40,22,21,24,2
+    db 25,239,26,219,28,200,29,181,31,162,33,142,35,123,37,104
+    db 39,85,41,65,43,46,46,27,48,8,51,244,54,225,57,206
+    db 60,187,64,167,68,148,72,129,76,110,80,90,85,71,90,52
+    db 96,33,102,13,108,250,115,231,122,212,130,192,139,173,148,154
+    db 157,135,168,115,180,96,192,77,206,58,221,39,238,19,0,0
+tr_e0hi:
+    db 0,5,0,5,0,5,0,5,0,5,0,5,0,5,0,5
+    db 0,5,0,5,0,4,0,4,0,4,0,4,0,4,0,4
+    db 0,4,0,4,0,4,0,4,0,4,0,4,0,4,0,4
+    db 0,3,0,3,0,3,0,3,0,3,0,3,0,3,0,3
+    db 0,3,0,3,0,3,0,3,0,3,0,2,0,2,0,2
+    db 0,2,0,2,0,2,0,2,0,2,0,2,0,2,0,2
+    db 0,2,0,2,0,1,0,1,0,1,0,1,0,1,0,1
+    db 0,1,0,1,0,1,0,1,0,1,0,1,0,1,1,1
+tr_e1lo:
+    db 189,7,169,7,150,8,131,8,112,9,92,9,73,10,54,10
+    db 35,11,15,11,252,12,233,12,214,13,194,14,175,15,156,15
+    db 137,16,117,17,98,18,79,19,60,20,40,21,21,22,2,24
+    db 239,25,219,26,200,28,181,29,162,31,142,33,123,35,104,37
+    db 85,39,65,41,46,43,27,46,8,48,244,51,225,54,206,57
+    db 187,60,167,64,148,68,129,72,110,76,90,80,71,85,52,90
+    db 33,96,13,102,250,108,231,115,212,122,192,130,173,139,154,148
+    db 135,157,115,168,96,180,77,192,58,206,39,221,19,238,0,0
+tr_e1hi:
+    db 5,0,5,0,5,0,5,0,5,0,5,0,5,0,5,0
+    db 5,0,5,0,4,0,4,0,4,0,4,0,4,0,4,0
+    db 4,0,4,0,4,0,4,0,4,0,4,0,4,0,4,0
+    db 3,0,3,0,3,0,3,0,3,0,3,0,3,0,3,0
+    db 3,0,3,0,3,0,3,0,3,0,2,0,2,0,2,0
+    db 2,0,2,0,2,0,2,0,2,0,2,0,2,0,2,0
+    db 2,0,2,0,1,0,1,0,1,0,1,0,1,0,1,0
+    db 1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,1
+tr_t0:
+    db 0,1,2,51,2,51,4,53,6,53,8,53,10,55,12,55
+    db 14,55,16,57,18,57,20,57,22,59,24,59,26,61,28,61
+    db 30,61,32,63,34,63,36,65,38,67,40,67,42,67,44,69
+    db 46,69,48,71,50,73,52,73,54,75,56,75,58,77,60,79
+    db 62,79,64,81,66,83,68,83,70,85,72,85,74,89,76,89
+    db 78,91,80,91,82,95,84,95,86,97,88,97,90,101,92,101
+    db 94,103,96,105,98,105,100,109,102,109,104,111,106,113,108,115
+    db 110,117,112,119,114,119,116,123,118,123,120,125,122,127,124,126
+tr_t1:
+    db 0,1,50,3,50,3,52,5,52,7,52,9,54,11,54,13
+    db 54,15,56,17,56,19,56,21,58,23,58,25,60,27,60,29
+    db 60,31,62,33,62,35,64,37,66,39,66,41,66,43,68,45
+    db 68,47,70,49,72,51,72,53,74,55,74,57,76,59,78,61
+    db 78,63,80,65,82,67,82,69,84,71,84,73,88,75,88,77
+    db 90,79,90,81,94,83,94,85,96,87,96,89,100,91,100,93
+    db 102,95,104,97,104,99,108,101,108,103,110,105,112,107,114,109
+    db 116,111,118,113,118,115,122,117,122,119,124,121,126,123,127,125
+tr_b4:     dq 0x000000ff00000000
+tr_kb5:    dq 0x2020202020202020
+tr_abs1:   dq 1<<48
+tr_lomask: dq 0xffffffff
+tr_m16:    dq -16
+tr_8hi:    dq 8<<32
+tr_top:    dq 1<<63
+tr_pw1:    dd 0x00010001
 
 cextern_common cabac_entropy
 cextern_common cabac_transition
@@ -1049,3 +1148,713 @@ clocal trellis_coefn
     jmp .ctx1
     COEFN_SUFFIX 0
     COEFN_SUFFIX 1
+
+
+
+;=============================================================================
+; avx512icl: all 8 nodes at once, kept in registers for the whole block.
+; m0 (cur) / m2 (prev): key = (score - 2^59) << 4 | n. n is the node for a kept
+; node and 8+source for a candidate, so unsigned min is the C's strict < with
+; ties to the existing node, then the lowest source; n also indexes the payload.
+; Invalid: key >= -16. Needs valid scores in 2^60 +- 2^59: per coef |ssd| < 2^52
+; (|d| < 2^21 for the transforms' range, coef_weight2 < 2^10) and bits < 2^44,
+; over 64 coefs < 2^59. trellis_bnode's score*8+j already needs < 2^61.
+; m1 (cur) / m3 (prev): payload = cabac_state[4] | level_idx<<32 for prev,
+; | abs_level<<48 for a pending cur node (its level_tree entry, a qword here).
+; All 8 entries are stored per nonzero coef: at most 1 + 8*64 = 513.
+;=============================================================================
+
+; build-time A/B: vpmuludq instead of IFMA, compare masks instead of unsigned min
+%ifndef TRELLIS_ICL_MULQ
+    %define TRELLIS_ICL_MULQ 0
+%endif
+%ifndef TRELLIS_ICL_CMPMERGE
+    %define TRELLIS_ICL_CMPMERGE 0
+%endif
+
+INIT_ZMM avx512icl
+
+%macro TR_LOOKUP_E 2 ; dst, bin: x264_cabac_entropy[l1_state^bin] << 32
+    vmovdqu64  %1, [tr_e %+ %2 %+ lo]
+    vpermt2b   %1, m10, [tr_e %+ %2 %+ lo+64]
+    vmovdqu64  m21, [tr_e %+ %2 %+ hi]
+    vpermt2b   m21{k3}{z}, m10, [tr_e %+ %2 %+ hi+64]
+    vpternlogq %1, m21, [tr_b4]{1to8}, 0xec
+%endmacro
+
+%macro TR_LOOKUP_T 2 ; dst, bin: x264_cabac_transition[l1_state][bin], byte 0/1
+    vmovdqu64  %1, [tr_t %+ %2]
+    vpermt2b   %1, m10, [tr_t %+ %2 + 64]
+%endmacro
+
+%macro TR_SUFFIX 4 ; dst, abs_level, abs_level (dword), tmp: abs_level >= 15 ? bs_size_ue_big( abs_level - 15 ) << CABAC_SIZE_BITS : 0
+    lea    %4, [%2-14]
+    bsr    %4, %4
+    shl    %4, CABAC_SIZE_BITS+1
+    add    %4, 1<<CABAC_SIZE_BITS
+    xor    %1, %1
+    cmp    %3, 15
+    cmovge %1, %4
+%endmacro
+
+; candidate keys m18 from ssd m17 and f8_bits<<32 m16, for every valid source node
+%macro TR_KEYS 0
+%if TRELLIS_ICL_MULQ
+    vpsrlq      m16, m16, 32
+    vpmuludq    m16, m16, m5
+    vpsrlq      m16, m16, CABAC_SIZE_BITS - LAMBDA_BITS
+    vpaddq      m17, m17, m16
+%else
+    vpmadd52huq m17, m16, m5     ; ssd + (f8_bits*lambda2 >> 4)
+%endif
+    vpshldq     m17, m17, m7, 4  ; <<4 | 8
+    vmovdqa64   m18, m4
+    vpaddq      m18{k1}, m2, m17
+%endmacro
+
+; best candidate in m19 vs cur: the node in its low 4 bits, 8-15 for a
+; candidate, 0-7 for the existing node, which so wins ties
+%macro TR_MERGE 0
+%if TRELLIS_ICL_CMPMERGE
+    vpcmpuq    k2, m19, m0, 1
+    vpternlogq m0{k2}, m19, [tr_m16]{1to8}, 0xd8
+    vpermq     m1{k2}, m19, m15
+%else
+    vpminuq    m0, m0, m19
+    vpermt2q   m1, m0, m15
+    vpternlogq m0, m14, [tr_m16]{1to8}, 0xec
+%endif
+%endmacro
+
+; abs_level 1: node j -> 1,2,3,3,4,5,6,7. m11 = entropy, m12 = transition
+%macro TR_PASS1 0
+    vpaddq     m16, m16, m11
+    TR_KEYS
+    vmovdqa64  m15, m3
+    vpternlogq m15, m8, [tr_m11], 0xec   ; node 2: level_state, all: abs_level 1
+    vpternlogq m15, m12, [tr_mt], 0xd8
+    vmovdqu64  m19, [tr_p1a]
+    vpermi2q   m19, m18, m4
+    vmovdqu64  m20, [tr_p1b]
+    vpermi2q   m20, m18, m4
+    vpminuq    m19, m19, m20
+    TR_MERGE
+%endmacro
+
+; abs_level > 1: node j -> 4,4,4,4,5,6,7,7. %1 = abs_level<<48, %2 = cabac_size_unary[prefix], %3 = cabac_transition_unary[prefix]
+%macro TR_PASSN 3
+    vmovdqu64  m19, [%2]
+    vpermt2w   m19{k6}{z}, m10, [%2+64]
+    vmovdqu64  m20, [%2+128]
+    vpermt2w   m20{k5}{z}, m10, [%2+192]
+    vpternlogq m19, m20, m11, 0xfe
+    vpdpwssd   m16, m19, [tr_pw1]{1to16}
+    TR_KEYS
+    vpbroadcastq m21, %1
+    vporq      m21, m21, m9
+    vmovdqa64  m15, m3
+    vpternlogq m15, m21, [tr_m1n], 0xec  ; nodes 0-3: level_state
+    vpternlogq m15, m12, [tr_mt], 0xd8
+    vmovdqu64  m21, [%3]
+    vpermt2b   m21, m10, [%3+64]
+    vpternlogq m15, m21, [TR_MTU], 0xd8
+    vmovdqu64  m19, [tr_pn1]
+    vpermi2q   m19, m18, m4
+    vpminuq    m19, m19, m18
+    vmovdqu64  m20, [tr_pn2]
+    vpermi2q   m20, m19, m4
+    vmovdqu64  m16, [tr_pn3]
+    vpermi2q   m16, m19, m4
+    vpminuq    m19, m20, m16
+    TR_MERGE
+%endmacro
+
+; levelgt1 state < 64 / >= 64, for the two halves of a cabac_size_unary row
+%macro TR_SUMASK 0
+    vpcmpuw   k6, m10, [tr_w3lt], 1
+    vpcmpuw   k5, m10, [tr_w3ge], 5
+%endmacro
+
+; append all 8 nodes' entries (the invalid ones are never reached), give them
+; their new level_idx; the next coef's state indexes
+%macro TR_END_COEF 0
+    vmovdqu64    m10, [TR_IDX]
+    vpermi2b     m10, m1, m6
+    vmovdqu64    [ltree + r4*8], m1
+    vpternlogq   m1, m13, [tr_lomask]{1to8}, 0xec
+    vpaddq       m13, m13, [tr_8hi]{1to8}
+    add          r4d, 8
+%endmacro
+
+; scalar part of one coef, i = r3: q r8, ssd1[q-1] r7, ssd1[q] r13,
+; cost_siglast r11, r14, r9 (ctx_lo); ctx_lo: ssd0 in ssd00m, ssd01m
+%macro TR_PREP 1 ; ctx_hi
+    mov    r6, quantp
+%if HIGH_BIT_DEPTH
+    mov    r7d, [r6+r3*4]
+%else
+    movsx  r7d, word [r6+r3*2]
+%endif
+    mov    r8d, r7d
+    neg    r8d
+    cmovl  r8d, r7d
+    movzx  r9d, byte [r1+r3]
+    mov    r6, origp
+%if HIGH_BIT_DEPTH
+    mov    r10d, [r6+r9*4]
+%else
+    movsx  r10d, word [r6+r9*2]
+%endif
+    mov    r11d, r10d
+    neg    r11d
+    cmovl  r11d, r10d
+%if dc
+    mov    r12d, mf2m
+%else
+    mov    r6, unqp
+    mov    r12d, [r6+r9*4]
+%endif
+    ; unquant_abs_level = (unquant_mf * abs_level + 128) >> 8
+    lea    r14d, [r8-1]
+    imul   r14d, r12d
+    add    r14d, 128
+    shr    r14d, 8
+    imul   r12d, r8d
+    add    r12d, 128
+    shr    r12d, 8
+    ; ssd = (int64_t)d*d * coef_weight2
+    mov    r13d, r11d
+    sub    r13d, r12d
+    movsxd r13, r13d
+    imul   r13, r13
+    mov    r7d, r11d
+    sub    r7d, r14d
+    movsxd r7, r7d
+    imul   r7, r7
+%if dc
+    shl    r13, 8
+    shl    r7, 8
+%else
+    mov    r6d, [dct_weight2_tab + r9*4 GLOBAL]
+    imul   r13, r6
+    imul   r7, r6
+%endif
+%if psy
+    ; ssd -= dct_weight_tab[zigzag[i]] * psy_trellis * abs( unquant_abs_level + SIGN(predicted_coef, sign_coef) )
+    test   r3d, r3d
+    jz %%nopsy
+    mov    r6, fenc_dctm
+%if HIGH_BIT_DEPTH
+    mov    r6d, [r6+r9*4]
+%else
+    movsx  r6d, word [r6+r9*2]
+%endif
+    sub    r6d, r10d
+    mov    r11d, r10d
+    sar    r11d, 31
+    xor    r6d, r11d
+    sub    r6d, r11d
+    mov    r11d, [dct_weight1_tab + r9*4 GLOBAL]
+    imul   r11d, psy_trellism
+    add    r12d, r6d
+    mov    r9d, r12d
+    neg    r9d
+    cmovl  r9d, r12d
+    imul   r9, r11
+    sub    r13, r9
+    add    r14d, r6d
+    mov    r9d, r14d
+    neg    r9d
+    cmovl  r9d, r14d
+    imul   r9, r11
+    sub    r7, r9
+%%nopsy:
+%endif
+%if %1 == 0
+    mov    ssd00m, r7
+    mov    ssd01m, r13
+%if dc == 0
+    test   r3d, r3d
+    jz %%dc_rounding
+%%dc_rounding_done:
+%endif
+%if dc && num_coefs != 8
+    cmp    r3d, i_coefsm
+%else
+    cmp    r3d, num_coefs-1
+%endif
+    je %%last_coef
+%endif
+    ; cost_siglast = { sig 0, sig 1 + last 0, sig 1 + last 1 }
+%if num_coefs == 64
+    mov    r6, sigtabp
+    movzx  r6d, byte [r6+r3]
+%elif num_coefs == 8
+    movzx  r6d, byte [coeff_flag_offset_chroma_422_dc + r3 GLOBAL]
+%else
+    mov    r6d, r3d
+%endif
+    mov    r9, cabac_state_sigm
+    movzx  r9d, byte [r9+r6]
+    movzx  r11d, word [cabac_entropy + r9*2 GLOBAL]
+    xor    r9d, 1
+    movzx  r12d, word [cabac_entropy + r9*2 GLOBAL]
+%if num_coefs == 64
+    movzx  r6d, byte [last_coeff_flag_offset_8x8 + r3 GLOBAL]
+%endif
+    mov    r9, cabac_state_lastm
+    movzx  r9d, byte [r9+r6]
+    movzx  r14d, word [cabac_entropy + r9*2 GLOBAL]
+    add    r14d, r12d
+%if %1 == 0
+    xor    r9d, 1
+    movzx  r9d, word [cabac_entropy + r9*2 GLOBAL]
+    add    r9d, r12d
+%%csl_done:
+%endif
+    cmp    r8d, 2
+    jl .q1_%1
+    je .q2_%1
+    jmp .qn_%1
+%if %1 == 0
+%%last_coef:
+    xor    r11d, r11d
+    xor    r14d, r14d
+    xor    r9d, r9d
+    jmp %%csl_done
+%if dc == 0
+%%dc_rounding:
+    ; d = sign_coef - ((SIGN(unquant_abs_level, sign_coef) + 8)&~15)
+    mov    r11d, r10d
+    sar    r11d, 31
+    mov    r6d, r12d
+    xor    r6d, r11d
+    sub    r6d, r11d
+    add    r6d, 8
+    and    r6d, ~15
+    mov    r12d, r10d
+    sub    r12d, r6d
+    movsxd r12, r12d
+    imul   r12, r12
+    mov    r6d, r14d
+    xor    r6d, r11d
+    sub    r6d, r11d
+    add    r6d, 8
+    and    r6d, ~15
+    mov    r14d, r10d
+    sub    r14d, r6d
+    movsxd r14, r14d
+    imul   r14, r14
+    mov    r6d, [dct_weight2_tab + r9*4 GLOBAL]
+    imul   r12, r6
+    imul   r14, r6
+    mov    ssd01m, r12
+    mov    ssd00m, r14
+    jmp %%dc_rounding_done
+%endif
+%endif
+%endmacro
+
+; lane 0 differs only in ctx_lo
+%macro TR_BCAST 4 ; ctx_hi, dst, lanes 1-7, lane 0
+    vpbroadcastq %2, %3
+%if %1 == 0
+    vpbroadcastq %2{k7}, %4
+%endif
+%endmacro
+
+%macro TR_LOOP 1 ; ctx_hi
+.coef%1:
+    vmovdqa64 m2, m0
+    vmovdqa64 m3, m1
+    vpcmpuq   k1, m2, [tr_m16]{1to8}, 1
+    TR_PREP %1
+
+.q1_%1:
+    ; trellis_coef0: the copy, then abs_level 1 against it
+    imul   r11, r2
+    shr    r11, CABAC_SIZE_BITS - LAMBDA_BITS
+    add    r11, r7
+%if %1 == 0
+    mov    r6, ssd00m
+    sub    r6, r11
+    shl    r6, 4
+    vmovq  xm17, r6
+    vpaddq m0, m2, m17
+%else
+    vmovdqa64 m0, m2
+%endif
+    vmovdqa64 m1, m3
+    sub    r13, r11
+    vpbroadcastq m17, r13
+%if %1 == 0
+    mov    r6, ssd01m
+    sub    r6, r11
+    vpbroadcastq m17{k7}, r6
+%endif
+    add    r14d, 1<<CABAC_SIZE_BITS
+    shl    r14, 32
+%if %1 == 0
+    add    r9d, 1<<CABAC_SIZE_BITS
+    shl    r9, 32
+%endif
+    TR_BCAST %1, m16, r14, r9
+    TR_LOOKUP_E m11, 0
+    TR_LOOKUP_T m12, 0
+    TR_PASS1
+    TR_END_COEF
+    jmp .next%1
+
+.q2_%1:
+    vmovdqu64 m0, [tr_inv]
+    TR_BCAST %1, m17, r7, qword ssd00m
+    lea    r6, [r14+(1<<CABAC_SIZE_BITS)]
+    shl    r6, 32
+%if %1 == 0
+    lea    r10, [r9+(1<<CABAC_SIZE_BITS)]
+    shl    r10, 32
+%endif
+    TR_BCAST %1, m16, r6, r10
+    TR_LOOKUP_E m11, 0
+    TR_LOOKUP_T m12, 0
+    TR_PASS1
+    shl    r14, 32
+%if %1 == 0
+    shl    r9, 32
+%endif
+    TR_BCAST %1, m16, r14, r9
+    TR_BCAST %1, m17, r13, qword ssd01m
+    TR_LOOKUP_E m11, 1
+    TR_LOOKUP_T m12, 1
+    TR_SUMASK
+    mov    r10, 2<<48
+    lea    r11, [cabac_size_unary + 1*256 GLOBAL]
+    lea    r12, [cabac_transition_unary + 1*128 GLOBAL]
+    TR_PASSN r10, r11, r12
+    TR_END_COEF
+    jmp .next1
+
+.qn_%1:
+    vmovdqu64 m0, [tr_inv]
+    TR_LOOKUP_E m11, 1
+    TR_LOOKUP_T m12, 1
+    TR_SUMASK
+    ; abs_level q-1
+    lea    r10d, [r8-1]
+    TR_SUFFIX r12d, r10, r10d, r6d
+    lea    r6, [r14+r12]
+    shl    r6, 32
+%if %1 == 0
+    lea    r12, [r9+r12]
+    shl    r12, 32
+%endif
+    TR_BCAST %1, m16, r6, r12
+    TR_BCAST %1, m17, r7, qword ssd00m
+    ; prefix = X264_MIN( abs_level-1, 14 )
+    lea    r6d, [r8-2]
+    mov    r12d, 14
+    cmp    r6d, r12d
+    cmova  r6d, r12d
+    mov    r12d, r6d
+    shl    r12d, 8
+    lea    r11, [cabac_size_unary GLOBAL]
+    add    r11, r12
+    shl    r6d, 7
+    lea    r12, [cabac_transition_unary GLOBAL]
+    add    r12, r6
+    shl    r10, 48
+    TR_PASSN r10, r11, r12
+    ; abs_level q
+    TR_SUFFIX r12d, r8, r8d, r6d
+    lea    r6, [r14+r12]
+    shl    r6, 32
+%if %1 == 0
+    lea    r12, [r9+r12]
+    shl    r12, 32
+%endif
+    TR_BCAST %1, m16, r6, r12
+    TR_BCAST %1, m17, r13, qword ssd01m
+    lea    r6d, [r8-1]
+    mov    r12d, 14
+    cmp    r6d, r12d
+    cmova  r6d, r12d
+    mov    r12d, r6d
+    shl    r12d, 8
+    lea    r11, [cabac_size_unary GLOBAL]
+    add    r11, r12
+    shl    r6d, 7
+    lea    r12, [cabac_transition_unary GLOBAL]
+    add    r12, r6
+    mov    r10, r8
+    shl    r10, 48
+    TR_PASSN r10, r11, r12
+    TR_END_COEF
+    jmp .next1
+%endmacro
+
+%macro TRELLIS_ICL 4
+%define num_coefs %2
+%define dc %3
+%define psy %4
+%if num_coefs == 8 && dc
+    %define TR_IDX tr_idx422
+    %define TR_MTU tr_mtu422
+%else
+    %define TR_IDX tr_idx
+    %define TR_MTU tr_mtu
+%endif
+%if num_coefs == 64
+    %define dct_weight1_tab dct8_weight_tab
+    %define dct_weight2_tab dct8_weight2_tab
+%else
+    %define dct_weight1_tab dct4_weight_tab
+    %define dct_weight2_tab dct4_weight2_tab
+%endif
+cglobal %1, 4,15,22
+    mov r2d, r2d
+    mov r3d, r3d
+    %assign pad 128 + 8*520 + 16-gprsize-(stack_offset&15)
+    SUB  rsp, pad
+%if WIN64
+    %define level_statem rsp+stack_offset+80
+%else
+    %define level_statem rsp+stack_offset+32
+%endif
+    %define cabac_state_sigm  r7m
+    %define cabac_state_lastm r8m
+    %define i_coefsm   r11m ; dc only
+    %define fenc_dctm  r12m
+    %define psy_trellism r13m
+    %define quantp  [rsp+ 0]
+    %define origp   [rsp+ 8]
+    %define unqp    [rsp+16]
+    %define mf2m    dword [rsp+24]
+    %define maskp   [rsp+32]
+    %define sigtabp [rsp+40]
+    %define ssd00m  [rsp+48]
+    %define ssd01m  [rsp+56]
+    %define nodesp  rsp+64
+    %define ltree   rsp+128
+    mov    r6, r4mp
+    mov    origp, r6
+    mov    r6, r5mp
+    mov    quantp, r6
+    mov    unqp, r0
+%if dc
+    mov    r6d, [r0]
+    add    r6d, r6d
+    mov    mf2m, r6d
+%endif
+%ifdef PIC
+    lea    r0, [$$]
+    %define GLOBAL +r0-$$
+%else
+    %define GLOBAL
+%endif
+
+    ; nonzero quant_coefs[i], b_ac <= i <= last_nnz
+    mov    r6, quantp
+%if num_coefs == 64
+%if HIGH_BIT_DEPTH
+    vmovdqu32 m10, [r6+  0]
+    vmovdqu32 m11, [r6+ 64]
+    vmovdqu32 m12, [r6+128]
+    vmovdqu32 m13, [r6+192]
+    vptestmd  k1, m10, m10
+    vptestmd  k2, m11, m11
+    vptestmd  k3, m12, m12
+    vptestmd  k4, m13, m13
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k4, k3
+    kunpckdq  k1, k3, k1
+%else
+    vmovdqu16 m10, [r6+ 0]
+    vmovdqu16 m11, [r6+64]
+    vptestmw  k1, m10, m10
+    vptestmw  k2, m11, m11
+    kunpckdq  k1, k2, k1
+%endif
+    kmovq     r5, k1
+%elif num_coefs == 16
+%if HIGH_BIT_DEPTH
+    vmovdqu32 m10, [r6]
+    vptestmd  k1, m10, m10
+%else
+    vmovdqu16 ym10, [r6]
+    vptestmw  k1, ym10, ym10
+%endif
+    kmovw     r5d, k1
+%else
+%if HIGH_BIT_DEPTH
+    vmovdqu32 ym10, [r6]
+    vptestmd  k1, ym10, ym10
+%else
+    vmovdqu16 xm10, [r6]
+    vptestmw  k1, xm10, xm10
+%endif
+    kmovb     r5d, k1
+%endif
+    xor    r6d, r6d
+    bts    r6, r3
+    lea    r6, [r6*2-1]
+    and    r5, r6
+%if num_coefs == 16 && dc == 0
+    mov    r6d, r11m ; b_ac
+    not    r6
+    and    r5, r6
+%endif
+    mov    maskp, r5
+%if num_coefs == 64
+    mov    r7d, r11m ; b_interlaced
+    shl    r7d, 6
+    lea    r6, [significant_coeff_flag_offset_8x8 GLOBAL]
+    add    r6, r7
+    mov    sigtabp, r6
+%endif
+
+    vpternlogq m4, m4, m4, 0xff
+%if TRELLIS_ICL_MULQ
+    vpbroadcastq m5, r2
+%else
+    mov    r6, r2
+    shl    r6, 16
+    vpbroadcastq m5, r6
+%endif
+    vmovq  xm6, [level_statem]
+    vpinsrw xm6, xm6, [level_statem+8], 4
+    vpbroadcastq m7, [tr_top]
+    vmovdqu64 m14, [tr_iota]
+    vmovdqu64 m8, [tr_pk1]
+    vpermb m8, m8, m6
+    vporq  m8, m8, [tr_abs1]{1to8}
+    vmovdqu64 m9, [tr_pkn]
+    vpermb m9, m9, m6
+    kmovq  k3, [tr_kb5]
+    mov    r6d, 1
+    kmovb  k7, r6d
+    vmovdqu64 m0, [tr_inv]
+    vpbroadcastq m0{k7}, [tr_top]
+    vpxord m1, m1, m1
+    vmovdqu64 m10, [TR_IDX]
+    vpermi2b m10, m1, m6
+    mov    dword [ltree+4], 0
+    vmovdqu64 m13, [tr_iotahi1]
+    mov    r4d, 1
+
+    TR_LOOP 0
+.next0:
+    ; the zeros below i, down to the next nonzero or b_ac:
+    ; nodes_cur[0].score -= cost_sig0
+    btr    r5, r3
+%if num_coefs == 16 && dc == 0
+    mov    r12d, r11m
+    dec    r12d
+%else
+    mov    r12d, -1
+%endif
+    bsr    r6, r5
+    cmovnz r12d, r6d
+    lea    r7d, [r3-1]
+    cmp    r7d, r12d
+    jle .zeros_done
+    mov    r9, cabac_state_sigm
+%if num_coefs == 64
+    mov    r10, sigtabp
+%endif
+    xor    r11d, r11d
+.zeros:
+%if num_coefs == 64
+    movzx  r6d, byte [r10+r7]
+%elif num_coefs == 8
+    movzx  r6d, byte [coeff_flag_offset_chroma_422_dc + r7 GLOBAL]
+%else
+    mov    r6d, r7d
+%endif
+    movzx  r6d, byte [r9+r6]
+    movzx  r6d, word [cabac_entropy + r6*2 GLOBAL]
+    imul   r6, r2
+    shr    r6, CABAC_SIZE_BITS - LAMBDA_BITS
+    add    r11, r6
+    dec    r7d
+    cmp    r7d, r12d
+    jg .zeros
+    shl    r11, 4
+    vmovq  xm19, r11
+    vpsubq m0, m0, m19
+.zeros_done:
+    mov    r3d, r12d
+    test   r5, r5
+    jnz .coef0
+    call .bnode
+    jnz .writeback
+%if num_coefs == 16 && dc == 0
+    mov    r10, r6m ; dct
+%if HIGH_BIT_DEPTH
+    vmovdqu64 [r10], m21
+%else
+    vmovdqu64 [r10], ym21
+%endif
+%endif
+    xor    eax, eax
+    jmp .return
+
+    TR_LOOP 1
+.next1:
+    btr    r5, r3
+    bsr    r3, r5
+    jnz .coef1
+    call .bnode
+.writeback:
+    ; int level = bnode->level_idx;
+    ; for each nonzero i: dct[zigzag[i]] = SIGN(level_tree[level].abs_level, dct[zigzag[i]]); level = level_tree[level].next;
+    vmovdqu64 [nodesp], m1
+    mov    r0d, [nodesp + r14*8 + 4]
+    mov    r12, maskp
+    mov    r10, r6m ; dct
+.writeback_loop:
+    bsf    r3, r12
+    movzx  r2d, byte [r1+r3]
+    mov    r5d, [ltree + r0*8 + 4]
+    movzx  r0d, r5w
+    shr    r5d, 16
+%if HIGH_BIT_DEPTH
+    mov    r4d, [r10 + r2*4]
+%else
+    movsx  r4d, word [r10 + r2*2]
+%endif
+    sar    r4d, 31
+    xor    r5d, r4d
+    sub    r5d, r4d
+%if HIGH_BIT_DEPTH
+    mov    [r10 + r2*4], r5d
+%else
+    mov    [r10 + r2*2], r5w
+%endif
+    lea    r13, [r12-1]
+    and    r12, r13
+    jnz .writeback_loop
+    mov    eax, 1
+.return:
+    ADD    rsp, pad
+    RET
+
+.bnode:
+    ; first node with the lowest score: r14, ZF if node 0. m21 = 0
+    vshufi64x2 m20, m0, m0, q1032
+    vpminuq    m19, m0, m20
+    vshufi64x2 m20, m19, m19, q2301
+    vpminuq    m19, m19, m20
+    vpshufd    m20, m19, q1032
+    vpminuq    m19, m19, m20
+    vmovq      r14, xm19
+    vpxord     m21, m21, m21
+    and        r14d, 7
+    ret
+%endmacro ; TRELLIS_ICL
+
+TRELLIS_ICL trellis_cabac_4x4, 16, 0, 0
+TRELLIS_ICL trellis_cabac_8x8, 64, 0, 0
+TRELLIS_ICL trellis_cabac_4x4_psy, 16, 0, 1
+TRELLIS_ICL trellis_cabac_8x8_psy, 64, 0, 1
+TRELLIS_ICL trellis_cabac_dc, 16, 1, 0
+TRELLIS_ICL trellis_cabac_chroma_422_dc, 8, 1, 0
