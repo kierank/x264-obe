@@ -2250,6 +2250,12 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
         }
     }
 
+    /* One-frame CBR: a P frame that ended under half the fill was planned too high, so
+     * the next plan steps from the QP it coded, not from the raised plan. */
+    if( rc->single_frame_vbv && rc->b_vbv_min_rate && h->sh.i_type == SLICE_TYPE_P
+        && bits < rc->buffer_rate * 0.5 && qp2qscale( rc->qpa_rc ) < rc->last_qscale_for[SLICE_TYPE_P] )
+        rc->last_qscale_for[SLICE_TYPE_P] = qp2qscale( rc->qpa_rc );
+
     *filler = update_vbv( h, bits );
     rc->filler_bits_sum += *filler * 8;
 
