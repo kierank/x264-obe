@@ -918,7 +918,9 @@ int x264_ratecontrol_new( x264_t *h )
         rc->lmax[i] = qp2qscale( h->param.rc.i_qp_max );
         for( int j = 0; j < num_preds; j++ )
         {
-            rc->pred[i+j*5].coeff_min = pred_coeff_table[i] / 2;
+            /* Low enough for content that codes far below the initial guess (scrolling text
+             * on black); at / 2 the frame plan for it was set by the floor. */
+            rc->pred[i+j*5].coeff_min = pred_coeff_table[i] / 16;
             rc->pred[i+j*5].coeff = pred_coeff_table[i];
             rc->pred[i+j*5].count = 1.0;
             rc->pred[i+j*5].decay = 0.5;
