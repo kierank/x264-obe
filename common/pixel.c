@@ -769,7 +769,7 @@ static int field_lowres_mvy( x264_t *h, int mb_x, int mb_y )
 }
 
 /* lowres qpel per frame: a pixel per field */
-#define FIELD_MOTION_MVY 4
+#define FIELD_MOTION_MVY 8
 
 int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
 {
