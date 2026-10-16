@@ -744,6 +744,9 @@ static int pixel_vsad( pixel *src, intptr_t stride, int height )
     return score;
 }
 
+/* field score weight /16 of a pair whose coded neighbours are all field */
+#define FIELD_REGION_WEIGHT 12
+
 int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
 {
     int score_field, score_frame;
@@ -763,6 +766,31 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
      * scores (it was 512 at every depth). */
     int bias = 1024 << (BIT_DEPTH - 8);
     score_field = score_field * 14 >> 4;
+    /* left, above-left, above, above-right: all field is a field region */
+    int n = 0, nfield = 0;
+    if( mb_x > 0 )
+    {
+        n++;
+        nfield += h->mb.field[mb_xy-1];
+    }
+    if( mb_y > h->i_threadslice_start )
+    {
+        int top = mb_xy - mb_stride;
+        n++;
+        nfield += h->mb.field[top];
+        if( mb_x > 0 )
+        {
+            n++;
+            nfield += h->mb.field[top-1];
+        }
+        if( mb_x < h->mb.i_mb_width-1 )
+        {
+            n++;
+            nfield += h->mb.field[top+1];
+        }
+    }
+    if( n >= 3 && nfield == n )
+        score_field = score_field * FIELD_REGION_WEIGHT >> 4;
     if( mb_x > 0 )
         score_field += bias - h->mb.field[mb_xy        -1]*2*bias;
     /* the pair above may belong to another slice thread that is still encoding it */
