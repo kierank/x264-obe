@@ -142,6 +142,7 @@ typedef struct x264_frame
     uint16_t *i_inv_qscale_factor;
     int     b_scenecut; /* Set to zero if the frame cannot possibly be part of a real scenecut. */
     float   f_weighted_cost_delta[X264_BFRAME_MAX+2];
+    float   f_offset_weight_ratio[X264_BFRAME_MAX+2]; /* per ref distance: an offset-only lookahead luma weight's cost over unweighted, else 0 */
     uint32_t i_pixel_sum[3];
     uint64_t i_pixel_ssd[3];
     /* weightp 4:2:0/4:2:2 progressive: the u then v sum of each MB, from the AQ pass,

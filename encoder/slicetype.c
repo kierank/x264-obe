@@ -870,6 +870,14 @@ static NOINLINE void x264_weight_lowres_init( x264_t *h, x264_frame_t *fenc, x26
 }
 #endif
 
+/* The weighted ref keeps under 1/16 of fenc's luma variance, as from a flat ref: the
+ * weight predicts by its offset alone */
+static int x264_weight_offset_only( x264_frame_t *fenc, x264_frame_t *ref, int scale, int denom )
+{
+    float s = (float)scale / (1 << denom);
+    return s * s * ref->i_pixel_ssd[0] * 16 < fenc->i_pixel_ssd[0];
+}
+
 /* Unweighted cut: the unweighted luma cost of the final analysis, motion compensated
  * by the lowres mvs and clamped at intra per mb, is at least UNWEIGHTED_CUT_THRESH/16
  * of the lowres intra cost */
@@ -884,6 +892,8 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
     SET_WEIGHT( weights[0], 0, 1, 0, 0 );
     SET_WEIGHT( weights[1], 0, 1, 0, 0 );
     SET_WEIGHT( weights[2], 0, 1, 0, 0 );
+    if( b_lookahead )
+        fenc->f_offset_weight_ratio[i_delta_index] = 0;
     int chroma_initted = 0;
     x264_weight_src_t ws;
     x264_weight_ops_t ops;
@@ -1115,6 +1125,8 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_FAKE && weights[0].weightfn && !plane )
             fenc->f_weighted_cost_delta[i_delta_index] = (float)minscore / origscore;
+        if( b_lookahead && x264_weight_offset_only( fenc, ref, minscale, mindenom ) )
+            fenc->f_offset_weight_ratio[i_delta_index] = (float)minscore / origscore;
     }
 
     /* Optimize and unify denominator */
@@ -2103,6 +2115,10 @@ static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **f
 
     int icost = frame->i_cost_est[0][0];
     int pcost = frame->i_cost_est[p1-p0][0];
+    /* an offset-only lookahead weight (flat ref) predicts nothing: test without its gain */
+    float f_offset_ratio = frame->f_offset_weight_ratio[p1-p0-1];
+    if( f_offset_ratio > 0 )
+        pcost = X264_MIN( pcost / f_offset_ratio, icost );
     float f_bias;
     int i_gop_size = frame->i_frame - h->lookahead->i_last_keyframe;
     float f_thresh_max = h->param.i_scenecut_threshold / 100.0;
