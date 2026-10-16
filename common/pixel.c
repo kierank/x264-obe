@@ -759,11 +759,26 @@ static int field_lowres_mvy( x264_t *h, int mb_x, int mb_y )
     for( int d = 1; d <= h->param.i_bframe + 1; d++ )
         if( f->lowres_mvs[0][d-1][0][0] != 0x7FFF )
         {
-            int my0 = f->lowres_mvs[0][d-1][mb_x + mb_y * mb_width][1];
-            int my1 = f->lowres_mvs[0][d-1][mb_x + (mb_y+1) * mb_width][1];
-            if( (my0 ^ my1) < 0 )
+            int16_t (*mvs)[2] = f->lowres_mvs[0][d-1];
+            int16_t *mv0 = mvs[mb_x + mb_y * mb_width];
+            int16_t *mv1 = mvs[mb_x + (mb_y+1) * mb_width];
+            if( (mv0[1] ^ mv1[1]) < 0 )
                 return 0;
-            return X264_MIN( abs(my0), abs(my1) ) / d;
+            int my = X264_MIN( abs(mv0[1]), abs(mv1[1]) );
+            /* a rigid vertical scroll (credits, a vertical ticker): the pair moves mostly
+             * vertically and the pairs either side of it move the same way */
+            if( abs(mv0[0]) * 4 > my || abs(mv1[0]) * 4 > my )
+                return 0;
+            for( int dx = -1; dx <= 1; dx += 2 )
+            {
+                int nx = mb_x + dx;
+                if( nx < 0 || nx >= mb_width )
+                    continue;
+                int16_t *mvn = mvs[nx + mb_y * mb_width];
+                if( abs(mvn[1] - mv0[1]) > 2 || abs(mvn[0]) * 4 > my )
+                    return 0;
+            }
+            return my / d;
         }
     return 0;
 }
