@@ -103,10 +103,11 @@ struct x264_ratecontrol_t
     int single_frame_vbv;
     float rate_factor_max_increment; /* Don't allow RF above (CRF + this value). */
     /* One-frame CBR: actual over predicted size of the P-frames the frame predictor
-     * would raise, decayed, and P-frames since the last of them */
-    double vbv_err_sum;
-    double vbv_err_count;
-    int vbv_err_age;
+     * would raise, decayed, and P-frames since the last of them; [1]: intra refresh
+     * wraps, counted in wraps */
+    double vbv_err_sum[2];
+    double vbv_err_count[2];
+    int vbv_err_age[2];
     int b_vbv_err_sample;       /* this frame is one */
     double vbv_ll[5];           /* P-frames, decayed: count, sums of x, y, x*x, x*y; x = log satd, y = log bits*qscale */
 
@@ -2495,6 +2496,12 @@ static void update_row_predictor( predictor_t *p, float q, float var, float bits
     update_predictor_fit( p, q, var, bits, 0 );
 }
 
+/* Intra refresh: the P-frame that starts a refresh cycle */
+static int vbv_err_phase( x264_t *h )
+{
+    return h->param.b_intra_refresh && h->fdec->i_frames_since_pir == 0;
+}
+
 // update VBV after encoding a frame
 static int update_vbv( x264_t *h, int bits )
 {
@@ -2504,18 +2511,20 @@ static int update_vbv( x264_t *h, int bits )
     x264_ratecontrol_t *rct = h->thread[0]->rc;
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
-    /* before the frame trains the predictor; four P-frames without one start it over */
+    /* before the frame trains the predictor; four P-frames without one start it over,
+     * two wraps for wraps */
     if( h->sh.i_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate )
     {
+        int p = vbv_err_phase( h );
         if( rcc->b_vbv_err_sample && rcc->last_satd >= h->mb.i_mb_count )
         {
             float pred = predict_size( &rct->pred[SLICE_TYPE_P], qp2qscale( rcc->qpa_rc ), rcc->last_satd );
-            rct->vbv_err_sum = rct->vbv_err_sum * 0.5 + x264_clip3f( bits / X264_MAX( pred, 1.0f ), 0, 4 );
-            rct->vbv_err_count = rct->vbv_err_count * 0.5 + 1;
-            rct->vbv_err_age = 0;
+            rct->vbv_err_sum[p] = rct->vbv_err_sum[p] * 0.5 + x264_clip3f( bits / X264_MAX( pred, 1.0f ), 0, 4 );
+            rct->vbv_err_count[p] = rct->vbv_err_count[p] * 0.5 + 1;
+            rct->vbv_err_age[p] = 0;
         }
-        else if( rct->vbv_err_count && ++rct->vbv_err_age >= 4 )
-            rct->vbv_err_sum = rct->vbv_err_count = 0;
+        else if( rct->vbv_err_count[p] && ++rct->vbv_err_age[p] >= (p ? 2 : 4) )
+            rct->vbv_err_sum[p] = rct->vbv_err_count[p] = 0;
 
         if( rcc->last_satd >= h->mb.i_mb_count && bits > 0 )
         {
@@ -2656,14 +2665,20 @@ static double vbv_err_scale( x264_t *h )
     x264_ratecontrol_t *rcc = h->rc;
     x264_ratecontrol_t *rct = h->thread[0]->rc;
     if( h->sh.i_type != SLICE_TYPE_P || !rcc->single_frame_vbv || !rcc->b_vbv_min_rate
-        || h->param.rc.i_lookahead || !h->frames.b_have_lowres || rct->vbv_err_count < 1.5 )
+        || h->param.rc.i_lookahead || !h->frames.b_have_lowres || rct->vbv_err_count[0] < 1.5 )
+        return 1;
+    int p = vbv_err_phase( h );
+    if( p && !rct->vbv_err_count[1] )
         return 1;
     int d = h->fenc->i_bframes + 1;
     int scored = h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?
                  (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
     if( h->fenc->i_cost_est[d][0] < 0 || h->fenc->i_intra_mbs[d] * 4 > scored )
         return 1;
-    double scale = x264_clip3f( 1.25 * rct->vbv_err_sum / rct->vbv_err_count, 0.25, 1 );
+    double scale = x264_clip3f( 1.25 * rct->vbv_err_sum[0] / rct->vbv_err_count[0], 0.25, 1 );
+    /* A wrap's satd is several times the others': its own error, while theirs is low. */
+    if( p )
+        return scale < 1 ? x264_clip3f( 1.25 * rct->vbv_err_sum[1] / rct->vbv_err_count[1], 0.25, 1 ) : 1;
     /* Bits fit to satd in logs: bits less than linear in the lowres satd (scrolling
      * text) are overestimated most where the satd is highest. */
     double *s = rct->vbv_ll;
