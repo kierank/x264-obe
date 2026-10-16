@@ -111,6 +111,7 @@ struct x264_ratecontrol_t
     int64_t filler_bits_sum;    /* sum in bits of finished frames' filler data */
     double wanted_bits_window;  /* target bitrate * window */
     double cbr_decay;
+    int b_abr_hold;             /* last P frame under-spent below the frame predictor's floor */
     double short_term_cplxsum;
     double short_term_cplxcount;
     double rate_factor_constant;
@@ -2248,6 +2249,11 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
         }
     }
 
+    if( rc->b_abr && rc->single_frame_vbv && rc->b_vbv_min_rate )
+        rc->b_abr_hold = h->sh.i_type == SLICE_TYPE_P && bits < h->fenc->f_duration * rc->bitrate
+                      && rc->last_satd >= h->mb.i_mb_count
+                      && bits * qp2qscale( rc->qpa_rc ) < rc->pred[SLICE_TYPE_P].coeff_min * rc->last_satd;
+
     *filler = update_vbv( h, bits );
     rc->filler_bits_sum += *filler * 8;
 
@@ -2943,6 +2949,11 @@ static float rate_estimate_qscale( x264_t *h )
                         lmax *= rcc->lstep;
                     else if( overflow < 0.9 )
                         lmin /= rcc->lstep;
+                    /* One-frame CBR: content cheaper than the frame predictor's floor that
+                     * left budget unspent keeps the plan. VBV can only plan it from the floor,
+                     * so the next costly frame would climb back in one step. */
+                    if( rcc->b_abr_hold && pict_type == SLICE_TYPE_P )
+                        lmin = rcc->last_qscale_for[pict_type];
 
                     q = x264_clip3f(q, lmin, lmax);
                 }
@@ -3120,6 +3131,7 @@ void x264_thread_sync_ratecontrol( x264_t *cur, x264_t *prev, x264_t *next )
          * so copy them from the context that most recently ended (cur)
          * to the context that's about to end (next) */
         COPY(cplxr_sum);
+        COPY(b_abr_hold);
         COPY(expected_bits_sum);
         COPY(filler_bits_sum);
         COPY(wanted_bits_window);
