@@ -870,6 +870,14 @@ static NOINLINE void x264_weight_lowres_init( x264_t *h, x264_frame_t *fenc, x26
 }
 #endif
 
+/* The weighted ref keeps under 1/16 of fenc's luma variance, as from a flat ref: the
+ * weight predicts by its offset alone */
+static int x264_weight_offset_only( x264_frame_t *fenc, x264_frame_t *ref, int scale, int denom )
+{
+    float s = (float)scale / (1 << denom);
+    return s * s * ref->i_pixel_ssd[0] * 16 < fenc->i_pixel_ssd[0];
+}
+
 /* Unweighted cut: the unweighted luma cost of the final analysis, motion compensated
  * by the lowres mvs and clamped at intra per mb, is at least UNWEIGHTED_CUT_THRESH/16
  * of the lowres intra cost */
@@ -1105,7 +1113,9 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 
         /* FIXME: More analysis can be done here on SAD vs. SATD termination. */
         /* 0.2% termination derived experimentally to avoid weird weights in frames that are mostly intra. */
-        if( !found || (minscale == 1 << mindenom && minoff == 0) || (float)minscore / origscore > 0.998f )
+        /* in lookahead no offset-only weight: its gain over intra predicts nothing and hides cuts */
+        if( !found || (minscale == 1 << mindenom && minoff == 0) || (float)minscore / origscore > 0.998f
+            || (b_lookahead && x264_weight_offset_only( fenc, ref, minscale, mindenom )) )
         {
             SET_WEIGHT( weights[plane], 0, 1, 0, 0 );
             continue;
