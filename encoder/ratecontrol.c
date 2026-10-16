@@ -1650,6 +1650,10 @@ static float predict_row_size( x264_t *h, int y, float qscale )
         {
             float pred_t = (int64_t)h->fref[0][0]->i_row_bits[y] * h->fdec->i_row_satd[y] / h->fref[0][0]->i_row_satd[y]
                          * h->fref[0][0]->f_row_qscale[y] / qscale;
+            /* Static rows: the satd fit of the hard rows before overestimates them
+             * several times, their colocated row doesn't. */
+            if( pred_t * 2.f < pred_s )
+                return pred_t;
             return X264_MIN( X264_MAX( pred_s, pred_t ), pred_intra + pred_s );
         }
         /* Sum: better to overestimate than underestimate by using only one of the two predictors. */
