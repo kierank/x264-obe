@@ -361,6 +361,10 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
     h->mb.i_neighbour = 0;
     h->mb.i_mb_xy = mb_y * h->mb.i_mb_stride + mb_x;
     h->mb.b_interlaced = PARAM_INTERLACED && h->mb.field[h->mb.i_mb_xy];
+    /* The previous threadslice may still be encoding the row above its start, so
+     * don't read its field or slice_table: it's another slice either way. */
+    int top_other_slice = !deblock_on_slice_edges
+                       && (h->i_threadslice_start >> MB_INTERLACED) == (mb_y >> MB_INTERLACED);
     h->mb.i_mb_top_y = mb_y - (1 << MB_INTERLACED);
     h->mb.i_mb_top_xy = mb_x + h->mb.i_mb_stride*h->mb.i_mb_top_y;
     h->mb.i_mb_left_xy[1] =
@@ -374,7 +378,7 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
         }
         else
         {
-            if( h->mb.i_mb_top_xy >= 0 && MB_INTERLACED && !h->mb.field[h->mb.i_mb_top_xy] )
+            if( h->mb.i_mb_top_xy >= 0 && MB_INTERLACED && !top_other_slice && !h->mb.field[h->mb.i_mb_top_xy] )
             {
                 h->mb.i_mb_top_xy += h->mb.i_mb_stride;
                 h->mb.i_mb_top_y++;
@@ -387,11 +391,8 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
     if( mb_x > 0 && (deblock_on_slice_edges ||
         h->mb.slice_table[h->mb.i_mb_left_xy[0]] == h->mb.slice_table[h->mb.i_mb_xy]) )
         h->mb.i_neighbour |= MB_LEFT;
-    /* The previous threadslice may still be encoding the row above its end, so
-     * don't read its slice_table: it's another slice either way. */
     if( mb_y > MB_INTERLACED && (deblock_on_slice_edges
-        || ((h->i_threadslice_start >> MB_INTERLACED) != (mb_y >> MB_INTERLACED)
-            && h->mb.slice_table[h->mb.i_mb_top_xy] == h->mb.slice_table[h->mb.i_mb_xy])) )
+        || (!top_other_slice && h->mb.slice_table[h->mb.i_mb_top_xy] == h->mb.slice_table[h->mb.i_mb_xy])) )
         h->mb.i_neighbour |= MB_TOP;
 }
 
