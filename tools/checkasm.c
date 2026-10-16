@@ -2614,6 +2614,47 @@ static int check_mc( int cpu_ref, int cpu_new )
                     }
             }
         }
+        /* interlaced (LOWRES_CORE, common/mc.c): fullpel rows at a zero source stride with
+         * dstv, dstc aliasing dst0, dsth, then vertical hpel rows at the field stride */
+        for( int w = 96; w <= 96+24 && ok; w += 8 )
+        {
+            intptr_t stride = (w*2+31)&~31;
+            intptr_t stride_lowres = (w+31)&~31;
+            for( int i = 0; i < 8; i++ )
+            {
+                intptr_t o = i*stride_lowres;
+                call_c( mc_c.frame_init_lowres_core, pbuf1+2*i*stride, dstc[0]+o, dstc[1]+o, dstc[0]+o, dstc[1]+o,
+                        (intptr_t)0, stride_lowres, w, 1 );
+                call_a( mc_a.frame_init_lowres_core, pbuf1+2*i*stride, dsta[0]+o, dsta[1]+o, dsta[0]+o, dsta[1]+o,
+                        (intptr_t)0, stride_lowres, w, 1 );
+            }
+            call_c( mc_c.frame_init_lowres_core, pbuf1, dstc[2], dstc[3], dstc[2]+stride_lowres, dstc[3]+stride_lowres,
+                    2*stride, 2*stride_lowres, w, 4 );
+            call_a( mc_a.frame_init_lowres_core, pbuf1, dsta[2], dsta[3], dsta[2]+stride_lowres, dsta[3]+stride_lowres,
+                    2*stride, 2*stride_lowres, w, 4 );
+            for( int i = 0; i < 8 && ok; i++ )
+            {
+                pixel *r0 = pbuf1 + 2*i*stride;
+                pixel *r1 = r0 + 2*stride;
+                for( int x = 0; x < w && ok; x++ )
+                {
+                    int f0 = (r0[2*x] + r0[2*x+1] + 1) >> 1;
+                    int fv = (((r0[2*x] + r1[2*x] + 1) >> 1) + ((r0[2*x+1] + r1[2*x+1] + 1) >> 1) + 1) >> 1;
+                    if( dstc[0][x+i*stride_lowres] != f0 || dstc[2][x+i*stride_lowres] != fv )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "frame_init_lowres field: c line %d x %d: %d %d, expected %d %d\n", i, x,
+                                 dstc[0][x+i*stride_lowres], dstc[2][x+i*stride_lowres], f0, fv );
+                    }
+                }
+                for( int j = 0; j < 4 && ok; j++ )
+                    if( memcmp( dstc[j]+i*stride_lowres, dsta[j]+i*stride_lowres, w * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "frame_init_lowres field differs at plane %d line %d w %d\n", j, i, w );
+                    }
+            }
+        }
         report( "lowres init :" );
     }
 
@@ -2657,6 +2698,33 @@ static int check_mc( int cpu_ref, int cpu_new )
                                          k, w, j, i, x, v, dstc[j][o], dsta[j][o] );
                                 break;
                             }
+                        }
+            }
+        /* interlaced, as in lowres init */
+        for( int k = 0; k < 2 && ok; k++ )
+            for( int w = 96; w <= 96+24 && ok; w += 8 )
+            {
+                pixel *src = k ? src_max : pbuf1;
+                intptr_t stride = (w*2+31)&~31;
+                intptr_t stride_lowres = (w+31)&~31;
+                for( int i = 0; i < 8; i++ )
+                {
+                    intptr_t o = i*stride_lowres;
+                    call_c( mc_c.frame_init_lowres_core8, src+2*i*stride, dstc[0]+o, dstc[1]+o, dstc[0]+o, dstc[1]+o,
+                            (intptr_t)0, stride_lowres, w, 1 );
+                    call_a( mc_a.frame_init_lowres_core8, src+2*i*stride, dsta[0]+o, dsta[1]+o, dsta[0]+o, dsta[1]+o,
+                            (intptr_t)0, stride_lowres, w, 1 );
+                }
+                call_c( mc_c.frame_init_lowres_core8, src, dstc[2], dstc[3], dstc[2]+stride_lowres, dstc[3]+stride_lowres,
+                        2*stride, 2*stride_lowres, w, 4 );
+                call_a( mc_a.frame_init_lowres_core8, src, dsta[2], dsta[3], dsta[2]+stride_lowres, dsta[3]+stride_lowres,
+                        2*stride, 2*stride_lowres, w, 4 );
+                for( int j = 0; j < 4 && ok; j++ )
+                    for( int i = 0; i < 8 && ok; i++ )
+                        if( memcmp( dstc[j]+i*stride_lowres, dsta[j]+i*stride_lowres, w ) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "frame_init_lowres8 field differs: src %d w %d plane %d line %d\n", k, w, j, i );
                         }
             }
         x264_free( src_max );

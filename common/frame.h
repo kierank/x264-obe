@@ -280,7 +280,7 @@ void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)
-void          x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 );
+void          x264_frame_init_lowres_edge( x264_t *h, x264_frame_t *frame, int y0, int y1 );
 #define x264_frame_init_lowres_rows x264_template(frame_init_lowres_rows)
 void          x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 );
 #define x264_frame_init_lowres_pixel_rows x264_template(frame_init_lowres_pixel_rows)

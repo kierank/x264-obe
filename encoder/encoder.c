@@ -827,6 +827,12 @@ static int x264_validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_WARNING, "OpenCL: frame size is too small, disabling opencl\n" );
             h->param.b_opencl = 0;
         }
+        /* its lowres is of the woven frame, not of the top field */
+        if( PARAM_INTERLACED )
+        {
+            x264_log( h, X264_LOG_WARNING, "OpenCL lookahead does not support interlaced, disabling opencl\n" );
+            h->param.b_opencl = 0;
+        }
 #endif
         if( h->param.opencl_device_id && h->param.i_opencl_device )
         {
@@ -3651,7 +3657,7 @@ static void *x264_prologue_copy_band( x264_prologue_band_t *band )
         x264_frame_expand_border_mod16_rows( h, band->fenc, y0, y1 );
     /* the lowres source edge, here so the second pass only reads the source */
     if( h->frames.b_have_lowres )
-        x264_frame_init_lowres_edge( band->fenc, y0, y1 );
+        x264_frame_init_lowres_edge( h, band->fenc, y0, y1 );
     return NULL;
 }
 

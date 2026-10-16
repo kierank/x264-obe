@@ -431,6 +431,26 @@ static void integral_init8v( uint16_t *sum8, intptr_t stride )
         sum8[x] = sum8[x+8*stride] - sum8[x];
 }
 
+/* frame_init_lowres_core (or _core8) on height lowres rows. Interlaced: of the top
+ * field only, as lowres pixels that mix the two fields defeat the lowres search under
+ * motion. Lowres row y is field row y halved horizontally, the vertical hpel planes
+ * the average of field rows y and y+1, so lowres[] keeps its geometry and mv units.
+ * A zero source stride makes one row of the fullpel planes (dstv, dstc alias dst0,
+ * dsth: same values), the field stride two rows of the vertical hpel planes. */
+#define LOWRES_CORE( core, src, dst0, dsth, dstv, dstc, src_stride, dst_stride, width, height )\
+{\
+    if( PARAM_INTERLACED )\
+    {\
+        for( int ly = 0; ly < (height); ly++ )\
+            core( (src) + 2*ly*(src_stride), (dst0) + ly*(dst_stride), (dsth) + ly*(dst_stride),\
+                  (dst0) + ly*(dst_stride), (dsth) + ly*(dst_stride), 0, (dst_stride), (width), 1 );\
+        core( (src), (dstv), (dstc), (dstv) + (dst_stride), (dstc) + (dst_stride),\
+              2*(src_stride), 2*(dst_stride), (width), (height) >> 1 );\
+    }\
+    else\
+        core( (src), (dst0), (dsth), (dstv), (dstc), (src_stride), (dst_stride), (width), (height) );\
+}
+
 #if HIGH_BIT_DEPTH
 /* rc.b_lookahead_8bit: the lookahead runs on lowres8[], and lowres[] is only read
  * by x264_weights_analyse past its early termination, so it computes lowres[] then,
@@ -449,10 +469,10 @@ static void frame_init_lowres8_rows( x264_t *h, x264_frame_t *frame, int y0, int
     int i_stride_lowres = frame->i_stride_lowres;
     int offset = y0 * i_stride_lowres;
 
-    h->mc.frame_init_lowres_core8( frame->plane[0] + 2*y0*i_stride,
-                                   frame->lowres8[0] + offset, frame->lowres8[1] + offset,
-                                   frame->lowres8[2] + offset, frame->lowres8[3] + offset,
-                                   i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+    LOWRES_CORE( h->mc.frame_init_lowres_core8, frame->plane[0] + 2*y0*i_stride,
+                 frame->lowres8[0] + offset, frame->lowres8[1] + offset,
+                 frame->lowres8[2] + offset, frame->lowres8[3] + offset,
+                 i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
     x264_frame_expand_border_lowres8_rows( frame, y0, y1 );
 }
 #endif
@@ -467,15 +487,16 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
     // duplicate last row and column so that their interpolation doesn't have to be special-cased
     for( int y = 0; y < i_height; y++ )
         src[i_width+y*i_stride] = src[i_width-1+y*i_stride];
-    memcpy( src+i_stride*i_height, src+i_stride*(i_height-1), (i_width+1) * sizeof(pixel) );
+    /* interlaced: of the same field */
+    memcpy( src+i_stride*i_height, src+i_stride*(i_height-1-PARAM_INTERLACED), (i_width+1) * sizeof(pixel) );
 #if HIGH_BIT_DEPTH
     if( frame->buffer_lowres8 )
         frame_init_lowres8_rows( h, frame, 0, frame->i_lines_lowres );
     if( !lowres_deferred( h, frame ) )
 #endif
     {
-        h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
-                                      i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
+        LOWRES_CORE( h->mc.frame_init_lowres_core, src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
+                     i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
         x264_frame_expand_border_lowres( frame );
     }
 
@@ -485,7 +506,7 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
 /* x264_frame_init_lowres in bands, for sliced threads: _edge on luma rows
  * [y0,y1) of every band, then after all of them _rows on MB rows
  * [mb_y0,mb_y1) of every band, then _finish. */
-void x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 )
+void x264_frame_init_lowres_edge( x264_t *h, x264_frame_t *frame, int y0, int y1 )
 {
     pixel *src = frame->plane[0];
     int i_stride = frame->i_stride[0];
@@ -495,7 +516,7 @@ void x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 )
     for( int y = y0; y < y1; y++ )
         src[i_width+y*i_stride] = src[i_width-1+y*i_stride];
     if( y1 == i_height )
-        memcpy( src+i_stride*i_height, src+i_stride*(i_height-1), (i_width+1) * sizeof(pixel) );
+        memcpy( src+i_stride*i_height, src+i_stride*(i_height-1-PARAM_INTERLACED), (i_width+1) * sizeof(pixel) );
 }
 
 void x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 )
@@ -518,10 +539,10 @@ void x264_frame_init_lowres_pixel_rows( x264_t *h, x264_frame_t *frame, int mb_y
     int offset = y0 * i_stride_lowres;
 
     /* reads source rows 2*y0 to 2*y1 inclusive, so one row of the next band */
-    h->mc.frame_init_lowres_core( frame->plane[0] + 2*y0*i_stride,
-                                  frame->lowres[0] + offset, frame->lowres[1] + offset,
-                                  frame->lowres[2] + offset, frame->lowres[3] + offset,
-                                  i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+    LOWRES_CORE( h->mc.frame_init_lowres_core, frame->plane[0] + 2*y0*i_stride,
+                 frame->lowres[0] + offset, frame->lowres[1] + offset,
+                 frame->lowres[2] + offset, frame->lowres[3] + offset,
+                 i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
     x264_frame_expand_border_lowres_rows( frame, y0, y1 );
 }
 
