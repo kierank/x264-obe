@@ -1665,20 +1665,36 @@ static int row_bits_so_far( x264_t *h, int y )
     return bits;
 }
 
-static float predict_row_size_to_end( x264_t *h, int y, float qp )
+static float predict_rows_to_end( x264_t *h, int y, float qp, int b_shape )
 {
     float qscale = qp2qscale( qp );
     float bits = 0;
     int last = h->i_threadslice_end - 1 - SLICE_MBAFF;
+    /* One-frame VBV: a row the reference coded d > 6 QP below the next row, a static
+     * region after a hard one, is planned d - 6 below qp, not at the hard rows' QP: it
+     * codes near its own QP, and the hard rows left it too little. */
+    x264_frame_t *ref = h->fref[0][0];
+    float ref_next = 0;
+    if( b_shape && h->rc->single_frame_vbv && h->sh.i_type == SLICE_TYPE_P
+        && ref->i_type == h->fdec->i_type && y+1 < h->i_threadslice_end )
+        ref_next = ref->f_row_qscale[y+1] * 0.5f;
     for( int i = y+1; i < h->i_threadslice_end; i++ )
     {
-        float pred = predict_row_size( h, i, qscale );
+        float q = qscale;
+        if( ref_next > 0 && ref->f_row_qscale[i] > 0 && ref->f_row_qscale[i] < ref_next )
+            q = qscale * ref->f_row_qscale[i] / ref_next;
+        float pred = predict_row_size( h, i, q );
         /* No row after the last takes up its error: its own predictor too. */
         if( i >= last )
-            pred = X264_MAX( pred, predict_size( &h->rc->row_pred_last[h->sh.i_type], qscale, h->fdec->i_row_satd[i] ) );
+            pred = X264_MAX( pred, predict_size( &h->rc->row_pred_last[h->sh.i_type], q, h->fdec->i_row_satd[i] ) );
         bits += pred;
     }
     return bits * h->rc->epb_scale;
+}
+
+static float predict_row_size_to_end( x264_t *h, int y, float qp )
+{
+    return predict_rows_to_end( h, y, qp, 1 );
 }
 
 /* Emulation prevention bytes x264_nal_encode adds to p[*pos..end), resumable. */
@@ -2010,7 +2026,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( others_final && prev_row_qp < qp_hard_max && can_reencode_row && rc->room_reencodes < 2 )
         {
             float room = vbv_limit - size_of_other_slices - bits_so_far - 32;
-            float over = predict_row_size_to_end( h, y, qp_hard_max ) - room;
+            float over = predict_rows_to_end( h, y, qp_hard_max, 0 ) - room;
             if( over > 0 )
             {
                 float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
