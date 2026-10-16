@@ -3802,7 +3802,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         int psy = v == 2 || v == 3;
         /* same blocks at every cpu level, so the bench compares like with like */
         srand( bench_seed * 7919 + v );
-        for( int it = 0; it < 4000; it++ )
+        for( int it = 0; it < 8000; it++ )
         {
             ALIGNED_ARRAY_64( dctcoef, tdct, [3],[64] );
             ALIGNED_ARRAY_64( dctcoef, torig, [80] );
@@ -3813,6 +3813,9 @@ static int check_quant( int cpu_ref, int cpu_new )
             /* mode 0: typical, 1: dense, 2: sparse with long zero runs, 3: large levels and suffixes,
              * 4: all ones, 5: a few coefs near the start, 6: levels up to 20, 7: levels 1-4 */
             int mode = it&7;
+            /* kind 1: every coef nonzero, levels 1-2, a high lambda2; 2: ties: lambda2 0-3, unquant_mf
+             * a multiple of 256, abs_coef on or halfway between the candidates, few distinct cabac states */
+            int kind = it < 4000 ? 0 : it < 6000 ? 1 : 2;
             int b_field = (it>>3)&1;
             int b_ac = (v == 0 || v == 2) ? (it>>4)&1 : 0;
             const uint8_t *zigzag = num_coefs == 64 ? x264_zigzag_scan8[b_field] : num_coefs == 16 ? x264_zigzag_scan4[b_field] :
@@ -3824,14 +3827,18 @@ static int check_quant( int cpu_ref, int cpu_new )
             int kmax = mode == 5 ? rand()%6 : num_coefs-1;
             int last_nnz = -1;
             for( int k = 0; k < 48; k++ )
-                tstate[k] = rand()&127;
+                tstate[k] = kind == 2 ? (rand()&1 ? 0 : 62 + (rand()&1)) : rand()&127;
             for( int k = 0; k < 64; k++ )
             {
-                tunquant[k] = unq_base * (16 + (rand()&15)) >> 4;
+                tunquant[k] = kind == 2 ? 256 << (rand()%5) : unq_base * (16 + (rand()&15)) >> 4;
                 tdct[0][k] = 0;
                 /* past num_coefs: junk, as in rdo.c */
                 tquant[k] = rand() - RAND_MAX/2;
             }
+            if( kind == 2 )
+                lambda2 = rand()&3;
+            if( kind == 1 )
+                lambda2 = x264_trellis_lambda2_tab[1][QP_MAX/2 + rand()%(QP_MAX/2)];
             for( int k = 0; k < 80; k++ )
             {
                 torig[k] = (rand()&0x3ff) - 0x200;
@@ -3844,7 +3851,9 @@ static int check_quant( int cpu_ref, int cpu_new )
                 int step = X264_MAX( unq>>8, 1 );
                 int rnd = rand();
                 int level;
-                if( i > kmax )
+                if( kind == 1 )
+                    level = (rand()%4) == 0 && i > num_coefs-12 ? 2 : (it&8) && (rand()%8) == 0 ? 2 : 1;
+                else if( i > kmax )
                     level = 0;
                 else if( mode == 1 )
                     level = (rnd&7) ? 1 + (rand()&1) + !(rand()&3) : 0;
@@ -3864,7 +3873,13 @@ static int check_quant( int cpu_ref, int cpu_new )
                 while( level > 1 && ((int64_t)unq*level >= (1<<30) || (int64_t)step*level >= coef_max) )
                     level >>= 1;
                 int sign = (rand()&1) ? -1 : 1;
-                int abs_coef = level ? ((unq*level + 128) >> 8) + rand()%(step+1) - step/2 : rand()%((step>>1)+1);
+                int abs_coef;
+                if( kind == 2 && level )
+                    abs_coef = (rand()&1) ? ((unq*(2*level-1) + 256) >> 9) : (unq*(level-(rand()&1)) + 128) >> 8;
+                else if( kind == 1 )
+                    abs_coef = X264_MAX( (unq*level + 128) >> 8, 1 );
+                else
+                    abs_coef = level ? ((unq*level + 128) >> 8) + rand()%(step+1) - step/2 : rand()%((step>>1)+1);
                 abs_coef = x264_clip3( abs_coef, 0, coef_max );
                 /* quant never makes a level from a zero coef, and keeps its sign */
                 if( level && !abs_coef )
@@ -3876,7 +3891,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                 if( level && i >= b_ac )
                     last_nnz = i;
             }
-            if( b_ac && (rand()&1) )
+            if( !kind && b_ac && (rand()&1) )
                 tdct[0][zigzag[0]] = tquant[0] = 1 + (rand()&3);
             int min_nnz = dc ? 0 : X264_MAX( b_ac, 1 );
             if( last_nnz < min_nnz )
@@ -3911,8 +3926,8 @@ static int check_quant( int cpu_ref, int cpu_new )
             if( res_c != res_a || memcmp( tdct[1], tdct[2], sizeof(tdct[0]) ) )
             {
                 ok = 0;
-                fprintf( stderr, "%s: [FAILED] mode %d last_nnz %d b_ac %d field %d: %d != %d\n",
-                         names[v], mode, last_nnz, b_ac, b_field, res_c, res_a );
+                fprintf( stderr, "%s: [FAILED] kind %d mode %d last_nnz %d b_ac %d field %d: %d != %d\n",
+                         names[v], kind, mode, last_nnz, b_ac, b_field, res_c, res_a );
                 break;
             }
             if( it == 4000-8 )
