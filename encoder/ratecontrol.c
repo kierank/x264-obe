@@ -1938,9 +1938,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( b_threadslices && rc->single_frame_vbv && !rc->b_floor_off )
             qp_min = X264_MAX( qp_min, X264_MIN( other_slices_max_qp( h ) - 1.0f, rc->qp ) );
         /* Nor more than 6 below the frame's QP with any threading: rows after a hard
-         * band found its room and went to near-lossless QPs while the band starved. */
+         * band found its room and went to near-lossless QPs while the band starved. 12
+         * below where the floor is off: a frame full at a high QP with poor references
+         * needs its rows to lead the descent. */
         if( rc->single_frame_vbv )
-            qp_min = X264_MAX( qp_min, rc->qp - 6.0f );
+            qp_min = X264_MAX( qp_min, rc->qp - (rc->b_floor_off ? 12.0f : 6.0f) );
 
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
