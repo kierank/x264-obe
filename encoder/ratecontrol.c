@@ -1842,6 +1842,23 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     h->fdec->f_row_qp[y] = rc->qpm;
     h->fdec->f_row_qscale[y] = qscale;
 
+    /* trace: each row's predictors at its coded qscale, before the update */
+    if( rc->single_frame_vbv && h->sh.i_type == SLICE_TYPE_P && h->param.i_log_level >= X264_LOG_DEBUG )
+    {
+        x264_frame_t *ref = h->fref[0][0];
+        float tr_s = predict_size( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y] );
+        float tr_i = predict_size( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y] );
+        float tr_t = -1;
+        if( ref->f_row_qscale[y] > 0 && ref->i_row_satd[y] > 0 )
+            tr_t = (int64_t)ref->i_row_bits[y] * h->fdec->i_row_satd[y] / ref->i_row_satd[y]
+                 * ref->f_row_qscale[y] / qscale;
+        int tr_match = abs(ref->i_row_satd[y] - h->fdec->i_row_satd[y]) < h->fdec->i_row_satd[y]/2;
+        x264_log( h, X264_LOG_DEBUG, "rowpred f %d y %d qp %.2f refqp %.2f satd %d refsatd %d isatd %d bits %d refbits %d s %.0f i %.0f t %.0f match %d plan %.0f\n",
+                  h->fenc->i_frame, y, rc->qpm, ref->f_row_qp[y], h->fdec->i_row_satd[y], ref->i_row_satd[y],
+                  h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y], ref->i_row_bits[y], tr_s, tr_i, tr_t, tr_match,
+                  rc->frame_size_planned );
+    }
+
     update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
     if( h->sh.i_type != SLICE_TYPE_I && rc->qpm < h->fref[0][0]->f_row_qp[y] )
         update_row_predictor( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y] );
