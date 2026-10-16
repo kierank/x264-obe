@@ -29,11 +29,10 @@
 #include "common.h"
 #include "encoder/me.h"
 
-#define MC_LUMA(list,p) \
+#define MC_LUMA(list,p,w) \
     h->mc.mc_luma( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
                    &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
-                   mvx, mvy, 4*width, 4*height, \
-                   list ? x264_weight_none : &h->sh.weight[i_ref][p] );
+                   mvx, mvy, 4*width, 4*height, w );
 
 static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
 {
@@ -41,13 +40,15 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     int i_ref = h->mb.cache.ref[0][i8];
     int mvx   = x264_clip3( h->mb.cache.mv[0][i8][0], h->mb.mv_min[0], h->mb.mv_max[0] ) + 4*4*x;
     int mvy   = x264_clip3( h->mb.cache.mv[0][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
+    /* H.264 8.4.3: a field mb's explicit weights are those of refIdxL0 >> 1 */
+    x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
 
-    MC_LUMA( 0, 0 );
+    MC_LUMA( 0, 0, &weight[0] );
 
     if( CHROMA444 )
     {
-        MC_LUMA( 0, 1 );
-        MC_LUMA( 0, 2 );
+        MC_LUMA( 0, 1, &weight[1] );
+        MC_LUMA( 0, 2, &weight[2] );
     }
     else
     {
@@ -65,14 +66,14 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
                          x264_mb_fref_uv( h, h->mb.pic.p_fref[0][i_ref], h->mb.pic.i_fld_uv_y, uv_dy, height ),
                          h->mb.pic.i_stride[1], mvx, uv_dy, 2*width, height );
 
-        if( h->sh.weight[i_ref][1].weightfn )
-            h->sh.weight[i_ref][1].weightfn[width>>1]( &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE,
-                                                       &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE,
-                                                       &h->sh.weight[i_ref][1], height );
-        if( h->sh.weight[i_ref][2].weightfn )
-            h->sh.weight[i_ref][2].weightfn[width>>1]( &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE,
-                                                       &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE,
-                                                       &h->sh.weight[i_ref][2], height );
+        if( weight[1].weightfn )
+            weight[1].weightfn[width>>1]( &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE,
+                                          &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE,
+                                          &weight[1], height );
+        if( weight[2].weightfn )
+            weight[2].weightfn[width>>1]( &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE,
+                                          &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE,
+                                          &weight[2], height );
     }
 }
 static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int height )
@@ -82,12 +83,12 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     int mvx   = x264_clip3( h->mb.cache.mv[1][i8][0], h->mb.mv_min[0], h->mb.mv_max[0] ) + 4*4*x;
     int mvy   = x264_clip3( h->mb.cache.mv[1][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
 
-    MC_LUMA( 1, 0 );
+    MC_LUMA( 1, 0, x264_weight_none );
 
     if( CHROMA444 )
     {
-        MC_LUMA( 1, 1 );
-        MC_LUMA( 1, 2 );
+        MC_LUMA( 1, 1, x264_weight_none );
+        MC_LUMA( 1, 2, x264_weight_none );
     }
     else
     {
@@ -288,9 +289,10 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
     for( int i = 0; i < 2; i++ )
     {
-        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) ) << PARAM_INTERLACED;
+        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) );
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
             i_refs = X264_MIN(X264_REF_MAX, i_refs + 1 + (BIT_DEPTH == 8)); //smart weights add two duplicate frames, one in >8-bit
+        i_refs <<= PARAM_INTERLACED; /* field refs */
 
         for( int j = !i; j < i_refs; j++ )
             PREALLOC( h->mb.mvr[i][j], 2 * (i_mb_count + 1) * sizeof(int16_t) );
@@ -341,9 +343,10 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
     for( int i = 0; i < 2; i++ )
     {
-        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) ) << PARAM_INTERLACED;
+        int i_refs = X264_MIN(X264_REF_MAX, (i ? 1 + !!h->param.i_bframe_pyramid : h->param.i_frame_reference) );
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
             i_refs = X264_MIN(X264_REF_MAX, i_refs + 1 + (BIT_DEPTH == 8)); //smart weights add two duplicate frames, one in >8-bit
+        i_refs <<= PARAM_INTERLACED; /* field refs */
 
         for( int j = !i; j < i_refs; j++ )
         {
@@ -386,6 +389,13 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 CHECKED_MALLOC( h->deblock_strength[i], sizeof(**h->deblock_strength) * h->mb.i_mb_width );
             h->deblock_strength[1] = h->deblock_strength[i];
         }
+        if( PARAM_INTERLACED && h->mb.b_adaptive_mbaff && h->param.analyse.i_weighted_pred > 0
+            && h->i_thread_frames > 1 && h->mb.i_mb_height*16 > h->param.i_height )
+            for( int i = 0; i < (CHROMA444 ? 3 : 2); i++ )
+            {
+                int rows = 2*(16 >> (i && CHROMA_V_SHIFT)) + 2;
+                CHECKED_MALLOCZERO( h->mb.fenc_bot[i], h->thread[0]->fdec->i_stride[i] * rows * sizeof(pixel) );
+            }
     }
 
     /* Allocate scratch buffer */
@@ -426,6 +436,8 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
         for( int i = 0; i < (PARAM_INTERLACED ? 5 : 2); i++ )
             for( int j = 0; j < (CHROMA444 ? 3 : 2); j++ )
                 x264_free( h->intra_border_backup[i][j] - 16 );
+        for( int i = 0; i < 3; i++ )
+            x264_free( h->mb.fenc_bot[i] );
     }
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );
@@ -469,18 +481,23 @@ void x264_macroblock_slice_init( x264_t *h )
     {
         if( h->sh.i_disable_deblocking_filter_idc != 1 && h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
         {
-            deblock_ref_table(-2) = -2;
-            deblock_ref_table(-1) = -1;
-            for( int i = 0; i < h->i_ref[0] << SLICE_MBAFF; i++ )
+            /* [0] frame mbs, [1] field mbs: field ref i is field i&1 (same or
+             * opposite parity) of frame ref i>>1. Edges between a frame and a
+             * field mb don't compare refs (x264_macroblock_deblock_strength_mbaff);
+             * the others are between frame mbs or same parity field mbs. */
+            for( int f = 0; f <= SLICE_MBAFF; f++ )
             {
-                /* Mask off high bits to avoid frame num collisions with -1/-2.
-                 * In current x264 frame num values don't cover a range of more
-                 * than 32, so 6 bits is enough for uniqueness. */
-                if( !MB_INTERLACED )
-                    deblock_ref_table(i) = h->fref[0][i]->i_frame_num&63;
-                else
-                    deblock_ref_table(i) = ((h->fref[0][i>>1]->i_frame_num&63)<<1) + (i&1);
+                h->mb.deblock_ref_table[f][0] = -2;
+                h->mb.deblock_ref_table[f][1] = -1;
             }
+            /* Mask off high bits to avoid frame num collisions with -1/-2.
+             * In current x264 frame num values don't cover a range of more
+             * than 32, so 6 bits is enough for uniqueness. */
+            for( int i = 0; i < h->i_ref[0]; i++ )
+                h->mb.deblock_ref_table[0][i+2] = h->fref[0][i]->i_frame_num&63;
+            if( SLICE_MBAFF )
+                for( int i = 0; i < h->i_ref[0] << 1; i++ )
+                    h->mb.deblock_ref_table[1][i+2] = ((h->fref[0][i>>1]->i_frame_num&63)<<1) + (i&1);
         }
     }
 
@@ -591,6 +608,8 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
         ref_pix_offset[1] += (1-2*(mb_y&1)) * i_stride;
     h->mb.pic.i_stride[i] = i_stride2;
     h->mb.pic.p_fenc_plane[i] = &h->fenc->plane[i][i_pix_offset];
+    if( b_mbaff && h->mb.b_fenc_bot && mb_y >= h->mb.i_mb_height - 2 )
+        h->mb.pic.p_fenc_plane[i] = h->mb.fenc_bot[i] + PADH + i_pix_offset - (height*(h->mb.i_mb_height-2) - 2) * i_stride;
     h->mb.pic.i_fenc_pre = 0;
     if( b_chroma )
     {
@@ -641,7 +660,8 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                 h->mb.pic.p_fref[0][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
             if( !i )
             {
-                if( h->sh.weight[j][0].weightfn )
+                /* both fields of a weighted frame: rows of its weighted plane */
+                if( h->sh.weight[j >> mb_interlaced][0].weightfn )
                     h->mb.pic.p_fref_w[j] = &h->fenc->weighted[j >> mb_interlaced][ref_pix_offset[j&1]];
                 else
                     h->mb.pic.p_fref_w[j] = h->mb.pic.p_fref[0][j][0];

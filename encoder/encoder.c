@@ -1457,11 +1457,6 @@ static int x264_validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_WARNING, "interlace + me=esa is not implemented\n" );
             h->param.analyse.i_me_method = X264_ME_UMH;
         }
-        if( h->param.analyse.i_weighted_pred > 0 )
-        {
-            x264_log( h, X264_LOG_WARNING, "interlace + weightp is not implemented\n" );
-            h->param.analyse.i_weighted_pred = X264_WEIGHTP_NONE;
-        }
     }
 
     if( !h->param.analyse.i_weighted_pred && h->param.rc.b_mb_tree && h->param.analyse.b_psy )
@@ -2527,7 +2522,7 @@ static void x264_weighted_pred_init( x264_t *h )
                         //scale full resolution frame
                         if( h->param.i_threads == 1 )
                         {
-                            pixel *src = h->fref[0][j]->filtered[0][0] - h->fref[0][j]->i_stride[0]*i_padv - PADH;
+                            pixel *src = x264_weight_src_plane( h, h->fref[0][j] ) - h->fref[0][j]->i_stride[0]*i_padv - PADH;
                             pixel *dst = h->fenc->weighted[j] - h->fenc->i_stride[0]*i_padv - PADH;
                             int stride = h->fenc->i_stride[0];
                             int width = h->fenc->i_width[0] + PADH*2;
@@ -3130,6 +3125,8 @@ static intptr_t x264_slice_write( x264_t *h )
         {
             if( h->mb.b_adaptive_mbaff )
             {
+                if( h->mb.fenc_bot[0] && !h->mb.b_fenc_bot && i_mb_y >= h->mb.i_mb_height - 2 )
+                    x264_fenc_bot_copy( h );
                 if( !(i_mb_y&1) )
                 {
                     /* FIXME: VSAD is fast but fairly poor at choosing the best interlace type. */
@@ -3452,6 +3449,7 @@ static void *x264_slices_write( x264_t *h )
     h->mb.b_reencode_mb = 0;
     if( h->param.rc.i_vbv_buffer_size )
         x264_ratecontrol_slices_start( h );
+    h->mb.b_fenc_bot = 0;
     if( h->param.b_sliced_threads )
     {
         h->i_threadslice_nal = h->out.i_nal;
