@@ -192,6 +192,7 @@ struct x264_ratecontrol_t
     int last_row_reencodes;
     int room_reencodes;
     int slice_qp8;              /* QP*256 of its next row, 0 once final; atomic */
+    float slice_cost;           /* per row of its slice: the colocated rows' bits x qscale */
     predictor_t *pred_b_from_p; /* predict B-frame size from P-frame satd */
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
@@ -1746,13 +1747,22 @@ void x264_ratecontrol_slices_start( x264_t *h )
 #define RC_STORE(p,v) (*(volatile int *)(p) = (v))
 #endif
 
-/* Highest next-row QP of the other thread slices still running. */
-static float other_slices_max_qp( x264_t *h )
+/* Highest next-row QP of the other thread slices still running, less 1 (*floor1), and
+ * up to 1 more below one costlier per row by over 2^(1/6): 6 per doubling past that. */
+static float other_slices_floor( x264_t *h, float *floor1 )
 {
-    float qp = 0;
+    float qp = -1.0f;
+    *floor1 = -1.0f;
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h != h->thread[i] )
-            qp = X264_MAX( qp, RC_LOAD( &h->thread[i]->rc->slice_qp8 ) * (1.0f / 256) );
+        {
+            int qp8 = RC_LOAD( &h->thread[i]->rc->slice_qp8 );
+            if( !qp8 )
+                continue;
+            float gap = 1.0f + x264_clip3f( 6.0f * log2f( h->thread[i]->rc->slice_cost / h->rc->slice_cost ) - 1.0f, 0.0f, 1.0f );
+            qp = X264_MAX( qp, qp8 * (1.0f / 256) - gap );
+            *floor1 = X264_MAX( *floor1, qp8 * (1.0f / 256) - 1.0f );
+        }
     return qp;
 }
 
@@ -1949,13 +1959,20 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
         /* A one-frame VBV lowers QP into all the room the frame has left. Not more
          * than one below the other running thread slices, so cheap slices, which get
-         * little for it, don't take the room a hard one needs; down to the frame's QP
+         * little for it, don't take the room a hard one needs; up to 1 more below one
+         * costlier per row, as flatter rows gain more for their bits, within its own
+         * planned size, so not out of the room the others planned; down to the frame's QP
          * in any case, so a hard slice at a high QP doesn't pin the others there. Not
          * on a frame planned near QP_MAX_SPEC with much of it intra: content full at a high
          * QP with poor references needs one slice to lead the descent, or they never get
          * better. A fade plans such QPs with few intra mbs and keeps the floor. */
+        float qp_plan_min = -1.0f;
         if( b_threadslices && rc->single_frame_vbv && !rc->b_floor_off )
-            qp_min = X264_MAX( qp_min, X264_MIN( other_slices_max_qp( h ) - 1.0f, rc->qp ) );
+        {
+            float floor1, floor_wide = other_slices_floor( h, &floor1 );
+            qp_min = X264_MAX( qp_min, X264_MIN( floor_wide, rc->qp ) );
+            qp_plan_min = X264_MIN( floor1, rc->qp );
+        }
         /* Nor more than 6 below the frame's QP with any threading: rows after a hard
          * band found its room and went to near-lossless QPs while the band starved. 12
          * below where the floor is off: a frame full at a high QP with poor references
@@ -1983,7 +2000,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
                && (rc->qpm > h->fdec->f_row_qp[0] || rc->single_frame_vbv)
                && (b2 < max_frame_size)
-               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
+               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max))
+               && (rc->qpm > qp_plan_min || b2 - size_of_other_slices <= rc->slice_size_planned) )
         {
             b1 = b2;
             rc->qpm -= step_size;
@@ -3111,6 +3129,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
             memcpy( t->rc, rc, offsetof(x264_ratecontrol_t, row_pred) );
         t->rc->row_pred = t->rc->row_preds[h->sh.i_type];
         t->rc->slice_qp8 = (int)(rc->qpm * 256 + 0.5f);
+        t->rc->slice_cost = 1.0f;
         /* Calculate the planned slice size. */
         if( rc->b_vbv && rc->frame_size_planned )
         {
@@ -3121,6 +3140,14 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
         }
         else
             t->rc->slice_size_planned = 0;
+        /* As coded, not lowres: the fine detail a half-res satd misses. */
+        if( rc->b_vbv && h->sh.i_type == SLICE_TYPE_P )
+        {
+            float cost = h->mb.i_mb_width;
+            for( row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
+                cost += h->fref[0][0]->i_row_bits[row] * h->fref[0][0]->f_row_qscale[row];
+            t->rc->slice_cost = cost / (t->i_threadslice_end - t->i_threadslice_start);
+        }
     }
     if( rc->b_vbv && rc->frame_size_planned )
     {
