@@ -267,6 +267,8 @@ void          x264_frame_expand_border_mod16( x264_t *h, x264_frame_t *frame );
 void          x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 );
 #define x264_expand_border_mbpair x264_template(expand_border_mbpair)
 void          x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y );
+#define x264_fenc_bot_copy x264_template(fenc_bot_copy)
+void          x264_fenc_bot_copy( x264_t *h );
 
 #define x264_frame_deblock_row x264_template(frame_deblock_row)
 void          x264_frame_deblock_row( x264_t *h, int mb_y );
@@ -333,6 +335,10 @@ void          x264_frame_push_unused( x264_t *h, x264_frame_t *frame );
 void          x264_frame_push_blank_unused( x264_t *h, x264_frame_t *frame );
 #define x264_frame_pop_blank_unused x264_template(frame_pop_blank_unused)
 x264_frame_t *x264_frame_pop_blank_unused( x264_t *h );
+/* Source of fenc->weighted[]. Interlaced: plane_fld, whose 2*PADV border rows
+ * are padded per field (the frame plane pads only PADV rows); the picture rows
+ * are the same, so frame mbs differ only in the border, and only in ME. */
+#define x264_weight_src_plane( h, frame ) (PARAM_INTERLACED ? (frame)->filtered_fld[0][0] : (frame)->filtered[0][0])
 #define x264_weight_scale_plane x264_template(weight_scale_plane)
 void x264_weight_scale_plane( x264_t *h, pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride,
                               int i_width, int i_height, x264_weight_t *w );
