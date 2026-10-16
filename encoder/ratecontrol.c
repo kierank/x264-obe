@@ -102,6 +102,12 @@ struct x264_ratecontrol_t
     predictor_t *pred;          /* predict frame size from satd */
     int single_frame_vbv;
     float rate_factor_max_increment; /* Don't allow RF above (CRF + this value). */
+    /* One-frame CBR: actual over predicted size of the P-frames the frame predictor
+     * would raise, decayed, and P-frames since the last of them */
+    double vbv_err_sum;
+    double vbv_err_count;
+    int vbv_err_age;
+    int b_vbv_err_sample;       /* this frame is one */
 
     /* ABR stuff */
     int    last_satd;
@@ -1520,6 +1526,7 @@ void x264_ratecontrol_start( x264_t *h, int i_force_qp, int overhead )
         rc->row_pred = rc->row_preds[h->sh.i_type];
         rc->buffer_rate = h->fenc->i_cpb_duration * rc->vbv_max_rate * h->sps->vui.i_num_units_in_tick / h->sps->vui.i_time_scale;
         rc->rows_done = 0;
+        rc->b_vbv_err_sample = 0;
         update_vbv_plan( h, overhead );
 
         const x264_level_t *l = x264_levels;
@@ -2496,6 +2503,20 @@ static int update_vbv( x264_t *h, int bits )
     x264_ratecontrol_t *rct = h->thread[0]->rc;
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
+    /* before the frame trains the predictor; four P-frames without one start it over */
+    if( h->sh.i_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate )
+    {
+        if( rcc->b_vbv_err_sample && rcc->last_satd >= h->mb.i_mb_count )
+        {
+            float pred = predict_size( &rct->pred[SLICE_TYPE_P], qp2qscale( rcc->qpa_rc ), rcc->last_satd );
+            rct->vbv_err_sum = rct->vbv_err_sum * 0.5 + x264_clip3f( bits / X264_MAX( pred, 1.0f ), 0, 4 );
+            rct->vbv_err_count = rct->vbv_err_count * 0.5 + 1;
+            rct->vbv_err_age = 0;
+        }
+        else if( rct->vbv_err_count && ++rct->vbv_err_age >= 4 )
+            rct->vbv_err_sum = rct->vbv_err_count = 0;
+    }
+
     if( rcc->last_satd >= h->mb.i_mb_count )
         update_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
 
@@ -2613,6 +2634,25 @@ static double clip_qscale( x264_t *h, int pict_type, double q )
         return x264_clip3f( q, lmin, lmax );
 }
 
+/* One-frame CBR, P-frames: the predicted size times the predictor's recent error on the
+ * frames it would raise, when well below 1. The raise picks the frames it overestimates,
+ * and only the next frames' 4 QP steps bring them back. Not on frames much of it intra
+ * in the lowres (cuts), where the error on the content before says nothing. */
+static double vbv_err_scale( x264_t *h )
+{
+    x264_ratecontrol_t *rcc = h->rc;
+    x264_ratecontrol_t *rct = h->thread[0]->rc;
+    if( h->sh.i_type != SLICE_TYPE_P || !rcc->single_frame_vbv || !rcc->b_vbv_min_rate
+        || h->param.rc.i_lookahead || !h->frames.b_have_lowres || rct->vbv_err_count < 1.5 )
+        return 1;
+    int d = h->fenc->i_bframes + 1;
+    int scored = h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?
+                 (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) : h->mb.i_mb_count;
+    if( h->fenc->i_cost_est[d][0] < 0 || h->fenc->i_intra_mbs[d] * 4 > scored )
+        return 1;
+    return x264_clip3f( 1.25 * rct->vbv_err_sum / rct->vbv_err_count, 0.25, 1 );
+}
+
 // apply VBV constraints
 static double vbv_pass1( x264_t *h, int pict_type, double q )
 {
@@ -2691,6 +2731,10 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
             double max_fill_factor = h->param.rc.i_vbv_buffer_size >= 5*h->param.rc.i_vbv_max_bitrate / rcc->fps ? 2 : 1;
             /* For single-frame VBVs, request that the frame use up the entire VBV. */
             double min_fill_factor = rcc->single_frame_vbv ? 1 : 2;
+
+            if( pict_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate )
+                rcc->b_vbv_err_sample = bits > rcc->buffer_fill/max_fill_factor;
+            bits *= vbv_err_scale( h );
 
             if( bits > rcc->buffer_fill/max_fill_factor )
             {
@@ -3001,7 +3045,7 @@ static float rate_estimate_qscale( x264_t *h )
         if( rcc->b_2pass && rcc->b_vbv )
             rcc->frame_size_planned = qscale2bits(&rce, q);
         else
-            rcc->frame_size_planned = predict_size( &rcc->pred[h->sh.i_type], q, rcc->last_satd );
+            rcc->frame_size_planned = predict_size( &rcc->pred[h->sh.i_type], q, rcc->last_satd ) * vbv_err_scale( h );
 
         /* Apply MinCR and buffer fill restrictions */
         if( rcc->b_vbv )
