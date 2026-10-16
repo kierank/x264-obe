@@ -744,6 +744,33 @@ static int pixel_vsad( pixel *src, intptr_t stride, int height )
     return score;
 }
 
+/* Lookahead vertical motion of an mb pair against a previous frame, in lowres
+ * qpel (half pixels) per frame; 0 where unsearched or the two mbs disagree */
+static int field_lowres_mvy( x264_t *h, int mb_x, int mb_y )
+{
+    x264_frame_t *f = h->fenc;
+    int mb_width = h->mb.i_mb_width;
+    if( !h->frames.b_have_lowres )
+        return 0;
+    /* edge mbs are searched only with VBV or mbtree */
+    if( !h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size &&
+        (!mb_x || !mb_y || mb_x == mb_width-1 || mb_y+2 >= h->mb.i_mb_height) )
+        return 0;
+    for( int d = 1; d <= h->param.i_bframe + 1; d++ )
+        if( f->lowres_mvs[0][d-1][0][0] != 0x7FFF )
+        {
+            int my0 = f->lowres_mvs[0][d-1][mb_x + mb_y * mb_width][1];
+            int my1 = f->lowres_mvs[0][d-1][mb_x + (mb_y+1) * mb_width][1];
+            if( (my0 ^ my1) < 0 )
+                return 0;
+            return X264_MIN( abs(my0), abs(my1) ) / d;
+        }
+    return 0;
+}
+
+/* lowres qpel per frame: a pixel per field */
+#define FIELD_MOTION_MVY 4
+
 int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
 {
     int score_field, score_frame;
@@ -763,6 +790,12 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
      * scores (it was 512 at every depth). */
     int bias = 1024 << (BIT_DEPTH - 8);
     score_field = score_field * 14 >> 4;
+    /* Detail finer than the field line spacing keeps the field vsad as high as
+     * the combing raises the frame vsad, and frame mc of vertical motion mixes
+     * the fields: halve the field score of active pairs that move vertically */
+    if( score_frame > (16 * (mbpair_height-1)) << (BIT_DEPTH-8) &&
+        field_lowres_mvy( h, mb_x, mb_y ) >= FIELD_MOTION_MVY )
+        score_field >>= 1;
     if( mb_x > 0 )
         score_field += bias - h->mb.field[mb_xy        -1]*2*bias;
     /* the pair above may belong to another slice thread that is still encoding it */
