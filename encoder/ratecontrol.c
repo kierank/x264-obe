@@ -160,6 +160,7 @@ struct x264_ratecontrol_t
     double frame_size_planned;
     double slice_size_planned;
     int b_floor_off;            /* no thread slice QP floor this frame */
+    int b_last_under_plan;      /* last P frame of a one-frame VBV ended under half its plan */
     predictor_t *row_pred;
     predictor_t row_preds[3][2];
     predictor_t row_pred_last[3]; /* the last row of this thread's slice */
@@ -2467,6 +2468,9 @@ static int update_vbv( x264_t *h, int bits )
     if( !rcc->b_vbv )
         return filler;
 
+    if( h->sh.i_type == SLICE_TYPE_P )
+        rct->b_last_under_plan = rcc->single_frame_vbv && bits < rcc->frame_size_planned * 0.5;
+
     rct->buffer_fill_final -= (uint64_t)bits * h->sps->vui.i_time_scale;
 
     if( rct->buffer_fill_final < 0 )
@@ -2926,7 +2930,7 @@ static float rate_estimate_qscale( x264_t *h )
                     double lmax = rcc->last_qscale_for[pict_type] * rcc->lstep;
                     if( overflow > 1.1 && h->i_frame > 3 )
                         lmax *= rcc->lstep;
-                    else if( overflow < 0.9 )
+                    else if( overflow < 0.9 || (pict_type == SLICE_TYPE_P && rcc->b_last_under_plan) )
                         lmin /= rcc->lstep;
 
                     q = x264_clip3f(q, lmin, lmax);
