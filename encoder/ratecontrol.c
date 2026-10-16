@@ -1614,7 +1614,7 @@ static float predict_row_size( x264_t *h, int y, float qscale )
             && h->fref[0][0]->i_row_satd[y] > 0
             && (abs(h->fref[0][0]->i_row_satd[y] - h->fdec->i_row_satd[y]) < h->fdec->i_row_satd[y]/2))
         {
-            float pred_t = h->fref[0][0]->i_row_bits[y] * h->fdec->i_row_satd[y] / h->fref[0][0]->i_row_satd[y]
+            float pred_t = (int64_t)h->fref[0][0]->i_row_bits[y] * h->fdec->i_row_satd[y] / h->fref[0][0]->i_row_satd[y]
                          * h->fref[0][0]->f_row_qscale[y] / qscale;
             return (pred_s + pred_t) * 0.5f;
         }
