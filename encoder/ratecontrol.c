@@ -2473,8 +2473,15 @@ static void update_row_predictor( predictor_t *p, float q, float var, float bits
     update_predictor_fit( p, q, var, bits, 0 );
 }
 
+/* A frame that cost less than its offset alone shows the offset is too big. */
 static void update_frame_predictor( predictor_t *p, float q, float var, float bits )
 {
+    float offset = frame_offset( p, var );
+    if( var >= 10 && bits*q*p->count < offset )
+    {
+        p->offset     *= bits*q*p->count / offset;
+        p->offset_rel *= bits*q*p->count / offset;
+    }
     update_predictor_fit( p, q, var, bits, 2 );
 }
 
