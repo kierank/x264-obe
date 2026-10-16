@@ -2241,8 +2241,9 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
             rc->bframe_bits += bits;
             if( h->fenc->b_last_minigop_bframe )
             {
-                update_predictor( rc->pred_b_from_p, qp2qscale( rc->qpa_rc ),
-                                  h->fref[1][h->i_ref[1]-1]->i_satd, rc->bframe_bits / rc->bframes );
+                if( !IS_X264_TYPE_I( h->fref[1][h->i_ref[1]-1]->i_type ) )
+                    update_predictor( rc->pred_b_from_p, qp2qscale( rc->qpa_rc ),
+                                      h->fref[1][h->i_ref[1]-1]->i_satd, rc->bframe_bits / rc->bframes );
                 rc->bframe_bits = 0;
             }
         }
@@ -2764,8 +2765,14 @@ static float rate_estimate_qscale( x264_t *h )
 
         rcc->qp_novbv = q;
         q = qp2qscale( q );
+        /* For row SATDs */
+        if( rcc->b_vbv )
+            rcc->last_satd = x264_rc_analyse_slice( h );
         if( rcc->b_2pass && rcc->b_vbv )
             rcc->frame_size_planned = qscale2bits( &rce, q );
+        /* An I anchor's satd is intra, several times a P's: from the B's own satd. */
+        else if( rcc->b_vbv && IS_X264_TYPE_I( h->fref[1][h->i_ref[1]-1]->i_type ) )
+            rcc->frame_size_planned = predict_size( &rcc->pred[SLICE_TYPE_B], q, rcc->last_satd );
         else
             rcc->frame_size_planned = predict_size( rcc->pred_b_from_p, q, h->fref[1][h->i_ref[1]-1]->i_satd );
 
@@ -2781,10 +2788,6 @@ static float rate_estimate_qscale( x264_t *h )
         }
 
         rcc->frame_size_estimated = rcc->frame_size_planned;
-
-        /* For row SATDs */
-        if( rcc->b_vbv )
-            rcc->last_satd = x264_rc_analyse_slice( h );
         return q;
     }
     else
