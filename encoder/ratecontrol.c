@@ -2224,10 +2224,10 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
         double rceq = h->sh.i_type != SLICE_TYPE_B ? rc->last_rceq : rc->last_rceq * fabs( h->param.rc.f_pb_factor );
         double cplxr = bits * qp2qscale( rc->qpa_rc ) / rceq;
         double wanted = h->fenc->f_duration * rc->bitrate;
-        /* One-frame CBR VBV: no deficit that would lower the ABR qscale (rceq*cplxr_sum/wanted)
+        /* CBR VBV: no deficit that would lower the ABR qscale (rceq*cplxr_sum/wanted)
          * while it is already more than a step below the coded QP. Content that can't
          * spend the budget would otherwise wind it down without bound. */
-        if( !(rc->single_frame_vbv && rc->b_vbv_min_rate && h->sh.i_type == SLICE_TYPE_P
+        if( !(rc->b_vbv_min_rate
               && bits < wanted && cplxr * rc->wanted_bits_window < wanted * rc->cplxr_sum
               && rceq * rc->cplxr_sum * rc->lstep < qp2qscale( rc->qpa_rc ) * rc->wanted_bits_window) )
         {
