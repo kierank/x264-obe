@@ -60,6 +60,7 @@ pd_4567: dd 4, 5, 6, 7
 sq_1: dq 1, 0
 pq_128: times 2 dq 128
 pq_ffffffff: times 2 dq 0xffffffff
+pd_04152637: dd 0, 4, 1, 5, 2, 6, 3, 7
 
 cextern_common cabac_entropy
 cextern_common cabac_transition
@@ -103,6 +104,76 @@ SECTION .text
     movd       %1, %2
     punpcklqdq %1, %1
 %endif
+%endmacro
+
+; xmm8 = nonzero quant_coefs[i], b_ac <= i <= last_nnz, as a bit mask
+%macro NZ_MASK 0
+    mov       r6, quant_coefsm
+%if num_coefs == 64
+%if HIGH_BIT_DEPTH
+    vmovdqu   ymm1, [r6+  0]
+    vpackssdw ymm1, ymm1, [r6+ 32]
+    vmovdqu   ymm2, [r6+ 64]
+    vpackssdw ymm2, ymm2, [r6+ 96]
+    vmovdqu   ymm3, [r6+128]
+    vpackssdw ymm3, ymm3, [r6+160]
+    vmovdqu   ymm4, [r6+192]
+    vpackssdw ymm4, ymm4, [r6+224]
+    vpacksswb ymm1, ymm1, ymm2
+    vpacksswb ymm3, ymm3, ymm4
+    vmovdqu   ymm0, [pd_04152637]
+    vpermd    ymm1, ymm0, ymm1
+    vpermd    ymm3, ymm0, ymm3
+%else
+    vmovdqu   ymm1, [r6+ 0]
+    vpacksswb ymm1, ymm1, [r6+32]
+    vmovdqu   ymm3, [r6+64]
+    vpacksswb ymm3, ymm3, [r6+96]
+    vpermq    ymm1, ymm1, q3120
+    vpermq    ymm3, ymm3, q3120
+%endif
+    vpxor     xmm0, xmm0, xmm0
+    vpcmpeqb  ymm1, ymm1, ymm0
+    vpcmpeqb  ymm3, ymm3, ymm0
+    vpmovmskb r6d, ymm1
+    vpmovmskb r10d, ymm3
+    vzeroupper
+    shl       r10, 32
+    or        r6, r10
+%else
+    pxor      m0, m0
+%if HIGH_BIT_DEPTH
+    movu      m1, [r6+ 0]
+    packssdw  m1, [r6+16]
+%if num_coefs == 16
+    movu      m2, [r6+32]
+    packssdw  m2, [r6+48]
+    packsswb  m1, m2
+%else
+    packsswb  m1, m0
+%endif
+%else
+    movu      m1, [r6]
+%if num_coefs == 16
+    packsswb  m1, [r6+16]
+%else
+    packsswb  m1, m0
+%endif
+%endif
+    pcmpeqb   m1, m0
+    pmovmskb  r6d, m1
+%endif
+    not       r6
+    xor      r10d, r10d
+    bts       r10, iiq
+    lea       r10, [r10*2-1]
+    and       r6, r10
+%if num_coefs == 16 && dc == 0
+    mov      r10d, b_acm
+    not       r10
+    and       r6, r10
+%endif
+    movq      m8, r6
 %endmacro
 
 ;-----------------------------------------------------------------------------
@@ -153,6 +224,9 @@ cglobal %1, 4,15,9
     %define quant_coefsm [stack+24]
     mov     orig_coefsm,  orig_coefsq
     mov     quant_coefsm, quant_coefsq
+%endif
+%if cpuflag(avx2)
+    NZ_MASK
 %endif
     %define unquant_mfm   [stack+32]
     %define levelgt1_ctxm [stack+40]
@@ -226,6 +300,15 @@ cglobal %1, 4,15,9
     ; for( int i = b_ac; i <= last_nnz; i++ )
     ;     dct[zigzag[i]] = SIGN(level_tree[level].abs_level, orig_coefs[zigzag[i]]);
     ;     level = level_tree[level].next;
+    %define dctq r10
+%if cpuflag(avx2)
+    ; only nonzero coefs have levels, the others are already 0
+    mov    r0d, [nodes_curq + node_level_idx(0) + rax*4]
+    movq   r6, m8
+.writeback_loop:
+    bsf    r3, r6
+    movzx  r2d, byte [zigzagq + r3]
+%else
     mov    iid, last_nnzm
     add zigzagq, iiq
     neg    iiq
@@ -233,10 +316,10 @@ cglobal %1, 4,15,9
     mov    r2d, b_acm
     add    iiq, r2
 %endif
-    %define dctq r10
     mov    r0d, [nodes_curq + node_level_idx(0) + rax*4]
 .writeback_loop:
     movzx   r2, byte [zigzagq + iiq]
+%endif
 %if cpuflag(ssse3)
     movd    m0, [level_tree + r0*4]
     movzx   r0, word [level_tree + r0*4]
@@ -268,8 +351,14 @@ cglobal %1, 4,15,9
     mov  [dctq + r2*SIZEOF_DCTCOEF], r5w
 %endif
 %endif
+%if cpuflag(avx2)
+    lea    r3, [r6-1]
+    and    r6, r3
+    jnz .writeback_loop
+%else
     inc    iiq
     jle .writeback_loop
+%endif
 
     mov eax, 1
 .return:
@@ -320,6 +409,7 @@ cglobal %1, 4,15,9
     movzx  r10, byte [r10 + iiq]
 %endif
 
+%if notcpuflag(avx2) ; avx2 visits only the nonzero coefs
     test  abs_leveld, abs_leveld
     jnz %%.nonzero_quant_coef
 
@@ -334,6 +424,7 @@ cglobal %1, 4,15,9
 %endif
     ZERO_LEVEL_IDX %1, cur
     jmp .i_continue%1
+%endif
 
 %%.nonzero_quant_coef:
     ; int sign_coef = orig_coefs[zigzag[i]];
@@ -526,11 +617,69 @@ cglobal %1, 4,15,9
     call trellis_coef1.entry%1b
 
 .i_continue%1:
+%if cpuflag(avx2)
+    ; next nonzero coef below i
+    movq   r6, m8
+    xor   r10d, r10d
+    bts    r10, iiq
+    dec    r10
+    and    r6, r10
+%if %1
+    bsr    iiq, r6
+    jnz .i_loop%1
+%else
+    ; the zeros in between, down to b_ac if none:
+    ; nodes_cur[0].score -= cost_sig0;
+%if num_coefs == 16 && dc == 0
+    mov   r12d, b_acm
+    dec   r12d
+%else
+    mov   r12d, -1
+%endif
+    bsr    r6, r6
+    cmovnz r12d, r6d
+    mov    r9, cabac_state_sigm
+%if num_coefs == 64
+    mov    r5d, b_interlacedm
+    lea    r5, [significant_coeff_flag_offset_8x8 + r5 GLOBAL]
+%endif
+    xor   r11d, r11d
+    dec    iid
+    cmp    iid, r12d
+    jle %%.zeros_done
+%%.zeros:
+%if num_coefs == 64
+    movzx r10d, byte [r5 + iiq]
+    movzx r10d, byte [r9 + r10]
+%elif num_coefs == 8
+    movzx r10d, byte [coeff_flag_offset_chroma_422_dc + iiq GLOBAL]
+    movzx r10d, byte [r9 + r10]
+%else
+    movzx r10d, byte [r9 + iiq]
+%endif
+    movzx r10d, word [cabac_entropy + r10*2 GLOBAL]
+    imul   r10, lambda2q
+    shr    r10, CABAC_SIZE_BITS - LAMBDA_BITS
+    add    r11, r10
+    dec    iid
+    cmp    iid, r12d
+    jg %%.zeros
+    sub   [nodes_curq + node_score(0)], r11
+%%.zeros_done:
+%if num_coefs == 16 && dc == 0
+    cmp    iid, b_acm
+%else
+    test   iid, iid
+%endif
+    jge .i_loop%1
+%endif
+%else
     dec iid
 %if num_coefs == 16 && dc == 0
     cmp iid, b_acm
 %endif
     jge .i_loop%1
+%endif
 
     call trellis_bnode_%1
 %if %1 == 0
@@ -585,6 +734,13 @@ TRELLIS trellis_cabac_8x8_psy, 64, 0, 1
 TRELLIS trellis_cabac_dc, 16, 1, 0
 TRELLIS trellis_cabac_chroma_422_dc, 8, 1, 0
 INIT_XMM ssse3
+TRELLIS trellis_cabac_4x4, 16, 0, 0
+TRELLIS trellis_cabac_8x8, 64, 0, 0
+TRELLIS trellis_cabac_4x4_psy, 16, 0, 1
+TRELLIS trellis_cabac_8x8_psy, 64, 0, 1
+TRELLIS trellis_cabac_dc, 16, 1, 0
+TRELLIS trellis_cabac_chroma_422_dc, 8, 1, 0
+INIT_XMM avx2
 TRELLIS trellis_cabac_4x4, 16, 0, 0
 TRELLIS trellis_cabac_8x8, 64, 0, 0
 TRELLIS trellis_cabac_4x4_psy, 16, 0, 1
