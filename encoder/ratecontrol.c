@@ -1681,6 +1681,12 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
     return bits * h->rc->epb_scale;
 }
 
+/* trace: one-frame VBV P rows at --log-level debug */
+static int rowpred_trace_on( x264_t *h )
+{
+    return h->rc->single_frame_vbv && h->sh.i_type == SLICE_TYPE_P && h->param.i_log_level >= X264_LOG_DEBUG;
+}
+
 /* Emulation prevention bytes x264_nal_encode adds to p[*pos..end), resumable. */
 static int epb_count( uint8_t *p, int *pos, int end )
 {
@@ -1787,6 +1793,9 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
         return 0;
     float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
     float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
+    if( rowpred_trace_on( h ) )
+        x264_log( h, X264_LOG_DEBUG, "rowreenc f %d y %d last qp %.2f -> %.2f excess %.0f\n", h->fenc->i_frame, y, rc->qpm,
+                  x264_clip3f( qp, qp_max, qp_hard_max ), excess );
     rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
     rc->last_row_reencodes++;
     return reencode_row( h, rc, y );
@@ -1850,6 +1859,25 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     float qscale = qp2qscale( rc->qpm );
     h->fdec->f_row_qp[y] = rc->qpm;
     h->fdec->f_row_qscale[y] = qscale;
+
+    /* trace: each row's predictors at its coded qscale, before the update. p is what
+     * predict_row_size returns, below the branch it takes (coded qscale under the ref's). */
+    if( rowpred_trace_on( h ) )
+    {
+        x264_frame_t *ref = h->fref[0][0];
+        float tr_s = predict_size( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y] );
+        float tr_i = predict_size( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y] );
+        float tr_t = -1;
+        if( ref->f_row_qscale[y] > 0 && ref->i_row_satd[y] > 0 )
+            tr_t = (int64_t)ref->i_row_bits[y] * h->fdec->i_row_satd[y] / ref->i_row_satd[y]
+                 * ref->f_row_qscale[y] / qscale;
+        float tr_p = predict_row_size( h, y, qscale );
+        int tr_match = abs(ref->i_row_satd[y] - h->fdec->i_row_satd[y]) < h->fdec->i_row_satd[y]/2;
+        x264_log( h, X264_LOG_DEBUG, "rowpred f %d y %d qp %.2f refqp %.2f satd %d refsatd %d isatd %d bits %d refbits %d s %.0f i %.0f t %.0f p %.0f below %d match %d rcqp %d plan %.0f\n",
+                  h->fenc->i_frame, y, rc->qpm, ref->f_row_qp[y], h->fdec->i_row_satd[y], ref->i_row_satd[y],
+                  h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y], ref->i_row_bits[y], tr_s, tr_i, tr_t, tr_p,
+                  qscale < ref->f_row_qscale[y], tr_match, rc->qp, rc->frame_size_planned );
+    }
 
     update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
     if( h->sh.i_type != SLICE_TYPE_I && rc->qpm < h->fref[0][0]->f_row_qp[y] )
@@ -1995,6 +2023,32 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         h->rc->frame_size_estimated = b1 - size_of_other_slices;
+        /* trace: the qp chosen for row y+1 and its limits; rest = rows y+1.. predicted at
+         * it, split by branch; down = the frame one step lower (the lowering stops at max). */
+        if( rowpred_trace_on( h ) )
+        {
+            x264_frame_t *ref = h->fref[0][0];
+            float tr_q = qp2qscale( rc->qpm );
+            float tr_above = 0, tr_below = 0;
+            int tr_nbelow = 0;
+            for( int i = y+1; i < h->i_threadslice_end; i++ )
+            {
+                float p = predict_row_size( h, i, tr_q );
+                if( tr_q < ref->f_row_qscale[i] )
+                {
+                    tr_below += p;
+                    tr_nbelow++;
+                }
+                else
+                    tr_above += p;
+            }
+            float tr_down = bits_so_far + predict_row_size_to_end( h, y, rc->qpm - step_size ) + size_of_other_slices;
+            float tr_floor = rc->single_frame_vbv ? rc->qp - (rc->b_floor_off ? 12.0f : 6.0f) : 0;
+            x264_log( h, X264_LOG_DEBUG, "rowplan f %d y %d prevqp %.2f qp %.2f qpmin %.2f qpmax %.2f rcqp %d floor %.2f sofar %.0f rest %.0f above %.0f below %.0f nbelow %d nrest %d down %.0f max %.0f plan %.0f tol %.0f fill %.0f others %.0f\n",
+                      h->fenc->i_frame, y, prev_row_qp, rc->qpm, qp_min, qp_max, rc->qp, tr_floor, bits_so_far,
+                      rc->frame_size_estimated - bits_so_far, tr_above, tr_below, tr_nbelow, h->i_threadslice_end - 1 - y,
+                      tr_down, max_frame_size, rc->frame_size_planned, rc_tol, rc->buffer_fill, size_of_other_slices );
+        }
         /* No row goes below the first row's QP. */
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
         {
@@ -2016,6 +2070,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
                 rc->qpm = x264_clip3f( reencode_qp( prev_row_qp, row_bits, over ), prev_row_qp + 1.0f, qp_hard_max );
                 rc->room_reencodes++;
+                if( rowpred_trace_on( h ) )
+                    x264_log( h, X264_LOG_DEBUG, "rowreenc f %d y %d room qp %.2f -> %.2f\n", h->fenc->i_frame, y, prev_row_qp, rc->qpm );
                 return reencode_row( h, rc, y );
             }
         }
@@ -2025,6 +2081,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         {
             /* Bump QP to halfway in between... close enough. */
             rc->qpm = x264_clip3f( (prev_row_qp + rc->qpm)*0.5f, prev_row_qp + 1.0f, qp_max );
+            if( rowpred_trace_on( h ) )
+                x264_log( h, X264_LOG_DEBUG, "rowreenc f %d y %d jump qp %.2f -> %.2f\n", h->fenc->i_frame, y, prev_row_qp, rc->qpm );
             rc->qpa_rc = rc->qpa_rc_prev;
             rc->qpa_aq = rc->qpa_aq_prev;
             h->fdec->i_row_bits[y] = 0;
@@ -2035,6 +2093,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     else
     {
         h->rc->frame_size_estimated = bits_so_far;
+        if( rowpred_trace_on( h ) )
+            x264_log( h, X264_LOG_DEBUG, "rowend f %d y %d qp %.2f sofar %.0f others %.0f limit %.0f max %.0f plan %.0f fill %.0f\n",
+                      h->fenc->i_frame, y, rc->qpm, bits_so_far, size_of_other_slices, vbv_limit, max_frame_size,
+                      rc->frame_size_planned, rc->buffer_fill );
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
         {
             rc->frame_size_ceil = bits_so_far;
