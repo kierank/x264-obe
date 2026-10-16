@@ -770,6 +770,8 @@ static int field_lowres_mvy( x264_t *h, int mb_x, int mb_y )
 
 /* lowres qpel per frame: a pixel per field */
 #define FIELD_MOTION_MVY 4
+/* field score weight /16 of a pair whose coded neighbours are all field */
+#define FIELD_REGION_WEIGHT 12
 
 int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
 {
@@ -796,6 +798,31 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
     if( score_frame > (16 * (mbpair_height-1)) << (BIT_DEPTH-8) &&
         field_lowres_mvy( h, mb_x, mb_y ) >= FIELD_MOTION_MVY )
         score_field >>= 1;
+    /* left, above-left, above, above-right: all field is a field region */
+    int n = 0, nfield = 0;
+    if( mb_x > 0 )
+    {
+        n++;
+        nfield += h->mb.field[mb_xy-1];
+    }
+    if( mb_y > h->i_threadslice_start )
+    {
+        int top = mb_xy - mb_stride;
+        n++;
+        nfield += h->mb.field[top];
+        if( mb_x > 0 )
+        {
+            n++;
+            nfield += h->mb.field[top-1];
+        }
+        if( mb_x < h->mb.i_mb_width-1 )
+        {
+            n++;
+            nfield += h->mb.field[top+1];
+        }
+    }
+    if( n >= 3 && nfield == n )
+        score_field = score_field * FIELD_REGION_WEIGHT >> 4;
     if( mb_x > 0 )
         score_field += bias - h->mb.field[mb_xy        -1]*2*bias;
     /* the pair above may belong to another slice thread that is still encoding it */
