@@ -78,7 +78,8 @@ static void x264_cabac_field_decoding_flag( x264_t *h, x264_cabac_t *cb )
 {
     int ctx = 0;
     ctx += h->mb.field_decoding_flag & !!h->mb.i_mb_x;
-    ctx += (h->mb.i_mb_top_mbpair_xy >= 0
+    /* not the previous threadslice: another slice, and it may still be written */
+    ctx += (h->mb.i_mb_top_mbpair_xy >= h->i_threadslice_start * h->mb.i_mb_stride
             && h->mb.slice_table[h->mb.i_mb_top_mbpair_xy] == h->sh.i_first_mb
             && h->mb.field[h->mb.i_mb_top_mbpair_xy]);
 
