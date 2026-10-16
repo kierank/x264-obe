@@ -795,7 +795,7 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
      * the fields: halve the field score of active pairs that move vertically */
     if( score_frame > (16 * (mbpair_height-1)) << (BIT_DEPTH-8) &&
         field_lowres_mvy( h, mb_x, mb_y ) >= FIELD_MOTION_MVY )
-        score_field >>= 1;
+        score_field = score_field * 12 >> 4;
     if( mb_x > 0 )
         score_field += bias - h->mb.field[mb_xy        -1]*2*bias;
     /* the pair above may belong to another slice thread that is still encoding it */
