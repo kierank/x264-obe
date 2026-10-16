@@ -1685,6 +1685,31 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
     return bits * h->rc->epb_scale;
 }
 
+/* One-frame VBV: rows the reference coded over 6 QP below qp and the next row, a
+ * static region after a hard one, code near their own QP, not at qp. The bits
+ * their colocated row took there and qp doesn't price: the lowering keeps them,
+ * but only below the next row's reference QP. Down to it the next row takes no
+ * more than its colocated row did, whose frame left the static rows these bits. */
+static float row_reserve( x264_t *h, int y, float qp )
+{
+    x264_frame_t *ref = h->fref[0][0];
+    if( !h->rc->single_frame_vbv || h->sh.i_type != SLICE_TYPE_P
+        || ref->i_type != h->fdec->i_type || y+1 >= h->i_threadslice_end
+        || qp >= ref->f_row_qp[y+1] )
+        return 0;
+    float qscale = qp2qscale( qp );
+    float q_far = X264_MIN( qscale, ref->f_row_qscale[y+1] ) * 0.5f;
+    float bits = 0;
+    for( int i = y+1; i < h->i_threadslice_end; i++ )
+        if( ref->f_row_qscale[i] > 0 && ref->f_row_qscale[i] < q_far && ref->i_row_satd[i] > 0
+            && abs(ref->i_row_satd[i] - h->fdec->i_row_satd[i]) < h->fdec->i_row_satd[i]/2 )
+        {
+            float own = (float)ref->i_row_bits[i] * h->fdec->i_row_satd[i] / ref->i_row_satd[i];
+            bits += X264_MAX( own - predict_row_size( h, i, qscale ), 0.f );
+        }
+    return bits * h->rc->epb_scale;
+}
+
 /* Emulation prevention bytes x264_nal_encode adds to p[*pos..end), resumable. */
 static int epb_count( uint8_t *p, int *pos, int end )
 {
@@ -1980,14 +2005,17 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         float b_max = b1 + (b_max_target - b1) * b_max_trust;
         rc->qpm -= step_size;
         float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
+        /* stops the lowering only */
+        float r2 = row_reserve( h, y, rc->qpm );
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
                && (rc->qpm > h->fdec->f_row_qp[0] || rc->single_frame_vbv)
-               && (b2 < max_frame_size)
-               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
+               && (b2 + r2 < max_frame_size)
+               && ((b2 + r2 < rc->frame_size_planned * 0.8f) || (b2 + r2 < b_max)) )
         {
             b1 = b2;
             rc->qpm -= step_size;
             b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
+            r2 = row_reserve( h, y, rc->qpm );
         }
         rc->qpm += step_size;
 
