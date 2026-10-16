@@ -157,7 +157,8 @@ struct x264_ratecontrol_t
                                           * not atomic on all arches we care about */
     volatile float bits_so_far;
     /* Frame threads: the frame's size at its first row's QP, below which no row goes,
-     * and the rows coded when it and frame_size_estimated were set. */
+     * and the rows coded when it and frame_size_estimated were set, stored after them
+     * with release and read first with acquire. */
     volatile float frame_size_ceil;
     volatile int rows_done;
     double frame_size_maximum;  /* Maximum frame size due to MinCR */
@@ -1991,7 +1992,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             rc->frame_size_ceil = rc->qpm > h->fdec->f_row_qp[0]
                                 ? bits_so_far + predict_row_size_to_end( h, y, h->fdec->f_row_qp[0] )
                                 : rc->frame_size_estimated;
-            rc->rows_done = y + 1;
+            RC_STORE( &rc->rows_done, y + 1 );
         }
 
         /* Every other slice final, and the rest of this one can't fit the room left
@@ -2028,7 +2029,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
         {
             rc->frame_size_ceil = bits_so_far;
-            rc->rows_done = y + 1;
+            RC_STORE( &rc->rows_done, y + 1 );
         }
 
         /* Last-ditch attempt: if the last row of the frame underflowed the VBV,
@@ -2554,7 +2555,7 @@ void x264_hrd_fullness( x264_t *h )
 static double inflight_bits( x264_t *t )
 {
     x264_ratecontrol_t *rc = t->rc;
-    int rows = rc->rows_done;
+    int rows = RC_LOAD( &rc->rows_done );
     double est = rc->frame_size_estimated;
     double bits = X264_MAX( rc->frame_size_planned, est );
     if( rows > 0 && !rc->single_frame_vbv )
