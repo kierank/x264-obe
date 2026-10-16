@@ -5,6 +5,9 @@
 #include "common/cpu.h"
 #include "ratecontrol.h"
 
+/* the bit depth templated encoder_reconfig of encoder.c */
+int x264_encoder_reconfig( x264_t *, x264_param_t * );
+
 struct x264_speedcontrol_t
 {
     // all times are in usec
