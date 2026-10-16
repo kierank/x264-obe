@@ -931,7 +931,10 @@ int x264_ratecontrol_new( x264_t *h )
         rc->lmax[i] = qp2qscale( h->param.rc.i_qp_max );
         for( int j = 0; j < num_preds; j++ )
         {
-            rc->pred[i+j*5].coeff_min = pred_coeff_table[i] / 2;
+            /* A one-frame VBV plans every frame from the predictor: low enough for content
+             * that codes far below the initial guess (scrolling text on black), where / 2
+             * set the plan. */
+            rc->pred[i+j*5].coeff_min = pred_coeff_table[i] / (rc->single_frame_vbv ? 16 : 2);
             rc->pred[i+j*5].coeff = pred_coeff_table[i];
             rc->pred[i+j*5].count = 1.0;
             rc->pred[i+j*5].decay = 0.5;
