@@ -118,6 +118,8 @@ SECTION .text
 %define dc %3
 %define psy %4
 cglobal %1, 4,15,9
+    mov r2d, r2d ; int args, used as 64-bit
+    mov r3d, r3d
     %assign level_tree_size 64*8*2*4 ; could depend on num_coefs, but nonuniform stack size would prevent accessing args from trellis_coef*
     %assign pad 96 + level_tree_size + 16*SIZEOF_NODE + 16-gprsize-(stack_offset&15)
     SUB  rsp, pad
