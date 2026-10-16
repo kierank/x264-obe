@@ -176,6 +176,14 @@ cextern_common coeff_flag_offset_chroma_422_dc
 SECTION .text
 
 %define TRELLIS_SCORE_BIAS 1<<60
+; build-time A/B. TRELLIS_AVX2_STLF: the avx2 functions use _sf node helpers, which store and
+; reload each node field at one width. TRELLIS_AVX2_CMOV: their node update is branchless.
+%ifndef TRELLIS_AVX2_STLF
+    %define TRELLIS_AVX2_STLF 1
+%endif
+%ifndef TRELLIS_AVX2_CMOV
+    %define TRELLIS_AVX2_CMOV 0
+%endif
 %define SIZEOF_NODE 16
 %define CABAC_SIZE_BITS 8
 %define LAMBDA_BITS 4
@@ -193,6 +201,16 @@ SECTION .text
 %else
     pmuludq m%1, m%1
     pand    m%1, [pq_ffffffff]
+%endif
+%endmacro
+
+; avx2: as two 8-byte stores, which the GPR reloads of each half can forward from
+%macro TR_STORE_SSD 2
+%if tr_sf
+    movq   [%1], %2
+    movhps [%1+8], %2
+%else
+    mova   [%1], %2
 %endif
 %endmacro
 
@@ -288,6 +306,11 @@ SECTION .text
 %define dc %3
 %define psy %4
 cglobal %1, 4,15,9
+%if cpuflag(avx2) && TRELLIS_AVX2_STLF
+    %assign tr_sf 1
+%else
+    %assign tr_sf 0
+%endif
     mov r2d, r2d ; int args, used as 64-bit
     mov r3d, r3d
     %assign level_tree_size 64*8*2*4 ; could depend on num_coefs, but nonuniform stack size would prevent accessing args from trellis_coef*
@@ -351,7 +374,12 @@ cglobal %1, 4,15,9
     %define level_state_packed mm0 ; version for copying into node.cabac_state
     pcmpeqb    m7, m7 ; TRELLIS_SCORE_MAX
     movq [nodes_curq + node_score(1)], m7
+%if tr_sf
+    movq [nodes_curq + node_score(2)], m7
+    movq [nodes_curq + node_score(3)], m7
+%else
     mova [nodes_curq + node_score(2)], m7
+%endif
 
     %define levels_usedq r4
     %define levels_usedd r4d
@@ -368,6 +396,17 @@ cglobal %1, 4,15,9
     mov dword levelgt1_ctxm, 8
 %else
     mov dword levelgt1_ctxm, 9
+%endif
+    %define lg1mulm [stack+44]
+    %define lg1andm [stack+92]
+%if tr_sf ; for inserting the levelgt1 transition into node 7's cabac_state
+%if num_coefs == 8
+    mov dword lg1mulm, 1<<16
+    mov dword lg1andm, 0xff00ffff
+%else
+    mov dword lg1mulm, 1<<24
+    mov dword lg1andm, 0x00ffffff
+%endif
 %endif
 %if psy
     LOAD_DUP m6, psy_trellism
@@ -658,7 +697,7 @@ cglobal %1, 4,15,9
 %endif
 %endif
 %if %1 == 0
-    mova [ssd], m0
+    TR_STORE_SSD ssd, m0
 %endif
 
 %if dc == 0 && %1 == 0
@@ -675,10 +714,10 @@ cglobal %1, 4,15,9
     psubd   m4, m2 ; d
     SQUARE   4, 3
     pmuludq m4, m5
-    mova [ssd], m4
+    TR_STORE_SSD ssd, m4
 %%.skip_dc_rounding:
 %endif
-    mova [ssd+16], m0
+    TR_STORE_SSD ssd+16, m0
 
     %assign stack_offset_bak stack_offset
     cmp abs_leveld, 1
@@ -689,6 +728,13 @@ cglobal %1, 4,15,9
     movq   r12, m0
     ; for( int j = 0; j < 8; j++ )
     ;     nodes_cur[j].score = TRELLIS_SCORE_MAX;
+%if tr_sf
+%assign j %1
+%rep 8-%1
+    movq [nodes_curq + node_score(j)], m7
+%assign j j+1
+%endrep
+%else
 %if cpuflag(ssse3)
     mova [nodes_curq + node_score(0)], m7
     mova [nodes_curq + node_score(2)], m7
@@ -702,18 +748,43 @@ cglobal %1, 4,15,9
 %endif
     mova [nodes_curq + node_score(4)], m7
     mova [nodes_curq + node_score(6)], m7
+%endif
     je %%.switch_coef1
 %%.switch_coefn:
+%if tr_sf
+    call trellis_coefn_sf.entry%1
+%else
     call trellis_coefn.entry%1
+%endif
+%if tr_sf
+    call trellis_coefn_sf.entry%1b
+%else
     call trellis_coefn.entry%1b
+%endif
     jmp .i_continue1
 %%.switch_coef1:
+%if tr_sf
+    call trellis_coef1_sf.entry%1
+%else
     call trellis_coef1.entry%1
+%endif
+%if tr_sf
+    call trellis_coefn_sf.entry%1b
+%else
     call trellis_coefn.entry%1b
+%endif
     jmp .i_continue1
 %%.switch_coef0:
+%if tr_sf
+    call trellis_coef0_%1_sf
+%else
     call trellis_coef0_%1
+%endif
+%if tr_sf
+    call trellis_coef1_sf.entry%1b
+%else
     call trellis_coef1.entry%1b
+%endif
 
 .i_continue%1:
 %if cpuflag(avx2)
@@ -791,7 +862,12 @@ cglobal %1, 4,15,9
 
 %%.zero_siglast:
     xor  r6d, r6d
+%if tr_sf
+    mov [cost_siglast+0], r6d
+    mov [cost_siglast+4], r6d
+%else
     mov [cost_siglast+0], r6
+%endif
     mov [cost_siglast+8], r6d
     jmp %%.skip_siglast
 %endif
@@ -888,8 +964,17 @@ TRELLIS_BNODE 0
 TRELLIS_BNODE 1
 
 
+; TR_SF: the _sf helpers of the avx2 functions. Every node field is stored and
+; reloaded at one width, score 8, cabac_state and level_idx 4 bytes, so each
+; reload can forward from the store that wrote it.
+; TR_CMOV: their node update is branchless.
+
 %macro TRELLIS_COEF0 1 ; ctx_hi
+%if TR_SF
+clocal trellis_coef0_%1_sf
+%else
 clocal trellis_coef0_%1
+%endif
     ; ssd1 += (uint64_t)cost_sig * lambda2 >> ( CABAC_SIZE_BITS - LAMBDA_BITS );
     mov  r11d, [cost_siglast+0]
     imul  r11, lambda2q
@@ -903,6 +988,32 @@ clocal trellis_coef0_%1
     mov  [nodes_curq + node_score(0)], scoreq
 %endif
     ; memcpy
+%if TR_SF
+%assign j 1
+%rep 3+4*%1
+    mov  scoreq, [nodes_prevq + node_score(j)]
+    mov  [nodes_curq + node_score(j)], scoreq
+%assign j j+1
+%endrep
+%assign j 3
+%rep 1+4*%1
+    mov  r6d, [nodes_prevq + node_cabac_state(j)]
+    mov  [nodes_curq + node_cabac_state(j)], r6d
+%assign j j+1
+%endrep
+    ; for( int j = 0; j < 8; j++ )
+    ;     level_tree[levels_used] = (trellis_level_t){ .next = nodes_prev[j].level_idx, .abs_level = 0 };
+    ;     nodes_cur[j].level_idx = levels_used++;
+%assign j 0
+%rep 4+4*%1
+    mov  r6d, [nodes_prevq + node_level_idx(j)]
+    mov  [level_tree + levels_usedq*4 + j*4], r6d
+    lea  r6d, [levels_usedq + j]
+    mov  [nodes_curq + node_level_idx(j)], r6d
+%assign j j+1
+%endrep
+    add  levels_usedd, 4+4*%1
+%else
     mov  scoreq, [nodes_prevq + node_score(1)]
     mov  [nodes_curq + node_score(1)], scoreq
     mova m1, [nodes_prevq + node_score(2)]
@@ -920,10 +1031,9 @@ clocal trellis_coef0_%1
     mova [nodes_curq + node_cabac_state(4)], m1
 %endif
     ZERO_LEVEL_IDX %1, prev
+%endif
     ret
 %endmacro ; TRELLIS_COEF0
-TRELLIS_COEF0 0
-TRELLIS_COEF0 1
 
 
 
@@ -958,6 +1068,39 @@ TRELLIS_COEF0 1
 %endif
 %endmacro ; START_COEF
 
+; the new cabac_state of node_ctx in r6d, all of it in one store: tr_state 1 if any
+%macro TR_STATE 1 ; gt1
+    %assign tr_state 0
+%if j == 2 || (j <= 3 && node_ctx == 4)
+    ; if this node hasn't previously needed to keep track of abs_level cabac_state, import a pristine copy of the input states
+    movd  r6d, level_state_packed
+    %assign tr_state 1
+%elif j >= 3
+    ; if we have updated before, then copy cabac_state from the parent node
+    mov   r6d, [nodes_prevq + node_cabac_state(j)]
+    %assign tr_state 1
+%endif
+%if j >= 3 ; skip the transition if we're not going to reuse the context
+%if (coeff_abs_level1_offs>>2) == 0
+    mov   r6b, r11b
+%else
+    and   r6d, 0xffff00ff
+    shl   r11d, 8
+    or    r6d, r11d
+%endif
+%endif
+%if %1 && node_ctx == 7
+%if j == 6
+    and   r6d, 0xff00ffff
+    shl   r10d, 16
+%else
+    and   r6d, lg1andm
+    imul  r10d, lg1mulm
+%endif
+    or    r6d, r10d
+%endif
+%endmacro
+
 %macro END_COEF 1
     ; n.score += (uint64_t)f8_bits * lambda2 >> ( CABAC_SIZE_BITS - LAMBDA_BITS );
     imul bitsq, lambda2q
@@ -967,9 +1110,41 @@ TRELLIS_COEF0 1
     ; if( n.score < nodes_cur[node_ctx].score )
     ;     SET_LEVEL( n, abs_level );
     ;     nodes_cur[node_ctx] = n;
+%if TR_SF && TR_CMOV
+    TR_STATE %1
+    mov  r10d, [nodes_prevq + node_level_idx(j)]
+%if %1
+    mov  r11d, abs_leveld
+    shl  r11d, 16
+    or   r10d, r11d
+%else
+    or   r10d, 1<<16
+%endif
+    mov    r13, [nodes_curq + node_score(node_ctx)]
+    cmp    scoreq, r13
+    cmovae scoreq, r13
+    mov    [nodes_curq + node_score(node_ctx)], scoreq
+%if tr_state
+    mov    r11d, [nodes_curq + node_cabac_state(node_ctx)]
+    cmovae r6d, r11d
+    mov    [nodes_curq + node_cabac_state(node_ctx)], r6d
+%endif
+    mov    [level_tree + levels_usedq*4], r10d
+    mov    r11d, [nodes_curq + node_level_idx(node_ctx)]
+    mov    r13d, levels_usedd
+    cmovae r13d, r11d
+    mov    [nodes_curq + node_level_idx(node_ctx)], r13d
+    adc    levels_usedd, 0
+%else
     cmp scoreq, [nodes_curq + node_score(node_ctx)]
     jae .ctx %+ nextj_if_valid
     mov [nodes_curq + node_score(node_ctx)], scoreq
+%if TR_SF
+    TR_STATE %1
+%if tr_state
+    mov [nodes_curq + node_cabac_state(node_ctx)], r6d
+%endif
+%else
 %if j == 2 || (j <= 3 && node_ctx == 4)
     ; if this node hasn't previously needed to keep track of abs_level cabac_state, import a pristine copy of the input states
     movd [nodes_curq + node_cabac_state(node_ctx)], level_state_packed
@@ -985,6 +1160,7 @@ TRELLIS_COEF0 1
     mov  r6d, levelgt1_ctxm
     mov [nodes_curq + node_cabac_state(node_ctx) + coeff_abs_levelgt1_offs-6], r10b
 %endif
+%endif
     mov  r6d, [nodes_prevq + node_level_idx(j)]
 %if %1
     mov r11d, abs_leveld
@@ -996,6 +1172,7 @@ TRELLIS_COEF0 1
     mov [level_tree + levels_usedq*4], r6d
     mov [nodes_curq + node_level_idx(node_ctx)], levels_usedd
     inc levels_usedd
+%endif
 %endmacro ; END_COEF
 
 
@@ -1065,34 +1242,6 @@ TRELLIS_COEF0 1
 
 
 
-clocal trellis_coef1
-.entry0b: ; ctx_lo, larger of the two abs_level candidates
-    mov  r10, [ssd+8]
-    sub  r10, r11
-    mov  r12, [ssd+24]
-    sub  r12, r11
-.entry0: ; ctx_lo, smaller of the two abs_level candidates
-    COEF1 0, 4
-    COEF1 1, 4
-    COEF1 2, 4
-    COEF1 3, 4
-.ctx4:
-    rep ret
-.entry1b: ; ctx_hi, larger of the two abs_level candidates
-    mov  r12, [ssd+24]
-    sub  r12, r11
-.entry1: ; ctx_hi, smaller of the two abs_level candidates
-trellis_coef1_hi:
-    COEF1 1, 2
-    COEF1 2, 3
-    COEF1 3, 4
-    COEF1 4, 5
-    COEF1 5, 6
-    COEF1 6, 7
-    COEF1 7, 8
-.ctx8:
-    rep ret
-
 %macro COEFN_PREFIX 1
     ; int prefix = X264_MIN( abs_level - 1, 14 );
     mov  r1d, abs_leveld
@@ -1115,7 +1264,48 @@ trellis_coef1_hi:
     jmp .skip_level_suffix%1
 %endmacro
 
+%macro TRELLIS_COEFS 0
+%if TR_SF
+clocal trellis_coef1_sf
+%else
+clocal trellis_coef1
+%endif
+.entry0b: ; ctx_lo, larger of the two abs_level candidates
+    mov  r10, [ssd+8]
+    sub  r10, r11
+    mov  r12, [ssd+24]
+    sub  r12, r11
+.entry0: ; ctx_lo, smaller of the two abs_level candidates
+    COEF1 0, 4
+    COEF1 1, 4
+    COEF1 2, 4
+    COEF1 3, 4
+.ctx4:
+    rep ret
+.entry1b: ; ctx_hi, larger of the two abs_level candidates
+    mov  r12, [ssd+24]
+    sub  r12, r11
+.entry1: ; ctx_hi, smaller of the two abs_level candidates
+%if TR_SF
+trellis_coef1_sf_hi:
+%else
+trellis_coef1_hi:
+%endif
+    COEF1 1, 2
+    COEF1 2, 3
+    COEF1 3, 4
+    COEF1 4, 5
+    COEF1 5, 6
+    COEF1 6, 7
+    COEF1 7, 8
+.ctx8:
+    rep ret
+
+%if TR_SF
+clocal trellis_coefn_sf
+%else
 clocal trellis_coefn
+%endif
 .entry0b:
     mov  r10, [ssd+8]
     mov  r12, [ssd+24]
@@ -1148,6 +1338,20 @@ clocal trellis_coefn
     jmp .ctx1
     COEFN_SUFFIX 0
     COEFN_SUFFIX 1
+%endmacro ; TRELLIS_COEFS
+
+%assign TR_SF 0
+%assign TR_CMOV 0
+TRELLIS_COEF0 0
+TRELLIS_COEF0 1
+TRELLIS_COEFS
+%if TRELLIS_AVX2_STLF
+%assign TR_SF 1
+%assign TR_CMOV TRELLIS_AVX2_CMOV
+TRELLIS_COEF0 0
+TRELLIS_COEF0 1
+TRELLIS_COEFS
+%endif
 
 
 
