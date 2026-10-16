@@ -1916,14 +1916,14 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             qp_min = X264_MAX( qp_min, rc->qp_novbv );
 
         /* A one-frame VBV lowers QP into all the room the frame has left. Not more
-         * than one below the other running thread slices, so cheap slices, which get
+         * than 3 below the other running thread slices, so cheap slices, which get
          * little for it, don't take the room a hard one needs; down to the frame's QP
          * in any case, so a hard slice at a high QP doesn't pin the others there. Not
          * on a frame planned near QP_MAX_SPEC with much of it intra: content full at a high
          * QP with poor references needs one slice to lead the descent, or they never get
          * better. A fade plans such QPs with few intra mbs and keeps the floor. */
         if( b_threadslices && rc->single_frame_vbv && !rc->b_floor_off )
-            qp_min = X264_MAX( qp_min, X264_MIN( other_slices_max_qp( h ) - 1.0f, rc->qp ) );
+            qp_min = X264_MAX( qp_min, X264_MIN( other_slices_max_qp( h ) - 3.0f, rc->qp ) );
         /* Nor more than 6 below the frame's QP with any threading: rows after a hard
          * band found its room and went to near-lossless QPs while the band starved. */
         if( rc->single_frame_vbv )
