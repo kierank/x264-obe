@@ -1111,7 +1111,17 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
             continue;
         }
         else
+        {
             SET_WEIGHT( weights[plane], 1, minscale, mindenom, minoff );
+            /* a fade the luma weight predicts is not a cut */
+            if( !plane && !b_lookahead && fenc->b_unweighted_cut )
+            {
+                uint64_t i_intra = 0;
+                for( int i = 0; i < h->mb.i_mb_count; i++ )
+                    i_intra += fenc->i_intra_cost[i];
+                fenc->b_unweighted_cut = (uint64_t)minscore * 16 >= (i_intra << (BIT_DEPTH - 8)) * UNWEIGHTED_CUT_THRESH;
+            }
+        }
 
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_FAKE && weights[0].weightfn && !plane )
             fenc->f_weighted_cost_delta[i_delta_index] = (float)minscore / origscore;
