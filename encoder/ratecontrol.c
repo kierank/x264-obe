@@ -2688,10 +2688,11 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
                 q *= qf;
             }
             /* One-frame CBR: a P frame a settled predictor puts under half the fill
-             * starts at the q predicted to fill it, down by at most the raise's 5x. */
+             * starts at the q predicted to fill 70% of it, down by at most the raise's 5x;
+             * aiming at the whole fill left the rows over plan, re-encoding cut frames. */
             if( rcc->single_frame_vbv && rcc->b_vbv_min_rate && pict_type == SLICE_TYPE_P
                 && rcc->pred[SLICE_TYPE_P].count > 1.9f && bits < rcc->buffer_rate * 0.5 )
-                q = X264_MAX( q, q0 * 0.2 );
+                q = X264_MAX( X264_MIN( q / 0.7, q0 ), q0 * 0.2 );
             else
                 q = X264_MAX( q0, q );
         }
