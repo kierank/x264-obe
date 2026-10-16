@@ -870,6 +870,25 @@ static NOINLINE void x264_weight_lowres_init( x264_t *h, x264_frame_t *fenc, x26
 }
 #endif
 
+/* ref's lowres luma weighted by w, for the lowres P cost of fenc */
+static void x264_weight_lowres_plane( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, x264_weight_t *w )
+{
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( h->lowres8 )
+    {
+        x264_lowres8_weight_plane( h->lowres8, fenc, ref, w );
+        return;
+    }
+#endif
+    pixel *src = ref->buffer_lowres[0];
+    pixel *dst = h->mb.p_weight_buf[0];
+    int width = ref->i_width_lowres + PADH*2;
+    int height = ref->i_lines_lowres + PADV*2;
+    x264_weight_scale_plane( h, dst, ref->i_stride_lowres, src, ref->i_stride_lowres,
+                             width, height, w );
+    fenc->weighted[0] = h->mb.p_weight_buf[0] + PADH + ref->i_stride_lowres * PADV;
+}
+
 /* Unweighted cut: the unweighted luma cost of the final analysis, motion compensated
  * by the lowres mvs and clamped at intra per mb, is at least UNWEIGHTED_CUT_THRESH/16
  * of the lowres intra cost */
@@ -1141,21 +1160,12 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
         if( weights[i].weightfn )
             h->mc.weight_cache( h, &weights[i] );
 
-#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
-    if( weights[0].weightfn && b_lookahead && h->lowres8 )
-        x264_lowres8_weight_plane( h->lowres8, fenc, ref, &weights[0] );
-    else
-#endif
-    if( weights[0].weightfn && b_lookahead )
+    if( b_lookahead )
     {
+        fenc->lowres_weight[i_delta_index] = weights[0];
         //scale lowres in lookahead for slicetype_frame_cost
-        pixel *src = ref->buffer_lowres[0];
-        pixel *dst = h->mb.p_weight_buf[0];
-        int width = ref->i_width_lowres + PADH*2;
-        int height = ref->i_lines_lowres + PADV*2;
-        x264_weight_scale_plane( h, dst, ref->i_stride_lowres, src, ref->i_stride_lowres,
-                                 width, height, &weights[0] );
-        fenc->weighted[0] = h->mb.p_weight_buf[0] + PADH + ref->i_stride_lowres * PADV;
+        if( weights[0].weightfn )
+            x264_weight_lowres_plane( h, fenc, ref, &weights[0] );
     }
 }
 
@@ -1536,9 +1546,11 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
                                     s->do_search, s->w, s->output_inter, s->output_intra );
 }
 
-static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
-                                      x264_frame_t **frames, int p0, int p1, int b,
-                                      int b_intra_penalty )
+/* w_lowres: the luma weight of the lowres P search, fenc->weighted[0] built, in place
+ * of the lookahead's analysis */
+static int x264_slicetype_frame_cost_w( x264_t *h, x264_mb_analysis_t *a,
+                                        x264_frame_t **frames, int p0, int p1, int b,
+                                        int b_intra_penalty, x264_weight_t *w_lowres )
 {
     int i_score = 0;
     int do_search[2];
@@ -1560,7 +1572,9 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
         do_search[1] = b != p1 && fenc->lowres_mvs[1][p1-b-1][0][0] == 0x7FFF;
         if( do_search[0] )
         {
-            if( h->param.analyse.i_weighted_pred && b == p1 )
+            if( w_lowres )
+                w = w_lowres;
+            else if( h->param.analyse.i_weighted_pred && b == p1 )
             {
                 x264_emms();
                 x264_weights_analyse( h, fenc, frames[p0], 1 );
@@ -1702,6 +1716,40 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
         i_score += (uint64_t)i_score * fenc->i_intra_mbs[b-p0] / (nmb * 8);
     }
     return i_score;
+}
+
+static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
+                                      x264_frame_t **frames, int p0, int p1, int b,
+                                      int b_intra_penalty )
+{
+    return x264_slicetype_frame_cost_w( h, a, frames, p0, p1, b, b_intra_penalty, NULL );
+}
+
+/* The lowres P cost of frames[b] against frames[0] again, where the final analysis
+ * weighted luma and the lowres search didn't, or with another gain, or an offset more
+ * than 1 apart */
+static void x264_slicetype_frame_cost_reweight( x264_t *h, x264_frame_t **frames, int b )
+{
+    x264_frame_t *fenc = frames[b];
+    x264_weight_t *wf = &fenc->weight[0][0];
+    x264_weight_t *wl = &fenc->lowres_weight[b-1];
+    if( !wf->weightfn || fenc->i_cost_est[b][0] < 0 )
+        return;
+    if( wl->weightfn && wl->i_scale << (7 - wl->i_denom) == wf->i_scale << (7 - wf->i_denom) &&
+        abs( wl->i_offset - wf->i_offset ) <= 1 )
+        return;
+    int i_cost = fenc->i_cost_est[b][0];
+    x264_mb_analysis_t a;
+    x264_lowres_context_init( h, &a );
+    x264_weight_lowres_plane( h, fenc, frames[0], wf );
+    fenc->i_cost_est[b][0] = -1;
+    fenc->lowres_mvs[0][b-1][0][0] = 0x7FFF;
+    x264_slicetype_frame_cost_w( h, &a, frames, 0, b, b, 0, fenc->weight[0] );
+    x264_log( h, X264_LOG_DEBUG, "frame %d lowres P cost %d -> %d, luma weight %d,%d,%d -> %d,%d,%d\n",
+              fenc->i_frame, i_cost, fenc->i_cost_est[b][0],
+              wl->weightfn ? wl->i_scale : 0, wl->weightfn ? wl->i_denom : 0, wl->weightfn ? wl->i_offset : 0,
+              wf->i_scale, wf->i_denom, wf->i_offset );
+    *wl = *wf;
 }
 
 /* If MB-tree changes the quantizers, we need to recalculate the frame cost without
@@ -2670,6 +2718,8 @@ void x264_slicetype_decide( x264_t *h )
     {
         x264_emms();
         x264_weights_analyse( h, h->lookahead->next.list[bframes], h->lookahead->last_nonb, 0 );
+        if( PARAM_INTERLACED && h->param.rc.i_rc_method != X264_RC_CQP )
+            x264_slicetype_frame_cost_reweight( h, frames, bframes + 1 );
     }
 
     /* shift sequence to coded order.
