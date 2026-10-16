@@ -2680,7 +2680,13 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
                 double qf = x264_clip3f( bits*min_fill_factor/rcc->buffer_rate, 0.001, 1.0 );
                 q *= qf;
             }
-            q = X264_MAX( q0, q );
+            /* One-frame CBR: a P frame a settled predictor puts under half the fill
+             * starts at the q predicted to fill it, down by at most the raise's 5x. */
+            if( rcc->single_frame_vbv && rcc->b_vbv_min_rate && pict_type == SLICE_TYPE_P
+                && rcc->pred[SLICE_TYPE_P].count > 1.9f && bits < rcc->buffer_rate * 0.5 )
+                q = X264_MAX( q, q0 * 0.2 );
+            else
+                q = X264_MAX( q0, q );
         }
 
         /* Check B-frame complexity, and use up any bits that would
