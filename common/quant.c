@@ -431,13 +431,14 @@ level_run(15)
 level_run(16)
 
 #if ARCH_X86_64
-#define INIT_TRELLIS(cpu)\
+#define INIT_TRELLIS(cpu) do {\
     pf->trellis_cabac_4x4 = x264_trellis_cabac_4x4_##cpu;\
     pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_##cpu;\
     pf->trellis_cabac_4x4_psy = x264_trellis_cabac_4x4_psy_##cpu;\
     pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_##cpu;\
     pf->trellis_cabac_dc = x264_trellis_cabac_dc_##cpu;\
-    pf->trellis_cabac_chroma_422_dc = x264_trellis_cabac_chroma_422_dc_##cpu;
+    pf->trellis_cabac_chroma_422_dc = x264_trellis_cabac_chroma_422_dc_##cpu;\
+} while( 0 )
 #else
 #define INIT_TRELLIS(...)
 #endif
