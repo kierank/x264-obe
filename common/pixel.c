@@ -772,7 +772,9 @@ static int field_lowres_mvy( x264_t *h, int mb_x, int mb_y )
             for( int dx = -1; dx <= 1; dx += 2 )
             {
                 int nx = mb_x + dx;
-                if( nx < 0 || nx >= mb_width )
+                /* edge mbs hold stale mvs unless searched (VBV or mbtree) */
+                if( nx < 0 || nx >= mb_width ||
+                    (!h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size && (!nx || nx == mb_width-1)) )
                     continue;
                 int16_t *mvn = mvs[nx + mb_y * mb_width];
                 if( abs(mvn[1] - mv0[1]) > 2 || abs(mvn[0]) * 4 > my )
