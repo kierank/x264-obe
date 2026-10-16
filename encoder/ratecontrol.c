@@ -2218,17 +2218,23 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
 
     if( rc->b_abr )
     {
-        if( h->sh.i_type != SLICE_TYPE_B )
-            rc->cplxr_sum += bits * qp2qscale( rc->qpa_rc ) / rc->last_rceq;
-        else
+        /* Depends on the fact that B-frame's QP is an offset from the following P-frame's.
+         * Not perfectly accurate with B-refs, but good enough. */
+        double rceq = h->sh.i_type != SLICE_TYPE_B ? rc->last_rceq : rc->last_rceq * fabs( h->param.rc.f_pb_factor );
+        double cplxr = bits * qp2qscale( rc->qpa_rc ) / rceq;
+        double wanted = h->fenc->f_duration * rc->bitrate;
+        /* One-frame CBR VBV: no deficit that would lower the ABR qscale (rceq*cplxr_sum/wanted)
+         * while it is already more than a step below the coded QP. Content that can't
+         * spend the budget would otherwise wind it down without bound. */
+        if( !(rc->single_frame_vbv && rc->b_vbv_min_rate && h->sh.i_type == SLICE_TYPE_P
+              && bits < wanted && cplxr * rc->wanted_bits_window < wanted * rc->cplxr_sum
+              && rceq * rc->cplxr_sum * rc->lstep < qp2qscale( rc->qpa_rc ) * rc->wanted_bits_window) )
         {
-            /* Depends on the fact that B-frame's QP is an offset from the following P-frame's.
-             * Not perfectly accurate with B-refs, but good enough. */
-            rc->cplxr_sum += bits * qp2qscale( rc->qpa_rc ) / (rc->last_rceq * fabs( h->param.rc.f_pb_factor ));
+            rc->cplxr_sum += cplxr;
+            rc->cplxr_sum *= rc->cbr_decay;
+            rc->wanted_bits_window += wanted;
+            rc->wanted_bits_window *= rc->cbr_decay;
         }
-        rc->cplxr_sum *= rc->cbr_decay;
-        rc->wanted_bits_window += h->fenc->f_duration * rc->bitrate;
-        rc->wanted_bits_window *= rc->cbr_decay;
     }
 
     if( rc->b_2pass )
