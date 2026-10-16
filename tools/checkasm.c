@@ -75,6 +75,7 @@ typedef struct
 int do_bench = 0;
 int bench_pattern_len = 0;
 const char *bench_pattern = "";
+static int bench_seed;
 char func_name[100];
 static bench_func_t benchs[MAX_FUNCS];
 
@@ -3799,6 +3800,8 @@ static int check_quant( int cpu_ref, int cpu_new )
         int num_coefs = v == 1 || v == 3 ? 64 : v == 5 ? 4 : v == 6 ? 8 : 16;
         int dc = v >= 4;
         int psy = v == 2 || v == 3;
+        /* same blocks at every cpu level, so the bench compares like with like */
+        srand( bench_seed * 7919 + v );
         for( int it = 0; it < 4000; it++ )
         {
             ALIGNED_ARRAY_64( dctcoef, tdct, [3],[64] );
@@ -4512,6 +4515,7 @@ int main(int argc, char *argv[])
     int seed = ( argc > 1 ) ? atoi(argv[1]) : x264_mdate();
     fprintf( stderr, "x264: using random seed %u\n", seed );
     srand( seed );
+    bench_seed = seed;
 
     buf1 = x264_malloc( 0x1e00 + 0x2000*sizeof(pixel) );
     pbuf1 = x264_malloc( 0x1e00*sizeof(pixel) );
