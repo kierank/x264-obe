@@ -2689,7 +2689,9 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
      * above each MB, as bS=4 doesn't happen for the top of interlaced mbpairs. */
     int minpix_y = min_y*16 - 4 * !b_start;
     int maxpix_y = mb_y*16 - 4 * !b_end;
-    b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv;
+    /* PSNR/SSIM measure the deblocked recon: deblock unreferenced frames, and sliced threads in pass 0 */
+    int b_full_recon = h->param.b_full_recon || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
+    b_deblock &= b_hpel || b_full_recon || h->param.psz_dump_yuv;
     if( h->param.b_sliced_threads )
     {
         switch( pass )
@@ -2697,13 +2699,13 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
             /* During encode: only do deblock if asked for */
             default:
             case 0:
-                b_deblock &= h->param.b_full_recon;
+                b_deblock &= b_full_recon;
                 b_hpel = 0;
                 break;
             /* During post-encode pass: do deblock if not done yet, do hpel for all
              * rows except those between slices. */
             case 1:
-                b_deblock &= !h->param.b_full_recon;
+                b_deblock &= !b_full_recon;
                 b_hpel &= !(b_start && min_y > 0);
                 b_measure_quality = 0;
                 break;
@@ -3055,7 +3057,8 @@ static intptr_t x264_slice_write( x264_t *h )
 #define BS_BAK_SLICE_MIN_MBS  2
 #define BS_BAK_ROW_VBV        3
     x264_bs_bak_t bs_bak[4];
-    b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv;
+    b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv
+               || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
     bs_realign( &h->out.bs );
 
     /* Slice */
@@ -3103,10 +3106,11 @@ static intptr_t x264_slice_write( x264_t *h )
         {
             if( x264_bitstream_check_buffer( h ) )
                 return -1;
-            if( !(i_mb_y & SLICE_MBAFF) && h->param.rc.i_vbv_buffer_size )
-                x264_bitstream_backup( h, &bs_bak[BS_BAK_ROW_VBV], i_skip, 1 );
+            /* before the row backup, so a row re-encode keeps the row above's PSNR/SSIM */
             if( !h->mb.b_reencode_mb )
                 x264_fdec_filter_row( h, i_mb_y, 0 );
+            if( !(i_mb_y & SLICE_MBAFF) && h->param.rc.i_vbv_buffer_size )
+                x264_bitstream_backup( h, &bs_bak[BS_BAK_ROW_VBV], i_skip, 1 );
         }
 
         if( back_up_bitstream )
