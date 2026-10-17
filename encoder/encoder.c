@@ -1916,7 +1916,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
     h->thread[0] = h;
     for( int i = 1; i < h->param.i_threads + !!h->param.i_sync_lookahead; i++ )
         CHECKED_MALLOC( h->thread[i], sizeof(x264_t) );
-    if( h->param.i_lookahead_threads > 1 )
+    /* sliced threads: a single-threaded lookahead gets one too, as thread 0
+     * filters the previous frame beside it (x264_slicetype_frame_cost) */
+    if( h->param.i_lookahead_threads > 1 || h->param.b_sliced_threads )
         for( int i = 0; i < h->param.i_lookahead_threads; i++ )
         {
             CHECKED_MALLOC( h->lookahead_thread[i], sizeof(x264_t) );
@@ -2011,7 +2013,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         for( int i = 0; i < h->param.i_threads + !!h->param.i_sync_lookahead; i++ )
             if( !(h->thread[i]->lowres8 = x264_lowres8_init( &h->param, h->mb.i_mb_width, h->mb.i_mb_height, stride, lines )) )
                 goto fail;
-        if( h->param.i_lookahead_threads > 1 )
+        if( h->param.i_lookahead_threads > 1 || h->param.b_sliced_threads )
             for( int i = 0; i < h->param.i_lookahead_threads; i++ )
                 if( !(h->lookahead_thread[i]->lowres8 = x264_lowres8_init( &h->param, h->mb.i_mb_width, h->mb.i_mb_height, stride, lines )) )
                     goto fail;
@@ -4938,7 +4940,7 @@ void    x264_encoder_close  ( x264_t *h )
                 if( h->thread[i]->fref[0][j] && h->thread[i]->fref[0][j]->b_duplicate )
                     x264_frame_delete( h->thread[i]->fref[0][j] );
 
-    if( h->param.i_lookahead_threads > 1 )
+    if( h->param.i_lookahead_threads > 1 || h->param.b_sliced_threads )
         for( int i = 0; i < h->param.i_lookahead_threads; i++ )
         {
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8

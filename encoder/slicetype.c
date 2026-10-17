@@ -1649,12 +1649,25 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
             }
             else
             {
-                h->i_threadslice_start = 0;
-                h->i_threadslice_end = h->mb.i_mb_height;
+                /* With sliced threads, thread 0 (h) may still be filtering the
+                 * previous frame on its slice worker, reading its threadslice
+                 * bounds and writing mb state, so cost on a context of our own. */
+                x264_t *t = h;
+                if( h->param.b_sliced_threads )
+                {
+                    t = h->lookahead_thread[0];
+                    t->param = h->param;
+                    t->pixf = h->pixf;
+                    t->mb.i_me_method = h->mb.i_me_method;
+                    t->mb.i_subpel_refine = h->mb.i_subpel_refine;
+                    t->mb.b_chroma_me = h->mb.b_chroma_me;
+                }
+                t->i_threadslice_start = 0;
+                t->i_threadslice_end = h->mb.i_mb_height;
                 memset( output_inter[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
                 memset( output_intra[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
                 output_inter[0][NUM_ROWS] = output_intra[0][NUM_ROWS] = h->mb.i_mb_height;
-                x264_slicetype_slice_t s = (x264_slicetype_slice_t){ h, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
+                x264_slicetype_slice_t s = (x264_slicetype_slice_t){ t, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
                     output_inter[0], output_intra[0] };
                 x264_slicetype_slice_cost( &s );
             }
