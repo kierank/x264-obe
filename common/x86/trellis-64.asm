@@ -1171,8 +1171,57 @@ clocal trellis_coefn
 %ifndef TRELLIS_ICL_CMPMERGE
     %define TRELLIS_ICL_CMPMERGE 0
 %endif
+; blocks with >= N nonzero quant_coefs tail-jump to avx2, faster on dense
+; blocks. N for 4x4(_psy), N64 for 8x8(_psy). N >= 99: no gate; N > num_coefs:
+; a gate that never jumps, the same code layout as N <= num_coefs
+%ifndef TRELLIS_ICL_DENSE_N
+    %define TRELLIS_ICL_DENSE_N 14
+%endif
+%ifndef TRELLIS_ICL_DENSE_N64
+    %define TRELLIS_ICL_DENSE_N64 99
+%endif
 
 INIT_ZMM avx512icl
+
+%macro TR_NZ_K 5 ; quant_coefs, tmp regs: k1 = quant_coefs[i] != 0
+%if num_coefs == 64
+%if HIGH_BIT_DEPTH
+    vmovdqu32 m%2, [%1+  0]
+    vmovdqu32 m%3, [%1+ 64]
+    vmovdqu32 m%4, [%1+128]
+    vmovdqu32 m%5, [%1+192]
+    vptestmd  k1, m%2, m%2
+    vptestmd  k2, m%3, m%3
+    vptestmd  k3, m%4, m%4
+    vptestmd  k4, m%5, m%5
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k4, k3
+    kunpckdq  k1, k3, k1
+%else
+    vmovdqu16 m%2, [%1+ 0]
+    vmovdqu16 m%3, [%1+64]
+    vptestmw  k1, m%2, m%2
+    vptestmw  k2, m%3, m%3
+    kunpckdq  k1, k2, k1
+%endif
+%elif num_coefs == 16
+%if HIGH_BIT_DEPTH
+    vmovdqu32 m%2, [%1]
+    vptestmd  k1, m%2, m%2
+%else
+    vmovdqu16 ym%2, [%1]
+    vptestmw  k1, ym%2, ym%2
+%endif
+%else
+%if HIGH_BIT_DEPTH
+    vmovdqu32 ym%2, [%1]
+    vptestmd  k1, ym%2, ym%2
+%else
+    vmovdqu16 xm%2, [%1]
+    vptestmw  k1, xm%2, xm%2
+%endif
+%endif
+%endmacro
 
 %macro TR_LOOKUP_E 2 ; dst, bin: x264_cabac_entropy[l1_state^bin] << 32
     vmovdqu64  %1, [tr_e %+ %2 %+ lo]
@@ -1610,7 +1659,29 @@ INIT_ZMM avx512icl
     %define dct_weight1_tab dct4_weight_tab
     %define dct_weight2_tab dct4_weight2_tab
 %endif
-cglobal %1, 4,15,22
+%if num_coefs == 64
+    %assign tr_dense_n TRELLIS_ICL_DENSE_N64
+%else
+    %assign tr_dense_n TRELLIS_ICL_DENSE_N
+%endif
+%assign tr_gate dc == 0 && tr_dense_n < 99
+cglobal %1
+%if tr_gate
+    ; a tail call, before the prologue; m0-m3 are zmm16-19, so no vzeroupper.
+    ; x264 zeroes the DC of b_ac blocks and nothing is nonzero above last_nnz:
+    ; this is the count for b_ac..last_nnz
+    mov    r6, r5mp
+    TR_NZ_K r6, 0, 1, 2, 3
+%if num_coefs == 64
+    kmovq  r6, k1
+%else
+    kmovw  r6d, k1
+%endif
+    popcnt r6, r6
+    cmp    r6d, tr_dense_n
+    jae    %1_avx2
+%endif
+    PROLOGUE 4,15,22
     mov r2d, r2d
     mov r3d, r3d
     %assign pad 128 + 8*520 + 16-gprsize-(stack_offset&15)
@@ -1653,45 +1724,15 @@ cglobal %1, 4,15,22
 %endif
 
     ; nonzero quant_coefs[i], b_ac <= i <= last_nnz
+%if tr_gate == 0
     mov    r6, quantp
+    TR_NZ_K r6, 10, 11, 12, 13
+%endif ; else k1 from the gate
 %if num_coefs == 64
-%if HIGH_BIT_DEPTH
-    vmovdqu32 m10, [r6+  0]
-    vmovdqu32 m11, [r6+ 64]
-    vmovdqu32 m12, [r6+128]
-    vmovdqu32 m13, [r6+192]
-    vptestmd  k1, m10, m10
-    vptestmd  k2, m11, m11
-    vptestmd  k3, m12, m12
-    vptestmd  k4, m13, m13
-    kunpckwd  k1, k2, k1
-    kunpckwd  k3, k4, k3
-    kunpckdq  k1, k3, k1
-%else
-    vmovdqu16 m10, [r6+ 0]
-    vmovdqu16 m11, [r6+64]
-    vptestmw  k1, m10, m10
-    vptestmw  k2, m11, m11
-    kunpckdq  k1, k2, k1
-%endif
     kmovq     r5, k1
 %elif num_coefs == 16
-%if HIGH_BIT_DEPTH
-    vmovdqu32 m10, [r6]
-    vptestmd  k1, m10, m10
-%else
-    vmovdqu16 ym10, [r6]
-    vptestmw  k1, ym10, ym10
-%endif
     kmovw     r5d, k1
 %else
-%if HIGH_BIT_DEPTH
-    vmovdqu32 ym10, [r6]
-    vptestmd  k1, ym10, ym10
-%else
-    vmovdqu16 xm10, [r6]
-    vptestmw  k1, xm10, xm10
-%endif
     kmovb     r5d, k1
 %endif
     xor    r6d, r6d
