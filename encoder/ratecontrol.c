@@ -111,6 +111,7 @@ struct x264_ratecontrol_t
 
     /* ABR stuff */
     int    last_satd;
+    int    prev_satd_p;             /* the satd of the frame before, if it was a P-frame */
     double last_rceq;
     double cplxr_sum;           /* sum of bits*qscale/rceq */
     double expected_bits_sum;   /* sum of qscale2bits after rceq, ratefactor, and overflow, only includes finished frames */
@@ -2753,7 +2754,14 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
                 double qf = x264_clip3f( bits*min_fill_factor/rcc->buffer_rate, 0.001, 1.0 );
                 q *= qf;
             }
-            q = X264_MAX( q0, q );
+            /* One-frame CBR P with under 1/16 of the satd of the P before (flat after
+             * noise): the QP window around that P says nothing of it, fill down to 3
+             * qpsteps below */
+            double q_min = q0;
+            if( pict_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate
+                && (int64_t)rcc->last_satd * 16 < rcc->prev_satd_p )
+                q_min /= rcc->lstep * rcc->lstep * rcc->lstep;
+            q = X264_MAX( q_min, q );
         }
 
         /* Check B-frame complexity, and use up any bits that would
@@ -2967,6 +2975,7 @@ static float rate_estimate_qscale( x264_t *h )
 
             double wanted_bits, overflow = 1;
 
+            rcc->prev_satd_p = rcc->last_non_b_pict_type == SLICE_TYPE_P ? rcc->last_satd : 0;
             rcc->last_satd = x264_rc_analyse_slice( h );
             rcc->short_term_cplxsum *= 0.5;
             rcc->short_term_cplxcount *= 0.5;
