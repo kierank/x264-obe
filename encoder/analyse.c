@@ -69,6 +69,7 @@ typedef struct
     /* I: Intra part */
     /* Take some shortcuts in intra search if intra is deemed unlikely */
     int b_fast_intra;
+    int b_intra_heavy; /* subme < 3 in intra heavy P: no fast intra where x264_mb_lowres_seen */
     int b_force_intra; /* For Periodic Intra Refresh.  Only supported in P-frames. */
     int b_avoid_topright; /* For Periodic Intra Refresh: don't predict from top-right pixels. */
     int b_pir_skip_invalid; /* For Periodic Intra Refresh: the P_SKIP mv reaches right of the reference's bar. */
@@ -329,6 +330,20 @@ static int x264_mb_lowres_intra_heavy( x264_t *h )
            f->i_intra_mbs[d] * 2 > i_scored;
 }
 
+/* Full res 16x16 intra satd above LOWRES_SEEN_THRESH times the lowres intra cost:
+ * detail the half resolution doesn't see (white noise is about 8) */
+#define LOWRES_SEEN_THRESH 16
+
+/* Whether the lowres intra cost of this mb accounts for its full res detail */
+static int x264_mb_lowres_seen( x264_t *h, x264_mb_analysis_t *a )
+{
+    if( !h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size &&
+        (!h->mb.i_mb_x || !h->mb.i_mb_y || h->mb.i_mb_x == h->mb.i_mb_width-1 || h->mb.i_mb_y == h->mb.i_mb_height-1) )
+        return 1;
+    int64_t i_lowres = (int64_t)h->fenc->i_intra_cost[h->mb.i_mb_xy] << (BIT_DEPTH-8);
+    return a->i_satd_i16x16 <= i_lowres * LOWRES_SEEN_THRESH + 4 * a->i_lambda;
+}
+
 static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
 {
     int subme = h->param.analyse.i_subpel_refine - (h->sh.i_type == SLICE_TYPE_B);
@@ -356,6 +371,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     a->i_satd_pcm = !h->param.i_avcintra_class && !h->mb.i_psy_rd && a->i_mbrd && pcm_cost < COST_MAX ? pcm_cost : COST_MAX;
 
     a->b_fast_intra = 0;
+    a->b_intra_heavy = 0;
     a->b_avoid_topright = 0;
     h->mb.i_skip_intra =
         h->mb.b_lossless ? 0 :
@@ -492,7 +508,8 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
         /* Fast intra decision */
         if( a->b_early_terminate && h->mb.i_mb_xy - h->sh.i_first_mb > 4 )
         {
-            /* Always run in fast-intra mode for subme < 3, except in intra heavy P */
+            /* Always run in fast-intra mode for subme < 3, except in intra heavy P
+             * where the full res agrees with the lowres (x264_mb_analyse_intra) */
             if( h->mb.i_subpel_refine > 2 &&
               ( IS_INTRA( h->mb.i_mb_type_left[0] ) ||
                 IS_INTRA( h->mb.i_mb_type_top ) ||
@@ -501,9 +518,10 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
                 (h->sh.i_type == SLICE_TYPE_P && IS_INTRA( h->fref[0][0]->mb_type[h->mb.i_mb_xy] )) ||
                 (h->mb.i_mb_xy - h->sh.i_first_mb < 3*(h->stat.frame.i_mb_count[I_4x4] + h->stat.frame.i_mb_count[I_8x8] + h->stat.frame.i_mb_count[I_16x16] + h->stat.frame.i_mb_count[I_PCM])) ) )
             { /* intra is likely */ }
-            else if( h->mb.i_subpel_refine > 2 || h->sh.i_type != SLICE_TYPE_P || !x264_mb_lowres_intra_heavy( h ) )
+            else
             {
                 a->b_fast_intra = 1;
+                a->b_intra_heavy = h->mb.i_subpel_refine <= 2 && h->sh.i_type == SLICE_TYPE_P && x264_mb_lowres_intra_heavy( h );
             }
         }
         h->mb.b_skip_mc = 0;
@@ -755,6 +773,11 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[0], a->i_predict16x16, 0 );
             COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[1], a->i_predict16x16, 1 );
             COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[2], a->i_predict16x16, 2 );
+            if( a->b_intra_heavy && x264_mb_lowres_seen( h, a ) )
+            {
+                a->b_fast_intra = a->b_intra_heavy = 0;
+                i16x16_thresh = COST_MAX;
+            }
 
             /* Plane is expensive, so don't check it unless one of the previous modes was useful. */
             if( a->i_satd_i16x16 <= i16x16_thresh )
@@ -781,6 +804,11 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                          lambda * bs_size_ue( x264_mb_pred_mode16x16_fix[i_mode] );
                 COPY2_IF_LT( a->i_satd_i16x16, i_satd, a->i_predict16x16, i_mode );
                 a->i_satd_i16x16_dir[i_mode] = i_satd;
+            }
+            if( a->b_intra_heavy && x264_mb_lowres_seen( h, a ) )
+            {
+                a->b_fast_intra = a->b_intra_heavy = 0;
+                i16x16_thresh = COST_MAX;
             }
         }
 
@@ -3405,7 +3433,8 @@ skip_analysis:
                 x264_mb_analyse_intra_p( h, &analysis, analysis.l0.me16x16.cost );
                 b_intra_first = 1;
                 int i_intra = X264_MIN3( analysis.i_satd_i16x16, analysis.i_satd_i8x8, analysis.i_satd_i4x4 );
-                b_intra_skip_me = (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_HEAVY_THRESH;
+                b_intra_skip_me = (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_HEAVY_THRESH &&
+                                  x264_mb_lowres_seen( h, &analysis );
             }
 
             if( !b_intra_skip_me )
