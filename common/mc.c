@@ -779,13 +779,13 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     if( y1 <= y0 )
         return;
     if( !b_copy )
-        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
+        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
     else if( h->mc.hpel_filter_copy )
-        h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer,
+        h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_hpel,
                                 frame->plane_fld[p] + offs );
     else
     {
-        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_buffer );
+        h->mc.hpel_filter( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
         for( int y = 0; y < y1 - y0; y++ )
             memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
     }
@@ -813,7 +813,7 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
                 frame->filtered[p][3] + offs,
                 frame->plane[p] + offs,
                 stride, width + 16, height - start,
-                h->scratch_buffer );
+                h->scratch_hpel );
 
         if( b_interlaced )
         {
