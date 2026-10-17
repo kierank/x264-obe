@@ -1833,9 +1833,16 @@ void x264_ratecontrol_slices_start( x264_t *h )
 #if defined(__ATOMIC_ACQUIRE)
 #define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
 #define RC_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
+#define RC_ADD(p,v,m) __atomic_fetch_add( (p), (v), __ATOMIC_ACQ_REL )
+/* another thread slice's row state: stale is fine, torn or cached is not */
+#define RC_LOADF(p) ({ float rc_f_; __atomic_load( (p), &rc_f_, __ATOMIC_RELAXED ); rc_f_; })
+#define RC_STOREF(p,v) do { float rc_f_ = (v); __atomic_store( (p), &rc_f_, __ATOMIC_RELAXED ); } while( 0 )
 #else
 #define RC_LOAD(p) (*(volatile int *)(p))
 #define RC_STORE(p,v) (*(volatile int *)(p) = (v))
+#define RC_ADD(p,v,m) x264_pthread_fetch_and_add( (p), (v), (m) )
+#define RC_LOADF(p) (*(volatile float *)(p))
+#define RC_STOREF(p,v) (*(volatile float *)(p) = (v))
 #endif
 
 /* Highest next-row QP of the other thread slices still running. */
@@ -1853,7 +1860,7 @@ static float other_slices_size( x264_t *h )
     float size = 0;
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h != h->thread[i] )
-            size += h->thread[i]->rc->frame_size_estimated;
+            size += RC_LOADF( &h->thread[i]->rc->frame_size_estimated );
     return size;
 }
 
@@ -1899,7 +1906,7 @@ static float other_slices_bits( x264_t *h )
     float size = 0;
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h != h->thread[i] )
-            size += h->thread[i]->rc->frame_bits_coded;
+            size += RC_LOADF( &h->thread[i]->rc->frame_bits_coded );
     return size;
 }
 
@@ -1909,7 +1916,7 @@ static float other_slices_meas( x264_t *h )
     float size = 0;
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h != h->thread[i] )
-            size += h->thread[i]->rc->frame_size_meas;
+            size += RC_LOADF( &h->thread[i]->rc->frame_size_meas );
     return size;
 }
 
@@ -2005,7 +2012,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         return 0;
 
     float qscale = qp2qscale( rc->qpm );
-    h->fdec->f_row_qp[y] = rc->qpm;
+    RC_STOREF( &h->fdec->f_row_qp[y], rc->qpm );
     h->fdec->f_row_qscale[y] = qscale;
 
     /* Not rows coded at an emergency step: far below 1/qscale, they would plan the
@@ -2046,13 +2053,13 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     if( b_last_row )
         bits_so_far += (epb_left + 1) / 2 * 8;
     rc->epb_scale = 1.f + (float)(epb_bytes * 8) / X264_MAX( mb_bits, 1 );
-    rc->bits_so_far = bits_so_far;
-    rc->frame_bits_coded = bits_so_far;
+    RC_STOREF( &rc->bits_so_far, bits_so_far );
+    RC_STOREF( &rc->frame_bits_coded, bits_so_far );
     /* A first row, a refresh column or noise at the planned QP, can be several times
      * the slice's mean: its rows left counted at it put every other slice over the
      * limit. Over its plan a slice takes its own steps on its own rows. */
-    rc->frame_size_meas = X264_MIN( bits_so_far + bits_so_far / (y - h->i_threadslice_start + 1) * (h->i_threadslice_end - 1 - y),
-                                    X264_MAX( rc->slice_size_planned, bits_so_far ) );
+    RC_STOREF( &rc->frame_size_meas, X264_MIN( bits_so_far + bits_so_far / (y - h->i_threadslice_start + 1) * (h->i_threadslice_end - 1 - y),
+                                               X264_MAX( rc->slice_size_planned, bits_so_far ) ) );
     /* The rest of the slice overruns as its rows near QP_MAX_SPEC did. */
     if( rc->row_err_next > 0 )
     {
@@ -2078,8 +2085,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         for( int i = 0; i < h->param.i_threads; i++ )
             if( h != h->thread[i] )
             {
-                size_of_other_slices += h->thread[i]->rc->frame_size_estimated;
-                bits_so_far_of_other_slices += h->thread[i]->rc->bits_so_far;
+                size_of_other_slices += RC_LOADF( &h->thread[i]->rc->frame_size_estimated );
+                bits_so_far_of_other_slices += RC_LOADF( &h->thread[i]->rc->bits_so_far );
             }
         float weight = x264_clip3f( (bits_so_far_of_other_slices + rc->frame_size_estimated) / (size_of_other_slices + rc->frame_size_estimated), 0.0, 1.0 );
         float frame_size_planned = rc->frame_size_planned - rc->frame_size_planned * max_frame_error;
@@ -2160,7 +2167,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         rc->qpm -= step_size;
         float b2 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
-               && (rc->qpm > h->fdec->f_row_qp[0] || rc->single_frame_vbv)
+               && (rc->single_frame_vbv || rc->qpm > RC_LOADF( &h->fdec->f_row_qp[0] ))
                && (b2 < max_frame_size)
                && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
         {
@@ -2214,7 +2221,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             }
         }
 
-        h->rc->frame_size_estimated = b1 - size_of_other_slices;
+        RC_STOREF( &h->rc->frame_size_estimated, b1 - size_of_other_slices );
         /* No row goes below the first row's QP. */
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
         {
@@ -2253,7 +2260,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     }
     else
     {
-        h->rc->frame_size_estimated = bits_so_far;
+        RC_STOREF( &h->rc->frame_size_estimated, bits_so_far );
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
         {
             rc->frame_size_ceil = bits_so_far;
@@ -2272,7 +2279,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( b_threadslices && !rc->b_slice_done )
         {
             rc->b_slice_done = 1;
-            int done = x264_pthread_fetch_and_add( &h->thread[0]->rc->slices_done, 1, &h->fdec->mutex ) + 1;
+            int done = RC_ADD( &h->thread[0]->rc->slices_done, 1, &h->fdec->mutex ) + 1;
             if( done == h->param.i_threads && !others_final && can_reencode_row
                 && (last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_max, qp_hard_max )
                     || emerg_last_row( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, prev_row_qp, qp_hard_max )) )
