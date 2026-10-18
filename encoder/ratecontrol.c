@@ -1885,20 +1885,32 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
     return reencode_row( h, rc, y );
 }
 
+/* Least excess, of the rest of the slice, an emergency step is taken on. */
+#define VBV_EMERG_EXCESS 0.25f
+
 /* The rest of the slice at the emergency step, or at qp_hard_max before one, as the
- * rows of the slice coded there: their mean bits a row. 0 with none. */
-static float emerg_rest( x264_t *h, x264_ratecontrol_t *rc, int y, float qp_hard_max )
+ * rows of the slice coded there: their bits per satd on the satd of the rows left, a
+ * mean a row without satd. 0 with none; *rows, how many. */
+static float emerg_rest( x264_t *h, x264_ratecontrol_t *rc, int y, float qp_hard_max, int *rows )
 {
     int first = rc->emerg_step ? rc->emerg_row0 : h->i_threadslice_start;
     float bits = 0;
-    int rows = 0;
+    int64_t satd = 0, satd_left = 0;
+    *rows = 0;
     for( int i = first; i <= y; i++ )
         if( rc->emerg_step || h->fdec->f_row_qp[i] >= qp_hard_max )
         {
             bits += h->fdec->i_row_bits[i];
-            rows++;
+            satd += h->fdec->i_row_satd[i];
+            (*rows)++;
         }
-    return rows ? bits / rows * (h->i_threadslice_end - 1 - y) * rc->epb_scale : 0;
+    if( !*rows )
+        return 0;
+    int left = h->i_threadslice_end - 1 - y;
+    for( int i = y + 1; i < h->i_threadslice_end; i++ )
+        satd_left += h->fdec->i_row_satd[i];
+    float rest = satd > 0 && satd_left > 0 ? bits * satd_left / satd : bits / *rows * left;
+    return rest * rc->epb_scale;
 }
 
 /* Last row over the VBV past last_row_reencode: the next emergency step. */
@@ -2138,8 +2150,15 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS && (rc->emerg_step || rc->qpm >= qp_hard_max) )
         {
             float room = vbv_limit - size_of_other_slices - bits_so_far - 32;
-            float rest = emerg_rest( h, rc, y, qp_hard_max );
-            if( rest > room && emerg_raise( h, rc, prev_row_qp, qp_hard_max ) )
+            int rows, left = h->i_threadslice_end - 1 - y;
+            float rest = emerg_rest( h, rc, y, qp_hard_max, &rows );
+            /* A step is the rest of the slice, so only once the excess is a quarter of
+             * the rest: a frame a few percent over takes it on its last rows. The next
+             * step on two rows of the last unless the slice ends first. */
+            int b_over = room <= 0 || rest * (1.f - VBV_EMERG_EXCESS) > room;
+            if( rc->emerg_step && rows < 2 && left > 2 && room > 0 )
+                b_over = 0;
+            if( b_over && emerg_raise( h, rc, prev_row_qp, qp_hard_max ) )
             {
                 b_emerg = can_reencode_row;
                 if( !b_emerg )
