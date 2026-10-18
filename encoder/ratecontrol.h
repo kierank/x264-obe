@@ -39,6 +39,27 @@
 
 #define CLIP_DURATION(f) x264_clip3f(f,MIN_FRAME_DURATION,MAX_FRAME_DURATION)
 
+/* One-frame VBV, the rest of a slice over the VBV even at qp_hard_max: steps of
+ * last resort, a row at a time, bit n is step n+1. 1: this row and the rest at
+ * qp_hard_max, mv, ref and i4x4 mode costs at that QP. 2: no chroma AC, then no
+ * chroma. 4: no luma AC. 8: P_L0 16x16 at the predicted mv, no residual. 16:
+ * P_SKIP. From 8, intra MBs (I slices, the refresh column) are I_16x16 DC with
+ * no residual. */
+#ifndef X264_VBV_EMERG_STEPS
+#define X264_VBV_EMERG_STEPS 0x1f
+#endif
+
+/* h->mb.i_vbv_emerg */
+enum vbv_emerg_e
+{
+    VBV_EMERG_QP = 1,
+    VBV_EMERG_CHROMA_AC,
+    VBV_EMERG_CHROMA,
+    VBV_EMERG_LUMA_AC,
+    VBV_EMERG_ZERO,
+    VBV_EMERG_SKIP,
+};
+
 #define x264_ratecontrol_new x264_template(ratecontrol_new)
 int  x264_ratecontrol_new   ( x264_t * );
 #define x264_ratecontrol_delete x264_template(ratecontrol_delete)

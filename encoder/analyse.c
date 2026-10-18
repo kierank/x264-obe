@@ -61,6 +61,7 @@ typedef struct
     int i_lambda;
     int i_lambda2;
     int i_qp;
+    int i_qp_cost;          /* of the mv, ref and i4x4 mode costs */
     uint16_t *p_cost_mv;
     uint16_t *p_cost_ref[2];
     int i_mbrd;
@@ -274,13 +275,39 @@ void x264_analyse_weight_rows( x264_t *h, int y0, int y1 )
 /* initialize an array of lambda*nbits for all possible mvs */
 static void x264_mb_analyse_load_costs( x264_t *h, x264_mb_analysis_t *a )
 {
-    a->p_cost_mv = h->cost_mv[a->i_qp];
-    a->p_cost_ref[0] = x264_cost_ref[a->i_qp][x264_clip3(h->sh.i_num_ref_idx_l0_active-1,0,2)];
-    a->p_cost_ref[1] = x264_cost_ref[a->i_qp][x264_clip3(h->sh.i_num_ref_idx_l1_active-1,0,2)];
+    a->p_cost_mv = h->cost_mv[a->i_qp_cost];
+    a->p_cost_ref[0] = x264_cost_ref[a->i_qp_cost][x264_clip3(h->sh.i_num_ref_idx_l0_active-1,0,2)];
+    a->p_cost_ref[1] = x264_cost_ref[a->i_qp_cost][x264_clip3(h->sh.i_num_ref_idx_l1_active-1,0,2)];
+}
+
+/* One-frame VBV emergency: the deadzone of qp, and the coefficients its step drops. */
+static void x264_mb_analyse_emerg_nr( x264_t *h )
+{
+    int step = h->mb.i_vbv_emerg;
+    int all = step >= VBV_EMERG_ZERO;
+    int chroma_ac = all || (step >= VBV_EMERG_CHROMA_AC && (X264_VBV_EMERG_STEPS & 2));
+    int chroma_dc = all || (step >= VBV_EMERG_CHROMA && (X264_VBV_EMERG_STEPS & 2));
+    int luma_ac = all || (step >= VBV_EMERG_LUMA_AC && (X264_VBV_EMERG_STEPS & 4));
+    udctcoef max = (1 << (7 + BIT_DEPTH)) - 1;
+    for( int cat = 0; cat < 4; cat++ )
+    {
+        int ac = cat < 2 ? luma_ac : chroma_ac;
+        int dc = cat < 2 ? all : chroma_dc;
+        h->nr_offset_vbv_emerg[cat][0] = dc ? max : h->nr_offset[cat][0];
+        for( int i = 1; i < 64; i++ )
+            h->nr_offset_vbv_emerg[cat][i] = ac ? max : h->nr_offset[cat][i];
+    }
+    h->nr_offset = h->nr_offset_vbv_emerg;
+    h->nr_residual_sum = h->nr_residual_sum_buf[1];
+    h->nr_count = h->nr_count_buf[1];
+    h->mb.b_noise_reduction = 1;
 }
 
 static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
 {
+    /* Past QP_MAX_SPEC the side info is priced at QP_MAX_SPEC; at its own QP in a
+     * one-frame VBV emergency. */
+    a->i_qp_cost = h->mb.i_vbv_emerg ? qp : SPEC_QP( qp );
     int effective_chroma_qp = h->chroma_qp_table[SPEC_QP(qp)] + X264_MAX( qp - QP_MAX_SPEC, 0 );
     a->i_lambda = x264_lambda_tab[qp];
     a->i_lambda2 = x264_lambda2_tab[qp];
@@ -313,6 +340,8 @@ static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
         h->nr_count = h->nr_count_buf[0];
         h->mb.b_noise_reduction = 0;
     }
+    if( h->mb.i_vbv_emerg >= VBV_EMERG_CHROMA_AC )
+        x264_mb_analyse_emerg_nr( h );
 
     a->i_qp = h->mb.i_qp = qp;
     h->mb.i_chroma_qp = h->chroma_qp_table[qp];
@@ -792,7 +821,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             return;
     }
 
-    uint16_t *cost_i4x4_mode = (uint16_t*)ALIGN((intptr_t)x264_cost_i4x4_mode,64) + a->i_qp*32 + 8;
+    uint16_t *cost_i4x4_mode = (uint16_t*)ALIGN((intptr_t)x264_cost_i4x4_mode,64) + a->i_qp_cost*32 + 8;
     /* 8x8 prediction selection */
     if( flags & X264_ANALYSE_I8x8 )
     {
@@ -3267,6 +3296,20 @@ static int x264_mb_pskip_mispredicted( x264_t *h )
     return b_lowres && x264_mb_pskip_cand_better( h, lmx, lmy, thresh );
 }
 
+/* One-frame VBV emergency: I_16x16 and chroma DC prediction; x264_mb_analyse_emerg_nr
+ * leaves no residual. */
+static void x264_mb_analyse_intra_emerg( x264_t *h, x264_mb_analysis_t *a )
+{
+    static const int8_t dc16x16[4] = { I_PRED_16x16_DC_128, I_PRED_16x16_DC_LEFT, I_PRED_16x16_DC_TOP, I_PRED_16x16_DC };
+    static const int8_t dc_chroma[4] = { I_PRED_CHROMA_DC_128, I_PRED_CHROMA_DC_LEFT, I_PRED_CHROMA_DC_TOP, I_PRED_CHROMA_DC };
+    int nb = h->mb.i_neighbour_intra & (MB_LEFT|MB_TOP);
+    a->i_predict16x16 = dc16x16[nb];
+    a->i_predict8x8chroma = dc_chroma[nb];
+    a->i_satd_chroma = 0;
+    h->mb.i_chroma_pred_mode = a->i_predict8x8chroma;
+    h->mb.i_type = I_16x16;
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3289,6 +3332,11 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->sh.i_type == SLICE_TYPE_I )
     {
 intra_analysis:
+        if( h->mb.i_vbv_emerg >= VBV_EMERG_ZERO )
+        {
+            x264_mb_analyse_intra_emerg( h, &analysis );
+            goto analysis_done;
+        }
         if( analysis.i_mbrd )
             x264_mb_init_fenc_cache( h, analysis.i_mbrd >= 2 );
         x264_mb_analyse_intra( h, &analysis, COST_MAX );
@@ -3314,6 +3362,8 @@ intra_analysis:
         analysis.b_try_skip = 0;
         if( analysis.b_force_intra )
         {
+            if( h->mb.i_vbv_emerg >= VBV_EMERG_ZERO )
+                goto intra_analysis;
             if( !h->param.analyse.b_psy )
             {
                 x264_mb_analyse_init_qp( h, &analysis, X264_MAX( h->mb.i_qp - h->mb.ip_offset, h->param.rc.i_qp_min ) );
@@ -3351,6 +3401,25 @@ intra_analysis:
 
             int skip_invalid = (h->i_thread_frames > 1 && h->mb.cache.pskip_mv[1] > h->mb.mv_max_spel[1]) ||
                                analysis.b_pir_skip_invalid;
+            /* One-frame VBV emergency: P_SKIP, or 16x16 at the predicted mv with no residual. */
+            if( h->mb.i_vbv_emerg >= VBV_EMERG_ZERO )
+            {
+                h->mb.i_partition = D_16x16;
+                if( h->mb.i_vbv_emerg == VBV_EMERG_SKIP && !skip_invalid )
+                {
+                    b_skip = 1;
+                    h->mb.i_type = P_SKIP;
+                }
+                else
+                {
+                    h->mb.i_type = P_L0;
+                    analysis.l0.me16x16.i_ref = 0;
+                    x264_mb_predict_mv_16x16( h, 0, 0, analysis.l0.me16x16.mv );
+                    analysis.l0.me16x16.mv[0] = x264_clip3( analysis.l0.me16x16.mv[0], h->mb.mv_min_spel[0], h->mb.mv_max_spel[0] );
+                    analysis.l0.me16x16.mv[1] = x264_clip3( analysis.l0.me16x16.mv[1], h->mb.mv_min_spel[1], h->mb.mv_max_spel[1] );
+                }
+                goto skip_analysis;
+            }
             /* If the current macroblock is off the frame, just skip it. */
             if( HAVE_INTERLACED && !MB_INTERLACED && h->mb.i_mb_y * 16 >= h->param.i_height && !skip_invalid )
                 b_skip = 1;
@@ -4098,6 +4167,7 @@ skip_analysis:
         }
     }
 
+analysis_done:
     x264_analyse_update_cache( h, &analysis );
 
     /* In rare cases we can end up qpel-RDing our way back to a larger partition size
@@ -4116,7 +4186,7 @@ skip_analysis:
     if( !analysis.i_mbrd )
         x264_mb_analyse_transform( h );
 
-    if( analysis.i_mbrd == 3 && !IS_SKIP(h->mb.i_type) )
+    if( analysis.i_mbrd == 3 && !IS_SKIP(h->mb.i_type) && h->mb.i_vbv_emerg < VBV_EMERG_ZERO )
         x264_mb_analyse_qp_rd( h, &analysis );
 
     h->mb.b_trellis = h->param.analyse.i_trellis;

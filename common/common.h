@@ -574,6 +574,7 @@ struct x264_t
         int ip_offset; /* Used by PIR to offset the quantizer of intra-refresh blocks. */
         int b_deblock_rdo;
         int b_overflow; /* If CAVLC had a level code overflow during bitstream writing. */
+        int i_vbv_emerg; /* one-frame VBV emergency step of this row, enum vbv_emerg_e */
 
         struct
         {
@@ -756,6 +757,7 @@ struct x264_t
     uint32_t *nr_count;
 
     ALIGNED_N( udctcoef nr_offset_denoise[4][64] );
+    ALIGNED_N( udctcoef nr_offset_vbv_emerg[4][64] );
     ALIGNED_N( uint32_t nr_residual_sum_buf[2][4][64] );
     uint32_t nr_count_buf[2][4];
 

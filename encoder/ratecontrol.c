@@ -191,6 +191,15 @@ struct x264_ratecontrol_t
     float row_err_bits;
     float row_err_pred;
     float row_err_scale;        /* their ratio, 1 to 2, on the rest of the slice */
+    /* One-frame VBV over even at qp_hard_max: the emergency step (h->mb.i_vbv_emerg),
+     * and as row_err_* for rows coded at it, their ratio replacing row_err_scale. */
+    int emerg_step;
+    int emerg_row0;             /* first row coded at it */
+    int emerg_reencodes;
+    float emerg_next;
+    float emerg_bits;
+    float emerg_pred;
+    float emerg_scale;
     /* Sliced threads: once every other thread slice is final, the one left
      * checks against their exact sizes. */
     int slices_done;            /* thread 0's: thread slices with their final size */
@@ -1688,7 +1697,7 @@ static float predict_row_size_to_end( x264_t *h, int y, float qp )
             pred = X264_MAX( pred, predict_size( &h->rc->row_pred_last[h->sh.i_type], qscale, h->fdec->i_row_satd[i] ) );
         bits += pred;
     }
-    return bits * h->rc->epb_scale * h->rc->row_err_scale;
+    return bits * h->rc->epb_scale * (h->rc->emerg_step ? h->rc->emerg_scale : h->rc->row_err_scale);
 }
 
 /* one row as predict_row_size_to_end counts it */
@@ -1705,11 +1714,56 @@ static float predict_row( x264_t *h, int i, float qscale )
 static void row_err_expect( x264_t *h, x264_ratecontrol_t *rc, int y0, float qp )
 {
     rc->row_err_next = 0;
-    if( rc->single_frame_vbv && qp >= QP_MAX_SPEC - 6 )
+    rc->emerg_next = 0;
+    if( rc->single_frame_vbv && (qp >= QP_MAX_SPEC - 6 || rc->emerg_step) )
     {
         float qscale = qp2qscale( qp );
-        rc->row_err_next = predict_row( h, y0, qscale ) + (SLICE_MBAFF ? predict_row( h, y0 + 1, qscale ) : 0);
+        float pred = predict_row( h, y0, qscale ) + (SLICE_MBAFF ? predict_row( h, y0 + 1, qscale ) : 0);
+        if( qp >= QP_MAX_SPEC - 6 )
+            rc->row_err_next = pred;
+        if( rc->emerg_step )
+            rc->emerg_next = pred;
     }
+}
+
+/* The rest of the slice over the VBV even at qp_hard_max, the row coded at row_qp:
+ * that QP from this row on, else the next emergency step. 0 if none is left. */
+static int emerg_raise( x264_t *h, x264_ratecontrol_t *rc, float row_qp, float qp_hard_max )
+{
+    /* bit of X264_VBV_EMERG_STEPS per enum vbv_emerg_e */
+    static const uint8_t step_bit[VBV_EMERG_SKIP+1] = { 0, 1, 2, 2, 4, 8, 16 };
+    int step = rc->emerg_step;
+    if( rc->emerg_reencodes >= 8 )
+        return 0;
+    if( row_qp < qp_hard_max )
+    {
+        if( !(X264_VBV_EMERG_STEPS & 1) )
+            return 0;
+        step = X264_MAX( step, VBV_EMERG_QP );
+    }
+    else
+    {
+        /* P_SKIP is VBV_EMERG_ZERO in I and B slices */
+        int skip_same = h->sh.i_type != SLICE_TYPE_P && step >= VBV_EMERG_ZERO;
+        do
+            step++;
+        while( step <= VBV_EMERG_SKIP && (!(X264_VBV_EMERG_STEPS & step_bit[step]) || (step == VBV_EMERG_SKIP && skip_same)) );
+        if( step > VBV_EMERG_SKIP )
+            return 0;
+    }
+    if( step != rc->emerg_step )
+    {
+        if( !rc->emerg_step )
+            rc->emerg_scale = rc->row_err_scale;
+        rc->emerg_bits = rc->emerg_pred = 0;
+        rc->emerg_row0 = h->mb.i_mb_y - SLICE_MBAFF;
+        x264_log( h, X264_LOG_DEBUG, "vbv emergency: frame %d row %d step %d -> %d\n",
+                  h->fenc->i_frame, h->mb.i_mb_y, rc->emerg_step, step );
+    }
+    rc->emerg_step = step;
+    rc->qpm = qp_hard_max;
+    rc->emerg_reencodes++;
+    return 1;
 }
 
 /* Emulation prevention bytes x264_nal_encode adds to p[*pos..end), resumable. */
@@ -1762,6 +1816,10 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->epb_scale = 1.f;
     rc->row_err_next = rc->row_err_bits = rc->row_err_pred = 0;
     rc->row_err_scale = 1.f;
+    rc->emerg_step = rc->emerg_reencodes = 0;
+    rc->emerg_next = rc->emerg_bits = rc->emerg_pred = 0;
+    rc->emerg_scale = 1.f;
+    h->mb.i_vbv_emerg = 0;
     rc->b_slice_done = 0;
     rc->last_row_reencodes = 0;
     rc->room_reencodes = 0;
@@ -1810,6 +1868,7 @@ static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
     h->fdec->i_row_bits[y] = 0;
     h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
     row_err_expect( h, rc, y - SLICE_MBAFF, rc->qpm );
+    h->mb.i_vbv_emerg = rc->emerg_step;
     return -1;
 }
 
@@ -1823,6 +1882,42 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
     float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
     rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
     rc->last_row_reencodes++;
+    return reencode_row( h, rc, y );
+}
+
+/* Least excess, of the rest of the slice, an emergency step is taken on. */
+#define VBV_EMERG_EXCESS 0.25f
+
+/* The rest of the slice at the emergency step, or at qp_hard_max before one, as the
+ * rows of the slice coded there: their bits per satd on the satd of the rows left, a
+ * mean a row without satd. 0 with none; *rows, how many. */
+static float emerg_rest( x264_t *h, x264_ratecontrol_t *rc, int y, float qp_hard_max, int *rows )
+{
+    int first = rc->emerg_step ? rc->emerg_row0 : h->i_threadslice_start;
+    float bits = 0;
+    int64_t satd = 0, satd_left = 0;
+    *rows = 0;
+    for( int i = first; i <= y; i++ )
+        if( rc->emerg_step || h->fdec->f_row_qp[i] >= qp_hard_max )
+        {
+            bits += h->fdec->i_row_bits[i];
+            satd += h->fdec->i_row_satd[i];
+            (*rows)++;
+        }
+    if( !*rows )
+        return 0;
+    int left = h->i_threadslice_end - 1 - y;
+    for( int i = y + 1; i < h->i_threadslice_end; i++ )
+        satd_left += h->fdec->i_row_satd[i];
+    float rest = satd > 0 && satd_left > 0 ? bits * satd_left / satd : bits / *rows * left;
+    return rest * rc->epb_scale;
+}
+
+/* Last row over the VBV past last_row_reencode: the next emergency step. */
+static int emerg_last_row( x264_t *h, x264_ratecontrol_t *rc, int y, float excess, float row_qp, float qp_hard_max )
+{
+    if( excess <= 0 || !rc->single_frame_vbv || !X264_VBV_EMERG_STEPS || !emerg_raise( h, rc, row_qp, qp_hard_max ) )
+        return 0;
     return reencode_row( h, rc, y );
 }
 
@@ -1926,6 +2021,13 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         rc->row_err_pred += rc->row_err_next;
         rc->row_err_next = 0;
         rc->row_err_scale = x264_clip3f( rc->row_err_bits / rc->row_err_pred, 1.f, 2.f );
+    }
+    if( rc->emerg_next > 0 )
+    {
+        rc->emerg_bits += h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+        rc->emerg_pred += rc->emerg_next;
+        rc->emerg_next = 0;
+        rc->emerg_scale = x264_clip3f( rc->emerg_bits / rc->emerg_pred, 1.f/64, 64.f );
     }
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
@@ -2036,6 +2138,39 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
         }
 
+        /* The rest of the slice over the room left even at qp_hard_max, the other
+         * thread slices as row QP counts them: the next emergency step, this row
+         * again. The rest as the rows coded at the step, or at qp_hard_max before one
+         * (none: only once over already), and the first only once the row QP above
+         * takes the next rows there: the row predictors at qp_hard_max, untrained or
+         * trained at lower QPs, fired on early rows of frames that fit, I frames by
+         * three times. The rest of the slice stays at qp_hard_max: the ratio of its
+         * rows there would only mislead a lower QP. */
+        int b_emerg = 0;
+        if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS && (rc->emerg_step || rc->qpm >= qp_hard_max) )
+        {
+            float room = vbv_limit - size_of_other_slices - bits_so_far - 32;
+            int rows, left = h->i_threadslice_end - 1 - y;
+            float rest = emerg_rest( h, rc, y, qp_hard_max, &rows );
+            /* A step is the rest of the slice, so only once the excess is a quarter of
+             * the rest: a frame a few percent over takes it on its last rows. The next
+             * step on two rows of the last unless the slice ends first. */
+            int b_over = room <= 0 || rest * (1.f - VBV_EMERG_EXCESS) > room;
+            if( rc->emerg_step && rows < 2 && left > 2 && room > 0 )
+                b_over = 0;
+            if( b_over && emerg_raise( h, rc, prev_row_qp, qp_hard_max ) )
+            {
+                b_emerg = can_reencode_row;
+                if( !b_emerg )
+                    rc->emerg_row0 = y + 1;
+            }
+            if( rc->emerg_step )
+            {
+                rc->qpm = X264_MAX( rc->qpm, qp_hard_max );
+                b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
+            }
+        }
+
         h->rc->frame_size_estimated = b1 - size_of_other_slices;
         /* No row goes below the first row's QP. */
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
@@ -2045,6 +2180,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                                 : rc->frame_size_estimated;
             RC_STORE( &rc->rows_done, y + 1 );
         }
+
+        if( b_emerg )
+            return reencode_row( h, rc, y );
 
         /* Every other slice final, and the rest of this one can't fit the room left
          * (less the last row's escape bound) even at the highest QP: this row too,
@@ -2082,7 +2220,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         /* Last-ditch attempt: if the last row of the frame underflowed the VBV,
          * try again. */
         if( can_reencode_row
-            && last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, qp_max, qp_hard_max ) )
+            && (last_row_reencode( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, qp_max, qp_hard_max )
+                || emerg_last_row( h, rc, y, bits_so_far + size_of_other_slices - vbv_limit, prev_row_qp, qp_hard_max )) )
             return -1;
 
         /* Final now. The slice counted last sees every other size final, as each
@@ -2092,7 +2231,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             rc->b_slice_done = 1;
             int done = x264_pthread_fetch_and_add( &h->thread[0]->rc->slices_done, 1, &h->fdec->mutex ) + 1;
             if( done == h->param.i_threads && !others_final && can_reencode_row
-                && last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_max, qp_hard_max ) )
+                && (last_row_reencode( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, qp_max, qp_hard_max )
+                    || emerg_last_row( h, rc, y, bits_so_far + other_slices_size( h ) - vbv_limit, prev_row_qp, qp_hard_max )) )
                 return -1;
         }
     }
@@ -2106,6 +2246,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     }
     else
         row_err_expect( h, rc, y + 1, rc->qpm );
+    h->mb.i_vbv_emerg = rc->emerg_step;
 
     rc->qpa_rc_prev = rc->qpa_rc;
     rc->qpa_aq_prev = rc->qpa_aq;
