@@ -162,6 +162,10 @@ struct x264_ratecontrol_t
     volatile float frame_size_estimated; /* Access to this variable must be atomic: double is
                                           * not atomic on all arches we care about */
     volatile float bits_so_far;
+    /* One-frame VBV, sliced threads: bits so far and the rest of the slice at their
+     * mean a row, the planned size before a row, the size once final. Atomic as
+     * frame_size_estimated. */
+    volatile float frame_size_meas;
     /* Frame threads: the frame's size at its first row's QP, below which no row goes,
      * and the rows coded when it and frame_size_estimated were set, stored after them
      * with release and read first with acquire. */
@@ -1819,6 +1823,7 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->emerg_step = rc->emerg_reencodes = 0;
     rc->emerg_next = rc->emerg_bits = rc->emerg_pred = 0;
     rc->emerg_scale = 1.f;
+    rc->frame_size_meas = rc->slice_size_planned;
     h->mb.i_vbv_emerg = 0;
     rc->b_slice_done = 0;
     rc->last_row_reencodes = 0;
@@ -1888,9 +1893,20 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
 /* Least excess, of the rest of the slice, an emergency step is taken on. */
 #define VBV_EMERG_EXCESS 0.25f
 
+/* The other thread slices as their rows coded so far count them. */
+static float other_slices_meas( x264_t *h )
+{
+    float size = 0;
+    for( int i = 0; i < h->param.i_threads; i++ )
+        if( h != h->thread[i] )
+            size += h->thread[i]->rc->frame_size_meas;
+    return size;
+}
+
 /* The rest of the slice at the emergency step, or at qp_hard_max before one, as the
- * rows of the slice coded there: their bits per satd on the satd of the rows left, a
- * mean a row without satd. 0 with none; *rows, how many. */
+ * rows of the slice coded there: the lesser of their mean a row and their bits per
+ * satd on the satd of the rows left (luma satd misses chroma, a mean the rows' cost
+ * by position). 0 with none; *rows, how many. */
 static float emerg_rest( x264_t *h, x264_ratecontrol_t *rc, int y, float qp_hard_max, int *rows )
 {
     int first = rc->emerg_step ? rc->emerg_row0 : h->i_threadslice_start;
@@ -1909,7 +1925,9 @@ static float emerg_rest( x264_t *h, x264_ratecontrol_t *rc, int y, float qp_hard
     int left = h->i_threadslice_end - 1 - y;
     for( int i = y + 1; i < h->i_threadslice_end; i++ )
         satd_left += h->fdec->i_row_satd[i];
-    float rest = satd > 0 && satd_left > 0 ? bits * satd_left / satd : bits / *rows * left;
+    float rest = bits / *rows * left;
+    if( satd > 0 && satd_left > 0 )
+        rest = X264_MIN( rest, bits * satd_left / satd );
     return rest * rc->epb_scale;
 }
 
@@ -2014,6 +2032,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         bits_so_far += (epb_left + 1) / 2 * 8;
     rc->epb_scale = 1.f + (float)(epb_bytes * 8) / X264_MAX( mb_bits, 1 );
     rc->bits_so_far = bits_so_far;
+    rc->frame_size_meas = bits_so_far + bits_so_far / (y - h->i_threadslice_start + 1) * (h->i_threadslice_end - 1 - y);
     /* The rest of the slice overruns as its rows near QP_MAX_SPEC did. */
     if( rc->row_err_next > 0 )
     {
@@ -2139,17 +2158,18 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         /* The rest of the slice over the room left even at qp_hard_max, the other
-         * thread slices as row QP counts them: the next emergency step, this row
-         * again. The rest as the rows coded at the step, or at qp_hard_max before one
-         * (none: only once over already), and the first only once the row QP above
-         * takes the next rows there: the row predictors at qp_hard_max, untrained or
-         * trained at lower QPs, fired on early rows of frames that fit, I frames by
-         * three times. The rest of the slice stays at qp_hard_max: the ratio of its
-         * rows there would only mislead a lower QP. */
+         * thread slices as their rows coded so far count them: the next emergency
+         * step, this row again. The rest as the rows coded at the step, or at
+         * qp_hard_max before one (none: only once over already), and the first only
+         * once the row QP above takes the next rows there: the row predictors at
+         * qp_hard_max, untrained or trained at lower QPs, fired on early rows of
+         * frames that fit, I frames by three times, and so did row QP's count of the
+         * other slices, their predicted sizes. The rest of the slice stays at
+         * qp_hard_max: the ratio of its rows there would only mislead a lower QP. */
         int b_emerg = 0;
         if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS && (rc->emerg_step || rc->qpm >= qp_hard_max) )
         {
-            float room = vbv_limit - size_of_other_slices - bits_so_far - 32;
+            float room = vbv_limit - (b_threadslices ? other_slices_meas( h ) : 0) - bits_so_far - 32;
             int rows, left = h->i_threadslice_end - 1 - y;
             float rest = emerg_rest( h, rc, y, qp_hard_max, &rows );
             /* A step is the rest of the slice, so only once the excess is a quarter of
