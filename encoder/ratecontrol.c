@@ -2110,10 +2110,13 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
         /* The rest of the slice over the room left even at qp_hard_max, the other
          * thread slices at their own estimates: the next emergency step, this row
-         * again. The rest of the slice stays at qp_hard_max: the ratio of its rows
-         * there would only mislead a lower QP. */
+         * again. The first only once the row QP above takes the next rows to
+         * qp_hard_max: before, the projection there is one it doesn't trust enough to
+         * raise QP on, and on early rows it fired on frames that fit far below it.
+         * The rest of the slice stays at qp_hard_max: the ratio of its rows there
+         * would only mislead a lower QP. */
         int b_emerg = 0;
-        if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS )
+        if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS && (rc->emerg_step || rc->qpm >= qp_hard_max) )
         {
             float room = vbv_limit - (b_threadslices ? other_slices_size( h ) : 0) - bits_so_far - 32;
             if( predict_row_size_to_end( h, y, qp_hard_max ) > room )
