@@ -54,7 +54,7 @@
 enum
 {
     T_NAT0, T_NAT1, T_NAT2, T_NAT3, T_SMOOTH, T_NATS, T_CHECK, T_VLINE, T_VLINE3, T_HLINE,
-    T_EXT, T_ZONE, T_TICKER, T_CREDITS, T_THIN, T_LOGO, T_SUB, T_L3, T_COUNT
+    T_EXT, T_ZONE, T_TICKER, T_CREDITS, T_THIN, T_LOGO, T_SUB, T_L3, T_FINE, T_COUNT
 };
 
 typedef struct
@@ -485,6 +485,18 @@ static tex_t *tex_build( gen_t *g, int id )
             text_line( t, 40, 150, 4, 50, &s, &fg2 );
             return t;
         }
+        case T_FINE:
+        {
+            /* crawl strip of 1-px and 2-px stroke text, two lines coloured */
+            static const int ly[7] = { 6, 20, 36, 58, 72, 94, 112 }, ls[7] = { 1, 1, 2, 1, 2, 1, 1 };
+            t = tex_alloc( 8192, 128, 0 );
+            pen_t bg = { { YBLK + YRNG / 10 }, CMID + 1500, CMID - 1000 }, fg = { { YWHT }, CMID, CMID };
+            pen_t fg2 = { { YBLK + YRNG * 85 / 100 }, CMID - 14000, CMID + 2000 };
+            tex_rect( t, 0, 0, 8192, 128, &bg );
+            for( int i = 0; i < 7; i++ )
+                text_line( t, 4, ly[i], ls[i], 8184 / (6 * ls[i]), &s, i == 2 || i == 5 ? &fg2 : &fg );
+            return t;
+        }
     }
     die( "bad texture" );
     return NULL;
@@ -603,16 +615,21 @@ static int span( const gen_t *g, int pl, int y, rect_t r, int *x0, int *x1, doub
 
 #define ROWPTR( g, img, pl, y ) ((img)->p[pl] + (size_t)(y) * (g)->pw[pl])
 
-static void draw_tex( gen_t *g, const pic_t *p, img_t *dst, int id, const double *A, rect_t r )
+static void draw_tex_pl( gen_t *g, const pic_t *p, img_t *dst, int id, const double *A, rect_t r, int planes )
 {
     const tex_t *t = gettex( g, id );
-    SPANS( g, p, r, ALL )
+    SPANS( g, p, r, planes )
     {
         int sx = pl ? 2 : 1;
         double xl = x0 * sx;
         tex_row( t, pl, ROWPTR( g, dst, pl, y ) + x0, x1 - x0, A[0] * xl + A[1] * yl + A[2],
                  A[3] * xl + A[4] * yl + A[5], A[0] * sx, A[3] * sx );
     }
+}
+
+static void draw_tex( gen_t *g, const pic_t *p, img_t *dst, int id, const double *A, rect_t r )
+{
+    draw_tex_pl( g, p, dst, id, A, r, ALL );
 }
 
 static void draw_tex_alpha( gen_t *g, const pic_t *p, img_t *dst, int id, const double *A, rect_t r )
@@ -655,6 +672,23 @@ static void draw_noise( gen_t *g, const pic_t *p, img_t *dst, rect_t r, int plan
             int u = (int)(v & 0xffff) - 32768;
             v >>= 16;
             d[x] = clip16( (mean ? mean[pl] : d[x]) + (u * amp[pl] >> 15) );
+        }
+    }
+}
+
+/* every sample lo or hi at random, fresh for every field */
+static void draw_binary( gen_t *g, const pic_t *p, img_t *dst, rect_t r, int planes, int lo, int hi, uint64_t salt )
+{
+    SPANS( g, p, r, planes )
+    {
+        uint16_t *d = ROWPTR( g, dst, pl, y );
+        uint64_t s = hash4( g->seed, salt, p->ftick, (uint64_t)pl << 32 | y ) | 1, v = 0;
+        for( int x = x0; x < x1; x++ )
+        {
+            if( !((x - x0) & 63) )
+                v = rnd( &s );
+            d[x] = v & 1 ? hi : lo;
+            v >>= 1;
         }
     }
 }
@@ -782,6 +816,28 @@ static void draw_pan( gen_t *g, const pic_t *p, int id, double tx, double ty, re
     double A[6];
     aff( g, A, 1, 0, tx, ty );
     draw_tex( g, p, &g->img, id, A, r );
+}
+
+static void draw_pan_pl( gen_t *g, const pic_t *p, int id, double tx, double ty, rect_t r, int planes )
+{
+    double A[6];
+    aff( g, A, 1, 0, tx, ty );
+    draw_tex_pl( g, p, &g->img, id, A, r, planes );
+}
+
+/* top luma row of slice band i of nb, split as x264 sliced threads split MB rows */
+static int band_y( const gen_t *g, int i, int nb )
+{
+    int il = !!g->interlaced, mbh = il ? (g->h + 31) / 32 * 2 : (g->h + 15) / 16;
+    int y = ((((mbh >> il) * i + nb / 2) / nb) << il) * 16;
+    return y < g->h ? y : g->h;
+}
+
+/* width of the left fraction f of every MB row, in whole MB columns */
+static int mb_cols( const gen_t *g, double f )
+{
+    int c = (int)floor( f * ((g->w + 15) / 16) + 0.5 ) * 16;
+    return c < g->w ? c : g->w;
 }
 
 static double bounce( double x, double range )
@@ -1373,6 +1429,597 @@ static void sc_split_pip( gen_t *g, const pic_t *p )
 }
 
 /****************************************************************************
+ * Scenarios: chroma
+ ****************************************************************************/
+
+static int seg_of( const gen_t *g, const pic_t *p, double len, int n )
+{
+    return (int)(p->n / g->fps / len) % n;
+}
+
+static void sc_chroma_sat( gen_t *g, const pic_t *p )
+{
+    int k = seg_of( g, p, 5, 4 );
+    if( k < 2 )
+        draw_fill( g, p, &g->img, full( g ), GREY );
+    else
+        draw_pan_pl( g, p, T_NAT0, 0, 0, full( g ), 1 );
+    draw_binary( g, p, &g->img, full( g ), 6, k & 1 ? 0 : CMIN, k & 1 ? 65535 : CMAX, 50 );
+}
+
+static void sc_chroma_nyquist( gen_t *g, const pic_t *p )
+{
+    int w = g->w, h = g->h, a = CRNG * 45 / 100, n = p->n;
+    if( seg_of( g, p, 5, 2 ) )
+        draw_pan_pl( g, p, T_NAT0, 0, 0, full( g ), 1 );
+    else
+        draw_fill( g, p, &g->img, full( g ), GREY );
+    SPANS( g, p, full( g ), 6 )
+    {
+        uint16_t *d = ROWPTR( g, &g->img, pl, y );
+        int top = yl < h / 2, sa = pl == 1 ? a : -a;
+        for( int x = x0; x < x1; x++ )
+        {
+            int xl = 2 * x, on;
+            if( top )
+                on = xl < w / 2 ? (x + y) & 1 : (x + y + n) & 1;
+            else if( xl < w / 2 )
+                on = (x + (n >> 1)) & 1;
+            else    /* plane-row Nyquist (one colour per field when interlaced), then half of it */
+                on = xl < 3 * w / 4 ? y & 1 : (y >> 1) & 1;
+            d[x] = CMID + (on ? sa : -sa);
+        }
+    }
+}
+
+static void sc_bars_chroma( gen_t *g, const pic_t *p )
+{
+    int k = seg_of( g, p, 3, 4 ), n = p->n;
+    draw_bars( g, p, &g->img, full( g ), BARS100, NULL, 8 );
+    SPANS( g, p, full( g ), 6 )
+    {
+        uint16_t *d = ROWPTR( g, &g->img, pl, y );
+        for( int x = x0; x < x1; x++ )
+        {
+            int ph = k == 0 ? x & 1 : k == 1 ? (x + n) & 1 : k == 2 ? (x + y) & 1 : (x + y + n) & 1;
+            if( ph )
+                d[x] = clip16( 2 * CMID - d[x] );
+        }
+    }
+}
+
+static void sc_chroma_motion( gen_t *g, const pic_t *p )
+{
+    double ft = p->ft, A[6];
+    switch( seg_of( g, p, 4, 4 ) )
+    {
+        case 0:  aff( g, A, 1, 0, 16 * ft, 0 ); break;
+        case 1:  aff( g, A, 1, 0, -28 * ft, 19 * ft ); break;
+        case 2:  aff( g, A, 1 + 0.25 * sin( 2 * PI * ft / 50 ), 15 * DEG * sin( 2 * PI * ft / 75 ), 0, 0 ); break;
+        default: aff( g, A, 1, 0, 2048 * hr( g, 45, 2 * p->n ), 2048 * hr( g, 45, 2 * p->n + 1 ) ); break;
+    }
+    draw_pan_pl( g, p, T_NAT0, 0, 0, full( g ), 1 );
+    draw_tex_pl( g, p, &g->img, T_NAT2, A, full( g ), 6 );
+    adjust( g, p, &g->img, full( g ), 1, YBLK, 0, 2.5 );
+}
+
+/****************************************************************************
+ * Scenarios: VBV fit and slice bands
+ ****************************************************************************/
+
+static void noise_left( gen_t *g, const pic_t *p, double f )
+{
+    int xn = mb_cols( g, f );
+    draw_pan( g, p, T_NAT1, 0, 0, R( xn, 0, g->w, g->h ) );
+    full_noise( g, p, R( 0, 0, xn, g->h ) );
+}
+
+/* noise fraction f = 0.1 + 0.9 * t / 20 for t = (n / fps) mod 24 < 20, else 0 */
+static void sc_noise_ramp( gen_t *g, const pic_t *p )
+{
+    double t = fmod( p->n / g->fps, 24 );
+    noise_left( g, p, t < 20 ? 0.1 + 0.9 * t / 20 : 0 );
+}
+
+static void sc_noise_steps( gen_t *g, const pic_t *p )
+{
+    static const double frac[8] = { 0.3, 0.9, 0.5, 1.0, 0.1, 0.7, 0.2, 0.8 };
+    static const int per[4] = { 1, 3, 8, 25 };
+    int seg = fsec( g, 8 ), k = p->n / seg, i = p->n % seg;
+    noise_left( g, p, frac[(i / per[k % 4] + k) % 8] );
+}
+
+static void sc_noise_band( gen_t *g, const pic_t *p )
+{
+    static const double hs[3] = { 1, 0.5, 0.25 };
+    static const int ord[4] = { 0, 3, 1, 2 };
+    int half = fsec( g, 0.5 ), k = p->n / half, pos = k % 8, w = g->w, b[5];
+    for( int i = 0; i < 5; i++ )
+        b[i] = band_y( g, i, 4 );
+    int bh = (int)((b[1] - b[0]) * hs[(k / 8) % 3]) & ~1, top;
+    draw_pan( g, p, T_NAT1, 0, 0, full( g ) );
+    if( pos < 4 )
+        top = b[ord[pos]];
+    else if( pos < 6 )      /* straddling the 0|1, then the 2|3 boundary */
+        top = b[pos == 4 ? 1 : 3] - bh / 2;
+    else if( pos == 6 )     /* split between the first and last band */
+    {
+        full_noise( g, p, R( 0, b[0], w, b[0] + bh / 2 ) );
+        full_noise( g, p, R( 0, b[4] - bh / 2, w, b[4] ) );
+        return;
+    }
+    else                    /* sweep one MB row per frame */
+        top = g->h > bh ? p->n * 16 % (g->h - bh) : 0;
+    full_noise( g, p, R( 0, top, w, top + bh ) );
+}
+
+static void sc_slice_mix( gen_t *g, const pic_t *p )
+{
+    int s = (int)(p->n / g->fps), w = g->w;
+    for( int i = 0; i < 4; i++ )
+    {
+        rect_t r = R( 0, band_y( g, i, 4 ), w, band_y( g, i + 1, 4 ) );
+        switch( (s & 4 ? i + s : s + 4 - i) % 4 )
+        {
+            case 0:  full_noise( g, p, r ); break;
+            case 1:  draw_pan( g, p, T_NAT0, 0, 0, r ); break;
+            case 2:  draw_pan( g, p, T_NAT1, 12 * p->ft, 2 * p->ft, r ); break;
+            default: draw_fill( g, p, &g->img, r, GREY ); break;
+        }
+    }
+}
+
+/****************************************************************************
+ * Scenarios: lowres-deceptive
+ ****************************************************************************/
+
+/* x264's lowres averages 2x2 blocks at even phase: 2-px detail at odd phase vanishes */
+static void sc_lowres_2px( gen_t *g, const pic_t *p )
+{
+    int w = g->w, h = g->h, d = YRNG * 35 / 100, dc = CRNG / 4, tk = p->tick;
+    const tex_t *m = gettex( g, T_NAT3 );
+    SPANS( g, p, full( g ), ALL )
+    {
+        int sx = pl ? 2 : 1, yy = (int)yl, top = yy < h / 2;
+        uint16_t *dst = ROWPTR( g, &g->img, pl, y );
+        if( !top )
+            tex_row( m, 0, g->ra, x1 - x0, x0 * sx + 5 * p->ft, yl + 2 * p->ft, sx, 0 );
+        for( int x = x0; x < x1; x++ )
+        {
+            int xl = x * sx, left = xl < w / 2, on, sh = tk & 1;
+            if( top && left )       /* static 2x2 checker, odd phase */
+                on = (((xl + 1) >> 1) + ((yy + 1) >> 1)) & 1;
+            else if( top )          /* 2-px stripes moving 2 px per picture */
+                on = ((xl + 1 + 2 * tk) >> 1) & 1;
+            else if( left )         /* 2x2 checker alternating even (visible) and odd (flat) phase */
+                on = (((xl + sh) >> 1) + ((yy + sh) >> 1)) & 1;
+            else                    /* odd-phase checker inverted inside moving blobs */
+                on = ((((xl + 1) >> 1) + ((yy + 1) >> 1)) & 1) ^ (g->ra[x - x0] > YMID);
+            dst[x] = pl == 0 ? (on ? YMID + d : YMID - d) : pl == 1 && !top && !left ? (on ? CMID + dc : CMID - dc) : CMID;
+        }
+    }
+}
+
+static void sc_text_crawl( gen_t *g, const pic_t *p )
+{
+    static const double yb[4] = { 0.08, 0.36, 0.62, 0.84 }, sp[4] = { 1.5, 2.25, 3.37, 0.5 };
+    double fl = 2 * p->ft;
+    int w = g->w, h = g->h;
+    draw_pan( g, p, T_NAT0, 1.5 * p->ft, 0.3 * p->ft, full( g ) );
+    for( int i = 0; i < 4; i++ )
+    {
+        int y0 = (int)(yb[i] * h) & ~1, xe = i == 3 ? w / 2 : w;
+        draw_pan( g, p, T_FINE, 2048 * i + sp[i] * fl, -y0, R( 0, y0, xe, y0 + 128 ) );
+        if( i == 3 )    /* vertical roll at 1 px/frame */
+            draw_pan( g, p, T_FINE, 6000, p->ft - y0, R( xe, y0, w, y0 + 128 ) );
+    }
+}
+
+static void sc_moire( gen_t *g, const pic_t *p )
+{
+    /* fx, fy in cycles per luma px; phase step in cycles per picture, -1 random */
+    static const double gr[5][3] = { { 0.47, 0, 0.5 }, { 0.31, 0.33, -1 }, { 0.49, 0.02, 0.25 },
+                                     { 0.45, 0.05, 0.35 }, { 0.45, -0.05, -0.15 } };
+    static float *cs;
+    int w = g->w, h = g->h;
+    double ph[5];
+    if( !cs )
+    {
+        cs = xmalloc( 10 * (size_t)w * sizeof(float) );
+        for( int k = 0; k < 5; k++ )
+            for( int x = 0; x < w; x++ )
+            {
+                cs[(2 * k) * w + x] = (float)cos( 2 * PI * gr[k][0] * x );
+                cs[(2 * k + 1) * w + x] = (float)sin( 2 * PI * gr[k][0] * x );
+            }
+    }
+    for( int k = 0; k < 5; k++ )
+        ph[k] = gr[k][2] == -1 ? hr( g, 46 + k, p->tick ) : fmod( gr[k][2] * p->tick, 1 );
+    SPANS( g, p, full( g ), ALL )
+    {
+        int sx = pl ? 2 : 1, q0 = yl < h / 2 ? 0 : 2, mid = pl ? CMID : YMID;
+        float amp = pl == 0 ? 0.4f * YRNG : pl == 1 ? 0.15f * CRNG : -0.15f * CRNG, C[5], S[5];
+        uint16_t *d = ROWPTR( g, &g->img, pl, y );
+        for( int k = 0; k < 5; k++ )
+        {
+            double a = 2 * PI * (gr[k][1] * yl + ph[k]);
+            C[k] = (float)cos( a );
+            S[k] = (float)sin( a );
+        }
+        for( int x = x0; x < x1; x++ )
+        {
+            int xl = x * sx, q = q0 + (xl >= w / 2);
+            float v = cs[2 * q * w + xl] * C[q] - cs[(2 * q + 1) * w + xl] * S[q];
+            if( q == 3 )
+                v = 0.5f * (v + cs[8 * w + xl] * C[4] - cs[9 * w + xl] * S[4]);
+            d[x] = clip16( mid + (int)(amp * v) );
+        }
+    }
+}
+
+static void sc_nyq_flicker( gen_t *g, const pic_t *p )
+{
+    int n = p->n, on = 1, ph = 0;
+    switch( seg_of( g, p, 4, 4 ) )
+    {
+        case 0:  on = !(n & 1); break;
+        case 1:  on = n % 3 == 0; break;
+        case 2:  ph = n & 1; break;
+        default: on = !(n & 2); break;
+    }
+    draw_pan( g, p, T_SMOOTH, 0.5 * p->ft, 0.2 * p->ft, full( g ) );
+    if( on )
+        SPANS( g, p, full( g ), 3 )
+        {
+            uint16_t *d = ROWPTR( g, &g->img, pl, y );
+            int amp = pl ? CRNG / 5 : YRNG * 3 / 10;
+            for( int x = x0; x < x1; x++ )
+                d[x] = clip16( d[x] + ((x + y + ph) & 1 ? amp : -amp) );
+        }
+}
+
+/****************************************************************************
+ * Scenarios: rate control whiplash
+ ****************************************************************************/
+
+static void sc_whiplash( gen_t *g, const pic_t *p )
+{
+    static const int per[3] = { 2, 3, 5 };
+    int seg = fsec( g, 4 ), k = (p->n / seg) % 6, i = p->n % seg;
+    if( !((i / per[k % 3]) & 1) )
+        full_noise( g, p, full( g ) );
+    else if( k < 3 )
+        draw_fill( g, p, &g->img, full( g ), GREY );
+    else
+        draw_pan( g, p, T_NAT1, 0, 0, full( g ) );
+}
+
+static void sc_pir_cut( gen_t *g, const pic_t *p )
+{
+    int L = fsec( g, 3 ), k = p->n / L, i = p->n % L, type = k % 4;
+    int start = (4 + (k * 7) % 23) % L, len = type == 0 ? 1 : type == 1 ? 3 : fsec( g, 1 );
+    int cuts = k / 4 + (type == 3 && i >= start);
+    uint64_t s = hash4( g->seed, 47, cuts, 0 ) | 1;
+    double bx = rndf( &s ) * 2048, by = rndf( &s ) * 2048, vx = 2 + rndf( &s ) * 4, vy = rndf( &s ) * 2 - 1;
+    if( type < 3 && i >= start && i < start + len )
+        full_noise( g, p, full( g ) );
+    else
+        draw_pan( g, p, T_NAT0 + cuts % 4, bx + vx * p->ft, by + vy * p->ft, full( g ) );
+}
+
+static void sc_black_cut( gen_t *g, const pic_t *p )
+{
+    double t = fmod( p->n / g->fps, 22 );
+    if( t < 10 )
+        draw_fill( g, p, &g->img, full( g ), BLACK );
+    else if( t < 12 || t >= 20 )
+        full_noise( g, p, full( g ) );
+    else
+        draw_pan( g, p, T_NAT1, 0, 0, full( g ) );
+}
+
+/****************************************************************************
+ * Scenarios: interlace, second batch
+ ****************************************************************************/
+
+static void sc_field_black( gen_t *g, const pic_t *p )
+{
+    pic_t f[2];
+    int nf = fields_of( g, p, f ), sw = seg_of( g, p, 4, 2 );
+    for( int i = 0; i < nf; i++ )
+        if( f[i].field == sw )
+            full_noise( g, &f[i], full( g ) );
+        else
+            draw_fill( g, &f[i], &g->img, full( g ), BLACK );
+}
+
+static void sc_parity_scroll( gen_t *g, const pic_t *p )
+{
+    static const double vy[4] = { 1, -1, 0.5, 1 }, vx[4] = { 0, 0, 0, 3 };     /* lines and px per field */
+    static double py, px, last;
+    int k = (p->n / fsec( g, 4 )) % 4;     /* whole frames per segment: 0.5 line/field ends on a line */
+    double fl = 2 * (p->ft - last);
+    py += vy[k] * fl;
+    px += vx[k] * fl;
+    last = p->ft;
+    draw_pan( g, p, T_CREDITS, 1024 - g->w / 4 + px, -py, R( 0, 0, g->w / 2, g->h ) );
+    draw_pan( g, p, T_NAT3, px, -py, R( g->w / 2, 0, g->w, g->h ) );
+}
+
+static void sc_field_swap( gen_t *g, const pic_t *p )
+{
+    pic_t f[2];
+    int L = fsec( g, 3 ), i = p->n % L, a = fsec( g, 1 ), b = fsec( g, 2 ), ty = g->h * 80 / 100;
+    int tswap = i >= a && i < a + 4, sswap = i >= b && i < b + 3;
+    for( int j = 0, nf = fields_of( g, p, f ); j < nf; j++ )
+    {
+        pic_t q = f[j];
+        /* temporal: fields shown in the wrong order; progressive odd rows from half a frame earlier */
+        if( tswap )
+            q.ft = g->interlaced ? 2 * p->n + 0.5 - p->ft : p->ft - 0.5 * q.field;
+        /* spatial: each field one line off, i.e. the fields exchanged */
+        double dy = sswap ? (q.field ? -1 : 1) : 0;
+        draw_pan( g, &q, T_NAT1, 10 * q.ft, 0.5 * q.ft + dy, full( g ) );
+        draw_pan( g, &q, T_TICKER, 8 * q.ft, dy - ty, R( 0, ty, g->w, ty + 64 ) );
+    }
+}
+
+/****************************************************************************
+ * Scenarios: broadcast realism and no signal
+ ****************************************************************************/
+
+static void sc_sd_upscale( gen_t *g, const pic_t *p )
+{
+    static float *lat;      /* SD-resolution grain, 721x577 for interpolation */
+    static int lat_tick = -1;
+    int w = g->w, h = g->h, ax0 = seg_of( g, p, 6, 2 ) ? ((w - h * 4 / 3) / 2) & ~1 : 0;
+    ax0 = ax0 < 0 ? 0 : ax0;
+    int ax1 = w - ax0;
+    double sx = (ax1 - ax0) / 720.0, sy = h / 576.0;
+    double A[6] = { 1 / sx, 0, 300 + 1.2 * p->ft - ax0 / sx, 0, 1 / sy, 200 + 0.4 * p->ft };
+    rect_t r = R( ax0, 0, ax1, h );
+    if( !lat )
+        lat = xmalloc( 721 * 577 * sizeof(float) );
+    if( p->tick != lat_tick )
+    {
+        uint64_t s = hash4( g->seed, 44, p->tick, 0 ) | 1, v = 0;
+        lat_tick = p->tick;
+        for( int i = 0; i < 721 * 577; i++, v >>= 12 )
+        {
+            if( !(i % 5) )
+                v = rnd( &s );
+            lat[i] = gauss[v & 4095] * (1.0f / 1024);
+        }
+    }
+    if( ax0 )
+        draw_fill( g, p, &g->img, full( g ), BLACK );
+    /* bilinear magnification of SD texels plus SD grain: the soft source */
+    draw_tex( g, p, &g->tmp, T_NAT0, A, r );
+    for( int x = 0; x < ax1 - ax0; x++ )
+    {
+        double u = x / sx;
+        g->colw[x] = (float)(u - (int)u);
+        g->ra[x] = (uint16_t)u;
+    }
+    SPANS( g, p, r, 1 )
+    {
+        uint16_t *d = ROWPTR( g, &g->tmp, pl, y ) + ax0;
+        double v = yl / sy;
+        int iv = (int)v;
+        float fv = (float)(v - iv);
+        const float *l0 = lat + iv * 721, *l1 = l0 + 721;
+        for( int x = 0; x < x1 - x0; x++ )
+        {
+            int iu = g->ra[x];
+            float fu = g->colw[x], c0 = l0[iu] + (l0[iu + 1] - l0[iu]) * fu, c1 = l1[iu] + (l1[iu + 1] - l1[iu]) * fu;
+            d[x] = clip16( d[x] + (int)((c0 + (c1 - c0) * fv) * 900) );
+        }
+    }
+    /* the upscaler's peaking: wide unsharp mask within the field, halos at every edge */
+    SPANS( g, p, r, ALL )
+    {
+        int rh = pl ? 2 : 3, rv = (pl && g->csp == 420 ? 1 : 2) * p->ys, yu = y - rv, yd = y + rv;
+        yu = yu < 0 ? y : yu;
+        yd = yd >= g->ph[pl] ? y : yd;
+        const uint16_t *t = ROWPTR( g, &g->tmp, pl, y ), *tu = ROWPTR( g, &g->tmp, pl, yu ), *td = ROWPTR( g, &g->tmp, pl, yd );
+        uint16_t *d = ROWPTR( g, &g->img, pl, y );
+        for( int x = x0; x < x1; x++ )
+        {
+            int xa = x - rh < x0 ? x0 : x - rh, xb = x + rh >= x1 ? x1 - 1 : x + rh;
+            d[x] = clip16( t[x] + ((4 * t[x] - t[xa] - t[xb] - tu[x] - td[x]) * 77 >> 8) );
+        }
+    }
+}
+
+static void sc_lowlight( gen_t *g, const pic_t *p )
+{
+    static uint16_t sig[1024];      /* shot plus read noise sigma by luma >> 6 */
+    double ft = p->ft, ph[4];
+    if( !sig[0] )
+        for( int i = 0; i < 1024; i++ )
+            sig[i] = (uint16_t)(sqrt( 110.0 * fmax( 0, i * 64 - YBLK ) ) + 280);
+    for( int i = 0; i < 4; i++ )
+        ph[i] = 2 * PI * hr( g, 40, i );
+    /* handheld: slow pan with smooth shake */
+    double jx = 2.5 * sin( 0.31 * ft + ph[0] ) + 1.1 * sin( 1.7 * ft + ph[1] );
+    double jy = 1.8 * sin( 0.23 * ft + ph[2] ) + 0.9 * sin( 2.1 * ft + ph[3] );
+    draw_pan( g, p, T_NAT1, 0.8 * ft + jx, jy, full( g ) );
+    adjust( g, p, &g->img, full( g ), 0.35 + 0.1 * sin( 2 * PI * ft / (20 * g->fps) ), YBLK, 0, 0.6 );
+    /* chroma first, from the clean co-sited luma of the same field */
+    for( int k = 1; k < 4; k++ )
+    {
+        int pl = k % 3;
+        ROWS( g, p, pl, y )
+        {
+            uint16_t *d = ROWPTR( g, &g->img, pl, y );
+            int ly = (int)ypos( g, pl, y );
+            if( g->interlaced && ((ly ^ p->field) & 1) )
+                ly--;
+            const uint16_t *lu = ROWPTR( g, &g->img, 0, ly );
+            uint64_t s = hash4( g->seed, 48, p->ftick, (uint64_t)pl << 32 | y ) | 1, v = 0;
+            for( int x = 0; x < g->pw[pl]; x++ )
+            {
+                if( !(x % 5) )
+                    v = rnd( &s );
+                int sg = pl ? sig[lu[2 * x] >> 6] * 9 / 10 + 300 : sig[d[x] >> 6];
+                d[x] = clip16( d[x] + (gauss[v & 4095] * sg >> 10) );
+                v >>= 12;
+            }
+        }
+    }
+}
+
+static void sc_dark_grain( gen_t *g, const pic_t *p )
+{
+    static const int sig[4] = { 64, 128, 256, 512 };   /* 1, 2, 4, 8 10-bit codes */
+    int k = seg_of( g, p, 4, 4 ), s3[3] = { sig[k], sig[k] / 2, sig[k] / 2 };
+    double lx = g->w * (0.3 + 0.4 * bounce( p->ft / (12 * g->fps), 1 )), ly = g->h * 0.4, irn = 1 / (hypot( g->w, g->h ) * 0.6);
+    SPANS( g, p, full( g ), ALL )
+    {
+        int sx = pl ? 2 : 1;
+        uint16_t *d = ROWPTR( g, &g->img, pl, y );
+        double dy = yl - ly;
+        for( int x = x0; x < x1; x++ )
+        {
+            double dx = x * sx - lx, e = fmax( 0, 1 - sqrt( dx * dx + dy * dy ) * irn );
+            e *= e;
+            /* luma 10-bit 70..180 (8-bit 17..45), faint warm tint */
+            d[x] = pl == 0 ? YBLK + (int)(64 * (6 + 110 * e)) : pl == 1 ? CMID - (int)(640 * e) : CMID + (int)(512 * e);
+        }
+    }
+    draw_grain( g, p, &g->img, full( g ), ALL, s3, 41 );
+}
+
+static void sc_ticker_noise( gen_t *g, const pic_t *p )
+{
+    double A[6], fl = 2 * p->ft;
+    int w = g->w, h = g->h, lb = (h - (int)(w / 2.39)) / 2;
+    lb = lb < 0 ? 0 : lb & ~1;
+    int t1 = lb >= 64 ? h - lb + (lb - 64) / 2 : h - 64, t2 = h - lb - 64 - h / 20;
+    draw_fill( g, p, &g->img, full( g ), BLACK );
+    full_noise( g, p, R( 0, lb, w, h - lb ) );
+    aff( g, A, 1, 0, -(w - 352), -(lb + 40) );
+    draw_tex_alpha( g, p, &g->img, T_LOGO, A, R( w - 352, lb + 40, w - 96, lb + 168 ) );
+    draw_pan( g, p, T_TICKER, 4096 + 2.1 * fl, -t2, R( 0, t2, w, t2 + 64 ) );
+    draw_pan( g, p, T_TICKER, 3.37 * fl, -t1, R( 0, t1, w, t1 + 64 ) );
+}
+
+static void sc_snow( gen_t *g, const pic_t *p )
+{
+    double s = secs( g, p );
+    int colour = (int)(s / 3) & 1;
+    for( int pl = 0; pl < 3; pl++ )
+        ROWS( g, p, pl, y )
+        {
+            uint16_t *d = ROWPTR( g, &g->img, pl, y );
+            uint64_t st = hash4( g->seed, 43, p->ftick, (uint64_t)pl << 32 | y ) | 1, v = rnd( &st );
+            /* horizontally band-limited like an analogue IF, with a rolling hum bar */
+            double a = pl ? 0.35 : 0.55, norm = 1 / sqrt( a / (2 - a) ), acc = gauss[v & 4095];
+            double base = pl ? CMID : YMID + 0.08 * YRNG * sin( 2 * PI * (ypos( g, pl, y ) / g->h - 0.25 * s ) );
+            double amp = (pl ? (colour ? 2600 : 300) : 11000) * norm / 1024;
+            for( int x = 0; x < g->pw[pl]; x++ )
+            {
+                if( !(x % 5) )
+                    v = rnd( &st );
+                acc += a * (gauss[v & 4095] - acc);
+                v >>= 12;
+                d[x] = clip16( (int)(base + acc * amp) );
+            }
+        }
+}
+
+static void tc_string( const gen_t *g, int n, char *buf )
+{
+    int fr = g->fps < 1.5 ? 1 : (int)(g->fps + 0.5), t = (int)(((long long)n + 36000LL * fr) % (86400LL * fr));
+    snprintf( buf, 32, "%02d:%02d:%02d:%02d", t / (3600 * fr) % 24, t / (60 * fr) % 60, t / fr % 60, t % fr );
+}
+
+/* seven-segment string of digits and colons; a digit is 6x11 units, advance 8 */
+static void draw_digits( gen_t *g, const pic_t *p, int x, int y, int s, const char *str, const int *c )
+{
+    static const uint8_t seg[10] = { 0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f };
+    static const int8_t box[7][4] = { { 1, 0, 5, 1 }, { 5, 1, 6, 5 }, { 5, 6, 6, 10 }, { 1, 10, 5, 11 },
+                                      { 0, 6, 1, 10 }, { 0, 1, 1, 5 }, { 1, 5, 5, 6 } };
+    for( ; *str; str++ )
+    {
+        if( *str == ':' )
+        {
+            draw_fill( g, p, &g->img, R( x, y + 3 * s, x + s, y + 4 * s ), c );
+            draw_fill( g, p, &g->img, R( x, y + 7 * s, x + s, y + 8 * s ), c );
+            x += 3 * s;
+            continue;
+        }
+        for( int i = 0; i < 7; i++ )
+            if( seg[*str - '0'] >> i & 1 )
+                draw_fill( g, p, &g->img, R( x + box[i][0] * s, y + box[i][1] * s, x + box[i][2] * s, y + box[i][3] * s ), c );
+        x += 8 * s;
+    }
+}
+
+static void sc_black_tc( gen_t *g, const pic_t *p )
+{
+    static const int fg[3] = { YBLK + YRNG * 3 / 4, CMID, CMID };
+    char tc[32];
+    int s = g->w / 240 > 1 ? g->w / 240 : 1;
+    draw_fill( g, p, &g->img, full( g ), BLACK );
+    tc_string( g, p->n, tc );
+    draw_digits( g, p, (g->w - 73 * s) / 2, g->h * 3 / 4, s, tc, fg );
+}
+
+/* antialiased analogue clock face, t in seconds */
+static void draw_clock( gen_t *g, const pic_t *p, double cx, double cy, double rad, double t )
+{
+    static const int face[3] = { YBLK + YRNG * 85 / 100, CMID, CMID }, red[3] = { 20000, 22000, 58000 };
+    double ang[3] = { 2 * PI * fmod( t / 43200, 1 ), 2 * PI * fmod( t / 3600, 1 ), 2 * PI * fmod( t / 60, 1 ) };
+    double len[3] = { 0.5 * rad, 0.8 * rad, 0.9 * rad }, hw[3] = { 0.04 * rad, 0.025 * rad, 0.01 * rad }, ux[3], uy[3];
+    for( int k = 0; k < 3; k++ )
+    {
+        ux[k] = sin( ang[k] );
+        uy[k] = -cos( ang[k] );
+    }
+    SPANS( g, p, R( (int)(cx - rad) - 2, (int)(cy - rad) - 2, (int)(cx + rad) + 3, (int)(cy + rad) + 3 ), ALL )
+    {
+        int sx = pl ? 2 : 1;
+        uint16_t *d = ROWPTR( g, &g->img, pl, y );
+        double dy = yl - cy;
+        for( int x = x0; x < x1; x++ )
+        {
+            double dx = x * sx - cx, rr = sqrt( dx * dx + dy * dy ), a = fmin( 1, fmax( 0, rad - rr + 0.5 ) ), v, cov;
+            if( a <= 0 )
+                continue;
+            v = face[pl];
+            cov = fmin( 1, fmax( 0, 0.03 * rad + 0.5 - fabs( rr - 0.96 * rad ) ) );
+            if( rr > 0.8 * rad && rr < 0.92 * rad )     /* hour marks */
+                cov = fmax( cov, fmin( 1, fmax( 0, 0.02 * rad + 0.5 - rr * fabs( remainder( atan2( dx, -dy ), PI / 6 ) ) ) ) );
+            v += (BLACK[pl] - v) * cov;
+            for( int k = 0; k < 3; k++ )
+            {
+                if( fabs( dx * uy[k] - dy * ux[k] ) > hw[k] + 0.5 )     /* off the hand's line */
+                    continue;
+                double u =fmax( -0.1 * rad, fmin( len[k], dx * ux[k] + dy * uy[k] ) ), ex = dx - u * ux[k], ey = dy - u * uy[k];
+                cov = fmin( 1, fmax( 0, hw[k] + 0.5 - sqrt( ex * ex + ey * ey ) ) );
+                v += ((k == 2 ? red : BLACK)[pl] - v) * cov;
+            }
+            d[x] = clip16( d[x] + (int)floor( (v - d[x]) * a + 0.5 ) );
+        }
+    }
+}
+
+static void sc_test_clock( gen_t *g, const pic_t *p )
+{
+    int w = g->w, h = g->h, s = w / 240 > 1 ? w / 240 : 1, fr = g->fps < 1.5 ? 1 : (int)(g->fps + 0.5), tw = 73 * s;
+    double rad = h / 5.0;
+    int ty = (int)(h / 3.0 + rad) + 3 * s, tx = (w - tw) / 2, cw = tw / fr > 1 ? tw / fr : 1, fx = tx + (p->n % fr) * cw;
+    char tc[32];
+    draw_test_card( g, p );
+    draw_clock( g, p, w / 2.0, h / 3.0, rad, 36000 + secs( g, p ) );
+    draw_fill( g, p, &g->img, R( tx - 2 * s, ty - 2 * s, tx + tw + 2 * s, ty + 17 * s ), BLACK );
+    tc_string( g, p->n, tc );
+    draw_digits( g, p, tx + s, ty, s, tc, WHITE );
+    draw_fill( g, p, &g->img, R( fx, ty + 13 * s, fx + cw, ty + 15 * s ), WHITE );
+}
+
+/****************************************************************************
  * Scenario table, output, main
  ****************************************************************************/
 
@@ -1387,7 +2034,10 @@ typedef struct
 
 #define TX( t ) (1u << T_##t)
 
-static const char *groups[4] = { "CPU worst case", "Rate control / VBV / quality", "Interlace", "Graphics and broadcast oddities" };
+static const char *groups[] = { "CPU worst case", "Rate control / VBV / quality", "Interlace", "Graphics and broadcast oddities",
+                                "Chroma", "VBV fit and slice bands", "Lowres-deceptive", "Broadcast realism and no signal" };
+
+#define NGROUPS (int)(sizeof(groups) / sizeof(groups[0]))
 
 static const scenario_t scenarios[] =
 {
@@ -1451,13 +2101,63 @@ static const scenario_t scenarios[] =
       TX( NAT0 ) | TX( NAT3 ) },
     { "split-pip",      3, 0, sc_split_pip,    "5 s each: static|noise, static|moving split, bouncing picture-in-picture",
       TX( NAT1 ) | TX( NAT2 ) | TX( NAT3 ) },
+    { "whiplash",       1, 0, sc_whiplash,     "noise/flat switching every 2, 3, 5 frames; then noise/static detail (4 s each)",
+      TX( NAT1 ) },
+    { "pir-cut",        1, 0, sc_pir_cut,      "pan cut to noise (1 frame, 3 frames, 1 s) or a new shot at irregular frames",
+      TX( NAT0 ) | TX( NAT1 ) | TX( NAT2 ) | TX( NAT3 ) },
+    { "black-cut",      1, 0, sc_black_cut,    "10 s black, 2 s noise, 8 s static picture, 2 s noise",
+      TX( NAT1 ) },
+    { "field-black",    2, 1, sc_field_black,  "top field noise, bottom field black; swapped every 4 s",
+      0 },
+    { "parity-scroll",  2, 1, sc_parity_scroll,"vertical scroll of exactly 1 line/field down, up, 0.5 line/field, diagonal",
+      TX( CREDITS ) | TX( NAT3 ) },
+    { "field-swap",     2, 1, sc_field_swap,   "pan and crawl with fields in wrong temporal order (4 frames), then exchanged (3)",
+      TX( NAT1 ) | TX( TICKER ) },
+    { "chroma-sat",     4, 0, sc_chroma_sat,   "binary chroma noise at legal then code 0/max extremes; flat, then static luma",
+      TX( NAT0 ) },
+    { "chroma-nyquist", 4, 0, sc_chroma_nyquist,"saturated chroma checkers, columns and field-row lines at chroma Nyquist",
+      TX( NAT0 ) },
+    { "bars-chroma-alt",4, 0, sc_bars_chroma,  "100% bars with chroma complemented every other sample: columns, flicker, checker",
+      0 },
+    { "chroma-motion",  4, 0, sc_chroma_motion,"static luma under 2.5x saturated chroma panning, rotating, cutting every frame",
+      TX( NAT0 ) | TX( NAT2 ) },
+    { "noise-ramp",     5, 0, sc_noise_ramp,   "noise over the left fraction 10%->100% of each MB row over 20 s, 4 s clean",
+      TX( NAT1 ) },
+    { "noise-steps",    5, 0, sc_noise_steps,  "noise fraction jumping between 10..100% every 1, 3, 8, 25 frames (8 s each)",
+      TX( NAT1 ) },
+    { "noise-band",     5, 0, sc_noise_band,   "noise band on, straddling and split across t4 slice bands, sweeping; 3 heights",
+      TX( NAT1 ) },
+    { "slice-mix",      5, 0, sc_slice_mix,    "t4 slice bands of noise, static, pan, flat; rotating every second",
+      TX( NAT0 ) | TX( NAT1 ) },
+    { "lowres-2px",     6, 0, sc_lowres_2px,   "2-px checkers/stripes at the odd phase x264's 2x2 lowres averages to flat",
+      TX( NAT3 ) },
+    { "text-crawl-fine",6, 0, sc_text_crawl,   "1-px and 2-px stroke text crawling 1.5, 2.25, 3.37, 0.5 px/field and rolling",
+      TX( NAT0 ) | TX( FINE ) },
+    { "moire-shift",    6, 0, sc_moire,        "near-Nyquist gratings whose phase jumps every picture; lowres sees false beats",
+      0 },
+    { "nyquist-flicker",6, 0, sc_nyq_flicker,  "1-px checker on even frames only, 1 in 3, phase-flipping, 2 on 2 off",
+      TX( SMOOTH ) },
+    { "sd-upscale",     7, 0, sc_sd_upscale,   "720x576 source magnified with SD grain and peaking halos; 4:3 pillarbox half the time",
+      TX( NAT0 ) },
+    { "lowlight",       7, 0, sc_lowlight,     "underexposed handheld camera, shot noise rising with luma, heavy chroma noise",
+      TX( NAT1 ) },
+    { "dark-grain",     7, 0, sc_dark_grain,   "8-bit 17..45 dark vignette gradient under grain of 1, 2, 4, 8 10-bit codes",
+      0 },
+    { "ticker-noise",   7, 0, sc_ticker_noise, "2.39 letterbox of noise, DOG, crawl over the noise and in the black bar",
+      TX( LOGO ) | TX( TICKER ) },
+    { "snow",           7, 0, sc_snow,         "analogue snow: band-limited luma noise, rolling hum bar, colour killer every 3 s",
+      0 },
+    { "black-tc",       7, 0, sc_black_tc,     "digital black with a frame-accurate seven-segment timecode burn-in",
+      0 },
+    { "test-clock",     7, 0, sc_test_clock,   "test card with an antialiased sweeping clock, timecode and frame strip",
+      0 },
 };
 
 #define NSCEN (int)(sizeof(scenarios) / sizeof(scenarios[0]))
 
 static void list( void )
 {
-    for( int gr = 0; gr < 4; gr++ )
+    for( int gr = 0; gr < NGROUPS; gr++ )
     {
         printf( "%s:\n", groups[gr] );
         for( int i = 0; i < NSCEN; i++ )
