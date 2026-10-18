@@ -163,8 +163,8 @@ struct x264_ratecontrol_t
                                           * not atomic on all arches we care about */
     volatile float bits_so_far;
     /* One-frame VBV, sliced threads: bits so far and the rest of the slice at their
-     * mean a row, the planned size before a row, the size once final. Atomic as
-     * frame_size_estimated. */
+     * mean a row, at most the planned size unless the bits so far are over it; the
+     * planned size before a row, the size once final. Atomic as frame_size_estimated. */
     volatile float frame_size_meas;
     /* Frame threads: the frame's size at its first row's QP, below which no row goes,
      * and the rows coded when it and frame_size_estimated were set, stored after them
@@ -2032,7 +2032,11 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         bits_so_far += (epb_left + 1) / 2 * 8;
     rc->epb_scale = 1.f + (float)(epb_bytes * 8) / X264_MAX( mb_bits, 1 );
     rc->bits_so_far = bits_so_far;
-    rc->frame_size_meas = bits_so_far + bits_so_far / (y - h->i_threadslice_start + 1) * (h->i_threadslice_end - 1 - y);
+    /* A first row, a refresh column or noise at the planned QP, can be several times
+     * the slice's mean: its rows left counted at it put every other slice over the
+     * limit. Over its plan a slice takes its own steps on its own rows. */
+    rc->frame_size_meas = X264_MIN( bits_so_far + bits_so_far / (y - h->i_threadslice_start + 1) * (h->i_threadslice_end - 1 - y),
+                                    X264_MAX( rc->slice_size_planned, bits_so_far ) );
     /* The rest of the slice overruns as its rows near QP_MAX_SPEC did. */
     if( rc->row_err_next > 0 )
     {
