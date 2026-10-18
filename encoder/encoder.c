@@ -80,13 +80,8 @@ static void x264_threadslice_filter( x264_t *h );
 #if HAVE_THREAD
 static void x264_encoder_thread_init( x264_t *h );
 
-#if defined(__ATOMIC_ACQUIRE)
 #define SLICE_LOAD(p)    __atomic_load_n( (p), __ATOMIC_ACQUIRE )
 #define SLICE_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
-#else
-#define SLICE_LOAD(p)    (*(volatile int *)(p))
-#define SLICE_STORE(p,v) (*(volatile int *)(p) = (v))
-#endif
 
 typedef struct
 {
