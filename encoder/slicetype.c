@@ -47,7 +47,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 
 static void x264_lowres_context_init( x264_t *h, x264_mb_analysis_t *a )
 {
-    a->i_qp = X264_LOOKAHEAD_QP;
+    a->i_qp = a->i_qp_cost = X264_LOOKAHEAD_QP;
     a->i_lambda = x264_lambda_tab[ a->i_qp ];
     x264_mb_analyse_load_costs( h, a );
     if( h->param.analyse.i_subpel_refine > 1 )
