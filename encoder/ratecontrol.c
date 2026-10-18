@@ -162,6 +162,9 @@ struct x264_ratecontrol_t
     volatile float frame_size_estimated; /* Access to this variable must be atomic: double is
                                           * not atomic on all arches we care about */
     volatile float bits_so_far;
+    /* One-frame VBV: bits so far and the rest of the slice at qp_hard_max, the least
+     * it can still take; its size once final. Atomic as frame_size_estimated. */
+    volatile float frame_size_min;
     /* Frame threads: the frame's size at its first row's QP, below which no row goes,
      * and the rows coded when it and frame_size_estimated were set, stored after them
      * with release and read first with acquire. */
@@ -1817,6 +1820,7 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->emerg_step = rc->emerg_reencodes = 0;
     rc->emerg_next = rc->emerg_bits = rc->emerg_pred = 0;
     rc->emerg_scale = 1.f;
+    rc->frame_size_min = 0;
     h->mb.i_vbv_emerg = 0;
     rc->b_slice_done = 0;
     rc->last_row_reencodes = 0;
@@ -1847,6 +1851,16 @@ static float other_slices_size( x264_t *h )
     for( int i = 0; i < h->param.i_threads; i++ )
         if( h != h->thread[i] )
             size += h->thread[i]->rc->frame_size_estimated;
+    return size;
+}
+
+/* The least the other thread slices can still take. */
+static float other_slices_min( x264_t *h )
+{
+    float size = 0;
+    for( int i = 0; i < h->param.i_threads; i++ )
+        if( h != h->thread[i] )
+            size += h->thread[i]->rc->frame_size_min;
     return size;
 }
 
@@ -2109,14 +2123,17 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         /* The rest of the slice over the room left even at qp_hard_max, the other
-         * thread slices at their own estimates: the next emergency step, this row
+         * thread slices at the least they can still take (their estimates, at their
+         * own QPs, are far over it on early rows): the next emergency step, this row
          * again. The rest of the slice stays at qp_hard_max: the ratio of its rows
          * there would only mislead a lower QP. */
         int b_emerg = 0;
         if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS )
         {
-            float room = vbv_limit - (b_threadslices ? other_slices_size( h ) : 0) - bits_so_far - 32;
-            if( predict_row_size_to_end( h, y, qp_hard_max ) > room )
+            float rest = predict_row_size_to_end( h, y, qp_hard_max );
+            float room = vbv_limit - (b_threadslices ? other_slices_min( h ) : 0) - bits_so_far - 32;
+            rc->frame_size_min = bits_so_far + rest;
+            if( rest > room )
                 b_emerg = emerg_raise( h, rc, prev_row_qp, qp_hard_max ) && can_reencode_row;
             if( rc->emerg_step )
             {
@@ -2165,6 +2182,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     else
     {
         h->rc->frame_size_estimated = bits_so_far;
+        h->rc->frame_size_min = bits_so_far;
         if( h->i_thread_frames > 1 && !rc->single_frame_vbv )
         {
             rc->frame_size_ceil = bits_so_far;
