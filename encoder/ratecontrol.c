@@ -1814,6 +1814,9 @@ static int epb_scan( x264_t *h, int *nal, int *pos, int *bytes, int b_end )
 void x264_ratecontrol_slices_start( x264_t *h )
 {
     x264_ratecontrol_t *rc = h->rc;
+    if( rc->emerg_step || h->mb.i_vbv_emerg )
+        x264_log( h, X264_LOG_WARNING, "gate start: frame %d emerg_step %d i_vbv_emerg %d (before reset)\n",
+                  h->fenc->i_frame, rc->emerg_step, h->mb.i_vbv_emerg );
     rc->slice_bits = 0;
     rc->epb_nal = h->out.i_nal;
     rc->epb_pos = 0;
@@ -2010,6 +2013,9 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
 
     /* Not rows coded at an emergency step: far below 1/qscale, they would plan the
      * next frames too big. */
+    if( h->mb.i_vbv_emerg || rc->emerg_step )
+        x264_log( h, X264_LOG_WARNING, "gate row: frame %d type %d y %d i_vbv_emerg %d emerg_step %d single %d\n",
+                  h->fenc->i_frame, h->sh.i_type, y, h->mb.i_vbv_emerg, rc->emerg_step, rc->single_frame_vbv );
     if( !h->mb.i_vbv_emerg )
     {
         update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
@@ -2281,6 +2287,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     }
 
     /* the last row as kept, not its re-encodes */
+    if( b_last_row && h->mb.i_vbv_emerg )
+        x264_log( h, X264_LOG_WARNING, "gate last: frame %d y %d i_vbv_emerg %d\n", h->fenc->i_frame, y, h->mb.i_vbv_emerg );
     if( b_last_row && !h->mb.i_vbv_emerg )
     {
         for( int i = y - SLICE_MBAFF; i <= y; i++ )
@@ -2744,6 +2752,9 @@ static int update_vbv( x264_t *h, int bits )
 
     /* An emergency frame says nothing of the predictor: its size is the steps'. */
     int b_emerg = frame_vbv_emerg( h );
+    if( b_emerg )
+        x264_log( h, X264_LOG_WARNING, "gate frame: frame %d type %d emerg_step %d h %p rc %p thread0 %p\n",
+                  h->fenc->i_frame, h->sh.i_type, h->rc->emerg_step, (void*)h, (void*)h->rc, (void*)h->thread[0] );
 
     /* before the frame trains the predictor; four P-frames without one start it over */
     if( h->sh.i_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate && !b_emerg )
@@ -3393,6 +3404,8 @@ void x264_threads_merge_ratecontrol( x264_t *h )
     {
         x264_t *t = h->thread[i];
         x264_ratecontrol_t *rct = h->thread[i]->rc;
+        if( h->param.rc.i_vbv_buffer_size && rct->emerg_step )
+            x264_log( h, X264_LOG_WARNING, "gate merge: thread %d emerg_step %d\n", i, rct->emerg_step );
         if( h->param.rc.i_vbv_buffer_size && !rct->emerg_step )
         {
             int size = 0;
