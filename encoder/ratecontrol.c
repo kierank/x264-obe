@@ -1950,9 +1950,14 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     h->fdec->f_row_qp[y] = rc->qpm;
     h->fdec->f_row_qscale[y] = qscale;
 
-    update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
-    if( h->sh.i_type != SLICE_TYPE_I && rc->qpm < h->fref[0][0]->f_row_qp[y] )
-        update_row_predictor( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y] );
+    /* Not rows coded at an emergency step: far below 1/qscale, they would plan the
+     * next frames too big. */
+    if( !h->mb.i_vbv_emerg )
+    {
+        update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
+        if( h->sh.i_type != SLICE_TYPE_I && rc->qpm < h->fref[0][0]->f_row_qp[y] )
+            update_row_predictor( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y] );
+    }
 
     /* update ratecontrol per-mbpair in MBAFF */
     if( SLICE_MBAFF && !(y&1) )
@@ -2192,7 +2197,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     }
 
     /* the last row as kept, not its re-encodes */
-    if( b_last_row )
+    if( b_last_row && !h->mb.i_vbv_emerg )
     {
         for( int i = y - SLICE_MBAFF; i <= y; i++ )
             update_predictor( &rc->row_pred_last[h->sh.i_type], h->fdec->f_row_qscale[i],
@@ -2633,6 +2638,17 @@ static void update_row_predictor( predictor_t *p, float q, float var, float bits
     update_predictor_fit( p, q, var, bits, 0 );
 }
 
+/* A slice of the frame took a one-frame VBV emergency step. */
+static int frame_vbv_emerg( x264_t *h )
+{
+    if( !h->param.b_sliced_threads )
+        return h->rc->emerg_step;
+    for( int i = 0; i < h->param.i_threads; i++ )
+        if( h->thread[i]->rc->emerg_step )
+            return 1;
+    return 0;
+}
+
 // update VBV after encoding a frame
 static int update_vbv( x264_t *h, int bits )
 {
@@ -2642,8 +2658,11 @@ static int update_vbv( x264_t *h, int bits )
     x264_ratecontrol_t *rct = h->thread[0]->rc;
     uint64_t buffer_size = (uint64_t)h->sps->vui.hrd.i_cpb_size_unscaled * h->sps->vui.i_time_scale;
 
+    /* An emergency frame says nothing of the predictor: its size is the steps'. */
+    int b_emerg = frame_vbv_emerg( h );
+
     /* before the frame trains the predictor; four P-frames without one start it over */
-    if( h->sh.i_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate )
+    if( h->sh.i_type == SLICE_TYPE_P && rcc->single_frame_vbv && rcc->b_vbv_min_rate && !b_emerg )
     {
         if( rcc->b_vbv_err_sample && rcc->last_satd >= h->mb.i_mb_count )
         {
@@ -2656,7 +2675,7 @@ static int update_vbv( x264_t *h, int bits )
             rct->vbv_err_sum = rct->vbv_err_count = 0;
     }
 
-    if( rcc->last_satd >= h->mb.i_mb_count )
+    if( rcc->last_satd >= h->mb.i_mb_count && !b_emerg )
         update_predictor( &rct->pred[h->sh.i_type], qp2qscale( rcc->qpa_rc ), rcc->last_satd, bits );
 
     if( !rcc->b_vbv )
@@ -3285,7 +3304,7 @@ void x264_threads_merge_ratecontrol( x264_t *h )
     {
         x264_t *t = h->thread[i];
         x264_ratecontrol_t *rct = h->thread[i]->rc;
-        if( h->param.rc.i_vbv_buffer_size )
+        if( h->param.rc.i_vbv_buffer_size && !rct->emerg_step )
         {
             int size = 0;
             for( int row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
