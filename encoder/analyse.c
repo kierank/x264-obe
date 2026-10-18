@@ -61,6 +61,7 @@ typedef struct
     int i_lambda;
     int i_lambda2;
     int i_qp;
+    int i_qp_cost; /* QP of the lambda, above QP_MAX_SPEC in emergency */
     uint16_t *p_cost_mv;
     uint16_t *p_cost_ref[2];
     int i_mbrd;
@@ -274,9 +275,9 @@ void x264_analyse_weight_rows( x264_t *h, int y0, int y1 )
 /* initialize an array of lambda*nbits for all possible mvs */
 static void x264_mb_analyse_load_costs( x264_t *h, x264_mb_analysis_t *a )
 {
-    a->p_cost_mv = h->cost_mv[a->i_qp];
-    a->p_cost_ref[0] = x264_cost_ref[a->i_qp][x264_clip3(h->sh.i_num_ref_idx_l0_active-1,0,2)];
-    a->p_cost_ref[1] = x264_cost_ref[a->i_qp][x264_clip3(h->sh.i_num_ref_idx_l1_active-1,0,2)];
+    a->p_cost_mv = h->cost_mv[a->i_qp_cost];
+    a->p_cost_ref[0] = x264_cost_ref[a->i_qp_cost][x264_clip3(h->sh.i_num_ref_idx_l0_active-1,0,2)];
+    a->p_cost_ref[1] = x264_cost_ref[a->i_qp_cost][x264_clip3(h->sh.i_num_ref_idx_l1_active-1,0,2)];
 }
 
 static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
@@ -284,6 +285,9 @@ static void x264_mb_analyse_init_qp( x264_t *h, x264_mb_analysis_t *a, int qp )
     int effective_chroma_qp = h->chroma_qp_table[SPEC_QP(qp)] + X264_MAX( qp - QP_MAX_SPEC, 0 );
     a->i_lambda = x264_lambda_tab[qp];
     a->i_lambda2 = x264_lambda2_tab[qp];
+    /* side info costs at the lambda's QP: at QP_MAX_SPEC they are ~8x too cheap
+     * against i_lambda, and mvs and modes chase noise the emergency deadzone zeroes */
+    a->i_qp_cost = qp;
 
     h->mb.b_trellis = h->param.analyse.i_trellis > 1 && a->i_mbrd;
     if( h->param.analyse.i_trellis )
@@ -792,7 +796,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             return;
     }
 
-    uint16_t *cost_i4x4_mode = (uint16_t*)ALIGN((intptr_t)x264_cost_i4x4_mode,64) + a->i_qp*32 + 8;
+    uint16_t *cost_i4x4_mode = (uint16_t*)ALIGN((intptr_t)x264_cost_i4x4_mode,64) + a->i_qp_cost*32 + 8;
     /* 8x8 prediction selection */
     if( flags & X264_ANALYSE_I8x8 )
     {
