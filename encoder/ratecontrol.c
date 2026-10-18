@@ -2333,6 +2333,7 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
 
     if( rc->single_frame_vbv && h->param.b_sliced_threads && h->param.i_threads > 1 && h->param.i_log_level >= X264_LOG_DEBUG )
     {
+        static int x264_trace_prev = -2;
         int b_emerg = 0;
         float slices = 0, limit = 0;
         for( int i = 0; i < h->param.i_threads; i++ )
@@ -2342,10 +2343,18 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
             slices += t->frame_size_estimated;
             limit = X264_MAX( limit, t->tr_vbv_limit );
         }
-        if( b_emerg || bits > 0.95f * limit )
+        int b_hit = b_emerg || bits > 0.95f * limit;
+        if( b_hit || h->fenc->i_frame == x264_trace_prev + 1 )
         {
-            x264_log( h, X264_LOG_DEBUG, "vbv trace: frame %d bits %d slices %.0f limit %.0f over %.0f\n",
-                      h->fenc->i_frame, bits, slices, limit, bits - limit );
+            x264_ratecontrol_t *rct = h->thread[0]->rc;
+            double err = rct->vbv_err_count >= 1.5 ? x264_clip3f( 1.25 * rct->vbv_err_sum / rct->vbv_err_count, 0.25, 1 ) : 1;
+            x264_log( h, X264_LOG_DEBUG, "vbv trace: frame %d type %c bits %d slices %.0f limit %.0f over %.0f"
+                      " | planned %.0f qp %.2f qpa %.2f err_scale %.3f sample %d\n",
+                      h->fenc->i_frame, h->sh.i_type == SLICE_TYPE_I ? 'I' : h->sh.i_type == SLICE_TYPE_P ? 'P' : 'B',
+                      bits, slices, limit, bits - limit,
+                      rc->frame_size_planned, rc->qp, rc->qpa_rc / h->mb.i_mb_count, err, rc->b_vbv_err_sample );
+            if( b_hit )
+                x264_trace_prev = h->fenc->i_frame;
             for( int i = 0; i < h->param.i_threads; i++ )
             {
                 x264_ratecontrol_t *t = h->thread[i]->rc;
