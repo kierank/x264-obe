@@ -126,6 +126,98 @@ median:
         goto median;
 }
 
+/* The count/median tail of x264_mb_predict_mv without branches: the median
+ * is always computed and the result picked with masks. */
+static ALWAYS_INLINE uint32_t mvp_select( int i_ref, int i_refa, int i_refb, int i_refc,
+                                          int16_t *mv_a, int16_t *mv_b, int16_t *mv_c )
+{
+    ALIGNED_4( int16_t med[2] );
+    x264_median_mv( med, mv_a, mv_b, mv_c );
+    int ma = i_refa == i_ref;
+    int mb = i_refb == i_ref;
+    int mc = i_refc == i_ref;
+    int one = ma + mb + mc == 1;
+    int only_a = !(ma | mb | mc) & (i_refb == -2) & (i_refc == -2) & (i_refa != -2);
+    uint32_t sa = -(uint32_t)((one & ma) | only_a);
+    uint32_t sb = -(uint32_t)(one & mb);
+    uint32_t sc = -(uint32_t)(one & mc);
+    return (M32( mv_a ) & sa) | (M32( mv_b ) & sb) | (M32( mv_c ) & sc) | (M32( med ) & ~(sa | sb | sc));
+}
+
+#define MVP_LOAD( width ) \
+    const int i8 = x264_scan8[idx]; \
+    const int i_ref = h->mb.cache.ref[i_list][i8]; \
+    int     i_refa = h->mb.cache.ref[i_list][i8 - 1]; \
+    int16_t *mv_a  = h->mb.cache.mv[i_list][i8 - 1]; \
+    int     i_refb = h->mb.cache.ref[i_list][i8 - 8]; \
+    int16_t *mv_b  = h->mb.cache.mv[i_list][i8 - 8]; \
+    int     i_refc = h->mb.cache.ref[i_list][i8 - 8 + width]; \
+    int16_t *mv_c  = h->mb.cache.mv[i_list][i8 - 8 + width];
+
+/* x264_mb_predict_mv for the 8x8 sub-blocks of a D_8x8 MB
+ * (idx = 4*i, width 2): (idx&3) is 0, so only an unavailable C falls back
+ * to D, and of the MBAFF topright cases only idx 8 can occur. */
+void x264_mb_predict_mv_8x8( x264_t *h, int i_list, int i, int16_t mvp[2] )
+{
+    const int idx = 4*i;
+    MVP_LOAD( 2 )
+    if( i_refc == -2 )
+    {
+        i_refc = h->mb.cache.ref[i_list][i8 - 8 - 1];
+        mv_c   = h->mb.cache.mv[i_list][i8 - 8 - 1];
+        if( SLICE_MBAFF && idx == 8
+            && h->mb.cache.ref[i_list][x264_scan8[0]-1] != -2
+            && MB_INTERLACED != h->mb.field[h->mb.i_mb_left_xy[0]] )
+        {
+            mv_c = h->mb.cache.topright_mv[i_list][1];
+            i_refc = h->mb.cache.topright_ref[i_list][1];
+        }
+    }
+    M32( mvp ) = mvp_select( i_ref, i_refa, i_refb, i_refc, mv_a, mv_b, mv_c );
+}
+
+/* x264_mb_predict_mv for the halves of a D_16x8 MB (idx = 8*i, width 4),
+ * including the 16x8 shortcut: B for the top half, A for the bottom. */
+void x264_mb_predict_mv_16x8( x264_t *h, int i_list, int i, int16_t mvp[2] )
+{
+    const int idx = 8*i;
+    MVP_LOAD( 4 )
+    if( i_refc == -2 )
+    {
+        i_refc = h->mb.cache.ref[i_list][i8 - 8 - 1];
+        mv_c   = h->mb.cache.mv[i_list][i8 - 8 - 1];
+        if( SLICE_MBAFF && idx == 8
+            && h->mb.cache.ref[i_list][x264_scan8[0]-1] != -2
+            && MB_INTERLACED != h->mb.field[h->mb.i_mb_left_xy[0]] )
+        {
+            mv_c = h->mb.cache.topright_mv[i_list][1];
+            i_refc = h->mb.cache.topright_ref[i_list][1];
+        }
+    }
+    uint32_t r = mvp_select( i_ref, i_refa, i_refb, i_refc, mv_a, mv_b, mv_c );
+    int s = i ? i_refa == i_ref : i_refb == i_ref;
+    uint32_t x = i ? M32( mv_a ) : M32( mv_b );
+    M32( mvp ) = s ? x : r;
+}
+
+/* x264_mb_predict_mv for the halves of a D_8x16 MB (idx = 4*i, width 2),
+ * including the 8x16 shortcut: A for the left half, C for the right. */
+void x264_mb_predict_mv_8x16( x264_t *h, int i_list, int i, int16_t mvp[2] )
+{
+    const int idx = 4*i;
+    MVP_LOAD( 2 )
+    if( i_refc == -2 )
+    {
+        i_refc = h->mb.cache.ref[i_list][i8 - 8 - 1];
+        mv_c   = h->mb.cache.mv[i_list][i8 - 8 - 1];
+    }
+    uint32_t r = mvp_select( i_ref, i_refa, i_refb, i_refc, mv_a, mv_b, mv_c );
+    int s = i ? i_refc == i_ref : i_refa == i_ref;
+    uint32_t x = i ? M32( mv_c ) : M32( mv_a );
+    M32( mvp ) = s ? x : r;
+}
+#undef MVP_LOAD
+
 void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i_ref, int16_t mvp[2] )
 {
     int     i_refa = h->mb.cache.ref[i_list][X264_SCAN8_0 - 1];

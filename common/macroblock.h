@@ -348,6 +348,14 @@ void x264_mb_predict_mv_pskip( x264_t *h, int16_t mv[2] );
  *      and valid mv/ref from other blocks. */
 #define x264_mb_predict_mv x264_template(mb_predict_mv)
 void x264_mb_predict_mv( x264_t *h, int i_list, int idx, int i_width, int16_t mvp[2] );
+/* x264_mb_predict_mv for partition i of a D_8x8 / D_16x8 / D_8x16 MB, with
+ * h->mb.i_partition already set to that shape. */
+#define x264_mb_predict_mv_8x8 x264_template(mb_predict_mv_8x8)
+void x264_mb_predict_mv_8x8( x264_t *h, int i_list, int i, int16_t mvp[2] );
+#define x264_mb_predict_mv_16x8 x264_template(mb_predict_mv_16x8)
+void x264_mb_predict_mv_16x8( x264_t *h, int i_list, int i, int16_t mvp[2] );
+#define x264_mb_predict_mv_8x16 x264_template(mb_predict_mv_8x16)
+void x264_mb_predict_mv_8x16( x264_t *h, int i_list, int i, int16_t mvp[2] );
 /* x264_mb_predict_mv_direct16x16:
  *      set h->mb.cache.mv and h->mb.cache.ref for B_SKIP or B_DIRECT
  *      h->mb. need only valid values from other blocks.
