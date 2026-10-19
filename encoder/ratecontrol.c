@@ -2201,6 +2201,14 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
             int b_over = b_over_now || (rows && rest * (1.f - VBV_EMERG_EXCESS) > room);
             if( rc->emerg_step && rows < 2 && left > 2 && !b_over_now )
                 b_over = 0;
+            /* A row coded far below the QP it needs, before any step: row QP's own
+             * re-encode first, i_qp_step at a time, as without the steps. A step here
+             * coded the frame at qp_hard_max with chroma dropped and left its sample
+             * out of the predictors, so the next frames were planned as low again
+             * (rack01 bars-cut 10M t4: the first P after a cut planned at QP 24, every
+             * slice stepped from its first row, frames 601-604, then 605-610 at 1-6%). */
+            if( !rc->emerg_step && rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row )
+                b_over = 0;
             if( b_over && emerg_raise( h, rc, prev_row_qp, qp_hard_max ) )
             {
                 b_emerg = can_reencode_row;
