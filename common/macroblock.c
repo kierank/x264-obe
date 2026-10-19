@@ -919,6 +919,18 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
     h->mb.cache.deblock_strength = h->deblock_strength[mb_y&1][h->param.b_sliced_threads?h->mb.i_mb_xy:mb_x];
     h->mb.mvp16_valid[0] = h->mb.mvp16_valid[1] = 0;
 
+    /* B direct reads fref[1][0]'s 4x4 MVs, from a frame that is no longer
+     * in cache: prefetch them one cache line (four MBs) ahead. */
+    if( h->sh.i_type == SLICE_TYPE_B )
+    {
+        x264_frame_t *l1 = h->fref[1][0];
+        int x = X264_MIN( mb_x + 4, h->mb.i_mb_width - 1 );
+        for( int l = 0; l < 2; l++ )
+            if( l1->mv[l] )
+                for( int y = 0; y < 4; y++ )
+                    x264_prefetch( &l1->mv[l][(4*mb_y+y)*s4x4 + 4*x] );
+    }
+
     /* load cache */
     if( h->mb.i_neighbour & MB_TOP )
     {
