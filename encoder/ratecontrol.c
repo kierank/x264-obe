@@ -1892,6 +1892,9 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
 
 /* Least excess, of the rest of the slice, an emergency step is taken on. */
 #define VBV_EMERG_EXCESS 0.25f
+/* and of the limit: the limit keeps half the frame error below the CPB, and the
+ * last row steps on what is over it */
+#define VBV_EMERG_EXCESS_MIN 0.01f
 
 /* The other thread slices' bits so far. */
 static float other_slices_bits( x264_t *h )
@@ -2198,7 +2201,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
              * project from, only once over on the bits coded: a costly first row past
              * the slice's plan is row QP's to bring back. */
             int b_over_now = bits_so_far + (b_threadslices ? other_slices_bits( h ) : 0) + 32 > vbv_limit;
-            int b_over = b_over_now || (rows && rest * (1.f - VBV_EMERG_EXCESS) > room);
+            int b_over = b_over_now || (rows && rest * (1.f - VBV_EMERG_EXCESS) > room
+                                                 && rest - room > vbv_limit * VBV_EMERG_EXCESS_MIN);
             if( rc->emerg_step && rows < 2 && left > 2 && !b_over_now )
                 b_over = 0;
             if( b_over && emerg_raise( h, rc, prev_row_qp, qp_hard_max ) )
