@@ -9290,6 +9290,18 @@ cglobal pixel_satd_4x8, 4,6,5
     SATD_AVX512_LOAD8 d, xm, k2, k3, k4 ; 0 0 2 2 4 4 6 6
     SATD_ICL_PACKED                     ; 1 1 3 3 5 5 7 7
     SATD_ICL_PACKED_END
+
+cglobal pixel_satd_4x16, 4,6,6
+    SATD_ICL_4x8_START
+    SATD_AVX512_LOAD8 d, xm, k2, k3, k4
+    SATD_ICL_PACKED
+    SWAP           0, 5
+    lea           r0, [r0+4*r1]
+    lea           r2, [r2+4*r3]
+    SATD_AVX512_LOAD8 d, xm, k2, k3, k4
+    SATD_ICL_PACKED
+    paddw         m0, m5
+    SATD_ICL_PACKED_END
 ICL_LOW_END
 %endif ; ARCH_X86_64
 
