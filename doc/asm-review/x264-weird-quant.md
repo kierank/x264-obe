@@ -204,3 +204,53 @@ vpshldvw assembling in 2.14.02 in its plain register form).
 - The parked branches: `zen5/x264-weird-quant-decimate` (scalar after the mask, not width
   dependent; decide in situ on Zen 4), `zen5/x264-weird-quant-quant4x4x4` and
   `zen5/x264-weird-quant-denoise10` (lose on split zmm; wait for a full-width Zen 5 box).
+
+## Round 2 (2026-10-20): every rejected row written
+
+Branch `wip/x264-weird2-quant`, base `origin/wip/x264-weird-sa8d8` 67b4aff6. Kieran: "don't
+reject, move to zen5 if rack01 is too slow". Every kernel below is dispatched at avx512icl in
+a braced block, one commit per kernel.
+
+Method: a driver links the assembled quant-a object with a prebuilt libx264.a and compares each
+kernel with the C of x264_quant_init( h, 0 ). Inputs follow the encoder contract, which the
+existing asm relies on: qp <= QP_MAX_SPEC (chroma: the highest chroma qp + 3 for the 4:2:2 dc),
+dequant_mf = real dequant bases x cqm scale (16 flat, else 10-255 / 10-228 at 10-bit),
+bias*mf < 2^16 for the dc quants, dequantized 8-bit values that fit int16. Within it: random,
+max, min (-32768 at 8-bit), sign-patterned, sparse, single-coef and zero blocks; every 8-bit
+idct/opt chroma level class up to PIXEL_MAX*16. Every call goes through the `chkcall`
+trampoline (callee-saved GPRs, rsp, XINUSE upper state, k1-k7 and zmm16-31 garbage on entry).
+Full checkasm (AC, bit-depth=all, seeds 1001/2002/3003) on b052e225 and b4a6ad23: all pass (175ab167 driver + nasm only);
+9 checkasm-level mutants on b052e225, all killed.
+
+| function | round-1 decision | round-2 action | commit | driver / mutation | nasm 2.14.02 |
+|---|---|---|---|---|---|
+| quant_2x2_dc 8/10-bit | rejected ("4 coefficients") | written: one xmm, vpmov[wd]2m sign + merge-masked subtract, vptestm + ktestb | 72fb3dbc | pass; 6/7, 1 equivalent: paddusw -> paddw (|coef| + bias < 65536 under bias*mf < 2^16, mf >= 2) | ok |
+| coeff_last4 8-bit | rejected ("already one load + lzcnt") | written: vptestmw + kmovb + lzcnt | 113adf53 | pass; 3/3 | ok |
+| dequant_4x4 8/10-bit | rejected (vpdpwssd no fewer uops) | written: right shift path with the accumulator starting at f and VNNI vpdpwssd for dct*dmf + f | 996d8a53 | pass; 8/9 (set), 1 equivalent: vpmovsdw -> vpmovdw (values fit int16) | ok |
+| dequant_8x8 8/10-bit | rejected | written: four independent vpdpwssd accumulators (x86-64, 12 registers) | 44cf6bb1 | pass; in the set | ok |
+| dequant_4x4dc 10-bit | rejected (zmm vs two ymm) | written: one zmm; left shift pmaddwd of the unshifted dmf then pslld, right shift vpdpwssd from f | 6fd4a15c | pass; 5/5 | ok |
+| dequant_4x4dc 8-bit | rejected ("one ymm") | written: right shift in dwords on one zmm (vpmovsxwd, vpdpwssd, psrad, vpmovdw) instead of unpack/pmaddwd/pack | b4a6ad23 | pass; 4/6, 2 equivalent: vpmovsxwd -> vpmovzxwd (the high word multiplies dmf's zero high word) and vpmovdw -> vpmovsdw (values fit int16) | ok |
+| idct_dequant_2x4_dc 8/10-bit | rejected (vpdpwssd, vpscatterdd) | written: two vpdpwssd accumulators for the rounding; dc stores by vpscatterdd (10-bit) / vpgatherdd + vpternlogd low-word merge + vpscatterdd (8-bit) | b6235e78 | pass; 8/8 (set) | ok |
+| idct_dequant_2x4_dconly 8/10-bit | rejected | written: as above, stored back to dct | 2fcfae6a | pass; in the set | ok |
+| optimize_chroma_2x2_dc (8-bit avx, 10-bit C) | rejected ("serial greedy search") | written: the transform is linear, so each trial decrement moves the pre-rounding values by -sign*dmf*T[:,k]: one subtract, shift, xor with the reference and vptestmd per trial; 8-bit outputs truncated to int16 as in the C | eb857387 | pass; 11/11 (set) | ok |
+| optimize_chroma_2x4_dc (C at both depths) | rejected | written: as above, 8 dwords in a ymm | b052e225 | pass; in the set | ok |
+| dequant_4x4_flat16 8-bit / dequant_8x8_flat16 | rejected ("already psllw + pmullw") | skipped. Instruction-level reason: the 4x4 kernel is one load-broadcast of the scale row, one psllw by a scalar count and one pmullw per 16 words, all in one ymm (the 8x8 one is already avx512, two zmm). AVX-512 has no word multiply with a shifted operand, vpmullw/vpsllw are the same ops EVEX-encoded, and a zmm would hold 32 words for a 16-coefficient block | - | - | - |
+| coeff_last8/15/16/64 (both depths), coeff_last4 10-bit | rejected (already that form) | skipped: the dispatched kernels already are the AVX-512 candidate (vptestnm/vptestm + kmov + lzcnt, kunpck for 64) | - | - | - |
+| decimate_score15/16/64, quant_4x4x4, denoise_dct 10-bit | zen5 branches | unchanged (round-1 zen5/ branches) | - | - | - |
+
+## Bug found in existing asm (round 2)
+
+- **10-bit dequant_4x4dc (sse2/xop/avx2), left shift path** (`common/x86/quant-a.asm`
+  DEQUANT_DC, `pslld m3, xm2` then `pmaddwd`): dmf was shifted by qp/6-6 before pmaddwd, which
+  reads dmf as a 16-bit word; with a cqm, dmf << qbits passes 2^15 at the highest 10-bit qps and
+  every nonzero dc came out wrong. Reached by: 10-bit, custom CQM (scale ~ > 114 on the dc
+  entry), qp 54-63 (checkasm's random cqm hits qp 62-63). Fixed in 47bb1cba (pmaddwd the
+  unshifted dmf, then pslld; identical to C mod 2^32); checkasm gets small dc levels at every qp,
+  which fail the old code at qp 62-63 on all three seeds and pass the fix. 8-bit is unaffected
+  (pmullw is exact mod 2^16).
+- **10-bit avx512icl quant_8x8 / quant_4x4x4 / quant_4x4 / quant_4x4_dc (round 1) and quant_2x2_dc**
+  (`common/x86/quant-a.asm` QUANT_ONE_AVX512, `psrad %1, 16`): arithmetic shift where the C
+  (udctcoef) and sse4/avx2 shift logically; results differ once (|coef| + bias) * mf >= 2^31
+  (driver: mf 52428-209712 with coef 16368-65472). Not reached by the encoder: x264_cqm_init
+  raises qp_min until mf <= 32767 at 10-bit, and |coef| <= 65472 with bias * mf <= 32768 keeps
+  the product below 2^31. Fixed anyway in 175ab167 (psrld, same cost).
