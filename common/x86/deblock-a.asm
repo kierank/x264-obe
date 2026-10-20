@@ -111,6 +111,16 @@ align 64
 %endrep
 %endmacro
 chroma_h_cols_idx: DB_CCOLS
+; and over 16 rows, vpermi2b: [p1|p0], [q0|q1] of 32 bytes each
+%macro DB_CCOLS16 1
+%assign %%j 0
+%rep 64
+    db 8*((%%j&31)>>1) + 2*(%%j>>5) + (%%j&1) + %1
+%assign %%j %%j+1
+%endrep
+%endmacro
+chroma422_p_idx: DB_CCOLS16 0
+chroma422_q_idx: DB_CCOLS16 4
 
 SECTION .text
 
@@ -4391,6 +4401,77 @@ cglobal deblock_h_chroma_mbaff, 5,7,9
     CHROMA_H_LOAD_ICL8 4
     CHROMA_INTER_ICL8 x, mbaff_tc_shuf
     CHROMA_H_STORE_ICL8 4
+    RET
+
+; 16 rows of 8 bytes at pix-4 -> ym0-ym3 = p1 p0 q0 q1 by two vpermi2b
+; r5 = 3*stride, r6 = pix-4, r7/r8/r9 = r6 + 4/8/12*stride
+%macro CHROMA_H_LOAD16_ICL8 0
+    lea         r5, [r1*3]
+    lea         r6, [r0-4]
+    lea         r7, [r6+r1*4]
+    lea         r8, [r6+r1*8]
+    lea         r9, [r7+r1*8]
+    movq       xm8, [r6]
+    movhps     xm8, [r6+r1]
+    movq       xm0, [r6+r1*2]
+    movhps     xm0, [r6+r5]
+    movq       xm1, [r7]
+    movhps     xm1, [r7+r1]
+    movq       xm2, [r7+r1*2]
+    movhps     xm2, [r7+r5]
+    movq       xm9, [r8]
+    movhps     xm9, [r8+r1]
+    movq       xm3, [r8+r1*2]
+    movhps     xm3, [r8+r5]
+    movq       xm4, [r9]
+    movhps     xm4, [r9+r1]
+    movq       xm5, [r9+r1*2]
+    movhps     xm5, [r9+r5]
+    vinserti128 ym8, ym8, xm0, 1
+    vinserti128 ym1, ym1, xm2, 1
+    vinserti128 ym9, ym9, xm3, 1
+    vinserti128 ym4, ym4, xm5, 1
+    vinserti64x4 m8, m8, ym1, 1     ; rows 0-7
+    vinserti64x4 m9, m9, ym4, 1     ; rows 8-15
+    mova        m0, [chroma422_p_idx]
+    mova        m2, [chroma422_q_idx]
+    vpermi2b    m0, m8, m9
+    vpermi2b    m2, m8, m9
+    vextracti64x4 ym1, m0, 1
+    vextracti64x4 ym3, m2, 1
+%endmacro
+
+; ym1, ym2 = p0', q0' -> columns -2..1 of 16 rows
+%macro CHROMA_H_STORE16_ICL8 0
+    punpcklwd   ym4, ym1, ym2       ; rows 0-3 | 8-11
+    punpckhwd   ym5, ym1, ym2       ; rows 4-7 | 12-15
+    vextracti128 xm6, ym4, 1
+    vextracti128 xm7, ym5, 1
+    movd      [r6+2], xm4
+    pextrd [r6+r1+2], xm4, 1
+    pextrd [r6+r1*2+2], xm4, 2
+    pextrd [r6+r5+2], xm4, 3
+    movd      [r7+2], xm5
+    pextrd [r7+r1+2], xm5, 1
+    pextrd [r7+r1*2+2], xm5, 2
+    pextrd [r7+r5+2], xm5, 3
+    movd      [r8+2], xm6
+    pextrd [r8+r1+2], xm6, 1
+    pextrd [r8+r1*2+2], xm6, 2
+    pextrd [r8+r5+2], xm6, 3
+    movd      [r9+2], xm7
+    pextrd [r9+r1+2], xm7, 1
+    pextrd [r9+r1*2+2], xm7, 2
+    pextrd [r9+r5+2], xm7, 3
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422, 5,10,10
+    CHROMA_H_LOAD16_ICL8
+    CHROMA_INTER_ICL8 y, deblock_tc_shuf_avx2
+    CHROMA_H_STORE16_ICL8
     RET
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
