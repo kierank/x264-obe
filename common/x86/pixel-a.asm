@@ -389,6 +389,20 @@ mcc_pre_perm:
 %undef mcc_r
 %undef mcc_b
 mcc_pre_q: db 0, 1, 8, 9, 4, 5, 12, 13, 2, 3, 10, 11, 6, 7, 14, 15
+; 8-bit hadamard_ac avx512icl: vpermi2w/vpermt2w word indices of TRANS d ord
+; (a0 b0 a2 b2 .. | a1 b1 a3 b3 ..)
+hadac_icl_idx:
+%assign hadac_i 0
+%rep 8
+    dw 2*hadac_i, 16+2*hadac_i
+%assign hadac_i hadac_i+1
+%endrep
+%assign hadac_i 0
+%rep 8
+    dw 2*hadac_i+1, 17+2*hadac_i
+%assign hadac_i hadac_i+1
+%endrep
+%undef hadac_i
 %endif
 
 SECTION .text
@@ -5051,6 +5065,20 @@ HADAMARD_AC_WXH_MMX  8,  8
     HSUMSUB %1, %2, %3, %4, %5
 %endmacro
 
+; HADAMARD 1, sumsub; 8-bit avx512icl: TRANS d ord as vpermi2w + vpermt2w
+; (m11/m12 = the even/odd word indices of hadac_icl_idx), %3 tmp
+%macro HADAC_H1 4
+%if cpuflag(avx512icl) && HIGH_BIT_DEPTH == 0
+    mova      m%3, m11
+    vpermi2w  m%3, m%1, m%2           ; a0 b0 a2 b2 ..
+    vpermt2w  m%1, m12, m%2           ; a1 b1 a3 b3 ..
+    SWAP       %2, %3
+    SUMSUB_BA  w, %1, %2, %3
+%else
+    HADAMARD 1, sumsub, %1, %2, %3, %4
+%endif
+%endmacro
+
 %macro HADAMARD_AC_SSE2 0-1 ; %1: suffix of the internal (v: vertically stacked blocks)
 ; in:  r0=pix, r1=stride, r2=stride*3
 ; out: [esp+16]=sa8d, [esp+32]=satd, r0+=stride*4
@@ -5070,6 +5098,10 @@ cglobal hadamard_ac_8x8%1
     %define vertical 0
     ;LOAD_INC loads sumsubs
     mova      m7, [hmul_8p]
+%if cpuflag(avx512icl)
+    movu     m11, [hadac_icl_idx]
+    movu     m12, [hadac_icl_idx+32]
+%endif
 %else
     %define vertical 1
     ;LOAD_INC only unpacks to words
@@ -5092,14 +5124,14 @@ cglobal hadamard_ac_8x8%1
     mova      m1, spill0
     mova      spill0, m6
     mova      spill1, m7
-    HADAMARD 1, sumsub, 0, 1, 6, 7
-    HADAMARD 1, sumsub, 2, 3, 6, 7
+    HADAC_H1 0, 1, 6, 7
+    HADAC_H1 2, 3, 6, 7
     mova      m6, spill0
     mova      m7, spill1
     mova      spill0, m1
     mova      spill1, m0
-    HADAMARD 1, sumsub, 4, 5, 1, 0
-    HADAMARD 1, sumsub, 6, 7, 1, 0
+    HADAC_H1 4, 5, 1, 0
+    HADAC_H1 6, 7, 1, 0
     mova      m0, spill1
 %endif
     mova  spill1, m2
@@ -7327,9 +7359,14 @@ HADAMARD_AC_8x8_AVX2
 %if ARCH_X86_64
 ; 8-bit, ymm: 8 pixel rows as [row row | row+8 row+8], lane 1 at r4 = r0+8*stride
 %macro LOAD_DUP_8x2P_VSTACK 2 ; dst, offset
+%if cpuflag(avx512icl)
+    vpbroadcastq m%1, [r0+%2]
+    vpbroadcastq m%1 {k3}, [r4+%2]    ; k3 = qwords 2-3
+%else
     vpbroadcastq m%1, [r0+%2]
     vpbroadcastq m11, [r4+%2]
     vpblendd     m%1, m%1, m11, 0xf0
+%endif
 %endmacro
 
 %macro LOAD_INC_8x4W_VSTACK 5
@@ -9518,6 +9555,36 @@ cglobal pixel_satd_8x4, 4,5,5
     SATD_ICL_PACKED_END
 
 HADAMARD_AC_8x8_AVX2
+
+; 8-bit hadamard_ac 16x16, 16x8, 8x16: the avx2 code with HADAC_H1's
+; vpermi2w/vpermt2w TRANS d ord, and for 8x16 the stacked rows from
+; merge-masked vpbroadcastq (k3) instead of vpbroadcastq + vpblendd
+%define LOAD_SUMSUB_8x4P LOAD_SUMSUB8_16x4P_AVX2
+%define LOAD_DUP_4x8P LOAD_DUP_4x16P_AVX2
+%define TRANS TRANS_SSE4
+%define LOAD_INC_8x4W LOAD_INC_8x4W_SSSE3
+HADAMARD_AC_SSE2
+%define LOAD_INC_8x4W LOAD_INC_8x4W_VSTACK
+HADAMARD_AC_SSE2 v
+%define LOAD_INC_8x4W LOAD_INC_8x4W_SSSE3
+cglobal pixel_hadamard_ac_8x16, 2,5,14
+    mov  r3d, 0xc
+    kmovb  k3, r3d
+    mov   r3, rsp
+    and  rsp, ~(mmsize-1)
+    sub  rsp, mmsize*3
+    lea   r2, [r1*3]
+    lea   r4, [r0+r1*8]
+    call hadamard_ac_8x8v
+    HADAMARD_AC_WXH_SUM_SSE2 8, 16
+    movd edx, xm0
+    movd eax, xm1
+    shr  edx, 2
+    shr  eax, 1
+    shl  rdx, 32
+    add  rax, rdx
+    mov  rsp, r3
+    RET
 
 ; sa8d_16x16: four pixel_sa8d_8x8_avx512icl transforms; an 8x8's max() words
 ; sum to <= 2*32*255 per word (signed), folded to dwords in two chains:
