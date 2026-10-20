@@ -70,6 +70,9 @@ cavlc_shuf_avx512: dw 0x0080, 0x0184, 0x0288, 0x038c, 0x0490, 0x0594, 0x0698, 0x
 %endif
 
 pw_ppmmmmpp:    dw 1,1,-1,-1,-1,-1,1,1
+; dct4x4dc/idct4x4dc avx512icl: output order, butterfly masks
+dc4x4_perm:     db 0,8,12,4,2,10,14,6,3,11,15,7,1,9,13,5
+dc4x4_masks:    dw 0xaaaa,0xcccc,0xf0f0,0xff00,0,0,0,0
 pb_sub4frame:   db 0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15
 pb_sub4field:   db 0,4,1,8,12,5,9,13,2,6,10,14,3,7,11,15
 pb_subacmask:   dw 0,-1,-1,-1,-1,-1,-1,-1
@@ -313,6 +316,86 @@ cglobal idct4x4dc, 1,1
     movq  [r0+24], m3
     RET
 %endif ; HIGH_BIT_DEPTH
+
+;-----------------------------------------------------------------------------
+; dct4x4dc/idct4x4dc avx512icl: the block in one register, rows in 4-coef
+; lanes. A butterfly is a shuffle, an add and a masked subtract; it leaves the
+; frequencies in order 0 3 1 2 on both axes, and one permute gives the
+; transposed order of the C. 8-bit dct4x4dc does the rows in words (the C
+; truncates there) and the columns in dwords (17 bits before the >>1).
+;-----------------------------------------------------------------------------
+%macro WALSH4_ICL 6 ; size, dst, src, tmp, shuffle, mask
+    %5
+    padd%1     %2, %3, %4
+    vpsub%1    %2 {%6}, %4, %3
+%endmacro
+
+%macro DC4x4_ICL_MASKS 0
+    kmovw      k1, [dc4x4_masks+0]
+    kmovw      k2, [dc4x4_masks+2]
+    kmovw      k3, [dc4x4_masks+4]
+    kmovw      k4, [dc4x4_masks+6]
+%endmacro
+
+; columns, dwords, from m0
+%macro DC4x4_ICL_COLS 0
+    WALSH4_ICL  d, m2, m0, m1, {vshufi32x4 m1, m0, m0, q2301}, k3
+    WALSH4_ICL  d, m0, m2, m1, {vshufi32x4 m1, m2, m2, q1032}, k4
+%endmacro
+
+INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH
+cglobal dct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova        m0, [r0]
+    WALSH4_ICL  d, m2, m0, m1, {pshufd m1, m0, q2301}, k1
+    WALSH4_ICL  d, m0, m2, m1, {pshufd m1, m2, q1032}, k2
+    DC4x4_ICL_COLS
+    vpmovzxbd   m1, [dc4x4_perm]
+    vpaddd      m0, m0, [pd_1] {1to16}
+    psrad       m0, 1
+    vpermd      m0, m1, m0
+    mova      [r0], m0
+    RET
+
+cglobal idct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova        m0, [r0]
+    WALSH4_ICL  d, m2, m0, m1, {pshufd m1, m0, q2301}, k1
+    WALSH4_ICL  d, m0, m2, m1, {pshufd m1, m2, q1032}, k2
+    DC4x4_ICL_COLS
+    vpmovzxbd   m1, [dc4x4_perm]
+    vpermd      m0, m1, m0
+    mova      [r0], m0
+    RET
+%else
+cglobal dct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova       ym0, [r0]
+    WALSH4_ICL  w, ym2, ym0, ym1, {vprold ym1, ym0, 16}, k1
+    WALSH4_ICL  w, ym0, ym2, ym1, {pshufd ym1, ym2, q2301}, k2
+    vpmovsxwd   m0, ym0
+    DC4x4_ICL_COLS
+    vpmovzxbd   m1, [dc4x4_perm]
+    vpaddd      m0, m0, [pd_1] {1to16}
+    psrad       m0, 1
+    vpermd      m0, m1, m0
+    vpmovdw    ym1, m0
+    mova      [r0], ym1
+    RET
+
+cglobal idct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova       ym0, [r0]
+    WALSH4_ICL  w, ym2, ym0, ym1, {vprold ym1, ym0, 16}, k1
+    WALSH4_ICL  w, ym0, ym2, ym1, {pshufd ym1, ym2, q2301}, k2
+    WALSH4_ICL  w, ym2, ym0, ym1, {pshufd ym1, ym0, q1032}, k3
+    WALSH4_ICL  w, ym0, ym2, ym1, {vpermq ym1, ym2, q1032}, k4
+    vpmovzxbw  ym1, [dc4x4_perm]
+    vpermw     ym0, ym1, ym0
+    mova      [r0], ym0
+    RET
+%endif
 
 ;-----------------------------------------------------------------------------
 ; void dct2x4dc( dctcoef dct[8], dctcoef dct4x4[8][16] )
