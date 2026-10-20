@@ -104,6 +104,12 @@ pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4
 pd_8: times 4 dd 8
 %if HIGH_BIT_DEPTH
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
+%else
+; avx512icl hpel, broadcast: c taps (even, odd outputs<<6) and biases, h taps, h 4x4 transpose
+hpel_c_icl:    dw 1,-5, 20,20, -5,1, 64,-320, 1280,1280, -320,64
+               dd 512, 512<<6
+hpel_h_icl:    db 1,-5,20,20, -5,1,0,0
+hpel_h_tr_icl: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 %endif
 
 SECTION .text
@@ -1065,7 +1071,10 @@ cglobal hpel_filter_h, 3,3,8
 %endif
     add       r3, mmsize
     add       r1, mmsize
-%if mmsize==32
+%if cpuflag(avx512icl)
+    vinserti128 %1, m1, xm4, 1
+    vshufi64x2  %2, m1, m4, 3
+%elif mmsize==32
     vinserti128 %1, m1, xm4, 1
     vperm2i128  %2, m1, m4, q0301
 %else
@@ -1098,7 +1107,38 @@ cglobal hpel_filter_h, 3,3,8
     FILT_H    %3, m3, m4
 %endmacro
 
+; avx512icl: words of the c filter of 16 v words %2 (left %1, right %3) -> %4
+; even outputs in dwords, odd ones with taps<<6 in the high words of dwords
+%macro FILT_C_ICL 4
+    valignq   m1, %2, %1, 3     ; v[-4]
+    valignq   m2, %3, %2, 1     ; v[+4]
+    vpshrdq   m3, m1, %2, 32    ; v[-2]
+    vpshrdq   m1, m1, %2, 48    ; v[-1]
+    vpshrdq   m4, %2, m2, 16    ; v[+1]
+    vpshrdq  m27, %2, m2, 48    ; v[+3]
+    vpshrdq   m2, %2, m2, 32    ; v[+2]
+    mova     m28, m22
+    mova     m29, m23
+    {evex} vpdpwssd m28, m3, m16
+    {evex} vpdpwssd m29, m1, m19
+    {evex} vpdpwssd m28, %2, m17
+    {evex} vpdpwssd m29, m4, m20
+    {evex} vpdpwssd m28, m2, m18
+    {evex} vpdpwssd m29, m27, m21
+    psrad    m28, 10
+    vpblendw  %4, m28, m29, 0xaa
+%endmacro
+
 %macro DO_FILT_C 4
+%if cpuflag(avx512icl)
+    FILT_C_ICL %1, %2, %3, m30
+    FILT_C_ICL %2, %3, %4, m31
+    mova      %1, %3
+    mova      %2, %4
+    packuswb m30, m31
+    vpermq   m30, m30, q3120
+    movntps   [r5+r4], m30
+%else
     FILT_C %1, %2, %3
     FILT_C %2, %1, %4
     FILT_PACK %3, %4, m15, 6
@@ -1106,6 +1146,7 @@ cglobal hpel_filter_h, 3,3,8
     vpermq %3, %3, q3120
 %endif
     movntps   [r5+r4], %3
+%endif
 %endmacro
 
 %macro ADD8TO16 5
@@ -1118,6 +1159,39 @@ cglobal hpel_filter_h, 3,3,8
 %endmacro
 
 %macro DO_FILT_H 3
+%if cpuflag(avx512icl)
+    ; output 4j+r: src[4j+r-2..4j+r+1] x (1,-5,20,20) + src[4j+r+2..4j+r+5] x (-5,1,0,0)
+    valignq   m1, %2, %1, 3     ; src[-8]
+    valignq   m2, %3, %2, 1     ; src[+8]
+    vpshrdq   m3, m1, %2, 48    ; src[-2]
+    vpshrdq   m1, m1, %2, 56    ; src[-1]
+    vpshrdq   m4, %2, m2, 8     ; src[+1]
+    vpshrdq   m5, %2, m2, 16    ; src[+2]
+    vpshrdq   m6, %2, m2, 24    ; src[+3]
+    vpshrdq  m27, %2, m2, 32    ; src[+4]
+    vpshrdq   m2, %2, m2, 40    ; src[+5]
+    pxor     m28, m28
+    pxor     m29, m29
+    pxor     m30, m30
+    pxor     m31, m31
+    {evex} vpdpbusd m28, m3, m24
+    {evex} vpdpbusd m29, m1, m24
+    {evex} vpdpbusd m30, %2, m24
+    {evex} vpdpbusd m31, m4, m24
+    {evex} vpdpbusd m28, m5, m25
+    {evex} vpdpbusd m29, m6, m25
+    {evex} vpdpbusd m30, m27, m25
+    {evex} vpdpbusd m31, m2, m25
+    packssdw m28, m29
+    packssdw m30, m31
+    pmulhrsw m28, m15
+    pmulhrsw m30, m15
+    packuswb m28, m30
+    pshufb   m28, m26
+    movntps [r0+r4], m28
+    mova      %1, %2
+    mova      %2, %3
+%else
 %if mmsize==32
     vperm2i128 m3, %2, %1, q0003
 %endif
@@ -1152,6 +1226,7 @@ cglobal hpel_filter_h, 3,3,8
 %endif
     movntps [r0+r4], m1
     mova      %2, %3
+%endif
 %endmacro
 
 %macro HPEL 0-1 0 ; copy
@@ -1164,11 +1239,16 @@ cglobal hpel_filter_h, 3,3,8
 ; copy also stores src to dst, at the columns of dstv
 ;-----------------------------------------------------------------------------
 %assign hpel_copy %1
+%if cpuflag(avx512icl)
+    %assign %%nregs 32
+%else
+    %assign %%nregs 16
+%endif
 %if hpel_copy
-cglobal hpel_filter_copy, 7,10,16
+cglobal hpel_filter_copy, 7,10,%%nregs
     mov       r9, r8mp
 %else
-cglobal hpel_filter, 7,9,16
+cglobal hpel_filter, 7,9,%%nregs
 %endif
     mov       r7, r3
     sub      r5d, mmsize
@@ -1197,6 +1277,19 @@ cglobal hpel_filter, 7,9,16
     pxor      m0, m0
     mova     m15, [pw_16]
 %endif
+%if cpuflag(avx512icl)
+    vpbroadcastd m16, [hpel_c_icl+ 0]
+    vpbroadcastd m17, [hpel_c_icl+ 4]
+    vpbroadcastd m18, [hpel_c_icl+ 8]
+    vpbroadcastd m19, [hpel_c_icl+12]
+    vpbroadcastd m20, [hpel_c_icl+16]
+    vpbroadcastd m21, [hpel_c_icl+20]
+    vpbroadcastd m22, [hpel_c_icl+24]
+    vpbroadcastd m23, [hpel_c_icl+28]
+    vpbroadcastd m24, [hpel_h_icl+0]
+    vpbroadcastd m25, [hpel_h_icl+4]
+    vbroadcasti32x4 m26, [hpel_h_tr_icl]
+%endif
 ;ALIGN 16
 .loopy:
 ; first filter_v
@@ -1205,13 +1298,15 @@ cglobal hpel_filter, 7,9,16
 .loopx:
     DO_FILT_V m6, m5, m11, m12, mmsize
 .lastx:
-%if cpuflag(ssse3)
+%if cpuflag(avx512icl)
+%elif cpuflag(ssse3)
     psrlw   m15, 1   ; pw_512
 %else
     paddw   m15, m15 ; pw_32
 %endif
     DO_FILT_C m9, m8, m7, m6
-%if cpuflag(ssse3)
+%if cpuflag(avx512icl)
+%elif cpuflag(ssse3)
     paddw   m15, m15 ; pw_1024
 %else
     psrlw   m15, 1   ; pw_16
@@ -1250,6 +1345,9 @@ INIT_XMM avx
 HPEL
 HPEL 1
 INIT_YMM avx2
+HPEL
+HPEL 1
+INIT_YMM avx512icl
 HPEL
 HPEL 1
 %endif ; ARCH_X86_64

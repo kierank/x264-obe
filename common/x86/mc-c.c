@@ -43,6 +43,8 @@
 #define x264_frame_init_lowres_core_xop x264_template(frame_init_lowres_core_xop)
 #define x264_hpel_filter_avx x264_template(hpel_filter_avx)
 #define x264_hpel_filter_avx2 x264_template(hpel_filter_avx2)
+#define x264_hpel_filter_avx512icl x264_template(hpel_filter_avx512icl)
+#define x264_hpel_filter_copy_avx512icl x264_template(hpel_filter_copy_avx512icl)
 #define x264_hpel_filter_c_avx2 x264_template(hpel_filter_c_avx2)
 #define x264_hpel_filter_copy_avx x264_template(hpel_filter_copy_avx)
 #define x264_hpel_filter_copy_avx2 x264_template(hpel_filter_copy_avx2)
@@ -1046,6 +1048,8 @@ void x264_hpel_filter_copy_sse2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, u
 void x264_hpel_filter_copy_ssse3( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
 void x264_hpel_filter_copy_avx  ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
 void x264_hpel_filter_copy_avx2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
+void x264_hpel_filter_avx512icl( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf );
+void x264_hpel_filter_copy_avx512icl( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
 #else
 HPEL(16, sse2, sse2, sse2, sse2)
 HPEL(16, ssse3, ssse3, ssse3, ssse3)
@@ -1608,6 +1612,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
+        pf->hpel_filter = x264_hpel_filter_avx512icl;
+        pf->hpel_filter_copy = x264_hpel_filter_copy_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
