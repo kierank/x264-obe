@@ -38,10 +38,38 @@ load_bytes_zmm_shuf: dd 0x50404032, 0x70606053, 0xd0c0c0b4, 0xf0e0e0d5
 strength_cur_idx: times 2 db 4,5,6,7,12,13,14,15,20,21,22,23,28,29,30,31
 strength_nb_idx:  db 3,4,5,6,11,12,13,14,19,20,21,22,27,28,29,30
                   db 0,1,2,3,8,9,10,11,16,17,18,19,24,25,26,27
+
+; 8-bit h luma, vpermi2b over 16 rows of p3..q3: column pairs [pN|qN] of 16 rows
+%macro DB_COLS16 4
+%rep 4
+%assign %%r 0
+%rep 16
+    db 8*%%r+%1
+%assign %%r %%r+1
+%endrep
+%rotate 1
+%endrep
+%endmacro
+; and back from [p0|q0|p1|q1], [p2|q2|p3|q3] to 8 rows of p3..q3
+%macro DB_ROWS8 1
+%assign %%r %1
+%rep 8
+    db 96+%%r, 64+%%r, 32+%%r, %%r, 16+%%r, 48+%%r, 80+%%r, 112+%%r
+%assign %%r %%r+1
+%endrep
+%endmacro
+h_luma_p01_idx: DB_COLS16 3, 4, 2, 5
+h_luma_p23_idx: DB_COLS16 1, 6, 0, 7
+h_luma_q01_idx: DB_COLS16 4, 3, 5, 2
+h_luma_rows0_idx: DB_ROWS8 0
+h_luma_rows8_idx: DB_ROWS8 8
 load_bytes_shuf: times 2 db 3,4,5,6,11,12,13,14,4,5,6,7,12,13,14,15
 insert_top_shuf: dd 0,1,4,5,7,2,3,6
 deblock_tc_shuf_avx2: db 0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3
 transpose_shuf: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
+; gf2p8affineqb: bit 0 = x.1^x.2 (x.2^x.3), i.e. (((x>>1)+1)>>1)&1 (x>>2)
+gf_par1: dq 0x0600000000000000
+gf_par2: dq 0x0c00000000000000
 
 SECTION .text
 
@@ -2445,6 +2473,182 @@ DEBLOCK_LUMA_INTRA v
 INIT_MMX mmx2
 DEBLOCK_LUMA_INTRA v8
 %endif
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl luma intra: one ymm pass covers both sides of the edge, lane 0 the
+; p side and lane 1 the q side. gf2p8affineqb gives the rounding parity bits
+; and k-masks select the outputs.
+;-----------------------------------------------------------------------------
+; in: m0-m3 = [p0|q0] [p1|q1] [p2|q2] [p3|q3], m4 = [q0|p0], m5 = [q1|p1]
+;     r2d = alpha, r3d = beta
+; out: m0-m2 = p0' p1' p2' | q0' q1' q2'
+; clobbers: m6-m14, k1, k2, r2
+%macro LUMA_INTRA_ICL 0
+    vpbroadcastb ym12, r2d
+    vpbroadcastb ym13, r3d
+    shr        r2d, 2
+    add        r2d, 2
+    vpbroadcastb ym14, r2d
+    pminub      ym6, ym0, ym4
+    pmaxub      ym7, ym0, ym4
+    psubb       ym7, ym6            ; |p0-q0|
+    pminub      ym6, ym1, ym0
+    pmaxub      ym8, ym1, ym0
+    psubb       ym8, ym6            ; |p1-p0| | |q1-q0|
+    pminub      ym6, ym2, ym0
+    pmaxub      ym9, ym2, ym0
+    psubb       ym9, ym6            ; |p2-p0| | |q2-q0|
+    vpermq      ym6, ym8, q1032
+    pmaxub      ym8, ym6
+    vpcmpub     k1, ym7, ym12, 1          ; |p0-q0| < alpha
+    vpcmpub     k1 {k1}, ym8, ym13, 1     ; max(|p1-p0|, |q1-q0|) < beta
+    vpcmpub     k2 {k1}, ym7, ym14, 1     ; |p0-q0| < (alpha>>2)+2
+    vpcmpub     k2 {k2}, ym9, ym13, 1     ; |p2-p0| < beta
+
+    pavgb       ym6, ym2, ym1
+    pavgb       ym7, ym0, ym4
+    pavgb       ym6, ym7            ; ((p2+p1+1)/2 + (p0+q0+1)/2 + 1)/2
+    paddb       ym8, ym2, ym1
+    paddb       ym9, ym0, ym4
+    paddb       ym8, ym9            ; p2+p1+p0+q0
+    paddb       ym9, ym8, ym8
+    vgf2p8affineqb ym10, ym8, [gf_par1]{1to4}, 0
+    vpternlogd  ym10, ym6, [pb_1]{1to8}, 0x28 ; (ym10 ^ ym6) & 1
+    psubb       ym6, ym10           ; p1' = (p2+p1+p0+q0+2)/4
+
+    pavgb      ym10, ym2, ym5
+    psubb      ym11, ym2, ym5
+    psubb       ym9, ym11           ; p2+2*p1+2*p0+2*q0+q1
+    vpandd     ym11, [pb_1]{1to8}
+    psubb      ym10, ym11
+    pavgb      ym10, ym1
+    pavgb      ym10, ym7            ; (((p2+q1)/2 + p1+1)/2 + (p0+q0+1)/2 + 1)/2
+    vgf2p8affineqb ym9, ym9, [gf_par2]{1to4}, 0
+    vpternlogd  ym9, ym10, [pb_1]{1to8}, 0x28
+    psubb      ym10, ym9            ; p0'a = (p2+2*p1+2*p0+2*q0+q1+4)/8
+
+    pxor        ym9, ym0, ym5
+    pavgb      ym11, ym0, ym5
+    vpandd      ym9, [pb_1]{1to8}
+    psubb      ym11, ym9
+    pavgb      ym11, ym1            ; p0'b = (2*p1+p0+q1+2)/4
+    vmovdqu8    ym0 {k1}, ym11
+    vmovdqu8    ym0 {k2}, ym10
+
+    paddb       ym9, ym3, ym2
+    pavgb      ym10, ym3, ym2
+    pavgb      ym10, ym6            ; (p3+p2+1)/2 + (p2+p1+p0+q0+2)/4
+    paddb       ym9, ym9
+    paddb       ym9, ym8            ; 2*p3+3*p2+p1+p0+q0
+    vgf2p8affineqb ym9, ym9, [gf_par2]{1to4}, 0
+    vpternlogd  ym9, ym10, [pb_1]{1to8}, 0x28
+    psubb      ym10, ym9            ; p2' = (2*p3+3*p2+p1+p0+q0+4)/8
+    vmovdqu8    ym1 {k2}, ym6
+    vmovdqu8    ym2 {k2}, ym10
+%endmacro
+
+INIT_YMM avx512icl
+;-----------------------------------------------------------------------------
+; void deblock_v_luma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_luma_intra, 4,6,15
+    lea         r4, [r1*4]
+    lea         r5, [r1*3]
+    neg         r4
+    add         r4, r0            ; pix-4*stride
+    movu       xm0, [r4+r5]
+    movu       xm1, [r4+r1*2]
+    movu       xm2, [r4+r1]
+    movu       xm3, [r4]
+    vinserti128 m0, m0, [r0], 1
+    vinserti128 m1, m1, [r0+r1], 1
+    vinserti128 m2, m2, [r0+r1*2], 1
+    vinserti128 m3, m3, [r0+r5], 1
+    vpermq      m4, m0, q1032
+    vpermq      m5, m1, q1032
+    LUMA_INTRA_ICL
+    movu   [r4+r5], xm0
+    vextracti128 [r0], m0, 1
+    movu [r4+r1*2], xm1
+    vextracti128 [r0+r1], m1, 1
+    movu   [r4+r1], xm2
+    vextracti128 [r0+r1*2], m2, 1
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_luma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+; rows 0-7 | 8-15 of p3..q3 <-> column pairs, one vpermi2b per 64 bytes
+INIT_ZMM avx512icl
+cglobal deblock_h_luma_intra, 4,9,15
+    lea         r5, [r1*3]
+    lea         r6, [r0-4]
+    lea         r7, [r6+r1*4]
+    lea         r8, [r6+r1*8]
+    lea         r4, [r7+r1*8]
+    movq       xm6, [r6]
+    movhps     xm6, [r6+r1]
+    movq       xm0, [r6+r1*2]
+    movhps     xm0, [r6+r5]
+    movq       xm1, [r7]
+    movhps     xm1, [r7+r1]
+    movq       xm2, [r7+r1*2]
+    movhps     xm2, [r7+r5]
+    movq       xm7, [r8]
+    movhps     xm7, [r8+r1]
+    movq       xm3, [r8+r1*2]
+    movhps     xm3, [r8+r5]
+    movq       xm4, [r4]
+    movhps     xm4, [r4+r1]
+    movq       xm5, [r4+r1*2]
+    movhps     xm5, [r4+r5]
+    vinserti128 ym6, ym6, xm0, 1
+    vinserti128 ym1, ym1, xm2, 1
+    vinserti128 ym7, ym7, xm3, 1
+    vinserti128 ym4, ym4, xm5, 1
+    vinserti64x4 m6, m6, ym1, 1     ; rows 0-7
+    vinserti64x4 m7, m7, ym4, 1     ; rows 8-15
+    mova       m0, [h_luma_p01_idx]
+    mova       m2, [h_luma_p23_idx]
+    mova       m4, [h_luma_q01_idx]
+    vpermi2b   m0, m6, m7
+    vpermi2b   m2, m6, m7
+    vpermi2b   m4, m6, m7
+    vextracti64x4 ym1, m0, 1
+    vextracti64x4 ym3, m2, 1
+    vextracti64x4 ym5, m4, 1
+    LUMA_INTRA_ICL
+    vinserti64x4 m0, m0, ym1, 1
+    vinserti64x4 m2, m2, ym3, 1
+    mova       m6, [h_luma_rows0_idx]
+    mova       m7, [h_luma_rows8_idx]
+    vpermi2b   m6, m0, m2
+    vpermi2b   m7, m0, m2
+    movq       [r6], xm6
+    movhps  [r6+r1], xm6
+    vextracti32x4 xm0, m6, 1
+    vextracti32x4 xm1, m6, 2
+    vextracti32x4 xm2, m6, 3
+    movq  [r6+r1*2], xm0
+    movhps  [r6+r5], xm0
+    movq       [r7], xm1
+    movhps  [r7+r1], xm1
+    movq  [r7+r1*2], xm2
+    movhps  [r7+r5], xm2
+    movq       [r8], xm7
+    movhps  [r8+r1], xm7
+    vextracti32x4 xm0, m7, 1
+    vextracti32x4 xm1, m7, 2
+    vextracti32x4 xm2, m7, 3
+    movq  [r8+r1*2], xm0
+    movhps  [r8+r5], xm0
+    movq       [r4], xm1
+    movhps  [r4+r1], xm1
+    movq  [r4+r1*2], xm2
+    movhps  [r4+r5], xm2
+    RET
+%endif ; ARCH_X86_64
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
