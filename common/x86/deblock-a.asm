@@ -4457,6 +4457,21 @@ cglobal deblock_v_chroma_intra, 4,4,10
     movu    [r0+r1], m1
     movu  [r0+r1*2], m2
     RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_intra, 4,6,10
+    add          r1, r1
+    vpbroadcastw  m4, r2d
+    vpbroadcastw  m5, r3d
+    lea          r4, [r1*3]
+    lea          r5, [r0+r1*4]
+    CHROMA_H_LOAD_AVX2 r4, r5
+    CHROMA_MASK_ICL
+    CHROMA_INTRA10_ICL
+    CHROMA_H_STORE_AVX2 r4, r5
+    RET
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
