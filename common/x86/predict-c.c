@@ -213,6 +213,9 @@ PREDICT_8x16C_P( mmx2 )
 PREDICT_8x16C_P( sse2 )
 PREDICT_8x16C_P( avx )
 PREDICT_8x16C_P( avx2 )
+#if ARCH_X86_64
+PREDICT_8x16C_P( avx512icl )
+#endif
 
 #define PREDICT_8x8C_P_CORE\
     int H = 0;\
@@ -530,6 +533,13 @@ void x264_predict_8x16c_init_mmx( int cpu, x264_predict_t pf[7] )
     if( cpu&X264_CPU_AVX2 )
     {
         pf[I_PRED_CHROMA_P]   = x264_predict_8x16c_p_avx2;
+    }
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pf[I_PRED_CHROMA_P]   = x264_predict_8x16c_p_avx512icl;
+#endif
     }
 }
 
