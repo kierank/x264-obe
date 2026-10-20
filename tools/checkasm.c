@@ -1643,7 +1643,8 @@ static int check_dct( int cpu_ref, int cpu_new )
             enc[0] = enc[1] = enc[4] = enc[5] = enc[8] = enc[9] = enc[12] = enc[13] = cond_a ? PIXEL_MAX : 0;
             enc[2] = enc[3] = enc[6] = enc[7] = enc[10] = enc[11] = enc[14] = enc[15] = cond_b ? PIXEL_MAX : 0;
 
-            for( int k = 0; k < 4; k++ )
+            /* every column: the 8x8 and 16x16 transforms read them all */
+            for( int k = 0; k < 16; k++ )
                 dec[k] = PIXEL_MAX - enc[k];
 
             enc += FENC_STRIDE;
@@ -1721,16 +1722,20 @@ static int check_dct( int cpu_ref, int cpu_new )
     { \
         set_func_name( #name ); \
         used_asm = 1; \
-        memcpy( pbuf3, pbuf1, 32*32 * sizeof(pixel) ); \
-        memcpy( pbuf4, pbuf1, 32*32 * sizeof(pixel) ); \
-        memcpy( dct1, src, 256 * sizeof(dctcoef) ); \
-        memcpy( dct2, src, 256 * sizeof(dctcoef) ); \
-        call_c1( dct_c.name, pbuf3, (void*)dct1 ); \
-        call_a1( dct_asm.name, pbuf4, (void*)dct2 ); \
-        if( memcmp( pbuf3, pbuf4, 32*32 * sizeof(pixel) ) ) \
+        /* dst random, near PIXEL_MAX and near 0: the clip at both ends */ \
+        for( int d = 0; d < 3; d++ ) \
         { \
-            ok = 0; \
-            fprintf( stderr, #name " [FAILED]\n" ); \
+            for( int i = 0; i < 32*32; i++ ) \
+                pbuf3[i] = pbuf4[i] = d == 0 ? pbuf1[i] : d == 1 ? PIXEL_MAX - (pbuf1[i]&3) : pbuf1[i]&3; \
+            memcpy( dct1, src, 256 * sizeof(dctcoef) ); \
+            memcpy( dct2, src, 256 * sizeof(dctcoef) ); \
+            call_c1( dct_c.name, pbuf3, (void*)dct1 ); \
+            call_a1( dct_asm.name, pbuf4, (void*)dct2 ); \
+            if( memcmp( pbuf3, pbuf4, 32*32 * sizeof(pixel) ) ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, #name " dst %d [FAILED]\n", d ); \
+            } \
         } \
         call_c2( dct_c.name, pbuf3, (void*)dct1 ); \
         call_a2( dct_asm.name, pbuf4, (void*)dct2 ); \
@@ -1819,8 +1824,9 @@ static int check_dct( int cpu_ref, int cpu_new )
     { \
         set_func_name( "zigzag_"#name"_%s", interlace?"field":"frame" ); \
         used_asm = 1; \
+        /* distinct, both signs, the high bits of dctcoef set */ \
         for( int i = 0; i < size*size; i++ ) \
-            dct[i] = i; \
+            dct[i] = (i&1 ? -1 : 1) * i * (sizeof(dctcoef) == 2 ? 509 : 0x10101); \
         call_c( zigzag_c[interlace].name, t1, dct ); \
         call_a( zigzag_asm[interlace].name, t2, dct ); \
         if( memcmp( t1, t2, size*size*sizeof(dctcoef) ) ) \
@@ -1878,7 +1884,7 @@ static int check_dct( int cpu_ref, int cpu_new )
             } \
             nz_c = call_c1( zigzag_c[interlace].name, t1, pbuf2, pbuf3, &dc_c ); \
             nz_a = call_a1( zigzag_asm[interlace].name, t2, pbuf2, pbuf4, &dc_a ); \
-            if( memcmp( t1+1, t2+1, 15*sizeof(dctcoef) ) || memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE * sizeof(pixel) ) || nz_c != nz_a || dc_c != dc_a ) \
+            if( memcmp( t1, t2, 16*sizeof(dctcoef) ) || memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE * sizeof(pixel) ) || nz_c != nz_a || dc_c != dc_a ) \
             { \
                 ok = 0; \
                 fprintf( stderr, #name " [FAILED]\n" ); \
