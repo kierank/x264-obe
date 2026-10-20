@@ -6405,6 +6405,50 @@ cglobal pixel_satd_4x4, 4,6,6
     psubw        m1, m3
     SATD4_ICL_HBD qdq
     SATD4_ICL_END
+
+ICL_LOW_BEGIN
+%macro SATD4x8_ICL_START 0
+    FIX_STRIDES r1, r3
+    SATD4_ICL_KMASK r4d
+    mov         r4d, 0xe
+    kmovb        k3, r4d
+    kshiftlb     k4, k3, 1
+    kshiftlb     k5, k3, 2
+    lea          r4, [3*r1]
+    lea          r5, [3*r3]
+%endmacro
+
+; m0 = rows 0 1 4 5, m1 = rows 2 3 6 7 of pix1-pix2; r0/r2 move down 4 rows
+; (merge-masked broadcasts, k3/k4/k5 = qwords 1-3/2-3/3)
+%macro SATD4x8_ICL_LOAD 0
+    vpbroadcastq m0, [r0]
+    vpbroadcastq m2, [r2]
+    vpbroadcastq m1, [r0+2*r1]
+    vpbroadcastq m3, [r2+2*r3]
+    vpbroadcastq m0 {k3}, [r0+r1]
+    vpbroadcastq m2 {k3}, [r2+r3]
+    vpbroadcastq m1 {k3}, [r0+r4]
+    vpbroadcastq m3 {k3}, [r2+r5]
+    lea          r0, [r0+4*r1]
+    lea          r2, [r2+4*r3]
+    vpbroadcastq m0 {k4}, [r0]
+    vpbroadcastq m2 {k4}, [r2]
+    vpbroadcastq m1 {k4}, [r0+2*r1]
+    vpbroadcastq m3 {k4}, [r2+2*r3]
+    vpbroadcastq m0 {k5}, [r0+r1]
+    vpbroadcastq m2 {k5}, [r2+r3]
+    vpbroadcastq m1 {k5}, [r0+r4]
+    vpbroadcastq m3 {k5}, [r2+r5]
+    psubw        m0, m2
+    psubw        m1, m3
+%endmacro
+
+cglobal pixel_satd_4x8, 4,6,6
+    SATD4x8_ICL_START
+    SATD4x8_ICL_LOAD
+    SATD4_ICL_HBD qdq
+    SATD4_ICL_END
+ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
 
