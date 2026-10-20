@@ -93,6 +93,19 @@ pb_hu_icl:      db 0,64,1,65,2,66,3,67,4,68,5,69,6,70,7,71
                 db 1,65,2,66,3,67,4,68,5,69,6,70,7,71,8,72
                 db 9,73,10,74,11,75,12,76,13,77,14,78,15,79,16,80
 %endif
+%if HIGH_BIT_DEPTH
+pw_filt_left:   dw 27,31,31,27,23,19,15,11,7,3,35,36,0,0,0,0
+                dw 31,31,27,23,19,15,11,7,3,35,36,0,0,0,0,0
+                dw 31,27,23,19,15,11,7,3,35,36,0,0,0,0,0,0
+pw_filt_fixtr:  dw 0,1,2,3,4,5,6,7,7,7,7,7,7,7,7,7
+pw_filt_nop:    dw 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+pw_filt_r:      dw 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
+pw_filt_l:      dw 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+%else
+pb_filt_left:   db 55,63,63,55,47,39,31,23,15,7,71,72,0,0,0,0
+pb_filt_r:      db 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
+pb_filt_l:      db 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+%endif
 
 SECTION .text
 
@@ -823,6 +836,100 @@ PREDICT_FILTER b, w, d, q
 INIT_MMX ssse3
 PREDICT_FILTER b, w, d, q
 %endif
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void predict_8x8_filter( pixel *src, pixel edge[36], int i_neighbor, int i_filters )
+;-----------------------------------------------------------------------------
+; avx512icl: the 8 rows ending at the left column go to qword lanes 0-7 by
+; merge-masked vpbroadcastq, vpermi2b/vpermi2w gathers l6 l7 l7 l6 .. l0 lt t0
+; from them; the top row's shifts are vpermb/vpermw, lt merged by k-mask.
+INIT_ZMM avx512icl
+cglobal predict_8x8_filter, 4,6
+%if HIGH_BIT_DEPTH
+    %define tx ym
+%else
+    %define tx xm
+%endif
+    test        r3b, 1
+    jz .check_top
+    mov         r4d, 1
+    kmovb        k1, r4d
+%assign Y 0
+%rep 8
+    vpbroadcastq m0{k1}, [r0+Y*FDEC_STRIDEB-8]
+%if Y < 7
+    kshiftlb     k1, k1, 1
+%endif
+%assign Y Y+1
+%endrep
+    mov         r4d, r2d
+    and         r4d, 8
+    neg          r4
+    movq        xm1, [r0+r4*(FDEC_STRIDEB/8)-8] ; lt, or l0 without MB_TOPLEFT
+    movhps      xm1, [r0-FDEC_STRIDEB]
+    mov         r4d, 0x3ff
+    kmovw        k2, r4d
+%if HIGH_BIT_DEPTH
+    movu        ym2, [pw_filt_left]
+    movu        ym3, [pw_filt_left+32]
+    movu        ym4, [pw_filt_left+64]
+    vpermi2w     m2, m0, m1
+    vpermi2w     m3, m0, m1
+    vpermi2w     m4, m0, m1
+    PRED8x8_LOWPASS ym2, ym2, ym4, ym3
+    vmovdqu16 [r1+6*SIZEOF_PIXEL]{k2}, ym2
+%else
+    movu        xm2, [pb_filt_left]
+    vpermi2b     m2, m0, m1
+    psrldq      xm3, xm2, 1
+    psrldq      xm4, xm2, 2
+    PRED8x8_LOWPASS xm2, xm2, xm4, xm3, xm5
+    vmovdqu8  [r1+6*SIZEOF_PIXEL]{k2}, xm2
+%endif
+    test        r3b, 2
+    jz .done
+.check_top:
+    movu        tx %+ 3, [r0-FDEC_STRIDEB]
+    mov         r4d, r2d
+    and         r4d, 4
+%if HIGH_BIT_DEPTH
+    lea          r5, [pw_filt_fixtr]
+    movu        ym0, [r5+r4*8]          ; neighbor&MB_TOPRIGHT ? pw_filt_nop : pw_filt_fixtr
+    vpermw      ym3, ym0, ym3
+    movu        ym0, [pw_filt_r]
+    vpermw      ym1, ym0, ym3
+    movu        ym0, [pw_filt_l]
+    vpermw      ym2, ym0, ym3
+%else
+    lea          r5, [shuf_fixtr]
+    pshufb      xm3, [r5+r4*4]
+    movu        xm0, [pb_filt_r]
+    vpermb      xm1, xm0, xm3
+    movu        xm0, [pb_filt_l]
+    vpermb      xm2, xm0, xm3
+%endif
+    shr         r2d, 3
+    and         r2d, 1
+    kmovb        k1, r2d
+%if HIGH_BIT_DEPTH
+    vpbroadcastw ym2{k1}, [r0-FDEC_STRIDEB-SIZEOF_PIXEL]
+%else
+    vpbroadcastb xm2{k1}, [r0-FDEC_STRIDEB-SIZEOF_PIXEL]
+%endif
+    PRED8x8_LOWPASS tx %+ 0, tx %+ 2, tx %+ 1, tx %+ 3, tx %+ 4
+    movu [r1+16*SIZEOF_PIXEL], tx %+ 0
+    mov         r4d, 0x8000
+    kmovw        k2, r4d
+%if HIGH_BIT_DEPTH
+    vmovdqu16 [r1+17*SIZEOF_PIXEL]{k2}, ym0 ; edge[32] = edge[31]
+%else
+    vmovdqu8  [r1+17*SIZEOF_PIXEL]{k2}, xm0
+%endif
+.done:
+    RET
+    %undef tx
+%endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
 ; void predict_8x8_v( pixel *src, pixel *edge )
