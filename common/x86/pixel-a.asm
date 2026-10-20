@@ -6448,6 +6448,18 @@ cglobal pixel_satd_4x8, 4,6,6
     SATD4x8_ICL_LOAD
     SATD4_ICL_HBD qdq
     SATD4_ICL_END
+
+cglobal pixel_satd_4x16, 4,6,7
+    SATD4x8_ICL_START
+    SATD4x8_ICL_LOAD
+    SATD4_ICL_HBD qdq
+    SWAP          0, 6
+    lea          r0, [r0+4*r1]
+    lea          r2, [r2+4*r3]
+    SATD4x8_ICL_LOAD
+    SATD4_ICL_HBD qdq
+    paddw        m0, m6
+    SATD4_ICL_END
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
