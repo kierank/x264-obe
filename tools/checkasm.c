@@ -3540,7 +3540,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         3,3,4,3,3,3,4,3
     };
 
-    for( int i_cqm = 0; i_cqm < 6; i_cqm++ )
+    for( int i_cqm = 0; i_cqm < 7; i_cqm++ )
     {
         if( i_cqm == 0 )
         {
@@ -3576,9 +3576,12 @@ static int check_quant( int cpu_ref, int cpu_new )
             if( i_cqm == 4 )
                 for( int i = 0; i < 64; i++ )
                     cqm_buf[i] = 10 + rand() % (max_scale - 9);
-            else
+            else if( i_cqm == 5 )
                 for( int i = 0; i < 64; i++ )
                     cqm_buf[i] = 1;
+            else /* at high bit depth dmf << qbits passes 2^15 at the highest qps */
+                for( int i = 0; i < 64; i++ )
+                    cqm_buf[i] = max_scale;
             for( int i = 0; i < 6; i++ )
                 h->pps->scaling_list[i] = cqm_buf;
             h->param.i_cqm_preset = h->pps->i_cqm_preset = X264_CQM_CUSTOM;
