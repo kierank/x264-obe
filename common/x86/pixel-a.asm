@@ -1340,6 +1340,140 @@ cglobal pixel_var_8x16, 2,3
     VAR_AVX512_CORE_8x8 1
     jmp var_avx512_end
 
+;-----------------------------------------------------------------------------
+; uint64_t pixel_var_wxh( pixel *, intptr_t ), avx512icl: VNNI
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+; vpdpwssd squares, two accumulators m6 m2; word sums m5
+%macro VAR_ICL_CORE 0
+    paddw       m5, m0
+    paddw       m5, m3
+    paddw       m5, m1
+    paddw       m5, m4
+    vpdpwssd    m6, m0, m0
+    vpdpwssd    m2, m3, m3
+    vpdpwssd    m6, m1, m1
+    vpdpwssd    m2, m4, m4
+%endmacro
+
+%macro VAR_ICL_START 0
+    FIX_STRIDES r1
+    lea         r3, [r1*3]
+    pxor        m5, m5
+    pxor        m6, m6
+    pxor        m2, m2
+%endmacro
+
+INIT_YMM avx512icl
+cglobal pixel_var_16x16, 2,4,7
+    VAR_ICL_START
+%rep 4
+    VAR_LOAD4_YMM r0, r0+16
+    lea         r0, [r0+r1*4]
+    VAR_ICL_CORE
+%endrep
+    paddd       m6, m2
+    VAR_END_YMM
+
+cglobal pixel_var_8x16, 2,4,7
+    VAR_ICL_START
+    lea         r2, [r0+r1*4]
+    VAR_LOAD4_YMM r0, r2
+    lea         r0, [r0+r1*8]
+    lea         r2, [r2+r1*8]
+    VAR_ICL_CORE
+    VAR_LOAD4_YMM r0, r2
+    VAR_ICL_CORE
+    paddd       m6, m2
+    VAR_END_YMM
+
+cglobal pixel_var_8x8, 2,4,7
+    VAR_ICL_START
+    lea         r2, [r0+r1*4]
+    VAR_LOAD4_YMM r0, r2
+    VAR_ICL_CORE
+    paddd       m6, m2
+    VAR_END_YMM
+%else ; !HIGH_BIT_DEPTH
+; vpdpbusd: x * 1 and x * (x ^ 0x80) = x*x - 128*x; m6 = 1, m7 = 0x80 bytes
+; sums m0 m1, squares - 128 * sums m2 m3
+%macro VAR_ICL_ACC 4 ; pixels, tmp, sum, square
+    pxor        m%2, m%1, m7
+    vpdpbusd    m%3, m%1, m6
+    vpdpbusd    m%4, m%1, m%2
+%endmacro
+
+%macro VAR_ICL_START 0
+    vpbroadcastd m6, [pb_1]
+    mov        r2d, 0x80808080
+    vpbroadcastd m7, r2d
+    lea         r3, [r1*3]
+    pxor        m0, m0
+    pxor        m1, m1
+    pxor        m2, m2
+    pxor        m3, m3
+%endmacro
+
+%macro VAR_ICL_END 0
+    paddd       m0, m1
+    paddd       m2, m3
+    pslld       m1, m0, 7
+    paddd       m2, m1
+    punpckldq   m1, m0, m2
+    punpckhdq   m0, m2
+    paddd       m0, m1
+    vextracti128 xm1, m0, 1
+    paddd      xm0, xm1
+    punpckhqdq xm1, xm0, xm0
+    paddd      xm0, xm1
+    movq       rax, xm0
+    RET
+%endmacro
+
+; four rows of 8 a ymm
+%macro VAR_ICL_W8 2 ; sum, square
+    movq       xm4, [r0]
+    movhps     xm4, [r0+r1]
+    movq       xm5, [r0+r1*2]
+    movhps     xm5, [r0+r3]
+    vinserti128 m4, m4, xm5, 1
+    VAR_ICL_ACC 4, 5, %1, %2
+%endmacro
+
+INIT_YMM avx512icl
+cglobal pixel_var_16x16, 2,4,10
+    VAR_ICL_START
+%rep 4
+    movu       xm4, [r0]
+    vinserti128 m4, m4, [r0+r1], 1
+    movu       xm5, [r0+r1*2]
+    vinserti128 m5, m5, [r0+r3], 1
+    lea         r0, [r0+r1*4]
+    VAR_ICL_ACC 4, 8, 0, 2
+    VAR_ICL_ACC 5, 9, 1, 3
+%endrep
+    VAR_ICL_END
+
+cglobal pixel_var_8x16, 2,4,8
+    VAR_ICL_START
+%rep 2
+    VAR_ICL_W8 0, 2
+    lea         r0, [r0+r1*4]
+    VAR_ICL_W8 1, 3
+    lea         r0, [r0+r1*4]
+%endrep
+    VAR_ICL_END
+
+cglobal pixel_var_8x8, 2,4,8
+    VAR_ICL_START
+    VAR_ICL_W8 0, 2
+    lea         r0, [r0+r1*4]
+    VAR_ICL_W8 1, 3
+    VAR_ICL_END
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
 %macro VAR2_END 3
     HADDW   %2, xm1
     movd   r1d, %2

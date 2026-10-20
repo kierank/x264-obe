@@ -1271,6 +1271,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         INIT_ADS( _avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512icl;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
@@ -1633,6 +1636,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         INIT_ADS( _avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512icl;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
 #endif
     }
 #endif //HAVE_MMX
