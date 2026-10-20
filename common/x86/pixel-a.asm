@@ -9682,6 +9682,64 @@ INIT_XMM xop
 ASD8
 %endif
 
+; avx512icl: four rows a ymm (8-bit, vpdpbusd by 1 of each image into m0 m1) or two
+; (high bit depth, vpdpwssd of the difference by 1 into m0 m1)
+%if ARCH_X86_64
+INIT_YMM avx512icl
+cglobal pixel_asd8, 5,7,6
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    pxor        m0, m0
+    pxor        m1, m1
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m4, [pw_1]
+%else
+    vpbroadcastd m4, [pb_1]
+%endif
+.loop:
+%if HIGH_BIT_DEPTH
+    movu       xm2, [r0]
+    vinserti128 m2, m2, [r0+r1], 1
+    movu       xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    psubw       m2, m3
+    vpdpwssd    m0, m2, m4
+    movu       xm2, [r0+r1*2]
+    vinserti128 m2, m2, [r0+r5], 1
+    movu       xm3, [r2+r3*2]
+    vinserti128 m3, m3, [r2+r6], 1
+    psubw       m2, m3
+    vpdpwssd    m1, m2, m4
+%else
+    movq       xm2, [r0]
+    movhps     xm2, [r0+r1]
+    movq       xm5, [r0+r1*2]
+    movhps     xm5, [r0+r5]
+    vinserti128 m2, m2, xm5, 1
+    movq       xm3, [r2]
+    movhps     xm3, [r2+r3]
+    movq       xm5, [r2+r3*2]
+    movhps     xm5, [r2+r6]
+    vinserti128 m3, m3, xm5, 1
+    vpdpbusd    m0, m2, m4
+    vpdpbusd    m1, m3, m4
+%endif
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+    sub        r4d, 4
+    jg .loop
+%if HIGH_BIT_DEPTH
+    paddd       m0, m1
+%else
+    psubd       m0, m1
+%endif
+    HADDD       m0, m1
+    pabsd      xm0, xm0
+    movd       eax, xm0
+    RET
+%endif
+
 ;=============================================================================
 ; Successive Elimination ADS
 ;=============================================================================

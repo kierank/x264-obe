@@ -1048,6 +1048,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
             ok = 0;
             fprintf( stderr, "asd: %d != %d\n", res_c, res_a );
         }
+        /* every height, and PIXEL_MAX against 0 either way */
+        ALIGNED_16( pixel hi[8*16] );
+        ALIGNED_16( pixel lo[8*16] );
+        for( int i = 0; i < 8*16; i++ )
+        {
+            hi[i] = PIXEL_MAX;
+            lo[i] = 0;
+        }
+        for( int h = 4; h <= 16 && ok; h += 4 )
+            for( int k = 0; k < 3 && ok; k++ )
+            {
+                pixel *p1 = k == 0 ? pbuf1 : k == 1 ? hi : lo;
+                pixel *p2 = k == 0 ? pbuf2 : k == 1 ? lo : hi;
+                res_c = pixel_c.asd8( p1, 8, p2, 8, h );
+                res_a = pixel_asm.asd8( p1, 8, p2, 8, h );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "asd: height %d %d: %d != %d\n", h, k, res_c, res_a );
+                }
+            }
     }
     report( "pixel asd :" );
 
