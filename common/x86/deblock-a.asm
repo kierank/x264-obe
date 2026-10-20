@@ -877,6 +877,20 @@ cglobal deblock_h_luma_intra, 4,8,16
     RET
 
 ;-----------------------------------------------------------------------------
+; void deblock_h_luma_mbaff( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+; 8 rows: punpck transposes, the k-mask branch of DEBLOCK_LUMA_INTER_SSE2
+INIT_XMM avx512icl
+cglobal deblock_h_luma_mbaff, 5,6,15
+    add         r1, r1
+    vpbroadcastw m12, r2d
+    vpbroadcastw m13, r3d
+    lea         r2, [r1*3]
+    lea         r5, [r0+r2]
+    DEBLOCK_H_LUMA_8ROWS 1
+    RET
+
+;-----------------------------------------------------------------------------
 ; void deblock_luma_mb( uint16_t *pix, intptr_t stride, uint8_t bs[2][8][4],
 ;                       x264_deblock_edge_t e[3], int edges )
 ; All luma edges of one macroblock: vertical edges left to right on a transposed
