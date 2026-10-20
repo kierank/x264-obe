@@ -77,6 +77,10 @@ isad_lidx_v:
 %undef i
 ; rows 0-2, 3-6, 7-10, 11-14, 15, 7-15; V plane rows 0-3, 4-7
 isad_lmask:    dw 0x0007, 0x0078, 0x0780, 0x7800, 0x8000, 0xff80, 0x000f, 0x00f0
+ALIGN 64
+; 8x8 H rows from edge[7..14] = l7..l0
+isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4,4,4
+               db 3,3,3,3,3,3,3,3, 2,2,2,2,2,2,2,2, 1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0
 
 SECTION .text
 
@@ -1346,6 +1350,34 @@ cglobal intra_sad_x3_4x4, 3,4,5
     movq      [r2+0], xm2
     pextrd    [r2+8], xm2, 2
     RET
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_8x8( uint8_t *fenc, uint8_t edge[36], int res[3] )
+; reached where intra_sad_x9_8x8 isn't used (frame edges, lossless)
+; all 8 rows of a mode in one zmm, the sums packed as in the 8x8c kernel
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x3_8x8, 3,3,8
+    movq          xm0, [r1+7]           ; l7 .. l0
+    movq          xm1, [r1+16]          ; t0 .. t7
+    punpcklqdq    xm2, xm0, xm1
+    pxor          xm3, xm3
+    psadbw        xm2, xm3
+    punpckhqdq    xm4, xm2, xm2
+    paddw         xm2, xm4
+    psrlw         xm2, 3
+    pavgw         xm2, xm3              ; (sum+8)>>4
+    vpbroadcastb   m2, xm2              ; DC
+    mova           m4, [isad8_hidxr]
+    vpermb         m4, m4, m0           ; H
+    vpbroadcastq   m1, xm1              ; V
+    movu           m6, [r0]
+    movu           m7, [r0+4*FENC_STRIDE]
+    mova           m5, [isad8c_qidx]
+    vpermt2q       m6, m5, m7           ; fenc rows 0-7
+    psadbw         m1, m6
+    psadbw         m4, m6
+    psadbw         m2, m6
+    INTRA_SAD_PACK3_END 1, 4, 2         ; V H DC
 
 ;-----------------------------------------------------------------------------
 ; int pixel_vsad( uint8_t *src, intptr_t stride, int height )
