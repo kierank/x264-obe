@@ -27,6 +27,10 @@
 
 #include <ctype.h>
 #include "common/common.h"
+#if SYS_LINUX
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 // GCC doesn't align stack variables on ARM, so use .bss
 #if ARCH_ARM
@@ -4672,11 +4676,45 @@ static int check_bitstream( int cpu_ref, int cpu_new )
     if( bs_a.nal_escape != bs_ref.nal_escape )
     {
         int size = 0x4000;
-        uint8_t *input = malloc(size+100);
+        uint8_t *input = malloc(size+NALU_ESCAPE_PADDING);
         uint8_t *output1 = malloc(size*2);
         uint8_t *output2 = malloc(size*2);
         used_asm = 1;
         set_func_name( "nal_escape" );
+#if SYS_LINUX
+        /* src ends NALU_ESCAPE_PADDING bytes before a PROT_NONE page: reading
+         * further than x264_nal_end guarantees faults */
+        long pg = sysconf( _SC_PAGESIZE );
+        uint8_t *guard_buf = mmap( NULL, 2*pg, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0 );
+        if( guard_buf != MAP_FAILED && !mprotect( guard_buf + pg, pg, PROT_NONE ) )
+        {
+            uint8_t *end = guard_buf + pg - NALU_ESCAPE_PADDING;
+            memset( end, 0xff, NALU_ESCAPE_PADDING );
+            int max_size = X264_MIN( pg - NALU_ESCAPE_PADDING, size );
+            for( int i = 0; i < 2000 && ok; i++ )
+            {
+                int test_size = i < 1000 ? i : rand() % max_size;
+                uint8_t *src = end - test_size;
+                for( int j = 0; j < test_size; j++ )
+                {
+                    int r = rand();
+                    src[j] = i & 1 ? r : (r & 3) ? 0 : (r >> 2) & 3;
+                }
+                uint8_t *dst = output2 + (i & 63);
+                uint8_t *end_c = (uint8_t*)call_c1( bs_c.nal_escape, output1, src, end );
+                uint8_t *end_a = (uint8_t*)call_a1( bs_a.nal_escape, dst, src, end );
+                int size_c = end_c - output1;
+                int size_a = end_a - dst;
+                if( size_c != size_a || memcmp( output1, dst, size_c ) )
+                {
+                    fprintf( stderr, "nal_escape :  [FAILED] padded size %d: %d %d\n", test_size, size_c, size_a );
+                    ok = 0;
+                }
+            }
+        }
+        if( guard_buf != MAP_FAILED )
+            munmap( guard_buf, 2*pg );
+#endif
         for( int i = 0; i < 100; i++ )
         {
             /* Test corner-case sizes */
