@@ -79,6 +79,7 @@ cextern pb_1
 cextern pb_3
 cextern pb_a1
 cextern pw_2
+cextern pw_1
 cextern pw_4
 cextern pw_00ff
 cextern pw_pixel_max
@@ -405,6 +406,77 @@ cglobal deblock_h_luma, 5,6,8,0-7*mmsize
 ; out: m0=p1', m3=q1', m1=p0', m2=q0'
 ; clobbers: m4, m5, m6, m7, m10, m11, m14
 %macro DEBLOCK_LUMA_INTER_SSE2 0-1 0 ; 1: mbaff, 2: tc0 bytes in xm14 (avx2)
+%if cpuflag(avx512)
+%if %1 == 2
+    vpbroadcastd m6, xm14
+    pshufb      m6, [deblock_tc_shuf_avx2]
+    psraw       m6, 8
+%elif %1
+    movd        m6, [r4]
+    punpcklbw   m6, m6
+    punpcklwd   m6, m6
+    psraw       m6, 8
+%else
+    LOAD_TC     m6, r4
+%endif
+    psubw       m4, m1, m2
+    psubw       m5, m0, m1
+    psubw       m7, m3, m2
+    psubw      m10, m8, m1
+    psubw      m11, m9, m2
+    pabsw       m4, m4
+    pabsw       m5, m5
+    pabsw       m7, m7
+    pabsw      m10, m10
+    pabsw      m11, m11
+    pmaxsw      m5, m7
+    vpcmpgtw    k1, m12, m4     ; |p0-q0| < alpha
+    vpcmpgtw    k2, m13, m5     ; max(|p1-p0|, |q1-q0|) < beta
+    vpcmpgtw    k3, m13, m10    ; ap
+    vpcmpgtw    k4, m13, m11    ; aq
+    vpmovw2m    k5, m6          ; tc0 < 0: bS 0
+    kandw       k1, k1, k2
+    kandnw      k1, k5, k1
+    kandw       k3, k3, k1
+    kandw       k4, k4, k1
+    vmovdqu16   m6 {k1}{z}, m6  ; tc0 & mask
+    psubw       m5, m2, m1
+    psubw       m7, m0, m3
+    psllw       m5, 2
+    paddw       m5, m7
+    paddw       m5, [pw_4]
+    psraw       m5, 3           ; ((q0-p0)*4 + p1-q1 + 4) >> 3
+    mova        m7, m6
+    paddw       m7 {k3}, m7, [pw_1]
+    paddw       m7 {k4}, m7, [pw_1] ; tc = tc0+ap+aq
+    pxor       m14, m14
+    psubw      m10, m14, m7
+    pmaxsw      m5, m10
+    pminsw      m5, m7          ; delta
+    pavgw       m4, m1, m2      ; (p0+q0+1)>>1
+    psubw       m7, m14, m6
+    paddw      m10, m8, m4
+    paddw      m11, m9, m4
+    psraw      m10, 1
+    psraw      m11, 1
+    psubw      m10, m0
+    psubw      m11, m3
+    pmaxsw     m10, m7
+    pmaxsw     m11, m7
+    pminsw     m10, m6
+    pminsw     m11, m6
+    paddw      m10, m0
+    paddw      m11, m3
+    vpblendmw   m8 {k3}, m0, m10 ; p1'
+    vpblendmw   m9 {k4}, m3, m11 ; q1'
+    paddw       m1, m5
+    psubw       m2, m5
+    mova        m4, [pw_pixel_max]
+    pmaxsw      m1, m14
+    pmaxsw      m2, m14
+    pminsw      m1, m4
+    pminsw      m2, m4
+%else
     LOAD_MASK   m0, m1, m2, m3, m12, m13, m7, m4, m6
 %if %1 == 2
     vpbroadcastd m6, xm14
@@ -443,6 +515,7 @@ cglobal deblock_h_luma, 5,6,8,0-7*mmsize
     pand        m4, m6
     DEBLOCK_P0_Q0 m1, m2, m0, m3, m4, m5, m6
 
+%endif
     SWAP         0, 8
     SWAP         3, 9
 %endmacro
@@ -643,6 +716,8 @@ cglobal deblock_h_luma, 5,7,15
 %endmacro
 
 INIT_YMM avx2
+DEBLOCK_LUMA_64_AVX2
+INIT_YMM avx512icl
 DEBLOCK_LUMA_64_AVX2
 
 ;-----------------------------------------------------------------------------
@@ -862,7 +937,7 @@ cglobal deblock_h_luma_intra, 4,8,16
 
 %define COL16(x) rsp+((x)+4)*32
 
-INIT_YMM avx2
+%macro DEBLOCK_LUMA_MB 0
 cglobal deblock_luma_mb, 5,13,16, 0-20*32
     ; stack: columns -4..15
     add         r1, r1
@@ -870,6 +945,12 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     lea         r7, [r0+r1*4]
     lea         r6, [r0+r1*8]
     lea         r8, [r7+r1*8]
+%if cpuflag(avx512)
+    movu        xm0, [r2]
+    vinserti128  m0, m0, [r2+32], 1
+    vptestmd     k1, m0, m0
+    kmovb       r9d, k1
+%else
     movu        xm0, [r2]
     movu        xm1, [r2+32]
     pxor        xm2, xm2
@@ -880,6 +961,7 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     shl        r10d, 4
     or          r9d, r10d
     not         r9d
+%endif
     and         r4d, r9d          ; drop edges with bS 0
     test        r4d, 15
     jz .horizontal
@@ -1009,6 +1091,12 @@ cglobal deblock_luma_mb, 5,13,16, 0-20*32
     jnz .hloop
 .end:
     RET
+%endmacro
+
+INIT_YMM avx2
+DEBLOCK_LUMA_MB
+INIT_YMM avx512icl
+DEBLOCK_LUMA_MB
 %endif
 
 %macro SWAPMOVA 2

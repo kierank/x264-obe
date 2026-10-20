@@ -831,10 +831,12 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
         if( cpu&X264_CPU_AVX512ICL )
         {
             pf->deblock_strength = x264_deblock_strength_avx512icl;
+            pf->deblock_luma[0] = x264_deblock_h_luma_avx512icl;
             pf->deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx512icl;
             pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx512icl;
-#if !HIGH_BIT_DEPTH
-            pf->deblock_luma[0] = x264_deblock_h_luma_avx512icl;
+#if HIGH_BIT_DEPTH
+            pf->deblock_luma[1] = x264_deblock_v_luma_avx512icl;
+            pf->deblock_luma_mb = x264_deblock_luma_mb_avx512icl;
 #endif
         }
 #endif
