@@ -1975,6 +1975,58 @@ SAD_X_HBD8_VNNI 4,  8, 1
 SAD_X_HBD8_VNNI 3,  4
 SAD_X_HBD8_VNNI 4,  4
 
+; 4 wide: qword lane i of a ymm = row k of ref i+1 (movq + k-merged
+; vpbroadcastq; x3: lane 3 is junk, never stored), fenc row k broadcast.
+; Tail: pshufd, paddd, vpmovqd (3 ops).
+%macro SAD_X_HBD4_VNNI 2 ; refs, height
+%if %1 == 3
+cglobal pixel_sad_x3_4x%2, 6,7,16
+    %define sad_stride r4
+%else
+cglobal pixel_sad_x4_4x%2, 6,7,16
+    %define sad_stride r5
+%endif
+    vpbroadcastd  m15, [pw_1]
+    mov           r6d, 2
+    kmovb          k1, r6d
+    add           r6d, r6d
+    kmovb          k2, r6d
+    add           r6d, r6d
+    kmovb          k3, r6d
+    lea            r6, [sad_stride+2*sad_stride]
+%assign sad_hbd_k 0
+%rep %2
+    SAD_HBD_ROWOFF sad_hbd_k&3, sad_stride, r6
+    vpbroadcastq  m14, [r0+sad_hbd_k*FENC_STRIDEB]
+    movq          xm10, [r1+sad_off]
+    vpbroadcastq  m10 {k1}, [r2+sad_off]
+    vpbroadcastq  m10 {k2}, [r3+sad_off]
+%if %1 == 4
+    vpbroadcastq  m10 {k3}, [r4+sad_off]
+%endif
+    psubw         m10, m14
+    SAD_X_HBD_VNNI_ACC sad_hbd_k&1, 10, sad_hbd_k < 2
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %2-1
+    lea            r1, [r1+8*sad_stride]
+    lea            r2, [r2+8*sad_stride]
+    lea            r3, [r3+8*sad_stride]
+%if %1 == 4
+    lea            r4, [r4+8*sad_stride]
+%endif
+%endif
+%assign sad_hbd_k sad_hbd_k+1
+%endrep
+    paddd          m0, m1
+    pshufd         m1, m0, q2301
+    paddd          m0, m1
+    vpmovqd       xm0, m0          ; s1 s2 s3 s4
+    SAD_X_HBD_VNNI_OUT %1, 0
+    %undef sad_stride
+%endmacro
+
+SAD_X_HBD4_VNNI 3, 8
+SAD_X_HBD4_VNNI 4, 8
+
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_16x16( uint16_t *fenc, intptr_t, uint16_t *pix, intptr_t stride )
 ; AVX512ICL zmm: as the avx512 kernel (row pair a zmm, ymm load + k-merged
