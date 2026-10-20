@@ -3795,6 +3795,15 @@ cglobal predict_4x4_dc_left, 1,2
     STORE4x4_SPLAT_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc_128( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc_128, 1,2
+    mov         r1d, 0x80808080
+    vpbroadcastd m0, r1d
+    STORE4x4_SPLAT_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 ; ym0 = left pixel of row y in word 4*y+3
 %macro LEFT4W_ICL 0
@@ -3930,6 +3939,14 @@ cglobal predict_4x4_dc_left, 1,2
     STORE4x4W_SPLAT_ICL 0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc_128( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc_128, 1,2
+    mov         r1d, 1 << (BIT_DEPTH-1)
+    vpbroadcastw ym0, r1d
+    SCATTER4x4W_ICL 0
+    RET
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
