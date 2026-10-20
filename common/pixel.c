@@ -1270,13 +1270,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
-        INIT_ADS( _avx512icl );
-        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512icl;
+        INIT_ADS( _zmm_avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
-        INIT2( ssd, _avx512icl );
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmm_avx512icl;
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
@@ -1643,13 +1644,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
-        INIT_ADS( _avx512icl );
-        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512icl;
+        INIT_ADS( _zmm_avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
-        INIT2( ssd, _avx512icl );
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmm_avx512icl;
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
