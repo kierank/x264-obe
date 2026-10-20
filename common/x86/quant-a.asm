@@ -588,7 +588,129 @@ cglobal quant_4x4x4, 3,3,6
     RET
 %endif ; !HIGH_BIT_DEPTH
 
+%if ARCH_X86_64
+; k1: nonzero coefs, 16 bits per block -> r6 (eax): nonzero blocks, k2: store mask of the nonzero blocks
+%macro QUANT_SCAN_NZ_AVX512 0
+    kmovq     r6, k1
+    mov       r7, 0x7fff7fff7fff7fff
+    mov       r8, r6
+    and       r8, r7
+    add       r8, r7
+    or        r8, r6
+    not       r7
+    and       r8, r7          ; bit 15 of each block: block is nonzero
+    pext      r6, r8, r7
+    shr       r8, 15
+    imul      r8, r8, 0xffff
+    kmovq     k2, r8
+%endmacro
 
+; dst, src, mf, bias; m7: 0
+%macro QUANT_ONE_AVX512 4
+%if HIGH_BIT_DEPTH
+    pabsd     %1, %2
+    paddd     %1, %4
+    pmulld    %1, %3
+    psrad     %1, 16
+    vpmovd2m  k1, %2
+    vpsubd    %1{k1}, m7, %1
+%else
+    pabsw     %1, %2
+    paddusw   %1, %4
+    pmulhuw   %1, %3
+    vpmovw2m  k1, %2
+    vpsubw    %1{k1}, m7, %1
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal quant_8x8, 3,3,8
+    pxor     xm7, xm7
+%assign qi 0
+%rep SIZEOF_DCTCOEF
+    movu      m0, [r0+qi]
+    QUANT_ONE_AVX512 m1, m0, [r1+qi], [r2+qi]
+    movu [r0+qi], m1
+%if qi
+    por       m6, m1
+%else
+    mova      m6, m1
+%endif
+%assign qi qi+64
+%endrep
+%undef qi
+    vptestmd  k1, m6, m6
+    xor      eax, eax
+    kortestw  k1, k1
+    setnz     al
+    RET
+
+cglobal quant_4x4x4, 3,9,8
+    pxor     xm7, xm7
+%if HIGH_BIT_DEPTH
+    movu      m2, [r1]
+    movu      m3, [r2]
+    movu      m0, [r0+  0]
+    QUANT_ONE_AVX512 m4, m0, m2, m3
+    movu      m0, [r0+ 64]
+    QUANT_ONE_AVX512 m5, m0, m2, m3
+    movu [r0+  0], m4
+    movu [r0+ 64], m5
+    vptestmd  k3, m4, m4
+    vptestmd  k4, m5, m5
+    movu      m0, [r0+128]
+    QUANT_ONE_AVX512 m4, m0, m2, m3
+    movu      m0, [r0+192]
+    QUANT_ONE_AVX512 m5, m0, m2, m3
+    movu [r0+128], m4
+    movu [r0+192], m5
+    vptestmd  k5, m4, m4
+    vptestmd  k6, m5, m5
+    kunpckwd  k3, k4, k3
+    kunpckwd  k5, k6, k5
+    kunpckdq  k1, k5, k3
+%else
+    vbroadcasti32x8 m2, [r1]
+    vbroadcasti32x8 m3, [r2]
+    movu      m0, [r0+ 0]
+    QUANT_ONE_AVX512 m4, m0, m2, m3
+    movu      m0, [r0+64]
+    QUANT_ONE_AVX512 m5, m0, m2, m3
+    movu [r0+ 0], m4
+    movu [r0+64], m5
+    vptestmw  k3, m4, m4
+    vptestmw  k4, m5, m5
+    kunpckdq  k1, k4, k3
+%endif
+    QUANT_SCAN_NZ_AVX512
+    RET
+
+%if HIGH_BIT_DEPTH
+cglobal quant_4x4, 3,3,8
+    pxor     xm7, xm7
+    movu      m0, [r0]
+    QUANT_ONE_AVX512 m1, m0, [r1], [r2]
+    movu    [r0], m1
+    vptestmd  k1, m1, m1
+    xor      eax, eax
+    kortestw  k1, k1
+    setnz     al
+    RET
+
+cglobal quant_4x4_dc, 3,3,8
+    pxor     xm7, xm7
+    vpbroadcastd m2, r1d
+    vpbroadcastd m3, r2d
+    movu      m0, [r0]
+    QUANT_ONE_AVX512 m1, m0, m2, m3
+    movu    [r0], m1
+    vptestmd  k1, m1, m1
+    xor      eax, eax
+    kortestw  k1, k1
+    setnz     al
+    RET
+%endif
+%endif ; ARCH_X86_64
 
 ;=============================================================================
 ; dequant
@@ -2812,22 +2934,6 @@ COEFF_LEVELRUN_AVX512 16, w
     shl       r1d, 4
     or        r6d, r1d
     RET
-%endmacro
-
-; k1: nonzero coefs, 16 bits per block -> r6 (eax): nonzero blocks, k2: store mask of the nonzero blocks
-%macro QUANT_SCAN_NZ_AVX512 0
-    kmovq     r6, k1
-    mov       r7, 0x7fff7fff7fff7fff
-    mov       r8, r6
-    and       r8, r7
-    add       r8, r7
-    or        r8, r6
-    not       r7
-    and       r8, r7          ; bit 15 of each block: block is nonzero
-    pext      r6, r8, r7
-    shr       r8, 15
-    imul      r8, r8, 0xffff
-    kmovq     k2, r8
 %endmacro
 
 %if HIGH_BIT_DEPTH
