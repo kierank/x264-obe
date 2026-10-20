@@ -6510,6 +6510,34 @@ cglobal pixel_satd_16x16, 4,6,8
     HADDD        m7, m6
     movd        eax, xm7
     RET
+
+; as pixel_satd_avg2_16x16_avx2 with the pixel_satd_16x16_avx512icl tail
+cglobal pixel_satd_avg2_16x16, 4,5,8
+    SATD_AVG2_START
+%assign satd_hbd_pass 0
+%rep 4
+    SATD_AVG2_LOAD_Y
+%if satd_hbd_pass & 1
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%if satd_hbd_pass == 1
+    pmaddwd      m7, m6, [pw_1]
+%elif satd_hbd_pass == 3
+    {evex} vpdpwssd m7, m6, [pw_1]
+%endif
+%if satd_hbd_pass < 3
+    lea          r1, [r1+4*r3]
+    lea          r2, [r2+4*r3]
+    add          r0, 4*FENC_STRIDEB
+%endif
+%assign satd_hbd_pass satd_hbd_pass+1
+%endrep
+%undef satd_hbd_pass
+    HADDD        m7, m6
+    movd        eax, xm7
+    RET
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
