@@ -1718,6 +1718,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd[PIXEL_4x8] = x264_pixel_satd_4x8_avx512icl;
         pixf->satd[PIXEL_4x16] = x264_pixel_satd_4x16_avx512icl;
         pixf->satd[PIXEL_8x4] = x264_pixel_satd_8x4_avx512icl;
+        /* x264-weird2 satd winners, second set */
+        pixf->sa8d[PIXEL_16x16] = x264_pixel_sa8d_16x16_avx512icl;
+        pixf->intra_satd_x3_4x4 = x264_intra_satd_x3_4x4_avx512icl;
+        pixf->intra_satd_x3_8x16c = x264_intra_satd_x3_8x16c_avx512icl;
+        pixf->satd_fenc_pre[1] = x264_pixel_satd_fenc_pre_8x8_avx512icl;
 #endif
     }
 

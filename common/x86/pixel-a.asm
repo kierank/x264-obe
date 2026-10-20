@@ -9310,7 +9310,337 @@ cglobal pixel_satd_8x4, 4,5,5
     SATD_AVX512_LOAD4 q, k1 ; 2 0 2 0
     SATD_ICL_PACKED         ; 3 1 3 1
     SATD_ICL_PACKED_END
+
+; sa8d_16x16: four pixel_sa8d_8x8_avx512icl transforms; an 8x8's max() words
+; sum to <= 2*32*255 per word (signed), folded to dwords in two chains:
+; pmaddwd for the first two 8x8s, {evex} vpdpwssd for the last two
+cglobal pixel_sa8d_16x16, 4,8,10
+    SATD_ICL_START8
+    vpbroadcastd  m9, [pw_1]
+%assign sa8d_icl_b 0
+%rep 4
+    SATD_ICL_SUMSUB8 0, 4, 0, 0
+    SATD_ICL_SUMSUB8 1, 5, r1, r3
+    SATD_ICL_SUMSUB8 2, 4, 2*r1, 2*r3
+    SATD_ICL_SUMSUB8 3, 5, r4, r5
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SA8D_ICL_H8 0, 1, 4
+    SA8D_ICL_H8 2, 3, 4
+    HADAMARD 2, sumsub, 0, 1, 4, 5
+    HADAMARD 2, sumsub, 2, 3, 4, 5
+    pabsw     m0, m0
+    pabsw     m1, m1
+    pabsw     m2, m2
+    pabsw     m3, m3
+    SATD_ICL_HMAX 0, 1, 4
+    SATD_ICL_HMAX 2, 3, 5
+    paddw     m0, m2
+%if sa8d_icl_b == 0
+    pmaddwd   m6, m0, m9
+%elif sa8d_icl_b == 1
+    pmaddwd   m8, m0, m9
+%elif sa8d_icl_b == 2
+    {evex} vpdpwssd m6, m0, m9
+%else
+    {evex} vpdpwssd m8, m0, m9
+%endif
+%if sa8d_icl_b == 0 || sa8d_icl_b == 2
+    add       r0, 8
+    add       r2, 8
+    add       r6, 8
+    add       r7, 8
+%elif sa8d_icl_b == 1
+    lea       r0, [r0+8*r1-8]
+    lea       r2, [r2+8*r3-8]
+    lea       r6, [r6+8*r1-8]
+    lea       r7, [r7+8*r3-8]
+%endif
+%assign sa8d_icl_b sa8d_icl_b+1
+%endrep
+%undef sa8d_icl_b
+    paddd     m6, m8
+    HADDD     m6, m1
+    movd     eax, xm6
+    add      eax, 1
+    shr      eax, 1
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_satd_x3_8x16c( uint8_t *fenc, uint8_t *fdec, int res[3] ) (DC, H, V)
+; Two halves of intra_satd_x3_8x8c_avx512icl (HMAX, merge-masked fenc and H
+; rows); the half's DC dword dc0-3 / dc4-7 as in predict_8x16c_dc.
+;-----------------------------------------------------------------------------
+cglobal intra_satd_x3_8x16c, 3,7,16
+    movq          xm0, [r1-FDEC_STRIDE]
+    pxor          xm1, xm1
+    punpcklbw     xm0, xm1
+    pmaddwd       xm0, [pw_1]
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1                 ; s0 s0 s1 s1
+    movd          r3d, xm0
+    pextrd        r5d, xm0, 2
+    mov           r4d, 0x5555000c
+    kmovd          k2, r4d
+    kshiftrd       k1, k2, 16
+    mov           r4d, 0xffff0000
+    kmovd          k3, r4d
+    INTRA_X3_LEFT4 r6d, 0                  ; s2
+    lea           r3d, [r3+r6+4]
+    shr           r3d, 3                   ; dc0 = (s0 + s2 + 4) >> 3
+    lea           r6d, [r5+2]
+    shr           r6d, 2                   ; dc1 = (s1 + 2) >> 2
+    shl           r6d, 8
+    or            r3d, r6d
+    INTRA_X3_LEFT4 r6d, 4                  ; s3
+    lea           r4d, [r6+2]
+    shr           r4d, 2                   ; dc2 = (s3 + 2) >> 2
+    shl           r4d, 16
+    or            r3d, r4d
+    lea           r4d, [r5+r6+4]
+    shr           r4d, 3                   ; dc3 = (s1 + s3 + 4) >> 3
+    shl           r4d, 24
+    or            r3d, r4d
+    movd         xm13, r3d
+    INTRA_X3_LEFT4 r6d, 8                  ; s4
+    lea           r3d, [r6+2]
+    shr           r3d, 2                   ; dc4 = (s4 + 2) >> 2
+    lea           r6d, [r5+r6+4]
+    shr           r6d, 3                   ; dc5 = (s1 + s4 + 4) >> 3
+    shl           r6d, 8
+    or            r3d, r6d
+    INTRA_X3_LEFT4 r6d, 12                 ; s5
+    lea           r4d, [r6+2]
+    shr           r4d, 2                   ; dc6 = (s5 + 2) >> 2
+    shl           r4d, 16
+    or            r3d, r4d
+    lea           r4d, [r5+r6+4]
+    shr           r4d, 3                   ; dc7 = (s1 + s5 + 4) >> 3
+    shl           r4d, 24
+    or            r3d, r4d
+    mova           m7, [hmul_8p]
+    vpbroadcastq  m12, [r1-FDEC_STRIDE]
+    pmaddubsw     m12, m7                  ; V, first stage
+    pxor          m14, m14
+    pxor          m15, m15
+    pxor           m6, m6
+%assign intra_x3_h 0
+%rep 2
+%if intra_x3_h
+    movd         xm13, r3d
+%endif
+    vpbroadcastd  m13, xm13
+    pshufb        m13, [intra_8x8c_dc_shufb]
+    pmaddubsw     m13, m7                  ; DC, first stage
+%assign intra_x3_k 0
+%rep 4
+    %assign intra_x3_f 8+intra_x3_k
+    vpbroadcastq   m %+ intra_x3_f, [r0+(8*intra_x3_h+intra_x3_k)*FENC_STRIDE]
+    vpbroadcastq   m %+ intra_x3_f {k2}, [r0+(8*intra_x3_h+intra_x3_k+4)*FENC_STRIDE]
+    pmaddubsw      m %+ intra_x3_f, m7
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    psubw          m0, m8, m13             ; DC
+    psubw          m1, m9, m13
+    psubw          m2, m10, m13
+    psubw          m3, m11, m13
+    INTRA_X3_SATD 14
+%assign intra_x3_k 0
+%rep 4                                     ; H
+    %assign intra_x3_f 8+intra_x3_k
+    vpbroadcastb   m %+ intra_x3_k, [r1+(8*intra_x3_h+intra_x3_k)*FDEC_STRIDE-1]
+    vpbroadcastb   m %+ intra_x3_k {k3}, [r1+(8*intra_x3_h+intra_x3_k+4)*FDEC_STRIDE-1]
+    pmaddubsw      m %+ intra_x3_k, m7
+    psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    INTRA_X3_SATD 15
+    psubw          m0, m8, m12             ; V
+    psubw          m1, m9, m12
+    psubw          m2, m10, m12
+    psubw          m3, m11, m12
+    INTRA_X3_SATD 6
+%assign intra_x3_h intra_x3_h+1
+%endrep
+%undef intra_x3_h
+    INTRA_X3_FOLD 14
+    INTRA_X3_FOLD 15
+    INTRA_X3_FOLD 6
+    punpckldq     xm4, xm14, xm15
+    punpckhdq    xm14, xm15
+    paddd        xm14, xm4
+    punpckhdq     xm5, xm6, xm6
+    punpckldq     xm6, xm6
+    paddd         xm6, xm5
+    punpcklqdq    xm4, xm14, xm6
+    punpckhqdq   xm14, xm6
+    paddd        xm14, xm4                 ; DC H V V
+    movq        [r2], xm14
+    pextrd    [r2+8], xm14, 2
+    RET
+
+%macro X9B_SATD_ICL 2 ; as X9B_SATD, m12 tmp
+    pmaddubsw   m%1, m11
+    psubw       m%1, m8
+    vprold      m%2, m%1, 16
+    paddw       m12, m%1, m%2
+    vpsubw      m12 {k4}, m%2, m%1
+    pshufd      m%2, m12, q1032
+    paddw       m%1, m12, m%2
+    vpsubw      m%1 {k5}, m%2, m12
+    pabsw       m%1, m%1
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void intra_satd_x3_4x4( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
+; The v, h and dc of intra_satd_x9_4x4_avx512icl, without the stores.
+;-----------------------------------------------------------------------------
+cglobal intra_satd_x3_4x4, 3,4,16
+    mov         r3d, 0xaaaa
+    kmovd        k4, r3d
+    mov         r3d, 0xf0f0
+    kmovd        k5, r3d
+    movu        xm1, [r1-1*FDEC_STRIDE-8]
+    pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
+    pinsrb      xm1, [r1+2*FDEC_STRIDE-1], 1
+    pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
+    pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
+    pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+    pxor        xm4, xm4
+    pshufb      xm2, xm1, [intrax9a_dc]
+    psadbw      xm2, xm4
+    psrlw       xm2, 2
+    pavgw       xm2, xm4
+    vpbroadcastb m2, xm2              ; dc
+    vpermq       m1, m1, q1010
+    movd        xm8, [r0+0*FENC_STRIDE]
+    pinsrd      xm8, [r0+1*FENC_STRIDE], 1
+    movd        xm9, [r0+2*FENC_STRIDE]
+    pinsrd      xm9, [r0+3*FENC_STRIDE], 1
+    vinserti128  m8, m8, xm9, 1
+    punpckldq    m8, m8
+    vbroadcasti128 m11, [hmul_4p]
+    pmaddubsw    m8, m11
+    pshufb       m9, m1, [x9b4_v]
+    pshufb      m10, m1, [x9b4_h]
+    X9B_SATD_ICL  9, 3
+    X9B_SATD_ICL 10, 3
+    X9B_SATD_ICL  2, 3
+    vperm2i128   m3, m9, m9, 0x01
+    pmaxsw       m9, m3               ; v | v
+    X9B_MERGE    10, 2, 3             ; h | dc
+    vpbroadcastd m4, [pw_1]
+    pmaddwd      m9, m4
+    pmaddwd     m10, m4
+    phaddd      m10, m9               ; h h v v | dc dc v v
+    vextracti128 xm3, m10, 1
+    phaddd      xm10, xm3             ; h v dc v
+    pshufd      xm10, xm10, q3201     ; v h dc
+    movq       [r2], xm10
+    pextrd   [r2+8], xm10, 2
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_sa8d_x3_8x8( uint8_t *fenc, uint8_t edge[36], int res[3] ) (V, H, DC)
+; The v | h and dc sa8ds of intra_sa8d_x9_8x8_avx512icl (HMAX), inline; dc
+; rows are all the same, so their first stage is computed once.
+;-----------------------------------------------------------------------------
+cglobal intra_sa8d_x3_8x8, 3,4,16, 0x100
+    %define fenc_buf rsp
+    mov         r3d, 0x5555
+    kmovd        k1, r3d
+    mova        m15, [hmul_8p]
+%assign x9i 0
+%rep 8
+    vpbroadcastq m %+ x9i, [r0+x9i*FENC_STRIDE]
+    pmaddubsw    m %+ x9i, m15
+    mova [fenc_buf+x9i*32], m %+ x9i
+%assign x9i x9i+1
+%endrep
+    movu        xm1, [r1+7]
+    vinserti128  m1, m1, [r1+16], 1
+    pxor        xm0, xm0
+    psadbw       m5, m1, m0
+    vextracti128 xm2, m5, 1
+    paddw       xm5, xm2
+    psrlw       xm5, 3
+    pavgw       xm5, xm0
+    vpbroadcastb m5, xm5              ; dc
+    pmaddubsw   m13, m5, m15          ; dc, first stage
+    vpermq      m12, m1, q1032        ; v | h
+%assign x9i 0
+%rep 8
+    pshufb       m %+ x9i, m12, [x9b8_vh+x9i*32]
+    pmaddubsw    m %+ x9i, m15
+    psubw        m %+ x9i, [fenc_buf+x9i*32]
+%assign x9i x9i+1
+%endrep
+    SA8D_X9_HMUL
+    paddw        m0, m1
+    paddw        m2, m3
+    paddw       m14, m0, m2           ; v | h
+%assign x9i 0
+%rep 8
+    psubw        m %+ x9i, m13, [fenc_buf+x9i*32]
+%assign x9i x9i+1
+%endrep
+%undef x9i
+    SA8D_X9_HMUL
+    paddw        m0, m1
+    paddw        m2, m3
+    paddw        m0, m2               ; dc | dc
+    phaddw      m14, m0
+    phaddw      m14, m14
+    phaddw      m14, m14              ; v dc .. | h dc ..
+    pxor        xm1, xm1
+    pavgw       m14, m1
+    vextracti128 xm1, m14, 1
+    punpcklwd   xm0, xm14, xm1        ; v h dc dc
+    pmovzxwd    xm0, xm0
+    movq       [r2], xm0
+    pextrd   [r2+8], xm0, 2
+    RET
 ICL_LOW_END
+
+;-----------------------------------------------------------------------------
+; satd_fenc_pre, zmm: the avx2 layout two rows (16 wide) or row pairs (8 wide)
+; a register. 16x16: one 64 byte load of four fenc rows, vshufi32x4 doubles
+; each row into its two lanes. 8x8: rows k, k+4, k+1, k+5 twice each from a
+; vpbroadcastq and three merge-masked ones (k1/k2/k3 = qwords 2-3/4-5/6-7).
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal pixel_satd_fenc_pre_16x16, 2,2,3
+    vbroadcasti64x4 m2, [hmul_16p]
+%assign fpre_i 0
+%rep 4
+    movu           m1, [r1+fpre_i*64]
+    vshufi32x4     m0, m1, m1, q1100
+    vshufi32x4     m1, m1, m1, q3322
+    pmaddubsw      m0, m2
+    pmaddubsw      m1, m2
+    movu [r0+fpre_i*128], m0
+    movu [r0+fpre_i*128+64], m1
+%assign fpre_i fpre_i+1
+%endrep
+    RET
+
+cglobal pixel_satd_fenc_pre_8x8, 2,3,3
+    vbroadcasti64x4 m2, [hmul_8p]
+    mov           r2d, 0xc
+    kmovb          k1, r2d
+    kshiftlb       k2, k1, 2
+    kshiftlb       k3, k1, 4
+%assign fpre_i 0
+%rep 2
+    vpbroadcastq   m0, [r1+(2*fpre_i+0)*FENC_STRIDE]
+    vpbroadcastq   m0 {k1}, [r1+(2*fpre_i+4)*FENC_STRIDE]
+    vpbroadcastq   m0 {k2}, [r1+(2*fpre_i+1)*FENC_STRIDE]
+    vpbroadcastq   m0 {k3}, [r1+(2*fpre_i+5)*FENC_STRIDE]
+    pmaddubsw      m0, m2
+    movu [r0+fpre_i*64], m0
+%assign fpre_i fpre_i+1
+%endrep
+%undef fpre_i
+    RET
 %endif ; ARCH_X86_64
 
 %endif ; HIGH_BIT_DEPTH
