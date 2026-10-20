@@ -1322,6 +1322,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_x3[PIXEL_8x8]   = x264_pixel_sad_x3_8x8_avx512icl;
         pixf->sad_x3_min[PIXEL_8x16]  = x264_pixel_sad_x3_min_8x16_avx512icl;
         pixf->sad_x3_min[PIXEL_8x8]   = x264_pixel_sad_x3_min_8x8_avx512icl;
+        pixf->sad_x4[PIXEL_8x16]  = x264_pixel_sad_x4_8x16_avx512icl;
+        pixf->sad_x4[PIXEL_8x8]   = x264_pixel_sad_x4_8x8_avx512icl;
+        pixf->sad_x4_min[PIXEL_8x16]  = x264_pixel_sad_x4_min_8x16_avx512icl;
+        pixf->sad_x4_min[PIXEL_8x8]   = x264_pixel_sad_x4_min_8x8_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
