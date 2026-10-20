@@ -4326,7 +4326,10 @@ static int check_intra( int cpu_ref, int cpu_new )
 
     memcpy( fdec, pbuf1, 32*20 * sizeof(pixel) );\
 
-    ip_c.predict_8x8_filter( fdec+48, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
+    /* block at column 16 of row 1, or at column 0 of row 2 (left neighbours at the
+     * end of the previous row) */
+    int ioff = 48;
+    ip_c.predict_8x8_filter( fdec+ioff, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
 
 #define INTRA_TEST( name, dir, w, h, align, bench, ... )\
     if( ip_a.name[dir] != ip_ref.name[dir] )\
@@ -4337,8 +4340,8 @@ static int check_intra( int cpu_ref, int cpu_new )
         memcpy( pbuf4, fdec, FDEC_STRIDE*20 * sizeof(pixel) );\
         for( int a = 0; a < (do_bench ? 64/sizeof(pixel) : 1); a += align )\
         {\
-            call_c##bench( ip_c.name[dir], pbuf3+48+a, ##__VA_ARGS__ );\
-            call_a##bench( ip_a.name[dir], pbuf4+48+a, ##__VA_ARGS__ );\
+            call_c##bench( ip_c.name[dir], pbuf3+ioff+a, ##__VA_ARGS__ );\
+            call_a##bench( ip_a.name[dir], pbuf4+ioff+a, ##__VA_ARGS__ );\
             if( memcmp( pbuf3, pbuf4, FDEC_STRIDE*20 * sizeof(pixel) ) )\
             {\
                 fprintf( stderr, #name "[%d] :  [FAILED]\n", dir );\
@@ -4350,7 +4353,7 @@ static int check_intra( int cpu_ref, int cpu_new )
                 {\
                     printf( "%2x ", edge[14-j] );\
                     for( int k = 0; k < w; k++ )\
-                        printf( "%2x ", pbuf4[48+k+j*FDEC_STRIDE] );\
+                        printf( "%2x ", pbuf4[ioff+k+j*FDEC_STRIDE] );\
                     printf( "\n" );\
                 }\
                 printf( "\n" );\
@@ -4358,7 +4361,7 @@ static int check_intra( int cpu_ref, int cpu_new )
                 {\
                     printf( "   " );\
                     for( int k = 0; k < w; k++ )\
-                        printf( "%2x ", pbuf3[48+k+j*FDEC_STRIDE] );\
+                        printf( "%2x ", pbuf3[ioff+k+j*FDEC_STRIDE] );\
                     printf( "\n" );\
                 }\
                 break;\
@@ -4366,16 +4369,21 @@ static int check_intra( int cpu_ref, int cpu_new )
         }\
     }
 
-    /* pat = 0: random neighbours; 1: every sample PIXEL_MAX; 2: every sample 0;
-     * 3: a random mix of 0 and PIXEL_MAX */
-    for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
+    /* p = 0: random neighbours; 1: every sample PIXEL_MAX; 2: every sample 0;
+     * 3: a random mix of 0 and PIXEL_MAX; 4: 0/PIXEL_MAX checkerboard.
+     * Each at both block offsets. */
+    for( int pat = 0; pat < (do_bench ? 1 : 10) && ok; pat++ )
     {
-        if( pat )
+        int p = pat % 5;
+        ioff = pat < 5 ? 48 : 64;
+        if( p )
         {
             for( int i = 0; i < 32*20; i++ )
-                fdec[i] = pat == 1 ? PIXEL_MAX : pat == 2 ? 0 : (rand()&1)*PIXEL_MAX;
-            ip_c.predict_8x8_filter( fdec+48, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
+                fdec[i] = p == 1 ? PIXEL_MAX : p == 2 ? 0 : p == 3 ? (rand()&1)*PIXEL_MAX : ((i + i/FDEC_STRIDE)&1)*PIXEL_MAX;
         }
+        else
+            memcpy( fdec, pbuf1, 32*20 * sizeof(pixel) );
+        ip_c.predict_8x8_filter( fdec+ioff, edge, ALL_NEIGHBORS, ALL_NEIGHBORS );
         for( int i = 0; i < 12; i++ )
             INTRA_TEST(   predict_4x4, i,  4,  4,  4, );
         for( int i = 0; i < 7; i++ )
@@ -4398,8 +4406,8 @@ static int check_intra( int cpu_ref, int cpu_new )
                 int neighbor = (i&24)>>1;
                 memset( edge,  0, 36*sizeof(pixel) );
                 memset( edge2, 0, 36*sizeof(pixel) );
-                call_c( ip_c.predict_8x8_filter, fdec+48, edge,  neighbor, i&7 );
-                call_a( ip_a.predict_8x8_filter, fdec+48, edge2, neighbor, i&7 );
+                call_c( ip_c.predict_8x8_filter, fdec+ioff, edge,  neighbor, i&7 );
+                call_a( ip_a.predict_8x8_filter, fdec+ioff, edge2, neighbor, i&7 );
                 if( !(neighbor&MB_TOPLEFT) )
                     edge[15] = edge2[15] = 0;
                 if( memcmp( edge+7, edge2+7, (i&MB_TOPRIGHT ? 26 : i&MB_TOP ? 17 : 8) * sizeof(pixel) ) )
