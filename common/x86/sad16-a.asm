@@ -1150,6 +1150,96 @@ cglobal pixel_sad_x4_16x%2, 6,7,8
     %undef sad_stride
 %endmacro
 
+; 8 wide: lane i of a zmm = row k of ref i+1 (x3: lane 3 unused), fenc row k
+; broadcast; even/odd rows in m0/m1 (at most 8*1023 a lane each)
+%macro SAD_X_HBD8_ZMM 2-3 0 ; refs, height, min
+%if %1 == 3
+%if %3
+cglobal pixel_sad_x3_min_8x%2, 5,7,8
+%else
+cglobal pixel_sad_x3_8x%2, 6,7,8
+%endif
+    %define sad_stride r4
+%else
+%if %3
+cglobal pixel_sad_x4_min_8x%2, 6,7,8
+%else
+cglobal pixel_sad_x4_8x%2, 6,7,8
+%endif
+    %define sad_stride r5
+%endif
+    lea            r6, [sad_stride+2*sad_stride]
+%assign sad_hbd_k 0
+%rep %2
+    SAD_HBD_ROWOFF sad_hbd_k&3, sad_stride, r6
+    vbroadcasti32x4 m4, [r0+sad_hbd_k*FENC_STRIDEB]
+    movu          xm5, [r1+sad_off]
+    vinserti32x4   m5, [r2+sad_off], 1
+    vinserti32x4   m5, [r3+sad_off], 2
+%if %1 == 4
+    vinserti32x4   m5, [r4+sad_off], 3
+%endif
+    psubw          m5, m4
+%assign sad_acc sad_hbd_k&1
+%if sad_hbd_k < 2
+    pabsw m %+ sad_acc, m5
+%else
+    pabsw          m5, m5
+    paddw m %+ sad_acc, m5
+%endif
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %2-1
+    lea            r1, [r1+8*sad_stride]
+    lea            r2, [r2+8*sad_stride]
+    lea            r3, [r3+8*sad_stride]
+%if %1 == 4
+    lea            r4, [r4+8*sad_stride]
+%endif
+%endif
+%assign sad_hbd_k sad_hbd_k+1
+%endrep
+    paddw          m0, m1          ; at most 16*1023 a lane
+%if %3
+    vpbroadcastd   m6, [pw_64]
+%else
+    vpbroadcastd   m6, [pw_1]
+%endif
+    pmaddwd        m0, m6
+    pshufd         m1, m0, q1032
+    paddd          m0, m1
+    pshufd         m1, m0, q2301
+    paddd          m0, m1
+%if %1 == 3
+    mov           r6d, 0x0111
+%else
+    mov           r6d, 0x1111
+%endif
+    kmovw          k1, r6d
+    vpcompressd    m0 {k1}{z}, m0  ; x3: lane 3 zero
+%if %3
+%if %1 == 3
+    movq          xm4, r5mp        ; b0 b1
+    movhps        xm4, r6mp        ; b2 best
+    pshufd        xm5, xm4, q3333
+%else
+    movq          xm4, r6mp        ; b0 b1
+    movhps        xm4, r7mp        ; b2 b3
+    vpbroadcastd  xm5, r8m
+%endif
+    paddd         xm0, xm4
+    SAD_X_HBD_MIN_TREE 0, 5, 1
+%else
+%if %1 == 3
+    movq      [r5+0], xm0
+    pextrd    [r5+8], xm0, 2
+%else
+    mov            r6, r6mp
+    movu         [r6], xm0
+%endif
+    RET
+%endif
+    %undef sad_stride
+%endmacro
+
 ; fenc rows FENC_STRIDE apart only, else the avx2 version (before the prologue)
 %macro SAD_HBD16_ZMM 1 ; height
 cglobal pixel_sad_16x%1
@@ -1210,6 +1300,15 @@ SAD_X_HBD16_ZMM 3, 16, 1
 SAD_X_HBD16_ZMM 3,  8, 1
 SAD_X_HBD16_ZMM 4, 16, 1
 SAD_X_HBD16_ZMM 4,  8, 1
+SAD_X_HBD8_ZMM 3, 16
+SAD_X_HBD8_ZMM 3,  8
+SAD_X_HBD8_ZMM 4, 16
+SAD_X_HBD8_ZMM 4,  8
+SAD_X_HBD8_ZMM 3, 16, 1
+SAD_X_HBD8_ZMM 3,  8, 1
+SAD_X_HBD8_ZMM 4, 16, 1
+SAD_X_HBD8_ZMM 4,  8, 1
+
 INIT_YMM avx2
 %endif
 
