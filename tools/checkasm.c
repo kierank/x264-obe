@@ -2859,8 +2859,9 @@ static int check_deblock( int cpu_ref, int cpu_new )
     { \
         intptr_t off = 8*32 + (i&15)*4*!align; /* benchmark various alignments of h filter */ \
         for( int j = 0; j < 1024; j++ ) \
-            /* two distributions of random to excersize different failure modes */ \
-            pbuf3[j] = rand() & (i&1 ? 0xf : PIXEL_MAX ); \
+            /* three distributions of random to excersize different failure modes, \
+             * the last one reaching the PIXEL_MAX clip */ \
+            pbuf3[j] = i&1 ? rand() & 0xf : i&2 ? PIXEL_MAX - (rand() & 0xf) : rand() & PIXEL_MAX; \
         memcpy( pbuf4, pbuf3, 1024 * sizeof(pixel) ); \
         if( db_a.name != db_ref.name ) \
         { \
@@ -2909,7 +2910,7 @@ static int check_deblock( int cpu_ref, int cpu_new )
             intptr_t off = 4*stride + 16;
             int edges = rand() & 0xff;
             for( int j = 0; j < 1280; j++ )
-                pbuf3[j] = rand() & (i&2 ? 0xf : PIXEL_MAX);
+                pbuf3[j] = i&2 ? rand() & 0xf : i&8 ? PIXEL_MAX - (rand() & 0xf) : rand() & PIXEL_MAX;
             memcpy( pbuf4, pbuf3, 1280 * sizeof(pixel) );
             for( int j = 0; j < 2*8*4; j++ )
                 ((uint8_t*)bs)[j] = (rand()&3) ? rand()&3 : 0;
