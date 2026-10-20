@@ -1396,6 +1396,33 @@ INIT_XMM avx
 DEQUANT_DC w, pmullw
 INIT_YMM avx2
 DEQUANT_DC w, pmullw
+
+; avx512icl: the right shift in dwords on one zmm (vpmovsxwd), the rounding
+; inside vpdpwssd, vpmovdw back (avx2: unpack, pmaddwd, psrad, packssdw)
+INIT_ZMM avx512icl
+cglobal dequant_4x4dc, 0,3
+    DEQUANT_START 6, 6
+.lshift:
+    mov         t1d, [r1]
+    shlx        t1d, t1d, t0d
+    vpbroadcastw ym3, t1d
+    pmullw      ym0, ym3, [r0]
+    mova       [r0], ym0
+    RET
+.rshift32:
+    neg         t0d
+    mov         t1d, 1
+    shlx        t1d, t1d, t0d
+    shr         t1d, 1
+    vpbroadcastd m0, t1d
+    vpbroadcastd m2, [r1]
+    vpmovsxwd    m1, [r0]
+    vpdpwssd     m0, m1, m2
+    movd        xm3, t0d
+    psrad        m0, xm3
+    vpmovdw     ym0, m0
+    mova       [r0], ym0
+    RET
 %endif
 
 %macro PEXTRW 4

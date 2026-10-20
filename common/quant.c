@@ -814,6 +814,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx512icl;
         pf->idct_dequant_2x4_dconly = x264_idct_dequant_2x4_dconly_avx512icl;
         pf->coeff_last4 = x264_coeff_last4_avx512icl;
+        pf->dequant_4x4_dc = x264_dequant_4x4dc_avx512icl;
         if( h->param.i_cqm_preset != X264_CQM_FLAT )
         {
             pf->dequant_4x4 = x264_dequant_4x4_avx512icl;
