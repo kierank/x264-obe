@@ -606,6 +606,12 @@ void x264_predict_8x8_init_mmx( int cpu, x264_predict8x8_t pf[12], x264_predict_
     pf[I_PRED_8x8_VL]   = x264_predict_8x8_vl_avx;
     pf[I_PRED_8x8_VR]   = x264_predict_8x8_vr_avx;
     pf[I_PRED_8x8_HD]   = x264_predict_8x8_hd_avx;
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pf[I_PRED_8x8_DDL]  = x264_predict_8x8_ddl_avx512icl;
+#endif
+    }
 #endif // HIGH_BIT_DEPTH
 }
 

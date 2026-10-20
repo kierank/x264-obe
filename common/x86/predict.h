@@ -174,6 +174,8 @@ void x264_predict_8x8_ddl_ssse3( pixel *src, pixel edge[36] );
 void x264_predict_8x8_ddl_ssse3_cache64( pixel *src, pixel edge[36] );
 #define x264_predict_8x8_ddl_avx x264_template(predict_8x8_ddl_avx)
 void x264_predict_8x8_ddl_avx( pixel *src, pixel edge[36] );
+#define x264_predict_8x8_ddl_avx512icl x264_template(predict_8x8_ddl_avx512icl)
+void x264_predict_8x8_ddl_avx512icl( uint8_t *src, uint8_t edge[36] );
 #define x264_predict_8x8_ddr_mmx2 x264_template(predict_8x8_ddr_mmx2)
 void x264_predict_8x8_ddr_mmx2( uint8_t *src, uint8_t edge[36] );
 #define x264_predict_8x8_ddr_sse2 x264_template(predict_8x8_ddr_sse2)
