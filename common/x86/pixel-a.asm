@@ -2945,7 +2945,17 @@ cglobal pixel_sa8d_16x16, 4,7
 ; %1: add spilled regs?
 ; %2: spill regs?
 %macro SA8D_SATD_ACCUM 2
-%if HIGH_BIT_DEPTH
+%if HIGH_BIT_DEPTH && cpuflag(avx512icl) && mmsize == 32
+    ; satd dwords in m7 (unused at high bit depth) instead of a spill
+%if %1
+    {evex} vpdpwssd m7, m10, [pw_1]
+    SWAP      7, 10
+    paddd    m0, temp0
+%else
+    pmaddwd  m7, m10, [pw_1]
+    pxor    m10, m10
+%endif
+%elif HIGH_BIT_DEPTH
     pmaddwd m10, [pw_1]
 %if %1
     paddd   m10, temp1
@@ -3001,7 +3011,14 @@ cglobal pixel_sa8d_satd_8x8_internal
 %endif
 
     ; create sa8d sub results
-%if HIGH_BIT_DEPTH
+%if HIGH_BIT_DEPTH && cpuflag(avx512icl)
+    ; max() words <= 32*PIXEL_MAX, signed: two vpdpwssd chains
+    pmaddwd  m0, [pw_1]
+    pmaddwd  m2, [pw_1]
+    {evex} vpdpwssd m0, m1, [pw_1]
+    {evex} vpdpwssd m2, m3, [pw_1]
+    paddd    m0, m2
+%elif HIGH_BIT_DEPTH
     SA8D_SUM_HBD 0, 1, 2, 3
 %else
     paddw    m1, m2
@@ -6561,6 +6578,7 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
 
 SATD_BI 16, 16, 0
 SATD_BI 16, 16, 1
+SA8D_SATD
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
