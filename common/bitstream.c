@@ -43,6 +43,15 @@ static uint8_t *x264_nal_escape_c( uint8_t *dst, uint8_t *src, uint8_t *end )
 #include "x86/bitstream.h"
 #endif
 
+/* layout twin of test/x264-w2-cabac422dc: the candidate has no 4:2:2 dc writer (the C one),
+ * so the arm's dispatch line assigns an undefined weak symbol: NULL, with the same code
+ * and relocation as the arm (a GOT load), and the asm stays assembled and linked */
+#if HAVE_MMX && ARCH_X86_64
+extern __typeof__( x264_cabac_block_residual_422_dc_internal_avx512icl ) x264_twin_cabac_block_residual_422_dc_none __attribute__((weak));
+#undef x264_cabac_block_residual_422_dc_internal_avx512icl
+#define x264_cabac_block_residual_422_dc_internal_avx512icl x264_twin_cabac_block_residual_422_dc_none
+#endif
+
 /****************************************************************************
  * x264_nal_encode:
  ****************************************************************************/
