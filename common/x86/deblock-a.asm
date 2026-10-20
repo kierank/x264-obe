@@ -4421,6 +4421,42 @@ cglobal deblock_h_chroma_mbaff, 5,7,11
     CHROMA_INTER10_ICL
     CHROMA_H_STORE r6
     RET
+
+; in: m0-m3 = p1 p0 q0 q1, k1 = mask; out: m1 = p0', m2 = q0'; clobbers m6, m7, m9
+%macro CHROMA_INTRA10_ICL 0
+    vpbroadcastd m9, [pw_2]
+    paddw        m6, m0, m9
+    paddw        m6, m3
+    paddw        m7, m6, m2
+    paddw        m6, m1
+    paddw        m6, m0
+    paddw        m7, m3
+    psraw        m6, 2           ; (2*p1 + p0 + q1 + 2) >> 2
+    psraw        m7, 2           ; (2*q1 + q0 + p1 + 2) >> 2
+    vmovdqu16    m1 {k1}, m6
+    vmovdqu16    m2 {k1}, m7
+%endmacro
+
+INIT_YMM avx512icl
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_chroma_intra, 4,4,10
+    add          r1, r1
+    vpbroadcastw  m4, r2d
+    vpbroadcastw  m5, r3d
+    lea          r2, [r1*3]
+    sub          r0, r1
+    sub          r0, r1
+    movu         m0, [r0]      ; p1
+    movu         m1, [r0+r1]   ; p0
+    movu         m2, [r0+r1*2] ; q0
+    movu         m3, [r0+r2]   ; q1
+    CHROMA_MASK_ICL
+    CHROMA_INTRA10_ICL
+    movu    [r0+r1], m1
+    movu  [r0+r1*2], m2
+    RET
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
