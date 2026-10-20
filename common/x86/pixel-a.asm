@@ -1614,6 +1614,49 @@ cglobal pixel_var2_8x%1, 5,6,7
 INIT_YMM avx2
 VAR2_8x8_AVX2_HBD  8, 6
 VAR2_8x8_AVX2_HBD 16, 7
+
+; avx512icl: vpdpwssd squares, two accumulators m6 m2
+%macro VAR2_8x8_ICL_HBD 2
+cglobal pixel_var2_8x%1, 5,6,7
+    FIX_STRIDES r1, r3
+    pxor      m5, m5
+    pxor      m6, m6
+    pxor      m2, m2
+    mov      r5d, %1/4
+.loop:
+    mova     xm0, [r0]
+    vinserti128 m0, m0, [r0+r1], 1
+    mova     xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    mova     xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    mova     xm4, [r2]
+    vinserti128 m4, m4, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    psubw     m0, m3
+    psubw     m1, m4
+    paddw     m5, m0
+    paddw     m5, m1
+    vpdpwssd  m6, m0, m0
+    vpdpwssd  m2, m1, m1
+    dec      r5d
+    jg .loop
+    paddd     m6, m2
+    vextracti128 xm0, m5, 1
+    paddw    xm5, xm0
+    vextracti128 xm0, m6, 1
+    paddd    xm6, xm0
+    VAR2_END %2, xm5, xm6
+%endmacro
+
+%if ARCH_X86_64
+INIT_YMM avx512icl
+VAR2_8x8_ICL_HBD  8, 6
+VAR2_8x8_ICL_HBD 16, 7
+%endif
 %endif
 
 %if HIGH_BIT_DEPTH == 0
@@ -1709,6 +1752,51 @@ cglobal pixel_var2_8x%1, 5,6,6
 INIT_YMM avx2
 VAR2_8x8_AVX2  8, 6
 VAR2_8x8_AVX2 16, 7
+
+; avx512icl: vpdpwssd squares, two accumulators m4 m6
+%macro VAR2_8x8_ICL 2
+cglobal pixel_var2_8x%1, 5,6,7
+    pxor      m3, m3
+    pxor      m4, m4
+    pxor      m6, m6
+    mova      m5, [hsub_mul]
+    mov      r5d, %1/4
+.loop:
+    movq     xm0, [r0]
+    movq     xm1, [r2]
+    vinserti128 m0, m0, [r0+r1], 1
+    vinserti128 m1, m1, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    punpcklbw m0, m1
+    movq     xm1, [r0]
+    movq     xm2, [r2]
+    vinserti128 m1, m1, [r0+r1], 1
+    vinserti128 m2, m2, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    punpcklbw m1, m2
+    pmaddubsw m0, m5
+    pmaddubsw m1, m5
+    paddw     m3, m0
+    paddw     m3, m1
+    vpdpwssd  m4, m0, m0
+    vpdpwssd  m6, m1, m1
+    dec      r5d
+    jg .loop
+    paddd     m4, m6
+    vextracti128 xm0, m3, 1
+    vextracti128 xm1, m4, 1
+    paddw    xm3, xm0
+    paddd    xm4, xm1
+    VAR2_END %2, xm3, xm4
+%endmacro
+
+%if ARCH_X86_64
+INIT_YMM avx512icl
+VAR2_8x8_ICL  8, 6
+VAR2_8x8_ICL 16, 7
+%endif
 
 %endif ; !HIGH_BIT_DEPTH
 
