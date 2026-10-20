@@ -10220,6 +10220,47 @@ cglobal intra_sad_x9_8x8, 5,7,8
     mov        eax, r2d
     RET
 ICL_LOW_END
+
+;-----------------------------------------------------------------------------
+; satd_fenc_pre, zmm: the avx2 layout two rows (16 wide) or row pairs (8 wide)
+; a register. 16x16: one 64 byte load of four fenc rows, vshufi32x4 doubles
+; each row into its two lanes. 8x8: rows k, k+4, k+1, k+5 twice each from a
+; vpbroadcastq and three merge-masked ones (k1/k2/k3 = qwords 2-3/4-5/6-7).
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal pixel_satd_fenc_pre_16x16, 2,2,3
+    vbroadcasti64x4 m2, [hmul_16p]
+%assign fpre_i 0
+%rep 4
+    movu           m1, [r1+fpre_i*64]
+    vshufi32x4     m0, m1, m1, q1100
+    vshufi32x4     m1, m1, m1, q3322
+    pmaddubsw      m0, m2
+    pmaddubsw      m1, m2
+    movu [r0+fpre_i*128], m0
+    movu [r0+fpre_i*128+64], m1
+%assign fpre_i fpre_i+1
+%endrep
+    RET
+
+cglobal pixel_satd_fenc_pre_8x8, 2,3,3
+    vbroadcasti64x4 m2, [hmul_8p]
+    mov           r2d, 0xc
+    kmovb          k1, r2d
+    kshiftlb       k2, k1, 2
+    kshiftlb       k3, k1, 4
+%assign fpre_i 0
+%rep 2
+    vpbroadcastq   m0, [r1+(2*fpre_i+0)*FENC_STRIDE]
+    vpbroadcastq   m0 {k1}, [r1+(2*fpre_i+4)*FENC_STRIDE]
+    vpbroadcastq   m0 {k2}, [r1+(2*fpre_i+1)*FENC_STRIDE]
+    vpbroadcastq   m0 {k3}, [r1+(2*fpre_i+5)*FENC_STRIDE]
+    pmaddubsw      m0, m2
+    movu [r0+fpre_i*64], m0
+%assign fpre_i fpre_i+1
+%endrep
+%undef fpre_i
+    RET
 %endif ; ARCH_X86_64
 
 %endif ; HIGH_BIT_DEPTH
