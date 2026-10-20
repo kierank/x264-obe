@@ -98,6 +98,9 @@
 #define x264_mc_copy_w4_mmx x264_template(mc_copy_w4_mmx)
 #define x264_mc_copy_w8_mmx x264_template(mc_copy_w8_mmx)
 #define x264_mc_copy_w8_sse x264_template(mc_copy_w8_sse)
+#define x264_mc_copy_w4_avx512icl x264_template(mc_copy_w4_avx512icl)
+#define x264_mc_copy_w8_avx512icl x264_template(mc_copy_w8_avx512icl)
+#define x264_mc_copy_w16_avx512icl x264_template(mc_copy_w16_avx512icl)
 #define x264_mc_offsetadd_plane_avx2 x264_template(mc_offsetadd_plane_avx2)
 #define x264_mc_offsetadd_plane_avx512 x264_template(mc_offsetadd_plane_avx512)
 #define x264_mc_offsetsub_plane_avx2 x264_template(mc_offsetsub_plane_avx2)
@@ -443,6 +446,9 @@ void x264_mc_copy_w16_sse( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_mc_copy_w16_aligned_sse( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_mc_copy_w16_avx( uint16_t *, intptr_t, uint16_t *, intptr_t, int );
 void x264_mc_copy_w16_aligned_avx( uint16_t *, intptr_t, uint16_t *, intptr_t, int );
+void x264_mc_copy_w4_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_mc_copy_w8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_mc_copy_w16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_fenc_420_mmx2( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_fenc_422_mmx2( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_ref_mmx2( pixel *, intptr_t, int );
@@ -1289,6 +1295,12 @@ PROPAGATE_LIST(avx512)
 #undef CLIP_ADD2
 
 
+#if ARCH_X86_64
+/* copy_16x16_unaligned refers to the w16 kernel by a name of its own, so the layout
+ * twin can give it a different function than copy[PIXEL_16x16] */
+X264_TWIN( x264_mc_copy_w16u_avx512icl, x264_mc_copy_w16_avx512icl )
+#endif
+
 void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 {
     if( !(cpu&X264_CPU_MMX) )
@@ -1473,6 +1485,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
+        /* x264-weird2 mc winners */
+        pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_zmm_avx512icl;
 #endif
     }
 #else // !HIGH_BIT_DEPTH
@@ -1659,6 +1673,11 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
+        /* x264-weird2 mc winners */
+        pf->weight = x264_mc_weight_wtab_avx512icl;
+        pf->offsetadd = x264_mc_offsetadd_wtab_avx512icl;
+        pf->offsetsub = x264_mc_offsetsub_wtab_avx512icl;
+        pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
@@ -1690,4 +1709,15 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;
 #endif
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        /* x264-weird2 mc winners */
+        pf->copy_16x16_unaligned = x264_twin_x264_mc_copy_w16u_avx512icl;
+        pf->copy[PIXEL_16x16] = x264_mc_copy_w16_avx512icl;
+        pf->copy[PIXEL_8x8]   = x264_mc_copy_w8_avx512icl;
+        pf->copy[PIXEL_4x4]   = x264_mc_copy_w4_avx512icl;
+#endif
+    }
 }
