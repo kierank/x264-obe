@@ -555,6 +555,13 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->add16x16_idct   = x264_add16x16_idct_avx2;
         dctf->add16x16_idct_dc= x264_add16x16_idct_dc_avx2;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        dctf->sub16x16_dct8   = x264_sub16x16_dct8_avx512icl;
+        dctf->add16x16_idct8  = x264_add16x16_idct8_avx512icl;
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
