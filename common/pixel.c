@@ -1289,6 +1289,16 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        /* x264-weird2 satd winners */
+        pixf->satd[PIXEL_4x4]   = x264_pixel_satd_4x4_avx512icl;
+        pixf->satd[PIXEL_4x8]   = x264_pixel_satd_4x8_avx512icl;
+        pixf->satd[PIXEL_4x16]  = x264_pixel_satd_4x16_avx512icl;
+        pixf->satd[PIXEL_8x4]   = x264_pixel_satd_8x4_avx512icl;
+#endif
+    }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
     /* hadamard_ac 16x16/16x8/8x16 _avx512icl 1.06-1.10x, sa8d 16x16/8x8 _avx512icl 1.14x/1.05x */
 #endif // HAVE_MMX
