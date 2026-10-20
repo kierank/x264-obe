@@ -4524,6 +4524,15 @@ cglobal deblock_h_chroma_422_intra, 4,10,10
     CHROMA_INTRA_ICL8 y
     CHROMA_H_STORE16_ICL8
     RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_intra_mbaff( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_intra_mbaff, 4,7,9
+    CHROMA_H_LOAD_ICL8 4
+    CHROMA_INTRA_ICL8 x
+    CHROMA_H_STORE_ICL8 4
+    RET
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
