@@ -1933,6 +1933,92 @@ DECIMATE4x4_AVX512 16
 INIT_ZMM avx512
 DECIMATE8x8_AVX512
 
+; branchless: the score is a sum of popcounts of the nonzero mask and its shifts
+%macro DECIMATE4x4_AVX512ICL 1
+cglobal decimate_score%1, 1,4
+    DECIMATE_MASK16_AVX512
+    kmovw    r1d, k0
+%if %1 == 15
+    shr      r1d, 1
+%endif
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below
+    lea      r2d, [r1+r1]
+    lea      r3d, [r1*4]
+    lea      eax, [r1*8]
+    or       r3d, r2d
+    or       r3d, eax       ; shifts 1-3
+    lea      eax, [r3*8]
+    or       eax, r3d       ; shifts 1-6
+    or       r2d, 1
+    or       r3d, 7
+    or       eax, 0x3f
+    and      r2d, r1d
+    and      r3d, r1d
+    and      eax, r1d
+    popcnt   r2d, r2d
+    popcnt   r3d, r3d
+    popcnt   eax, eax
+    add      eax, r2d
+    add      eax, r3d
+    mov      r2d, 9
+    kortestw  k1, k1
+    cmovnz   eax, r2d
+    RET
+%endmacro
+
+%macro DECIMATE8x8_AVX512ICL 0
+cglobal decimate_score64, 1,5
+    DECIMATE_MASK64_AVX512
+%if HIGH_BIT_DEPTH == 0
+    kunpckdq  k1, k2, k1
+%endif
+    kmovq     r1, k1
+    ; score = sum over nonzero coefs of [run<4] + [run<12] + [run<24]
+    lea       r2, [r1+r1]
+    lea       r3, [r1*4]
+    lea       r4, [r1*8]
+    mov       rax, r1
+    shl       rax, 4
+    or        r2, r3
+    or        r4, rax
+    or        r2, r4        ; shifts 1-4
+    mov       r3, r2
+    mov       r4, r2
+    shl       r3, 4
+    shl       r4, 8
+    or        r3, r4
+    or        r3, r2        ; shifts 1-12
+    mov       r4, r3
+    shl       r4, 12
+    or        r4, r3        ; shifts 1-24
+    or        r2, 0xf
+    or        r3, 0xfff
+    or        r4, 0xffffff
+    and       r2, r1
+    and       r3, r1
+    and       r4, r1
+    popcnt    r2, r2
+    popcnt    r3, r3
+    popcnt    rax, r4
+    add       eax, r2d
+    add       eax, r3d
+    RET
+.ret9:
+    mov       eax, 9
+    RET
+%endmacro
+
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+INIT_ZMM avx512icl
+%else
+INIT_YMM avx512icl
+%endif
+DECIMATE4x4_AVX512ICL 15
+DECIMATE4x4_AVX512ICL 16
+INIT_ZMM avx512icl
+DECIMATE8x8_AVX512ICL
+%endif
 
 ;-----------------------------------------------------------------------------
 ; int coeff_last( dctcoef *dct )
