@@ -60,6 +60,10 @@ pb_p8c_rows:    times 8 db 0
                 times 8 db 4
                 times 8 db 1
                 times 8 db 5
+pb_p16_rows:    times 8 db 0
+                times 8 db 2
+                times 8 db 1
+                times 8 db 3
 %endif
 
 SECTION .text
@@ -1479,6 +1483,62 @@ cglobal predict_16x16_p_core, 1,2,8*HIGH_BIT_DEPTH
     jg .loop
     RET
 
+%if ARCH_X86_64
+; 8-bit: x 0-7 | 8-15 of rows 0 2 1 3 in the lanes of m0 | m1; after packuswb
+; lanes 0|2 are rows 0|1 and lanes 1|3 rows 2|3 (stored from r0+48).
+; 10-bit: rows y|y+1 in the ymm halves.
+INIT_ZMM avx512icl
+cglobal predict_16x16_p_core, 4,5
+    vpbroadcastw    m0, r1d
+    vpbroadcastw    m2, r2d
+    vpbroadcastw    m4, r3d
+%if HIGH_BIT_DEPTH
+    vbroadcasti32x8 m1, [pw_0to15]
+    pmullw          m2, m1            ; b*x
+    mov            r4d, 0xffff0000
+    kmovd           k1, r4d
+    vmovdqu16       m5{k1}{z}, m4     ; c*y
+    paddw           m4, m4
+    pxor            m6, m6
+    vpbroadcastd    m3, [pw_pixel_max]
+    mov            r4d, 8
+.loop:
+    paddsw          m1, m2, m5
+    paddsw          m1, m0
+    psraw           m1, 5
+    CLIPW           m1, m6, m3
+    paddw           m5, m4
+    mova            [r0+0*FDEC_STRIDEB], ym1
+    vextracti32x8   [r0+1*FDEC_STRIDEB], m1, 1
+    add             r0, 2*FDEC_STRIDEB
+%else ; !HIGH_BIT_DEPTH
+    vbroadcasti32x4 m1, [pw_0to15]
+    vpmovzxbw       m3, [pb_p16_rows]
+    pmullw          m1, m2            ; b*x
+    pmullw          m3, m4            ; c*y
+    psllw           m2, 3
+    paddsw          m0, m3
+    paddsw          m0, m1            ; x 0-7
+    paddsw          m1, m0, m2        ; x 8-15
+    psllw           m4, 2
+    mov             r4, 0x0000ffff0000ffff
+    kmovq           k1, r4
+    kshiftlq        k2, k1, 16
+    mov            r4d, 4
+.loop:
+    psraw           m2, m0, 5
+    psraw           m3, m1, 5
+    packuswb        m2, m3
+    vmovdqu8 [r0+0*FDEC_STRIDE   ]{k1}, m2
+    vmovdqu8 [r0+2*FDEC_STRIDE-16]{k2}, m2
+    paddsw          m0, m4
+    paddsw          m1, m4
+    add             r0, 4*FDEC_STRIDE
+%endif ; !HIGH_BIT_DEPTH
+    dec            r4d
+    jg .loop
+    RET
+%endif ; ARCH_X86_64
 
 %if HIGH_BIT_DEPTH == 0
 %macro PREDICT_8x8_DDL 0
