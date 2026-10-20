@@ -120,6 +120,8 @@ void x264_predict_8x8c_p_core_sse2( pixel *src, int i00, int b, int c );
 void x264_predict_8x8c_p_core_avx ( pixel *src, int i00, int b, int c );
 #define x264_predict_8x8c_p_core_avx2 x264_template(predict_8x8c_p_core_avx2)
 void x264_predict_8x8c_p_core_avx2( pixel *src, int i00, int b, int c );
+#define x264_predict_8x8c_p_core_avx512icl x264_template(predict_8x8c_p_core_avx512icl)
+void x264_predict_8x8c_p_core_avx512icl( pixel *src, int i00, int b, int c );
 #define x264_predict_8x8c_dc_mmx2 x264_template(predict_8x8c_dc_mmx2)
 void x264_predict_8x8c_dc_mmx2( pixel *src );
 #define x264_predict_8x8c_dc_sse2 x264_template(predict_8x8c_dc_sse2)
