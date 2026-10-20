@@ -1870,6 +1870,91 @@ cglobal pixel_sad_x4_16x%2, 6,7,16
     %undef sad_stride
 %endmacro
 
+; 8 wide: { ref1 | ref2 } and { ref3 | ref4 } rows against the fenc row in both
+; lanes, even/odd rows in m0/m1 and m2/m3; x3: { ref3 row k | row k+1 }
+; against { fenc row k | k+1 } in m2/m3 by row pair parity
+%macro SAD_X_HBD8_VNNI 2-3 0 ; refs, height, min
+%if %1 == 3
+%if %3
+cglobal pixel_sad_x3_min_8x%2, 5,7,16
+%else
+cglobal pixel_sad_x3_8x%2, 6,7,16
+%endif
+    %define sad_stride r4
+%else
+%if %3
+cglobal pixel_sad_x4_min_8x%2, 6,7,16
+%else
+cglobal pixel_sad_x4_8x%2, 6,7,16
+%endif
+    %define sad_stride r5
+%endif
+%if %3
+    vpbroadcastd  m15, [pw_64]
+%else
+    vpbroadcastd  m15, [pw_1]
+%endif
+    lea            r6, [sad_stride+2*sad_stride]
+%assign sad_hbd_k 0
+%rep %2
+    SAD_HBD_ROWOFF sad_hbd_k&3, sad_stride, r6
+    vbroadcasti32x4 m14, [r0+sad_hbd_k*FENC_STRIDEB]
+    movu          xm10, [r1+sad_off]
+    vinserti32x4  m10, m10, [r2+sad_off], 1
+    psubw         m10, m14
+%if %1 == 4
+    movu          xm11, [r3+sad_off]
+    vinserti32x4  m11, m11, [r4+sad_off], 1
+    psubw         m11, m14
+%assign sad_acc sad_hbd_k&1
+    SAD_X_HBD_VNNI_ACC sad_acc, 10, sad_hbd_k < 2
+%assign sad_acc (sad_hbd_k&1)+2
+    SAD_X_HBD_VNNI_ACC sad_acc, 11, sad_hbd_k < 2
+%else
+%assign sad_acc sad_hbd_k&1
+    SAD_X_HBD_VNNI_ACC sad_acc, 10, sad_hbd_k < 2
+%if sad_hbd_k & 1
+    movu          xm12, [r3+sad_off0]
+    vinserti32x4  m12, m12, [r3+sad_off], 1
+    vinserti32x4  m13, m13, xm14, 1   ; fenc rows k-1 | k
+    psubw         m12, m13
+%assign sad_acc 2+((sad_hbd_k>>1)&1)
+    SAD_X_HBD_VNNI_ACC sad_acc, 12, sad_hbd_k < 4
+%else
+    %xdefine sad_off0 sad_off
+    mova          m13, m14
+%endif
+%endif
+%if (sad_hbd_k&3) == 3 && sad_hbd_k < %2-1
+    lea            r1, [r1+8*sad_stride]
+    lea            r2, [r2+8*sad_stride]
+    lea            r3, [r3+8*sad_stride]
+%if %1 == 4
+    lea            r4, [r4+8*sad_stride]
+%endif
+%endif
+%assign sad_hbd_k sad_hbd_k+1
+%endrep
+%undef sad_acc
+    paddd          m0, m1          ; { s1 | s2 } 4 dwords a lane
+    paddd          m2, m3          ; x4: { s3 | s4 }; x3: { s3 even rows | odd rows }
+    punpckldq      m4, m0, m2
+    punpckhdq      m0, m2
+    paddd          m0, m4          ; 1 3 1 3 | 2 4 2 4
+    punpckhqdq     m4, m0, m0
+    paddd          m0, m4
+    vextracti128  xm4, m0, 1
+    punpckldq     xm0, xm4         ; 1 2 3 4 (x3: 1 2 3e 3o)
+%if %1 == 3
+    mov           r6d, 4
+    kmovb          k1, r6d
+    vpshufd       xm4 {k1}{z}, xm0, q3333
+    paddd         xm0, xm4         ; 1 2 3 3o: lane 3 >= 0 cannot win a min
+%endif
+    SAD_X_HBD_VNNI_OUT %1, %3
+    %undef sad_stride
+%endmacro
+
 INIT_YMM avx512icl
 SAD_X_HBD16_VNNI 3, 16
 SAD_X_HBD16_VNNI 3, 16, 1
@@ -1879,6 +1964,10 @@ SAD_X_HBD16_VNNI 4, 16
 SAD_X_HBD16_VNNI 4, 16, 1
 SAD_X_HBD16_VNNI 4,  8
 SAD_X_HBD16_VNNI 4,  8, 1
+SAD_X_HBD8_VNNI 3, 16
+SAD_X_HBD8_VNNI 3, 16, 1
+SAD_X_HBD8_VNNI 3,  8
+SAD_X_HBD8_VNNI 3,  8, 1
 
 INIT_YMM avx2
 %endif
