@@ -169,6 +169,7 @@ tr_qidx:
     %assign tr_j tr_j+1
 %endrep
 %undef tr_j
+tr_off422: db 0, 0, 1, 1, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0 ; coeff_flag_offset_chroma_422_dc
 
 cextern_common cabac_entropy
 cextern_common cabac_transition
@@ -1630,6 +1631,9 @@ INIT_ZMM avx512icl
 %if TRELLIS_ICL_ZPREFIX && num_coefs == 16 && dc == 0
     %assign tr_zpfx 1
 %endif
+%if TRELLIS_ICL_ZPREFIX && dc
+    %assign tr_zpfx 1
+%endif
 cglobal %1, 4,15,22
     mov r2d, r2d
     mov r3d, r3d
@@ -1841,6 +1845,9 @@ cglobal %1, 4,15,22
     mov    r6, sigtabp
     vmovdqu8  m16, [r6]
     vpermb    m16, m16, m15               ; state of each position
+%elif num_coefs == 8
+    vmovdqu8  xm16, [tr_off422]
+    vpermb    xm16, xm16, [r6]
 %else
     vmovdqu8  xm16, [r6]
 %endif
