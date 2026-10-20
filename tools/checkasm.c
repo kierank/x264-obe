@@ -2211,6 +2211,39 @@ static int check_mc( int cpu_ref, int cpu_new )
         MC_TEST_AVG( avg, w );
     report( "mc wpredb :" );
 
+    /* copy[16x16] (aligned), copy[8x8], copy[4x4] (height 4 or 8), copy_16x16_unaligned: every
+     * height the encoder uses, src aligned and not, nothing written past w x h */
+    ok = 1, used_asm = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        static const int copy_idx[3] = { PIXEL_16x16, PIXEL_8x8, PIXEL_4x4 };
+        void (*fc)( pixel *, intptr_t, pixel *, intptr_t, int ) = i < 3 ? mc_c.copy[copy_idx[i]] : mc_c.copy_16x16_unaligned;
+        void (*fa)( pixel *, intptr_t, pixel *, intptr_t, int ) = i < 3 ? mc_a.copy[copy_idx[i]] : mc_a.copy_16x16_unaligned;
+        void (*fr)( pixel *, intptr_t, pixel *, intptr_t, int ) = i < 3 ? mc_ref.copy[copy_idx[i]] : mc_ref.copy_16x16_unaligned;
+        int w = i == 1 ? 8 : i == 2 ? 4 : 16;
+        if( fa == fr )
+            continue;
+        used_asm = 1;
+        set_func_name( i < 3 ? "mc_copy_w%d" : "mc_copy_w%d_unaligned", w );
+        for( int hgt = 4; hgt <= (w == 4 ? 8 : 16) && ok; hgt <<= 1 )
+            for( int a = 0; a < (i ? 16 : 1) && ok; a++ )
+            {
+                pixel *src = pbuf1 + 64 + a;
+                for( int k = 0; k < 1024; k++ )
+                    pbuf3[k] = pbuf4[k] = 0xCD;
+                call_c1( fc, pbuf3, (intptr_t)32, src, (intptr_t)64, hgt );
+                call_a1( fa, pbuf4, (intptr_t)32, src, (intptr_t)64, hgt );
+                if( memcmp( pbuf3, pbuf4, 1024 * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "mc_copy_w%d%s h %d src +%d [FAILED]\n", w, i < 3 ? "" : "_unaligned", hgt, a );
+                }
+            }
+        call_c2( fc, pbuf3, (intptr_t)32, pbuf1+64, (intptr_t)64, w == 4 ? 8 : 16 );
+        call_a2( fa, pbuf4, (intptr_t)32, pbuf1+64, (intptr_t)64, w == 4 ? 8 : 16 );
+    }
+    report( "mc copy :" );
+
 #define MC_TEST_WEIGHT( name, weight, aligned, src, height, bench ) \
     int align_off = (aligned ? 0 : rand()%16); \
     for( int i = 1; i <= 5; i++ ) \
@@ -2480,11 +2513,11 @@ static int check_mc( int cpu_ref, int cpu_new )
         {
             set_func_name( "store_interleave_chroma" );
             used_asm = 1;
-            memset( pbuf3, 0, 64*height );
-            memset( pbuf4, 0, 64*height );
+            memset( pbuf3, 0, 64*height*sizeof(pixel) );
+            memset( pbuf4, 0, 64*height*sizeof(pixel) );
             call_c( mc_c.store_interleave_chroma, pbuf3, (intptr_t)64, pbuf1, pbuf1+16, height );
             call_a( mc_a.store_interleave_chroma, pbuf4, (intptr_t)64, pbuf1, pbuf1+16, height );
-            if( memcmp( pbuf3, pbuf4, 64*height ) )
+            if( memcmp( pbuf3, pbuf4, 64*height*sizeof(pixel) ) )
             {
                 ok = 0;
                 fprintf( stderr, "store_interleave_chroma FAILED: h=%d\n", height );
@@ -2500,7 +2533,7 @@ static int check_mc( int cpu_ref, int cpu_new )
             memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
             call_c( mc_c.load_deinterleave_chroma_fenc, pbuf3, pbuf1, (intptr_t)64, height );
             call_a( mc_a.load_deinterleave_chroma_fenc, pbuf4, pbuf1, (intptr_t)64, height );
-            if( memcmp( pbuf3, pbuf4, FENC_STRIDE*height ) )
+            if( memcmp( pbuf3, pbuf4, FENC_STRIDE*height*sizeof(pixel) ) )
             {
                 ok = 0;
                 fprintf( stderr, "load_deinterleave_chroma_fenc FAILED: h=%d\n", height );
@@ -2516,7 +2549,7 @@ static int check_mc( int cpu_ref, int cpu_new )
             memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
             call_c( mc_c.load_deinterleave_chroma_fdec, pbuf3, pbuf1, (intptr_t)64, height );
             call_a( mc_a.load_deinterleave_chroma_fdec, pbuf4, pbuf1, (intptr_t)64, height );
-            if( memcmp( pbuf3, pbuf4, FDEC_STRIDE*height ) )
+            if( memcmp( pbuf3, pbuf4, FDEC_STRIDE*height*sizeof(pixel) ) )
             {
                 ok = 0;
                 fprintf( stderr, "load_deinterleave_chroma_fdec FAILED: h=%d\n", height );
@@ -2593,13 +2626,13 @@ static int check_mc( int cpu_ref, int cpu_new )
             intptr_t dst_stride = w;
             intptr_t src_stride = (2*w + 127) & ~63;
             intptr_t offv = (dst_stride*h + 31) & ~15;
-            memset( pbuf3, 0, 0x1000 );
-            memset( pbuf4, 0, 0x1000 );
+            memset( pbuf3, 0, 0x1000*sizeof(pixel) );
+            memset( pbuf4, 0, 0x1000*sizeof(pixel) );
             call_c( mc_c.plane_copy_deinterleave, pbuf3, dst_stride, pbuf3+offv, dst_stride, pbuf1, src_stride, w, h );
             call_a( mc_a.plane_copy_deinterleave, pbuf4, dst_stride, pbuf4+offv, dst_stride, pbuf1, src_stride, w, h );
             for( int y = 0; y < h; y++ )
-                if( memcmp( pbuf3+y*dst_stride,      pbuf4+y*dst_stride, w ) ||
-                    memcmp( pbuf3+y*dst_stride+offv, pbuf4+y*dst_stride+offv, w ) )
+                if( memcmp( pbuf3+y*dst_stride,      pbuf4+y*dst_stride, w*sizeof(pixel) ) ||
+                    memcmp( pbuf3+y*dst_stride+offv, pbuf4+y*dst_stride+offv, w*sizeof(pixel) ) )
                 {
                     ok = 0;
                     fprintf( stderr, "plane_copy_deinterleave FAILED: w=%d h=%d stride=%d\n", w, h, (int)src_stride );
@@ -2622,14 +2655,14 @@ static int check_mc( int cpu_ref, int cpu_new )
 
             for( int pw = 3; pw <= 4; pw++ )
             {
-                memset( pbuf3, 0, 0x1000 );
-                memset( pbuf4, 0, 0x1000 );
+                memset( pbuf3, 0, 0x1000*sizeof(pixel) );
+                memset( pbuf4, 0, 0x1000*sizeof(pixel) );
                 call_c( mc_c.plane_copy_deinterleave_rgb, pbuf3, dst_stride, pbuf3+offv, dst_stride, pbuf3+2*offv, dst_stride, pbuf1, src_stride, pw, w, h );
                 call_a( mc_a.plane_copy_deinterleave_rgb, pbuf4, dst_stride, pbuf4+offv, dst_stride, pbuf4+2*offv, dst_stride, pbuf1, src_stride, pw, w, h );
                 for( int y = 0; y < h; y++ )
-                    if( memcmp( pbuf3+y*dst_stride+0*offv, pbuf4+y*dst_stride+0*offv, w ) ||
-                        memcmp( pbuf3+y*dst_stride+1*offv, pbuf4+y*dst_stride+1*offv, w ) ||
-                        memcmp( pbuf3+y*dst_stride+2*offv, pbuf4+y*dst_stride+2*offv, w ) )
+                    if( memcmp( pbuf3+y*dst_stride+0*offv, pbuf4+y*dst_stride+0*offv, w*sizeof(pixel) ) ||
+                        memcmp( pbuf3+y*dst_stride+1*offv, pbuf4+y*dst_stride+1*offv, w*sizeof(pixel) ) ||
+                        memcmp( pbuf3+y*dst_stride+2*offv, pbuf4+y*dst_stride+2*offv, w*sizeof(pixel) ) )
                     {
                         ok = 0;
                         fprintf( stderr, "plane_copy_deinterleave_rgb FAILED: w=%d h=%d stride=%d pw=%d\n", w, h, (int)src_stride, pw );
@@ -2884,11 +2917,14 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_emms();
         for( int i = 0; i < 10; i++ )
         {
-            float fps_factor = (rand30()&65535) / 65535.0f;
+            /* i >= 5: the encoder's ranges (fps_factor near 1/512, lowres costs, inv_qscale
+             * near 256): most outputs unsaturated; at i < 5 nearly all are 0 or 32767 */
+            int real = i >= 5;
+            float fps_factor = (rand30()&65535) / 65535.0f / (real ? 256 : 1);
             set_func_name( "mbtree_propagate_cost" );
             int16_t *dsta = (int16_t*)buf3;
             int16_t *dstc = dsta+400;
-            uint16_t *prop = (uint16_t*)buf1;
+            uint16_t *prop = real ? (uint16_t*)buf4 + 384 : (uint16_t*)buf1;
             uint16_t *intra = (uint16_t*)buf4;
             uint16_t *inter = intra+128;
             uint16_t *qscale = inter+128;
@@ -2896,10 +2932,20 @@ static int check_mc( int cpu_ref, int cpu_new )
             x264_emms();
             for( int j = 0; j < 100; j++ )
             {
-                intra[j]  = *rnd++ & 0x7fff;
+                if( real )
+                {
+                    intra[j]  = rand() & LOWRES_COST_MASK;
+                    inter[j]  = rand() & 0x7fff;
+                    qscale[j] = 128 + rand() % 768;
+                    prop[j]   = rand() & 0x7fff;
+                }
+                else
+                {
+                    intra[j]  = *rnd++ & 0x7fff;
+                    inter[j]  = *rnd++ & 0x7fff;
+                    qscale[j] = *rnd++ & 0x7fff;
+                }
                 intra[j] += !intra[j];
-                inter[j]  = *rnd++ & 0x7fff;
-                qscale[j] = *rnd++ & 0x7fff;
             }
             call_c( mc_c.mbtree_propagate_cost, dstc, prop, intra, inter, qscale, &fps_factor, 100 );
             call_a( mc_a.mbtree_propagate_cost, dsta, prop, intra, inter, qscale, &fps_factor, 100 );
