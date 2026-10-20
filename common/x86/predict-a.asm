@@ -162,6 +162,17 @@ cextern pw_0to15
     PRED_H_STORE m1, 3-4*%2, %1
 %endmacro
 
+; %1 = (%1 ^ %2) & 1 in each byte
+%macro PARITY_B 2
+%if mmsize == 64
+    vpternlogd  %1, %2, [pb_1]{1to16}, 0x28
+%elif mmsize == 32
+    vpternlogd  %1, %2, [pb_1]{1to8}, 0x28
+%else
+    vpternlogd  %1, %2, [pb_1]{1to4}, 0x28
+%endif
+%endmacro
+
 ; dest, left, right, src, tmp
 ; output: %1 = (t[n-1] + t[n]*2 + t[n+1] + 2) >> 2
 %macro PRED8x8_LOWPASS 4-5
@@ -169,6 +180,11 @@ cextern pw_0to15
     paddw       %2, %3
     psrlw       %2, 1
     pavgw       %1, %4, %2
+%elif cpuflag(avx512icl)
+    pavgb       %5, %2, %3
+    PARITY_B    %2, %3
+    psubb       %5, %2
+    pavgb       %1, %4, %5
 %else
     mova        %5, %2
     pavgb       %2, %3
@@ -1374,7 +1390,7 @@ cglobal predict_16x16_p_core, 1,2,8*HIGH_BIT_DEPTH
     RET
 
 %if HIGH_BIT_DEPTH == 0
-%macro PREDICT_8x8 0
+%macro PREDICT_8x8_DDL 0
 ;-----------------------------------------------------------------------------
 ; void predict_8x8_ddl( uint8_t *src, uint8_t *edge )
 ;-----------------------------------------------------------------------------
@@ -1397,8 +1413,9 @@ cglobal predict_8x8_ddl, 2,2
 %assign Y (Y+1)
 %endrep
     RET
+%endmacro
 
-%ifnidn cpuname, ssse3
+%macro PREDICT_8x8_DDR 0
 ;-----------------------------------------------------------------------------
 ; void predict_8x8_ddr( uint8_t *src, uint8_t *edge )
 ;-----------------------------------------------------------------------------
@@ -1421,7 +1438,9 @@ cglobal predict_8x8_ddr, 2,2
     movq        [r0-3*FDEC_STRIDE], m0
     movq        [r0-4*FDEC_STRIDE], m1
     RET
+%endmacro
 
+%macro PREDICT_8x8_VL 0
 ;-----------------------------------------------------------------------------
 ; void predict_8x8_vl( uint8_t *src, uint8_t *edge )
 ;-----------------------------------------------------------------------------
@@ -1447,8 +1466,9 @@ cglobal predict_8x8_vl, 2,2
     movq        [r0+ Y   *FDEC_STRIDE], m3
     movq        [r0+(Y+1)*FDEC_STRIDE], m0
     RET
-%endif ; !ssse3
+%endmacro
 
+%macro PREDICT_8x8_VR 0
 ;-----------------------------------------------------------------------------
 ; void predict_8x8_vr( uint8_t *src, uint8_t *edge )
 ;-----------------------------------------------------------------------------
@@ -1489,7 +1509,16 @@ cglobal predict_8x8_vr, 2,2
     movq        [r0-1*FDEC_STRIDE], m0
     movq        [r0-2*FDEC_STRIDE], m3
     RET
-%endmacro ; PREDICT_8x8
+%endmacro
+
+%macro PREDICT_8x8 0
+    PREDICT_8x8_DDL
+%ifnidn cpuname, ssse3
+    PREDICT_8x8_DDR
+    PREDICT_8x8_VL
+%endif
+    PREDICT_8x8_VR
+%endmacro
 
 INIT_XMM sse2
 PREDICT_8x8
