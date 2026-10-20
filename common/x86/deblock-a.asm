@@ -3055,6 +3055,33 @@ cglobal deblock_h_luma, 5,10,16
     RET
 
 ;-----------------------------------------------------------------------------
+; void deblock_v_luma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal deblock_v_luma, 5,6,16
+    lea         r5, [r1*3]
+    neg         r5
+    add         r5, r0            ; pix-3*stride
+    movu       xm0, [r5+r1*2]
+    movu       xm1, [r5+r1]
+    movu       xm2, [r5]
+    vinserti128 m0, m0, [r0], 1   ; [p0|q0]
+    vinserti128 m1, m1, [r0+r1], 1
+    vinserti128 m2, m2, [r0+r1*2], 1
+    movu       xm4, [r0]
+    movu       xm5, [r0+r1]
+    movu       xm6, [r0+r1*2]
+    vinserti128 m4, m4, xm0, 1    ; [q0|p0]
+    vinserti128 m5, m5, xm1, 1
+    vinserti128 m6, m6, xm2, 1
+    LUMA_INTER_ICL y, 4, 8, pb_unpackbd1
+    movu  [r5+r1*2], xm0
+    vextracti128 [r0], m0, 1
+    movu    [r5+r1], xm1
+    vextracti128 [r0+r1], m1, 1
+    RET
+
+;-----------------------------------------------------------------------------
 ; avx512icl MBAFF mixed edge, 8 rows: one vpermb turns the 8x8 block of
 ; p3..q3 into [pN|qN] qword pairs, the xmm forms of the filters above run once.
 ;-----------------------------------------------------------------------------

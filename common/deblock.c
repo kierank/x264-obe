@@ -840,6 +840,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_h_chroma_422 = x264_deblock_h_chroma_422_avx512icl;
             pf->deblock_h_chroma_422_intra = x264_deblock_h_chroma_422_intra_avx512icl;
 #else
+            pf->deblock_luma[1] = x264_deblock_v_luma_avx512icl;
             pf->deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx512icl;
             pf->deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx512icl;
 #endif
