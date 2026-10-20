@@ -584,6 +584,9 @@ void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dst
 #define x264_frame_init_lowres_core8_avx512icl x264_template(frame_init_lowres_core8_avx512icl)
 void x264_frame_init_lowres_core8_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                              intptr_t src_stride, intptr_t dst_stride, int width, int height );
+#define x264_frame_init_lowres_core8_zmm_avx512icl x264_template(frame_init_lowres_core8_zmm_avx512icl)
+void x264_frame_init_lowres_core8_zmm_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+                                                 intptr_t src_stride, intptr_t dst_stride, int width, int height );
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );

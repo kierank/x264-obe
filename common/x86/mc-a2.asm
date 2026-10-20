@@ -105,6 +105,16 @@ pd_8: times 4 dd 8
 %if HIGH_BIT_DEPTH
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
 %endif
+%if HIGH_BIT_DEPTH
+; lowres8 zmm: packuswb lanes (v0 words 8L..8L+7, then v1's) -> 32 even | 32 odd bytes
+%assign lr_i 0
+pb_lowres8_64_icl:
+%rep 64
+    %assign lr_o (lr_i & 31) * 2 + (lr_i >> 5)  ; source word of output byte
+    db (lr_o >> 5) * 8 + ((lr_o & 31) >> 3) * 16 + (lr_o & 7)
+    %assign lr_i lr_i+1
+%endrep
+%endif
 
 SECTION .text
 
@@ -3350,4 +3360,90 @@ INIT_YMM avx2
 FRAME_INIT_LOWRES8
 INIT_YMM avx512icl
 FRAME_INIT_LOWRES8
+
+; frame_init_lowres_core8_zmm: 32 pixels of each plane per iteration; the row is
+; written up to the width rounded up to 16, as the ymm kernels write it: a 16-pixel
+; tail loads only the first half and is a masked store
+%macro LOWRES8_ZMM_BODY 1 ; tail
+    movu          m0, [r9+r11*4]
+    movu          m2, [r9+r11*4+2]
+    pavgw         m4, m0, [r0+r11*4]
+    pavgw         m6, m2, [r0+r11*4+2]
+    pavgw         m4, m6                ; rows 0, 1
+    pavgw         m6, m0, [r10+r11*4]
+    pavgw         m0, m2, [r10+r11*4+2]
+    pavgw         m6, m0                ; rows 1, 2
+%if %1
+    mova          m5, m4
+    mova          m8, m6
+%else
+    movu          m1, [r9+r11*4+mmsize]
+    movu          m3, [r9+r11*4+mmsize+2]
+    pavgw         m5, m1, [r0+r11*4+mmsize]
+    pavgw         m8, m3, [r0+r11*4+mmsize+2]
+    pavgw         m5, m8
+    pavgw         m8, m1, [r10+r11*4+mmsize]
+    pavgw         m1, m3, [r10+r11*4+mmsize+2]
+    pavgw         m8, m1
+%endif
+    paddw         m4, m7
+    paddw         m5, m7
+    paddw         m6, m7
+    paddw         m8, m7
+    psrlw         m4, 2
+    psrlw         m5, 2
+    psrlw         m6, 2
+    psrlw         m8, 2
+    packuswb      m4, m5                ; 256 saturates to 255
+    packuswb      m6, m8
+    vpermb        m4, m9, m4            ; dst0 | dsth
+    vpermb        m6, m9, m6            ; dstv | dstc
+    vextracti32x8 ym5, m4, 1
+    vextracti32x8 ym8, m6, 1
+%if %1
+    vmovdqu8 [r1+r11] {k1}, xm4
+    vmovdqu8 [r2+r11] {k1}, xm5
+    vmovdqu8 [r3+r11] {k1}, xm6
+    vmovdqu8 [r4+r11] {k1}, xm8
+%else
+    movu     [r1+r11], ym4
+    movu     [r2+r11], ym5
+    movu     [r3+r11], ym6
+    movu     [r4+r11], ym8
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal frame_init_lowres_core8_zmm, 9,13,10
+    FIX_STRIDES   r5
+    vpbroadcastd  m7, [pw_2]
+    movu          m9, [pb_lowres8_64_icl]
+    mov         r12d, 0xffff
+    kmovd         k1, r12d
+    add          r7d, 15
+    and          r7d, ~15
+.vloop:
+    lea           r9, [r0+r5]
+    lea          r10, [r0+r5*2]
+    xor         r11d, r11d
+.hloop:
+    lea         r12d, [r11+mmsize/2]
+    cmp         r12d, r7d
+    jg .tail
+    LOWRES8_ZMM_BODY 0
+    add          r11, mmsize/2
+    cmp         r11d, r7d
+    jl .hloop
+    jmp .next
+.tail:
+    LOWRES8_ZMM_BODY 1
+.next:
+    lea           r0, [r0+r5*2]
+    add           r1, r6
+    add           r2, r6
+    add           r3, r6
+    add           r4, r6
+    dec          r8d
+    jg .vloop
+    RET
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
