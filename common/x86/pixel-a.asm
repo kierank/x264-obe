@@ -6202,6 +6202,14 @@ cglobal intra_satd_x3_16x16, 3,5,16
 %else
     %assign intra_hbd_r0 intra_hbd_pass*4   ; one row per register
 %endif
+    ; avx512icl ymm: passes 0-1 and 2-3 each fit signed words (<= 2*2*8*PIXEL_MAX),
+    ; folded to dwords in ymm16-18 by pmaddwd after pass 1 and vpdpwssd at the end
+    %assign intra_hbd_swap 0
+%if intra_hbd_pass == 0
+    %assign intra_hbd_swap 1
+%elif intra_hbd_pass == 2 && cpuflag(avx512icl) && mmsize == 32
+    %assign intra_hbd_swap 1
+%endif
 %assign intra_hbd_i 0
 %rep 4
     %assign intra_hbd_f 8+intra_hbd_i
@@ -6214,7 +6222,7 @@ cglobal intra_satd_x3_16x16, 3,5,16
 %assign intra_hbd_i intra_hbd_i+1
 %endrep
     INTRA_HBD_DIFF4 12                      ; V
-%if intra_hbd_pass == 0
+%if intra_hbd_swap
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14, swap
 %else
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 14
@@ -6231,20 +6239,50 @@ cglobal intra_satd_x3_16x16, 3,5,16
     psubw          m %+ intra_hbd_i, m %+ intra_hbd_f, m %+ intra_hbd_i
 %assign intra_hbd_i intra_hbd_i+1
 %endrep
-%if intra_hbd_pass == 0
+%if intra_hbd_swap
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15, swap
 %else
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 15
 %endif
     INTRA_HBD_DIFF4 13                      ; DC
-%if intra_hbd_pass == 0
+%if intra_hbd_swap
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
 %else
     SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
 %endif
+%if intra_hbd_pass == 1 && cpuflag(avx512icl) && mmsize == 32
+    vpmaddwd     ymm16, m14, [pw_1]
+    vpmaddwd     ymm17, m15, [pw_1]
+    vpmaddwd     ymm18, m6, [pw_1]
+%endif
 %assign intra_hbd_pass intra_hbd_pass+1
 %endrep
+%undef intra_hbd_swap
+%if cpuflag(avx512icl) && mmsize == 32
+    {evex} vpdpwssd ymm16, m14, [pw_1]
+    {evex} vpdpwssd ymm17, m15, [pw_1]
+    {evex} vpdpwssd ymm18, m6, [pw_1]
+    vextracti32x4 xmm19, ymm16, 1
+    vextracti32x4 xmm20, ymm17, 1
+    vextracti32x4 xmm21, ymm18, 1
+    vpaddd       xmm16, xmm19
+    vpaddd       xmm17, xmm20
+    vpaddd       xmm18, xmm21
+    vpunpckldq   xmm19, xmm16, xmm17
+    vpunpckhdq   xmm16, xmm16, xmm17
+    vpaddd       xmm16, xmm19
+    vpunpckhdq   xmm19, xmm18, xmm18
+    vpunpckldq   xmm18, xmm18, xmm18
+    vpaddd       xmm18, xmm19
+    vpunpcklqdq  xmm19, xmm16, xmm18
+    vpunpckhqdq  xmm16, xmm16, xmm18
+    vpaddd       xmm16, xmm19
+    vmovq        [r2], xmm16
+    vpextrd    [r2+8], xmm16, 2
+    RET
+%else
     INTRA_HBD_X3_END 14, 15, 6, mmsize == 32
+%endif
 %endmacro
 
 ;-----------------------------------------------------------------------------
@@ -6253,6 +6291,10 @@ cglobal intra_satd_x3_16x16, 3,5,16
 ;-----------------------------------------------------------------------------
 %macro INTRA_SATD_X3_8x8C_HBD 0
 cglobal intra_satd_x3_8x8c, 3,7,16
+%if cpuflag(avx512icl)
+    mov           r3d, 0xff00               ; H rows k | k+4: merge-masked vpbroadcastw
+    kmovd          k1, r3d
+%endif
     movu          xm4, [r1-FDEC_STRIDEB]
     pmaddwd       xm4, [pw_1]
     pshufd        xm5, xm4, q2301
@@ -6300,9 +6342,14 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 %assign intra_hbd_i 0
 %rep 4                                      ; H
     %assign intra_hbd_f 8+intra_hbd_i
+%if cpuflag(avx512icl)
+    vpbroadcastw   m %+ intra_hbd_i, [r1+intra_hbd_i*FDEC_STRIDEB-2]
+    vpbroadcastw   m %+ intra_hbd_i {k1}, [r1+(intra_hbd_i+4)*FDEC_STRIDEB-2]
+%else
     vpbroadcastw  xm %+ intra_hbd_i, [r1+intra_hbd_i*FDEC_STRIDEB-2]
     vpbroadcastw  xm6, [r1+(intra_hbd_i+4)*FDEC_STRIDEB-2]
     vinserti128    m %+ intra_hbd_i, m %+ intra_hbd_i, xm6, 1
+%endif
     psubw          m %+ intra_hbd_i, m %+ intra_hbd_f, m %+ intra_hbd_i
 %assign intra_hbd_i intra_hbd_i+1
 %endrep
@@ -6345,9 +6392,14 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 %assign intra_hbd_i 0
 %rep 4                                      ; H
     %assign intra_hbd_f 8+intra_hbd_i
+%if cpuflag(avx512icl)
+    vpbroadcastw   m %+ intra_hbd_i, [r1+(%1+intra_hbd_i)*FDEC_STRIDEB-2]
+    vpbroadcastw   m %+ intra_hbd_i {k1}, [r1+(%1+intra_hbd_i+4)*FDEC_STRIDEB-2]
+%else
     vpbroadcastw  xm %+ intra_hbd_i, [r1+(%1+intra_hbd_i)*FDEC_STRIDEB-2]
     vpbroadcastw  xm4, [r1+(%1+intra_hbd_i+4)*FDEC_STRIDEB-2]
     vinserti128    m %+ intra_hbd_i, m %+ intra_hbd_i, xm4, 1
+%endif
     psubw          m %+ intra_hbd_i, m %+ intra_hbd_f, m %+ intra_hbd_i
 %assign intra_hbd_i intra_hbd_i+1
 %endrep
@@ -6366,6 +6418,10 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 
 %macro INTRA_SATD_X3_8x16C_HBD 0
 cglobal intra_satd_x3_8x16c, 3,7,16
+%if cpuflag(avx512icl)
+    mov           r3d, 0xff00               ; H rows k | k+4: merge-masked vpbroadcastw
+    kmovd          k1, r3d
+%endif
     movu          xm4, [r1-FDEC_STRIDEB]
     pmaddwd       xm4, [pw_1]
     pshufd        xm5, xm4, q2301
@@ -6608,6 +6664,7 @@ SATD_BI 16, 16, 0
 SATD_BI 16, 16, 1
 SA8D_SATD
 HADAMARD_AC_8x8_AVX2
+INTRA_SATD_X3_8x8C_HBD
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
