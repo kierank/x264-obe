@@ -6479,6 +6479,37 @@ cglobal pixel_satd_8x4, 4,6,6
     psubw        m1, m3
     SATD4_ICL_HBD lane
     SATD4_ICL_END
+
+; 16x16 as pixel_satd_16x16_avx2. A pass adds <= 2*8184 per word, so two
+; passes fit signed words: passes 1-2 are folded to dwords by pmaddwd and
+; passes 3-4 into them by vpdpwssd, instead of HADDUWD after four passes.
+cglobal pixel_satd_16x16, 4,6,8
+    FIX_STRIDES r1, r3
+    lea          r4, [3*r1]
+    lea          r5, [3*r3]
+%assign satd_hbd_pass 0
+%rep 4
+    SATD_HBD_LOAD_Y
+%if satd_hbd_pass & 1
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%if satd_hbd_pass == 1
+    pmaddwd      m7, m6, [pw_1]
+%elif satd_hbd_pass == 3
+    {evex} vpdpwssd m7, m6, [pw_1]
+%endif
+%if satd_hbd_pass < 3
+    lea          r0, [r0+4*r1]
+    lea          r2, [r2+4*r3]
+%endif
+%assign satd_hbd_pass satd_hbd_pass+1
+%endrep
+%undef satd_hbd_pass
+    HADDD        m7, m6
+    movd        eax, xm7
+    RET
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
