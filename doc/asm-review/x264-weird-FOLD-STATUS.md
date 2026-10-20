@@ -68,8 +68,30 @@ symbols (8-bit 18, 10-bit 35) is in its slot, so no dispatch is overridden.
   - 10-bit deblock_h_chroma_422(_intra): 10l and 10n (progressive and 1080i), 10_nr and
     10_sf_cut.
 
-## Not verified yet
+## Layout twin: test/x264-weird-twin2 a5c65c9a (verified)
 
-- Layout twin test/x264-weird-twin2: in progress. This file is updated when it is
-  pushed.
+On 69df9397, with the same X264_TWIN technique as test/x264-weird-twin 28a8d88f. It
+redirects 162 symbols to WB's function for each slot: the old 121, less the 12 ymm
+ads/var_16x16/ssd that are no longer dispatched, plus the 53 new ones.
+(test/x264-weird-twin2-wip faf5ddab has the same tree. It was pushed before
+verification.)
+- Function-pointer tables (27 levels: the checkasm cpu cascade, detect, and detect
+  minus AVX-512; both depths): twin2 == 4d6a42df at every slot. The only exceptions are as in 28a8d88f:
+  plane_copy_interleave_icl at avx512icl (its core is redirected to the base's core),
+  and the static zigzag_sub_8x8 C functions, which show under their alias name.
+- All 28 asm objects are byte-identical to the 69df9397 build.
+- The 12 changed C objects (bitstream, dct, deblock, pixel, quant, mc-c, both depths)
+  have identical .text, .rodata and .data, with relocations at the same offsets and of
+  the same types.
+- Every linked .text symbol address is identical to the 69df9397 build (3644 symbols).
+- The nm global defined symbols are equal (2752).
+- checkasm8 and checkasm10, seeds 1001, 2002, 3003: pass.
+- Changed in place, so not twinned: still only weightp_stats8_avx2, trellis 8x8
+  ZPREFIX and the decimate_score15 DC fix. Function by function, the WB vs tip
+  differences are the same list as for 99d29cc3. Round 2 changes no function that
+  4d6a42df has. The only round 2 changes to round 1 functions are rodata neighbour
+  bytes in the 8-bit deblock_v/h_luma_intra_avx512icl, from the new tables; their
+  instructions are unchanged.
+
+## Not verified yet
 - Speed: nothing on Zen 4 yet. All kernels are pending rack01 numbers.
