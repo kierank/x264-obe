@@ -7859,6 +7859,236 @@ ALIGN 16
     paddw        m2, m3
     paddw      mret, m0, m2
     ret
+
+;-----------------------------------------------------------------------------
+; avx512icl 8-bit satd and satd_avg2 (ymm16-31), the avx2 layouts with:
+; - HADAMARD 1, max in 3 uops: vpblendmw (k1 = 0x5555) and vpshldd give the
+;   pairs of TRANS d unord with the two words of each dword swapped, so the
+;   sum is unchanged;
+; - 8 wide row pairs [k k | k+4 k+4] from a broadcast and a merge-masked
+;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+%macro SATD_ICL_KMASK 1 ; gpr (dword) to clobber
+    mov       %1, 0x5555000c
+    kmovd     k2, %1
+    kshiftrd  k1, k2, 16
+%endmacro
+
+%macro SATD_ICL_HMAX 3 ; a, b, tmp
+    vpblendmw m%3 {k1}, m%1, m%2
+    vpshldd   m%2, m%1, m%2, 16
+    pmaxsw    m%1, m%3, m%2
+%endmacro
+
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %1
+%macro SATD_ICL_8x4 1 ; swap/add
+    HADAMARD4_V 0, 1, 2, 3, 4
+    pabsw     m0, m0
+    pabsw     m2, m2
+    pabsw     m1, m1
+    pabsw     m3, m3
+    SATD_ICL_HMAX 0, 2, 4
+    SATD_ICL_HMAX 1, 3, 5
+%ifidn %1, swap
+    paddw     m6, m0, m1
+%else
+    paddw     m0, m1
+    paddw     m6, m0
+%endif
+%endmacro
+
+%macro SATD_ICL_DUP8 3 ; dst, 2*mem: [%2 %2 | %3 %3]
+    vpbroadcastq m%1, %2
+    vpbroadcastq m%1 {k2}, %3
+%endmacro
+
+; rows k, k+4 (r0/r2 and r6/r7 = four rows down), %3/%4 = k*stride1/k*stride2
+%macro SATD_ICL_SUMSUB8 4 ; dst, tmp, 2*offset
+    SATD_ICL_DUP8 %1, [r0+%3], [r6+%3]
+    SATD_ICL_DUP8 %2, [r2+%4], [r7+%4]
+    pmaddubsw m%1, m7
+    pmaddubsw m%2, m7
+    psubw     m%1, m%2
+%endmacro
+
+%macro SATD_ICL_8x8 1 ; swap/add
+    SATD_ICL_SUMSUB8 0, 4, 0, 0
+    SATD_ICL_SUMSUB8 1, 5, r1, r3
+    SATD_ICL_SUMSUB8 2, 4, 2*r1, 2*r3
+    SATD_ICL_SUMSUB8 3, 5, r4, r5
+    SATD_ICL_8x4 %1
+%endmacro
+
+%macro SATD_ICL_START8 0
+    SATD_ICL_KMASK r4d
+    mova      m7, [hmul_8p]
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    lea       r6, [r0+4*r1]
+    lea       r7, [r2+4*r3]
+%endmacro
+
+%macro SATD_ICL_END 0
+    vextracti128 xm0, m6, 1
+    paddw        xm0, xm6
+    SATD_END_SSE2 xm0
+%endmacro
+
+cglobal pixel_satd_8x8, 4,8,8
+    SATD_ICL_START8
+    SATD_ICL_8x8 swap
+    SATD_ICL_END
+
+cglobal pixel_satd_8x16, 4,8,8
+    SATD_ICL_START8
+    SATD_ICL_8x8 swap
+    lea       r0, [r0+8*r1]
+    lea       r2, [r2+8*r3]
+    lea       r6, [r6+8*r1]
+    lea       r7, [r7+8*r3]
+    SATD_ICL_8x8 add
+    SATD_ICL_END
+
+; m6 += the satd of 16x8 at r0/r2, which move down 8 rows
+cglobal pixel_satd_16x8_internal
+%rep 2
+    LOAD_SUMSUB_16x4P_AVX2 0, 1, 2, 3, 4, 5, 7, r0, r2, 1
+    SATD_ICL_8x4 add
+%endrep
+    ret
+
+%macro SATD_ICL_START16 0
+    mov      r4d, 0x5555
+    kmovd     k1, r4d
+    mova      m7, [hmul_16p]
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    pxor      m6, m6
+%endmacro
+
+cglobal pixel_satd_16x16, 4,6,8
+    SATD_ICL_START16
+    call pixel_satd_16x8_internal
+    call pixel_satd_16x8_internal
+    SATD_ICL_END
+
+cglobal pixel_satd_16x8, 4,6,8
+    SATD_ICL_START16
+    call pixel_satd_16x8_internal
+    SATD_ICL_END
+
+; satd_avg2: as the avx2 SATD_AVG2_16x4 / SATD_AVG2_8x8
+%macro SATD_AVG2_ICL_16x4 0
+    SATD_AVG2_SUMSUB16x2 0, 1, 4, 5, 0, FENC_STRIDE, 0, r3
+    SATD_AVG2_SUMSUB16x2 2, 3, 4, 5, 2*FENC_STRIDE, 3*FENC_STRIDE, 2*r3, r4
+    SATD_ICL_8x4 add
+%endmacro
+
+%macro SATD_AVG2_ICL_SUMSUB8 3 ; dst (number), k, source offset
+    SATD_ICL_DUP8 %1, [r0+%2*FENC_STRIDE], [r0+(%2+4)*FENC_STRIDE]
+    SATD_ICL_DUP8 4, [r1+%3], [r5+%3]
+    SATD_ICL_DUP8 8, [r2+%3], [r6+%3]
+    pavgb          m4, m8
+    pmaddubsw     m%1, m7
+    pmaddubsw      m4, m7
+    psubw         m%1, m4
+%endmacro
+
+%macro SATD_AVG2_ICL_8x8 1 ; swap/add
+    SATD_AVG2_ICL_SUMSUB8 0, 0, 0
+    SATD_AVG2_ICL_SUMSUB8 1, 1, r3
+    SATD_AVG2_ICL_SUMSUB8 2, 2, 2*r3
+    SATD_AVG2_ICL_SUMSUB8 3, 3, r4
+    SATD_ICL_8x4 %1
+%endmacro
+
+cglobal pixel_satd_avg2_16x16, 4,5,9
+    mov      r4d, 0x5555
+    kmovd     k1, r4d
+    mova      m7, [hmul_16p]
+    lea       r4, [3*r3]
+    pxor      m6, m6
+    SATD_AVG2_ICL_16x4
+%rep 3
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDE
+    SATD_AVG2_ICL_16x4
+%endrep
+    SATD_ICL_END
+
+cglobal pixel_satd_avg2_16x8, 4,5,9
+    mov      r4d, 0x5555
+    kmovd     k1, r4d
+    mova      m7, [hmul_16p]
+    lea       r4, [3*r3]
+    pxor      m6, m6
+    SATD_AVG2_ICL_16x4
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDE
+    SATD_AVG2_ICL_16x4
+    SATD_ICL_END
+
+%macro SATD_AVG2_ICL_START8 0
+    SATD_ICL_KMASK r4d
+    mova      m7, [hmul_8p]
+    lea       r4, [3*r3]
+    lea       r5, [r1+4*r3]
+    lea       r6, [r2+4*r3]
+%endmacro
+
+cglobal pixel_satd_avg2_8x16, 4,7,9
+    SATD_AVG2_ICL_START8
+    SATD_AVG2_ICL_8x8 swap
+    lea       r1, [r1+8*r3]
+    lea       r2, [r2+8*r3]
+    lea       r5, [r5+8*r3]
+    lea       r6, [r6+8*r3]
+    add       r0, 8*FENC_STRIDE
+    SATD_AVG2_ICL_8x8 add
+    SATD_ICL_END
+
+cglobal pixel_satd_avg2_8x8, 4,7,9
+    SATD_AVG2_ICL_START8
+    SATD_AVG2_ICL_8x8 swap
+    SATD_ICL_END
+
+; HADAMARD 8, sumsub (vperm2i128 has no EVEX form)
+%macro SA8D_ICL_H8 3 ; a, b, tmp
+    vshufi32x4  m%3, m%1, m%2, 3
+    vinserti128 m%1, m%1, xm%2, 1
+    SWAP         %2, %3
+    SUMSUB_BA    w, %1, %2, %3
+%endmacro
+
+; as pixel_sa8d_8x8_avx2
+cglobal pixel_sa8d_8x8, 4,8,8
+    SATD_ICL_START8
+    SATD_ICL_SUMSUB8 0, 4, 0, 0
+    SATD_ICL_SUMSUB8 1, 5, r1, r3
+    SATD_ICL_SUMSUB8 2, 4, 2*r1, 2*r3
+    SATD_ICL_SUMSUB8 3, 5, r4, r5
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SA8D_ICL_H8 0, 1, 4
+    SA8D_ICL_H8 2, 3, 4
+    HADAMARD 2, sumsub, 0, 1, 4, 5
+    HADAMARD 2, sumsub, 2, 3, 4, 5
+    pabsw     m0, m0
+    pabsw     m1, m1
+    pabsw     m2, m2
+    pabsw     m3, m3
+    SATD_ICL_HMAX 0, 1, 4
+    SATD_ICL_HMAX 2, 3, 5
+    paddw     m6, m0, m2
+    vextracti128 xm1, m6, 1
+    paddw    xm6, xm1
+    HADDW    xm6, xm1
+    movd     eax, xm6
+    add      eax, 1
+    shr      eax, 1
+    RET
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask

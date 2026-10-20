@@ -1619,6 +1619,18 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        /* ymm, VBMI2 + opmask transform; not the X264_CPU_AVX512 zmm table below */
+        INIT4( satd, _avx512icl );
+        pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx512icl;
+        pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx512icl;
+        pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx512icl;
+        pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx512icl;
+        pixf->sa8d[PIXEL_8x8] = x264_pixel_sa8d_8x8_avx512icl;
+#endif
+    }
 
     /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
      * (rack01 ablation, obed low latency), although most win in checkasm. */
