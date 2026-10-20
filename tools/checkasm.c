@@ -2943,6 +2943,7 @@ static int check_deblock( int cpu_ref, int cpu_new )
 
     if( db_a.deblock_strength != db_ref.deblock_strength )
     {
+        used_asm = 1;
         for( int i = 0; i < 100; i++ )
         {
             ALIGNED_ARRAY_16( uint8_t, nnz, [X264_SCAN8_SIZE] );
