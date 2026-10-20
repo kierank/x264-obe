@@ -396,6 +396,9 @@ rd8_last_bits:
     dw 658,5777,696,5757,736,5642,779,5623,824,5278,871,5258,921,5181,974,5162
     dw 1031,4824,1092,4785,1157,4766,1226,4436,1300,4417,1379,4154,1464,4097,1555,3845
     dw 1652,3807,1756,3565,1868,3546,1988,3316,2118,3297,2259,3098,2412,2911,2578,2738
+; position i: shift that leaves the positions above i (avx512icl rd 4x4)
+rd4_above:          dd 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+rd4_ctxc:           dd 1, 3, 5, 9
 
 %if ARCH_X86_64
 %macro COEFF_LAST_TABLE 17
@@ -460,6 +463,7 @@ cextern_common count_cat_m1
 cextern cabac_encode_ue_bypass
 cextern pb_1
 cextern pw_1
+cextern pd_1
 
 %if ARCH_X86_64
     %define pointer resq
@@ -867,18 +871,67 @@ CABAC bmi2
 %ifndef RD4_ICL_WORDS
     %define RD4_ICL_WORDS 1
 %endif
+; build-time A/B: avx512icl 4x4 rd level contexts from vpopcntd counts
+%ifndef RD4_ICL_NODECTX
+    %define RD4_ICL_NODECTX 1
+%endif
+
+; one level of the avx512icl 4x4 rd: r1d = abs, r6 = position, contexts at ctx1m/ctxg1m
+%macro COEFF_ABS_LEVEL_GT1_ICL 0
+    movzx   lctxd, byte [ctx1m+r6]
+    movzx   lt0d, byte [r8+lctx]
+    cmp     r1d, 1
+    jg %%gt1
+    movzx   lt1d, byte [cabac_transition+lt0*2 GLOBAL]
+    movzx   lt0d, word [cabac_entropy+lt0*2 GLOBAL]
+    lea     r0d, [r0+lt0+256]
+    mov [r8+lctx], lt1b
+    jmp %%end
+%%gt1:
+    movzx   lt1d, byte [cabac_transition+lt0*2+1 GLOBAL]
+    xor     lt0d, 1
+    movzx   lt0d, word [cabac_entropy+lt0*2 GLOBAL]
+    mov [r8+lctx], lt1b
+    add     r0d, lt0d
+    movzx   lctxd, byte [ctxg1m+r6]
+    cmp     r1d, 15
+    jge %%escape
+    shl     r1d, 7
+    movzx   lt0d, byte [r8+lctx]
+    add     lt0d, r1d
+    movzx   lt1d, byte [cabac_transition_unary-128+lt0 GLOBAL]
+    movzx   lt0d, word [cabac_size_unary-256+lt0*2 GLOBAL]
+    mov [r8+lctx], lt1b
+    add     r0d, lt0d
+    jmp %%end
+%%escape:
+    movzx   lt0d, byte [r8+lctx]
+    movzx   lt1d, byte [cabac_transition_unary+128*14+lt0 GLOBAL]
+    movzx   lt0d, word [cabac_size_unary+256*14+lt0*2 GLOBAL]
+    add     r0d, lt0d
+    mov [r8+lctx], lt1b
+    sub     r1d, 14
+    lzcnt   lt0d, r1d
+    xor     lt0d, 0x1f
+    shl     lt0d, 9
+    lea     r0d, [r0+lt0+256]
+%%end:
+%endmacro
 
 ; 4x4 blocks, avx512icl: the whole significance map at once. Each sig and
 ; last context is used at most once per 4x4 block, and the sig, last and
 ; level context ranges are disjoint, so the decisions are independent and
 ; only f8_bits (an integer sum) depends on their order.
 %macro CABAC_RESIDUAL_RD_4x4_ICL 0
+    %assign rd4i_stack 16*SIZEOF_DCTCOEF+RD4_ICL_NODECTX*32 ; abs() copy, level contexts
+    %define ctx1m  rsp+16*SIZEOF_DCTCOEF
+    %define ctxg1m rsp+16*SIZEOF_DCTCOEF+16
 %ifdef PIC
-    cglobal cabac_block_residual_rd_internal, 4,11,8,-16*SIZEOF_DCTCOEF
+    cglobal cabac_block_residual_rd_internal, 4,11,8,-rd4i_stack
     lea     r10, [$$]
     %define GLOBAL +r10-$$
 %else
-    cglobal cabac_block_residual_rd_internal, 4,10,8,-16*SIZEOF_DCTCOEF
+    cglobal cabac_block_residual_rd_internal, 4,10,8,-rd4i_stack
     %define GLOBAL
 %endif
     RD_TMP_REGS 5, 7, 9                                       ; r5/r7 are free once the map is written
@@ -978,6 +1031,42 @@ CABAC bmi2
 %endif
     vmovd    r1d, xm3
     add      r0d, r1d
+%if RD4_ICL_NODECTX
+; level contexts of each position from the number of levels 1 (e) and > 1 (g)
+; above it: ctx1 = g ? 0 : min(e,3)+1, ctxgt1 = min(g+5,9)
+%if HIGH_BIT_DEPTH
+    vpcmpud   k5, zm0, [pd_1] {1to16}, 6
+    kmovw    r1d, k5
+%else
+    vpcmpuw   k5, ym0, [pw_1], 6
+    kmovd    r1d, k5
+%endif
+    andn     r2d, r1d, r4d
+    vpbroadcastd zm1, r1d
+    vpbroadcastd zm2, r2d
+    vpsrlvd   zm1, zm1, [rd4_above]
+    vpsrlvd   zm2, zm2, [rd4_above]
+    vpopcntd  zm1, zm1                                        ; g
+    vpopcntd  zm2, zm2                                        ; e
+    vptestnmd k5, zm1, zm1
+    vpminud   zm2, zm2, [rd4_ctxc+4] {1to16}
+    vpaddd    zm2 {k5}{z}, zm2, [rd4_ctxc] {1to16}
+    vpaddd    zm1, zm1, [rd4_ctxc+8] {1to16}
+    vpminud   zm1, zm1, [rd4_ctxc+12] {1to16}
+    vpmovdb   xm2, zm2
+    vpmovdb   xm1, zm1
+    vmovdqu  [ctx1m], xm2
+    vmovdqu  [ctxg1m], xm1
+; levels: last, then the other nonzero coefficients in descending order
+.level_loop:
+    lzcnt    r6d, r4d
+    xor      r6d, 31
+    btr      r4d, r6d
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_GT1_ICL
+    test     r4d, r4d
+    jnz .level_loop
+%else
 ; levels: last, then the other nonzero coefficients in descending order
     LOAD_DCTCOEF r1d
     COEFF_ABS_LEVEL_GT1 last, 1
@@ -992,6 +1081,7 @@ CABAC bmi2
     COEFF_ABS_LEVEL_GT1 coeff, 0
     test     r4d, r4d
     jnz .level_loop
+%endif
 .end:
     mov [r3+cb.bits_encoded-cb.state], r0d
     RET
