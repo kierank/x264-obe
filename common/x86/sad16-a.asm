@@ -2030,6 +2030,90 @@ cglobal pixel_sad_16x%1
 SAD_HBD16_VNNI 16
 SAD_HBD16_VNNI  8
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_WxH( uint16_t *pix1, intptr_t, uint16_t *pix2, intptr_t ), W = 8, 4
+; AVX-512: four rows a register from one load and three k-merged broadcasts
+; (8 wide: vbroadcasti32x4 into a zmm, 4 wide: vpbroadcastq into a ymm), so
+; no load is wider than a row. Word sums, at most 4*1023 a lane.
+; Tail: (zmm: vextracti64x4, paddw,) pmaddwd, vextracti32x4, paddd,
+; 2 pshufd + paddd, movd (8 or 10 ops).
+;-----------------------------------------------------------------------------
+; k3-k5 = row 1-3 of a group: dword lanes 4-7, 8-11, 12-15 (8 wide), qword 1-3 (4 wide)
+%macro SAD_HBD_K4_MASKS 1 ; width
+%if %1 == 8
+    mov           r6d, 0xf0
+    kmovw          k3, r6d
+    shl           r6d, 4
+    kmovw          k4, r6d
+    shl           r6d, 4
+    kmovw          k5, r6d
+%else
+    mov           r6d, 2
+    kmovb          k3, r6d
+    add           r6d, r6d
+    kmovb          k4, r6d
+    add           r6d, r6d
+    kmovb          k5, r6d
+%endif
+%endmacro
+
+; m%1 = rows 0-3 of %2 (stride %3, 3*stride %4)
+%macro SAD_HBD_K4_LOAD 5 ; dst, ptr, stride, stride3, width
+%if %5 == 8
+    movu          xm%1, [%2]
+    vbroadcasti32x4 m%1 {k3}, [%2+%3]
+    vbroadcasti32x4 m%1 {k4}, [%2+2*%3]
+    vbroadcasti32x4 m%1 {k5}, [%2+%4]
+%else
+    vpbroadcastq   m%1, [%2]
+    vpbroadcastq   m%1 {k3}, [%2+%3]
+    vpbroadcastq   m%1 {k4}, [%2+2*%3]
+    vpbroadcastq   m%1 {k5}, [%2+%4]
+%endif
+%endmacro
+
+%macro SAD_HBD_K4 2 ; width, height
+cglobal pixel_sad_%1x%2, 4,7,4
+    FIX_STRIDES    r1, r3
+    lea            r4, [r1+2*r1]
+    lea            r5, [r3+2*r3]
+    SAD_HBD_K4_MASKS %1
+%assign sad_hbd_g 0
+%rep %2/4
+    SAD_HBD_K4_LOAD 1, r2, r3, r5, %1
+    SAD_HBD_K4_LOAD 2, r0, r1, r4, %1
+    psubw          m1, m2
+%if sad_hbd_g == 0
+    pabsw          m0, m1
+%else
+    pabsw          m1, m1
+    paddw          m0, m1
+%endif
+%if sad_hbd_g < %2/4-1
+    lea            r0, [r0+4*r1]
+    lea            r2, [r2+4*r3]
+%endif
+%assign sad_hbd_g sad_hbd_g+1
+%endrep
+%undef sad_hbd_g
+%if mmsize == 64
+    vextracti64x4 ym1, m0, 1
+    paddw         ym0, ym1
+%endif
+    pmaddwd       ym0, [pw_1]
+    vextracti128  xm1, ym0, 1
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
+INIT_ZMM avx512
+SAD_HBD_K4 8, 16
+
 INIT_YMM avx2
 %endif
 
