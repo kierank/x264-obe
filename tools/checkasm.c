@@ -1459,6 +1459,26 @@ static int check_pixel( int cpu_ref, int cpu_new )
             fprintf( stderr, "ssd_nv12: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
                      res_u_c, res_v_c, res_u_a, res_v_a );
         }
+        /* every width mod 64 bytes, random and PIXEL_MAX against 0 */
+        ALIGNED_16( pixel nv[2][160*5] );
+        for( int i = 0; i < 160*5; i++ )
+        {
+            nv[0][i] = -(rand()&1) & PIXEL_MAX;
+            nv[1][i] = PIXEL_MAX - nv[0][i];
+        }
+        for( int w = 8; w <= 72 && ok; w += 8 )
+            for( int k = 0; k < 2 && ok; k++ )
+            {
+                pixel *p1 = k ? nv[0] : pbuf1, *p2 = k ? nv[1] : pbuf2;
+                pixel_c.ssd_nv12_core(   p1, 160, p2, 160, w, 5, &res_u_c, &res_v_c );
+                pixel_asm.ssd_nv12_core( p1, 160, p2, 160, w, 5, &res_u_a, &res_v_a );
+                if( res_u_c != res_u_a || res_v_c != res_v_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "ssd_nv12 width %d: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
+                             w, res_u_c, res_v_c, res_u_a, res_v_a );
+                }
+            }
         call_c( pixel_c.ssd_nv12_core,   pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_c, &res_v_c );
         call_a( pixel_asm.ssd_nv12_core, pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_a, &res_v_a );
     }

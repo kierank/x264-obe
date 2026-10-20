@@ -944,6 +944,126 @@ INIT_YMM avx2
 SSD_NV12
 
 ;-----------------------------------------------------------------------------
+; avx512icl ssd_nv12_core: 64 bytes a step, the row's partial last step by zero-masked
+; loads (k1, k2: its bytes in the first and second ymm), no over-read. vpdpwssd into two
+; sets, summed in qwords (per row at high bit depth).
+; 8-bit: |d| bytes, u = low and v = high byte of each word; m0 m1 = u, m2 m3 = v.
+; High bit depth: d * (d & 0xffff) = u, d * d = u + v; m0 m1 = u, m2 m3 = u + v.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%macro SSD_NV12_ICL_STEP 2 ; u acc, v (u + v) acc; m8 m9 = pix1 pix2
+%if HIGH_BIT_DEPTH
+    psubw       m8, m9
+    pand        m9, m8, m7
+    vpdpwssd    %1, m8, m9
+    vpdpwssd    %2, m8, m8
+%else
+    pminub     m10, m8, m9
+    pmaxub      m8, m9
+    psubb       m8, m10
+    psrlw       m9, m8, 8
+    pand        m8, m7
+    vpdpwssd    %1, m8, m8
+    vpdpwssd    %2, m9, m9
+%endif
+%endmacro
+
+; m4 += u, m5 += v as qwords, from m0-m3; m6 = 0
+%macro SSD_NV12_ICL_WIDEN 0
+    paddd       m0, m1
+    paddd       m2, m3
+%if HIGH_BIT_DEPTH
+    psubd       m2, m0
+%endif
+    punpckldq   m1, m0, m6
+    punpckhdq   m0, m6
+    paddq       m4, m1
+    paddq       m4, m0
+    punpckldq   m3, m2, m6
+    punpckhdq   m2, m6
+    paddq       m5, m3
+    paddq       m5, m2
+%endmacro
+
+INIT_YMM avx512icl
+cglobal pixel_ssd_nv12_core, 6,8,11
+%if HIGH_BIT_DEPTH
+    shl        r4d, 2
+    FIX_STRIDES r1, r3
+    vpbroadcastd m7, [pd_ffff]
+%else
+    add        r4d, r4d
+    vpbroadcastd m7, [pw_00ff]
+%endif
+    mov        r6d, r4d
+    and        r6d, 63
+    and        r4d, ~63
+    mov         r7, -1
+    bzhi        r7, r7, r6
+    kmovq       k1, r7
+    kshiftrq    k2, k1, 32
+    add         r0, r4
+    add         r2, r4
+    neg         r4
+    pxor        m4, m4
+    pxor        m5, m5
+    pxor        m6, m6
+    pxor        m0, m0
+    pxor        m1, m1
+    pxor        m2, m2
+    pxor        m3, m3
+.loopy:
+    mov         r6, r4
+    test        r6, r6
+    jz .tail
+.loopx:
+    movu        m8, [r0+r6]
+    movu        m9, [r2+r6]
+    SSD_NV12_ICL_STEP m0, m2
+    movu        m8, [r0+r6+32]
+    movu        m9, [r2+r6+32]
+    SSD_NV12_ICL_STEP m1, m3
+    add         r6, 64
+    jl .loopx
+.tail:
+    kortestq    k1, k1
+    jz .next
+    vmovdqu8    m8 {k1}{z}, [r0]
+    vmovdqu8    m9 {k1}{z}, [r2]
+    SSD_NV12_ICL_STEP m0, m2
+    vmovdqu8    m8 {k2}{z}, [r0+32]
+    vmovdqu8    m9 {k2}{z}, [r2+32]
+    SSD_NV12_ICL_STEP m1, m3
+.next:
+%if HIGH_BIT_DEPTH
+    SSD_NV12_ICL_WIDEN
+    pxor        m0, m0
+    pxor        m1, m1
+    pxor        m2, m2
+    pxor        m3, m3
+%endif
+    add         r0, r1
+    add         r2, r3
+    dec        r5d
+    jg .loopy
+%if HIGH_BIT_DEPTH == 0
+    SSD_NV12_ICL_WIDEN
+%endif
+    vextracti128 xm0, m4, 1
+    paddq       xm4, xm0
+    vextracti128 xm0, m5, 1
+    paddq       xm5, xm0
+    punpcklqdq  xm0, xm4, xm5
+    punpckhqdq  xm4, xm5
+    paddq       xm0, xm4
+    mov         r3, r6mp
+    mov         r4, r7mp
+    movq      [r3], xm0
+    movhps    [r4], xm0
+    RET
+%endif
+
+;-----------------------------------------------------------------------------
 ; int pixel_ssd_WxH( pixel *, intptr_t, pixel *, intptr_t ), avx512icl: VNNI
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
