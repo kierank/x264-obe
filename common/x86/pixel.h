@@ -844,6 +844,8 @@ void x264_intra_sad_x3_8x8c_sse2   ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_8x8c_ssse3  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_8x8c_avx2   ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_8x8c_avx512icl( pixel *, pixel *, int * );
+#define x264_intra_sad_x3_8x8c_vp_avx512icl x264_template(intra_sad_x3_8x8c_vp_avx512icl)
+void x264_intra_sad_x3_8x8c_vp_avx512icl( pixel *, pixel *, int * );
 void x264_intra_sad_x3_8x8c_avx512( pixel *, pixel *, int * );
 void x264_intra_sad_x3_8x16c_avx512( pixel *, pixel *, int * );
 #define x264_intra_sad_x3_8x16c_avx512icl x264_template(intra_sad_x3_8x16c_avx512icl)

@@ -59,6 +59,24 @@ isad816c_dcidx: times 4 db 16,16,16,16,20,20,20,20
 isad816c_wperm: dw 0, 4, 2, 2, 6, 6, 2, 6, 8, 8, 2, 8, 10, 10, 2, 10
 isad816c_wmul:  dw 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1
 isad816c_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
+ALIGN 64
+; left column bytes from aligned 64 byte loads: byte r = (32r+63)&127 (fdec at 64n,
+; loads from fdec-64), (32r+15)&127 (fdec at 64n+16, loads from fdec-16)
+%assign i 0
+isad_lidx:
+%rep 64
+    db (32*i+63)&127
+%assign i i+1
+%endrep
+%assign i 0
+isad_lidx_v:
+%rep 64
+    db (32*i+15)&127
+%assign i i+1
+%endrep
+%undef i
+; rows 0-2, 3-6, 7-10, 11-14, 15, 7-15; V plane rows 0-3, 4-7
+isad_lmask:    dw 0x0007, 0x0078, 0x0780, 0x7800, 0x8000, 0xff80, 0x000f, 0x00f0
 
 SECTION .text
 
@@ -1141,6 +1159,36 @@ cglobal intra_sad_x3_8x8c, 3,3,8
     INTRA_SAD_LEFT4 2, 1
     movq          xm1, [r1-FDEC_STRIDE]
     punpckldq     xm0, xm2              ; left 0-7
+    INTRA_SAD_X3_8x8C_BODY
+
+; left column by vpermi2b/vpermb from 64 byte aligned fdec loads: no line
+; splits, no pinsrb. fdec at 64n (U) or 64n+16 (V); else the pinsrb kernel.
+cglobal intra_sad_x3_8x8c_vp, 3,4,8
+    mov           r3d, r1d
+    and           r3d, 63
+    jz .u
+    cmp           r3d, 16
+    jne intra_sad_x3_8x8c_avx512icl
+    mova           m0, [isad_lidx_v]
+    kmovw          k1, [isad_lmask+12]
+    kmovw          k2, [isad_lmask+14]
+    mova           m2, [r1-16]
+    vpermi2b       m0 {k1}, m2, [r1+48]
+    mova           m2, [r1+112]
+    vpermi2b       m0 {k2}, m2, [r1+176]
+    jmp .left
+.u:
+    mova           m0, [isad_lidx]
+    kmovw          k1, [isad_lmask+0]
+    kmovw          k2, [isad_lmask+2]
+    kmovw          k3, [isad_lmask+4]
+    mova           m2, [r1-64]
+    vpermi2b       m0 {k1}, m2, [r1]
+    mova           m2, [r1+64]
+    vpermi2b       m0 {k2}, m2, [r1+128]
+    vpermb         m0 {k3}, m0, [r1+192]
+.left:
+    movq          xm1, [r1-FDEC_STRIDE]
     INTRA_SAD_X3_8x8C_BODY
 
 ; 8x16c: as 8x8c with { s4, s5 } from left 8-15 in lane 1 of the vdbpsadbw,
