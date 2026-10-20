@@ -48,6 +48,26 @@ pw_wclip: times 16 dw 0x7fff-((1 << BIT_DEPTH)-1) ; weight clip: 0x7fff-PIXEL_MA
 sq_1: times 1 dq 1
 %if HIGH_BIT_DEPTH
 plane_tail: dd 0, 0xff, 0xffff, 0xffffff ; weight plane zmm tail, by tail bytes/16
+%else
+; avx512icl mc_chroma: row r at 0, row r+1 at 64 -> dword x: u {s[2x], s[2x+2], t[2x], t[2x+2]},
+; dword 8+x: the same for v; then byte 0 of the dwords of rows r, r+1 -> u r, u r+1, v r, v r+1
+%assign mcc_j 0
+mcc_win_icl:
+             %rep 8
+                 db 2*mcc_j, 2*mcc_j+2, 64+2*mcc_j, 66+2*mcc_j
+                 %assign mcc_j mcc_j+1
+             %endrep
+             %assign mcc_j 0
+             %rep 8
+                 db 2*mcc_j+1, 2*mcc_j+3, 65+2*mcc_j, 67+2*mcc_j
+                 %assign mcc_j mcc_j+1
+             %endrep
+%assign mcc_j 0
+mcc_gather_icl:
+             %rep 32
+                 db (mcc_j & 7)*4 + (mcc_j >> 3 & 1)*64 + (mcc_j >> 4)*32
+                 %assign mcc_j mcc_j+1
+             %endrep
 %endif
 
 SECTION .text
@@ -2932,4 +2952,93 @@ INIT_XMM avx
 MC_CHROMA_SSSE3 ; No known AVX CPU will trigger CPU_CACHELINE_64
 INIT_YMM avx2
 MC_CHROMA_SSSE3
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 8-bit mc_chroma, avx512icl: two rows per iteration. vpermi2b gathers the
+; 2x2 bilinear taps {s[2x], s[2x+2], t[2x], t[2x+2]} of 8 u and 8 v outputs
+; into dwords and one vpdpbusd per row sums them against (cA, cB, cC, cD)
+; (each <= 64, sum 64); then (sum + 32) >> 6, exact. Masked loads read the
+; 2*width+2 bytes of each row, masked stores write width bytes.
+;-----------------------------------------------------------------------------
+%macro MC_CHROMA_ICL_ROWS 1 ; width 8
+    vmovdqu8      ym1 {k1}{z}, [r3+r4]
+    lea            r3, [r3+r4*2]
+    vmovdqu8      ym2 {k1}{z}, [r3]
+    mova           m7, m3
+    mova           m8, m3
+    vpermi2b       m7, m0, m1
+    vpermi2b       m8, m1, m2
+    mova           m9, m6
+    mova          m10, m6
+    {evex} vpdpbusd m9, m7, m5
+    {evex} vpdpbusd m10, m8, m5
+    psrld          m9, 6
+    psrld         m10, 6
+    vpermt2b       m9, m4, m10        ; u row 0, u row 1, v row 0, v row 1
+    vextracti32x4 xm10, ym9, 1
+%if %1
+    movq         [r0], xm9
+    movhps    [r0+r2], xm9
+    movq         [r1], xm10
+    movhps    [r1+r2], xm10
+%else
+    vmovdqu8     [r0] {k2}, xm9
+    vmovdqu8     [r1] {k2}, xm10
+    psrldq        xm9, 8
+    psrldq       xm10, 8
+    vmovdqu8  [r0+r2] {k2}, xm9
+    vmovdqu8  [r1+r2] {k2}, xm10
+%endif
+    mova           m0, m2
+    lea            r0, [r0+r2*2]
+    lea            r1, [r1+r2*2]
+    sub           r5d, 2
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal mc_chroma
+    MC_CHROMA_START 11
+    and           r5d, 7
+    and           t2d, 7
+    mov           t0d, 8
+    sub           t0d, r5d
+    shl           r5d, 8
+    add           r5d, t0d            ; 8-dx, dx
+    mov           t0d, 8
+    sub           t0d, t2d
+    imul          t0d, r5d            ; cA, cB
+    imul          t2d, r5d            ; cC, cD
+    shl           t2d, 16
+    or            t0d, t2d
+    vpbroadcastd   m5, t0d
+    mov           t1d, r7m
+    lea           t2d, [t1*2+2]
+    xor           t0d, t0d
+    bts           t0d, t2d
+    dec           t0d
+    kmovd          k1, t0d            ; 2*width+2 source bytes
+    xor           t0d, t0d
+    bts           t0d, t1d
+    dec           t0d
+    kmovd          k2, t0d            ; width output bytes
+    movu           m3, [mcc_win_icl]
+    movu          ym4, [mcc_gather_icl]
+    vpbroadcastd   m6, [pd_32]
+    movifnidn      r0, r0mp
+    movifnidn      r1, r1mp
+    movifnidn     r2d, r2m
+    mov           r5d, r8m
+    vmovdqu8      ym0 {k1}{z}, [r3]
+    cmp           t1d, 8
+    jl .narrow
+.loop8:
+    MC_CHROMA_ICL_ROWS 1
+    jg .loop8
+    RET
+.narrow:
+    MC_CHROMA_ICL_ROWS 0
+    jg .narrow
+    RET
+%endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
