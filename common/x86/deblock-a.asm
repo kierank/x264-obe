@@ -34,6 +34,10 @@ load_bytes_zmm_shuf: dd 0x50404032, 0x70606053, 0xd0c0c0b4, 0xf0e0e0d5
                      dd 0x50404036, 0x70606057, 0xd0c0c0b8, 0xf0e0e0d9
                      dd 0x50104001, 0x70306023, 0xd090c083, 0xf0b0e0a5
                      dd 0x50104005, 0x70306027, 0xd090c087, 0xf0b0e0a9
+; vpermb indices into scan8 bytes 8..39 (left) and 4..35 (top)
+strength_cur_idx: times 2 db 4,5,6,7,12,13,14,15,20,21,22,23,28,29,30,31
+strength_nb_idx:  db 3,4,5,6,11,12,13,14,19,20,21,22,27,28,29,30
+                  db 0,1,2,3,8,9,10,11,16,17,18,19,24,25,26,27
 load_bytes_shuf: times 2 db 3,4,5,6,11,12,13,14,4,5,6,7,12,13,14,15
 insert_top_shuf: dd 0,1,4,5,7,2,3,6
 deblock_tc_shuf_avx2: db 0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3
@@ -3694,3 +3698,65 @@ cglobal deblock_strength, 5,5
     pshufb         xm0, [transpose_shuf]
     mova         [bs0], xm0
     RET
+
+; avx512icl: vpermb gathers the cur/left/top ref and nnz bytes
+%if ARCH_X86_64
+INIT_YMM avx512icl
+cglobal deblock_strength, 6,6,9
+    shl            r4d, 8
+    add            r4d, 3 - (1<<8)
+    vpbroadcastw    m5, r4d
+    mov            r4d, 0xffff0000
+    kmovd           k1, r4d
+    mova            m6, [strength_cur_idx]
+    mova            m7, [strength_nb_idx]
+    pxor           xm8, xm8
+
+.lists:
+    movu            m1, [ref-4]
+    vpermb          m0, m6, m1
+    vpermb          m2, m7, m1
+    vpermb          m2 {k1}, m7, [ref-8]
+    vpternlogd      m8, m0, m2, 0xf6 ; m8 | (cur ^ nb)
+
+    movu           xm0, [mv-4+4*8*0]
+    vinserti128     m0, m0, [mv+4*8*-1], 1
+    vbroadcasti128  m2, [mv+4*8* 0]
+    vinserti128     m1, m2, [mv-4+4*8*1], 0
+    vbroadcasti128  m3, [mv+4*8* 1]
+    psubw           m0, m2
+    psubw           m1, m3
+    vinserti128     m2, m3, [mv-4+4*8*2], 0
+    vbroadcasti128  m4, [mv+4*8* 2]
+    vinserti128     m3, m4, [mv-4+4*8*3], 0
+    psubw           m2, m4
+    vbroadcasti128  m4, [mv+4*8* 3]
+    psubw           m3, m4
+    packsswb        m0, m1
+    packsswb        m2, m3
+    pabsb           m0, m0
+    pabsb           m2, m2
+    psubusb         m0, m5
+    psubusb         m2, m5
+    packsswb        m0, m2
+    por             m8, m0
+
+    add             r1, 40
+    add             r2, 4*8*5
+    dec            r5d
+    jge .lists
+
+    movu            m1, [nnz-4]
+    vpermb          m0, m6, m1
+    vpermb          m2, m7, m1
+    vpermb          m2 {k1}, m7, [nnz-8]
+    mova            m3, [pb_1]
+    por             m0, m2
+    pminub          m8, m3           ; mv ? 1 : 0
+    vptestmb        k2, m0, m0
+    paddb           m8 {k2}, m3, m3  ; nnz ? 2
+    vextracti128 [bs1], m8, 1
+    pshufb         xm8, [transpose_shuf]
+    mova         [bs0], xm8
+    RET
+%endif

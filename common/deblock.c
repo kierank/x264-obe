@@ -827,6 +827,12 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_h_chroma_422_intra = x264_deblock_h_chroma_422_intra_avx2;
 #endif
         }
+#if ARCH_X86_64
+        if( cpu&X264_CPU_AVX512ICL )
+        {
+            pf->deblock_strength = x264_deblock_strength_avx512icl;
+        }
+#endif
     }
 #endif
 
