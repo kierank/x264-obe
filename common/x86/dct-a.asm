@@ -1069,6 +1069,87 @@ cglobal add8x8_idct, 2,2
     packuswb        m1, m3
     vpscatterqq [r0+m5] {k3}, m1
     RET
+
+; fdec rows as qwords {0 3 1 2 4 7 5 6}, the order the packuswb output comes in
+%macro ADD8x8_IDCT_ZMM_INIT 0
+    mova            m8, [dct_avx512]
+    vbroadcasti32x4 m9, [pw_32]
+    psrlq          m13, m8, 28
+    psrlq          m14, m8, 24
+    mov            r2d, 0xf0f0f0f0
+    kmovd           k1, r2d
+%endmacro
+
+%macro ADD8x8_IDCT_ZMM 0
+    movq           xm6, [r0+0*FDEC_STRIDE]
+    movhps         xm6, [r0+3*FDEC_STRIDE]
+    movq           xm7, [r0+1*FDEC_STRIDE]
+    movhps         xm7, [r0+2*FDEC_STRIDE]
+    movq           xm4, [r0+4*FDEC_STRIDE]
+    movhps         xm4, [r0+7*FDEC_STRIDE]
+    movq           xm5, [r0+5*FDEC_STRIDE]
+    movhps         xm5, [r0+6*FDEC_STRIDE]
+    vinserti32x4   ym6, ym6, xm7, 1
+    vinserti32x4   ym4, ym4, xm5, 1
+    vinserti64x4    m6, m6, ym4, 1
+    mova            m1, [r1]
+    mova            m2, [r1+64]
+    vshufi32x4      m0, m1, m2, q2020 ; 0 1   4 5   8 9   c d
+    vshufi32x4      m1, m2, q3131     ; 2 3   6 7   a b   e f
+    SARSUMSUB        0, 1, 2
+    SBUTTERFLY      wd, 1, 0, 2
+    SUMSUB_BA        w, 0, 1, 2       ; 0+1+2+3>>1 0+1>>1-2-3
+    vprold          m1, 16            ; 0-1>>1-2+3 0-1+2-3>>1
+    SBUTTERFLY      dq, 0, 1, 2
+    mova            m3, m14
+    SARSUMSUB        0, 1, 2
+    vpermi2q        m3, m1, m0
+    vpermt2q        m1, m13, m0
+    paddw           m3, m9            ; += 32
+    SUMSUB_BA        w, 1, 3, 0
+    psraw           m1, 6             ; 0'+1'+2'+3'>>1 0'+1'>>1-2'-3'
+    psraw           m3, 6             ; 0'-1'+2'-3'>>1 0'-1'>>1-2'+3'
+    pxor           xm0, xm0
+    SBUTTERFLY      bw, 6, 0, 2
+    paddsw          m1, m6
+    paddsw          m3, m0
+    packuswb        m1, m3
+    vextracti32x4  xm0, m1, 1
+    vextracti32x4  xm2, m1, 2
+    vextracti32x4  xm3, m1, 3
+    movq   [r0+0*FDEC_STRIDE], xm1
+    movhps [r0+3*FDEC_STRIDE], xm1
+    movq   [r0+1*FDEC_STRIDE], xm0
+    movhps [r0+2*FDEC_STRIDE], xm0
+    movq   [r0+4*FDEC_STRIDE], xm2
+    movhps [r0+7*FDEC_STRIDE], xm2
+    movq   [r0+5*FDEC_STRIDE], xm3
+    movhps [r0+6*FDEC_STRIDE], xm3
+%endmacro
+
+; the avx512 versions above without vpgatherqq/vpscatterqq
+INIT_ZMM avx512icl
+cglobal add8x8_idct, 2,3,15
+    ADD8x8_IDCT_ZMM_INIT
+    ADD8x8_IDCT_ZMM
+    RET
+
+cglobal add16x16_idct, 2,3,15
+    ADD8x8_IDCT_ZMM_INIT
+    call .add8x8
+    add             r0, 8
+    add             r1, 128
+    call .add8x8
+    add             r0, 8*FDEC_STRIDE-8
+    add             r1, 128
+    call .add8x8
+    add             r0, 8
+    add             r1, 128
+    call .add8x8
+    RET
+.add8x8:
+    ADD8x8_IDCT_ZMM
+    ret
 %endif ; HIGH_BIT_DEPTH
 
 INIT_MMX
