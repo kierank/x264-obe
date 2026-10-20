@@ -334,6 +334,60 @@ global current_function %+ .skip_prologue
     ret
 
 ;-----------------------------------------------------------------------------
+; avx512icl sub8x8_dct8 (high bit depth): the 8 rows of src and of dst packed 4
+; per zmm with merge-masked vbroadcasti32x4, two psubw for the block, rows
+; split out with vextracti32x4, then the avx2 passes. zmm28-31 hold the packs.
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal sub8x8_dct8, 3,4,10
+    mov        r3d, 0x00f0
+    kmovw       k5, r3d
+    mov        r3d, 0x0f00
+    kmovw       k6, r3d
+    mov        r3d, 0xf000
+    kmovw       k7, r3d
+    movu            xmm28, [r1+0*FENC_STRIDEB]
+    vbroadcasti32x4 zmm28 {k5}, [r1+1*FENC_STRIDEB]
+    vbroadcasti32x4 zmm28 {k6}, [r1+2*FENC_STRIDEB]
+    vbroadcasti32x4 zmm28 {k7}, [r1+3*FENC_STRIDEB]
+    movu            xmm29, [r2+0*FDEC_STRIDEB]
+    vbroadcasti32x4 zmm29 {k5}, [r2+1*FDEC_STRIDEB]
+    vbroadcasti32x4 zmm29 {k6}, [r2+2*FDEC_STRIDEB]
+    vbroadcasti32x4 zmm29 {k7}, [r2+3*FDEC_STRIDEB]
+    movu            xmm30, [r1+4*FENC_STRIDEB]
+    vbroadcasti32x4 zmm30 {k5}, [r1+5*FENC_STRIDEB]
+    vbroadcasti32x4 zmm30 {k6}, [r1+6*FENC_STRIDEB]
+    vbroadcasti32x4 zmm30 {k7}, [r1+7*FENC_STRIDEB]
+    movu            xmm31, [r2+4*FDEC_STRIDEB]
+    vbroadcasti32x4 zmm31 {k5}, [r2+5*FDEC_STRIDEB]
+    vbroadcasti32x4 zmm31 {k6}, [r2+6*FDEC_STRIDEB]
+    vbroadcasti32x4 zmm31 {k7}, [r2+7*FDEC_STRIDEB]
+    vpsubw        zmm28, zmm28, zmm29
+    vpsubw        zmm30, zmm30, zmm31
+    vmovdqa64       xm0, xmm28
+    vextracti32x4   xm1, zmm28, 1
+    vextracti32x4   xm2, zmm28, 2
+    vextracti32x4   xm3, zmm28, 3
+    vmovdqa64       xm4, xmm30
+    vextracti32x4   xm5, zmm30, 1
+    vextracti32x4   xm6, zmm30, 2
+    vextracti32x4   xm7, zmm30, 3
+    DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
+%assign dct8_hbd_i 0
+%rep 8
+    pmovsxwd   m %+ dct8_hbd_i, xm %+ dct8_hbd_i
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    DCT8_1D d, 0,1,2,3,4,5,6,7, 8,9
+%assign dct8_hbd_i 0
+%rep 8
+    mova [r0+dct8_hbd_i*32], m %+ dct8_hbd_i
+%assign dct8_hbd_i dct8_hbd_i+1
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
 ; void sub16x16_dct8( int32_t dct[4][64], uint16_t *pix1, uint16_t *pix2 ), AVX-512
 ; The four 8x8 blocks in the four lanes: zmm row r = rows r and r+8 of the
 ; 16x16. Word pass and 8x8 word transpose once for all four, then the dword
@@ -563,6 +617,66 @@ cglobal sub8x8_dct8, 3,3,11
 %assign dct8_i dct8_i+2
 %endrep
     RET
+
+; k1-k7 = 1 << 1..7: qword lanes of a zmm
+%macro DCT8_ICL_QMASKS 1 ; tmp gpr
+    mov          %1, 2
+    kmovb        k1, %1
+    kaddb        k2, k1, k1
+    kaddb        k3, k2, k2
+    kaddb        k4, k3, k3
+    kaddb        k5, k4, k4
+    kaddb        k6, k5, k5
+    kaddb        k7, k6, k6
+%endmacro
+
+; the 8 rows of 8 pixels as the qwords of a zmm: movq + merge-masked vpbroadcastq
+%macro DCT8_ICL_LOADROWS 3 ; zmm, base, stride
+    vmovq        xmm%1, [%2]
+    vpbroadcastq zmm%1 {k1}, [%2+1*%3]
+    vpbroadcastq zmm%1 {k2}, [%2+2*%3]
+    vpbroadcastq zmm%1 {k3}, [%2+3*%3]
+    vpbroadcastq zmm%1 {k4}, [%2+4*%3]
+    vpbroadcastq zmm%1 {k5}, [%2+5*%3]
+    vpbroadcastq zmm%1 {k6}, [%2+6*%3]
+    vpbroadcastq zmm%1 {k7}, [%2+7*%3]
+%endmacro
+
+;-----------------------------------------------------------------------------
+; avx512icl sub8x8_dct8: src and dst rows packed into one zmm each, one
+; punpcklbw/punpckhbw + pmaddubsw pair for all 8 rows of differences
+; (zmm28-31), rows split out with vextracti32x4, then the avx2 passes
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal sub8x8_dct8, 3,4,11
+    DCT8_ICL_QMASKS r3d
+    DCT8_ICL_LOADROWS 28, r1, FENC_STRIDE
+    DCT8_ICL_LOADROWS 29, r2, FDEC_STRIDE
+    vbroadcasti32x4 zmm31, [hsub_mul]
+    vpunpcklbw   zmm30, zmm28, zmm29      ; rows 0 2 4 6
+    vpunpckhbw   zmm28, zmm28, zmm29      ; rows 1 3 5 7
+    vpmaddubsw   zmm30, zmm30, zmm31
+    vpmaddubsw   zmm28, zmm28, zmm31
+    vmovdqa64       xm0, xmm30
+    vmovdqa64       xm1, xmm28
+    vextracti32x4   xm2, zmm30, 1
+    vextracti32x4   xm3, zmm28, 1
+    vextracti32x4   xm4, zmm30, 2
+    vextracti32x4   xm5, zmm28, 2
+    vextracti32x4   xm6, zmm30, 3
+    vextracti32x4   xm7, zmm28, 3
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+%assign dct8_i 0
+%rep 4
+    %assign dct8_j dct8_i+1
+    vinserti32x4 m %+ dct8_i, m %+ dct8_i, xm %+ dct8_j, 1
+    mova [r0+dct8_i*0x10], m %+ dct8_i
+%assign dct8_i dct8_i+2
+%endrep
+    RET
+
 
 ;-----------------------------------------------------------------------------
 ; void add8x8_idct8( uint8_t *p_dst, int16_t dct[8][8] )
