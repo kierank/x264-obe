@@ -717,6 +717,32 @@ void x264_macroblock_deblock( x264_t *h )
 #include "x86/deblock.h"
 #endif
 
+/* layout twin of test/x264-w2-deblock: the new dispatch below assigns the
+ * functions wip/x264-weird-zen4-sn2 has in those slots */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_deblock_v_luma_avx512icl, x264_deblock_v_luma_avx )
+#undef x264_deblock_v_luma_avx512icl
+#define x264_deblock_v_luma_avx512icl x264_twin_x264_deblock_v_luma_avx512icl
+X264_TWIN( x264_deblock_v_chroma_avx512icl, x264_deblock_v_chroma_avx )
+#undef x264_deblock_v_chroma_avx512icl
+#define x264_deblock_v_chroma_avx512icl x264_twin_x264_deblock_v_chroma_avx512icl
+X264_TWIN( x264_deblock_v_chroma_intra_avx512icl, x264_deblock_v_chroma_intra_avx )
+#undef x264_deblock_v_chroma_intra_avx512icl
+#define x264_deblock_v_chroma_intra_avx512icl x264_twin_x264_deblock_v_chroma_intra_avx512icl
+#else
+X264_TWIN( x264_deblock_v_chroma_intra_avx512icl, x264_deblock_v_chroma_intra_avx2 )
+#undef x264_deblock_v_chroma_intra_avx512icl
+#define x264_deblock_v_chroma_intra_avx512icl x264_twin_x264_deblock_v_chroma_intra_avx512icl
+X264_TWIN( x264_deblock_h_luma_mbaff_avx512icl, x264_deblock_h_luma_mbaff_avx )
+#undef x264_deblock_h_luma_mbaff_avx512icl
+#define x264_deblock_h_luma_mbaff_avx512icl x264_twin_x264_deblock_h_luma_mbaff_avx512icl
+X264_TWIN( x264_deblock_h_luma_intra_mbaff_avx512icl, x264_deblock_h_luma_intra_mbaff_avx )
+#undef x264_deblock_h_luma_intra_mbaff_avx512icl
+#define x264_deblock_h_luma_intra_mbaff_avx512icl x264_twin_x264_deblock_h_luma_intra_mbaff_avx512icl
+#endif
+#endif
+
 void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 {
     pf->deblock_luma[1] = deblock_v_luma_c;
