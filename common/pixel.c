@@ -1660,7 +1660,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512icl;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx512icl;
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx512icl;
-        pixf->satd_pre[PIXEL_16x16] = x264_pixel_satd_pre_16x16_avx512icl;
+        /* zen4 prune: satd_pre[16x16] 1.028x avx2, slower in 11/11 runs (rack01, 36943197); dispatched on zen5/x264-weird-satd-zen4slow */
         pixf->satd_pre[PIXEL_8x16] = x264_pixel_satd_pre_8x16_avx512icl;
         pixf->satd_pre[PIXEL_8x8] = x264_pixel_satd_pre_8x8_avx512icl;
         pixf->satd_avg2_pre[PIXEL_16x8] = x264_pixel_satd_avg2_pre_16x8_avx512icl;
