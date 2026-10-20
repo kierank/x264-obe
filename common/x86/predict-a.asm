@@ -108,8 +108,14 @@ pb_filt_r:      db 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
 pb_filt_l:      db 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
 %endif
 %if HIGH_BIT_DEPTH
+pw_8x8h_icl:    times 8 dw 7
+                times 8 dw 6
+                times 8 dw 5
+                times 8 dw 4
 pq_rowquad_icl: dq 0, 8, 64, 72, 128, 136, 192, 200
 %else
+pb_8x8h_icl:    times 32 db 7
+                times 32 db 6
 %endif
 
 SECTION .text
@@ -3118,6 +3124,29 @@ cglobal predict_8x8_v, 2,2
     STORE8_PAIRS_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x8_h( uint8_t *src, uint8_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_h, 2,3
+    movq        xm5, [r1+7]             ; l7 .. l0
+    movu         m3, [pb_8x8h_icl]
+    mov         r2d, 0x02020202
+    vpbroadcastd m4, r2d
+    vpermb       m0, m3, m5
+    psubb        m3, m4
+    vpermb       m1, m3, m5
+    psubb        m3, m4
+    vpermb       m2, m3, m5
+    psubb        m3, m4
+    vpermb       m3, m3, m5
+    mov          r1, 0x000000ff000000ff
+    kmovq        k1, r1
+    vmovdqu8 [r0+0*FDEC_STRIDE]{k1}, m0
+    vmovdqu8 [r0+2*FDEC_STRIDE]{k1}, m1
+    vmovdqu8 [r0+4*FDEC_STRIDE]{k1}, m2
+    vmovdqu8 [r0+6*FDEC_STRIDE]{k1}, m3
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE8_ROWS_ICL 1 ; xmm
 %assign %%y 0
@@ -3153,6 +3182,20 @@ cglobal predict_8x8_v, 2,2
 cglobal predict_8x8_v, 2,2
     vbroadcasti32x4 m0, [r1+16*SIZEOF_PIXEL]
     SCATTER8_ICL m0
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_h( uint16_t *src, uint16_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_h, 2,2
+    movu         m2, [pw_8x8h_icl]
+    vpbroadcastd m3, [pw_4]
+    movu        xm4, [r1+7*SIZEOF_PIXEL]  ; l7 .. l0
+    vpermw       m0, m2, m4
+    psubw        m2, m3
+    vpermw       m1, m2, m4
+    STORE4_ICL    0, 0
+    STORE4_ICL    1, 4
     RET
 
 %endif ; HIGH_BIT_DEPTH
