@@ -838,10 +838,18 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_luma[1] = x264_deblock_v_luma_avx512icl;
             /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
             /* deblock_h_chroma_422 1.51x, deblock_h_chroma_422_intra 1.41x; borderline: deblock_luma_mb 1.016x, slower in 11/11 runs */
+            /* x264-weird2 dbpred winners */
+            pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx512icl;
+            pf->deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx512icl;
+            pf->deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx512icl;
 #else
             /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
             /* deblock_strength 1.042x, deblock_luma_mbaff 1.042x */
             pf->deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx512icl;
+            /* x264-weird2 dbpred winners */
+            pf->deblock_luma[1] = x264_deblock_v_luma_avx512icl;
+            pf->deblock_chroma[1] = x264_deblock_v_chroma_avx512icl;
+            pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx512icl;
 #endif
         }
 #endif
