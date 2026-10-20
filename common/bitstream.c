@@ -84,6 +84,19 @@ void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )
     x264_emms();
 }
 
+/* layout twin of wip/x264-weird: the new dispatch below assigns the base's functions */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_nal_escape_avx512icl, x264_nal_escape_avx2 )
+#undef x264_nal_escape_avx512icl
+#define x264_nal_escape_avx512icl x264_twin_x264_nal_escape_avx512icl
+#else
+X264_TWIN( x264_nal_escape_avx512icl, x264_nal_escape_avx2 )
+#undef x264_nal_escape_avx512icl
+#define x264_nal_escape_avx512icl x264_twin_x264_nal_escape_avx512icl
+#endif
+#endif
+
 void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
 {
     memset( pf, 0, sizeof(*pf) );

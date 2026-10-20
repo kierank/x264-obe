@@ -1107,6 +1107,16 @@ PLANE_INTERLEAVE(sse2)
 PLANE_INTERLEAVE(avx)
 #endif
 #if ARCH_X86_64
+/* layout twin: plane_copy_interleave_icl stays, running the base's core */
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_plane_copy_interleave_core_avx512icl, x264_plane_copy_interleave_core_sse2 )
+#undef x264_plane_copy_interleave_core_avx512icl
+#define x264_plane_copy_interleave_core_avx512icl x264_twin_x264_plane_copy_interleave_core_avx512icl
+#else
+X264_TWIN( x264_plane_copy_interleave_core_avx512icl, x264_plane_copy_interleave_core_avx )
+#undef x264_plane_copy_interleave_core_avx512icl
+#define x264_plane_copy_interleave_core_avx512icl x264_twin_x264_plane_copy_interleave_core_avx512icl
+#endif
 PLANE_INTERLEAVE(avx512icl)
 /* the avx512icl core's ymm non-temporal stores need 32-byte aligned rows */
 static void plane_copy_interleave_icl( pixel *dst,  intptr_t i_dst,
@@ -1237,6 +1247,31 @@ PROPAGATE_LIST(avx512)
 #undef CLIP_ADD
 #undef CLIP_ADD2
 
+
+/* layout twin of wip/x264-weird: the new dispatch below assigns the base's functions */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_frame_init_lowres_core_avx512icl, x264_frame_init_lowres_core_avx2 )
+#undef x264_frame_init_lowres_core_avx512icl
+#define x264_frame_init_lowres_core_avx512icl x264_twin_x264_frame_init_lowres_core_avx512icl
+X264_TWIN( x264_plane_copy_deinterleave_avx512icl, x264_plane_copy_deinterleave_ssse3 )
+#undef x264_plane_copy_deinterleave_avx512icl
+#define x264_plane_copy_deinterleave_avx512icl x264_twin_x264_plane_copy_deinterleave_avx512icl
+#else
+X264_TWIN( x264_frame_init_lowres_core8_avx512icl, x264_frame_init_lowres_core8_avx2 )
+#undef x264_frame_init_lowres_core8_avx512icl
+#define x264_frame_init_lowres_core8_avx512icl x264_twin_x264_frame_init_lowres_core8_avx512icl
+X264_TWIN( x264_frame_init_lowres_core_avx512icl, x264_frame_init_lowres_core_avx2 )
+#undef x264_frame_init_lowres_core_avx512icl
+#define x264_frame_init_lowres_core_avx512icl x264_twin_x264_frame_init_lowres_core_avx512icl
+X264_TWIN( x264_plane_copy_deinterleave_avx512icl, x264_plane_copy_deinterleave_avx )
+#undef x264_plane_copy_deinterleave_avx512icl
+#define x264_plane_copy_deinterleave_avx512icl x264_twin_x264_plane_copy_deinterleave_avx512icl
+X264_TWIN( x264_store_interleave_chroma_avx512icl, x264_store_interleave_chroma_avx )
+#undef x264_store_interleave_chroma_avx512icl
+#define x264_store_interleave_chroma_avx512icl x264_twin_x264_store_interleave_chroma_avx512icl
+#endif
+#endif
 
 void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 {
