@@ -818,6 +818,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(3);
     TEST_PIXEL_X_MIN(4);
 
+    ALIGNED_16( pixel var_max[256] );
+    ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \
     if( pixel_asm.var[i] != pixel_ref.var[i] ) \
     { \
@@ -826,12 +828,19 @@ static int check_pixel( int cpu_ref, int cpu_new )
         /* abi-check wrapper can't return uint64_t, so separate it from return value check */ \
         call_c1( pixel_c.var[i],   pbuf1,           16 ); \
         call_a1( pixel_asm.var[i], pbuf1, (intptr_t)16 ); \
-        uint64_t res_c   = pixel_c.var[i]( pbuf1, 16 ); \
-        uint64_t res_asm = pixel_asm.var[i]( pbuf1, 16 ); \
-        if( res_c != res_asm ) \
+        /* random, maxed differences, all PIXEL_MAX, all 0 */ \
+        for( int j = 0; j < 5; j++ ) \
         { \
-            ok = 0; \
-            fprintf( stderr, "var[%d]: %d %d != %d %d [FAILED]\n", i, (int)res_c, (int)(res_c>>32), (int)res_asm, (int)(res_asm>>32) ); \
+            pixel *pix = j == 0 ? pbuf1 : j == 1 ? pbuf3 : j == 2 ? pbuf4 : var_max; \
+            for( int k = 0; k < 256; k++ ) \
+                var_max[k] = j == 3 ? PIXEL_MAX : 0; \
+            uint64_t res_c   = pixel_c.var[i]( pix, 16 ); \
+            uint64_t res_asm = pixel_asm.var[i]( pix, 16 ); \
+            if( res_c != res_asm ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, "var[%d] %d: %d %d != %d %d [FAILED]\n", i, j, (int)res_c, (int)(res_c>>32), (int)res_asm, (int)(res_asm>>32) ); \
+            } \
         } \
         call_c2( pixel_c.var[i],   pbuf1, (intptr_t)16 ); \
         call_a2( pixel_asm.var[i], pbuf1, (intptr_t)16 ); \
@@ -855,6 +864,24 @@ static int check_pixel( int cpu_ref, int cpu_new )
         { \
             ok = 0; \
             fprintf( stderr, "var2[%d]: %d != %d or %d != %d [FAILED]\n", i, res_c, res_asm, ssd_c, ssd_asm ); \
+        } \
+        /* maxed differences of both signs, and all +-PIXEL_MAX (the largest |sum|) */ \
+        for( int j = 0; j < 4; j++ ) \
+        { \
+            for( int k = 0; k < 256; k++ ) \
+            { \
+                var_max[k] = PIXEL_MAX; \
+                var_zero[k] = 0; \
+            } \
+            pixel *p1 = j == 0 ? pbuf3 : j == 1 ? pbuf4 : j == 2 ? var_max : var_zero; \
+            pixel *p2 = j == 0 ? pbuf4 : j == 1 ? pbuf3 : j == 2 ? var_zero : var_max; \
+            res_c   = pixel_c.var2[i]( p1, 16, p2, 16, &ssd_c ); \
+            res_asm = pixel_asm.var2[i]( p1, 16, p2, 16, &ssd_asm ); \
+            if( res_c != res_asm || ssd_c != ssd_asm ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, "var2[%d] %d: %d != %d or %d != %d [FAILED]\n", i, j, res_c, res_asm, ssd_c, ssd_asm ); \
+            } \
         } \
     }
 
