@@ -179,6 +179,26 @@ zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
 zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
                db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
+%if HIGH_BIT_DEPTH == 0
+; sub8x8_dct/sub16x16_dct avx512icl: vpermb indices of the pixel bytes, words zero-extended
+align 64
+dct8_icl_fenc0: db 0,0,1,0,2,0,3,0,16,0,17,0,18,0,19,0
+    db 64,0,65,0,66,0,67,0,80,0,81,0,82,0,83,0
+    db 4,0,5,0,6,0,7,0,20,0,21,0,22,0,23,0
+    db 68,0,69,0,70,0,71,0,84,0,85,0,86,0,87,0
+dct8_icl_fenc1: db 48,0,49,0,50,0,51,0,32,0,33,0,34,0,35,0
+    db 112,0,113,0,114,0,115,0,96,0,97,0,98,0,99,0
+    db 52,0,53,0,54,0,55,0,36,0,37,0,38,0,39,0
+    db 116,0,117,0,118,0,119,0,100,0,101,0,102,0,103,0
+dct8_icl_fdec0: db 0,0,1,0,2,0,3,0,32,0,33,0,34,0,35,0
+    db 64,0,65,0,66,0,67,0,96,0,97,0,98,0,99,0
+    db 4,0,5,0,6,0,7,0,36,0,37,0,38,0,39,0
+    db 68,0,69,0,70,0,71,0,100,0,101,0,102,0,103,0
+dct8_icl_fdec1: db 40,0,41,0,42,0,43,0,8,0,9,0,10,0,11,0
+    db 104,0,105,0,106,0,107,0,72,0,73,0,74,0,75,0
+    db 44,0,45,0,46,0,47,0,12,0,13,0,14,0,15,0
+    db 108,0,109,0,110,0,111,0,76,0,77,0,78,0,79,0
+%endif
 
 SECTION .text
 
@@ -1214,6 +1234,53 @@ cglobal sub8x16_dct_dc, 3,3
     shufps     xmm0, xmm1, q0220
     mova       [r0], xmm0
     RET
+
+; avx512icl: vpermb/vpermi2b with the odd bytes zero-masked gather the pixels
+; and widen them to words in one step (the avx512 versions: vpermt2d + punpck)
+; dct4x4x4_internal after the unpack: m0/m1 fenc, m2/m3 fdec words -> m0, m1
+%macro DCT4x4x4_ICL 0
+    call dct4x4x4_icl_internal_avx512icl
+%endmacro
+
+%macro DCT_ICL_MASKS 0
+    mov        r3, 0x5555555555555555
+    kmovq      k4, r3
+    mov       r3d, 0xaaaaaaaa
+    kmovd      k1, r3d
+    mov       r3d, 0xf0f0f0f0
+    kmovd      k2, r3d
+    knotw      k3, k2
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal dct4x4x4_icl_internal
+    DCT4x4_AVX512
+    mova       m1, m2
+    vshufi32x4 m2 {k2}, m0, m0, q2200
+    vshufi32x4 m0 {k3}, m1, m1, q3311
+    ret
+
+cglobal sub8x8_dct, 3,4
+    DCT_ICL_MASKS
+    movu       m4, [r1]
+    mova       m0, [dct8_icl_fenc0]
+    mova       m1, [dct8_icl_fenc1]
+    vpermi2b   m0 {k4}{z}, m4, [r1+64]
+    vpermi2b   m1 {k4}{z}, m4, [r1+64]
+    movu       m4,      [r2+0*FDEC_STRIDE]
+    vmovddup   m4 {k1}, [r2+2*FDEC_STRIDE]
+    movu       m5,      [r2+4*FDEC_STRIDE]
+    vmovddup   m5 {k1}, [r2+6*FDEC_STRIDE]
+    mova       m2, [dct8_icl_fdec0]
+    mova       m3, [dct8_icl_fdec1]
+    vpermi2b   m2 {k4}{z}, m4, m5
+    vpermi2b   m3 {k4}{z}, m4, m5
+    DCT4x4x4_ICL
+    mova     [r0], m0
+    mova  [r0+64], m1
+    RET
+
+INIT_ZMM avx512
 
 %macro SARSUMSUB 3 ; a, b, tmp
     mova    m%3, m%1
