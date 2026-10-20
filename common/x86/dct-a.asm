@@ -221,6 +221,9 @@ dctdc_icl_wd: times 2 db -1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 addc8_dc:     times 4 db 0,0,0,0,1,1,1,1
               times 4 db 2,2,2,2,3,3,3,3
 addc8_rows:   dq 0, 32, 64, 96, 128, 160, 192, 224
+; dct2x4dc avx512icl: the dc of each 16-coef block
+dct2x4_dc_idxw: dw 0, 16, 32, 48
+                times 28 dw 0
 addc16_dc:    times 4 db 0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3
               times 4 db 4,4,4,4,5,5,5,5,6,6,6,6,7,7,7,7
               times 4 db 16,16,16,16,17,17,17,17,18,18,18,18,19,19,19,19
@@ -231,6 +234,7 @@ align 64
 addc8_hbd_dc:  times 4 dw 0,0,0,0,1,1,1,1
 addc8_hbd_dc2: times 32 dw 2
 addc16_hbd_dc: times 2 dw 0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3
+dct2x4_dc_idx: dd 0, 16, 32, 48, 64, 80, 96, 112
 %endif
 
 SECTION .text
@@ -525,6 +529,65 @@ DCT2x4DC d, dq
 INIT_MMX mmx2
 DCT2x4DC w, wd
 %endif
+
+; avx512icl: 10-bit gathers the 8 dcs with one vpgatherdd and zeroes them with
+; one vpscatterdd; 8-bit loads the 8 blocks in 4 zmm, picks the dcs with
+; vpermt2w and stores the blocks back with the dcs cleared by a zero-masking
+; move. The 2x4 transform in dwords with merge-masked vpsubd.
+INIT_ZMM avx512icl
+cglobal dct2x4dc, 2,3
+%if HIGH_BIT_DEPTH
+    mova         ym2, [dct2x4_dc_idx]
+    kxnorb        k1, k1, k1
+    vpgatherdd   ym0 {k1}, [r1+ym2*4]
+    pxor         xm3, xm3
+    kxnorb        k1, k1, k1
+    vpscatterdd   [r1+ym2*4] {k1}, ym3
+%else
+    mov          r2d, 0xfffefffe
+    kmovd         k2, r2d
+    movu         m0, [r1+0*64]
+    movu         m1, [r1+1*64]
+    movu         m2, [r1+2*64]
+    movu         m3, [r1+3*64]
+    movu         m4, [dct2x4_dc_idxw]
+    vpermi2w     m4, m0, m1              ; dc of blocks 0-3
+    vmovdqu16    m0 {k2}{z}, m0
+    vmovdqu16    m1 {k2}{z}, m1
+    movu  [r1+0*64], m0
+    movu  [r1+1*64], m1
+    movu         m5, [dct2x4_dc_idxw]
+    vpermi2w     m5, m2, m3              ; dc of blocks 4-7
+    vmovdqu16    m2 {k2}{z}, m2
+    vmovdqu16    m3 {k2}{z}, m3
+    movu  [r1+2*64], m2
+    movu  [r1+3*64], m3
+    punpcklqdq   xm4, xm5
+    pmovsxwd     ym0, xm4                   ; dc0-7
+%endif
+    mov          r2d, 0xaa
+    kmovb         k1, r2d
+    pshufd        ym1, ym0, q2301
+    paddd         ym2, ym0, ym1
+    vpsubd        ym2 {k1}, ym1, ym0           ; a0 a4 a1 a5 | a2 a6 a3 a7
+    mov          r2d, 0xcc
+    kmovb         k1, r2d
+    pshufd        ym1, ym2, q1032
+    paddd         ym0, ym2, ym1
+    vpsubd        ym0 {k1}, ym1, ym2           ; b0 b2 b4 b6 | b1 b3 b5 b7
+    vextracti32x4 xm1, ym0, 1
+    paddd         xm2, xm0, xm1             ; dct 0 1 6 7
+    psubd         xm0, xm1                  ; dct 2 3 4 5
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+%if HIGH_BIT_DEPTH
+    movu    [r0+ 0], xm1
+    movu    [r0+16], xm0
+%else
+    packssdw      xm1, xm0
+    movu      [r0], xm1
+%endif
+    RET
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
