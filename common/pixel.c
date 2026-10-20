@@ -1281,6 +1281,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT_ADS( _zmm_avx512icl );
         INIT_ADS( _pext_avx512icl ); /* over the zmm vpcompressw ones, for the rack01 A/B */
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmmb_avx512icl; /* over the inserting zmm one */
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
@@ -1713,6 +1714,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT_ADS( _zmm_avx512icl );
         INIT_ADS( _pext_avx512icl ); /* over the zmm vpcompressw ones, for the rack01 A/B */
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmmb_avx512icl; /* over the inserting zmm one */
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;

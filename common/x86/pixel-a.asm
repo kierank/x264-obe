@@ -1776,20 +1776,17 @@ cglobal pixel_var_8x8, 2,4,7
     paddd       m6, m2
     VAR_END_YMM
 
-; zmm, two rows a register: assembled, not dispatched (for full width zmm)
-INIT_ZMM avx512icl
-cglobal pixel_var_16x16_zmm, 2,4,7
+; zmm, two rows a register (_zmmb: by merge-masked broadcasts)
+%macro VAR_ICL_ZMM 1 ; name suffix
+cglobal pixel_var_16x16%1, 2,4,7
     VAR_ICL_START
+    ICL_ZMMB_MASKS r2d
 %rep 2
-    movu       ym0, [r0]
-    vinserti64x4 m0, m0, [r0+r1], 1
-    movu       ym3, [r0+r1*2]
-    vinserti64x4 m3, m3, [r0+r3], 1
+    ICL_ROW2Z 0, [r0], [r0+r1]
+    ICL_ROW2Z 3, [r0+r1*2], [r0+r3]
     lea         r0, [r0+r1*4]
-    movu       ym1, [r0]
-    vinserti64x4 m1, m1, [r0+r1], 1
-    movu       ym4, [r0+r1*2]
-    vinserti64x4 m4, m4, [r0+r3], 1
+    ICL_ROW2Z 1, [r0], [r0+r1]
+    ICL_ROW2Z 4, [r0+r1*2], [r0+r3]
     lea         r0, [r0+r1*4]
     VAR_ICL_CORE
 %endrep
@@ -1811,6 +1808,13 @@ cglobal pixel_var_16x16_zmm, 2,4,7
     paddd      xm5, xm0
     movq       rax, xm5
     RET
+%endmacro
+
+INIT_ZMM avx512icl
+VAR_ICL_ZMM _zmm
+%define ICL_ZMMB 1
+VAR_ICL_ZMM _zmmb
+%define ICL_ZMMB 0
 %else ; !HIGH_BIT_DEPTH
 ; vpdpbusd: x * 1 and x * (x ^ 0x80) = x*x - 128*x; m6 = 1, m7 = 0x80 bytes
 ; sums m0 m1, squares - 128 * sums m2 m3
@@ -1892,25 +1896,27 @@ cglobal pixel_var_8x8, 2,4,8
     VAR_ICL_W8 1, 3
     VAR_ICL_END
 
-; zmm, four rows a register: assembled, not dispatched (for full width zmm)
-INIT_ZMM avx512icl
-cglobal pixel_var_16x16_zmm, 2,4,10
+; zmm, four rows a register (_zmmb: by merge-masked broadcasts)
+%macro VAR_ICL_ZMM 1 ; name suffix
+cglobal pixel_var_16x16%1, 2,4,10
     VAR_ICL_START
+    ICL_ZMMB_MASKS r2d
 %rep 2
-    movu       xm4, [r0]
-    vinserti32x4 m4, m4, [r0+r1], 1
-    vinserti32x4 m4, m4, [r0+r1*2], 2
-    vinserti32x4 m4, m4, [r0+r3], 3
+    SSD_ICL_W16Z 4, r0, r1, r3
     lea         r0, [r0+r1*4]
-    movu       xm5, [r0]
-    vinserti32x4 m5, m5, [r0+r1], 1
-    vinserti32x4 m5, m5, [r0+r1*2], 2
-    vinserti32x4 m5, m5, [r0+r3], 3
+    SSD_ICL_W16Z 5, r0, r1, r3
     lea         r0, [r0+r1*4]
     VAR_ICL_ACC 4, 8, 0, 2
     VAR_ICL_ACC 5, 9, 1, 3
 %endrep
     VAR_ICL_END
+%endmacro
+
+INIT_ZMM avx512icl
+VAR_ICL_ZMM _zmm
+%define ICL_ZMMB 1
+VAR_ICL_ZMM _zmmb
+%define ICL_ZMMB 0
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
