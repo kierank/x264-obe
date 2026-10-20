@@ -2167,10 +2167,13 @@ cglobal integral_init4h, 3,4
     neg     r2
     pxor    m4, m4
 .loop:
-    mova    m0, [r1+r2]
 %if mmsize==32
-    movu    m1, [r1+r2+8]
+    mova   xm0, [r1+r2]
+    mova   xm1, [r1+r2+16]
+    vinserti128 m0, m0, [r1+r2+ 8], 1 ; mpsadbw sums per lane: x+0..7 | x+8..15
+    vinserti128 m1, m1, [r1+r2+24], 1
 %else
+    mova    m0, [r1+r2]
     mova    m1, [r1+r2+16]
     palignr m1, m0, 8
 %endif
@@ -2197,12 +2200,15 @@ cglobal integral_init8h, 3,4
     neg     r2
     pxor    m4, m4
 .loop:
-    mova    m0, [r1+r2]
 %if mmsize==32
-    movu    m1, [r1+r2+8]
+    mova   xm0, [r1+r2]
+    mova   xm1, [r1+r2+16]
+    vinserti128 m0, m0, [r1+r2+ 8], 1 ; mpsadbw sums per lane: x+0..7 | x+8..15
+    vinserti128 m1, m1, [r1+r2+24], 1
     mpsadbw m2, m0, m4, 100100b
     mpsadbw m3, m1, m4, 100100b
 %else
+    mova    m0, [r1+r2]
     mova    m1, [r1+r2+16]
     palignr m1, m0, 8
     mpsadbw m2, m0, m4, 100b
