@@ -2148,6 +2148,64 @@ INIT_XMM sse2
 SUB8x16_DCT_DC_10
 INIT_XMM avx
 SUB8x16_DCT_DC_10
+
+; avx512icl: 4 rows of 8 pixels per zmm, one per lane, packed with
+; merge-masked vbroadcasti32x4 (k5-k7); one psubw + pmaddwd per 4 rows gives
+; per lane [l l r r] pair sums of the left and right 4x4 blocks
+%macro DCTDC_ICL_10_ROWS 3 ; dst, tmp, row
+    movu           xm%1, [r1+(%3+0)*FENC_STRIDEB]
+    vbroadcasti32x4 m%1 {k5}, [r1+(%3+1)*FENC_STRIDEB]
+    vbroadcasti32x4 m%1 {k6}, [r1+(%3+2)*FENC_STRIDEB]
+    vbroadcasti32x4 m%1 {k7}, [r1+(%3+3)*FENC_STRIDEB]
+    movu           xm%2, [r2+(%3+0)*FDEC_STRIDEB]
+    vbroadcasti32x4 m%2 {k5}, [r2+(%3+1)*FDEC_STRIDEB]
+    vbroadcasti32x4 m%2 {k6}, [r2+(%3+2)*FDEC_STRIDEB]
+    vbroadcasti32x4 m%2 {k7}, [r2+(%3+3)*FDEC_STRIDEB]
+    psubw           m%1, m%2
+    pmaddwd         m%1, m7
+    pshufd          m%2, m%1, q2301
+    paddd           m%1, m%2              ; per lane: l . r .
+%endmacro
+
+%macro DCTDC_ICL_10_MASKS 0
+    mov         r3d, 0x00f0
+    kmovw        k5, r3d
+    mov         r3d, 0x0f00
+    kmovw        k6, r3d
+    mov         r3d, 0xf000
+    kmovw        k7, r3d
+    vpbroadcastd m7, [pw_1]
+%endmacro
+
+; m%1, m%2: per lane l . r . of two groups of 4 rows -> xm%1: l0 r0 l1 r1 summed over the lanes
+%macro DCTDC_ICL_10_JOIN 3 ; a, b, tmp
+    shufps          m%1, m%2, q2020
+    vextracti64x4  ym%3, m%1, 1
+    paddd          ym%1, ym%3
+    vextracti32x4  xm%3, ym%1, 1
+    paddd          xm%1, xm%3
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal sub8x8_dct_dc, 3,4
+    DCTDC_ICL_10_MASKS
+    DCTDC_ICL_10_ROWS 0, 2, 0
+    DCTDC_ICL_10_ROWS 1, 3, 4
+    DCTDC_ICL_10_JOIN 0, 1, 2              ; b0 b1 b2 b3
+    mov         r3d, 0xa
+    kmovb        k1, r3d
+    pshufd      xm1, xm0, q2301
+    paddd       xm2, xm0, xm1
+    vpsubd      xm2 {k1}, xm1, xm0         ; b0+b1 b0-b1 b2+b3 b2-b3
+    pshufd      xm1, xm2, q1032
+    paddd       xm0, xm2, xm1
+    mov         r3d, 0xc
+    kmovb        k1, r3d
+    vpsubd      xm0 {k1}, xm1, xm2
+    pshufd      xm0, xm0, q3120
+    movu       [r0], xm0
+    RET
+
 %endif
 
 ;-----------------------------------------------------------------------------
