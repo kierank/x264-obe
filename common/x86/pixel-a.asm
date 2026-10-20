@@ -350,6 +350,11 @@ weightp_perm_nv16: db 0,4,1,5,2,6,3,7,8,12,9,13,10,14,11,15
 ; ads avx512icl: candidate indices
 ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
            dw 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+; 8-bit weightp_stats8 avx512icl: vpermt2b of the min (bytes 0-31) and max (32-63) dwords of
+; blocks 0 1 4 5 | 2 3 6 7 to min | max << 16 in block order; vpermt2d of the qword sums
+weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
+                  db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
+weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
 
 SECTION .text
 
@@ -10269,13 +10274,14 @@ cglobal weightp_sum8_nv, 6,8,16
 ; blocks 0 1 4 5, lane 1 blocks 2 3 6 7) and the dword's bytes by shifts.
 ;-----------------------------------------------------------------------------
 %macro WEIGHTP_STATS8_B 0
-cglobal weightp_stats8, 6,8,12
+cglobal weightp_stats8, 6,8,13
     pxor       m8, m8
 %if cpuflag(avx512icl)
     movu       m9, [weightp_mm_perm]
     movu      m10, [weightp_sum_perm]
     mov       r6d, 0x55555555
     kmovd      k1, r6d
+    vpternlogd m12, m12, m12, 0xff ; once: vpternlogd isn't dependency breaking
 %else
     pcmpeqb    m9, m9
     psrld      m9, 24
@@ -10285,8 +10291,8 @@ cglobal weightp_stats8, 6,8,12
     pxor       m0, m0
     pxor       m1, m1
 %if cpuflag(avx512)
-    vpternlogd m2, m2, m2, 0xff
-    vpternlogd m3, m3, m3, 0xff
+    mova       m2, m12
+    mova       m3, m12
 %else
     pcmpeqb    m2, m2
     pcmpeqb    m3, m3
@@ -10357,6 +10363,9 @@ WEIGHTP_STATS8_B
 WEIGHTP_SUM8_NV
 
 %if HIGH_BIT_DEPTH == 0
+INIT_YMM avx512icl
+WEIGHTP_STATS8_B
+
 ; avx512icl 8-bit: vpdpbusd of each row by 1,0,1,0 (u) and 0,1,0,1 (v) bytes, no unpacking.
 ; A ymm is two blocks, 8 a pass; u in m0-m3, v in m4-m7, then as weightp_sum8.
 %macro WEIGHTP_NV_ICL_ROW 3 ; u acc, v acc, offset
