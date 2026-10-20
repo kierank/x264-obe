@@ -5525,7 +5525,7 @@ cglobal pixel_satd_bi4_%1x%2, 7,12,11
     %define bi_wd  r6d
     %define bi_wb  r6b
     FIX_STRIDES r5
-%if cpuflag(avx512icl)
+%if cpuflag(avx512icl) && HIGH_BIT_DEPTH == 0
     SATD_ICL_KMASK r7d
 %endif
     lea       r7, [3*r5]
@@ -5552,7 +5552,7 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
     %define bi_wd  r5d
     %define bi_wb  r5b
     FIX_STRIDES r2, r4
-%if cpuflag(avx512icl)
+%if cpuflag(avx512icl) && HIGH_BIT_DEPTH == 0
     SATD_ICL_KMASK r6d
 %endif
     lea       r6, [3*r2]
@@ -5860,10 +5860,30 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     BI_HBD_ROW 1, 1
     BI_HBD_ROW 2, 2
     BI_HBD_ROW 3, 3
+%if cpuflag(avx512icl) && bi_big
+    ; the pixel_satd_16x16_avx512icl tail: two passes per signed word fold
+%if bi_pass & 1
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%endif
+%if bi_pass == 1
+    pmaddwd        m7, m6, [pw_1]
+%elif bi_pass == 3
+    {evex} vpdpwssd m7, m6, [pw_1]
+%endif
+%else
     BI_SATD_PASS 1
+%endif
 %assign bi_pass bi_pass+1
 %endrep
+%if cpuflag(avx512icl) && bi_big
+    HADDD          m7, m6
+    movd          eax, xm7
+    RET
+%else
     SATD_HBD_END bi_big
+%endif
 %endmacro
 
 SATD_BI 16, 16, 0
@@ -6538,6 +6558,8 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     HADDD        m7, m6
     movd        eax, xm7
     RET
+
+SATD_BI 16, 16, 0
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
