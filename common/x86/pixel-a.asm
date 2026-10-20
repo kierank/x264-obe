@@ -9302,6 +9302,14 @@ cglobal pixel_satd_4x16, 4,6,6
     SATD_ICL_PACKED
     paddw         m0, m5
     SATD_ICL_PACKED_END
+
+cglobal pixel_satd_8x4, 4,5,5
+    mova          m4, [hmul_16p]
+    mov          r4d, 0x5555
+    kmovw         k1, r4d
+    SATD_AVX512_LOAD4 q, k1 ; 2 0 2 0
+    SATD_ICL_PACKED         ; 3 1 3 1
+    SATD_ICL_PACKED_END
 ICL_LOW_END
 %endif ; ARCH_X86_64
 
