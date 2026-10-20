@@ -150,6 +150,27 @@ pb_scan8frame_avx2:    db 0,1,-1,-1,2,3,4,5,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,10,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,-1,-1,8,9,-1,-1,-1,-1,10,11,-1,-1,-1,-1,-1,-1,-1,-1,10,11,12,13,-1,-1,14,15
                        db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,-1,12,13,-1,-1,-1,-1,14,15,-1,-1
+align 64
+; zigzag_sub_8x8 avx512icl: vpermb indices into the 8x8 block packed as 8 bytes
+; per row; even bytes give coefs 0-31, odd bytes coefs 32-63
+zsub8_frame8:  db  0,35, 1,42, 8,49,16,56, 9,57, 2,50, 3,43,10,36
+               db 17,29,24,22,32,15,25,23,18,30,11,37, 4,44, 5,51
+               db 12,58,19,59,26,52,33,45,40,38,48,31,41,39,34,46
+               db 27,53,20,60,13,61, 6,54, 7,47,14,55,21,62,28,63
+zsub8_field8:  db  0,35, 8,43,16,51, 1,59, 9,28,24,13,32, 6,17,21
+               db  2,36,25,44,40,52,48,60,56,29,33,14,10,22, 3,37
+               db 18,45,41,53,49,61,57,30,26,7,11,15, 4,38,19,46
+               db 34,54,42,62,50,23,58,31,27,39,12,47, 5,55,20,63
+; vpermt2b indices packing the 8 src rows to 8 bytes each
+zsub8_pack:    db   0,  1,  2,  3,  4,  5,  6,  7, 16, 17, 18, 19, 20, 21, 22, 23
+               db  32, 33, 34, 35, 36, 37, 38, 39, 48, 49, 50, 51, 52, 53, 54, 55
+               db  64, 65, 66, 67, 68, 69, 70, 71, 80, 81, 82, 83, 84, 85, 86, 87
+               db  96, 97, 98, 99,100,101,102,103,112,113,114,115,116,117,118,119
+; zigzag_sub_4x4 avx512icl: even bytes index FENC_STRIDE rows, odd bytes the packed dst rows
+zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
+               db 33, 9,48,12,49,13,34,10,19, 7,35,11,50,14,51,15
+zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
+               db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
 
 SECTION .text
@@ -2413,6 +2434,107 @@ ZIGZAG_SUB_4x4   , frame
 ZIGZAG_SUB_4x4 ac, frame
 ZIGZAG_SUB_4x4   , field
 ZIGZAG_SUB_4x4 ac, field
+
+; vpermb gathers the scan order and zero-extends in one step
+%macro ZIGZAG_SUB_4x4_ICL 2
+%ifidn %1, ac
+cglobal zigzag_sub_4x4%1_%2, 4,5
+%else
+cglobal zigzag_sub_4x4%1_%2, 3,5
+%endif
+    mov           r4, 0x000f000f000f000f
+    kmovq         k1, r4
+    mov          r4d, 0x55555555
+    kmovd         k3, r4d
+    vmovdqu8      m0 {k1}{z}, [r1]
+    movd         xm1, [r2+0*FDEC_STRIDE]
+    pinsrd       xm1, [r2+1*FDEC_STRIDE], 1
+    pinsrd       xm1, [r2+2*FDEC_STRIDE], 2
+    pinsrd       xm1, [r2+3*FDEC_STRIDE], 3
+    mova         ym3, [zsub4_%2]
+    psrlw        ym4, ym3, 8
+    vpermb        m0 {k3}{z}, m3, m0
+    vpermb        m1 {k3}{z}, m4, m1
+%assign %%i 0
+%rep 4
+    mov          r4d, [r1+%%i*FENC_STRIDE]
+    mov [r2+%%i*FDEC_STRIDE], r4d
+%assign %%i %%i+1
+%endrep
+    psubw        ym0, ym1
+%ifidn %1, ac
+    movd         r4d, xm0
+    mov          [r3], r4w
+    mov          r4d, 0xfffe
+    kmovw         k1, r4d
+    vmovdqu16    ym0 {k1}{z}, ym0
+%endif
+    mova        [r0], ym0
+    vptestmw      k0, ym0, ym0
+    xor          eax, eax
+    kortestw      k0, k0
+    setnz         al
+    RET
+%endmacro
+
+; 8x8: pack both blocks to 8 bytes per row, then vpermb each half of the scan
+%macro ZIGZAG_SUB_8x8_ICL 1
+cglobal zigzag_sub_8x8_%1, 3,4
+    mov           r3, 0x00ff00ff00ff00ff
+    kmovq         k1, r3
+    mov           r3, 0x5555555555555555
+    kmovq         k3, r3
+    vmovdqu8      m0 {k1}{z}, [r1]
+    vmovdqu8      m1 {k1}{z}, [r1+4*FENC_STRIDE]
+    movq         xm2, [r2+0*FDEC_STRIDE]
+    movhps       xm2, [r2+1*FDEC_STRIDE]
+    movq         xm3, [r2+2*FDEC_STRIDE]
+    movhps       xm3, [r2+3*FDEC_STRIDE]
+    movq         xm4, [r2+4*FDEC_STRIDE]
+    movhps       xm4, [r2+5*FDEC_STRIDE]
+    movq         xm5, [r2+6*FDEC_STRIDE]
+    movhps       xm5, [r2+7*FDEC_STRIDE]
+    mova          m6, [zsub8_pack]
+    vpermt2b      m0, m6, m1            ; src rows 0-7
+    vinserti32x4 ym2, ym2, xm3, 1
+    vinserti32x4 ym4, ym4, xm5, 1
+    vinserti64x4  m2, m2, ym4, 1        ; dst rows 0-7
+    mova          m6, [zsub8_%1 %+ 8]
+    psrlw         m7, m6, 8
+    vpermb        m1 {k3}{z}, m6, m0
+    vpermb        m3 {k3}{z}, m7, m0
+    vpermb        m4 {k3}{z}, m6, m2
+    vpermb        m5 {k3}{z}, m7, m2
+    psubw         m1, m4
+    psubw         m3, m5
+    vextracti32x4 xm4, m0, 1
+    vextracti32x4 xm5, m0, 2
+    vextracti32x4 xm6, m0, 3
+    movq   [r2+0*FDEC_STRIDE], xm0
+    movhps [r2+1*FDEC_STRIDE], xm0
+    movq   [r2+2*FDEC_STRIDE], xm4
+    movhps [r2+3*FDEC_STRIDE], xm4
+    movq   [r2+4*FDEC_STRIDE], xm5
+    movhps [r2+5*FDEC_STRIDE], xm5
+    movq   [r2+6*FDEC_STRIDE], xm6
+    movhps [r2+7*FDEC_STRIDE], xm6
+    mova      [r0], m1
+    mova   [r0+64], m3
+    vptestmw      k0, m1, m1
+    vptestmw      k1, m3, m3
+    xor          eax, eax
+    kortestd      k0, k1
+    setnz         al
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+ZIGZAG_SUB_4x4_ICL   , frame
+ZIGZAG_SUB_4x4_ICL ac, frame
+ZIGZAG_SUB_4x4_ICL   , field
+ZIGZAG_SUB_4x4_ICL ac, field
+ZIGZAG_SUB_8x8_ICL frame
+ZIGZAG_SUB_8x8_ICL field
 %endif ; !HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
