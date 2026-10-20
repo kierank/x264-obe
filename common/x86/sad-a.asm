@@ -1166,6 +1166,42 @@ cglobal intra_sad_x3_16x16, 3,3,10
 %endrep
 %undef isad_g
     INTRA_SAD_PACK3_END 4, 6, 5         ; V H DC
+
+;-----------------------------------------------------------------------------
+; int pixel_vsad( uint8_t *src, intptr_t stride, int height )
+; R = { row 2k | row 2k+1 } (xmm load + k-merged vbroadcasti32x4), valignq
+; with the next R gives { row 2k+1 | row 2k+2 }: two row differences a psadbw.
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal pixel_vsad, 3,4,4
+    mov           r3d, 0xf0
+    kmovb          k1, r3d
+    movu          xm1, [r0]
+    vbroadcasti32x4 m1 {k1}, [r0+r1]
+    lea            r0, [r0+2*r1]
+    pxor           m0, m0
+    sub           r2d, 2
+    je .end
+.loop:
+    movu          xm2, [r0]
+    vbroadcasti32x4 m2 {k1}, [r0+r1]
+    lea            r0, [r0+2*r1]
+    valignq        m3, m2, m1, 2
+    psadbw         m3, m1
+    paddd          m0, m3
+    mova           m1, m2
+    sub           r2d, 2
+    jg .loop
+.end:
+    vextracti128  xm2, m1, 1
+    psadbw        xm2, xm1
+    vextracti128  xm3, m0, 1
+    paddd         xm0, xm3
+    paddd         xm0, xm2
+    punpckhqdq    xm3, xm0, xm0
+    paddd         xm0, xm3
+    movd          eax, xm0
+    RET
 %endif ; ARCH_X86_64
 
 ;=============================================================================
