@@ -10267,4 +10267,52 @@ WEIGHTP_SUM8 0
 WEIGHTP_SUM8 1
 WEIGHTP_STATS8
 WEIGHTP_SUM8_NV
+
+%if HIGH_BIT_DEPTH == 0
+; avx512icl 8-bit: vpdpbusd of each row by 1,0,1,0 (u) and 0,1,0,1 (v) bytes, no unpacking.
+; A ymm is two blocks, 8 a pass; u in m0-m3, v in m4-m7, then as weightp_sum8.
+%macro WEIGHTP_NV_ICL_ROW 3 ; u acc, v acc, offset
+    movu       m8, [r6+%3]
+    vpdpbusd  m%1, m8, m10
+    vpdpbusd  m%2, m8, m11
+%endmacro
+
+INIT_YMM avx512icl
+cglobal weightp_sum8_nv, 6,8,13
+    mov       r6d, 0x00010001
+    vpbroadcastd m10, r6d
+    pslld     m11, m10, 8
+    WEIGHTP_PERM m9
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    pxor       m4, m4
+    pxor       m5, m5
+    pxor       m6, m6
+    pxor       m7, m7
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    WEIGHTP_NV_ICL_ROW 0, 4, 0
+    WEIGHTP_NV_ICL_ROW 1, 5, 32
+    WEIGHTP_NV_ICL_ROW 2, 6, 64
+    WEIGHTP_NV_ICL_ROW 3, 7, 96
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m8, m12
+    HADD4D     m4, m5, m6, m7, m8, m12
+    vpermd     m0, m9, m0
+    vpermd     m4, m9, m4
+    movu     [r0], m0
+    movu     [r1], m4
+    add        r0, 32
+    add        r1, 32
+    add        r2, 128
+    sub       r4d, 8
+    jg .loopx
+    RET
+%endif
 %endif ; ARCH_X86_64
