@@ -1572,6 +1572,30 @@ VAR2_8x8_AVX2 16, 7
 ; SATD
 ;=============================================================================
 
+; avx512icl functions between ICL_LOW_BEGIN and ICL_LOW_END keep m0-m15 on
+; ymm0-15 (x86inc's avx512 permutation undone): only the opmask/VBMI2/VNNI
+; instructions need EVEX, the rest keep their shorter VEX encodings and the
+; VEX-only ones (phaddw, phminposuw, ...) still assemble. vzeroupper on return
+; and WIN64 xmm6-15 saves as for avx2. VNNI needs {evex}: on ymm0-15 nasm
+; picks the VEX AVX-VNNI encoding, which avx512icl does not imply.
+%macro ICL_LOW_RESET 0
+    INIT_YMM avx512icl
+    AVX512_MM_PERMUTATION
+    %define RESET_MM_PERMUTATION ICL_LOW_RESET
+%endmacro
+
+%macro ICL_LOW_BEGIN 0
+    %define vzeroupper_required (mmsize > 16)
+    %define high_mm_regs 0
+    ICL_LOW_RESET
+%endmacro
+
+%macro ICL_LOW_END 0
+    %define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
+    %define high_mm_regs (16*cpuflag(avx512))
+    INIT_YMM avx512icl
+%endmacro
+
 %macro JDUP 2
 %if cpuflag(sse4)
     ; just use shufps on anything post conroe
@@ -4563,14 +4587,14 @@ cglobal hadamard_ac_8x8%1
     ABSW      m2, spill0
     pmaddwd  m11, m3, m12
     ABSW      m3, spill1
-    vpdpwssd  m1, m2, m12
+    {evex} vpdpwssd  m1, m2, m12
     ABSW      m2, spill2
-    vpdpwssd m11, m3, m12
+    {evex} vpdpwssd m11, m3, m12
     ABSW      m3, m6, m6
-    vpdpwssd  m1, m2, m12
+    {evex} vpdpwssd  m1, m2, m12
     ABSW      m2, m7, m7
-    vpdpwssd m11, m3, m12
-    vpdpwssd  m1, m2, m12
+    {evex} vpdpwssd m11, m3, m12
+    {evex} vpdpwssd  m1, m2, m12
     paddd     m1, m11
 %else
     AC_PREP   m1, [pw_1]
@@ -4606,13 +4630,13 @@ cglobal hadamard_ac_8x8%1
 %if HIGH_BIT_DEPTH && cpuflag(avx512icl)
     paddw    m13, m12, m12
     pmaddwd   m2, m13
-    vpdpwssd  m2, m3, m13
+    {evex} vpdpwssd  m2, m3, m13
     ABSW      m4, m4, m7
     pand      m0, [mask_ac8]
     ABSW      m0, m0, m7
     pmaddwd   m4, m12
-    vpdpwssd  m4, m0, m12
-    vpdpwssd  m2, m1, m13
+    {evex} vpdpwssd  m4, m0, m12
+    {evex} vpdpwssd  m2, m1, m13
     paddd     m2, m4
 %else
     AC_PREP   m2, [pw_1]
@@ -4691,7 +4715,7 @@ HADAMARD_AC_WXH_SSE2  8,  8
 
 ; struct { int satd, int sa8d; } pixel_hadamard_ac_16x16( uint8_t *pix, int stride )
 %macro HADAMARD_AC_WXH_SSE2 2
-cglobal pixel_hadamard_ac_%1x%2, 2,4,11
+cglobal pixel_hadamard_ac_%1x%2, 2,4,11+3*cpuflag(avx512icl)
     %define ysub r1
     FIX_STRIDES r1
     mov   r3, rsp
@@ -5381,7 +5405,7 @@ HADAMARD_AC_SSE2
 %assign hadac_vstack 1
 HADAMARD_AC_SSE2 v
 %assign hadac_vstack 0
-cglobal pixel_hadamard_ac_8x16, 2,5,11
+cglobal pixel_hadamard_ac_8x16, 2,5,11+3*cpuflag(avx512icl)
     FIX_STRIDES r1
     mov   r3, rsp
     and  rsp, ~(mmsize-1)
@@ -5401,8 +5425,9 @@ cglobal pixel_hadamard_ac_8x16, 2,5,11
 %endmacro
 
 HADAMARD_AC_HBD_YMM
-INIT_YMM avx512icl
+ICL_LOW_BEGIN
 HADAMARD_AC_HBD_YMM
+ICL_LOW_END
 INIT_YMM avx2
 
 ; 16 pixel rows: lane 0 is pix[0], lane 1 is pix[8], the 8x8 transform is lane-local
@@ -5417,9 +5442,9 @@ cglobal pixel_sa8d_16x8_internal
     HADAMARD8_2D 0, 1, 2, 8, 4, 5, 3, 9, 6, amax
 %if cpuflag(avx512icl)
     pmaddwd   m0, m12
-    vpdpwssd  m0, m1, m12
+    {evex} vpdpwssd  m0, m1, m12
     pmaddwd   m2, m12
-    vpdpwssd  m2, m8, m12
+    {evex} vpdpwssd  m2, m8, m12
     paddd     m0, m2
 %else
     paddw m0, m1
@@ -5457,8 +5482,9 @@ cglobal pixel_sa8d_16x16, 4,8,12+cpuflag(avx512icl)
 %endmacro
 
 SA8D_16x16_HBD
-INIT_YMM avx512icl
+ICL_LOW_BEGIN
 SA8D_16x16_HBD
+ICL_LOW_END
 INIT_YMM avx2
 %endif
 
@@ -5516,9 +5542,9 @@ cglobal pixel_sa8d_8x8, 4,6,8
     pmaxsw      xm3, xm4
 %if cpuflag(avx512icl)
     pmaddwd     xm0, xm7
-    vpdpwssd    xm0, xm1, xm7
+    {evex} vpdpwssd    xm0, xm1, xm7
     pmaddwd     xm2, xm7
-    vpdpwssd    xm2, xm3, xm7
+    {evex} vpdpwssd    xm2, xm3, xm7
 %else
     pmaddwd     xm0, xm7
     pmaddwd     xm1, xm7
@@ -5537,8 +5563,9 @@ cglobal pixel_sa8d_8x8, 4,6,8
 
 SA8D_8x8_HBD
 %if ARCH_X86_64
-INIT_YMM avx512icl
+ICL_LOW_BEGIN
 SA8D_8x8_HBD
+ICL_LOW_END
 INIT_YMM avx2
 %endif
 %if ARCH_X86_64
@@ -8122,20 +8149,9 @@ SA8D_X9_8BIT
 ;   sum is unchanged;
 ; - 8 wide row pairs [k k | k+4 k+4] from a broadcast and a merge-masked
 ;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
-; To the end of the block m0-m15 stay on ymm0-15 (x86inc's avx512 permutation
-; undone): only the opmask/VBMI2 instructions need EVEX, the rest keep their
-; shorter VEX encodings, and the VEX-only phaddw/phminposuw of lowres and x9
-; assemble. vzeroupper on return and WIN64 xmm6-15 saves as for avx2. VNNI
-; here would need {evex} (nasm picks the VEX AVX-VNNI form on ymm0-15).
+; The whole block is ICL_LOW (m0-m15 on ymm0-15).
 ;-----------------------------------------------------------------------------
-%macro ICL_LOW_RESET 0
-    INIT_YMM avx512icl
-    AVX512_MM_PERMUTATION
-    %define RESET_MM_PERMUTATION ICL_LOW_RESET
-%endmacro
-%define vzeroupper_required (mmsize > 16)
-%define high_mm_regs 0
-ICL_LOW_RESET
+ICL_LOW_BEGIN
 %macro SATD_ICL_KMASK 1 ; gpr (dword) to clobber
     mov       %1, 0x5555000c
     kmovd     k2, %1
@@ -8371,9 +8387,7 @@ SATD_BI 16, 16, 1
 SATD_BI 16,  8, 1
 SATD_BI  8, 16, 1
 SATD_BI  8,  8, 1
-%define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
-%define high_mm_regs (16*cpuflag(avx512))
-INIT_YMM avx512icl
+ICL_LOW_END
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
