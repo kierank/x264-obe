@@ -976,6 +976,10 @@ int x264_pixel_satd_4x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
 int x264_pixel_satd_4x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
 #define x264_pixel_satd_8x4_avx512icl x264_template(pixel_satd_8x4_avx512icl)
 int x264_pixel_satd_8x4_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_intra_satd_x3_8x16c_avx512icl x264_template(intra_satd_x3_8x16c_avx512icl)
+void x264_intra_satd_x3_8x16c_avx512icl( pixel *, pixel *, int * );
+#define x264_intra_satd_x3_4x4_avx512icl x264_template(intra_satd_x3_4x4_avx512icl)
+void x264_intra_satd_x3_4x4_avx512icl( pixel *, pixel *, int * );
 #define x264_pixel_sad_avg2_16x16_avx2 x264_template(pixel_sad_avg2_16x16_avx2)
 int x264_pixel_sad_avg2_16x16_avx2( pixel *, pixel *, pixel *, intptr_t );
 #define x264_pixel_sad_avg2_16x8_avx2 x264_template(pixel_sad_avg2_16x8_avx2)
