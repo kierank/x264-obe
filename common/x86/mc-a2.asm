@@ -32,6 +32,21 @@
 
 SECTION_RODATA 64
 
+; avx512icl permutes, 32 bytes each (256 in all, so what follows keeps its alignment)
+pb_even_icl:   db  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
+               db 32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
+pb_odd_icl:    db  1, 3, 5, 7, 9,11,13,15,17,19,21,23,25,27,29,31
+               db 33,35,37,39,41,43,45,47,49,51,53,55,57,59,61,63
+pw_even_icl:   dw  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
+pw_odd_icl:    dw  1, 3, 5, 7, 9,11,13,15,17,19,21,23,25,27,29,31
+pb_deint_icl:  db  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
+               db  1, 3, 5, 7, 9,11,13,15,17,19,21,23,25,27,29,31
+pb_ilv_icl:    db  0,32, 1,33, 2,34, 3,35, 4,36, 5,37, 6,38, 7,39
+               db  8,40, 9,41,10,42,11,43,12,44,13,45,14,46,15,47
+pw_ilv_icl:    dw  0,16, 1,17, 2,18, 3,19, 4,20, 5,21, 6,22, 7,23
+pb_lowres8_icl: db 0, 2, 4, 6,16,18,20,22, 8,10,12,14,24,26,28,30 ; packuswb lanes -> even | odd words
+               db  1, 3, 5, 7,17,19,21,23, 9,11,13,15,25,27,29,31
+
 %if HIGH_BIT_DEPTH
 v210_shuf_avx512: db  0, 0,34, 1,35,34, 4, 4,38, 5,39,38, 8, 8,42, 9, ; luma, chroma
                   db 43,42,12,12,46,13,47,46,16,16,50,17,51,50,20,20,
@@ -1824,6 +1839,140 @@ cglobal load_deinterleave_chroma_fdec, 4,4
     RET
 %endif ; HIGH_BIT_DEPTH
 
+;-----------------------------------------------------------------------------
+; avx512icl: each (de)interleave is one two-source byte/word permute
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_YMM avx512icl
+; plane_copy_interleave_core: as the sse2/avx version, but dst and i_dst*sizeof(pixel)
+; must also be multiples of 32. The pad writes the same 16 bytes as those.
+cglobal plane_copy_interleave_core, 6,9
+    mov   r6d, r6m
+%if HIGH_BIT_DEPTH
+    FIX_STRIDES r1, r3, r5, r6d
+    movifnidn r1mp, r1
+    movifnidn r3mp, r3
+    mov  r6m, r6d
+    mova   m2, [pw_ilv_icl]
+%else
+    mova   m2, [pb_ilv_icl]
+%endif
+    lea    r0, [r0+r6*2]
+    add    r2,  r6
+    add    r4,  r6
+    DECLARE_REG_TMP 7,8
+    mov  t1, r1
+    shr  t1, SIZEOF_PIXEL
+    sub  t1, r6
+    mov  t0d, r7m
+.loopy:
+    mov    r6d, r6m
+    neg    r6
+.prefetch:
+    prefetchnta [r2+r6]
+    prefetchnta [r4+r6]
+    add    r6, 64
+    jl .prefetch
+    mov    r6d, r6m
+    neg    r6
+.loopx:
+    movu      xm0, [r2+r6]
+    movu      xm1, [r4+r6]
+%if HIGH_BIT_DEPTH
+    vpermt2w   m0, m2, m1
+    movu      xm1, [r2+r6+16]
+    movu      xm3, [r4+r6+16]
+    vpermt2w   m1, m2, m3
+    movntdq [r0+r6*2], m0
+    movntdq [r0+r6*2+32], m1
+%else
+    vpermt2b   m0, m2, m1
+    movntdq [r0+r6*2], m0
+%endif
+    add    r6, 16*SIZEOF_PIXEL
+    jl .loopx
+%if HIGH_BIT_DEPTH == 0
+    vextracti32x4 xm1, m0, 1
+%endif
+.pad:
+%assign n 0
+%rep SIZEOF_PIXEL
+    movntdq [r0+r6*2+(n+ 0)], xm1
+    movntdq [r0+r6*2+(n+16)], xm1
+    %assign n n+32
+%endrep
+    add    r6, 16*SIZEOF_PIXEL
+    cmp    r6, t1
+    jl .pad
+    add    r0, r1mp
+    add    r2, r3mp
+    add    r4, r5
+    dec    t0d
+    jg .loopy
+    sfence
+    RET
+
+cglobal plane_copy_deinterleave, 6,7
+    mov    r6d, r6m
+    FIX_STRIDES r1, r3, r5, r6d
+%if HIGH_BIT_DEPTH
+    mov    r6m, r6d
+    mova   m2, [pw_even_icl]
+    mova   m3, [pw_odd_icl]
+%else
+    mova   m2, [pb_deint_icl]
+%endif
+    add    r0,  r6
+    add    r2,  r6
+    lea    r4, [r4+r6*2]
+.loopy:
+    mov    r6d, r6m
+    neg    r6
+.loopx:
+%if HIGH_BIT_DEPTH
+    movu      m0, [r4+r6*2]
+    movu      m1, [r4+r6*2+32]
+    mova      m4, m2
+    vpermi2w  m4, m0, m1
+    vpermt2w  m0, m3, m1
+    movu [r0+r6], m4
+    movu [r2+r6], m0
+%else
+    vpermb    m0, m2, [r4+r6*2]
+    movu [r0+r6], xm0
+    vextracti32x4 [r2+r6], m0, 1
+%endif
+    add    r6, 16*SIZEOF_PIXEL
+    jl .loopx
+    add    r0, r1
+    add    r2, r3
+    add    r4, r5
+    dec dword r7m
+    jg .loopy
+    RET
+
+%if HIGH_BIT_DEPTH
+cglobal store_interleave_chroma, 5,5
+    FIX_STRIDES r1
+    mova      m2, [pw_ilv_icl]
+.loop:
+    mova     xm0, [r2]
+    mova     xm1, [r3]
+    vpermt2w  m0, m2, m1
+    mova     xm1, [r2+FDEC_STRIDEB]
+    mova     xm3, [r3+FDEC_STRIDEB]
+    vpermt2w  m1, m2, m3
+    movu    [r0], m0
+    movu [r0+r1], m1
+    add       r2, FDEC_STRIDEB*2
+    add       r3, FDEC_STRIDEB*2
+    lea       r0, [r0+r1*2]
+    sub      r4d, 2
+    jg .loop
+    RET
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
 %macro PLANE_DEINTERLEAVE_RGB_CORE 9 ; pw, i_dsta, i_dstb, i_dstc, i_src, w, h, tmp1, tmp2
 %if cpuflag(ssse3)
     mova        m3, [deinterleave_rgb_shuf+(%1-3)*16]
@@ -2395,6 +2544,18 @@ cglobal integral_init4v, 3,5
     pavgb     m2, m4
     pavgb     m3, m5
 
+%if cpuflag(avx512icl) ; m7 = even bytes, m6 = odd bytes of two sources
+    mova      m4, m7
+    vpermi2b  m4, m0, m2
+    vpermt2b  m0, m6, m2
+    mova      m5, m7
+    vpermi2b  m5, m1, m3
+    vpermt2b  m1, m6, m3
+    mova    [%1], m4
+    mova    [%2], m0
+    mova    [%3], m5
+    mova    [%4], m1
+%else
     pshufb    m0, m7
     pshufb    m1, m7
     pshufb    m2, m7
@@ -2411,6 +2572,7 @@ cglobal integral_init4v, 3,5
     mova    [%2], m1
     mova    [%3], m2
     mova    [%4], m3
+%endif
 %endmacro
 
 %macro FILT16x2 4
@@ -2529,6 +2691,18 @@ cglobal integral_init4v, 3,5
     pavgw     m3, [r0+r5*2+mmsize+2]
     pavgw     m0, m2
     pavgw     m1, m3                ; rows 1, 2
+%if cpuflag(avx512icl) ; m7 = even words, m9 = odd words of two sources
+    mova      m2, m7
+    vpermi2w  m2, m4, m5
+    vpermt2w  m4, m9, m5
+    movu    [r1], m2
+    movu    [r2], m4
+    mova      m2, m7
+    vpermi2w  m2, m0, m1
+    vpermt2w  m0, m9, m1
+    movu    [r3], m2
+    movu    [r4], m0
+%else
     psrld     m2, m4, 16
     psrld     m3, m5, 16
     pand      m4, m7
@@ -2549,6 +2723,7 @@ cglobal integral_init4v, 3,5
     vpermq    m2, m2, q3120
     movu    [r3], m0
     movu    [r4], m2
+%endif
 %endmacro
 
 %macro FRAME_INIT_LOWRES 0
@@ -2594,7 +2769,10 @@ cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
     PUSH      r6
     %define src_gap [rsp]
 %if HIGH_BIT_DEPTH
-%if cpuflag(xop)
+%if cpuflag(avx512icl)
+    mova      m7, [pw_even_icl]
+    mova      m9, [pw_odd_icl]
+%elif cpuflag(xop)
     mova      m6, [deinterleave_shuf32a]
     mova      m7, [deinterleave_shuf32b]
 %else
@@ -2629,7 +2807,10 @@ cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
     sub      r6d, mmsize
     jg .hloop
 %else ; !HIGH_BIT_DEPTH
-%if cpuflag(avx2)
+%if cpuflag(avx512icl)
+    mova      m7, [pb_even_icl]
+    mova      m6, [pb_odd_icl]
+%elif cpuflag(avx2)
     mova      m7, [deinterleave_shuf]
 %elif cpuflag(xop)
     mova      m6, [deinterleave_shuf32a]
@@ -2716,6 +2897,10 @@ INIT_XMM xop
 FRAME_INIT_LOWRES
 INIT_YMM avx2
 FRAME_INIT_LOWRES
+%if ARCH_X86_64
+INIT_YMM avx512icl
+FRAME_INIT_LOWRES
+%endif
 
 ;-----------------------------------------------------------------------------
 ; void mbtree_propagate_cost( int *dst, uint16_t *propagate_in, uint16_t *intra_costs,
@@ -3073,7 +3258,10 @@ cglobal mbtree_propagate_list_internal, 7,7,14
 %macro FRAME_INIT_LOWRES8 0
 cglobal frame_init_lowres_core8, 9,12,11
     FIX_STRIDES r5
-%if mmsize == 32
+%if cpuflag(avx512icl)
+    vpbroadcastd   m7, [pw_2]
+    mova           m9, [pb_lowres8_icl]
+%elif mmsize == 32
     vpbroadcastd   m7, [pw_2]
     vbroadcasti128 m9, [deinterleave_shuf]
     pmovzxbd      m10, [lowres8_perm]
@@ -3112,6 +3300,14 @@ cglobal frame_init_lowres_core8, 9,12,11
     psrlw     m8, 2
     packuswb  m4, m5                ; 256 saturates to 255
     packuswb  m6, m8
+%if cpuflag(avx512icl)
+    vpermb    m4, m9, m4
+    vpermb    m6, m9, m6
+    movu      [r1+r11], xm4
+    vextracti128 [r2+r11], m4, 1
+    movu      [r3+r11], xm6
+    vextracti128 [r4+r11], m6, 1
+%else
     pshufb    m4, m9
     pshufb    m6, m9
 %if mmsize == 32
@@ -3127,6 +3323,7 @@ cglobal frame_init_lowres_core8, 9,12,11
     movhps    [r2+r11], m4
     movq      [r3+r11], m6
     movhps    [r4+r11], m6
+%endif
 %endif
     add      r11, mmsize/2
     cmp     r11d, r7d
@@ -3144,5 +3341,7 @@ cglobal frame_init_lowres_core8, 9,12,11
 INIT_XMM ssse3
 FRAME_INIT_LOWRES8
 INIT_YMM avx2
+FRAME_INIT_LOWRES8
+INIT_YMM avx512icl
 FRAME_INIT_LOWRES8
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
