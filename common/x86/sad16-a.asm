@@ -55,6 +55,9 @@ isadhbd_dcpa:  dd 0, 1, 3, 1, 4, 1, 6, 1
 isadhbd_dcpb:  dd 2, 0, 0, 3, 0, 4, 0, 6
 ; 8x8 edge[7..14] = l7..l0 -> l0..l7
 isadhbd_wrev:  db 14,15,12,13,10,11,8,9,6,7,4,5,2,3,0,1
+; 4x4: { V rows 0-3 | H rows 0-3 } words from { l0 l1 l2 l3 t0 t1 t2 t3 }
+isadhbd_p4idx: times 4 dw 4, 5, 6, 7
+               dw 0,0,0,0, 1,1,1,1, 2,2,2,2, 3,3,3,3
 
 SECTION .text
 
@@ -1642,6 +1645,59 @@ cglobal intra_sad_x3_8x8, 3,7,12
     SAD_X_HBD16_ZMM_END pw_1            ; V H DC
     movq       [r2+0], xm0
     pextrd     [r2+8], xm0, 2
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_4x4( uint16_t *fenc, uint16_t *fdec, int res[3] )
+; fenc rows k-merged by vpbroadcastq into { 0 1 2 3 | 0 1 2 3 } against
+; { V | H } (one vpermw of { left, top }), DC in a ymm.
+; Tail: 2 vshufi64x2, paddw, pmaddwd, 2 pshufd + paddd, vpcompressd (9 ops).
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x3_4x4, 3,4,8
+    mov           r3d, 0x22
+    kmovb          k3, r3d
+    add           r3d, r3d
+    kmovb          k4, r3d
+    add           r3d, r3d
+    kmovb          k5, r3d
+    movq          xm0, [r1+3*FDEC_STRIDEB-8]
+    pinsrw        xm0, [r1+0*FDEC_STRIDEB-2], 0
+    pinsrw        xm0, [r1+1*FDEC_STRIDEB-2], 1
+    pinsrw        xm0, [r1+2*FDEC_STRIDEB-2], 2
+    movhps        xm0, [r1-FDEC_STRIDEB]     ; l0 l1 l2 l3 t0 t1 t2 t3
+    vpbroadcastq   m7, [r0]
+    vpbroadcastq   m7 {k3}, [r0+1*FENC_STRIDEB]
+    vpbroadcastq   m7 {k4}, [r0+2*FENC_STRIDEB]
+    vpbroadcastq   m7 {k5}, [r0+3*FENC_STRIDEB]
+    pmaddwd       xm1, xm0, [pw_1]
+    pshufd        xm2, xm1, q1032
+    paddd         xm1, xm2
+    pshufd        xm2, xm1, q2301
+    paddd         xm1, xm2                   ; sum, at most 8*1023
+    psrld         xm1, 2
+    pxor          xm2, xm2
+    pavgw         xm1, xm2                   ; (sum+4)>>3
+    vpbroadcastw  ym2, xm1                   ; DC
+    movu           m3, [isadhbd_p4idx]
+    vpermw         m3, m3, m0                ; V rows 0-3 | H rows 0-3
+    psubw          m3, m7
+    psubw         ym5, ym7, ym2
+    pabsw          m3, m3
+    pabsw         ym5, ym5
+    vshufi64x2     m4, m3, m5, 0x88          ; V0 H0 DC0 0
+    vshufi64x2     m3, m3, m5, 0xdd          ; V1 H1 DC1 0
+    paddw          m3, m4                    ; at most 2*1023 a word
+    vpbroadcastd   m4, [pw_1]
+    pmaddwd        m3, m4
+    pshufd         m4, m3, q1032
+    paddd          m3, m4
+    pshufd         m4, m3, q2301
+    paddd          m3, m4
+    mov           r3d, 0x1111
+    kmovw          k1, r3d
+    vpcompressd    m3 {k1}{z}, m3
+    movq       [r2+0], xm3
+    pextrd     [r2+8], xm3, 2
     RET
 
 INIT_YMM avx2
