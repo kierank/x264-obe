@@ -170,3 +170,99 @@ the rest are sums, squares, min/max. Not prototyped.
   go to speed-next on its own whatever the speed results.
 - zen5/x264-weird-pixmisc-zmm: zmm ads, var_16x16, ssd_16x16/16x8 dispatched, for a
   full-width zmm box.
+
+## Round 2 (2026-10-20): every rejected candidate written and dispatched
+
+Branch `wip/x264-weird2-pixmisc`, base origin/wip/x264-weird-sa8d8 67b4aff6. Kieran's
+rules: nothing is rejected by the agent, every candidate is dispatched, and rack01 moves
+slow ones to zen5/. One commit per kernel; where a new kernel takes a slot held by a
+round-1 kernel, the commit overrides the slot and says so, so dropping that commit
+restores the round-1 kernel.
+
+Method (laptop on battery: no configure, no make, no encoder):
+- Single-file nasm of pixel-a.asm at both depths, linked into a standalone C driver
+  (scratchpad w2pm-drv.c) that compares each kernel with the C reference copied from
+  common/pixel.c. Inputs come in six modes: random, PIXEL_MAX vs 0 random (+-max
+  residual), near max, alternating extremes, all 0, and all PIXEL_MAX vs 0 (same-sign
+  maxed). Strides and offsets are random. Before every kernel call the driver clobbers
+  k1-k7, so no kernel can rely on masks left by the previous one. One mutation only
+  failed once this was added.
+- PROT_NONE guard page after the last input byte: ssd 4xN, ssd_nv12, asd8, ssim_end4,
+  vsad. Sanity check: the AVX2 ssd_nv12 (over-reads by design) faults there.
+- gdb 17.1 ABI check (scratchpad w2pm-abi.py) at each kernel's entry and return:
+  rbx rbp r12-r15 and rsp are preserved, and ymm0-15 are either unchanged or have zero
+  upper halves (vzeroupper). For float returns, the upper half of ymm0 must be zero.
+  Sanity check: an injected rbx change is caught. Every new kernel passes with "ymm0-15
+  unchanged": none of them touches ymm/zmm0-15.
+- Mutations: at least one instruction or table byte broken per kernel, rebuilt and
+  run; every one was killed (listed below).
+- nasm 2.14.02: both whole objects disassemble identically to nasm 3.01's, apart from
+  the known satd_mcc movsxd/cltq and its padding. The full driver passes on the 2.14.02
+  objects. No instruction needs a newer nasm (vpdpwssd, vpdpbusd, valignq, vpermi2d,
+  vpermt2w/b, vbroadcasti32x4/64x4 {k}, vmovdqu8 {k}{z}, kmovb/w/q, kaddb, kshiftlw,
+  kshiftrq, kortestq, bzhi, pdep, pext, shlx). No vpshldv/vpshrdv.
+- checkasm additions (tools/checkasm.c, C99): ssd_nv12 widths 8-72 pairs (every row
+  length mod 64 bytes), random and PIXEL_MAX vs 0; ssim_end4 at widths 1-4 against C;
+  asd8 at heights 4-16, PIXEL_MAX vs 0 either way.
+- Later on AC power: configure --bit-depth=8 and =10 (--enable-pic, -no-pie link), checkasm8
+  and checkasm10 at seeds 1001, 2002, 3003 on tip 95893a5c: all pass, AVX512 and
+  AVX512ICL levels included. 13 mutations rebuilt into the real checkasm all failed it,
+  and each restored build passed again. They cover: the nv12 tail mask, the ssim_end4 width
+  mask, asd8, the 10-bit sum8_clip offset fold, the 10-bit stats8 vpermt2w table, ads
+  pext imul, vsad valignq and the 10-bit vpdpwssd, the zmmb k2 shift and the 10-bit k1
+  broadcast, ssd 4xN kaddb, the 8-bit zmm stats8 table, 10-bit sum8_nv, and the zmm
+  avx512 stats8 constant. A swapped 10-bit vsad psubw survived; it is equivalent under
+  pabsw, so it is not a real mutation. No encoder md5 runs (not part of round 2).
+
+| function | round-1 decision | round-2 action | commit | driver (cases; mutations) | nasm 2.14.02 |
+|---|---|---|---|---|---|
+| pixel_ssd_8x8 (8-bit) | assembled only | dispatched (VNNI vpdpbusd) | 0a0df1ed | pass, 6 modes x 2000; psubb->paddb killed | ok |
+| pixel_ssd_8x4 | (missing row) | written: SSD_ICL 8x4 both depths | 9f117f4e | pass; 8-bit psubb->paddb, 10-bit vpdpwssd operand killed | ok |
+| pixel_ssd_4x4/4x8/4x16 | rejected (prologue dominates) | written: 4 rows a register by merge-masked vpbroadcastd/q {k1-k3}, 8-bit pmovzxbw, vpdpwssd into 2 accumulators | 3413ca74 | pass + guard; pmovzxbw->pmovsxbw, k2->k1, kaddb k3 killed | ok |
+| pixel_ssd_nv12_core | rejected (PSNR only) | written: 64 B a step, zero-masked tail loads (bzhi/kmovq/kshiftrq), 8-bit \|d\| split u/v + vpdpwssd, 10-bit d*(d&0xffff) and d*d, qword sums | cf114410 | pass (widths 0-200, heights 1-20, 1920x20) + guard; psrlw, pand->por, psubd->paddd, k2 shift killed | ok |
+| pixel_ssim_end4 | rejected (float, 4 lanes) | written: 2 ymm loads + 6 adds, vpermi2d transpose, vdivps {k}{z} width mask (no table, no branch), 8-bit vpdpwssd for s1^2+s2^2+c1; bit-identical to the avx version | 07c8ce34 | pass (bit-exact vs avx, 1e-5 vs C, widths 1-4) + guard; perm operands, pf_128, paddd->psubd, mask 15->7 killed | ok |
+| pixel_asd8 | rejected (no caller) | written: 8-bit vpdpbusd by 1 per image, 10-bit vpdpwssd of the difference, 2 accumulators | 33ac64ea | pass (heights 4-32) + guard; psubw, row offset, psubd, pabsd killed | ok |
+| weightp_stats8 zmm (10-bit) | dropped 9ddb5d1f (rack01 +8%) | re-instantiated INIT_ZMM avx512 with the all-ones min reset hoisted (m15 set once; ALL_ONES copies it) | 129b8386 | pass; m15 copy->pxor, perm table killed | ok |
+| weightp_stats8 zmm (8-bit) | (round-1 bytes kernel was ymm) | bytes kernel at zmm, 16 blocks a pass, vpermt2b/vpermt2d 64 B tables; overrides the round-1 ymm slot | bef54fb3 | pass; 4 table/mask mutations killed | ok |
+| weightp_stats8 (10-bit) | rejected (pack is small) | ymm avx512icl: row 0 seeds sum/min/max (no all-ones), punpck-ladder min/max of 4 registers (11 ops each instead of 4x12), one vpermt2w pack; overrides 129b8386 on ICL | a64b84b3 | pass; table byte, row count, punpckhqdq, punpckhwd killed | ok |
+| weightp_sum8_clip (10-bit) | rejected (VNNI can't fuse the shift) | vpdpwssd straight from memory by {scale,0}/{0,scale} onto round + (offset << denom) (exact: the shift floors); 10 ops per 16 px instead of 15 | 33ee3a7e | pass, including negative scales (strict); offset fold, lane shift, clip, scale zero-extension killed | ok |
+| weightp_sum8 (10-bit) | rejected (as above) | same macro without the clip: 6 ops + 2 moves per 16 px, no punpck pair | 9275bfc4 | pass, negative scales; rounding and lane mutations killed | ok |
+| weightp_sum8_nv (10-bit) | rejected (paddw beats 2 vpdpwssd) | vpdpwssd from memory by {1,0} and {0,1}, 4 blocks a pass, 8 accumulators, no split | 440db5e8 | pass; offset, shift, step killed | ok |
+| pixel_ads4/2/1 pdep/pext | (lesson: x265 P4) | written: per 8 candidates pdep(mask,0x01..)*255 then pext of 0x0706..00, movq/pmovzxbw/+base, one 16 B store; groups past width skipped (writes stay within the 8-rounded width, as pre-ICL); overrides the zmm vpcompressw slot | 6a3b0ad5 | pass (widths 1-160, boundary thresholds, write bound) ; constant, imul, skip, popcnt killed | ok |
+| pixel_ssd_16x16/16x8 zmm | round-1 zmm (per-row inserts) | _zmmb: rows by vbroadcasti32x4/64x4 {k} (lesson); _zmm code unchanged; overrides _zmm | c47edd50 | pass; mask shift, mask value, row offset killed | ok |
+| pixel_var_16x16 zmm | round-1 zmm (per-row inserts) | _zmmb as above via a VAR_ICL_ZMM macro; _zmm unchanged; overrides _zmm | 81dcff66 | pass (16-px aligned, as callers); row offsets, masks removed killed | ok |
+| pixel_vsad | not edited (sad files) | written in pixel-a.asm (sad files untouched): 8-bit valignq + psadbw (two row pairs a psadbw, each row loaded once), 10-bit vpdpwssd; renamed vsad_valign in 95893a5c (clash with agent C's 8-bit vsad_avx512icl) | e7b69706, 95893a5c | pass + guard; valignq imm, tail psadbw, vpdpwssd operand, mask killed | ok |
+| pixel_var_* avx512 (old zmm) | unchanged | skipped: rack01 already measured and dropped them in situ (d0395c5b, bc4042cd); the slots are held by the avx512icl ymm/zmm kernels at a higher level. Kieran's call whether they go to a zen5/ branch | - | - | - |
+| weightp_sum8 / sum8_nv zmm avx512 (both depths), 8-bit word stats8 zmm | dropped 9ddb5d1f | skipped: rack01-measured; kept on zen5/weightp-avx512. The 8-bit word zmm is superseded by the byte kernels (bef54fb3) | - | - | - |
+| pixel_ads_mvs | superseded | skipped: no caller at avx512icl (the ICL ads compact in-loop) | - | - | - |
+| intra_sa8d_x3_8x8, hadamard_load | satd family | skipped: agent C's package | - | - | - |
+| pixel-32.asm | not reachable | skipped: x86_64-only build | - | - | - |
+
+Ops in the result tail of kernels that feed a decision: ads pext 11 ops per 8 candidates
+(kmov, bzhi, then movzx, popcnt, pdep, imul, pext, movq, pmovzxbw, paddw, store, add)
+against round-1 vpcompressw's 7 per 16 or 32; vsad 8-bit tail 7 ops (vextracti128,
+psadbw, paddd, vextracti128, paddd, punpckhqdq, paddd), 10-bit 1 paddd + HADDD.
+
+Round-1 kernels re-checked on the maxed and sign-patterned modes (var2 8x8/8x16 icl
+and avx2, weightp_dc8x8, ssim_4x4x2_core, ssd ymm, var ymm/zmm, ads ymm/zmm, stats8,
+sum8): all match C.
+
+### Findings in existing asm (round 2)
+
+1. **AVX2 weightp_sum8 and weightp_sum8_clip, both depths, are wrong for negative
+   scale** (pixel-a.asm WEIGHTP_SUM8: `shl r7d, 16; or r7d, r5d` ors a sign-extended
+   scale into the rounding word: the x265 weight_pp/sp pattern). Unreachable: x264
+   clips the weightp scale to 0-127 (slicetype.c x264_clip3( ..., 0, 127 ), and the
+   chroma guess breaks out above 127). Not fixed. The new avx512icl kernels zero-extend
+   the scale (movzx) and pass negative scales; the round-1 8-bit avx512icl ones also
+   pass.
+2. The driver's ads inputs first exceeded the 8-bit sums range (64*255). Out of range,
+   the round-1 8-bit ads disagree with C, because the cost is 16-bit and saturated. Real
+   sums are block DCs (<= 16320 at 8-bit), so this is not a bug.
+
+### Needs rack01
+
+checkasm --bench of every function above at both depths, then the in-situ A/B for the
+slot overrides: bef54fb3 (8-bit zmm stats8 vs ymm), a64b84b3 vs 129b8386 (10-bit stats8
+ymm icl vs zmm avx512), 6a3b0ad5 (ads pext vs zmm vpcompressw), c47edd50 and 81dcff66
+(_zmmb vs _zmm), and vsad_valign vs agent C's vsad.
