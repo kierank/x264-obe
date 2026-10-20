@@ -32,6 +32,8 @@
 void x264_sub4x4_dct_mmx    ( dctcoef dct    [16], pixel   *pix1, pixel   *pix2 );
 #define x264_sub4x4_dct_avx2 x264_template(sub4x4_dct_avx2)
 void x264_sub4x4_dct_avx2   ( dctcoef dct    [16], pixel   *pix1, pixel   *pix2 );
+#define x264_sub4x4_dct_avx512icl x264_template(sub4x4_dct_avx512icl)
+void x264_sub4x4_dct_avx512icl( dctcoef dct    [16], pixel   *pix1, pixel   *pix2 );
 #define x264_sub8x8_dct_mmx x264_template(sub8x8_dct_mmx)
 void x264_sub8x8_dct_mmx    ( dctcoef dct[ 4][16], pixel   *pix1, pixel   *pix2 );
 #define x264_sub16x16_dct_mmx x264_template(sub16x16_dct_mmx)

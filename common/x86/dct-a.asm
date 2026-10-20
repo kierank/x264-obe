@@ -683,6 +683,57 @@ cglobal sub4x4_dct, 3,3,6
     movu   [r0+32], m1
     RET
 
+; avx512icl: the 4 rows of src and dst as the qwords of one ymm each
+; (merge-masked vpbroadcastq), one psubw, then the avx2 transform
+INIT_YMM avx512icl
+cglobal sub4x4_dct, 3,4,6
+    mov        r3d, 2
+    kmovb       k2, r3d
+    mov        r3d, 4
+    kmovb       k3, r3d
+    mov        r3d, 8
+    kmovb       k4, r3d
+    movq        xm0, [r1+0*FENC_STRIDEB]
+    vpbroadcastq m0 {k2}, [r1+1*FENC_STRIDEB]
+    vpbroadcastq m0 {k3}, [r1+2*FENC_STRIDEB]
+    vpbroadcastq m0 {k4}, [r1+3*FENC_STRIDEB]
+    movq        xm4, [r2+0*FDEC_STRIDEB]
+    vpbroadcastq m4 {k2}, [r2+1*FDEC_STRIDEB]
+    vpbroadcastq m4 {k3}, [r2+2*FDEC_STRIDEB]
+    vpbroadcastq m4 {k4}, [r2+3*FDEC_STRIDEB]
+    psubw        m0, m4
+    vextracti32x4 xm2, m0, 1
+    psrldq      xm1, xm0, 8
+    psrldq      xm3, xm2, 8
+    paddw      xm4, xm0, xm3      ; s03
+    psubw      xm0, xm3           ; d03
+    paddw      xm5, xm1, xm2      ; s12
+    psubw      xm1, xm2           ; d12
+    paddw      xm2, xm4, xm5      ; f0 = s03 + s12
+    psubw      xm4, xm5           ; f2 = s03 - s12
+    paddw      xm3, xm0, xm0
+    paddw      xm3, xm1           ; f1 = 2*d03 + d12
+    psubw      xm0, xm1
+    psubw      xm0, xm1           ; f3 = d03 - 2*d12
+    punpcklwd  xm2, xm3
+    punpcklwd  xm4, xm0
+    punpckhdq  xm1, xm2, xm4      ; c2 | c3
+    punpckldq  xm2, xm4           ; c0 | c1
+    pshufd     xm1, xm1, q1032    ; c3 | c2
+    paddw      xm0, xm2, xm1      ; s03 | s12
+    psubw      xm2, xm1           ; d03 | d12
+    punpcklqdq xm1, xm0, xm2      ; s03 | d03
+    punpckhqdq xm0, xm2           ; s12 | d12
+    pmovsxwd    m1, xm1
+    pmovsxwd    m0, xm0
+    vpsllvd     m2, m1, [sub4x4_hbd_shift]
+    vpsllvd     m3, m0, [sub4x4_hbd_shift]
+    paddd       m2, m0
+    psubd       m1, m3
+    movu   [r0+ 0], m2
+    movu   [r0+32], m1
+    RET
+
 ;-----------------------------------------------------------------------------
 ; void sub8x8_dct( dctcoef dct[4][16], pixel *pix1, pixel *pix2 ), AVX2
 ; Each lane holds one row of two 4x4 blocks (rows i and i+4 of the 8x8), so a
