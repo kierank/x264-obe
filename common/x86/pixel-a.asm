@@ -2179,11 +2179,18 @@ cglobal pixel_satd_8x4, 4,6,8
     %define lh m0
     %define rh [esp+48]
 %endif
-%if HIGH_BIT_DEPTH
+%if HIGH_BIT_DEPTH || ARCH_X86_64
     paddd   lh, rh
 %else
     paddusw lh, rh
 %endif ; HIGH_BIT_DEPTH
+%endmacro
+
+; 8-bit x86_64: an 8x8's words are <= 80*255, four 8x8s overflow 16 bits
+%macro SA8D_WIDEN 0
+%if HIGH_BIT_DEPTH == 0
+    pmaddwd m0, [pw_1]
+%endif
 %endmacro
 
 ; high bit depth: max() words are <= 32*PIXEL_MAX, four of them overflow 16 bits
@@ -2251,25 +2258,25 @@ cglobal pixel_sa8d_16x16, 4,8,12
     mova m7, [hmul_8p]
 %endif
     call pixel_sa8d_8x8_internal ; pix[0]
+    SA8D_WIDEN
     add  r2, 8*SIZEOF_PIXEL
     add  r0, 8*SIZEOF_PIXEL
     mova m10, m0
     call pixel_sa8d_8x8_internal ; pix[8]
+    SA8D_WIDEN
     lea  r2, [r2+8*r3]
     lea  r0, [r0+8*r1]
     SA8D_INTER
     call pixel_sa8d_8x8_internal ; pix[8*stride+8]
+    SA8D_WIDEN
     sub  r2, 8*SIZEOF_PIXEL
     sub  r0, 8*SIZEOF_PIXEL
     SA8D_INTER
     call pixel_sa8d_8x8_internal ; pix[8*stride]
+    SA8D_WIDEN
     SA8D_INTER
     SWAP 0, 10
-%if HIGH_BIT_DEPTH
     HADDD  m0, m1
-%else
-    HADDUW m0, m1
-%endif
     movd eax, m0
     add  eax, 1
     shr  eax, 1
@@ -2476,8 +2483,12 @@ cglobal pixel_sa8d_16x16, 4,7
     mova  temp1, m10
     pxor    m10, m10
 %endif
-%elif %1
-    paddw    m0, temp0
+%else
+    ; an 8x8's sa8d words are <= 80*255, four 8x8s overflow 16 bits
+    pmaddwd  m0, [pw_1]
+%if %1
+    paddd    m0, temp0
+%endif
 %endif
 %if %2
     mova  temp0, m0
@@ -2539,11 +2550,10 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
     SA8D_SATD_ACCUM 1, 0
     vextracti128 xm1, m0, 1
     vextracti128 xm2, m10, 1
-%if HIGH_BIT_DEPTH
     paddd   xm0, xm1
+%if HIGH_BIT_DEPTH
     paddd  xm10, xm2
 %else
-    paddw   xm0, xm1
     paddw  xm10, xm2
 %endif
 %else
@@ -2567,18 +2577,16 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
 ; xop already has fast horizontal sums
 %if cpuflag(sse4) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
     pmaddwd xm10, [pw_1]
-    HADDUWD xm0, xm1
     phaddd  xm0, xm10       ;  sa8d1  sa8d2  satd1  satd2
     pshufd  xm1, xm0, q2301 ;  sa8d2  sa8d1  satd2  satd1
     paddd   xm0, xm1        ;   sa8d   sa8d   satd   satd
     movd    r0d, xm0
     pextrd  eax, xm0, 2
 %else
-%if HIGH_BIT_DEPTH
     HADDD   xm0, xm1
+%if HIGH_BIT_DEPTH
     HADDD  xm10, xm2
 %else
-    HADDUW  xm0, xm1
     HADDW  xm10, xm2
 %endif
     movd    r0d, xm0

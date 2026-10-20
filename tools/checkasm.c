@@ -690,6 +690,72 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel sa8d_satd :" );
 
+    // maxed differences negated on a coset of each 8x8 (3 of its 6 coordinate bits fixed), the same in
+    // all four 8x8s of a 16x16: puts most of every 8x8's sa8d in one word, whatever the lane layout
+    ok = 1, used_asm = 0;
+    if( pixel_asm.sa8d[PIXEL_8x8] != pixel_ref.sa8d[PIXEL_8x8] ||
+        pixel_asm.sa8d[PIXEL_16x16] != pixel_ref.sa8d[PIXEL_16x16] ||
+        pixel_asm.sa8d_satd[PIXEL_16x16] != pixel_ref.sa8d_satd[PIXEL_16x16] )
+    {
+        static const int sa8d_sizes[2] = { PIXEL_16x16, PIXEL_8x8 };
+        ALIGNED_ARRAY_64( pixel, pa,[16*16] );
+        ALIGNED_ARRAY_64( pixel, pb,[16*16] );
+        set_func_name( "sa8d_coset" );
+        used_asm = 1;
+        for( int m = 0; m < 64 && ok; m++ )
+        {
+            int bits = 0;
+            for( int b = m; b; b &= b-1 )
+                bits++;
+            if( bits != 3 )
+                continue;
+            for( int t = 0; t < 64 && ok; t++ )
+            {
+                if( t & ~m )
+                    continue;
+                for( int inv = 0; inv < 2 && ok; inv++ )
+                {
+                    for( int i = 0; i < 256; i++ )
+                    {
+                        int k = (i>>4&7)<<3 | (i&7);
+                        int neg = ((k & m) == t) ^ inv;
+                        pa[i] = neg ? 0 : PIXEL_MAX;
+                        pb[i] = neg ? PIXEL_MAX : 0;
+                    }
+                    for( int s = 0; s < 2; s++ )
+                    {
+                        int sz = sa8d_sizes[s];
+                        if( pixel_asm.sa8d[sz] == pixel_ref.sa8d[sz] )
+                            continue;
+                        int res_c   = pixel_c.sa8d[sz]( pa, 16, pb, 16 );
+                        int res_asm = pixel_asm.sa8d[sz]( pa, 16, pb, 16 );
+                        if( res_c != res_asm )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "sa8d[%d]: coset %02o/%02o%s %d != %d [FAILED]\n",
+                                     sz, m, t, inv ? " inverted" : "", res_c, res_asm );
+                        }
+                    }
+                    if( pixel_asm.sa8d_satd[PIXEL_16x16] != pixel_ref.sa8d_satd[PIXEL_16x16] )
+                    {
+                        uint32_t cost8_c = pixel_c.sa8d[PIXEL_16x16]( pa, 16, pb, 16 );
+                        uint32_t cost4_c = pixel_c.satd[PIXEL_16x16]( pa, 16, pb, 16 );
+                        uint64_t res_a = pixel_asm.sa8d_satd[PIXEL_16x16]( pa, 16, pb, 16 );
+                        uint32_t cost8_a = res_a;
+                        uint32_t cost4_a = res_a >> 32;
+                        if( cost8_a != cost8_c || cost4_a != cost4_c )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "sa8d_satd [%d]: coset %02o/%02o%s (%d,%d) != (%d,%d) [FAILED]\n",
+                                     PIXEL_16x16, m, t, inv ? " inverted" : "", cost8_c, cost4_c, cost8_a, cost4_a );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    report( "pixel sa8d coset :" );
+
 #define TEST_PIXEL_X( N ) \
     ok = 1; used_asm = 0; \
     for( int i = 0; i < 7; i++ ) \
