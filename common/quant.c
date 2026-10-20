@@ -600,6 +600,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         INIT_TRELLIS( avx512icl );
 #if ARCH_X86_64
         pf->decimate_score64 = x264_decimate_score64_avx512icl;
+        pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
+        pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
+        pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx512icl;
+        pf->coeff_level_run[DCT_LUMA_4x4] = x264_coeff_level_run16_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
@@ -790,6 +794,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         INIT_TRELLIS( avx512icl );
 #if ARCH_X86_64
         pf->decimate_score64 = x264_decimate_score64_avx512icl;
+        pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
+        pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
+        pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx512icl;
+        pf->coeff_level_run[DCT_LUMA_4x4] = x264_coeff_level_run16_avx512icl;
 #endif
     }
 #endif // HAVE_MMX

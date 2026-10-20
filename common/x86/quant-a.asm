@@ -36,6 +36,7 @@ SECTION_RODATA 64
 decimate_shuf_avx512: dd 0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 qscan4_frame_avx512:  dd 0, 4, 1, 2, 5, 8,12, 9, 6, 3, 7,10,13,14,11,15
 qscan4_field_avx512:  dd 0, 1, 4, 2, 3, 5, 6, 7, 8, 9,10,11,12,13,14,15
+levelrun_rev_avx512:  dd 15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
 %else
 dequant_shuf_avx512: dw  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
                      dw 32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
@@ -43,6 +44,7 @@ qscan4_frame_avx512: dw  0, 4, 1, 2, 5, 8,12, 9, 6, 3, 7,10,13,14,11,15
                      dw 16,20,17,18,21,24,28,25,22,19,23,26,29,30,27,31
 qscan4_field_avx512: dw  0, 1, 4, 2, 3, 5, 6, 7, 8, 9,10,11,12,13,14,15
                      dw 16,17,20,18,19,21,22,23,24,25,26,27,28,29,30,31
+levelrun_rev_avx512: dw 15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 4, 5, 6, 7
 %endif
 ALIGN 64, db 0
 
@@ -2584,6 +2586,67 @@ COEFF_LEVELRUN_LUT 15
 COEFF_LEVELRUN_LUT 16
 %endif
 
+; levels from the last nonzero coef down: reverse the coefs, then compress the nonzero ones
+%macro COEFF_LEVELRUN_AVX512 2 ; num, w/d
+cglobal coeff_level_run%1, 2,3
+%if %1 == 4 && HIGH_BIT_DEPTH == 0
+    movq        xm0, [r0]
+    movu        xm1, [levelrun_rev_avx512+24]
+%elif %1 == 4
+    movu        xm0, [r0]
+%else
+    movu         m0, [r0-(%1&1)*SIZEOF_DCTCOEF]
+    movu         m1, [levelrun_rev_avx512+(16-mmsize/SIZEOF_DCTCOEF)*SIZEOF_DCTCOEF]
+%endif
+    vptestm%2    k1, m0, m0
+%if %1 == 4 && HIGH_BIT_DEPTH
+    pshufd       m1, m0, q0123
+%else
+    vperm%2      m1, m1, m0
+%endif
+%if %1 == 15
+    mov         r2d, 0x7fff
+    kmovw        k2, r2d
+    vptestm%2    k2{k2}, m1, m1
+%else
+    vptestm%2    k2, m1, m1
+%endif
+    kmovw       eax, k1
+%if %1 == 15
+    shr         eax, 1
+%endif
+    vpcompress%2 m1{k2}{z}, m1
+    mov [r1+levelrun.mask], eax
+    lzcnt       r2d, eax
+    xor         r2d, 31
+    mov [r1+levelrun.last], r2d
+    popcnt      eax, eax
+%if %1 == 4 && HIGH_BIT_DEPTH == 0
+    movq [r1+levelrun.level], xm1
+%else
+    movu [r1+levelrun.level], m1
+%endif
+    RET
+%endmacro
+
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+INIT_XMM avx512icl
+COEFF_LEVELRUN_AVX512  4, d
+INIT_YMM avx512icl
+COEFF_LEVELRUN_AVX512  8, d
+INIT_ZMM avx512icl
+COEFF_LEVELRUN_AVX512 15, d
+COEFF_LEVELRUN_AVX512 16, d
+%else
+INIT_XMM avx512icl
+COEFF_LEVELRUN_AVX512  4, w
+COEFF_LEVELRUN_AVX512  8, w
+INIT_YMM avx512icl
+COEFF_LEVELRUN_AVX512 15, w
+COEFF_LEVELRUN_AVX512 16, w
+%endif
+%endif
 
 ;-----------------------------------------------------------------------------
 ; int quant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
