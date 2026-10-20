@@ -1736,6 +1736,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx512icl;
         pixf->sad_avg2[PIXEL_16x8] = x264_pixel_sad_avg2_16x8_avx512icl;
         pixf->sad_avg2[PIXEL_8x16] = x264_pixel_sad_avg2_8x16_avx512icl;
+        pixf->sad_avg2[PIXEL_8x8] = x264_pixel_sad_avg2_8x8_avx512icl;
         INIT_ADS( _zmm_avx512icl );
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
