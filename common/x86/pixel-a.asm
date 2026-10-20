@@ -2425,10 +2425,17 @@ cglobal pixel_sa8d_16x16, 4,7
     pabsw    m14, m%4
     pabsw    m13, m%3
     pabsw    m15, m%5
+%if cpuflag(avx512icl)
+    SATD_ICL_HMAX 12, 14, 6
+    paddw    m10, m12
+    SATD_ICL_HMAX 13, 15, 6
+    paddw    m10, m13
+%else
     HADAMARD 1, max, 12, 14, 6, 11
     paddw    m10, m12
     HADAMARD 1, max, 13, 15, 6, 11
     paddw    m10, m13
+%endif
 %endif
 %endmacro ; SA8D_SATD_8x4
 
@@ -2470,10 +2477,21 @@ cglobal pixel_sa8d_satd_8x8_internal
     SUMSUB_BADC w, 2, 8, 3, 9, 12
     HADAMARD 2, sumsub, 2, 8, 12, 11
     HADAMARD 2, sumsub, 3, 9, 12, 11
+%if cpuflag(avx512icl)
+    ABSW2 m0, m4, m0, m4, m12, m11
+    ABSW2 m1, m5, m1, m5, m12, m11
+    ABSW2 m2, m8, m2, m8, m12, m11
+    ABSW2 m3, m9, m3, m9, m12, m11
+    SATD_ICL_HMAX 0, 4, 12
+    SATD_ICL_HMAX 1, 5, 12
+    SATD_ICL_HMAX 2, 8, 12
+    SATD_ICL_HMAX 3, 9, 12
+%else
     HADAMARD 1, amax, 0, 4, 12, 11
     HADAMARD 1, amax, 1, 5, 12, 4
     HADAMARD 1, amax, 2, 8, 12, 4
     HADAMARD 1, amax, 3, 9, 12, 4
+%endif
 %endif
 
     ; create sa8d sub results
@@ -2493,6 +2511,10 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
     FIX_STRIDES r1, r3
 %if vertical==0
     mova     m7, [hmul_8p]
+%endif
+%if cpuflag(avx512icl)
+    mov     r4d, 0x5555
+    kmovd    k1, r4d
 %endif
     lea      r4, [3*r1]
     lea      r5, [3*r3]
@@ -2531,7 +2553,17 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
 %endif
 
 ; xop already has fast horizontal sums
-%if cpuflag(sse4) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
+%if cpuflag(avx512icl) && HIGH_BIT_DEPTH==0
+    pmaddwd    xm10, [pw_1]
+    HADDUWD     xm0, xm1
+    punpcklqdq  xm1, xm0, xm10
+    punpckhqdq  xm0, xm10
+    paddd       xm0, xm1    ;  sa8d1  sa8d2  satd1  satd2
+    pshufd      xm1, xm0, q2301
+    paddd       xm0, xm1    ;   sa8d   sa8d   satd   satd
+    movd        r0d, xm0
+    pextrd      eax, xm0, 2
+%elif cpuflag(sse4) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
     pmaddwd xm10, [pw_1]
     HADDUWD xm0, xm1
     phaddd  xm0, xm10       ;  sa8d1  sa8d2  satd1  satd2
@@ -8170,6 +8202,7 @@ cglobal pixel_sa8d_8x8, 4,8,8
     RET
 
 INTRA_SATD_X3_8BIT
+SA8D_SATD
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
