@@ -29,6 +29,12 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
+SECTION_RODATA
+; add16x16_idct8 avx512icl: packed qwords to 16-pixel rows
+idct8_zmm_pack: db 0,2,4,6,1,3,5,7
+; sub16x16_dct8 avx512icl: 128-bit lanes of a row pair, blocks 0 1, then 2 3
+dct8_zmm_pairs: db 0,1,8,9,2,3,10,11, 4,5,12,13,6,7,14,15
+
 SECTION .text
 
 cextern pd_32
@@ -327,6 +333,114 @@ global current_function %+ .skip_prologue
 %endrep
     ret
 
+;-----------------------------------------------------------------------------
+; void sub16x16_dct8( int32_t dct[4][64], uint16_t *pix1, uint16_t *pix2 ), AVX-512
+; The four 8x8 blocks in the four lanes: zmm row r = rows r and r+8 of the
+; 16x16. Word pass and 8x8 word transpose once for all four, then the dword
+; pass on blocks 0+1 and 2+3.
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal sub16x16_dct8, 3,3,18
+%assign dct8z_i 0
+%rep 8
+    movu          ym %+ dct8z_i, [r1+dct8z_i*FENC_STRIDEB]
+    vinserti64x4   m %+ dct8z_i, m %+ dct8z_i, [r1+(dct8z_i+8)*FENC_STRIDEB], 1
+    movu          ym8, [r2+dct8z_i*FDEC_STRIDEB]
+    vinserti64x4   m8, m8, [r2+(dct8z_i+8)*FDEC_STRIDEB], 1
+    psubw          m %+ dct8z_i, m8
+%assign dct8z_i dct8z_i+1
+%endrep
+    DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
+%assign dct8z_i 0
+%rep 8
+%assign dct8z_j dct8z_i+10
+    pmovsxwd       m %+ dct8z_j, ym %+ dct8z_i
+%assign dct8z_i dct8z_i+1
+%endrep
+    DCT8_1D d, 10,11,12,13,14,15,16,17, 8,9
+%assign dct8z_i 0
+%rep 8
+%assign dct8z_j dct8z_i+10
+    mova  [r0+dct8z_i*32], ym %+ dct8z_j
+    vextracti64x4 [r0+256+dct8z_i*32], m %+ dct8z_j, 1
+%assign dct8z_i dct8z_i+1
+%endrep
+%assign dct8z_i 0
+%rep 8
+%assign dct8z_j dct8z_i+10
+    vextracti64x4  ym8, m %+ dct8z_i, 1
+    pmovsxwd       m %+ dct8z_j, ym8
+%assign dct8z_i dct8z_i+1
+%endrep
+    DCT8_1D d, 10,11,12,13,14,15,16,17, 8,9
+%assign dct8z_i 0
+%rep 8
+%assign dct8z_j dct8z_i+10
+    mova  [r0+512+dct8z_i*32], ym %+ dct8z_j
+    vextracti64x4 [r0+768+dct8z_i*32], m %+ dct8z_j, 1
+%assign dct8z_i dct8z_i+1
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void add16x16_idct8( uint16_t *p_dst, int32_t dct[4][64] ), AVX-512
+; Two 8x8 blocks side by side per pass: zmm row r = row r of both, so after
+; the pack each register half is one 16-pixel row of the 16x16.
+;-----------------------------------------------------------------------------
+cglobal add16x16_idct8, 2,3,18
+    vpbroadcastd   m16, [pd_32]
+    vpbroadcastw   m17, [pw_pixel_max]
+    vpmovzxbq      m15, [idct8_zmm_pack]
+    mov            r2d, 0x0f0f
+    kmovw           k1, r2d
+    knotw           k2, k1
+    call .add16x8
+    add             r0, 8*FDEC_STRIDEB
+    add             r1, 512
+    call .add16x8
+    RET
+.add16x8:
+%assign dct8z_i 0
+%rep 8
+    movu          ym %+ dct8z_i, [r1+dct8z_i*32]
+    vinserti64x4   m %+ dct8z_i, m %+ dct8z_i, [r1+256+dct8z_i*32], 1
+%assign dct8z_i dct8z_i+1
+%endrep
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE4x4D 0,1,2,3,8
+    TRANSPOSE4x4D 4,5,6,7,8
+    ; per 256-bit half (one block): row i = [i.lo, j.lo], row j = [i.hi, j.hi]
+%assign dct8z_i 0
+%rep 4
+%assign dct8z_j dct8z_i+4
+    mova           m8, m %+ dct8z_j
+    vshufi32x4     m %+ dct8z_j {k1}, m %+ dct8z_i, m %+ dct8z_i, 0x31
+    vshufi32x4     m %+ dct8z_i {k2}, m8, m8, 0x80
+%assign dct8z_i dct8z_i+1
+%endrep
+    paddd          m0, m16
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    pxor           m8, m8
+%assign dct8z_i 0
+%rep 4
+%assign dct8z_j dct8z_i+1
+    psrad          m %+ dct8z_i, 6
+    psrad          m %+ dct8z_j, 6
+    packssdw       m %+ dct8z_i, m %+ dct8z_j
+    vpermq         m %+ dct8z_i, m15, m %+ dct8z_i
+    movu          ym9, [r0+dct8z_i*FDEC_STRIDEB]
+    vinserti64x4   m9, m9, [r0+dct8z_j*FDEC_STRIDEB], 1
+    paddw          m %+ dct8z_i, m9
+    CLIPW          m %+ dct8z_i, m8, m17
+    movu  [r0+dct8z_i*FDEC_STRIDEB], ym %+ dct8z_i
+    vextracti64x4 [r0+dct8z_j*FDEC_STRIDEB], m %+ dct8z_i, 1
+%assign dct8z_i dct8z_i+2
+%endrep
+    ret
+%undef dct8z_i
+%undef dct8z_j
+
 %else ; !HIGH_BIT_DEPTH
 
 %macro DCT_SUB8 0
@@ -529,5 +643,88 @@ INIT_XMM sse2
 ADD8x8
 INIT_XMM avx
 ADD8x8
+
+;-----------------------------------------------------------------------------
+; void sub16x16_dct8( int16_t dct[4][64], uint8_t *pix1, uint8_t *pix2 ), AVX-512
+; The four 8x8 blocks in the four lanes: zmm row r = rows r and r+8 of the
+; 16x16, so both passes and the transpose run once. Row pairs of a block are
+; joined for 32 byte stores, so quant_8x8's 32 byte loads can forward.
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal sub16x16_dct8, 3,3,12
+%assign dct8z_i 0
+%rep 8
+    movu           xm %+ dct8z_i, [r1+dct8z_i*FENC_STRIDE]
+    vinserti32x4   ym %+ dct8z_i, ym %+ dct8z_i, [r1+(dct8z_i+8)*FENC_STRIDE], 1
+    movu           xm8, [r2+dct8z_i*FDEC_STRIDE]
+    vinserti32x4   ym8, ym8, [r2+(dct8z_i+8)*FDEC_STRIDE], 1
+    pmovzxbw        m %+ dct8z_i, ym %+ dct8z_i
+    pmovzxbw        m8, ym8
+    psubw           m %+ dct8z_i, m8
+%assign dct8z_i dct8z_i+1
+%endrep
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
+    vpmovzxbq      m10, [dct8_zmm_pairs]
+    vpmovzxbq      m11, [dct8_zmm_pairs+8]
+%assign dct8z_i 0
+%rep 4
+%assign dct8z_j dct8z_i+1
+    mova            m8, m10
+    vpermi2q        m8, m %+ dct8z_i, m %+ dct8z_j ; blocks 0, 1
+    vpermt2q        m %+ dct8z_i, m11, m %+ dct8z_j ; blocks 2, 3
+    mova  [r0+    dct8z_i*16], ym8
+    vextracti64x4 [r0+128+dct8z_i*16], m8, 1
+    mova  [r0+256+dct8z_i*16], ym %+ dct8z_i
+    vextracti64x4 [r0+384+dct8z_i*16], m %+ dct8z_i, 1
+%assign dct8z_i dct8z_i+2
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void add16x16_idct8( uint8_t *p_dst, int16_t dct[4][64] ), AVX-512
+; As sub16x16_dct8: block b in lane b, so lanes 0-1 of an output row are
+; pixel row r and lanes 2-3 pixel row r+8.
+;-----------------------------------------------------------------------------
+cglobal add16x16_idct8, 2,2,12
+%assign dct8z_i 0
+%rep 8
+    movu           xm %+ dct8z_i, [r1+dct8z_i*16]
+    vinserti32x4   ym %+ dct8z_i, ym %+ dct8z_i, [r1+128+dct8z_i*16], 1
+    vinserti32x4    m %+ dct8z_i, m %+ dct8z_i, [r1+256+dct8z_i*16], 2
+    vinserti32x4    m %+ dct8z_i, m %+ dct8z_i, [r1+384+dct8z_i*16], 3
+%assign dct8z_i dct8z_i+1
+%endrep
+    IDCT8_1D      w,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    vpbroadcastw    m9, [pw_32]
+    paddw           m0, m9 ; rounding for the >>6 at the end
+    IDCT8_1D      w,0,1,2,3,4,5,6,7,8,9
+    vpmovzxbq      m10, [idct8_zmm_pack]
+%assign dct8z_i 0
+%rep 4
+%assign dct8z_j dct8z_i+1
+    psraw           m %+ dct8z_i, 6
+    psraw           m %+ dct8z_j, 6
+    movu           xm8, [r0+dct8z_i*FDEC_STRIDE]
+    vinserti32x4   ym8, ym8, [r0+(dct8z_i+8)*FDEC_STRIDE], 1
+    movu           xm9, [r0+dct8z_j*FDEC_STRIDE]
+    vinserti32x4   ym9, ym9, [r0+(dct8z_j+8)*FDEC_STRIDE], 1
+    pmovzxbw        m8, ym8
+    pmovzxbw        m9, ym9
+    paddsw          m %+ dct8z_i, m8
+    paddsw          m %+ dct8z_j, m9
+    packuswb        m %+ dct8z_i, m %+ dct8z_j
+    vpermq          m %+ dct8z_i, m10, m %+ dct8z_i
+    movu  [r0+dct8z_i*FDEC_STRIDE], xm %+ dct8z_i
+    vextracti32x4 [r0+(dct8z_i+8)*FDEC_STRIDE], m %+ dct8z_i, 1
+    vextracti32x4 [r0+dct8z_j*FDEC_STRIDE], m %+ dct8z_i, 2
+    vextracti32x4 [r0+(dct8z_j+8)*FDEC_STRIDE], m %+ dct8z_i, 3
+%assign dct8z_i dct8z_i+2
+%endrep
+    RET
+%undef dct8z_i
+%undef dct8z_j
 
 %endif ; !HIGH_BIT_DEPTH
