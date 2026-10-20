@@ -1265,6 +1265,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
+        INIT2( sad, _avx512 );
 #endif
     }
 #endif // HAVE_MMX
@@ -1621,7 +1622,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     }
 
     /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
-     * (rack01 ablation, obed low latency), although most win in checkasm. */
+     * (rack01 ablation, obed low latency), although most win in checkasm.
+     * Exception: the AVX512ICL intra sad_x3 (only used at subme <= 1). */
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512icl;
+#endif
+    }
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6

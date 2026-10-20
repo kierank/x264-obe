@@ -719,6 +719,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 else \
                     call_c2( pixel_c.sad_x3[i], pbuf1, pix2, pix2+6, pix2+1, (intptr_t)64, res_asm ); \
             } \
+            /* maxed differences (pbuf3 = ~pbuf4), every sum at its largest */ \
+            for( int j = 0; j < 0x1000 && ok; j += 256 ) \
+            { \
+                pixel *pix[4]; \
+                for( int k = 0; k < 4; k++ ) \
+                { \
+                    pix[k] = pbuf4 + ((j + 256*k) & 0xfff); \
+                    res_c[k] = pixel_c.sad[i]( pbuf3+j, 16, pix[k], 16 ); \
+                } \
+                if( N == 4 ) \
+                    pixel_asm.sad_x4[i]( pbuf3+j, pix[0], pix[1], pix[2], pix[3], 16, res_asm ); \
+                else \
+                    pixel_asm.sad_x3[i]( pbuf3+j, pix[0], pix[1], pix[2], 16, res_asm ); \
+                if( memcmp(res_c, res_asm, N*sizeof(int)) ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, "sad_x"#N"[%d]: overflow %d,%d,%d,%d != %d,%d,%d,%d\n", \
+                             i, res_c[0], res_c[1], res_c[2], res_c[3], \
+                             res_asm[0], res_asm[1], res_asm[2], res_asm[3] ); \
+                } \
+            } \
         } \
     } \
     report( "pixel sad_x"#N" :" );
@@ -1252,11 +1273,20 @@ static int check_pixel( int cpu_ref, int cpu_new )
     for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
     {
         INTRA_X_SOURCES( pat );
-        TEST_INTRA_X3( intra_sad_x3_16x16, 0 );
-        TEST_INTRA_X3( intra_sad_x3_8x16c, 0 );
-        TEST_INTRA_X3( intra_sad_x3_8x8c, 0 );
-        TEST_INTRA_X3( intra_sad_x3_8x8, 1, edge );
-        TEST_INTRA_X3( intra_sad_x3_4x4, 0 );
+        /* several aligned block positions: other neighbours and DC roundings */
+        for( int o = 0; o < (do_bench ? 1 : 7) && ok; o++ )
+        {
+            pixel *fenc0 = x9_fenc, *fdec0 = pbuf3;
+            x9_fenc += 16*o;
+            pbuf3 += 16*o;
+            TEST_INTRA_X3( intra_sad_x3_16x16, 0 );
+            TEST_INTRA_X3( intra_sad_x3_8x16c, 0 );
+            TEST_INTRA_X3( intra_sad_x3_8x8c, 0 );
+            TEST_INTRA_X3( intra_sad_x3_8x8, 1, edge );
+            TEST_INTRA_X3( intra_sad_x3_4x4, 0 );
+            x9_fenc = fenc0;
+            pbuf3 = fdec0;
+        }
     }
     report( "intra sad_x3 :" );
     ok = 1; used_asm = 0;
