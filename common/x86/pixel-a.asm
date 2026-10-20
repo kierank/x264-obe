@@ -347,6 +347,14 @@ lowres_hu3:    db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
 weightp_perm8:  db 0,4,1,5,2,6,3,7
 weightp_perm16: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 weightp_perm_nv16: db 0,4,1,5,2,6,3,7,8,12,9,13,10,14,11,15
+; ads avx512icl: candidate indices
+ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
+           dw 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+; 8-bit weightp_stats8 avx512icl: vpermt2b of the min (bytes 0-31) and max (32-63) dwords of
+; blocks 0 1 4 5 | 2 3 6 7 to min | max << 16 in block order; vpermt2d of the qword sums
+weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
+                  db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
+weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
 
 SECTION .text
 
@@ -935,6 +943,157 @@ SSD_NV12
 INIT_YMM avx2
 SSD_NV12
 
+;-----------------------------------------------------------------------------
+; int pixel_ssd_WxH( pixel *, intptr_t, pixel *, intptr_t ), avx512icl: VNNI
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+; vpdpwssd of the differences into m0 m5
+%macro SSD_ICL 2-3 ; width, height, name suffix
+cglobal pixel_ssd_%1x%2%3, 4,7,6
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    pxor        m0, m0
+    pxor        m5, m5
+%rep %2/4
+%if %1 == 16 && mmsize == 64
+    movu       ym1, [r0]
+    vinserti64x4 m1, m1, [r0+r1], 1
+    movu       ym2, [r0+r1*2]
+    vinserti64x4 m2, m2, [r0+r5], 1
+    movu       ym3, [r2]
+    vinserti64x4 m3, m3, [r2+r3], 1
+    movu       ym4, [r2+r3*2]
+    vinserti64x4 m4, m4, [r2+r6], 1
+    psubw       m1, m3
+    psubw       m2, m4
+    vpdpwssd    m0, m1, m1
+    vpdpwssd    m5, m2, m2
+%elif %1 == 16
+    movu        m1, [r0]
+    movu        m2, [r0+r1]
+    movu        m3, [r0+r1*2]
+    movu        m4, [r0+r5]
+    psubw       m1, [r2]
+    psubw       m2, [r2+r3]
+    psubw       m3, [r2+r3*2]
+    psubw       m4, [r2+r6]
+    vpdpwssd    m0, m1, m1
+    vpdpwssd    m5, m2, m2
+    vpdpwssd    m0, m3, m3
+    vpdpwssd    m5, m4, m4
+%else
+    movu       xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    movu       xm2, [r0+r1*2]
+    vinserti128 m2, m2, [r0+r5], 1
+    movu       xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    movu       xm4, [r2+r3*2]
+    vinserti128 m4, m4, [r2+r6], 1
+    psubw       m1, m3
+    psubw       m2, m4
+    vpdpwssd    m0, m1, m1
+    vpdpwssd    m5, m2, m2
+%endif
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+%endrep
+    paddd       m0, m5
+    HADDD       m0, m1
+    movd       eax, xm0
+    RET
+%endmacro
+%else ; !HIGH_BIT_DEPTH
+; |a - b| bytes; vpdpbusd |d| * (|d| ^ 0x80) = d*d - 128*|d| into m0 m5 and |d| into m4 m8
+; m6 = 1, m7 = 0x80
+%macro SSD_ICL_ABS 4 ; a (|d| out), b, square, sum
+    pminub      m3, m%1, m%2
+    pmaxub     m%1, m%2
+    psubb      m%1, m3
+    pxor        m3, m%1, m7
+    vpdpbusd   m%3, m%1, m3
+    vpdpbusd   m%4, m%1, m6
+%endmacro
+
+; four rows of 8 a ymm
+%macro SSD_ICL_W8 4 ; dst, src, stride, 3*stride
+    movq      xm%1, [%2]
+    movhps    xm%1, [%2+%3]
+    movq       xm3, [%2+%3*2]
+    movhps     xm3, [%2+%4]
+    vinserti128 m%1, m%1, xm3, 1
+%endmacro
+
+; four rows of 16 a zmm
+%macro SSD_ICL_W16Z 4 ; dst, src, stride, 3*stride
+    movu      xm%1, [%2]
+    vinserti32x4 m%1, m%1, [%2+%3], 1
+    vinserti32x4 m%1, m%1, [%2+%3*2], 2
+    vinserti32x4 m%1, m%1, [%2+%4], 3
+%endmacro
+
+%macro SSD_ICL 2-3 ; width, height, name suffix
+cglobal pixel_ssd_%1x%2%3, 4,7,9
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    vpbroadcastd m6, [pb_1]
+    mov        r4d, 0x80808080
+    vpbroadcastd m7, r4d
+    pxor        m0, m0
+    pxor        m5, m5
+    pxor        m4, m4
+    pxor        m8, m8
+%rep %2/4
+%if %1 == 16 && mmsize == 64
+    SSD_ICL_W16Z 1, r0, r1, r5
+    SSD_ICL_W16Z 2, r2, r3, r6
+    SSD_ICL_ABS 1, 2, 0, 4
+    SWAP 0, 5
+    SWAP 4, 8
+%elif %1 == 16
+    movu       xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    movu       xm2, [r2]
+    vinserti128 m2, m2, [r2+r3], 1
+    SSD_ICL_ABS 1, 2, 0, 4
+    movu       xm1, [r0+r1*2]
+    vinserti128 m1, m1, [r0+r5], 1
+    movu       xm2, [r2+r3*2]
+    vinserti128 m2, m2, [r2+r6], 1
+    SSD_ICL_ABS 1, 2, 5, 8
+%else
+    SSD_ICL_W8 1, r0, r1, r5
+    SSD_ICL_W8 2, r2, r3, r6
+    SSD_ICL_ABS 1, 2, 0, 4
+    SWAP 0, 5
+    SWAP 4, 8
+%endif
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+%endrep
+    paddd       m0, m5
+    paddd       m4, m8
+    pslld       m4, 7
+    paddd       m0, m4
+    HADDD       m0, m1
+    movd       eax, xm0
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+INIT_YMM avx512icl
+SSD_ICL 16, 16
+SSD_ICL 16,  8
+SSD_ICL  8, 16
+SSD_ICL  8,  8
+; zmm: assembled, not dispatched (for full width zmm)
+INIT_ZMM avx512icl
+SSD_ICL 16, 16, _zmm
+SSD_ICL 16,  8, _zmm
+%endif ; ARCH_X86_64
+
 ;=============================================================================
 ; variance
 ;=============================================================================
@@ -1337,6 +1496,200 @@ cglobal pixel_var_8x16, 2,3
     VAR_AVX512_CORE_8x8 1
     jmp var_avx512_end
 
+;-----------------------------------------------------------------------------
+; uint64_t pixel_var_wxh( pixel *, intptr_t ), avx512icl: VNNI
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+; vpdpwssd squares, two accumulators m6 m2; word sums m5
+%macro VAR_ICL_CORE 0
+    paddw       m5, m0
+    paddw       m5, m3
+    paddw       m5, m1
+    paddw       m5, m4
+    vpdpwssd    m6, m0, m0
+    vpdpwssd    m2, m3, m3
+    vpdpwssd    m6, m1, m1
+    vpdpwssd    m2, m4, m4
+%endmacro
+
+%macro VAR_ICL_START 0
+    FIX_STRIDES r1
+    lea         r3, [r1*3]
+    pxor        m5, m5
+    pxor        m6, m6
+    pxor        m2, m2
+%endmacro
+
+INIT_YMM avx512icl
+cglobal pixel_var_16x16, 2,4,7
+    VAR_ICL_START
+%rep 4
+    VAR_LOAD4_YMM r0, r0+16
+    lea         r0, [r0+r1*4]
+    VAR_ICL_CORE
+%endrep
+    paddd       m6, m2
+    VAR_END_YMM
+
+cglobal pixel_var_8x16, 2,4,7
+    VAR_ICL_START
+    lea         r2, [r0+r1*4]
+    VAR_LOAD4_YMM r0, r2
+    lea         r0, [r0+r1*8]
+    lea         r2, [r2+r1*8]
+    VAR_ICL_CORE
+    VAR_LOAD4_YMM r0, r2
+    VAR_ICL_CORE
+    paddd       m6, m2
+    VAR_END_YMM
+
+cglobal pixel_var_8x8, 2,4,7
+    VAR_ICL_START
+    lea         r2, [r0+r1*4]
+    VAR_LOAD4_YMM r0, r2
+    VAR_ICL_CORE
+    paddd       m6, m2
+    VAR_END_YMM
+
+; zmm, two rows a register: assembled, not dispatched (for full width zmm)
+INIT_ZMM avx512icl
+cglobal pixel_var_16x16_zmm, 2,4,7
+    VAR_ICL_START
+%rep 2
+    movu       ym0, [r0]
+    vinserti64x4 m0, m0, [r0+r1], 1
+    movu       ym3, [r0+r1*2]
+    vinserti64x4 m3, m3, [r0+r3], 1
+    lea         r0, [r0+r1*4]
+    movu       ym1, [r0]
+    vinserti64x4 m1, m1, [r0+r1], 1
+    movu       ym4, [r0+r1*2]
+    vinserti64x4 m4, m4, [r0+r3], 1
+    lea         r0, [r0+r1*4]
+    VAR_ICL_CORE
+%endrep
+    paddd       m6, m2
+    vextracti32x8 ym0, m5, 1
+    paddw      ym5, ym0
+    vextracti32x8 ym0, m6, 1
+    paddd      ym6, ym0
+    vpbroadcastd ym0, [pw_1]
+    pmaddwd    ym5, ym0
+    vextracti128 xm0, ym5, 1
+    paddd      xm5, xm0
+    vextracti128 xm0, ym6, 1
+    paddd      xm6, xm0
+    punpckldq  xm0, xm5, xm6
+    punpckhdq  xm5, xm6
+    paddd      xm5, xm0
+    punpckhqdq xm0, xm5, xm5
+    paddd      xm5, xm0
+    movq       rax, xm5
+    RET
+%else ; !HIGH_BIT_DEPTH
+; vpdpbusd: x * 1 and x * (x ^ 0x80) = x*x - 128*x; m6 = 1, m7 = 0x80 bytes
+; sums m0 m1, squares - 128 * sums m2 m3
+%macro VAR_ICL_ACC 4 ; pixels, tmp, sum, square
+    pxor        m%2, m%1, m7
+    vpdpbusd    m%3, m%1, m6
+    vpdpbusd    m%4, m%1, m%2
+%endmacro
+
+%macro VAR_ICL_START 0
+    vpbroadcastd m6, [pb_1]
+    mov        r2d, 0x80808080
+    vpbroadcastd m7, r2d
+    lea         r3, [r1*3]
+    pxor        m0, m0
+    pxor        m1, m1
+    pxor        m2, m2
+    pxor        m3, m3
+%endmacro
+
+%macro VAR_ICL_END 0
+    paddd       m0, m1
+    paddd       m2, m3
+    pslld       m1, m0, 7
+    paddd       m2, m1
+    punpckldq   m1, m0, m2
+    punpckhdq   m0, m2
+    paddd       m0, m1
+%if mmsize == 64
+    vextracti32x8 ym1, m0, 1
+    paddd      ym0, ym1
+%endif
+    vextracti128 xm1, ym0, 1
+    paddd      xm0, xm1
+    punpckhqdq xm1, xm0, xm0
+    paddd      xm0, xm1
+    movq       rax, xm0
+    RET
+%endmacro
+
+; four rows of 8 a ymm
+%macro VAR_ICL_W8 2 ; sum, square
+    movq       xm4, [r0]
+    movhps     xm4, [r0+r1]
+    movq       xm5, [r0+r1*2]
+    movhps     xm5, [r0+r3]
+    vinserti128 m4, m4, xm5, 1
+    VAR_ICL_ACC 4, 5, %1, %2
+%endmacro
+
+INIT_YMM avx512icl
+cglobal pixel_var_16x16, 2,4,10
+    VAR_ICL_START
+%rep 4
+    movu       xm4, [r0]
+    vinserti128 m4, m4, [r0+r1], 1
+    movu       xm5, [r0+r1*2]
+    vinserti128 m5, m5, [r0+r3], 1
+    lea         r0, [r0+r1*4]
+    VAR_ICL_ACC 4, 8, 0, 2
+    VAR_ICL_ACC 5, 9, 1, 3
+%endrep
+    VAR_ICL_END
+
+cglobal pixel_var_8x16, 2,4,8
+    VAR_ICL_START
+%rep 2
+    VAR_ICL_W8 0, 2
+    lea         r0, [r0+r1*4]
+    VAR_ICL_W8 1, 3
+    lea         r0, [r0+r1*4]
+%endrep
+    VAR_ICL_END
+
+cglobal pixel_var_8x8, 2,4,8
+    VAR_ICL_START
+    VAR_ICL_W8 0, 2
+    lea         r0, [r0+r1*4]
+    VAR_ICL_W8 1, 3
+    VAR_ICL_END
+
+; zmm, four rows a register: assembled, not dispatched (for full width zmm)
+INIT_ZMM avx512icl
+cglobal pixel_var_16x16_zmm, 2,4,10
+    VAR_ICL_START
+%rep 2
+    movu       xm4, [r0]
+    vinserti32x4 m4, m4, [r0+r1], 1
+    vinserti32x4 m4, m4, [r0+r1*2], 2
+    vinserti32x4 m4, m4, [r0+r3], 3
+    lea         r0, [r0+r1*4]
+    movu       xm5, [r0]
+    vinserti32x4 m5, m5, [r0+r1], 1
+    vinserti32x4 m5, m5, [r0+r1*2], 2
+    vinserti32x4 m5, m5, [r0+r3], 3
+    lea         r0, [r0+r1*4]
+    VAR_ICL_ACC 4, 8, 0, 2
+    VAR_ICL_ACC 5, 9, 1, 3
+%endrep
+    VAR_ICL_END
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
 %macro VAR2_END 3
     HADDW   %2, xm1
     movd   r1d, %2
@@ -1477,6 +1830,49 @@ cglobal pixel_var2_8x%1, 5,6,7
 INIT_YMM avx2
 VAR2_8x8_AVX2_HBD  8, 6
 VAR2_8x8_AVX2_HBD 16, 7
+
+; avx512icl: vpdpwssd squares, two accumulators m6 m2
+%macro VAR2_8x8_ICL_HBD 2
+cglobal pixel_var2_8x%1, 5,6,7
+    FIX_STRIDES r1, r3
+    pxor      m5, m5
+    pxor      m6, m6
+    pxor      m2, m2
+    mov      r5d, %1/4
+.loop:
+    mova     xm0, [r0]
+    vinserti128 m0, m0, [r0+r1], 1
+    mova     xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    mova     xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    mova     xm4, [r2]
+    vinserti128 m4, m4, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    psubw     m0, m3
+    psubw     m1, m4
+    paddw     m5, m0
+    paddw     m5, m1
+    vpdpwssd  m6, m0, m0
+    vpdpwssd  m2, m1, m1
+    dec      r5d
+    jg .loop
+    paddd     m6, m2
+    vextracti128 xm0, m5, 1
+    paddw    xm5, xm0
+    vextracti128 xm0, m6, 1
+    paddd    xm6, xm0
+    VAR2_END %2, xm5, xm6
+%endmacro
+
+%if ARCH_X86_64
+INIT_YMM avx512icl
+VAR2_8x8_ICL_HBD  8, 6
+VAR2_8x8_ICL_HBD 16, 7
+%endif
 %endif
 
 %if HIGH_BIT_DEPTH == 0
@@ -1572,6 +1968,51 @@ cglobal pixel_var2_8x%1, 5,6,6
 INIT_YMM avx2
 VAR2_8x8_AVX2  8, 6
 VAR2_8x8_AVX2 16, 7
+
+; avx512icl: vpdpwssd squares, two accumulators m4 m6
+%macro VAR2_8x8_ICL 2
+cglobal pixel_var2_8x%1, 5,6,7
+    pxor      m3, m3
+    pxor      m4, m4
+    pxor      m6, m6
+    mova      m5, [hsub_mul]
+    mov      r5d, %1/4
+.loop:
+    movq     xm0, [r0]
+    movq     xm1, [r2]
+    vinserti128 m0, m0, [r0+r1], 1
+    vinserti128 m1, m1, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    punpcklbw m0, m1
+    movq     xm1, [r0]
+    movq     xm2, [r2]
+    vinserti128 m1, m1, [r0+r1], 1
+    vinserti128 m2, m2, [r2+r3], 1
+    lea       r0, [r0+r1*2]
+    lea       r2, [r2+r3*2]
+    punpcklbw m1, m2
+    pmaddubsw m0, m5
+    pmaddubsw m1, m5
+    paddw     m3, m0
+    paddw     m3, m1
+    vpdpwssd  m4, m0, m0
+    vpdpwssd  m6, m1, m1
+    dec      r5d
+    jg .loop
+    paddd     m4, m6
+    vextracti128 xm0, m3, 1
+    vextracti128 xm1, m4, 1
+    paddw    xm3, xm0
+    paddd    xm4, xm1
+    VAR2_END %2, xm3, xm4
+%endmacro
+
+%if ARCH_X86_64
+INIT_YMM avx512icl
+VAR2_8x8_ICL  8, 6
+VAR2_8x8_ICL 16, 7
+%endif
 
 %endif ; !HIGH_BIT_DEPTH
 
@@ -8273,6 +8714,97 @@ INIT_XMM avx
 SSIM
 
 ;-----------------------------------------------------------------------------
+; avx512icl ssim_4x4x2_core: VNNI. A dword is 4 pixels of a row of one block (8-bit) or
+; 2 (high bit depth); sums s1 m2, s2 m3, ss m4, s12 m5.
+; 8-bit: four rows a ymm; x*1, x*(x ^ 0x80) = x*x - 128*x, a*(b ^ 0x80) = a*b - 128*a.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_YMM avx512icl
+cglobal pixel_ssim_4x4x2_core, 5,8,10
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    pxor        m2, m2
+    pxor        m3, m3
+    pxor        m4, m4
+    pxor        m5, m5
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m6, [pw_1]
+    movu       xm0, [r0]
+    vinserti128 m0, m0, [r0+r1], 1
+    movu       xm1, [r2]
+    vinserti128 m1, m1, [r2+r3], 1
+    movu       xm7, [r0+r1*2]
+    vinserti128 m7, m7, [r0+r5], 1
+    movu       xm8, [r2+r3*2]
+    vinserti128 m8, m8, [r2+r6], 1
+    vpdpwssd    m2, m0, m6
+    vpdpwssd    m3, m1, m6
+    vpdpwssd    m4, m0, m0
+    vpdpwssd    m5, m0, m1
+    vpdpwssd    m2, m7, m6
+    vpdpwssd    m3, m8, m6
+    vpdpwssd    m4, m7, m7
+    vpdpwssd    m5, m7, m8
+    vpdpwssd    m4, m1, m1
+    vpdpwssd    m4, m8, m8
+    ; dwords per row: L L R R
+    punpckldq   m8, m2, m3
+    punpckhdq   m2, m3
+    punpckldq   m9, m4, m5
+    punpckhdq   m4, m5
+    punpcklqdq  m3, m8, m9
+    punpckhqdq  m8, m9
+    paddd       m3, m8            ; s1 s2 ss s12 of L
+    punpcklqdq  m8, m2, m4
+    punpckhqdq  m2, m4
+    paddd       m2, m8            ; of R
+%else
+    vpbroadcastd m6, [pb_1]
+    mov        r7d, 0x80808080
+    vpbroadcastd m7, r7d
+    movq       xm0, [r0]
+    movhps     xm0, [r0+r1]
+    movq       xm8, [r0+r1*2]
+    movhps     xm8, [r0+r5]
+    vinserti128 m0, m0, xm8, 1
+    movq       xm1, [r2]
+    movhps     xm1, [r2+r3]
+    movq       xm8, [r2+r3*2]
+    movhps     xm8, [r2+r6]
+    vinserti128 m1, m1, xm8, 1
+    pxor        m8, m0, m7
+    pxor        m9, m1, m7
+    vpdpbusd    m2, m0, m6
+    vpdpbusd    m3, m1, m6
+    vpdpbusd    m4, m0, m8
+    vpdpbusd    m5, m0, m9
+    vpdpbusd    m4, m1, m9
+    paddd       m8, m2, m3
+    pslld       m8, 7
+    pslld       m9, m2, 7
+    paddd       m4, m8
+    paddd       m5, m9
+    ; dwords per row: L R
+    punpckldq   m8, m2, m3
+    punpckhdq   m2, m3
+    paddd       m2, m8            ; s1 s2 of L, R
+    punpckldq   m8, m4, m5
+    punpckhdq   m4, m5
+    paddd       m4, m8            ; ss s12 of L, R
+    punpcklqdq  m3, m2, m4
+    punpckhqdq  m2, m4
+%endif
+    vextracti128 xm8, m3, 1
+    paddd      xm3, xm8
+    vextracti128 xm8, m2, 1
+    paddd      xm2, xm8
+    movu   [r4+ 0], xm3
+    movu   [r4+16], xm2
+    RET
+%endif
+
+;-----------------------------------------------------------------------------
 ; int pixel_asd8( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 ;-----------------------------------------------------------------------------
 %macro ASD8 0
@@ -8987,6 +9519,177 @@ ads_mvs_ssse3:
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
+; avx512icl ads: no mask buffer. The compare is a k mask, vpcompressw packs the
+; indices of the candidates and a masked store writes exactly that many at mvs+nmv.
+; ADS_N candidates a chunk: words (8-bit), dwords (high bit depth).
+; m4 = indices, m5 = thresh, m6 = ADS_N; r6 = nmv, r9d = -1
+;-----------------------------------------------------------------------------
+%if HIGH_BIT_DEPTH
+    %define ADS_N (mmsize/4)
+%else
+    %define ADS_N (mmsize/2)
+%endif
+
+%macro ADS_ICL_STORE 0 ; k1 = candidates of this chunk
+    cmp        r5d, ADS_N
+    jge %%full
+    kmovd      r7d, k1
+    bzhi       r7d, r7d, r5d
+    kmovd       k1, r7d
+%%full:
+    kmovd      r7d, k1
+    popcnt     r7d, r7d
+    bzhi       r8d, r9d, r7d
+    kmovd       k2, r8d
+%if HIGH_BIT_DEPTH && mmsize == 64
+    vpcompressw ym0 {k1}{z}, ym4
+    vmovdqu16  [r4+r6*2] {k2}, ym0
+%elif HIGH_BIT_DEPTH
+    vpcompressw xm0 {k1}{z}, xm4
+    vmovdqu16  [r4+r6*2] {k2}, xm0
+%else
+    vpcompressw m0 {k1}{z}, m4
+    vmovdqu16  [r4+r6*2] {k2}, m0
+%endif
+    add        r6d, r7d
+    paddw       m4, m6
+%endmacro
+
+; m0 = sum of |dc - sums| of ADS_N candidates (8-bit: words, < 65536)
+%macro ADS_ICL_COST 1 ; size
+%if HIGH_BIT_DEPTH
+    pmovzxwd    m0, [r1]
+    psubd       m0, m7
+    pabsd       m0, m0
+%if %1 == 4
+    pmovzxwd    m1, [r1+16]
+    pmovzxwd    m2, [r1+r2]
+    pmovzxwd    m3, [r1+r2+16]
+    psubd       m1, m8
+    psubd       m2, m9
+    psubd       m3, m10
+    pabsd       m1, m1
+    pabsd       m2, m2
+    pabsd       m3, m3
+    paddd       m0, m1
+    paddd       m2, m3
+    paddd       m0, m2
+%elif %1 == 2
+    pmovzxwd    m1, [r1+r2]
+    psubd       m1, m8
+    pabsd       m1, m1
+    paddd       m0, m1
+%endif
+%else
+    psubw       m0, m7, [r1]
+    pabsw       m0, m0
+%if %1 == 4
+    psubw       m1, m8, [r1+16]
+    psubw       m2, m9, [r1+r2]
+    psubw       m3, m10, [r1+r2+16]
+    pabsw       m1, m1
+    pabsw       m2, m2
+    pabsw       m3, m3
+    paddw       m0, m1
+    paddw       m2, m3
+    paddw       m0, m2
+%elif %1 == 2
+    psubw       m1, m8, [r1+r2]
+    pabsw       m1, m1
+    paddw       m0, m1
+%endif
+%endif
+%endmacro
+
+%macro ADS_ICL_NEXT 1 ; loop label
+    add         r1, ADS_N*2
+    add         r3, ADS_N*2
+    sub        r5d, ADS_N
+    jg %1
+    RET
+%endmacro
+
+%macro ADS_ICL 1-2 ; size, name suffix
+cglobal pixel_ads%1%2, 7,10,11
+    test       r6d, r6d
+    jle .zero
+    movsxd      r2, r2d
+    add         r2, r2
+    movu        m4, [ads_idx_w]
+    mov        r7d, ADS_N
+    vpbroadcastw m6, r7d
+    mov        r9d, -1
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m7, [r0]
+%if %1 >= 2
+    vpbroadcastd m8, [r0+4]
+%endif
+%if %1 == 4
+    vpbroadcastd m9, [r0+8]
+    vpbroadcastd m10, [r0+12]
+%endif
+    vpbroadcastd m5, r6d
+    xor        r6d, r6d
+.loop:
+    ADS_ICL_COST %1
+    pmovzxwd    m1, [r3]
+    paddd       m0, m1
+    vpcmpd      k1, m0, m5, 1
+    ADS_ICL_STORE
+    ADS_ICL_NEXT .loop
+%else
+    vpbroadcastw m7, [r0]
+%if %1 >= 2
+    vpbroadcastw m8, [r0+4]
+%endif
+%if %1 == 4
+    vpbroadcastw m9, [r0+8]
+    vpbroadcastw m10, [r0+12]
+%endif
+    cmp        r6d, 0xffff
+    ja .hi
+    vpbroadcastw m5, r6d
+    xor        r6d, r6d
+.loop:
+    ADS_ICL_COST %1
+    paddusw     m0, [r3]
+    vpcmpuw     k1, m0, m5, 1
+    ADS_ICL_STORE
+    ADS_ICL_NEXT .loop
+.hi: ; thresh > 0xffff: cost < thresh unless the 17-bit cost carries and its low word >= thresh - 0x10000
+    sub        r6d, 0x10000
+    mov        r7d, 0xffff
+    cmp        r6d, r7d
+    cmova      r6d, r7d
+    vpbroadcastw m5, r6d
+    xor        r6d, r6d
+.loop_hi:
+    ADS_ICL_COST %1
+    movu        m1, [r3]
+    paddw       m0, m1
+    vpcmpuw     k1, m0, m5, 1
+    vpcmpuw     k2, m0, m1, 5
+    kord        k1, k1, k2
+    ADS_ICL_STORE
+    ADS_ICL_NEXT .loop_hi
+%endif
+.zero:
+    xor        eax, eax
+    RET
+%endmacro
+
+INIT_YMM avx512icl
+ADS_ICL 4
+ADS_ICL 2
+ADS_ICL 1
+INIT_ZMM avx512icl
+ADS_ICL 4, _zmm
+ADS_ICL 2, _zmm
+ADS_ICL 1, _zmm
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
 ; void pixel_satd_mcc( fenc, int res[2], pixel *src, intptr_t stride,
 ;                      int dx, int dy, int width, int height )
 ; Chroma ME: satd of the u and v mc_chroma predictions against fenc's u
@@ -9377,6 +10080,72 @@ cglobal weightp_dc8x8, 5,5,6
     movu     [r0], m0
     RET
 
+%if ARCH_X86_64
+; avx512icl: rows 0-3 into m0, 4-7 into m1. 8-bit: vpdpbusd of pix1 by 1 and pix2 by -1,
+; four rows of 8 a ymm, dwords r0L r0R r1L r1R | r2L r2R r3L r3R. High bit depth: vpdpwssd
+; of pix1 - pix2 by 1, two rows a ymm, dwords pairs of r0 | r1.
+%macro WEIGHTP_DC_ICL_LOAD 4 ; dst, src, stride, 3*stride
+    movq      xm%1, [%2]
+    movhps    xm%1, [%2+%3]
+    movq       xm5, [%2+%3*2]
+    movhps     xm5, [%2+%4]
+    vinserti128 m%1, m%1, xm5, 1
+%endmacro
+
+%macro WEIGHTP_DC_ICL_HBD 1 ; acc: four rows
+%rep 2
+    movu      xm2, [r1]
+    vinserti128 m2, m2, [r1+r2], 1
+    movu      xm3, [r3]
+    vinserti128 m3, m3, [r3+r4], 1
+    psubw      m2, m3
+    vpdpwssd  m%1, m2, m6
+    lea        r1, [r1+r2*2]
+    lea        r3, [r3+r4*2]
+%endrep
+%endmacro
+
+INIT_YMM avx512icl
+cglobal weightp_dc8x8, 5,7,8
+    FIX_STRIDES r2, r4
+    lea        r5, [r2*3]
+    lea        r6, [r4*3]
+    pxor       m0, m0
+    pxor       m1, m1
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m6, [pw_1]
+    WEIGHTP_DC_ICL_HBD 0
+    WEIGHTP_DC_ICL_HBD 1
+%else
+    vpbroadcastd m6, [pb_1]
+    vpternlogd m7, m7, m7, 0xff
+    WEIGHTP_DC_ICL_LOAD 2, r1, r2, r5
+    WEIGHTP_DC_ICL_LOAD 3, r3, r4, r6
+    lea        r1, [r1+r2*4]
+    lea        r3, [r3+r4*4]
+    vpdpbusd   m0, m2, m6
+    vpdpbusd   m0, m3, m7
+    WEIGHTP_DC_ICL_LOAD 2, r1, r2, r5
+    WEIGHTP_DC_ICL_LOAD 3, r3, r4, r6
+    vpdpbusd   m1, m2, m6
+    vpdpbusd   m1, m3, m7
+%endif
+    vextracti128 xm2, m0, 1
+    paddd     xm0, xm2
+    vextracti128 xm2, m1, 1
+    paddd     xm1, xm2
+%if HIGH_BIT_DEPTH
+    shufps    xm2, xm0, xm1, q2020
+    shufps    xm0, xm1, q3131
+%else
+    punpcklqdq xm2, xm0, xm1
+    punpckhqdq xm0, xm1
+%endif
+    paddd     xm0, xm2
+    movu     [r0], xm0
+    RET
+%endif
+
 ;=============================================================================
 ; x264_weights_analyse chroma block statistics
 ;=============================================================================
@@ -9680,9 +10449,213 @@ cglobal weightp_sum8_nv, 6,8,16
     RET
 %endmacro
 
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; 8-bit weightp_stats8 on bytes: a ymm row is 4 blocks; psadbw block sums, pminub, pmaxub.
+; 8 blocks a pass. Then per block: the qword halves of two registers by shufps (lane 0
+; blocks 0 1 4 5, lane 1 blocks 2 3 6 7) and the dword's bytes by shifts.
+;-----------------------------------------------------------------------------
+%macro WEIGHTP_STATS8_B 0
+cglobal weightp_stats8, 6,8,13
+    pxor       m8, m8
+%if cpuflag(avx512icl)
+    movu       m9, [weightp_mm_perm]
+    movu      m10, [weightp_sum_perm]
+    mov       r6d, 0x55555555
+    kmovd      k1, r6d
+    vpternlogd m12, m12, m12, 0xff ; once: vpternlogd isn't dependency breaking
+%else
+    pcmpeqb    m9, m9
+    psrld      m9, 24
+    pslld     m10, m9, 16
+%endif
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+%if cpuflag(avx512)
+    mova       m2, m12
+    mova       m3, m12
+%else
+    pcmpeqb    m2, m2
+    pcmpeqb    m3, m3
+%endif
+    pxor       m4, m4
+    pxor       m5, m5
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    movu       m6, [r6]
+    movu       m7, [r6+32]
+    psadbw    m11, m6, m8
+    paddd      m0, m11
+    pminub     m2, m6
+    pmaxub     m4, m6
+    psadbw    m11, m7, m8
+    paddd      m1, m11
+    pminub     m3, m7
+    pmaxub     m5, m7
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+    shufps     m6, m2, m3, q2020
+    shufps     m2, m3, q3131
+    pminub     m2, m6
+    shufps     m6, m4, m5, q2020
+    shufps     m4, m5, q3131
+    pmaxub     m4, m6
+    psrld      m6, m2, 16
+    pminub     m2, m6
+    psrlw      m6, m2, 8
+    pminub     m2, m6
+    psrld      m6, m4, 16
+    pmaxub     m4, m6
+    psrlw      m6, m4, 8
+    pmaxub     m4, m6
+%if cpuflag(avx512icl)
+    vpermt2b   m2 {k1}{z}, m9, m4  ; min | max << 16, blocks in order
+    vpermt2d   m0, m10, m1
+%else
+    pand       m2, m9
+    pslld      m4, 16
+    pand       m4, m10
+    por        m2, m4
+    vpermq     m2, m2, q3120
+    shufps     m0, m1, q2020
+    vpermq     m0, m0, q3120
+%endif
+    movu     [r1], m2
+    movu     [r0], m0
+    add        r0, 32
+    add        r1, 32
+    add        r2, 64
+    sub       r4d, 8
+    jg .loopx
+    RET
+%endmacro
+%endif
+
 INIT_YMM avx2
 WEIGHTP_SUM8 0
 WEIGHTP_SUM8 1
+%if HIGH_BIT_DEPTH
 WEIGHTP_STATS8
+%else
+WEIGHTP_STATS8_B
+%endif
 WEIGHTP_SUM8_NV
+
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avx512icl
+WEIGHTP_STATS8_B
+
+; avx512icl 8-bit weightp_sum8(_clip): on words, x * scale + round fits (scale 0-127):
+; pmullw, paddw, psraw [, + offset, clip], then vpdpwssd by 1 into the block's dword pairs.
+; As the AVX2 version otherwise: one block a lane, 4 registers a pass.
+; m5 = pw_1, m6 = scale, m7 = round, xm8 = denom, m10 = block order;
+; _clip: m9 = offset, m11 = 255, m12 = 0.
+%macro WEIGHTP_SUM8_ICL_ROW 3 ; acc, offset, clip
+    pmovzxbw   m4, [r7+%2]
+    pmullw     m4, m6
+    paddw      m4, m7
+    psraw      m4, xm8
+%if %3
+    paddw      m4, m9
+    pmaxsw     m4, m12
+    pminsw     m4, m11
+%endif
+    vpdpwssd   %1, m4, m5
+%endmacro
+
+%macro WEIGHTP_SUM8_ICL 1 ; clip
+%if %1
+cglobal weightp_sum8_clip, 8,9,14
+    vpbroadcastw m9, r7d
+    mov       r7d, 255
+    vpbroadcastw m11, r7d
+    pxor      m12, m12
+%else
+cglobal weightp_sum8, 7,9,14
+%endif
+    vpbroadcastw m6, r5d
+    xor       r7d, r7d
+    bts       r7d, r6d
+    shr       r7d, 1
+    vpbroadcastw m7, r7d
+    movd      xm8, r6d
+    vpbroadcastd m5, [pw_1]
+    WEIGHTP_PERM m10
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    mov        r7, r1
+    mov       r8d, r4d
+.loopy:
+    WEIGHTP_SUM8_ICL_ROW m0,  0, %1
+    WEIGHTP_SUM8_ICL_ROW m1, 16, %1
+    WEIGHTP_SUM8_ICL_ROW m2, 32, %1
+    WEIGHTP_SUM8_ICL_ROW m3, 48, %1
+    add        r7, r2
+    dec       r8d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m4, m13
+    vpermd     m0, m10, m0
+    movu     [r0], m0
+    add        r0, 32
+    add        r1, 64
+    sub       r3d, 8
+    jg .loopx
+    RET
+%endmacro
+
+WEIGHTP_SUM8_ICL 0
+WEIGHTP_SUM8_ICL 1
+
+; avx512icl 8-bit: vpdpbusd of each row by 1,0,1,0 (u) and 0,1,0,1 (v) bytes, no unpacking.
+; A ymm is two blocks, 8 a pass; u in m0-m3, v in m4-m7, then as weightp_sum8.
+%macro WEIGHTP_NV_ICL_ROW 3 ; u acc, v acc, offset
+    movu       m8, [r6+%3]
+    vpdpbusd  m%1, m8, m10
+    vpdpbusd  m%2, m8, m11
+%endmacro
+
+INIT_YMM avx512icl
+cglobal weightp_sum8_nv, 6,8,13
+    mov       r6d, 0x00010001
+    vpbroadcastd m10, r6d
+    pslld     m11, m10, 8
+    WEIGHTP_PERM m9
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    pxor       m4, m4
+    pxor       m5, m5
+    pxor       m6, m6
+    pxor       m7, m7
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    WEIGHTP_NV_ICL_ROW 0, 4, 0
+    WEIGHTP_NV_ICL_ROW 1, 5, 32
+    WEIGHTP_NV_ICL_ROW 2, 6, 64
+    WEIGHTP_NV_ICL_ROW 3, 7, 96
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m8, m12
+    HADD4D     m4, m5, m6, m7, m8, m12
+    vpermd     m0, m9, m0
+    vpermd     m4, m9, m4
+    movu     [r0], m0
+    movu     [r1], m4
+    add        r0, 32
+    add        r1, 32
+    add        r2, 128
+    sub       r4d, 8
+    jg .loopx
+    RET
+%endif
 %endif ; ARCH_X86_64

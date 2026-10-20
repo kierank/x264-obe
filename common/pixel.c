@@ -1268,6 +1268,22 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT2( sad, _avx512 );
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        INIT_ADS( _avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512icl;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
+        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
+        INIT2( ssd, _avx512icl );
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
+        pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1621,13 +1637,28 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
     }
 
-    /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
-     * (rack01 ablation, obed low latency), although most win in checkasm.
-     * Exception: the AVX512ICL intra sad_x3 (only used at subme <= 1). */
+    /* No 8-bit AVX-512 (avx512 level) pixel functions: on Zen 4 they made real 8-bit encodes
+     * ~1.5% slower (rack01 ablation, obed low latency), although most win in checkasm.
+     * The avx512icl ones below are ymm (VNNI, VBMI2) and need their own in situ A/B;
+     * intra sad_x3 is only used at subme <= 1, ads only by --me esa/tesa. */
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512icl;
+        INIT_ADS( _avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx512icl;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
+        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
+        INIT2( ssd, _avx512icl );
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
+        pixf->weightp_stats8 = x264_weightp_stats8_avx512icl;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
+        pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
+        pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
 #endif
     }
 #endif //HAVE_MMX
