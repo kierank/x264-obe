@@ -8074,16 +8074,18 @@ ALIGN 16
 SA8D_X9_8BIT
 
 ;-----------------------------------------------------------------------------
-; avx512icl 8-bit satd and satd_avg2 (ymm16-31), the avx2 layouts with:
+; avx512icl 8-bit satd family, the avx2 layouts with:
 ; - HADAMARD 1, max in 3 uops: vpblendmw (k1 = 0x5555) and vpshldd give the
 ;   pairs of TRANS d unord with the two words of each dword swapped, so the
 ;   sum is unchanged;
 ; - 8 wide row pairs [k k | k+4 k+4] from a broadcast and a merge-masked
 ;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
+; To the end of the block m0-m15 stay on ymm0-15 (x86inc's avx512 permutation
+; undone): only the opmask/VBMI2 instructions need EVEX, the rest keep their
+; shorter VEX encodings, and the VEX-only phaddw/phminposuw of lowres and x9
+; assemble. vzeroupper on return and WIN64 xmm6-15 saves as for avx2. VNNI
+; here would need {evex} (nasm picks the VEX AVX-VNNI form on ymm0-15).
 ;-----------------------------------------------------------------------------
-; every function from here to the end of the block keeps m0-m15 on ymm0-15, so
-; all but the opmask/VBMI2 instructions keep their (shorter) VEX encodings;
-; vzeroupper on return and WIN64 saves of xmm6-15 as for avx2
 %macro ICL_LOW_RESET 0
     INIT_YMM avx512icl
     AVX512_MM_PERMUTATION
