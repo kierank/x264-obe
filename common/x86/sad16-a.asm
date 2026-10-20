@@ -1700,6 +1700,52 @@ cglobal intra_sad_x3_4x4, 3,4,8
     pextrd     [r2+8], xm3, 2
     RET
 
+;-----------------------------------------------------------------------------
+; int pixel_vsad( uint16_t *src, intptr_t stride, int height )
+; R = { row 2k | row 2k+1 } (ymm load + k-merged vbroadcasti64x4), valignq
+; with the next R gives { row 2k+1 | row 2k+2 }: two row differences an op.
+; Word sums at most 15*1023 a lane (height <= 32), 31*1023 after the half fold
+; and the last row difference, so pmaddwd is exact.
+;-----------------------------------------------------------------------------
+cglobal pixel_vsad, 3,4,4
+    add            r1, r1
+    mov           r3d, 0xf0
+    kmovb          k1, r3d
+    movu          ym1, [r0]
+    vbroadcasti64x4 m1 {k1}, [r0+r1]
+    lea            r0, [r0+2*r1]
+    pxor           m0, m0
+    sub           r2d, 2
+    je .end
+.loop:
+    movu          ym2, [r0]
+    vbroadcasti64x4 m2 {k1}, [r0+r1]
+    lea            r0, [r0+2*r1]
+    valignq        m3, m2, m1, 4
+    psubw          m3, m1
+    pabsw          m3, m3
+    paddw          m0, m3
+    mova           m1, m2
+    sub           r2d, 2
+    jg .loop
+.end:
+    vextracti64x4 ym2, m1, 1
+    psubw         ym2, ym1
+    pabsw         ym2, ym2
+    vextracti64x4 ym3, m0, 1
+    paddw         ym0, ym3
+    paddw         ym0, ym2
+    vpbroadcastd  ym3, [pw_1]
+    pmaddwd       ym0, ym3
+    vextracti128  xm3, ym0, 1
+    paddd         xm0, xm3
+    pshufd        xm3, xm0, q1032
+    paddd         xm0, xm3
+    pshufd        xm3, xm0, q2301
+    paddd         xm0, xm3
+    movd          eax, xm0
+    RET
+
 INIT_YMM avx2
 %endif
 
