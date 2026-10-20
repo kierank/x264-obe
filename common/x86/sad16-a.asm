@@ -2165,6 +2165,7 @@ cglobal pixel_sad_avg2_8x%1, 4,7,4
 
 INIT_ZMM avx512
 SAD_AVG2_HBD8_K4 16
+SAD_AVG2_HBD8_K4  8
 
 INIT_YMM avx2
 %endif
