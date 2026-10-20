@@ -426,6 +426,7 @@ void x264_predict_16x16_init_mmx( int cpu, x264_predict_t pf[7] )
         pf[I_PRED_16x16_DC]      = x264_predict_16x16_dc_avx512icl;
         pf[I_PRED_16x16_DC_TOP]  = x264_predict_16x16_dc_top_avx512icl;
         pf[I_PRED_16x16_DC_LEFT] = x264_predict_16x16_dc_left_avx512icl;
+        pf[I_PRED_16x16_DC_128]  = x264_predict_16x16_dc_128_avx512icl;
 #endif
     }
 }

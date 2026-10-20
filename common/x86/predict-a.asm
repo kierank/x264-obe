@@ -2970,6 +2970,15 @@ cglobal predict_16x16_dc_left_core, 2,2
     STORE16_PAIRS_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_128( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_dc_128, 1,2
+    mov         r1d, 0x80808080
+    vpbroadcastd m0, r1d
+    STORE16_PAIRS_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE16_ROWS_ICL 1 ; ymm
 %assign %%y 0
@@ -3051,6 +3060,20 @@ cglobal predict_16x16_dc_left_core, 2,2
     STORE16_ROWS_ICL ym0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_128( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_dc_128, 1,2
+    mov         r1d, 1 << (BIT_DEPTH-1)
+    vpbroadcastw m0, r1d
+    movu         m7, [pq_rowpair_icl]
+%assign Y 0
+%rep 8
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+Y*2*FDEC_STRIDEB]{k1}, m0
+%assign Y Y+1
+%endrep
+    RET
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
