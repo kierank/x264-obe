@@ -11697,5 +11697,51 @@ cglobal weightp_sum8, 7,9,11
 
 WEIGHTP_SUM8_HBD 0
 WEIGHTP_SUM8_HBD 1
+
+; high bit depth avx512icl weightp_sum8_nv: a block (8 u v pairs) is a ymm row; vpdpwssd
+; straight from memory by { 1, 0 } (u) and { 0, 1 } (v), 4 blocks a pass, u in m0-m3,
+; v in m4-m7, no word sums to split. m10 = { 1, 0 }, m11 = { 0, 1 }.
+INIT_YMM avx512icl
+cglobal weightp_sum8_nv, 6,8,12
+    FIX_STRIDES r3
+    vpbroadcastd m10, [pd_1]
+    pslld      m11, m10, 16
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    pxor       m4, m4
+    pxor       m5, m5
+    pxor       m6, m6
+    pxor       m7, m7
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    vpdpwssd   m0, m10, [r6]
+    vpdpwssd   m4, m11, [r6]
+    vpdpwssd   m1, m10, [r6+32]
+    vpdpwssd   m5, m11, [r6+32]
+    vpdpwssd   m2, m10, [r6+64]
+    vpdpwssd   m6, m11, [r6+64]
+    vpdpwssd   m3, m10, [r6+96]
+    vpdpwssd   m7, m11, [r6+96]
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m8, m9
+    HADD4D     m4, m5, m6, m7, m8, m9
+    vextracti128 xm8, m0, 1
+    paddd      xm0, xm8
+    vextracti128 xm8, m4, 1
+    paddd      xm4, xm8
+    movu     [r0], xm0
+    movu     [r1], xm4
+    add        r0, 16
+    add        r1, 16
+    add        r2, 128
+    sub       r4d, 4
+    jg .loopx
+    RET
 %endif
 %endif ; ARCH_X86_64
