@@ -150,6 +150,8 @@ void x264_deblock_h_chroma_avx512icl( pixel *pix, intptr_t stride, int alpha, in
 void x264_deblock_h_chroma_mbaff_avx512icl( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_v_chroma_intra_avx512icl x264_template(deblock_v_chroma_intra_avx512icl)
 void x264_deblock_v_chroma_intra_avx512icl( pixel *pix, intptr_t stride, int alpha, int beta );
+#define x264_deblock_h_chroma_intra_avx512icl x264_template(deblock_h_chroma_intra_avx512icl)
+void x264_deblock_h_chroma_intra_avx512icl( pixel *pix, intptr_t stride, int alpha, int beta );
 #define x264_deblock_h_chroma_422_avx512icl x264_template(deblock_h_chroma_422_avx512icl)
 void x264_deblock_h_chroma_422_avx512icl( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_h_chroma_422_intra_avx512icl x264_template(deblock_h_chroma_422_intra_avx512icl)

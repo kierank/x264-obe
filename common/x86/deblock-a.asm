@@ -4506,6 +4506,15 @@ cglobal deblock_v_chroma_intra, 4,5,9
     mova   [r4+r1], xm1
     mova      [r0], xm2
     RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_intra, 4,8,9
+    CHROMA_H_LOAD_ICL8 8
+    CHROMA_INTRA_ICL8 x
+    CHROMA_H_STORE_ICL8 8
+    RET
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
