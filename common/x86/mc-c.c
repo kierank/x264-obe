@@ -34,6 +34,8 @@
 #define x264_frame_init_lowres_core_avx x264_template(frame_init_lowres_core_avx)
 #define x264_frame_init_lowres_core_avx2 x264_template(frame_init_lowres_core_avx2)
 #define x264_frame_init_lowres_core_avx512icl x264_template(frame_init_lowres_core_avx512icl)
+#define x264_frame_init_lowres_core_zmm_avx512icl x264_template(frame_init_lowres_core_zmm_avx512icl)
+#define x264_frame_init_lowres_core8_zmm_avx512icl x264_template(frame_init_lowres_core8_zmm_avx512icl)
 #define x264_frame_init_lowres_core8_ssse3 x264_template(frame_init_lowres_core8_ssse3)
 #define x264_frame_init_lowres_core8_avx2 x264_template(frame_init_lowres_core8_avx2)
 #define x264_frame_init_lowres_core_cache32_mmx2 x264_template(frame_init_lowres_core_cache32_mmx2)
@@ -614,6 +616,7 @@ LOWRES(avx)
 LOWRES(xop)
 LOWRES(avx2)
 LOWRES(avx512icl)
+LOWRES(zmm_avx512icl)
 void x264_frame_init_lowres_core8_ssse3( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                          intptr_t src_stride, intptr_t dst_stride, int width, int height );
 void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
@@ -621,6 +624,8 @@ void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dst
 #define x264_frame_init_lowres_core8_avx512icl x264_template(frame_init_lowres_core8_avx512icl)
 void x264_frame_init_lowres_core8_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                              intptr_t src_stride, intptr_t dst_stride, int width, int height );
+void x264_frame_init_lowres_core8_zmm_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+                                                 intptr_t src_stride, intptr_t dst_stride, int width, int height );
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
@@ -1492,8 +1497,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
-        pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
-        pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx512icl;
+        pf->frame_init_lowres_core = x264_frame_init_lowres_core_zmm_avx512icl;
+        pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_zmm_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
@@ -1682,7 +1687,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
-        pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
+        pf->frame_init_lowres_core = x264_frame_init_lowres_core_zmm_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->hpel_filter = x264_hpel_filter_avx512icl;

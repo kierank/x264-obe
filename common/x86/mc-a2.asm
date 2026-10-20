@@ -111,6 +111,41 @@ hpel_c_icl:    dw 1,-5, 20,20, -5,1, 64,-320, 1280,1280, -320,64
 hpel_h_icl:    db 1,-5,20,20, -5,1,0,0
 hpel_h_tr_icl: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 %endif
+; avx512icl zmm lowres: even/odd bytes and words of two zmm sources (loaded with movu)
+%assign lr_i 0
+pb_even64_icl:
+%rep 64
+    db 2*lr_i
+    %assign lr_i lr_i+1
+%endrep
+%assign lr_i 0
+pb_odd64_icl:
+%rep 64
+    db 2*lr_i+1
+    %assign lr_i lr_i+1
+%endrep
+%if HIGH_BIT_DEPTH
+%assign lr_i 0
+pw_even64_icl:
+%rep 32
+    dw 2*lr_i
+    %assign lr_i lr_i+1
+%endrep
+%assign lr_i 0
+pw_odd64_icl:
+%rep 32
+    dw 2*lr_i+1
+    %assign lr_i lr_i+1
+%endrep
+; lowres8 zmm: packuswb lanes (v0 words 8L..8L+7, then v1's) -> 32 even | 32 odd bytes
+%assign lr_i 0
+pb_lowres8_64_icl:
+%rep 64
+    %assign lr_o (lr_i & 31) * 2 + (lr_i >> 5)  ; source word of output byte
+    db (lr_o >> 5) * 8 + ((lr_o & 31) >> 3) * 16 + (lr_o & 7)
+    %assign lr_i lr_i+1
+%endrep
+%endif
 
 SECTION .text
 
@@ -3111,6 +3146,133 @@ FRAME_INIT_LOWRES
 %if ARCH_X86_64
 INIT_YMM avx512icl
 FRAME_INIT_LOWRES
+
+;-----------------------------------------------------------------------------
+; frame_init_lowres_core_zmm: the avx512icl kernel at zmm, left to right, 64 bytes of
+; each plane per iteration. The row is written up to the width rounded up to 32
+; bytes, as the ymm kernels write it: a 32-byte tail is a masked store, and its loads
+; cover only the first half (the second half's registers repeat the first).
+;-----------------------------------------------------------------------------
+%macro LOWRES_ZMM_BODY 1 ; tail
+%if HIGH_BIT_DEPTH
+    movu          m0, [r10+r9*2]
+    movu          m2, [r10+r9*2+2]
+    pavgw         m4, m0, [r0+r9*2]
+    pavgw         m6, m2, [r0+r9*2+2]
+    pavgw         m4, m6                ; rows 0, 1
+    pavgw         m0, [r11+r9*2]
+    pavgw         m2, [r11+r9*2+2]
+    pavgw         m0, m2                ; rows 1, 2
+%if %1
+    mova          m5, m4
+    mova          m1, m0
+%else
+    movu          m1, [r10+r9*2+mmsize]
+    movu          m3, [r10+r9*2+mmsize+2]
+    pavgw         m5, m1, [r0+r9*2+mmsize]
+    pavgw         m8, m3, [r0+r9*2+mmsize+2]
+    pavgw         m5, m8
+    pavgw         m1, [r11+r9*2+mmsize]
+    pavgw         m3, [r11+r9*2+mmsize+2]
+    pavgw         m1, m3
+%endif
+    mova          m2, m7
+    vpermi2w      m2, m4, m5
+    vpermt2w      m4, m9, m5
+    mova          m3, m7
+    vpermi2w      m3, m0, m1
+    vpermt2w      m0, m9, m1
+%else
+    movu          m1, [r10+r9*2]
+    pavgb         m0, m1, [r0+r9*2]
+    movu          m3, [r10+r9*2+1]
+    pavgb         m2, m3, [r0+r9*2+1]
+    pavgb         m1, [r11+r9*2]
+    pavgb         m3, [r11+r9*2+1]
+    pavgb         m0, m2                ; rows 0, 1
+    pavgb         m1, m3                ; rows 1, 2
+%if %1
+    mova          m4, m0
+    mova          m5, m1
+%else
+    movu          m5, [r10+r9*2+mmsize]
+    pavgb         m4, m5, [r0+r9*2+mmsize]
+    movu          m3, [r10+r9*2+mmsize+1]
+    pavgb         m2, m3, [r0+r9*2+mmsize+1]
+    pavgb         m5, [r11+r9*2+mmsize]
+    pavgb         m3, [r11+r9*2+mmsize+1]
+    pavgb         m4, m2
+    pavgb         m5, m3
+%endif
+    mova          m2, m7
+    vpermi2b      m2, m0, m4            ; dst0
+    vpermt2b      m0, m6, m4            ; dsth
+    mova          m3, m7
+    vpermi2b      m3, m1, m5            ; dstv
+    vpermt2b      m1, m6, m5            ; dstc
+    %define lr_h m0
+    %define lr_c m1
+%endif
+%if HIGH_BIT_DEPTH
+    %define lr_h m4
+    %define lr_c m0
+%endif
+%if %1
+    vmovdqu8 [r1+r9] {k1}, m2
+    vmovdqu8 [r2+r9] {k1}, lr_h
+    vmovdqu8 [r3+r9] {k1}, m3
+    vmovdqu8 [r4+r9] {k1}, lr_c
+%else
+    movu     [r1+r9], m2
+    movu     [r2+r9], lr_h
+    movu     [r3+r9], m3
+    movu     [r4+r9], lr_c
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal frame_init_lowres_core_zmm, 6,13,10
+    mov          r6d, r6m
+    mov          r7d, r7m
+%if HIGH_BIT_DEPTH
+    FIX_STRIDES   r5
+    add          r6d, r6d
+    add          r7d, r7d
+    movu          m7, [pw_even64_icl]
+    movu          m9, [pw_odd64_icl]
+%else
+    movu          m7, [pb_even64_icl]
+    movu          m6, [pb_odd64_icl]
+%endif
+    add          r7d, 31
+    and          r7d, ~31               ; bytes of each output row
+    mov          r8d, 0xffffffff
+    kmovd         k1, r8d
+    mov          r8d, r8m
+.vloop:
+    lea          r10, [r0+r5]
+    lea          r11, [r0+r5*2]
+    xor          r9d, r9d
+.hloop:
+    lea         r12d, [r9+mmsize]
+    cmp         r12d, r7d
+    jg .tail
+    LOWRES_ZMM_BODY 0
+    add          r9d, mmsize
+    cmp          r9d, r7d
+    jl .hloop
+    jmp .next
+.tail:
+    LOWRES_ZMM_BODY 1
+.next:
+    lea           r0, [r0+r5*2]
+    add           r1, r6
+    add           r2, r6
+    add           r3, r6
+    add           r4, r6
+    dec          r8d
+    jg .vloop
+    RET
 %endif
 
 ;-----------------------------------------------------------------------------
@@ -3555,4 +3717,90 @@ INIT_YMM avx2
 FRAME_INIT_LOWRES8
 INIT_YMM avx512icl
 FRAME_INIT_LOWRES8
+
+; frame_init_lowres_core8_zmm: 32 pixels of each plane per iteration; the row is
+; written up to the width rounded up to 16, as the ymm kernels write it: a 16-pixel
+; tail loads only the first half and is a masked store
+%macro LOWRES8_ZMM_BODY 1 ; tail
+    movu          m0, [r9+r11*4]
+    movu          m2, [r9+r11*4+2]
+    pavgw         m4, m0, [r0+r11*4]
+    pavgw         m6, m2, [r0+r11*4+2]
+    pavgw         m4, m6                ; rows 0, 1
+    pavgw         m6, m0, [r10+r11*4]
+    pavgw         m0, m2, [r10+r11*4+2]
+    pavgw         m6, m0                ; rows 1, 2
+%if %1
+    mova          m5, m4
+    mova          m8, m6
+%else
+    movu          m1, [r9+r11*4+mmsize]
+    movu          m3, [r9+r11*4+mmsize+2]
+    pavgw         m5, m1, [r0+r11*4+mmsize]
+    pavgw         m8, m3, [r0+r11*4+mmsize+2]
+    pavgw         m5, m8
+    pavgw         m8, m1, [r10+r11*4+mmsize]
+    pavgw         m1, m3, [r10+r11*4+mmsize+2]
+    pavgw         m8, m1
+%endif
+    paddw         m4, m7
+    paddw         m5, m7
+    paddw         m6, m7
+    paddw         m8, m7
+    psrlw         m4, 2
+    psrlw         m5, 2
+    psrlw         m6, 2
+    psrlw         m8, 2
+    packuswb      m4, m5                ; 256 saturates to 255
+    packuswb      m6, m8
+    vpermb        m4, m9, m4            ; dst0 | dsth
+    vpermb        m6, m9, m6            ; dstv | dstc
+    vextracti32x8 ym5, m4, 1
+    vextracti32x8 ym8, m6, 1
+%if %1
+    vmovdqu8 [r1+r11] {k1}, xm4
+    vmovdqu8 [r2+r11] {k1}, xm5
+    vmovdqu8 [r3+r11] {k1}, xm6
+    vmovdqu8 [r4+r11] {k1}, xm8
+%else
+    movu     [r1+r11], ym4
+    movu     [r2+r11], ym5
+    movu     [r3+r11], ym6
+    movu     [r4+r11], ym8
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal frame_init_lowres_core8_zmm, 9,13,10
+    FIX_STRIDES   r5
+    vpbroadcastd  m7, [pw_2]
+    movu          m9, [pb_lowres8_64_icl]
+    mov         r12d, 0xffff
+    kmovd         k1, r12d
+    add          r7d, 15
+    and          r7d, ~15
+.vloop:
+    lea           r9, [r0+r5]
+    lea          r10, [r0+r5*2]
+    xor         r11d, r11d
+.hloop:
+    lea         r12d, [r11+mmsize/2]
+    cmp         r12d, r7d
+    jg .tail
+    LOWRES8_ZMM_BODY 0
+    add          r11, mmsize/2
+    cmp         r11d, r7d
+    jl .hloop
+    jmp .next
+.tail:
+    LOWRES8_ZMM_BODY 1
+.next:
+    lea           r0, [r0+r5*2]
+    add           r1, r6
+    add           r2, r6
+    add           r3, r6
+    add           r4, r6
+    dec          r8d
+    jg .vloop
+    RET
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
