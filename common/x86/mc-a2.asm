@@ -1839,6 +1839,140 @@ cglobal load_deinterleave_chroma_fdec, 4,4
     RET
 %endif ; HIGH_BIT_DEPTH
 
+;-----------------------------------------------------------------------------
+; avx512icl: each (de)interleave is one two-source byte/word permute
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_YMM avx512icl
+; plane_copy_interleave_core: as the sse2/avx version, but dst and i_dst*sizeof(pixel)
+; must also be multiples of 32. The pad writes the same 16 bytes as those.
+cglobal plane_copy_interleave_core, 6,9
+    mov   r6d, r6m
+%if HIGH_BIT_DEPTH
+    FIX_STRIDES r1, r3, r5, r6d
+    movifnidn r1mp, r1
+    movifnidn r3mp, r3
+    mov  r6m, r6d
+    mova   m2, [pw_ilv_icl]
+%else
+    mova   m2, [pb_ilv_icl]
+%endif
+    lea    r0, [r0+r6*2]
+    add    r2,  r6
+    add    r4,  r6
+    DECLARE_REG_TMP 7,8
+    mov  t1, r1
+    shr  t1, SIZEOF_PIXEL
+    sub  t1, r6
+    mov  t0d, r7m
+.loopy:
+    mov    r6d, r6m
+    neg    r6
+.prefetch:
+    prefetchnta [r2+r6]
+    prefetchnta [r4+r6]
+    add    r6, 64
+    jl .prefetch
+    mov    r6d, r6m
+    neg    r6
+.loopx:
+    movu      xm0, [r2+r6]
+    movu      xm1, [r4+r6]
+%if HIGH_BIT_DEPTH
+    vpermt2w   m0, m2, m1
+    movu      xm1, [r2+r6+16]
+    movu      xm3, [r4+r6+16]
+    vpermt2w   m1, m2, m3
+    movntdq [r0+r6*2], m0
+    movntdq [r0+r6*2+32], m1
+%else
+    vpermt2b   m0, m2, m1
+    movntdq [r0+r6*2], m0
+%endif
+    add    r6, 16*SIZEOF_PIXEL
+    jl .loopx
+%if HIGH_BIT_DEPTH == 0
+    vextracti32x4 xm1, m0, 1
+%endif
+.pad:
+%assign n 0
+%rep SIZEOF_PIXEL
+    movntdq [r0+r6*2+(n+ 0)], xm1
+    movntdq [r0+r6*2+(n+16)], xm1
+    %assign n n+32
+%endrep
+    add    r6, 16*SIZEOF_PIXEL
+    cmp    r6, t1
+    jl .pad
+    add    r0, r1mp
+    add    r2, r3mp
+    add    r4, r5
+    dec    t0d
+    jg .loopy
+    sfence
+    RET
+
+cglobal plane_copy_deinterleave, 6,7
+    mov    r6d, r6m
+    FIX_STRIDES r1, r3, r5, r6d
+%if HIGH_BIT_DEPTH
+    mov    r6m, r6d
+    mova   m2, [pw_even_icl]
+    mova   m3, [pw_odd_icl]
+%else
+    mova   m2, [pb_deint_icl]
+%endif
+    add    r0,  r6
+    add    r2,  r6
+    lea    r4, [r4+r6*2]
+.loopy:
+    mov    r6d, r6m
+    neg    r6
+.loopx:
+%if HIGH_BIT_DEPTH
+    movu      m0, [r4+r6*2]
+    movu      m1, [r4+r6*2+32]
+    mova      m4, m2
+    vpermi2w  m4, m0, m1
+    vpermt2w  m0, m3, m1
+    movu [r0+r6], m4
+    movu [r2+r6], m0
+%else
+    vpermb    m0, m2, [r4+r6*2]
+    movu [r0+r6], xm0
+    vextracti32x4 [r2+r6], m0, 1
+%endif
+    add    r6, 16*SIZEOF_PIXEL
+    jl .loopx
+    add    r0, r1
+    add    r2, r3
+    add    r4, r5
+    dec dword r7m
+    jg .loopy
+    RET
+
+%if HIGH_BIT_DEPTH
+cglobal store_interleave_chroma, 5,5
+    FIX_STRIDES r1
+    mova      m2, [pw_ilv_icl]
+.loop:
+    mova     xm0, [r2]
+    mova     xm1, [r3]
+    vpermt2w  m0, m2, m1
+    mova     xm1, [r2+FDEC_STRIDEB]
+    mova     xm3, [r3+FDEC_STRIDEB]
+    vpermt2w  m1, m2, m3
+    movu    [r0], m0
+    movu [r0+r1], m1
+    add       r2, FDEC_STRIDEB*2
+    add       r3, FDEC_STRIDEB*2
+    lea       r0, [r0+r1*2]
+    sub      r4d, 2
+    jg .loop
+    RET
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
 %macro PLANE_DEINTERLEAVE_RGB_CORE 9 ; pw, i_dsta, i_dstb, i_dstc, i_src, w, h, tmp1, tmp2
 %if cpuflag(ssse3)
     mova        m3, [deinterleave_rgb_shuf+(%1-3)*16]

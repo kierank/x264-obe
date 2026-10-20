@@ -478,6 +478,16 @@ void x264_plane_copy_deinterleave_v210_avx2 ( uint16_t *dstu, intptr_t i_dstu,
 void x264_plane_copy_deinterleave_v210_avx512( uint16_t *dstu, intptr_t i_dstu,
                                                uint16_t *dstv, intptr_t i_dstv,
                                                uint32_t *src,  intptr_t i_src, int w, int h );
+#define x264_plane_copy_interleave_core_avx512icl x264_template(plane_copy_interleave_core_avx512icl)
+void x264_plane_copy_interleave_core_avx512icl( pixel *dst,  intptr_t i_dst,
+                                                pixel *srcu, intptr_t i_srcu,
+                                                pixel *srcv, intptr_t i_srcv, int w, int h );
+#define x264_plane_copy_deinterleave_avx512icl x264_template(plane_copy_deinterleave_avx512icl)
+void x264_plane_copy_deinterleave_avx512icl( pixel *dstu, intptr_t i_dstu,
+                                             pixel *dstv, intptr_t i_dstv,
+                                             pixel *src,  intptr_t i_src, int w, int h );
+#define x264_store_interleave_chroma_avx512icl x264_template(store_interleave_chroma_avx512icl)
+void x264_store_interleave_chroma_avx512icl( pixel *dst, intptr_t i_dst, pixel *srcu, pixel *srcv, int height );
 void x264_store_interleave_chroma_mmx2( pixel *dst, intptr_t i_dst, pixel *srcu, pixel *srcv, int height );
 void x264_store_interleave_chroma_sse2( pixel *dst, intptr_t i_dst, pixel *srcu, pixel *srcv, int height );
 void x264_store_interleave_chroma_avx ( pixel *dst, intptr_t i_dst, pixel *srcu, pixel *srcv, int height );
@@ -1096,6 +1106,23 @@ PLANE_INTERLEAVE(sse2)
 #if HIGH_BIT_DEPTH
 PLANE_INTERLEAVE(avx)
 #endif
+#if ARCH_X86_64
+PLANE_INTERLEAVE(avx512icl)
+/* the avx512icl core's ymm non-temporal stores need 32-byte aligned rows */
+static void plane_copy_interleave_icl( pixel *dst,  intptr_t i_dst,
+                                       pixel *srcu, intptr_t i_srcu,
+                                       pixel *srcv, intptr_t i_srcv, int w, int h )
+{
+    if( ((intptr_t)dst | (i_dst * (intptr_t)sizeof(pixel))) & 31 )
+#if HIGH_BIT_DEPTH
+        x264_plane_copy_interleave_avx( dst, i_dst, srcu, i_srcu, srcv, i_srcv, w, h );
+#else
+        x264_plane_copy_interleave_sse2( dst, i_dst, srcu, i_srcu, srcv, i_srcv, w, h );
+#endif
+    else
+        x264_plane_copy_interleave_avx512icl( dst, i_dst, srcu, i_srcu, srcv, i_srcv, w, h );
+}
+#endif
 
 #if HAVE_X86_INLINE_ASM
 #define CLIP_ADD(s,x)\
@@ -1392,6 +1419,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
         pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx512icl;
+        pf->plane_copy_interleave = plane_copy_interleave_icl;
+        pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
+        pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
 #endif
     }
 #else // !HIGH_BIT_DEPTH
@@ -1576,6 +1606,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     {
 #if ARCH_X86_64
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
+        pf->plane_copy_interleave = plane_copy_interleave_icl;
+        pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
