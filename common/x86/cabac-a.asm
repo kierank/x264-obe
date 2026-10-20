@@ -875,9 +875,43 @@ CABAC bmi2
 %ifndef RD4_ICL_NODECTX
     %define RD4_ICL_NODECTX 1
 %endif
+; build-time A/B: avx512icl 4x4 rd level bins without a branch on abs > 1 (needs NODECTX)
+%ifndef RD4_ICL_BRANCHLESS
+    %define RD4_ICL_BRANCHLESS 1
+%endif
 
 ; one level of the avx512icl 4x4 rd: r1d = abs, r6 = position, contexts at ctx1m/ctxg1m
 %macro COEFF_ABS_LEVEL_GT1_ICL 0
+%if RD4_ICL_BRANCHLESS
+; the first bin and the unary prefix without a branch on abs > 1; r2d = bin
+    movzx   lctxd, byte [ctx1m+r6]
+    movzx   lt0d, byte [r8+lctx]
+    xor     r2d, r2d
+    cmp     r1d, 1
+    setg    r2b
+    lea     lt1d, [lt0*2+r2]
+    movzx   lt1d, byte [cabac_transition+lt1 GLOBAL]
+    mov [r8+lctx], lt1b
+    xor     lt0d, r2d
+    movzx   lt0d, word [cabac_entropy+lt0*2 GLOBAL]
+    add     r0d, lt0d
+    movzx   lctxd, byte [ctxg1m+r6]
+    cmp     r1d, 15
+    jge %%escape
+    movzx   lt0d, byte [r8+lctx]
+    mov     lt1d, r1d
+    shl     lt1d, 7
+    add     lt1d, lt0d
+    movzx   r11d, byte [cabac_transition_unary-128+lt1 GLOBAL]
+    movzx   lt1d, word [cabac_size_unary-256+lt1*2 GLOBAL]
+    test    r2d, r2d
+    cmovz   r11d, lt0d                                        ; level 1: gt1 state kept
+    mov     lt0d, 256
+    cmovz   lt1d, lt0d                                        ; level 1: the 256 instead
+    mov [r8+lctx], r11b
+    add     r0d, lt1d
+    jmp %%end
+%else
     movzx   lctxd, byte [ctx1m+r6]
     movzx   lt0d, byte [r8+lctx]
     cmp     r1d, 1
@@ -904,6 +938,7 @@ CABAC bmi2
     mov [r8+lctx], lt1b
     add     r0d, lt0d
     jmp %%end
+%endif
 %%escape:
     movzx   lt0d, byte [r8+lctx]
     movzx   lt1d, byte [cabac_transition_unary+128*14+lt0 GLOBAL]
@@ -927,11 +962,11 @@ CABAC bmi2
     %define ctx1m  rsp+16*SIZEOF_DCTCOEF
     %define ctxg1m rsp+16*SIZEOF_DCTCOEF+16
 %ifdef PIC
-    cglobal cabac_block_residual_rd_internal, 4,11,8,-rd4i_stack
+    cglobal cabac_block_residual_rd_internal, 4,12,8,-rd4i_stack
     lea     r10, [$$]
     %define GLOBAL +r10-$$
 %else
-    cglobal cabac_block_residual_rd_internal, 4,10,8,-rd4i_stack
+    cglobal cabac_block_residual_rd_internal, 4,12,8,-rd4i_stack
     %define GLOBAL
 %endif
     RD_TMP_REGS 5, 7, 9                                       ; r5/r7 are free once the map is written
