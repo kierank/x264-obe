@@ -3608,6 +3608,51 @@ cglobal mbtree_propagate_list_internal, 7,7,14
     cmp            r4d, r6d
     jl .loop
     RET
+
+;-----------------------------------------------------------------------------
+; int mbtree_propagate_list_active( uint16_t *active, uint16_t *lowres_costs, int len, int list )
+; the indices of the entries that use the list, in order: vptestmw, vpcompressw (register
+; form) and a masked store of popcnt words; returns their count
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal mbtree_propagate_list_active, 4,8,4
+    mov            r4d, 1<<14           ; LOWRES_COST_SHIFT
+    test           r3d, r3d
+    jz .list0
+    add            r4d, r4d
+.list0:
+    vpbroadcastw    m1, r4d
+    movu            m2, [pw_0to15]
+    vpbroadcastw    m3, [pw_16]
+    xor            r4d, r4d
+    xor            r5d, r5d
+.loop:
+    mov            r6d, r2d
+    sub            r6d, r4d
+    mov            r7d, 0xffff
+    cmp            r6d, 16
+    jge .full
+    xor            r7d, r7d
+    bts            r7d, r6d
+    dec            r7d
+.full:
+    kmovw           k2, r7d             ; entries left, at most 16
+    vptestmw        k1 {k2}, m1, [r1+r4*2]
+    vpcompressw     m0 {k1}{z}, m2
+    kmovd          r6d, k1
+    popcnt         r6d, r6d
+    xor            r7d, r7d
+    bts            r7d, r6d
+    dec            r7d
+    kmovd           k3, r7d
+    vmovdqu16 [r0+r5*2] {k3}, m0
+    add            r5d, r6d
+    paddw           m2, m3
+    add            r4d, 16
+    cmp            r4d, r2d
+    jl .loop
+    mov            eax, r5d
+    RET
 %endif
 
 %if HIGH_BIT_DEPTH && ARCH_X86_64

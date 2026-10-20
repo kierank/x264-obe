@@ -1416,6 +1416,68 @@ PROPAGATE_LIST(avx)
 #if ARCH_X86_64
 #define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
 PROPAGATE_LIST(avx512)
+
+/* the avx512 list, with the C loop run only over the entries that use the list,
+ * in order: their indices packed by vpcompressw after the internal's output */
+#define x264_mbtree_propagate_list_active_avx512icl x264_template(mbtree_propagate_list_active_avx512icl)
+int x264_mbtree_propagate_list_active_avx512icl( uint16_t *active, uint16_t *lowres_costs, int len, int list );
+static void x264_mbtree_propagate_list_avx512icl( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
+                                                  int16_t *propagate_amount, uint16_t *lowres_costs,
+                                                  int bipred_weight, int mb_y, int len, int list )
+{
+    int16_t *current = h->scratch_buffer2;
+    uint16_t *active = (uint16_t*)(current + (len+7)/8*48);
+
+    x264_mbtree_propagate_list_internal_avx512( mvs, propagate_amount, lowres_costs,
+                                                current, bipred_weight, mb_y, len );
+    int n = x264_mbtree_propagate_list_active_avx512icl( active, lowres_costs, len, list );
+
+    unsigned stride = h->mb.i_mb_stride;
+    unsigned width = h->mb.i_mb_width;
+    unsigned height = h->mb.i_mb_height;
+
+    for( int k = 0; k < n; k++ )
+    {
+        unsigned i = active[k];
+        int16_t *cur = current + (i>>3)*48 + (i&7)*2;
+        unsigned mbx = cur[0];
+        unsigned mby = cur[1];
+        unsigned idx0 = mbx + mby * stride;
+        unsigned idx2 = idx0 + stride;
+
+        /* Shortcut for the simple/common case of zero MV */
+        if( !M32( mvs[i] ) )
+        {
+            CLIP_ADD( ref_costs[idx0], cur[16] );
+            continue;
+        }
+
+        if( mbx < width-1 && mby < height-1 )
+        {
+            CLIP_ADD2( ref_costs+idx0, cur+16 );
+            CLIP_ADD2( ref_costs+idx2, cur+32 );
+        }
+        else
+        {
+            /* Note: this takes advantage of unsigned representation to
+             * catch negative mbx/mby. */
+            if( mby < height )
+            {
+                if( mbx < width )
+                    CLIP_ADD( ref_costs[idx0+0], cur[16] );
+                if( mbx+1 < width )
+                    CLIP_ADD( ref_costs[idx0+1], cur[17] );
+            }
+            if( mby+1 < height )
+            {
+                if( mbx < width )
+                    CLIP_ADD( ref_costs[idx2+0], cur[32] );
+                if( mbx+1 < width )
+                    CLIP_ADD( ref_costs[idx2+1], cur[33] );
+            }
+        }
+    }
+}
 #endif
 #undef CLIP_ADD
 #undef CLIP_ADD2
@@ -1860,6 +1922,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
+        pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512icl;
         pf->get_ref = get_ref_avx512icl;
         pf->mc_luma = mc_luma_avx512icl;
         pf->copy_16x16_unaligned = x264_mc_copy_w16_avx512icl;
