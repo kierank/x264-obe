@@ -117,6 +117,32 @@ pq_rowquad_icl: dq 0, 8, 64, 72, 128, 136, 192, 200
 pb_8x8h_icl:    times 32 db 7
                 times 32 db 6
 %endif
+%if HIGH_BIT_DEPTH == 0
+pb_c_dc_icl:    times 4 db 0
+                times 4 db 4
+                times 24 db 0
+                times 4 db 0
+                times 4 db 4
+                times 24 db 0
+pb_c_left16_icl: db 7,15,23,31,39,47,55,63,71,79,87,95,103,111,119,127
+pb_c_dc8_icl:   db 64,65,66,67,68,69,70,71,7,15,23,31,39,47,55,63
+pd_c_dc16a_icl: dd 0,1,3,1,4,1,5,1
+pd_c_dc16b_icl: dd 2,1,3,3,4,4,5,5
+%endif
+%if HIGH_BIT_DEPTH
+pw_c_h_icl:     times 8 dw 3
+                times 8 dw 7
+                times 8 dw 11
+                times 8 dw 15
+pw_c_dc_icl:    dw 0,0,0,0,2,2,2,2
+pw_c_dctop_icl: dw 0,0,0,0,4,4,4,4
+pw_c_left16_icl: dw 3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63
+pw_c_dc8_icl:   dw 32,33,34,35,36,37,38,39,3,7,11,15,19,23,27,31
+pd_c_dc8a_icl:  dd 0,2,6,2,0,0,0,0
+pd_c_dc8b_icl:  dd 4,2,6,6,0,0,0,0
+pd_c_dc16a_icl: dd 0,2,6,2,8,2,10,2
+pd_c_dc16b_icl: dd 4,2,6,6,8,8,10,10
+%endif
 
 SECTION .text
 
@@ -3277,6 +3303,84 @@ cglobal predict_8x8_dc_128, 1,2
     vpbroadcastw m0, r1d
     SCATTER8_ICL m0
     RET
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 8x8c/8x16c v, h, dc: 8-bit rows y|y+1 in bytes 0-7|32-39, one
+; masked store per row pair; the left column by merge-masked vpbroadcastq
+; (row y in qword lane y) and vpermb; dc sums by vpdpbusd. 10-bit rows are
+; 64 bytes apart: dc sums by vpdpwssd, h rows by vpermw, v and dc_128 as
+; vpscatterqq of four rows.
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+; %1 = the 8 qwords ending at the left pixels of rows %2..%2+7, one per lane
+%macro LEFT8_ICL 2
+    mov         r2d, 1
+    kmovb        k1, r2d
+%assign %%y 0
+%rep 8
+    vpbroadcastq %1{k1}, [r0+(%2+%%y)*FDEC_STRIDEB-8]
+%if %%y < 7
+    kshiftlb     k1, k1, 1
+%endif
+%assign %%y %%y+1
+%endrep
+%endmacro
+
+%if HIGH_BIT_DEPTH == 0
+%macro CSTORE_PAIRS_ICL 2-3 0 ; zmm, rows, first row
+    mov          r1, 0x000000ff000000ff
+    kmovq        k2, r1
+%assign %%y 0
+%rep %2/2
+    vmovdqu8 [r0+(%3+%%y)*FDEC_STRIDE]{k2}, %1
+%assign %%y %%y+2
+%endrep
+%endmacro
+
+%macro PREDICT_C_ICL 1 ; height
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_v( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_v, 1,2
+    vpbroadcastq m0, [r0-FDEC_STRIDE]
+    CSTORE_PAIRS_ICL m0, %1
+    RET
+
+%endmacro ; PREDICT_C_ICL
+
+PREDICT_C_ICL 8
+PREDICT_C_ICL 16
+%else ; HIGH_BIT_DEPTH
+%macro CSTORE_ROWS_ICL 3 ; xmm, rows, first row
+%assign %%y 0
+%rep %2
+    mova [r0+(%3+%%y)*FDEC_STRIDEB], %1
+%assign %%y %%y+1
+%endrep
+%endmacro
+
+%macro PREDICT_C_ICL 1 ; height
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_v( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_v, 1,1
+    vbroadcasti32x4 m0, [r0-FDEC_STRIDEB]
+    movu         m7, [pq_rowquad_icl]
+%assign %%y 0
+%rep %1/4
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+%%y*FDEC_STRIDEB]{k1}, m0
+%assign %%y %%y+4
+%endrep
+    RET
+
+%endmacro ; PREDICT_C_ICL
+
+PREDICT_C_ICL 8
+PREDICT_C_ICL 16
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
