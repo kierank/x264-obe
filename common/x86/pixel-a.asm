@@ -6341,6 +6341,70 @@ INTRA_SATD_X3_8x8C_HBD
 INTRA_SATD_X3_8x16C_HBD
 INIT_ZMM avx512
 INTRA_SATD_X3_16x16_HBD
+
+;-----------------------------------------------------------------------------
+; avx512icl high bit depth satd 4x4, 4x8, 4x16, 8x4. Each qword holds 4 words
+; of one row, m0/m1 rows k and k+2 of a 4x4. Vertical: sumsub, an exchange
+; (qdq for 4 wide, the 128-bit lanes for 8 wide), sumsub. Horizontal, distance
+; 1: vprold + paddw + psubw {k1 = odd words}; distance 2, the last stage: the
+; max of absolutes of both registers into one (vpblendmd {k2 = even dwords} +
+; vpshldq + pmaxsw), whose word sum is the satd. |diff| <= PIXEL_MAX, three
+; sumsubs: words <= 8*PIXEL_MAX = 8184 (two passes added: 16368).
+;-----------------------------------------------------------------------------
+%macro SATD4_ICL_KMASK 1 ; gpr (dword) to clobber
+    mov          %1, 0xaaaa0055
+    kmovd        k2, %1
+    kshiftrd     k1, k2, 16
+%endmacro
+
+%macro SATD4_ICL_HBD 1 ; qdq/lane: m0, m1 -> m0 = words summing to the satd; m1-m5 tmp
+    SUMSUB_BA     w, 0, 1, 2
+%ifidn %1, qdq
+    SBUTTERFLY  qdq, 0, 1, 2
+%else
+    vperm2i128   m2, m0, m1, 0x31
+    vinserti128  m0, m0, xm1, 1
+    SWAP          1, 2
+%endif
+    SUMSUB_BA     w, 0, 1, 2
+    vprold       m2, m0, 16
+    vprold       m3, m1, 16
+    paddw        m4, m0, m2
+    paddw        m5, m1, m3
+    vpsubw       m4 {k1}, m2, m0
+    vpsubw       m5 {k1}, m3, m1
+    pabsw        m4, m4
+    pabsw        m5, m5
+    vpblendmd    m0 {k2}, m4, m5
+    vpshldq      m5, m4, m5, 32
+    pmaxsw       m0, m5
+%endmacro
+
+%macro SATD4_ICL_END 0
+    pmaddwd      m0, [pw_1]
+    HADDD        m0, m1
+    movd        eax, xm0
+    RET
+%endmacro
+
+INIT_XMM avx512icl
+cglobal pixel_satd_4x4, 4,6,6
+    FIX_STRIDES r1, r3
+    SATD4_ICL_KMASK r4d
+    lea          r4, [r0+2*r1]
+    lea          r5, [r2+2*r3]
+    movq         m0, [r0]
+    movq         m2, [r2]
+    movq         m1, [r4]
+    movq         m3, [r5]
+    movhps       m0, [r0+r1]
+    movhps       m2, [r2+r3]
+    movhps       m1, [r4+r1]
+    movhps       m3, [r5+r3]
+    psubw        m0, m2
+    psubw        m1, m3
+    SATD4_ICL_HBD qdq
+    SATD4_ICL_END
 %endif
 %endif ; HIGH_BIT_DEPTH
 
