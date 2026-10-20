@@ -1063,6 +1063,10 @@ WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
 %elif %1 == 20
     vmovdqu8     ym0 {k1}{z}, [r2]
     vmovdqu8     ym1 {k1}{z}, [r2+r3]
+%elif %1 == 12
+    vmovdqu8     xm0 {k1}{z}, [r2]
+    vmovdqu8     xm1 {k1}{z}, [r2+r3]
+    vinserti32x4 ym0, ym0, xm1, 1
 %else
     movu         xm0, [r2]
     vinserti32x4 ym0, ym0, [r2+r3], 1
