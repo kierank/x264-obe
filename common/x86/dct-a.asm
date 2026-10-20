@@ -72,7 +72,9 @@ cavlc_shuf_avx512: dw 0x0080, 0x0184, 0x0288, 0x038c, 0x0490, 0x0594, 0x0698, 0x
 pw_ppmmmmpp:    dw 1,1,-1,-1,-1,-1,1,1
 ; dct4x4dc/idct4x4dc avx512icl: output order, butterfly masks
 dc4x4_perm:     db 0,8,12,4,2,10,14,6,3,11,15,7,1,9,13,5
-dc4x4_masks:    dw 0xaaaa,0xcccc,0xf0f0,0xff00,0,0,0,0
+dc4x4_masks:    dw 0xaaaa,0xcccc,0xf0f0,0xff00
+; add8x8_idct high bit depth avx512icl: packed row pairs to 8-pixel rows
+add8x8_hbd_zmm_rows: db 0,2,1,3,4,6,5,7
 ; zigzag_scan_4x4_field avx512icl
 scan4field_perm: db 0,1,4,2,3,5,6,7,8,9,10,11,12,13,14,15
 pb_sub4frame:   db 0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15
@@ -770,6 +772,86 @@ cglobal add16x16_idct, 2,2,8
     ADD8x8_IDCT_HBD
     ret
 
+;-----------------------------------------------------------------------------
+; void add8x8_idct( pixel *p_dst, dctcoef dct[4][16] ), AVX-512
+; One pass for the four blocks: lane b holds block b, a register one row.
+; The rows come from a 4x4 transpose of the 128-bit lanes of the four
+; blocks; after the pack a vpermq gives four 8-pixel rows per register.
+;-----------------------------------------------------------------------------
+%macro ADD8x8_IDCT_HBD_ZMM_ROWS 5 ; reg, 4 pixel rows
+    movu         xm2, [r0+%2*FDEC_STRIDEB]
+    vinserti32x4  m2, m2, [r0+%3*FDEC_STRIDEB], 1
+    vinserti32x4  m2, m2, [r0+%4*FDEC_STRIDEB], 2
+    vinserti32x4  m2, m2, [r0+%5*FDEC_STRIDEB], 3
+    paddsw       m%1, m2
+    CLIPW        m%1, m7, m8
+    movu  [r0+%2*FDEC_STRIDEB], xm%1
+    vextracti32x4 [r0+%3*FDEC_STRIDEB], m%1, 1
+    vextracti32x4 [r0+%4*FDEC_STRIDEB], m%1, 2
+    vextracti32x4 [r0+%5*FDEC_STRIDEB], m%1, 3
+%endmacro
+
+%macro ADD8x8_IDCT_HBD_ZMM 0
+    mova          m0, [r1+  0]
+    mova          m1, [r1+ 64]
+    mova          m2, [r1+128]
+    mova          m3, [r1+192]
+    vshufi32x4    m4, m0, m1, q1010 ; b0r0 b0r1 b1r0 b1r1
+    vshufi32x4    m0, m0, m1, q3232 ; b0r2 b0r3 b1r2 b1r3
+    vshufi32x4    m1, m2, m3, q1010 ; b2r0 b2r1 b3r0 b3r1
+    vshufi32x4    m2, m2, m3, q3232 ; b2r2 b2r3 b3r2 b3r3
+    vshufi32x4    m3, m4, m1, q2020 ; row 0
+    vshufi32x4    m4, m4, m1, q3131 ; row 1
+    vshufi32x4    m1, m0, m2, q2020 ; row 2
+    vshufi32x4    m0, m0, m2, q3131 ; row 3
+    IDCT4_1D d, 3, 4, 1, 0, 2, 5
+    TRANSPOSE4x4D 3, 4, 1, 0, 2
+    paddd         m3, m6
+    IDCT4_1D d, 3, 4, 1, 0, 2, 5
+    psrad         m3, 6
+    psrad         m4, 6
+    psrad         m1, 6
+    psrad         m0, 6
+    packssdw      m3, m4            ; rows 0, 1 of each block
+    packssdw      m1, m0            ; rows 2, 3
+    vpermq        m3, m9, m3        ; pixel rows 0 1 4 5
+    vpermq        m1, m9, m1        ; pixel rows 2 3 6 7
+    ADD8x8_IDCT_HBD_ZMM_ROWS 3, 0, 1, 4, 5
+    ADD8x8_IDCT_HBD_ZMM_ROWS 1, 2, 3, 6, 7
+%endmacro
+
+%macro ADD8x8_IDCT_HBD_ZMM_INIT 0
+    vpbroadcastd  m6, [pd_32]
+    pxor         xm7, xm7
+    vpbroadcastw  m8, [pw_pixel_max]
+    vpmovzxbq     m9, [add8x8_hbd_zmm_rows]
+%endmacro
+
+%if ARCH_X86_64
+INIT_ZMM avx512icl
+cglobal add8x8_idct, 2,2,10
+    ADD8x8_IDCT_HBD_ZMM_INIT
+    ADD8x8_IDCT_HBD_ZMM
+    RET
+
+cglobal add16x16_idct, 2,2,10
+    ADD8x8_IDCT_HBD_ZMM_INIT
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*FDEC_STRIDEB-8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    RET
+.add8x8:
+    ADD8x8_IDCT_HBD_ZMM
+    ret
+%endif ; ARCH_X86_64
+
 %else ; !HIGH_BIT_DEPTH
 
 INIT_MMX mmx
@@ -1234,6 +1316,7 @@ cglobal add8x8_idct, 2,2
 %endmacro
 
 ; the avx512 versions above without vpgatherqq/vpscatterqq
+%if ARCH_X86_64
 INIT_ZMM avx512icl
 cglobal add8x8_idct, 2,3,15
     ADD8x8_IDCT_ZMM_INIT
@@ -1256,6 +1339,7 @@ cglobal add16x16_idct, 2,3,15
 .add8x8:
     ADD8x8_IDCT_ZMM
     ret
+%endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
 INIT_MMX
