@@ -53,6 +53,8 @@ isadhbd_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
 ; 8x16c DC: { s0 s1 s2 s3 s4 s4 s5 s5 } -> { s0, s1, s3, s1, s4, s1, s5, s1 } + { s2, 0, 0, s3, 0, s4, 0, s5 }
 isadhbd_dcpa:  dd 0, 1, 3, 1, 4, 1, 6, 1
 isadhbd_dcpb:  dd 2, 0, 0, 3, 0, 4, 0, 6
+; 8x8 edge[7..14] = l7..l0 -> l0..l7
+isadhbd_wrev:  db 14,15,12,13,10,11,8,9,6,7,4,5,2,3,0,1
 
 SECTION .text
 
@@ -1597,6 +1599,50 @@ cglobal intra_sad_x3_8x16c, 3,7,15
     pextrd     [r2+8], xm0, 2
     RET
 
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_8x8( uint16_t *fenc, uint16_t edge[36], int res[3] )
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x3_8x8, 3,7,12
+    movu          xm8, [r1+7*SIZEOF_PIXEL]  ; l7 .. l0
+    movu          xm9, [r1+16*SIZEOF_PIXEL] ; t0 .. t7
+    paddw         xm1, xm8, xm9
+    pmaddwd       xm1, [pw_1]
+    pshufd        xm2, xm1, q1032
+    paddd         xm1, xm2
+    pshufd        xm2, xm1, q2301
+    paddd         xm1, xm2              ; sum, at most 16*1023
+    psrld         xm1, 3
+    pxor          xm2, xm2
+    pavgw         xm1, xm2              ; (sum+8)>>4
+    vpbroadcastw  m11, xm1              ; DC
+    vbroadcasti32x4 m10, [r1+16*SIZEOF_PIXEL] ; V
+    pshufb        xm8, [isadhbd_wrev]
+    vshufi32x4     m8, m8, m8, 0
+    INTRA_SAD_HBD_FENC4_K
+    INTRA_SAD_HBD_FENC4 7, 0
+    psubw          m0, m7, m10
+    pshufb         m1, m8, [isadhbd_hidx8]
+    psubw          m1, m7
+    psubw          m2, m7, m11
+    pabsw          m0, m0
+    pabsw          m1, m1
+    pabsw          m2, m2
+    INTRA_SAD_HBD_FENC4 7, 1
+    psubw          m4, m7, m10
+    pshufb         m5, m8, [isadhbd_hidx8+64]
+    psubw          m5, m7
+    psubw          m6, m7, m11
+    pabsw          m4, m4
+    pabsw          m5, m5
+    pabsw          m6, m6
+    paddw          m0, m4
+    paddw          m1, m5
+    paddw          m2, m6
+    pxor           m3, m3
+    SAD_X_HBD16_ZMM_END pw_1            ; V H DC
+    movq       [r2+0], xm0
+    pextrd     [r2+8], xm0, 2
+    RET
 
 INIT_YMM avx2
 %endif
