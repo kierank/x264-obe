@@ -65,6 +65,13 @@ pb_p16_rows:    times 8 db 0
                 times 8 db 1
                 times 8 db 3
 %endif
+%if HIGH_BIT_DEPTH
+%else
+pb_hd_icl:      db 1,65,2,66,3,67,4,68,5,69,6,70,7,71,72,73
+                db 74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89
+                db 0,64,1,65,2,66,3,67,4,68,5,69,6,70,7,71
+                db 72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87
+%endif
 
 SECTION .text
 
@@ -183,9 +190,9 @@ cextern pw_0to15
 
 ; %1 = (%1 ^ %2) & 1 in each byte
 %macro PARITY_B 2
-%if mmsize == 64
+%if sizeof%1 == 64
     vpternlogd  %1, %2, [pb_1]{1to16}, 0x28
-%elif mmsize == 32
+%elif sizeof%1 == 32
     vpternlogd  %1, %2, [pb_1]{1to8}, 0x28
 %else
     vpternlogd  %1, %2, [pb_1]{1to4}, 0x28
@@ -1885,6 +1892,53 @@ cglobal predict_8x8_hu_ssse3, 2,2
     movhps [r0+(Y+4)*FDEC_STRIDE], m0
     RET
 %endif ; !HIGH_BIT_DEPTH
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 8x8 directional modes: the rows come from the filtered edge by
+; vpermb/vpermw. 8-bit: one zmm holds a row pair (row y in bytes 0-7, row y+1
+; in bytes 32-39) for a masked store, valignd steps two rows. 10-bit: one zmm
+; holds 4 rows, one per lane.
+;-----------------------------------------------------------------------------
+%macro STORE4_ICL 2 ; zmm number, first row
+    mova          [r0+(%2+0)*FDEC_STRIDEB], xm%1
+    vextracti32x4 [r0+(%2+1)*FDEC_STRIDEB], m%1, 1
+    vextracti32x4 [r0+(%2+2)*FDEC_STRIDEB], m%1, 2
+    vextracti32x4 [r0+(%2+3)*FDEC_STRIDEB], m%1, 3
+%endmacro
+
+; rows %2, %2+2*%3, ... of the row pairs in %1, valignd between
+%macro STORE_PAIRS_ICL 3 ; zmm, first row, row step
+    vmovdqu8 [r0+(%2+0*%3)*FDEC_STRIDE]{k1}, %1
+    valignd       %1, %1, %1, 1
+    vmovdqu8 [r0+(%2+1*%3)*FDEC_STRIDE]{k1}, %1
+    valignd       %1, %1, %1, 1
+    vmovdqu8 [r0+(%2+2*%3)*FDEC_STRIDE]{k1}, %1
+    valignd       %1, %1, %1, 1
+    vmovdqu8 [r0+(%2+3*%3)*FDEC_STRIDE]{k1}, %1
+%endmacro
+
+INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void predict_8x8_hd( uint8_t *src, uint8_t *edge )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_hd, 2,3
+    movu        xm1, [r1+7]
+    movu        xm3, [r1+8]
+    movu        xm2, [r1+9]
+    pavgb       xm4, xm1, xm3
+    PRED8x8_LOWPASS xm0, xm1, xm2, xm3, xm5
+    movu         m1, [pb_hd_icl]
+    vpermi2b     m1, m4, m0
+    mov          r2, 0x000000ff000000ff
+    kmovq        k1, r2
+    STORE_PAIRS_ICL m1, 6, -2
+    RET
+
+%else ; HIGH_BIT_DEPTH
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
 ; void predict_8x8c_v( uint8_t *src )
