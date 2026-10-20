@@ -7391,7 +7391,9 @@ INIT_YMM avx2
 ; m0-m15 on ymm0-15 (the 32 regs make x86inc save them on WIN64 and vzeroupper):
 ; phaddw, pblendw, vpblendd, vperm2i128 and phminposuw have no EVEX form
 cglobal intra_satd_lowres, 3,5,32
+%ifndef icl_low_regs
     AVX512_MM_PERMUTATION
+%endif
     mov         r3d, 0x5555
     kmovd        k1, r3d
 %else
@@ -7921,7 +7923,9 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 %macro SA8D_X9_8BIT 0
 %if cpuflag(avx512icl)
 cglobal intra_sa8d_x9_8x8, 5,7,32, 0x600
+%ifndef icl_low_regs
     AVX512_MM_PERMUTATION
+%endif
     mov         r5d, 0x5555
     kmovd        k1, r5d
 %else
@@ -8062,7 +8066,9 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 
 RESET_MM_PERMUTATION
 %if cpuflag(avx512icl)
+%ifndef icl_low_regs
     AVX512_MM_PERMUTATION
+%endif
 %endif
 ALIGN 16
 .sa8d: ; m0-m7 pred rows (stored to r5), r6 fenc rows -> m0 = 8 word sums of the maxes per lane
@@ -8091,7 +8097,18 @@ SA8D_X9_8BIT
 ; - 8 wide row pairs [k k | k+4 k+4] from a broadcast and a merge-masked
 ;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
 ;-----------------------------------------------------------------------------
-INIT_YMM avx512icl
+; every function from here to the end of the block keeps m0-m15 on ymm0-15, so
+; all but the opmask/VBMI2 instructions keep their (shorter) VEX encodings;
+; vzeroupper on return and WIN64 saves of xmm6-15 as for avx2
+%macro ICL_LOW_RESET 0
+    INIT_YMM avx512icl
+    AVX512_MM_PERMUTATION
+    %define RESET_MM_PERMUTATION ICL_LOW_RESET
+%endmacro
+%define icl_low_regs 1
+%define vzeroupper_required (mmsize > 16)
+%define high_mm_regs 0
+ICL_LOW_RESET
 %macro SATD_ICL_KMASK 1 ; gpr (dword) to clobber
     mov       %1, 0x5555000c
     kmovd     k2, %1
@@ -8327,6 +8344,10 @@ SATD_BI 16, 16, 1
 SATD_BI 16,  8, 1
 SATD_BI  8, 16, 1
 SATD_BI  8,  8, 1
+%undef icl_low_regs
+%define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
+%define high_mm_regs (16*cpuflag(avx512))
+INIT_YMM avx512icl
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
