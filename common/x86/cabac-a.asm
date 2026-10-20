@@ -459,6 +459,7 @@ cextern_common coeff_abs_level_m1_offset
 cextern_common count_cat_m1
 cextern cabac_encode_ue_bypass
 cextern pb_1
+cextern pw_1
 
 %if ARCH_X86_64
     %define pointer resq
@@ -862,17 +863,22 @@ CABAC bmi2
 %endmacro
 
 
+; build-time A/B: avx512icl 4x4 rd entropy as words (vpermt2w, vpdpwssd)
+%ifndef RD4_ICL_WORDS
+    %define RD4_ICL_WORDS 1
+%endif
+
 ; 4x4 blocks, avx512icl: the whole significance map at once. Each sig and
 ; last context is used at most once per 4x4 block, and the sig, last and
 ; level context ranges are disjoint, so the decisions are independent and
 ; only f8_bits (an integer sum) depends on their order.
 %macro CABAC_RESIDUAL_RD_4x4_ICL 0
 %ifdef PIC
-    cglobal cabac_block_residual_rd_internal, 4,11,7,-16*SIZEOF_DCTCOEF
+    cglobal cabac_block_residual_rd_internal, 4,11,8,-16*SIZEOF_DCTCOEF
     lea     r10, [$$]
     %define GLOBAL +r10-$$
 %else
-    cglobal cabac_block_residual_rd_internal, 4,10,7,-16*SIZEOF_DCTCOEF
+    cglobal cabac_block_residual_rd_internal, 4,10,8,-16*SIZEOF_DCTCOEF
     %define GLOBAL
 %endif
     RD_TMP_REGS 5, 7, 9                                       ; r5/r7 are free once the map is written
@@ -924,16 +930,42 @@ CABAC bmi2
     vinserti32x4 ym1, ym1, [r7], 1                            ; states
     vpmovm2b ym2, k4
     vpternlogd ym2, ym1, [pb_1], 0x6c                         ; state^bin
+%if RD4_ICL_WORDS
+; cabac_entropy words: two vpermt2w over the 128-entry table, summed by vpdpwssd
+    vpmovzxbw zm6, ym2
+    vmovdqu16 zm3, [cabac_entropy GLOBAL]
+    vpermt2w  zm3, zm6, [cabac_entropy+64 GLOBAL]
+    vmovdqu16 zm4, [cabac_entropy+128 GLOBAL]
+    vpermt2w  zm4, zm6, [cabac_entropy+192 GLOBAL]
+    vpsllw    zm7, zm6, 9
+    vpmovw2m  k5, zm7                                         ; index >= 64
+    vmovdqu16 zm3 {k3}{z}, zm3
+    kandd     k5, k5, k3
+    vmovdqu16 zm3 {k5}, zm4
+%else
     vmovdqu8 zm3, [rd_entropy_lo]
     vpermt2b zm3 {k3}{z}, zm2, [rd_entropy_lo+64]
     vmovdqu8 zm4, [rd_entropy_hi]
     vpermt2b zm4 {k3}{z}, zm2, [rd_entropy_hi+64]
+%endif
     vmovdqu8 zm5, [rd_transition_xor]
     vpermt2b zm5, zm2, [rd_transition_xor+64]
     vpternlogd ym5, ym1, [pb_1], 0x78                         ; transition[state][bin]
     vmovdqu8 ym1 {k3}, ym5
     vmovdqu8 [r5], xm1
     vextracti32x4 [r7], ym1, 1
+%if RD4_ICL_WORDS
+    vpxord   xm6, xm6, xm6
+    vpdpwssd zm6, zm3, [pw_1] {1to16}
+    vextracti64x4 ym4, zm6, 1
+    vpaddd   ym3, ym6, ym4
+    vextracti32x4 xm4, ym3, 1
+    vpaddd   xm3, xm3, xm4
+    vpsrldq  xm4, xm3, 8
+    vpaddd   xm3, xm3, xm4
+    vpsrldq  xm4, xm3, 4
+    vpaddd   xm3, xm3, xm4
+%else
     vpxord   xm6, xm6, xm6
     vpsadbw  ym3, ym3, ym6
     vpsadbw  ym4, ym4, ym6
@@ -943,6 +975,7 @@ CABAC bmi2
     vpaddq   xm3, xm3, xm4
     vpsrldq  xm4, xm3, 8
     vpaddq   xm3, xm3, xm4
+%endif
     vmovd    r1d, xm3
     add      r0d, r1d
 ; levels: last, then the other nonzero coefficients in descending order
