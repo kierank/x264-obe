@@ -143,6 +143,26 @@ pd_c_dc8b_icl:  dd 4,2,6,6,0,0,0,0
 pd_c_dc16a_icl: dd 0,2,6,2,8,2,10,2
 pd_c_dc16b_icl: dd 4,2,6,6,8,8,10,10
 %endif
+%if HIGH_BIT_DEPTH
+pw_e4_icl:       dw 15,15,11,7,3,23,24,25,26,27,28,29,30,31,31,31
+                 dw 15,11,7,3,23,24,25,26,27,28,29,30,31,31,31,31
+                 dw 11,7,3,23,24,25,26,27,28,29,30,31,31,31,31,31
+pw_h4_icl:       dw 3,3,3,3,7,7,7,7,11,11,11,11,15,15,15,15
+pw_dc4_icl:      dw 16,17,18,19,3,7,11,15,0,0,0,0,0,0,0,0,0,0,0,0
+pq_rows4_icl:    dq 0, 64, 128, 192
+pw_4x4_ddl_icl: dw 22,23,24,25,23,24,25,26,24,25,26,27,25,26,27,28
+%else
+pb_e4_icl:       db 15,15,11,7,3,23,24,25,26,27,28,29,30,31,31,31
+pb_h4_icl:       db 3,3,3,3,0,0,0,0,11,11,11,11,0,0,0,0
+                 times 16 db 0
+                 db 7,7,7,7,0,0,0,0,15,15,15,15,0,0,0,0
+                 times 16 db 0
+pb_dc4_icl:      db 16,17,18,19,3,7,11,15,0,0,0,0,0,0,0,0,0,0,0,0
+pb_4x4_ddl_icl: db 70,71,72,73,0,0,0,0,72,73,74,75,0,0,0,0
+                 db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+                 db 71,72,73,74,0,0,0,0,73,74,75,76,0,0,0,0
+                 db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+%endif
 
 SECTION .text
 
@@ -3617,6 +3637,142 @@ cglobal predict_8x%1c_dc, 1,3
 
 PREDICT_C_ICL 8
 PREDICT_C_ICL 16
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 4x4: the left column by merge-masked vpbroadcastd/q (row y in lane
+; y), packed with the top row by vpermi2b/w into E = l3 l3 l2 l1 l0 lt t0 .. t7
+; t7; F1/F2 of E, then one vpermi2b/w per block picks every output pixel.
+; 8-bit: rows 0|1 in bytes 0-3|32-35 and rows 2|3 in bytes 8-11|40-43, two
+; masked stores. 10-bit: the 4 rows in one ymm.
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH == 0
+; xm0 = left pixel of row y in byte 4*y+3
+%macro LEFT4_ICL 0
+    mov         r1d, 1
+    kmovb        k1, r1d
+    vpbroadcastd xm0{k1}, [r0+0*FDEC_STRIDE-4]
+    kshiftlb     k1, k1, 1
+    vpbroadcastd xm0{k1}, [r0+1*FDEC_STRIDE-4]
+    kshiftlb     k1, k1, 1
+    vpbroadcastd xm0{k1}, [r0+2*FDEC_STRIDE-4]
+    kshiftlb     k1, k1, 1
+    vpbroadcastd xm0{k1}, [r0+3*FDEC_STRIDE-4]
+%endmacro
+
+; rows 0|1 (bytes 0-3|32-35) and 2|3 (bytes 8-11|40-43) of %1
+%macro STORE4x4_ICL 1
+    mov          r1, 0x0000000f0000000f
+    kmovq        k1, r1
+    vmovdqu8 [r0+0*FDEC_STRIDE  ]{k1}, %1
+    kshiftlq     k1, k1, 8
+    vmovdqu8 [r0+2*FDEC_STRIDE-8]{k1}, %1
+%endmacro
+
+; the same row (bytes 0-3 and 32-35 of %1) in all 4 rows
+%macro STORE4x4_SPLAT_ICL 1
+    mov          r1, 0x0000000f0000000f
+    kmovq        k1, r1
+    vmovdqu8 [r0+0*FDEC_STRIDE]{k1}, %1
+    vmovdqu8 [r0+2*FDEC_STRIDE]{k1}, %1
+%endmacro
+
+%macro PREDICT_4x4_DIR_ICL 1 ; mode
+;-----------------------------------------------------------------------------
+; void predict_4x4_%1( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_%1, 1,2
+    LEFT4_ICL
+    movu        xm1, [r0-FDEC_STRIDE-8]
+    movu        xm2, [pb_e4_icl]
+    vpermi2b    xm2, xm0, xm1           ; E
+    psrldq      xm3, xm2, 1
+    psrldq      xm4, xm2, 2
+    pavgb       xm0, xm2, xm3
+    PRED8x8_LOWPASS xm1, xm2, xm4, xm3, xm5
+    movu         m2, [pb_4x4_%1_icl]
+    vpermi2b     m2, m0, m1
+    STORE4x4_ICL m2
+    RET
+%endmacro
+
+PREDICT_4x4_DIR_ICL ddl
+
+%else ; HIGH_BIT_DEPTH
+; ym0 = left pixel of row y in word 4*y+3
+%macro LEFT4W_ICL 0
+    mov         r1d, 1
+    kmovb        k1, r1d
+    vpbroadcastq ym0{k1}, [r0+0*FDEC_STRIDEB-8]
+    kshiftlb     k1, k1, 1
+    vpbroadcastq ym0{k1}, [r0+1*FDEC_STRIDEB-8]
+    kshiftlb     k1, k1, 1
+    vpbroadcastq ym0{k1}, [r0+2*FDEC_STRIDEB-8]
+    kshiftlb     k1, k1, 1
+    vpbroadcastq ym0{k1}, [r0+3*FDEC_STRIDEB-8]
+%endmacro
+
+; rows 0-3 of ym%1 (4 words each)
+%macro STORE4x4W_ICL 1
+    movq   [r0+0*FDEC_STRIDEB], xm%1
+    movhps [r0+1*FDEC_STRIDEB], xm%1
+    vextracti32x4 xm%1, ym%1, 1
+    movq   [r0+2*FDEC_STRIDEB], xm%1
+    movhps [r0+3*FDEC_STRIDEB], xm%1
+%endmacro
+
+; the low qword of xm%1 in all 4 rows
+%macro STORE4x4W_SPLAT_ICL 1
+    movq   [r0+0*FDEC_STRIDEB], xm%1
+    movq   [r0+1*FDEC_STRIDEB], xm%1
+    movq   [r0+2*FDEC_STRIDEB], xm%1
+    movq   [r0+3*FDEC_STRIDEB], xm%1
+%endmacro
+
+; 4 qwords of ym%1 to rows 0-3 by vpscatterqq
+%macro SCATTER4x4W_ICL 1
+    movu        ym7, [pq_rows4_icl]
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+ym7]{k1}, ym%1
+%endmacro
+
+; xm%1 = broadcast word (sum of the words of xm%2 + dword 0 of xm3) >> %3
+%macro DC4W_ICL 3
+    vpdpwssd    xm3, xm%2, [pw_1]{1to4}
+    pshufd      xm%2, xm3, q1032
+    paddd       xm3, xm%2
+    pshufd      xm%2, xm3, q2301
+    paddd       xm3, xm%2
+    psrld       xm3, %3
+    vpbroadcastw xm%1, xm3
+%endmacro
+
+%macro PREDICT_4x4_DIR_ICL 1 ; mode
+;-----------------------------------------------------------------------------
+; void predict_4x4_%1( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_%1, 1,2
+    LEFT4W_ICL
+    movu        ym1, [r0-FDEC_STRIDEB-16]
+    movu        ym2, [pw_e4_icl]
+    movu        ym3, [pw_e4_icl+32]
+    movu        ym4, [pw_e4_icl+64]
+    vpermi2w    ym2, ym0, ym1           ; E
+    vpermi2w    ym3, ym0, ym1           ; E >> 1
+    vpermi2w    ym4, ym0, ym1           ; E >> 2
+    pavgw       ym0, ym2, ym3
+    PRED8x8_LOWPASS ym1, ym2, ym4, ym3
+    movu        ym2, [pw_4x4_%1_icl]
+    vpermi2w    ym2, ym0, ym1
+    STORE4x4W_ICL 2
+    RET
+%endmacro
+
+PREDICT_4x4_DIR_ICL ddl
+
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 

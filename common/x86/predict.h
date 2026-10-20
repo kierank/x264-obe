@@ -362,5 +362,7 @@ void x264_predict_4x4_ddr_ssse3( pixel *src );
 void x264_predict_4x4_ddr_avx( uint16_t *src );
 #define x264_predict_4x4_hu_mmx2 x264_template(predict_4x4_hu_mmx2)
 void x264_predict_4x4_hu_mmx2( pixel *src );
+#define x264_predict_4x4_ddl_avx512icl x264_template(predict_4x4_ddl_avx512icl)
+void x264_predict_4x4_ddl_avx512icl( pixel *src );
 
 #endif
