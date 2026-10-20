@@ -10457,6 +10457,70 @@ WEIGHTP_SUM8_NV
 INIT_YMM avx512icl
 WEIGHTP_STATS8_B
 
+; avx512icl 8-bit weightp_sum8(_clip): on words, x * scale + round fits (scale 0-127):
+; pmullw, paddw, psraw [, + offset, clip], then vpdpwssd by 1 into the block's dword pairs.
+; As the AVX2 version otherwise: one block a lane, 4 registers a pass.
+; m5 = pw_1, m6 = scale, m7 = round, xm8 = denom, m10 = block order;
+; _clip: m9 = offset, m11 = 255, m12 = 0.
+%macro WEIGHTP_SUM8_ICL_ROW 3 ; acc, offset, clip
+    pmovzxbw   m4, [r7+%2]
+    pmullw     m4, m6
+    paddw      m4, m7
+    psraw      m4, xm8
+%if %3
+    paddw      m4, m9
+    pmaxsw     m4, m12
+    pminsw     m4, m11
+%endif
+    vpdpwssd   %1, m4, m5
+%endmacro
+
+%macro WEIGHTP_SUM8_ICL 1 ; clip
+%if %1
+cglobal weightp_sum8_clip, 8,9,14
+    vpbroadcastw m9, r7d
+    mov       r7d, 255
+    vpbroadcastw m11, r7d
+    pxor      m12, m12
+%else
+cglobal weightp_sum8, 7,9,14
+%endif
+    vpbroadcastw m6, r5d
+    xor       r7d, r7d
+    bts       r7d, r6d
+    shr       r7d, 1
+    vpbroadcastw m7, r7d
+    movd      xm8, r6d
+    vpbroadcastd m5, [pw_1]
+    WEIGHTP_PERM m10
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    mov        r7, r1
+    mov       r8d, r4d
+.loopy:
+    WEIGHTP_SUM8_ICL_ROW m0,  0, %1
+    WEIGHTP_SUM8_ICL_ROW m1, 16, %1
+    WEIGHTP_SUM8_ICL_ROW m2, 32, %1
+    WEIGHTP_SUM8_ICL_ROW m3, 48, %1
+    add        r7, r2
+    dec       r8d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m4, m13
+    vpermd     m0, m10, m0
+    movu     [r0], m0
+    add        r0, 32
+    add        r1, 64
+    sub       r3d, 8
+    jg .loopx
+    RET
+%endmacro
+
+WEIGHTP_SUM8_ICL 0
+WEIGHTP_SUM8_ICL 1
+
 ; avx512icl 8-bit: vpdpbusd of each row by 1,0,1,0 (u) and 0,1,0,1 (v) bytes, no unpacking.
 ; A ymm is two blocks, 8 a pass; u in m0-m3, v in m4-m7, then as weightp_sum8.
 %macro WEIGHTP_NV_ICL_ROW 3 ; u acc, v acc, offset

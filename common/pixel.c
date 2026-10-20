@@ -1654,6 +1654,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
         pixf->weightp_stats8 = x264_weightp_stats8_avx512icl;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
+        pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
 #endif
     }
