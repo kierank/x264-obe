@@ -227,6 +227,8 @@ int x264_coeff_last64_sse2_lzcnt( dctcoef *dct );
 int x264_coeff_last64_avx2_lzcnt( dctcoef *dct );
 #define x264_coeff_last4_avx512 x264_template(coeff_last4_avx512)
 int x264_coeff_last4_avx512( int32_t *dct );
+#define x264_coeff_last4_avx512icl x264_template(coeff_last4_avx512icl)
+int x264_coeff_last4_avx512icl( int16_t *dct );
 #define x264_coeff_last8_avx512 x264_template(coeff_last8_avx512)
 int x264_coeff_last8_avx512( dctcoef *dct );
 #define x264_coeff_last15_avx512 x264_template(coeff_last15_avx512)

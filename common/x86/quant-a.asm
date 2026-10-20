@@ -2397,6 +2397,14 @@ INIT_MMX mmx2
 COEFF_LAST48
 INIT_MMX mmx2, lzcnt
 COEFF_LAST48
+INIT_XMM avx512icl
+cglobal coeff_last4, 1,1
+    movq      xm0, [r0]
+    vptestmw   k1, xm0, xm0
+    kmovb     eax, k1
+    lzcnt     eax, eax
+    xor       eax, 31
+    RET
 %endif ; HIGH_BIT_DEPTH
 
 %macro COEFF_LAST 0
