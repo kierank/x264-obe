@@ -1762,6 +1762,10 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 ; %1 = 8x8 mode, %2 = count_m1
 %macro SIGMAP_BMI2 2
 %%loop:
+%if cpuflag(avx512icl)
+    bt      r14, r12                ; r14 = nonzero mask, coeffs[] already packed
+    jnc %%zero
+%else
 %if HIGH_BIT_DEPTH
     mov     r1d, [r14+r12*4]
 %else
@@ -1771,6 +1775,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     jz %%zero                       ; if( l[i] )
     inc     r13d
     mov [coeffs+r13*4], r1d         ; coeffs[++coeff_idx] = l[i];
+%endif
 %if %1
     movzx   r1d, byte [r0+r12]
     CABAC_BIN 1, r3+r1              ; ctx_sig + sig_off, 1
@@ -1795,6 +1800,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     inc     r12d
     cmp     r12d, %2
     jne %%loop                      ; if( ++i == count_m1 )
+%if notcpuflag(avx512icl)
 %if HIGH_BIT_DEPTH
     mov     r1d, [r14+r12*4]
 %else
@@ -1802,11 +1808,21 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %endif
     inc     r13d
     mov [coeffs+r13*4], r1d         ; coeffs[++coeff_idx] = l[i]
+%endif
     jmp .level_loop_start
 %%is_last:
     CABAC_BIN 1, sm_last            ; ctx_last + last_off, 1
 %if %1 == 0
     jmp .level_loop_start
+%endif
+%endmacro
+
+; coeffs[r13]: words at avx512icl 8-bit (packed by vpcompressw), else dwords
+%macro LOAD_COEFFS 1
+%if cpuflag(avx512icl) && HIGH_BIT_DEPTH == 0
+    movsx    %1, word [coeffs+r13*2]
+%else
+    mov      %1, [coeffs+r13*4]
 %endif
 %endmacro
 
@@ -1844,13 +1860,97 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     add     r10, r3
     mov  levelm, r10                ; ctx_level state
     add      r3, r8                 ; ctx_sig state
+%if cpuflag(avx512icl)
+; nonzero mask (r14), last, and coeffs[] = the nonzero coefs ascending
+; (vpcompress register form + full stores), r13 = their count - 1
+    lea     r1d, [r13+1]
+    cmp    r13d, 63
+    je .mask_8x8
+    mov     r6d, -1
+    bzhi    r6d, r6d, r1d
+    kmovw    k1, r6d
+%if HIGH_BIT_DEPTH
+    vmovdqu32 zmm16 {k1}{z}, [r14]
+    vptestmd  k1, zmm16, zmm16
+    vpcompressd zmm16 {k1}{z}, zmm16
+    vmovdqu32 [coeffs], zmm16
+%else
+    vmovdqu16 ymm16 {k1}{z}, [r14]
+    vptestmw  k1, ymm16, ymm16
+    vpcompressw ymm16 {k1}{z}, ymm16
+    vmovdqu16 [coeffs], ymm16
+%endif
+    kmovw   r14d, k1
+    jmp .mask_done
+.mask_8x8:
+%if HIGH_BIT_DEPTH
+    vmovdqu32 zmm16, [r14+0*64]
+    vmovdqu32 zmm17, [r14+1*64]
+    vmovdqu32 zmm18, [r14+2*64]
+    vmovdqu32 zmm19, [r14+3*64]
+    vptestmd  k1, zmm16, zmm16
+    vptestmd  k2, zmm17, zmm17
+    vptestmd  k3, zmm18, zmm18
+    vptestmd  k4, zmm19, zmm19
+    vpcompressd zmm16 {k1}{z}, zmm16
+    vpcompressd zmm17 {k2}{z}, zmm17
+    vpcompressd zmm18 {k3}{z}, zmm18
+    vpcompressd zmm19 {k4}{z}, zmm19
+    kmovw    r4d, k1
+    kmovw    r5d, k2
+    kmovw    r6d, k3
+    popcnt   r4d, r4d
+    popcnt   r5d, r5d
+    popcnt   r6d, r6d
+    add      r5d, r4d
+    add      r6d, r5d
+    vmovdqu32 [coeffs], zmm16
+    vmovdqu32 [coeffs+r4*4], zmm17
+    vmovdqu32 [coeffs+r5*4], zmm18
+    vmovdqu32 [coeffs+r6*4], zmm19
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k4, k3
+    kunpckdq  k1, k3, k1
+%else
+    vmovdqu16 zmm16, [r14+0*64]
+    vmovdqu16 zmm17, [r14+1*64]
+    vptestmw  k1, zmm16, zmm16
+    vptestmw  k2, zmm17, zmm17
+    vpcompressw zmm16 {k1}{z}, zmm16
+    vpcompressw zmm17 {k2}{z}, zmm17
+    kmovd    r4d, k1
+    popcnt   r4d, r4d
+    vmovdqu16 [coeffs], zmm16
+    vmovdqu16 [coeffs+r4*2], zmm17
+    kunpckdq  k1, k2, k1
+%endif
+    kmovq    r14, k1
+.mask_done:
+    popcnt   r1, r14
+    lea     r13d, [r1-1]            ; coeff_idx
+    lzcnt    r1, r14
+    xor     r1d, 63
+    mov   lastm, r1d
+%else
     call [%1+gprsize*r2 GLOBAL]     ; preserves r3, r7-r14
     mov   lastm, eax
+%endif
     mov      r6, cbm
     mov    lowd, [r6+cb.low]
     mov  ranged, [r6+cb.range]
     mov  queued, [r6+cb.queue]
     sub  queued, 24
+%if cpuflag(avx512icl)
+    movzx   r0d, byte [count_cat_m1+r2 GLOBAL]
+    cmp     r0d, 63
+    je .sigmap_8x8
+    xor    r12d, r12d               ; i
+    SIGMAP_BMI2 0, r0d
+.sigmap_8x8:
+    mov      r0, r12
+    xor    r12d, r12d
+    SIGMAP_BMI2 1, 63
+%else
     cmp    r13d, 63
     je .sigmap_8x8
     mov     r0d, r13d
@@ -1862,11 +1962,12 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     mov    r13d, -1
     xor    r12d, r12d
     SIGMAP_BMI2 1, 63
+%endif
 .level_loop_start:
     mov      r3, levelm
     xor    r12d, r12d               ; node_ctx
 .level_loop:
-    mov    r11d, [coeffs+r13*4]
+    LOAD_COEFFS r11d
     mov     r1d, r11d
     sar     r1d, 31
     add    r11d, r1d
@@ -1928,7 +2029,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     movzx  r12d, byte [coeff_abs_level_transition+8+r12 GLOBAL]
 .level_sign:
 ; x264_cabac_encode_bypass( cb, coeff_sign )
-    mov     r1d, [coeffs+r13*4]
+    LOAD_COEFFS r1d
     sar     r1d, 31
     and     r1d, ranged
     lea     lowq, [lowq*2+r1]
@@ -2020,5 +2121,7 @@ CABAC_RESIDUAL coeff_last_sse2_lzcnt
 INIT_XMM avx2,bmi2
 CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt
 INIT_XMM avx512
+CABAC_RESIDUAL_BMI2 coeff_last_avx512
+INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 %endif
