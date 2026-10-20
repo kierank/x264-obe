@@ -555,6 +555,11 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->add16x16_idct   = x264_add16x16_idct_avx2;
         dctf->add16x16_idct_dc= x264_add16x16_idct_dc_avx2;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        dctf->dct4x4dc        = x264_dct4x4dc_avx512icl;
+        dctf->idct4x4dc       = x264_idct4x4dc_avx512icl;
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -666,6 +671,12 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->sub16x16_dct     = x264_sub16x16_dct_avx512;
         dctf->sub8x8_dct_dc    = x264_sub8x8_dct_dc_avx512;
         dctf->sub8x16_dct_dc   = x264_sub8x16_dct_dc_avx512;
+    }
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        dctf->dct4x4dc         = x264_dct4x4dc_avx512icl;
+        dctf->idct4x4dc        = x264_idct4x4dc_avx512icl;
     }
 #endif //HAVE_MMX
 
