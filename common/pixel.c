@@ -1267,6 +1267,12 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        INIT_ADS( _avx512icl );
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1620,8 +1626,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
     }
 
-    /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
-     * (rack01 ablation, obed low latency), although most win in checkasm. */
+    /* No 8-bit AVX-512 pixel functions in the presets' paths: on Zen 4 they made real 8-bit
+     * encodes ~1.5% slower (rack01 ablation, obed low latency), although most win in checkasm.
+     * ads is only reached by --me esa/tesa. */
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        INIT_ADS( _avx512icl );
+#endif
+    }
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6

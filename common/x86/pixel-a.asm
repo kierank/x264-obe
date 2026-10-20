@@ -347,6 +347,9 @@ lowres_hu3:    db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
 weightp_perm8:  db 0,4,1,5,2,6,3,7
 weightp_perm16: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 weightp_perm_nv16: db 0,4,1,5,2,6,3,7,8,12,9,13,10,14,11,15
+; ads avx512icl: candidate indices
+ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
+           dw 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
 
 SECTION .text
 
@@ -8977,6 +8980,177 @@ ads_mvs_ssse3:
     jl .loop
     movifnidn eax, r0d
     RET
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl ads: no mask buffer. The compare is a k mask, vpcompressw packs the
+; indices of the candidates and a masked store writes exactly that many at mvs+nmv.
+; ADS_N candidates a chunk: words (8-bit), dwords (high bit depth).
+; m4 = indices, m5 = thresh, m6 = ADS_N; r6 = nmv, r9d = -1
+;-----------------------------------------------------------------------------
+%if HIGH_BIT_DEPTH
+    %define ADS_N (mmsize/4)
+%else
+    %define ADS_N (mmsize/2)
+%endif
+
+%macro ADS_ICL_STORE 0 ; k1 = candidates of this chunk
+    cmp        r5d, ADS_N
+    jge %%full
+    kmovd      r7d, k1
+    bzhi       r7d, r7d, r5d
+    kmovd       k1, r7d
+%%full:
+    kmovd      r7d, k1
+    popcnt     r7d, r7d
+    bzhi       r8d, r9d, r7d
+    kmovd       k2, r8d
+%if HIGH_BIT_DEPTH && mmsize == 64
+    vpcompressw ym0 {k1}{z}, ym4
+    vmovdqu16  [r4+r6*2] {k2}, ym0
+%elif HIGH_BIT_DEPTH
+    vpcompressw xm0 {k1}{z}, xm4
+    vmovdqu16  [r4+r6*2] {k2}, xm0
+%else
+    vpcompressw m0 {k1}{z}, m4
+    vmovdqu16  [r4+r6*2] {k2}, m0
+%endif
+    add        r6d, r7d
+    paddw       m4, m6
+%endmacro
+
+; m0 = sum of |dc - sums| of ADS_N candidates (8-bit: words, < 65536)
+%macro ADS_ICL_COST 1 ; size
+%if HIGH_BIT_DEPTH
+    pmovzxwd    m0, [r1]
+    psubd       m0, m7
+    pabsd       m0, m0
+%if %1 == 4
+    pmovzxwd    m1, [r1+16]
+    pmovzxwd    m2, [r1+r2]
+    pmovzxwd    m3, [r1+r2+16]
+    psubd       m1, m8
+    psubd       m2, m9
+    psubd       m3, m10
+    pabsd       m1, m1
+    pabsd       m2, m2
+    pabsd       m3, m3
+    paddd       m0, m1
+    paddd       m2, m3
+    paddd       m0, m2
+%elif %1 == 2
+    pmovzxwd    m1, [r1+r2]
+    psubd       m1, m8
+    pabsd       m1, m1
+    paddd       m0, m1
+%endif
+%else
+    psubw       m0, m7, [r1]
+    pabsw       m0, m0
+%if %1 == 4
+    psubw       m1, m8, [r1+16]
+    psubw       m2, m9, [r1+r2]
+    psubw       m3, m10, [r1+r2+16]
+    pabsw       m1, m1
+    pabsw       m2, m2
+    pabsw       m3, m3
+    paddw       m0, m1
+    paddw       m2, m3
+    paddw       m0, m2
+%elif %1 == 2
+    psubw       m1, m8, [r1+r2]
+    pabsw       m1, m1
+    paddw       m0, m1
+%endif
+%endif
+%endmacro
+
+%macro ADS_ICL_NEXT 1 ; loop label
+    add         r1, ADS_N*2
+    add         r3, ADS_N*2
+    sub        r5d, ADS_N
+    jg %1
+    RET
+%endmacro
+
+%macro ADS_ICL 1-2 ; size, name suffix
+cglobal pixel_ads%1%2, 7,10,11
+    test       r6d, r6d
+    jle .zero
+    movsxd      r2, r2d
+    add         r2, r2
+    movu        m4, [ads_idx_w]
+    mov        r7d, ADS_N
+    vpbroadcastw m6, r7d
+    mov        r9d, -1
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m7, [r0]
+%if %1 >= 2
+    vpbroadcastd m8, [r0+4]
+%endif
+%if %1 == 4
+    vpbroadcastd m9, [r0+8]
+    vpbroadcastd m10, [r0+12]
+%endif
+    vpbroadcastd m5, r6d
+    xor        r6d, r6d
+.loop:
+    ADS_ICL_COST %1
+    pmovzxwd    m1, [r3]
+    paddd       m0, m1
+    vpcmpd      k1, m0, m5, 1
+    ADS_ICL_STORE
+    ADS_ICL_NEXT .loop
+%else
+    vpbroadcastw m7, [r0]
+%if %1 >= 2
+    vpbroadcastw m8, [r0+4]
+%endif
+%if %1 == 4
+    vpbroadcastw m9, [r0+8]
+    vpbroadcastw m10, [r0+12]
+%endif
+    cmp        r6d, 0xffff
+    ja .hi
+    vpbroadcastw m5, r6d
+    xor        r6d, r6d
+.loop:
+    ADS_ICL_COST %1
+    paddusw     m0, [r3]
+    vpcmpuw     k1, m0, m5, 1
+    ADS_ICL_STORE
+    ADS_ICL_NEXT .loop
+.hi: ; thresh > 0xffff: cost < thresh unless the 17-bit cost carries and its low word >= thresh - 0x10000
+    sub        r6d, 0x10000
+    mov        r7d, 0xffff
+    cmp        r6d, r7d
+    cmova      r6d, r7d
+    vpbroadcastw m5, r6d
+    xor        r6d, r6d
+.loop_hi:
+    ADS_ICL_COST %1
+    movu        m1, [r3]
+    paddw       m0, m1
+    vpcmpuw     k1, m0, m5, 1
+    vpcmpuw     k2, m0, m1, 5
+    kord        k1, k1, k2
+    ADS_ICL_STORE
+    ADS_ICL_NEXT .loop_hi
+%endif
+.zero:
+    xor        eax, eax
+    RET
+%endmacro
+
+INIT_YMM avx512icl
+ADS_ICL 4
+ADS_ICL 2
+ADS_ICL 1
+INIT_ZMM avx512icl
+ADS_ICL 4, _zmm
+ADS_ICL 2, _zmm
+ADS_ICL 1, _zmm
+%endif ; ARCH_X86_64
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
