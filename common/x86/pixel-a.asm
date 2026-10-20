@@ -389,6 +389,17 @@ mcc_pre_perm:
 %undef mcc_r
 %undef mcc_b
 mcc_pre_q: db 0, 1, 8, 9, 4, 5, 12, 13, 2, 3, 10, 11, 6, 7, 14, 15
+%endif
+%if HIGH_BIT_DEPTH
+; 10-bit intra_satd_lowres avx512icl: (x-3, y-3) word pairs of rows 0 | 4
+lowres_p_xy:
+%assign lowres_j 0
+%rep 16
+    dw (lowres_j&7)-3, 4*(lowres_j>>3)-3
+%assign lowres_j lowres_j+1
+%endrep
+%undef lowres_j
+%else
 ; 8-bit hadamard_ac avx512icl: vpermi2w/vpermt2w word indices of TRANS d ord
 ; (a0 b0 a2 b2 .. | a1 b1 a3 b3 ..)
 hadac_icl_idx:
@@ -7145,7 +7156,7 @@ SA8D_X9_HBD
     LOWRES_DIFF10
 %endmacro
 
-INIT_YMM avx2
+%macro LOWRES_HBD 0
 cglobal intra_satd_lowres, 3,5,16, 0x160
     %define lr_edge rsp       ; E6..E32 at 12..65, predict_8x8_filter's layout
     %define lr_f    rsp+0x60  ; F7..F31
@@ -7292,6 +7303,29 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     vpbroadcastw m4, xm0
     pmulhrsw     m3, [pw_17408]       ; b
     pmulhrsw     m4, [pw_17408]       ; c
+%if cpuflag(avx512icl)
+    ; exact dwords a + 16 + b*(x-3) + c*(y-3) (one {evex} vpdpwssd for rows 0 | 4,
+    ; + c a row), >> 5, clipped to [0, PIXEL_MAX]: the same as the saturating words
+    punpcklwd   xm8, xm3, xm4
+    vpbroadcastd zmm16, xm8           ; b | c
+    vpmovzxwd   zmm17, m11            ; a + 16
+    vpmovsxwd   zmm18, m4             ; c
+    {evex} vpdpwssd zmm17, zmm16, [lowres_p_xy]
+    vpbroadcastw  m5, [pw_pixel_max]
+    pxor          m4, m4
+%assign lowres_k 0
+%rep 4
+%if lowres_k
+    vpaddd      zmm17, zmm17, zmm18
+%endif
+    vpsrad      zmm19, zmm17, 5
+    vpmovsdw      m %+ lowres_k, zmm19
+    pmaxsw        m %+ lowres_k, m4
+    pminsw        m %+ lowres_k, m5
+%assign lowres_k lowres_k+1
+%endrep
+%undef lowres_k
+%else
     pmullw       m8, m3, [lowres_p_x]
     pmullw       m5, m4, [lowres_p_y] ; c*(y-3), rows 0 | 4
     paddsw       m0, m8, m5
@@ -7314,6 +7348,7 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pmaxsw       m1, m4
     pmaxsw       m2, m4
     pmaxsw       m3, m4
+%endif
     LOWRES_DIFF10
     LOWRES_SATD  m8
     phaddw       m7, m8
@@ -7356,8 +7391,13 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     movd        eax, xm0
     RET
 
+%endmacro
+
+INIT_YMM avx2
+LOWRES_HBD
 ICL_LOW_BEGIN
 SA8D_X9_HBD
+LOWRES_HBD
 ICL_LOW_END
 INIT_YMM avx2
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
