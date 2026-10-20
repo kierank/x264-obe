@@ -3157,6 +3157,15 @@ cglobal predict_8x8_dc, 2,2
     STORE8_PAIRS_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc_top( uint8_t *src, uint8_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_dc_top, 2,2
+    movq        xm0, [r1+16]
+    DC8_ICL pw_4, 3
+    STORE8_PAIRS_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE8_ROWS_ICL 1 ; xmm
 %assign %%y 0
@@ -3217,6 +3226,17 @@ cglobal predict_8x8_dc, 2,2
     mov         r1d, 8
     movd        xm2, r1d
     DC8W_ICL 4
+    STORE8_ROWS_ICL xm0
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc_top( uint16_t *src, uint16_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_dc_top, 2,2
+    movu        xm0, [r1+16*SIZEOF_PIXEL]
+    mov         r1d, 4
+    movd        xm2, r1d
+    DC8W_ICL 3
     STORE8_ROWS_ICL xm0
     RET
 
