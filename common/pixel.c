@@ -1268,7 +1268,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT2( sad, _avx512 );
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* sad_x3/sad_x4 (+_min) _avx512: 1.07-1.38x */
-        pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx512;
+        /* zen4 prune, borderline: sad_avg2[16x16] _avx512 1.022x, slower in 11/11 runs */
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx512;
 #endif
     }
@@ -1648,8 +1648,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         /* ymm, VBMI2 + opmask transform; not the X264_CPU_AVX512 zmm table below */
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
-        /* satd[16x16] 1.031x, satd_avg2[16x8] 1.073x, satd_pre[16x8] 1.069x, satd_bi[16x16] 1.038x, satd_bi4[16x8] 1.051x */
-        pixf->satd[PIXEL_16x8]  = x264_pixel_satd_16x8_avx512icl;
+        /* satd[16x16] 1.031x, satd_avg2[16x8] 1.073x, satd_pre[16x8] 1.069x, satd_bi[16x16] 1.038x, satd_bi4[16x8] 1.051x;
+         * borderline, slower in 11/11 interleaved runs beyond the spread: satd[16x8] 1.024x, satd_avg2_pre[16x16] 1.008x,
+         * satd_bi[16x8] (weighted 1.015x, unweighted 0.990x), satd_bi4[16x16] (weighted 1.024x, unweighted 0.999x) */
         pixf->satd[PIXEL_8x16]  = x264_pixel_satd_8x16_avx512icl;
         pixf->satd[PIXEL_8x8]   = x264_pixel_satd_8x8_avx512icl;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx512icl;
@@ -1662,16 +1663,13 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_pre[PIXEL_16x16] = x264_pixel_satd_pre_16x16_avx512icl;
         pixf->satd_pre[PIXEL_8x16] = x264_pixel_satd_pre_8x16_avx512icl;
         pixf->satd_pre[PIXEL_8x8] = x264_pixel_satd_pre_8x8_avx512icl;
-        pixf->satd_avg2_pre[PIXEL_16x16] = x264_pixel_satd_avg2_pre_16x16_avx512icl;
         pixf->satd_avg2_pre[PIXEL_16x8] = x264_pixel_satd_avg2_pre_16x8_avx512icl;
         pixf->satd_avg2_pre[PIXEL_8x16] = x264_pixel_satd_avg2_pre_8x16_avx512icl;
         pixf->satd_avg2_pre[PIXEL_8x8] = x264_pixel_satd_avg2_pre_8x8_avx512icl;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx512icl;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;
-        pixf->satd_bi[PIXEL_16x8] = x264_pixel_satd_bi_16x8_avx512icl;
         pixf->satd_bi[PIXEL_8x16] = x264_pixel_satd_bi_8x16_avx512icl;
         pixf->satd_bi[PIXEL_8x8] = x264_pixel_satd_bi_8x8_avx512icl;
-        pixf->satd_bi4[PIXEL_16x16] = x264_pixel_satd_bi4_16x16_avx512icl;
         pixf->satd_bi4[PIXEL_8x16] = x264_pixel_satd_bi4_8x16_avx512icl;
         pixf->satd_bi4[PIXEL_8x8] = x264_pixel_satd_bi4_8x8_avx512icl;
 #endif
