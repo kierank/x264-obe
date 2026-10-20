@@ -363,6 +363,9 @@ weightp_mm_perm16: db  0,0, 64,0,  4,0, 68,0, 16,0, 80,0, 20,0, 84,0
                    db  8,0, 72,0, 12,0, 76,0, 24,0, 88,0, 28,0, 92,0
                    db 40,0,104,0, 44,0,108,0, 56,0,120,0, 60,0,124,0
 weightp_sum_perm16: db  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
+; high bit depth weightp_stats8 avx512icl: vpermt2w of the min (words 0-15) and max (16-31),
+; lane 0 words 0-3 blocks 0 2 4 6, lane 1 words 8-11 blocks 1 3 5 7
+weightp_mm_perm_w: db 0,16, 8,24, 1,17, 9,25, 2,18,10,26, 3,19,11,27
 
 SECTION .text
 
@@ -11544,6 +11547,75 @@ cglobal weightp_sum8_nv, 6,8,13
     vpermd     m4, m9, m4
     movu     [r0], m0
     movu     [r1], m4
+    add        r0, 32
+    add        r1, 32
+    add        r2, 128
+    sub       r4d, 8
+    jg .loopx
+    RET
+%endif
+
+%if HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; high bit depth avx512icl weightp_stats8: as the AVX2 one, but row 0 starts the sum,
+; min and max (no all-ones), the min and max of the 4 registers are reduced together by
+; punpck ladders, and min | max << 16 is packed in block order by one vpermt2w.
+;-----------------------------------------------------------------------------
+; words 0-3 of each lane of %2 = %1 over the 8 words of that lane of %2 %3 %4 %5
+%macro WEIGHTP_HREDUCE4W 6 ; op, a, b, c, d, tmp
+    punpcklwd  %6, %2, %3
+    punpckhwd  %2, %3
+    %1         %2, %6
+    punpcklwd  %6, %4, %5
+    punpckhwd  %4, %5
+    %1         %4, %6
+    punpckldq  %6, %2, %4
+    punpckhdq  %2, %4
+    %1         %2, %6
+    punpckhqdq %6, %2, %2
+    %1         %2, %6
+%endmacro
+
+INIT_YMM avx512icl
+cglobal weightp_stats8, 6,8,16
+    FIX_STRIDES r3
+    vpbroadcastd m13, [pw_1]
+    WEIGHTP_PERM m14
+    pmovzxbw   m15, [weightp_mm_perm_w]
+.loopx:
+    mov        r6, r2
+    lea       r7d, [r5-1]
+    movu       m0, [r6]
+    movu       m1, [r6+32]
+    movu       m2, [r6+64]
+    movu       m3, [r6+96]
+    mova       m4, m0
+    mova       m5, m1
+    mova       m6, m2
+    mova       m7, m3
+    mova       m8, m0
+    mova       m9, m1
+    mova      m10, m2
+    mova      m11, m3
+.loopy:
+    add        r6, r3
+    WEIGHTP_STATS8_ROW m0, m4, m8,  0
+    WEIGHTP_STATS8_ROW m1, m5, m9,  32
+    WEIGHTP_STATS8_ROW m2, m6, m10, 64
+    WEIGHTP_STATS8_ROW m3, m7, m11, 96
+    dec       r7d
+    jg .loopy
+    WEIGHTP_HREDUCE4W pminuw, m4, m5, m6, m7, m12
+    WEIGHTP_HREDUCE4W pmaxuw, m8, m9, m10, m11, m12
+    vpermt2w   m4, m15, m8 ; min | max << 16, blocks in order
+    movu     [r1], m4
+    pmaddwd    m0, m13
+    pmaddwd    m1, m13
+    pmaddwd    m2, m13
+    pmaddwd    m3, m13
+    HADD4D     m0, m1, m2, m3, m8, m9
+    vpermd     m0, m14, m0
+    movu     [r0], m0
     add        r0, 32
     add        r1, 32
     add        r2, 128
