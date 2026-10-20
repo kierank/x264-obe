@@ -1311,6 +1311,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_mcc = x264_pixel_satd_mcc_avx512icl;
         pixf->intra_satd_x3_8x8c = x264_intra_satd_x3_8x8c_avx512icl;
         pixf->intra_satd_x3_8x16c = x264_intra_satd_x3_8x16c_avx512icl;
+        pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512icl; /* over the zmm avx512 one */
 #endif
     }
 #endif // HAVE_MMX
