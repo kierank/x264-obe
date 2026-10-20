@@ -557,13 +557,12 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
-        dctf->dct4x4dc        = x264_dct4x4dc_avx512icl;
-        dctf->idct4x4dc       = x264_idct4x4dc_avx512icl;
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* dct4x4dc 2.72x, idct4x4dc 2.64x, add16x16_idct 1.17x */
 #if ARCH_X86_64
         dctf->sub16x16_dct8   = x264_sub16x16_dct8_avx512icl;
         dctf->add16x16_idct8  = x264_add16x16_idct8_avx512icl;
         dctf->add8x8_idct     = x264_add8x8_idct_avx512icl;
-        dctf->add16x16_idct   = x264_add16x16_idct_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
@@ -681,12 +680,10 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 
     if( cpu&X264_CPU_AVX512ICL )
     {
-        dctf->dct4x4dc         = x264_dct4x4dc_avx512icl;
-        dctf->idct4x4dc        = x264_idct4x4dc_avx512icl;
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* dct4x4dc 1.75x, idct4x4dc 1.14x, add16x16_idct 1.25x, sub16x16_dct8 1.056x */
         dctf->add8x8_idct      = x264_add8x8_idct_avx512icl;
-        dctf->add16x16_idct    = x264_add16x16_idct_avx512icl;
 #if ARCH_X86_64
-        dctf->sub16x16_dct8    = x264_sub16x16_dct8_avx512icl;
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
 #endif
     }
@@ -1047,10 +1044,15 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
-        pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field_avx512icl;
         pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx512icl;
-        pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx512icl;
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx512icl;
+#if HIGH_BIT_DEPTH
+        pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field_avx512icl;
+        pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx512icl;
+#else
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* 8-bit field scan 1.04-1.07x, field scan_ac 1.05-1.07x */
+#endif
     }
 #endif
 
