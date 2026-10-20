@@ -61,6 +61,7 @@ strength_nb_idx:  db 3,4,5,6,11,12,13,14,19,20,21,22,27,28,29,30
 h_luma_p01_idx: DB_COLS16 3, 4, 2, 5
 h_luma_p23_idx: DB_COLS16 1, 6, 0, 7
 h_luma_q01_idx: DB_COLS16 4, 3, 5, 2
+h_luma_q23_idx: DB_COLS16 6, 1, 7, 0
 h_luma_rows0_idx: DB_ROWS8 0
 h_luma_rows8_idx: DB_ROWS8 8
 load_bytes_shuf: times 2 db 3,4,5,6,11,12,13,14,4,5,6,7,12,13,14,15
@@ -2483,7 +2484,7 @@ DEBLOCK_LUMA_INTRA v8
 ; in: m0-m3 = [p0|q0] [p1|q1] [p2|q2] [p3|q3], m4 = [q0|p0], m5 = [q1|p1]
 ;     r2d = alpha, r3d = beta
 ; out: m0-m2 = p0' p1' p2' | q0' q1' q2'
-; clobbers: m6-m14, k1, k2, r2
+; clobbers: ym6-ym14, k1-k5, r2
 %macro LUMA_INTRA_ICL 0
     vpbroadcastb ym12, r2d
     vpbroadcastb ym13, r3d
@@ -2496,15 +2497,21 @@ DEBLOCK_LUMA_INTRA v8
     pminub      ym6, ym1, ym0
     pmaxub      ym8, ym1, ym0
     psubb       ym8, ym6            ; |p1-p0| | |q1-q0|
+    pminub      ym6, ym5, ym4
+    pmaxub     ym10, ym5, ym4
+    psubb      ym10, ym6            ; |q1-q0| | |p1-p0|
     pminub      ym6, ym2, ym0
     pmaxub      ym9, ym2, ym0
     psubb       ym9, ym6            ; |p2-p0| | |q2-q0|
-    vpermq      ym6, ym8, q1032
-    pmaxub      ym8, ym6
-    vpcmpub     k1, ym7, ym12, 1          ; |p0-q0| < alpha
-    vpcmpub     k1 {k1}, ym8, ym13, 1     ; max(|p1-p0|, |q1-q0|) < beta
-    vpcmpub     k2 {k1}, ym7, ym14, 1     ; |p0-q0| < (alpha>>2)+2
-    vpcmpub     k2 {k2}, ym9, ym13, 1     ; |p2-p0| < beta
+    vpcmpub     k1, ym7, ym12, 1    ; |p0-q0| < alpha
+    vpcmpub     k2, ym8, ym13, 1
+    vpcmpub     k3, ym10, ym13, 1
+    vpcmpub     k4, ym7, ym14, 1    ; |p0-q0| < (alpha>>2)+2
+    vpcmpub     k5, ym9, ym13, 1    ; |p2-p0| < beta
+    kandd       k1, k1, k2
+    kandd       k1, k1, k3          ; normal
+    kandd       k2, k4, k5
+    kandd       k2, k2, k1          ; strong
 
     pavgb       ym6, ym2, ym1
     pavgb       ym7, ym0, ym4
@@ -2565,8 +2572,10 @@ cglobal deblock_v_luma_intra, 4,6,15
     vinserti128 m1, m1, [r0+r1], 1
     vinserti128 m2, m2, [r0+r1*2], 1
     vinserti128 m3, m3, [r0+r5], 1
-    vpermq      m4, m0, q1032
-    vpermq      m5, m1, q1032
+    movu       xm4, [r0]
+    movu       xm5, [r0+r1]
+    vinserti128 m4, m4, [r4+r5], 1
+    vinserti128 m5, m5, [r4+r1*2], 1
     LUMA_INTRA_ICL
     movu   [r4+r5], xm0
     vextracti128 [r0], m0, 1
@@ -2647,6 +2656,153 @@ cglobal deblock_h_luma_intra, 4,9,15
     movhps  [r4+r1], xm1
     movq  [r4+r1*2], xm2
     movhps  [r4+r5], xm2
+    RET
+
+;-----------------------------------------------------------------------------
+; avx512icl luma inter, same lane layout as LUMA_INTRA_ICL. The p0/q0 delta is
+; computed once in lane 0 and applied to q0 with its sign swapped.
+;-----------------------------------------------------------------------------
+; in: ym0-ym2 = [p0|q0] [p1|q1] [p2|q2], ym4-ym6 = [q0|p0] [q1|p1] [q2|p2]
+;     r2d = alpha, r3d = beta, r4 = tc0
+; out: ym0-ym1 = p0' p1' | q0' q1'
+; clobbers: ym7-ym15, k1-k6
+%macro LUMA_INTER_ICL 0
+    vpbroadcastb ym12, r2d
+    vpbroadcastb ym13, r3d
+    vpbroadcastd ym14, [r4]
+    pshufb      ym14, [pb_unpackbd1] ; tc0
+    pminub      ym7, ym0, ym4
+    pmaxub      ym8, ym0, ym4
+    psubb       ym8, ym7            ; |p0-q0|
+    pminub      ym7, ym1, ym0
+    pmaxub      ym9, ym1, ym0
+    psubb       ym9, ym7            ; |p1-p0| | |q1-q0|
+    pminub      ym7, ym5, ym4
+    pmaxub     ym10, ym5, ym4
+    psubb      ym10, ym7            ; |q1-q0| | |p1-p0|
+    pminub      ym7, ym2, ym0
+    pmaxub     ym11, ym2, ym0
+    psubb      ym11, ym7            ; |p2-p0| | |q2-q0|
+    pminub      ym7, ym6, ym4
+    pmaxub     ym15, ym6, ym4
+    psubb      ym15, ym7            ; |q2-q0| | |p2-p0|
+    vpcmpub     k1, ym8, ym12, 1
+    vpcmpub     k2, ym9, ym13, 1
+    vpcmpub     k3, ym10, ym13, 1
+    vpmovb2m    k4, ym14            ; tc0 < 0: bS 0
+    vpcmpub     k5, ym11, ym13, 1   ; ap | aq
+    vpcmpub     k6, ym15, ym13, 1   ; aq | ap
+    kandd       k1, k1, k2
+    kandnd      k3, k4, k3
+    kandd       k1, k1, k3          ; mask
+    kandd       k5, k5, k1
+    kandd       k6, k6, k1
+    vmovdqu8    ym7 {k1}{z}, ym14
+    vmovdqu8    ym9 {k5}{z}, ym14   ; tc0 for p1 | q1
+    paddb       ym7 {k5}, ym7, [pb_1]
+    paddb       ym7 {k6}, ym7, [pb_1] ; tc = tc0+ap+aq
+    pavgb       ym8, ym0, ym4       ; (p0+q0+1)>>1
+
+    pxor       xm10, xm0, xm4
+    vpandd     xm10, [pb_1]{1to4}   ; (p0^q0)&1
+    vpternlogd xm11, xm5, xm5, 0x33 ; ~q1
+    pavgb      xm11, xm1            ; (p1 - q1 + 256)>>1
+    pavgb      xm11, [pb_3]         ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    vpternlogd xm12, xm0, xm0, 0x33 ; ~p0
+    pavgb      xm12, xm4            ; (q0 - p0 + 256)>>1
+    pavgb      xm11, xm10
+    paddusb    xm11, xm12           ; d+128+33
+    mova       xm10, [pb_a1]
+    psubusb    xm10, xm11
+    psubusb    xm11, [pb_a1]
+    pminub     xm10, xm7            ; -d
+    pminub     xm11, xm7            ; +d
+    vinserti128 ym12, ym10, xm11, 1
+    vinserti128 ym11, ym11, xm10, 1
+    psubusb     ym0, ym12
+    paddusb     ym0, ym11           ; p0' | q0'
+
+    pavgb      ym10, ym2, ym8
+    vpternlogd  ym8, ym2, [pb_1]{1to8}, 0x28 ; (p2 ^ avg(p0,q0)) & 1
+    psubusb    ym10, ym8            ; (p2+((p0+q0+1)>>1))>>1
+    psubusb     ym8, ym1, ym9
+    paddusb     ym9, ym1
+    pmaxub     ym10, ym8
+    pminub      ym1, ym10, ym9      ; p1' | q1'
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void deblock_h_luma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal deblock_h_luma, 5,10,16
+    lea         r5, [r1*3]
+    lea         r6, [r0-4]
+    lea         r7, [r6+r1*4]
+    lea         r8, [r6+r1*8]
+    lea         r9, [r7+r1*8]
+    movq       xm8, [r6]
+    movhps     xm8, [r6+r1]
+    movq       xm0, [r6+r1*2]
+    movhps     xm0, [r6+r5]
+    movq       xm1, [r7]
+    movhps     xm1, [r7+r1]
+    movq       xm2, [r7+r1*2]
+    movhps     xm2, [r7+r5]
+    movq       xm9, [r8]
+    movhps     xm9, [r8+r1]
+    movq       xm3, [r8+r1*2]
+    movhps     xm3, [r8+r5]
+    movq       xm4, [r9]
+    movhps     xm4, [r9+r1]
+    movq       xm5, [r9+r1*2]
+    movhps     xm5, [r9+r5]
+    vinserti128 ym8, ym8, xm0, 1
+    vinserti128 ym1, ym1, xm2, 1
+    vinserti128 ym9, ym9, xm3, 1
+    vinserti128 ym4, ym4, xm5, 1
+    vinserti64x4 m8, m8, ym1, 1     ; rows 0-7
+    vinserti64x4 m9, m9, ym4, 1     ; rows 8-15
+    mova        m0, [h_luma_p01_idx]
+    mova        m2, [h_luma_p23_idx]
+    mova        m4, [h_luma_q01_idx]
+    mova        m6, [h_luma_q23_idx]
+    vpermi2b    m0, m8, m9
+    vpermi2b    m2, m8, m9
+    vpermi2b    m4, m8, m9
+    vpermi2b    m6, m8, m9
+    vextracti64x4 ym1, m0, 1
+    vextracti64x4 ym3, m2, 1
+    vextracti64x4 ym5, m4, 1
+    LUMA_INTER_ICL
+    vinserti64x4 m0, m0, ym1, 1
+    vinserti64x4 m2, m2, ym3, 1
+    mova        m6, [h_luma_rows0_idx]
+    mova        m7, [h_luma_rows8_idx]
+    vpermi2b    m6, m0, m2
+    vpermi2b    m7, m0, m2
+    movq       [r6], xm6
+    movhps  [r6+r1], xm6
+    vextracti32x4 xm0, m6, 1
+    vextracti32x4 xm1, m6, 2
+    vextracti32x4 xm2, m6, 3
+    movq  [r6+r1*2], xm0
+    movhps  [r6+r5], xm0
+    movq       [r7], xm1
+    movhps  [r7+r1], xm1
+    movq  [r7+r1*2], xm2
+    movhps  [r7+r5], xm2
+    movq       [r8], xm7
+    movhps  [r8+r1], xm7
+    vextracti32x4 xm0, m7, 1
+    vextracti32x4 xm1, m7, 2
+    vextracti32x4 xm2, m7, 3
+    movq  [r8+r1*2], xm0
+    movhps  [r8+r5], xm0
+    movq       [r9], xm1
+    movhps  [r9+r1], xm1
+    movq  [r9+r1*2], xm2
+    movhps  [r9+r5], xm2
     RET
 %endif ; ARCH_X86_64
 
