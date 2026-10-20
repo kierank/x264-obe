@@ -1287,6 +1287,12 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+        /* x264-weird2 pixmisc winners */
+        pixf->ssd[PIXEL_4x16] = x264_pixel_ssd_4x16_avx512icl;
+        pixf->ssd[PIXEL_4x8]  = x264_pixel_ssd_4x8_avx512icl;
+        pixf->weightp_stats8 = x264_weightp_stats8_avx512icl;
+        pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
 #endif
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
@@ -1691,12 +1697,19 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* var[8x8] 1.089x, var2[8x16] 1.034x, ssd[16x16] zmm 1.085x, weightp_stats8 icl 1.076x (vs the avx2 rewrite) */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
-        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+        /* x264-weird2 pixmisc winners */
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
+        pixf->ssd[PIXEL_4x16] = x264_pixel_ssd_4x16_avx512icl;
+        pixf->ssd[PIXEL_4x8]  = x264_pixel_ssd_4x8_avx512icl;
+        pixf->ssd[PIXEL_4x4]  = x264_pixel_ssd_4x4_avx512icl;
+        pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx512icl;
+        pixf->weightp_stats8 = x264_weightp_stats8_zmm_avx512icl;
 #endif
     }
 #endif //HAVE_MMX
