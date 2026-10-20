@@ -1377,6 +1377,28 @@ static int check_pixel( int cpu_ref, int cpu_new )
             ok = 0;
             fprintf( stderr, "ssim: %.7f != %.7f [FAILED]\n", res_c, res_a );
         }
+        /* the core sums exactly: random, maxed differences, PIXEL_MAX against 0 and itself */
+        for( int j = 0; j < 4 && ok; j++ )
+        {
+            ALIGNED_16( int sc[2][4] );
+            ALIGNED_16( int sa[2][4] );
+            pixel *p1 = j == 0 ? pbuf1+5 : pbuf3;
+            pixel *p2 = j == 0 ? pbuf2+3 : j == 1 ? pbuf4 : pbuf3;
+            for( int k = 0; k < 4*32 && j; k++ )
+            {
+                pbuf3[k] = j == 1 ? -(rand()&1) & PIXEL_MAX : PIXEL_MAX;
+                pbuf4[k] = j == 1 ? PIXEL_MAX - pbuf3[k] : 0;
+            }
+            if( j == 2 )
+                p2 = pbuf4;
+            pixel_c.ssim_4x4x2_core( p1, 32, p2, 32, sc );
+            pixel_asm.ssim_4x4x2_core( p1, 32, p2, 32, sa );
+            if( memcmp( sc, sa, sizeof(sc) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "ssim_4x4x2_core %d [FAILED]\n", j );
+            }
+        }
         set_func_name( "ssim_core" );
         call_c2( pixel_c.ssim_4x4x2_core,   pbuf1+2, (intptr_t)32, pbuf2+2, (intptr_t)32, sums );
         call_a2( pixel_asm.ssim_4x4x2_core, pbuf1+2, (intptr_t)32, pbuf2+2, (intptr_t)32, sums );

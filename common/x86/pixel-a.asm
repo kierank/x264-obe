@@ -8623,6 +8623,97 @@ INIT_XMM avx
 SSIM
 
 ;-----------------------------------------------------------------------------
+; avx512icl ssim_4x4x2_core: VNNI. A dword is 4 pixels of a row of one block (8-bit) or
+; 2 (high bit depth); sums s1 m2, s2 m3, ss m4, s12 m5.
+; 8-bit: four rows a ymm; x*1, x*(x ^ 0x80) = x*x - 128*x, a*(b ^ 0x80) = a*b - 128*a.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_YMM avx512icl
+cglobal pixel_ssim_4x4x2_core, 5,8,10
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    pxor        m2, m2
+    pxor        m3, m3
+    pxor        m4, m4
+    pxor        m5, m5
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m6, [pw_1]
+    movu       xm0, [r0]
+    vinserti128 m0, m0, [r0+r1], 1
+    movu       xm1, [r2]
+    vinserti128 m1, m1, [r2+r3], 1
+    movu       xm7, [r0+r1*2]
+    vinserti128 m7, m7, [r0+r5], 1
+    movu       xm8, [r2+r3*2]
+    vinserti128 m8, m8, [r2+r6], 1
+    vpdpwssd    m2, m0, m6
+    vpdpwssd    m3, m1, m6
+    vpdpwssd    m4, m0, m0
+    vpdpwssd    m5, m0, m1
+    vpdpwssd    m2, m7, m6
+    vpdpwssd    m3, m8, m6
+    vpdpwssd    m4, m7, m7
+    vpdpwssd    m5, m7, m8
+    vpdpwssd    m4, m1, m1
+    vpdpwssd    m4, m8, m8
+    ; dwords per row: L L R R
+    punpckldq   m8, m2, m3
+    punpckhdq   m2, m3
+    punpckldq   m9, m4, m5
+    punpckhdq   m4, m5
+    punpcklqdq  m3, m8, m9
+    punpckhqdq  m8, m9
+    paddd       m3, m8            ; s1 s2 ss s12 of L
+    punpcklqdq  m8, m2, m4
+    punpckhqdq  m2, m4
+    paddd       m2, m8            ; of R
+%else
+    vpbroadcastd m6, [pb_1]
+    mov        r7d, 0x80808080
+    vpbroadcastd m7, r7d
+    movq       xm0, [r0]
+    movhps     xm0, [r0+r1]
+    movq       xm8, [r0+r1*2]
+    movhps     xm8, [r0+r5]
+    vinserti128 m0, m0, xm8, 1
+    movq       xm1, [r2]
+    movhps     xm1, [r2+r3]
+    movq       xm8, [r2+r3*2]
+    movhps     xm8, [r2+r6]
+    vinserti128 m1, m1, xm8, 1
+    pxor        m8, m0, m7
+    pxor        m9, m1, m7
+    vpdpbusd    m2, m0, m6
+    vpdpbusd    m3, m1, m6
+    vpdpbusd    m4, m0, m8
+    vpdpbusd    m5, m0, m9
+    vpdpbusd    m4, m1, m9
+    paddd       m8, m2, m3
+    pslld       m8, 7
+    pslld       m9, m2, 7
+    paddd       m4, m8
+    paddd       m5, m9
+    ; dwords per row: L R
+    punpckldq   m8, m2, m3
+    punpckhdq   m2, m3
+    paddd       m2, m8            ; s1 s2 of L, R
+    punpckldq   m8, m4, m5
+    punpckhdq   m4, m5
+    paddd       m4, m8            ; ss s12 of L, R
+    punpcklqdq  m3, m2, m4
+    punpckhqdq  m2, m4
+%endif
+    vextracti128 xm8, m3, 1
+    paddd      xm3, xm8
+    vextracti128 xm8, m2, 1
+    paddd      xm2, xm8
+    movu   [r4+ 0], xm3
+    movu   [r4+16], xm2
+    RET
+%endif
+
+;-----------------------------------------------------------------------------
 ; int pixel_asd8( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 ;-----------------------------------------------------------------------------
 %macro ASD8 0

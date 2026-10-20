@@ -715,6 +715,7 @@
 #define x264_pixel_var_8x8_mmx2 x264_template(pixel_var_8x8_mmx2)
 #define x264_pixel_var_8x8_sse2 x264_template(pixel_var_8x8_sse2)
 #define x264_pixel_var_8x8_xop x264_template(pixel_var_8x8_xop)
+#define x264_pixel_ssim_4x4x2_core_avx512icl x264_template(pixel_ssim_4x4x2_core_avx512icl)
 #define x264_pixel_ssd_16x16_avx512icl x264_template(pixel_ssd_16x16_avx512icl)
 #define x264_pixel_ssd_16x8_avx512icl x264_template(pixel_ssd_16x8_avx512icl)
 #define x264_pixel_ssd_8x16_avx512icl x264_template(pixel_ssd_8x16_avx512icl)
@@ -959,6 +960,8 @@ void x264_pixel_ssim_4x4x2_core_sse2( const pixel *pix1, intptr_t stride1,
                                       const pixel *pix2, intptr_t stride2, int sums[2][4] );
 void x264_pixel_ssim_4x4x2_core_avx ( const pixel *pix1, intptr_t stride1,
                                       const pixel *pix2, intptr_t stride2, int sums[2][4] );
+void x264_pixel_ssim_4x4x2_core_avx512icl( const pixel *pix1, intptr_t stride1,
+                                          const pixel *pix2, intptr_t stride2, int sums[2][4] );
 float x264_pixel_ssim_end4_sse2( int sum0[5][4], int sum1[5][4], int width );
 float x264_pixel_ssim_end4_avx ( int sum0[5][4], int sum1[5][4], int width );
 int  x264_pixel_var2_8x8_mmx2  ( pixel *,   intptr_t, pixel *,   intptr_t, int * );
