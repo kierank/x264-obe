@@ -1380,6 +1380,24 @@ DENOISE_DCT
 INIT_YMM avx2
 DENOISE_DCT
 
+INIT_ZMM avx512icl
+cglobal denoise_dct, 4,4,4
+    pxor     xm3, xm3
+    movsxdifnidn r3, r3d
+.loop:
+    movu      m1, [r0+r3*4-64]
+    pabsd     m0, m1
+    paddd     m2, m0, [r1+r3*4-64]
+    movu [r1+r3*4-64], m2
+    psubd     m0, [r2+r3*4-64]
+    pmaxsd    m0, m3
+    vpmovd2m  k1, m1
+    vpsubd    m0{k1}, m3, m0
+    movu [r0+r3*4-64], m0
+    sub      r3d, 16
+    jg .loop
+    RET
+
 %else ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
@@ -1446,6 +1464,24 @@ cglobal denoise_dct, 4,4,4
     mova      [r1+r3*4-2*mmsize], m1
     mova      [r1+r3*4-1*mmsize], m0
     sub       r3, mmsize/2
+    jg .loop
+    RET
+
+INIT_ZMM avx512icl
+cglobal denoise_dct, 4,4,4
+    pxor     xm3, xm3
+    movsxdifnidn r3, r3d
+.loop:
+    movu     ym1, [r0+r3*2-32]
+    pabsw    ym0, ym1
+    psubusw  ym2, ym0, [r2+r3*2-32]
+    vpmovw2m  k1, ym1
+    vpsubw   ym2{k1}, ym3, ym2
+    movu [r0+r3*2-32], ym2
+    vpmovzxwd m0, ym0
+    paddd     m0, [r1+r3*4-64]
+    movu [r1+r3*4-64], m0
+    sub       r3, 16
     jg .loop
     RET
 

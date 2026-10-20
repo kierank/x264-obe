@@ -149,6 +149,8 @@ void x264_denoise_dct_ssse3( dctcoef *dct, uint32_t *sum, udctcoef *offset, int 
 void x264_denoise_dct_avx  ( dctcoef *dct, uint32_t *sum, udctcoef *offset, int size );
 #define x264_denoise_dct_avx2 x264_template(denoise_dct_avx2)
 void x264_denoise_dct_avx2 ( dctcoef *dct, uint32_t *sum, udctcoef *offset, int size );
+#define x264_denoise_dct_avx512icl x264_template(denoise_dct_avx512icl)
+void x264_denoise_dct_avx512icl( dctcoef *dct, uint32_t *sum, udctcoef *offset, int size );
 #define x264_decimate_score15_mmx2 x264_template(decimate_score15_mmx2)
 int x264_decimate_score15_mmx2( dctcoef *dct );
 #define x264_decimate_score15_sse2 x264_template(decimate_score15_sse2)

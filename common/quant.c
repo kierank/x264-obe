@@ -791,6 +791,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     if( cpu&X264_CPU_AVX512ICL )
     {
         INIT_TRELLIS( avx512icl );
+        pf->denoise_dct = x264_denoise_dct_avx512icl;
 #if ARCH_X86_64
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
