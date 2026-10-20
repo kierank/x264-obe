@@ -33,6 +33,7 @@
 #include "mc.h"
 #define x264_frame_init_lowres_core_avx x264_template(frame_init_lowres_core_avx)
 #define x264_frame_init_lowres_core_avx2 x264_template(frame_init_lowres_core_avx2)
+#define x264_frame_init_lowres_core_avx512icl x264_template(frame_init_lowres_core_avx512icl)
 #define x264_frame_init_lowres_core8_ssse3 x264_template(frame_init_lowres_core8_ssse3)
 #define x264_frame_init_lowres_core8_avx2 x264_template(frame_init_lowres_core8_avx2)
 #define x264_frame_init_lowres_core_cache32_mmx2 x264_template(frame_init_lowres_core_cache32_mmx2)
@@ -547,10 +548,14 @@ LOWRES(ssse3)
 LOWRES(avx)
 LOWRES(xop)
 LOWRES(avx2)
+LOWRES(avx512icl)
 void x264_frame_init_lowres_core8_ssse3( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                          intptr_t src_stride, intptr_t dst_stride, int width, int height );
 void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                         intptr_t src_stride, intptr_t dst_stride, int width, int height );
+#define x264_frame_init_lowres_core8_avx512icl x264_template(frame_init_lowres_core8_avx512icl)
+void x264_frame_init_lowres_core8_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+                                             intptr_t src_stride, intptr_t dst_stride, int width, int height );
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
@@ -1381,6 +1386,14 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight_plane = weight_plane_avx512;
 #endif
     }
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
+        pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx512icl;
+#endif
+    }
 #else // !HIGH_BIT_DEPTH
 
 #if ARCH_X86 // all x86_64 cpus with cacheline split issues use sse2 instead
@@ -1557,6 +1570,13 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg[PIXEL_8x4]   = x264_pixel_avg_8x4_avx512;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx512;
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx512;
+    }
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
+#endif
     }
 #endif // HIGH_BIT_DEPTH
 
