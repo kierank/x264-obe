@@ -606,6 +606,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->quant_4x4 = x264_quant_4x4_avx512icl;
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx512icl;
         pf->quant_8x8 = x264_quant_8x8_avx512icl;
+        pf->quant_4x4x4 = x264_quant_4x4x4_avx512icl;
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
         pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx512icl;
@@ -804,6 +805,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->decimate_score16 = x264_decimate_score16_avx512icl;
         pf->decimate_score64 = x264_decimate_score64_avx512icl;
         pf->quant_8x8 = x264_quant_8x8_avx512icl;
+        pf->quant_4x4x4 = x264_quant_4x4x4_avx512icl;
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
         pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx512icl;
