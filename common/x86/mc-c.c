@@ -250,6 +250,11 @@
 #define x264_pixel_avg_16x8_ssse3 x264_template(pixel_avg_16x8_ssse3)
 #define x264_pixel_avg_4x16_avx2 x264_template(pixel_avg_4x16_avx2)
 #define x264_pixel_avg_4x16_avx512 x264_template(pixel_avg_4x16_avx512)
+#define x264_pixel_avg_16x16_avx512icl x264_template(pixel_avg_16x16_avx512icl)
+#define x264_pixel_avg_4x16_avx512icl x264_template(pixel_avg_4x16_avx512icl)
+#define x264_pixel_avg_4x8_avx512icl x264_template(pixel_avg_4x8_avx512icl)
+#define x264_pixel_avg_4x4_avx512icl x264_template(pixel_avg_4x4_avx512icl)
+#define x264_pixel_avg_4x2_avx512icl x264_template(pixel_avg_4x2_avx512icl)
 #define x264_pixel_avg_4x16_mmx2 x264_template(pixel_avg_4x16_mmx2)
 #define x264_pixel_avg_4x16_sse2 x264_template(pixel_avg_4x16_sse2)
 #define x264_pixel_avg_4x16_ssse3 x264_template(pixel_avg_4x16_ssse3)
@@ -322,6 +327,11 @@ DECL_SUF( x264_pixel_avg_4x16,  ( pixel *, intptr_t, pixel *, intptr_t, pixel *,
 DECL_SUF( x264_pixel_avg_4x8,   ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
 DECL_SUF( x264_pixel_avg_4x4,   ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
 DECL_SUF( x264_pixel_avg_4x2,   ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
+void x264_pixel_avg_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_4x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_4x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_4x4_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_4x2_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
 
 #define MC_WEIGHT(w,type) \
     void x264_mc_weight_w##w##_##type( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int );
@@ -1648,6 +1658,11 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight = x264_mc_weight_wtab_avx512icl;
         pf->offsetadd = x264_mc_offsetadd_wtab_avx512icl;
         pf->offsetsub = x264_mc_offsetsub_wtab_avx512icl;
+        pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx512icl;
+        pf->avg[PIXEL_4x16]  = x264_pixel_avg_4x16_avx512icl;
+        pf->avg[PIXEL_4x8]   = x264_pixel_avg_4x8_avx512icl;
+        pf->avg[PIXEL_4x4]   = x264_pixel_avg_4x4_avx512icl;
+        pf->avg[PIXEL_4x2]   = x264_pixel_avg_4x2_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
