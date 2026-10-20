@@ -219,3 +219,92 @@ x86_32 guards. Observations, not bugs:
      `--subme 1`). Only overload presets run it.
 3. zen5/ branches: none expected to win on Zen 4 (double-pumped like this laptop); park
    until a full-width Zen 5 server exists.
+
+## Round 2 (2026-10-20): every rejected or undispatched row written and dispatched
+
+Branch `wip/x264-weird2-sad`, base `wip/x264-weird-sa8d8` 67b4aff6. Kieran's rules:
+"don't reject, send all to rack01", and "move to zen5 if rack01 is too slow". Every
+kernel below is dispatched on this branch, one commit per kernel. rack01 decides. No
+laptop timings were taken.
+
+Laptop checks (the laptop was on battery for most of the round):
+- **Drivers.** Each kernel was compared against the C reference in a standalone gcc
+  driver: random, PIXEL_MAX vs 0 both ways, inverted-fenc and checkerboard maxima, and
+  small spreads for DC rounding. The drivers live in
+  `scratchpad/x264-weird2-sad-drv/*.c`.
+  - Refs sit at arbitrary offsets and strides, and the last row is placed against a
+    PROT_NONE guard page.
+  - k1-k7 are clobbered with random values (kclob.asm) before every kernel call.
+- **gdb ABI check.** `abichk.py` checks every kernel at its ret, with tail calls
+  handled. It confirms that rbx, rbp and r12-r15 are preserved, that rsp is correct,
+  and that bits 128-511 of zmm0-15 are zero. All pass. Positive controls fired on a
+  `xor ebx,ebx` and on a VEX ymm1 write.
+- **Mutation.** 123 mutants, re-run after the k-clobber was added: all killed. They
+  include a "kmov -> nop" mask-setup removal in every kernel that uses a k-mask.
+  Equivalent mutants (accumulator choice, fallback target, lane 3 of x3) are noted
+  per row. A null mutant (no change) survives, as it should.
+- **Full build and checkasm.** Once on AC power: `--bit-depth=all` build, then
+  checkasm8 and checkasm10 at seeds 1001, 2002 and 3003. All pass. Positive control:
+  10-bit intra 8x16c mask, VNNI sad_x pw_64 and 8-bit sad_avg2 pavgb broken together
+  made `intra sad_x3`, `sad_x3_min`/`sad_x4_min` and `sad_avg2` FAIL. With them
+  restored, everything passes.
+- **nasm.** Every intermediate commit's asm assembles with nasm 3.01 and 2.14.02 to
+  identical disassembly. Nothing needs a nasm newer than 2.14.02 (vpdpwssd EVEX,
+  vpermi2b, vpermb, vpermw, valignq, vpmovqw, vpmovqd, vdbpsadbw, kmovw from memory,
+  k-merged broadcasts). Every vpdpwssd has the EVEX prefix.
+
+Coordinator lessons applied:
+- No per-row-inserted or shifted zmm loads were added. Rows are packed by k-merged
+  broadcasts (vpbroadcastq/d, vbroadcasti32x4/64x4), or the kernel stays at ymm.
+- The round-1 vpermt2b left variant (zmm loads from fdec-1, always split) was rewritten
+  with 64-byte-aligned loads only.
+- Reduction tails, which feed mode decisions and ME branches, are kept short. Their op
+  counts are listed below.
+- vpdpwssd always uses two or more accumulators.
+- New rodata goes at the end of the section with ALIGN, and generator variables are
+  %undef'd.
+
+### Round-2 rows
+
+| function | depth | round-1 decision | round-2 action | commit | driver | nasm 2.14.02 |
+|---|---|---|---|---|---|---|
+| intra_sad_x3_16x16 | 10 | rejected (C combo; avx2-sad combo lost) | written: AVX512 zmm, predictions in registers (pshufb H, pavgw DC), tail SAD_X_HBD16_ZMM_END 17 ops / 10 deep | 9e1ccaaa | pass; 6 mutants killed | ok |
+| intra_sad_x3_8x8c | 10 | rejected (C combo) | written: AVX512, fenc rows by k-merged vbroadcasti32x4 (16 B aligned, no splits), DC by shufps quad sums + zero-masked vpshufd + vpsrlvd/pavgw | e4fd6ef4 | pass; 11 mutants | ok |
+| intra_sad_x3_8x16c | 10 | rejected (C combo; 4:2:2 chroma) | written: AVX512, eight DCs by two vpermd (one zero-masked) | 7ea69536 | pass; 10 mutants | ok |
+| intra_sad_x3_8x8 | 10 | rejected ("small gain, subme <= 1") | written: AVX512, 4 rows a zmm, edge reversed by one pshufb | 89e81a16 | pass; 4 mutants | ok |
+| intra_sad_x3_4x4 | 10 | rejected ("fits one xmm") | written: AVX512, k-merged vpbroadcastq fenc, { V \| H } by one vpermw, tail 9 ops / 8 deep | 9ccb1538 | pass; 9 mutants (lane-3 mask mutant equivalent) | ok |
+| pixel_vsad | 10 | rejected ("needs merges") | written: AVX512 zmm row pairs (ymm + k-merged vbroadcasti64x4), valignq for the row below; words at most 31*1023 at height 32; tail 11 ops | 2f543a2e | pass, all even heights 2-32, max pattern; 5 mutants (paddw->paddsw equivalent: no overflow) | ok |
+| pixel_vsad | 8 | rejected | written: AVX512ICL ymm (VL only), valignq + psadbw, tail 7 ops. Agent D has a separate pixel_vsad_valign_avx512icl; rack01 compares them | 333e42b4 | pass; 4 mutants | ok |
+| pixel_sad_x3(_min) 16x16/16x8 | 10 | zmm (zen5; parked after rack01 -1.3..-2.0 %) | written: AVX512ICL ymm VNNI (x265 P5): vpdpwssd pw_1/pw_64, 2 accumulators per ref, refs as memory operands; tail 15 ops / 7 deep. Overrides the zmm slot | 664f44da | pass, every min winner; 13 mutants | ok |
+| pixel_sad_x4(_min) 16x16/16x8 | 10 | as above | written, as above | 7569c8ae | pass | ok |
+| pixel_sad_x3(_min) 8x16/8x8 | 10 | as above | written: x264 paired-ref layout (SAD_X3_HBD_Y) + vpdpwssd; tail 11 ops / 8 deep (x3 lane 3 >= 0 cannot win a min) | 3349ac2b | pass | ok |
+| pixel_sad_x4(_min) 8x16/8x8 | 10 | as above | written: paired refs (SAD_X4_HBD_Y) + vpdpwssd; tail 9 ops / 6 deep | 65a3f574 | pass | ok |
+| pixel_sad_x3/x4 8x4 | 10 | rejected ("unused in production") | written: the 8-wide VNNI kernel at height 4 | deabfcdd | pass | ok |
+| pixel_sad_x3/x4 4x8, 4x4 | 10 | rejected | written: one ref a qword lane (movq + k-merged vpbroadcastq), vpdpwssd, tail 4 ops (vpmovqd) | e121509c, 10cfbb4f | pass; 5 mutants | ok |
+| pixel_sad_16x16/16x8 VNNI | 10 | written, rejected (laptop) | recovered and rewritten: AVX512ICL zmm, row pairs by k-merged vbroadcasti64x4, vpdpwssd 2 accumulators; tail 10 ops. Overrides the round-1 zmm slot | 80538902 | pass; 5 mutants (accumulator and fallback mutants equivalent) | ok |
+| pixel_sad_8x16/8x8/8x4 | 10 | rejected ("3 merges, worse") | written: AVX512 zmm, 4 rows from one load + 3 k-merged vbroadcasti32x4 (no load wider than a row); tail 10 ops | 3b202de5, 7052e1fd, a47f6786 | pass; 10 mutants | ok |
+| pixel_sad_4x8/4x4 | 10 | rejected ("MMX width is fine") | written: AVX512 ymm, k-merged vpbroadcastq; tail 8 ops | 64e63acf, d6558686 | pass | ok |
+| pixel_sad_avg2_8x16/8x8 | 10 | rejected | written: AVX512 zmm, both sources and fenc k-merged, pavgw; tail 10 ops | e9dcc969, 47335394 | pass; 4 mutants | ok |
+| pixel_sad_avg2 16x16/16x8/8x16/8x8 | 8 | rejected ("no fewer ops") | written: AVX512ICL zmm, 4 rows a source by k-merged vbroadcasti32x4, psadbw against a 64 B fenc operand, 2 accumulators; 8 wide reads 8 bytes past each row like the avx2 kernel | c3e8f141, 625ce693, 3cf1824c, d899f9fa | pass (guard page 8 bytes after each row, as avx2 needs); 7 mutants | ok |
+| intra_sad_x3_8x16c | 8 | not in the round-1 table (sse2 C combo) | written: AVX512ICL, as the 8x8c kernel (vdbpsadbw, vpermw+pmaddwd DC, vpermb) | df965c35 | pass; 8 mutants | ok |
+| intra_sad_x3_16x16 / 8x8c, vpermt2b left | 8 | written, rejected (laptop; split loads) | rewritten split-free: only 64 B aligned fdec loads, vpermi2b/vpermb gathers with k-masks (16x16: two chains merged by vmovdqu8). fdec at 64n (luma, U) or 64n+16 (V) takes the fast path, any other alignment tail-calls the pinsrb kernel. 51e93209 macro-izes the round-1 bodies (objdump identical). Override the slots | 51e93209, 184dd1de, 446f2bfb | pass at aligned and unaligned fdec; 12 mutants | ok |
+| intra_sad_x3_4x4 | 8 | unchanged ("unused when x9 is dispatched") | written: AVX512ICL. Reached: x9 is used only when predict_mode[8] >= 0 (analyse.c:969), so frame edges, lossless and --cpu-independent run x3. { V \| H \| DC } lanes, one psadbw, tail 2 ops | b286da56 | pass; 7 mutants | ok |
+| intra_sad_x3_8x8 | 8 | unchanged ("unused when x9 is dispatched") | written: AVX512ICL, reached as above (analyse.c:851). vpermb H from the reversed edge, packed-qword tail | a7d93e7b | pass; 6 mutants | ok |
+| pixel_sad 16x16/16x8/8x16/8x8/small | 8 | unchanged (upstream avx512 undispatched, c24c3625) | skipped: the AVX-512 expression exists (upstream zmm/ymm avx512); rack01 measured it slower in situ (c24c3625), and it is dispatched on zen5/avx512-8bit-pixel-retest. vpdpbusd cannot form \|a-b\|; psadbw already reduces | - | - | - |
+| pixel_sad_x3/x4 (all sizes) | 8 | unchanged | skipped: as above (upstream avx512 on zen5/avx512-8bit-pixel-retest). vdbpsadbw needs refs at adjacent x offsets, which needs an ME API change (out of scope) | - | - | - |
+| pixel_sad_x3/x4_min | 8 | unchanged (kmask argmin measured 2026-10-12) | skipped: the k-mask argmin is on zen5/asm-avx512vl-kmask (rack01-measured) | - | - | - |
+| pixel_sad_*_cache32/64 | 8 | unchanged | skipped: CACHELINE_32/64 are never set on SSE4.2+ CPUs, so no AVX-512 CPU can select them | - | - | - |
+| mmx2/sse2/ssse3/xop variants | 8, 10 | unchanged | skipped: superseded at dispatch on every AVX-512 CPU | - | - | - |
+
+### Findings (round 2)
+
+- No functional bug was found in the existing sad asm.
+- 8-bit avx2 (and new zmm) sad_avg2 8x16/8x8 read 8 bytes past each reference row, as
+  their comment says (planes' PADH). A guard-page driver segfaults without that slack.
+  This is pre-existing and documented, not a bug.
+- The round-1 8-bit intra_sad_x3_8x8c fenc 64-byte loads read up to 8 bytes past the
+  V block's last row. They stay inside fenc_buf (48 rows). The round-2 10-bit chroma
+  kernels use row loads and read nothing past the block.
+- Review of the satd agent's skip reason: 8-bit intra_satd_x3_4x4 and
+  intra_sa8d_x3_8x8 are reachable (frame edges, lossless, --cpu-independent), as their
+  sad counterparts are. Passed on to it.
