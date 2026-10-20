@@ -677,6 +677,8 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 
     if( cpu&X264_CPU_AVX512ICL )
     {
+        dctf->add8x8_idct      = x264_add8x8_idct_avx512icl;
+        dctf->add16x16_idct    = x264_add16x16_idct_avx512icl;
 #if ARCH_X86_64
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
 #endif
