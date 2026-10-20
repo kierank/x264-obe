@@ -4503,13 +4503,13 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     }\
                     call_c1( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                     call_a1( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
-                    ok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp(cb[0].state, cb[1].state, 1024);\
+                    int cok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp(cb[0].state, cb[1].state, 1024);\
                     if( !rd )\
                     {\
                         /* a carry or a 0xff byte may be held in another form: compare the position,\
                          * then flush copies and compare the whole stream */\
                         x264_cabac_t fl[2];\
-                        ok &= x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) &&\
+                        cok &= x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) &&\
                               cb[0].i_range == cb[1].i_range && cb[0].i_queue == cb[1].i_queue;\
                         memcpy( &fl[0], &cb[0], sizeof(x264_cabac_t) );\
                         memcpy( &fl[1], &cb[1], sizeof(x264_cabac_t) );\
@@ -4517,11 +4517,12 @@ static int check_cabac( int cpu_ref, int cpu_new )
                         x264_cabac_encode_bypass_c( &fl[1], 0 );\
                         x264_cabac_encode_flush( &h, &fl[0] );\
                         x264_cabac_encode_flush( &h, &fl[1] );\
-                        ok &= fl[0].p - bitstream[0] == fl[1].p - bitstream[1] &&\
+                        cok &= fl[0].p - bitstream[0] == fl[1].p - bitstream[1] &&\
                               !memcmp( bitstream[1], bitstream[0], fl[0].p - bitstream[0] );\
                     }\
-                    if( !ok )\
+                    if( !cok )\
                     {\
+                        ok = 0;\
                         fprintf( stderr, #name " :  [FAILED] ctx_block_cat %d", (int)ctx_block_cat );\
                         if( rd && cb[0].f8_bits_encoded != cb[1].f8_bits_encoded )\
                             fprintf( stderr, " (%d != %d)", cb[0].f8_bits_encoded, cb[1].f8_bits_encoded );\
