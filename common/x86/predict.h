@@ -96,6 +96,8 @@ void x264_predict_16x16_dc_avx512icl( pixel *src );
 void x264_predict_16x16_dc_top_avx512icl( pixel *src );
 #define x264_predict_16x16_dc_core_avx512icl x264_template(predict_16x16_dc_core_avx512icl)
 void x264_predict_16x16_dc_core_avx512icl( pixel *src, int i_dc_left );
+#define x264_predict_16x16_dc_left_core_avx512icl x264_template(predict_16x16_dc_left_core_avx512icl)
+void x264_predict_16x16_dc_left_core_avx512icl( pixel *src, int i_dc_left );
 #define x264_predict_8x16c_dc_mmx2 x264_template(predict_8x16c_dc_mmx2)
 void x264_predict_8x16c_dc_mmx2( pixel *src );
 #define x264_predict_8x16c_dc_sse2 x264_template(predict_8x16c_dc_sse2)

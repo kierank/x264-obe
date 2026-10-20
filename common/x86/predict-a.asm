@@ -2962,6 +2962,14 @@ cglobal predict_16x16_dc_top, 1,2
     STORE16_PAIRS_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_left_core( uint8_t *src, int i_dc_left )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_dc_left_core, 2,2
+    vpbroadcastb m0, r1d
+    STORE16_PAIRS_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE16_ROWS_ICL 1 ; ymm
 %assign %%y 0
@@ -3032,6 +3040,14 @@ cglobal predict_16x16_dc_top, 1,2
     mov         r1d, 8
     movd        xm2, r1d
     DC16_TOP_ICL 4
+    STORE16_ROWS_ICL ym0
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_left_core( uint16_t *src, int i_dc_left )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_dc_left_core, 2,2
+    vpbroadcastw ym0, r1d
     STORE16_ROWS_ICL ym0
     RET
 
