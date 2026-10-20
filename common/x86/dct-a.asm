@@ -235,6 +235,10 @@ addc8_hbd_dc:  times 4 dw 0,0,0,0,1,1,1,1
 addc8_hbd_dc2: times 32 dw 2
 addc16_hbd_dc: times 2 dw 0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3
 dct2x4_dc_idx: dd 0, 16, 32, 48, 64, 80, 96, 112
+; zigzag_sub avx512icl (high bit depth): raster index of each scan position
+align 64
+zsub4_frame_hbd: dw  0, 1, 4, 8, 5, 2, 3, 6, 9,12,13,10, 7,11,14,15
+zsub4_field_hbd: dw  0, 4, 1, 8,12, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 %endif
 
 SECTION .text
@@ -3240,6 +3244,64 @@ ZIGZAG_SUB_4x4_ICL ac, field
 ZIGZAG_SUB_8x8_ICL frame
 ZIGZAG_SUB_8x8_ICL field
 %endif ; !HIGH_BIT_DEPTH
+
+%if HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; int zigzag_sub_4x4[ac]_{frame,field}( int32_t level[16], const uint16_t *src, uint16_t *dst[, int32_t *dc] )
+; int zigzag_sub_8x8_{frame,field}( int32_t level[64], const uint16_t *src, uint16_t *dst )
+;-----------------------------------------------------------------------------
+; avx512icl: rows packed with merge-masked broadcasts (4x4: qwords of a ymm,
+; 8x8: 4 rows per zmm), the word differences put in scan order by vpermw /
+; vpermi2w and widened with vpmovsxwd, nz from vptestmw
+%macro ZIGZAG_SUB_4x4_HBD_ICL 2 ; ac, frame/field
+%ifidn %1, ac
+cglobal zigzag_sub_4x4%1_%2, 4,5
+%else
+cglobal zigzag_sub_4x4%1_%2, 3,5
+%endif
+    mov         r4d, 2
+    kmovb        k2, r4d
+    mov         r4d, 4
+    kmovb        k3, r4d
+    mov         r4d, 8
+    kmovb        k4, r4d
+    movq          xm0, [r1+0*FENC_STRIDEB]
+    vpbroadcastq  ym0 {k2}, [r1+1*FENC_STRIDEB]
+    vpbroadcastq  ym0 {k3}, [r1+2*FENC_STRIDEB]
+    vpbroadcastq  ym0 {k4}, [r1+3*FENC_STRIDEB]
+    movq          xm1, [r2+0*FDEC_STRIDEB]
+    vpbroadcastq  ym1 {k2}, [r2+1*FDEC_STRIDEB]
+    vpbroadcastq  ym1 {k3}, [r2+2*FDEC_STRIDEB]
+    vpbroadcastq  ym1 {k4}, [r2+3*FDEC_STRIDEB]
+    movq   [r2+0*FDEC_STRIDEB], xm0
+    movhps [r2+1*FDEC_STRIDEB], xm0
+    vextracti32x4 xm2, ym0, 1
+    movq   [r2+2*FDEC_STRIDEB], xm2
+    movhps [r2+3*FDEC_STRIDEB], xm2
+    psubw         ym1, ym0, ym1
+    mova          ym2, [zsub4_%2_hbd]
+    vpermw        ym1, ym2, ym1
+    vpmovsxwd      m2, ym1
+%ifidn %1, ac
+    movd         [r3], xm2
+    mov          r4d, 0xfffe
+    kmovw         k1, r4d
+    vmovdqa32      m2 {k1}{z}, m2
+    vptestmw      k1 {k1}, ym1, ym1
+%else
+    vptestmw      k1, ym1, ym1
+%endif
+    movu         [r0], m2
+    xor          eax, eax
+    kortestw      k1, k1
+    setnz         al
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+ZIGZAG_SUB_4x4_HBD_ICL   , frame
+ZIGZAG_SUB_4x4_HBD_ICL   , field
+%endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
 INIT_XMM xop
