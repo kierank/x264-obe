@@ -3375,6 +3375,21 @@ cglobal predict_8x%1c_dc_128, 1,2
     CSTORE_PAIRS_ICL m0, %1
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc_top( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc_top, 1,2
+    movq        xm0, [r0-FDEC_STRIDE]
+    pxor        xm1, xm1
+    vpdpbusd    xm1, xm0, [pb_1]{1to4}  ; s0 s1
+    pxor        xm2, xm2
+    psrld       xm1, 1
+    pavgw       xm1, xm2                ; (s+2)>>2
+    movu         m2, [pb_c_dc_icl]
+    vpermb       m0, m2, m1
+    CSTORE_PAIRS_ICL m0, %1
+    RET
+
 %endmacro ; PREDICT_C_ICL
 
 PREDICT_C_ICL 8
@@ -3434,6 +3449,23 @@ cglobal predict_8x%1c_dc_128, 1,2
     vpscatterqq [r0+m7+%%y*FDEC_STRIDEB]{k1}, m0
 %assign %%y %%y+4
 %endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc_top( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc_top, 1,1
+    movu        xm0, [r0-FDEC_STRIDEB]
+    pxor        xm1, xm1
+    vpdpwssd    xm1, xm0, [pw_1]{1to4}
+    pshufd      xm2, xm1, q2301
+    paddd       xm1, xm2                ; s0 . s1 .
+    pxor        xm2, xm2
+    psrld       xm1, 1
+    pavgw       xm1, xm2                ; (s+2)>>2
+    movu        xm2, [pw_c_dctop_icl]
+    vpermw      xm0, xm2, xm1
+    CSTORE_ROWS_ICL xm0, %1, 0
     RET
 
 %endmacro ; PREDICT_C_ICL

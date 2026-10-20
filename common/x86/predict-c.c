@@ -498,6 +498,7 @@ void x264_predict_8x8c_init_mmx( int cpu, x264_predict_t pf[7] )
         pf[I_PRED_CHROMA_P]   = x264_predict_8x8c_p_avx512icl;
         pf[I_PRED_CHROMA_V]      = x264_predict_8x8c_v_avx512icl;
         pf[I_PRED_CHROMA_H]      = x264_predict_8x8c_h_avx512icl;
+        pf[I_PRED_CHROMA_DC_TOP] = x264_predict_8x8c_dc_top_avx512icl;
         pf[I_PRED_CHROMA_DC_128] = x264_predict_8x8c_dc_128_avx512icl;
 #endif
     }
@@ -566,6 +567,7 @@ void x264_predict_8x16c_init_mmx( int cpu, x264_predict_t pf[7] )
         pf[I_PRED_CHROMA_P]   = x264_predict_8x16c_p_avx512icl;
         pf[I_PRED_CHROMA_V]      = x264_predict_8x16c_v_avx512icl;
         pf[I_PRED_CHROMA_H]      = x264_predict_8x16c_h_avx512icl;
+        pf[I_PRED_CHROMA_DC_TOP] = x264_predict_8x16c_dc_top_avx512icl;
         pf[I_PRED_CHROMA_DC_128] = x264_predict_8x16c_dc_128_avx512icl;
 #endif
     }
