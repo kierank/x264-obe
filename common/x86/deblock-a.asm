@@ -3057,28 +3057,93 @@ cglobal deblock_h_luma, 5,10,16
 ;-----------------------------------------------------------------------------
 ; void deblock_v_luma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
 ;-----------------------------------------------------------------------------
-INIT_YMM avx512icl
-cglobal deblock_v_luma, 5,6,16
-    lea         r5, [r1*3]
-    neg         r5
-    add         r5, r0            ; pix-3*stride
-    movu       xm0, [r5+r1*2]
-    movu       xm1, [r5+r1]
-    movu       xm2, [r5]
-    vinserti128 m0, m0, [r0], 1   ; [p0|q0]
-    vinserti128 m1, m1, [r0+r1], 1
-    vinserti128 m2, m2, [r0+r1*2], 1
-    movu       xm4, [r0]
-    movu       xm5, [r0+r1]
-    movu       xm6, [r0+r1*2]
-    vinserti128 m4, m4, xm0, 1    ; [q0|p0]
-    vinserti128 m5, m5, xm1, 1
-    vinserti128 m6, m6, xm2, 1
-    LUMA_INTER_ICL y, 4, 8, pb_unpackbd1
-    movu  [r5+r1*2], xm0
-    vextracti128 [r0], m0, 1
-    movu    [r5+r1], xm1
-    vextracti128 [r0+r1], m1, 1
+; EVEX xmm form of DEBLOCK_LUMA: OR3 + vptestnmb for the filter mask, k-mask
+; selects for tc, vpternlogd for NOT and the parity bits
+; %1 = p1, %2 = p2, %3 = [p1 out], %4 = tc0, %5-%6 = tmp; m1 = p0, m2 = q0
+%macro LUMA_Q1_ICL 6
+    pavgb       %5, m1, m2
+    pavgb       %6, %2, %5        ; avg(p2,avg(p0,q0))
+    vpternlogd  %5, %2, [pb_1]{1to4}, 0x28 ; (p2^avg(p0,q0))&1
+    psubusb     %6, %5            ; (p2+((p0+q0+1)>>1))>>1
+    psubusb     %5, %1, %4
+    paddusb     %4, %1
+    pmaxub      %6, %5
+    pminub      %6, %4
+    mova        %3, %6
+%endmacro
+
+INIT_XMM avx512icl
+cglobal deblock_v_luma, 5,5,10
+    vpbroadcastd m8, [r4]
+    lea         r4, [r1*3]
+    neg         r4
+    add         r4, r0            ; pix-3*stride
+    mova        m0, [r4+r1]       ; p1
+    mova        m1, [r4+r1*2]     ; p0
+    mova        m2, [r0]          ; q0
+    mova        m3, [r0+r1]       ; q1
+    vpbroadcastb m4, r2d
+    vpbroadcastb m5, r3d
+    psubusb     m4, [pb_1]        ; alpha-1
+    psubusb     m5, [pb_1]        ; beta-1
+    psubusb     m6, m1, m2
+    psubusb     m7, m2, m1
+    por         m6, m7
+    psubusb     m6, m4            ; |p0-q0| > alpha-1
+    psubusb     m7, m0, m1
+    psubusb     m4, m1, m0
+    por         m7, m4
+    psubusb     m7, m5            ; |p1-p0| > beta-1
+    psubusb     m4, m3, m2
+    psubusb     m9, m2, m3
+    por         m4, m9
+    psubusb     m4, m5            ; |q1-q0| > beta-1
+    vpternlogd  m4, m6, m7, 0xfe
+    vptestnmb   k1, m4, m4        ; mask
+    pshufb      m8, [pb_unpackbd1]
+    vpmovb2m    k2, m8            ; tc0 < 0
+    kandnw      k1, k2, k1
+    vmovdqu8    m8 {k1}{z}, m8    ; tc0 & mask
+    mova        m3, [r4]          ; p2
+    psubusb     m6, m1, m3
+    psubusb     m7, m3, m1
+    por         m6, m7
+    vpcmpub     k2, m6, m5, 2     ; |p2-p0| <= beta-1
+    kandw       k2, k2, k1
+    mova        m7, m8
+    paddb       m7 {k2}, m7, [pb_1]
+    vmovdqu8    m6 {k2}{z}, m8
+    LUMA_Q1_ICL m0, m3, [r4+r1], m6, m4, m9
+    mova        m4, [r0+r1*2]     ; q2
+    psubusb     m6, m2, m4
+    psubusb     m9, m4, m2
+    por         m6, m9
+    vpcmpub     k3, m6, m5, 2     ; |q2-q0| <= beta-1
+    kandw       k3, k3, k1
+    paddb       m7 {k3}, m7, [pb_1] ; tc
+    vmovdqu8    m8 {k3}{z}, m8
+    mova        m3, [r0+r1]
+    LUMA_Q1_ICL m3, m4, [r0+r1], m8, m6, m9
+    mova        m5, [pb_1]
+    vpternlogd  m5, m1, m2, 0x60  ; (p0^q0)&1
+    vpternlogd  m3, m3, m3, 0x0f  ; ~q1
+    pavgb       m3, m0            ; (p1 - q1 + 256)>>1
+    pavgb       m3, [pb_3]        ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    vpternlogd  m4, m1, m1, 0x33  ; ~p0
+    pavgb       m4, m2            ; (q0 - p0 + 256)>>1
+    pavgb       m3, m5
+    paddusb     m3, m4            ; d+128+33
+    mova        m6, [pb_a1]
+    psubusb     m6, m3
+    psubusb     m3, [pb_a1]
+    pminub      m6, m7
+    pminub      m3, m7
+    psubusb     m1, m6
+    psubusb     m2, m3
+    paddusb     m1, m3
+    paddusb     m2, m6
+    mova  [r4+r1*2], m1
+    mova        [r0], m2
     RET
 
 ;-----------------------------------------------------------------------------
