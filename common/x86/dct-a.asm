@@ -983,6 +983,46 @@ ADD4x4_IDCT
 INIT_XMM avx
 ADD4x4_IDCT
 
+; avx512icl: the 4 pixel rows as the qwords of one ymm (merge-masked
+; vpbroadcastq), one paddsw/clip, stores by qword
+INIT_YMM avx512icl
+cglobal add4x4_idct, 2,3,6
+    mov        r2d, 2
+    kmovb       k2, r2d
+    mov        r2d, 4
+    kmovb       k3, r2d
+    mov        r2d, 8
+    kmovb       k4, r2d
+    movu       xm1, [r1+16]
+    movu       xm3, [r1+48]
+    movu       xm2, [r1+32]
+    movu       xm0, [r1+ 0]
+    IDCT4_1D d,0,1,2,3,4,5
+    TRANSPOSE4x4D 0,1,2,3,4
+    paddd       m0, [pd_32]
+    IDCT4_1D d,0,1,2,3,4,5
+    psrad       m0, 6
+    psrad       m1, 6
+    psrad       m2, 6
+    psrad       m3, 6
+    packssdw    m0, m1
+    packssdw    m2, m3
+    vinserti32x4 m0, m0, xm2, 1          ; rows 0 1 2 3
+    movq        xm4, [r0+0*FDEC_STRIDEB]
+    vpbroadcastq m4 {k2}, [r0+1*FDEC_STRIDEB]
+    vpbroadcastq m4 {k3}, [r0+2*FDEC_STRIDEB]
+    vpbroadcastq m4 {k4}, [r0+3*FDEC_STRIDEB]
+    paddsw       m0, m4
+    pxor        xm5, xm5
+    vpbroadcastd m4, [pw_pixel_max]
+    CLIPW        m0, m5, m4
+    movq   [r0+0*FDEC_STRIDEB], xm0
+    movhps [r0+1*FDEC_STRIDEB], xm0
+    vextracti32x4 xm0, m0, 1
+    movq   [r0+2*FDEC_STRIDEB], xm0
+    movhps [r0+3*FDEC_STRIDEB], xm0
+    RET
+
 ;-----------------------------------------------------------------------------
 ; void add8x8_idct( pixel *p_dst, dctcoef dct[4][16] ), AVX2
 ; Lane 0 holds block 0 or 1 and lane 1 the block below it (2 or 3), so each
@@ -1161,7 +1201,17 @@ cglobal add4x4_idct, 2,2
     RET
 
 %macro ADD4x4 0
+%if cpuflag(avx512)
+cglobal add4x4_idct, 2,3,6
+    mov        r2d, 2
+    kmovb       k2, r2d
+    mov        r2d, 4
+    kmovb       k3, r2d
+    mov        r2d, 8
+    kmovb       k4, r2d
+%else
 cglobal add4x4_idct, 2,2,6
+%endif
     mova      m1, [r1+0x00]     ; row1/row0
     mova      m3, [r1+0x10]     ; row3/row2
     psraw     m0, m1, 1         ; row1>>1/...
@@ -1189,6 +1239,19 @@ cglobal add4x4_idct, 2,2,6
     SBUTTERFLY2 qdq, 0, 3, 1
     SUMSUB_BA w, 3, 0, 1
 
+%if cpuflag(avx512)
+    ; the 4 rows in one xmm, in the order of the packed result
+    movd          m1, [r0+FDEC_STRIDE*2]
+    vpbroadcastd  m1 {k2}, [r0+FDEC_STRIDE*3]
+    vpbroadcastd  m1 {k3}, [r0+FDEC_STRIDE*1]
+    vpbroadcastd  m1 {k4}, [r0+FDEC_STRIDE*0]
+    pxor          m4, m4
+    punpckhbw     m2, m1, m4        ; row1/row0
+    punpcklbw     m1, m4            ; row2/row3
+    SWAP           1, 2
+    psraw         m3, 6
+    psraw         m0, 6
+%else
     movd      m4, [r0+FDEC_STRIDE*0]
     movd      m1, [r0+FDEC_STRIDE*1]
     movd      m2, [r0+FDEC_STRIDE*2]
@@ -1200,6 +1263,7 @@ cglobal add4x4_idct, 2,2,6
     psraw     m3, 6
     punpcklbw m2, m4
     psraw     m0, 6
+%endif
     paddsw    m3, m1
     paddsw    m0, m2
     packuswb  m0, m3            ; row0/row1/row3/row2
@@ -1213,6 +1277,8 @@ cglobal add4x4_idct, 2,2,6
 INIT_XMM sse4
 ADD4x4
 INIT_XMM avx
+ADD4x4
+INIT_XMM avx512icl
 ADD4x4
 
 %macro STOREx2_AVX2 9
