@@ -9310,6 +9310,60 @@ cglobal pixel_satd_8x4, 4,5,5
     SATD_AVX512_LOAD4 q, k1 ; 2 0 2 0
     SATD_ICL_PACKED         ; 3 1 3 1
     SATD_ICL_PACKED_END
+
+; sa8d_16x16: four pixel_sa8d_8x8_avx512icl transforms; an 8x8's max() words
+; sum to <= 2*32*255 per word (signed), folded to dwords in two chains:
+; pmaddwd for the first two 8x8s, {evex} vpdpwssd for the last two
+cglobal pixel_sa8d_16x16, 4,8,10
+    SATD_ICL_START8
+    vpbroadcastd  m9, [pw_1]
+%assign sa8d_icl_b 0
+%rep 4
+    SATD_ICL_SUMSUB8 0, 4, 0, 0
+    SATD_ICL_SUMSUB8 1, 5, r1, r3
+    SATD_ICL_SUMSUB8 2, 4, 2*r1, 2*r3
+    SATD_ICL_SUMSUB8 3, 5, r4, r5
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SA8D_ICL_H8 0, 1, 4
+    SA8D_ICL_H8 2, 3, 4
+    HADAMARD 2, sumsub, 0, 1, 4, 5
+    HADAMARD 2, sumsub, 2, 3, 4, 5
+    pabsw     m0, m0
+    pabsw     m1, m1
+    pabsw     m2, m2
+    pabsw     m3, m3
+    SATD_ICL_HMAX 0, 1, 4
+    SATD_ICL_HMAX 2, 3, 5
+    paddw     m0, m2
+%if sa8d_icl_b == 0
+    pmaddwd   m6, m0, m9
+%elif sa8d_icl_b == 1
+    pmaddwd   m8, m0, m9
+%elif sa8d_icl_b == 2
+    {evex} vpdpwssd m6, m0, m9
+%else
+    {evex} vpdpwssd m8, m0, m9
+%endif
+%if sa8d_icl_b == 0 || sa8d_icl_b == 2
+    add       r0, 8
+    add       r2, 8
+    add       r6, 8
+    add       r7, 8
+%elif sa8d_icl_b == 1
+    lea       r0, [r0+8*r1-8]
+    lea       r2, [r2+8*r3-8]
+    lea       r6, [r6+8*r1-8]
+    lea       r7, [r7+8*r3-8]
+%endif
+%assign sa8d_icl_b sa8d_icl_b+1
+%endrep
+%undef sa8d_icl_b
+    paddd     m6, m8
+    HADDD     m6, m1
+    movd     eax, xm6
+    add      eax, 1
+    shr      eax, 1
+    RET
 ICL_LOW_END
 %endif ; ARCH_X86_64
 
