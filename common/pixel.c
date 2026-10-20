@@ -1648,6 +1648,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2_pre[PIXEL_8x16] = x264_pixel_satd_avg2_pre_8x16_avx512icl;
         pixf->satd_avg2_pre[PIXEL_8x8] = x264_pixel_satd_avg2_pre_8x8_avx512icl;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx512icl;
+        pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;
 #endif
     }
 

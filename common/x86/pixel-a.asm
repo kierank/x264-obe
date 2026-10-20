@@ -7879,7 +7879,42 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 ;-----------------------------------------------------------------------------
 ; Modes go through .sa8d in pairs, mode 2k in lane 0 and 2k+1 in lane 1.
 ; FL, GL = F2, F1 of edge[7..22] (centred, rightwards); FT, GT of edge[16..31].
+; HADAMARD8_2D_HMUL 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 (avx512icl: the amax stage
+; with SATD_ICL_HMAX, k1 = 0x5555)
+%macro SA8D_X9_HMUL 0
+%if cpuflag(avx512icl)
+    HADAMARD4_V 0, 1, 2, 3, 8
+    HADAMARD4_V 4, 5, 6, 7, 8
+    SUMSUB_BADC w, 0, 4, 1, 5, 8
+    HADAMARD 2, sumsub, 0, 4, 8, 9
+    HADAMARD 2, sumsub, 1, 5, 8, 9
+    SUMSUB_BADC w, 2, 6, 3, 7, 8
+    HADAMARD 2, sumsub, 2, 6, 8, 9
+    HADAMARD 2, sumsub, 3, 7, 8, 9
+    ABSW2 m0, m4, m0, m4, m8, m9
+    ABSW2 m1, m5, m1, m5, m8, m9
+    ABSW2 m2, m6, m2, m6, m8, m9
+    ABSW2 m3, m7, m3, m7, m8, m9
+    SATD_ICL_HMAX 0, 4, 8
+    SATD_ICL_HMAX 1, 5, 8
+    SATD_ICL_HMAX 2, 6, 8
+    SATD_ICL_HMAX 3, 7, 8
+%else
+    HADAMARD8_2D_HMUL 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+%endif
+%endmacro
+
+; avx2, and avx512icl after the SATD_ICL macros (m0-m15 on ymm0-15 as in
+; intra_satd_lowres: phaddw, vpblendd, vperm2i128, phminposuw have no EVEX form)
+%macro SA8D_X9_8BIT 0
+%if cpuflag(avx512icl)
+cglobal intra_sa8d_x9_8x8, 5,7,32, 0x600
+    AVX512_MM_PERMUTATION
+    mov         r5d, 0x5555
+    kmovd        k1, r5d
+%else
 cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
+%endif
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
     mova        m15, [hmul_8p]
@@ -8014,6 +8049,9 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     RET
 
 RESET_MM_PERMUTATION
+%if cpuflag(avx512icl)
+    AVX512_MM_PERMUTATION
+%endif
 ALIGN 16
 .sa8d: ; m0-m7 pred rows (stored to r5), r6 fenc rows -> m0 = 8 word sums of the maxes per lane
     %xdefine mret m0
@@ -8024,11 +8062,14 @@ ALIGN 16
     psubw        m %+ x9i, [r6+x9i*32]
 %assign x9i x9i+1
 %endrep
-    HADAMARD8_2D_HMUL 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+    SA8D_X9_HMUL
     paddw        m0, m1
     paddw        m2, m3
     paddw      mret, m0, m2
     ret
+%endmacro
+
+SA8D_X9_8BIT
 
 ;-----------------------------------------------------------------------------
 ; avx512icl 8-bit satd and satd_avg2 (ymm16-31), the avx2 layouts with:
@@ -8265,6 +8306,7 @@ SA8D_SATD
 SATD_PRE_FUNCS
 SATD_AVG2_PRE_FUNCS
 LOWRES_8BIT
+SA8D_X9_8BIT
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
