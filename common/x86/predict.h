@@ -194,6 +194,8 @@ void x264_predict_8x8_vl_sse2( pixel *src, pixel edge[36] );
 void x264_predict_8x8_vl_ssse3( pixel *src, pixel edge[36] );
 #define x264_predict_8x8_vl_avx x264_template(predict_8x8_vl_avx)
 void x264_predict_8x8_vl_avx( pixel *src, pixel edge[36] );
+#define x264_predict_8x8_vl_avx512icl x264_template(predict_8x8_vl_avx512icl)
+void x264_predict_8x8_vl_avx512icl( uint8_t *src, uint8_t edge[36] );
 #define x264_predict_8x8_vl_mmx2 x264_template(predict_8x8_vl_mmx2)
 void x264_predict_8x8_vl_mmx2( uint8_t *src, uint8_t edge[36] );
 #define x264_predict_8x8_vr_mmx2 x264_template(predict_8x8_vr_mmx2)
