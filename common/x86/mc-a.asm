@@ -48,6 +48,7 @@ pw_wclip: times 16 dw 0x7fff-((1 << BIT_DEPTH)-1) ; weight clip: 0x7fff-PIXEL_MA
 sq_1: times 1 dq 1
 %if HIGH_BIT_DEPTH
 plane_tail: dd 0, 0xff, 0xffff, 0xffffff ; weight plane zmm tail, by tail bytes/16
+wdp_ilv_icl: db 0,1,8,9,2,3,10,11,4,5,12,13,6,7,14,15 ; avx512icl weight: even|odd words per lane -> pixels
 %else
 ; avx512icl mc_chroma: row r at 0, row r+1 at 64 -> dword x: u {s[2x], s[2x+2], t[2x], t[2x+2]},
 ; dword 8+x: the same for v; then byte 0 of the dwords of rows r, r+1 -> u r, u r+1, v r, v r+1
@@ -1116,6 +1117,202 @@ WEIGHT_PLANE weight, WEIGHT_OP_AVX2
 WEIGHT_PLANE weight_ns, WEIGHT_NS_OP_AVX2
 WEIGHT_PLANE offsetadd, OFFSET_add_AVX2
 WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
+
+;-----------------------------------------------------------------------------
+; 10-bit mc_weight/offsetadd/offsetsub_wN and mc_weight_plane, avx512icl.
+; x264_weight_cache_icl layout: cachea = (scale, 0) word pairs, cacheb = the
+; dword (1 << (denom-1)) + (offset << denom), i_denom; any scale (the avx2 cache
+; sends negative ones to SSE2). Even and odd pixels are summed into dwords by
+; two {evex} vpdpwssd against (scale, 0) and (0, scale) from the bias, so the
+; result is exact; psrad denom, packusdw + pminuw clip, pshufb re-interleaves.
+; Offsets: the mmx2 cache (|offset|), paddusw + pminuw / psubusw.
+; Two rows per iteration: 8/16/32-byte rows in one register (the second row by
+; a masked broadcast), 24/40-byte rows one register each under a word mask.
+;-----------------------------------------------------------------------------
+%macro WEIGHT_DP_OP 1 ; words in %1; m3 bias, m4/m5 taps, xm6 denom, m7 pixel max, m8 shuffle
+    mova          m9, m3
+    mova         m10, m3
+    {evex} vpdpwssd m9, %1, m4
+    {evex} vpdpwssd m10, %1, m5
+    psrad         m9, xm6
+    psrad        m10, xm6
+    packusdw      m9, m10               ; per lane: even 0-3, odd 0-3
+    pminuw        m9, m7
+    pshufb        %1, m9, m8
+%endmacro
+
+%macro OFFSET_add_ICL 1
+    paddusw       %1, m3
+    pminuw        %1, m7
+%endmacro
+
+%macro OFFSET_sub_ICL 1
+    psubusw       %1, m3
+%endmacro
+
+; rows 0, 1 of %1 bytes each -> m0 (24/40: m0, m1)
+%macro HROWS_LOAD 1
+%if %1 == 8
+    movq          m0, [r2]
+    vpbroadcastq  m0 {k1}, [r2+r3]
+%elif %1 == 16
+    movu         xm0, [r2]
+    vbroadcasti32x4 m0 {k1}, [r2+r3]
+%elif %1 == 32
+    movu         ym0, [r2]
+    vbroadcasti32x8 m0 {k1}, [r2+r3]
+%else
+    vmovdqu16     m0 {k1}{z}, [r2]
+    vmovdqu16     m1 {k1}{z}, [r2+r3]
+%endif
+%endmacro
+
+%macro HROWS_STORE 1
+%if %1 == 8
+    movq        [r0], m0
+    movhps   [r0+r1], m0
+%elif %1 == 16
+    movu        [r0], xm0
+    vextracti32x4 [r0+r1], m0, 1
+%elif %1 == 32
+    movu        [r0], ym0
+    vextracti32x8 [r0+r1], m0, 1
+%else
+    vmovdqu16   [r0] {k1}, m0
+    vmovdqu16 [r0+r1] {k1}, m1
+%endif
+%endmacro
+
+%macro HROWS_MASK 1
+%if %1 == 8
+    mov          r5d, 2
+%elif %1 == 16
+    mov          r5d, 0xf0
+%elif %1 == 32
+    mov          r5d, 0xff00
+%else
+    mov          r5d, (1 << (%1/2)) - 1
+%endif
+    kmovd         k1, r5d
+%endmacro
+
+%macro HROWS_INIT 1
+%if %1 == 8
+INIT_XMM avx512icl
+%elif %1 <= 24
+INIT_YMM avx512icl
+%else
+INIT_ZMM avx512icl
+%endif
+%endmacro
+
+%macro WEIGHT_DP_CONSTS 0
+    vpbroadcastd  m3, [r4+16]
+    vpbroadcastd  m4, [r4]
+    pslld         m5, m4, 16
+    movd         xm6, [r4+32]
+    vpbroadcastw  m7, [pw_pixel_max]
+%if mmsize == 16
+    movu          m8, [wdp_ilv_icl]
+%else
+    vbroadcasti32x4 m8, [wdp_ilv_icl]
+%endif
+%endmacro
+
+%macro WEIGHTER_DP 2 ; bytes, width
+HROWS_INIT %1
+cglobal mc_weight_w%2, 6,6,11
+    FIX_STRIDES r1, r3
+    WEIGHT_DP_CONSTS
+    mov          r4d, r5d
+    HROWS_MASK %1
+.loop:
+    HROWS_LOAD %1
+    WEIGHT_DP_OP  m0
+%if %1 == 24 || %1 == 40
+    WEIGHT_DP_OP  m1
+%endif
+    HROWS_STORE %1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    sub          r4d, 2
+    jg .loop
+    RET
+%endmacro
+
+%macro OFFSET_ICL 3 ; bytes, width, add/sub
+HROWS_INIT %1
+cglobal mc_offset%3_w%2, 6,6,8
+    FIX_STRIDES r1, r3
+    vpbroadcastw  m3, [r4]
+    vpbroadcastw  m7, [pw_pixel_max]
+    mov          r4d, r5d
+    HROWS_MASK %1
+.loop:
+    HROWS_LOAD %1
+    OFFSET_%3_ICL m0
+%if %1 == 24 || %1 == 40
+    OFFSET_%3_ICL m1
+%endif
+    HROWS_STORE %1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    sub          r4d, 2
+    jg .loop
+    RET
+%endmacro
+
+%macro WEIGHTER_DP_ALL 2
+WEIGHTER_DP %1, %2
+OFFSET_ICL  %1, %2, add
+OFFSET_ICL  %1, %2, sub
+%endmacro
+
+WEIGHTER_DP_ALL  8,  4
+WEIGHTER_DP_ALL 16,  8
+WEIGHTER_DP_ALL 24, 12
+WEIGHTER_DP_ALL 32, 16
+WEIGHTER_DP_ALL 40, 20
+
+; void mc_weight_plane( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+;                       weight_t *w, int width, int height ): 32 px per zmm, masked tail
+INIT_ZMM avx512icl
+cglobal mc_weight_plane, 7,8,11
+    FIX_STRIDES r1, r3
+    WEIGHT_DP_CONSTS
+    movsxdifnidn r5, r5d
+    add           r5, r5                ; bytes
+    mov          r4d, r5d
+    and          r4d, 63
+    sub           r5, r4                ; full zmm columns
+    shr          r4d, 1
+    xor          r7d, r7d
+    bts          r7d, r4d
+    dec          r7d
+    kmovd         k1, r7d               ; tail words
+.row:
+    xor          r7d, r7d
+    cmp           r7, r5
+    jge .tail
+.col:
+    movu          m0, [r2+r7]
+    WEIGHT_DP_OP  m0
+    movu     [r0+r7], m0
+    add           r7, mmsize
+    cmp           r7, r5
+    jl .col
+.tail:
+    test         r4d, r4d
+    jz .next
+    vmovdqu16     m0 {k1}{z}, [r2+r7]
+    WEIGHT_DP_OP  m0
+    vmovdqu16 [r0+r7] {k1}, m0
+.next:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row
+    RET
 %endif
 %endif
 
