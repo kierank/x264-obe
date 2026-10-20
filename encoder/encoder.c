@@ -625,7 +625,7 @@ static int x264_bitstream_check_buffer_internal( x264_t *h, int size, int b_caba
         (h->out.bs.p_end - h->out.bs.p < size) )
     {
         int buf_size = h->out.i_bitstream + size;
-        uint8_t *buf = x264_malloc( buf_size );
+        uint8_t *buf = x264_malloc( buf_size + NALU_ESCAPE_PADDING );
         if( !buf )
             return -1;
         int aligned_size = h->out.i_bitstream & ~15;
@@ -1942,7 +1942,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         else
             h->thread[i]->fdec = h->thread[0]->fdec;
 
-        CHECKED_MALLOC( h->thread[i]->out.p_bitstream, h->out.i_bitstream );
+        CHECKED_MALLOC( h->thread[i]->out.p_bitstream, h->out.i_bitstream + NALU_ESCAPE_PADDING );
         /* Start each thread with room for init_nal_count NAL units; it'll realloc later if needed. */
         CHECKED_MALLOC( h->thread[i]->out.nal, init_nal_count*sizeof(x264_nal_t) );
         h->thread[i]->out.i_nals_allocated = init_nal_count;
@@ -2191,7 +2191,7 @@ static int x264_nal_end( x264_t *h )
     nal->i_payload = end - nal->p_payload;
     /* Assembly implementation of nal_escape reads past the end of the input.
      * While undefined padding wouldn't actually affect the output, it makes valgrind unhappy. */
-    memset( end, 0xff, 64 );
+    memset( end, 0xff, NALU_ESCAPE_PADDING );
     if( h->param.nalu_process )
         h->param.nalu_process( h, nal, h->fenc->opaque );
     h->out.i_nal++;

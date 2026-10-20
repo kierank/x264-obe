@@ -67,6 +67,8 @@
 #define NALU_OVERHEAD 5 // startcode + NAL type costs 5 bytes per frame
 #define FILLER_OVERHEAD (NALU_OVERHEAD+1)
 #define SEI_OVERHEAD (NALU_OVERHEAD - (h->param.b_annexb && !h->param.i_avcintra_class && (h->out.i_nal-1)))
+/* nal_escape asm reads up to 127 bytes past its input (avx2); allocated past out.bs.p_end */
+#define NALU_ESCAPE_PADDING 128
 
 #if HAVE_INTERLACED
 #   define MB_INTERLACED h->mb.b_interlaced
