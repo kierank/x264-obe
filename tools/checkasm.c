@@ -4476,8 +4476,72 @@ static int check_bitstream( int cpu_ref, int cpu_new )
                 break;
             }
         }
+        /* Runs of zeros and of 00 00 0x across every block boundary and dst/src
+         * alignment; nothing written before dst or more than 64 bytes past the end */
+        for( int i = 0; i < 4000 && ok; i++ )
+        {
+            int test_size = i < 300 ? i : rand() & 0x7ff;
+            int src_off = rand() & 63;
+            int dst_off = i < 300 ? i & 63 : rand() & 63;
+            uint8_t *src = input + src_off;
+            uint8_t *dst = output2 + 64 + dst_off;
+            int mode = (i / 7) % 9;
+            for( int j = 0; j < test_size; j++ )
+            {
+                int r = rand();
+                switch( mode )
+                {
+                    case 0: src[j] = (r & 3) ? 0 : (r >> 2) & 3; break;     /* mostly zeros, escapable bytes */
+                    case 1: src[j] = (r & 7) ? 0 : r >> 3; break;
+                    case 2: src[j] = (j % (3 + (i & 7))) < 2 ? 0 : (r & 1) ? (r >> 1) & 3 : r >> 1; break;
+                    case 3: src[j] = ((j + (i >> 3)) & 63) >= 60 ? 0 : (r & 1) ? 1 : r >> 1; break; /* zeros at block ends */
+                    case 4: src[j] = (r & 0x3f) ? 0 : 0xff; break;          /* long zero runs */
+                    case 5: src[j] = (r & 15) ? r >> 4 : (r >> 4) & 3; break;
+                    default: src[j] = 4 + (r >> 4) % 252; break;            /* no zeros, then isolated events */
+                }
+            }
+            /* isolated 00 00 0x / 00 00 00 .. at random offsets: blocks without
+             * escapes around them, pairs split across blocks */
+            if( mode >= 6 )
+                for( int j = rand() % 40; j + 5 < test_size; j += mode == 8 ? 128 + rand() % 384 : 8 + rand() % 64 )
+                {
+                    int r = rand();
+                    src[j] = src[j+1] = 0;
+                    if( mode >= 7 && (r & 1) )
+                        src[j+2] = 0;
+                    src[j+2+(mode >= 7 && (r & 1))] = (r >> 1) & 3;
+                }
+            memset( output1, 0xa5, size*2 );
+            memset( output2, 0xa5, size*2 );
+            uint8_t *end_c = (uint8_t*)call_c1( bs_c.nal_escape, output1 + 64 + dst_off, src, src+test_size );
+            uint8_t *end_a = (uint8_t*)call_a1( bs_a.nal_escape, dst, src, src+test_size );
+            int size_c = end_c - (output1 + 64 + dst_off);
+            int size_a = end_a - dst;
+            /* avx512icl writes nothing past the end */
+            int slack = cpu_new & X264_CPU_AVX512ICL ? 0 : 64;
+            int guard = 1;
+            for( uint8_t *p = output2; p < dst; p++ )
+                guard &= *p == 0xa5;
+            for( uint8_t *p = end_a + slack; p < output2 + size*2; p++ )
+                guard &= *p == 0xa5;
+            if( size_c != size_a || memcmp( output1 + 64 + dst_off, dst, size_c ) || !guard )
+            {
+                fprintf( stderr, "nal_escape :  [FAILED] size %d mode %d: %d %d%s\n", test_size, mode,
+                         size_c, size_a, guard ? "" : " (out of bounds write)" );
+                ok = 0;
+            }
+        }
         for( int j = 0; j < size+32; j++ )
             input[j] = rand();
+        call_c2( bs_c.nal_escape, output1, input, input+size );
+        call_a2( bs_a.nal_escape, output2, input, input+size );
+        /* escape-dense input */
+        set_func_name( "nal_escape_dense" );
+        for( int j = 0; j < size+32; j++ )
+        {
+            int r = rand();
+            input[j] = (r & 3) ? 0 : (r >> 2) & 3;
+        }
         call_c2( bs_c.nal_escape, output1, input, input+size );
         call_a2( bs_a.nal_escape, output2, input, input+size );
         free(input);
