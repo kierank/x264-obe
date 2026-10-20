@@ -9794,7 +9794,7 @@ cglobal pixel_asd8, 5,7,6
 ; it and the next, one psadbw for two row pairs. High bit depth: |d| words by vpdpwssd
 ; into two dword accumulators (no HADDUW).
 ;-----------------------------------------------------------------------------
-cglobal pixel_vsad, 3,4,6
+cglobal pixel_vsad_valign, 3,4,6
 %if HIGH_BIT_DEPTH
     add         r1, r1
     vpbroadcastd m5, [pw_1]
