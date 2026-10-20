@@ -2939,6 +2939,18 @@ cglobal predict_16x16_h, 1,2
 %endrep
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_core( uint8_t *src, int i_dc_left )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_dc_core, 2,2
+    SUM16_TOP_ICL
+    movd        xm1, r1d
+    paddd       xm0, xm1
+    psrld       xm0, 5
+    vpbroadcastb m0, xm0
+    STORE16_PAIRS_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE16_ROWS_ICL 1 ; ymm
 %assign %%y 0
@@ -2991,6 +3003,15 @@ cglobal predict_16x16_h, 1,2
     vpscatterqq [r0+m7+Y*2*FDEC_STRIDEB]{k1}, m0
 %assign Y Y+1
 %endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_16x16_dc_core( uint16_t *src, int i_dc_left )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_dc_core, 2,2
+    movd        xm2, r1d
+    DC16_TOP_ICL 5
+    STORE16_ROWS_ICL ym0
     RET
 
 %endif ; HIGH_BIT_DEPTH

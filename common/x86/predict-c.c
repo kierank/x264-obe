@@ -44,6 +44,9 @@ void x264_predict_16x16_dc_##name( pixel *src )\
 PREDICT_16x16_DC( mmx2 )
 PREDICT_16x16_DC( sse2 )
 PREDICT_16x16_DC( avx2 )
+#if ARCH_X86_64
+PREDICT_16x16_DC( avx512icl )
+#endif
 
 #define PREDICT_16x16_DC_LEFT(name)\
 static void x264_predict_16x16_dc_left_##name( pixel *src )\
@@ -417,6 +420,7 @@ void x264_predict_16x16_init_mmx( int cpu, x264_predict_t pf[7] )
         pf[I_PRED_16x16_P]       = x264_predict_16x16_p_avx512icl;
         pf[I_PRED_16x16_V]       = x264_predict_16x16_v_avx512icl;
         pf[I_PRED_16x16_H]       = x264_predict_16x16_h_avx512icl;
+        pf[I_PRED_16x16_DC]      = x264_predict_16x16_dc_avx512icl;
 #endif
     }
 }
