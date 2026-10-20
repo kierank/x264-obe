@@ -900,6 +900,74 @@ int x264_pixel_satd_bi4_16x8_avx2( x264_bi_fenc_t *, pixel *, pixel *, pixel *, 
 int x264_pixel_satd_bi4_8x16_avx2( x264_bi_fenc_t *, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
 #define x264_pixel_satd_bi4_8x8_avx2 x264_template(pixel_satd_bi4_8x8_avx2)
 int x264_pixel_satd_bi4_8x8_avx2( x264_bi_fenc_t *, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
+#define x264_pixel_satd_16x16_avx512icl x264_template(pixel_satd_16x16_avx512icl)
+int x264_pixel_satd_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_satd_16x8_avx512icl x264_template(pixel_satd_16x8_avx512icl)
+int x264_pixel_satd_16x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_satd_8x16_avx512icl x264_template(pixel_satd_8x16_avx512icl)
+int x264_pixel_satd_8x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_satd_8x8_avx512icl x264_template(pixel_satd_8x8_avx512icl)
+int x264_pixel_satd_8x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_16x16_avx512icl x264_template(pixel_satd_avg2_16x16_avx512icl)
+int x264_pixel_satd_avg2_16x16_avx512icl( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_16x8_avx512icl x264_template(pixel_satd_avg2_16x8_avx512icl)
+int x264_pixel_satd_avg2_16x8_avx512icl( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_8x16_avx512icl x264_template(pixel_satd_avg2_8x16_avx512icl)
+int x264_pixel_satd_avg2_8x16_avx512icl( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_8x8_avx512icl x264_template(pixel_satd_avg2_8x8_avx512icl)
+int x264_pixel_satd_avg2_8x8_avx512icl( pixel *, pixel *, pixel *, intptr_t );
+#define x264_pixel_sa8d_8x8_avx512icl x264_template(pixel_sa8d_8x8_avx512icl)
+int x264_pixel_sa8d_8x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_hadamard_ac_16x16_avx512icl x264_template(pixel_hadamard_ac_16x16_avx512icl)
+uint64_t x264_pixel_hadamard_ac_16x16_avx512icl( pixel *, intptr_t );
+#define x264_pixel_hadamard_ac_16x8_avx512icl x264_template(pixel_hadamard_ac_16x8_avx512icl)
+uint64_t x264_pixel_hadamard_ac_16x8_avx512icl( pixel *, intptr_t );
+#define x264_pixel_hadamard_ac_8x16_avx512icl x264_template(pixel_hadamard_ac_8x16_avx512icl)
+uint64_t x264_pixel_hadamard_ac_8x16_avx512icl( pixel *, intptr_t );
+#define x264_pixel_sa8d_16x16_avx512icl x264_template(pixel_sa8d_16x16_avx512icl)
+int x264_pixel_sa8d_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_intra_satd_x3_16x16_avx512icl x264_template(intra_satd_x3_16x16_avx512icl)
+void x264_intra_satd_x3_16x16_avx512icl( pixel *, pixel *, int * );
+#define x264_intra_satd_x3_8x8c_avx512icl x264_template(intra_satd_x3_8x8c_avx512icl)
+void x264_intra_satd_x3_8x8c_avx512icl( pixel *, pixel *, int * );
+#define x264_pixel_sa8d_satd_16x16_avx512icl x264_template(pixel_sa8d_satd_16x16_avx512icl)
+uint64_t x264_pixel_sa8d_satd_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+#define x264_pixel_satd_pre_16x16_avx512icl x264_template(pixel_satd_pre_16x16_avx512icl)
+int x264_pixel_satd_pre_16x16_avx512icl( int16_t *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_pre_16x16_avx512icl x264_template(pixel_satd_avg2_pre_16x16_avx512icl)
+int x264_pixel_satd_avg2_pre_16x16_avx512icl( int16_t *, pixel *, pixel *, intptr_t );
+#define x264_pixel_satd_pre_16x8_avx512icl x264_template(pixel_satd_pre_16x8_avx512icl)
+int x264_pixel_satd_pre_16x8_avx512icl( int16_t *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_pre_16x8_avx512icl x264_template(pixel_satd_avg2_pre_16x8_avx512icl)
+int x264_pixel_satd_avg2_pre_16x8_avx512icl( int16_t *, pixel *, pixel *, intptr_t );
+#define x264_pixel_satd_pre_8x16_avx512icl x264_template(pixel_satd_pre_8x16_avx512icl)
+int x264_pixel_satd_pre_8x16_avx512icl( int16_t *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_pre_8x16_avx512icl x264_template(pixel_satd_avg2_pre_8x16_avx512icl)
+int x264_pixel_satd_avg2_pre_8x16_avx512icl( int16_t *, pixel *, pixel *, intptr_t );
+#define x264_pixel_satd_pre_8x8_avx512icl x264_template(pixel_satd_pre_8x8_avx512icl)
+int x264_pixel_satd_pre_8x8_avx512icl( int16_t *, pixel *, intptr_t );
+#define x264_pixel_satd_avg2_pre_8x8_avx512icl x264_template(pixel_satd_avg2_pre_8x8_avx512icl)
+int x264_pixel_satd_avg2_pre_8x8_avx512icl( int16_t *, pixel *, pixel *, intptr_t );
+#define x264_intra_satd_lowres_avx512icl x264_template(intra_satd_lowres_avx512icl)
+int x264_intra_satd_lowres_avx512icl( void *, pixel *, intptr_t );
+#define x264_intra_sa8d_x9_8x8_avx512icl x264_template(intra_sa8d_x9_8x8_avx512icl)
+int x264_intra_sa8d_x9_8x8_avx512icl( pixel *, pixel *, pixel *, uint16_t *, uint16_t * );
+#define x264_pixel_satd_bi_16x16_avx512icl x264_template(pixel_satd_bi_16x16_avx512icl)
+int x264_pixel_satd_bi_16x16_avx512icl( x264_bi_fenc_t *, pixel *, intptr_t, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi4_16x16_avx512icl x264_template(pixel_satd_bi4_16x16_avx512icl)
+int x264_pixel_satd_bi4_16x16_avx512icl( x264_bi_fenc_t *, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi_16x8_avx512icl x264_template(pixel_satd_bi_16x8_avx512icl)
+int x264_pixel_satd_bi_16x8_avx512icl( x264_bi_fenc_t *, pixel *, intptr_t, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi4_16x8_avx512icl x264_template(pixel_satd_bi4_16x8_avx512icl)
+int x264_pixel_satd_bi4_16x8_avx512icl( x264_bi_fenc_t *, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi_8x16_avx512icl x264_template(pixel_satd_bi_8x16_avx512icl)
+int x264_pixel_satd_bi_8x16_avx512icl( x264_bi_fenc_t *, pixel *, intptr_t, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi4_8x16_avx512icl x264_template(pixel_satd_bi4_8x16_avx512icl)
+int x264_pixel_satd_bi4_8x16_avx512icl( x264_bi_fenc_t *, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi_8x8_avx512icl x264_template(pixel_satd_bi_8x8_avx512icl)
+int x264_pixel_satd_bi_8x8_avx512icl( x264_bi_fenc_t *, pixel *, intptr_t, pixel *, intptr_t, int );
+#define x264_pixel_satd_bi4_8x8_avx512icl x264_template(pixel_satd_bi4_8x8_avx512icl)
+int x264_pixel_satd_bi4_8x8_avx512icl( x264_bi_fenc_t *, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
 #define x264_pixel_sad_avg2_16x16_avx2 x264_template(pixel_sad_avg2_16x16_avx2)
 int x264_pixel_sad_avg2_16x16_avx2( pixel *, pixel *, pixel *, intptr_t );
 #define x264_pixel_sad_avg2_16x8_avx2 x264_template(pixel_sad_avg2_16x8_avx2)

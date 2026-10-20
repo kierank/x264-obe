@@ -2020,6 +2020,30 @@ VAR2_8x8_ICL 16, 7
 ; SATD
 ;=============================================================================
 
+; avx512icl functions between ICL_LOW_BEGIN and ICL_LOW_END keep m0-m15 on
+; ymm0-15 (x86inc's avx512 permutation undone): only the opmask/VBMI2/VNNI
+; instructions need EVEX, the rest keep their shorter VEX encodings and the
+; VEX-only ones (phaddw, phminposuw, ...) still assemble. vzeroupper on return
+; and WIN64 xmm6-15 saves as for avx2. VNNI needs {evex}: on ymm0-15 nasm
+; picks the VEX AVX-VNNI encoding, which avx512icl does not imply.
+%macro ICL_LOW_RESET 0
+    INIT_YMM avx512icl
+    AVX512_MM_PERMUTATION
+    %define RESET_MM_PERMUTATION ICL_LOW_RESET
+%endmacro
+
+%macro ICL_LOW_BEGIN 0
+    %define vzeroupper_required (mmsize > 16)
+    %define high_mm_regs 0
+    ICL_LOW_RESET
+%endmacro
+
+%macro ICL_LOW_END 0
+    %define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
+    %define high_mm_regs (16*cpuflag(avx512))
+    INIT_YMM avx512icl
+%endmacro
+
 %macro JDUP 2
 %if cpuflag(sse4)
     ; just use shufps on anything post conroe
@@ -2873,10 +2897,17 @@ cglobal pixel_sa8d_16x16, 4,7
     pabsw    m14, m%4
     pabsw    m13, m%3
     pabsw    m15, m%5
+%if cpuflag(avx512icl)
+    SATD_ICL_HMAX 12, 14, 6
+    paddw    m10, m12
+    SATD_ICL_HMAX 13, 15, 6
+    paddw    m10, m13
+%else
     HADAMARD 1, max, 12, 14, 6, 11
     paddw    m10, m12
     HADAMARD 1, max, 13, 15, 6, 11
     paddw    m10, m13
+%endif
 %endif
 %endmacro ; SA8D_SATD_8x4
 
@@ -2918,10 +2949,21 @@ cglobal pixel_sa8d_satd_8x8_internal
     SUMSUB_BADC w, 2, 8, 3, 9, 12
     HADAMARD 2, sumsub, 2, 8, 12, 11
     HADAMARD 2, sumsub, 3, 9, 12, 11
+%if cpuflag(avx512icl)
+    ABSW2 m0, m4, m0, m4, m12, m11
+    ABSW2 m1, m5, m1, m5, m12, m11
+    ABSW2 m2, m8, m2, m8, m12, m11
+    ABSW2 m3, m9, m3, m9, m12, m11
+    SATD_ICL_HMAX 0, 4, 12
+    SATD_ICL_HMAX 1, 5, 12
+    SATD_ICL_HMAX 2, 8, 12
+    SATD_ICL_HMAX 3, 9, 12
+%else
     HADAMARD 1, amax, 0, 4, 12, 11
     HADAMARD 1, amax, 1, 5, 12, 4
     HADAMARD 1, amax, 2, 8, 12, 4
     HADAMARD 1, amax, 3, 9, 12, 4
+%endif
 %endif
 
     ; create sa8d sub results
@@ -2941,6 +2983,10 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
     FIX_STRIDES r1, r3
 %if vertical==0
     mova     m7, [hmul_8p]
+%endif
+%if cpuflag(avx512icl)
+    mov     r4d, 0x5555
+    kmovd    k1, r4d
 %endif
     lea      r4, [3*r1]
     lea      r5, [3*r3]
@@ -2979,7 +3025,17 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
 %endif
 
 ; xop already has fast horizontal sums
-%if cpuflag(sse4) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
+%if cpuflag(avx512icl) && HIGH_BIT_DEPTH==0
+    pmaddwd    xm10, [pw_1]
+    HADDUWD     xm0, xm1
+    punpcklqdq  xm1, xm0, xm10
+    punpckhqdq  xm0, xm10
+    paddd       xm0, xm1    ;  sa8d1  sa8d2  satd1  satd2
+    pshufd      xm1, xm0, q2301
+    paddd       xm0, xm1    ;   sa8d   sa8d   satd   satd
+    movd        r0d, xm0
+    pextrd      eax, xm0, 2
+%elif cpuflag(sse4) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
     pmaddwd xm10, [pw_1]
     HADDUWD xm0, xm1
     phaddd  xm0, xm10       ;  sa8d1  sa8d2  satd1  satd2
@@ -4972,6 +5028,23 @@ cglobal hadamard_ac_8x8%1
 %else
     pand      m1, [mask_ac4b]
 %endif
+%if HIGH_BIT_DEPTH && cpuflag(avx512icl)
+    ; vpdpwssd for pmaddwd + paddd, two chains; m12 = pw_1, m13 = pw_2
+    vpbroadcastd m12, [pw_1]
+    pmaddwd   m1, m12
+    ABSW      m2, spill0
+    pmaddwd  m11, m3, m12
+    ABSW      m3, spill1
+    {evex} vpdpwssd  m1, m2, m12
+    ABSW      m2, spill2
+    {evex} vpdpwssd m11, m3, m12
+    ABSW      m3, m6, m6
+    {evex} vpdpwssd  m1, m2, m12
+    ABSW      m2, m7, m7
+    {evex} vpdpwssd m11, m3, m12
+    {evex} vpdpwssd  m1, m2, m12
+    paddd     m1, m11
+%else
     AC_PREP   m1, [pw_1]
     ABSW      m2, spill0
     AC_PADD   m1, m3, [pw_1]
@@ -4984,6 +5057,7 @@ cglobal hadamard_ac_8x8%1
     ABSW      m2, m7, m7
     AC_PADD   m1, m3, [pw_1]
     AC_PADD   m1, m2, [pw_1]
+%endif
     paddw     m3, m7, spill2
     psubw     m7, spill2
     mova  [rsp+gprsize+mmsize*2], m1 ; save satd
@@ -5001,6 +5075,18 @@ cglobal hadamard_ac_8x8%1
     mova      m4, spill1
     HADAMARD %%x, amax, 1, 5, 6, 7
     HADAMARD %%x, sumsub, 0, 4, 5, 6
+%if HIGH_BIT_DEPTH && cpuflag(avx512icl)
+    paddw    m13, m12, m12
+    pmaddwd   m2, m13
+    {evex} vpdpwssd  m2, m3, m13
+    ABSW      m4, m4, m7
+    pand      m0, [mask_ac8]
+    ABSW      m0, m0, m7
+    pmaddwd   m4, m12
+    {evex} vpdpwssd  m4, m0, m12
+    {evex} vpdpwssd  m2, m1, m13
+    paddd     m2, m4
+%else
     AC_PREP   m2, [pw_1]
     AC_PADD   m2, m3, [pw_1]
     AC_PADD   m2, m1, [pw_1]
@@ -5014,6 +5100,7 @@ cglobal hadamard_ac_8x8%1
     ABSW      m0, m0, m7
     AC_PADD   m2, m4, [pw_1]
     AC_PADD   m2, m0, [pw_1]
+%endif
     mova [rsp+gprsize+mmsize], m2 ; save sa8d
     SWAP       0, 2
     SAVE_MM_PERMUTATION
@@ -5076,7 +5163,7 @@ HADAMARD_AC_WXH_SSE2  8,  8
 
 ; struct { int satd, int sa8d; } pixel_hadamard_ac_16x16( uint8_t *pix, int stride )
 %macro HADAMARD_AC_WXH_SSE2 2
-cglobal pixel_hadamard_ac_%1x%2, 2,4,11
+cglobal pixel_hadamard_ac_%1x%2, 2,4,11+3*cpuflag(avx512icl)
     %define ysub r1
     FIX_STRIDES r1
     mov   r3, rsp
@@ -5359,7 +5446,13 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
 
 ; the satd pass of rows m0-m3 into m6
 %macro BI_SATD_PASS 1 ; 1 for the high bit depth transform
+%if cpuflag(avx512icl) && %1 == 0
 %if bi_pass
+    SATD_ICL_8x4 add
+%else
+    SATD_ICL_8x4 swap
+%endif
+%elif bi_pass
     SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6
 %else
     SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6, swap
@@ -5398,6 +5491,9 @@ cglobal pixel_satd_bi4_%1x%2, 7,12,11
     %define bi_wd  r6d
     %define bi_wb  r6b
     FIX_STRIDES r5
+%if cpuflag(avx512icl)
+    SATD_ICL_KMASK r7d
+%endif
     lea       r7, [3*r5]
 %if bi_wide == 0
     lea       r8, [r1+4*r5]
@@ -5422,6 +5518,9 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
     %define bi_wd  r5d
     %define bi_wb  r5b
     FIX_STRIDES r2, r4
+%if cpuflag(avx512icl)
+    SATD_ICL_KMASK r6d
+%endif
     lea       r6, [3*r2]
     lea       r7, [3*r4]
 %if bi_wide == 0
@@ -5746,13 +5845,15 @@ SATD_BI  8,  8, 1
 %if ARCH_X86_64
 INIT_YMM avx2
 SA8D_SATD
+
+%macro HADAMARD_AC_HBD_YMM 0
 HADAMARD_AC_SSE2
 
 ; 8x16: lane 0 is the top 8x8, lane 1 the bottom one, one pass like 16x8
 %assign hadac_vstack 1
 HADAMARD_AC_SSE2 v
 %assign hadac_vstack 0
-cglobal pixel_hadamard_ac_8x16, 2,5,11
+cglobal pixel_hadamard_ac_8x16, 2,5,11+3*cpuflag(avx512icl)
     FIX_STRIDES r1
     mov   r3, rsp
     and  rsp, ~(mmsize-1)
@@ -5769,37 +5870,70 @@ cglobal pixel_hadamard_ac_8x16, 2,5,11
     add  rax, rdx
     mov  rsp, r3
     RET
+%endmacro
+
+HADAMARD_AC_HBD_YMM
+ICL_LOW_BEGIN
+HADAMARD_AC_HBD_YMM
+ICL_LOW_END
+INIT_YMM avx2
 
 ; 16 pixel rows: lane 0 is pix[0], lane 1 is pix[8], the 8x8 transform is lane-local
+; avx2: m0 = word sums of the four maxes (unsigned); avx512icl: dword sums (vpdpwssd,
+; m12 = pw_1 from the caller)
+%macro SA8D_16x16_HBD 0
 cglobal pixel_sa8d_16x8_internal
     lea  r6, [r0+4*r1]
     lea  r7, [r2+4*r3]
     LOAD_DIFF_8x4P 0, 1, 2, 8, 5, 6, 7, r0, r2, 0, 0
     LOAD_DIFF_8x4P 4, 5, 3, 9, 11, 6, 7, r6, r7, 0, 0
     HADAMARD8_2D 0, 1, 2, 8, 4, 5, 3, 9, 6, amax
+%if cpuflag(avx512icl)
+    pmaddwd   m0, m12
+    {evex} vpdpwssd  m0, m1, m12
+    pmaddwd   m2, m12
+    {evex} vpdpwssd  m2, m8, m12
+    paddd     m0, m2
+%else
     paddw m0, m1
     paddw m0, m2
     paddw m0, m8
+%endif
     SAVE_MM_PERMUTATION
     ret
 
-cglobal pixel_sa8d_16x16, 4,8,12
+cglobal pixel_sa8d_16x16, 4,8,12+cpuflag(avx512icl)
     FIX_STRIDES r1, r3
     lea  r4, [3*r1]
     lea  r5, [3*r3]
+%if cpuflag(avx512icl)
+    vpbroadcastd m12, [pw_1]
+%endif
     call pixel_sa8d_16x8_internal
     lea  r0, [r0+8*r1]
     lea  r2, [r2+8*r3]
+%if cpuflag(avx512icl)
+    mova m10, m0
+    call pixel_sa8d_16x8_internal
+%else
     HADDUWD m0, m1
     mova m10, m0
     call pixel_sa8d_16x8_internal
     HADDUWD m0, m1
+%endif
     paddd m0, m10
     HADDD m0, m1
     movd eax, xm0
     add  eax, 1
     shr  eax, 1
     RET
+%endmacro
+
+SA8D_16x16_HBD
+ICL_LOW_BEGIN
+SA8D_16x16_HBD
+ICL_LOW_END
+INIT_YMM avx2
 %endif
 
 INIT_YMM avx2
@@ -5808,8 +5942,10 @@ HADAMARD_AC_8x8_AVX2
 ;-----------------------------------------------------------------------------
 ; int pixel_sa8d_8x8( uint16_t *, intptr_t, uint16_t *, intptr_t )
 ; Same lane split as hadamard_ac_8x8. Differences reach 32*1023 before the
-; last stage, so the four max() results are widened before they are added.
+; last stage, so the four max() results are widened before they are added
+; (avx512icl: vpdpwssd, two chains).
 ;-----------------------------------------------------------------------------
+%macro SA8D_8x8_HBD 0
 cglobal pixel_sa8d_8x8, 4,6,8
     FIX_STRIDES r1, r3
     lea          r4, [r1*3]
@@ -5852,18 +5988,34 @@ cglobal pixel_sa8d_8x8, 4,6,8
     pmaxsw      xm2, xm6
     vextracti128 xm4, m3, 1
     pmaxsw      xm3, xm4
+%if cpuflag(avx512icl)
+    pmaddwd     xm0, xm7
+    {evex} vpdpwssd    xm0, xm1, xm7
+    pmaddwd     xm2, xm7
+    {evex} vpdpwssd    xm2, xm3, xm7
+%else
     pmaddwd     xm0, xm7
     pmaddwd     xm1, xm7
     pmaddwd     xm2, xm7
     pmaddwd     xm3, xm7
     paddd       xm0, xm1
     paddd       xm2, xm3
+%endif
     paddd       xm0, xm2
     HADDD       xm0, xm1
     movd        eax, xm0
     add         eax, 1
     shr         eax, 1
     RET
+%endmacro
+
+SA8D_8x8_HBD
+%if ARCH_X86_64
+ICL_LOW_BEGIN
+SA8D_8x8_HBD
+ICL_LOW_END
+INIT_YMM avx2
+%endif
 %if ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
@@ -6186,8 +6338,13 @@ INTRA_SATD_X3_16x16_HBD
     HADAMARD4_V  0, 1, 2, 3, 4
     ABSW2        m0, m2, m0, m2, m4, m5
     ABSW2        m1, m3, m1, m3, m4, m5
+%if cpuflag(avx512icl)
+    SATD_ICL_HMAX 0, 2, 4
+    SATD_ICL_HMAX 1, 3, 4
+%else
     HADAMARD 1, max, 0, 2, 4, 5
     HADAMARD 1, max, 1, 3, 4, 5
+%endif
     paddw        %1, m0, m1
 %endif
 %endmacro
@@ -7172,6 +7329,30 @@ cglobal pixel_satd_fenc_pre_8x8, 2,2,3
 %undef fpre_i
     RET
 
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %1 (avx512icl: SATD_ICL_8x4, k1 = 0x5555)
+%macro SATD_PRE_UNIT 1
+%if cpuflag(avx512icl)
+    SATD_ICL_8x4 %1
+%else
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %1
+%endif
+%endmacro
+
+; [%2 %2 | %3 %3] (avx512icl: k2 = 0xc)
+%macro SATD_PRE_DUP8 3 ; dst, 2*mem
+%if cpuflag(avx512icl)
+    SATD_ICL_DUP8 %1, %2, %3
+%else
+    LOAD_DUP_8x2P_AVX2 %1, 4, %2, %3
+%endif
+%endmacro
+
+%macro SATD_PRE_KMASK 1 ; gpr (dword) to clobber
+%if cpuflag(avx512icl)
+    SATD_ICL_KMASK %1
+%endif
+%endmacro
+
 ; four 16 pixel rows (r3 = 3*stride) less fenc_pre rows %1 to %1+3
 %macro SATD_PRE_16x4 2 ; fenc_pre row, swap/add
     vbroadcasti128 m0, [r1]
@@ -7186,12 +7367,12 @@ cglobal pixel_satd_fenc_pre_8x8, 2,2,3
     psubw          m1, [r0+(%1+1)*32]
     psubw          m2, [r0+(%1+2)*32]
     psubw          m3, [r0+(%1+3)*32]
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_UNIT %2
 %endmacro
 
 ; rows k, k+4 (r1, r4 = r1+4*stride, %2 = k*stride) less fenc_pre's
 %macro SATD_PRE_SUMSUB8 3 ; dst (number), source offset, fenc_pre offset
-    LOAD_DUP_8x2P_AVX2 %1, 4, [r1+%2], [r4+%2]
+    SATD_PRE_DUP8 %1, [r1+%2], [r4+%2]
     pmaddubsw     m%1, m7
     psubw         m%1, [r0+%3]
 %endmacro
@@ -7201,10 +7382,12 @@ cglobal pixel_satd_fenc_pre_8x8, 2,2,3
     SATD_PRE_SUMSUB8 1, r2,   %1+32
     SATD_PRE_SUMSUB8 2, 2*r2, %1+64
     SATD_PRE_SUMSUB8 3, r3,   %1+96
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_UNIT %2
 %endmacro
 
+%macro SATD_PRE_FUNCS 0
 cglobal pixel_satd_pre_16x16, 3,4,8
+    SATD_PRE_KMASK r3d
     mova     m7, [hmul_16p]
     lea      r3, [3*r2]
     SATD_PRE_16x4 0, swap
@@ -7217,6 +7400,7 @@ cglobal pixel_satd_pre_16x16, 3,4,8
     SATD_AVG2_END
 
 cglobal pixel_satd_pre_16x8, 3,4,8
+    SATD_PRE_KMASK r3d
     mova     m7, [hmul_16p]
     lea      r3, [3*r2]
     SATD_PRE_16x4 0, swap
@@ -7225,6 +7409,7 @@ cglobal pixel_satd_pre_16x8, 3,4,8
     SATD_AVG2_END
 
 cglobal pixel_satd_pre_8x16, 3,5,8
+    SATD_PRE_KMASK r3d
     mova     m7, [hmul_8p]
     lea      r3, [3*r2]
     lea      r4, [r1+4*r2]
@@ -7235,11 +7420,15 @@ cglobal pixel_satd_pre_8x16, 3,5,8
     SATD_AVG2_END
 
 cglobal pixel_satd_pre_8x8, 3,5,8
+    SATD_PRE_KMASK r3d
     mova     m7, [hmul_8p]
     lea      r3, [3*r2]
     lea      r4, [r1+4*r2]
     SATD_PRE_8x8 0, swap
     SATD_AVG2_END
+%endmacro
+
+SATD_PRE_FUNCS
 
 ; 16 wide: row (%2 = k*stride) of pavgb( src1, src2 ) less fenc_pre's
 %macro SATD_AVG2_PRE_ROW16 3 ; dst (number), source offset, fenc_pre offset
@@ -7255,13 +7444,13 @@ cglobal pixel_satd_pre_8x8, 3,5,8
     SATD_AVG2_PRE_ROW16 1, r3,   (%1+1)*32
     SATD_AVG2_PRE_ROW16 2, 2*r3, (%1+2)*32
     SATD_AVG2_PRE_ROW16 3, r4,   (%1+3)*32
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_UNIT %2
 %endmacro
 
 ; 8 wide: rows k, k+4 (r5/r6 = src1/src2 four rows down)
 %macro SATD_AVG2_PRE_SUMSUB8 3 ; dst (number), source offset, fenc_pre offset
-    LOAD_DUP_8x2P_AVX2 %1, 4, [r1+%2], [r5+%2]
-    LOAD_DUP_8x2P_AVX2 5, 4, [r2+%2], [r6+%2]
+    SATD_PRE_DUP8 %1, [r1+%2], [r5+%2]
+    SATD_PRE_DUP8 5, [r2+%2], [r6+%2]
     pavgb         m%1, m5
     pmaddubsw     m%1, m7
     psubw         m%1, [r0+%3]
@@ -7272,10 +7461,12 @@ cglobal pixel_satd_pre_8x8, 3,5,8
     SATD_AVG2_PRE_SUMSUB8 1, r3,   %1+32
     SATD_AVG2_PRE_SUMSUB8 2, 2*r3, %1+64
     SATD_AVG2_PRE_SUMSUB8 3, r4,   %1+96
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %2
+    SATD_PRE_UNIT %2
 %endmacro
 
+%macro SATD_AVG2_PRE_FUNCS 0
 cglobal pixel_satd_avg2_pre_16x16, 4,5,8
+    SATD_PRE_KMASK r4d
     mova     m7, [hmul_16p]
     lea      r4, [3*r3]
     SATD_AVG2_PRE_16x4 0, swap
@@ -7290,6 +7481,7 @@ cglobal pixel_satd_avg2_pre_16x16, 4,5,8
     SATD_AVG2_END
 
 cglobal pixel_satd_avg2_pre_16x8, 4,5,8
+    SATD_PRE_KMASK r4d
     mova     m7, [hmul_16p]
     lea      r4, [3*r3]
     SATD_AVG2_PRE_16x4 0, swap
@@ -7299,6 +7491,7 @@ cglobal pixel_satd_avg2_pre_16x8, 4,5,8
     SATD_AVG2_END
 
 cglobal pixel_satd_avg2_pre_8x16, 4,7,8
+    SATD_PRE_KMASK r4d
     mova     m7, [hmul_8p]
     lea      r4, [3*r3]
     lea      r5, [r1+4*r3]
@@ -7312,12 +7505,16 @@ cglobal pixel_satd_avg2_pre_8x16, 4,7,8
     SATD_AVG2_END
 
 cglobal pixel_satd_avg2_pre_8x8, 4,7,8
+    SATD_PRE_KMASK r4d
     mova     m7, [hmul_8p]
     lea      r4, [3*r3]
     lea      r5, [r1+4*r3]
     lea      r6, [r2+4*r3]
     SATD_AVG2_PRE_8x8 0, swap
     SATD_AVG2_END
+%endmacro
+
+SATD_AVG2_PRE_FUNCS
 
 ;-----------------------------------------------------------------------------
 ; satd_bi/satd_bi4 (see SATD_BI) against fenc_pre, the rows as satd_pre's. The
@@ -7378,9 +7575,9 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
 ; 8 wide: list %2's rows %3, %3+4 as [k k | k+4 k+4] in m%1; m4, m10 tmp
 %macro BI_PRE_SRC8 3
     BI_ROW_OFF %2, %3
-    LOAD_DUP_8x2P_AVX2 %1, 4, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
+    SATD_PRE_DUP8 %1, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
 %if bi_four
-    LOAD_DUP_8x2P_AVX2 10, 4, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
+    SATD_PRE_DUP8 10, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
     pavgb          m%1, m10
 %endif
 %endmacro
@@ -7474,6 +7671,27 @@ SATD_BI  8,  8, 1
     pmaddwd      xm%1, [pw_1]
 %endmacro
 
+%macro INTRA_X3_LEFT4 2 ; dst gpr, first row
+    movzx         %1, byte [r1+%2*FDEC_STRIDE-1]
+%assign intra_x3_y %2+1
+%rep 3
+    movzx         r4d, byte [r1+intra_x3_y*FDEC_STRIDE-1]
+    add           %1, r4d
+%assign intra_x3_y intra_x3_y+1
+%endrep
+%endmacro
+
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %1 (avx512icl: SATD_ICL_8x4, k1 = 0x5555)
+%macro INTRA_X3_SATD 1 ; accumulator
+%if cpuflag(avx512icl)
+    SATD_ICL_8x4 add, %1
+%else
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %1
+%endif
+%endmacro
+
+; avx2, and avx512icl after the SATD_ICL macros
+%macro INTRA_SATD_X3_8BIT 0
 cglobal intra_satd_x3_16x16, 3,5,16
     ; DC = (sum of top + sum of left + 16) >> 5
     movzx         r3d, byte [r1-1]
@@ -7491,6 +7709,10 @@ cglobal intra_satd_x3_16x16, 3,5,16
     movd          r4d, xm1
     lea           r3d, [r3+r4+16]
     shr           r3d, 5
+%if cpuflag(avx512icl)
+    mov           r4d, 0x5555
+    kmovd          k1, r4d
+%endif
     mova           m7, [hmul_16p]
     movd         xm13, r3d
     vpbroadcastb  m13, xm13
@@ -7513,7 +7735,7 @@ cglobal intra_satd_x3_16x16, 3,5,16
     psubw          m1, m9, m12
     psubw          m2, m10, m12
     psubw          m3, m11, m12
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 14
+    INTRA_X3_SATD 14
 %assign intra_x3_k 0
 %rep 4                                     ; H: the row's left neighbour
     %assign intra_x3_f 8+intra_x3_k
@@ -7522,12 +7744,12 @@ cglobal intra_satd_x3_16x16, 3,5,16
     psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
 %assign intra_x3_k intra_x3_k+1
 %endrep
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 15
+    INTRA_X3_SATD 15
     psubw          m0, m8, m13             ; DC
     psubw          m1, m9, m13
     psubw          m2, m10, m13
     psubw          m3, m11, m13
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+    INTRA_X3_SATD 6
 %assign intra_x3_g intra_x3_g+1
 %endrep
     INTRA_X3_FOLD 14
@@ -7551,24 +7773,26 @@ cglobal intra_satd_x3_16x16, 3,5,16
 ; void intra_satd_x3_8x8c( uint8_t *fenc, uint8_t *fdec, int res[3] ) (DC, H, V)
 ; 8 wide layout of pixel_satd_8x8: lanes = rows k, k+4, each row twice
 ;-----------------------------------------------------------------------------
-%macro INTRA_X3_LEFT4 2 ; dst gpr, first row
-    movzx         %1, byte [r1+%2*FDEC_STRIDE-1]
-%assign intra_x3_y %2+1
-%rep 3
-    movzx         r4d, byte [r1+intra_x3_y*FDEC_STRIDE-1]
-    add           %1, r4d
-%assign intra_x3_y intra_x3_y+1
-%endrep
-%endmacro
-
 cglobal intra_satd_x3_8x8c, 3,7,16
     movq          xm0, [r1-FDEC_STRIDE]
     pxor          xm1, xm1
     punpcklbw     xm0, xm1
     pmaddwd       xm0, [pw_1]
+%if cpuflag(avx512icl)
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1                 ; s0 s0 s1 s1
+    movd          r3d, xm0
+    pextrd        r5d, xm0, 2
+    mov           r4d, 0x5555000c
+    kmovd          k2, r4d
+    kshiftrd       k1, k2, 16
+    mov           r4d, 0xffff0000
+    kmovd          k3, r4d
+%else
     phaddd        xm0, xm0                 ; s0 s1 (top 0-3, top 4-7)
     movd          r3d, xm0
     pextrd        r5d, xm0, 1
+%endif
     INTRA_X3_LEFT4 r6d, 0                  ; s2
     lea           r3d, [r3+r6+4]
     shr           r3d, 3                   ; dc0 = (s0 + s2 + 4) >> 3
@@ -7595,9 +7819,14 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 %assign intra_x3_k 0
 %rep 4
     %assign intra_x3_f 8+intra_x3_k
+%if cpuflag(avx512icl)
+    vpbroadcastq   m %+ intra_x3_f, [r0+intra_x3_k*FENC_STRIDE]
+    vpbroadcastq   m %+ intra_x3_f {k2}, [r0+(intra_x3_k+4)*FENC_STRIDE]
+%else
     movq          xm %+ intra_x3_f, [r0+intra_x3_k*FENC_STRIDE]
     vinserti128    m %+ intra_x3_f, m %+ intra_x3_f, [r0+(intra_x3_k+4)*FENC_STRIDE], 1
     punpcklqdq     m %+ intra_x3_f, m %+ intra_x3_f
+%endif
     pmaddubsw      m %+ intra_x3_f, m7
 %assign intra_x3_k intra_x3_k+1
 %endrep
@@ -7608,23 +7837,28 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     psubw          m1, m9, m13
     psubw          m2, m10, m13
     psubw          m3, m11, m13
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 14
+    INTRA_X3_SATD 14
 %assign intra_x3_k 0
 %rep 4                                     ; H
     %assign intra_x3_f 8+intra_x3_k
+%if cpuflag(avx512icl)
+    vpbroadcastb   m %+ intra_x3_k, [r1+intra_x3_k*FDEC_STRIDE-1]
+    vpbroadcastb   m %+ intra_x3_k {k3}, [r1+(intra_x3_k+4)*FDEC_STRIDE-1]
+%else
     vpbroadcastb  xm %+ intra_x3_k, [r1+intra_x3_k*FDEC_STRIDE-1]
     vpbroadcastb  xm4, [r1+(intra_x3_k+4)*FDEC_STRIDE-1]
     vinserti128    m %+ intra_x3_k, m %+ intra_x3_k, xm4, 1
+%endif
     pmaddubsw      m %+ intra_x3_k, m7
     psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
 %assign intra_x3_k intra_x3_k+1
 %endrep
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 15
+    INTRA_X3_SATD 15
     psubw          m0, m8, m12             ; V
     psubw          m1, m9, m12
     psubw          m2, m10, m12
     psubw          m3, m11, m12
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+    INTRA_X3_SATD 6
     INTRA_X3_FOLD 14
     INTRA_X3_FOLD 15
     INTRA_X3_FOLD 6
@@ -7640,6 +7874,9 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     movq        [r2], xm14
     pextrd    [r2+8], xm14, 2
     RET
+%endmacro
+
+INTRA_SATD_X3_8BIT
 INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
@@ -7665,7 +7902,14 @@ INIT_YMM avx2
     LOWRES_PRE8
 %endmacro
 
+; avx2, and avx512icl in the ymm0-15 block after the SATD_ICL macros (phaddw,
+; pblendw, vpblendd, vperm2i128 and phminposuw have no EVEX form)
+%macro LOWRES_8BIT 0
 cglobal intra_satd_lowres, 3,5,16
+%if cpuflag(avx512icl)
+    mov         r3d, 0x5555
+    kmovd        k1, r3d
+%endif
     sub          r1, r2               ; top row, row k at r1+(k+1)*r2
     lea          r3, [3*r2]
     lea          r4, [r1+4*r2]        ; row 3
@@ -7808,6 +8052,9 @@ cglobal intra_satd_lowres, 3,5,16
     movd        eax, xm0
     movzx       eax, ax
     RET
+%endmacro
+
+LOWRES_8BIT
 
 %endif ; ARCH_X86_64
 
@@ -8157,7 +8404,39 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 ;-----------------------------------------------------------------------------
 ; Modes go through .sa8d in pairs, mode 2k in lane 0 and 2k+1 in lane 1.
 ; FL, GL = F2, F1 of edge[7..22] (centred, rightwards); FT, GT of edge[16..31].
+; HADAMARD8_2D_HMUL 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 (avx512icl: the amax stage
+; with SATD_ICL_HMAX, k1 = 0x5555)
+%macro SA8D_X9_HMUL 0
+%if cpuflag(avx512icl)
+    HADAMARD4_V 0, 1, 2, 3, 8
+    HADAMARD4_V 4, 5, 6, 7, 8
+    SUMSUB_BADC w, 0, 4, 1, 5, 8
+    HADAMARD 2, sumsub, 0, 4, 8, 9
+    HADAMARD 2, sumsub, 1, 5, 8, 9
+    SUMSUB_BADC w, 2, 6, 3, 7, 8
+    HADAMARD 2, sumsub, 2, 6, 8, 9
+    HADAMARD 2, sumsub, 3, 7, 8, 9
+    ABSW2 m0, m4, m0, m4, m8, m9
+    ABSW2 m1, m5, m1, m5, m8, m9
+    ABSW2 m2, m6, m2, m6, m8, m9
+    ABSW2 m3, m7, m3, m7, m8, m9
+    SATD_ICL_HMAX 0, 4, 8
+    SATD_ICL_HMAX 1, 5, 8
+    SATD_ICL_HMAX 2, 6, 8
+    SATD_ICL_HMAX 3, 7, 8
+%else
+    HADAMARD8_2D_HMUL 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+%endif
+%endmacro
+
+; avx2, and avx512icl in the ymm0-15 block after the SATD_ICL macros (phaddw,
+; vpblendd, vperm2i128 and phminposuw have no EVEX form)
+%macro SA8D_X9_8BIT 0
 cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
+%if cpuflag(avx512icl)
+    mov         r5d, 0x5555
+    kmovd        k1, r5d
+%endif
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
     mova        m15, [hmul_8p]
@@ -8302,11 +8581,261 @@ ALIGN 16
     psubw        m %+ x9i, [r6+x9i*32]
 %assign x9i x9i+1
 %endrep
-    HADAMARD8_2D_HMUL 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+    SA8D_X9_HMUL
     paddw        m0, m1
     paddw        m2, m3
     paddw      mret, m0, m2
     ret
+%endmacro
+
+SA8D_X9_8BIT
+
+;-----------------------------------------------------------------------------
+; avx512icl 8-bit satd family, the avx2 layouts with:
+; - HADAMARD 1, max in 3 uops: vpblendmw (k1 = 0x5555) and vpshldd give the
+;   pairs of TRANS d unord with the two words of each dword swapped, so the
+;   sum is unchanged;
+; - 8 wide row pairs [k k | k+4 k+4] from a broadcast and a merge-masked
+;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
+; The whole block is ICL_LOW (m0-m15 on ymm0-15).
+;-----------------------------------------------------------------------------
+ICL_LOW_BEGIN
+%macro SATD_ICL_KMASK 1 ; gpr (dword) to clobber
+    mov       %1, 0x5555000c
+    kmovd     k2, %1
+    kshiftrd  k1, k2, 16
+%endmacro
+
+%macro SATD_ICL_HMAX 3 ; a, b, tmp
+    vpblendmw m%3 {k1}, m%1, m%2
+    vpshldd   m%2, m%1, m%2, 16
+    pmaxsw    m%1, m%3, m%2
+%endmacro
+
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %2, %1
+%macro SATD_ICL_8x4 1-2 6 ; swap/add, accumulator
+    HADAMARD4_V 0, 1, 2, 3, 4
+    pabsw     m0, m0
+    pabsw     m2, m2
+    pabsw     m1, m1
+    pabsw     m3, m3
+    SATD_ICL_HMAX 0, 2, 4
+    SATD_ICL_HMAX 1, 3, 5
+%ifidn %1, swap
+    paddw    m%2, m0, m1
+%else
+    paddw     m0, m1
+    paddw    m%2, m0
+%endif
+%endmacro
+
+%macro SATD_ICL_DUP8 3 ; dst, 2*mem: [%2 %2 | %3 %3]
+    vpbroadcastq m%1, %2
+    vpbroadcastq m%1 {k2}, %3
+%endmacro
+
+; rows k, k+4 (r0/r2 and r6/r7 = four rows down), %3/%4 = k*stride1/k*stride2
+%macro SATD_ICL_SUMSUB8 4 ; dst, tmp, 2*offset
+    SATD_ICL_DUP8 %1, [r0+%3], [r6+%3]
+    SATD_ICL_DUP8 %2, [r2+%4], [r7+%4]
+    pmaddubsw m%1, m7
+    pmaddubsw m%2, m7
+    psubw     m%1, m%2
+%endmacro
+
+%macro SATD_ICL_8x8 1 ; swap/add
+    SATD_ICL_SUMSUB8 0, 4, 0, 0
+    SATD_ICL_SUMSUB8 1, 5, r1, r3
+    SATD_ICL_SUMSUB8 2, 4, 2*r1, 2*r3
+    SATD_ICL_SUMSUB8 3, 5, r4, r5
+    SATD_ICL_8x4 %1
+%endmacro
+
+%macro SATD_ICL_START8 0
+    SATD_ICL_KMASK r4d
+    mova      m7, [hmul_8p]
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    lea       r6, [r0+4*r1]
+    lea       r7, [r2+4*r3]
+%endmacro
+
+%macro SATD_ICL_END 0
+    vextracti128 xm0, m6, 1
+    paddw        xm0, xm6
+    SATD_END_SSE2 xm0
+%endmacro
+
+cglobal pixel_satd_8x8, 4,8,8
+    SATD_ICL_START8
+    SATD_ICL_8x8 swap
+    SATD_ICL_END
+
+cglobal pixel_satd_8x16, 4,8,8
+    SATD_ICL_START8
+    SATD_ICL_8x8 swap
+    lea       r0, [r0+8*r1]
+    lea       r2, [r2+8*r3]
+    lea       r6, [r6+8*r1]
+    lea       r7, [r7+8*r3]
+    SATD_ICL_8x8 add
+    SATD_ICL_END
+
+; m6 += the satd of 16x8 at r0/r2, which move down 8 rows
+cglobal pixel_satd_16x8_internal
+%rep 2
+    LOAD_SUMSUB_16x4P_AVX2 0, 1, 2, 3, 4, 5, 7, r0, r2, 1
+    SATD_ICL_8x4 add
+%endrep
+    ret
+
+%macro SATD_ICL_START16 0
+    mov      r4d, 0x5555
+    kmovd     k1, r4d
+    mova      m7, [hmul_16p]
+    lea       r4, [3*r1]
+    lea       r5, [3*r3]
+    pxor      m6, m6
+%endmacro
+
+cglobal pixel_satd_16x16, 4,6,8
+    SATD_ICL_START16
+    call pixel_satd_16x8_internal
+    call pixel_satd_16x8_internal
+    SATD_ICL_END
+
+cglobal pixel_satd_16x8, 4,6,8
+    SATD_ICL_START16
+    call pixel_satd_16x8_internal
+    SATD_ICL_END
+
+; satd_avg2: as the avx2 SATD_AVG2_16x4 / SATD_AVG2_8x8
+%macro SATD_AVG2_ICL_16x4 0
+    SATD_AVG2_SUMSUB16x2 0, 1, 4, 5, 0, FENC_STRIDE, 0, r3
+    SATD_AVG2_SUMSUB16x2 2, 3, 4, 5, 2*FENC_STRIDE, 3*FENC_STRIDE, 2*r3, r4
+    SATD_ICL_8x4 add
+%endmacro
+
+%macro SATD_AVG2_ICL_SUMSUB8 3 ; dst (number), k, source offset
+    SATD_ICL_DUP8 %1, [r0+%2*FENC_STRIDE], [r0+(%2+4)*FENC_STRIDE]
+    SATD_ICL_DUP8 4, [r1+%3], [r5+%3]
+    SATD_ICL_DUP8 8, [r2+%3], [r6+%3]
+    pavgb          m4, m8
+    pmaddubsw     m%1, m7
+    pmaddubsw      m4, m7
+    psubw         m%1, m4
+%endmacro
+
+%macro SATD_AVG2_ICL_8x8 1 ; swap/add
+    SATD_AVG2_ICL_SUMSUB8 0, 0, 0
+    SATD_AVG2_ICL_SUMSUB8 1, 1, r3
+    SATD_AVG2_ICL_SUMSUB8 2, 2, 2*r3
+    SATD_AVG2_ICL_SUMSUB8 3, 3, r4
+    SATD_ICL_8x4 %1
+%endmacro
+
+cglobal pixel_satd_avg2_16x16, 4,5,9
+    mov      r4d, 0x5555
+    kmovd     k1, r4d
+    mova      m7, [hmul_16p]
+    lea       r4, [3*r3]
+    pxor      m6, m6
+    SATD_AVG2_ICL_16x4
+%rep 3
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDE
+    SATD_AVG2_ICL_16x4
+%endrep
+    SATD_ICL_END
+
+cglobal pixel_satd_avg2_16x8, 4,5,9
+    mov      r4d, 0x5555
+    kmovd     k1, r4d
+    mova      m7, [hmul_16p]
+    lea       r4, [3*r3]
+    pxor      m6, m6
+    SATD_AVG2_ICL_16x4
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDE
+    SATD_AVG2_ICL_16x4
+    SATD_ICL_END
+
+%macro SATD_AVG2_ICL_START8 0
+    SATD_ICL_KMASK r4d
+    mova      m7, [hmul_8p]
+    lea       r4, [3*r3]
+    lea       r5, [r1+4*r3]
+    lea       r6, [r2+4*r3]
+%endmacro
+
+cglobal pixel_satd_avg2_8x16, 4,7,9
+    SATD_AVG2_ICL_START8
+    SATD_AVG2_ICL_8x8 swap
+    lea       r1, [r1+8*r3]
+    lea       r2, [r2+8*r3]
+    lea       r5, [r5+8*r3]
+    lea       r6, [r6+8*r3]
+    add       r0, 8*FENC_STRIDE
+    SATD_AVG2_ICL_8x8 add
+    SATD_ICL_END
+
+cglobal pixel_satd_avg2_8x8, 4,7,9
+    SATD_AVG2_ICL_START8
+    SATD_AVG2_ICL_8x8 swap
+    SATD_ICL_END
+
+; HADAMARD 8, sumsub (vperm2i128 has no EVEX form)
+%macro SA8D_ICL_H8 3 ; a, b, tmp
+    vshufi32x4  m%3, m%1, m%2, 3
+    vinserti128 m%1, m%1, xm%2, 1
+    SWAP         %2, %3
+    SUMSUB_BA    w, %1, %2, %3
+%endmacro
+
+; as pixel_sa8d_8x8_avx2
+cglobal pixel_sa8d_8x8, 4,8,8
+    SATD_ICL_START8
+    SATD_ICL_SUMSUB8 0, 4, 0, 0
+    SATD_ICL_SUMSUB8 1, 5, r1, r3
+    SATD_ICL_SUMSUB8 2, 4, 2*r1, 2*r3
+    SATD_ICL_SUMSUB8 3, 5, r4, r5
+    HADAMARD4_V 0, 1, 2, 3, 4
+    SA8D_ICL_H8 0, 1, 4
+    SA8D_ICL_H8 2, 3, 4
+    HADAMARD 2, sumsub, 0, 1, 4, 5
+    HADAMARD 2, sumsub, 2, 3, 4, 5
+    pabsw     m0, m0
+    pabsw     m1, m1
+    pabsw     m2, m2
+    pabsw     m3, m3
+    SATD_ICL_HMAX 0, 1, 4
+    SATD_ICL_HMAX 2, 3, 5
+    paddw     m6, m0, m2
+    vextracti128 xm1, m6, 1
+    paddw    xm6, xm1
+    HADDW    xm6, xm1
+    movd     eax, xm6
+    add      eax, 1
+    shr      eax, 1
+    RET
+
+INTRA_SATD_X3_8BIT
+SA8D_SATD
+SATD_PRE_FUNCS
+SATD_AVG2_PRE_FUNCS
+LOWRES_8BIT
+SA8D_X9_8BIT
+SATD_BI 16, 16, 0
+SATD_BI 16,  8, 0
+SATD_BI  8, 16, 0
+SATD_BI  8,  8, 0
+SATD_BI 16, 16, 1
+SATD_BI 16,  8, 1
+SATD_BI  8, 16, 1
+SATD_BI  8,  8, 1
+ICL_LOW_END
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
