@@ -712,6 +712,42 @@ cglobal quant_4x4_dc, 3,3,8
 %endif
 %endif ; ARCH_X86_64
 
+;-----------------------------------------------------------------------------
+; int quant_2x2_dc( dctcoef dct[4], int mf, int bias )
+;-----------------------------------------------------------------------------
+INIT_XMM avx512icl
+cglobal quant_2x2_dc, 3,3
+%if HIGH_BIT_DEPTH
+    movu          m0, [r0]
+    vpbroadcastd  m2, r1d
+    vpbroadcastd  m3, r2d
+    pabsd         m1, m0
+    paddd         m1, m3
+    pmulld        m1, m2
+    psrad         m1, 16
+    vpmovd2m      k1, m0
+    pxor          m2, m2
+    vpsubd        m1 {k1}, m2, m1
+    movu        [r0], m1
+    vptestmd      k1, m1, m1
+%else
+    movq          m0, [r0]
+    vpbroadcastw  m2, r1d
+    vpbroadcastw  m3, r2d
+    pabsw         m1, m0
+    paddusw       m1, m3
+    pmulhuw       m1, m2
+    vpmovw2m      k1, m0
+    pxor          m2, m2
+    vpsubw        m1 {k1}, m2, m1
+    movq        [r0], m1
+    vptestmw      k1, m1, m1
+%endif
+    xor          eax, eax
+    ktestb        k1, k1
+    setnz         al
+    RET
+
 ;=============================================================================
 ; dequant
 ;=============================================================================
