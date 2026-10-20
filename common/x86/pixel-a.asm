@@ -2180,11 +2180,21 @@ cglobal pixel_satd_8x4, 4,6,8
     %define rh [esp+48]
 %endif
 %if HIGH_BIT_DEPTH
-    HADDUW  m0, m1
     paddd   lh, rh
 %else
     paddusw lh, rh
 %endif ; HIGH_BIT_DEPTH
+%endmacro
+
+; high bit depth: max() words are <= 32*PIXEL_MAX, four of them overflow 16 bits
+%macro SA8D_SUM_HBD 4
+    pmaddwd m%1, [pw_1]
+    pmaddwd m%2, [pw_1]
+    pmaddwd m%3, [pw_1]
+    pmaddwd m%4, [pw_1]
+    paddd   m%1, m%2
+    paddd   m%3, m%4
+    paddd   m%1, m%3
 %endmacro
 
 %macro SA8D 0
@@ -2205,9 +2215,13 @@ cglobal pixel_sa8d_8x8_internal
 %else ; non-sse2
     HADAMARD8_2D_HMUL 0, 1, 2, 8, 4, 5, 3, 9, 6, 11
 %endif
+%if HIGH_BIT_DEPTH
+    SA8D_SUM_HBD 0, 1, 2, 8
+%else
     paddw m0, m1
     paddw m0, m2
     paddw m0, m8
+%endif
     SAVE_MM_PERMUTATION
     ret
 
@@ -2220,7 +2234,7 @@ cglobal pixel_sa8d_8x8, 4,8,12
 %endif
     call pixel_sa8d_8x8_internal
 %if HIGH_BIT_DEPTH
-    HADDUW m0, m1
+    HADDD  m0, m1
 %else
     HADDW m0, m1
 %endif ; HIGH_BIT_DEPTH
@@ -2239,9 +2253,6 @@ cglobal pixel_sa8d_16x16, 4,8,12
     call pixel_sa8d_8x8_internal ; pix[0]
     add  r2, 8*SIZEOF_PIXEL
     add  r0, 8*SIZEOF_PIXEL
-%if HIGH_BIT_DEPTH
-    HADDUW m0, m1
-%endif
     mova m10, m0
     call pixel_sa8d_8x8_internal ; pix[8]
     lea  r2, [r2+8*r3]
@@ -2254,7 +2265,9 @@ cglobal pixel_sa8d_16x16, 4,8,12
     call pixel_sa8d_8x8_internal ; pix[8*stride]
     SA8D_INTER
     SWAP 0, 10
-%if HIGH_BIT_DEPTH == 0
+%if HIGH_BIT_DEPTH
+    HADDD  m0, m1
+%else
     HADDUW m0, m1
 %endif
     movd eax, m0
@@ -2276,7 +2289,13 @@ cglobal pixel_sa8d_8x8_internal
     HADAMARD4_2D 4, 5, 6, 7, 3
     HADAMARD2_2D 0, 4, 1, 5, 3, qdq, amax
     movdqa m3, spill0
+%if HIGH_BIT_DEPTH
+    pmaddwd m0, [pw_1]
+    pmaddwd m1, [pw_1]
+    paddd m0, m1
+%else
     paddw m0, m1
+%endif
     HADAMARD2_2D 2, 6, 3, 7, 5, qdq, amax
 %else ; mmsize == 8
     mova m7, [hmul_8p]
@@ -2309,8 +2328,15 @@ cglobal pixel_sa8d_8x8_internal
     HADAMARD 1, amax, 2, 6, 4, 5
     HADAMARD 1, amax, 3, 7, 4, 5
 %endif ; sse2/non-sse2
+%if HIGH_BIT_DEPTH
+    pmaddwd m2, [pw_1]
+    pmaddwd m3, [pw_1]
+    paddd m0, m2
+    paddd m0, m3
+%else
     paddw m0, m2
     paddw m0, m3
+%endif
     SAVE_MM_PERMUTATION
     ret
 %endif ; ifndef mmx2
@@ -2324,7 +2350,7 @@ cglobal pixel_sa8d_8x8, 4,7
     lea    r5, [3*r3]
     call pixel_sa8d_8x8_internal
 %if HIGH_BIT_DEPTH
-    HADDUW m0, m1
+    HADDD  m0, m1
 %else
     HADDW  m0, m1
 %endif ; HIGH_BIT_DEPTH
@@ -2346,9 +2372,6 @@ cglobal pixel_sa8d_16x16, 4,7
     lea  r0, [r0+4*r1]
     lea  r2, [r2+4*r3]
 %endif
-%if HIGH_BIT_DEPTH
-    HADDUW m0, m1
-%endif
     mova [esp+48], m0
     call pixel_sa8d_8x8_internal
     mov  r0, [r6+20]
@@ -2368,6 +2391,7 @@ cglobal pixel_sa8d_16x16, 4,7
     call pixel_sa8d_8x8_internal
 %if HIGH_BIT_DEPTH
     SA8D_INTER
+    HADDD m0, m1
 %else ; !HIGH_BIT_DEPTH
     paddusw m0, [esp+64-mmsize]
 %if mmsize == 16
@@ -2444,7 +2468,6 @@ cglobal pixel_sa8d_16x16, 4,7
 %macro SA8D_SATD_ACCUM 2
 %if HIGH_BIT_DEPTH
     pmaddwd m10, [pw_1]
-    HADDUWD  m0, m1
 %if %1
     paddd   m10, temp1
     paddd    m0, temp0
@@ -2484,9 +2507,13 @@ cglobal pixel_sa8d_satd_8x8_internal
 %endif
 
     ; create sa8d sub results
+%if HIGH_BIT_DEPTH
+    SA8D_SUM_HBD 0, 1, 2, 3
+%else
     paddw    m1, m2
     paddw    m0, m3
     paddw    m0, m1
+%endif
 
     SAVE_MM_PERMUTATION
     ret
@@ -5336,9 +5363,7 @@ cglobal pixel_sa8d_16x8_internal
     LOAD_DIFF_8x4P 0, 1, 2, 8, 5, 6, 7, r0, r2, 0, 0
     LOAD_DIFF_8x4P 4, 5, 3, 9, 11, 6, 7, r6, r7, 0, 0
     HADAMARD8_2D 0, 1, 2, 8, 4, 5, 3, 9, 6, amax
-    paddw m0, m1
-    paddw m0, m2
-    paddw m0, m8
+    SA8D_SUM_HBD 0, 1, 2, 8
     SAVE_MM_PERMUTATION
     ret
 
@@ -5349,10 +5374,8 @@ cglobal pixel_sa8d_16x16, 4,8,12
     call pixel_sa8d_16x8_internal
     lea  r0, [r0+8*r1]
     lea  r2, [r2+8*r3]
-    HADDUWD m0, m1
     mova m10, m0
     call pixel_sa8d_16x8_internal
-    HADDUWD m0, m1
     paddd m0, m10
     HADDD m0, m1
     movd eax, xm0
