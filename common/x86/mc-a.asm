@@ -1167,6 +1167,25 @@ WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
 %endif
 %endmacro
 
+; rows 0, 1 in m0 (24/40: m0, m1) averaged with those of src2 (r6)
+%macro HROWS_AVG 1
+%if %1 == 8
+    movq         m11, [r6]
+    vpbroadcastq m11 {k1}, [r6+r3]
+%elif %1 == 16
+    movu        xm11, [r6]
+    vbroadcasti32x4 m11 {k1}, [r6+r3]
+%elif %1 == 32
+    movu        ym11, [r6]
+    vbroadcasti32x8 m11 {k1}, [r6+r3]
+%else
+    vmovdqu16    m11 {k1}{z}, [r6]
+    vmovdqu16    m12 {k1}{z}, [r6+r3]
+    pavgw         m1, m12
+%endif
+    pavgw         m0, m11
+%endmacro
+
 %macro HROWS_STORE 1
 %if %1 == 8
     movq        [r0], m0
@@ -1219,15 +1238,22 @@ INIT_ZMM avx512icl
 %endif
 %endmacro
 
-%macro WEIGHTER_DP 2 ; bytes, width
+%macro WEIGHTER_DP 2-3 0 ; bytes, width, average with src2
 HROWS_INIT %1
+%if %3
+cglobal mc_weight_avg_w%2, 7,7,13
+%else
 cglobal mc_weight_w%2, 6,6,11
+%endif
     FIX_STRIDES r1, r3
     WEIGHT_DP_CONSTS
     mov          r4d, r5d
     HROWS_MASK %1
 .loop:
     HROWS_LOAD %1
+%if %3
+    HROWS_AVG %1
+%endif
     WEIGHT_DP_OP  m0
 %if %1 == 24 || %1 == 40
     WEIGHT_DP_OP  m1
@@ -1235,14 +1261,21 @@ cglobal mc_weight_w%2, 6,6,11
     HROWS_STORE %1
     lea           r0, [r0+r1*2]
     lea           r2, [r2+r3*2]
+%if %3
+    lea           r6, [r6+r3*2]
+%endif
     sub          r4d, 2
     jg .loop
     RET
 %endmacro
 
-%macro OFFSET_ICL 3 ; bytes, width, add/sub
+%macro OFFSET_ICL 3-4 0 ; bytes, width, add/sub, average with src2
 HROWS_INIT %1
+%if %4
+cglobal mc_offset%3_avg_w%2, 7,7,13
+%else
 cglobal mc_offset%3_w%2, 6,6,8
+%endif
     FIX_STRIDES r1, r3
     vpbroadcastw  m3, [r4]
     vpbroadcastw  m7, [pw_pixel_max]
@@ -1250,6 +1283,9 @@ cglobal mc_offset%3_w%2, 6,6,8
     HROWS_MASK %1
 .loop:
     HROWS_LOAD %1
+%if %4
+    HROWS_AVG %1
+%endif
     OFFSET_%3_ICL m0
 %if %1 == 24 || %1 == 40
     OFFSET_%3_ICL m1
@@ -1257,6 +1293,9 @@ cglobal mc_offset%3_w%2, 6,6,8
     HROWS_STORE %1
     lea           r0, [r0+r1*2]
     lea           r2, [r2+r3*2]
+%if %4
+    lea           r6, [r6+r3*2]
+%endif
     sub          r4d, 2
     jg .loop
     RET
@@ -1266,6 +1305,9 @@ cglobal mc_offset%3_w%2, 6,6,8
 WEIGHTER_DP %1, %2
 OFFSET_ICL  %1, %2, add
 OFFSET_ICL  %1, %2, sub
+WEIGHTER_DP %1, %2, 1
+OFFSET_ICL  %1, %2, add, 1
+OFFSET_ICL  %1, %2, sub, 1
 %endmacro
 
 WEIGHTER_DP_ALL  8,  4
@@ -1386,9 +1428,34 @@ cglobal mc_weight_plane, 7,8,11
     pmaxsw        %1, m5
 %endmacro
 
+; bytes of rows 0, 1 in m0 (w20: m0, m1) averaged with those of src2 (r6)
+%macro WEIGHT_ICL_AVGB 1
+%if %1 == 4
+    movd         xm6, [r6]
+    vpbroadcastd xm6 {k2}, [r6+r3]
+    pavgb        xm0, xm6
+%elif %1 == 8
+    movq         xm6, [r6]
+    vpbroadcastq xm6 {k2}, [r6+r3]
+    pavgb        xm0, xm6
+%elif %1 == 20
+    vmovdqu8     ym6 {k1}{z}, [r6]
+    vmovdqu8     ym7 {k1}{z}, [r6+r3]
+    pavgb        ym0, ym6
+    pavgb        ym1, ym7
+%else
+    movu         xm6, [r6]
+    vinserti32x4 ym6, ym6, [r6+r3], 1
+    pavgb        ym0, ym6
+%endif
+%endmacro
+
 ; m0: xmm (w4), ymm (w8), zmm (w12, w16, w20)
-%macro WEIGHT_ICL_ROWS 2 ; width, fast
+%macro WEIGHT_ICL_ROWS 2-3 0 ; width, fast, average with src2
     WEIGHT_ICL_LOADB %1
+%if %3
+    WEIGHT_ICL_AVGB %1
+%endif
 %if %1 == 20
     vpmovzxbw     m0, ym0
     vpmovzxbw     m1, ym1
@@ -1457,6 +1524,58 @@ cglobal mc_offset%2_w%1, 6,6,3
     RET
 %endmacro
 
+;-----------------------------------------------------------------------------
+; mc_X_avg_wN: mc_X_wN of pavgb( src1, src2 ), the same rows and caches
+; (8-bit w12 is the w16 kernel, as at avx2)
+;-----------------------------------------------------------------------------
+%macro WEIGHTER_AVG_ICL 1 ; width
+cglobal mc_weight_avg_w%1, 7,7,8
+    vpbroadcastw  m3, [r4]
+    vpbroadcastw  m4, [r4+16]
+    pxor          m5, m5
+    cmp byte [r4+1], 0
+    WEIGHT_ICL_MASKS %1
+    jz .fast
+.loop:
+    WEIGHT_ICL_ROWS %1, 0, 1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    lea           r6, [r6+r3*2]
+    sub          r5d, 2
+    jg .loop
+    RET
+.fast:
+    psllw         m3, 7
+.fastloop:
+    WEIGHT_ICL_ROWS %1, 1, 1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    lea           r6, [r6+r3*2]
+    sub          r5d, 2
+    jg .fastloop
+    RET
+%endmacro
+
+%macro OFFSET_AVG_ICL 2 ; width, add/sub
+cglobal mc_offset%2_avg_w%1, 7,7,8
+    vpbroadcastb  m2, [r4]
+    WEIGHT_ICL_MASKS %1
+.loop:
+    WEIGHT_ICL_LOADB %1
+    WEIGHT_ICL_AVGB %1
+    p%2usb        m0, m2
+%if %1 == 20
+    p%2usb        m1, m2
+%endif
+    WEIGHT_ICL_STOREB %1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    lea           r6, [r6+r3*2]
+    sub          r5d, 2
+    jg .loop
+    RET
+%endmacro
+
 INIT_XMM avx512icl
 WEIGHTER_ICL 4
 OFFSET_ICL 4, add
@@ -1475,6 +1594,20 @@ INIT_ZMM avx512icl
 WEIGHTER_ICL 12
 WEIGHTER_ICL 16
 WEIGHTER_ICL 20
+WEIGHTER_AVG_ICL 16
+WEIGHTER_AVG_ICL 20
+INIT_XMM avx512icl
+WEIGHTER_AVG_ICL 4
+OFFSET_AVG_ICL 4, add
+OFFSET_AVG_ICL 4, sub
+OFFSET_AVG_ICL 8, add
+OFFSET_AVG_ICL 8, sub
+INIT_YMM avx512icl
+WEIGHTER_AVG_ICL 8
+OFFSET_AVG_ICL 16, add
+OFFSET_AVG_ICL 16, sub
+OFFSET_AVG_ICL 20, add
+OFFSET_AVG_ICL 20, sub
 %endif ; HIGH_BIT_DEPTH == 0 && ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
