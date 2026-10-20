@@ -3405,6 +3405,15 @@ static int check_quant( int cpu_ref, int cpu_new )
                 for( int j = 0; j < maxj; j++ ) \
                 { \
                     INIT_QUANT##type(j, w*w) \
+                    if( j >= 2 && maxj == 4 ) \
+                    { \
+                        /* one coefficient, anywhere in the block */ \
+                        int k = rand() % (w*w); \
+                        dctcoef v = dct1[k] ? dct1[k] : 1; \
+                        memset( dct1, 0, w*w*sizeof(dctcoef) ); \
+                        memset( dct2, 0, w*w*sizeof(dctcoef) ); \
+                        dct1[k] = dct2[k] = j&1 ? v : (v < 0 ? -1 : 1) * PIXEL_MAX*4; \
+                    } \
                     int result_c = call_c1( qf_c.qname, (void*)dct1, h->quant##type##_mf[block][qp], h->quant##type##_bias[block][qp] ); \
                     int result_a = call_a1( qf_a.qname, (void*)dct2, h->quant##type##_mf[block][qp], h->quant##type##_bias[block][qp] ); \
                     if( memcmp( dct1, dct2, w*w*sizeof(dctcoef) ) || result_c != result_a ) \
@@ -3419,10 +3428,10 @@ static int check_quant( int cpu_ref, int cpu_new )
             } \
         }
 
-        TEST_QUANT( quant_8x8, CQM_8IY, 8, 8, 2 );
-        TEST_QUANT( quant_8x8, CQM_8PY, 8, 8, 2 );
-        TEST_QUANT( quant_4x4, CQM_4IY, 4, 4, 2 );
-        TEST_QUANT( quant_4x4, CQM_4PY, 4, 4, 2 );
+        TEST_QUANT( quant_8x8, CQM_8IY, 8, 8, 4 );
+        TEST_QUANT( quant_8x8, CQM_8PY, 8, 8, 4 );
+        TEST_QUANT( quant_4x4, CQM_4IY, 4, 4, 4 );
+        TEST_QUANT( quant_4x4, CQM_4PY, 4, 4, 4 );
         TEST_QUANT( quant_4x4x4, CQM_4IY, 4, 8, 16 );
         TEST_QUANT( quant_4x4x4, CQM_4PY, 4, 8, 16 );
         TEST_QUANT_DC( quant_4x4_dc, **h->quant4_mf[CQM_4IY] );
@@ -3727,6 +3736,22 @@ static int check_quant( int cpu_ref, int cpu_new )
                 break; \
             } \
         } \
+        /* every run length: one coef at p, or a pair p > q */ \
+        for( int p = ac; p < w*w && ok; p++ ) \
+            for( int q = ac-1; q < p && ok; q++ ) \
+            { \
+                memset( dct1, 0, w*w*sizeof(dctcoef) ); \
+                dct1[p] = 1; \
+                if( q >= ac ) \
+                    dct1[q] = -1; \
+                int result_c = call_c( qf_c.decname, dct1 ); \
+                int result_a = call_a( qf_a.decname, dct1 ); \
+                if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, #decname " (p=%d, q=%d): [FAILED]\n", p, q ); \
+                } \
+            } \
     }
 
     ok = 1; used_asm = 0;
