@@ -359,6 +359,19 @@ weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
 ; 8-bit intra_satd_x9_4x4 avx512icl: vpermw of the phaddw'd satds to modes 0-8
 x9b4_kperm: dw 4, 0, 8, 1, 9, 2, 10, 3, 11, 0, 0, 0, 0, 0, 0, 0
 %endif
+; satd_mcc avx512icl width 8: output i of a row from bytes i, i+2 of rows k | k+1
+; (8-bit, vpermb) or words i, i+2 of one row (high bit depth, vpermw)
+mcc_icl_perm:
+%assign mcc_p 0
+%rep 16
+%if HIGH_BIT_DEPTH
+    dw mcc_p, mcc_p+2
+%else
+    db mcc_p, mcc_p+2, mcc_p+32, mcc_p+34
+%endif
+%assign mcc_p mcc_p+1
+%endrep
+%undef mcc_p
 
 SECTION .text
 
@@ -11139,7 +11152,91 @@ ADS_ICL 1, _zmm
 %assign mcc_h1 20-mcc_h0
 %endmacro
 
-INIT_YMM avx2
+; avx512icl width 8: mc_chroma's 4-tap filter in one pass per row on zmm.
+; 8-bit: vpermb gives the bytes (i, i+2) of rows k and k+1 of each output i as
+; one dword and vpdpbusd sums them with the negated weights onto
+; 64*fenc - 32 + 63, so >> 6 gives fenc - ((V+32)>>6), the negated
+; difference (same satd). High bit depth: vpermw word pairs (i, i+2) of a
+; row, vpmaddwd + vpdpwssd with A|B and C|D, +32, >> 6. vpmovdw to the words.
+; Rows are vmovdqu8/16 {k6 = 18 elements}{z}, so nothing is read past src.
+%macro MCC_ICL_W8 0
+    movd         r6d, xm9
+    movzx        r6d, r6w             ; dx
+%if HIGH_BIT_DEPTH
+    imul         r6d, r6d, 65535
+    add          r6d, 8               ; 8-dx | dx<<16
+    imul         r5d, r6d             ; C | D<<16
+    shl          r6d, 3
+    sub          r6d, r5d             ; A | B<<16
+    vpbroadcastd zmm14, r6d
+    vpbroadcastd zmm11, r5d
+    mov          r5d, 32
+%else
+    imul         r6d, r6d, 255
+    add          r6d, 8               ; 8-dx | dx<<8
+    imul         r5d, r6d             ; C | D<<8
+    shl          r6d, 3
+    sub          r6d, r5d             ; A | B<<8
+    shl          r5d, 16
+    or           r6d, r5d
+    vpbroadcastd zmm14, r6d
+    vpxord       zmm9, zmm9, zmm9
+    vpsubb       zmm14, zmm9, zmm14   ; -A -B -C -D
+    mov          r5d, 63
+%endif
+    vpbroadcastd zmm10, r5d
+    mov          r5d, 0x3ffff
+    kmovd         k6, r5d
+    vmovdqu8     zmm8, [mcc_icl_perm]
+%if HIGH_BIT_DEPTH
+    vmovdqu16    zmm13 {k6}{z}, [r2]
+    vpermw       zmm13, zmm8, zmm13
+%else
+    vmovdqu8     ymm13 {k6}{z}, [r2]
+%endif
+.loop8:
+%assign mcc_k 0
+%rep 4
+    %assign mcc_p 13-(mcc_k&1)        ; row k (pairs at high bit depth)
+    %assign mcc_n 25-mcc_p            ; row k+1
+    MCC_ROW        r2, mcc_k+1
+%if HIGH_BIT_DEPTH
+    vmovdqu16    zmm %+ mcc_n {k6}{z}, [mcc_row]
+    vpermw       zmm %+ mcc_n, zmm8, zmm %+ mcc_n
+    vpmaddwd     zmm9, zmm %+ mcc_p, zmm14
+    vpdpwssd     zmm9, zmm %+ mcc_n, zmm11
+    vpaddd       zmm9, zmm9, zmm10
+    vpsrad       zmm9, zmm9, 6
+    vpmovdw      m %+ mcc_k, zmm9
+    MCC_ROW        r0, mcc_k
+    psubw        m %+ mcc_k, [mcc_row]
+%else
+    vmovdqu8     ymm %+ mcc_n {k6}{z}, [mcc_row]
+    vinserti32x8 zmm15, zmm %+ mcc_p, ymm %+ mcc_n, 1
+    vpermb       zmm15, zmm8, zmm15
+    vpmovsxwd    zmm9, [r0+32*mcc_k]
+    vpaddd       zmm9, zmm9, zmm10
+    vpdpbusd     zmm9, zmm15, zmm14
+    vpsrad       zmm9, zmm9, 6
+    vpmovdw      m %+ mcc_k, zmm9
+%endif
+%assign mcc_k mcc_k+1
+%endrep
+%undef mcc_p
+%undef mcc_n
+    MCC_SATD_4x4
+%if HIGH_BIT_DEPTH
+    lea           r0, [r0+r3*4]
+%else
+    sub           r0, -128
+%endif
+    lea           r2, [r2+r3*4]
+    sub          r7d, 4
+    jg .loop8
+    jmp .end
+%endmacro
+
+%macro SATD_MCC 0
 cglobal pixel_satd_mcc, 4,8,16
     FIX_STRIDES   r3
     movifnidn    r4d, r4m
@@ -11182,6 +11279,9 @@ cglobal pixel_satd_mcc, 4,8,16
     cmp dword    r6m, 4
     je .w4
 
+%if cpuflag(avx512icl)
+    MCC_ICL_W8
+%else
     MCC_SATD_H     7, r2
 .loop8:
 %assign mcc_k 0
@@ -11208,6 +11308,7 @@ cglobal pixel_satd_mcc, 4,8,16
     sub          r7d, 4
     jg .loop8
     jmp .end
+%endif
 
 .w4:
 %if HIGH_BIT_DEPTH
@@ -11304,6 +11405,14 @@ cglobal pixel_satd_mcc, 4,8,16
 %endif
     MCC_SATD_4x4_LANES
     MCC_SATD_END
+%endmacro
+
+INIT_YMM avx2
+SATD_MCC
+ICL_LOW_BEGIN
+SATD_MCC
+ICL_LOW_END
+INIT_YMM avx2
 
 %if HIGH_BIT_DEPTH == 0
 ;-----------------------------------------------------------------------------
