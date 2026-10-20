@@ -355,6 +355,10 @@ ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
 weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
                   db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
 weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
+%if HIGH_BIT_DEPTH == 0
+; 8-bit intra_satd_x9_4x4 avx512icl: vpermw of the phaddw'd satds to modes 0-8
+x9b4_kperm: dw 4, 0, 8, 1, 9, 2, 10, 3, 11, 0, 0, 0, 0, 0, 0, 0
+%endif
 
 SECTION .text
 
@@ -9424,6 +9428,134 @@ cglobal pixel_satd_8x4, 4,5,5
     SATD_ICL_PACKED_END
 
 HADAMARD_AC_8x8_AVX2
+
+;-----------------------------------------------------------------------------
+; int intra_satd_x9_4x4( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts )
+; As the avx2 version, with the sign stages of X9B_SATD as masked psubw
+; (k4 = odd words, k5 = words 4-7 of each lane) and a k-mask argmin over the
+; nine costs: vpermw orders the satds as modes 0-8 (words 9-15 all ones), the
+; bitcosts are added from vmovdqu16 {k3 = 0x1ff}{z}, the minimum is pminuw +
+; phminposuw and the mode tzcnt of vpcmpeqw's mask: the lowest mode on ties,
+; as the avx2 phminposuw + cmovae against v.
+;-----------------------------------------------------------------------------
+%macro X9B_SATD_ICL 2 ; as X9B_SATD, m12 tmp
+    pmaddubsw   m%1, m11
+    psubw       m%1, m8
+    vprold      m%2, m%1, 16
+    paddw       m12, m%1, m%2
+    vpsubw      m12 {k4}, m%2, m%1
+    pshufd      m%2, m12, q1032
+    paddw       m%1, m12, m%2
+    vpsubw      m%1 {k5}, m%2, m12
+    pabsw       m%1, m%1
+%endmacro
+
+cglobal intra_satd_x9_4x4, 3,4,16, 9*32
+    %define pred_buf rsp
+    mov         r3d, 0xaaaa
+    kmovd        k4, r3d
+    mov         r3d, 0xf0f0
+    kmovd        k5, r3d
+    mov         r3d, 0x1ff
+    kmovd        k3, r3d
+    movu        xm1, [r1-1*FDEC_STRIDE-8]
+    pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
+    pinsrb      xm1, [r1+2*FDEC_STRIDE-1], 1
+    pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
+    pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
+    pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+    pxor        xm4, xm4
+    pshufb      xm2, xm1, [intrax9a_dc]
+    psadbw      xm2, xm4
+    psrlw       xm2, 2
+    pavgw       xm2, xm4
+    vpbroadcastb m2, xm2              ; dc
+    vpermq       m1, m1, q1010
+    psrldq       m0, m1, 1
+    psrldq       m3, m1, 2
+    pavgb        m5, m0, m1
+    PRED4x4_LOWPASS m0, m1, m3, m0, m4 ; F: Fl3 Fl2 Fl1 Fl0 Flt Ft0 .. Ft7
+    pslldq       m6, m0, 5
+    palignr      m7, m5, m6, 5        ; Q: Fl3 .. Ft5 Gl3 Gl2 Gl1 Gl0 Glt
+    psrldq       m5, 5
+    palignr      m5, m5, m6, 6        ; P: __ Fl1 .. Ft5 Gt0 .. Gt5
+
+    movd        xm8, [r0+0*FENC_STRIDE]
+    pinsrd      xm8, [r0+1*FENC_STRIDE], 1
+    movd        xm9, [r0+2*FENC_STRIDE]
+    pinsrd      xm9, [r0+3*FENC_STRIDE], 1
+    vinserti128  m8, m8, xm9, 1
+    punpckldq    m8, m8
+    vbroadcasti128 m11, [hmul_4p]
+    pmaddubsw    m8, m11
+
+    pshufb       m9, m1, [x9b4_v]
+    mova [pred_buf+0*32], m9
+    X9B_SATD_ICL  9, 10
+    vperm2i128  m10, m9, m9, 0x01
+    pmaxsw       m9, m10              ; v | v
+    pshufb      m10, m1, [x9b4_h]
+    mova [pred_buf+1*32], m10
+    mova [pred_buf+2*32], m2
+    X9B_SATD_ICL 10, 3
+    X9B_SATD_ICL  2, 3
+    X9B_MERGE    10, 2, 3             ; h | dc
+    pshufb       m1, m0, [x9b4_ddl]
+    pshufb       m2, m0, [x9b4_ddr]
+    mova [pred_buf+3*32], m1
+    mova [pred_buf+4*32], m2
+    X9B_SATD_ICL  1, 3
+    X9B_SATD_ICL  2, 3
+    X9B_MERGE     1, 2, 3             ; ddl | ddr
+    pshufb       m0, m5, [x9b4_vr]
+    pshufb       m2, m7, [x9b4_hd]
+    mova [pred_buf+5*32], m0
+    mova [pred_buf+6*32], m2
+    X9B_SATD_ICL  0, 3
+    X9B_SATD_ICL  2, 3
+    X9B_MERGE     0, 2, 3             ; vr | hd
+    pshufb       m2, m5, [x9b4_vl]
+    pshufb       m3, m7, [x9b4_hu]
+    mova [pred_buf+7*32], m2
+    mova [pred_buf+8*32], m3
+    X9B_SATD_ICL  2, 4
+    X9B_SATD_ICL  3, 4
+    X9B_MERGE     2, 3, 4             ; vl | hu
+
+    phaddw      m10, m1
+    phaddw       m0, m2
+    phaddw      m10, m0
+    phaddw       m9, m9
+    phaddw       m9, m9
+    phaddw      m10, m9               ; h ddl vr vl v v v v | dc ddr hd hu v v v v
+    vpternlogd   m4, m4, m4, 0xff
+    movu         m5, [x9b4_kperm]
+    vpermw       m4 {k3}, m5, m10     ; v h dc ddl ddr vr hd vl hu, ones
+    vmovdqu16    m5 {k3}{z}, [r2]
+    paddw        m4, m5
+    vextracti128 xm5, m4, 1
+    pminuw      xm5, xm4
+    phminposuw  xm5, xm5
+    vpbroadcastw m5, xm5
+    vpcmpeqw     k1, m4, m5
+    kmovd       r3d, k1
+    tzcnt       r3d, r3d
+    movd        eax, xm5
+    movzx       eax, ax
+    mov         r2d, r3d
+    shl         r2d, 16
+    or          eax, r2d
+
+    shl         r3d, 5
+    mov         r0d, [pred_buf+r3+ 0]
+    mov         r2d, [pred_buf+r3+ 8]
+    mov [r1+0*FDEC_STRIDE], r0d
+    mov [r1+1*FDEC_STRIDE], r2d
+    mov         r0d, [pred_buf+r3+16]
+    mov         r2d, [pred_buf+r3+24]
+    mov [r1+2*FDEC_STRIDE], r0d
+    mov [r1+3*FDEC_STRIDE], r2d
+    RET
 ICL_LOW_END
 %endif ; ARCH_X86_64
 
