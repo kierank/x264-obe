@@ -467,6 +467,26 @@ static void add16x16_idct_dc( pixel *p_dst, dctcoef dct[16] )
 /****************************************************************************
  * x264_dct_init:
  ****************************************************************************/
+/* layout twin of test/x264-w2-dct: the new dispatch below assigns the
+ * functions wip/x264-weird-zen4-sn2 has in those slots */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_sub8x8_dct_avx512icl, x264_sub8x8_dct_avx512 )
+#undef x264_sub8x8_dct_avx512icl
+#define x264_sub8x8_dct_avx512icl x264_twin_x264_sub8x8_dct_avx512icl
+X264_TWIN( x264_sub16x16_dct_avx512icl, x264_sub16x16_dct_avx512 )
+#undef x264_sub16x16_dct_avx512icl
+#define x264_sub16x16_dct_avx512icl x264_twin_x264_sub16x16_dct_avx512icl
+X264_TWIN( x264_sub8x8_dct_dc_avx512icl, x264_sub8x8_dct_dc_avx512 )
+#undef x264_sub8x8_dct_dc_avx512icl
+#define x264_sub8x8_dct_dc_avx512icl x264_twin_x264_sub8x8_dct_dc_avx512icl
+X264_TWIN( x264_dct2x4dc_avx512icl, x264_dct2x4dc_mmx2 )
+#undef x264_dct2x4dc_avx512icl
+#define x264_dct2x4dc_avx512icl x264_twin_x264_dct2x4dc_avx512icl
+#else
+#endif
+#endif
+
 void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 {
     dctf->sub4x4_dct    = sub4x4_dct;
