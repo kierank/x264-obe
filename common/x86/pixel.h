@@ -712,6 +712,10 @@
 #define x264_pixel_var_8x8_mmx2 x264_template(pixel_var_8x8_mmx2)
 #define x264_pixel_var_8x8_sse2 x264_template(pixel_var_8x8_sse2)
 #define x264_pixel_var_8x8_xop x264_template(pixel_var_8x8_xop)
+#define x264_pixel_ssd_16x16_avx512icl x264_template(pixel_ssd_16x16_avx512icl)
+#define x264_pixel_ssd_16x8_avx512icl x264_template(pixel_ssd_16x8_avx512icl)
+#define x264_pixel_ssd_8x16_avx512icl x264_template(pixel_ssd_8x16_avx512icl)
+#define x264_pixel_ssd_8x8_avx512icl x264_template(pixel_ssd_8x8_avx512icl)
 #define x264_pixel_var2_8x16_avx512icl x264_template(pixel_var2_8x16_avx512icl)
 #define x264_pixel_var2_8x8_avx512icl x264_template(pixel_var2_8x8_avx512icl)
 #define x264_pixel_var_16x16_avx512icl x264_template(pixel_var_16x16_avx512icl)
@@ -964,6 +968,10 @@ int  x264_pixel_var2_8x16_sse2 ( pixel *,   intptr_t, pixel *,   intptr_t, int *
 int  x264_pixel_var2_8x16_ssse3( uint8_t *, intptr_t, uint8_t *, intptr_t, int * );
 int  x264_pixel_var2_8x16_xop  ( uint8_t *, intptr_t, uint8_t *, intptr_t, int * );
 int  x264_pixel_var2_8x16_avx2 ( pixel *,   intptr_t, pixel *,   intptr_t, int * );
+int  x264_pixel_ssd_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+int  x264_pixel_ssd_16x8_avx512icl ( pixel *, intptr_t, pixel *, intptr_t );
+int  x264_pixel_ssd_8x16_avx512icl ( pixel *, intptr_t, pixel *, intptr_t );
+int  x264_pixel_ssd_8x8_avx512icl  ( pixel *, intptr_t, pixel *, intptr_t );
 int  x264_pixel_var2_8x8_avx512icl ( pixel *, intptr_t, pixel *, intptr_t, int * );
 int  x264_pixel_var2_8x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int * );
 int  x264_pixel_vsad_mmx2 ( pixel *src, intptr_t stride, int height );

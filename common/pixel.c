@@ -1276,6 +1276,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
+        INIT2( ssd, _avx512icl );
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
@@ -1631,8 +1634,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
     }
 
-    /* No 8-bit AVX-512 pixel functions in the presets' paths: on Zen 4 they made real 8-bit
-     * encodes ~1.5% slower (rack01 ablation, obed low latency), although most win in checkasm.
+    /* No 8-bit AVX-512 (avx512 level) pixel functions: on Zen 4 they made real 8-bit encodes
+     * ~1.5% slower (rack01 ablation, obed low latency), although most win in checkasm.
+     * The avx512icl ones below are ymm (VNNI, VBMI2) and need their own in situ A/B;
      * ads is only reached by --me esa/tesa. */
     if( cpu&X264_CPU_AVX512ICL )
     {
@@ -1643,6 +1647,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
+        INIT2( ssd, _avx512icl );
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
 #endif
     }
 #endif //HAVE_MMX

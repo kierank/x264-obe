@@ -938,6 +938,126 @@ SSD_NV12
 INIT_YMM avx2
 SSD_NV12
 
+;-----------------------------------------------------------------------------
+; int pixel_ssd_WxH( pixel *, intptr_t, pixel *, intptr_t ), avx512icl: VNNI
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+; vpdpwssd of the differences into m0 m5
+%macro SSD_ICL 2 ; width, height
+cglobal pixel_ssd_%1x%2, 4,7,6
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    pxor        m0, m0
+    pxor        m5, m5
+%rep %2/4
+%if %1 == 16
+    movu        m1, [r0]
+    movu        m2, [r0+r1]
+    movu        m3, [r0+r1*2]
+    movu        m4, [r0+r5]
+    psubw       m1, [r2]
+    psubw       m2, [r2+r3]
+    psubw       m3, [r2+r3*2]
+    psubw       m4, [r2+r6]
+    vpdpwssd    m0, m1, m1
+    vpdpwssd    m5, m2, m2
+    vpdpwssd    m0, m3, m3
+    vpdpwssd    m5, m4, m4
+%else
+    movu       xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    movu       xm2, [r0+r1*2]
+    vinserti128 m2, m2, [r0+r5], 1
+    movu       xm3, [r2]
+    vinserti128 m3, m3, [r2+r3], 1
+    movu       xm4, [r2+r3*2]
+    vinserti128 m4, m4, [r2+r6], 1
+    psubw       m1, m3
+    psubw       m2, m4
+    vpdpwssd    m0, m1, m1
+    vpdpwssd    m5, m2, m2
+%endif
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+%endrep
+    paddd       m0, m5
+    HADDD       m0, m1
+    movd       eax, xm0
+    RET
+%endmacro
+%else ; !HIGH_BIT_DEPTH
+; |a - b| bytes; vpdpbusd |d| * (|d| ^ 0x80) = d*d - 128*|d| into m0 m5 and |d| into m4 m8
+; m6 = 1, m7 = 0x80
+%macro SSD_ICL_ABS 4 ; a (|d| out), b, square, sum
+    pminub      m3, m%1, m%2
+    pmaxub     m%1, m%2
+    psubb      m%1, m3
+    pxor        m3, m%1, m7
+    vpdpbusd   m%3, m%1, m3
+    vpdpbusd   m%4, m%1, m6
+%endmacro
+
+; four rows of 8 a ymm
+%macro SSD_ICL_W8 4 ; dst, src, stride, 3*stride
+    movq      xm%1, [%2]
+    movhps    xm%1, [%2+%3]
+    movq       xm3, [%2+%3*2]
+    movhps     xm3, [%2+%4]
+    vinserti128 m%1, m%1, xm3, 1
+%endmacro
+
+%macro SSD_ICL 2 ; width, height
+cglobal pixel_ssd_%1x%2, 4,7,9
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    vpbroadcastd m6, [pb_1]
+    mov        r4d, 0x80808080
+    vpbroadcastd m7, r4d
+    pxor        m0, m0
+    pxor        m5, m5
+    pxor        m4, m4
+    pxor        m8, m8
+%rep %2/4
+%if %1 == 16
+    movu       xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    movu       xm2, [r2]
+    vinserti128 m2, m2, [r2+r3], 1
+    SSD_ICL_ABS 1, 2, 0, 4
+    movu       xm1, [r0+r1*2]
+    vinserti128 m1, m1, [r0+r5], 1
+    movu       xm2, [r2+r3*2]
+    vinserti128 m2, m2, [r2+r6], 1
+    SSD_ICL_ABS 1, 2, 5, 8
+%else
+    SSD_ICL_W8 1, r0, r1, r5
+    SSD_ICL_W8 2, r2, r3, r6
+    SSD_ICL_ABS 1, 2, 0, 4
+    SWAP 0, 5
+    SWAP 4, 8
+%endif
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+%endrep
+    paddd       m0, m5
+    paddd       m4, m8
+    pslld       m4, 7
+    paddd       m0, m4
+    HADDD       m0, m1
+    movd       eax, xm0
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+INIT_YMM avx512icl
+SSD_ICL 16, 16
+SSD_ICL 16,  8
+SSD_ICL  8, 16
+SSD_ICL  8,  8
+%endif ; ARCH_X86_64
+
 ;=============================================================================
 ; variance
 ;=============================================================================
