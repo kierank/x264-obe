@@ -249,3 +249,56 @@ newer nasm (vpermb/vpermt2b/vpermi2q/vpermt2q/vshufi32x4/vinserti32x4/64x4/vextr
   or zmm 8-bit add8x8_idct8; a fused U+V chroma DC kernel for 4:2:2 (the fenc/fdec chroma
   planes sit side by side, so a zmm row load covers both planes; needs a call-site change in
   macroblock.c, out of scope here; see also zen5/asm-chroma422-dc-chain).
+
+## Round 2 (2026-10-20): every rejected / kept row written
+
+Branch `wip/x264-weird2-dct`, base `origin/wip/x264-weird-sa8d8` 67b4aff6. Kieran: "don't
+reject, move to zen5 if rack01 is too slow". Every kernel below is dispatched at avx512icl in
+a braced block (x86-64-only ones inside `#if ARCH_X86_64`), one commit per kernel.
+
+Method: a driver links the assembled dct-a/dct-64 objects with a prebuilt libx264.a and compares
+each kernel with the C of x264_dct_init( 0 ) / x264_zigzag_init( 0 ): pixel modes random,
+fenc max/fdec 0 and the reverse, equal, checkerboard/row/column extremes, small differences;
+coefficient modes random, max, min, sparse, sign pattern, small. The 8-bit idct4/idct8 and the
+10-bit idct8 compute in 16 bits where the C uses int, so random coefficients also fail the
+existing avx/avx2; those tests feed real forward transforms of random residuals (as checkasm
+does). C add8x8_idct8 writes its rounding into dct[0], so add tests compare pixels only. Every
+call goes through the `chkcall` trampoline (callee-saved GPRs, rsp, XINUSE upper state, k1-k7
+and zmm16-31 garbage on entry). Full checkasm (AC, bit-depth=all, seeds 1001/2002/3003) on
+1cccd754, af2971ec, 989acc3a and d710648f: all pass; 17 checkasm-level mutants on those builds,
+all killed. Coordinator lesson applied to the later kernels: masked-broadcast rows, no
+gather/scatter, no per-row memory inserts.
+
+| function | round-1 decision | round-2 action | commit | driver / mutation | nasm 2.14.02 |
+|---|---|---|---|---|---|
+| sub8x8_dct 8-bit | keep (vpermt2b idea not written) | written: zero-masked vpermi2b gathers and widens fenc/fdec in one step (replaces vpermt2d + punpck), shared 4x4x4 helper | 5f5fdb4c | pass; mutants (sub set) 7/7 | ok |
+| sub16x16_dct 8-bit | keep | written: zero-masked vpermb/vpermi2b per 4x16 strip | 1cccd754 | pass; in the 7/7 above | ok |
+| sub8x8_dct_dc 8-bit | rejected (VNNI) | written: vpdpbusd with +1/-1 byte weights, one 3-op chain per 4 rows | 5507ca3e | pass; 10/10 (dct_dc set) | ok |
+| sub8x16_dct_dc 8-bit | rejected | written: four independent vpdpbusd chains, merge-masked vpsubd 2x4 transform | af2971ec | pass; in the 10/10 | ok |
+| sub8x8_dct_dc 10-bit | rejected | written: 4 rows per zmm from merge-masked vbroadcasti32x4, one psubw + pmaddwd per 4 rows | 5b63a3e2 | pass; 7/7 | ok |
+| sub8x16_dct_dc 10-bit | rejected | written: as above, four groups | 58f9d710 | pass; in the 7/7 | ok |
+| add8x8_idct_dc 8/10-bit | rejected (masked row pairs) | written: 8-bit vpgatherqq/vpscatterqq of the 8 rows + vpermb dc spread; 10-bit masked broadcasts + vpermw | 30031d2c | pass; 9/10 (set), 1 equivalent: swapping the gather/scatter offsets of rows 6 and 7 (same dc pattern) | ok |
+| add16x16_idct_dc 8/10-bit | rejected | written: masked broadcasts (4 rows of 16 / 2 rows of 16 per zmm), vpermb/vpermw dc spread | ccd759e0 | pass; in the set | ok |
+| dct2x4dc 8/10-bit | rejected (gather / vpermt2w) | written: 10-bit vpgatherdd + vpscatterdd of zeros; 8-bit 4 zmm loads, vpermi2w dc pick, zero-masked vmovdqu16, full stores | 0fc9a2dc | pass; 6/6 | ok |
+| sub16x16_dct 10-bit | idea | written: two 8x8 per zmm pass, row i+4 by merge-masked vbroadcasti64x4, vshufi64x2 regrouping | 0dd9aa37 | pass; 6/6 | ok |
+| sub8x8_dct 10-bit | idea ("all four blocks already in one ymm") | written: the avx2 pass with vbroadcasti32x4{k} instead of vinserti128 of memory, vshufi64x2 instead of vperm2i128 | da967b65 | pass; 4/4 | ok |
+| sub4x4_dct 10-bit | keep | written: rows as qwords of one ymm (movq + merge-masked vpbroadcastq), one psubw, then the avx2 transform | 84f78d38 | pass; 4/4 | ok |
+| add4x4_idct 8/10-bit | keep | written: 8-bit 4 pixel rows in one xmm in packed-result order (vpbroadcastd{k}), one punpck pair; 10-bit rows as qwords of a ymm, one paddsw/clip | 1459a6e6 | pass; 6/6 | ok |
+| sub8x8_dct8 8/10-bit | keep | written: 8-bit src/dst rows as qwords of one zmm each, one punpck + pmaddubsw pair for 8 rows; 10-bit 4 rows per zmm, two psubw; rows split with vextracti32x4 (zmm28-31) | d1da28c0 | pass; 13/13 (dct8 sets) | ok |
+| add8x8_idct8 8/10-bit | idea / keep | written: 8-bit pixel rows as qwords of one zmm, one punpck pair, residual rows joined (vinserti32x4/64x4 from registers), one vpaddsw pair + vpackuswb; 10-bit avx2 kernel with vbroadcasti32x4{k} rows and vshufi64x2 | d710648f | pass; in the 13/13 | ok |
+| zigzag_sub_4x4 frame/field 10-bit | not done (lossless only) | written: rows as qwords of a ymm, vpermw scan, vpmovsxwd, vptestmw | a899ef62 | pass; 9/9 (set) | ok |
+| zigzag_sub_4x4ac frame/field 10-bit | not done | written: as above, dc out, level[0] cleared by a zero-masking move, nz on the ac words | ba9e5d27 | pass | ok |
+| zigzag_sub_8x8 frame/field 10-bit | not done | written: 4 rows per zmm, two vpermi2w, vpmovsxwd, vptestmw + kortestd | 989acc3a | pass | ok |
+| dct2x4dc: vpcompressw | considered | skipped: the dcs are at fixed positions (one per 16 coefs); a compress needs a mask that is constant, which is exactly what the vpermi2w index already is | - | - | - |
+| sub4x4_dct 8-bit, dct4x4x4_internal, zigzag_scan_4x4_frame, zigzag_scan_8x8 frame/field, zigzag_interleave_8x8_cavlc | keep (already avx512) | skipped: the dispatched kernel is already AVX-512 (masked broadcasts / one or two vpermw-vpermt2w per output) | - | - | - |
+| dct4x4dc/idct4x4dc, sub16x16_dct8 8-bit, add8x8_idct/add16x16_idct (both depths) | zen5 branches | unchanged (round-1 zen5/ branches) | - | - | - |
+
+Notes:
+- x86inc trap found while writing (caught by the drivers, none pushed): under INIT_XMM the
+  ym#/zm# names cast to xmm, and under INIT_YMM zm# casts to ymm. Wide registers need INIT_ZMM
+  names or explicit zmm16+ (the dct8 kernels use zmm28-31). A scan of round-1 code found no
+  such use outside INIT_ZMM functions.
+- 8-bit add8x8_idct_dc and dct2x4dc 10-bit use gather/scatter (written before the "no
+  gather/scatter" lesson); rack01 decides.
+
+Bugs in existing asm: none found in this package in round 2.
