@@ -43,7 +43,7 @@ void x264_speedcontrol_new( x264_t *h )
 
     if( h->param.sc.f_speed <= 0 )
         h->param.sc.f_speed = 1;
-    sc->fps = h->param.i_fps_num / h->param.i_fps_den;
+    sc->fps = (double)h->param.i_fps_num / h->param.i_fps_den;
     sc->spf = 1e6 / sc->fps;
     h->param.sc.i_buffer_size = X264_MAX( 3, h->param.sc.i_buffer_size );
     sc->buffer_size = h->param.sc.i_buffer_size * 1e6 / sc->fps;
