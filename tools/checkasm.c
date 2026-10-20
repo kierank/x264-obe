@@ -4369,6 +4369,9 @@ static void run_cabac_decision_##cpu( x264_t *h, uint8_t *dst )\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
         x264_cabac_encode_decision_##cpu( &cb, buf1[i]>>1, buf1[i]&1 );\
+    /* the bits still in low/queue, and the contexts: all in the compared 0x1000 bytes */\
+    x264_cabac_encode_flush( h, &cb );\
+    memcpy( dst+0xe00, cb.state, 128 );\
 }\
 static void run_cabac_bypass_##cpu( x264_t *h, uint8_t *dst )\
 {\
@@ -4377,6 +4380,7 @@ static void run_cabac_bypass_##cpu( x264_t *h, uint8_t *dst )\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
         x264_cabac_encode_bypass_##cpu( &cb, buf1[i]&1 );\
+    x264_cabac_encode_flush( h, &cb );\
 }\
 static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
 {\
@@ -4385,6 +4389,7 @@ static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
         x264_cabac_encode_terminal_##cpu( &cb );\
+    x264_cabac_encode_flush( h, &cb );\
 }
 DECL_CABAC(c)
 #if HAVE_MMX
