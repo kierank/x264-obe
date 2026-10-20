@@ -7065,6 +7065,27 @@ SATD_BI  8,  8, 1
     pmaddwd      xm%1, [pw_1]
 %endmacro
 
+%macro INTRA_X3_LEFT4 2 ; dst gpr, first row
+    movzx         %1, byte [r1+%2*FDEC_STRIDE-1]
+%assign intra_x3_y %2+1
+%rep 3
+    movzx         r4d, byte [r1+intra_x3_y*FDEC_STRIDE-1]
+    add           %1, r4d
+%assign intra_x3_y intra_x3_y+1
+%endrep
+%endmacro
+
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %1 (avx512icl: SATD_ICL_8x4, k1 = 0x5555)
+%macro INTRA_X3_SATD 1 ; accumulator
+%if cpuflag(avx512icl)
+    SATD_ICL_8x4 add, %1
+%else
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %1
+%endif
+%endmacro
+
+; avx2, and avx512icl after the SATD_ICL macros
+%macro INTRA_SATD_X3_8BIT 0
 cglobal intra_satd_x3_16x16, 3,5,16
     ; DC = (sum of top + sum of left + 16) >> 5
     movzx         r3d, byte [r1-1]
@@ -7082,6 +7103,10 @@ cglobal intra_satd_x3_16x16, 3,5,16
     movd          r4d, xm1
     lea           r3d, [r3+r4+16]
     shr           r3d, 5
+%if cpuflag(avx512icl)
+    mov           r4d, 0x5555
+    kmovd          k1, r4d
+%endif
     mova           m7, [hmul_16p]
     movd         xm13, r3d
     vpbroadcastb  m13, xm13
@@ -7104,7 +7129,7 @@ cglobal intra_satd_x3_16x16, 3,5,16
     psubw          m1, m9, m12
     psubw          m2, m10, m12
     psubw          m3, m11, m12
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 14
+    INTRA_X3_SATD 14
 %assign intra_x3_k 0
 %rep 4                                     ; H: the row's left neighbour
     %assign intra_x3_f 8+intra_x3_k
@@ -7113,12 +7138,12 @@ cglobal intra_satd_x3_16x16, 3,5,16
     psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
 %assign intra_x3_k intra_x3_k+1
 %endrep
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 15
+    INTRA_X3_SATD 15
     psubw          m0, m8, m13             ; DC
     psubw          m1, m9, m13
     psubw          m2, m10, m13
     psubw          m3, m11, m13
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+    INTRA_X3_SATD 6
 %assign intra_x3_g intra_x3_g+1
 %endrep
     INTRA_X3_FOLD 14
@@ -7142,24 +7167,26 @@ cglobal intra_satd_x3_16x16, 3,5,16
 ; void intra_satd_x3_8x8c( uint8_t *fenc, uint8_t *fdec, int res[3] ) (DC, H, V)
 ; 8 wide layout of pixel_satd_8x8: lanes = rows k, k+4, each row twice
 ;-----------------------------------------------------------------------------
-%macro INTRA_X3_LEFT4 2 ; dst gpr, first row
-    movzx         %1, byte [r1+%2*FDEC_STRIDE-1]
-%assign intra_x3_y %2+1
-%rep 3
-    movzx         r4d, byte [r1+intra_x3_y*FDEC_STRIDE-1]
-    add           %1, r4d
-%assign intra_x3_y intra_x3_y+1
-%endrep
-%endmacro
-
 cglobal intra_satd_x3_8x8c, 3,7,16
     movq          xm0, [r1-FDEC_STRIDE]
     pxor          xm1, xm1
     punpcklbw     xm0, xm1
     pmaddwd       xm0, [pw_1]
+%if cpuflag(avx512icl)
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1                 ; s0 s0 s1 s1
+    movd          r3d, xm0
+    pextrd        r5d, xm0, 2
+    mov           r4d, 0x5555000c
+    kmovd          k2, r4d
+    kshiftrd       k1, k2, 16
+    mov           r4d, 0xffff0000
+    kmovd          k3, r4d
+%else
     phaddd        xm0, xm0                 ; s0 s1 (top 0-3, top 4-7)
     movd          r3d, xm0
     pextrd        r5d, xm0, 1
+%endif
     INTRA_X3_LEFT4 r6d, 0                  ; s2
     lea           r3d, [r3+r6+4]
     shr           r3d, 3                   ; dc0 = (s0 + s2 + 4) >> 3
@@ -7186,9 +7213,14 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 %assign intra_x3_k 0
 %rep 4
     %assign intra_x3_f 8+intra_x3_k
+%if cpuflag(avx512icl)
+    vpbroadcastq   m %+ intra_x3_f, [r0+intra_x3_k*FENC_STRIDE]
+    vpbroadcastq   m %+ intra_x3_f {k2}, [r0+(intra_x3_k+4)*FENC_STRIDE]
+%else
     movq          xm %+ intra_x3_f, [r0+intra_x3_k*FENC_STRIDE]
     vinserti128    m %+ intra_x3_f, m %+ intra_x3_f, [r0+(intra_x3_k+4)*FENC_STRIDE], 1
     punpcklqdq     m %+ intra_x3_f, m %+ intra_x3_f
+%endif
     pmaddubsw      m %+ intra_x3_f, m7
 %assign intra_x3_k intra_x3_k+1
 %endrep
@@ -7199,23 +7231,28 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     psubw          m1, m9, m13
     psubw          m2, m10, m13
     psubw          m3, m11, m13
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 14
+    INTRA_X3_SATD 14
 %assign intra_x3_k 0
 %rep 4                                     ; H
     %assign intra_x3_f 8+intra_x3_k
+%if cpuflag(avx512icl)
+    vpbroadcastb   m %+ intra_x3_k, [r1+intra_x3_k*FDEC_STRIDE-1]
+    vpbroadcastb   m %+ intra_x3_k {k3}, [r1+(intra_x3_k+4)*FDEC_STRIDE-1]
+%else
     vpbroadcastb  xm %+ intra_x3_k, [r1+intra_x3_k*FDEC_STRIDE-1]
     vpbroadcastb  xm4, [r1+(intra_x3_k+4)*FDEC_STRIDE-1]
     vinserti128    m %+ intra_x3_k, m %+ intra_x3_k, xm4, 1
+%endif
     pmaddubsw      m %+ intra_x3_k, m7
     psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
 %assign intra_x3_k intra_x3_k+1
 %endrep
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 15
+    INTRA_X3_SATD 15
     psubw          m0, m8, m12             ; V
     psubw          m1, m9, m12
     psubw          m2, m10, m12
     psubw          m3, m11, m12
-    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6
+    INTRA_X3_SATD 6
     INTRA_X3_FOLD 14
     INTRA_X3_FOLD 15
     INTRA_X3_FOLD 6
@@ -7231,6 +7268,9 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     movq        [r2], xm14
     pextrd    [r2+8], xm14, 2
     RET
+%endmacro
+
+INTRA_SATD_X3_8BIT
 INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
@@ -7920,8 +7960,8 @@ INIT_YMM avx512icl
     pmaxsw    m%1, m%3, m%2
 %endmacro
 
-; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, 6, %1
-%macro SATD_ICL_8x4 1 ; swap/add
+; SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %2, %1
+%macro SATD_ICL_8x4 1-2 6 ; swap/add, accumulator
     HADAMARD4_V 0, 1, 2, 3, 4
     pabsw     m0, m0
     pabsw     m2, m2
@@ -7930,10 +7970,10 @@ INIT_YMM avx512icl
     SATD_ICL_HMAX 0, 2, 4
     SATD_ICL_HMAX 1, 3, 5
 %ifidn %1, swap
-    paddw     m6, m0, m1
+    paddw    m%2, m0, m1
 %else
     paddw     m0, m1
-    paddw     m6, m0
+    paddw    m%2, m0
 %endif
 %endmacro
 
@@ -8128,6 +8168,8 @@ cglobal pixel_sa8d_8x8, 4,8,8
     add      eax, 1
     shr      eax, 1
     RET
+
+INTRA_SATD_X3_8BIT
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
