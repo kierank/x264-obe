@@ -1089,6 +1089,64 @@ SSD_ICL 16,  8
 SSD_ICL  8, 16
 SSD_ICL  8,  8
 SSD_ICL  8,  4
+
+; 4 wide: 4 rows a register, rows 1-3 by merge-masked broadcasts (k1-k3 = element 1-3);
+; 8-bit: dwords of an xmm widened to words. vpdpwssd of the differences into m0 m3.
+%macro SSD_ICL_LOAD4 4 ; dst, src, stride, 3*stride
+%if HIGH_BIT_DEPTH
+    movq          xm%1, [%2]
+    vpbroadcastq   m%1 {k1}, [%2+%3]
+    vpbroadcastq   m%1 {k2}, [%2+%3*2]
+    vpbroadcastq   m%1 {k3}, [%2+%4]
+%else
+    movd          xm%1, [%2]
+    vpbroadcastd  xm%1 {k1}, [%2+%3]
+    vpbroadcastd  xm%1 {k2}, [%2+%3*2]
+    vpbroadcastd  xm%1 {k3}, [%2+%4]
+    pmovzxbw       m%1, xm%1
+%endif
+%endmacro
+
+%macro SSD_ICL_W4 1 ; height
+cglobal pixel_ssd_4x%1, 4,7,4
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    mov        r4d, 2
+    kmovb       k1, r4d
+    kaddb       k2, k1, k1
+    kaddb       k3, k2, k2
+    pxor        m0, m0
+%if %1 > 4
+    pxor        m3, m3
+%endif
+%assign %%i 0
+%rep %1/4
+    SSD_ICL_LOAD4 1, r0, r1, r5
+    SSD_ICL_LOAD4 2, r2, r3, r6
+    psubw       m1, m2
+%if %%i & 1
+    vpdpwssd    m3, m1, m1
+%else
+    vpdpwssd    m0, m1, m1
+%endif
+%assign %%i %%i+1
+%if %%i < %1/4
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+%endif
+%endrep
+%if %1 > 4
+    paddd       m0, m3
+%endif
+    HADDD       m0, m1
+    movd       eax, xm0
+    RET
+%endmacro
+
+SSD_ICL_W4  4
+SSD_ICL_W4  8
+SSD_ICL_W4 16
 ; zmm: assembled, not dispatched (for full width zmm)
 INIT_ZMM avx512icl
 SSD_ICL 16, 16, _zmm
