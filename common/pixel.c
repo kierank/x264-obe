@@ -1294,6 +1294,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+        pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )
@@ -1721,6 +1722,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+        pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
 #endif
     }
 #endif //HAVE_MMX

@@ -355,6 +355,8 @@ ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
 weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
                   db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
 weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
+; ssim_end4 avx512icl: vpermi2d of blocks 0 1 | 2 3 to s1 | s2 and ss | s12
+ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 
 SECTION .text
 
@@ -9534,6 +9536,82 @@ cglobal pixel_ssim_4x4x2_core, 5,8,10
     paddd      xm2, xm8
     movu   [r4+ 0], xm3
     movu   [r4+16], xm2
+    RET
+
+;-----------------------------------------------------------------------------
+; avx512icl ssim_end4: blocks 0 1 and 2 3 a ymm, transposed by vpermi2d; the lanes past
+; width zeroed by the divide's k-mask (no table, no branch). Otherwise the avx version's
+; arithmetic, so the same result; 8-bit: s1*s1 + s2*s2 + ssim_c1 by vpdpwssd.
+;-----------------------------------------------------------------------------
+cglobal pixel_ssim_end4, 3,4,7
+    movu        m0, [r0]
+    movu        m1, [r0+32]
+    paddd       m0, [r0+16]
+    paddd       m1, [r0+48]
+    paddd       m0, [r1]
+    paddd       m1, [r1+32]
+    paddd       m0, [r1+16]
+    paddd       m1, [r1+48]
+    pmovzxbd    m4, [ssim_end_perm]
+    pmovzxbd    m5, [ssim_end_perm+8]
+    vpermi2d    m4, m0, m1
+    vpermi2d    m5, m0, m1
+    vextracti128 xm1, m4, 1
+    vextracti128 xm3, m5, 1
+    SWAP         0, 4
+    SWAP         2, 5
+    mova        xm5, [ssim_c1]
+    mova        xm6, [ssim_c2]
+;   s1=m0, s2=m1, ss=m2, s12=m3
+%if BIT_DEPTH == 10
+    cvtdq2ps   xm0, xm0
+    cvtdq2ps   xm1, xm1
+    cvtdq2ps   xm2, xm2
+    cvtdq2ps   xm3, xm3
+    mulps      xm2, [pf_64]   ; ss*64
+    mulps      xm3, [pf_128]  ; s12*128
+    mova       xm4, xm1
+    mulps      xm4, xm0       ; s1*s2
+    mulps      xm1, xm1       ; s2*s2
+    mulps      xm0, xm0       ; s1*s1
+    addps      xm4, xm4       ; s1*s2*2
+    addps      xm0, xm1       ; s1*s1 + s2*s2
+    subps      xm2, xm0       ; vars
+    subps      xm3, xm4       ; covar*2
+    addps      xm4, xm5       ; s1*s2*2 + ssim_c1
+    addps      xm0, xm5       ; s1*s1 + s2*s2 + ssim_c1
+    addps      xm2, xm6       ; vars + ssim_c2
+    addps      xm3, xm6       ; covar*2 + ssim_c2
+%else
+    pmaddwd    xm4, xm1, xm0  ; s1*s2
+    pslld      xm1, 16
+    por        xm1, xm0
+    mova       xm0, xm5
+    vpdpwssd   xm0, xm1, xm1  ; s1*s1 + s2*s2 + ssim_c1
+    pslld      xm4, 1
+    pslld      xm3, 7
+    pslld      xm2, 6
+    psubd      xm3, xm4       ; covar*2
+    paddd      xm4, xm5       ; s1*s2*2 + ssim_c1
+    paddd      xm2, xm5
+    psubd      xm2, xm0       ; vars
+    paddd      xm3, xm6       ; covar*2 + ssim_c2
+    paddd      xm2, xm6       ; vars + ssim_c2
+    cvtdq2ps   xm0, xm0
+    cvtdq2ps   xm4, xm4
+    cvtdq2ps   xm3, xm3
+    cvtdq2ps   xm2, xm2
+%endif
+    mulps      xm4, xm3
+    mulps      xm0, xm2
+    mov        r3d, 15
+    bzhi       r3d, r3d, r2d
+    kmovb       k1, r3d
+    vdivps     xm4 {k1}{z}, xm4, xm0 ; ssim
+    movhlps    xm0, xm4
+    addps      xm0, xm4
+    pshuflw    xm4, xm0, q0032
+    vaddss     xmm0, xm0, xm4
     RET
 %endif
 
