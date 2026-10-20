@@ -35,9 +35,6 @@ pb_shuf8x8c2: times 2 db 0,0,0,0,8,8,8,8,-1,-1,-1,-1,-1,-1,-1,-1
 hpred_shuf: db 0,0,2,2,8,8,10,10,1,1,3,3,9,9,11,11
 
 ALIGN 64
-; vpermt2b: byte -1 of rows 0-3 from two zmm loads of two rows each
-isad_lidx:     db 0, 32, 64, 96
-               times 60 db 0
 isad8c_qidx:   dq 0, 2, 4, 6, 8, 10, 12, 14
 isad8c_hidx:   db 0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3
                db 4,4,4,4,4,4,4,4, 5,5,5,5,5,5,5,5, 6,6,6,6,6,6,6,6, 7,7,7,7,7,7,7,7
@@ -1098,28 +1095,18 @@ cglobal intra_sad_x3_16x16, 3,5,6
     RET
 %endmacro
 
-; xm%1 = bytes -1 of rows %3*4 .. %3*4+3 of fdec (r1). %4: vpermt2b of two zmm
-; loads of row pairs (m%2 = tmp, m6 = isad_lidx), else movd + pinsrb.
-%macro INTRA_SAD_LEFT4 4
-%if %4
-    movu           m%1, [r1-1+FDEC_STRIDE*(%3*4+0)]
-    movu           m%2, [r1-1+FDEC_STRIDE*(%3*4+2)]
-    vpermt2b       m%1, m6, m%2
-%else
-    movd          xm%1, [r1+FDEC_STRIDE*(%3*4+3)-4]
-    pinsrb        xm%1, [r1+FDEC_STRIDE*(%3*4+0)-1], 0
-    pinsrb        xm%1, [r1+FDEC_STRIDE*(%3*4+1)-1], 1
-    pinsrb        xm%1, [r1+FDEC_STRIDE*(%3*4+2)-1], 2
-%endif
+; xm%1 = bytes -1 of rows %2*4 .. %2*4+3 of fdec (r1)
+%macro INTRA_SAD_LEFT4 2
+    movd          xm%1, [r1+FDEC_STRIDE*(%2*4+3)-4]
+    pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+0)-1], 0
+    pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+1)-1], 1
+    pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+2)-1], 2
 %endmacro
 
-%macro INTRA_SAD_X3_8x8C_ICL 1-2 ; vpermt2b left, name suffix
-cglobal intra_sad_x3_8x8c%2, 3,3,8
-%if %1
-    mova           m6, [isad_lidx]
-%endif
-    INTRA_SAD_LEFT4 0, 1, 0, %1
-    INTRA_SAD_LEFT4 2, 3, 1, %1
+INIT_ZMM avx512icl
+cglobal intra_sad_x3_8x8c, 3,3,8
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
     movq          xm1, [r1-FDEC_STRIDE]
     punpckldq     xm0, xm2              ; left 0-7
     pxor          xm3, xm3
@@ -1143,17 +1130,12 @@ cglobal intra_sad_x3_8x8c%2, 3,3,8
     psadbw         m5, m6
     psadbw         m1, m6
     INTRA_SAD_PACK3_END 4, 5, 1         ; DC H V
-%endmacro
 
-%macro INTRA_SAD_X3_16x16_ICL 1-2 ; vpermt2b left, name suffix
-cglobal intra_sad_x3_16x16%2, 3,3,10
-%if %1
-    mova           m6, [isad_lidx]
-%endif
-    INTRA_SAD_LEFT4 0, 1, 0, %1
-    INTRA_SAD_LEFT4 2, 3, 1, %1
-    INTRA_SAD_LEFT4 1, 3, 2, %1
-    INTRA_SAD_LEFT4 4, 5, 3, %1
+cglobal intra_sad_x3_16x16, 3,3,10
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    INTRA_SAD_LEFT4 1, 2
+    INTRA_SAD_LEFT4 4, 3
     punpckldq     xm0, xm2
     punpckldq     xm1, xm4
     movu          xm3, [r1-FDEC_STRIDE]
@@ -1184,15 +1166,6 @@ cglobal intra_sad_x3_16x16%2, 3,3,10
 %endrep
 %undef isad_g
     INTRA_SAD_PACK3_END 4, 6, 5         ; V H DC
-%endmacro
-
-INIT_ZMM avx512icl
-INTRA_SAD_X3_8x8C_ICL 0
-INTRA_SAD_X3_16x16_ICL 0
-%ifdef SAD_TEST_VARIANTS
-INTRA_SAD_X3_8x8C_ICL 1, _vp
-INTRA_SAD_X3_16x16_ICL 1, _vp
-%endif
 %endif ; ARCH_X86_64
 
 ;=============================================================================
