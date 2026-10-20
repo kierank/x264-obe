@@ -9556,6 +9556,119 @@ cglobal pixel_sa8d_16x16, 4,8,10
     RET
 
 ;-----------------------------------------------------------------------------
+; void intra_satd_x3_8x16c( uint8_t *fenc, uint8_t *fdec, int res[3] ) (DC, H, V)
+; Two halves of intra_satd_x3_8x8c_avx512icl (HMAX, merge-masked fenc and H
+; rows); the half's DC dword dc0-3 / dc4-7 as in predict_8x16c_dc.
+;-----------------------------------------------------------------------------
+cglobal intra_satd_x3_8x16c, 3,7,16
+    movq          xm0, [r1-FDEC_STRIDE]
+    pxor          xm1, xm1
+    punpcklbw     xm0, xm1
+    pmaddwd       xm0, [pw_1]
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1                 ; s0 s0 s1 s1
+    movd          r3d, xm0
+    pextrd        r5d, xm0, 2
+    mov           r4d, 0x5555000c
+    kmovd          k2, r4d
+    kshiftrd       k1, k2, 16
+    mov           r4d, 0xffff0000
+    kmovd          k3, r4d
+    INTRA_X3_LEFT4 r6d, 0                  ; s2
+    lea           r3d, [r3+r6+4]
+    shr           r3d, 3                   ; dc0 = (s0 + s2 + 4) >> 3
+    lea           r6d, [r5+2]
+    shr           r6d, 2                   ; dc1 = (s1 + 2) >> 2
+    shl           r6d, 8
+    or            r3d, r6d
+    INTRA_X3_LEFT4 r6d, 4                  ; s3
+    lea           r4d, [r6+2]
+    shr           r4d, 2                   ; dc2 = (s3 + 2) >> 2
+    shl           r4d, 16
+    or            r3d, r4d
+    lea           r4d, [r5+r6+4]
+    shr           r4d, 3                   ; dc3 = (s1 + s3 + 4) >> 3
+    shl           r4d, 24
+    or            r3d, r4d
+    movd         xm13, r3d
+    INTRA_X3_LEFT4 r6d, 8                  ; s4
+    lea           r3d, [r6+2]
+    shr           r3d, 2                   ; dc4 = (s4 + 2) >> 2
+    lea           r6d, [r5+r6+4]
+    shr           r6d, 3                   ; dc5 = (s1 + s4 + 4) >> 3
+    shl           r6d, 8
+    or            r3d, r6d
+    INTRA_X3_LEFT4 r6d, 12                 ; s5
+    lea           r4d, [r6+2]
+    shr           r4d, 2                   ; dc6 = (s5 + 2) >> 2
+    shl           r4d, 16
+    or            r3d, r4d
+    lea           r4d, [r5+r6+4]
+    shr           r4d, 3                   ; dc7 = (s1 + s5 + 4) >> 3
+    shl           r4d, 24
+    or            r3d, r4d
+    mova           m7, [hmul_8p]
+    vpbroadcastq  m12, [r1-FDEC_STRIDE]
+    pmaddubsw     m12, m7                  ; V, first stage
+    pxor          m14, m14
+    pxor          m15, m15
+    pxor           m6, m6
+%assign intra_x3_h 0
+%rep 2
+%if intra_x3_h
+    movd         xm13, r3d
+%endif
+    vpbroadcastd  m13, xm13
+    pshufb        m13, [intra_8x8c_dc_shufb]
+    pmaddubsw     m13, m7                  ; DC, first stage
+%assign intra_x3_k 0
+%rep 4
+    %assign intra_x3_f 8+intra_x3_k
+    vpbroadcastq   m %+ intra_x3_f, [r0+(8*intra_x3_h+intra_x3_k)*FENC_STRIDE]
+    vpbroadcastq   m %+ intra_x3_f {k2}, [r0+(8*intra_x3_h+intra_x3_k+4)*FENC_STRIDE]
+    pmaddubsw      m %+ intra_x3_f, m7
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    psubw          m0, m8, m13             ; DC
+    psubw          m1, m9, m13
+    psubw          m2, m10, m13
+    psubw          m3, m11, m13
+    INTRA_X3_SATD 14
+%assign intra_x3_k 0
+%rep 4                                     ; H
+    %assign intra_x3_f 8+intra_x3_k
+    vpbroadcastb   m %+ intra_x3_k, [r1+(8*intra_x3_h+intra_x3_k)*FDEC_STRIDE-1]
+    vpbroadcastb   m %+ intra_x3_k {k3}, [r1+(8*intra_x3_h+intra_x3_k+4)*FDEC_STRIDE-1]
+    pmaddubsw      m %+ intra_x3_k, m7
+    psubw          m %+ intra_x3_k, m %+ intra_x3_f, m %+ intra_x3_k
+%assign intra_x3_k intra_x3_k+1
+%endrep
+    INTRA_X3_SATD 15
+    psubw          m0, m8, m12             ; V
+    psubw          m1, m9, m12
+    psubw          m2, m10, m12
+    psubw          m3, m11, m12
+    INTRA_X3_SATD 6
+%assign intra_x3_h intra_x3_h+1
+%endrep
+%undef intra_x3_h
+    INTRA_X3_FOLD 14
+    INTRA_X3_FOLD 15
+    INTRA_X3_FOLD 6
+    punpckldq     xm4, xm14, xm15
+    punpckhdq    xm14, xm15
+    paddd        xm14, xm4
+    punpckhdq     xm5, xm6, xm6
+    punpckldq     xm6, xm6
+    paddd         xm6, xm5
+    punpcklqdq    xm4, xm14, xm6
+    punpckhqdq   xm14, xm6
+    paddd        xm14, xm4                 ; DC H V V
+    movq        [r2], xm14
+    pextrd    [r2+8], xm14, 2
+    RET
+
+;-----------------------------------------------------------------------------
 ; int intra_satd_x9_4x4( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts )
 ; As the avx2 version, with the sign stages of X9B_SATD as masked psubw
 ; (k4 = odd words, k5 = words 4-7 of each lane) and a k-mask argmin over the
