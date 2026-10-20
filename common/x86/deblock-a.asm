@@ -4402,6 +4402,25 @@ cglobal deblock_h_chroma, 5,7,11
     CHROMA_INTER10_ICL
     CHROMA_H_STORE_AVX2 r5, r6
     RET
+
+INIT_XMM avx512icl
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_mbaff( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_mbaff, 5,7,11
+    add          r1, r1
+    lea          r6, [r1*3]
+    CHROMA_H_LOAD r6
+    vpbroadcastw  m4, r2d
+    vpbroadcastw  m5, r3d
+    CHROMA_MASK_ICL
+    movd         m9, [r4]
+    punpcklbw    m9, m9
+    psraw        m9, 8
+    punpcklwd    m9, m9        ; tc0[i] covers row i
+    CHROMA_INTER10_ICL
+    CHROMA_H_STORE r6
+    RET
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
