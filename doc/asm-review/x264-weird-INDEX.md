@@ -16,7 +16,8 @@ this order:
 | pixmisc | 70bff4fd | 8a9e0863 | x264-weird-pixmisc.md |
 | satd | e88da8e8 | d29524ce | x264-weird-satd.md |
 
-No zen5/ branch and no fix/configure-pie are merged.
+fix/configure-pie is not merged. In a second round the 13 zen5/ branches were merged
+too, dispatched for rack01 (see "zen5/ kernels" below and x264-weird-FOLD-STATUS.md).
 
 Conflicts: only common/pixel.c, in the 8-bit AVX512ICL block (sad's intra_sad_x3_16x16 and
 pixmisc's kernels). Both are kept in one braced block. Everything else merged textually,
@@ -97,10 +98,10 @@ ratio is new/old time, so < 1 is faster. They are indicative only.
 | quant | quant_8x8 | 8, 10 | avx512icl | neutral |
 | quant | quant_4x4, quant_4x4_dc | 10 | avx512icl | neutral to better |
 | quant | denoise_dct | 8 | avx512icl | neutral (--nr only) |
-| pixmisc | pixel_ads1/2/4 | 8, 10 | avx512icl ymm | 8: 19-22 -> 7-10; 10: 21-25 -> 9-16 (esa/tesa only) |
-| pixmisc | pixel_var 16x16, 8x16, 8x8 | 8, 10 | avx512icl ymm | 8: 11.2 -> 6.6 (16x16); 10: 13.8 -> 10.3 |
+| pixmisc | pixel_ads1/2/4 | 8, 10 | avx512icl ymm, replaced by zmm in round 2 | 8: 19-22 -> 7-10; 10: 21-25 -> 9-16 (esa/tesa only) |
+| pixmisc | pixel_var 8x16, 8x8 (16x16: ymm, replaced by zmm in round 2) | 8, 10 | avx512icl ymm | 8: 11.2 -> 6.6 (16x16); 10: 13.8 -> 10.3 |
 | pixmisc | pixel_var2 8x8, 8x16 | 8, 10 | avx512icl ymm | ~0.91-0.95 |
-| pixmisc | pixel_ssd 16x16, 16x8, 8x16 | 8, 10 | avx512icl ymm | 16x16 small win, others neutral |
+| pixmisc | pixel_ssd 8x16 (16x16, 16x8: ymm, replaced by zmm in round 2) | 8, 10 | avx512icl ymm | 16x16 small win, others neutral |
 | pixmisc | pixel_ssd 8x8 | 10 | avx512icl ymm | neutral |
 | pixmisc | weightp_dc8x8 | 8, 10 | avx512icl ymm | 8: 5.6 -> 4.4; 10: 4.7 -> 4.4 |
 | pixmisc | weightp_stats8 | 8 | avx2 rewrite + avx512icl | old avx2 218 -> new avx2 88.8 -> icl 81.6 |
@@ -119,28 +120,37 @@ ratio is new/old time, so < 1 is faster. They are indicative only.
 | satd | pixel_hadamard_ac 16x16, 16x8, 8x16 | 10 | avx512icl (ICL_LOW, {evex} VNNI) | 0.94-1.00 |
 | satd | pixel_sa8d 8x8, 16x16 | 10 | avx512icl (ICL_LOW, {evex} VNNI) | ~1.00 (16x16 not reached) |
 
-Assembled but not dispatched on this branch: 8-bit zmm add8x8/add16x16_idct,
-dct4x4dc/idct4x4dc, decimate_score15/16/64, intra_sad_x3_8x8c, zmm ads/var_16x16/ssd,
-8-bit ssd_8x8 icl, 8-bit sub16x16_dct8 zmm, 10-bit denoise_dct icl, quant_4x4x4 icl, and
-the 10-bit zmm sad_x3/x4(_min)/sad_avg2. The zen5/ branches below dispatch them.
+Assembled but not dispatched on this branch: the avx512icl ymm ads1/2/4, var_16x16,
+ssd_16x16 and ssd_16x8 (both depths; the zmm versions replaced them in round 2) and the
+8-bit ssd_8x8 icl.
 
-## zen5/ branches (dispatch on, not merged)
+## zen5/ kernels: dispatched in round 2, pending Zen 4 numbers
 
-| branch | hash | dispatches | laptop |
-|---|---|---|---|
-| zen5/x264-weird-dbpred-mbaff | 48337be3 | 8-bit h_luma(_intra)_mbaff vpermb transposes | 1.02-1.07 |
-| zen5/x264-weird-dbpred-chroma422 | d0b0b0d9 | 10-bit zmm h_chroma_422(_intra) | 1.27-1.36 |
-| zen5/x264-weird-sad-hbd-sadx-zmm | 63f2ee79 | 10-bit zmm sad_x3/x4(_min), 4 sizes | 0.97-1.59 |
-| zen5/x264-weird-sad-intra8c | f80bdadf | 8-bit intra_sad_x3_8x8c | 1.03-1.10 |
-| zen5/x264-weird-sad-hbd-avg2-zmm | e2cd4898 | 10-bit zmm sad_avg2 16x16/16x8 | 0.99-1.25 |
-| zen5/x264-weird-dct-add-idct | ad632c1f | 8-bit zmm add8x8/add16x16_idct | 1.2-1.27 |
-| zen5/x264-weird-dct-dc4x4 | 34744f3c | dct4x4dc/idct4x4dc, both depths | 8-bit throughput better, chained latency worse |
-| zen5/x264-weird-dct-sub16x16-dct8 | 3176001d | 8-bit zmm sub16x16_dct8 | 1.02-1.10 |
-| zen5/x264-weird-dct-hbd-add-idct | 0d4c5d43 | 10-bit zmm add8x8/add16x16_idct | 1.17-1.22 |
-| zen5/x264-weird-quant-decimate | 896cb220 | decimate_score15/16/64 popcnt | mixed/slower (scalar; decide in situ on Zen 4) |
-| zen5/x264-weird-quant-quant4x4x4 | a10f7b11 | quant_4x4x4 icl | 8: ~1.03; 10: ~1.2 |
-| zen5/x264-weird-quant-denoise10 | 2103475d | 10-bit denoise_dct icl | 0.97-1.11 |
-| zen5/x264-weird-pixmisc-zmm | 7bcea30c | zmm ads, var_16x16, ssd_16x16/16x8 | ssd zmm slower; 10-bit var/ads1 zmm faster |
+Kieran ruled that the laptop is not indicative of server speed. The kernel sets parked
+on zen5/ branches because of laptop timings are therefore merged here with their
+dispatch, to be measured on rack01 (Zen 4). The laptop column is a note only and decides
+nothing. Each branch has its own --no-ff merge, so `git revert -m 1 <merge>` removes one
+set alone. Verification and reachability are in x264-weird-FOLD-STATUS.md.
+
+Same slot at the same level: only pixmisc-zmm, which replaces the round 1 ymm avx512icl
+ads1/2/4, var_16x16, ssd_16x16 and ssd_16x8 (zmm runs). No two zen5 branches share a
+slot, and at detect every new symbol is in its slot (nothing later overrides it).
+
+| branch | hash | merge | dispatches | laptop (note only) |
+|---|---|---|---|---|
+| zen5/x264-weird-dbpred-chroma422 | d0b0b0d9 | 72c57bd1 | 10-bit zmm h_chroma_422(_intra), avx512icl | 1.27-1.36 |
+| zen5/x264-weird-dbpred-mbaff | 48337be3 | e30c6024 | 8-bit h_luma(_intra)_mbaff vpermb transposes, avx512icl | 1.02-1.07 |
+| zen5/x264-weird-dct-add-idct | ad632c1f | 79b9c3e2 | 8-bit zmm add8x8/add16x16_idct, avx512icl | 1.2-1.27 |
+| zen5/x264-weird-dct-dc4x4 | 34744f3c | 2e7c54ab | dct4x4dc/idct4x4dc, both depths, avx512icl | 8-bit throughput better, chained latency worse |
+| zen5/x264-weird-dct-hbd-add-idct | 0d4c5d43 | fdad85f0 | 10-bit zmm add8x8/add16x16_idct, avx512icl | 1.17-1.22 |
+| zen5/x264-weird-dct-sub16x16-dct8 | 3176001d | da791567 | 8-bit zmm sub16x16_dct8, avx512icl | 1.02-1.10 |
+| zen5/x264-weird-pixmisc-zmm | 7bcea30c | 58a07d20 | zmm ads, var_16x16, ssd_16x16/16x8, both depths, avx512icl | ssd zmm slower; 10-bit var/ads1 zmm faster |
+| zen5/x264-weird-quant-decimate | 896cb220 | 3998ca35 | decimate_score15/16/64 popcnt, both depths, avx512icl | mixed/slower (scalar; decide in situ) |
+| zen5/x264-weird-quant-denoise10 | 2103475d | c35fc777 | 10-bit denoise_dct, avx512icl | 0.97-1.11 |
+| zen5/x264-weird-quant-quant4x4x4 | a10f7b11 | 868b7cb5 | quant_4x4x4, both depths, avx512icl | 8: ~1.03; 10: ~1.2 |
+| zen5/x264-weird-sad-hbd-avg2-zmm | e2cd4898 | ca349f4d | 10-bit zmm sad_avg2 16x16/16x8, avx512 | 0.99-1.25 |
+| zen5/x264-weird-sad-hbd-sadx-zmm | 63f2ee79 | ca913238 | 10-bit zmm sad_x3/x4(_min), 4 sizes, avx512 | 0.97-1.59 |
+| zen5/x264-weird-sad-intra8c | f80bdadf | 00bafa32 | 8-bit intra_sad_x3_8x8c, avx512icl (also 10-bit lowlat lookahead) | 1.03-1.10 |
 
 ## Bugs and coverage fixes
 
@@ -204,6 +214,9 @@ Other findings, not changed:
 - satd: in-situ A/B with a layout twin (8l/8n/10l/10n, progressive and 1080i; 10l runs the
   8-bit lookahead kernels); the encoding A/B 708da2d3 (default permutation, EVEX) vs the
   tip (ICL_LOW, VEX); checkasm on Zen 4 as a SIGILL check; optionally the phaddw lead.
+- Round 2 (zen5/ kernels above): checkasm --bench of every one at both depths, then the
+  in-situ A/B with the layout twin test/x264-weird-twin2. Keep or revert each merge on
+  the Zen 4 numbers.
 - Whole branch: 10-bit 4:2:2 check of 4d6a42df vs 0ac92fa9 (the var2 fix changes output),
   then wip/x264-weird vs 4d6a42df.
 - nasm: everything here assembles identically with 2.14.02, so no upgrade is required
