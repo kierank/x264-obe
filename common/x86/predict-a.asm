@@ -3731,6 +3731,14 @@ PREDICT_4x4_DIR_ICL hd
 PREDICT_4x4_DIR_ICL vl
 PREDICT_4x4_DIR_ICL hu
 
+;-----------------------------------------------------------------------------
+; void predict_4x4_v( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_v, 1,2
+    vpbroadcastd m0, [r0-FDEC_STRIDE]
+    STORE4x4_SPLAT_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 ; ym0 = left pixel of row y in word 4*y+3
 %macro LEFT4W_ICL 0
@@ -3807,6 +3815,14 @@ PREDICT_4x4_DIR_ICL vr
 PREDICT_4x4_DIR_ICL hd
 PREDICT_4x4_DIR_ICL vl
 PREDICT_4x4_DIR_ICL hu
+
+;-----------------------------------------------------------------------------
+; void predict_4x4_v( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_v, 1,1
+    vpbroadcastq ym0, [r0-FDEC_STRIDEB]
+    SCATTER4x4W_ICL 0
+    RET
 
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
