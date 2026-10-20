@@ -1649,6 +1649,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2_pre[PIXEL_8x8] = x264_pixel_satd_avg2_pre_8x8_avx512icl;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx512icl;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;
+        pixf->satd_bi[PIXEL_16x16] = x264_pixel_satd_bi_16x16_avx512icl;
+        pixf->satd_bi[PIXEL_16x8] = x264_pixel_satd_bi_16x8_avx512icl;
+        pixf->satd_bi[PIXEL_8x16] = x264_pixel_satd_bi_8x16_avx512icl;
+        pixf->satd_bi[PIXEL_8x8] = x264_pixel_satd_bi_8x8_avx512icl;
+        pixf->satd_bi4[PIXEL_16x16] = x264_pixel_satd_bi4_16x16_avx512icl;
+        pixf->satd_bi4[PIXEL_16x8] = x264_pixel_satd_bi4_16x8_avx512icl;
+        pixf->satd_bi4[PIXEL_8x16] = x264_pixel_satd_bi4_8x16_avx512icl;
+        pixf->satd_bi4[PIXEL_8x8] = x264_pixel_satd_bi4_8x8_avx512icl;
 #endif
     }
 

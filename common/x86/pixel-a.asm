@@ -4974,7 +4974,13 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
 
 ; the satd pass of rows m0-m3 into m6
 %macro BI_SATD_PASS 1 ; 1 for the high bit depth transform
+%if cpuflag(avx512icl) && %1 == 0
 %if bi_pass
+    SATD_ICL_8x4 add
+%else
+    SATD_ICL_8x4 swap
+%endif
+%elif bi_pass
     SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6
 %else
     SATD_8x4_SSE %1, 0, 1, 2, 3, 4, 5, 6, swap
@@ -5013,6 +5019,9 @@ cglobal pixel_satd_bi4_%1x%2, 7,12,11
     %define bi_wd  r6d
     %define bi_wb  r6b
     FIX_STRIDES r5
+%if cpuflag(avx512icl)
+    SATD_ICL_KMASK r7d
+%endif
     lea       r7, [3*r5]
 %if bi_wide == 0
     lea       r8, [r1+4*r5]
@@ -5037,6 +5046,9 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
     %define bi_wd  r5d
     %define bi_wb  r5b
     FIX_STRIDES r2, r4
+%if cpuflag(avx512icl)
+    SATD_ICL_KMASK r6d
+%endif
     lea       r6, [3*r2]
     lea       r7, [3*r4]
 %if bi_wide == 0
@@ -7046,9 +7058,9 @@ SATD_AVG2_PRE_FUNCS
 ; 8 wide: list %2's rows %3, %3+4 as [k k | k+4 k+4] in m%1; m4, m10 tmp
 %macro BI_PRE_SRC8 3
     BI_ROW_OFF %2, %3
-    LOAD_DUP_8x2P_AVX2 %1, 4, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
+    SATD_PRE_DUP8 %1, [bi_p%2a+bi_o], [bi_q%2a+bi_o]
 %if bi_four
-    LOAD_DUP_8x2P_AVX2 10, 4, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
+    SATD_PRE_DUP8 10, [bi_p%2b+bi_o], [bi_q%2b+bi_o]
     pavgb          m%1, m10
 %endif
 %endmacro
@@ -8307,6 +8319,14 @@ SATD_PRE_FUNCS
 SATD_AVG2_PRE_FUNCS
 LOWRES_8BIT
 SA8D_X9_8BIT
+SATD_BI 16, 16, 0
+SATD_BI 16,  8, 0
+SATD_BI  8, 16, 0
+SATD_BI  8,  8, 0
+SATD_BI 16, 16, 1
+SATD_BI 16,  8, 1
+SATD_BI  8, 16, 1
+SATD_BI  8,  8, 1
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
