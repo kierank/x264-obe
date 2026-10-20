@@ -1298,6 +1298,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx512icl;
         pixf->sa8d[PIXEL_16x16] = x264_pixel_sa8d_16x16_avx512icl;
         pixf->sa8d[PIXEL_8x8]   = x264_pixel_sa8d_8x8_avx512icl;
+        pixf->satd[PIXEL_4x4]   = x264_pixel_satd_4x4_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
