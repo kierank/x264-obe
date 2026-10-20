@@ -1362,19 +1362,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
     ok = 1; used_asm = 0;
     for( int i = 0; i < 32; i++ )
         cost_mv[i] = rand30() & 0xffff;
-    for( int i = 0; i < 100 && ok; i++ )
+    for( int i = 0; i < 200 && ok; i++ )
         if( pixel_asm.ads[i&3] != pixel_ref.ads[i&3] )
         {
-            ALIGNED_16( uint16_t sums[72] );
+            /* widths: one partial chunk, whole chunks, several chunks plus a tail;
+             * thresholds: random, then 0, the 0xffff / 0x10000 boundaries, all pass, negative */
+            static const int ads_width[5] = { 28, 4, 64, 100, 36 };
+            static const int ads_thresh[7] = { 0, 1, 0xffff, 0x10000, 0x10001, 0x20000, -5 };
+            ALIGNED_16( uint16_t sums[192] );
+            ALIGNED_16( uint16_t cost[192] );
             ALIGNED_16( int dc[4] );
-            ALIGNED_16( int16_t mvs_a[48] );
-            ALIGNED_16( int16_t mvs_c[48] );
+            ALIGNED_16( int16_t mvs_a[160] );
+            ALIGNED_16( int16_t mvs_c[160] );
             int mvn_a, mvn_c;
+            int width = i < 100 ? 28 : ads_width[(i>>2)%5];
             int thresh = (rand() % 257) * PIXEL_MAX + (rand30() & 0xffff);
+            if( i >= 100 && i%3 == 2 )
+                thresh = ads_thresh[(i>>2)%7];
             set_func_name( "esa_ads_%s", pixel_names[i&3] );
-            if( i < 40 )
+            if( i < 40 || (i >= 100 && i < 140) )
             {
-                for( int j = 0; j < 72; j++ )
+                for( int j = 0; j < 192; j++ )
                     sums[j] = (rand() % 9) * 8 * PIXEL_MAX;
                 for( int j = 0; j < 4; j++ )
                     dc[j]   = (rand() % 9) * 8 * PIXEL_MAX;
@@ -1382,24 +1390,37 @@ static int check_pixel( int cpu_ref, int cpu_new )
             else
             {
 #if BIT_DEPTH + 6 > 15
-                for( int j = 0; j < 72; j++ )
+                for( int j = 0; j < 192; j++ )
                     sums[j] = rand30() & ((1 << (BIT_DEPTH + 6))-1);
                 for( int j = 0; j < 4; j++ )
                     dc[j]   = rand30() & ((1 << (BIT_DEPTH + 6))-1);
 #else
-                for( int j = 0; j < 72; j++ )
+                for( int j = 0; j < 192; j++ )
                     sums[j] = rand() & ((1 << (BIT_DEPTH + 6))-1);
                 for( int j = 0; j < 4; j++ )
                     dc[j]   = rand() & ((1 << (BIT_DEPTH + 6))-1);
 #endif
             }
+            for( int j = 0; j < 192; j++ )
+                cost[j] = j < 32 && i < 100 ? cost_mv[j] : rand30() & 0xffff;
+            if( i >= 100 && i%3 == 1 )
+            {
+                /* thresh equal to a candidate's cost */
+                int k = rand() % width;
+                int size = (i&3) == 0 ? 4 : (i&3) == 3 ? 1 : 2;
+                thresh = abs( dc[0] - sums[k] ) + cost[k];
+                if( size == 4 )
+                    thresh += abs( dc[1] - sums[k+8] ) + abs( dc[2] - sums[k+32] ) + abs( dc[3] - sums[k+40] );
+                else if( size == 2 )
+                    thresh += abs( dc[1] - sums[k+32] );
+            }
             used_asm = 1;
-            mvn_c = call_c( pixel_c.ads[i&3], dc, sums, 32, cost_mv, mvs_c, 28, thresh );
-            mvn_a = call_a( pixel_asm.ads[i&3], dc, sums, 32, cost_mv, mvs_a, 28, thresh );
+            mvn_c = call_c( pixel_c.ads[i&3], dc, sums, 32, cost, mvs_c, width, thresh );
+            mvn_a = call_a( pixel_asm.ads[i&3], dc, sums, 32, cost, mvs_a, width, thresh );
             if( mvn_c != mvn_a || memcmp( mvs_c, mvs_a, mvn_c*sizeof(*mvs_c) ) )
             {
                 ok = 0;
-                printf( "thresh: %d\n", thresh );
+                printf( "width: %d thresh: %d\n", width, thresh );
                 printf( "c%d: ", i&3 );
                 for( int j = 0; j < mvn_c; j++ )
                     printf( "%d ", mvs_c[j] );
