@@ -679,6 +679,71 @@ MC_COPY_WTAB(avx,mmx,sse,avx)
 MC_COPY_WTAB(sse,mmx,mmx,sse)
 #endif
 
+/* layout twin of test/x264-w2-mcweight: the new dispatch below assigns the
+ * functions wip/x264-weird-zen4-sn2 has in those slots */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_mc_weight_w4_avx512icl, x264_mc_weight_w4_ssse3 )
+#undef x264_mc_weight_w4_avx512icl
+#define x264_mc_weight_w4_avx512icl x264_twin_x264_mc_weight_w4_avx512icl
+X264_TWIN( x264_mc_weight_w12_avx512icl, x264_mc_weight_w16_avx2 )
+#undef x264_mc_weight_w12_avx512icl
+#define x264_mc_weight_w12_avx512icl x264_twin_x264_mc_weight_w12_avx512icl
+X264_TWIN( x264_mc_weight_w20_avx512icl, x264_mc_weight_w20_avx2 )
+#undef x264_mc_weight_w20_avx512icl
+#define x264_mc_weight_w20_avx512icl x264_twin_x264_mc_weight_w20_avx512icl
+X264_TWIN( x264_mc_offsetadd_w4_avx512icl, x264_mc_offsetadd_w4_mmx2 )
+#undef x264_mc_offsetadd_w4_avx512icl
+#define x264_mc_offsetadd_w4_avx512icl x264_twin_x264_mc_offsetadd_w4_avx512icl
+X264_TWIN( x264_mc_offsetadd_w8_avx512icl, x264_mc_offsetadd_w8_mmx2 )
+#undef x264_mc_offsetadd_w8_avx512icl
+#define x264_mc_offsetadd_w8_avx512icl x264_twin_x264_mc_offsetadd_w8_avx512icl
+X264_TWIN( x264_mc_offsetadd_w12_avx512icl, x264_mc_offsetadd_w16_sse2 )
+#undef x264_mc_offsetadd_w12_avx512icl
+#define x264_mc_offsetadd_w12_avx512icl x264_twin_x264_mc_offsetadd_w12_avx512icl
+X264_TWIN( x264_mc_offsetadd_w20_avx512icl, x264_mc_offsetadd_w20_sse2 )
+#undef x264_mc_offsetadd_w20_avx512icl
+#define x264_mc_offsetadd_w20_avx512icl x264_twin_x264_mc_offsetadd_w20_avx512icl
+X264_TWIN( x264_mc_offsetsub_w4_avx512icl, x264_mc_offsetsub_w4_mmx2 )
+#undef x264_mc_offsetsub_w4_avx512icl
+#define x264_mc_offsetsub_w4_avx512icl x264_twin_x264_mc_offsetsub_w4_avx512icl
+X264_TWIN( x264_mc_offsetsub_w8_avx512icl, x264_mc_offsetsub_w8_mmx2 )
+#undef x264_mc_offsetsub_w8_avx512icl
+#define x264_mc_offsetsub_w8_avx512icl x264_twin_x264_mc_offsetsub_w8_avx512icl
+X264_TWIN( x264_mc_offsetsub_w12_avx512icl, x264_mc_offsetsub_w16_sse2 )
+#undef x264_mc_offsetsub_w12_avx512icl
+#define x264_mc_offsetsub_w12_avx512icl x264_twin_x264_mc_offsetsub_w12_avx512icl
+X264_TWIN( x264_mc_offsetsub_w20_avx512icl, x264_mc_offsetsub_w20_sse2 )
+#undef x264_mc_offsetsub_w20_avx512icl
+#define x264_mc_offsetsub_w20_avx512icl x264_twin_x264_mc_offsetsub_w20_avx512icl
+X264_TWIN( x264_store_interleave_chroma_avx512icl, x264_store_interleave_chroma_mmx2 )
+#undef x264_store_interleave_chroma_avx512icl
+#define x264_store_interleave_chroma_avx512icl x264_twin_x264_store_interleave_chroma_avx512icl
+X264_TWIN( x264_mc_copy_w16_avx512icl, x264_mc_copy_w16_aligned_sse )
+#undef x264_mc_copy_w16_avx512icl
+#define x264_mc_copy_w16_avx512icl x264_twin_x264_mc_copy_w16_avx512icl
+X264_TWIN( x264_mc_copy_w8_avx512icl, x264_mc_copy_w8_mmx )
+#undef x264_mc_copy_w8_avx512icl
+#define x264_mc_copy_w8_avx512icl x264_twin_x264_mc_copy_w8_avx512icl
+X264_TWIN( x264_mc_copy_w4_avx512icl, x264_mc_copy_w4_mmx )
+#undef x264_mc_copy_w4_avx512icl
+#define x264_mc_copy_w4_avx512icl x264_twin_x264_mc_copy_w4_avx512icl
+#else
+X264_TWIN( x264_frame_init_lowres_core8_zmm_avx512icl, x264_frame_init_lowres_core8_avx512icl )
+#undef x264_frame_init_lowres_core8_zmm_avx512icl
+#define x264_frame_init_lowres_core8_zmm_avx512icl x264_twin_x264_frame_init_lowres_core8_zmm_avx512icl
+X264_TWIN( x264_mc_copy_w16_avx512icl, x264_mc_copy_w16_aligned_avx )
+#undef x264_mc_copy_w16_avx512icl
+#define x264_mc_copy_w16_avx512icl x264_twin_x264_mc_copy_w16_avx512icl
+X264_TWIN( x264_mc_copy_w8_avx512icl, x264_mc_copy_w8_mmx )
+#undef x264_mc_copy_w8_avx512icl
+#define x264_mc_copy_w8_avx512icl x264_twin_x264_mc_copy_w8_avx512icl
+X264_TWIN( x264_mc_copy_w4_avx512icl, x264_mc_copy_w4_mmx )
+#undef x264_mc_copy_w4_avx512icl
+#define x264_mc_copy_w4_avx512icl x264_twin_x264_mc_copy_w4_avx512icl
+#endif
+#endif
+
 #define MC_WEIGHT_WTAB(function, instr, name1, name2, w12version)\
     static void (* x264_mc_##function##_wtab_##instr[6])( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int ) =\
 {\
@@ -1298,7 +1363,7 @@ PROPAGATE_LIST(avx512)
 #if ARCH_X86_64
 /* copy_16x16_unaligned refers to the w16 kernel by a name of its own, so the layout
  * twin can give it a different function than copy[PIXEL_16x16] */
-X264_TWIN( x264_mc_copy_w16u_avx512icl, x264_mc_copy_w16_avx512icl )
+X264_TWIN( x264_mc_copy_w16u_avx512icl, x264_mc_copy_w16_mmx )
 #endif
 
 void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
