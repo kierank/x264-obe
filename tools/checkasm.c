@@ -1628,6 +1628,7 @@ static int check_dct( int cpu_ref, int cpu_new )
 
     ALIGNED_ARRAY_64( dctcoef, level1,[64] );
     ALIGNED_ARRAY_64( dctcoef, level2,[64] );
+    ALIGNED_ARRAY_64( pixel, zsrc,[16*FENC_STRIDE] );
 
 #define TEST_ZIGZAG_SCAN( name, t1, t2, dct, size ) \
     if( zigzag_asm[interlace].name != zigzag_ref[interlace].name ) \
@@ -1656,20 +1657,46 @@ static int check_dct( int cpu_ref, int cpu_new )
         } \
     }
 
+/* cases: random; dst == src (nz = 0); dst == src but one pixel; extremes
+ * (src max, dst 0 and the reverse) */
 #define TEST_ZIGZAG_SUB( name, t1, t2, size ) \
     if( zigzag_asm[interlace].name != zigzag_ref[interlace].name ) \
     { \
-        int nz_a, nz_c; \
+        int nz_a, nz_c, w = size == 16 ? 4 : 8; \
         set_func_name( "zigzag_"#name"_%s", interlace?"field":"frame" ); \
         used_asm = 1; \
-        memcpy( pbuf3, pbuf1, 16*FDEC_STRIDE * sizeof(pixel) ); \
-        memcpy( pbuf4, pbuf1, 16*FDEC_STRIDE * sizeof(pixel) ); \
-        nz_c = call_c1( zigzag_c[interlace].name, t1, pbuf2, pbuf3 ); \
-        nz_a = call_a1( zigzag_asm[interlace].name, t2, pbuf2, pbuf4 ); \
-        if( memcmp( t1, t2, size*sizeof(dctcoef) ) || memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE*sizeof(pixel) ) || nz_c != nz_a ) \
+        for( int i = 0; i < 6 && ok; i++ ) \
         { \
-            ok = 0; \
-            fprintf( stderr, #name " [FAILED]\n" ); \
+            memcpy( zsrc, pbuf2, 16*FENC_STRIDE * sizeof(pixel) ); \
+            memcpy( pbuf3, pbuf1, 16*FDEC_STRIDE * sizeof(pixel) ); \
+            for( int y = 0; y < w; y++ ) \
+                for( int x = 0; x < w; x++ ) \
+                { \
+                    if( i == 1 || i == 2 || i == 3 ) \
+                        pbuf3[y*FDEC_STRIDE+x] = zsrc[y*FENC_STRIDE+x]; \
+                    else if( i == 4 ) \
+                    { \
+                        zsrc[y*FENC_STRIDE+x] = PIXEL_MAX; \
+                        pbuf3[y*FDEC_STRIDE+x] = 0; \
+                    } \
+                    else if( i == 5 ) \
+                    { \
+                        zsrc[y*FENC_STRIDE+x] = 0; \
+                        pbuf3[y*FDEC_STRIDE+x] = PIXEL_MAX; \
+                    } \
+                } \
+            if( i == 2 ) \
+                pbuf3[(w-1)*FDEC_STRIDE+w-1] ^= 1; \
+            if( i == 3 ) \
+                pbuf3[(rand()%w)*FDEC_STRIDE+rand()%w] ^= 1; \
+            memcpy( pbuf4, pbuf3, 16*FDEC_STRIDE * sizeof(pixel) ); \
+            nz_c = call_c1( zigzag_c[interlace].name, t1, zsrc, pbuf3 ); \
+            nz_a = call_a1( zigzag_asm[interlace].name, t2, zsrc, pbuf4 ); \
+            if( memcmp( t1, t2, size*sizeof(dctcoef) ) || memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE*sizeof(pixel) ) || nz_c != nz_a ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, #name " [FAILED] case %d\n", i ); \
+            } \
         } \
         call_c2( zigzag_c[interlace].name, t1, pbuf2, pbuf3 ); \
         call_a2( zigzag_asm[interlace].name, t2, pbuf2, pbuf4 ); \
@@ -1682,21 +1709,29 @@ static int check_dct( int cpu_ref, int cpu_new )
         dctcoef dc_a, dc_c; \
         set_func_name( "zigzag_"#name"_%s", interlace?"field":"frame" ); \
         used_asm = 1; \
-        for( int i = 0; i < 2; i++ ) \
+        /* cases: dst == src; random; only the dc differs (nz = 0); src max, dst 0 */ \
+        for( int i = 0; i < 4; i++ ) \
         { \
+            memcpy( zsrc, pbuf2, 16*FENC_STRIDE * sizeof(pixel) ); \
             memcpy( pbuf3, pbuf2, 16*FDEC_STRIDE * sizeof(pixel) ); \
-            memcpy( pbuf4, pbuf2, 16*FDEC_STRIDE * sizeof(pixel) ); \
             for( int j = 0; j < 4; j++ ) \
             { \
-                memcpy( pbuf3 + j*FDEC_STRIDE, (i?pbuf1:pbuf2) + j*FENC_STRIDE, 4 * sizeof(pixel) ); \
-                memcpy( pbuf4 + j*FDEC_STRIDE, (i?pbuf1:pbuf2) + j*FENC_STRIDE, 4 * sizeof(pixel) ); \
+                if( i == 3 ) \
+                    for( int k = 0; k < 4; k++ ) \
+                        zsrc[j*FENC_STRIDE+k] = PIXEL_MAX; \
+                memcpy( pbuf3 + j*FDEC_STRIDE, (i==1?pbuf1:zsrc) + j*FENC_STRIDE, 4 * sizeof(pixel) ); \
+                if( i == 3 ) \
+                    memset( pbuf3 + j*FDEC_STRIDE, 0, 4 * sizeof(pixel) ); \
             } \
-            nz_c = call_c1( zigzag_c[interlace].name, t1, pbuf2, pbuf3, &dc_c ); \
-            nz_a = call_a1( zigzag_asm[interlace].name, t2, pbuf2, pbuf4, &dc_a ); \
-            if( memcmp( t1+1, t2+1, 15*sizeof(dctcoef) ) || memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE * sizeof(pixel) ) || nz_c != nz_a || dc_c != dc_a ) \
+            if( i == 2 ) \
+                pbuf3[0] ^= 1; \
+            memcpy( pbuf4, pbuf3, 16*FDEC_STRIDE * sizeof(pixel) ); \
+            nz_c = call_c1( zigzag_c[interlace].name, t1, zsrc, pbuf3, &dc_c ); \
+            nz_a = call_a1( zigzag_asm[interlace].name, t2, zsrc, pbuf4, &dc_a ); \
+            if( memcmp( t1, t2, 16*sizeof(dctcoef) ) || memcmp( pbuf3, pbuf4, 16*FDEC_STRIDE * sizeof(pixel) ) || nz_c != nz_a || dc_c != dc_a ) \
             { \
                 ok = 0; \
-                fprintf( stderr, #name " [FAILED]\n" ); \
+                fprintf( stderr, #name " [FAILED] case %d\n", i ); \
                 break; \
             } \
         } \
@@ -1738,6 +1773,7 @@ static int check_dct( int cpu_ref, int cpu_new )
         TEST_ZIGZAG_SCAN( scan_8x8, level1, level2, dct8[0], 8 );
         TEST_ZIGZAG_SCAN( scan_4x4, level1, level2, dct1[0], 4 );
         TEST_ZIGZAG_SUB( sub_4x4, level1, level2, 16 );
+        TEST_ZIGZAG_SUB( sub_8x8, level1, level2, 64 );
         TEST_ZIGZAG_SUBAC( sub_4x4ac, level1, level2 );
         report( interlace ? "zigzag_field :" : "zigzag_frame :" );
     }
