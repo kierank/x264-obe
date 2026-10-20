@@ -80,6 +80,9 @@ pw_hd_icl:      dw 7,39,40,41,42,43,44,45,6,38,7,39,40,41,42,43
                 dw 5,37,6,38,7,39,40,41,4,36,5,37,6,38,7,39
 pw_hd4_icl:     dw 3,35,4,36,5,37,6,38,2,34,3,35,4,36,5,37
                 dw 1,33,2,34,3,35,4,36,0,32,1,33,2,34,3,35
+pw_hu_icl:      dw 0,32,1,33,2,34,3,35,1,33,2,34,3,35,4,36
+                dw 2,34,3,35,4,36,5,37,3,35,4,36,5,37,6,38
+pw_hu_left:     dw 7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0
 %else
 pb_hd_icl:      db 1,65,2,66,3,67,4,68,5,69,6,70,7,71,72,73
                 db 74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89
@@ -2058,6 +2061,27 @@ cglobal predict_8x8_hd, 2,2
     STORE4_ICL   5, 4
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x8_hu( uint16_t *src, uint16_t *edge )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_hu, 2,2
+    movu        ym3, [pw_hu_left]
+    vpbroadcastd ym4, [pw_1]
+    vpermw      ym0, ym3, [r1+7*SIZEOF_PIXEL] ; l0 .. l7 l7 ..
+    psubusw     ym3, ym4
+    vpermw      ym1, ym3, [r1+7*SIZEOF_PIXEL] ; l1 .. l7 l7 ..
+    psubusw     ym3, ym4
+    vpermw      ym2, ym3, [r1+7*SIZEOF_PIXEL] ; l2 .. l7 l7 ..
+    pavgw       ym5, ym0, ym1
+    PRED8x8_LOWPASS ym1, ym0, ym2, ym1
+    movu         m3, [pw_hu_icl]
+    vpbroadcastd m4, [pw_4]
+    paddw        m4, m3
+    vpermi2w     m3, m5, m1
+    vpermi2w     m4, m5, m1
+    STORE4_ICL   3, 0
+    STORE4_ICL   4, 4
+    RET
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
