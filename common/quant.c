@@ -601,6 +601,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->denoise_dct = x264_denoise_dct_avx512icl;
         pf->dequant_4x4 = x264_dequant_4x4_avx512icl;
         pf->quant_2x2_dc = x264_quant_2x2_dc_avx512icl;
+        pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx512icl;
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx512icl;
 #if ARCH_X86_64
         pf->decimate_score15 = x264_decimate_score15_avx512icl;
@@ -805,6 +806,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         INIT_TRELLIS( avx512icl );
         pf->denoise_dct = x264_denoise_dct_avx512icl;
         pf->quant_2x2_dc = x264_quant_2x2_dc_avx512icl;
+        pf->idct_dequant_2x4_dc = x264_idct_dequant_2x4_dc_avx512icl;
         pf->coeff_last4 = x264_coeff_last4_avx512icl;
         if( h->param.i_cqm_preset != X264_CQM_FLAT )
         {

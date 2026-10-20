@@ -127,6 +127,8 @@ dct_coef_shuffle:
 %assign x x+1
 %endrep
 %endif
+; idct_dequant_2x4_dc avx512icl: dct4x4[i][0], in dctcoefs
+idct2x4_dc_idx: dd 0, 16, 32, 48
 
 SECTION .text
 
@@ -138,6 +140,7 @@ cextern pw_m2
 cextern pd_1
 cextern pb_01
 cextern pd_1024
+cextern pd_ffff
 cextern deinterleave_shufd
 cextern popcnt_table
 
@@ -1525,6 +1528,96 @@ DEQUANT_2x4_DC dconly
 INIT_XMM avx
 DEQUANT_2x4_DC dc
 DEQUANT_2x4_DC dconly
+
+; avx512icl: the right shift adds the rounding inside vpdpwssd (two
+; accumulators); the dc version writes dct4x4[i][0] with one vpscatterdd
+; (8-bit: vpgatherdd, the low words merged with vpternlogd, vpscatterdd)
+%macro DEQUANT_2x4_DC_ICL 1
+%ifidn %1, dconly
+    DECLARE_REG_TMP 6,3,2
+    %define %%args dct, dmf, qp
+%else
+    DECLARE_REG_TMP 6,4,3
+    %define %%args dct, dct4x4, dmf, qp
+%endif
+cglobal idct_dequant_2x4_%1, 0,3,6, %%args
+    movifnidn  t2d, qpm
+    imul       t0d, t2d, 0x2b
+    shr        t0d, 8         ; qp / 6
+    lea        t1d, [t0*5]
+    sub        t2d, t0d
+    sub        t2d, t1d       ; qp % 6
+    shl        t2d, 6         ; 16 * sizeof(int)
+    imul       t2d, [dmfq+t2], -0xffff ; (-dmf) << 16 | dmf
+%if HIGH_BIT_DEPTH
+    mova        m0, [dctq]
+    mova        m1, [dctq+16]
+    SUMSUB_BA    d, 1, 0, 2
+    packssdw    m1, m0
+%else
+    movq        m0, [dctq]
+    movq        m1, [dctq+8]
+    SUMSUB_BA    w, 1, 0, 2
+    punpcklqdq  m1, m0        ; a0 a1 a2 a3 a4 a5 a6 a7
+%endif
+    pshufd      m0, m1, q2301 ; a2 a3 a0 a1 a6 a7 a4 a5
+    movd        m3, t2d
+    pshuflw     m3, m3, q1000 ; +  +  +  -
+    SUMSUB_BA    w, 0, 1, 2
+    punpcklqdq  m3, m3        ; +  +  +  -  +  +  +  -
+    pshufd      m1, m1, q0022
+    sub        t0d, 6
+    jl .rshift
+    movd        m2, t0d
+    psllw       m3, m2
+    pmaddwd     m0, m3
+    pmaddwd     m1, m3
+    jmp .end
+.rshift:
+    neg        t0d
+    mov        t1d, 1
+    shlx       t1d, t1d, t0d
+    shr        t1d, 1         ; 1 << (-qbits-1)
+    vpbroadcastd m4, t1d
+    mova        m5, m4
+    vpdpwssd    m4, m0, m3
+    vpdpwssd    m5, m1, m3
+    movd        m2, t0d
+    psrad       m0, m4, m2
+    psrad       m1, m5, m2
+.end:
+%ifidn %1, dconly
+%if HIGH_BIT_DEPTH
+    mova    [dctq], m0
+    mova [dctq+16], m1
+%else
+    packssdw    m0, m1
+    mova    [dctq], m0
+%endif
+%else
+    movifnidn dct4x4q, dct4x4mp
+    mova        m4, [idct2x4_dc_idx] ; dc of blocks 0-3 in m0, 4-7 in m1
+    kxnorb      k1, k1, k1
+    kxnorb      k2, k2, k2
+%if HIGH_BIT_DEPTH
+    vpscatterdd [dct4x4q+m4*4] {k1}, m0
+    vpscatterdd [dct4x4q+m4*4+4*64] {k2}, m1
+%else
+    vpgatherdd  m2 {k1}, [dct4x4q+m4*2]
+    vpgatherdd  m3 {k2}, [dct4x4q+m4*2+4*32]
+    vpternlogd  m2, m0, [pd_ffff] {1to4}, 0xd8
+    vpternlogd  m3, m1, [pd_ffff] {1to4}, 0xd8
+    kxnorb      k1, k1, k1
+    kxnorb      k2, k2, k2
+    vpscatterdd [dct4x4q+m4*2] {k1}, m2
+    vpscatterdd [dct4x4q+m4*2+4*32] {k2}, m3
+%endif
+%endif
+    RET
+%endmacro
+
+INIT_XMM avx512icl
+DEQUANT_2x4_DC_ICL dc
 
 ; t4 is eax for return value.
 %if ARCH_X86_64
