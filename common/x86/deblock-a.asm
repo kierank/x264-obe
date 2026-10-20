@@ -97,6 +97,20 @@ transpose_shuf: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 gf_par1: dq 0x0600000000000000
 gf_par2: dq 0x0c00000000000000
 mbaff_tc_shuf: times 2 db 0,0,1,1,2,2,3,3
+; 8-bit h chroma, vpermb over rows of 8 bytes: lanes [p1|p0|q0|q1], 2 bytes per row
+align 64
+%macro DB_CCOLS 0
+%assign %%l 0
+%rep 4
+%assign %%j 0
+%rep 16
+    db 8*(%%j>>1) + 2*%%l + (%%j&1)
+%assign %%j %%j+1
+%endrep
+%assign %%l %%l+1
+%endrep
+%endmacro
+chroma_h_cols_idx: DB_CCOLS
 
 SECTION .text
 
@@ -4322,6 +4336,52 @@ cglobal deblock_v_chroma, 5,6,9
     CHROMA_INTER_ICL8 x, pb_unpackbd1
     mova   [r5+r1], xm1
     mova      [r0], xm2
+    RET
+
+; %1 rows (8 or 4) of 8 bytes at pix-4 -> xm0-xm3 = p1 p0 q0 q1 by one vpermb
+; r5 = 3*stride, r6 = pix-4, r7 = pix-4+4*stride
+%macro CHROMA_H_LOAD_ICL8 1
+%if %1 == 8
+    LUMA_MBAFF_LOAD_ICL
+%else
+    lea         r5, [r1*3]
+    lea         r6, [r0-4]
+    movq       xm8, [r6]
+    movhps     xm8, [r6+r1]
+    movq       xm0, [r6+r1*2]
+    movhps     xm0, [r6+r5]
+    vinserti128 ym8, ym8, xm0, 1
+%endif
+    mova        m0, [chroma_h_cols_idx]
+    vpermb      m0, m0, m8
+    vextracti32x4 xm1, m0, 1
+    vextracti32x4 xm2, m0, 2
+    vextracti32x4 xm3, m0, 3
+%endmacro
+
+; xm1, xm2 = p0', q0' -> columns -2..1 of %1 rows
+%macro CHROMA_H_STORE_ICL8 1
+    punpcklwd   xm4, xm1, xm2
+    movd      [r6+2], xm4
+    pextrd [r6+r1+2], xm4, 1
+    pextrd [r6+r1*2+2], xm4, 2
+    pextrd [r6+r5+2], xm4, 3
+%if %1 == 8
+    punpckhwd   xm5, xm1, xm2
+    movd      [r7+2], xm5
+    pextrd [r7+r1+2], xm5, 1
+    pextrd [r7+r1*2+2], xm5, 2
+    pextrd [r7+r5+2], xm5, 3
+%endif
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma, 5,8,9
+    CHROMA_H_LOAD_ICL8 8
+    CHROMA_INTER_ICL8 x, pb_unpackbd1
+    CHROMA_H_STORE_ICL8 8
     RET
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
