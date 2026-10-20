@@ -606,6 +606,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->decimate_score16 = x264_decimate_score16_avx512icl;
         pf->decimate_score64 = x264_decimate_score64_avx512icl;
         pf->quant_4x4 = x264_quant_4x4_avx512icl;
+        pf->dequant_8x8 = x264_dequant_8x8_avx512icl;
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx512icl;
         pf->quant_8x8 = x264_quant_8x8_avx512icl;
         pf->quant_4x4x4 = x264_quant_4x4x4_avx512icl;
@@ -807,6 +808,9 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         if( h->param.i_cqm_preset != X264_CQM_FLAT )
         {
             pf->dequant_4x4 = x264_dequant_4x4_avx512icl;
+#if ARCH_X86_64
+            pf->dequant_8x8 = x264_dequant_8x8_avx512icl;
+#endif
         }
 #if ARCH_X86_64
         pf->decimate_score15 = x264_decimate_score15_avx512icl;

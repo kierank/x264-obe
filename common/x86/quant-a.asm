@@ -1179,6 +1179,85 @@ cglobal dequant_4x4, 0,3
 %endif
     RET
 
+%if ARCH_X86_64
+cglobal dequant_8x8, 0,3,12
+    DEQUANT_START_AVX512 8
+    mova          m0, [dmf+0*64]
+    mova          m1, [dmf+1*64]
+    mova          m2, [dmf+2*64]
+    mova          m3, [dmf+3*64]
+%if HIGH_BIT_DEPTH == 0
+    mova          m6, [dequant_shuf_avx512]
+%endif
+    sub          t0d, 6
+    jl .rshift
+%if HIGH_BIT_DEPTH
+    pmaddwd       m0, [r0+0*64]
+    pmaddwd       m1, [r0+1*64]
+    pmaddwd       m2, [r0+2*64]
+    pmaddwd       m3, [r0+3*64]
+    vpbroadcastd  m4, t0d
+    vpsllvd       m0, m4
+    vpsllvd       m1, m4
+    vpsllvd       m2, m4
+    vpsllvd       m3, m4
+    mova   [r0+0*64], m0
+    mova   [r0+1*64], m1
+    mova   [r0+2*64], m2
+    mova   [r0+3*64], m3
+%else
+    vpbroadcastw  m4, t0d
+    vpermt2w      m0, m6, m1
+    vpermt2w      m2, m6, m3
+    pmullw        m0, [r0]
+    pmullw        m2, [r0+64]
+    vpsllvw       m0, m4
+    vpsllvw       m2, m4
+    mova        [r0], m0
+    mova     [r0+64], m2
+%endif
+    RET
+.rshift:
+    mov          r1d, 1<<31
+    shrx         r1d, r1d, t0d ; 1 << (-i_qbits-1)
+    neg          t0d
+    vpbroadcastd  m4, r1d
+    vpbroadcastd  m5, t0d
+    mova          m7, m4
+    mova          m8, m4
+    mova          m9, m4
+%if HIGH_BIT_DEPTH
+    vpdpwssd      m4, m0, [r0+0*64]
+    vpdpwssd      m7, m1, [r0+1*64]
+    vpdpwssd      m8, m2, [r0+2*64]
+    vpdpwssd      m9, m3, [r0+3*64]
+%else
+    pmovzxwd     m10, [r0+0*32]
+    pmovzxwd     m11, [r0+1*32]
+    vpdpwssd      m4, m0, m10
+    vpdpwssd      m7, m1, m11
+    pmovzxwd     m10, [r0+2*32]
+    pmovzxwd     m11, [r0+3*32]
+    vpdpwssd      m8, m2, m10
+    vpdpwssd      m9, m3, m11
+%endif
+    vpsravd       m4, m5
+    vpsravd       m7, m5
+    vpsravd       m8, m5
+    vpsravd       m9, m5
+%if HIGH_BIT_DEPTH
+    mova   [r0+0*64], m4
+    mova   [r0+1*64], m7
+    mova   [r0+2*64], m8
+    mova   [r0+3*64], m9
+%else
+    vpermt2w      m4, m6, m7
+    vpermt2w      m8, m6, m9
+    mova        [r0], m4
+    mova     [r0+64], m8
+%endif
+    RET
+%endif ; ARCH_X86_64
 
 %undef dmf
 
