@@ -7385,19 +7385,13 @@ INIT_YMM avx2
     LOWRES_PRE8
 %endmacro
 
-; avx2, and avx512icl after the SATD_ICL macros
+; avx2, and avx512icl in the ymm0-15 block after the SATD_ICL macros (phaddw,
+; pblendw, vpblendd, vperm2i128 and phminposuw have no EVEX form)
 %macro LOWRES_8BIT 0
+cglobal intra_satd_lowres, 3,5,16
 %if cpuflag(avx512icl)
-; m0-m15 on ymm0-15 (the 32 regs make x86inc save them on WIN64 and vzeroupper):
-; phaddw, pblendw, vpblendd, vperm2i128 and phminposuw have no EVEX form
-cglobal intra_satd_lowres, 3,5,32
-%ifndef icl_low_regs
-    AVX512_MM_PERMUTATION
-%endif
     mov         r3d, 0x5555
     kmovd        k1, r3d
-%else
-cglobal intra_satd_lowres, 3,5,16
 %endif
     sub          r1, r2               ; top row, row k at r1+(k+1)*r2
     lea          r3, [3*r2]
@@ -7918,18 +7912,13 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 %endif
 %endmacro
 
-; avx2, and avx512icl after the SATD_ICL macros (m0-m15 on ymm0-15 as in
-; intra_satd_lowres: phaddw, vpblendd, vperm2i128, phminposuw have no EVEX form)
+; avx2, and avx512icl in the ymm0-15 block after the SATD_ICL macros (phaddw,
+; vpblendd, vperm2i128 and phminposuw have no EVEX form)
 %macro SA8D_X9_8BIT 0
+cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %if cpuflag(avx512icl)
-cglobal intra_sa8d_x9_8x8, 5,7,32, 0x600
-%ifndef icl_low_regs
-    AVX512_MM_PERMUTATION
-%endif
     mov         r5d, 0x5555
     kmovd        k1, r5d
-%else
-cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %endif
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
@@ -8065,11 +8054,6 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     RET
 
 RESET_MM_PERMUTATION
-%if cpuflag(avx512icl)
-%ifndef icl_low_regs
-    AVX512_MM_PERMUTATION
-%endif
-%endif
 ALIGN 16
 .sa8d: ; m0-m7 pred rows (stored to r5), r6 fenc rows -> m0 = 8 word sums of the maxes per lane
     %xdefine mret m0
@@ -8105,7 +8089,6 @@ SA8D_X9_8BIT
     AVX512_MM_PERMUTATION
     %define RESET_MM_PERMUTATION ICL_LOW_RESET
 %endmacro
-%define icl_low_regs 1
 %define vzeroupper_required (mmsize > 16)
 %define high_mm_regs 0
 ICL_LOW_RESET
@@ -8344,7 +8327,6 @@ SATD_BI 16, 16, 1
 SATD_BI 16,  8, 1
 SATD_BI  8, 16, 1
 SATD_BI  8,  8, 1
-%undef icl_low_regs
 %define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
 %define high_mm_regs (16*cpuflag(avx512))
 INIT_YMM avx512icl
