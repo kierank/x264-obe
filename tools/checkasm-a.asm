@@ -56,6 +56,9 @@ n14:  dq 0x249214109d5d1c88
 SECTION .text
 
 cextern_naked puts
+%if ARCH_X86_64
+cextern checkasm_kmask
+%endif
 
 ; max number of args used by any x264 asm function.
 ; (max_args % 4) must equal 3 for stack alignment
@@ -123,6 +126,21 @@ cglobal checkasm_call, 2,15,16,max_args*8+8
         %assign i i+1
     %endrep
 %endif
+
+    ; avx-512 cpus: garbage in k0-k7, varied per call, so a kernel reading a
+    ; mask it didn't set fails instead of using the previous kernel's
+    mov  r9, [rel checkasm_kmask]
+    test r9, r9
+    jz .kmask_done
+%assign i 0
+%rep 8
+    kmovq k %+ i, r9
+    rol  r9, 8
+    %assign i i+1
+%endrep
+    rol  r9, 5
+    mov  [rel checkasm_kmask], r9
+.kmask_done:
 
 %assign i 14
 %rep 15-free_regs

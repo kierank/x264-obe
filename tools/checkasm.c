@@ -234,6 +234,8 @@ intptr_t x264_checkasm_call( intptr_t (*func)(), int *ok, ... );
  * detect all functions that assumes zero-extension.
  */
 void x264_checkasm_stack_clobber( uint64_t clobber, ... );
+/* nonzero (avx-512 cpus): x264_checkasm_call loads k0-k7 from it */
+uint64_t x264_checkasm_kmask;
 #define call_a1(func,...) ({ \
     uint64_t r = (rand() & 0xffff) * 0x0001000100010001ULL; \
     x264_checkasm_stack_clobber( r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r ); /* max_args+6 */ \
@@ -4734,6 +4736,10 @@ int main(int argc, char *argv[])
     fprintf( stderr, "x264: using random seed %u\n", seed );
     srand( seed );
     bench_seed = seed;
+#if ARCH_X86_64
+    if( x264_cpu_detect() & X264_CPU_AVX512 )
+        x264_checkasm_kmask = ((uint64_t)rand30() << 34 ^ (uint64_t)rand30() << 17 ^ rand30()) | 1;
+#endif
 
     buf1 = x264_malloc( 0x1e00 + 0x2000*sizeof(pixel) );
     pbuf1 = x264_malloc( 0x1e00*sizeof(pixel) );
