@@ -601,6 +601,7 @@ void x264_predict_8x8_init_mmx( int cpu, x264_predict8x8_t pf[12], x264_predict_
 #if ARCH_X86_64
         pf[I_PRED_8x8_DDL]  = x264_predict_8x8_ddl_avx512icl;
         pf[I_PRED_8x8_DDR]  = x264_predict_8x8_ddr_avx512icl;
+        pf[I_PRED_8x8_VL]   = x264_predict_8x8_vl_avx512icl;
 #endif
     }
 #else
