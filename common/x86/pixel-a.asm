@@ -6912,6 +6912,9 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 ; Modes go through .sa8d in pairs, mode 2k in lane 0 and 2k+1 in lane 1.
 ; Rows of the directional modes are loads from filtered-edge tables:
 ; F(i) = F2(e[i-1],e[i],e[i+1]), G(i) = F1(e[i],e[i+1]), e = edge.
+; (avx512icl: the .sa8d widening as pmaddwd + {evex} vpdpwssd, two chains;
+; the max() words are <= 32*PIXEL_MAX, signed)
+%macro SA8D_X9_HBD 0
 cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
@@ -7098,14 +7101,25 @@ ALIGN 16
 %assign x9i x9i+1
 %endrep
     HADAMARD8_2D 0, 1, 2, 3, 4, 5, 6, 7, 8, amax
+%if cpuflag(avx512icl)
+    pmaddwd      m0, m15
+    pmaddwd      m2, m15
+    {evex} vpdpwssd m0, m1, m15
+    {evex} vpdpwssd m2, m3, m15
+%else
     pmaddwd      m0, m15
     pmaddwd      m1, m15
     pmaddwd      m2, m15
     pmaddwd      m3, m15
     paddd        m0, m1
     paddd        m2, m3
+%endif
     paddd      mret, m0, m2
     ret
+%endmacro
+
+INIT_YMM avx2
+SA8D_X9_HBD
 
 ;-----------------------------------------------------------------------------
 ; int intra_satd_lowres( uint16_t *fenc, uint16_t *src, intptr_t stride )
@@ -7342,6 +7356,10 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     movd        eax, xm0
     RET
 
+ICL_LOW_BEGIN
+SA8D_X9_HBD
+ICL_LOW_END
+INIT_YMM avx2
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
 
 %if HIGH_BIT_DEPTH == 0
