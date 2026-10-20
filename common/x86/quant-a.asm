@@ -627,7 +627,7 @@ cglobal quant_4x4x4, 3,3,6
     pabsd     %1, %2
     paddd     %1, %4
     pmulld    %1, %3
-    psrad     %1, 16
+    psrld     %1, 16
     vpmovd2m  k1, %2
     vpsubd    %1{k1}, m7, %1
 %else
@@ -740,7 +740,7 @@ cglobal quant_2x2_dc, 3,3
     pabsd         m1, m0
     paddd         m1, m3
     pmulld        m1, m2
-    psrad         m1, 16
+    psrld         m1, 16
     vpmovd2m      k1, m0
     pxor          m2, m2
     vpsubd        m1 {k1}, m2, m1
