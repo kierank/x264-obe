@@ -71,6 +71,7 @@
 #define x264_pixel_ads1_avx2 x264_template(pixel_ads1_avx2)
 #define x264_pixel_ads1_avx512icl x264_template(pixel_ads1_avx512icl)
 #define x264_pixel_ads1_zmm_avx512icl x264_template(pixel_ads1_zmm_avx512icl)
+#define x264_pixel_ads1_pext_avx512icl x264_template(pixel_ads1_pext_avx512icl)
 #define x264_pixel_ads1_mmx2 x264_template(pixel_ads1_mmx2)
 #define x264_pixel_ads1_sse2 x264_template(pixel_ads1_sse2)
 #define x264_pixel_ads1_ssse3 x264_template(pixel_ads1_ssse3)
@@ -78,6 +79,7 @@
 #define x264_pixel_ads2_avx2 x264_template(pixel_ads2_avx2)
 #define x264_pixel_ads2_avx512icl x264_template(pixel_ads2_avx512icl)
 #define x264_pixel_ads2_zmm_avx512icl x264_template(pixel_ads2_zmm_avx512icl)
+#define x264_pixel_ads2_pext_avx512icl x264_template(pixel_ads2_pext_avx512icl)
 #define x264_pixel_ads2_mmx2 x264_template(pixel_ads2_mmx2)
 #define x264_pixel_ads2_sse2 x264_template(pixel_ads2_sse2)
 #define x264_pixel_ads2_ssse3 x264_template(pixel_ads2_ssse3)
@@ -85,6 +87,7 @@
 #define x264_pixel_ads4_avx2 x264_template(pixel_ads4_avx2)
 #define x264_pixel_ads4_avx512icl x264_template(pixel_ads4_avx512icl)
 #define x264_pixel_ads4_zmm_avx512icl x264_template(pixel_ads4_zmm_avx512icl)
+#define x264_pixel_ads4_pext_avx512icl x264_template(pixel_ads4_pext_avx512icl)
 #define x264_pixel_ads4_mmx2 x264_template(pixel_ads4_mmx2)
 #define x264_pixel_ads4_sse2 x264_template(pixel_ads4_sse2)
 #define x264_pixel_ads4_ssse3 x264_template(pixel_ads4_ssse3)
@@ -1156,6 +1159,9 @@ DECL_ADS( 1, avx512icl )
 DECL_ADS( 4, zmm_avx512icl )
 DECL_ADS( 2, zmm_avx512icl )
 DECL_ADS( 1, zmm_avx512icl )
+DECL_ADS( 4, pext_avx512icl )
+DECL_ADS( 2, pext_avx512icl )
+DECL_ADS( 1, pext_avx512icl )
 
 #undef DECL_PIXELS
 #undef DECL_X1

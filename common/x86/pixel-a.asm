@@ -10433,6 +10433,40 @@ ads_mvs_ssse3:
     paddw       m4, m6
 %endmacro
 
+; pdep/pext variant (x265 ads): per 8 candidates, the byte indices of the mask's set bits by
+; pext of 0x0706050403020100 under the byte mask pdep(mask, 0x0101010101010101) * 255,
+; widened, + m4 and stored whole at mvs+nmv: nmv <= the group's first index and no group
+; starts past width, so within what the pre-ICL kernels write (the 8-rounded width).
+; m4 = base index (all words), m6 = 8; r10 r11 = the constants.
+%macro ADS_ICL_STORE_PEXT 0 ; k1 = candidates of this chunk
+    kmovd      r7d, k1
+    cmp        r5d, ADS_N
+    jge %%full
+    bzhi       r7d, r7d, r5d
+%%full:
+%assign %%g 0
+%rep ADS_N/8
+%if %%g
+    cmp        r5d, 8*%%g
+    jle %%done
+%endif
+    movzx      r8d, r7b
+    popcnt     r9d, r8d
+    pdep        r8, r8, r10
+    imul        r8, r8, 255
+    pext        r8, r11, r8
+    movq       xm0, r8
+    pmovzxbw   xm0, xm0
+    paddw      xm0, xm4
+    movu [r4+r6*2], xm0
+    add        r6d, r9d
+    paddw       m4, m6
+    shr        r7d, 8
+%assign %%g %%g+1
+%endrep
+%%done:
+%endmacro
+
 ; m0 = sum of |dc - sums| of ADS_N candidates (8-bit: words, < 65536)
 %macro ADS_ICL_COST 1 ; size
 %if HIGH_BIT_DEPTH
@@ -10487,14 +10521,25 @@ ads_mvs_ssse3:
     RET
 %endmacro
 
-%macro ADS_ICL 1-2 ; size, name suffix
+%macro ADS_ICL 1-3 ; size, name suffix, store suffix
+%ifidn %3, _PEXT
+cglobal pixel_ads%1%2, 7,12,11
+%else
 cglobal pixel_ads%1%2, 7,10,11
+%endif
     test       r6d, r6d
     jle .zero
     movsxd      r2, r2d
     add         r2, r2
+%ifidn %3, _PEXT
+    pxor        m4, m4
+    mov        r7d, 8
+    mov        r10, 0x0101010101010101
+    mov        r11, 0x0706050403020100
+%else
     movu        m4, [ads_idx_w]
     mov        r7d, ADS_N
+%endif
     vpbroadcastw m6, r7d
     mov        r9d, -1
 %if HIGH_BIT_DEPTH
@@ -10513,7 +10558,7 @@ cglobal pixel_ads%1%2, 7,10,11
     pmovzxwd    m1, [r3]
     paddd       m0, m1
     vpcmpd      k1, m0, m5, 1
-    ADS_ICL_STORE
+    ADS_ICL_STORE%3
     ADS_ICL_NEXT .loop
 %else
     vpbroadcastw m7, [r0]
@@ -10532,7 +10577,7 @@ cglobal pixel_ads%1%2, 7,10,11
     ADS_ICL_COST %1
     paddusw     m0, [r3]
     vpcmpuw     k1, m0, m5, 1
-    ADS_ICL_STORE
+    ADS_ICL_STORE%3
     ADS_ICL_NEXT .loop
 .hi: ; thresh > 0xffff: cost < thresh unless the 17-bit cost carries and its low word >= thresh - 0x10000
     sub        r6d, 0x10000
@@ -10548,7 +10593,7 @@ cglobal pixel_ads%1%2, 7,10,11
     vpcmpuw     k1, m0, m5, 1
     vpcmpuw     k2, m0, m1, 5
     kord        k1, k1, k2
-    ADS_ICL_STORE
+    ADS_ICL_STORE%3
     ADS_ICL_NEXT .loop_hi
 %endif
 .zero:
@@ -10564,6 +10609,10 @@ INIT_ZMM avx512icl
 ADS_ICL 4, _zmm
 ADS_ICL 2, _zmm
 ADS_ICL 1, _zmm
+INIT_YMM avx512icl
+ADS_ICL 4, _pext, _PEXT
+ADS_ICL 2, _pext, _PEXT
+ADS_ICL 1, _pext, _PEXT
 %endif ; ARCH_X86_64
 
 %if ARCH_X86_64

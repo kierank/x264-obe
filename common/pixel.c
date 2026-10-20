@@ -1279,6 +1279,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         INIT_ADS( _zmm_avx512icl );
+        INIT_ADS( _pext_avx512icl ); /* over the zmm vpcompressw ones, for the rack01 A/B */
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
@@ -1708,6 +1709,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512icl;
         pixf->intra_sad_x3_8x8c  = x264_intra_sad_x3_8x8c_avx512icl;
         INIT_ADS( _zmm_avx512icl );
+        INIT_ADS( _pext_avx512icl ); /* over the zmm vpcompressw ones, for the rack01 A/B */
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
