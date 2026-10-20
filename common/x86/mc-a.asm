@@ -1034,6 +1034,163 @@ WEIGHT_PLANE offsetsub, OFFSET_sub_AVX2
 %endif
 %endif
 
+%if HIGH_BIT_DEPTH == 0 && ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 8-bit mc_weight/offsetadd/offsetsub_wN, avx512icl: two rows per iteration,
+; w4/w8/w12/w16 both rows in one register (the second merged in by a masked
+; broadcast or an insert), w20 one row per register under a 20-lane mask.
+; Weight: the ssse3 cache, pmulhrsw as there, then pmaxsw 0 + vpmovuswb for
+; the clip to [0, 255]. w12 and w20 store under a mask.
+;-----------------------------------------------------------------------------
+%macro WEIGHT_ICL_MASKS 1 ; width
+%if %1 == 4 || %1 == 8
+    mov          r4d, 2
+    kmovb         k2, r4d               ; second dword/qword
+%elif %1 == 12 || %1 == 20
+    mov          r4d, (1 << %1) - 1
+    kmovd         k1, r4d
+%endif
+%endmacro
+
+; bytes of rows 0, 1 -> m0 (w4: dwords 0, 1; w8: qwords 0, 1; w12/w16: xmm lanes 0, 1; w20: m0, m1)
+%macro WEIGHT_ICL_LOADB 1
+%if %1 == 4
+    movd         xm0, [r2]
+    vpbroadcastd xm0 {k2}, [r2+r3]
+%elif %1 == 8
+    movq         xm0, [r2]
+    vpbroadcastq xm0 {k2}, [r2+r3]
+%elif %1 == 20
+    vmovdqu8     ym0 {k1}{z}, [r2]
+    vmovdqu8     ym1 {k1}{z}, [r2+r3]
+%else
+    movu         xm0, [r2]
+    vinserti32x4 ym0, ym0, [r2+r3], 1
+%endif
+%endmacro
+
+; bytes of rows 0, 1 in m0 (w20: m0, m1) -> dst
+%macro WEIGHT_ICL_STOREB 1
+%if %1 == 4
+    movd       [r0], xm0
+    pextrd  [r0+r1], xm0, 1
+%elif %1 == 8
+    movq       [r0], xm0
+    movhps  [r0+r1], xm0
+%elif %1 == 12
+    vextracti32x4 xm1, ym0, 1
+    vmovdqu8   [r0] {k1}, xm0
+    vmovdqu8 [r0+r1] {k1}, xm1
+%elif %1 == 16
+    movu       [r0], xm0
+    vextracti32x4 [r0+r1], ym0, 1
+%else
+    vmovdqu8   [r0] {k1}, ym0
+    vmovdqu8 [r0+r1] {k1}, ym1
+%endif
+%endmacro
+
+; %2: 0 = scale<<7 doesn't fit a word, shift the pixels instead
+%macro WEIGHT_ICL_OP 2 ; reg, fast
+    %if %2 == 0
+    psllw         %1, 7
+    %endif
+    pmulhrsw      %1, m3
+    paddw         %1, m4
+    pmaxsw        %1, m5
+%endmacro
+
+; m0: xmm (w4), ymm (w8), zmm (w12, w16, w20)
+%macro WEIGHT_ICL_ROWS 2 ; width, fast
+    WEIGHT_ICL_LOADB %1
+%if %1 == 20
+    vpmovzxbw     m0, ym0
+    vpmovzxbw     m1, ym1
+    WEIGHT_ICL_OP m0, %2
+    WEIGHT_ICL_OP m1, %2
+    vpmovuswb    ym0, m0
+    vpmovuswb    ym1, m1
+%elif %1 == 4
+    pmovzxbw      m0, m0
+    WEIGHT_ICL_OP m0, %2
+    vpmovuswb     m0, m0
+%elif %1 == 8
+    vpmovzxbw     m0, xm0
+    WEIGHT_ICL_OP m0, %2
+    vpmovuswb    xm0, m0
+%else
+    vpmovzxbw     m0, ym0
+    WEIGHT_ICL_OP m0, %2
+    vpmovuswb    ym0, m0
+%endif
+    WEIGHT_ICL_STOREB %1
+%endmacro
+
+%macro WEIGHTER_ICL 1 ; width
+cglobal mc_weight_w%1, 6,6,6
+    vpbroadcastw  m3, [r4]
+    vpbroadcastw  m4, [r4+16]
+    pxor          m5, m5
+    cmp byte [r4+1], 0
+    WEIGHT_ICL_MASKS %1
+    jz .fast
+.loop:
+    WEIGHT_ICL_ROWS %1, 0
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    sub          r5d, 2
+    jg .loop
+    RET
+.fast:
+    psllw         m3, 7
+.fastloop:
+    WEIGHT_ICL_ROWS %1, 1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    sub          r5d, 2
+    jg .fastloop
+    RET
+%endmacro
+
+; w4/w8 in an xmm, w12/w16 two rows in a ymm, w20 one row per ymm
+%macro OFFSET_ICL 2 ; width, add/sub
+cglobal mc_offset%2_w%1, 6,6,3
+    vpbroadcastb  m2, [r4]
+    WEIGHT_ICL_MASKS %1
+.loop:
+    WEIGHT_ICL_LOADB %1
+    p%2usb        m0, m2
+%if %1 == 20
+    p%2usb        m1, m2
+%endif
+    WEIGHT_ICL_STOREB %1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    sub          r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+INIT_XMM avx512icl
+WEIGHTER_ICL 4
+OFFSET_ICL 4, add
+OFFSET_ICL 4, sub
+OFFSET_ICL 8, add
+OFFSET_ICL 8, sub
+INIT_YMM avx512icl
+WEIGHTER_ICL 8
+OFFSET_ICL 12, add
+OFFSET_ICL 12, sub
+OFFSET_ICL 16, add
+OFFSET_ICL 16, sub
+OFFSET_ICL 20, add
+OFFSET_ICL 20, sub
+INIT_ZMM avx512icl
+WEIGHTER_ICL 12
+WEIGHTER_ICL 16
+WEIGHTER_ICL 20
+%endif ; HIGH_BIT_DEPTH == 0 && ARCH_X86_64
+
 ;-----------------------------------------------------------------------------
 ; void mc_X_avg_wN( pixel *dst, intptr_t i_dst_stride, pixel *src1, intptr_t i_src_stride,
 ;                   const x264_weight_t *weight, int h, pixel *src2 )
