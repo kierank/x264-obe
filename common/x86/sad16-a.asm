@@ -1240,6 +1240,61 @@ cglobal pixel_sad_x4_8x%2, 6,7,8
     %undef sad_stride
 %endmacro
 
+; sad( fenc, (src1+src2+1)>>1 ), 16 wide: rows k, k+1 a zmm for both sources
+%macro SAD_AVG2_HBD16_ZMM 1 ; height
+cglobal pixel_sad_avg2_16x%1, 4,5,4
+    mov           r4d, 0xf0
+    kmovb          k1, r4d
+    lea            r4, [r3+2*r3]
+%assign sad_hbd_k 0
+%rep %1/2
+    SAD_HBD_ROWOFF sad_hbd_k&3, r3, r4
+    %xdefine sad_off0 sad_off
+    SAD_HBD_ROWOFF (sad_hbd_k+1)&3, r3, r4
+    movu          ym1, [r1+sad_off0]
+    movu          ym3, [r2+sad_off0]
+    vbroadcasti64x4 m1 {k1}, [r1+sad_off]
+    vbroadcasti64x4 m3 {k1}, [r2+sad_off]
+    pavgw          m1, m3
+    psubw          m1, [r0+sad_hbd_k*FENC_STRIDEB]
+%if sad_hbd_k == 0
+    pabsw          m0, m1
+%elif sad_hbd_k == 2
+    pabsw          m2, m1
+%else
+    pabsw          m1, m1
+%if sad_hbd_k & 2
+    paddw          m2, m1
+%else
+    paddw          m0, m1
+%endif
+%endif
+%if (sad_hbd_k&3) == 2 && sad_hbd_k < %1-2
+    lea            r1, [r1+8*r3]
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_hbd_k sad_hbd_k+2
+%endrep
+    SAD_HBD16_ZMM_END
+%endmacro
+
+; m0 + m2 (word sums, at most 8*1023 a lane) -> eax
+%macro SAD_HBD16_ZMM_END 0
+    paddw          m0, m2
+    vextracti64x4 ym1, m0, 1
+    paddw         ym0, ym1
+    vpbroadcastd  ym1, [pw_1]
+    pmaddwd       ym0, ym1
+    vextracti128  xm1, ym0, 1
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    paddd         xm0, xm1
+    psrlq         xm1, xm0, 32
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
 ; fenc rows FENC_STRIDE apart only, else the avx2 version (before the prologue)
 %macro SAD_HBD16_ZMM 1 ; height
 cglobal pixel_sad_16x%1
@@ -1274,19 +1329,7 @@ cglobal pixel_sad_16x%1
 %endif
 %assign sad_hbd_k sad_hbd_k+2
 %endrep
-    paddw          m0, m2          ; at most 8*1023 a lane
-    vextracti64x4 ym1, m0, 1
-    paddw         ym0, ym1
-    vpbroadcastd  ym1, [pw_1]
-    pmaddwd       ym0, ym1
-    vextracti128  xm1, ym0, 1
-    paddd         xm0, xm1
-    pshufd        xm1, xm0, q1032
-    paddd         xm0, xm1
-    psrlq         xm1, xm0, 32
-    paddd         xm0, xm1
-    movd          eax, xm0
-    RET
+    SAD_HBD16_ZMM_END
 %endmacro
 
 INIT_ZMM avx512
@@ -1308,6 +1351,8 @@ SAD_X_HBD8_ZMM 3, 16, 1
 SAD_X_HBD8_ZMM 3,  8, 1
 SAD_X_HBD8_ZMM 4, 16, 1
 SAD_X_HBD8_ZMM 4,  8, 1
+SAD_AVG2_HBD16_ZMM 16
+SAD_AVG2_HBD16_ZMM  8
 
 INIT_YMM avx2
 %endif
