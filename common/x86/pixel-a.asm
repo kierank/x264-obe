@@ -9422,6 +9422,8 @@ cglobal pixel_satd_8x4, 4,5,5
     SATD_AVX512_LOAD4 q, k1 ; 2 0 2 0
     SATD_ICL_PACKED         ; 3 1 3 1
     SATD_ICL_PACKED_END
+
+HADAMARD_AC_8x8_AVX2
 ICL_LOW_END
 %endif ; ARCH_X86_64
 
