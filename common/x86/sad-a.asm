@@ -1202,6 +1202,73 @@ cglobal pixel_vsad, 3,4,4
     paddd         xm0, xm3
     movd          eax, xm0
     RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_avg2_WxH( uint8_t *fenc, uint8_t *src1, uint8_t *src2, intptr_t stride )
+; AVX512ICL zmm: four rows a zmm per source (16 byte row loads + k-merged
+; vbroadcasti32x4), pavgb, psadbw against four fenc rows as one 64 byte
+; memory operand. 8 wide reads 16 bytes a row as the avx2 kernel (8 bytes past
+; the block, in the planes' padding); qword 1 of each lane is junk and
+; dropped by the tail. Two accumulators.
+; Tail: paddd, vextracti64x4, paddd, vextracti32x4, paddd, (16 wide:
+; punpckhqdq, paddd,) movd.
+;-----------------------------------------------------------------------------
+%macro SAD_AVG2_K4 2 ; width, height
+cglobal pixel_sad_avg2_%1x%2, 4,6,4
+    lea            r4, [r3+2*r3]
+    mov           r5d, 0xf0
+    kmovw          k3, r5d
+    shl           r5d, 4
+    kmovw          k4, r5d
+    shl           r5d, 4
+    kmovw          k5, r5d
+%assign sad_avg2_g 0
+%rep %2/4
+    movu          xm1, [r1]
+    vbroadcasti32x4 m1 {k3}, [r1+r3]
+    vbroadcasti32x4 m1 {k4}, [r1+2*r3]
+    vbroadcasti32x4 m1 {k5}, [r1+r4]
+    movu          xm2, [r2]
+    vbroadcasti32x4 m2 {k3}, [r2+r3]
+    vbroadcasti32x4 m2 {k4}, [r2+2*r3]
+    vbroadcasti32x4 m2 {k5}, [r2+r4]
+    pavgb          m1, m2
+%if sad_avg2_g == 0
+    psadbw         m0, m1, [r0]
+%elif sad_avg2_g == 1
+    psadbw         m3, m1, [r0+4*FENC_STRIDE]
+%else
+    psadbw         m1, [r0+sad_avg2_g*4*FENC_STRIDE]
+%if sad_avg2_g & 1
+    paddd          m3, m1
+%else
+    paddd          m0, m1
+%endif
+%endif
+%if sad_avg2_g < %2/4-1
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign sad_avg2_g sad_avg2_g+1
+%endrep
+%undef sad_avg2_g
+%if %2 > 4
+    paddd          m0, m3
+%endif
+    vextracti64x4 ym1, m0, 1
+    paddd         ym0, ym1
+    vextracti128  xm1, ym0, 1
+    paddd         xm0, xm1
+%if %1 == 16
+    punpckhqdq    xm1, xm0, xm0
+    paddd         xm0, xm1
+%endif
+    movd          eax, xm0
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+SAD_AVG2_K4 16, 16
 %endif ; ARCH_X86_64
 
 ;=============================================================================
