@@ -221,11 +221,16 @@ dctdc_icl_wd: times 2 db -1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 addc8_dc:     times 4 db 0,0,0,0,1,1,1,1
               times 4 db 2,2,2,2,3,3,3,3
 addc8_rows:   dq 0, 32, 64, 96, 128, 160, 192, 224
+addc16_dc:    times 4 db 0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3
+              times 4 db 4,4,4,4,5,5,5,5,6,6,6,6,7,7,7,7
+              times 4 db 16,16,16,16,17,17,17,17,18,18,18,18,19,19,19,19
+              times 4 db 20,20,20,20,21,21,21,21,22,22,22,22,23,23,23,23
 %else
 ; add8x8_idct_dc/add16x16_idct_dc avx512icl: vpermw indices of the dc words
 align 64
 addc8_hbd_dc:  times 4 dw 0,0,0,0,1,1,1,1
 addc8_hbd_dc2: times 32 dw 2
+addc16_hbd_dc: times 2 dw 0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3
 %endif
 
 SECTION .text
@@ -1804,6 +1809,36 @@ cglobal add8x8_idct_dc, 2,3
 %endrep
     RET
 
+cglobal add16x16_idct_dc, 2,3
+    mov         r2d, 0xf0
+    kmovb        k5, r2d
+    mov         r2d, 4
+    mova         m6, [addc16_hbd_dc]
+    vpbroadcastd m5, [pw_pixel_max]
+    pxor        xm4, xm4
+.loop:
+    mova        xm3, [r1]
+    paddd       xm3, [pd_32]
+    psrad       xm3, 6
+    packssdw    xm3, xm3
+    vpermw       m3, m6, m3                ; dc0 x4 dc1 x4 dc2 x4 dc3 x4, both rows
+    movu           ym0, [r0+FDEC_STRIDEB*0]
+    vbroadcasti64x4 m0 {k5}, [r0+FDEC_STRIDEB*1]
+    movu           ym1, [r0+FDEC_STRIDEB*2]
+    vbroadcasti64x4 m1 {k5}, [r0+FDEC_STRIDEB*3]
+    paddsw          m0, m3
+    paddsw          m1, m3
+    CLIPW           m0, m4, m5
+    CLIPW           m1, m4, m5
+    movu   [r0+FDEC_STRIDEB*0], ym0
+    vextracti64x4  [r0+FDEC_STRIDEB*1], m0, 1
+    movu   [r0+FDEC_STRIDEB*2], ym1
+    vextracti64x4  [r0+FDEC_STRIDEB*3], m1, 1
+    add          r1, 16
+    add          r0, 4*FDEC_STRIDEB
+    dec         r2d
+    jg .loop
+    RET
 
 %else ;!HIGH_BIT_DEPTH
 %macro ADD_DC 3
@@ -2026,6 +2061,37 @@ cglobal add8x8_idct_dc, 2,2
     vpscatterqq  [r0+m3] {k1}, m4
     RET
 
+cglobal add16x16_idct_dc, 2,3
+    mov         r2d, 0x00f0
+    kmovw        k5, r2d
+    mov         r2d, 0x0f00
+    kmovw        k6, r2d
+    mov         r2d, 0xf000
+    kmovw        k7, r2d
+    movu        ym0, [r1]
+    pmulhrsw    ym0, [pw_512]
+    pxor        xm1, xm1
+    psubw       ym1, ym0
+    packuswb    ym0, ym0                   ; dc0-7 . dc8-15 .
+    packuswb    ym1, ym1
+%assign adc_g 0
+%rep 4
+    mova            m5, [addc16_dc+64*adc_g]
+    vpermb          m2, m5, m0
+    vpermb          m3, m5, m1
+    movu           xm4, [r0+(4*adc_g+0)*FDEC_STRIDE]
+    vbroadcasti32x4 m4 {k5}, [r0+(4*adc_g+1)*FDEC_STRIDE]
+    vbroadcasti32x4 m4 {k6}, [r0+(4*adc_g+2)*FDEC_STRIDE]
+    vbroadcasti32x4 m4 {k7}, [r0+(4*adc_g+3)*FDEC_STRIDE]
+    paddusb         m4, m2
+    psubusb         m4, m3
+    movu   [r0+(4*adc_g+0)*FDEC_STRIDE], xm4
+    vextracti32x4  [r0+(4*adc_g+1)*FDEC_STRIDE], m4, 1
+    vextracti32x4  [r0+(4*adc_g+2)*FDEC_STRIDE], m4, 2
+    vextracti32x4  [r0+(4*adc_g+3)*FDEC_STRIDE], m4, 3
+%assign adc_g adc_g+1
+%endrep
+    RET
 
 %endif ; HIGH_BIT_DEPTH
 
