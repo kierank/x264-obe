@@ -1291,6 +1291,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
     /* hadamard_ac 16x16/16x8/8x16 _avx512icl 1.06-1.10x, sa8d 16x16/8x8 _avx512icl 1.14x/1.05x */
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        INIT2( hadamard_ac, _avx512icl );
+        pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx512icl;
+        pixf->sa8d[PIXEL_16x16] = x264_pixel_sa8d_16x16_avx512icl;
+        pixf->sa8d[PIXEL_8x8]   = x264_pixel_sa8d_8x8_avx512icl;
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1651,6 +1660,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* satd[16x16] 1.031x, satd_avg2[16x8] 1.073x, satd_pre[16x8] 1.069x, satd_bi[16x16] 1.038x, satd_bi4[16x8] 1.051x;
          * borderline, slower in 11/11 interleaved runs beyond the spread: satd[16x8] 1.024x, satd_avg2_pre[16x16] 1.008x,
          * satd_bi[16x8] (weighted 1.015x, unweighted 0.990x), satd_bi4[16x16] (weighted 1.024x, unweighted 0.999x) */
+        pixf->satd[PIXEL_16x16] = x264_pixel_satd_16x16_avx512icl;
+        pixf->satd[PIXEL_16x8]  = x264_pixel_satd_16x8_avx512icl;
+        pixf->satd_avg2[PIXEL_16x8] = x264_pixel_satd_avg2_16x8_avx512icl;
+        pixf->satd_pre[PIXEL_16x8] = x264_pixel_satd_pre_16x8_avx512icl;
+        pixf->satd_avg2_pre[PIXEL_16x16] = x264_pixel_satd_avg2_pre_16x16_avx512icl;
+        pixf->satd_bi[PIXEL_16x16] = x264_pixel_satd_bi_16x16_avx512icl;
+        pixf->satd_bi[PIXEL_16x8] = x264_pixel_satd_bi_16x8_avx512icl;
+        pixf->satd_bi4[PIXEL_16x16] = x264_pixel_satd_bi4_16x16_avx512icl;
+        pixf->satd_bi4[PIXEL_16x8] = x264_pixel_satd_bi4_16x8_avx512icl;
         pixf->satd[PIXEL_8x16]  = x264_pixel_satd_8x16_avx512icl;
         pixf->satd[PIXEL_8x8]   = x264_pixel_satd_8x8_avx512icl;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx512icl;
