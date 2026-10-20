@@ -26,6 +26,14 @@
 #ifndef X264_CPU_H
 #define X264_CPU_H
 
+/* layout twin of wip/x264-weird: x264_twin_<new> is a local assembler alias of base.
+ * Code referencing it is generated as for the extern <new>, but links to base. */
+#define X264_TWIN_STR2(x) #x
+#define X264_TWIN_STR(x) X264_TWIN_STR2(x)
+#define X264_TWIN( new, base )\
+    extern __typeof__( base ) x264_twin_##new;\
+    __asm__( ".set " X264_TWIN_STR(x264_twin_##new) ", " X264_TWIN_STR(base) );
+
 uint32_t x264_cpu_detect( void );
 int      x264_cpu_num_processors( void );
 void     x264_cpu_emms( void );

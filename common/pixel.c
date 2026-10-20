@@ -956,6 +956,220 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 }
 
 
+/* layout twin of wip/x264-weird: the new dispatch below assigns the base's functions */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_intra_sa8d_x9_8x8_avx512icl, x264_intra_sa8d_x9_8x8_avx2 )
+#undef x264_intra_sa8d_x9_8x8_avx512icl
+#define x264_intra_sa8d_x9_8x8_avx512icl x264_twin_x264_intra_sa8d_x9_8x8_avx512icl
+X264_TWIN( x264_intra_sad_x3_16x16_avx512icl, x264_intra_sad_x3_16x16_avx2 )
+#undef x264_intra_sad_x3_16x16_avx512icl
+#define x264_intra_sad_x3_16x16_avx512icl x264_twin_x264_intra_sad_x3_16x16_avx512icl
+X264_TWIN( x264_intra_satd_lowres_avx512icl, x264_intra_satd_lowres_avx2 )
+#undef x264_intra_satd_lowres_avx512icl
+#define x264_intra_satd_lowres_avx512icl x264_twin_x264_intra_satd_lowres_avx512icl
+X264_TWIN( x264_intra_satd_x3_16x16_avx512icl, x264_intra_satd_x3_16x16_avx2 )
+#undef x264_intra_satd_x3_16x16_avx512icl
+#define x264_intra_satd_x3_16x16_avx512icl x264_twin_x264_intra_satd_x3_16x16_avx512icl
+X264_TWIN( x264_intra_satd_x3_8x8c_avx512icl, x264_intra_satd_x3_8x8c_avx2 )
+#undef x264_intra_satd_x3_8x8c_avx512icl
+#define x264_intra_satd_x3_8x8c_avx512icl x264_twin_x264_intra_satd_x3_8x8c_avx512icl
+X264_TWIN( x264_pixel_ads1_avx512icl, x264_pixel_ads1_avx2 )
+#undef x264_pixel_ads1_avx512icl
+#define x264_pixel_ads1_avx512icl x264_twin_x264_pixel_ads1_avx512icl
+X264_TWIN( x264_pixel_ads2_avx512icl, x264_pixel_ads2_avx2 )
+#undef x264_pixel_ads2_avx512icl
+#define x264_pixel_ads2_avx512icl x264_twin_x264_pixel_ads2_avx512icl
+X264_TWIN( x264_pixel_ads4_avx512icl, x264_pixel_ads4_avx2 )
+#undef x264_pixel_ads4_avx512icl
+#define x264_pixel_ads4_avx512icl x264_twin_x264_pixel_ads4_avx512icl
+X264_TWIN( x264_pixel_sa8d_8x8_avx512icl, x264_pixel_sa8d_8x8_avx2 )
+#undef x264_pixel_sa8d_8x8_avx512icl
+#define x264_pixel_sa8d_8x8_avx512icl x264_twin_x264_pixel_sa8d_8x8_avx512icl
+X264_TWIN( x264_pixel_sa8d_satd_16x16_avx512icl, x264_pixel_sa8d_satd_16x16_avx2 )
+#undef x264_pixel_sa8d_satd_16x16_avx512icl
+#define x264_pixel_sa8d_satd_16x16_avx512icl x264_twin_x264_pixel_sa8d_satd_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_16x16_avx512icl, x264_pixel_satd_16x16_avx2 )
+#undef x264_pixel_satd_16x16_avx512icl
+#define x264_pixel_satd_16x16_avx512icl x264_twin_x264_pixel_satd_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_16x8_avx512icl, x264_pixel_satd_16x8_avx2 )
+#undef x264_pixel_satd_16x8_avx512icl
+#define x264_pixel_satd_16x8_avx512icl x264_twin_x264_pixel_satd_16x8_avx512icl
+X264_TWIN( x264_pixel_satd_8x16_avx512icl, x264_pixel_satd_8x16_avx2 )
+#undef x264_pixel_satd_8x16_avx512icl
+#define x264_pixel_satd_8x16_avx512icl x264_twin_x264_pixel_satd_8x16_avx512icl
+X264_TWIN( x264_pixel_satd_8x8_avx512icl, x264_pixel_satd_8x8_avx2 )
+#undef x264_pixel_satd_8x8_avx512icl
+#define x264_pixel_satd_8x8_avx512icl x264_twin_x264_pixel_satd_8x8_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_16x16_avx512icl, x264_pixel_satd_avg2_16x16_avx2 )
+#undef x264_pixel_satd_avg2_16x16_avx512icl
+#define x264_pixel_satd_avg2_16x16_avx512icl x264_twin_x264_pixel_satd_avg2_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_16x8_avx512icl, x264_pixel_satd_avg2_16x8_avx2 )
+#undef x264_pixel_satd_avg2_16x8_avx512icl
+#define x264_pixel_satd_avg2_16x8_avx512icl x264_twin_x264_pixel_satd_avg2_16x8_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_8x16_avx512icl, x264_pixel_satd_avg2_8x16_avx2 )
+#undef x264_pixel_satd_avg2_8x16_avx512icl
+#define x264_pixel_satd_avg2_8x16_avx512icl x264_twin_x264_pixel_satd_avg2_8x16_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_8x8_avx512icl, x264_pixel_satd_avg2_8x8_avx2 )
+#undef x264_pixel_satd_avg2_8x8_avx512icl
+#define x264_pixel_satd_avg2_8x8_avx512icl x264_twin_x264_pixel_satd_avg2_8x8_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_pre_16x16_avx512icl, x264_pixel_satd_avg2_pre_16x16_avx2 )
+#undef x264_pixel_satd_avg2_pre_16x16_avx512icl
+#define x264_pixel_satd_avg2_pre_16x16_avx512icl x264_twin_x264_pixel_satd_avg2_pre_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_pre_16x8_avx512icl, x264_pixel_satd_avg2_pre_16x8_avx2 )
+#undef x264_pixel_satd_avg2_pre_16x8_avx512icl
+#define x264_pixel_satd_avg2_pre_16x8_avx512icl x264_twin_x264_pixel_satd_avg2_pre_16x8_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_pre_8x16_avx512icl, x264_pixel_satd_avg2_pre_8x16_avx2 )
+#undef x264_pixel_satd_avg2_pre_8x16_avx512icl
+#define x264_pixel_satd_avg2_pre_8x16_avx512icl x264_twin_x264_pixel_satd_avg2_pre_8x16_avx512icl
+X264_TWIN( x264_pixel_satd_avg2_pre_8x8_avx512icl, x264_pixel_satd_avg2_pre_8x8_avx2 )
+#undef x264_pixel_satd_avg2_pre_8x8_avx512icl
+#define x264_pixel_satd_avg2_pre_8x8_avx512icl x264_twin_x264_pixel_satd_avg2_pre_8x8_avx512icl
+X264_TWIN( x264_pixel_satd_bi4_16x16_avx512icl, x264_pixel_satd_bi4_16x16_avx2 )
+#undef x264_pixel_satd_bi4_16x16_avx512icl
+#define x264_pixel_satd_bi4_16x16_avx512icl x264_twin_x264_pixel_satd_bi4_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_bi4_16x8_avx512icl, x264_pixel_satd_bi4_16x8_avx2 )
+#undef x264_pixel_satd_bi4_16x8_avx512icl
+#define x264_pixel_satd_bi4_16x8_avx512icl x264_twin_x264_pixel_satd_bi4_16x8_avx512icl
+X264_TWIN( x264_pixel_satd_bi4_8x16_avx512icl, x264_pixel_satd_bi4_8x16_avx2 )
+#undef x264_pixel_satd_bi4_8x16_avx512icl
+#define x264_pixel_satd_bi4_8x16_avx512icl x264_twin_x264_pixel_satd_bi4_8x16_avx512icl
+X264_TWIN( x264_pixel_satd_bi4_8x8_avx512icl, x264_pixel_satd_bi4_8x8_avx2 )
+#undef x264_pixel_satd_bi4_8x8_avx512icl
+#define x264_pixel_satd_bi4_8x8_avx512icl x264_twin_x264_pixel_satd_bi4_8x8_avx512icl
+X264_TWIN( x264_pixel_satd_bi_16x16_avx512icl, x264_pixel_satd_bi_16x16_avx2 )
+#undef x264_pixel_satd_bi_16x16_avx512icl
+#define x264_pixel_satd_bi_16x16_avx512icl x264_twin_x264_pixel_satd_bi_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_bi_16x8_avx512icl, x264_pixel_satd_bi_16x8_avx2 )
+#undef x264_pixel_satd_bi_16x8_avx512icl
+#define x264_pixel_satd_bi_16x8_avx512icl x264_twin_x264_pixel_satd_bi_16x8_avx512icl
+X264_TWIN( x264_pixel_satd_bi_8x16_avx512icl, x264_pixel_satd_bi_8x16_avx2 )
+#undef x264_pixel_satd_bi_8x16_avx512icl
+#define x264_pixel_satd_bi_8x16_avx512icl x264_twin_x264_pixel_satd_bi_8x16_avx512icl
+X264_TWIN( x264_pixel_satd_bi_8x8_avx512icl, x264_pixel_satd_bi_8x8_avx2 )
+#undef x264_pixel_satd_bi_8x8_avx512icl
+#define x264_pixel_satd_bi_8x8_avx512icl x264_twin_x264_pixel_satd_bi_8x8_avx512icl
+X264_TWIN( x264_pixel_satd_pre_16x16_avx512icl, x264_pixel_satd_pre_16x16_avx2 )
+#undef x264_pixel_satd_pre_16x16_avx512icl
+#define x264_pixel_satd_pre_16x16_avx512icl x264_twin_x264_pixel_satd_pre_16x16_avx512icl
+X264_TWIN( x264_pixel_satd_pre_16x8_avx512icl, x264_pixel_satd_pre_16x8_avx2 )
+#undef x264_pixel_satd_pre_16x8_avx512icl
+#define x264_pixel_satd_pre_16x8_avx512icl x264_twin_x264_pixel_satd_pre_16x8_avx512icl
+X264_TWIN( x264_pixel_satd_pre_8x16_avx512icl, x264_pixel_satd_pre_8x16_avx2 )
+#undef x264_pixel_satd_pre_8x16_avx512icl
+#define x264_pixel_satd_pre_8x16_avx512icl x264_twin_x264_pixel_satd_pre_8x16_avx512icl
+X264_TWIN( x264_pixel_satd_pre_8x8_avx512icl, x264_pixel_satd_pre_8x8_avx2 )
+#undef x264_pixel_satd_pre_8x8_avx512icl
+#define x264_pixel_satd_pre_8x8_avx512icl x264_twin_x264_pixel_satd_pre_8x8_avx512icl
+X264_TWIN( x264_pixel_ssd_16x16_avx512icl, x264_pixel_ssd_16x16_avx2 )
+#undef x264_pixel_ssd_16x16_avx512icl
+#define x264_pixel_ssd_16x16_avx512icl x264_twin_x264_pixel_ssd_16x16_avx512icl
+X264_TWIN( x264_pixel_ssd_16x8_avx512icl, x264_pixel_ssd_16x8_avx2 )
+#undef x264_pixel_ssd_16x8_avx512icl
+#define x264_pixel_ssd_16x8_avx512icl x264_twin_x264_pixel_ssd_16x8_avx512icl
+X264_TWIN( x264_pixel_ssd_8x16_avx512icl, x264_pixel_ssd_8x16_avx )
+#undef x264_pixel_ssd_8x16_avx512icl
+#define x264_pixel_ssd_8x16_avx512icl x264_twin_x264_pixel_ssd_8x16_avx512icl
+X264_TWIN( x264_pixel_ssim_4x4x2_core_avx512icl, x264_pixel_ssim_4x4x2_core_avx )
+#undef x264_pixel_ssim_4x4x2_core_avx512icl
+#define x264_pixel_ssim_4x4x2_core_avx512icl x264_twin_x264_pixel_ssim_4x4x2_core_avx512icl
+X264_TWIN( x264_pixel_var2_8x16_avx512icl, x264_pixel_var2_8x16_avx2 )
+#undef x264_pixel_var2_8x16_avx512icl
+#define x264_pixel_var2_8x16_avx512icl x264_twin_x264_pixel_var2_8x16_avx512icl
+X264_TWIN( x264_pixel_var2_8x8_avx512icl, x264_pixel_var2_8x8_avx2 )
+#undef x264_pixel_var2_8x8_avx512icl
+#define x264_pixel_var2_8x8_avx512icl x264_twin_x264_pixel_var2_8x8_avx512icl
+X264_TWIN( x264_pixel_var_16x16_avx512icl, x264_pixel_var_16x16_avx2 )
+#undef x264_pixel_var_16x16_avx512icl
+#define x264_pixel_var_16x16_avx512icl x264_twin_x264_pixel_var_16x16_avx512icl
+X264_TWIN( x264_pixel_var_8x16_avx512icl, x264_pixel_var_8x16_avx2 )
+#undef x264_pixel_var_8x16_avx512icl
+#define x264_pixel_var_8x16_avx512icl x264_twin_x264_pixel_var_8x16_avx512icl
+X264_TWIN( x264_pixel_var_8x8_avx512icl, x264_pixel_var_8x8_avx2 )
+#undef x264_pixel_var_8x8_avx512icl
+#define x264_pixel_var_8x8_avx512icl x264_twin_x264_pixel_var_8x8_avx512icl
+X264_TWIN( x264_weightp_dc8x8_avx512icl, x264_weightp_dc8x8_sse2 )
+#undef x264_weightp_dc8x8_avx512icl
+#define x264_weightp_dc8x8_avx512icl x264_twin_x264_weightp_dc8x8_avx512icl
+X264_TWIN( x264_weightp_stats8_avx512icl, x264_weightp_stats8_avx2 )
+#undef x264_weightp_stats8_avx512icl
+#define x264_weightp_stats8_avx512icl x264_twin_x264_weightp_stats8_avx512icl
+X264_TWIN( x264_weightp_sum8_avx512icl, x264_weightp_sum8_avx2 )
+#undef x264_weightp_sum8_avx512icl
+#define x264_weightp_sum8_avx512icl x264_twin_x264_weightp_sum8_avx512icl
+X264_TWIN( x264_weightp_sum8_clip_avx512icl, x264_weightp_sum8_clip_avx2 )
+#undef x264_weightp_sum8_clip_avx512icl
+#define x264_weightp_sum8_clip_avx512icl x264_twin_x264_weightp_sum8_clip_avx512icl
+X264_TWIN( x264_weightp_sum8_nv_avx512icl, x264_weightp_sum8_nv_avx2 )
+#undef x264_weightp_sum8_nv_avx512icl
+#define x264_weightp_sum8_nv_avx512icl x264_twin_x264_weightp_sum8_nv_avx512icl
+#else
+X264_TWIN( x264_pixel_ads1_avx512icl, x264_pixel_ads1_avx2 )
+#undef x264_pixel_ads1_avx512icl
+#define x264_pixel_ads1_avx512icl x264_twin_x264_pixel_ads1_avx512icl
+X264_TWIN( x264_pixel_ads2_avx512icl, x264_pixel_ads2_avx2 )
+#undef x264_pixel_ads2_avx512icl
+#define x264_pixel_ads2_avx512icl x264_twin_x264_pixel_ads2_avx512icl
+X264_TWIN( x264_pixel_ads4_avx512icl, x264_pixel_ads4_avx2 )
+#undef x264_pixel_ads4_avx512icl
+#define x264_pixel_ads4_avx512icl x264_twin_x264_pixel_ads4_avx512icl
+X264_TWIN( x264_pixel_hadamard_ac_16x16_avx512icl, x264_pixel_hadamard_ac_16x16_avx2 )
+#undef x264_pixel_hadamard_ac_16x16_avx512icl
+#define x264_pixel_hadamard_ac_16x16_avx512icl x264_twin_x264_pixel_hadamard_ac_16x16_avx512icl
+X264_TWIN( x264_pixel_hadamard_ac_16x8_avx512icl, x264_pixel_hadamard_ac_16x8_avx2 )
+#undef x264_pixel_hadamard_ac_16x8_avx512icl
+#define x264_pixel_hadamard_ac_16x8_avx512icl x264_twin_x264_pixel_hadamard_ac_16x8_avx512icl
+X264_TWIN( x264_pixel_hadamard_ac_8x16_avx512icl, x264_pixel_hadamard_ac_8x16_avx2 )
+#undef x264_pixel_hadamard_ac_8x16_avx512icl
+#define x264_pixel_hadamard_ac_8x16_avx512icl x264_twin_x264_pixel_hadamard_ac_8x16_avx512icl
+X264_TWIN( x264_pixel_sa8d_16x16_avx512icl, x264_pixel_sa8d_16x16_avx2 )
+#undef x264_pixel_sa8d_16x16_avx512icl
+#define x264_pixel_sa8d_16x16_avx512icl x264_twin_x264_pixel_sa8d_16x16_avx512icl
+X264_TWIN( x264_pixel_sa8d_8x8_avx512icl, x264_pixel_sa8d_8x8_avx2 )
+#undef x264_pixel_sa8d_8x8_avx512icl
+#define x264_pixel_sa8d_8x8_avx512icl x264_twin_x264_pixel_sa8d_8x8_avx512icl
+X264_TWIN( x264_pixel_sad_16x16_avx512, x264_pixel_sad_16x16_avx2 )
+#undef x264_pixel_sad_16x16_avx512
+#define x264_pixel_sad_16x16_avx512 x264_twin_x264_pixel_sad_16x16_avx512
+X264_TWIN( x264_pixel_sad_16x8_avx512, x264_pixel_sad_16x8_avx2 )
+#undef x264_pixel_sad_16x8_avx512
+#define x264_pixel_sad_16x8_avx512 x264_twin_x264_pixel_sad_16x8_avx512
+X264_TWIN( x264_pixel_ssd_16x16_avx512icl, x264_pixel_ssd_16x16_avx2 )
+#undef x264_pixel_ssd_16x16_avx512icl
+#define x264_pixel_ssd_16x16_avx512icl x264_twin_x264_pixel_ssd_16x16_avx512icl
+X264_TWIN( x264_pixel_ssd_16x8_avx512icl, x264_pixel_ssd_16x8_avx2 )
+#undef x264_pixel_ssd_16x8_avx512icl
+#define x264_pixel_ssd_16x8_avx512icl x264_twin_x264_pixel_ssd_16x8_avx512icl
+X264_TWIN( x264_pixel_ssd_8x16_avx512icl, x264_pixel_ssd_8x16_avx2 )
+#undef x264_pixel_ssd_8x16_avx512icl
+#define x264_pixel_ssd_8x16_avx512icl x264_twin_x264_pixel_ssd_8x16_avx512icl
+X264_TWIN( x264_pixel_ssd_8x8_avx512icl, x264_pixel_ssd_8x8_avx2 )
+#undef x264_pixel_ssd_8x8_avx512icl
+#define x264_pixel_ssd_8x8_avx512icl x264_twin_x264_pixel_ssd_8x8_avx512icl
+X264_TWIN( x264_pixel_ssim_4x4x2_core_avx512icl, x264_pixel_ssim_4x4x2_core_avx )
+#undef x264_pixel_ssim_4x4x2_core_avx512icl
+#define x264_pixel_ssim_4x4x2_core_avx512icl x264_twin_x264_pixel_ssim_4x4x2_core_avx512icl
+X264_TWIN( x264_pixel_var2_8x16_avx512icl, x264_pixel_var2_8x16_avx2 )
+#undef x264_pixel_var2_8x16_avx512icl
+#define x264_pixel_var2_8x16_avx512icl x264_twin_x264_pixel_var2_8x16_avx512icl
+X264_TWIN( x264_pixel_var2_8x8_avx512icl, x264_pixel_var2_8x8_avx2 )
+#undef x264_pixel_var2_8x8_avx512icl
+#define x264_pixel_var2_8x8_avx512icl x264_twin_x264_pixel_var2_8x8_avx512icl
+X264_TWIN( x264_pixel_var_16x16_avx512icl, x264_pixel_var_16x16_avx2 )
+#undef x264_pixel_var_16x16_avx512icl
+#define x264_pixel_var_16x16_avx512icl x264_twin_x264_pixel_var_16x16_avx512icl
+X264_TWIN( x264_pixel_var_8x16_avx512icl, x264_pixel_var_8x16_avx2 )
+#undef x264_pixel_var_8x16_avx512icl
+#define x264_pixel_var_8x16_avx512icl x264_twin_x264_pixel_var_8x16_avx512icl
+X264_TWIN( x264_pixel_var_8x8_avx512icl, x264_pixel_var_8x8_avx )
+#undef x264_pixel_var_8x8_avx512icl
+#define x264_pixel_var_8x8_avx512icl x264_twin_x264_pixel_var_8x8_avx512icl
+X264_TWIN( x264_weightp_dc8x8_avx512icl, x264_weightp_dc8x8_sse2 )
+#undef x264_weightp_dc8x8_avx512icl
+#define x264_weightp_dc8x8_avx512icl x264_twin_x264_weightp_dc8x8_avx512icl
+#endif
+#endif
+
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
