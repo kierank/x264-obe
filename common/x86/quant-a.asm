@@ -131,6 +131,15 @@ dct_coef_shuffle:
 idct2x4_dc_idx: dd 0, 16, 32, 48
 ; optimize_chroma_2x2/2x4_dc avx512icl: columns of the dc transforms, rounding constants
 optchroma_col2x2: dd 1, 1, 1, 1,  1, 1,-1,-1,  1,-1, 1,-1,  1,-1,-1, 1
+optchroma_col2x4: dd 1, 1, 1, 1, 1, 1, 1, 1
+                  dd 1,-1, 1,-1, 1,-1, 1,-1
+                  dd 1, 1, 1, 1,-1,-1,-1,-1
+                  dd 1,-1, 1,-1,-1, 1,-1, 1
+                  dd 1, 1,-1,-1,-1,-1, 1, 1
+                  dd 1,-1,-1, 1,-1, 1, 1,-1
+                  dd 1, 1,-1,-1, 1, 1,-1,-1
+                  dd 1,-1,-1, 1, 1,-1,-1, 1
+optchroma_2080:   dd 2080
 optchroma_32:     dd 32
 optchroma_m64:    dd -64
 
@@ -1872,6 +1881,8 @@ cglobal optimize_chroma_%1_dc, 2,6
 
 INIT_XMM avx512icl
 OPTIMIZE_CHROMA_ICL 2x2, 4
+INIT_YMM avx512icl
+OPTIMIZE_CHROMA_ICL 2x4, 8
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
