@@ -105,6 +105,9 @@
 #define x264_mc_copy_w4_mmx x264_template(mc_copy_w4_mmx)
 #define x264_mc_copy_w8_mmx x264_template(mc_copy_w8_mmx)
 #define x264_mc_copy_w8_sse x264_template(mc_copy_w8_sse)
+#define x264_mc_copy_w4_avx512icl x264_template(mc_copy_w4_avx512icl)
+#define x264_mc_copy_w8_avx512icl x264_template(mc_copy_w8_avx512icl)
+#define x264_mc_copy_w16_avx512icl x264_template(mc_copy_w16_avx512icl)
 #define x264_mc_offsetadd_plane_avx2 x264_template(mc_offsetadd_plane_avx2)
 #define x264_mc_offsetadd_plane_avx512 x264_template(mc_offsetadd_plane_avx512)
 #define x264_mc_offsetsub_plane_avx2 x264_template(mc_offsetsub_plane_avx2)
@@ -469,6 +472,9 @@ void x264_mc_copy_w16_sse( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_mc_copy_w16_aligned_sse( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_mc_copy_w16_avx( uint16_t *, intptr_t, uint16_t *, intptr_t, int );
 void x264_mc_copy_w16_aligned_avx( uint16_t *, intptr_t, uint16_t *, intptr_t, int );
+void x264_mc_copy_w4_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_mc_copy_w8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_mc_copy_w16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_fenc_420_mmx2( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_fenc_422_mmx2( pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_prefetch_ref_mmx2( pixel *, intptr_t, int );
@@ -703,6 +709,9 @@ MC_COPY_WTAB(sse,mmx,sse,sse)
 MC_COPY_WTAB(avx,mmx,sse,avx)
 #else
 MC_COPY_WTAB(sse,mmx,mmx,sse)
+#endif
+#if ARCH_X86_64
+MC_COPY_WTAB(avx512icl,avx512icl,avx512icl,avx512icl)
 #endif
 
 #define MC_WEIGHT_WTAB(function, instr, name1, name2, w12version)\
@@ -980,11 +989,7 @@ MC_LUMA(cache64_ssse3,cache64_ssse3,sse)
 MC_LUMA(cache64_ssse3_atom,cache64_ssse3_atom,sse)
 #endif // !HIGH_BIT_DEPTH
 #if ARCH_X86_64
-#if HIGH_BIT_DEPTH
-MC_LUMA(avx512icl,avx512icl,avx)
-#else
-MC_LUMA(avx512icl,avx512icl,sse)
-#endif
+MC_LUMA(avx512icl,avx512icl,avx512icl)
 #endif
 
 #define GET_REF(name)\
@@ -1733,6 +1738,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
         pf->get_ref = get_ref_avx512icl;
         pf->mc_luma = mc_luma_avx512icl;
+        pf->copy_16x16_unaligned = x264_mc_copy_w16_avx512icl;
+        pf->copy[PIXEL_16x16] = x264_mc_copy_w16_avx512icl;
+        pf->copy[PIXEL_8x8]   = x264_mc_copy_w8_avx512icl;
+        pf->copy[PIXEL_4x4]   = x264_mc_copy_w4_avx512icl;
 #endif
     }
 }

@@ -2369,6 +2369,71 @@ INIT_YMM aligned, avx
 MC_COPY 16
 %endif
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; mc_copy_wN, avx512icl: two rows per register, the second merged in by a
+; masked broadcast (%1 = bytes per row: 4, 8, 16, 32); no alignment needed
+;-----------------------------------------------------------------------------
+%macro MC_COPY_ICL 2 ; bytes, width
+%if %1 <= 8
+INIT_XMM avx512icl
+%elif %1 == 16
+INIT_YMM avx512icl
+%else
+INIT_ZMM avx512icl
+%endif
+cglobal mc_copy_w%2, 5,6,1
+    FIX_STRIDES r1, r3
+%if %1 == 32
+    mov          r5d, 0xff00
+    kmovw         k1, r5d
+%elif %1 == 16
+    mov          r5d, 0xf0
+    kmovb         k1, r5d
+%else
+    mov          r5d, 2
+    kmovb         k1, r5d
+%endif
+.height_loop:
+%if %1 == 4
+    movd          m0, [r2]
+    vpbroadcastd  m0 {k1}, [r2+r3]
+    movd        [r0], m0
+    pextrd   [r0+r1], m0, 1
+%elif %1 == 8
+    movq          m0, [r2]
+    vpbroadcastq  m0 {k1}, [r2+r3]
+    movq        [r0], m0
+    movhps   [r0+r1], m0
+%elif %1 == 16
+    movu         xm0, [r2]
+    vbroadcasti32x4 m0 {k1}, [r2+r3]
+    movu        [r0], xm0
+    vextracti32x4 [r0+r1], m0, 1
+%else
+    movu         ym0, [r2]
+    vbroadcasti32x8 m0 {k1}, [r2+r3]
+    movu        [r0], ym0
+    vextracti32x8 [r0+r1], m0, 1
+%endif
+    lea           r2, [r2+r3*2]
+    lea           r0, [r0+r1*2]
+    sub          r4d, 2
+    jg .height_loop
+    RET
+%endmacro
+
+%if HIGH_BIT_DEPTH
+MC_COPY_ICL  8,  4
+MC_COPY_ICL 16,  8
+MC_COPY_ICL 32, 16
+%else
+MC_COPY_ICL  4,  4
+MC_COPY_ICL  8,  8
+MC_COPY_ICL 16, 16
+%endif
+%endif ; ARCH_X86_64
+
 ;=============================================================================
 ; prefetch
 ;=============================================================================
