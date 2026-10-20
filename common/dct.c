@@ -1052,6 +1052,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
 #else
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* 8-bit field scan 1.04-1.07x, field scan_ac 1.05-1.07x */
+        pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field_avx512icl;
+        pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx512icl;
 #endif
     }
 #endif
