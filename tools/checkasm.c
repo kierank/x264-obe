@@ -310,6 +310,12 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pbuf4[i] = -(pbuf1[i&~0x88]&1) & PIXEL_MAX;
         pbuf3[i] = ~(pbuf4[i]) & PIXEL_MAX;
     }
+    // maxed differences, negated in one column of the top 8x8s: puts most of the sa8d sum in one word
+    for( int i = 256; i < 512; i++ )
+    {
+        pbuf4[i] = i&0x80 ? 0 : -!(i&7) & PIXEL_MAX;
+        pbuf3[i] = i&0x80 ? 0 : ~pbuf4[i] & PIXEL_MAX;
+    }
 
 #define TEST_PIXEL( name, align ) \
     ok = 1, used_asm = 0; \
