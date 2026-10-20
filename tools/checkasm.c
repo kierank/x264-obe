@@ -3557,6 +3557,15 @@ static int check_quant( int cpu_ref, int cpu_new )
                 for( int j = 0; j < maxj; j++ ) \
                 { \
                     INIT_QUANT##type(j, w*w) \
+                    if( j >= 2 && maxj == 4 ) \
+                    { \
+                        /* one coefficient, anywhere in the block */ \
+                        int k = rand() % (w*w); \
+                        dctcoef v = dct1[k] ? dct1[k] : 1; \
+                        memset( dct1, 0, w*w*sizeof(dctcoef) ); \
+                        memset( dct2, 0, w*w*sizeof(dctcoef) ); \
+                        dct1[k] = dct2[k] = j&1 ? v : (v < 0 ? -1 : 1) * PIXEL_MAX*4; \
+                    } \
                     int result_c = call_c1( qf_c.qname, (void*)dct1, h->quant##type##_mf[block][qp], h->quant##type##_bias[block][qp] ); \
                     int result_a = call_a1( qf_a.qname, (void*)dct2, h->quant##type##_mf[block][qp], h->quant##type##_bias[block][qp] ); \
                     if( memcmp( dct1, dct2, w*w*sizeof(dctcoef) ) || result_c != result_a ) \
@@ -3571,10 +3580,10 @@ static int check_quant( int cpu_ref, int cpu_new )
             } \
         }
 
-        TEST_QUANT( quant_8x8, CQM_8IY, 8, 8, 2 );
-        TEST_QUANT( quant_8x8, CQM_8PY, 8, 8, 2 );
-        TEST_QUANT( quant_4x4, CQM_4IY, 4, 4, 2 );
-        TEST_QUANT( quant_4x4, CQM_4PY, 4, 4, 2 );
+        TEST_QUANT( quant_8x8, CQM_8IY, 8, 8, 4 );
+        TEST_QUANT( quant_8x8, CQM_8PY, 8, 8, 4 );
+        TEST_QUANT( quant_4x4, CQM_4IY, 4, 4, 4 );
+        TEST_QUANT( quant_4x4, CQM_4PY, 4, 4, 4 );
         TEST_QUANT( quant_4x4x4, CQM_4IY, 4, 8, 16 );
         TEST_QUANT( quant_4x4x4, CQM_4PY, 4, 8, 16 );
         TEST_QUANT_DC( quant_4x4_dc, **h->quant4_mf[CQM_4IY] );
@@ -3625,7 +3634,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                         int (*dmf)[16] = j&64 ? NULL : h->dequant4_mf[block]; \
                         for( int k = 0; k < 64; k++ ) \
                         { \
-                            int big = 255*scale1d[(k>>2)&3]*scale1d[k&3]; \
+                            int big = PIXEL_MAX*scale1d[(k>>2)&3]*scale1d[k&3]; \
                             int small = X264_MIN( big, ((j>>4)&3) == 1 ? (3<<15)/mf[k&15] : (3<<16)/mf[k&15] ); \
                             int x = ((j>>4)&3) == 0 ? rand()%(2*big+1) - big \
                                   : ((j>>4)&3) == 3 ? (rand()&15 ? 0 : rand()&1 ? big : -big) \
@@ -3818,6 +3827,28 @@ static int check_quant( int cpu_ref, int cpu_new )
             call_c2( qf_c.denoise_dct, dct1, (uint32_t*)buf3,       (udctcoef*)buf2, size );
             call_a2( qf_a.denoise_dct, dct2, (uint32_t*)(buf3+256), (udctcoef*)buf2, size );
         }
+        /* offsets below the coefficient range, so both the zeroing and the sign restore are reached */
+        ALIGNED_ARRAY_64( udctcoef, nr_offset,[64] );
+        ALIGNED_ARRAY_64( uint32_t, nr_sum,[2],[64] );
+        for( int i = 0; i < 32 && ok; i++ )
+        {
+            int size = i&1 ? 64 : 16;
+            int range = i&2 ? 1<<(BIT_DEPTH+6) : 1<<(BIT_DEPTH-2);
+            for( int k = 0; k < 64; k++ )
+            {
+                dct1[k] = dct2[k] = i == 31 ? (k&1 ? -1 : 1)*(1<<(BIT_DEPTH+6))
+                                  : i&4 && !(rand()&3) ? 0 : rand()%(2*range+1) - range;
+                nr_offset[k] = rand() % (i&8 ? 1<<BIT_DEPTH : 64);
+                nr_sum[0][k] = nr_sum[1][k] = rand30();
+            }
+            qf_c.denoise_dct( dct1, nr_sum[0], nr_offset, size );
+            qf_a.denoise_dct( dct2, nr_sum[1], nr_offset, size );
+            if( memcmp( dct1, dct2, 64*sizeof(dctcoef) ) || memcmp( nr_sum[0], nr_sum[1], sizeof(nr_sum[0]) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "denoise_dct (size=%d, range=%d): [FAILED]\n", size, range );
+            }
+        }
     }
     report( "denoise dct :" );
 
@@ -3826,7 +3857,7 @@ static int check_quant( int cpu_ref, int cpu_new )
     { \
         set_func_name( #decname ); \
         used_asm = 1; \
-        for( int i = 0; i < 100; i++ ) \
+        for( int i = 0; i < 200; i++ ) \
         { \
             static const int distrib[16] = {1,1,1,1,1,1,1,1,1,1,1,1,2,3,4};\
             static const int zerorate_lut[4] = {3,7,15,31};\
@@ -3837,10 +3868,17 @@ static int check_quant( int cpu_ref, int cpu_new )
                 int abs_level = distrib[rand()&15]; \
                 if( abs_level == 4 ) abs_level = rand()&0x3fff; \
                 int zero = !(rand()&zero_rate); \
+                /* i >= 100: levels +-1 only; dense, all set, a single coef, or long runs */ \
+                if( i >= 100 ) \
+                { \
+                    abs_level = 1; \
+                    zero = (i&3) == 0 ? rand()&1 : (i&3) == 1 ? 1 : (i&3) == 2 ? idx == i%(w*w) : !(rand()&63); \
+                } \
                 dct1[idx] = zero * abs_level * sign; \
             } \
+            /* the DC is not part of the AC score */ \
             if( ac ) \
-                dct1[0] = 0; \
+                dct1[0] = i&1 ? 0 : (rand()&0x3ff) - 0x200; \
             int result_c = call_c( qf_c.decname, dct1 ); \
             int result_a = call_a( qf_a.decname, dct1 ); \
             if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
@@ -3850,6 +3888,22 @@ static int check_quant( int cpu_ref, int cpu_new )
                 break; \
             } \
         } \
+        /* every run length: one coef at p, or a pair p > q */ \
+        for( int p = ac; p < w*w && ok; p++ ) \
+            for( int q = ac-1; q < p && ok; q++ ) \
+            { \
+                memset( dct1, 0, w*w*sizeof(dctcoef) ); \
+                dct1[p] = 1; \
+                if( q >= ac ) \
+                    dct1[q] = -1; \
+                int result_c = call_c( qf_c.decname, dct1 ); \
+                int result_a = call_a( qf_a.decname, dct1 ); \
+                if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, #decname " (p=%d, q=%d): [FAILED]\n", p, q ); \
+                } \
+            } \
     }
 
     ok = 1; used_asm = 0;
@@ -3857,6 +3911,11 @@ static int check_quant( int cpu_ref, int cpu_new )
     TEST_DECIMATE( decimate_score16, 4, 0, 6 );
     TEST_DECIMATE( decimate_score15, 4, 1, 7 );
     report( "decimate_score :" );
+
+/* i 8-15: dense +-1, else sparse with either sign and magnitudes up to the dctcoef range */
+#define TEST_LAST_COEF( i ) \
+    ( (i) >= 8 && (i) < 16 ? (rand()&1 ? -1 : 1) \
+      : ((i)&1 ? -1 : 1) * (!(rand()&3) + (!(rand()&15))*(rand()&0x3fffffff)) )
 
 #define TEST_LAST( last, lastname, size, ac ) \
     if( qf_a.last != qf_ref.last ) \
@@ -3866,12 +3925,14 @@ static int check_quant( int cpu_ref, int cpu_new )
         for( int i = 0; i < 100; i++ ) \
         { \
             int nnz = 0; \
-            int max = rand() & (size-1); \
+            int max = i < 16 ? size : rand() % (size+1); \
             memset( dct1, 0, size*sizeof(dctcoef) ); \
             for( int idx = ac; idx < max; idx++ ) \
-                nnz |= dct1[idx] = !(rand()&3) + (!(rand()&15))*rand(); \
+                nnz |= dct1[idx] = TEST_LAST_COEF( i ); \
             if( !nnz ) \
                 dct1[ac] = 1; \
+            if( ac && (i&1) ) \
+                dct1[0] = -1; /* the coef before the block */ \
             int result_c = call_c( qf_c.last, dct1+ac ); \
             int result_a = call_a( qf_a.last, dct1+ac ); \
             if( result_c != result_a ) \
@@ -3900,14 +3961,21 @@ static int check_quant( int cpu_ref, int cpu_new )
         { \
             x264_run_level_t runlevel_c, runlevel_a; \
             int nnz = 0; \
-            int max = rand() & (size-1); \
+            int max = i < 16 ? size : rand() % (size+1); \
             memset( dct1, 0, size*sizeof(dctcoef) ); \
             memcpy( &runlevel_a, buf1+i, sizeof(x264_run_level_t) ); \
             memcpy( &runlevel_c, buf1+i, sizeof(x264_run_level_t) ); \
             for( int idx = ac; idx < max; idx++ ) \
-                nnz |= dct1[idx] = !(rand()&3) + (!(rand()&15))*rand(); \
+                nnz |= dct1[idx] = TEST_LAST_COEF( i ); \
             if( !nnz ) \
                 dct1[ac] = 1; \
+            if( i == 99 ) \
+            { \
+                memset( dct1, 0, size*sizeof(dctcoef) ); \
+                dct1[size-1] = -1; \
+            } \
+            if( ac && (i&1) ) \
+                dct1[0] = -1; /* the coef before the block */ \
             int result_c = call_c( qf_c.lastname, dct1+ac, &runlevel_c ); \
             int result_a = call_a( qf_a.lastname, dct1+ac, &runlevel_a ); \
             if( result_c != result_a || runlevel_c.last != runlevel_a.last || \

@@ -34,10 +34,19 @@ SECTION_RODATA 64
 
 %if HIGH_BIT_DEPTH
 decimate_shuf_avx512: dd 0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+qscan4_frame_avx512:  dd 0, 4, 1, 2, 5, 8,12, 9, 6, 3, 7,10,13,14,11,15
+qscan4_field_avx512:  dd 0, 1, 4, 2, 3, 5, 6, 7, 8, 9,10,11,12,13,14,15
+levelrun_rev_avx512:  dd 15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
 %else
 dequant_shuf_avx512: dw  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
                      dw 32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
+qscan4_frame_avx512: dw  0, 4, 1, 2, 5, 8,12, 9, 6, 3, 7,10,13,14,11,15
+                     dw 16,20,17,18,21,24,28,25,22,19,23,26,29,30,27,31
+qscan4_field_avx512: dw  0, 1, 4, 2, 3, 5, 6, 7, 8, 9,10,11,12,13,14,15
+                     dw 16,17,20,18,19,21,22,23,24,25,26,27,28,29,30,31
+levelrun_rev_avx512: dw 15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 4, 5, 6, 7
 %endif
+ALIGN 64, db 0
 
 %macro DQM4 3
     dw %1, %2, %1, %2, %2, %3, %2, %3
@@ -125,6 +134,7 @@ cextern pb_1
 cextern pw_1
 cextern pw_2
 cextern pw_256
+cextern pw_m2
 cextern pd_1
 cextern pb_01
 cextern pd_1024
@@ -578,7 +588,129 @@ cglobal quant_4x4x4, 3,3,6
     RET
 %endif ; !HIGH_BIT_DEPTH
 
+%if ARCH_X86_64
+; k1: nonzero coefs, 16 bits per block -> r6 (eax): nonzero blocks, k2: store mask of the nonzero blocks
+%macro QUANT_SCAN_NZ_AVX512 0
+    kmovq     r6, k1
+    mov       r7, 0x7fff7fff7fff7fff
+    mov       r8, r6
+    and       r8, r7
+    add       r8, r7
+    or        r8, r6
+    not       r7
+    and       r8, r7          ; bit 15 of each block: block is nonzero
+    pext      r6, r8, r7
+    shr       r8, 15
+    imul      r8, r8, 0xffff
+    kmovq     k2, r8
+%endmacro
 
+; dst, src, mf, bias; m7: 0
+%macro QUANT_ONE_AVX512 4
+%if HIGH_BIT_DEPTH
+    pabsd     %1, %2
+    paddd     %1, %4
+    pmulld    %1, %3
+    psrad     %1, 16
+    vpmovd2m  k1, %2
+    vpsubd    %1{k1}, m7, %1
+%else
+    pabsw     %1, %2
+    paddusw   %1, %4
+    pmulhuw   %1, %3
+    vpmovw2m  k1, %2
+    vpsubw    %1{k1}, m7, %1
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal quant_8x8, 3,3,8
+    pxor     xm7, xm7
+%assign qi 0
+%rep SIZEOF_DCTCOEF
+    movu      m0, [r0+qi]
+    QUANT_ONE_AVX512 m1, m0, [r1+qi], [r2+qi]
+    movu [r0+qi], m1
+%if qi
+    por       m6, m1
+%else
+    mova      m6, m1
+%endif
+%assign qi qi+64
+%endrep
+%undef qi
+    vptestmd  k1, m6, m6
+    xor      eax, eax
+    kortestw  k1, k1
+    setnz     al
+    RET
+
+cglobal quant_4x4x4, 3,9,8
+    pxor     xm7, xm7
+%if HIGH_BIT_DEPTH
+    movu      m2, [r1]
+    movu      m3, [r2]
+    movu      m0, [r0+  0]
+    QUANT_ONE_AVX512 m4, m0, m2, m3
+    movu      m0, [r0+ 64]
+    QUANT_ONE_AVX512 m5, m0, m2, m3
+    movu [r0+  0], m4
+    movu [r0+ 64], m5
+    vptestmd  k3, m4, m4
+    vptestmd  k4, m5, m5
+    movu      m0, [r0+128]
+    QUANT_ONE_AVX512 m4, m0, m2, m3
+    movu      m0, [r0+192]
+    QUANT_ONE_AVX512 m5, m0, m2, m3
+    movu [r0+128], m4
+    movu [r0+192], m5
+    vptestmd  k5, m4, m4
+    vptestmd  k6, m5, m5
+    kunpckwd  k3, k4, k3
+    kunpckwd  k5, k6, k5
+    kunpckdq  k1, k5, k3
+%else
+    vbroadcasti32x8 m2, [r1]
+    vbroadcasti32x8 m3, [r2]
+    movu      m0, [r0+ 0]
+    QUANT_ONE_AVX512 m4, m0, m2, m3
+    movu      m0, [r0+64]
+    QUANT_ONE_AVX512 m5, m0, m2, m3
+    movu [r0+ 0], m4
+    movu [r0+64], m5
+    vptestmw  k3, m4, m4
+    vptestmw  k4, m5, m5
+    kunpckdq  k1, k4, k3
+%endif
+    QUANT_SCAN_NZ_AVX512
+    RET
+
+%if HIGH_BIT_DEPTH
+cglobal quant_4x4, 3,3,8
+    pxor     xm7, xm7
+    movu      m0, [r0]
+    QUANT_ONE_AVX512 m1, m0, [r1], [r2]
+    movu    [r0], m1
+    vptestmd  k1, m1, m1
+    xor      eax, eax
+    kortestw  k1, k1
+    setnz     al
+    RET
+
+cglobal quant_4x4_dc, 3,3,8
+    pxor     xm7, xm7
+    vpbroadcastd m2, r1d
+    vpbroadcastd m3, r2d
+    movu      m0, [r0]
+    QUANT_ONE_AVX512 m1, m0, m2, m3
+    movu    [r0], m1
+    vptestmd  k1, m1, m1
+    xor      eax, eax
+    kortestw  k1, k1
+    setnz     al
+    RET
+%endif
+%endif ; ARCH_X86_64
 
 ;=============================================================================
 ; dequant
@@ -1370,6 +1502,24 @@ DENOISE_DCT
 INIT_YMM avx2
 DENOISE_DCT
 
+INIT_ZMM avx512icl
+cglobal denoise_dct, 4,4,4
+    pxor     xm3, xm3
+    movsxdifnidn r3, r3d
+.loop:
+    movu      m1, [r0+r3*4-64]
+    pabsd     m0, m1
+    paddd     m2, m0, [r1+r3*4-64]
+    movu [r1+r3*4-64], m2
+    psubd     m0, [r2+r3*4-64]
+    pmaxsd    m0, m3
+    vpmovd2m  k1, m1
+    vpsubd    m0{k1}, m3, m0
+    movu [r0+r3*4-64], m0
+    sub      r3d, 16
+    jg .loop
+    RET
+
 %else ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
@@ -1436,6 +1586,24 @@ cglobal denoise_dct, 4,4,4
     mova      [r1+r3*4-2*mmsize], m1
     mova      [r1+r3*4-1*mmsize], m0
     sub       r3, mmsize/2
+    jg .loop
+    RET
+
+INIT_ZMM avx512icl
+cglobal denoise_dct, 4,4,4
+    pxor     xm3, xm3
+    movsxdifnidn r3, r3d
+.loop:
+    movu     ym1, [r0+r3*2-32]
+    pabsw    ym0, ym1
+    psubusw  ym2, ym0, [r2+r3*2-32]
+    vpmovw2m  k1, ym1
+    vpsubw   ym2{k1}, ym3, ym2
+    movu [r0+r3*2-32], ym2
+    vpmovzxwd m0, ym0
+    paddd     m0, [r1+r3*4-64]
+    movu [r1+r3*4-64], m0
+    sub       r3, 16
     jg .loop
     RET
 
@@ -1518,7 +1686,11 @@ cglobal decimate_score%1, 1,3
     DECIMATE_MASK edx, eax, r0, [pb_1], ecx
     xor   edx, 0xffff
     je   .ret
+%if %1==15
+    and   eax, -2       ; not the DC
+%else
     test  eax, eax
+%endif
     jne  .ret9
 %if %1==15
     shr   edx, 1
@@ -1751,6 +1923,9 @@ cglobal decimate_score%1, 1,3
     test  edx, edx
 %endif
     jz .ret
+%if %1 == 15
+    kshiftrw k1, k1, 1  ; not the DC
+%endif
     ktestw k1, k1
     jnz .ret9
 %ifdef PIC
@@ -1924,6 +2099,96 @@ DECIMATE4x4_AVX512 15
 DECIMATE4x4_AVX512 16
 INIT_ZMM avx512
 DECIMATE8x8_AVX512
+
+; branchless: the score is a sum of popcounts of the nonzero mask and its shifts
+%macro DECIMATE4x4_AVX512ICL 1
+cglobal decimate_score%1, 1,4
+    DECIMATE_MASK16_AVX512
+    kmovw    r1d, k0
+%if %1 == 15
+    shr      r1d, 1
+%endif
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below
+    lea      r2d, [r1+r1]
+    lea      r3d, [r1*4]
+    lea      eax, [r1*8]
+    or       r3d, r2d
+    or       r3d, eax       ; shifts 1-3
+    lea      eax, [r3*8]
+    or       eax, r3d       ; shifts 1-6
+    or       r2d, 1
+    or       r3d, 7
+    or       eax, 0x3f
+    and      r2d, r1d
+    and      r3d, r1d
+    and      eax, r1d
+    popcnt   r2d, r2d
+    popcnt   r3d, r3d
+    popcnt   eax, eax
+    add      eax, r2d
+    add      eax, r3d
+    mov      r2d, 9
+%if %1 == 15
+    kshiftrw  k1, k1, 1     ; not the DC
+%endif
+    kortestw  k1, k1
+    cmovnz   eax, r2d
+    RET
+%endmacro
+
+%macro DECIMATE8x8_AVX512ICL 0
+cglobal decimate_score64, 1,5
+    DECIMATE_MASK64_AVX512
+%if HIGH_BIT_DEPTH == 0
+    kunpckdq  k1, k2, k1
+%endif
+    kmovq     r1, k1
+    ; score = sum over nonzero coefs of [run<4] + [run<12] + [run<24]
+    lea       r2, [r1+r1]
+    lea       r3, [r1*4]
+    lea       r4, [r1*8]
+    mov       rax, r1
+    shl       rax, 4
+    or        r2, r3
+    or        r4, rax
+    or        r2, r4        ; shifts 1-4
+    mov       r3, r2
+    mov       r4, r2
+    shl       r3, 4
+    shl       r4, 8
+    or        r3, r4
+    or        r3, r2        ; shifts 1-12
+    mov       r4, r3
+    shl       r4, 12
+    or        r4, r3        ; shifts 1-24
+    or        r2, 0xf
+    or        r3, 0xfff
+    or        r4, 0xffffff
+    and       r2, r1
+    and       r3, r1
+    and       r4, r1
+    popcnt    r2, r2
+    popcnt    r3, r3
+    popcnt    rax, r4
+    add       eax, r2d
+    add       eax, r3d
+    RET
+.ret9:
+    mov       eax, 9
+    RET
+%endmacro
+
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+INIT_ZMM avx512icl
+%else
+INIT_YMM avx512icl
+%endif
+DECIMATE4x4_AVX512ICL 15
+DECIMATE4x4_AVX512ICL 16
+INIT_ZMM avx512icl
+DECIMATE8x8_AVX512ICL
+%endif
 
 ;-----------------------------------------------------------------------------
 ; int coeff_last( dctcoef *dct )
@@ -2489,6 +2754,62 @@ COEFF_LEVELRUN_LUT 15
 COEFF_LEVELRUN_LUT 16
 %endif
 
+; levels from the last nonzero coef down: reverse the coefs, then compress the nonzero ones
+%macro COEFF_LEVELRUN_AVX512 2 ; num, w/d
+cglobal coeff_level_run%1, 2,3
+%if %1 == 4 && HIGH_BIT_DEPTH == 0
+    movq        xm0, [r0]
+    movu        xm1, [levelrun_rev_avx512+24]
+%elif %1 == 4
+    movu        xm0, [r0]
+%else
+    movu         m0, [r0-(%1&1)*SIZEOF_DCTCOEF]
+    movu         m1, [levelrun_rev_avx512+(16-mmsize/SIZEOF_DCTCOEF)*SIZEOF_DCTCOEF]
+%endif
+    vptestm%2    k1, m0, m0
+%if %1 == 4 && HIGH_BIT_DEPTH
+    pshufd       m1, m0, q0123
+%else
+    vperm%2      m1, m1, m0
+%endif
+    vptestm%2    k2, m1, m1 ; for 15 the coef before the block is last, after the levels
+    kmovw       eax, k1
+%if %1 == 15
+    shr         eax, 1
+%endif
+    vpcompress%2 m1{k2}{z}, m1
+    mov [r1+levelrun.mask], eax
+    lzcnt       r2d, eax
+    xor         r2d, 31
+    mov [r1+levelrun.last], r2d
+    popcnt      eax, eax
+%if %1 == 4 && HIGH_BIT_DEPTH == 0
+    movq [r1+levelrun.level], xm1
+%else
+    movu [r1+levelrun.level], m1
+%endif
+    RET
+%endmacro
+
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH
+INIT_XMM avx512icl
+COEFF_LEVELRUN_AVX512  4, d
+INIT_YMM avx512icl
+COEFF_LEVELRUN_AVX512  8, d
+INIT_ZMM avx512icl
+COEFF_LEVELRUN_AVX512 15, d
+COEFF_LEVELRUN_AVX512 16, d
+%else
+INIT_XMM avx512icl
+COEFF_LEVELRUN_AVX512  4, w
+COEFF_LEVELRUN_AVX512  8, w
+INIT_YMM avx512icl
+COEFF_LEVELRUN_AVX512 15, w
+COEFF_LEVELRUN_AVX512 16, w
+%endif
+%endif
+
 ;-----------------------------------------------------------------------------
 ; int quant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
 ;                       int dequant_mf[6][16], int i_qp )
@@ -2573,6 +2894,50 @@ COEFF_LEVELRUN_LUT 16
     sub       r5d, r8d        ; i_qp % 6
     shl       r5d, 6
     add       r4, r5
+%endmacro
+
+; k1: nonzero coefs in scan order, 16 bits per block; k4: a level is > 1; ac
+; eax |= min(score,9) << 4
+%macro QUANT_SCAN_SCORE_AVX512 1
+    kmovq     r7, k1
+%if %1
+    mov       r1, 0xfffefffefffefffe
+    and       r7, r1
+    mov       r4, 0x0003000300030003
+    mov       r5, 0x000f000f000f000f
+    mov       r8, 0x007f007f007f007f
+%else
+    mov       r4, 0x0001000100010001
+    mov       r5, 0x0007000700070007
+    mov       r8, 0x003f003f003f003f
+%endif
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below
+    lea       r1, [r7+r7]
+    lea       r2, [r7*4]
+    lea       r3, [r7*8]
+    or        r2, r1
+    or        r2, r3
+    lea       r3, [r2*8]
+    or        r3, r2
+    or        r1, r4
+    or        r2, r5
+    or        r3, r8
+    and       r1, r7
+    and       r2, r7
+    and       r3, r7
+    popcnt    r1, r1
+    popcnt    r2, r2
+    popcnt    r3, r3
+    add       r1d, r2d
+    add       r1d, r3d
+    mov       r2d, 9
+    cmp       r1d, r2d
+    cmova     r1d, r2d
+    kortestd  k4, k4
+    cmovnz    r1d, r2d
+    shl       r1d, 4
+    or        r6d, r1d
+    RET
 %endmacro
 
 %if HIGH_BIT_DEPTH
@@ -2725,6 +3090,128 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
     RET
 %endmacro
 
+%macro QUANT_4x4x4_SCAN_AVX512 3 ; name, field, ac
+cglobal quant_4x4x4_scan_%1, 6,9,12
+    movu      m4, [r2]
+    movu      m5, [r3]
+    movu      m0, [r0+  0]
+    movu      m1, [r0+ 64]
+    movu      m2, [r0+128]
+    movu      m3, [r0+192]
+    pabsd     m6, m0
+    pabsd     m7, m1
+    pabsd     m8, m2
+    pabsd     m9, m3
+    paddd     m6, m5
+    paddd     m7, m5
+    paddd     m8, m5
+    paddd     m9, m5
+    pmulld    m6, m4
+    pmulld    m7, m4
+    pmulld    m8, m4
+    pmulld    m9, m4
+    psrad     m6, 16
+    psrad     m7, 16
+    psrad     m8, 16
+    psrad     m9, 16
+    vpmovd2m  k1, m0
+    vpmovd2m  k2, m1
+    vpmovd2m  k3, m2
+    vpmovd2m  k5, m3
+    pxor     xm11, xm11
+    vpsubd    m6{k1}, m11, m6
+    vpsubd    m7{k2}, m11, m7
+    vpsubd    m8{k3}, m11, m8
+    vpsubd    m9{k5}, m11, m9
+    pabsd     m0, m6
+    pabsd     m1, m7
+    pabsd     m2, m8
+    pabsd     m3, m9
+    por       m10, m0, m1
+    vpternlogd m10, m2, m3, 0xfe ; |level| of all blocks
+%if %3
+    mov       r6d, 0xfffe
+    kmovw     k1, r6d
+    vpcmpud   k4{k1}, m10, [pd_1] {1to16}, 6
+%else
+    vpcmpud   k4, m10, [pd_1] {1to16}, 6
+%endif
+    vptestmd  k1, m10, m10
+    kortestw  k1, k1
+    jz .store_q
+%if %2
+    movu      m11, [qscan4_field_avx512]
+%else
+    movu      m11, [qscan4_frame_avx512]
+%endif
+    vpermd    m0, m11, m6
+    vpermd    m1, m11, m7
+    vpermd    m2, m11, m8
+    vpermd    m3, m11, m9
+    vptestmd  k1, m0, m0
+    vptestmd  k2, m1, m1
+    vptestmd  k3, m2, m2
+    vptestmd  k5, m3, m3
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k5, k3
+    kunpckdq  k1, k3, k1
+    QUANT_SCAN_NZ_AVX512
+    vmovdqu32 [r1+  0]{k2}, m0
+    kshiftrq  k2, k2, 16
+    vmovdqu32 [r1+ 64]{k2}, m1
+    kshiftrq  k2, k2, 16
+    vmovdqu32 [r1+128]{k2}, m2
+    kshiftrq  k2, k2, 16
+    vmovdqu32 [r1+192]{k2}, m3
+    test      r4, r4
+    jz .store_q_score
+    QUANT_SCAN_DEQUANT_START
+    movu      m0, [r4]
+    sub       r7d, 4
+    jl .rshift
+    movd     xm1, r7d
+    pmaddwd   m6, m0
+    pmaddwd   m7, m0
+    pmaddwd   m8, m0
+    pmaddwd   m9, m0
+    pslld     m6, xm1
+    pslld     m7, xm1
+    pslld     m8, xm1
+    pslld     m9, xm1
+.store_q_score:
+    movu [r0+  0], m6
+    movu [r0+ 64], m7
+    movu [r0+128], m8
+    movu [r0+192], m9
+    QUANT_SCAN_SCORE_AVX512 %3
+.rshift:
+    neg       r7d
+    movd     xm1, r7d
+    vpbroadcastd m2, [pd_1]
+    pslld     m2, xm1
+    psrld     m2, 1
+    pmaddwd   m6, m0
+    pmaddwd   m7, m0
+    pmaddwd   m8, m0
+    pmaddwd   m9, m0
+    paddd     m6, m2
+    paddd     m7, m2
+    paddd     m8, m2
+    paddd     m9, m2
+    psrad     m6, xm1
+    psrad     m7, xm1
+    psrad     m8, xm1
+    psrad     m9, xm1
+    jmp .store_q_score
+.store_q:
+    movu [r0+  0], m6
+    movu [r0+ 64], m7
+    movu [r0+128], m8
+    movu [r0+192], m9
+    xor      eax, eax
+    RET
+%endmacro
+
 %else ; !HIGH_BIT_DEPTH
 ; dst, tmp
 %macro QUANT_SCAN_RSHIFT 2
@@ -2858,6 +3345,107 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
     mova [r0+96], m3
     RET
 %endmacro
+; dst; m2: dmf, m4: rounding, xm3: shift
+%macro QUANT_SCAN_RSHIFT_AVX512 1
+    pmullw    m5, %1, m2
+    pmulhw    m6, %1, m2
+    punpcklwd %1, m5, m6
+    punpckhwd m5, m6
+    paddd     %1, m4
+    paddd     m5, m4
+    psrad     %1, xm3
+    psrad     m5, xm3
+    packssdw  %1, m5
+%endmacro
+
+%macro QUANT_4x4x4_SCAN_AVX512 3 ; name, field, ac
+cglobal quant_4x4x4_scan_%1, 6,9,7
+    vbroadcasti32x8 m4, [r2]
+    vbroadcasti32x8 m5, [r3]
+    movu      m2, [r0+ 0]
+    movu      m3, [r0+64]
+    pabsw     m0, m2
+    pabsw     m1, m3
+    paddusw   m0, m5
+    paddusw   m1, m5
+    pmulhuw   m0, m4
+    pmulhuw   m1, m4
+    vpmovw2m  k1, m2
+    vpmovw2m  k2, m3
+    pxor     xm5, xm5
+    vpsubw    m0{k1}, m5, m0
+    vpsubw    m1{k2}, m5, m1
+    pabsw     m4, m0
+    pabsw     m5, m1
+    por       m4, m5        ; |level| of all blocks, wrapped like the stored levels
+    vpbroadcastd m6, [pw_m2]
+%if %3
+    mov       r6d, 0xfffefffe
+    kmovd     k1, r6d
+    vptestmw  k4{k1}, m4, m6
+%else
+    vptestmw  k4, m4, m6
+%endif
+    vptestmw  k1, m4, m4
+    kortestd  k1, k1
+    jz .store_q
+%if %2
+    movu      m6, [qscan4_field_avx512]
+%else
+    movu      m6, [qscan4_frame_avx512]
+%endif
+    vpermw    m2, m6, m0
+    vpermw    m3, m6, m1
+    vptestmw  k1, m2, m2
+    vptestmw  k2, m3, m3
+    kunpckdq  k1, k2, k1
+    QUANT_SCAN_NZ_AVX512
+    vmovdqu16 [r1+ 0]{k2}, m2
+    kshiftrq  k2, k2, 32
+    vmovdqu16 [r1+64]{k2}, m3
+    test      r4, r4
+    jz .store_q_score
+    QUANT_SCAN_DEQUANT_START
+    movu      m2, [dequant_shuf_avx512]
+    vpermw    m2, m2, [r4]  ; dmf of both blocks as words
+    sub       r7d, 4
+    jl .rshift
+    movd     xm3, r7d
+    psllw     m2, xm3
+    pmullw    m0, m2
+    pmullw    m1, m2
+.store_q_score:
+    movu [r0+ 0], m0
+    movu [r0+64], m1
+    QUANT_SCAN_SCORE_AVX512 %3
+.rshift:
+    neg       r7d
+    movd     xm3, r7d
+    ; dmf divisible by 1<<shift (flat): the shift is exact, multiply by dmf>>shift like dequant_4x4_flat16
+    mov       r8d, 1
+    shlx      r8d, r8d, r7d
+    dec       r8d
+    vpbroadcastw m4, r8d
+    vptestmw  k3, m2, m4
+    kortestd  k3, k3
+    jnz .rshift_round
+    psrlw     m2, xm3
+    pmullw    m0, m2
+    pmullw    m1, m2
+    jmp .store_q_score
+.rshift_round:
+    vpbroadcastd m4, [pd_1]
+    pslld     m4, xm3
+    psrld     m4, 1
+    QUANT_SCAN_RSHIFT_AVX512 m0
+    QUANT_SCAN_RSHIFT_AVX512 m1
+    jmp .store_q_score
+.store_q:
+    movu [r0+ 0], m0
+    movu [r0+64], m1
+    xor      eax, eax
+    RET
+%endmacro
 %endif ; HIGH_BIT_DEPTH
 
 INIT_YMM avx2
@@ -2865,4 +3453,10 @@ QUANT_4x4x4_SCAN frame,    0, 0
 QUANT_4x4x4_SCAN field,    1, 0
 QUANT_4x4x4_SCAN frame_ac, 0, 1
 QUANT_4x4x4_SCAN field_ac, 1, 1
+
+INIT_ZMM avx512icl
+QUANT_4x4x4_SCAN_AVX512 frame,    0, 0
+QUANT_4x4x4_SCAN_AVX512 field,    1, 0
+QUANT_4x4x4_SCAN_AVX512 frame_ac, 0, 1
+QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
 %endif ; ARCH_X86_64
