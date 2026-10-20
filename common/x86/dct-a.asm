@@ -73,6 +73,8 @@ pw_ppmmmmpp:    dw 1,1,-1,-1,-1,-1,1,1
 ; dct4x4dc/idct4x4dc avx512icl: output order, butterfly masks
 dc4x4_perm:     db 0,8,12,4,2,10,14,6,3,11,15,7,1,9,13,5
 dc4x4_masks:    dw 0xaaaa,0xcccc,0xf0f0,0xff00,0,0,0,0
+; zigzag_scan_4x4_field avx512icl
+scan4field_perm: db 0,1,4,2,3,5,6,7,8,9,10,11,12,13,14,15
 pb_sub4frame:   db 0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15
 pb_sub4field:   db 0,4,1,8,12,5,9,13,2,6,10,14,3,7,11,15
 pb_subacmask:   dw 0,-1,-1,-1,-1,-1,-1,-1
@@ -2863,6 +2865,14 @@ cglobal zigzag_scan_4x4_field, 2,2
     movu    [r0+8], xmm1
     RET
 
+INIT_ZMM avx512icl
+cglobal zigzag_scan_4x4_field, 2,2
+    vpmovzxbd   m0, [scan4field_perm]
+    vpermd      m0, m0, [r1]
+    mova      [r0], m0
+    RET
+INIT_ZMM avx512
+
 cglobal zigzag_scan_8x8_frame, 2,2
     psrld       m0, [scan_frame_avx512], 4
     mova        m1, [r1+0*64]
@@ -2966,6 +2976,13 @@ cglobal zigzag_scan_4x4_field, 2,2
     pshuflw   xmm1, [r1+4], q3102
     mova      [r0], m0
     movq    [r0+4], xmm1
+    RET
+
+INIT_YMM avx512icl
+cglobal zigzag_scan_4x4_field, 2,2
+    vpmovzxbw   m0, [scan4field_perm]
+    vpermw      m0, m0, [r1]
+    mova      [r0], m0
     RET
 
 INIT_ZMM avx512
