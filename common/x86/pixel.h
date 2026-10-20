@@ -99,6 +99,7 @@
 #define x264_weightp_dc8x8_avx512icl x264_template(weightp_dc8x8_avx512icl)
 #define x264_weightp_sum8_nv_avx512icl x264_template(weightp_sum8_nv_avx512icl)
 #define x264_weightp_stats8_avx512icl x264_template(weightp_stats8_avx512icl)
+#define x264_weightp_stats8_zmm_avx512icl x264_template(weightp_stats8_zmm_avx512icl)
 #define x264_weightp_sum8_avx512icl x264_template(weightp_sum8_avx512icl)
 #define x264_weightp_sum8_clip_avx512icl x264_template(weightp_sum8_clip_avx512icl)
 #define x264_pixel_hadamard_ac_16x16_avx x264_template(pixel_hadamard_ac_16x16_avx)
@@ -1110,6 +1111,7 @@ void x264_weightp_dc8x8_sse2( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel
 void x264_weightp_dc8x8_avx512icl( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 );
 void x264_weightp_sum8_nv_avx512icl( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height );
 void x264_weightp_stats8_avx512icl( int32_t *sum, uint32_t *minmax, pixel *src, intptr_t i_src, int n, int height );
+void x264_weightp_stats8_zmm_avx512icl( int32_t *sum, uint32_t *minmax, pixel *src, intptr_t i_src, int n, int height );
 void x264_weightp_sum8_avx512icl( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom );
 void x264_weightp_sum8_clip_avx512icl( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
                                        int offset );
