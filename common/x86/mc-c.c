@@ -160,6 +160,17 @@
 #define x264_mc_weight_w8_mmx2 x264_template(mc_weight_w8_mmx2)
 #define x264_mc_weight_w8_sse2 x264_template(mc_weight_w8_sse2)
 #define x264_mc_weight_w8_ssse3 x264_template(mc_weight_w8_ssse3)
+#define x264_mc_weight_w4_avx512icl x264_template(mc_weight_w4_avx512icl)
+#define x264_mc_weight_w12_avx512icl x264_template(mc_weight_w12_avx512icl)
+#define x264_mc_weight_w20_avx512icl x264_template(mc_weight_w20_avx512icl)
+#define x264_mc_offsetadd_w4_avx512icl x264_template(mc_offsetadd_w4_avx512icl)
+#define x264_mc_offsetadd_w8_avx512icl x264_template(mc_offsetadd_w8_avx512icl)
+#define x264_mc_offsetadd_w12_avx512icl x264_template(mc_offsetadd_w12_avx512icl)
+#define x264_mc_offsetadd_w20_avx512icl x264_template(mc_offsetadd_w20_avx512icl)
+#define x264_mc_offsetsub_w4_avx512icl x264_template(mc_offsetsub_w4_avx512icl)
+#define x264_mc_offsetsub_w8_avx512icl x264_template(mc_offsetsub_w8_avx512icl)
+#define x264_mc_offsetsub_w12_avx512icl x264_template(mc_offsetsub_w12_avx512icl)
+#define x264_mc_offsetsub_w20_avx512icl x264_template(mc_offsetsub_w20_avx512icl)
 #define x264_memcpy_aligned_mmx x264_template(memcpy_aligned_mmx)
 #define x264_memcpy_aligned_sse x264_template(memcpy_aligned_sse)
 #define x264_memcpy_aligned_avx x264_template(memcpy_aligned_avx)
@@ -333,6 +344,13 @@ MC_WEIGHT( 20, ssse3 )
 MC_WEIGHT( 8, avx2 )
 MC_WEIGHT( 16, avx2 )
 MC_WEIGHT( 20, avx2 )
+#if !HIGH_BIT_DEPTH
+MC_WEIGHT_OFFSET( 4, avx512icl )
+MC_WEIGHT_OFFSET( 12, avx512icl )
+MC_WEIGHT_OFFSET( 20, avx512icl )
+void x264_mc_offsetadd_w8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int );
+void x264_mc_offsetsub_w8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int );
+#endif
 #if HIGH_BIT_DEPTH
 MC_WEIGHT_OFFSET( 4, avx2 )
 MC_WEIGHT_OFFSET( 8, avx2 )
@@ -815,6 +833,36 @@ MC_WEIGHT_WTAB(offsetadd,sse2,mmx2,mmx2,16)
 MC_WEIGHT_WTAB(offsetsub,sse2,mmx2,mmx2,16)
 MC_WEIGHT_WTAB(weight,ssse3,ssse3,ssse3,16)
 MC_WEIGHT_WTAB(weight,avx2,ssse3,avx2,16)
+#if ARCH_X86_64
+/* the avx512icl widths that won on Zen 4; weight w8/w16 and offset w16 as wtab_avx2/sse2 */
+static weight_fn_t x264_mc_weight_wtab_avx512icl[6] =
+{
+    x264_mc_weight_w4_avx512icl,
+    x264_mc_weight_w4_avx512icl,
+    x264_mc_weight_w8_avx2,
+    x264_mc_weight_w12_avx512icl,
+    x264_mc_weight_w16_avx2,
+    x264_mc_weight_w20_avx512icl,
+};
+static weight_fn_t x264_mc_offsetadd_wtab_avx512icl[6] =
+{
+    x264_mc_offsetadd_w4_avx512icl,
+    x264_mc_offsetadd_w4_avx512icl,
+    x264_mc_offsetadd_w8_avx512icl,
+    x264_mc_offsetadd_w12_avx512icl,
+    x264_mc_offsetadd_w16_sse2,
+    x264_mc_offsetadd_w20_avx512icl,
+};
+static weight_fn_t x264_mc_offsetsub_wtab_avx512icl[6] =
+{
+    x264_mc_offsetsub_w4_avx512icl,
+    x264_mc_offsetsub_w4_avx512icl,
+    x264_mc_offsetsub_w8_avx512icl,
+    x264_mc_offsetsub_w12_avx512icl,
+    x264_mc_offsetsub_w16_sse2,
+    x264_mc_offsetsub_w20_avx512icl,
+};
+#endif
 
 static void x264_weight_cache_mmx2( x264_t *h, x264_weight_t *w )
 {
