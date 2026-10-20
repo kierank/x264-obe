@@ -9893,6 +9893,72 @@ cglobal weightp_dc8x8, 5,5,6
     movu     [r0], m0
     RET
 
+%if ARCH_X86_64
+; avx512icl: rows 0-3 into m0, 4-7 into m1. 8-bit: vpdpbusd of pix1 by 1 and pix2 by -1,
+; four rows of 8 a ymm, dwords r0L r0R r1L r1R | r2L r2R r3L r3R. High bit depth: vpdpwssd
+; of pix1 - pix2 by 1, two rows a ymm, dwords pairs of r0 | r1.
+%macro WEIGHTP_DC_ICL_LOAD 4 ; dst, src, stride, 3*stride
+    movq      xm%1, [%2]
+    movhps    xm%1, [%2+%3]
+    movq       xm5, [%2+%3*2]
+    movhps     xm5, [%2+%4]
+    vinserti128 m%1, m%1, xm5, 1
+%endmacro
+
+%macro WEIGHTP_DC_ICL_HBD 1 ; acc: four rows
+%rep 2
+    movu      xm2, [r1]
+    vinserti128 m2, m2, [r1+r2], 1
+    movu      xm3, [r3]
+    vinserti128 m3, m3, [r3+r4], 1
+    psubw      m2, m3
+    vpdpwssd  m%1, m2, m6
+    lea        r1, [r1+r2*2]
+    lea        r3, [r3+r4*2]
+%endrep
+%endmacro
+
+INIT_YMM avx512icl
+cglobal weightp_dc8x8, 5,7,8
+    FIX_STRIDES r2, r4
+    lea        r5, [r2*3]
+    lea        r6, [r4*3]
+    pxor       m0, m0
+    pxor       m1, m1
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m6, [pw_1]
+    WEIGHTP_DC_ICL_HBD 0
+    WEIGHTP_DC_ICL_HBD 1
+%else
+    vpbroadcastd m6, [pb_1]
+    vpternlogd m7, m7, m7, 0xff
+    WEIGHTP_DC_ICL_LOAD 2, r1, r2, r5
+    WEIGHTP_DC_ICL_LOAD 3, r3, r4, r6
+    lea        r1, [r1+r2*4]
+    lea        r3, [r3+r4*4]
+    vpdpbusd   m0, m2, m6
+    vpdpbusd   m0, m3, m7
+    WEIGHTP_DC_ICL_LOAD 2, r1, r2, r5
+    WEIGHTP_DC_ICL_LOAD 3, r3, r4, r6
+    vpdpbusd   m1, m2, m6
+    vpdpbusd   m1, m3, m7
+%endif
+    vextracti128 xm2, m0, 1
+    paddd     xm0, xm2
+    vextracti128 xm2, m1, 1
+    paddd     xm1, xm2
+%if HIGH_BIT_DEPTH
+    shufps    xm2, xm0, xm1, q2020
+    shufps    xm0, xm1, q3131
+%else
+    punpcklqdq xm2, xm0, xm1
+    punpckhqdq xm0, xm1
+%endif
+    paddd     xm0, xm2
+    movu     [r0], xm0
+    RET
+%endif
+
 ;=============================================================================
 ; x264_weights_analyse chroma block statistics
 ;=============================================================================

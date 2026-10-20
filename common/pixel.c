@@ -1279,6 +1279,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT2( ssd, _avx512icl );
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
@@ -1649,6 +1650,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         INIT2( ssd, _avx512icl );
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
 #endif
     }
 #endif //HAVE_MMX
