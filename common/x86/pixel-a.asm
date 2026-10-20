@@ -9272,6 +9272,25 @@ cglobal pixel_satd_4x4, 4,5,5
     SATD_AVX512_LOAD4 d, k2 ; 0 0 2 2
     SATD_ICL_PACKED         ; 1 1 3 3
     SATD_ICL_PACKED_END
+
+ICL_LOW_BEGIN
+%macro SATD_ICL_4x8_START 0
+    vbroadcasti128 m4, [hmul_4p]
+    mov          r4d, 0x55550c
+    kmovd         k2, r4d   ; 00001100
+    kshiftlb      k3, k2, 2 ; 00110000
+    kshiftlb      k4, k2, 4 ; 11000000
+    kshiftrd      k1, k2, 8 ; 01010101
+    lea           r4, [3*r1]
+    lea           r5, [3*r3]
+%endmacro
+
+cglobal pixel_satd_4x8, 4,6,5
+    SATD_ICL_4x8_START
+    SATD_AVX512_LOAD8 d, xm, k2, k3, k4 ; 0 0 2 2 4 4 6 6
+    SATD_ICL_PACKED                     ; 1 1 3 3 5 5 7 7
+    SATD_ICL_PACKED_END
+ICL_LOW_END
 %endif ; ARCH_X86_64
 
 %endif ; HIGH_BIT_DEPTH
