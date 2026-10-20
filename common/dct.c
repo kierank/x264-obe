@@ -686,6 +686,10 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 #if ARCH_X86_64
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
         dctf->sub16x16_dct     = x264_sub16x16_dct_avx512icl;
+        /* x264-weird2 dct winners (with sub16x16_dct above) */
+        dctf->sub8x8_dct       = x264_sub8x8_dct_avx512icl;
+        dctf->sub8x8_dct_dc    = x264_sub8x8_dct_dc_avx512icl;
+        dctf->dct2x4dc         = x264_dct2x4dc_avx512icl;
 #endif
     }
 #endif //HAVE_MMX
