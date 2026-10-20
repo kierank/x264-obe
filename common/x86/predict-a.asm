@@ -3419,6 +3419,48 @@ cglobal predict_8x%1c_dc_left, 1,3
 %endrep
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc, 1,3
+    LEFT8_ICL    m0, 0
+    movq        xm1, [r0-FDEC_STRIDE]
+    movu        xm2, [pb_c_dc8_icl]
+    vpermi2b     m2, m0, m1             ; t0 .. t7 l0 .. l7
+    pxor        xm3, xm3
+    vpdpbusd    xm3, xm2, [pb_1]{1to4}  ; s0 s1 s2 s3
+%if %1 == 16
+    LEFT8_ICL    m0, 8
+    movu        xm2, [pb_c_left16_icl]
+    vpermb       m2, m2, m0             ; l8 .. l15
+    pxor        xm4, xm4
+    vpdpbusd    xm4, xm2, [pb_1]{1to4}  ; s4 s5
+    vinserti32x4 ym3, ym3, xm4, 1
+    movu        ym1, [pd_c_dc16a_icl]
+    movu        ym2, [pd_c_dc16b_icl]
+    vpermd      ym1, ym1, ym3           ; s0 s1 s3 s1 s4 s1 s5 s1
+    vpermd      ym3, ym2, ym3           ; s2 s1 s3 s3 s4 s4 s5 s5
+%else
+    pshufd      xm1, xm3, q1310         ; s0 s1 s3 s1
+    pshufd      xm3, xm3, q3312         ; s2 s1 s3 s3
+%endif
+    paddd       ym3, ym1
+    pxor        xm2, xm2
+    psrld       ym3, 2
+    pavgw       ym3, ym2                ; dc0 .. dc%1/2-1 in dwords
+    movu         m1, [pb_c_dc_icl]
+    mov         r2d, 0x08080808
+    vpbroadcastd m2, r2d
+%assign %%g 0
+%rep %1/4
+    vpermb       m0, m1, m3
+    CSTORE_PAIRS_ICL m0, 4, %%g*4
+%if %%g < %1/4-1
+    paddb        m1, m2
+%endif
+%assign %%g %%g+1
+%endrep
+    RET
 %endmacro ; PREDICT_C_ICL
 
 PREDICT_C_ICL 8
@@ -3526,6 +3568,51 @@ cglobal predict_8x%1c_dc_left, 1,3
 %endrep
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc, 1,3
+    LEFT8_ICL    m0, 0
+    movu        xm1, [r0-FDEC_STRIDEB]
+    movu        ym2, [pw_c_dc8_icl]
+    vpermi2w     m2, m0, m1             ; t0 .. t7 l0 .. l7
+    pxor        xm3, xm3
+    vpdpwssd    ym3, ym2, [pw_1]{1to8}
+    pshufd      ym1, ym3, q2301
+    paddd       ym3, ym1                ; s0 . s1 . s2 . s3 .
+%if %1 == 16
+    LEFT8_ICL    m0, 8
+    movu        xm2, [pw_c_left16_icl]
+    vpermw       m2, m2, m0             ; l8 .. l15
+    pxor        xm4, xm4
+    vpdpwssd    xm4, xm2, [pw_1]{1to4}
+    pshufd      xm2, xm4, q2301
+    paddd       xm4, xm2                ; s4 . s5 .
+    vinserti32x4 m3, m3, xm4, 2
+    movu        ym1, [pd_c_dc16a_icl]
+    movu        ym2, [pd_c_dc16b_icl]
+%else
+    movu        ym1, [pd_c_dc8a_icl]
+    movu        ym2, [pd_c_dc8b_icl]
+%endif
+    vpermd       m1, m1, m3             ; s0 s1 s3 s1 (s4 s1 s5 s1)
+    vpermd       m3, m2, m3             ; s2 s1 s3 s3 (s4 s4 s5 s5)
+    paddd       ym3, ym1
+    pxor        xm2, xm2
+    psrld       ym3, 2
+    pavgw       ym3, ym2                ; dc0 .. dc%1/2-1 in dwords
+    movu        xm1, [pw_c_dc_icl]
+    vpbroadcastd m2, [pw_4]
+%assign %%g 0
+%rep %1/4
+    vpermw       m0, m1, m3
+    CSTORE_ROWS_ICL xm0, 4, %%g*4
+%if %%g < %1/4-1
+    paddw       xm1, xm2
+%endif
+%assign %%g %%g+1
+%endrep
+    RET
 %endmacro ; PREDICT_C_ICL
 
 PREDICT_C_ICL 8
