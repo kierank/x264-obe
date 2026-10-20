@@ -266,6 +266,10 @@
 #define x264_pixel_avg_4x16_avx2 x264_template(pixel_avg_4x16_avx2)
 #define x264_pixel_avg_4x16_avx512 x264_template(pixel_avg_4x16_avx512)
 #define x264_pixel_avg_16x16_avx512icl x264_template(pixel_avg_16x16_avx512icl)
+#define x264_pixel_avg_16x8_avx512icl x264_template(pixel_avg_16x8_avx512icl)
+#define x264_pixel_avg_8x16_avx512icl x264_template(pixel_avg_8x16_avx512icl)
+#define x264_pixel_avg_8x8_avx512icl x264_template(pixel_avg_8x8_avx512icl)
+#define x264_pixel_avg_8x4_avx512icl x264_template(pixel_avg_8x4_avx512icl)
 #define x264_pixel_avg_4x16_avx512icl x264_template(pixel_avg_4x16_avx512icl)
 #define x264_pixel_avg_4x8_avx512icl x264_template(pixel_avg_4x8_avx512icl)
 #define x264_pixel_avg_4x4_avx512icl x264_template(pixel_avg_4x4_avx512icl)
@@ -343,6 +347,10 @@ DECL_SUF( x264_pixel_avg_4x8,   ( pixel *, intptr_t, pixel *, intptr_t, pixel *,
 DECL_SUF( x264_pixel_avg_4x4,   ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
 DECL_SUF( x264_pixel_avg_4x2,   ( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int ))
 void x264_pixel_avg_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_16x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_8x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_8x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
+void x264_pixel_avg_8x4_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_pixel_avg_4x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_pixel_avg_4x8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
 void x264_pixel_avg_4x4_avx512icl( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int );
@@ -1602,6 +1610,15 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->offsetsub = x264_mc_offsetsub_wtab_avx512icl;
         pf->weight_cache = x264_weight_cache_icl;
         pf->weight_plane = weight_plane_icl;
+        pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx512icl;
+        pf->avg[PIXEL_16x8] = x264_pixel_avg_16x8_avx512icl;
+        pf->avg[PIXEL_8x16] = x264_pixel_avg_8x16_avx512icl;
+        pf->avg[PIXEL_8x8] = x264_pixel_avg_8x8_avx512icl;
+        pf->avg[PIXEL_8x4] = x264_pixel_avg_8x4_avx512icl;
+        pf->avg[PIXEL_4x16] = x264_pixel_avg_4x16_avx512icl;
+        pf->avg[PIXEL_4x8] = x264_pixel_avg_4x8_avx512icl;
+        pf->avg[PIXEL_4x4] = x264_pixel_avg_4x4_avx512icl;
+        pf->avg[PIXEL_4x2] = x264_pixel_avg_4x2_avx512icl;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
         pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif

@@ -331,6 +331,106 @@ cglobal pixel_avg_weight_w8
     vextracti128 [t0+t1*2], m0, 1
     AVG_END
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 10-bit pixel_avg_w4/w8/w16 and pixel_avg_weight_w4/w8/w16, avx512icl: two rows
+; per register (xmm/ymm/zmm), the second merged in by a masked broadcast. Biweight:
+; (s1, s2) word pairs against (w1, w2) by two {evex} vpdpwssd from the rounding,
+; then psrad 6, packusdw + pminuw: exact.
+;-----------------------------------------------------------------------------
+%macro AVG_HBD_ICL_MASK 1 ; width
+%if %1 == 4
+    mov          t6d, 2
+%elif %1 == 8
+    mov          t6d, 0xf0
+%else
+    mov          t6d, 0xff00
+%endif
+    kmovw         k1, t6d
+%endmacro
+
+%macro AVG_HBD_ICL_LOAD 1 ; width: rows 0, 1 of src1 -> m0, of src2 -> m1
+%if %1 == 4
+    movq          m0, [t2]
+    vpbroadcastq  m0 {k1}, [t2+t3*2]
+    movq          m1, [t4]
+    vpbroadcastq  m1 {k1}, [t4+t5*2]
+%elif %1 == 8
+    movu         xm0, [t2]
+    vbroadcasti32x4 m0 {k1}, [t2+t3*2]
+    movu         xm1, [t4]
+    vbroadcasti32x4 m1 {k1}, [t4+t5*2]
+%else
+    movu         ym0, [t2]
+    vbroadcasti32x8 m0 {k1}, [t2+t3*2]
+    movu         ym1, [t4]
+    vbroadcasti32x8 m1 {k1}, [t4+t5*2]
+%endif
+%endmacro
+
+%macro AVG_HBD_ICL_STORE 1
+%if %1 == 4
+    movq        [t0], m0
+    movhps [t0+t1*2], m0
+%elif %1 == 8
+    movu        [t0], xm0
+    vextracti32x4 [t0+t1*2], m0, 1
+%else
+    movu        [t0], ym0
+    vextracti32x8 [t0+t1*2], m0, 1
+%endif
+%endmacro
+
+%macro AVG_HBD_ICL 1 ; width
+%if %1 == 4
+INIT_XMM avx512icl
+%elif %1 == 8
+INIT_YMM avx512icl
+%else
+INIT_ZMM avx512icl
+%endif
+cglobal pixel_avg_weight_w%1
+    mov          t6d, r6m
+    mov          t7d, 64
+    sub          t7d, t6d
+    shl          t7d, 16
+    movzx        t6d, t6w
+    or           t6d, t7d
+    vpbroadcastd  m3, t6d                ; w1, w2
+    vpbroadcastd  m4, [pd_32]
+    vpbroadcastw  m5, [pw_pixel_max]
+    AVG_START 8
+    AVG_HBD_ICL_MASK %1
+.height_loop:
+    AVG_HBD_ICL_LOAD %1
+    punpcklwd     m2, m0, m1
+    punpckhwd     m0, m1
+    mova          m6, m4
+    mova          m7, m4
+    {evex} vpdpwssd m6, m2, m3
+    {evex} vpdpwssd m7, m0, m3
+    psrad         m6, 6
+    psrad         m7, 6
+    packusdw      m6, m7
+    pminuw        m0, m6, m5
+    AVG_HBD_ICL_STORE %1
+    AVG_END
+
+cglobal pixel_avg_w%1
+    AVG_START 2
+    AVG_HBD_ICL_MASK %1
+.height_loop:
+    AVG_HBD_ICL_LOAD %1
+    pavgw         m0, m1
+    AVG_HBD_ICL_STORE %1
+    AVG_END
+%endmacro
+
+AVG_HBD_ICL 4
+AVG_HBD_ICL 8
+AVG_HBD_ICL 16
+%endif ; ARCH_X86_64
+
 %else ;!HIGH_BIT_DEPTH
 INIT_XMM sse2
 AVG_WEIGHT 8,  7
@@ -1814,8 +1914,8 @@ cglobal pixel_avg_%1x%2
     mov eax, %2
     cmp dword r6m, 32
     jne pixel_avg_weight_w%1 %+ SUFFIX
-%if cpuflag(avx512icl) && %1 == 4 && HIGH_BIT_DEPTH == 0
-    jmp pixel_avg_w4_avx512icl
+%if cpuflag(avx512icl) && (HIGH_BIT_DEPTH || %1 == 4)
+    jmp pixel_avg_w%1_avx512icl
 %elif cpuflag(avx2) && %1*SIZEOF_PIXEL >= 16 ; all AVX2 machines can do fast 16-byte unaligned loads
     jmp pixel_avg_w%1_avx2
 %else
@@ -1897,6 +1997,18 @@ AVGH  16,  8
 AVGH   8, 16
 AVGH   8,  8
 AVGH   8,  4
+%if ARCH_X86_64
+INIT_XMM avx512icl
+AVGH 16, 16
+AVGH 16,  8
+AVGH  8, 16
+AVGH  8,  8
+AVGH  8,  4
+AVGH  4, 16
+AVGH  4,  8
+AVGH  4,  4
+AVGH  4,  2
+%endif
 
 %else ;!HIGH_BIT_DEPTH
 
