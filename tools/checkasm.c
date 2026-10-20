@@ -3753,6 +3753,8 @@ static int check_quant( int cpu_ref, int cpu_new )
                 nnz |= dct1[idx] = TEST_LAST_COEF( i ); \
             if( !nnz ) \
                 dct1[ac] = 1; \
+            if( ac && (i&1) ) \
+                dct1[0] = -1; /* the coef before the block */ \
             int result_c = call_c( qf_c.last, dct1+ac ); \
             int result_a = call_a( qf_a.last, dct1+ac ); \
             if( result_c != result_a ) \
@@ -3794,6 +3796,8 @@ static int check_quant( int cpu_ref, int cpu_new )
                 memset( dct1, 0, size*sizeof(dctcoef) ); \
                 dct1[size-1] = -1; \
             } \
+            if( ac && (i&1) ) \
+                dct1[0] = -1; /* the coef before the block */ \
             int result_c = call_c( qf_c.lastname, dct1+ac, &runlevel_c ); \
             int result_a = call_a( qf_a.lastname, dct1+ac, &runlevel_a ); \
             if( result_c != result_a || runlevel_c.last != runlevel_a.last || \
