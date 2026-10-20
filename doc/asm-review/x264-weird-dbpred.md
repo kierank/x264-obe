@@ -155,3 +155,82 @@ None needs a newer nasm.
    the 10-bit h filters.
 4. Deblock was under 1% of all-intra cycles on rack01 (2026-10-13), so none of this moves frame
    time much; the intra kernels matter most for lowlat PIR (an intra column every frame).
+
+## Round 2 (2026-10-20): every rejected row written and dispatched
+
+Kieran: "you shouldn't reject, send all to rack01" / "don't reject, move to zen5 if rack01 is too
+slow". Every round-1 deblock row that was rejected is now written and dispatched at avx512icl on
+`wip/x264-weird2-dbpred` (base origin/wip/x264-weird-sa8d8 67b4aff6), one commit per kernel. No
+laptop timings were taken (battery; rack01 decides).
+
+### Method (laptop, battery rules: no configure/make/encoder)
+
+- Driver `dbdrv` (scratchpad agA-dbdrv/, WSL ~/x264-weird2-dbpred/): links only the assembled
+  deblock-a.asm, const-a.asm and tools/checkasm-a.asm (`x264_checkasm_call`, so callee-saved GPRs
+  and 32-bit int args with dirty upper halves are checked). The C reference is extracted verbatim
+  from common/deblock.c at build time. Per call the WHOLE buffer is compared (no write outside
+  the C's pixels).
+  - Inputs: uniform random, low/high noise (rand&0xf, PIXEL_MAX-rand&0xf), all 0, all PIXEL_MAX,
+    random 0/MAX, column/row/coset sign patterns at 0/MAX, noisy steps across the edge(s) sized
+    around alpha, flat+-2 noise, mid-grey noise. Parameters: real alpha/beta/tc0 table values at
+    every index with bS 0..3 (tc0 = -1<<s for bS 0, +1 for chroma), synthetic alpha 1..255<<s,
+    beta up to 255<<s, alpha/beta at 1..4, tc0 up to 25<<s; luma_mb random bS/edges/classes
+    as checkasm, plus all-bS-3. Strides 32..192 pixels, the offsets the callers produce.
+  - Guard pages: the kernel's read extent placed against a PROT_NONE page at the low and the high
+    end of an mmap'd buffer (over-reads/over-writes SIGSEGV), 10% of the iterations.
+  - Upper state: the driver issues vzeroupper before each call; under gdb 17.1
+    (`vcheck.py`) every return is checked for zero zmm0-15 bits 128-511. Negative control (an
+    added `vpcmpeqb ymm3` before RET) is flagged on every call.
+- Mutation: `mut.sh` changes one line of a private copy, rebuilds and must see the driver fail.
+- nasm 2.14.02: `n214.sh` assembles deblock-a.asm at both depths with ~/tools/nasm-2.14.02 and
+  compares the new functions' bytes with nasm 3.01.
+- Dispatch compile check (`synchk.sh`): common/deblock.c compiled alone at both depths with a
+  round-1 config.h, every `*_avx512icl` it references must be defined in that depth's
+  deblock-a.o; tools/checkasm.c -fsyntax-only at both depths. This caught one of my own dispatch
+  lines landing in the HIGH_BIT_DEPTH branch before push (fixed before anything was pushed).
+
+### Deblock rows
+
+| function | round-1 decision | round-2 action | commit | driver (iters, guard, mutations) | nasm 2.14.02 |
+|---|---|---|---|---|---|
+| 8-bit deblock_v_luma | rejected (ymm [pN\|qN] "loop 1.13", EVEX xmm not written) | not recoverable (old worktree, reflog, unreachable blobs, WSL copies: no copy of either); both rewritten. ymm [pN\|qN] lanes on LUMA_INTER_ICL | 2d30793b | 200k + 20k guard pass; 4 mutations caught | identical |
+| 8-bit deblock_v_luma (EVEX xmm) | as above | written: OR3+vptestnmb mask, vpmovb2m/kandnw, vpcmpub LE, masked paddb, vpternlogd NOT/parity. **Overrides 2d30793b in the same slot**; revert f9d05428 to A/B the ymm one | f9d05428 | 200k + 20k; 6 caught | identical |
+| 8-bit deblock_luma_mb | rejected (vpermt2b transposes, not written) | written: 16x16 transposes by 8 vpermi2b (4 rows per zmm), left columns by 3 vpermi2b, bS-0 mask by vptestmd/kshiftlb/korb/kmovb, EVEX xmm edge filter | dd533999 | 150k + 15k; 8 caught | identical |
+| 8-bit deblock_v_chroma (+ chroma_inter_body) | rejected (~2 ops) | written: OR3+vptestnmb, zero-masked tc, vpternlogd | 670fa8e8 | 150k + 15k; 5 caught | identical |
+| 8-bit deblock_h_chroma (4:2:0, also 4:2:2 MBAFF alias) | rejected (vpermb load/store cost) | written: 8 rows in a zmm, one vpermb to [p1\|p0\|q0\|q1] | 5de0d766 | 100k + 10k; 4 caught | identical |
+| 8-bit deblock_h_chroma_mbaff | rejected (4 rows) | written: ymm load, same vpermb + EVEX filter | 12dd636c | 100k + 10k; 3 caught | identical |
+| 8-bit deblock_h_chroma_422 | rejected (not production at 8-bit) | written: 16 rows in two zmm, two vpermi2b, ymm filter once | 9a49abd2 | 100k + 10k; 5 caught | identical |
+| 8-bit deblock_v_chroma_intra (+ chroma_intra_body) | rejected (masked move saves 4 ops) | written: OR3+vptestnmb, vpternlogd parities, merge-masked vmovdqu8 | 739a0e75 | 100k + 10k; 4 caught | identical |
+| 8-bit deblock_h_chroma_intra (also 4:2:2 MBAFF intra alias) | rejected | written: vpermb gather + EVEX intra filter | 127705ce | 100k + 10k; 2 caught | identical |
+| 8-bit deblock_h_chroma_422_intra | rejected | written: two vpermi2b, ymm intra filter | c79de7d9 | 100k + 10k; 1 caught | identical |
+| 8-bit deblock_h_chroma_intra_mbaff | rejected (mmx2, 4 rows) | written: ymm load, vpermb, EVEX intra filter | 178c3834 | 100k + 10k; 3 caught | identical |
+| 10-bit deblock_h_luma_mbaff | rejected (k-mask ~5%, vpermt2w loses) | written with punpck transposes (TRANSPOSE4x4W) + the avx512 k-mask branch of DEBLOCK_LUMA_INTER_SSE2, xmm | 1d18d3b9 | 100k + 10k; 4 caught | identical |
+| 10-bit deblock_h_luma_intra_mbaff | rejected | written: TRANSPOSE8x8W (punpck) + LUMA_INTRA10_ICL on xmm | d8730ba5 | 100k + 10k; 3 caught | identical |
+| 10-bit deblock_v_chroma (+ inter_body) | rejected (no op saving) | written: vpcmpgtw/kandd mask, zero-masked vmovdqu16 tc, ymm | c395cb96 | 100k + 10k; 5 caught | identical |
+| 10-bit deblock_h_chroma (4:2:0, also 4:2:2 MBAFF alias) | rejected (vpermt2d = TRANSPOSE4x4D) | written: AVX2 lane layout, TRANSPOSE4x4D punpck (not vpermt2d, per the x265 lesson), k-mask filter | d4b3cf9a | 100k + 10k; 3 caught | identical |
+| 10-bit deblock_h_chroma_mbaff | rejected | written: xmm, CHROMA_H_LOAD punpck, k-mask filter | ea2712c4 | 100k + 10k; 3 caught | identical |
+| 10-bit deblock_v_chroma_intra (+ intra_body) | rejected | written: k-mask, merge-masked vmovdqu16 selects | 6a294da1 | 100k + 10k; 3 caught | identical |
+| 10-bit deblock_h_chroma_intra (also 4:2:2 MBAFF intra alias) | rejected | written: AVX2 lane layout + k-mask intra | b1ea19be | 100k + 10k; 2 caught | identical |
+| 10-bit deblock_h_chroma_intra_mbaff | rejected | written: xmm, k-mask intra | c055763f | 100k + 10k; 2 caught | identical |
+
+Every row above: gdb upper-state check clean (250 returns each), x264_checkasm_call register check
+clean, deblock.c compile + symbol check at both depths. Each kernel's dispatch line is in its own
+commit; shared macros (CHROMA_MASK_ICL8 / DEBLOCK_P0_Q0_ICL / CHROMA_INTER_ICL8 in 670fa8e8,
+CHROMA_H_LOAD_ICL8 / CHROMA_H_STORE_ICL8 in 5de0d766, CHROMA_H_LOAD16_ICL8 in 9a49abd2,
+CHROMA_INTRA_ICL8 in 739a0e75, CHROMA_INTER10_ICL in c395cb96, CHROMA_INTRA10_ICL in 6a294da1)
+are introduced by the first kernel that uses them: to drop one of those kernels on rack01, delete
+its dispatch line rather than reverting the commit.
+
+Rows not written, with the reason:
+- 8/10-bit deblock_strength, v/h_luma_intra, h_luma, 10-bit v_luma/luma_mb, 4:2:2 10-bit, 8-bit
+  luma MBAFF: already dispatched at avx512icl (round 1 / folded zen5 sets).
+- 8/10-bit deblock_strength_avx512 (zmm, INIT_ZMM avx512): already written; dropped by d0395c5b
+  (rack01 2-3% slower), assembled and undispatched; the avx512icl version owns the slot.
+
+Lessons applied: punpck ladders, not vpermw/vpermt2d, for every word transpose (10-bit); no zmm
+from unaligned per-row 128-bit inserts (the only zmm row loads are luma_mb's 16-byte aligned MB
+rows; chroma/luma h gathers use 8-byte movq/movhps + register inserts as round 1); new RODATA
+tables appended at the end of the section after an `align 64`. Cb|Cr: x264 chroma is NV12, every
+chroma deblock path already filters Cb and Cr together.
+
+Predict rows: written by a sub-agent on the local branch wip/x264-weird2-dbpred-predict (its git push was blocked by its permission system; not folded here, pending Kieran). Their log rows go here once that branch is reviewed.
