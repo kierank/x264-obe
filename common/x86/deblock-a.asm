@@ -121,6 +121,27 @@ chroma_h_cols_idx: DB_CCOLS
 %endmacro
 chroma422_p_idx: DB_CCOLS16 0
 chroma422_q_idx: DB_CCOLS16 4
+; 8-bit luma_mb 16x16 byte transpose of 4 zmm (lane i = row 4j+i) by vpermi2b:
+; stage 1 rows 0-7 (8-15) x cols 0-7 / 8-15, 8 bytes per column
+%macro DB_T16S1 1
+%assign %%s 0
+%rep 64
+    db ((%%s&7)>>2)*64 + (%%s&3)*16 + (%%s>>3) + %1
+%assign %%s %%s+1
+%endrep
+%endmacro
+; stage 2 cols 0-3 / 4-7 of a stage-1 pair, 16 rows per column
+%macro DB_T16S2 1
+%assign %%b 0
+%rep 64
+    db ((%%b&15)>>3)*64 + 8*((%%b>>4)+%1) + (%%b&7)
+%assign %%b %%b+1
+%endrep
+%endmacro
+db16_t1a: DB_T16S1 0
+db16_t1b: DB_T16S1 8
+db16_t2a: DB_T16S2 0
+db16_t2b: DB_T16S2 4
 
 SECTION .text
 
@@ -2324,6 +2345,262 @@ cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
     pshufb      xm8, [pb_unpackbd1]
     lea         r12, [r0+r5]
     LUMA_MB_EDGE r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2, rsp+r11*4
+.hnext:
+    mov        r11d, 16
+    add        r10d, 4
+    lea         r0, [r0+r1*4]
+    shr         r9d, 1
+    jnz .hloop
+.end:
+    RET
+
+;-----------------------------------------------------------------------------
+; avx512icl deblock_luma_mb: the 16x16 transposes by 8 vpermi2b over 4 zmm,
+; the per-edge filter EVEX xmm (OR3 + vptestnmb mask, k-mask tc, vpternlogd)
+;-----------------------------------------------------------------------------
+; in: m0-m3 = 4 rows (columns) per zmm lane; out: m0-m3 = 4 columns (rows) per lane
+%macro TRANSPOSE16x16B_ICL 0
+    mova        m4, [db16_t1a]
+    mova        m5, [db16_t1b]
+    mova        m6, m4
+    mova        m7, m5
+    vpermi2b    m4, m0, m1
+    vpermi2b    m5, m0, m1
+    vpermi2b    m6, m2, m3
+    vpermi2b    m7, m2, m3
+    mova        m0, [db16_t2a]
+    mova        m1, [db16_t2b]
+    mova        m2, m0
+    mova        m3, m1
+    vpermi2b    m0, m4, m6
+    vpermi2b    m1, m4, m6
+    vpermi2b    m2, m5, m7
+    vpermi2b    m3, m5, m7
+%endmacro
+
+; %1: zmm register number, %2-%5: 4 rows of 16 bytes
+%macro LOAD_4ROWS_ICL 5
+    movu        xm%1, %2
+    vinserti32x4 m%1, m%1, %3, 1
+    vinserti32x4 m%1, m%1, %4, 2
+    vinserti32x4 m%1, m%1, %5, 3
+%endmacro
+
+; %1: zmm register number, %2-%5: 4 destinations of 16 bytes
+%macro STORE_4ROWS_ICL 5
+    movu         %2, xm%1
+    vextracti32x4 %3, m%1, 1
+    vextracti32x4 %4, m%1, 2
+    vextracti32x4 %5, m%1, 3
+%endmacro
+
+; LUMA_Q1 on xm registers, parity by vpternlogd; %2 = p2 in a register
+%macro LUMA_MB_Q1_ICL 6 ; p1, p2, [p1 out], tc0, tmp, tmp
+    pavgb       %5, xm1, xm2
+    pavgb       %6, %2, %5        ; avg(p2,avg(p0,q0))
+    vpternlogd  %5, %2, [pb_1]{1to4}, 0x28 ; (p2^avg(p0,q0))&1
+    psubusb     %6, %5            ; (p2+((p0+q0+1)>>1))>>1
+    psubusb     %5, %1, %4
+    paddusb     %4, %1
+    pmaxub      %6, %5
+    pminub      %6, %4
+    mova        %3, %6
+%endmacro
+
+; %1-%6: p2 p1 p0 q0 q1 q2 addresses, [%7]: alpha-1, beta-1; xm8: tc0 (<0: skip)
+%macro LUMA_MB_EDGE_ICL 7
+    mova        xm0, [%2]         ; p1
+    mova        xm1, [%3]         ; p0
+    mova        xm2, [%4]         ; q0
+    mova        xm3, [%5]         ; q1
+    mova        xm5, [%7+16]
+    psubusb     xm6, xm1, xm2
+    psubusb     xm7, xm2, xm1
+    por         xm6, xm7
+    psubusb     xm6, [%7]         ; |p0-q0| > alpha-1
+    psubusb     xm7, xm0, xm1
+    psubusb     xm4, xm1, xm0
+    por         xm7, xm4
+    psubusb     xm7, xm5          ; |p1-p0| > beta-1
+    psubusb     xm4, xm3, xm2
+    psubusb     xm9, xm2, xm3
+    por         xm4, xm9
+    psubusb     xm4, xm5          ; |q1-q0| > beta-1
+    vpternlogd  xm4, xm6, xm7, 0xfe
+    vptestnmb   k1, xm4, xm4
+    vpmovb2m    k2, xm8           ; tc0 < 0
+    kandnw      k1, k2, k1
+    vmovdqu8    xm8 {k1}{z}, xm8
+    mova        xm3, [%1]         ; p2
+    psubusb     xm6, xm1, xm3
+    psubusb     xm7, xm3, xm1
+    por         xm6, xm7
+    vpcmpub     k2, xm6, xm5, 2   ; |p2-p0| <= beta-1
+    kandw       k2, k2, k1
+    mova        xm7, xm8
+    paddb       xm7 {k2}, xm7, [pb_1]
+    vmovdqu8    xm6 {k2}{z}, xm8
+    LUMA_MB_Q1_ICL xm0, xm3, [%2], xm6, xm4, xm9
+    mova        xm4, [%6]         ; q2
+    psubusb     xm6, xm2, xm4
+    psubusb     xm9, xm4, xm2
+    por         xm6, xm9
+    vpcmpub     k3, xm6, xm5, 2   ; |q2-q0| <= beta-1
+    kandw       k3, k3, k1
+    paddb       xm7 {k3}, xm7, [pb_1] ; tc
+    vmovdqu8    xm8 {k3}{z}, xm8
+    mova        xm3, [%5]
+    LUMA_MB_Q1_ICL xm3, xm4, [%5], xm8, xm6, xm9
+    mova        xm5, [pb_1]
+    vpternlogd  xm5, xm1, xm2, 0x60 ; (p0^q0)&1
+    vpternlogd  xm3, xm3, xm3, 0x0f ; ~q1
+    pavgb       xm3, xm0          ; (p1 - q1 + 256)>>1
+    pavgb       xm3, [pb_3]       ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    vpternlogd  xm4, xm1, xm1, 0x33 ; ~p0
+    pavgb       xm4, xm2          ; (q0 - p0 + 256)>>1
+    pavgb       xm3, xm5
+    paddusb     xm3, xm4          ; d+128+33
+    mova        xm6, [pb_a1]
+    psubusb     xm6, xm3
+    psubusb     xm3, [pb_a1]
+    pminub      xm6, xm7
+    pminub      xm3, xm7
+    psubusb     xm1, xm6
+    psubusb     xm2, xm3
+    paddusb     xm1, xm3
+    paddusb     xm2, xm6
+    mova        [%3], xm1
+    mova        [%4], xm2
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal deblock_luma_mb, 5,13,16, 0-(3*32+20*16)
+    ; stack: 3 x (alpha-1, beta-1), then columns -4..15
+    mova       xm15, [pb_1]
+%assign dbmb_i 0
+%rep 3
+    vpbroadcastb xm0, [r3+8*dbmb_i+4]
+    vpbroadcastb xm1, [r3+8*dbmb_i+6]
+    psubusb     xm0, xm15
+    psubusb     xm1, xm15
+    mova [rsp+32*dbmb_i], xm0
+    mova [rsp+32*dbmb_i+16], xm1
+%assign dbmb_i dbmb_i+1
+%endrep
+    lea         r5, [r1*3]
+    lea         r7, [r0+r1*4]
+    lea         r6, [r0+r1*8]
+    lea         r8, [r7+r1*8]
+    movu        xm0, [r2]
+    movu        xm1, [r2+32]
+    vptestmd    k1, xm0, xm0
+    vptestmd    k2, xm1, xm1
+    kshiftlb    k2, k2, 4
+    korb        k1, k1, k2
+    kmovb       r9d, k1
+    and         r4d, r9d          ; drop edges with bS 0
+    test        r4d, 15
+    jz .horizontal
+
+    LOAD_4ROWS_ICL 0, [r0], [r0+r1], [r0+r1*2], [r0+r5]
+    LOAD_4ROWS_ICL 1, [r7], [r7+r1], [r7+r1*2], [r7+r5]
+    LOAD_4ROWS_ICL 2, [r6], [r6+r1], [r6+r1*2], [r6+r5]
+    LOAD_4ROWS_ICL 3, [r8], [r8+r1], [r8+r1*2], [r8+r5]
+    TRANSPOSE16x16B_ICL
+    movu        [COL(0)], m0
+    movu        [COL(4)], m1
+    movu        [COL(8)], m2
+    movu       [COL(12)], m3
+    test        r4d, 1
+    jz .vedges
+    LOAD_4ROWS_ICL 0, [r0-16], [r0+r1-16], [r0+r1*2-16], [r0+r5-16]
+    LOAD_4ROWS_ICL 1, [r7-16], [r7+r1-16], [r7+r1*2-16], [r7+r5-16]
+    LOAD_4ROWS_ICL 2, [r6-16], [r6+r1-16], [r6+r1*2-16], [r6+r5-16]
+    LOAD_4ROWS_ICL 3, [r8-16], [r8+r1-16], [r8+r1*2-16], [r8+r5-16]
+    mova        m5, [db16_t1b]
+    mova        m7, m5
+    vpermi2b    m5, m0, m1        ; columns -8..-1 of rows 0-7
+    vpermi2b    m7, m2, m3        ; rows 8-15
+    mova        m1, [db16_t2b]
+    vpermi2b    m1, m5, m7        ; columns -4..-1
+    movu       [COL(-4)], m1
+
+.vedges:
+    mov         r9d, r4d
+    and         r9d, 15
+    xor        r10d, r10d         ; bs offset
+    xor        r11d, r11d         ; class*8
+    lea         r12, [COL(-3)]
+.vloop:
+    test        r9d, 1
+    jz .vnext
+    movd        xm8, [r2+r10]
+    movd        xm9, [r3+r11]
+    pshufb      xm8, xm9, xm8
+    pshufb      xm8, [pb_unpackbd1]
+    LUMA_MB_EDGE_ICL r12, r12+16, r12+32, r12+48, r12+64, r12+80, rsp+r11*4
+.vnext:
+    mov        r11d, 16
+    add        r10d, 4
+    add         r12, 64
+    shr         r9d, 1
+    jnz .vloop
+
+    test        r4d, 1
+    jz .vstore
+    mova        xm0, [COL(-4)]
+    mova        xm2, [COL(-2)]
+    punpckhbw   xm4, xm0, [COL(-3)]
+    punpcklbw   xm0, [COL(-3)]
+    punpckhbw   xm5, xm2, [COL(-1)]
+    punpcklbw   xm2, [COL(-1)]
+    punpckhwd   xm1, xm0, xm2
+    punpcklwd   xm0, xm2
+    punpckhwd   xm3, xm4, xm5
+    punpcklwd   xm4, xm5
+    movd        [r0-4], xm0
+    pextrd      [r0+r1-4], xm0, 1
+    pextrd      [r0+r1*2-4], xm0, 2
+    pextrd      [r0+r5-4], xm0, 3
+    movd        [r7-4], xm1
+    pextrd      [r7+r1-4], xm1, 1
+    pextrd      [r7+r1*2-4], xm1, 2
+    pextrd      [r7+r5-4], xm1, 3
+    movd        [r6-4], xm4
+    pextrd      [r6+r1-4], xm4, 1
+    pextrd      [r6+r1*2-4], xm4, 2
+    pextrd      [r6+r5-4], xm4, 3
+    movd        [r8-4], xm3
+    pextrd      [r8+r1-4], xm3, 1
+    pextrd      [r8+r1*2-4], xm3, 2
+    pextrd      [r8+r5-4], xm3, 3
+.vstore:
+    LOAD_4ROWS_ICL 0, [COL(0)], [COL(1)], [COL(2)], [COL(3)]
+    LOAD_4ROWS_ICL 1, [COL(4)], [COL(5)], [COL(6)], [COL(7)]
+    LOAD_4ROWS_ICL 2, [COL(8)], [COL(9)], [COL(10)], [COL(11)]
+    LOAD_4ROWS_ICL 3, [COL(12)], [COL(13)], [COL(14)], [COL(15)]
+    TRANSPOSE16x16B_ICL
+    STORE_4ROWS_ICL 0, [r0], [r0+r1], [r0+r1*2], [r0+r5]
+    STORE_4ROWS_ICL 1, [r7], [r7+r1], [r7+r1*2], [r7+r5]
+    STORE_4ROWS_ICL 2, [r6], [r6+r1], [r6+r1*2], [r6+r5]
+    STORE_4ROWS_ICL 3, [r8], [r8+r1], [r8+r1*2], [r8+r5]
+
+.horizontal:
+    mov         r9d, r4d
+    shr         r9d, 4
+    jz .end
+    mov        r10d, 32
+    mov        r11d, 8
+    sub         r0, r5            ; row -3
+.hloop:
+    test        r9d, 1
+    jz .hnext
+    movd        xm8, [r2+r10]
+    movd        xm9, [r3+r11]
+    pshufb      xm8, xm9, xm8
+    pshufb      xm8, [pb_unpackbd1]
+    lea         r12, [r0+r5]
+    LUMA_MB_EDGE_ICL r0, r0+r1, r0+r1*2, r12, r12+r1, r12+r1*2, rsp+r11*4
 .hnext:
     mov        r11d, 16
     add        r10d, 4
