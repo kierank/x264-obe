@@ -152,7 +152,11 @@ cglobal checkasm_call, 2,15,16,max_args*8+8
     jz .ok
     mov  r9, rax
     lea  r0, [error_message]
+%if FORMAT_ELF
+    call puts wrt ..plt
+%else
     call puts
+%endif
     mov  r1, [rsp+max_args*8]
     mov  dword [r1], 0
     mov  rax, r9
