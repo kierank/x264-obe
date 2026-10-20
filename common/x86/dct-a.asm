@@ -1365,6 +1365,41 @@ cglobal sub8x8_dct_dc, 3,3
     movq        [r0], xm0
     RET
 
+cglobal sub8x16_dct_dc, 3,3
+    DCTDC_ICL_GROUP m0, m4, 0
+    DCTDC_ICL_GROUP m1, m5, 4
+    DCTDC_ICL_GROUP m2, m6, 8
+    DCTDC_ICL_GROUP m3, m7, 12
+    pshufd        m1, m1, q1032
+    pshufd        m3, m3, q1032
+    paddd         m0, m1                 ; per lane: a0 a1 a2 a3
+    paddd         m2, m3                 ; per lane: a4 a5 a6 a7
+    vextracti64x4 ym1, m0, 1
+    vextracti64x4 ym3, m2, 1
+    paddd         ym0, ym1
+    paddd         ym2, ym3
+    vshufi64x2    ym1, ym0, ym2, 0
+    vshufi64x2    ym0, ym0, ym2, 3
+    paddd         ym0, ym1               ; a0-a7
+    mov          r1d, 0xaa
+    kmovb         k1, r1d
+    pshufd        ym1, ym0, q2301
+    paddd         ym2, ym0, ym1
+    vpsubd        ym2 {k1}, ym1, ym0     ; b0 b4 b1 b5 | b2 b6 b3 b7
+    mov          r1d, 0xcc
+    kmovb         k1, r1d
+    pshufd        ym1, ym2, q1032
+    paddd         ym0, ym2, ym1
+    vpsubd        ym0 {k1}, ym1, ym2     ; a0' a2' a4' a6' | a1' a3' a5' a7'
+    vextracti32x4 xm1, ym0, 1
+    paddd         xm2, xm0, xm1          ; dct 0 1 6 7
+    psubd         xm0, xm1               ; dct 2 3 4 5
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+    packssdw      xm1, xm0
+    mova        [r0], xm1
+    RET
+
 INIT_ZMM avx512
 
 %macro SARSUMSUB 3 ; a, b, tmp
