@@ -9675,6 +9675,201 @@ cglobal intra_sad_x9_4x4, 3,4,16, 9*32
     mov [r1+2*FDEC_STRIDE], r0d
     mov [r1+3*FDEC_STRIDE], r2d
     RET
+
+;-----------------------------------------------------------------------------
+; int intra_sad_x9_8x8( uint8_t *fenc, uint8_t *fdec, uint8_t edge[36], uint16_t *bitcosts, uint16_t *satds )
+; As the avx2 version, with the k-mask argmin of intra_sad_x9_4x4_avx512icl
+; over all nine costs and the nine satds stored by one vmovdqu16 {k3}.
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x9_8x8, 5,7,8
+    %define pred(i,j) [rsp+i*0x40+j*0x20]
+
+    mov         r6, rsp
+    and        rsp, ~31
+    sub        rsp, 0x240
+    movu        m5, [r0+0*FENC_STRIDE]
+    movu        m6, [r0+4*FENC_STRIDE]
+    punpcklqdq  m5, [r0+2*FENC_STRIDE]
+    punpcklqdq  m6, [r0+6*FENC_STRIDE]
+
+    ; save instruction size: avoid 4-byte memory offsets
+    lea         r0, [intra8x9_h1+128]
+    %define off(m) (r0+m-(intra8x9_h1+128))
+
+    vpbroadcastq m0, [r2+16]
+    psadbw      m4, m0, m5
+    psadbw      m2, m0, m6
+    mova pred(0,0), m0
+    mova pred(0,1), m0
+    paddw       m4, m2
+
+    vpbroadcastq m1, [r2+7]
+    pshufb      m3, m1, [off(intra8x9_h1)]
+    pshufb      m2, m1, [off(intra8x9_h3)]
+    mova pred(1,0), m3
+    mova pred(1,1), m2
+    psadbw      m3, m5
+    psadbw      m2, m6
+    paddw       m3, m2
+
+    lea         r5, [rsp+0x100]
+    %define pred(i,j) [r5+i*0x40+j*0x20-0x100]
+
+    ; combine the first two
+    pslldq      m3, 2
+    por         m4, m3
+
+    pxor        m2, m2
+    psadbw      m0, m2
+    psadbw      m1, m2
+    paddw       m0, m1
+    psrlw       m0, 3
+    pavgw       m0, m2
+    pshufb      m0, m2
+    mova pred(2,0), m0
+    mova pred(2,1), m0
+    psadbw      m3, m0, m5
+    psadbw      m2, m0, m6
+    paddw       m3, m2
+
+    pslldq      m3, 4
+    por         m4, m3
+
+    vbroadcasti128 m0, [r2+16]
+    vbroadcasti128 m2, [r2+17]
+    pslldq      m1, m0, 1
+    pavgb       m3, m0, m2
+    PRED4x4_LOWPASS m0, m1, m2, m0, m7
+    pshufb      m1, m0, [off(intra8x9_ddl1)]
+    pshufb      m2, m0, [off(intra8x9_ddl3)]
+    mova pred(3,0), m1
+    mova pred(3,1), m2
+    psadbw      m1, m5
+    psadbw      m2, m6
+    paddw       m1, m2
+
+    pslldq      m1, 6
+    por         m4, m1
+    vextracti128 xm1, m4, 1
+    paddw      xm4, xm1
+    mova      [r4], xm4
+
+    ; for later
+    vinserti128 m7, m3, xm0, 1
+
+    vbroadcasti128 m2, [r2+8]
+    vbroadcasti128 m0, [r2+7]
+    vbroadcasti128 m1, [r2+6]
+    pavgb       m3, m2, m0
+    PRED4x4_LOWPASS m0, m1, m2, m0, m4
+    pshufb      m1, m0, [off(intra8x9_ddr1)]
+    pshufb      m2, m0, [off(intra8x9_ddr3)]
+    mova pred(4,0), m1
+    mova pred(4,1), m2
+    psadbw      m4, m1, m5
+    psadbw      m2, m6
+    paddw       m4, m2
+
+    add         r0, 256
+    add         r5, 0xC0
+    %define off(m) (r0+m-(intra8x9_h1+256+128))
+    %define pred(i,j) [r5+i*0x40+j*0x20-0x1C0]
+
+    vpblendd    m2, m3, m0, 11110011b
+    pshufb      m1, m2, [off(intra8x9_vr1)]
+    pshufb      m2, m2, [off(intra8x9_vr3)]
+    mova pred(5,0), m1
+    mova pred(5,1), m2
+    psadbw      m1, m5
+    psadbw      m2, m6
+    paddw       m1, m2
+
+    pslldq      m1, 2
+    por         m4, m1
+
+    psrldq      m2, m3, 4
+    pblendw     m2, m0, q3330
+    punpcklbw   m0, m3
+    pshufb      m1, m2, [off(intra8x9_hd1)]
+    pshufb      m2, m0, [off(intra8x9_hd3)]
+    mova pred(6,0), m1
+    mova pred(6,1), m2
+    psadbw      m1, m5
+    psadbw      m2, m6
+    paddw       m1, m2
+
+    pslldq      m1, 4
+    por         m4, m1
+
+    pshufb      m1, m7, [off(intra8x9_vl1)]
+    pshufb      m2, m7, [off(intra8x9_vl3)]
+    mova pred(7,0), m1
+    mova pred(7,1), m2
+    psadbw      m1, m5
+    psadbw      m2, m6
+    paddw       m1, m2
+
+    pslldq      m1, 6
+    por         m4, m1
+    vextracti128 xm1, m4, 1
+    paddw      xm4, xm1
+    mova       xm3, [r4]
+    SBUTTERFLY qdq, 3, 4, 7
+    paddw      xm3, xm4
+
+    pslldq      m1, m0, 1
+    vpbroadcastd m0, [r2+7]
+    palignr     m0, m1, 1
+    pshufb      m1, m0, [off(intra8x9_hu1)]
+    pshufb      m2, m0, [off(intra8x9_hu3)]
+    mova pred(8,0), m1
+    mova pred(8,1), m2
+    psadbw      m1, m5
+    psadbw      m2, m6
+    paddw       m1, m2
+    vextracti128 xm2, m1, 1
+    paddw      xm1, xm2
+    movhlps    xm2, xm1
+    paddw      xm1, xm2
+    mov        r2d, 0x1ff
+    kmovd       k3, r2d
+    vinserti128 m3, m3, xm1, 1        ; sads of modes 0-7 | hu
+    vmovdqu16   m2 {k3}{z}, [r3]
+    paddw       m3, m2
+    vmovdqu16 [r4] {k3}, m3
+    vpternlogd  m4, m4, m4, 0xff
+    vmovdqu16   m4 {k3}, m3           ; costs of modes 0-8, ones
+    vextracti128 xm2, m4, 1
+    pminuw     xm2, xm4
+    phminposuw xm2, xm2
+    vpbroadcastw m2, xm2
+    vpcmpeqw    k1, m4, m2
+    kmovd      r3d, k1
+    tzcnt      r3d, r3d
+    movd       r2d, xm2
+    movzx      r2d, r2w
+    shl        r3d, 16
+    or         r3d, r2d
+
+    mov        r2d, r3d
+    shr         r3, 16
+    shl         r3, 6
+    add         r1, 4*FDEC_STRIDE
+    mova       xm0, [rsp+r3+0x00]
+    mova       xm1, [rsp+r3+0x10]
+    mova       xm2, [rsp+r3+0x20]
+    mova       xm3, [rsp+r3+0x30]
+    movq   [r1+FDEC_STRIDE*-4], xm0
+    movhps [r1+FDEC_STRIDE*-2], xm0
+    movq   [r1+FDEC_STRIDE*-3], xm1
+    movhps [r1+FDEC_STRIDE*-1], xm1
+    movq   [r1+FDEC_STRIDE* 0], xm2
+    movhps [r1+FDEC_STRIDE* 2], xm2
+    movq   [r1+FDEC_STRIDE* 1], xm3
+    movhps [r1+FDEC_STRIDE* 3], xm3
+    mov        rsp, r6
+    mov        eax, r2d
+    RET
 ICL_LOW_END
 %endif ; ARCH_X86_64
 
