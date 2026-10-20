@@ -415,6 +415,7 @@ void x264_predict_16x16_init_mmx( int cpu, x264_predict_t pf[7] )
     {
 #if ARCH_X86_64
         pf[I_PRED_16x16_P]       = x264_predict_16x16_p_avx512icl;
+        pf[I_PRED_16x16_V]       = x264_predict_16x16_v_avx512icl;
 #endif
     }
 }

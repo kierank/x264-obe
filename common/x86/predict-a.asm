@@ -101,6 +101,7 @@ pw_filt_fixtr:  dw 0,1,2,3,4,5,6,7,7,7,7,7,7,7,7,7
 pw_filt_nop:    dw 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 pw_filt_r:      dw 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
 pw_filt_l:      dw 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+pq_rowpair_icl: dq 0, 8, 16, 24, 64, 72, 80, 88
 %else
 pb_filt_left:   db 55,63,63,55,47,39,31,23,15,7,71,72,0,0,0,0
 pb_filt_r:      db 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
@@ -2881,6 +2882,81 @@ PREDICT_16x16_DC_128
 INIT_YMM avx
 PREDICT_16x16_DC_128
 %endif
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 16x16 v, h, dc: 8-bit rows y|y+1 in bytes 0-15|32-47 of one zmm,
+; one masked store per row pair. 10-bit rows are 64 bytes apart: dc sums by
+; vpdpwssd (rounding in the accumulator) and ymm row stores; v, h and dc_128
+; as vpscatterqq of two rows (8 qwords) at a time.
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH == 0
+%macro STORE16_PAIRS_ICL 1 ; zmm with a row in bytes 0-15 and 32-47
+    mov          r1, 0x0000ffff0000ffff
+    kmovq        k1, r1
+%assign %%y 0
+%rep 8
+    vmovdqu8 [r0+%%y*FDEC_STRIDE]{k1}, %1
+%assign %%y %%y+2
+%endrep
+%endmacro
+
+; xm0 = sum of the top row (dword 0)
+%macro SUM16_TOP_ICL 0
+    pxor        xm1, xm1
+    psadbw      xm0, xm1, [r0-FDEC_STRIDE]
+    punpckhqdq  xm1, xm0, xm0
+    paddd       xm0, xm1
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void predict_16x16_v( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_v, 1,2
+    vbroadcasti32x4 m0, [r0-FDEC_STRIDE]
+    STORE16_PAIRS_ICL m0
+    RET
+
+%else ; HIGH_BIT_DEPTH
+%macro STORE16_ROWS_ICL 1 ; ymm
+%assign %%y 0
+%rep 16
+    mova [r0+%%y*FDEC_STRIDEB], %1
+%assign %%y %%y+1
+%endrep
+%endmacro
+
+; ym0 = (sum of the top row + xm2) >> %1, broadcast
+%macro DC16_TOP_ICL 1 ; shift, xm2 = rounding
+    movu        ym0, [r0-FDEC_STRIDEB]
+    vextracti128 xm1, ym0, 1
+    paddw       xm0, xm1
+    vpdpwssd    xm2, xm0, [pw_1]{1to4}
+    pshufd      xm1, xm2, q1032
+    paddd       xm2, xm1
+    pshufd      xm1, xm2, q2301
+    paddd       xm2, xm1
+    psrld       xm2, %1
+    vpbroadcastw ym0, xm2
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void predict_16x16_v( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_v, 1,1
+    vbroadcasti64x4 m0, [r0-FDEC_STRIDEB]
+    movu         m7, [pq_rowpair_icl]
+%assign Y 0
+%rep 8
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+Y*2*FDEC_STRIDEB]{k1}, m0
+%assign Y Y+1
+%endrep
+    RET
+
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
 ; void predict_8x8c_dc_left( pixel *src )
