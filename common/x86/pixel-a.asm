@@ -3064,7 +3064,6 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
 ; xop already has fast horizontal sums
 %if cpuflag(avx512icl) && HIGH_BIT_DEPTH==0
     pmaddwd    xm10, [pw_1]
-    HADDUWD     xm0, xm1
     punpcklqdq  xm1, xm0, xm10
     punpckhqdq  xm0, xm10
     paddd       xm0, xm1    ;  sa8d1  sa8d2  satd1  satd2
