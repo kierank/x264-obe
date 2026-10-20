@@ -357,6 +357,12 @@ weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
 weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
 ; ssim_end4 avx512icl: vpermi2d of blocks 0 1 | 2 3 to s1 | s2 and ss | s12
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+; 8-bit weightp_stats8 zmm: as weightp_mm_perm for blocks 0-15 (lane i: blocks 2i 2i+1 8+2i 9+2i)
+weightp_mm_perm16: db  0,0, 64,0,  4,0, 68,0, 16,0, 80,0, 20,0, 84,0
+                   db 32,0, 96,0, 36,0,100,0, 48,0,112,0, 52,0,116,0
+                   db  8,0, 72,0, 12,0, 76,0, 24,0, 88,0, 28,0, 92,0
+                   db 40,0,104,0, 44,0,108,0, 56,0,120,0, 60,0,124,0
+weightp_sum_perm16: db  0, 2, 4, 6, 8,10,12,14,16,18,20,22,24,26,28,30
 
 SECTION .text
 
@@ -11328,11 +11334,18 @@ cglobal weightp_sum8_nv, 6,8,16
 ; 8-bit weightp_stats8 on bytes: a ymm row is 4 blocks; psadbw block sums, pminub, pmaxub.
 ; 8 blocks a pass. Then per block: the qword halves of two registers by shufps (lane 0
 ; blocks 0 1 4 5, lane 1 blocks 2 3 6 7) and the dword's bytes by shifts.
+; zmm: 16 blocks a pass, lane i blocks 2i 2i+1 8+2i 9+2i.
 ;-----------------------------------------------------------------------------
-%macro WEIGHTP_STATS8_B 0
-cglobal weightp_stats8, 6,8,13
+%macro WEIGHTP_STATS8_B 0-1 ; name suffix
+cglobal weightp_stats8%1, 6,8,13
     pxor       m8, m8
-%if cpuflag(avx512icl)
+%if mmsize == 64
+    movu       m9, [weightp_mm_perm16]
+    pmovzxbd  m10, [weightp_sum_perm16]
+    mov        r6, 0x5555555555555555
+    kmovq      k1, r6
+    vpternlogd m12, m12, m12, 0xff
+%elif cpuflag(avx512icl)
     movu       m9, [weightp_mm_perm]
     movu      m10, [weightp_sum_perm]
     mov       r6d, 0x55555555
@@ -11359,7 +11372,7 @@ cglobal weightp_stats8, 6,8,13
     mov       r7d, r5d
 .loopy:
     movu       m6, [r6]
-    movu       m7, [r6+32]
+    movu       m7, [r6+mmsize]
     psadbw    m11, m6, m8
     paddd      m0, m11
     pminub     m2, m6
@@ -11399,10 +11412,10 @@ cglobal weightp_stats8, 6,8,13
 %endif
     movu     [r1], m2
     movu     [r0], m0
-    add        r0, 32
-    add        r1, 32
-    add        r2, 64
-    sub       r4d, 8
+    add        r0, mmsize
+    add        r1, mmsize
+    add        r2, 2*mmsize
+    sub       r4d, mmsize/4
     jg .loopx
     RET
 %endmacro
@@ -11424,6 +11437,9 @@ WEIGHTP_SUM8_NV
 %if HIGH_BIT_DEPTH == 0
 INIT_YMM avx512icl
 WEIGHTP_STATS8_B
+INIT_ZMM avx512icl
+WEIGHTP_STATS8_B _zmm
+INIT_YMM avx512icl
 
 ; avx512icl 8-bit weightp_sum8(_clip): on words, x * scale + round fits (scale 0-127):
 ; pmullw, paddw, psraw [, + offset, clip], then vpdpwssd by 1 into the block's dword pairs.
