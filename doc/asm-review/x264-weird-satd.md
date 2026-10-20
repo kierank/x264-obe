@@ -298,3 +298,123 @@ win64 assembly checked too: xmm6-13 are saved in the ICL_LOW kernels.
 3. checkasm on Zen 4, to confirm no VEX AVX-VNNI (SIGILL check). The objdump
    check here found none.
 4. Optional: the phaddw lead above.
+
+## Round 2 (2026-10-20, wip/x264-weird2-satd on 67b4aff6)
+
+Kieran: "don't reject, move to zen5 if rack01 is too slow". Every round-1 row
+that was not dispatched and not on a zen5/ branch is written and dispatched at
+avx512icl here; rack01 (Zen 4) decides placement. Nothing was found to recover:
+the round-1 branch history (reflog of wip/x264-weird-satd) is linear, there are
+no satd stashes, and the round-1 WSL copies hold only the two encoding arms of
+708da2d3. Laptop timings: none taken.
+
+### Checks (every kernel)
+
+- **Driver** (laptop, WSL gcc + nasm, no x264 build): each kernel against the C
+  reference copied from common/pixel.c (satd, sa8d, hadamard_ac, mc_chroma +
+  satd, predict 4x4/8x8/8x16c + satd/sa8d), or, where a C reference needs the
+  predict/mc tables (x9, lowres, fenc_pre layouts), against the existing asm
+  that checkasm verifies against C (avx2, and a second level where it exists).
+  Inputs: random, PIXEL_MAX vs 0 both ways, random 0/PIXEL_MAX, every
+  difference +-PIXEL_MAX, small differences, ramps, all 1456 sa8d cosets
+  ((k & m) == t of the 6 coordinate bits, both signs), odd strides and offsets,
+  and the last element read placed against a PROT_NONE page. Weighted bi: every
+  weight -63..127, clipped extremes. x9/x3: ties (flat blocks, zero bitcosts)
+  and saturating bitcosts.
+- **ABI** (asm trampoline around every call): rbx/rbp/r12-r15 set to patterns
+  and compared after the call, rsp+8 64-byte aligned, k1-k7 random before every
+  call, XINUSE (xgetbv 1) bits 2 and 6 (ymm/zmm0-15 upper state) must be clear
+  at return. Positive controls: vzeroupper disabled -> flagged; a mov to ebx ->
+  flagged; each kernel's k-mask set-up replaced by nop -> killed. No kernel
+  relied on a stale k-mask.
+- **Mutants**: 2-5 per kernel (k-mask constants, shuffle immediates, table
+  entries, VNNI operands, clamps, store offsets), all killed except two
+  equivalent ones (a sign flip of a whole intermediate in 10-bit satd_4x4 and
+  in 10-bit intra_satd_x9_4x4: |x| sums are unchanged), replaced by killed ones.
+- **nasm 2.14.02**: every avx512icl function disassembles identically with
+  2.14.02 and 3.01 (after normalising satd_mcc's pre-existing cltq/movslq), at
+  both depths; win64 assembles with both. Nothing needs a newer nasm (no
+  vpshldv*/vpshrdv*). Every vpdpwssd/vpdpbusd is EVEX (objdump: 0 without 0x62).
+- **Unchanged code**: per-function disassembly against the previous tip for
+  the commits that turn functions into macros (satd_mcc, 10-bit
+  intra_sa8d_x9_8x8 / intra_satd_lowres, 10-bit intra_satd_x3): the avx2/avx512
+  versions are identical.
+- **checkasm** (laptop on AC, configure --bit-depth=all): checkasm8 and
+  checkasm10, seeds 1001, 2002, 3003, all pass at c5fbd079 (and at f5e859dc).
+
+### Rows
+
+| function | depth | round-1 decision | round-2 action | commit | driver | nasm 2.14.02 |
+|---|---|---|---|---|---|---|
+| pixel_satd 4x4 | 8 | rejected (cold) | written: avx512 packed layout, last stage SATD_ICL_HMAX (vpblendmw + vpshldd + pmaxsw) into one register, pmaddwd sum; xmm | 057e59b6 | pass, 1909 cases, 3 mutants | ok |
+| pixel_satd 4x8, 4x16 | 8 | rejected (cold) | written: as 4x4, ymm0-15 | 736fc50d, 79dd97c6 | pass, 1909 each, 4 mutants | ok |
+| pixel_satd 8x4 | 8 | rejected (cold) | written: as 4x4, ymm0-15 | 247bc99e | pass, 1909, 2 mutants | ok |
+| pixel_satd 16x16 | 10 | rejected (vertical mode) | written: VNNI tail; two passes fit signed words (2*2*8*1023 = 32736): pmaddwd after pass 2, {evex} vpdpwssd after pass 4, no HADDUWD | abc48e9a | pass, 1909, 2 mutants | ok |
+| pixel_satd 8x8, 8x16, 16x8 | 10 | rejected | not written: no widening to replace (one pmaddwd after <= 2 passes); the zmm 16x16/16x8 dropped in e770eb7e are on origin/zen5/hbd-avx512-sad8-satd (38959f89, dispatched there), not re-dispatched | - | - | - |
+| pixel_satd 4x4 | 10 | rejected (cold) | written: xmm, qword per row; vertical sumsub, qdq exchange, sumsub; horizontal vprold + paddw + vpsubw {odd}; last stage vpblendmd {even dwords} + vpshldq 32 + pmaxsw; replaces mmx2 | e5247bcd | pass, 1909, 6 mutants | ok |
+| pixel_satd 4x8, 4x16 | 10 | rejected (cold) | written: ymm, rows from vpbroadcastq + merge-masked vpbroadcastq | 0103199c, d68cf414 | pass, 1909 each, 4 mutants | ok |
+| pixel_satd 8x4 | 10 | rejected (cold) | written: ymm, lane exchange vperm2i128 + vinserti128 | 20cc26c0 | pass, 1909, 2 mutants | ok |
+| pixel_satd_avg2 16x16 | 10 | rejected | written: the satd 16x16 VNNI tail (8x8..16x8 have no widening) | 042f176a | pass, 1906, 2 mutants | ok |
+| pixel_satd_bi / bi4 16x16 | 10 | rejected | written: VNNI tail in SATD_BI's high bit depth body (8x8..16x8 have no widening) | 7430acaa, 360cd3eb | pass, 22416 each (all weights), 2+2 mutants | ok |
+| pixel_satd_fenc_pre_16x16 | 8 | rejected | written: zmm, one 64 byte load of four fenc rows, vshufi32x4 doubles rows into lanes (vpermb not needed: the duplication is 128-bit-lane granular) | 6055a3f0 | pass vs avx2, 2501, 1 mutant | ok |
+| pixel_satd_fenc_pre_8x8 | 8 | rejected | written: zmm, vpbroadcastq + three merge-masked vpbroadcastq | c7df4e45 | pass vs avx2, 2501 + guard, 3 mutants | ok |
+| pixel_satd_mcc | 8 | rejected | written: width 8 as mc_chroma's 4-tap in one zmm pass: masked 18-byte row loads, vinserti32x8 (register), vpermb quads, vpdpbusd with negated weights onto 64*fenc + 31 (negated difference, same satd), vpmovdw; satd_mcc became a macro | 4ee7e103 | pass vs C, 8880 (all dx/dy, extremes, guard), 4 mutants | ok |
+| pixel_satd_mcc | 10 | rejected | written: width 8 as vpermw word pairs + vpmaddwd and vpdpwssd (zmm), +32, psrad, vpmovdw | f5e859dc | pass vs C, 8880, 4 mutants | ok |
+| pixel_satd_mcc_fenc_pre | 8 | rejected | written: zmm, vpermb {even bytes}{z} straight to interleaved uv words, vpermi2q for the width 4 and 4x4 layouts | 7e3f4378 | pass vs avx2, 2502 + guard, 5 mutants | ok |
+| pixel_sa8d_16x16 | 8 | rejected (cold) | written: four sa8d_8x8_avx512icl transforms, two-chain pmaddwd/vpdpwssd dword fold (8x8 words <= 2*32*255) | 42c8f98d | pass, 1909 incl. cosets, 4 mutants | ok |
+| pixel_sa8d_satd_16x16 | 10 | rejected (~2 ops) | written: sa8d sum as two vpdpwssd chains, satd dwords kept in m7 (no spill) | bd0cd62b | pass, 1906, 3 mutants | ok |
+| pixel_hadamard_ac_8x8 | 8, 10 | rejected (phaddd, noise) | written: ymm0-15 keeps VEX phaddd; sa8d tail as two vpdpwssd chains (pw_2 = pw_1 + pw_1), 7 ops instead of 10 | c21c5e24 (8), d3c46460 (10) | pass, 1906 each, 3 mutants | ok |
+| pixel_hadamard_ac 16x16, 16x8 | 8 | rejected (vpermt2w loses) | written: the four TRANS d ord of the internal as vpermi2w + vpermt2w (hadac_icl_idx); x265 found such transposes slower, rack01 decides | 8db9f3f6 | pass, 1906 each, 3 mutants | ok |
+| pixel_hadamard_ac 8x16 | 8 | rejected | written: as 16x16 plus stacked rows from merge-masked vpbroadcastq | e4ba54d5 | pass, 1906, 1 mutant | ok |
+| intra_satd_x3_8x16c | 8 | rejected (4:2:2 8-bit) | written: two HMAX 8x8c halves | 53b83a19 | pass vs C, 16000, 3 mutants | ok |
+| intra_satd_x3_8x8c, 8x16c | 10 | rejected | written: H rows k and k+4 by merge-masked vpbroadcastw | 233dd10b, 44718455 | pass vs avx2, 16000 each, 1+1 mutants | ok |
+| intra_satd_x3_16x16 | 10 | rejected | written: ymm, two passes per signed word fold, vpmaddwd + {evex} vpdpwssd into ymm16-18, three chains; overrides the zmm avx512 one in the slot | 615a7c10 | pass vs avx2 and avx512, 16000 each, 3 mutants | ok |
+| intra_satd_x9_4x4 | 8 | rejected (phminposuw better) | written: psignw stages as vprold/pshufd + paddw + vpsubw {k}; k-mask argmin over nine costs (vpermw, vmovdqu16 {k}{z} bitcosts, pminuw + phminposuw, vpcmpeqw + kmovd + tzcnt) | 2047e495 | pass vs avx2 and avx, 20000 each incl. ties, 4 mutants (incl. tzcnt -> bsr) | ok |
+| intra_satd_x9_4x4 | 10 | (not in round 1) | written: as 8-bit on the X9H layout (three masked sign stages) | ab0080e7 | pass vs avx2, 20000, 4 mutants | ok |
+| intra_sad_x9_4x4 | 8 | rejected (subme <= 1) | written: x9b predictions, psadbw (2*sad, rows twice), or'd word slots, k-mask argmin. vdbpsadbw: its two dword windows per qword are at byte offsets 0-1 / 2-3, so only the edge-window modes (ddl, ddr, vl) map onto it, and all nine predictions are materialised for the fdec store anyway | 142f8174 | pass vs avx and ssse3, 20000 each, 4 mutants | ok |
+| intra_sad_x9_8x8 | 8 | rejected | written: avx2 version with the k-mask argmin and one vmovdqu16 {k3} satds store | e32265ab | pass vs avx2 and ssse3, 20000 each, 4 mutants | ok |
+| intra_satd_x3_4x4, intra_sa8d_x3_8x8 | 8 | rejected (x9 supersedes) | written (coordinator: reached at frame edges where predict_mode[8] < 0, lossless, --cpu-independent): x9b v/h/dc with masked sign stages; HMAX v+h pair and dc sa8ds | b43ecc53, f718823b | pass vs C and ssse3/sse2, 16000 each, 2+3 mutants | ok |
+| intra_sa8d_x9_8x8 | 10 | rejected (vertical) | written: .sa8d widening as two vpdpwssd chains (5 ops instead of 7, five calls) | 39f38b22 | pass vs avx2, 20000, 2 mutants | ok |
+| intra_satd_lowres | 10 | rejected (vertical) | written: P prediction in exact dwords by one zmm vpdpwssd + c per row, clipped to [0, PIXEL_MAX] (equal to the saturating words) | 5884983b | pass vs avx2, 2400 incl. clip-reaching gradients, 5 mutants | ok |
+| mmx2 .. avx/xop/atom versions | 8, 10 | rejected | skipped: superseded at dispatch by the avx2/avx512icl versions on every AVX-512 CPU (brief row 18) | - | - | - |
+| AVX2 phaddw -> pmaddwd + packssdw lead | 8, 10 | lead | not done (optional row 19, not an unusual instruction) | - | - | - |
+
+### Tails (kernels whose result feeds a branch)
+
+Ops after the last transform stage to eax, and their dependency depth:
+satd 4x4 (both depths) pmaddwd + HADDD(xmm) + movd: 6, depth 6 (avx2/avx: HADDW
+or HADDUW, 6-7). Small ymm satds: 8, depth 8 (the extract adds one). 10-bit
+16x16 satd/avg2/bi/bi4: vpdpwssd + HADDD + movd = 8, depth 8 (avx2: HADDUWD 4 +
+HADDD 6 + movd = 11, depth 9; the pass 1-2 pmaddwd is off the critical path).
+hadamard_ac_8x8 sa8d: 7 (avx2 10), depth 4 (two chains). x9 4x4 argmin: about
+13 ops, depth about 10 (avx2 phminposuw + cmov: 9, depth 7): the k-mask form
+is longer; it removes the separate v compare. sa8d_16x16 8-bit: paddd + HADDD +
+rounding: 9, depth 9.
+
+### Notes for rack01
+
+- The 10-bit satd_mcc width-8 path loads rows with vmovdqu16 zmm {18 words}
+  masks at arbitrary reference offsets (a 36-byte span, like the avx2 version's
+  two 32-byte loads); the 8-bit path uses ymm masked loads and a register
+  vinserti32x8. No per-row memory inserts into zmm.
+- intra_satd_x3_16x16 (10-bit): the ymm VNNI version overrides the zmm avx512
+  version, which won in situ against avx2 earlier; compare all three.
+- 8-bit hadamard_ac 16x16/16x8/8x16 is the vpermt2w transpose variant the x265
+  lesson expects to lose: measure, then zen5/ if slower.
+- zmm kernels (default x86inc permutation): satd_fenc_pre_16x16/8x8,
+  satd_mcc_fenc_pre. The rest are ymm0-15 (ICL_LOW) except the xmm satd_4x4s.
+
+### Bugs found
+
+- common/x86/pixel-a.asm SATDS_SSE2 (line 2581 before c5fbd079): at high bit
+  depth the ssse3/sse4/avx/xop instantiations built x264_10_pixel_satd_4x4_* from
+  the 8-bit code (movd loads of two pixels, pmaddubsw): wrong results (e.g. 2046
+  for a satd of 13184). Never dispatched (10-bit 4x4 used mmx2), so no output
+  ever changed; the condition comes from upstream (vertical==0 ||
+  HIGH_BIT_DEPTH). Fixed in c5fbd079 (not built at high bit depth).
+- Brief correction: 10-bit has intra_satd_x9_4x4 (avx2, 6d956833), so the
+  10-bit i4x4 decision runs x9, not satd_4x4; it got its own avx512icl version
+  (ab0080e7).
+- No overflow found in existing kernels at PIXEL_MAX under the coset, row,
+  column and checkerboard patterns (8-bit hadamard_ac 16x16/16x8/8x16 avx2,
+  sse2, ssse3 with their paddusw sums included).
