@@ -1278,6 +1278,33 @@ cglobal intra_sad_x3_16x16, 3,3,10
     punpcklqdq    xm0, xm1              ; left 0-15
     INTRA_SAD_X3_16x16_BODY
 
+; left column by two vpermi2b chains from 64 byte aligned fdec loads (fdec
+; at 64n, as the encoder's luma); else the pinsrb kernel
+cglobal intra_sad_x3_16x16_vp, 3,3,10
+    test          r1b, 63
+    jnz intra_sad_x3_16x16_avx512icl
+    mova           m0, [isad_lidx]
+    mova           m6, m0
+    kmovw          k1, [isad_lmask+0]
+    kmovw          k2, [isad_lmask+2]
+    kmovw          k3, [isad_lmask+4]
+    kmovw          k4, [isad_lmask+6]
+    kmovw          k5, [isad_lmask+8]
+    kmovw          k6, [isad_lmask+10]
+    mova           m2, [r1-64]
+    vpermi2b       m0 {k1}, m2, [r1]
+    mova           m4, [r1+192]
+    vpermi2b       m6 {k3}, m4, [r1+256]
+    mova           m2, [r1+64]
+    vpermi2b       m0 {k2}, m2, [r1+128]
+    mova           m4, [r1+320]
+    vpermi2b       m6 {k4}, m4, [r1+384]
+    vpermb         m6 {k5}, m6, [r1+448]
+    vmovdqu8       m0 {k6}, m6          ; left 0-15
+    movu          xm3, [r1-FDEC_STRIDE]
+    pxor          xm5, xm5
+    INTRA_SAD_X3_16x16_BODY
+
 ;-----------------------------------------------------------------------------
 ; int pixel_vsad( uint8_t *src, intptr_t stride, int height )
 ; R = { row 2k | row 2k+1 } (xmm load + k-merged vbroadcasti32x4), valignq
