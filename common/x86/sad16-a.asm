@@ -50,6 +50,9 @@ isadhbd_dcidx: times 4 db 0,1,0,1,0,1,0,1,4,5,4,5,4,5,4,5
                times 4 db 8,9,8,9,8,9,8,9,12,13,12,13,12,13,12,13
 ; chroma DC rounding: (s+2)>>2 = ((s>>1)+1)>>1, (s+4)>>3 = ((s>>2)+1)>>1
 isadhbd_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
+; 8x16c DC: { s0 s1 s2 s3 s4 s4 s5 s5 } -> { s0, s1, s3, s1, s4, s1, s5, s1 } + { s2, 0, 0, s3, 0, s4, 0, s5 }
+isadhbd_dcpa:  dd 0, 1, 3, 1, 4, 1, 6, 1
+isadhbd_dcpb:  dd 2, 0, 0, 3, 0, 4, 0, 6
 
 SECTION .text
 
@@ -1518,6 +1521,76 @@ cglobal intra_sad_x3_8x8c, 3,7,13
     paddw          m0, m4
     paddw          m1, m5
     paddw          m2, m6
+    pxor           m3, m3
+    SAD_X_HBD16_ZMM_END pw_1            ; DC H V
+    movq       [r2+0], xm0
+    pextrd     [r2+8], xm0, 2
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_8x16c( uint16_t *fenc, uint16_t *fdec, int res[3] )
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x3_8x16c, 3,7,15
+    INTRA_SAD_HBD_LEFT4 8, 0
+    INTRA_SAD_HBD_LEFT4 1, 1
+    INTRA_SAD_HBD_LEFT4 9, 2
+    INTRA_SAD_HBD_LEFT4 2, 3
+    punpcklqdq    xm8, xm1              ; left 0-7
+    punpcklqdq    xm9, xm2              ; left 8-15
+    movu          xm3, [r1-FDEC_STRIDEB]
+    INTRA_SAD_HBD_SUM4 1, 3, 8, 2       ; s0 s1 s2 s3
+    pmaddwd       xm2, xm9, [pw_1]
+    pshufd        xm3, xm2, q2301
+    paddd         xm2, xm3              ; s4 s4 s5 s5
+    vinserti32x4  ym1, ym1, xm2, 1
+    mov           r6d, 0xa9
+    kmovb          k1, r6d
+    mova          ym2, [isadhbd_dcpa]
+    vpermd        ym2, ym2, ym1
+    mova          ym3, [isadhbd_dcpb]
+    vpermd        ym3 {k1}{z}, ym3, ym1
+    paddd         ym2, ym3              ; s0+s2 s1 s3 s1+s3 s4 s1+s4 s5 s1+s5
+    vpsrlvd       ym2, ym2, [isadhbd_shift]
+    pxor          xm3, xm3
+    pavgw         ym2, ym3              ; dc0 .. dc7
+    vshufi32x4     m3, m2, m2, q1111
+    vshufi32x4     m2, m2, m2, 0
+    pshufb        m10, m2, [isadhbd_dcidx]    ; DC rows 0-3
+    pshufb        m11, m2, [isadhbd_dcidx+64] ; DC rows 4-7
+    pshufb        m12, m3, [isadhbd_dcidx]    ; DC rows 8-11
+    pshufb        m13, m3, [isadhbd_dcidx+64] ; DC rows 12-15
+    vbroadcasti32x4 m14, [r1-FDEC_STRIDEB]    ; V
+    vshufi32x4     m8, m8, m8, 0
+    vshufi32x4     m9, m9, m9, 0
+    INTRA_SAD_HBD_FENC4_K
+%assign isad_g 0
+%rep 4
+    INTRA_SAD_HBD_FENC4 7, isad_g
+%assign isad_dc 10+isad_g
+    psubw          m4, m7, m %+ isad_dc
+%if isad_g < 2
+    pshufb         m5, m8, [isadhbd_hidx8+isad_g*64]
+%else
+    pshufb         m5, m9, [isadhbd_hidx8+(isad_g-2)*64]
+%endif
+    psubw          m5, m7
+    psubw          m6, m7, m14
+%if isad_g == 0
+    pabsw          m0, m4
+    pabsw          m1, m5
+    pabsw          m2, m6
+%else
+    pabsw          m4, m4
+    pabsw          m5, m5
+    pabsw          m6, m6
+    paddw          m0, m4
+    paddw          m1, m5
+    paddw          m2, m6
+%endif
+%assign isad_g isad_g+1
+%endrep
+%undef isad_g
+%undef isad_dc
     pxor           m3, m3
     SAD_X_HBD16_ZMM_END pw_1            ; DC H V
     movq       [r2+0], xm0
