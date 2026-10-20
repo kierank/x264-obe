@@ -3349,6 +3349,23 @@ cglobal predict_8x%1c_v, 1,2
     CSTORE_PAIRS_ICL m0, %1
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_h( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_h, 1,2
+    mov          r1, 0xffffffff00000000
+    kmovq        k1, r1
+    mov          r1, 0x000000ff000000ff
+    kmovq        k2, r1
+%assign %%y 0
+%rep %1/2
+    vpbroadcastb ym0, [r0+(%%y+0)*FDEC_STRIDE-1]
+    vpbroadcastb  m0{k1}, [r0+(%%y+1)*FDEC_STRIDE-1]
+    vmovdqu8 [r0+%%y*FDEC_STRIDE]{k2}, m0
+%assign %%y %%y+2
+%endrep
+    RET
+
 %endmacro ; PREDICT_C_ICL
 
 PREDICT_C_ICL 8
@@ -3374,6 +3391,24 @@ cglobal predict_8x%1c_v, 1,1
     kxnorb       k1, k1, k1
     vpscatterqq [r0+m7+%%y*FDEC_STRIDEB]{k1}, m0
 %assign %%y %%y+4
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_h( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_h, 1,3
+    vpbroadcastd m4, [pw_16]
+%assign %%y 0
+%rep %1/8
+    LEFT8_ICL    m1, %%y
+    movu         m2, [pw_c_h_icl]
+    vpermw       m0, m2, m1
+    paddw        m2, m4
+    vpermw       m3, m2, m1
+    STORE4_ICL    0, %%y
+    STORE4_ICL    3, %%y+4
+%assign %%y %%y+8
 %endrep
     RET
 
