@@ -4524,6 +4524,23 @@ cglobal hadamard_ac_8x8%1
 %else
     pand      m1, [mask_ac4b]
 %endif
+%if HIGH_BIT_DEPTH && cpuflag(avx512icl)
+    ; vpdpwssd for pmaddwd + paddd, two chains; m12 = pw_1, m13 = pw_2
+    vpbroadcastd m12, [pw_1]
+    pmaddwd   m1, m12
+    ABSW      m2, spill0
+    pmaddwd  m11, m3, m12
+    ABSW      m3, spill1
+    vpdpwssd  m1, m2, m12
+    ABSW      m2, spill2
+    vpdpwssd m11, m3, m12
+    ABSW      m3, m6, m6
+    vpdpwssd  m1, m2, m12
+    ABSW      m2, m7, m7
+    vpdpwssd m11, m3, m12
+    vpdpwssd  m1, m2, m12
+    paddd     m1, m11
+%else
     AC_PREP   m1, [pw_1]
     ABSW      m2, spill0
     AC_PADD   m1, m3, [pw_1]
@@ -4536,6 +4553,7 @@ cglobal hadamard_ac_8x8%1
     ABSW      m2, m7, m7
     AC_PADD   m1, m3, [pw_1]
     AC_PADD   m1, m2, [pw_1]
+%endif
     paddw     m3, m7, spill2
     psubw     m7, spill2
     mova  [rsp+gprsize+mmsize*2], m1 ; save satd
@@ -4553,6 +4571,18 @@ cglobal hadamard_ac_8x8%1
     mova      m4, spill1
     HADAMARD %%x, amax, 1, 5, 6, 7
     HADAMARD %%x, sumsub, 0, 4, 5, 6
+%if HIGH_BIT_DEPTH && cpuflag(avx512icl)
+    paddw    m13, m12, m12
+    pmaddwd   m2, m13
+    vpdpwssd  m2, m3, m13
+    ABSW      m4, m4, m7
+    pand      m0, [mask_ac8]
+    ABSW      m0, m0, m7
+    pmaddwd   m4, m12
+    vpdpwssd  m4, m0, m12
+    vpdpwssd  m2, m1, m13
+    paddd     m2, m4
+%else
     AC_PREP   m2, [pw_1]
     AC_PADD   m2, m3, [pw_1]
     AC_PADD   m2, m1, [pw_1]
@@ -4566,6 +4596,7 @@ cglobal hadamard_ac_8x8%1
     ABSW      m0, m0, m7
     AC_PADD   m2, m4, [pw_1]
     AC_PADD   m2, m0, [pw_1]
+%endif
     mova [rsp+gprsize+mmsize], m2 ; save sa8d
     SWAP       0, 2
     SAVE_MM_PERMUTATION
@@ -5298,6 +5329,8 @@ SATD_BI  8,  8, 1
 %if ARCH_X86_64
 INIT_YMM avx2
 SA8D_SATD
+
+%macro HADAMARD_AC_HBD_YMM 0
 HADAMARD_AC_SSE2
 
 ; 8x16: lane 0 is the top 8x8, lane 1 the bottom one, one pass like 16x8
@@ -5321,6 +5354,12 @@ cglobal pixel_hadamard_ac_8x16, 2,5,11
     add  rax, rdx
     mov  rsp, r3
     RET
+%endmacro
+
+HADAMARD_AC_HBD_YMM
+INIT_YMM avx512icl
+HADAMARD_AC_HBD_YMM
+INIT_YMM avx2
 
 ; 16 pixel rows: lane 0 is pix[0], lane 1 is pix[8], the 8x8 transform is lane-local
 cglobal pixel_sa8d_16x8_internal

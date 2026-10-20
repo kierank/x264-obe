@@ -1267,6 +1267,13 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        INIT2( hadamard_ac, _avx512icl );
+        pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx512icl;
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
