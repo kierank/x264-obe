@@ -177,3 +177,90 @@ vpermt2w, vpermi2w and vextracti32x4 all assemble with 2.14.02 to the same bytes
 - checkasm 3 seeds and the 12-cell md5 matrix at nasm 2.14.02 and its successor.
 - No zen5/ branch: no kernel here was slower on the laptop, and none was written as zmm
   (the reasons are in the table).
+
+## Round 2 (2026-10-20)
+
+Rule: every candidate is written and dispatched at avx512icl; rack01 decides, and
+Kieran moves the losers to zen5/. Branch wip/x264-weird2-mc on
+origin/wip/x264-weird-sa8d8 (67b4aff6). One commit per kernel.
+
+Gates per kernel:
+- A standalone C driver (WSL gcc, objects from nasm 3.01) checks the kernel against the C
+  reference copied from common/*.c. Every call goes through x264_checkasm_call (callee-saved
+  GPRs) with random k1-k7 loaded before it, and XINUSE is checked after it (no dirty ymm/zmm0-15).
+- The drivers cover random data, 0/PIXEL_MAX/alternating/sign patterns, every width, height
+  and pointer alignment the callers use, odd strides, and limit parameters.
+- Input and output row ends are placed against PROT_NONE pages, and a canary checks that
+  nothing is written outside what C writes.
+- Mutations: at least three single-instruction or table edits per kernel, each FAILS or
+  faults. Deleting each kernel's k-mask setup also fails, so no kernel relies on a stale mask.
+- nasm 2.14.02: every changed function disassembles the same as with nasm 3.01. The only
+  difference anywhere is cltq vs movslq %eax,%rax, an encoding of the same instruction in
+  the existing MC_CHROMA_START macro.
+- mc-c.c is compiled at both depths, and every *_avx512icl symbol it references exists in
+  the assembled objects. The 406 pre-existing functions of mc-a/mc-a2 disassemble
+  unchanged, except the fixed avx2 integral_init4h/8h.
+- On AC power: x264 --bit-depth=all was built at 2d221b50, 2d0ed692, dba5fcf9, c697ddd9,
+  23c97c12 and 3bda5c57. checkasm8 and checkasm10 pass seeds 1001/2002/3003 at each
+  (2d221b50 with the eab2461e checkasm fix).
+- No encodes on the laptop: the md5 identity check against 67b4aff6 is rack01's.
+
+| function | round-1 decision | round-2 action | commit | driver result | nasm 2.14.02 ok? |
+|---|---|---|---|---|---|
+| hpel_filter 8-bit (fused v/c/h + copy) | rejected (analysed) | written: H by 8 vpdpbusd (4 phase accumulators) on valignq + immediate vpshrdq windows; c by 6 {evex} vpdpwssd (even/odd accumulators, odd taps <<6), exact (S+512)>>10; v as avx2 (vshufi64x2 lane fix) | 86e98e9b | pass, 6000 cases (widths 32-320, every src misalignment, h 1-8, 9 patterns incl. v/c/h extremes, copy variant); written bytes identical to avx2; mutations: H window shift, c tap, c shift, valignq, vshufi64x2 imm all fail | yes |
+| mc_chroma 8-bit | rejected (analysed) | written: zmm two rows, vpermi2b gathers {s[2x],s[2x+2],t[2x],t[2x+2]}, {evex} vpdpbusd vs (cA,cB,cC,cD), (sum+32)>>6 exact, vpermt2b pack; masked loads (2w+2 bytes) and stores (w bytes) | e6faa772 | pass, 100k cases (w 2/4/8, h 2-16, mv +-32, dst strides 8/16/32, interleaved u/v) + PROT_NONE source end; mutations: shift, window index, store mask, load mask, weight pack all fail | yes |
+| mc_weight/offsetadd/offsetsub 8-bit w4-w20 | rejected | written: masked rows, both rows in one register via masked vpbroadcastd/q or vinserti32x4 (w12 masked 12-byte loads, 3f38166e), w20 one row per register under a 20-byte mask; pmulhrsw (ssse3 cache) + pmaxsw 0 + vpmovuswb; offsets paddusb/psubusb. vpdpbusd (src,1)x(scale,offset) is not exact: (1<<(denom-1))+(offset<<denom) does not fit a signed byte tap | 6b1955e1, 3f38166e | pass, 400k cases (scale -128..127 incl. limits, offset -128..127, denom 0-7, in place, guards); mutations: clip, second-row address, w12 mask, shift, load offset all fail | yes |
+| weight_plane 8-bit (none dispatched before) | (in the weight row) | written: zmm rows (weights 32 px as words, offsets 64 px), masked tail; weight_plane_icl8 | 3bda5c57 | pass, 30k planes (w 8-480, even h, both strides, guards); mutations: tail mask width, column step, signed pack, mask setup all fail | yes |
+| mc_weight family 10-bit | rejected | written: new x264_weight_cache_icl keeps every scale (avx2 sends negative/large to SSE2); even/odd pixels by two {evex} vpdpwssd vs (scale,0)/(0,scale) from the dword bias, psrad denom, packusdw+pminuw, pshufb; offsets on the mmx2 cache; w4/w8/w16 two rows per register by masked broadcasts, w12/w20 word masks; zmm weight_plane with masked tail | 2d221b50 (+ checkasm eab2461e) | pass, 300k + 20k planes, scale -128..127, offset -128..127, denom 0-7, guards; mutations: tap shift, psrad, clip, interleave table, row mask, plane tail mask, second-row op, second-row address all fail | yes |
+| mc_weight_avg/offset*_avg (fused qpel avg) | rejected | written both depths: pavg of src2's rows (same masked row packing) then the avx512icl op; 8-bit w12 = w16 kernel as at avx2 (checkasm expects it); weightavgfn from x264_weight_cache_icl8 / _icl | 2d0ed692 | pass, 300k cases per depth incl. odd heights 1-17, guards; mutations: pavg operand, src2 row address, src2 advance (both depths) fail | yes |
+| pixel_avg 8-bit 16x16, 4x16/4x8/4x4/4x2 | rejected (analysed) | written: biweight by two {evex} vpdpbusd (even (w1,w2,0,0), odd (0,0,w1,w2)), psrad/pslld 10 + vpblendmw, packuswb; w16 two rows per ymm (masked vbroadcasti32x4), w4 two rows per xmm (masked vpbroadcastd); weight-32 4xN gets an EVEX pavgb kernel (mmx2 read 8 bytes of src2 rows) | 3a150295 | pass, 300k cases, weights -63..127 and 32, guards, odd strides; mutations: odd shift, blend mask, odd taps, pavgb, src2 row address fail | yes |
+| pixel_avg 10-bit (all sizes) | rejected | written: biweight (s1,s2) pairs x (w1,w2) by two {evex} vpdpwssd from the rounding, psrad 6, packusdw+pminuw (exact for -64..128); pavgw for weight 32; two rows per xmm/ymm/zmm by masked broadcasts | dba5fcf9 | pass, 300k cases, guards; mutations: shift, weight pack, clip, row mask, src2 stride, mask setup fail | yes |
+| pixel_avg2_w4..w20 (both depths) + mc_luma/get_ref | rejected | written: 4/8/16/32-byte rows two per register by masked broadcasts, 12/20/24/40-byte rows under byte masks; exact width reads/writes; new avx512icl mc_luma/get_ref and avg wtab both depths (dispatched last: the AVX2 get_ref after the depth blocks overrode it) | cb7b11af | pass, 300k cases per depth, guards; mutations: row masks, src2 address, broadcast address fail | yes |
+| mc_copy_w4/w8/w16 (both depths) | rejected | written: two rows per register by masked broadcasts (10-bit w16 per zmm); copy[], copy_16x16_unaligned and the mc_luma copy table | 5aa84e6d | pass, 200k cases per depth, guards; mutations: address, masks, pextrd lane fail | yes |
+| store_interleave_chroma 8-bit | rejected | written: two rows per ymm, movq + masked vpbroadcastq of u and v, one vpermt2b (pb_ilv_icl) | 917f048b | pass, 100k cases (h 2-16, u/v layouts), guards; mutations: src row, table, mask fail | yes |
+| frame_init_lowres_core (8/10-bit), lowres_core8 | dispatched ymm (round 1) | written zmm with masked tails, OVERRIDES the round-1 ymm slots (kept assembled): writes exactly the ymm kernels' extent (width rounded to 32 bytes, core8 to 16 px), tail loads only the first half | 64c68f3e | pass, 6000 runs x (core, core8) incl. byte-identical whole buffers vs the round-1 ymm kernel and guards on source and every plane; mutations: rounding, tail mask, odd table, lowres8 table, core8 mask, row address fail | yes |
+| integral_init4h/8h (8-bit) | rejected | written: log-step sums (a=p+p1, 4-sum=a+a2, 8-sum=s4+s4[x+4]) on vpmovzxbw zmm with valignq + immediate vpshrdq windows; reads what avx2 reads | 4bd3a682 | pass, vs C and vs the fixed avx2 on the whole written region, guards; mutations: window, 8-sum shift fail | yes |
+| integral_init4v/8v (both depths) | rejected | written: zmm; 4v's x+4 window a valignq with a qword load (avx2 reads 8 bytes past too) | 4bd3a682 | pass, vs C and vs avx2/sse2 whole region, guards; mutations: valignq, operand, address fail | yes |
+| mbtree_propagate_list | rejected (analysed) | written: mbtree_propagate_list_active (vptestmw, register vpcompressw, masked store of popcnt words); the C clip-add loop runs only over those entries, in order. vpconflictd not used (overlapping idx0/idx0+1 saturating adds) | c697ddd9 | pass: active lists 20k (len 1-260, both lists, densities, guards); 4000 rows ref_costs byte-identical to the avx512 wrapper, within the existing +-1 of C; mutations fail/fault | yes |
+| plane_copy_deinterleave_rgb | rejected (no RGB in OBE) | written: masked load of 16*pw bytes, one vpermb, masked tail (exact w px) | 23c97c12 | pass, 20k cases pw 3/4, guards on source and all planes; mutations: table, masks, step, extract fail | yes |
+| mc_chroma 10-bit zmm | rejected (dropped by d0395c5b) | zen5: local branch zen5/x264-weird2-mc-chroma-hbd-zmm fc7b6ca5 (on 67b4aff6), MC_CHROMA_HBD INIT_ZMM avx512 instantiated and dispatched, not pushed | fc7b6ca5 (zen5, local) | pass, 100k cases + guards (width 2 compared on its 2 px: mc_chroma_avx); mutations: valignq, row insert fail; checkasm8/10 x3 pass on that branch | yes |
+| load_deinterleave_chroma 8-bit / 10-bit | rejected | skipped: 8-bit avx512 already dispatched; 10-bit vpermw exists on origin/zen5/asm-avx512-dblk-deint | - | - | - |
+| hpel_filter 10-bit | rejected | skipped: VNNI exists on origin/zen5/asm-vnni and origin/zen5/asm-avx512vl-regs | - | - | - |
+| plane_copy, memcpy_aligned, memzero_aligned, mbtree_propagate_cost | rejected | skipped: already AVX-512 dispatched | - | - | - |
+| plane_copy_deinterleave_v210 | rejected | skipped: OBE x264 gets no v210 input (Kieran) | - | - | - |
+| prefetch_fenc_420/422, prefetch_ref | rejected | skipped: prefetch instructions only, no data path | - | - | - |
+| mbtree_fix8_pack/unpack | n/a | skipped: not in this fork | - | - | - |
+| plane_copy_interleave, plane_copy_deinterleave, 10-bit store_interleave_chroma | dispatched (round 1) | unchanged | - | - | - |
+
+### nasm
+
+Nothing new needs nasm > 2.14.02. vpdpbusd/vpdpwssd ({evex}), vpshrdq (immediate),
+valignq, vpermb, vpermi2b, vpermt2b, vpermi2w, vpermt2w, vpcompressw, vptestmw,
+vpmovuswb, vpmovzxbw and every masked load and store assemble with 2.14.02 to the
+same functions as 3.01. None of the variable vpshldv*/vpshrdv* are used.
+
+### Existing asm bugs found
+
+1. **Fixed (594505d0): 8-bit avx2 integral_init4h/8h column order** (mc-a2.asm
+   INTEGRAL_INIT4H/8H, mmsize==32). The row was loaded as one ymm plus one at x+8, and the
+   ymm mpsadbw sums each lane on its own. So each 32-column block was stored as
+   x+0..7, x+16..23, x+8..15, x+24..31.
+   - Reached by --me esa/tesa integral images on AVX2 CPUs.
+   - checkasm called the functions with sum+stride but compared only row 0, so the test
+     could not fail; it now also compares row 1.
+2. **Fixed in checkasm (eab2461e): the weight_plane test** hard-coded which scales the
+   avx2 cache sends to SSE2. The avx512icl cache handles them, so the test now compares
+   those rows with C instead.
+3. **Not fixed: 10-bit mc_chroma_avx2 (and the dropped zmm) loop4/loop8** load one source
+   row past the last row they use (row h+1). This was found by putting the source end
+   against a PROT_NONE page: it faults in x264_10_mc_chroma_avx2.loop4. Harmless on padded
+   frames.
+4. **Not fixed: pixel_avg_w4_mmx2** (AVG_FUNC 4) reads 8 bytes per 4-wide src2 row
+   (pavgb mm, [mem]). The new avx512icl 4xN path reads 4.
+5. **Not fixed: commit message mismatch in d0395c5b.** The message names
+   mbtree_propagate_list as 1.60x slower, but the commit does not drop it: the avx512
+   version is still dispatched, so no zen5 branch was made for it.
+
+### zen5 branches (local, not pushed)
+
+- zen5/x264-weird2-mc-chroma-hbd-zmm fc7b6ca5: 10-bit mc_chroma avx512 (zmm) re-enabled.
