@@ -9797,6 +9797,116 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
     RET
 
 ;-----------------------------------------------------------------------------
+; void intra_satd_x3_4x4( uint8_t *fenc, uint8_t *fdec, int res[3] ) (V, H, DC)
+; The v, h and dc of intra_satd_x9_4x4_avx512icl, without the stores.
+;-----------------------------------------------------------------------------
+cglobal intra_satd_x3_4x4, 3,4,16
+    mov         r3d, 0xaaaa
+    kmovd        k4, r3d
+    mov         r3d, 0xf0f0
+    kmovd        k5, r3d
+    movu        xm1, [r1-1*FDEC_STRIDE-8]
+    pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
+    pinsrb      xm1, [r1+2*FDEC_STRIDE-1], 1
+    pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
+    pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
+    pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+    pxor        xm4, xm4
+    pshufb      xm2, xm1, [intrax9a_dc]
+    psadbw      xm2, xm4
+    psrlw       xm2, 2
+    pavgw       xm2, xm4
+    vpbroadcastb m2, xm2              ; dc
+    vpermq       m1, m1, q1010
+    movd        xm8, [r0+0*FENC_STRIDE]
+    pinsrd      xm8, [r0+1*FENC_STRIDE], 1
+    movd        xm9, [r0+2*FENC_STRIDE]
+    pinsrd      xm9, [r0+3*FENC_STRIDE], 1
+    vinserti128  m8, m8, xm9, 1
+    punpckldq    m8, m8
+    vbroadcasti128 m11, [hmul_4p]
+    pmaddubsw    m8, m11
+    pshufb       m9, m1, [x9b4_v]
+    pshufb      m10, m1, [x9b4_h]
+    X9B_SATD_ICL  9, 3
+    X9B_SATD_ICL 10, 3
+    X9B_SATD_ICL  2, 3
+    vperm2i128   m3, m9, m9, 0x01
+    pmaxsw       m9, m3               ; v | v
+    X9B_MERGE    10, 2, 3             ; h | dc
+    vpbroadcastd m4, [pw_1]
+    pmaddwd      m9, m4
+    pmaddwd     m10, m4
+    phaddd      m10, m9               ; h h v v | dc dc v v
+    vextracti128 xm3, m10, 1
+    phaddd      xm10, xm3             ; h v dc v
+    pshufd      xm10, xm10, q3201     ; v h dc
+    movq       [r2], xm10
+    pextrd   [r2+8], xm10, 2
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_sa8d_x3_8x8( uint8_t *fenc, uint8_t edge[36], int res[3] ) (V, H, DC)
+; The v | h and dc sa8ds of intra_sa8d_x9_8x8_avx512icl (HMAX), inline; dc
+; rows are all the same, so their first stage is computed once.
+;-----------------------------------------------------------------------------
+cglobal intra_sa8d_x3_8x8, 3,4,16, 0x100
+    %define fenc_buf rsp
+    mov         r3d, 0x5555
+    kmovd        k1, r3d
+    mova        m15, [hmul_8p]
+%assign x9i 0
+%rep 8
+    vpbroadcastq m %+ x9i, [r0+x9i*FENC_STRIDE]
+    pmaddubsw    m %+ x9i, m15
+    mova [fenc_buf+x9i*32], m %+ x9i
+%assign x9i x9i+1
+%endrep
+    movu        xm1, [r1+7]
+    vinserti128  m1, m1, [r1+16], 1
+    pxor        xm0, xm0
+    psadbw       m5, m1, m0
+    vextracti128 xm2, m5, 1
+    paddw       xm5, xm2
+    psrlw       xm5, 3
+    pavgw       xm5, xm0
+    vpbroadcastb m5, xm5              ; dc
+    pmaddubsw   m13, m5, m15          ; dc, first stage
+    vpermq      m12, m1, q1032        ; v | h
+%assign x9i 0
+%rep 8
+    pshufb       m %+ x9i, m12, [x9b8_vh+x9i*32]
+    pmaddubsw    m %+ x9i, m15
+    psubw        m %+ x9i, [fenc_buf+x9i*32]
+%assign x9i x9i+1
+%endrep
+    SA8D_X9_HMUL
+    paddw        m0, m1
+    paddw        m2, m3
+    paddw       m14, m0, m2           ; v | h
+%assign x9i 0
+%rep 8
+    psubw        m %+ x9i, m13, [fenc_buf+x9i*32]
+%assign x9i x9i+1
+%endrep
+%undef x9i
+    SA8D_X9_HMUL
+    paddw        m0, m1
+    paddw        m2, m3
+    paddw        m0, m2               ; dc | dc
+    phaddw      m14, m0
+    phaddw      m14, m14
+    phaddw      m14, m14              ; v dc .. | h dc ..
+    pxor        xm1, xm1
+    pavgw       m14, m1
+    vextracti128 xm1, m14, 1
+    punpcklwd   xm0, xm14, xm1        ; v h dc dc
+    pmovzxwd    xm0, xm0
+    movq       [r2], xm0
+    pextrd   [r2+8], xm0, 2
+    RET
+
+;-----------------------------------------------------------------------------
 ; int intra_sad_x9_4x4( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts )
 ; The predictions of intra_satd_x9_4x4_avx512icl (rows twice per lane), psadbw
 ; against fenc in the same layout (2*sad per mode), mode k's sums or'd into
