@@ -1306,6 +1306,16 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sa8d[PIXEL_8x8]   = x264_pixel_sa8d_8x8_avx512icl;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        /* ymm VNNI sad_x3/x4, over the zmm ones above */
+        pixf->sad_x3[PIXEL_16x16] = x264_pixel_sad_x3_16x16_avx512icl;
+        pixf->sad_x3[PIXEL_16x8]  = x264_pixel_sad_x3_16x8_avx512icl;
+        pixf->sad_x3_min[PIXEL_16x16] = x264_pixel_sad_x3_min_16x16_avx512icl;
+        pixf->sad_x3_min[PIXEL_16x8]  = x264_pixel_sad_x3_min_16x8_avx512icl;
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
