@@ -2780,7 +2780,9 @@ static int check_mc( int cpu_ref, int cpu_new )
         call_c1( mc_c.name, __VA_ARGS__ );\
         sum = (uint16_t*)buf4;\
         call_a1( mc_a.name, __VA_ARGS__ );\
+        /* row 0 (v), row 1 (h: sum+stride) */\
         if( memcmp( buf3, buf4, (stride-8)*2 ) \
+            || memcmp( buf3+2*stride, buf4+2*stride, (stride-8)*2 ) \
             || (size>9 && memcmp( buf3+18*stride, buf4+18*stride, (stride-8)*2 )))\
             ok = 0;\
         call_c2( mc_c.name, __VA_ARGS__ );\
