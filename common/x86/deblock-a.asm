@@ -936,6 +936,36 @@ cglobal deblock_h_luma_mbaff, 5,6,15
     RET
 
 ;-----------------------------------------------------------------------------
+; void deblock_h_luma_intra_mbaff( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+; 8 rows: TRANSPOSE8x8W both ways, LUMA_INTRA10_ICL on xmm
+INIT_XMM avx512icl
+cglobal deblock_h_luma_intra_mbaff, 4,6,16
+    add         r1, r1
+    lea         r5, [r1*3]
+    lea         r4, [r0+r1*4]
+    movu        m3, [r0-8]
+    movu        m2, [r0+r1-8]
+    movu        m1, [r0+r1*2-8]
+    movu        m0, [r0+r5-8]
+    movu        m4, [r4-8]
+    movu        m5, [r4+r1-8]
+    movu        m6, [r4+r1*2-8]
+    movu        m7, [r4+r5-8]
+    TRANSPOSE8x8W 3, 2, 1, 0, 4, 5, 6, 7, 8
+    LUMA_INTRA10_ICL
+    TRANSPOSE8x8W 3, 2, 1, 0, 4, 5, 6, 7, 8
+    movu        [r0-8], m3
+    movu     [r0+r1-8], m2
+    movu   [r0+r1*2-8], m1
+    movu     [r0+r5-8], m0
+    movu        [r4-8], m4
+    movu     [r4+r1-8], m5
+    movu   [r4+r1*2-8], m6
+    movu     [r4+r5-8], m7
+    RET
+
+;-----------------------------------------------------------------------------
 ; void deblock_luma_mb( uint16_t *pix, intptr_t stride, uint8_t bs[2][8][4],
 ;                       x264_deblock_edge_t e[3], int edges )
 ; All luma edges of one macroblock: vertical edges left to right on a transposed
