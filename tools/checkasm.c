@@ -4552,6 +4552,10 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     h.mb.b_interlaced = i;\
                     x264_cabac_t cb[2];\
                     x264_cabac_context_init( &h, &cb[0], (j&32) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>6)%3 );\
+                    /* rd, j&16: every context state random, so table lookups see all 128 states */\
+                    if( rd && (j&16) )\
+                        for( int k = 0; k < 1024; k++ )\
+                            cb[0].state[k] = rand()&127;\
                     memcpy( cb[1].state, cb[0].state, 1024 );\
                     x264_cabac_encode_init( &cb[0], bitstream[0], bitstream[0]+0xfff0 );\
                     x264_cabac_encode_init( &cb[1], bitstream[1], bitstream[1]+0xfff0 );\
@@ -4626,6 +4630,33 @@ name##fail:
 #define CATS_8x8 ((1<<DCT_LUMA_8x8) | (1<<DCT_CHROMAU_8x8) | (1<<DCT_CHROMAV_8x8))
     CABAC_RESIDUAL( cabac_block_residual_rd, ((1<<14)-1) & ~CATS_8x8, 1 )
     CABAC_RESIDUAL( cabac_block_residual_8x8_rd, CATS_8x8, 1 )
+    /* every (state, count) of one last context: n coefs among positions 16-31 (last context 2), last = 63 */
+    if( ok && bs_a.cabac_block_residual_8x8_rd_internal != bs_ref.cabac_block_residual_8x8_rd_internal )
+    {
+        for( int i = 0; i < 2 && ok; i++ )
+            for( int s = 0; s < 128 && ok; s++ )
+                for( int n = 0; n <= 16 && ok; n++ )
+                {
+                    ALIGNED_ARRAY_64( dctcoef, dct, [2],[64] );
+                    x264_cabac_t cb[2];
+                    memset( dct, 0, sizeof(dct) );
+                    dct[0][63] = dct[1][63] = 1;
+                    for( int k = 0; k < n; k++ )
+                        dct[0][16+k] = dct[1][16+k] = (k&1) ? -1 : 2;
+                    h.mb.b_interlaced = i;
+                    x264_cabac_context_init( &h, &cb[0], SLICE_TYPE_P, 26, 0 );
+                    cb[0].state[x264_last_coeff_flag_offset[i][DCT_LUMA_8x8] + 2] = s;
+                    memcpy( cb[1].state, cb[0].state, 1024 );
+                    cb[0].f8_bits_encoded = cb[1].f8_bits_encoded = 0;
+                    x264_cabac_block_residual_8x8_rd_c( &h, &cb[0], DCT_LUMA_8x8, dct[0] );
+                    bs_a.cabac_block_residual_8x8_rd_internal( dct[1], i, DCT_LUMA_8x8, &cb[1] );
+                    if( cb[0].f8_bits_encoded != cb[1].f8_bits_encoded || memcmp( cb[0].state, cb[1].state, 1024 ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "cabac_block_residual_8x8_rd :  [FAILED] last state %d count %d field %d\n", s, n, i );
+                    }
+                }
+    }
 #undef CATS_8x8
     report( "cabac residual rd:" );
 
