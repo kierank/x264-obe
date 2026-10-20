@@ -1287,6 +1287,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmm_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmmb_avx512icl; /* over the inserting zmm ones */
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmmb_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
         pixf->ssd[PIXEL_8x4]  = x264_pixel_ssd_8x4_avx512icl;
@@ -1717,6 +1719,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmm_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmmb_avx512icl; /* over the inserting zmm ones */
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmmb_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
         pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
         pixf->ssd[PIXEL_8x4]  = x264_pixel_ssd_8x4_avx512icl;

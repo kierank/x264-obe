@@ -1078,6 +1078,27 @@ cglobal pixel_ssd_nv12_core, 6,8,11
 ; int pixel_ssd_WxH( pixel *, intptr_t, pixel *, intptr_t ), avx512icl: VNNI
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
+; ICL_ZMMB: zmm rows packed by merge-masked broadcasts (k1 = 0xf0: the upper 4 qwords, or
+; the dwords of lane 1, k2 k3 lanes 2 3) instead of inserts
+%define ICL_ZMMB 0
+%macro ICL_ZMMB_MASKS 1 ; gpr (dword) to clobber
+%if ICL_ZMMB
+    mov        %1, 0xf0
+    kmovw       k1, %1
+    kshiftlw    k2, k1, 4
+    kshiftlw    k3, k1, 8
+%endif
+%endmacro
+
+%macro ICL_ROW2Z 3 ; dst, row, next row: 2 rows of 16 words a zmm
+    movu      ym%1, %2
+%if ICL_ZMMB
+    vbroadcasti64x4 m%1 {k1}, %3
+%else
+    vinserti64x4 m%1, m%1, %3, 1
+%endif
+%endmacro
+
 %if HIGH_BIT_DEPTH
 ; vpdpwssd of the differences into m0 m5
 %macro SSD_ICL 2-3 ; width, height, name suffix
@@ -1085,18 +1106,17 @@ cglobal pixel_ssd_%1x%2%3, 4,7,6
     FIX_STRIDES r1, r3
     lea         r5, [r1*3]
     lea         r6, [r3*3]
+%if mmsize == 64
+    ICL_ZMMB_MASKS r4d
+%endif
     pxor        m0, m0
     pxor        m5, m5
 %rep %2/4
 %if %1 == 16 && mmsize == 64
-    movu       ym1, [r0]
-    vinserti64x4 m1, m1, [r0+r1], 1
-    movu       ym2, [r0+r1*2]
-    vinserti64x4 m2, m2, [r0+r5], 1
-    movu       ym3, [r2]
-    vinserti64x4 m3, m3, [r2+r3], 1
-    movu       ym4, [r2+r3*2]
-    vinserti64x4 m4, m4, [r2+r6], 1
+    ICL_ROW2Z 1, [r0], [r0+r1]
+    ICL_ROW2Z 2, [r0+r1*2], [r0+r5]
+    ICL_ROW2Z 3, [r2], [r2+r3]
+    ICL_ROW2Z 4, [r2+r3*2], [r2+r6]
     psubw       m1, m3
     psubw       m2, m4
     vpdpwssd    m0, m1, m1
@@ -1160,15 +1180,24 @@ cglobal pixel_ssd_%1x%2%3, 4,7,6
 ; four rows of 16 a zmm
 %macro SSD_ICL_W16Z 4 ; dst, src, stride, 3*stride
     movu      xm%1, [%2]
+%if ICL_ZMMB
+    vbroadcasti32x4 m%1 {k1}, [%2+%3]
+    vbroadcasti32x4 m%1 {k2}, [%2+%3*2]
+    vbroadcasti32x4 m%1 {k3}, [%2+%4]
+%else
     vinserti32x4 m%1, m%1, [%2+%3], 1
     vinserti32x4 m%1, m%1, [%2+%3*2], 2
     vinserti32x4 m%1, m%1, [%2+%4], 3
+%endif
 %endmacro
 
 %macro SSD_ICL 2-3 ; width, height, name suffix
 cglobal pixel_ssd_%1x%2%3, 4,7,9
     lea         r5, [r1*3]
     lea         r6, [r3*3]
+%if mmsize == 64
+    ICL_ZMMB_MASKS r4d
+%endif
     vpbroadcastd m6, [pb_1]
     mov        r4d, 0x80808080
     vpbroadcastd m7, r4d
@@ -1282,6 +1311,11 @@ SSD_ICL_W4 16
 INIT_ZMM avx512icl
 SSD_ICL 16, 16, _zmm
 SSD_ICL 16,  8, _zmm
+; zmm, rows by merge-masked broadcasts
+%define ICL_ZMMB 1
+SSD_ICL 16, 16, _zmmb
+SSD_ICL 16,  8, _zmmb
+%define ICL_ZMMB 0
 %endif ; ARCH_X86_64
 
 ;=============================================================================
