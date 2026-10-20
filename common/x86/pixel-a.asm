@@ -9239,6 +9239,41 @@ cglobal pixel_sa8d_8x8, 4,6
     HMAXABSW2      0, 1, 2, 3
     SATD_AVX512_END 1
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 8-bit satd 4x4, 4x8, 4x16, 8x4: the avx512 packed layout and
+; transform, the last stage (max of absolute word pairs) as SATD_ICL_HMAX
+; into one register, so every word counts and pmaddwd sums them.
+; Words <= 8*255.
+;-----------------------------------------------------------------------------
+%macro SATD_ICL_PACKED 0
+    DIFF_SUMSUB_SSSE3 0, 2, 1, 3, 4
+    SUMSUB_BA      w, 0, 1, 2
+    SBUTTERFLY   qdq, 0, 1, 2
+    SUMSUB_BA      w, 0, 1, 2
+    pabsw         m0, m0
+    pabsw         m1, m1
+    SATD_ICL_HMAX  0, 1, 2
+%endmacro
+
+%macro SATD_ICL_PACKED_END 0
+    pmaddwd       m0, [pw_1]
+    HADDD         m0, m1
+    movd         eax, xm0
+    RET
+%endmacro
+
+INIT_XMM avx512icl
+cglobal pixel_satd_4x4, 4,5,5
+    mova          m4, [hmul_4p]
+    mov          r4d, 0x550c
+    kmovw         k2, r4d
+    kshiftrw      k1, k2, 8
+    SATD_AVX512_LOAD4 d, k2 ; 0 0 2 2
+    SATD_ICL_PACKED         ; 1 1 3 3
+    SATD_ICL_PACKED_END
+%endif ; ARCH_X86_64
+
 %endif ; HIGH_BIT_DEPTH
 
 ;=============================================================================
