@@ -2772,13 +2772,7 @@ cglobal coeff_level_run%1, 2,3
 %else
     vperm%2      m1, m1, m0
 %endif
-%if %1 == 15
-    mov         r2d, 0x7fff
-    kmovw        k2, r2d
-    vptestm%2    k2{k2}, m1, m1
-%else
-    vptestm%2    k2, m1, m1
-%endif
+    vptestm%2    k2, m1, m1 ; for 15 the coef before the block is last, after the levels
     kmovw       eax, k1
 %if %1 == 15
     shr         eax, 1
