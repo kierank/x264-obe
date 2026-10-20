@@ -62,6 +62,10 @@
 #define x264_hpel_filter_v_mmx2 x264_template(hpel_filter_v_mmx2)
 #define x264_hpel_filter_v_sse2 x264_template(hpel_filter_v_sse2)
 #define x264_integral_init4h_avx2 x264_template(integral_init4h_avx2)
+#define x264_integral_init4h_avx512icl x264_template(integral_init4h_avx512icl)
+#define x264_integral_init8h_avx512icl x264_template(integral_init8h_avx512icl)
+#define x264_integral_init4v_avx512icl x264_template(integral_init4v_avx512icl)
+#define x264_integral_init8v_avx512icl x264_template(integral_init8v_avx512icl)
 #define x264_integral_init4h_sse4 x264_template(integral_init4h_sse4)
 #define x264_integral_init4v_avx2 x264_template(integral_init4v_avx2)
 #define x264_integral_init4v_mmx x264_template(integral_init4v_mmx)
@@ -567,6 +571,10 @@ void x264_integral_init4v_avx2( uint16_t *sum8, uint16_t *sum4, intptr_t stride 
 void x264_integral_init8v_mmx ( uint16_t *sum8, intptr_t stride );
 void x264_integral_init8v_sse2( uint16_t *sum8, intptr_t stride );
 void x264_integral_init8v_avx2( uint16_t *sum8, intptr_t stride );
+void x264_integral_init4h_avx512icl( uint16_t *sum, uint8_t *pix, intptr_t stride );
+void x264_integral_init8h_avx512icl( uint16_t *sum, uint8_t *pix, intptr_t stride );
+void x264_integral_init4v_avx512icl( uint16_t *sum8, uint16_t *sum4, intptr_t stride );
+void x264_integral_init8v_avx512icl( uint16_t *sum8, intptr_t stride );
 void x264_mbtree_propagate_cost_sse2( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
                                       uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
 void x264_mbtree_propagate_cost_avx ( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
@@ -1484,6 +1492,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
+        pf->integral_init4v = x264_integral_init4v_avx512icl;
+        pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif
     }
 #else // !HIGH_BIT_DEPTH
@@ -1682,6 +1692,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg[PIXEL_4x8]   = x264_pixel_avg_4x8_avx512icl;
         pf->avg[PIXEL_4x4]   = x264_pixel_avg_4x4_avx512icl;
         pf->avg[PIXEL_4x2]   = x264_pixel_avg_4x2_avx512icl;
+        pf->integral_init4h = x264_integral_init4h_avx512icl;
+        pf->integral_init8h = x264_integral_init8h_avx512icl;
+        pf->integral_init4v = x264_integral_init4v_avx512icl;
+        pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
