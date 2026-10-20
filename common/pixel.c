@@ -1711,6 +1711,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_4x4 = x264_intra_satd_x3_4x4_avx512icl;
         pixf->intra_sa8d_x3_8x8 = x264_intra_sa8d_x3_8x8_avx512icl;
         pixf->satd_fenc_pre[0] = x264_pixel_satd_fenc_pre_16x16_avx512icl;
+        pixf->satd_fenc_pre[1] = x264_pixel_satd_fenc_pre_8x8_avx512icl;
 #endif
     }
 
