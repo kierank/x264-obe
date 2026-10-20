@@ -372,6 +372,24 @@ mcc_icl_perm:
 %assign mcc_p mcc_p+1
 %endrep
 %undef mcc_p
+%if HIGH_BIT_DEPTH == 0
+; satd_mcc_fenc_pre avx512icl: vpermb of four u|v fenc rows to rows 0, 1 (and
+; 2, 3) as interleaved uv bytes in the low byte of each word (high bytes zeroed
+; by {k}); qword indices of vpermi2q: columns 0-3 / 4-7 of two row pairs
+mcc_pre_perm:
+%assign mcc_r 0
+%rep 2
+%assign mcc_b 0
+%rep 64
+    db 32*mcc_r + 16*(mcc_b>>5) + 8*((mcc_b>>1)&1) + ((mcc_b>>2)&7)
+%assign mcc_b mcc_b+1
+%endrep
+%assign mcc_r mcc_r+1
+%endrep
+%undef mcc_r
+%undef mcc_b
+mcc_pre_q: db 0, 1, 8, 9, 4, 5, 12, 13, 2, 3, 10, 11, 6, 7, 14, 15
+%endif
 
 SECTION .text
 
@@ -11842,6 +11860,75 @@ cglobal pixel_satd_mcc_fenc_pre, 3,3,6
     MCC_FENC_PRE    0, 0
     MCC_FENC_PRE    1, 0
     RET
+
+; avx512icl: per 8 rows, two 64 byte loads, vpermb {k1 = even bytes}{z} to the
+; uv words of row pairs 01 23 45 67, 64*fenc - 32, stored as the width 8 rows;
+; vpermi2q gives the width 4 (and 4x4) layouts from them.
+%macro MCC_FENC_PRE_ICL 2 ; rows 8*%1 to 8*%1+7; %2: also the 4x4 blocks
+    movu           m0, [r1+128*%1]
+    movu           m1, [r1+128*%1+64]
+    vpermb         m8 {k1}{z}, m6, m0     ; rows 0, 1
+    vpermb         m9 {k1}{z}, m7, m0     ; rows 2, 3
+    vpermb        m10 {k1}{z}, m6, m1     ; rows 4, 5
+    vpermb        m11 {k1}{z}, m7, m1     ; rows 6, 7
+    psllw          m8, 6
+    psllw          m9, 6
+    psllw         m10, 6
+    psllw         m11, 6
+    psubw          m8, m5
+    psubw          m9, m5
+    psubw         m10, m5
+    psubw         m11, m5
+    movu [r0+256*%1    ], m8
+    movu [r0+256*%1+ 64], m9
+    movu [r0+256*%1+128], m10
+    movu [r0+256*%1+192], m11
+    mova           m0, m3
+    vpermi2q       m0, m8, m10            ; columns 0-3, rows 0 | 4, 1 | 5
+    mova           m1, m3
+    vpermi2q       m1, m9, m11            ; rows 2 | 6, 3 | 7
+    movu [r0+512+128*%1   ], m0
+    movu [r0+512+128*%1+64], m1
+    mova           m0, m4
+    vpermi2q       m0, m8, m10            ; columns 4-7
+    mova           m1, m4
+    vpermi2q       m1, m9, m11
+    movu [r0+768+128*%1   ], m0
+    movu [r0+768+128*%1+64], m1
+%if %2
+    mova           m0, m3
+    vpermi2q       m0, m8, m9             ; columns 0-3, rows 0 | 2, 1 | 3
+    mova           m1, m4
+    vpermi2q       m1, m8, m9             ; columns 4-7
+    movu     [r0+256], m0
+    movu     [r0+320], m1
+    mova           m0, m3
+    vpermi2q       m0, m10, m11           ; rows 4 | 6, 5 | 7
+    mova           m1, m4
+    vpermi2q       m1, m10, m11
+    movu     [r0+384], m0
+    movu     [r0+448], m1
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal pixel_satd_mcc_fenc_pre, 3,4,12
+    mov            r3, 0x5555555555555555
+    kmovq          k1, r3
+    movu           m6, [mcc_pre_perm]
+    movu           m7, [mcc_pre_perm+64]
+    vpmovzxbq      m3, [mcc_pre_q]
+    vpmovzxbq      m4, [mcc_pre_q+8]
+    vpbroadcastw   m5, [pw_32]
+    cmp           r2d, 8
+    jg .h16
+    MCC_FENC_PRE_ICL 0, 1
+    RET
+.h16:
+    MCC_FENC_PRE_ICL 0, 0
+    MCC_FENC_PRE_ICL 1, 0
+    RET
+INIT_YMM avx2
 %endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
