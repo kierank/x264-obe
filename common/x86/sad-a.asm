@@ -1110,12 +1110,8 @@ cglobal intra_sad_x3_16x16, 3,5,6
     pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+2)-1], 2
 %endmacro
 
-INIT_ZMM avx512icl
-cglobal intra_sad_x3_8x8c, 3,3,8
-    INTRA_SAD_LEFT4 0, 0
-    INTRA_SAD_LEFT4 2, 1
-    movq          xm1, [r1-FDEC_STRIDE]
-    punpckldq     xm0, xm2              ; left 0-7
+; xm0 = left 0-7, xm1 = top 0-7 -> res
+%macro INTRA_SAD_X3_8x8C_BODY 0
     pxor          xm3, xm3
     punpcklqdq    xm2, xm1, xm0         ; top 0-7, left 0-7
     vdbpsadbw     xm2, xm2, xm3, 0      ; s0 s0 s1 s1 s2 s2 s3 s3
@@ -1137,6 +1133,15 @@ cglobal intra_sad_x3_8x8c, 3,3,8
     psadbw         m5, m6
     psadbw         m1, m6
     INTRA_SAD_PACK3_END 4, 5, 1         ; DC H V
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal intra_sad_x3_8x8c, 3,3,8
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    movq          xm1, [r1-FDEC_STRIDE]
+    punpckldq     xm0, xm2              ; left 0-7
+    INTRA_SAD_X3_8x8C_BODY
 
 ; 8x16c: as 8x8c with { s4, s5 } from left 8-15 in lane 1 of the vdbpsadbw,
 ; dc4-dc7 as bytes 16-28 of the vpermb source, H rows 8-15 from left 8-15
@@ -1184,16 +1189,8 @@ cglobal intra_sad_x3_8x16c, 3,3,12
     paddq          m1, m9
     INTRA_SAD_PACK3_END 4, 7, 1         ; DC H V
 
-cglobal intra_sad_x3_16x16, 3,3,10
-    INTRA_SAD_LEFT4 0, 0
-    INTRA_SAD_LEFT4 2, 1
-    INTRA_SAD_LEFT4 1, 2
-    INTRA_SAD_LEFT4 4, 3
-    punpckldq     xm0, xm2
-    punpckldq     xm1, xm4
-    movu          xm3, [r1-FDEC_STRIDE]
-    pxor          xm5, xm5
-    punpcklqdq    xm0, xm1              ; left 0-15
+; xm0 = left 0-15, xm3 = top 0-15, xm5 = 0 -> res
+%macro INTRA_SAD_X3_16x16_BODY 0
     psadbw        xm2, xm0, xm5
     psadbw        xm3, xm5
     paddw         xm2, xm3
@@ -1219,6 +1216,19 @@ cglobal intra_sad_x3_16x16, 3,3,10
 %endrep
 %undef isad_g
     INTRA_SAD_PACK3_END 4, 6, 5         ; V H DC
+%endmacro
+
+cglobal intra_sad_x3_16x16, 3,3,10
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    INTRA_SAD_LEFT4 1, 2
+    INTRA_SAD_LEFT4 4, 3
+    punpckldq     xm0, xm2
+    punpckldq     xm1, xm4
+    movu          xm3, [r1-FDEC_STRIDE]
+    pxor          xm5, xm5
+    punpcklqdq    xm0, xm1              ; left 0-15
+    INTRA_SAD_X3_16x16_BODY
 
 ;-----------------------------------------------------------------------------
 ; int pixel_vsad( uint8_t *src, intptr_t stride, int height )
