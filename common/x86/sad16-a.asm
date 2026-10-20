@@ -2119,6 +2119,53 @@ INIT_YMM avx512
 SAD_HBD_K4 4,  8
 SAD_HBD_K4 4,  4
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_avg2_8xH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
+; AVX-512: four rows a zmm for both sources and fenc (row loads + k-merged
+; vbroadcasti32x4), pavgw. Tail as SAD_HBD_K4 (10 ops).
+;-----------------------------------------------------------------------------
+%macro SAD_AVG2_HBD8_K4 1 ; height
+cglobal pixel_sad_avg2_8x%1, 4,7,4
+    FIX_STRIDES    r3
+    lea            r5, [r3+2*r3]
+    SAD_HBD_K4_MASKS 8
+%assign sad_hbd_g 0
+%rep %1/4
+    SAD_HBD_K4_LOAD 1, r1, r3, r5, 8
+    SAD_HBD_K4_LOAD 2, r2, r3, r5, 8
+    pavgw          m1, m2
+    SAD_HBD_K4_LOAD 2, r0, FENC_STRIDEB, 3*FENC_STRIDEB, 8
+    psubw          m1, m2
+%if sad_hbd_g == 0
+    pabsw          m0, m1
+%else
+    pabsw          m1, m1
+    paddw          m0, m1
+%endif
+%if sad_hbd_g < %1/4-1
+    add            r0, 4*FENC_STRIDEB
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign sad_hbd_g sad_hbd_g+1
+%endrep
+%undef sad_hbd_g
+    vextracti64x4 ym1, m0, 1
+    paddw         ym0, ym1
+    pmaddwd       ym0, [pw_1]
+    vextracti128  xm1, ym0, 1
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
+INIT_ZMM avx512
+SAD_AVG2_HBD8_K4 16
+
 INIT_YMM avx2
 %endif
 
