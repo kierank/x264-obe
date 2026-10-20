@@ -3175,6 +3175,15 @@ cglobal predict_8x8_dc_left, 2,2
     STORE8_PAIRS_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc_128( uint8_t *src, uint8_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_dc_128, 1,2
+    mov         r1d, 0x80808080
+    vpbroadcastd m0, r1d
+    STORE8_PAIRS_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE8_ROWS_ICL 1 ; xmm
 %assign %%y 0
@@ -3260,6 +3269,14 @@ cglobal predict_8x8_dc_left, 2,2
     STORE8_ROWS_ICL xm0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc_128( uint16_t *src, uint16_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_dc_128, 1,2
+    mov         r1d, 1 << (BIT_DEPTH-1)
+    vpbroadcastw m0, r1d
+    SCATTER8_ICL m0
+    RET
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 

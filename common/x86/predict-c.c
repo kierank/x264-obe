@@ -623,6 +623,7 @@ void x264_predict_8x8_init_mmx( int cpu, x264_predict8x8_t pf[12], x264_predict_
         pf[I_PRED_8x8_DC]     = x264_predict_8x8_dc_avx512icl;
         pf[I_PRED_8x8_DC_TOP] = x264_predict_8x8_dc_top_avx512icl;
         pf[I_PRED_8x8_DC_LEFT] = x264_predict_8x8_dc_left_avx512icl;
+        pf[I_PRED_8x8_DC_128] = x264_predict_8x8_dc_128_avx512icl;
 #endif
     }
 #else
@@ -680,6 +681,7 @@ void x264_predict_8x8_init_mmx( int cpu, x264_predict8x8_t pf[12], x264_predict_
         pf[I_PRED_8x8_DC]     = x264_predict_8x8_dc_avx512icl;
         pf[I_PRED_8x8_DC_TOP] = x264_predict_8x8_dc_top_avx512icl;
         pf[I_PRED_8x8_DC_LEFT] = x264_predict_8x8_dc_left_avx512icl;
+        pf[I_PRED_8x8_DC_128] = x264_predict_8x8_dc_128_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
