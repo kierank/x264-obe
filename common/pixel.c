@@ -1715,6 +1715,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_mcc_fenc_pre = x264_pixel_satd_mcc_fenc_pre_avx512icl;
         pixf->hadamard_ac[PIXEL_16x16] = x264_pixel_hadamard_ac_16x16_avx512icl;
         pixf->hadamard_ac[PIXEL_16x8]  = x264_pixel_hadamard_ac_16x8_avx512icl;
+        pixf->hadamard_ac[PIXEL_8x16]  = x264_pixel_hadamard_ac_8x16_avx512icl;
 #endif
     }
 
