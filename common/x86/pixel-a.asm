@@ -11622,5 +11622,79 @@ cglobal weightp_stats8, 6,8,16
     sub       r4d, 8
     jg .loopx
     RET
+
+;-----------------------------------------------------------------------------
+; high bit depth avx512icl weightp_sum8(_clip): vpdpwssd of each row straight from memory
+; by { scale, 0 } and { 0, scale } (even and odd pixels, no unpacking) onto
+; c = round (_clip: + offset << denom, exact as the shift floors), then >> denom
+; [, clip to [0,pixel_max]]. As the AVX2 version otherwise.
+; m5 = { scale, 0 }, m6 = { 0, scale }, m7 = c, xm8 = denom, m10 = block order;
+; _clip: m11 = pixel_max, m12 = 0.
+;-----------------------------------------------------------------------------
+%macro WEIGHTP_SUM8_HBD_ROW 3 ; acc, offset, clip
+    mova       m4, m7
+    mova       m9, m7
+    vpdpwssd   m4, m5, [r7+%2]
+    vpdpwssd   m9, m6, [r7+%2]
+    psrad      m4, xm8
+    psrad      m9, xm8
+%if %3
+    pmaxsd     m4, m12
+    pmaxsd     m9, m12
+    pminsd     m4, m11
+    pminsd     m9, m11
+%endif
+    paddd      %1, m4
+    paddd      %1, m9
+%endmacro
+
+%macro WEIGHTP_SUM8_HBD 1 ; clip
+%if %1
+cglobal weightp_sum8_clip, 8,9,13
+    shlx      r7d, r7d, r6d
+    mov       r8d, (1<<BIT_DEPTH)-1
+    vpbroadcastd m11, r8d
+    pxor      m12, m12
+%else
+cglobal weightp_sum8, 7,9,11
+    xor       r7d, r7d
+%endif
+    FIX_STRIDES r2
+    xor       r8d, r8d
+    bts       r8d, r6d
+    shr       r8d, 1
+    add       r8d, r7d
+    vpbroadcastd m7, r8d
+    movzx     r5d, r5w
+    vpbroadcastd m5, r5d
+    pslld      m6, m5, 16
+    movd      xm8, r6d
+    WEIGHTP_PERM m10
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pxor       m2, m2
+    pxor       m3, m3
+    mov        r7, r1
+    mov       r8d, r4d
+.loopy:
+    WEIGHTP_SUM8_HBD_ROW m0,  0, %1
+    WEIGHTP_SUM8_HBD_ROW m1, 32, %1
+    WEIGHTP_SUM8_HBD_ROW m2, 64, %1
+    WEIGHTP_SUM8_HBD_ROW m3, 96, %1
+    add        r7, r2
+    dec       r8d
+    jg .loopy
+    HADD4D     m0, m1, m2, m3, m4, m9
+    vpermd     m0, m10, m0
+    movu     [r0], m0
+    add        r0, 32
+    add        r1, 128
+    sub       r3d, 8
+    jg .loopx
+    RET
+%endmacro
+
+WEIGHTP_SUM8_HBD 1
 %endif
 %endif ; ARCH_X86_64
