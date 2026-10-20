@@ -1972,6 +1972,8 @@ SAD_X_HBD8_VNNI 4, 16
 SAD_X_HBD8_VNNI 4, 16, 1
 SAD_X_HBD8_VNNI 4,  8
 SAD_X_HBD8_VNNI 4,  8, 1
+SAD_X_HBD8_VNNI 3,  4
+SAD_X_HBD8_VNNI 4,  4
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_16x16( uint16_t *fenc, intptr_t, uint16_t *pix, intptr_t stride )
