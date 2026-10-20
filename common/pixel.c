@@ -959,6 +959,47 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
+/* layout twin of test/x264-w2-pixmisc: the new dispatch below assigns the
+ * functions wip/x264-weird-zen4-sn2 has in those slots */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_pixel_ssd_8x8_avx512icl, x264_pixel_ssd_8x8_avx )
+#undef x264_pixel_ssd_8x8_avx512icl
+#define x264_pixel_ssd_8x8_avx512icl x264_twin_x264_pixel_ssd_8x8_avx512icl
+X264_TWIN( x264_pixel_ssd_4x8_avx512icl, x264_pixel_ssd_4x8_ssse3 )
+#undef x264_pixel_ssd_4x8_avx512icl
+#define x264_pixel_ssd_4x8_avx512icl x264_twin_x264_pixel_ssd_4x8_avx512icl
+X264_TWIN( x264_pixel_ssd_4x4_avx512icl, x264_pixel_ssd_4x4_ssse3 )
+#undef x264_pixel_ssd_4x4_avx512icl
+#define x264_pixel_ssd_4x4_avx512icl x264_twin_x264_pixel_ssd_4x4_avx512icl
+X264_TWIN( x264_pixel_ssd_4x16_avx512icl, x264_pixel_ssd_4x16_ssse3 )
+#undef x264_pixel_ssd_4x16_avx512icl
+#define x264_pixel_ssd_4x16_avx512icl x264_twin_x264_pixel_ssd_4x16_avx512icl
+X264_TWIN( x264_weightp_stats8_zmm_avx512icl, x264_weightp_stats8_avx2 )
+#undef x264_weightp_stats8_zmm_avx512icl
+#define x264_weightp_stats8_zmm_avx512icl x264_twin_x264_weightp_stats8_zmm_avx512icl
+X264_TWIN( x264_pixel_ssd_nv12_core_avx512icl, x264_pixel_ssd_nv12_core_avx2 )
+#undef x264_pixel_ssd_nv12_core_avx512icl
+#define x264_pixel_ssd_nv12_core_avx512icl x264_twin_x264_pixel_ssd_nv12_core_avx512icl
+#else
+X264_TWIN( x264_pixel_ssd_4x8_avx512icl, x264_pixel_ssd_4x8_mmx2 )
+#undef x264_pixel_ssd_4x8_avx512icl
+#define x264_pixel_ssd_4x8_avx512icl x264_twin_x264_pixel_ssd_4x8_avx512icl
+X264_TWIN( x264_pixel_ssd_4x16_avx512icl, x264_pixel_ssd_4x16_mmx2 )
+#undef x264_pixel_ssd_4x16_avx512icl
+#define x264_pixel_ssd_4x16_avx512icl x264_twin_x264_pixel_ssd_4x16_avx512icl
+X264_TWIN( x264_weightp_stats8_avx512icl, x264_weightp_stats8_avx2 )
+#undef x264_weightp_stats8_avx512icl
+#define x264_weightp_stats8_avx512icl x264_twin_x264_weightp_stats8_avx512icl
+X264_TWIN( x264_weightp_sum8_avx512icl, x264_weightp_sum8_avx2 )
+#undef x264_weightp_sum8_avx512icl
+#define x264_weightp_sum8_avx512icl x264_twin_x264_weightp_sum8_avx512icl
+X264_TWIN( x264_weightp_sum8_clip_avx512icl, x264_weightp_sum8_clip_avx2 )
+#undef x264_weightp_sum8_clip_avx512icl
+#define x264_weightp_sum8_clip_avx512icl x264_twin_x264_weightp_sum8_clip_avx512icl
+#endif
+#endif
+
 void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 {
     memset( pixf, 0, sizeof(*pixf) );
