@@ -1340,9 +1340,16 @@ cglobal pixel_var_8x16, 2,3
 %macro VAR2_END 3
     HADDW   %2, xm1
     movd   r1d, %2
+%if HIGH_BIT_DEPTH && ARCH_X86_64 ; 8x16: |sum| up to 128*1023, sum*sum above 2^32
+    movsxd  r1, r1d
+    imul    r1, r1
+    HADDD   %3, xm1
+    shr     r1, %1
+%else
     imul   r1d, r1d
     HADDD   %3, xm1
     shr    r1d, %1
+%endif
     movd   eax, %3
     movd  [r4], %3
     sub    eax, r1d  ; sqr - (sum * sum >> shift)
