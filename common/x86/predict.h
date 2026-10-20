@@ -258,6 +258,8 @@ void x264_predict_8x8_filter_avx512icl( pixel *src, pixel edge[36], int i_neighb
 void x264_predict_8x8_v_avx512icl( pixel *src, pixel edge[36] );
 #define x264_predict_8x8_h_avx512icl x264_template(predict_8x8_h_avx512icl)
 void x264_predict_8x8_h_avx512icl( pixel *src, pixel edge[36] );
+#define x264_predict_8x8_dc_avx512icl x264_template(predict_8x8_dc_avx512icl)
+void x264_predict_8x8_dc_avx512icl( pixel *src, pixel edge[36] );
 #define x264_predict_4x4_h_avx2 x264_template(predict_4x4_h_avx2)
 void x264_predict_4x4_h_avx2( uint16_t *src );
 #define x264_predict_4x4_h_sse2 x264_template(predict_4x4_h_sse2)

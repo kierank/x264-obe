@@ -3147,6 +3147,16 @@ cglobal predict_8x8_h, 2,3
     vmovdqu8 [r0+6*FDEC_STRIDE]{k1}, m3
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc( uint8_t *src, uint8_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_dc, 2,2
+    movq        xm0, [r1+7]
+    movhps      xm0, [r1+16]
+    DC8_ICL pw_8, 4
+    STORE8_PAIRS_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE8_ROWS_ICL 1 ; xmm
 %assign %%y 0
@@ -3196,6 +3206,18 @@ cglobal predict_8x8_h, 2,2
     vpermw       m1, m2, m4
     STORE4_ICL    0, 0
     STORE4_ICL    1, 4
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_dc( uint16_t *src, uint16_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_dc, 2,2
+    movu        xm0, [r1+7*SIZEOF_PIXEL]
+    paddw       xm0, [r1+16*SIZEOF_PIXEL]
+    mov         r1d, 8
+    movd        xm2, r1d
+    DC8W_ICL 4
+    STORE8_ROWS_ICL xm0
     RET
 
 %endif ; HIGH_BIT_DEPTH
