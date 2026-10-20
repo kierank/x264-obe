@@ -155,6 +155,7 @@ pw_4x4_ddr_icl: dw 20,21,22,23,19,20,21,22,18,19,20,21,17,18,19,20
 pw_4x4_vr_icl: dw 5,6,7,8,20,21,22,23,19,5,6,7,18,20,21,22
 pw_4x4_hd_icl: dw 4,20,21,22,3,19,4,20,2,18,3,19,1,17,2,18
 pw_4x4_vl_icl: dw 6,7,8,9,22,23,24,25,7,8,9,10,23,24,25,26
+pw_4x4_hu_icl: dw 3,18,2,17,2,17,1,16,1,16,0,0,0,0,0,0
 %else
 pb_e4_icl:       db 15,15,11,7,3,23,24,25,26,27,28,29,30,31,31,31
 pb_h4_icl:       db 3,3,3,3,0,0,0,0,11,11,11,11,0,0,0,0
@@ -181,6 +182,10 @@ pb_4x4_hd_icl: db 4,68,69,70,0,0,0,0,2,66,3,67,0,0,0,0
 pb_4x4_vl_icl: db 6,7,8,9,0,0,0,0,7,8,9,10,0,0,0,0
                  db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
                  db 70,71,72,73,0,0,0,0,71,72,73,74,0,0,0,0
+                 db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+pb_4x4_hu_icl: db 3,66,2,65,0,0,0,0,1,64,0,0,0,0,0,0
+                 db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+                 db 2,65,1,64,0,0,0,0,0,0,0,0,0,0,0,0
                  db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 %endif
 
@@ -3724,6 +3729,7 @@ PREDICT_4x4_DIR_ICL ddr
 PREDICT_4x4_DIR_ICL vr
 PREDICT_4x4_DIR_ICL hd
 PREDICT_4x4_DIR_ICL vl
+PREDICT_4x4_DIR_ICL hu
 
 %else ; HIGH_BIT_DEPTH
 ; ym0 = left pixel of row y in word 4*y+3
@@ -3800,6 +3806,7 @@ PREDICT_4x4_DIR_ICL ddr
 PREDICT_4x4_DIR_ICL vr
 PREDICT_4x4_DIR_ICL hd
 PREDICT_4x4_DIR_ICL vl
+PREDICT_4x4_DIR_ICL hu
 
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
