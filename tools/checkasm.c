@@ -3900,7 +3900,7 @@ static int check_quant( int cpu_ref, int cpu_new )
             memcpy( buf3+256, buf3, 256 );
             call_c1( qf_c.denoise_dct, dct1, (uint32_t*)buf3,       (udctcoef*)buf2, size );
             call_a1( qf_a.denoise_dct, dct2, (uint32_t*)(buf3+256), (udctcoef*)buf2, size );
-            if( memcmp( dct1, dct2, size*sizeof(dctcoef) ) || memcmp( buf3+4, buf3+256+4, (size-1)*sizeof(uint32_t) ) )
+            if( memcmp( dct1, dct2, size*sizeof(dctcoef) ) || memcmp( buf3, buf3+256, size*sizeof(uint32_t) ) )
                 ok = 0;
             call_c2( qf_c.denoise_dct, dct1, (uint32_t*)buf3,       (udctcoef*)buf2, size );
             call_a2( qf_a.denoise_dct, dct2, (uint32_t*)(buf3+256), (udctcoef*)buf2, size );
@@ -3957,6 +3957,9 @@ static int check_quant( int cpu_ref, int cpu_new )
             memset( dct1, 0, size*sizeof(dctcoef) ); \
             for( int idx = ac; idx < max; idx++ ) \
                 nnz |= dct1[idx] = !(rand()&3) + (!(rand()&15))*rand(); \
+            /* max < size: the last coef also, negative or with only its high half set */ \
+            if( (i&3) == 3 ) \
+                nnz |= dct1[size-1] = i&4 ? -1 : 1 << (4*sizeof(dctcoef)); \
             if( !nnz ) \
                 dct1[ac] = 1; \
             int result_c = call_c( qf_c.last, dct1+ac ); \
@@ -3993,6 +3996,9 @@ static int check_quant( int cpu_ref, int cpu_new )
             memcpy( &runlevel_c, buf1+i, sizeof(x264_run_level_t) ); \
             for( int idx = ac; idx < max; idx++ ) \
                 nnz |= dct1[idx] = !(rand()&3) + (!(rand()&15))*rand(); \
+            /* max < size: the last coef also, negative or with only its high half set */ \
+            if( (i&3) == 3 ) \
+                nnz |= dct1[size-1] = i&4 ? -1 : 1 << (4*sizeof(dctcoef)); \
             if( !nnz ) \
                 dct1[ac] = 1; \
             int result_c = call_c( qf_c.lastname, dct1+ac, &runlevel_c ); \
