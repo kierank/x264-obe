@@ -214,6 +214,9 @@ dct16_icl_fdec1: db 96,0,97,0,98,0,99,0,64,0,65,0,66,0,67,0
     db 104,0,105,0,106,0,107,0,72,0,73,0,74,0,75,0
     db 100,0,101,0,102,0,103,0,68,0,69,0,70,0,71,0
     db 108,0,109,0,110,0,111,0,76,0,77,0,78,0,79,0
+; sub8x8_dct_dc/sub8x16_dct_dc avx512icl: vpdpbusd weights, fenc rows and fdec row pairs
+dctdc_icl_wf: times 4 db 1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0
+dctdc_icl_wd: times 2 db -1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 %endif
 
 SECTION .text
@@ -1322,6 +1325,46 @@ cglobal sub16x16_dct, 3,4,10
     SUB4x16_DCT_ICL 5, 3
     RET
 %endif
+; sub8x8_dct_dc/sub8x16_dct_dc avx512icl: VNNI vpdpbusd sums the 4x4 blocks:
+; fenc rows (one per 128-bit lane) against +1 weights in dwords 0-1 of each lane,
+; fdec rows (lanes 0 and 2) against -1. Every lane of a group of 4 rows adds to
+; the same two dword positions, so the group's two block sums come out of a
+; lane reduction. One accumulator chain (3 vpdpbusd) per group of 4 rows.
+%macro DCTDC_ICL_GROUP 3 ; acc, tmp, row
+    movu      %2, [r1+%3*FENC_STRIDE]
+    vpxord    %1, %1, %1
+    vpdpbusd  %1, %2, [dctdc_icl_wf]
+    movu      %2, [r2+%3*FDEC_STRIDE]
+    vpdpbusd  %1, %2, [dctdc_icl_wd]
+    movu      %2, [r2+(%3+2)*FDEC_STRIDE]
+    vpdpbusd  %1, %2, [dctdc_icl_wd]
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal sub8x8_dct_dc, 3,3
+    DCTDC_ICL_GROUP m0, m2, 0
+    DCTDC_ICL_GROUP m1, m3, 4
+    pshufd        m1, m1, q1032
+    paddd         m0, m1                 ; per lane: blocks 0 1 2 3
+    vextracti64x4 ym1, m0, 1
+    paddd         ym0, ym1
+    vextracti32x4 xm1, ym0, 1
+    paddd         xm0, xm1               ; b0 b1 b2 b3
+    mov          r1d, 0xa
+    kmovb         k1, r1d
+    pshufd        xm1, xm0, q2301
+    paddd         xm2, xm0, xm1
+    vpsubd        xm2 {k1}, xm1, xm0     ; b0+b1 b0-b1 b2+b3 b2-b3
+    pshufd        xm1, xm2, q1032
+    paddd         xm0, xm2, xm1
+    mov          r1d, 0xc
+    kmovb         k1, r1d
+    vpsubd        xm0 {k1}, xm1, xm2     ; 0+1+2+3 0-1+2-3 0+1-2-3 0-1-2+3
+    pshufd        xm0, xm0, q3120
+    vpmovdw       xm0, xm0
+    movq        [r0], xm0
+    RET
+
 INIT_ZMM avx512
 
 %macro SARSUMSUB 3 ; a, b, tmp
