@@ -561,6 +561,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->idct4x4dc       = x264_idct4x4dc_avx512icl;
         dctf->sub8x8_dct_dc   = x264_sub8x8_dct_dc_avx512icl;
         dctf->dct2x4dc        = x264_dct2x4dc_avx512icl;
+        dctf->sub16x16_dct    = x264_sub16x16_dct_avx512icl;
         dctf->sub8x16_dct_dc  = x264_sub8x16_dct_dc_avx512icl;
         dctf->add8x8_idct_dc  = x264_add8x8_idct_dc_avx512icl;
         dctf->add16x16_idct_dc= x264_add16x16_idct_dc_avx512icl;

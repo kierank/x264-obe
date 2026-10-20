@@ -747,6 +747,66 @@ cglobal sub16x16_dct, 3,3,8
 .sub8x8:
     SUB8x8_DCT_HBD
     ret
+
+; avx512icl sub16x16_dct: two 8x8 side by side per zmm pass. Rows i and i+4 of
+; both come from one 32-byte row each (ymm load + merge-masked vbroadcasti64x4):
+; lanes A row i, B row i, A row i+4, B row i+4; the transform is lane local
+%macro SUB16x8_DCT_HBD_ICL_LOAD 0
+%assign subdct_hbd_i 0
+%rep 4
+    movu          ym %+ subdct_hbd_i, [r1+subdct_hbd_i*FENC_STRIDEB]
+    vbroadcasti64x4 m %+ subdct_hbd_i {k1}, [r1+(subdct_hbd_i+4)*FENC_STRIDEB]
+    movu          ym4, [r2+subdct_hbd_i*FDEC_STRIDEB]
+    vbroadcasti64x4 m4 {k1}, [r2+(subdct_hbd_i+4)*FDEC_STRIDEB]
+    psubw          m %+ subdct_hbd_i, m4
+%assign subdct_hbd_i subdct_hbd_i+1
+%endrep
+%endmacro
+
+%macro SUB16x8_DCT_HBD_ICL_STORE 4 ; row i, row i+1, tmp, offset
+    vshufi64x2   m%3, m%1, m%2, q1010    ; a.0 a.1 b.0 b.1
+    vshufi64x2   m%1, m%1, m%2, q3232    ; a.2 a.3 b.2 b.3
+    vshufi64x2   m%3, m%3, m%3, q3120    ; A top | B top
+    vshufi64x2   m%1, m%1, m%1, q3120    ; A bottom | B bottom
+    mova     [r0+%4    ], ym%3
+    vextracti64x4 [r0+%4+256], m%3, 1
+    mova     [r0+%4+128], ym%1
+    vextracti64x4 [r0+%4+384], m%1, 1
+%endmacro
+
+%macro SUB16x8_DCT_HBD_ICL_HALF 2 ; punpck suffix, offset
+    punpck%1wd    m4, m2, m2
+    punpck%1wd    m5, m0, m0
+    punpck%1wd    m6, m1, m1
+    psrad         m4, 16
+    psrad         m5, 16
+    psrad         m6, 16
+    SUMSUB2_AB    d, 5, 6, 7
+    SUB16x8_DCT_HBD_ICL_STORE 4, 5, 6, %2
+    punpck%1wd    m4, m3, m3
+    psrad         m4, 16
+    SUB16x8_DCT_HBD_ICL_STORE 4, 7, 6, %2+32
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal sub16x16_dct, 3,4,8
+    mov         r3d, 0xf0
+    kmovb        k1, r3d
+    call .sub16x8
+    add          r0, 512
+    add          r1, 8*FENC_STRIDEB
+    add          r2, 8*FDEC_STRIDEB
+    call .sub16x8
+    RET
+.sub16x8:
+    SUB16x8_DCT_HBD_ICL_LOAD
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    SUMSUB_BADC w, 3, 0, 2, 1
+    SUMSUB_BA   w, 2, 3, 4
+    SUB16x8_DCT_HBD_ICL_HALF l, 0
+    SUB16x8_DCT_HBD_ICL_HALF h, 64
+    ret
 %else
 
 %macro SUB_DCT4 0
