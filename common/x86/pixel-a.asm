@@ -11038,7 +11038,7 @@ cglobal weightp_dc8x8, 5,7,8
 
 %macro ALL_ONES 1
 %if mmsize == 64
-    vpternlogd %1, %1, %1, 0xff
+    mova       %1, m15 ; set once: vpternlogd isn't dependency breaking
 %else
     pcmpeqw    %1, %1
 %endif
@@ -11167,7 +11167,12 @@ cglobal weightp_sum8, 7,9,11
 %endmacro
 
 %macro WEIGHTP_STATS8 0
+%if mmsize == 64
+cglobal weightp_stats8, 6,8,16
+    vpternlogd m15, m15, m15, 0xff
+%else
 cglobal weightp_stats8, 6,8,15
+%endif
     FIX_STRIDES r3
     vpbroadcastd m13, [pw_1]
     WEIGHTP_PERM m14
@@ -11408,6 +11413,9 @@ WEIGHTP_SUM8 0
 WEIGHTP_SUM8 1
 %if HIGH_BIT_DEPTH
 WEIGHTP_STATS8
+INIT_ZMM avx512
+WEIGHTP_STATS8
+INIT_YMM avx2
 %else
 WEIGHTP_STATS8_B
 %endif
