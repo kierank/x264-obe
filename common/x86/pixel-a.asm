@@ -6560,6 +6560,7 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     RET
 
 SATD_BI 16, 16, 0
+SATD_BI 16, 16, 1
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
