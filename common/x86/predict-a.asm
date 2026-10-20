@@ -2918,6 +2918,27 @@ cglobal predict_16x16_v, 1,2
     STORE16_PAIRS_ICL m0
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_16x16_h( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_h, 1,2
+    mov          r1, 0xffffffff00000000
+    kmovq        k2, r1
+    mov          r1, 0x0000ffff0000ffff
+    kmovq        k1, r1
+%assign Y 0
+%rep 8
+    vpbroadcastb ym %+ Y, [r0+(Y*2+0)*FDEC_STRIDE-1]
+    vpbroadcastb  m %+ Y{k2}, [r0+(Y*2+1)*FDEC_STRIDE-1]
+%assign Y Y+1
+%endrep
+%assign Y 0
+%rep 8
+    vmovdqu8 [r0+Y*2*FDEC_STRIDE]{k1}, m %+ Y
+%assign Y Y+1
+%endrep
+    RET
+
 %else ; HIGH_BIT_DEPTH
 %macro STORE16_ROWS_ICL 1 ; ymm
 %assign %%y 0
@@ -2949,6 +2970,23 @@ cglobal predict_16x16_v, 1,1
     movu         m7, [pq_rowpair_icl]
 %assign Y 0
 %rep 8
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+Y*2*FDEC_STRIDEB]{k1}, m0
+%assign Y Y+1
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_16x16_h( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_16x16_h, 1,2
+    mov         r1d, 0xffff0000
+    kmovd        k2, r1d
+    movu         m7, [pq_rowpair_icl]
+%assign Y 0
+%rep 8
+    vpbroadcastw ym0, [r0+(Y*2+0)*FDEC_STRIDEB-SIZEOF_PIXEL]
+    vpbroadcastw  m0{k2}, [r0+(Y*2+1)*FDEC_STRIDEB-SIZEOF_PIXEL]
     kxnorb       k1, k1, k1
     vpscatterqq [r0+m7+Y*2*FDEC_STRIDEB]{k1}, m0
 %assign Y Y+1
