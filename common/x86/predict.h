@@ -366,6 +366,8 @@ void x264_predict_4x4_hu_mmx2( pixel *src );
 void x264_predict_4x4_v_avx512icl( pixel *src );
 #define x264_predict_4x4_h_avx512icl x264_template(predict_4x4_h_avx512icl)
 void x264_predict_4x4_h_avx512icl( pixel *src );
+#define x264_predict_4x4_dc_avx512icl x264_template(predict_4x4_dc_avx512icl)
+void x264_predict_4x4_dc_avx512icl( pixel *src );
 #define x264_predict_4x4_ddl_avx512icl x264_template(predict_4x4_ddl_avx512icl)
 void x264_predict_4x4_ddl_avx512icl( pixel *src );
 #define x264_predict_4x4_ddr_avx512icl x264_template(predict_4x4_ddr_avx512icl)

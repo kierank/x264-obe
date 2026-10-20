@@ -741,6 +741,7 @@ void x264_predict_4x4_init_mmx( int cpu, x264_predict_t pf[12] )
 #if ARCH_X86_64
         pf[I_PRED_4x4_V]       = x264_predict_4x4_v_avx512icl;
         pf[I_PRED_4x4_H]       = x264_predict_4x4_h_avx512icl;
+        pf[I_PRED_4x4_DC]      = x264_predict_4x4_dc_avx512icl;
         pf[I_PRED_4x4_DDL]     = x264_predict_4x4_ddl_avx512icl;
         pf[I_PRED_4x4_DDR]     = x264_predict_4x4_ddr_avx512icl;
         pf[I_PRED_4x4_VR]      = x264_predict_4x4_vr_avx512icl;
@@ -770,6 +771,7 @@ void x264_predict_4x4_init_mmx( int cpu, x264_predict_t pf[12] )
 #if ARCH_X86_64
         pf[I_PRED_4x4_V]       = x264_predict_4x4_v_avx512icl;
         pf[I_PRED_4x4_H]       = x264_predict_4x4_h_avx512icl;
+        pf[I_PRED_4x4_DC]      = x264_predict_4x4_dc_avx512icl;
         pf[I_PRED_4x4_DDL]     = x264_predict_4x4_ddl_avx512icl;
         pf[I_PRED_4x4_DDR]     = x264_predict_4x4_ddr_avx512icl;
         pf[I_PRED_4x4_VR]      = x264_predict_4x4_vr_avx512icl;

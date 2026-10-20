@@ -3749,6 +3749,22 @@ cglobal predict_4x4_h, 1,2
     STORE4x4_ICL m1
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc, 1,2
+    LEFT4_ICL
+    movd        xm1, [r0-FDEC_STRIDE]
+    movu        xm2, [pb_dc4_icl]
+    vpermi2b    xm2, xm0, xm1           ; t0 .. t3 l0 .. l3
+    pxor        xm1, xm1
+    psadbw      xm2, xm1
+    paddw       xm2, [pw_4]
+    psrlw       xm2, 3
+    vpbroadcastb m0, xm2
+    STORE4x4_SPLAT_ICL m0
+    RET
+
 %else ; HIGH_BIT_DEPTH
 ; ym0 = left pixel of row y in word 4*y+3
 %macro LEFT4W_ICL 0
@@ -3842,6 +3858,20 @@ cglobal predict_4x4_h, 1,2
     movu        ym1, [pw_h4_icl]
     vpermw      ym1, ym1, ym0
     STORE4x4W_ICL 1
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_4x4_dc( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_4x4_dc, 1,2
+    LEFT4W_ICL
+    movq        xm1, [r0-FDEC_STRIDEB]
+    movu        ym2, [pw_dc4_icl]
+    vpermi2w    ym2, ym0, ym1           ; t0 .. t3 l0 .. l3
+    mov         r1d, 4
+    movd        xm3, r1d
+    DC4W_ICL     0, 2, 3
+    STORE4x4W_SPLAT_ICL 0
     RET
 
 %endif ; HIGH_BIT_DEPTH
