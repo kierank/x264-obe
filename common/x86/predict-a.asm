@@ -68,6 +68,8 @@ pb_p16_rows:    times 8 db 0
 %if HIGH_BIT_DEPTH
 pw_ddl_icl:     dw 1,2,3,4,5,6,7,8,2,3,4,5,6,7,8,9
                 dw 3,4,5,6,7,8,9,10,4,5,6,7,8,9,10,11
+pw_ddr_icl:     dw 7,8,9,10,11,12,13,14,6,7,8,9,10,11,12,13
+                dw 5,6,7,8,9,10,11,12,4,5,6,7,8,9,10,11
 %else
 pb_hd_icl:      db 1,65,2,66,3,67,4,68,5,69,6,70,7,71,72,73
                 db 74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89
@@ -1972,6 +1974,23 @@ cglobal predict_8x8_ddl, 2,2
     vpermw       m1, m3, m0
     vpbroadcastd m2, [pw_4]
     paddw        m3, m2
+    vpermw       m2, m3, m0
+    STORE4_ICL   1, 0
+    STORE4_ICL   2, 4
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_ddr( uint16_t *src, uint16_t *edge )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_ddr, 2,2
+    movu        ym0, [r1+8*SIZEOF_PIXEL]
+    movu        ym1, [r1+7*SIZEOF_PIXEL]
+    movu        ym2, [r1+9*SIZEOF_PIXEL]
+    PRED8x8_LOWPASS ym0, ym1, ym2, ym0
+    movu         m3, [pw_ddr_icl]
+    vpermw       m1, m3, m0
+    vpbroadcastd m2, [pw_4]
+    psubw        m3, m2
     vpermw       m2, m3, m0
     STORE4_ICL   1, 0
     STORE4_ICL   2, 4
