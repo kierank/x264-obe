@@ -2068,6 +2068,26 @@ cglobal store_interleave_chroma, 5,5
     sub      r4d, 2
     jg .loop
     RET
+%else
+; two rows per ymm: u and v of both rows merged by masked vpbroadcastq, one vpermt2b
+cglobal store_interleave_chroma, 5,6
+    mova      m2, [pb_ilv_icl]
+    mov      r5d, 2
+    kmovb     k1, r5d
+.loop:
+    movq     xm0, [r2]
+    vpbroadcastq xm0 {k1}, [r2+FDEC_STRIDEB]
+    movq     xm1, [r3]
+    vpbroadcastq xm1 {k1}, [r3+FDEC_STRIDEB]
+    vpermt2b  m0, m2, m1
+    movu    [r0], xm0
+    vextracti32x4 [r0+r1], m0, 1
+    add       r2, FDEC_STRIDEB*2
+    add       r3, FDEC_STRIDEB*2
+    lea       r0, [r0+r1*2]
+    sub      r4d, 2
+    jg .loop
+    RET
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 

@@ -1699,6 +1699,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg[PIXEL_4x2]   = x264_pixel_avg_4x2_avx512icl;
         pf->integral_init4h = x264_integral_init4h_avx512icl;
         pf->integral_init8h = x264_integral_init8h_avx512icl;
+        pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
         pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif
