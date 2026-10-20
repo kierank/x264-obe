@@ -10262,10 +10262,98 @@ cglobal weightp_sum8_nv, 6,8,16
     RET
 %endmacro
 
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; 8-bit weightp_stats8 on bytes: a ymm row is 4 blocks; psadbw block sums, pminub, pmaxub.
+; 8 blocks a pass. Then per block: the qword halves of two registers by shufps (lane 0
+; blocks 0 1 4 5, lane 1 blocks 2 3 6 7) and the dword's bytes by shifts.
+;-----------------------------------------------------------------------------
+%macro WEIGHTP_STATS8_B 0
+cglobal weightp_stats8, 6,8,12
+    pxor       m8, m8
+%if cpuflag(avx512icl)
+    movu       m9, [weightp_mm_perm]
+    movu      m10, [weightp_sum_perm]
+    mov       r6d, 0x55555555
+    kmovd      k1, r6d
+%else
+    pcmpeqb    m9, m9
+    psrld      m9, 24
+    pslld     m10, m9, 16
+%endif
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+%if cpuflag(avx512)
+    vpternlogd m2, m2, m2, 0xff
+    vpternlogd m3, m3, m3, 0xff
+%else
+    pcmpeqb    m2, m2
+    pcmpeqb    m3, m3
+%endif
+    pxor       m4, m4
+    pxor       m5, m5
+    mov        r6, r2
+    mov       r7d, r5d
+.loopy:
+    movu       m6, [r6]
+    movu       m7, [r6+32]
+    psadbw    m11, m6, m8
+    paddd      m0, m11
+    pminub     m2, m6
+    pmaxub     m4, m6
+    psadbw    m11, m7, m8
+    paddd      m1, m11
+    pminub     m3, m7
+    pmaxub     m5, m7
+    add        r6, r3
+    dec       r7d
+    jg .loopy
+    shufps     m6, m2, m3, q2020
+    shufps     m2, m3, q3131
+    pminub     m2, m6
+    shufps     m6, m4, m5, q2020
+    shufps     m4, m5, q3131
+    pmaxub     m4, m6
+    psrld      m6, m2, 16
+    pminub     m2, m6
+    psrlw      m6, m2, 8
+    pminub     m2, m6
+    psrld      m6, m4, 16
+    pmaxub     m4, m6
+    psrlw      m6, m4, 8
+    pmaxub     m4, m6
+%if cpuflag(avx512icl)
+    vpermt2b   m2 {k1}{z}, m9, m4  ; min | max << 16, blocks in order
+    vpermt2d   m0, m10, m1
+%else
+    pand       m2, m9
+    pslld      m4, 16
+    pand       m4, m10
+    por        m2, m4
+    vpermq     m2, m2, q3120
+    shufps     m0, m1, q2020
+    vpermq     m0, m0, q3120
+%endif
+    movu     [r1], m2
+    movu     [r0], m0
+    add        r0, 32
+    add        r1, 32
+    add        r2, 64
+    sub       r4d, 8
+    jg .loopx
+    RET
+%endmacro
+%endif
+
 INIT_YMM avx2
 WEIGHTP_SUM8 0
 WEIGHTP_SUM8 1
+%if HIGH_BIT_DEPTH
 WEIGHTP_STATS8
+%else
+WEIGHTP_STATS8_B
+%endif
 WEIGHTP_SUM8_NV
 
 %if HIGH_BIT_DEPTH == 0
