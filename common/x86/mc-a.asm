@@ -1708,6 +1708,96 @@ OFFSET_AVG_ICL 16, add
 OFFSET_AVG_ICL 16, sub
 OFFSET_AVG_ICL 20, add
 OFFSET_AVG_ICL 20, sub
+
+;-----------------------------------------------------------------------------
+; 8-bit mc_X_plane( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+;                   weight_t *w, int width, int height ), avx512icl: the caches and
+; ops of the avx512icl mc_X_wN rows over whole rows (x264_weight_scale_plane passes
+; width a multiple of 8, even height), weights 32 px per zmm as words, offsets
+; 64 px per zmm; the row tail loads and stores under k1
+;-----------------------------------------------------------------------------
+%macro PLANE_ICL8_TAIL 1 ; px per zmm
+    mov          r7d, r5d
+    and          r7d, %1-1
+    sub          r5d, r7d               ; full columns
+    xor          r8d, r8d
+    bts           r8, r7
+    dec           r8
+    kmovq         k1, r8
+%endmacro
+
+%macro WEIGHT_PLANE_ICL8_ROWS 1 ; fast
+.row%1:
+    xor          r8d, r8d
+    cmp          r8d, r5d
+    jge .tail%1
+.col%1:
+    vpmovzxbw     m0, [r2+r8]
+    WEIGHT_ICL_OP m0, %1
+    vpmovuswb ym0, m0
+    movu     [r0+r8], ym0
+    add           r8, 32
+    cmp          r8d, r5d
+    jl .col%1
+.tail%1:
+    kortestd      k1, k1
+    jz .next%1
+    vpmovzxbw     m0 {k1}{z}, [r2+r8]
+    WEIGHT_ICL_OP m0, %1
+    vpmovuswb    ym0, m0
+    vmovdqu8 [r0+r8] {k1}, ym0
+.next%1:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row%1
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal mc_weight_plane, 7,9,6
+    vpbroadcastw  m3, [r4]
+    vpbroadcastw  m4, [r4+16]
+    pxor          m5, m5
+    PLANE_ICL8_TAIL 32
+    cmp byte [r4+1], 0
+    jz .fast
+    WEIGHT_PLANE_ICL8_ROWS 0
+.fast:
+    psllw         m3, 7
+    WEIGHT_PLANE_ICL8_ROWS 1
+
+%macro OFFSET_PLANE_ICL8 1 ; add/sub
+cglobal mc_offset%1_plane, 7,9,3
+    vpbroadcastb  m2, [r4]
+    PLANE_ICL8_TAIL 64
+.row:
+    xor          r8d, r8d
+    cmp          r8d, r5d
+    jge .tail
+.col:
+    movu          m0, [r2+r8]
+    p%1usb        m0, m2
+    movu     [r0+r8], m0
+    add           r8, 64
+    cmp          r8d, r5d
+    jl .col
+.tail:
+    kortestq      k1, k1
+    jz .next
+    vmovdqu8      m0 {k1}{z}, [r2+r8]
+    p%1usb        m0, m2
+    vmovdqu8 [r0+r8] {k1}, m0
+.next:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row
+    RET
+%endmacro
+
+OFFSET_PLANE_ICL8 add
+OFFSET_PLANE_ICL8 sub
 %endif ; HIGH_BIT_DEPTH == 0 && ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
