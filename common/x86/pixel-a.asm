@@ -11695,6 +11695,7 @@ cglobal weightp_sum8, 7,9,11
     RET
 %endmacro
 
+WEIGHTP_SUM8_HBD 0
 WEIGHTP_SUM8_HBD 1
 %endif
 %endif ; ARCH_X86_64
