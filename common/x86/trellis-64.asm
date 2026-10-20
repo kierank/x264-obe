@@ -1622,9 +1622,12 @@ INIT_ZMM avx512icl
     %define dct_weight1_tab dct4_weight_tab
     %define dct_weight2_tab dct4_weight2_tab
 %endif
-; zero-run prefix sums: 8x8 only, where runs of 20-55 zero coefs are typical
+; zero-run prefix sums
 %assign tr_zpfx 0
 %if TRELLIS_ICL_ZPREFIX && num_coefs == 64
+    %assign tr_zpfx 1
+%endif
+%if TRELLIS_ICL_ZPREFIX && num_coefs == 16 && dc == 0
     %assign tr_zpfx 1
 %endif
 cglobal %1, 4,15,22
@@ -1833,10 +1836,14 @@ cglobal %1, 4,15,22
 .prefix:
     ; prefix[i] = sum of cost_sig0 of positions 0..i-1
     mov    r6, cabac_state_sigm
+%if num_coefs == 64
     vmovdqu8  xm15, [r6]
     mov    r6, sigtabp
     vmovdqu8  m16, [r6]
     vpermb    m16, m16, m15               ; state of each position
+%else
+    vmovdqu8  xm16, [r6]
+%endif
     vmovdqu64 m17, [tr_e0lo]
     vpermt2b  m17, m16, [tr_e0lo+64]
     vmovdqu64 m18, [tr_e0hi]
@@ -1852,10 +1859,10 @@ cglobal %1, 4,15,22
     vpxord    m21, m21, m21
     mov    qword [prefix], 0
 %assign %%g 0
-%rep 8
+%rep num_coefs/8
     vmovdqa64 m19, m15
     vpermi2b  m19{k2}{z}, m17, m18        ; entropy of positions 8g..8g+7
-%if %%g < 7
+%if %%g < num_coefs/8-1
     vpaddb    m15, m15, m2
 %endif
     vpmuludq  m19, m19, m3
@@ -1868,7 +1875,7 @@ cglobal %1, 4,15,22
     vpaddq    m19, m19, m20
     vpaddq    m19, m19, m12
     vmovdqu64 [prefix + 8 + 64*%%g], m19
-%if %%g < 7
+%if %%g < num_coefs/8-1
     vpermq    m12, m11, m19
 %endif
 %assign %%g %%g+1
