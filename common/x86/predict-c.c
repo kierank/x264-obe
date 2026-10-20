@@ -596,6 +596,12 @@ void x264_predict_8x8_init_mmx( int cpu, x264_predict8x8_t pf[12], x264_predict_
     pf[I_PRED_8x8_VL]     = x264_predict_8x8_vl_avx;
     pf[I_PRED_8x8_VR]     = x264_predict_8x8_vr_avx;
     *predict_8x8_filter   = x264_predict_8x8_filter_avx;
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pf[I_PRED_8x8_DDL]  = x264_predict_8x8_ddl_avx512icl;
+#endif
+    }
 #else
     pf[I_PRED_8x8_V]      = x264_predict_8x8_v_mmx2;
     pf[I_PRED_8x8_H]      = x264_predict_8x8_h_mmx2;
