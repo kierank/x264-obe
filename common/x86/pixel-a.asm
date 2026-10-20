@@ -5425,6 +5425,16 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
     pand        xm5, [mask_ac8]
     pabsw       xm5, xm5
     pabsw       xm0, xm0
+%if cpuflag(avx512icl)
+    ; two vpdpwssd chains; the max() words weighted by 2 (pw_2)
+    paddw       xm6, xm7, xm7
+    pmaddwd     xm1, xm6
+    pmaddwd     xm5, xm7
+    {evex} vpdpwssd xm1, xm2, xm6
+    {evex} vpdpwssd xm5, xm0, xm7
+    {evex} vpdpwssd xm1, xm3, xm6
+    paddd       xm0, xm5, xm1      ; sa8d
+%else
     pmaddwd     xm1, xm7
     pmaddwd     xm2, xm7
     pmaddwd     xm3, xm7
@@ -5435,6 +5445,7 @@ cglobal pixel_hadamard_ac_8x8, 2,3,8
     paddd       xm1, xm1           ; max(|a|,|b|) is half of |a+b|+|a-b|
     paddd       xm0, xm5
     paddd       xm0, xm1           ; sa8d
+%endif
     vextracti128 xm1, m4, 1
     paddd       xm4, xm1           ; satd
     phaddd      xm4, xm0
@@ -6579,6 +6590,7 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
 SATD_BI 16, 16, 0
 SATD_BI 16, 16, 1
 SA8D_SATD
+HADAMARD_AC_8x8_AVX2
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
