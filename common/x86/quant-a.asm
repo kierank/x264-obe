@@ -1344,6 +1344,31 @@ INIT_XMM xop
 DEQUANT_DC d, pmaddwd
 INIT_YMM avx2
 DEQUANT_DC d, pmaddwd
+
+; avx512icl: the 16 coefficients in one zmm; the right shift adds the
+; rounding inside vpdpwssd
+INIT_ZMM avx512icl
+cglobal dequant_4x4dc, 0,3
+    DEQUANT_START 6, 6
+.lshift:
+    vpbroadcastd m3, [r1]
+    pmaddwd      m0, m3, [r0]
+    movd        xm2, t0d
+    pslld        m0, xm2
+    mova       [r0], m0
+    RET
+.rshift32:
+    neg         t0d
+    mov         t1d, 1
+    shlx        t1d, t1d, t0d
+    shr         t1d, 1
+    vpbroadcastd m0, t1d
+    vpbroadcastd m2, [r1]
+    vpdpwssd     m0, m2, [r0]
+    movd        xm3, t0d
+    psrad        m0, xm3
+    mova       [r0], m0
+    RET
 %else
 %if ARCH_X86_64 == 0
 INIT_MMX mmx2
