@@ -1273,6 +1273,15 @@ cglobal dequant_4x4dc, 0,3,6
     SPLAT%1  m3, xm3
 %endif
     movd    xm2, t0d
+%if HIGH_BIT_DEPTH
+%assign %%x 0
+%rep SIZEOF_PIXEL*32/mmsize
+    %2       m0, m3, [r0+%%x]   ; dmf < 2^15 before the shift, not after
+    pslld    m0, xm2
+    mova     [r0+%%x], m0
+%assign %%x %%x+mmsize
+%endrep
+%else
     pslld    m3, xm2
 %assign %%x 0
 %rep SIZEOF_PIXEL*32/mmsize
@@ -1280,6 +1289,7 @@ cglobal dequant_4x4dc, 0,3,6
     mova     [r0+%%x], m0
 %assign %%x %%x+mmsize
 %endrep
+%endif
     RET
 
 .rshift32:

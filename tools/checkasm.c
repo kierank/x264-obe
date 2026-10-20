@@ -3799,6 +3799,16 @@ static int check_quant( int cpu_ref, int cpu_new )
                     oks[1] = 0; \
                     fprintf( stderr, #dqname "(qp=%d, cqm=%d, block="#block"): [FAILED]\n", qp, i_cqm ); \
                 } \
+                /* small levels at every qp: with a cqm, dmf << qbits passes 2^15 at high qp */ \
+                for( int i = 0; i < 16; i++ ) \
+                    dct1[i] = dct2[i] = rand()%7 - 3; \
+                call_c1( qf_c.dqname, dct1, h->dequant##w##_mf[block], qp ); \
+                call_a1( qf_a.dqname, dct2, h->dequant##w##_mf[block], qp ); \
+                if( memcmp( dct1, dct2, w*w*sizeof(dctcoef) ) ) \
+                { \
+                    oks[1] = 0; \
+                    fprintf( stderr, #dqname "(qp=%d, cqm=%d, block="#block", small levels): [FAILED]\n", qp, i_cqm ); \
+                } \
                 call_c2( qf_c.dqname, dct1, h->dequant##w##_mf[block], qp ); \
                 call_a2( qf_a.dqname, dct2, h->dequant##w##_mf[block], qp ); \
             } \
