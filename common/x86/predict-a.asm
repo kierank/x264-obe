@@ -107,6 +107,10 @@ pb_filt_left:   db 55,63,63,55,47,39,31,23,15,7,71,72,0,0,0,0
 pb_filt_r:      db 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
 pb_filt_l:      db 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
 %endif
+%if HIGH_BIT_DEPTH
+pq_rowquad_icl: dq 0, 8, 64, 72, 128, 136, 192, 200
+%else
+%endif
 
 SECTION .text
 
@@ -3074,6 +3078,83 @@ cglobal predict_16x16_dc_128, 1,2
 %assign Y Y+1
 %endrep
     RET
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 8x8 v, h, dc (pixel *src, pixel edge[36]): 8-bit rows y|y+1 in
+; bytes 0-7|32-39, one masked store per row pair. 10-bit rows are 64 bytes
+; apart: h as vpermw rows (4 per zmm), dc sums by vpdpwssd, v and dc_128 as
+; vpscatterqq of four rows (8 qwords).
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH == 0
+%macro STORE8_PAIRS_ICL 1 ; zmm with a row in bytes 0-7 and 32-39
+    mov          r1, 0x000000ff000000ff
+    kmovq        k1, r1
+    vmovdqu8 [r0+0*FDEC_STRIDE]{k1}, %1
+    vmovdqu8 [r0+2*FDEC_STRIDE]{k1}, %1
+    vmovdqu8 [r0+4*FDEC_STRIDE]{k1}, %1
+    vmovdqu8 [r0+6*FDEC_STRIDE]{k1}, %1
+%endmacro
+
+; m0 = broadcast (psadbw(xm0) + %1) >> %2
+%macro DC8_ICL 2
+    pxor        xm1, xm1
+    psadbw      xm0, xm1
+    punpckhqdq  xm1, xm0, xm0
+    paddw       xm0, xm1
+    paddw       xm0, [%1]
+    psrlw       xm0, %2
+    vpbroadcastb m0, xm0
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_v( uint8_t *src, uint8_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_v, 2,2
+    vpbroadcastq m0, [r1+16]
+    STORE8_PAIRS_ICL m0
+    RET
+
+%else ; HIGH_BIT_DEPTH
+%macro STORE8_ROWS_ICL 1 ; xmm
+%assign %%y 0
+%rep 8
+    mova [r0+%%y*FDEC_STRIDEB], %1
+%assign %%y %%y+1
+%endrep
+%endmacro
+
+; rows 0-3 and 4-7 of %1 (one row per 128-bit lane) by vpscatterqq
+%macro SCATTER8_ICL 1
+    movu         m7, [pq_rowquad_icl]
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+0*FDEC_STRIDEB]{k1}, %1
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+4*FDEC_STRIDEB]{k1}, %1
+%endmacro
+
+; xm0 = broadcast (sum of the words of xm0 + xm2) >> %1
+%macro DC8W_ICL 1
+    vpdpwssd    xm2, xm0, [pw_1]{1to4}
+    pshufd      xm1, xm2, q1032
+    paddd       xm2, xm1
+    pshufd      xm1, xm2, q2301
+    paddd       xm2, xm1
+    psrld       xm2, %1
+    vpbroadcastw xm0, xm2
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_v( uint16_t *src, uint16_t edge[36] )
+;-----------------------------------------------------------------------------
+cglobal predict_8x8_v, 2,2
+    vbroadcasti32x4 m0, [r1+16*SIZEOF_PIXEL]
+    SCATTER8_ICL m0
+    RET
+
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
