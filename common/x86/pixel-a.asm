@@ -9787,6 +9787,72 @@ cglobal pixel_asd8, 5,7,6
     pabsd      xm0, xm0
     movd       eax, xm0
     RET
+
+;-----------------------------------------------------------------------------
+; int pixel_vsad( pixel *src, intptr_t stride, int height ), avx512icl
+; 8-bit: rows y y+1 a ymm (row y+1 by vbroadcasti32x4 {k1}), rows y+1 y+2 by valignq of
+; it and the next, one psadbw for two row pairs. High bit depth: |d| words by vpdpwssd
+; into two dword accumulators (no HADDUW).
+;-----------------------------------------------------------------------------
+cglobal pixel_vsad, 3,4,6
+%if HIGH_BIT_DEPTH
+    add         r1, r1
+    vpbroadcastd m5, [pw_1]
+    movu        m0, [r0]
+    movu        m1, [r0+r1]
+    lea         r0, [r0+r1*2]
+    psubw       m2, m0, m1
+    pabsw       m2, m2
+    pxor        m3, m3
+    pxor        m4, m4
+    vpdpwssd    m3, m2, m5
+    sub        r2d, 2
+    jz .end
+.loop:
+    movu        m0, [r0]
+    psubw       m2, m1, m0
+    movu        m1, [r0+r1]
+    psubw       m0, m1
+    pabsw       m2, m2
+    pabsw       m0, m0
+    vpdpwssd    m4, m2, m5
+    vpdpwssd    m3, m0, m5
+    lea         r0, [r0+r1*2]
+    sub        r2d, 2
+    jg .loop
+.end:
+    paddd       m3, m4
+    HADDD       m3, m0
+%else
+    mov        r3d, 0xf0
+    kmovb       k1, r3d
+    movu       xm0, [r0]
+    vbroadcasti32x4 m0 {k1}, [r0+r1]
+    lea         r0, [r0+r1*2]
+    pxor        m3, m3
+    sub        r2d, 2
+    jz .end
+.loop:
+    movu       xm1, [r0]
+    vbroadcasti32x4 m1 {k1}, [r0+r1]
+    valignq     m2, m1, m0, 2
+    psadbw      m2, m0
+    paddd       m3, m2
+    mova        m0, m1
+    lea         r0, [r0+r1*2]
+    sub        r2d, 2
+    jg .loop
+.end:
+    vextracti128 xm1, m0, 1
+    psadbw      xm1, xm0
+    paddd       m3, m1
+    vextracti128 xm1, m3, 1
+    paddd       xm3, xm1
+    punpckhqdq  xm1, xm3, xm3
+    paddd       xm3, xm1
+%endif
+    movd       eax, xm3
+    RET
 %endif
 
 ;=============================================================================
