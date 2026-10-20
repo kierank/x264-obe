@@ -1973,6 +1973,63 @@ SAD_X_HBD8_VNNI 4, 16, 1
 SAD_X_HBD8_VNNI 4,  8
 SAD_X_HBD8_VNNI 4,  8, 1
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_16x16( uint16_t *fenc, intptr_t, uint16_t *pix, intptr_t stride )
+; AVX512ICL zmm: as the avx512 kernel (row pair a zmm, ymm load + k-merged
+; vbroadcasti64x4, the fenc pair a memory operand), |diff| into dwords by
+; vpdpwssd with pw_1, two accumulators (row pairs alternate).
+; Tail: paddd, vextracti64x4, paddd, vextracti32x4, paddd, 2 pshufd + paddd,
+; movd (10 ops, 9 deep).
+;-----------------------------------------------------------------------------
+%macro SAD_HBD16_VNNI 1 ; height
+INIT_ZMM avx512icl
+cglobal pixel_sad_16x%1
+    cmp          r1mp, FENC_STRIDE
+    jne pixel_sad_16x%1_avx2
+    PROLOGUE 4,5,4
+    mov           r4d, 0xf0
+    kmovb          k1, r4d
+    lea            r4, [r3+2*r3]
+    vpbroadcastd   m3, [pw_1]
+%assign sad_hbd_k 0
+%rep %1/2
+    SAD_HBD_ROWOFF sad_hbd_k&3, r3, r4
+    %xdefine sad_off0 sad_off
+    SAD_HBD_ROWOFF (sad_hbd_k+1)&3, r3, r4
+    movu          ym1, [r2+sad_off0]
+    vbroadcasti64x4 m1 {k1}, [r2+sad_off]
+    psubw          m1, [r0+sad_hbd_k*FENC_STRIDEB]
+    pabsw          m1, m1
+%if sad_hbd_k == 0
+    pmaddwd        m0, m1, m3
+%elif sad_hbd_k == 2
+    pmaddwd        m2, m1, m3
+%elif sad_hbd_k & 2
+    vpdpwssd       m2, m1, m3
+%else
+    vpdpwssd       m0, m1, m3
+%endif
+%if (sad_hbd_k&3) == 2 && sad_hbd_k < %1-2
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_hbd_k sad_hbd_k+2
+%endrep
+    paddd          m0, m2
+    vextracti64x4 ym1, m0, 1
+    paddd         ym0, ym1
+    vextracti128  xm1, ym0, 1
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
+SAD_HBD16_VNNI 16
+SAD_HBD16_VNNI  8
+
 INIT_YMM avx2
 %endif
 
