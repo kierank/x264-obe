@@ -5809,8 +5809,13 @@ INTRA_SATD_X3_16x16_HBD
     HADAMARD4_V  0, 1, 2, 3, 4
     ABSW2        m0, m2, m0, m2, m4, m5
     ABSW2        m1, m3, m1, m3, m4, m5
+%if cpuflag(avx512icl)
+    SATD_ICL_HMAX 0, 2, 4
+    SATD_ICL_HMAX 1, 3, 4
+%else
     HADAMARD 1, max, 0, 2, 4, 5
     HADAMARD 1, max, 1, 3, 4, 5
+%endif
     paddw        %1, m0, m1
 %endif
 %endmacro
@@ -7368,7 +7373,18 @@ INIT_YMM avx2
     LOWRES_PRE8
 %endmacro
 
+; avx2, and avx512icl after the SATD_ICL macros
+%macro LOWRES_8BIT 0
+%if cpuflag(avx512icl)
+; m0-m15 on ymm0-15 (the 32 regs make x86inc save them on WIN64 and vzeroupper):
+; phaddw, pblendw, vpblendd, vperm2i128 and phminposuw have no EVEX form
+cglobal intra_satd_lowres, 3,5,32
+    AVX512_MM_PERMUTATION
+    mov         r3d, 0x5555
+    kmovd        k1, r3d
+%else
 cglobal intra_satd_lowres, 3,5,16
+%endif
     sub          r1, r2               ; top row, row k at r1+(k+1)*r2
     lea          r3, [3*r2]
     lea          r4, [r1+4*r2]        ; row 3
@@ -7511,6 +7527,9 @@ cglobal intra_satd_lowres, 3,5,16
     movd        eax, xm0
     movzx       eax, ax
     RET
+%endmacro
+
+LOWRES_8BIT
 
 %endif ; ARCH_X86_64
 
@@ -8245,6 +8264,7 @@ INTRA_SATD_X3_8BIT
 SA8D_SATD
 SATD_PRE_FUNCS
 SATD_AVG2_PRE_FUNCS
+LOWRES_8BIT
 %endif ; ARCH_X86_64
 
 %macro SATD_AVX512_LOAD4 2 ; size, opmask
