@@ -2206,6 +2206,33 @@ cglobal sub8x8_dct_dc, 3,4
     movu       [r0], xm0
     RET
 
+cglobal sub8x16_dct_dc, 3,4
+    DCTDC_ICL_10_MASKS
+    DCTDC_ICL_10_ROWS 0, 4, 0
+    DCTDC_ICL_10_ROWS 1, 5, 4
+    DCTDC_ICL_10_ROWS 2, 4, 8
+    DCTDC_ICL_10_ROWS 3, 5, 12
+    DCTDC_ICL_10_JOIN 0, 1, 4              ; a0 a1 a2 a3
+    DCTDC_ICL_10_JOIN 2, 3, 4              ; a4 a5 a6 a7
+    vinserti32x4  ym0, ym0, xm2, 1
+    mov         r3d, 0xaa
+    kmovb        k1, r3d
+    pshufd       ym1, ym0, q2301
+    paddd        ym2, ym0, ym1
+    vpsubd       ym2 {k1}, ym1, ym0        ; b0 b4 b1 b5 | b2 b6 b3 b7
+    mov         r3d, 0xcc
+    kmovb        k1, r3d
+    pshufd       ym1, ym2, q1032
+    paddd        ym0, ym2, ym1
+    vpsubd       ym0 {k1}, ym1, ym2        ; a0' a2' a4' a6' | a1' a3' a5' a7'
+    vextracti32x4 xm1, ym0, 1
+    paddd         xm2, xm0, xm1            ; dct 0 1 6 7
+    psubd         xm0, xm1                 ; dct 2 3 4 5
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+    movu     [r0+ 0], xm1
+    movu     [r0+16], xm0
+    RET
 %endif
 
 ;-----------------------------------------------------------------------------

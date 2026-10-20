@@ -85,7 +85,7 @@ void x264_sub8x16_dct_dc_avx512( int16_t dct [ 8], uint8_t *pix1, uint8_t *pix2 
 #define x264_sub8x8_dct_dc_avx512icl x264_template(sub8x8_dct_dc_avx512icl)
 void x264_sub8x8_dct_dc_avx512icl ( dctcoef dct [ 4], pixel *pix1, pixel *pix2 );
 #define x264_sub8x16_dct_dc_avx512icl x264_template(sub8x16_dct_dc_avx512icl)
-void x264_sub8x16_dct_dc_avx512icl( int16_t dct [ 8], uint8_t *pix1, uint8_t *pix2 );
+void x264_sub8x16_dct_dc_avx512icl( dctcoef dct [ 8], pixel *pix1, pixel *pix2 );
 
 #define x264_add4x4_idct_mmx x264_template(add4x4_idct_mmx)
 void x264_add4x4_idct_mmx       ( uint8_t *p_dst, int16_t dct    [16] );
