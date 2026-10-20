@@ -3715,8 +3715,9 @@ static int check_quant( int cpu_ref, int cpu_new )
                 } \
                 dct1[idx] = zero * abs_level * sign; \
             } \
+            /* the DC is not part of the AC score */ \
             if( ac ) \
-                dct1[0] = 0; \
+                dct1[0] = i&1 ? 0 : (rand()&0x3ff) - 0x200; \
             int result_c = call_c( qf_c.decname, dct1 ); \
             int result_a = call_a( qf_a.decname, dct1 ); \
             if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \

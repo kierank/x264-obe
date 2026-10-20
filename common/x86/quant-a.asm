@@ -1686,7 +1686,11 @@ cglobal decimate_score%1, 1,3
     DECIMATE_MASK edx, eax, r0, [pb_1], ecx
     xor   edx, 0xffff
     je   .ret
+%if %1==15
+    and   eax, -2       ; not the DC
+%else
     test  eax, eax
+%endif
     jne  .ret9
 %if %1==15
     shr   edx, 1
@@ -1919,6 +1923,9 @@ cglobal decimate_score%1, 1,3
     test  edx, edx
 %endif
     jz .ret
+%if %1 == 15
+    kshiftrw k1, k1, 1  ; not the DC
+%endif
     ktestw k1, k1
     jnz .ret9
 %ifdef PIC
@@ -2121,6 +2128,9 @@ cglobal decimate_score%1, 1,4
     add      eax, r2d
     add      eax, r3d
     mov      r2d, 9
+%if %1 == 15
+    kshiftrw  k1, k1, 1     ; not the DC
+%endif
     kortestw  k1, k1
     cmovnz   eax, r2d
     RET
