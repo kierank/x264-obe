@@ -949,15 +949,28 @@ SSD_NV12
 %if ARCH_X86_64
 %if HIGH_BIT_DEPTH
 ; vpdpwssd of the differences into m0 m5
-%macro SSD_ICL 2 ; width, height
-cglobal pixel_ssd_%1x%2, 4,7,6
+%macro SSD_ICL 2-3 ; width, height, name suffix
+cglobal pixel_ssd_%1x%2%3, 4,7,6
     FIX_STRIDES r1, r3
     lea         r5, [r1*3]
     lea         r6, [r3*3]
     pxor        m0, m0
     pxor        m5, m5
 %rep %2/4
-%if %1 == 16
+%if %1 == 16 && mmsize == 64
+    movu       ym1, [r0]
+    vinserti64x4 m1, m1, [r0+r1], 1
+    movu       ym2, [r0+r1*2]
+    vinserti64x4 m2, m2, [r0+r5], 1
+    movu       ym3, [r2]
+    vinserti64x4 m3, m3, [r2+r3], 1
+    movu       ym4, [r2+r3*2]
+    vinserti64x4 m4, m4, [r2+r6], 1
+    psubw       m1, m3
+    psubw       m2, m4
+    vpdpwssd    m0, m1, m1
+    vpdpwssd    m5, m2, m2
+%elif %1 == 16
     movu        m1, [r0]
     movu        m2, [r0+r1]
     movu        m3, [r0+r1*2]
@@ -1013,8 +1026,16 @@ cglobal pixel_ssd_%1x%2, 4,7,6
     vinserti128 m%1, m%1, xm3, 1
 %endmacro
 
-%macro SSD_ICL 2 ; width, height
-cglobal pixel_ssd_%1x%2, 4,7,9
+; four rows of 16 a zmm
+%macro SSD_ICL_W16Z 4 ; dst, src, stride, 3*stride
+    movu      xm%1, [%2]
+    vinserti32x4 m%1, m%1, [%2+%3], 1
+    vinserti32x4 m%1, m%1, [%2+%3*2], 2
+    vinserti32x4 m%1, m%1, [%2+%4], 3
+%endmacro
+
+%macro SSD_ICL 2-3 ; width, height, name suffix
+cglobal pixel_ssd_%1x%2%3, 4,7,9
     lea         r5, [r1*3]
     lea         r6, [r3*3]
     vpbroadcastd m6, [pb_1]
@@ -1025,7 +1046,13 @@ cglobal pixel_ssd_%1x%2, 4,7,9
     pxor        m4, m4
     pxor        m8, m8
 %rep %2/4
-%if %1 == 16
+%if %1 == 16 && mmsize == 64
+    SSD_ICL_W16Z 1, r0, r1, r5
+    SSD_ICL_W16Z 2, r2, r3, r6
+    SSD_ICL_ABS 1, 2, 0, 4
+    SWAP 0, 5
+    SWAP 4, 8
+%elif %1 == 16
     movu       xm1, [r0]
     vinserti128 m1, m1, [r0+r1], 1
     movu       xm2, [r2]
@@ -1061,6 +1088,10 @@ SSD_ICL 16, 16
 SSD_ICL 16,  8
 SSD_ICL  8, 16
 SSD_ICL  8,  8
+; zmm: assembled, not dispatched (for full width zmm)
+INIT_ZMM avx512icl
+SSD_ICL 16, 16, _zmm
+SSD_ICL 16,  8, _zmm
 %endif ; ARCH_X86_64
 
 ;=============================================================================
@@ -1520,6 +1551,42 @@ cglobal pixel_var_8x8, 2,4,7
     VAR_ICL_CORE
     paddd       m6, m2
     VAR_END_YMM
+
+; zmm, two rows a register: assembled, not dispatched (for full width zmm)
+INIT_ZMM avx512icl
+cglobal pixel_var_16x16_zmm, 2,4,7
+    VAR_ICL_START
+%rep 2
+    movu       ym0, [r0]
+    vinserti64x4 m0, m0, [r0+r1], 1
+    movu       ym3, [r0+r1*2]
+    vinserti64x4 m3, m3, [r0+r3], 1
+    lea         r0, [r0+r1*4]
+    movu       ym1, [r0]
+    vinserti64x4 m1, m1, [r0+r1], 1
+    movu       ym4, [r0+r1*2]
+    vinserti64x4 m4, m4, [r0+r3], 1
+    lea         r0, [r0+r1*4]
+    VAR_ICL_CORE
+%endrep
+    paddd       m6, m2
+    vextracti32x8 ym0, m5, 1
+    paddw      ym5, ym0
+    vextracti32x8 ym0, m6, 1
+    paddd      ym6, ym0
+    vpbroadcastd ym0, [pw_1]
+    pmaddwd    ym5, ym0
+    vextracti128 xm0, ym5, 1
+    paddd      xm5, xm0
+    vextracti128 xm0, ym6, 1
+    paddd      xm6, xm0
+    punpckldq  xm0, xm5, xm6
+    punpckhdq  xm5, xm6
+    paddd      xm5, xm0
+    punpckhqdq xm0, xm5, xm5
+    paddd      xm5, xm0
+    movq       rax, xm5
+    RET
 %else ; !HIGH_BIT_DEPTH
 ; vpdpbusd: x * 1 and x * (x ^ 0x80) = x*x - 128*x; m6 = 1, m7 = 0x80 bytes
 ; sums m0 m1, squares - 128 * sums m2 m3
@@ -1548,7 +1615,11 @@ cglobal pixel_var_8x8, 2,4,7
     punpckldq   m1, m0, m2
     punpckhdq   m0, m2
     paddd       m0, m1
-    vextracti128 xm1, m0, 1
+%if mmsize == 64
+    vextracti32x8 ym1, m0, 1
+    paddd      ym0, ym1
+%endif
+    vextracti128 xm1, ym0, 1
     paddd      xm0, xm1
     punpckhqdq xm1, xm0, xm0
     paddd      xm0, xm1
@@ -1595,6 +1666,26 @@ cglobal pixel_var_8x8, 2,4,8
     VAR_ICL_W8 0, 2
     lea         r0, [r0+r1*4]
     VAR_ICL_W8 1, 3
+    VAR_ICL_END
+
+; zmm, four rows a register: assembled, not dispatched (for full width zmm)
+INIT_ZMM avx512icl
+cglobal pixel_var_16x16_zmm, 2,4,10
+    VAR_ICL_START
+%rep 2
+    movu       xm4, [r0]
+    vinserti32x4 m4, m4, [r0+r1], 1
+    vinserti32x4 m4, m4, [r0+r1*2], 2
+    vinserti32x4 m4, m4, [r0+r3], 3
+    lea         r0, [r0+r1*4]
+    movu       xm5, [r0]
+    vinserti32x4 m5, m5, [r0+r1], 1
+    vinserti32x4 m5, m5, [r0+r1*2], 2
+    vinserti32x4 m5, m5, [r0+r3], 3
+    lea         r0, [r0+r1*4]
+    VAR_ICL_ACC 4, 8, 0, 2
+    VAR_ICL_ACC 5, 9, 1, 3
+%endrep
     VAR_ICL_END
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64

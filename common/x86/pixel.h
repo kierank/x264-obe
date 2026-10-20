@@ -719,6 +719,9 @@
 #define x264_pixel_var_8x8_xop x264_template(pixel_var_8x8_xop)
 #define x264_pixel_ssim_4x4x2_core_avx512icl x264_template(pixel_ssim_4x4x2_core_avx512icl)
 #define x264_pixel_ssd_16x16_avx512icl x264_template(pixel_ssd_16x16_avx512icl)
+#define x264_pixel_ssd_16x16_zmm_avx512icl x264_template(pixel_ssd_16x16_zmm_avx512icl)
+#define x264_pixel_ssd_16x8_zmm_avx512icl x264_template(pixel_ssd_16x8_zmm_avx512icl)
+#define x264_pixel_var_16x16_zmm_avx512icl x264_template(pixel_var_16x16_zmm_avx512icl)
 #define x264_pixel_ssd_16x8_avx512icl x264_template(pixel_ssd_16x8_avx512icl)
 #define x264_pixel_ssd_8x16_avx512icl x264_template(pixel_ssd_8x16_avx512icl)
 #define x264_pixel_ssd_8x8_avx512icl x264_template(pixel_ssd_8x8_avx512icl)
@@ -980,6 +983,9 @@ int  x264_pixel_ssd_16x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
 int  x264_pixel_ssd_16x8_avx512icl ( pixel *, intptr_t, pixel *, intptr_t );
 int  x264_pixel_ssd_8x16_avx512icl ( pixel *, intptr_t, pixel *, intptr_t );
 int  x264_pixel_ssd_8x8_avx512icl  ( pixel *, intptr_t, pixel *, intptr_t );
+int  x264_pixel_ssd_16x16_zmm_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
+int  x264_pixel_ssd_16x8_zmm_avx512icl ( pixel *, intptr_t, pixel *, intptr_t );
+uint64_t x264_pixel_var_16x16_zmm_avx512icl( pixel *pix, intptr_t i_stride );
 int  x264_pixel_var2_8x8_avx512icl ( pixel *, intptr_t, pixel *, intptr_t, int * );
 int  x264_pixel_var2_8x16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, int * );
 int  x264_pixel_vsad_mmx2 ( pixel *src, intptr_t stride, int height );
