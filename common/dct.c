@@ -464,6 +464,49 @@ static void add16x16_idct_dc( pixel *p_dst, dctcoef dct[16] )
 }
 
 
+/* layout twin of wip/x264-weird: the new dispatch below assigns the base's functions */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_add16x16_idct8_avx512icl, x264_add16x16_idct8_avx )
+#undef x264_add16x16_idct8_avx512icl
+#define x264_add16x16_idct8_avx512icl x264_twin_x264_add16x16_idct8_avx512icl
+X264_TWIN( x264_add16x16_idct_avx512icl, x264_add16x16_idct_avx2 )
+#undef x264_add16x16_idct_avx512icl
+#define x264_add16x16_idct_avx512icl x264_twin_x264_add16x16_idct_avx512icl
+X264_TWIN( x264_add8x8_idct_avx512icl, x264_add8x8_idct_avx2 )
+#undef x264_add8x8_idct_avx512icl
+#define x264_add8x8_idct_avx512icl x264_twin_x264_add8x8_idct_avx512icl
+X264_TWIN( x264_dct4x4dc_avx512icl, x264_dct4x4dc_mmx2 )
+#undef x264_dct4x4dc_avx512icl
+#define x264_dct4x4dc_avx512icl x264_twin_x264_dct4x4dc_avx512icl
+X264_TWIN( x264_idct4x4dc_avx512icl, x264_idct4x4dc_mmx )
+#undef x264_idct4x4dc_avx512icl
+#define x264_idct4x4dc_avx512icl x264_twin_x264_idct4x4dc_avx512icl
+X264_TWIN( x264_sub16x16_dct8_avx512icl, x264_sub16x16_dct8_avx2 )
+#undef x264_sub16x16_dct8_avx512icl
+#define x264_sub16x16_dct8_avx512icl x264_twin_x264_sub16x16_dct8_avx512icl
+#else
+X264_TWIN( x264_add16x16_idct8_avx512icl, x264_add16x16_idct8_avx2 )
+#undef x264_add16x16_idct8_avx512icl
+#define x264_add16x16_idct8_avx512icl x264_twin_x264_add16x16_idct8_avx512icl
+X264_TWIN( x264_add16x16_idct_avx512icl, x264_add16x16_idct_avx2 )
+#undef x264_add16x16_idct_avx512icl
+#define x264_add16x16_idct_avx512icl x264_twin_x264_add16x16_idct_avx512icl
+X264_TWIN( x264_add8x8_idct_avx512icl, x264_add8x8_idct_avx2 )
+#undef x264_add8x8_idct_avx512icl
+#define x264_add8x8_idct_avx512icl x264_twin_x264_add8x8_idct_avx512icl
+X264_TWIN( x264_dct4x4dc_avx512icl, x264_dct4x4dc_avx )
+#undef x264_dct4x4dc_avx512icl
+#define x264_dct4x4dc_avx512icl x264_twin_x264_dct4x4dc_avx512icl
+X264_TWIN( x264_idct4x4dc_avx512icl, x264_idct4x4dc_avx )
+#undef x264_idct4x4dc_avx512icl
+#define x264_idct4x4dc_avx512icl x264_twin_x264_idct4x4dc_avx512icl
+X264_TWIN( x264_sub16x16_dct8_avx512icl, x264_sub16x16_dct8_avx2 )
+#undef x264_sub16x16_dct8_avx512icl
+#define x264_sub16x16_dct8_avx512icl x264_twin_x264_sub16x16_dct8_avx512icl
+#endif
+#endif
+
 /****************************************************************************
  * x264_dct_init:
  ****************************************************************************/
@@ -907,6 +950,61 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
         nnz[(i&1) + (i>>1)*8] = !!nz;
     }
 }
+
+/* layout twin of wip/x264-weird: the new dispatch below assigns the base's functions */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_quant_4x4x4_scan_field_ac_avx512icl, x264_quant_4x4x4_scan_field_ac_avx2 )
+#undef x264_quant_4x4x4_scan_field_ac_avx512icl
+#define x264_quant_4x4x4_scan_field_ac_avx512icl x264_twin_x264_quant_4x4x4_scan_field_ac_avx512icl
+X264_TWIN( x264_quant_4x4x4_scan_field_avx512icl, x264_quant_4x4x4_scan_field_avx2 )
+#undef x264_quant_4x4x4_scan_field_avx512icl
+#define x264_quant_4x4x4_scan_field_avx512icl x264_twin_x264_quant_4x4x4_scan_field_avx512icl
+X264_TWIN( x264_quant_4x4x4_scan_frame_ac_avx512icl, x264_quant_4x4x4_scan_frame_ac_avx2 )
+#undef x264_quant_4x4x4_scan_frame_ac_avx512icl
+#define x264_quant_4x4x4_scan_frame_ac_avx512icl x264_twin_x264_quant_4x4x4_scan_frame_ac_avx512icl
+X264_TWIN( x264_quant_4x4x4_scan_frame_avx512icl, x264_quant_4x4x4_scan_frame_avx2 )
+#undef x264_quant_4x4x4_scan_frame_avx512icl
+#define x264_quant_4x4x4_scan_frame_avx512icl x264_twin_x264_quant_4x4x4_scan_frame_avx512icl
+X264_TWIN( x264_zigzag_scan_4x4_field_avx512icl, x264_zigzag_scan_4x4_field_avx512 )
+#undef x264_zigzag_scan_4x4_field_avx512icl
+#define x264_zigzag_scan_4x4_field_avx512icl x264_twin_x264_zigzag_scan_4x4_field_avx512icl
+X264_TWIN( x264_zigzag_sub_4x4_field_avx512icl, x264_zigzag_sub_4x4_field_avx )
+#undef x264_zigzag_sub_4x4_field_avx512icl
+#define x264_zigzag_sub_4x4_field_avx512icl x264_twin_x264_zigzag_sub_4x4_field_avx512icl
+X264_TWIN( x264_zigzag_sub_4x4_frame_avx512icl, x264_zigzag_sub_4x4_frame_avx )
+#undef x264_zigzag_sub_4x4_frame_avx512icl
+#define x264_zigzag_sub_4x4_frame_avx512icl x264_twin_x264_zigzag_sub_4x4_frame_avx512icl
+X264_TWIN( x264_zigzag_sub_4x4ac_field_avx512icl, x264_zigzag_sub_4x4ac_field_avx )
+#undef x264_zigzag_sub_4x4ac_field_avx512icl
+#define x264_zigzag_sub_4x4ac_field_avx512icl x264_twin_x264_zigzag_sub_4x4ac_field_avx512icl
+X264_TWIN( x264_zigzag_sub_4x4ac_frame_avx512icl, x264_zigzag_sub_4x4ac_frame_avx )
+#undef x264_zigzag_sub_4x4ac_frame_avx512icl
+#define x264_zigzag_sub_4x4ac_frame_avx512icl x264_twin_x264_zigzag_sub_4x4ac_frame_avx512icl
+X264_TWIN( x264_zigzag_sub_8x8_field_avx512icl, zigzag_sub_8x8_field )
+#undef x264_zigzag_sub_8x8_field_avx512icl
+#define x264_zigzag_sub_8x8_field_avx512icl x264_twin_x264_zigzag_sub_8x8_field_avx512icl
+X264_TWIN( x264_zigzag_sub_8x8_frame_avx512icl, zigzag_sub_8x8_frame )
+#undef x264_zigzag_sub_8x8_frame_avx512icl
+#define x264_zigzag_sub_8x8_frame_avx512icl x264_twin_x264_zigzag_sub_8x8_frame_avx512icl
+#else
+X264_TWIN( x264_quant_4x4x4_scan_field_ac_avx512icl, x264_quant_4x4x4_scan_field_ac_avx2 )
+#undef x264_quant_4x4x4_scan_field_ac_avx512icl
+#define x264_quant_4x4x4_scan_field_ac_avx512icl x264_twin_x264_quant_4x4x4_scan_field_ac_avx512icl
+X264_TWIN( x264_quant_4x4x4_scan_field_avx512icl, x264_quant_4x4x4_scan_field_avx2 )
+#undef x264_quant_4x4x4_scan_field_avx512icl
+#define x264_quant_4x4x4_scan_field_avx512icl x264_twin_x264_quant_4x4x4_scan_field_avx512icl
+X264_TWIN( x264_quant_4x4x4_scan_frame_ac_avx512icl, x264_quant_4x4x4_scan_frame_ac_avx2 )
+#undef x264_quant_4x4x4_scan_frame_ac_avx512icl
+#define x264_quant_4x4x4_scan_frame_ac_avx512icl x264_twin_x264_quant_4x4x4_scan_frame_ac_avx512icl
+X264_TWIN( x264_quant_4x4x4_scan_frame_avx512icl, x264_quant_4x4x4_scan_frame_avx2 )
+#undef x264_quant_4x4x4_scan_frame_avx512icl
+#define x264_quant_4x4x4_scan_frame_avx512icl x264_twin_x264_quant_4x4x4_scan_frame_avx512icl
+X264_TWIN( x264_zigzag_scan_4x4_field_avx512icl, x264_zigzag_scan_4x4_field_avx512 )
+#undef x264_zigzag_scan_4x4_field_avx512icl
+#define x264_zigzag_scan_4x4_field_avx512icl x264_twin_x264_zigzag_scan_4x4_field_avx512icl
+#endif
+#endif
 
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {

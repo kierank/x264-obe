@@ -443,6 +443,79 @@ level_run(16)
 #define INIT_TRELLIS(...)
 #endif
 
+/* layout twin of wip/x264-weird: the new dispatch below assigns the base's functions */
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+X264_TWIN( x264_coeff_level_run15_avx512icl, x264_coeff_level_run15_avx2_lzcnt )
+#undef x264_coeff_level_run15_avx512icl
+#define x264_coeff_level_run15_avx512icl x264_twin_x264_coeff_level_run15_avx512icl
+X264_TWIN( x264_coeff_level_run16_avx512icl, x264_coeff_level_run16_avx2_lzcnt )
+#undef x264_coeff_level_run16_avx512icl
+#define x264_coeff_level_run16_avx512icl x264_twin_x264_coeff_level_run16_avx512icl
+X264_TWIN( x264_coeff_level_run4_avx512icl, x264_coeff_level_run4_ssse3 )
+#undef x264_coeff_level_run4_avx512icl
+#define x264_coeff_level_run4_avx512icl x264_twin_x264_coeff_level_run4_avx512icl
+X264_TWIN( x264_coeff_level_run8_avx512icl, x264_coeff_level_run8_ssse3 )
+#undef x264_coeff_level_run8_avx512icl
+#define x264_coeff_level_run8_avx512icl x264_twin_x264_coeff_level_run8_avx512icl
+X264_TWIN( x264_decimate_score15_avx512icl, x264_decimate_score15_avx512 )
+#undef x264_decimate_score15_avx512icl
+#define x264_decimate_score15_avx512icl x264_twin_x264_decimate_score15_avx512icl
+X264_TWIN( x264_decimate_score16_avx512icl, x264_decimate_score16_avx512 )
+#undef x264_decimate_score16_avx512icl
+#define x264_decimate_score16_avx512icl x264_twin_x264_decimate_score16_avx512icl
+X264_TWIN( x264_decimate_score64_avx512icl, x264_decimate_score64_avx512 )
+#undef x264_decimate_score64_avx512icl
+#define x264_decimate_score64_avx512icl x264_twin_x264_decimate_score64_avx512icl
+X264_TWIN( x264_denoise_dct_avx512icl, x264_denoise_dct_avx2 )
+#undef x264_denoise_dct_avx512icl
+#define x264_denoise_dct_avx512icl x264_twin_x264_denoise_dct_avx512icl
+X264_TWIN( x264_quant_4x4x4_avx512icl, x264_quant_4x4x4_avx2 )
+#undef x264_quant_4x4x4_avx512icl
+#define x264_quant_4x4x4_avx512icl x264_twin_x264_quant_4x4x4_avx512icl
+X264_TWIN( x264_quant_8x8_avx512icl, x264_quant_8x8_avx2 )
+#undef x264_quant_8x8_avx512icl
+#define x264_quant_8x8_avx512icl x264_twin_x264_quant_8x8_avx512icl
+#else
+X264_TWIN( x264_coeff_level_run15_avx512icl, x264_coeff_level_run15_sse2_lzcnt )
+#undef x264_coeff_level_run15_avx512icl
+#define x264_coeff_level_run15_avx512icl x264_twin_x264_coeff_level_run15_avx512icl
+X264_TWIN( x264_coeff_level_run16_avx512icl, x264_coeff_level_run16_sse2_lzcnt )
+#undef x264_coeff_level_run16_avx512icl
+#define x264_coeff_level_run16_avx512icl x264_twin_x264_coeff_level_run16_avx512icl
+X264_TWIN( x264_coeff_level_run4_avx512icl, x264_coeff_level_run4_mmx2_lzcnt )
+#undef x264_coeff_level_run4_avx512icl
+#define x264_coeff_level_run4_avx512icl x264_twin_x264_coeff_level_run4_avx512icl
+X264_TWIN( x264_coeff_level_run8_avx512icl, x264_coeff_level_run8_sse2_lzcnt )
+#undef x264_coeff_level_run8_avx512icl
+#define x264_coeff_level_run8_avx512icl x264_twin_x264_coeff_level_run8_avx512icl
+X264_TWIN( x264_decimate_score15_avx512icl, x264_decimate_score15_avx512 )
+#undef x264_decimate_score15_avx512icl
+#define x264_decimate_score15_avx512icl x264_twin_x264_decimate_score15_avx512icl
+X264_TWIN( x264_decimate_score16_avx512icl, x264_decimate_score16_avx512 )
+#undef x264_decimate_score16_avx512icl
+#define x264_decimate_score16_avx512icl x264_twin_x264_decimate_score16_avx512icl
+X264_TWIN( x264_decimate_score64_avx512icl, x264_decimate_score64_avx512 )
+#undef x264_decimate_score64_avx512icl
+#define x264_decimate_score64_avx512icl x264_twin_x264_decimate_score64_avx512icl
+X264_TWIN( x264_denoise_dct_avx512icl, x264_denoise_dct_avx2 )
+#undef x264_denoise_dct_avx512icl
+#define x264_denoise_dct_avx512icl x264_twin_x264_denoise_dct_avx512icl
+X264_TWIN( x264_quant_4x4_avx512icl, x264_quant_4x4_avx2 )
+#undef x264_quant_4x4_avx512icl
+#define x264_quant_4x4_avx512icl x264_twin_x264_quant_4x4_avx512icl
+X264_TWIN( x264_quant_4x4_dc_avx512icl, x264_quant_4x4_dc_avx2 )
+#undef x264_quant_4x4_dc_avx512icl
+#define x264_quant_4x4_dc_avx512icl x264_twin_x264_quant_4x4_dc_avx512icl
+X264_TWIN( x264_quant_4x4x4_avx512icl, x264_quant_4x4x4_avx2 )
+#undef x264_quant_4x4x4_avx512icl
+#define x264_quant_4x4x4_avx512icl x264_twin_x264_quant_4x4x4_avx512icl
+X264_TWIN( x264_quant_8x8_avx512icl, x264_quant_8x8_avx2 )
+#undef x264_quant_8x8_avx512icl
+#define x264_quant_8x8_avx512icl x264_twin_x264_quant_8x8_avx512icl
+#endif
+#endif
+
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
 {
     pf->quant_8x8 = quant_8x8;
