@@ -808,6 +808,7 @@ CABAC bmi2
 %endif
     shl      r1d, 4                                           ; MB_INTERLACED*16
 %if cpuflag(avx512icl)
+    mov     r10d, r1d                                         ; field: rounds 0-1 can code
     lea      r4d, [r1+r1*2]
     lea       r4, [rd8_sig_slots+r4*4 GLOBAL]                 ; r4 = sig slots, frame or field
 %else
@@ -846,11 +847,18 @@ CABAC bmi2
     vpxord    m6, m6, m3
     vpxord    m7, m7, m4
     vmovdqu8 xm8, [r5]
-    vpxord   xm8, xm8, xm2
     vmovdqu8 m12, [rd_transition_sb]
     vmovdqu8 m13, [rd_transition_sb+64]
+    test    r10d, r10d
+    jnz .sig_field
+    vextracti32x4 xm14, m2, 2                                ; frame: rounds 0-1 are empty
+    vpxord   xm8, xm8, xm14
+    jmp .sig_round2
+.sig_field:
+    vpxord   xm8, xm8, xm2
     RD8_SIG_ROUND 0, k1, m9,  m5, xm5
     RD8_SIG_ROUND 1, k1, m9,  m5, xm5
+.sig_round2:
     RD8_SIG_ROUND 2, k1, m9,  m5, xm5
     RD8_SIG_ROUND 3, k1, m9,  m5, xm5
     RD8_SIG_ROUND 0, k2, m10, m6, xm6
