@@ -1184,6 +1184,10 @@ clocal trellis_coefn
 %ifndef TRELLIS_ICL_ZPREFIX
     %define TRELLIS_ICL_ZPREFIX 1
 %endif
+; build-time A/B: level_tree append of the valid nodes only (vpcompressq)
+%ifndef TRELLIS_ICL_COMPRESS
+    %define TRELLIS_ICL_COMPRESS 1
+%endif
 
 INIT_ZMM avx512icl
 
@@ -1293,10 +1297,26 @@ INIT_ZMM avx512icl
 %macro TR_END_COEF 0
     vmovdqu64    m10, [TR_IDX]
     vpermi2b     m10, m1, m6
+%if TRELLIS_ICL_COMPRESS
+    ; append the valid nodes only, packed; level_idx = r4 + rank
+    vpcmpuq      k2, m0, [tr_m16]{1to8}, 1
+    vpcompressq  m20{k2}{z}, m1
+    vmovdqu64    [ltree + r4*8], m20
+    vpexpandq    m19{k2}{z}, m13
+    lea          r6d, [r4-1]
+    shl          r6, 32
+    vpbroadcastq m20, r6
+    vpaddq       m19, m19, m20
+    vpternlogq   m1, m19, [tr_lomask]{1to8}, 0xec
+    kmovb        r6d, k2
+    popcnt       r6d, r6d
+    add          r4d, r6d
+%else
     vmovdqu64    [ltree + r4*8], m1
     vpternlogq   m1, m13, [tr_lomask]{1to8}, 0xec
     vpaddq       m13, m13, [tr_8hi]{1to8}
     add          r4d, 8
+%endif
 %endmacro
 
 ; scalar part of one coef, i = r3: q r8, ssd1[q-1] r7, ssd1[q] r13,
