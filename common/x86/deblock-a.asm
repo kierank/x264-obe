@@ -4335,6 +4335,57 @@ cglobal deblock_h_chroma_422_intra, 4,9,11
     vmovdqu16    m2 {k1}, m7
     CHROMA_H_STORE_ZMM
     RET
+
+;-----------------------------------------------------------------------------
+; 10-bit chroma, avx512icl xmm/ymm: the AVX2 layouts (punpck transposes),
+; vpcmpgtw k-masks for the filter mask, zero-masked tc, masked intra selects
+;-----------------------------------------------------------------------------
+; in: m0-m3 = p1 p0 q0 q1, k1 = mask, m9 = tc0 words; out: m1 = p0', m2 = q0'
+; clobbers: m4-m8, m10
+%macro CHROMA_INTER10_ICL 0
+    vmovdqu16    m7 {k1}{z}, m9
+    pxor         m6, m6
+    pmaxsw       m7, m6          ; tc
+    vpbroadcastd m10, [pw_4]
+    psubw        m8, m2, m1
+    psubw        m4, m0, m3
+    psllw        m8, 2
+    paddw        m8, m4
+    paddw        m8, m10
+    psraw        m8, 3           ; ((q0-p0)*4 + p1-q1 + 4) >> 3
+    psubw        m5, m6, m7
+    pmaxsw       m8, m5
+    pminsw       m8, m7
+    vpbroadcastd m10, [pw_pixel_max]
+    paddw        m1, m8
+    psubw        m2, m8
+    pmaxsw       m1, m6
+    pmaxsw       m2, m6
+    pminsw       m1, m10
+    pminsw       m2, m10
+%endmacro
+
+INIT_YMM avx512icl
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_chroma, 5,5,11
+    add          r1, r1
+    vpbroadcastw  m4, r2d
+    vpbroadcastw  m5, r3d
+    lea          r2, [r1*3]
+    sub          r0, r1
+    sub          r0, r1
+    movu         m0, [r0]      ; p1
+    movu         m1, [r0+r1]   ; p0
+    movu         m2, [r0+r1*2] ; q0
+    movu         m3, [r0+r2]   ; q1
+    CHROMA_MASK_ICL
+    LOAD_TC      m9, r4
+    CHROMA_INTER10_ICL
+    movu    [r0+r1], m1
+    movu  [r0+r1*2], m2
+    RET
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
