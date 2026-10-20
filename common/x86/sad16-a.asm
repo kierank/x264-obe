@@ -1024,6 +1024,195 @@ SAD_X4_HBD16 16, 1
 SAD_X4_HBD16  8, 1
 %endif
 
+%if ARCH_X86_64
+;=============================================================================
+; 10-bit 16 wide sad, sad_x3/sad_x4 (and _min), AVX-512: rows k, k+1 a zmm.
+; The fenc pair is one 64 byte load (FENC_STRIDE apart), a reference pair a
+; ymm load plus a merge-masked vbroadcasti64x4 into the upper half (k1 = 0xf0).
+; Word sums, at most 8*1023 a lane.
+;=============================================================================
+; xm%1 = candidates, xm%2 = best in all lanes -> eax
+%macro SAD_X_HBD_MIN_TREE 3 ; c, best, tmp
+    pminsd       xm%2, xm%1
+    pshufd       xm%3, xm%1, q1032
+    pminsd       xm%1, xm%2, xm%3
+    psrlq        xm%3, xm%1, 32
+    pminsd       xm%1, xm%3
+    movd          eax, xm%1
+    RET
+%endmacro
+
+; m0..m3 = word sums of refs 1-4 (m3 zero for x3) -> xm0 = { sad1 sad2 sad3 sad4 },
+; times %1 (pw_1 or pw_64)
+%macro SAD_X_HBD16_ZMM_END 1
+    vshufi64x2     m4, m0, m1, q1010
+    vshufi64x2     m0, m0, m1, q3232
+    vshufi64x2     m5, m2, m3, q1010
+    vshufi64x2     m2, m2, m3, q3232
+    paddw          m0, m4          ; { 1 | 2 }, at most 16*1023 a lane
+    paddw          m2, m5          ; { 3 | 4 }
+    vpbroadcastd   m6, [%1]
+    pmaddwd        m0, m6
+    pmaddwd        m2, m6
+    vshufi64x2     m4, m0, m2, q2020
+    vshufi64x2     m0, m0, m2, q3131
+    paddd          m0, m4          ; lane i = ref i+1
+    pshufd         m4, m0, q1032
+    paddd          m0, m4
+    pshufd         m4, m0, q2301
+    paddd          m0, m4
+    mov           r6d, 0x1111
+    kmovw          k2, r6d
+    vpcompressd    m0 {k2}{z}, m0
+%endmacro
+
+; rows k, k+1 of ref %1 against the fenc pair in m4: acc m%2, tmp m%3
+%macro SAD_X_HBD16_ZMM_REF 4 ; ref, acc, tmp, first
+    movu          ym%3, [%1+sad_off0]
+    vbroadcasti64x4 m%3 {k1}, [%1+sad_off]
+    psubw          m%3, m4
+%if %4
+    pabsw          m%2, m%3
+%else
+    pabsw          m%3, m%3
+    paddw          m%2, m%3
+%endif
+%endmacro
+
+%macro SAD_X_HBD16_ZMM 2-3 0 ; refs, height, min
+%if %1 == 3
+%if %3
+cglobal pixel_sad_x3_min_16x%2, 5,7,8
+%else
+cglobal pixel_sad_x3_16x%2, 6,7,8
+%endif
+    %define sad_stride r4
+%else
+%if %3
+cglobal pixel_sad_x4_min_16x%2, 6,7,8
+%else
+cglobal pixel_sad_x4_16x%2, 6,7,8
+%endif
+    %define sad_stride r5
+%endif
+    mov           r6d, 0xf0
+    kmovb          k1, r6d
+    lea            r6, [sad_stride+2*sad_stride]
+%assign sad_hbd_k 0
+%rep %2/2
+    SAD_HBD_ROWOFF sad_hbd_k&3, sad_stride, r6
+    %xdefine sad_off0 sad_off
+    SAD_HBD_ROWOFF (sad_hbd_k+1)&3, sad_stride, r6
+    movu           m4, [r0+sad_hbd_k*FENC_STRIDEB]
+    SAD_X_HBD16_ZMM_REF r1, 0, 5, sad_hbd_k == 0
+    SAD_X_HBD16_ZMM_REF r2, 1, 6, sad_hbd_k == 0
+    SAD_X_HBD16_ZMM_REF r3, 2, 7, sad_hbd_k == 0
+%if %1 == 4
+    SAD_X_HBD16_ZMM_REF r4, 3, 5, sad_hbd_k == 0
+%endif
+%if (sad_hbd_k&3) == 2 && sad_hbd_k < %2-2
+    lea            r1, [r1+8*sad_stride]
+    lea            r2, [r2+8*sad_stride]
+    lea            r3, [r3+8*sad_stride]
+%if %1 == 4
+    lea            r4, [r4+8*sad_stride]
+%endif
+%endif
+%assign sad_hbd_k sad_hbd_k+2
+%endrep
+%if %1 == 3
+    pxor           m3, m3
+%endif
+%if %3
+    SAD_X_HBD16_ZMM_END pw_64
+%if %1 == 3
+    movq          xm4, r5mp        ; b0 b1
+    movhps        xm4, r6mp        ; b2 best
+    pshufd        xm5, xm4, q3333
+%else
+    movq          xm4, r6mp        ; b0 b1
+    movhps        xm4, r7mp        ; b2 b3
+    vpbroadcastd  xm5, r8m
+%endif
+    paddd         xm0, xm4
+    SAD_X_HBD_MIN_TREE 0, 5, 1
+%else
+    SAD_X_HBD16_ZMM_END pw_1
+%if %1 == 3
+    movq      [r5+0], xm0
+    pextrd    [r5+8], xm0, 2
+%else
+    mov            r6, r6mp
+    movu         [r6], xm0
+%endif
+    RET
+%endif
+    %undef sad_stride
+%endmacro
+
+; fenc rows FENC_STRIDE apart only, else the avx2 version (before the prologue)
+%macro SAD_HBD16_ZMM 1 ; height
+cglobal pixel_sad_16x%1
+    cmp          r1mp, FENC_STRIDE
+    jne pixel_sad_16x%1_avx2
+    PROLOGUE 4,5,3
+    mov           r4d, 0xf0
+    kmovb          k1, r4d
+    lea            r4, [r3+2*r3]
+%assign sad_hbd_k 0
+%rep %1/2
+    SAD_HBD_ROWOFF sad_hbd_k&3, r3, r4
+    %xdefine sad_off0 sad_off
+    SAD_HBD_ROWOFF (sad_hbd_k+1)&3, r3, r4
+    movu          ym1, [r2+sad_off0]
+    vbroadcasti64x4 m1 {k1}, [r2+sad_off]
+    psubw          m1, [r0+sad_hbd_k*FENC_STRIDEB]
+%if sad_hbd_k == 0
+    pabsw          m0, m1
+%elif sad_hbd_k == 2
+    pabsw          m2, m1
+%else
+    pabsw          m1, m1
+%if sad_hbd_k & 2
+    paddw          m2, m1
+%else
+    paddw          m0, m1
+%endif
+%endif
+%if (sad_hbd_k&3) == 2 && sad_hbd_k < %1-2
+    lea            r2, [r2+8*r3]
+%endif
+%assign sad_hbd_k sad_hbd_k+2
+%endrep
+    paddw          m0, m2          ; at most 8*1023 a lane
+    vextracti64x4 ym1, m0, 1
+    paddw         ym0, ym1
+    vpbroadcastd  ym1, [pw_1]
+    pmaddwd       ym0, ym1
+    vextracti128  xm1, ym0, 1
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    paddd         xm0, xm1
+    psrlq         xm1, xm0, 32
+    paddd         xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
+INIT_ZMM avx512
+SAD_HBD16_ZMM 16
+SAD_HBD16_ZMM  8
+SAD_X_HBD16_ZMM 3, 16
+SAD_X_HBD16_ZMM 3,  8
+SAD_X_HBD16_ZMM 4, 16
+SAD_X_HBD16_ZMM 4,  8
+SAD_X_HBD16_ZMM 3, 16, 1
+SAD_X_HBD16_ZMM 3,  8, 1
+SAD_X_HBD16_ZMM 4, 16, 1
+SAD_X_HBD16_ZMM 4,  8, 1
+INIT_YMM avx2
+%endif
+
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_avg2_WxH( uint16_t *fenc, uint16_t *src1, uint16_t *src2, intptr_t stride )
 ; sad( fenc, (src1+src2+1)>>1 ), word sums (at most 16*1023 a lane)
