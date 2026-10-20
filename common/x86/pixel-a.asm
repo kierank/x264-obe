@@ -6460,6 +6460,25 @@ cglobal pixel_satd_4x16, 4,6,7
     SATD4_ICL_HBD qdq
     paddw        m0, m6
     SATD4_ICL_END
+
+; lanes: m0 = rows 0, 1, m1 = rows 2, 3; the qwords are the two 4x4s
+cglobal pixel_satd_8x4, 4,6,6
+    FIX_STRIDES r1, r3
+    SATD4_ICL_KMASK r4d
+    lea          r4, [r0+r1]
+    lea          r5, [r2+r3]
+    movu        xm0, [r0]
+    movu        xm2, [r2]
+    movu        xm1, [r0+2*r1]
+    movu        xm3, [r2+2*r3]
+    vinserti128  m0, m0, [r4], 1
+    vinserti128  m2, m2, [r5], 1
+    vinserti128  m1, m1, [r4+2*r1], 1
+    vinserti128  m3, m3, [r5+2*r3], 1
+    psubw        m0, m2
+    psubw        m1, m3
+    SATD4_ICL_HBD lane
+    SATD4_ICL_END
 ICL_LOW_END
 %endif
 %endif ; HIGH_BIT_DEPTH
