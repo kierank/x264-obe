@@ -217,6 +217,15 @@ dct16_icl_fdec1: db 96,0,97,0,98,0,99,0,64,0,65,0,66,0,67,0
 ; sub8x8_dct_dc/sub8x16_dct_dc avx512icl: vpdpbusd weights, fenc rows and fdec row pairs
 dctdc_icl_wf: times 4 db 1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0
 dctdc_icl_wd: times 2 db -1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+; add8x8_idct_dc/add16x16_idct_dc avx512icl: vpermb indices of the dc bytes, row offsets
+addc8_dc:     times 4 db 0,0,0,0,1,1,1,1
+              times 4 db 2,2,2,2,3,3,3,3
+addc8_rows:   dq 0, 32, 64, 96, 128, 160, 192, 224
+%else
+; add8x8_idct_dc/add16x16_idct_dc avx512icl: vpermw indices of the dc words
+align 64
+addc8_hbd_dc:  times 4 dw 0,0,0,0,1,1,1,1
+addc8_hbd_dc2: times 32 dw 2
 %endif
 
 SECTION .text
@@ -1755,6 +1764,47 @@ cglobal add16x16_idct_dc, 2,3,6
     jg .loop
     RET
 
+; avx512icl: rows packed into zmm with merge-masked broadcasts (4 rows of 8
+; pixels, or 2 rows of 16), the dc words spread by vpermw
+INIT_ZMM avx512icl
+cglobal add8x8_idct_dc, 2,3
+    mov         r2d, 0x00f0
+    kmovw        k5, r2d
+    mov         r2d, 0x0f00
+    kmovw        k6, r2d
+    mov         r2d, 0xf000
+    kmovw        k7, r2d
+    mova        xm3, [r1]
+    paddd       xm3, [pd_32]
+    psrad       xm3, 6
+    packssdw    xm3, xm3                   ; dc0 dc1 dc2 dc3
+    mova         m4, [addc8_hbd_dc]
+    vpermw       m2, m4, m3                ; dc0 x4 dc1 x4, every lane
+    paddw        m4, [addc8_hbd_dc2]
+    vpermw       m3, m4, m3                ; dc2 x4 dc3 x4
+    vpbroadcastd m5, [pw_pixel_max]
+    pxor        xm4, xm4
+%assign adc_i 0
+%rep 2
+    movu           xm0, [r0+(4*adc_i+0)*FDEC_STRIDEB]
+    vbroadcasti32x4 m0 {k5}, [r0+(4*adc_i+1)*FDEC_STRIDEB]
+    vbroadcasti32x4 m0 {k6}, [r0+(4*adc_i+2)*FDEC_STRIDEB]
+    vbroadcasti32x4 m0 {k7}, [r0+(4*adc_i+3)*FDEC_STRIDEB]
+%if adc_i
+    paddsw          m0, m3
+%else
+    paddsw          m0, m2
+%endif
+    CLIPW           m0, m4, m5
+    movu   [r0+(4*adc_i+0)*FDEC_STRIDEB], xm0
+    vextracti32x4  [r0+(4*adc_i+1)*FDEC_STRIDEB], m0, 1
+    vextracti32x4  [r0+(4*adc_i+2)*FDEC_STRIDEB], m0, 2
+    vextracti32x4  [r0+(4*adc_i+3)*FDEC_STRIDEB], m0, 3
+%assign adc_i adc_i+1
+%endrep
+    RET
+
+
 %else ;!HIGH_BIT_DEPTH
 %macro ADD_DC 3
     mova    m4, [%3+FDEC_STRIDE*0]
@@ -1952,6 +2002,30 @@ cglobal add16x16_idct_dc, 2,3,6
     ADD_DC_AVX2 m0, m1, FDEC_STRIDE* 0
     ADD_DC_AVX2 m0, m1, FDEC_STRIDE* 2
     RET
+
+; avx512icl: the dc bytes (+ and - parts) spread over the pixels by vpermb;
+; add8x8: the 8 rows of 8 pixels in one zmm with vpgatherqq/vpscatterqq,
+; add16x16: 4 rows of 16 per zmm from merge-masked vbroadcasti32x4
+INIT_ZMM avx512icl
+cglobal add8x8_idct_dc, 2,2
+    movq        xm0, [r1]
+    pmulhrsw    xm0, [pw_512]
+    pxor        xm1, xm1
+    psubw       xm1, xm0
+    packuswb    xm0, xm0
+    packuswb    xm1, xm1
+    mova         m2, [addc8_dc]
+    vpermb       m0, m2, m0
+    vpermb       m1, m2, m1
+    mova         m3, [addc8_rows]
+    kxnorb       k1, k1, k1
+    vpgatherqq   m4 {k1}, [r0+m3]
+    paddusb      m4, m0
+    psubusb      m4, m1
+    kxnorb       k1, k1, k1
+    vpscatterqq  [r0+m3] {k1}, m4
+    RET
+
 
 %endif ; HIGH_BIT_DEPTH
 
