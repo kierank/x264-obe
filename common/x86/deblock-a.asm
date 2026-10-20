@@ -646,6 +646,136 @@ INIT_YMM avx2
 DEBLOCK_LUMA_64_AVX2
 
 ;-----------------------------------------------------------------------------
+; 10-bit luma intra, avx512icl: the whole 16 pixel edge per ymm, k-masks for
+; the alpha/beta tests and the output selects.
+;-----------------------------------------------------------------------------
+; %1-%6 = p0 p1 p2 p3 q0 q1, %7 = strong mask, %8/%9 = p0'/p1' out
+; in: k1 = filter mask, m15 = pw_2; p2' is written over p2; clobbers m12-m14
+%macro LUMA_INTRA10_SIDE 9
+    paddw      m12, m%3, m%2
+    paddw      m12, m%1
+    paddw      m12, m%5
+    paddw      m12, m15         ; p2+p1+p0+q0+2
+    psubw      m13, m12, m%3
+    psubw      m13, m%5
+    paddw      m13, m%6
+    paddw      m13, m%2
+    psrlw      m13, 2           ; (2*p1+p0+q1+2)>>2
+    vpblendmw  m%8 {k1}, m%1, m13
+    paddw      m13, m12, m12
+    psubw      m13, m%3
+    paddw      m13, m%6
+    psrlw      m13, 3           ; (p2+2*p1+2*p0+2*q0+q1+4)>>3
+    vmovdqu16  m%8 {%7}, m13
+    psrlw      m13, m12, 2      ; (p2+p1+p0+q0+2)>>2
+    vpblendmw  m%9 {%7}, m%2, m13
+    paddw      m14, m%4, m%3
+    paddw      m14, m14
+    paddw      m14, m15
+    paddw      m14, m12
+    psrlw      m14, 3           ; (2*p3+3*p2+p1+p0+q0+4)>>3
+    vmovdqu16  m%3 {%7}, m14
+%endmacro
+
+; in: m0-m3 = p0-p3, m4-m7 = q0-q3, r2d = alpha, r3d = beta
+; out: m0-m2, m4-m6 filtered
+%macro LUMA_INTRA10_ICL 0
+    vpbroadcastw m8, r2d
+    vpbroadcastw m9, r3d
+    shr        r2d, 2
+    add        r2d, 2
+    vpbroadcastw m10, r2d
+    vpbroadcastd m15, [pw_2]
+    psubw      m11, m0, m4
+    psubw      m12, m1, m0
+    psubw      m13, m5, m4
+    pabsw      m11, m11         ; |p0-q0|
+    pabsw      m12, m12
+    pabsw      m13, m13
+    pmaxsw     m12, m13         ; max(|p1-p0|, |q1-q0|)
+    psubw      m13, m2, m0
+    psubw      m14, m6, m4
+    pabsw      m13, m13         ; |p2-p0|
+    pabsw      m14, m14         ; |q2-q0|
+    vpcmpgtw    k1, m8, m11
+    vpcmpgtw    k2, m9, m12
+    vpcmpgtw    k3, m10, m11
+    vpcmpgtw    k4, m9, m13
+    vpcmpgtw    k5, m9, m14
+    kandw       k1, k1, k2      ; filter
+    kandw       k3, k3, k1
+    kandw       k4, k4, k3      ; strong p
+    kandw       k5, k5, k3      ; strong q
+    LUMA_INTRA10_SIDE 0, 1, 2, 3, 4, 5, k4, 8, 9
+    LUMA_INTRA10_SIDE 4, 5, 6, 7, 0, 1, k5, 10, 11
+    SWAP         0, 8
+    SWAP         1, 9
+    SWAP         4, 10
+    SWAP         5, 11
+%endmacro
+
+INIT_YMM avx512icl
+cglobal deblock_v_luma_intra, 4,6,16
+    add         r1, r1
+    lea         r4, [r1*4]
+    lea         r5, [r1*3]
+    neg         r4
+    add         r4, r0          ; pix-4*stride
+    movu        m0, [r4+r5]
+    movu        m1, [r4+r1*2]
+    movu        m2, [r4+r1]
+    movu        m3, [r4]
+    movu        m4, [r0]
+    movu        m5, [r0+r1]
+    movu        m6, [r0+r1*2]
+    movu        m7, [r0+r5]
+    LUMA_INTRA10_ICL
+    movu   [r4+r5], m0
+    movu [r4+r1*2], m1
+    movu   [r4+r1], m2
+    movu      [r0], m4
+    movu   [r0+r1], m5
+    movu [r0+r1*2], m6
+    RET
+
+; rows 0-7 | 8-15 per ymm, so the transposes stay lane-local
+INIT_YMM avx512icl
+cglobal deblock_h_luma_intra, 4,8,16
+    add         r1, r1
+    lea         r5, [r1*3]
+    lea         r4, [r0+r1*4]
+    lea         r6, [r0+r1*8]
+    lea         r7, [r4+r1*8]
+    DEBLOCK_H_LOAD_ROW 3, [r0-8],      [r6-8]
+    DEBLOCK_H_LOAD_ROW 2, [r0+r1-8],   [r6+r1-8]
+    DEBLOCK_H_LOAD_ROW 1, [r0+r1*2-8], [r6+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 0, [r0+r5-8],   [r6+r5-8]
+    DEBLOCK_H_LOAD_ROW 4, [r4-8],      [r7-8]
+    DEBLOCK_H_LOAD_ROW 5, [r4+r1-8],   [r7+r1-8]
+    DEBLOCK_H_LOAD_ROW 6, [r4+r1*2-8], [r7+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 7, [r4+r5-8],   [r7+r5-8]
+    TRANSPOSE8x8W 3, 2, 1, 0, 4, 5, 6, 7, 8
+    LUMA_INTRA10_ICL
+    TRANSPOSE8x8W 3, 2, 1, 0, 4, 5, 6, 7, 8
+    movu        [r0-8], xm3
+    vextracti128 [r6-8], m3, 1
+    movu     [r0+r1-8], xm2
+    vextracti128 [r6+r1-8], m2, 1
+    movu   [r0+r1*2-8], xm1
+    vextracti128 [r6+r1*2-8], m1, 1
+    movu     [r0+r5-8], xm0
+    vextracti128 [r6+r5-8], m0, 1
+    movu        [r4-8], xm4
+    vextracti128 [r7-8], m4, 1
+    movu     [r4+r1-8], xm5
+    vextracti128 [r7+r1-8], m5, 1
+    movu   [r4+r1*2-8], xm6
+    vextracti128 [r7+r1*2-8], m6, 1
+    movu     [r4+r5-8], xm7
+    vextracti128 [r7+r5-8], m7, 1
+    RET
+
+;-----------------------------------------------------------------------------
 ; void deblock_luma_mb( uint16_t *pix, intptr_t stride, uint8_t bs[2][8][4],
 ;                       x264_deblock_edge_t e[3], int edges )
 ; All luma edges of one macroblock: vertical edges left to right on a transposed
