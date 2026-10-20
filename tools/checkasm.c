@@ -797,6 +797,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 else \
                     call_c2( pixel_c.sad_x3[i], pbuf1, pix2, pix2+6, pix2+1, (intptr_t)64, res_asm ); \
             } \
+            /* candidate k at k*256 past the complement of fenc: maxed differences in the first */ \
+            for( int j = 0; j <= 0xc00 && ok; j += 256 ) \
+            { \
+                pixel *pix[4]; \
+                for( int k = 0; k < 4; k++ ) \
+                { \
+                    pix[k] = pbuf4 + (j + 256*k) % 0xd00; \
+                    res_c[k] = pixel_c.sad[i]( pbuf3+j, 16, pix[k], 16 ); \
+                } \
+                if( N == 4 ) \
+                    pixel_asm.sad_x4[i]( pbuf3+j, pix[0], pix[1], pix[2], pix[3], (intptr_t)16, res_asm ); \
+                else \
+                    pixel_asm.sad_x3[i]( pbuf3+j, pix[0], pix[1], pix[2], (intptr_t)16, res_asm ); \
+                if( memcmp(res_c, res_asm, N*sizeof(int)) ) \
+                { \
+                    ok = 0; \
+                    fprintf( stderr, "sad_x"#N"[%d]: overflow %d,%d,%d,%d != %d,%d,%d,%d [FAILED]\n", \
+                             i, res_c[0], res_c[1], res_c[2], res_c[3], \
+                             res_asm[0], res_asm[1], res_asm[2], res_asm[3] ); \
+                } \
+            } \
         } \
     } \
     report( "pixel sad_x"#N" :" );
@@ -1032,6 +1053,22 @@ static int check_pixel( int cpu_ref, int cpu_new )
         {
             ok = 0;
             fprintf( stderr, "asd: %d != %d\n", res_c, res_a );
+        }
+        /* the largest |sum| of both signs */
+        for( int k = 0; k < 256; k++ )
+        {
+            var_max[k] = PIXEL_MAX;
+            var_zero[k] = 0;
+        }
+        for( int j = 0; j < 2 && ok; j++ )
+        {
+            res_c = pixel_c.asd8( j ? var_max : var_zero, 8, j ? var_zero : var_max, 8, 16 );
+            res_a = pixel_asm.asd8( j ? var_max : var_zero, 8, j ? var_zero : var_max, 8, 16 );
+            if( res_c != res_a )
+            {
+                ok = 0;
+                fprintf( stderr, "asd: extreme %d: %d != %d\n", j, res_c, res_a );
+            }
         }
     }
     report( "pixel asd :" );
@@ -1435,6 +1472,24 @@ static int check_pixel( int cpu_ref, int cpu_new )
             fprintf( stderr, "ssd_nv12: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
                      res_u_c, res_v_c, res_u_a, res_v_a );
         }
+        /* every difference +-PIXEL_MAX, the 16-pixel tail, odd heights */
+        for( int i = 0; i < 0x1000; i++ )
+        {
+            pbuf3[i] = -(pbuf1[i]&1) & PIXEL_MAX;
+            pbuf4[i] = PIXEL_MAX - pbuf3[i];
+        }
+        for( int k = 0; k < 4 && ok; k++ )
+        {
+            int w = k&1 ? 360 : 352, hgt = k&2 ? 9 : 8;
+            pixel_c.ssd_nv12_core(   pbuf3, 368, pbuf4, 368, w, hgt, &res_u_c, &res_v_c );
+            pixel_asm.ssd_nv12_core( pbuf3, 368, pbuf4, 368, w, hgt, &res_u_a, &res_v_a );
+            if( res_u_c != res_u_a || res_v_c != res_v_a )
+            {
+                ok = 0;
+                fprintf( stderr, "ssd_nv12 %dx%d maxed: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
+                         w, hgt, res_u_c, res_v_c, res_u_a, res_v_a );
+            }
+        }
         call_c( pixel_c.ssd_nv12_core,   pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_c, &res_v_c );
         call_a( pixel_asm.ssd_nv12_core, pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_a, &res_v_a );
     }
@@ -1455,6 +1510,31 @@ static int check_pixel( int cpu_ref, int cpu_new )
             ok = 0;
             fprintf( stderr, "ssim: %.7f != %.7f [FAILED]\n", res_c, res_a );
         }
+        /* the core's sums exactly: random, and 0/PIXEL_MAX (pbuf3 against its complement and itself) */
+        for( int i = 0; i < 256; i++ )
+        {
+            pbuf3[i] = -(pbuf1[i]&1) & PIXEL_MAX;
+            pbuf4[i] = PIXEL_MAX - pbuf3[i];
+        }
+        if( pixel_asm.ssim_4x4x2_core != pixel_ref.ssim_4x4x2_core )
+            for( int k = 0; k < 3 && ok; k++ )
+                for( int j = 0; j < 8 && ok; j++ )
+                {
+                    pixel *p1 = (k ? pbuf3 : pbuf1) + 4*j + 2;
+                    pixel *p2 = (k == 1 ? pbuf4 : k ? pbuf3 : pbuf2) + 4*j + 2;
+                    int sums_c[2][4], sums_a[2][4];
+                    memset( sums_c, 0x5a, sizeof(sums_c) );
+                    memset( sums_a, 0x5a, sizeof(sums_a) );
+                    pixel_c.ssim_4x4x2_core( p1, 32, p2, 32, sums_c );
+                    pixel_asm.ssim_4x4x2_core( p1, 32, p2, 32, sums_a );
+                    if( memcmp( sums_c, sums_a, sizeof(sums_c) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "ssim_4x4x2_core k %d x %d: %d,%d,%d,%d %d,%d,%d,%d != %d,%d,%d,%d %d,%d,%d,%d [FAILED]\n", k, 4*j+2,
+                                 sums_c[0][0], sums_c[0][1], sums_c[0][2], sums_c[0][3], sums_c[1][0], sums_c[1][1], sums_c[1][2], sums_c[1][3],
+                                 sums_a[0][0], sums_a[0][1], sums_a[0][2], sums_a[0][3], sums_a[1][0], sums_a[1][1], sums_a[1][2], sums_a[1][3] );
+                    }
+                }
         set_func_name( "ssim_core" );
         call_c2( pixel_c.ssim_4x4x2_core,   pbuf1+2, (intptr_t)32, pbuf2+2, (intptr_t)32, sums );
         call_a2( pixel_asm.ssim_4x4x2_core, pbuf1+2, (intptr_t)32, pbuf2+2, (intptr_t)32, sums );
@@ -4174,7 +4254,8 @@ static int check_intra( int cpu_ref, int cpu_new )
                 call_a( ip_a.predict_8x8_filter, fdec+48, edge2, neighbor, i&7 );
                 if( !(neighbor&MB_TOPLEFT) )
                     edge[15] = edge2[15] = 0;
-                if( memcmp( edge+7, edge2+7, (i&MB_TOPRIGHT ? 26 : i&MB_TOP ? 17 : 8) * sizeof(pixel) ) )
+                /* from edge[6], which the filter writes as l7 */
+                if( memcmp( edge+6, edge2+6, (i&MB_TOPRIGHT ? 27 : i&MB_TOP ? 18 : 9) * sizeof(pixel) ) )
                 {
                     fprintf( stderr, "predict_8x8_filter :  [FAILED] %d %d\n", (i&24)>>1, i&7);
                     ok = 0;
