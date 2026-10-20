@@ -3094,12 +3094,14 @@ static int check_deblock( int cpu_ref, int cpu_new )
     }
 
 #define TEST_DEBLOCK( name, align, ... ) \
-    for( int i = 0; i < 36; i++ ) \
+    for( int k = 0; k < 72; k++ ) \
     { \
+        int i = k % 36; \
         intptr_t off = 8*32 + (i&15)*4*!align; /* benchmark various alignments of h filter */ \
         for( int j = 0; j < 1024; j++ ) \
-            /* two distributions of random to excersize different failure modes */ \
-            pbuf3[j] = rand() & (i&1 ? 0xf : PIXEL_MAX ); \
+            /* three distributions of random to excersize different failure modes; \
+             * k >= 36 near PIXEL_MAX, where the filtered pixels clip at the top */ \
+            pbuf3[j] = k >= 36 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&1 ? 0xf : PIXEL_MAX ); \
         memcpy( pbuf4, pbuf3, 1024 * sizeof(pixel) ); \
         if( db_a.name != db_ref.name ) \
         { \
@@ -3110,11 +3112,14 @@ static int check_deblock( int cpu_ref, int cpu_new )
             if( memcmp( pbuf3, pbuf4, 1024 * sizeof(pixel) ) ) \
             { \
                 ok = 0; \
-                fprintf( stderr, #name "(a=%d, b=%d): [FAILED]\n", alphas[i], betas[i] ); \
+                fprintf( stderr, #name "(a=%d, b=%d%s): [FAILED]\n", alphas[i], betas[i], k >= 36 ? ", near max" : "" ); \
                 break; \
             } \
-            call_c2( db_c.name, pbuf3+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
-            call_a2( db_a.name, pbuf4+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            if( k < 36 ) \
+            { \
+                call_c2( db_c.name, pbuf3+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
+                call_a2( db_a.name, pbuf4+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            } \
         } \
     }
 
@@ -3147,8 +3152,9 @@ static int check_deblock( int cpu_ref, int cpu_new )
             intptr_t stride = 32 << (i&1);
             intptr_t off = 4*stride + 16;
             int edges = rand() & 0xff;
+            /* full range, near 0, and (i&10 == 10) near PIXEL_MAX */
             for( int j = 0; j < 1280; j++ )
-                pbuf3[j] = rand() & (i&2 ? 0xf : PIXEL_MAX);
+                pbuf3[j] = (i&10) == 10 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&2 ? 0xf : PIXEL_MAX);
             memcpy( pbuf4, pbuf3, 1280 * sizeof(pixel) );
             for( int j = 0; j < 2*8*4; j++ )
                 ((uint8_t*)bs)[j] = (rand()&3) ? rand()&3 : 0;
