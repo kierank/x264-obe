@@ -144,3 +144,68 @@ vpermi2b, vpermt2b, vptestnmb, vpcmpub, kmovq, valignq, pdep all assemble on 2.1
   Laptop zmm is double-pumped, like Zen 4's.
 - fix/configure-pie: PIC (RIP-relative) vs non-PIC asm A/B before merging, if wanted (upstream
   reports no measurable difference).
+
+## Round 2 (2026-10-20): every rejected row written
+
+Branch `wip/x264-weird2-cabac`, base `origin/wip/x264-weird-sa8d8` 67b4aff6. Kieran: "don't
+reject, move to zen5 if rack01 is too slow". Every candidate below is written and dispatched
+(inside the existing avx512icl kernels; build-time knobs default on, so one revert drops one).
+
+Method (laptop on battery for most of the round: single-file nasm + standalone gcc drivers;
+full builds only on AC at the end):
+- Drivers link the assembled object(s) and a prebuilt bit-depth=all libx264.a for the C
+  references and tables. Every asm call goes through a small trampoline (`chkcall`) that puts
+  sentinels in rbx/rbp/r12-r15, checks rsp, loads garbage into k1-k7 and zmm16-31 before the
+  call, and reads XINUSE (xgetbv ecx=1) after it for dirty ymm/zmm0-15 upper state. Int
+  arguments get garbage in their upper 32 bits.
+- trellis: checkasm's C `trellis_ref` and its random generator (all 7 variants, 4 seeds x
+  30000), plus the four real-encode corpora of round 1 (grain8, credits8, ticker10i,
+  noise10, ~350k records) against their recorded outputs.
+- RD residual: the C `x264_cabac_block_residual_rd_c` / `_8x8_rd_c` on checkasm's generator
+  plus random context states, a sweep of every (state, count) of one 8x8 last context, and the
+  round-1 RD corpora.
+- writer: bytes, position, range, queue and context state against the C writer after a flush,
+  all 14 block categories, field and frame, mid-stream starts with outstanding 0xff bytes,
+  dense/sparse/single-coef/escape-boundary (14-17, 0x7f00, 0x7fff) levels.
+- 4:2:2 dc: the C of encoder/cabac.c (chroma422dc = 1) copied into the driver: every position
+  x 12 level classes x sign, every one of the 255 nonzero masks with random levels, reachable
+  context states (rd: any state), mid-stream writer starts; 207k cases per depth.
+- Full checkasm (AC): d8038226, checkasm8/10 x seeds 1001/2002/3003, all pass. 11 checkasm-level
+  mutants on that build, all killed.
+- After the coordinator's k-mask lesson every mutant of this branch was re-run with k1-k7 and
+  zmm16-31 clobbered: all killed except the equivalent ones listed. No kernel relied on a stale
+  k mask.
+
+| function | round-1 decision | round-2 action | commit | driver / mutation | nasm 2.14.02 |
+|---|---|---|---|---|---|
+| trellis_cabac_4x4, 4x4_psy | rejected (written, dropped on instruction counts) | rewritten: the 8x8 zero-run prefix for 16 coefs (states straight from cabac_state_sig, 2 groups of 8) | af918c33 | pass (random 840k, 4 corpora 0 mismatches); 2/2 own + shared-load mutant kills 4x4/4x4psy/dc/dc2x2 | ok |
+| trellis_cabac_dc, chroma_422_dc | rejected (same) | rewritten: same prefix; 4:2:2 maps positions to contexts with one vpermb (local 8-byte table at the end of rodata) | 2594747d | pass; 3/3 | ok |
+| trellis node chain (TR_END_COEF level_tree append) | rejected (analysis) | written: append only the valid nodes, vpcompressq (register form, full store), level_idx = r4 + rank from vpexpandq of the iota, r4 += popcnt; TRELLIS_ICL_COMPRESS | 11ec4d2d | pass; 5/7 killed, 2 equivalent: `popcnt -> mov 7` (at most 7 nodes are valid at once, so advancing by 7 only leaves gaps) and `vpcmpuq lt -> le` (differs only for a node whose score equals the -16 sentinel: an unreachable entry) | ok |
+| trellis node chain: GFNI, vpconflict | rejected | skipped: no operation of the chain is a per-byte bit-matrix product (GFNI) or a scatter with possibly equal indices (vpconflict: the context map per pass is fixed) | - | - | - |
+| trellis node chain: lambda-scaled entropy tables | rejected | skipped: not exact. The C computes (a+b)*lambda2>>4 on the summed f8_bits; scaling each table entry rounds each term separately | - | - | - |
+| trellis density gate | rejected on rack01 2026-10-17 | not repeated (rack01 measured it) | - | - | - |
+| cabac_block_residual_8x8_rd_internal: empty rounds | ordinary idea, not done | written: frame mode starts at sig round 2 (rd8_sig_slots rows 0-1 are empty in frame mode) | ac222124 | pass; 2/2 | ok |
+| cabac_block_residual_8x8_rd_internal: last flags | rejected (analysis, break-even ~12 nonzero) | written: vpopcntq of the nonzero mask against the 8 context ranges, one power-table step per context (transition^n and summed entropy, n <= 16, 6.5 KiB generated from rd_transition_sb/rd_entropy_*); RD8_ICL_LASTCNT. checkasm: random context states for the rd tests and a sweep of every (state, count) of one last context | 4e463ffc | pass; 7/7 + 2/2 n=16 table mutants (killed only by the sweep) | ok |
+| cabac_block_residual_rd_internal (4x4): entropy | rejected | written: cabac_entropy words with two vpermt2w (index bit 6 picks the half), one vpdpwssd sum; RD4_ICL_WORDS | 5198d48b | pass; 5/5 | ok |
+| cabac_block_residual_rd_internal (4x4): node_ctx | rejected | written: ctx1/ctxgt1 of all 16 positions from vpsrlvd + vpopcntd counts of the eq1/gt1 masks; RD4_ICL_NODECTX | e4d352c8 | pass; 7/7 | ok |
+| cabac_block_residual_rd_internal (4x4): first bin | ordinary idea, not done | written: setg/cmov level bins, only the escape branches; RD4_ICL_BRANCHLESS (needs NODECTX) | 6a5fc0a4 | pass; 5/5 | ok |
+| cabac_block_residual_internal (writer) | rejected (analysis) | written: new avx512icl writer: coeffs[] packed once by vpcompressw/d (register form + full store), sig map from the nonzero mask (bt), last from lzcnt (no coeff_last call), zmm16-19 only | a3058d0e | pass (all 14 cats); 7/7 (2 by crash) | ok |
+| 4:2:2 chroma dc writer and rd (C only before) | not in round 1 (coordinator request) | written: writer = the a3058d0e kernel instanced for 8 coefs with the 4:2:2 offsets and chroma gt1 contexts; rd = serial sig flags, per-context popcnt + rd8_last power tables for the last flags, vpopcntd level contexts capped at 8. New bsf pointers (NULL keeps the C); x264_cabac_block_residual_422_dc_c/_rd_c exported for checkasm, which gets a 4:2:2 dc test | 29a59ceb, d8038226 (checkasm: coeff_last[DCT_CHROMA_DC] = coeff_last8 for the test) | pass 207k/depth; 8/8 | ok |
+| cabac_encode_decision / bypass / terminal, putbyte | n/a | skipped: one bin per call, a dependent scalar recurrence on (low, range) through a state-indexed table; there are no lanes for a vector or mask instruction, and the bmi2 versions already use lzcnt/shlx for the renormalisation | - | - | - |
+| trellis sse2/ssse3/avx2 + trellis_coef* helpers | n/a | skipped: superseded by the avx512icl kernels on every CPU that has the extensions | - | - | - |
+| nal_escape (vpexpandb variant) | dispatched (compress form) | not touched (coordinator: nal_escape only if the log has a rejected row; fix/nal-escape-overread changes its padding in C) | - | - | - |
+
+rack01 (Zen 4, coordinator 2026-10-20, a3058d0e vs 67b4aff6): 4x4 rd icl 2.03x slower, trellis
+dc_2x2/422_dc/4x4_psy/dc 1.11-1.33x slower, writer 1.027x slower; all to zen5 pending the four
+knob arms (RD4_ICL_WORDS, RD4_ICL_NODECTX, RD8_ICL_LASTCNT, TRELLIS_ICL_COMPRESS). The 4:2:2
+dc kernels replace C and are judged separately.
+
+Notes:
+- Context states 126/127 (the terminate state) crash the C writer; random-state writer tests
+  use states reached from the init states by random bins. RD tests take any state.
+- `bs_size_ue_big` in the C rd path is only valid for values < 65536 (table index); 10-bit 8x8
+  rd C and asm differ for |level| >= 2^16 + 15, which the encoder cannot produce.
+- x86inc trap seen in my own code (caught by the drivers, nothing pushed): under INIT_XMM ym#/zm#
+  cast to xmm, under INIT_YMM zm# casts to ymm. The writer uses explicit zmm16-19.
+
+Bugs in existing asm: none found in this package in round 2.
