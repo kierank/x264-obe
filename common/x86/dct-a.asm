@@ -760,6 +760,55 @@ cglobal sub16x16_dct, 3,3,8
     SUB8x8_DCT_HBD
     ret
 
+; avx512icl sub8x8_dct: the avx2 pass with row i+4 of each pair from a
+; merge-masked vbroadcasti32x4 (no vinserti128 of memory) and EVEX
+; vshufi64x2 regrouping before the stores
+%macro SUB8x8_DCT_HBD_ICL_LOAD 0
+%assign subdct_hbd_i 0
+%rep 4
+    movu          xm %+ subdct_hbd_i, [r1+subdct_hbd_i*FENC_STRIDEB]
+    vbroadcasti32x4 m %+ subdct_hbd_i {k1}, [r1+(subdct_hbd_i+4)*FENC_STRIDEB]
+    movu          xm4, [r2+subdct_hbd_i*FDEC_STRIDEB]
+    vbroadcasti32x4 m4 {k1}, [r2+(subdct_hbd_i+4)*FDEC_STRIDEB]
+    psubw          m %+ subdct_hbd_i, m4
+%assign subdct_hbd_i subdct_hbd_i+1
+%endrep
+%endmacro
+
+%macro SUB8x8_DCT_HBD_ICL_STORE 4 ; row i, row i+1, tmp, offset
+    vshufi64x2   m%3, m%1, m%2, 0
+    vshufi64x2   m%1, m%1, m%2, 3
+    mova  [r0+%4    ], m%3
+    mova  [r0+%4+128], m%1
+%endmacro
+
+%macro SUB8x8_DCT_HBD_ICL_HALF 2 ; punpck suffix, offset
+    punpck%1wd    m4, m2, m2
+    punpck%1wd    m5, m0, m0
+    punpck%1wd    m6, m1, m1
+    psrad         m4, 16
+    psrad         m5, 16
+    psrad         m6, 16
+    SUMSUB2_AB    d, 5, 6, 7
+    SUB8x8_DCT_HBD_ICL_STORE 4, 5, 6, %2
+    punpck%1wd    m4, m3, m3
+    psrad         m4, 16
+    SUB8x8_DCT_HBD_ICL_STORE 4, 7, 6, %2+32
+%endmacro
+
+INIT_YMM avx512icl
+cglobal sub8x8_dct, 3,4,8
+    mov         r3d, 0xf0
+    kmovb        k1, r3d
+    SUB8x8_DCT_HBD_ICL_LOAD
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    SUMSUB_BADC w, 3, 0, 2, 1
+    SUMSUB_BA   w, 2, 3, 4
+    SUB8x8_DCT_HBD_ICL_HALF l, 0
+    SUB8x8_DCT_HBD_ICL_HALF h, 64
+    RET
+
 ; avx512icl sub16x16_dct: two 8x8 side by side per zmm pass. Rows i and i+4 of
 ; both come from one 32-byte row each (ymm load + merge-masked vbroadcasti64x4):
 ; lanes A row i, B row i, A row i+4, B row i+4; the transform is lane local
