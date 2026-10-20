@@ -399,6 +399,8 @@ rd8_last_bits:
 ; position i: shift that leaves the positions above i (avx512icl rd 4x4)
 rd4_above:          dd 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 rd4_ctxc:           dd 1, 3, 5, 9
+rd4_ctx8:           dd 8
+coeff_abs_levelgt1_ctx_chroma_dc: db 5, 5, 5, 5, 6, 7, 8, 8
 
 %if ARCH_X86_64
 %macro COEFF_LAST_TABLE 17
@@ -460,6 +462,7 @@ cextern_common last_coeff_flag_offset
 cextern_common last_coeff_flag_offset_8x8
 cextern_common coeff_abs_level_m1_offset
 cextern_common count_cat_m1
+cextern_common coeff_flag_offset_chroma_422_dc
 cextern cabac_encode_ue_bypass
 cextern pb_1
 cextern pw_1
@@ -1122,6 +1125,140 @@ CABAC bmi2
     RET
 %endmacro
 
+; 4:2:2 chroma dc, avx512icl (ctx_block_cat = DCT_CHROMA_DC, 8 coefficients).
+; The sig and last contexts repeat (0,0,1,1,2,2,2), so the sig flags are coded
+; serially, descending; the last flags below last are all bin 0: per context n
+; from popcnt and one rd8_last_pow/bits step. Levels as in the 4x4 icl kernel,
+; with the chroma dc gt1 contexts (capped at 8).
+%macro CABAC_RESIDUAL_RD_422DC_ICL 0
+    %assign rd422_stack 16*SIZEOF_DCTCOEF+32 ; abs() copy, level contexts
+%ifdef PIC
+    cglobal cabac_block_residual_422_dc_rd_internal, 4,12,8,-rd422_stack
+    lea     r10, [$$]
+    %define GLOBAL +r10-$$
+%else
+    cglobal cabac_block_residual_422_dc_rd_internal, 4,12,8,-rd422_stack
+    %define GLOBAL
+%endif
+    RD_TMP_REGS 5, 7, 9
+    %define dct rsp
+    %define ctx1m  rsp+16*SIZEOF_DCTCOEF
+    %define ctxg1m rsp+16*SIZEOF_DCTCOEF+16
+%if HIGH_BIT_DEPTH
+    vmovdqu32 ym0, [r0]
+    vptestmd  k2, ym0, ym0
+    vpabsd    ym0, ym0
+    vmovdqu32 [rsp], ym0
+%else
+    vmovdqu16 xm0, [r0]
+    vptestmw  k2, xm0, xm0
+    vpabsw    xm0, xm0
+    vmovdqu16 [rsp], xm0
+%endif
+    shl      r1d, 4                                           ; MB_INTERLACED*16
+    add      r1d, r2d
+    movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx    r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+    mov      r0d, [r3+cb.bits_encoded]
+    add       r3, cb.state
+    add       r5, r3
+    add       r7, r3
+    add       r8, r3
+    kmovd    r4d, k2                                          ; r4 = nonzero mask
+    lzcnt    r6d, r4d
+    xor      r6d, 31                                          ; r6 = last
+    cmp      r6d, 7
+    je .skip_last
+    movzx    r1d, byte [coeff_flag_offset_chroma_422_dc+r6 GLOBAL]
+    movzx    r2d, byte [r5+r1]
+    movzx    r9d, byte [cabac_transition+1+r2*2 GLOBAL]
+    xor      r2d, 1
+    movzx    r2d, word [cabac_entropy+r2*2 GLOBAL]
+    mov [r5+r1], r9b
+    add      r0d, r2d
+    movzx    r2d, byte [r7+r1]
+    movzx    r9d, byte [cabac_transition+1+r2*2 GLOBAL]
+    xor      r2d, 1
+    movzx    r2d, word [cabac_entropy+r2*2 GLOBAL]
+    mov [r7+r1], r9b
+    add      r0d, r2d
+.skip_last:
+; sig flags of i < last, descending
+    lea      r1d, [r6-1]
+    test     r1d, r1d
+    jl .sig_done
+.sig_loop:
+    movzx    r2d, byte [coeff_flag_offset_chroma_422_dc+r1 GLOBAL]
+    movzx    r9d, byte [r5+r2]
+    bt       r4d, r1d
+    adc      r9d, r9d                                         ; 2*state+bin
+    movzx   r11d, byte [cabac_transition+r9 GLOBAL]
+    movzx    r9d, word [rd_entropy_sb+r9*2 GLOBAL]
+    mov [r5+r2], r11b
+    add      r0d, r9d
+    dec      r1d
+    jge .sig_loop
+.sig_done:
+; last flags (bin 0) of the nonzero coefs below last, contexts 0-2
+    mov      r1d, r4d
+    btr      r1d, r6d
+%assign %%c 0
+%rep 3
+    %if %%c == 0
+        mov     r2d, 0x03
+    %elif %%c == 1
+        mov     r2d, 0x0c
+    %else
+        mov     r2d, 0x70
+    %endif
+    and      r2d, r1d
+    popcnt   r2d, r2d
+    shl      r2d, 7
+    movzx    r9d, byte [r7+%%c]
+    add      r2d, r9d                                         ; n*128+state
+    movzx    r9d, byte [rd8_last_pow+r2 GLOBAL]
+    mov [r7+%%c], r9b
+    movzx    r9d, word [rd8_last_bits+r2*2 GLOBAL]
+    add      r0d, r9d
+    %assign %%c %%c+1
+%endrep
+; level contexts: ctx1 = g ? 0 : min(e,3)+1, ctxgt1 = min(g+5,8)
+%if HIGH_BIT_DEPTH
+    vpcmpud   k5, ym0, [pd_1] {1to8}, 6
+%else
+    vpcmpuw   k5, xm0, [pw_1], 6
+%endif
+    kmovd    r1d, k5
+    andn     r2d, r1d, r4d
+    vpbroadcastd ym1, r1d
+    vpbroadcastd ym2, r2d
+    vpsrlvd   ym1, ym1, [rd4_above]
+    vpsrlvd   ym2, ym2, [rd4_above]
+    vpopcntd  ym1, ym1                                        ; g
+    vpopcntd  ym2, ym2                                        ; e
+    vptestnmd k5, ym1, ym1
+    vpminud   ym2, ym2, [rd4_ctxc+4] {1to8}
+    vpaddd    ym2 {k5}{z}, ym2, [rd4_ctxc] {1to8}
+    vpaddd    ym1, ym1, [rd4_ctxc+8] {1to8}
+    vpminud   ym1, ym1, [rd4_ctx8] {1to8}
+    vpmovdb  xm2, ym2
+    vpmovdb  xm1, ym1
+    vmovq    [ctx1m], xm2
+    vmovq    [ctxg1m], xm1
+; levels: last, then the other nonzero coefficients in descending order
+.level_loop:
+    lzcnt    r6d, r4d
+    xor      r6d, 31
+    btr      r4d, r6d
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_GT1_ICL
+    test     r4d, r4d
+    jnz .level_loop
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+%endmacro
+
 ; abs() of the 64 coefficients of l (r0) to [rsp], nonzero mask to r9
 %macro ABS_NZMASK_8x8 0
 %if mmsize == 64
@@ -1479,6 +1616,7 @@ INIT_ZMM avx512
 CABAC_RESIDUAL_RD_8x8
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_4x4_ICL
+CABAC_RESIDUAL_RD_422DC_ICL
 CABAC_RESIDUAL_RD_8x8
 %endif
 
@@ -1779,7 +1917,11 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %if %1
     movzx   r1d, byte [r0+r12]
     CABAC_BIN 1, r3+r1              ; ctx_sig + sig_off, 1
+%if %1 == 2
+    movzx   r1d, byte [r0+r12]      ; 4:2:2 dc: last_off == sig_off
+%else
     movzx   r1d, byte [last_coeff_flag_offset_8x8+r12 GLOBAL]
+%endif
     %define sm_last r11+r1
 %else
     CABAC_BIN 1, r3+r12
@@ -1826,8 +1968,13 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %endif
 %endmacro
 
-%macro CABAC_RESIDUAL_BMI2 1
+; %2 = 4:2:2 chroma dc (cabac_block_residual_422_dc_internal, ctx_block_cat = DCT_CHROMA_DC)
+%macro CABAC_RESIDUAL_BMI2 1-2 0
+%if %2
+cglobal cabac_block_residual_422_dc_internal, 4,15,0,-4*72
+%else
 cglobal cabac_block_residual_internal, 4,15,0,-4*72
+%endif
 %ifdef PIC
     lea      r7, [$$]
     %define GLOBAL +r7-$$
@@ -1847,12 +1994,20 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     %assign pb_count 0
 
     shl     r1d, 4
+%if %2
+    lea     r12, [coeff_flag_offset_chroma_422_dc GLOBAL]
+%else
     lea     r12, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]
+%endif
     add     r1d, r2d
     movzx   r8d, word [significant_coeff_flag_offset+r1*2 GLOBAL]
     movzx   r9d, word [last_coeff_flag_offset+r1*2 GLOBAL]
     movzx  r10d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]
+%if %2
+    mov    r13d, 7
+%else
     movzx  r13d, byte [count_cat_m1+r2 GLOBAL]
+%endif
     mov     cbm, r3
     mov     r14, r0                 ; dct
     add      r3, cb.state
@@ -1940,7 +2095,11 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     mov  ranged, [r6+cb.range]
     mov  queued, [r6+cb.queue]
     sub  queued, 24
-%if cpuflag(avx512icl)
+%if %2
+    mov      r0, r12
+    xor    r12d, r12d
+    SIGMAP_BMI2 2, 7
+%elif cpuflag(avx512icl)
     movzx   r0d, byte [count_cat_m1+r2 GLOBAL]
     cmp     r0d, 63
     je .sigmap_8x8
@@ -1980,7 +2139,11 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     jmp .level_sign
 .level_gt1:
     CABAC_BIN 1, r3+r1
+%if %2
+    movzx  r14d, byte [coeff_abs_levelgt1_ctx_chroma_dc+r12 GLOBAL]
+%else
     movzx  r14d, byte [coeff_abs_levelgt1_ctx+r12 GLOBAL]
+%endif
     movzx   r2d, byte [r3+r14]      ; state stays in r2d for the run
     mov     r0d, 15
     cmp    r11d, r0d
@@ -2124,4 +2287,5 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
+CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
 %endif
