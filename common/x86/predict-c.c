@@ -742,6 +742,7 @@ void x264_predict_4x4_init_mmx( int cpu, x264_predict_t pf[12] )
         pf[I_PRED_4x4_DDL]     = x264_predict_4x4_ddl_avx512icl;
         pf[I_PRED_4x4_DDR]     = x264_predict_4x4_ddr_avx512icl;
         pf[I_PRED_4x4_VR]      = x264_predict_4x4_vr_avx512icl;
+        pf[I_PRED_4x4_HD]      = x264_predict_4x4_hd_avx512icl;
 #endif
     }
 #else
@@ -766,6 +767,7 @@ void x264_predict_4x4_init_mmx( int cpu, x264_predict_t pf[12] )
         pf[I_PRED_4x4_DDL]     = x264_predict_4x4_ddl_avx512icl;
         pf[I_PRED_4x4_DDR]     = x264_predict_4x4_ddr_avx512icl;
         pf[I_PRED_4x4_VR]      = x264_predict_4x4_vr_avx512icl;
+        pf[I_PRED_4x4_HD]      = x264_predict_4x4_hd_avx512icl;
 #endif
     }
 #endif // HIGH_BIT_DEPTH
