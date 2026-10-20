@@ -1266,6 +1266,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
         INIT2( sad, _avx512 );
+        INIT4( sad_x3, _avx512 );
+        INIT4( sad_x4, _avx512 );
+        INIT4( sad_x3_min, _avx512 );
+        INIT4( sad_x4_min, _avx512 );
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx512;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx512;
 #endif
