@@ -9556,6 +9556,125 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
     mov [r1+2*FDEC_STRIDE], r0d
     mov [r1+3*FDEC_STRIDE], r2d
     RET
+
+;-----------------------------------------------------------------------------
+; int intra_sad_x9_4x4( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts )
+; The predictions of intra_satd_x9_4x4_avx512icl (rows twice per lane), psadbw
+; against fenc in the same layout (2*sad per mode), mode k's sums or'd into
+; word k&3 of its group of four, and the same k-mask argmin.
+;-----------------------------------------------------------------------------
+; m%1 = 2*sad of pred m%1 as 4 qwords, shifted to word %2 (0-3)
+%macro X9B_SAD_ICL 2
+    psadbw      m%1, m8
+%if %2
+    psllq       m%1, 16*%2
+%endif
+%endmacro
+
+cglobal intra_sad_x9_4x4, 3,4,16, 9*32
+    %define pred_buf rsp
+    mov         r3d, 0x1ff
+    kmovd        k3, r3d
+    movu        xm1, [r1-1*FDEC_STRIDE-8]
+    pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
+    pinsrb      xm1, [r1+2*FDEC_STRIDE-1], 1
+    pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
+    pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
+    pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+    pxor        xm4, xm4
+    pshufb      xm2, xm1, [intrax9a_dc]
+    psadbw      xm2, xm4
+    psrlw       xm2, 2
+    pavgw       xm2, xm4
+    vpbroadcastb m2, xm2              ; dc
+    vpermq       m1, m1, q1010
+    psrldq       m0, m1, 1
+    psrldq       m3, m1, 2
+    pavgb        m5, m0, m1
+    PRED4x4_LOWPASS m0, m1, m3, m0, m4 ; F: Fl3 Fl2 Fl1 Fl0 Flt Ft0 .. Ft7
+    pslldq       m6, m0, 5
+    palignr      m7, m5, m6, 5        ; Q: Fl3 .. Ft5 Gl3 Gl2 Gl1 Gl0 Glt
+    psrldq       m5, 5
+    palignr      m5, m5, m6, 6        ; P: __ Fl1 .. Ft5 Gt0 .. Gt5
+
+    movd        xm8, [r0+0*FENC_STRIDE]
+    pinsrd      xm8, [r0+1*FENC_STRIDE], 1
+    movd        xm9, [r0+2*FENC_STRIDE]
+    pinsrd      xm9, [r0+3*FENC_STRIDE], 1
+    vinserti128  m8, m8, xm9, 1
+    punpckldq    m8, m8               ; f0 f0 f1 f1 | f2 f2 f3 f3
+
+    pshufb       m9, m1, [x9b4_v]
+    pshufb      m10, m1, [x9b4_h]
+    pshufb      m11, m0, [x9b4_ddl]
+    mova [pred_buf+0*32], m9
+    mova [pred_buf+1*32], m10
+    mova [pred_buf+2*32], m2
+    mova [pred_buf+3*32], m11
+    X9B_SAD_ICL   9, 0
+    X9B_SAD_ICL  10, 1
+    X9B_SAD_ICL   2, 2
+    X9B_SAD_ICL  11, 3
+    por          m9, m10
+    por          m2, m11
+    por          m9, m2               ; v h dc ddl
+    pshufb      m10, m0, [x9b4_ddr]
+    pshufb      m11, m5, [x9b4_vr]
+    pshufb      m12, m7, [x9b4_hd]
+    pshufb      m13, m5, [x9b4_vl]
+    pshufb      m14, m7, [x9b4_hu]
+    mova [pred_buf+4*32], m10
+    mova [pred_buf+5*32], m11
+    mova [pred_buf+6*32], m12
+    mova [pred_buf+7*32], m13
+    mova [pred_buf+8*32], m14
+    X9B_SAD_ICL  10, 0
+    X9B_SAD_ICL  11, 1
+    X9B_SAD_ICL  12, 2
+    X9B_SAD_ICL  13, 3
+    X9B_SAD_ICL  14, 0
+    por         m10, m11
+    por         m12, m13
+    por         m10, m12              ; ddr vr hd vl
+    vextracti128 xm0, m9, 1
+    vextracti128 xm1, m10, 1
+    vextracti128 xm2, m14, 1
+    paddw       xm9, xm0
+    paddw      xm10, xm1
+    paddw      xm14, xm2
+    punpcklqdq  xm0, xm9, xm10
+    punpckhqdq  xm9, xm10
+    paddw       xm0, xm9              ; 2*sad: v h dc ddl ddr vr hd vl
+    pshufd      xm1, xm14, q1032
+    paddw      xm14, xm1              ; 2*sad: hu
+    vinserti128  m0, m0, xm14, 1
+    psrlw        m0, 1
+    vmovdqu16    m1 {k3}{z}, [r2]
+    vpternlogd   m4, m4, m4, 0xff
+    vpaddw       m4 {k3}, m0, m1      ; costs of modes 0-8, ones
+    vextracti128 xm5, m4, 1
+    pminuw      xm5, xm4
+    phminposuw  xm5, xm5
+    vpbroadcastw m5, xm5
+    vpcmpeqw     k1, m4, m5
+    kmovd       r3d, k1
+    tzcnt       r3d, r3d
+    movd        eax, xm5
+    movzx       eax, ax
+    mov         r2d, r3d
+    shl         r2d, 16
+    or          eax, r2d
+
+    shl         r3d, 5
+    mov         r0d, [pred_buf+r3+ 0]
+    mov         r2d, [pred_buf+r3+ 8]
+    mov [r1+0*FDEC_STRIDE], r0d
+    mov [r1+1*FDEC_STRIDE], r2d
+    mov         r0d, [pred_buf+r3+16]
+    mov         r2d, [pred_buf+r3+24]
+    mov [r1+2*FDEC_STRIDE], r0d
+    mov [r1+3*FDEC_STRIDE], r2d
+    RET
 ICL_LOW_END
 %endif ; ARCH_X86_64
 

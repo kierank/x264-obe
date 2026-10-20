@@ -980,6 +980,8 @@ int x264_pixel_satd_8x4_avx512icl( pixel *, intptr_t, pixel *, intptr_t );
 uint64_t x264_pixel_hadamard_ac_8x8_avx512icl( pixel *, intptr_t );
 #define x264_intra_satd_x9_4x4_avx512icl x264_template(intra_satd_x9_4x4_avx512icl)
 int x264_intra_satd_x9_4x4_avx512icl( pixel *, pixel *, uint16_t * );
+#define x264_intra_sad_x9_4x4_avx512icl x264_template(intra_sad_x9_4x4_avx512icl)
+int x264_intra_sad_x9_4x4_avx512icl( pixel *, pixel *, uint16_t * );
 #define x264_pixel_sad_avg2_16x16_avx2 x264_template(pixel_sad_avg2_16x16_avx2)
 int x264_pixel_sad_avg2_16x16_avx2( pixel *, pixel *, pixel *, intptr_t );
 #define x264_pixel_sad_avg2_16x8_avx2 x264_template(pixel_sad_avg2_16x8_avx2)
