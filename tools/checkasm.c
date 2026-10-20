@@ -4788,8 +4788,10 @@ name##fail:
 #undef CATS_8x8
     report( "cabac residual rd:" );
 
-    /* 4:2:2 chroma dc (8 coefs, repeated sig/last contexts): writer and rd */
+    /* 4:2:2 chroma dc (8 coefs, repeated sig/last contexts): writer and rd; the C finds last
+     * through coeff_last[DCT_CHROMA_DC], which the encoder sets to coeff_last8 for 4:2:2 */
     ok = 1; used_asm = 0;
+    h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last8;
     for( int rd = 0; rd < 2; rd++ )
     {
         void (*fa)( dctcoef *, int, intptr_t, x264_cabac_t * ) = rd ? bs_a.cabac_block_residual_422_dc_rd_internal : bs_a.cabac_block_residual_422_dc_internal;
@@ -4879,6 +4881,7 @@ name##fail:
                 }
             }
     }
+    h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     report( "cabac 4:2:2 dc :" );
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
