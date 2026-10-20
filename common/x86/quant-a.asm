@@ -1618,6 +1618,7 @@ cglobal idct_dequant_2x4_%1, 0,3,6, %%args
 
 INIT_XMM avx512icl
 DEQUANT_2x4_DC_ICL dc
+DEQUANT_2x4_DC_ICL dconly
 
 ; t4 is eax for return value.
 %if ARCH_X86_64
