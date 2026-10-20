@@ -355,10 +355,8 @@ ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
 weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
                   db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
 weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
-%if HIGH_BIT_DEPTH == 0
-; 8-bit intra_satd_x9_4x4 avx512icl: vpermw of the phaddw'd satds to modes 0-8
+; intra_satd_x9_4x4 avx512icl: vpermw of the phaddw'd satds to modes 0-8
 x9b4_kperm: dw 4, 0, 8, 1, 9, 2, 10, 3, 11, 0, 0, 0, 0, 0, 0, 0
-%endif
 ; satd_mcc avx512icl width 8: output i of a row from bytes i, i+2 of rows k | k+1
 ; (8-bit, vpermb) or words i, i+2 of one row (high bit depth, vpermw)
 mcc_icl_perm:
@@ -7398,6 +7396,153 @@ LOWRES_HBD
 ICL_LOW_BEGIN
 SA8D_X9_HBD
 LOWRES_HBD
+
+; X9H_SATD with the three psignw stages as masked psubw (k4 = odd words, k5 =
+; words 2-3, k6 = words 4-7 of each 8); m12 tmp
+%macro X9H_SATD_ICL 2
+    psubw       m%1, m8, m%1
+    vprold      m%2, m%1, 16
+    paddw       m12, m%1, m%2
+    vpsubw      m12 {k4}, m%2, m%1
+    pshufd      m%2, m12, q2301
+    paddw       m%1, m12, m%2
+    vpsubw      m%1 {k5}, m%2, m12
+    pshufd      m%2, m%1, q1032
+    paddw       m12, m%1, m%2
+    vpsubw      m12 {k6}, m%2, m%1
+    pabsw       m%1, m12
+%endmacro
+
+; intra_satd_x9_4x4 as the avx2 version with X9H_SATD_ICL and the k-mask argmin
+; of the 8-bit avx512icl one (vpermw x9b4_kperm, vmovdqu16 {k3}{z} bitcosts,
+; pminuw + phminposuw, vpcmpeqw + kmovd + tzcnt)
+cglobal intra_satd_x9_4x4, 3,4,16, 9*32
+    %define pred_buf rsp
+    mov         r3d, 0xaaaa
+    kmovd        k4, r3d
+    mov         r3d, 0xcccc
+    kmovd        k5, r3d
+    mov         r3d, 0xf0f0
+    kmovd        k6, r3d
+    mov         r3d, 0x1ff
+    kmovd        k3, r3d
+    movq        xm8, [r0+0*FENC_STRIDEB]
+    movhps      xm8, [r0+1*FENC_STRIDEB]
+    movq        xm0, [r0+2*FENC_STRIDEB]
+    movhps      xm0, [r0+3*FENC_STRIDEB]
+    vinserti128  m8, m8, xm0, 1
+
+    ; v, ddl, vl: lane 1 of the top edge is lane 0 advanced by one sample
+    vbroadcasti128 m0, [r1-FDEC_STRIDEB]
+    punpcklqdq   m9, m0, m0
+    pshufb       m1, m0, [x9h_top0]
+    pshufb       m2, m0, [x9h_top1]
+    pshufb       m0, m0, [x9h_top2]
+    pavgw        m3, m1, m2           ; t0t1 .. | t1t2 ..
+    paddw        m1, m0
+    paddw        m2, [pw_1]
+    paddw        m1, m2
+    paddw        m1, m2
+    psrlw        m1, 2                ; F(t1) .. | F(t2) ..
+    punpcklqdq   m4, m3, m1
+    pshufb       m5, m1, [x9h_ddl]
+    movu [pred_buf+0*32], m9
+    movu [pred_buf+3*32], m5
+    movu [pred_buf+7*32], m4
+    X9H_SATD_ICL      9, 0
+    X9H_SATD_ICL      5, 0
+    X9H_SATD_ICL      4, 0
+    vperm2i128   m0, m9, m9, 0x01
+    pmaxsw       m9, m0
+
+    ; left edge: e = l3 l2 l1 l0 lt t0 t1 t2 (t3)
+    movu        xm0, [r1-FDEC_STRIDEB-10]
+    pinsrw      xm0, [r1+3*FDEC_STRIDEB-2], 0
+    pinsrw      xm0, [r1+2*FDEC_STRIDEB-2], 1
+    pinsrw      xm0, [r1+1*FDEC_STRIDEB-2], 2
+    pinsrw      xm0, [r1+0*FDEC_STRIDEB-2], 3
+    movq        xm1, [r1-FDEC_STRIDEB+6]
+    palignr     xm1, xm1, xm0, 2      ; l2 l1 l0 lt t0 t1 t2 t3
+    vpblendd    xm2, xm0, xm1, 0x0c   ; l3 l2 l1 l0 t0 t1 t2 t3
+    pmaddwd     xm2, [pw_1]
+    pshufd      xm3, xm2, q1032
+    paddd       xm2, xm3
+    pshufd      xm3, xm2, q2301
+    paddd       xm2, xm3
+    psrlw       xm2, 2
+    pxor        xm3, xm3
+    pavgw       xm2, xm3
+    vpbroadcastw m2, xm2              ; dc
+    vinserti128  m0, m0, xm0, 1
+    vinserti128  m1, m1, xm1, 1
+    pshufb       m3, m0, [x9h_ldup]
+    pavgw        m6, m0, m1           ; G(e[i],e[i+1])
+    paddw        m3, m1
+    paddw        m1, m0, [pw_1]
+    paddw        m3, m1
+    paddw        m3, m1
+    psrlw        m3, 2                ; F(e[i])
+    pshufb       m7, m0, [x9h_h]
+    movu [pred_buf+1*32], m7
+    movu [pred_buf+2*32], m2
+    X9H_SATD_ICL      7, 0
+    X9H_SATD_ICL      2, 0
+    X9H_MERGE     7, 2, 0             ; h | dc
+    pshufb      m10, m3, [x9h_ddr]
+    movu [pred_buf+4*32], m10
+    X9H_SATD_ICL     10, 0
+    X9H_MERGE     5, 10, 0            ; ddl | ddr
+    pshufb      m10, m3, [x9h_vrf]
+    pshufb       m0, m6, [x9h_vrg]
+    por         m10, m0
+    pshufb      m11, m3, [x9h_hdf]
+    pshufb       m0, m6, [x9h_hdg]
+    por         m11, m0
+    movu [pred_buf+5*32], m10
+    movu [pred_buf+6*32], m11
+    X9H_SATD_ICL     10, 0
+    X9H_SATD_ICL     11, 0
+    X9H_MERGE    10, 11, 0            ; vr | hd
+    punpcklwd    m0, m6, m3
+    pshufb       m0, [x9h_hu]
+    vpbroadcastw m1, [r1+3*FDEC_STRIDEB-2]
+    vpblendd     m0, m0, m1, 0xe0
+    movu [pred_buf+8*32], m0
+    X9H_SATD_ICL      0, 1
+    X9H_MERGE     4, 0, 1             ; vl | hu
+
+    phaddw       m7, m5
+    phaddw      m10, m4
+    phaddw       m7, m10
+    phaddw       m9, m9
+    phaddw       m9, m9
+    phaddw       m7, m9               ; h ddl vr vl v v v v | dc ddr hd hu v v v v
+    vpternlogd   m4, m4, m4, 0xff
+    movu         m5, [x9b4_kperm]
+    vpermw       m4 {k3}, m5, m7      ; v h dc ddl ddr vr hd vl hu, ones
+    vmovdqu16    m5 {k3}{z}, [r2]
+    paddw        m4, m5
+    vextracti128 xm5, m4, 1
+    pminuw      xm5, xm4
+    phminposuw  xm5, xm5
+    vpbroadcastw m5, xm5
+    vpcmpeqw     k1, m4, m5
+    kmovd       r3d, k1
+    tzcnt       r3d, r3d
+    movd        eax, xm5
+    movzx       eax, ax
+    mov         r2d, r3d
+    shl         r2d, 16
+    or          eax, r2d
+
+    shl         r3d, 5
+    movu        xm0, [pred_buf+r3]
+    movu        xm1, [pred_buf+r3+16]
+    movq   [r1+0*FDEC_STRIDEB], xm0
+    movhps [r1+1*FDEC_STRIDEB], xm0
+    movq   [r1+2*FDEC_STRIDEB], xm1
+    movhps [r1+3*FDEC_STRIDEB], xm1
+    RET
 ICL_LOW_END
 INIT_YMM avx2
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
