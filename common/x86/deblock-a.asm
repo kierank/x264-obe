@@ -64,6 +64,10 @@ h_luma_q01_idx: DB_COLS16 4, 3, 5, 2
 h_luma_q23_idx: DB_COLS16 6, 1, 7, 0
 h_luma_rows0_idx: DB_ROWS8 0
 h_luma_rows8_idx: DB_ROWS8 8
+chroma422_tc_shuf: times 16 db 0
+                   times 16 db 1
+                   times 16 db 2
+                   times 16 db 3
 load_bytes_shuf: times 2 db 3,4,5,6,11,12,13,14,4,5,6,7,12,13,14,15
 insert_top_shuf: dd 0,1,4,5,7,2,3,6
 deblock_tc_shuf_avx2: db 0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3
@@ -3652,6 +3656,141 @@ cglobal deblock_h_chroma_422_intra, 4,6,10
     lea          r5, [r5+r1*8]
     dec          r2d
     jg .loop
+    RET
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 10-bit 4:2:2 h chroma, avx512icl: all 16 rows in one zmm pass, rows 4i..4i+3
+; in lane i, so the dword transposes stay lane-local and lane i takes tc0[i].
+;-----------------------------------------------------------------------------
+; in: r5 = 3*stride, r6 = r0+4*stride, r7 = r0+8*stride, r8 = r0+12*stride
+%macro CHROMA_H_LOAD_ZMM 0
+    movu         xm0, [r0-8]
+    movu         xm1, [r0+r1-8]
+    movu         xm2, [r0+r1*2-8]
+    movu         xm3, [r0+r5-8]
+%assign %%i 1
+%rep 3
+%if %%i == 1
+    %define %%b r6
+%elif %%i == 2
+    %define %%b r7
+%else
+    %define %%b r8
+%endif
+    vinserti32x4  m0, m0, [%%b-8], %%i
+    vinserti32x4  m1, m1, [%%b+r1-8], %%i
+    vinserti32x4  m2, m2, [%%b+r1*2-8], %%i
+    vinserti32x4  m3, m3, [%%b+r5-8], %%i
+%assign %%i %%i+1
+%endrep
+    TRANSPOSE4x4D 0, 1, 2, 3, 7
+%endmacro
+
+; in: m1 = p0', m2 = q0'
+%macro CHROMA_H_STORE_ZMM 0
+    SBUTTERFLY   dq, 1, 2, 3
+    movq         [r0-4], xm1
+    movhps       [r0+r1-4], xm1
+    movq         [r0+r1*2-4], xm2
+    movhps       [r0+r5-4], xm2
+%assign %%i 1
+%rep 3
+%if %%i == 1
+    %define %%b r6
+%elif %%i == 2
+    %define %%b r7
+%else
+    %define %%b r8
+%endif
+    vextracti32x4 xm3, m1, %%i
+    vextracti32x4 xm4, m2, %%i
+    movq         [%%b-4], xm3
+    movhps       [%%b+r1-4], xm3
+    movq         [%%b+r1*2-4], xm4
+    movhps       [%%b+r5-4], xm4
+%assign %%i %%i+1
+%endrep
+%endmacro
+
+; in: m0-m3 = p1 p0 q0 q1, m4/m5 = alpha/beta; out: k1; clobbers m6-m8
+%macro CHROMA_MASK_ICL 0
+    psubw        m6, m1, m2
+    psubw        m7, m0, m1
+    psubw        m8, m3, m2
+    pabsw        m6, m6
+    pabsw        m7, m7
+    pabsw        m8, m8
+    pmaxsw       m7, m8
+    vpcmpgtw     k1, m4, m6
+    vpcmpgtw     k2, m5, m7
+    kandd        k1, k1, k2
+%endmacro
+
+%macro CHROMA_H_START_ZMM 0
+    add          r1, r1
+    vpbroadcastw  m4, r2d
+    vpbroadcastw  m5, r3d
+    lea          r5, [r1*3]
+    lea          r6, [r0+r1*4]
+    lea          r7, [r0+r1*8]
+    lea          r8, [r6+r1*8]
+%endmacro
+
+INIT_ZMM avx512icl
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422, 5,9,11
+    CHROMA_H_START_ZMM
+    vpbroadcastd m9, [r4]
+    pshufb       m9, [chroma422_tc_shuf]
+    psraw        m9, 8             ; lane i = tc0[i]
+    CHROMA_H_LOAD_ZMM
+    CHROMA_MASK_ICL
+    vmovdqu16    m7 {k1}{z}, m9
+    pxor         m6, m6
+    pmaxsw       m7, m6
+    vpbroadcastd m10, [pw_4]
+    psubw        m8, m2, m1
+    psubw        m4, m0, m3
+    psllw        m8, 2
+    paddw        m8, m4
+    paddw        m8, m10
+    psraw        m8, 3           ; ((q0-p0)*4 + p1-q1 + 4) >> 3
+    psubw        m5, m6, m7
+    pmaxsw       m8, m5
+    pminsw       m8, m7
+    vpbroadcastd m10, [pw_pixel_max]
+    paddw        m1, m8
+    psubw        m2, m8
+    pmaxsw       m1, m6
+    pmaxsw       m2, m6
+    pminsw       m1, m10
+    pminsw       m2, m10
+    CHROMA_H_STORE_ZMM
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422_intra, 4,9,11
+    CHROMA_H_START_ZMM
+    CHROMA_H_LOAD_ZMM
+    CHROMA_MASK_ICL
+    vpbroadcastd m9, [pw_2]
+    paddw        m6, m0, m9
+    paddw        m6, m3
+    paddw        m7, m6, m2
+    paddw        m6, m1
+    paddw        m6, m0
+    paddw        m7, m3
+    psraw        m6, 2           ; (2*p1 + p0 + q1 + 2) >> 2
+    psraw        m7, 2           ; (2*q1 + q0 + p1 + 2) >> 2
+    vmovdqu16    m1 {k1}, m6
+    vmovdqu16    m2 {k1}, m7
+    CHROMA_H_STORE_ZMM
     RET
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
