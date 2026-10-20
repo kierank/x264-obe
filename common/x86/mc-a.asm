@@ -1979,6 +1979,115 @@ cglobal pixel_avg2_w20, 6,7
     sub    r5d, 2
     jg     .height_loop
     RET
+%endif ; !HIGH_BIT_DEPTH
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; pixel_avg2_wN, avx512icl, both depths, two rows per iteration. %1 = bytes per
+; row: 4/8/16/32 put both rows in one register (the second merged in by a
+; masked broadcast), 12/20/24/40 take a register per row under a byte mask.
+; Reads and writes exactly N pixels per row; no alignment needed.
+;-----------------------------------------------------------------------------
+%macro AVG2_ICL 2 ; bytes, width
+%if %1 == 4 || %1 == 8 || %1 == 12
+INIT_XMM avx512icl
+%elif %1 == 16 || %1 == 20 || %1 == 24
+INIT_YMM avx512icl
+%else
+INIT_ZMM avx512icl
+%endif
+cglobal pixel_avg2_w%2, 6,7,4
+    FIX_STRIDES r1, r3
+    sub           r4, r2
+%if %1 == 4 || %1 == 8
+    mov          r6d, 2
+    kmovb         k1, r6d
+%elif %1 == 16
+    mov          r6d, 0xf0
+    kmovb         k1, r6d
+%elif %1 == 32
+    mov          r6d, 0xff00
+    kmovw         k1, r6d
+%else
+    mov           r6, (1 << %1) - 1
+    kmovq         k1, r6
+%endif
+    lea           r6, [r4+r3]
+.height_loop:
+%if %1 == 4
+    movd          m0, [r2]
+    vpbroadcastd  m0 {k1}, [r2+r3]
+    movd          m1, [r2+r4]
+    vpbroadcastd  m1 {k1}, [r2+r6]
+%elif %1 == 8
+    movq          m0, [r2]
+    vpbroadcastq  m0 {k1}, [r2+r3]
+    movq          m1, [r2+r4]
+    vpbroadcastq  m1 {k1}, [r2+r6]
+%elif %1 == 16
+    movu         xm0, [r2]
+    vbroadcasti32x4 m0 {k1}, [r2+r3]
+    movu         xm1, [r2+r4]
+    vbroadcasti32x4 m1 {k1}, [r2+r6]
+%elif %1 == 32
+    movu         ym0, [r2]
+    vbroadcasti32x8 m0 {k1}, [r2+r3]
+    movu         ym1, [r2+r4]
+    vbroadcasti32x8 m1 {k1}, [r2+r6]
+%else
+    vmovdqu8      m0 {k1}{z}, [r2]
+    vmovdqu8      m1 {k1}{z}, [r2+r4]
+    vmovdqu8      m2 {k1}{z}, [r2+r3]
+    vmovdqu8      m3 {k1}{z}, [r2+r6]
+%endif
+%if HIGH_BIT_DEPTH
+    pavgw         m0, m1
+%else
+    pavgb         m0, m1
+%endif
+%if %1 == 4
+    movd        [r0], m0
+    pextrd   [r0+r1], m0, 1
+%elif %1 == 8
+    movq        [r0], m0
+    movhps   [r0+r1], m0
+%elif %1 == 16
+    movu        [r0], xm0
+    vextracti32x4 [r0+r1], m0, 1
+%elif %1 == 32
+    movu        [r0], ym0
+    vextracti32x8 [r0+r1], m0, 1
+%else
+%if HIGH_BIT_DEPTH
+    pavgw         m2, m3
+%else
+    pavgb         m2, m3
+%endif
+    vmovdqu8    [r0] {k1}, m0
+    vmovdqu8 [r0+r1] {k1}, m2
+%endif
+    lea           r2, [r2+r3*2]
+    lea           r0, [r0+r1*2]
+    sub          r5d, 2
+    jg .height_loop
+    RET
+%endmacro
+
+%if HIGH_BIT_DEPTH
+AVG2_ICL  8,  4
+AVG2_ICL 16,  8
+AVG2_ICL 24, 12
+AVG2_ICL 32, 16
+AVG2_ICL 40, 20
+%else
+AVG2_ICL  4,  4
+AVG2_ICL  8,  8
+AVG2_ICL 12, 12
+AVG2_ICL 16, 16
+AVG2_ICL 20, 20
+%endif
+%endif ; ARCH_X86_64
+%if HIGH_BIT_DEPTH == 0
 
 ; Cacheline split code for processors with high latencies for loads
 ; split over cache lines.  See sad-a.asm for a more detailed explanation.

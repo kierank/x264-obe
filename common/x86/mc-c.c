@@ -229,6 +229,11 @@
 #define x264_pixel_avg2_w4_mmx2 x264_template(pixel_avg2_w4_mmx2)
 #define x264_pixel_avg2_w4_sse2 x264_template(pixel_avg2_w4_sse2)
 #define x264_pixel_avg2_w8_avx2 x264_template(pixel_avg2_w8_avx2)
+#define x264_pixel_avg2_w4_avx512icl x264_template(pixel_avg2_w4_avx512icl)
+#define x264_pixel_avg2_w8_avx512icl x264_template(pixel_avg2_w8_avx512icl)
+#define x264_pixel_avg2_w12_avx512icl x264_template(pixel_avg2_w12_avx512icl)
+#define x264_pixel_avg2_w16_avx512icl x264_template(pixel_avg2_w16_avx512icl)
+#define x264_pixel_avg2_w20_avx512icl x264_template(pixel_avg2_w20_avx512icl)
 #define x264_pixel_avg2_w8_avx x264_template(pixel_avg2_w8_avx)
 #define x264_pixel_avg2_w10_avx x264_template(pixel_avg2_w10_avx)
 #define x264_pixel_avg2_w16_avx x264_template(pixel_avg2_w16_avx)
@@ -617,6 +622,7 @@ PIXEL_AVG_WALL(sse2)
 PIXEL_AVG_WALL(cache64_ssse3)
 PIXEL_AVG_WALL(avx)
 PIXEL_AVG_WALL(avx2)
+PIXEL_AVG_WALL(avx512icl)
 
 #define PIXEL_AVG_WTAB(instr, name1, name2, name3, name4, name5)\
 static void (* const x264_pixel_avg_wtab_##instr[6])( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t ) =\
@@ -669,6 +675,9 @@ PIXEL_AVG_WTAB(cache64_ssse3, mmx2, cache64_mmx2, cache64_ssse3, cache64_ssse3, 
 PIXEL_AVG_WTAB(cache64_ssse3_atom, mmx2, mmx2, cache64_ssse3, cache64_ssse3, sse2)
 PIXEL_AVG_WTAB(avx2, mmx2, mmx2, sse2, sse2, avx2)
 #endif // HIGH_BIT_DEPTH
+#if ARCH_X86_64
+PIXEL_AVG_WTAB(avx512icl, avx512icl, avx512icl, avx512icl, avx512icl, avx512icl)
+#endif
 
 #define MC_COPY_WTAB(instr, name1, name2, name3)\
 static void (* const x264_mc_copy_wtab_##instr[5])( pixel *, intptr_t, pixel *, intptr_t, int ) =\
@@ -962,6 +971,13 @@ MC_LUMA(cache64_sse2,cache64_sse2,sse)
 MC_LUMA(cache64_ssse3,cache64_ssse3,sse)
 MC_LUMA(cache64_ssse3_atom,cache64_ssse3_atom,sse)
 #endif // !HIGH_BIT_DEPTH
+#if ARCH_X86_64
+#if HIGH_BIT_DEPTH
+MC_LUMA(avx512icl,avx512icl,avx)
+#else
+MC_LUMA(avx512icl,avx512icl,sse)
+#endif
+#endif
 
 #define GET_REF(name)\
 static pixel *get_ref_##name( pixel *dst,   intptr_t *i_dst_stride,\
@@ -1011,6 +1027,9 @@ GET_REF(cache64_sse2)
 GET_REF(cache64_ssse3)
 GET_REF(cache64_ssse3_atom)
 #endif // !HIGH_BIT_DEPTH
+#if ARCH_X86_64
+GET_REF(avx512icl)
+#endif
 
 #define HPEL(align, cpu, cpuv, cpuc, cpuh)\
 void x264_hpel_filter_v_##cpuv( pixel *dst, pixel *src, int16_t *buf, intptr_t stride, intptr_t width);\
@@ -1694,4 +1713,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;
 #endif
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pf->get_ref = get_ref_avx512icl;
+        pf->mc_luma = mc_luma_avx512icl;
+#endif
+    }
 }
