@@ -3366,6 +3366,15 @@ cglobal predict_8x%1c_h, 1,2
 %endrep
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc_128( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc_128, 1,2
+    mov         r1d, 0x80808080
+    vpbroadcastd m0, r1d
+    CSTORE_PAIRS_ICL m0, %1
+    RET
+
 %endmacro ; PREDICT_C_ICL
 
 PREDICT_C_ICL 8
@@ -3409,6 +3418,21 @@ cglobal predict_8x%1c_h, 1,3
     STORE4_ICL    0, %%y
     STORE4_ICL    3, %%y+4
 %assign %%y %%y+8
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc_128( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc_128, 1,2
+    mov         r1d, 1 << (BIT_DEPTH-1)
+    vpbroadcastw m0, r1d
+    movu         m7, [pq_rowquad_icl]
+%assign %%y 0
+%rep %1/4
+    kxnorb       k1, k1, k1
+    vpscatterqq [r0+m7+%%y*FDEC_STRIDEB]{k1}, m0
+%assign %%y %%y+4
 %endrep
     RET
 
