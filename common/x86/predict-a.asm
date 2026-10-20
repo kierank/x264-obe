@@ -3390,6 +3390,35 @@ cglobal predict_8x%1c_dc_top, 1,2
     CSTORE_PAIRS_ICL m0, %1
     RET
 
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc_left( uint8_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc_left, 1,3
+    LEFT8_ICL    m0, 0
+%if %1 == 16
+    LEFT8_ICL    m1, 8
+    movu        xm2, [pb_c_left16_icl]
+    vpermi2b     m2, m0, m1             ; l0 .. l15
+%else
+    movu        xm2, [pb_c_left16_icl]
+    vpermb       m2, m2, m0             ; l0 .. l7
+%endif
+    pxor        xm1, xm1
+    vpdpbusd    xm1, xm2, [pb_1]{1to4}  ; one sum per 4 rows
+    pxor        xm2, xm2
+    psrld       xm1, 1
+    pavgw       xm1, xm2
+%assign %%g 0
+%rep %1/4
+    vpbroadcastb m0, xm1
+    CSTORE_PAIRS_ICL m0, 4, %%g*4
+%if %%g < %1/4-1
+    psrldq      xm1, 4
+%endif
+%assign %%g %%g+1
+%endrep
+    RET
+
 %endmacro ; PREDICT_C_ICL
 
 PREDICT_C_ICL 8
@@ -3466,6 +3495,35 @@ cglobal predict_8x%1c_dc_top, 1,1
     movu        xm2, [pw_c_dctop_icl]
     vpermw      xm0, xm2, xm1
     CSTORE_ROWS_ICL xm0, %1, 0
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x%1c_dc_left( uint16_t *src )
+;-----------------------------------------------------------------------------
+cglobal predict_8x%1c_dc_left, 1,3
+    LEFT8_ICL    m0, 0
+    movu        ym2, [pw_c_left16_icl]
+%if %1 == 16
+    LEFT8_ICL    m1, 8
+    vpermi2w     m2, m0, m1             ; l0 .. l15
+%else
+    vpermw       m2, m2, m0             ; l0 .. l7
+%endif
+    pxor        xm1, xm1
+    vpdpwssd    ym1, ym2, [pw_1]{1to8}
+    pshufd      ym2, ym1, q2301
+    paddd       ym1, ym2                ; one sum per 4 rows: dwords 0 2 4 6
+    pxor        xm2, xm2
+    psrld       ym1, 1
+    pavgw       ym1, ym2
+%assign %%g 0
+%rep %1/4
+    mov         r2d, %%g*4
+    vpbroadcastw m2, r2d
+    vpermw       m0, m2, m1
+    CSTORE_ROWS_ICL xm0, 4, %%g*4
+%assign %%g %%g+1
+%endrep
     RET
 
 %endmacro ; PREDICT_C_ICL

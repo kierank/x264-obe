@@ -136,6 +136,8 @@ void x264_predict_8x16c_v_avx512icl( pixel *src );
 void x264_predict_8x16c_h_avx512icl( pixel *src );
 #define x264_predict_8x16c_dc_top_avx512icl x264_template(predict_8x16c_dc_top_avx512icl)
 void x264_predict_8x16c_dc_top_avx512icl( pixel *src );
+#define x264_predict_8x16c_dc_left_avx512icl x264_template(predict_8x16c_dc_left_avx512icl)
+void x264_predict_8x16c_dc_left_avx512icl( pixel *src );
 #define x264_predict_8x16c_dc_128_avx512icl x264_template(predict_8x16c_dc_128_avx512icl)
 void x264_predict_8x16c_dc_128_avx512icl( pixel *src );
 #define x264_predict_8x8c_p_core_mmx2 x264_template(predict_8x8c_p_core_mmx2)
@@ -154,6 +156,8 @@ void x264_predict_8x8c_v_avx512icl( pixel *src );
 void x264_predict_8x8c_h_avx512icl( pixel *src );
 #define x264_predict_8x8c_dc_top_avx512icl x264_template(predict_8x8c_dc_top_avx512icl)
 void x264_predict_8x8c_dc_top_avx512icl( pixel *src );
+#define x264_predict_8x8c_dc_left_avx512icl x264_template(predict_8x8c_dc_left_avx512icl)
+void x264_predict_8x8c_dc_left_avx512icl( pixel *src );
 #define x264_predict_8x8c_dc_128_avx512icl x264_template(predict_8x8c_dc_128_avx512icl)
 void x264_predict_8x8c_dc_128_avx512icl( pixel *src );
 #define x264_predict_8x8c_dc_mmx2 x264_template(predict_8x8c_dc_mmx2)
