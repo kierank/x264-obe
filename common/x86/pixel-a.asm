@@ -1088,6 +1088,7 @@ SSD_ICL 16, 16
 SSD_ICL 16,  8
 SSD_ICL  8, 16
 SSD_ICL  8,  8
+SSD_ICL  8,  4
 ; zmm: assembled, not dispatched (for full width zmm)
 INIT_ZMM avx512icl
 SSD_ICL 16, 16, _zmm
