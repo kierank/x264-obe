@@ -573,6 +573,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->add16x16_idct8  = x264_add16x16_idct8_avx512icl;
         dctf->add8x8_idct     = x264_add8x8_idct_avx512icl;
         dctf->sub8x8_dct8     = x264_sub8x8_dct8_avx512icl;
+        dctf->add8x8_idct8    = x264_add8x8_idct8_avx512icl;
         dctf->add16x16_idct   = x264_add16x16_idct_avx512icl;
 #endif
     }
@@ -705,6 +706,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 #if ARCH_X86_64
         dctf->sub16x16_dct8    = x264_sub16x16_dct8_avx512icl;
         dctf->sub8x8_dct8      = x264_sub8x8_dct8_avx512icl;
+        dctf->add8x8_idct8     = x264_add8x8_idct8_avx512icl;
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
         dctf->sub16x16_dct     = x264_sub16x16_dct_avx512icl;
 #endif

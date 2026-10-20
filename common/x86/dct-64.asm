@@ -334,6 +334,54 @@ global current_function %+ .skip_prologue
     ret
 
 ;-----------------------------------------------------------------------------
+; avx512icl add8x8_idct8 (high bit depth): the avx2 kernel with the odd pixel
+; row of each pair from a merge-masked vbroadcasti32x4 (no vinserti128 of
+; memory) and vshufi64x2 for the lane exchanges
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal add8x8_idct8, 2,3,11
+    mov        r2d, 0xf0
+    kmovb       k1, r2d
+    add r1, 128
+%assign idct8_hbd_i 0
+%rep 8
+    mova       m %+ idct8_hbd_i, [r1-128+idct8_hbd_i*32]
+%assign idct8_hbd_i idct8_hbd_i+1
+%endrep
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE4x4D 0,1,2,3,8
+    TRANSPOSE4x4D 4,5,6,7,8
+%assign idct8_hbd_i 0
+%rep 4
+    %assign idct8_hbd_j idct8_hbd_i+4
+    vshufi64x2 m8, m %+ idct8_hbd_i, m %+ idct8_hbd_j, 0
+    vshufi64x2 m %+ idct8_hbd_j, m %+ idct8_hbd_i, m %+ idct8_hbd_j, 3
+    SWAP idct8_hbd_i, 8
+%assign idct8_hbd_i idct8_hbd_i+1
+%endrep
+    vpbroadcastd m8, [pd_32]
+    paddd      m0, m8
+    IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    pxor       m8, m8
+    vpbroadcastd m9, [pw_pixel_max]
+%assign idct8_hbd_i 0
+%rep 4
+    %assign idct8_hbd_j idct8_hbd_i+1
+    psrad      m %+ idct8_hbd_i, 6
+    psrad      m %+ idct8_hbd_j, 6
+    packssdw   m %+ idct8_hbd_i, m %+ idct8_hbd_j
+    vpermq     m %+ idct8_hbd_i, m %+ idct8_hbd_i, q3120
+    movu      xm10, [r0+idct8_hbd_i*FDEC_STRIDEB]
+    vbroadcasti32x4 m10 {k1}, [r0+idct8_hbd_j*FDEC_STRIDEB]
+    paddw      m %+ idct8_hbd_i, m10
+    CLIPW      m %+ idct8_hbd_i, m8, m9
+    mova       [r0+idct8_hbd_i*FDEC_STRIDEB], xm %+ idct8_hbd_i
+    vextracti32x4 [r0+idct8_hbd_j*FDEC_STRIDEB], m %+ idct8_hbd_i, 1
+%assign idct8_hbd_i idct8_hbd_i+2
+%endrep
+    RET
+
+;-----------------------------------------------------------------------------
 ; avx512icl sub8x8_dct8 (high bit depth): the 8 rows of src and of dst packed 4
 ; per zmm with merge-masked vbroadcasti32x4, two psubw for the block, rows
 ; split out with vextracti32x4, then the avx2 passes. zmm28-31 hold the packs.
@@ -677,6 +725,55 @@ cglobal sub8x8_dct8, 3,4,11
 %endrep
     RET
 
+;-----------------------------------------------------------------------------
+; avx512icl add8x8_idct8: the avx passes, then the 8 pixel rows packed into
+; one zmm (merge-masked vpbroadcastq), widened by one punpcklbw/punpckhbw
+; pair, the residual rows joined with vinserti32x4, one paddsw/packuswb
+; for the block (zmm28-31)
+;-----------------------------------------------------------------------------
+cglobal add8x8_idct8, 2,3,11
+    mova         xm0, [r1+0x00]
+    mova         xm1, [r1+0x10]
+    mova         xm2, [r1+0x20]
+    mova         xm3, [r1+0x30]
+    mova         xm4, [r1+0x40]
+    mova         xm5, [r1+0x50]
+    mova         xm6, [r1+0x60]
+    mova         xm7, [r1+0x70]
+    IDCT8_1D      w,0,1,2,3,4,5,6,7,8,10
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    paddw        xm0, [pw_32]
+    IDCT8_1D      w,0,1,2,3,4,5,6,7,8,10
+    DCT8_ICL_QMASKS r2d
+    DCT8_ICL_LOADROWS 28, r0, FDEC_STRIDE
+    vpxord       zmm29, zmm29, zmm29
+    vpunpckhbw   zmm30, zmm28, zmm29      ; rows 1 3 5 7
+    vpunpcklbw   zmm28, zmm28, zmm29      ; rows 0 2 4 6
+    vinserti32x4  m0, m0, xm2, 1
+    vinserti32x4  m4, m4, xm6, 1
+    vinserti32x4  m1, m1, xm3, 1
+    vinserti32x4  m5, m5, xm7, 1
+    vmovdqa64    ymm29, m0
+    vinserti64x4 zmm29, zmm29, m4, 1      ; rows 0 2 4 6
+    vmovdqa64    ymm31, m1
+    vinserti64x4 zmm31, zmm31, m5, 1      ; rows 1 3 5 7
+    vpsraw       zmm29, zmm29, 6
+    vpsraw       zmm31, zmm31, 6
+    vpaddsw      zmm28, zmm28, zmm29
+    vpaddsw      zmm30, zmm30, zmm31
+    vpackuswb    zmm28, zmm28, zmm30      ; per lane: row 2l, row 2l+1
+    vmovq        [r0+0*FDEC_STRIDE], xmm28
+    vmovhps      [r0+1*FDEC_STRIDE], xmm28
+    vextracti32x4 xmm29, zmm28, 1
+    vmovq        [r0+2*FDEC_STRIDE], xmm29
+    vmovhps      [r0+3*FDEC_STRIDE], xmm29
+    vextracti32x4 xmm29, zmm28, 2
+    vmovq        [r0+4*FDEC_STRIDE], xmm29
+    vmovhps      [r0+5*FDEC_STRIDE], xmm29
+    vextracti32x4 xmm29, zmm28, 3
+    vmovq        [r0+6*FDEC_STRIDE], xmm29
+    vmovhps      [r0+7*FDEC_STRIDE], xmm29
+    RET
 
 ;-----------------------------------------------------------------------------
 ; void add8x8_idct8( uint8_t *p_dst, int16_t dct[8][8] )

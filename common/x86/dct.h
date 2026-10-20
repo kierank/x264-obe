@@ -213,6 +213,8 @@ void x264_add8x8_idct8_avx   ( pixel *dst, dctcoef dct   [64] );
 void x264_add16x16_idct8_avx ( pixel *dst, dctcoef dct[4][64] );
 #define x264_add8x8_idct8_avx2 x264_template(add8x8_idct8_avx2)
 void x264_add8x8_idct8_avx2  ( pixel *dst, dctcoef dct   [64] );
+#define x264_add8x8_idct8_avx512icl x264_template(add8x8_idct8_avx512icl)
+void x264_add8x8_idct8_avx512icl( pixel *dst, dctcoef dct   [64] );
 #define x264_add16x16_idct8_avx2 x264_template(add16x16_idct8_avx2)
 void x264_add16x16_idct8_avx2( pixel *dst, dctcoef dct[4][64] );
 #define x264_add16x16_idct8_avx512icl x264_template(add16x16_idct8_avx512icl)
