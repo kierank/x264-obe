@@ -8540,7 +8540,7 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     mova        m10, m8
     sub          r5, 0x100
     call .sa8d
-    phaddw      m11, m0, m10          ; ddr hd | vr vl
+    HADD_ILV  w,  wd, m11,  m0, m10, m1 ; (ddr hd) x4 | (vr vl) x4
     ; v | h
 %assign x9i 0
 %rep 8
@@ -8558,8 +8558,8 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %endrep
     add          r5, 0x100
     call .sa8d
-    phaddw      m12, m0               ; v dc | h ddl
-    phaddw      m12, m11              ; v dc ddr hd | h ddl vr vl
+    HADD_ILV  w,  wd, m12, m12,  m0, m1 ; (v dc) x4 | (h ddl) x4
+    HADD_ILV  w,  dq, m12, m12, m11, m1 ; (v dc ddr hd) x2 | (h ddl vr vl) x2
     ; hu
 %assign x9i 0
 %rep 8
@@ -8569,9 +8569,9 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     add          r5, 0x300
     call .sa8d
 
-    phaddw       m0, m0
-    phaddw       m0, m0
-    phaddw      m12, m0               ; v dc ddr hd hu hu hu hu | h ddl vr vl x x x x
+    HADD_ILV  w,  wd,  m0,  m0,  m0, m1
+    HADD_ILV  w,  dq,  m0,  m0,  m0, m1 ; hu hu hu hu halves of hu
+    HADD_ILV  w, qdq, m12, m12,  m0, m1 ; v dc ddr hd hu hu hu hu | h ddl vr vl x x x x
     pxor        xm1, xm1
     pavgw       m12, m1
     vextracti128 xm1, m12, 1
