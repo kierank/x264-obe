@@ -3538,6 +3538,63 @@ static int check_mc( int cpu_ref, int cpu_new )
             call_a2( mc_a.mbtree_cost_scale, costs, qp, 120 );
         }
     }
+
+    if( mc_a.mbtree_finish != mc_ref.mbtree_finish )
+    {
+        used_asm = 1;
+        set_func_name( "mbtree_finish" );
+        float *qpc = (float*)buf3;
+        float *qpa = qpc + 300;
+        float *qp_aq = qpa + 300;
+        uint16_t *intra = (uint16_t*)buf4;
+        uint16_t *invq = intra + 300;
+        uint16_t *prop = invq + 300;
+        for( int i = 0; i < 40 && ok; i++ )
+        {
+            /* i%4 0: the encoder's ranges, 1: weightdelta, 2: maxed inputs, 3: half the MBs with intra 0 */
+            int len = i < 32 ? 1 + i : 120 + rand()%180;
+            int fps_factor = i%4 == 2 ? 0x7fff : 384 + rand()%256;
+            float params[2] = { i%4 == 2 ? 5.f : (rand()%5000) * (5.f/5000), i%4 == 1 ? (rand()&65535) * (1.f/65536) : 0.f };
+            for( int j = 0; j < len; j++ )
+            {
+                intra[j] = i%4 == 2 ? LOWRES_COST_MASK : rand() & LOWRES_COST_MASK;
+                invq[j]  = i%4 == 2 ? 0xffff : 128 + rand()%768;
+                prop[j]  = i%4 == 2 ? 0xffff : rand() & 0xffff >> (rand()&15);
+                if( i%4 == 3 && (rand()&1) )
+                    intra[j] = rand()&1;
+                qp_aq[j] = ((rand()&65535) - 32768) * (12.f/32768);
+                qpc[j] = qpa[j] = rand() * (1.f/RAND_MAX);
+            }
+            call_c1( mc_c.mbtree_finish, qpc, qp_aq, intra, invq, prop, params, fps_factor, len );
+            call_a1( mc_a.mbtree_finish, qpa, qp_aq, intra, invq, prop, params, fps_factor, len );
+            /* -ffast-math may reorder the C's float sums; bit-exact otherwise */
+            for( int j = 0; j < len && ok; j++ )
+            {
+#ifdef __FAST_MATH__
+                ok &= fabs( qpc[j] - qpa[j] ) < 1e-4;
+#else
+                ok &= !memcmp( qpc+j, qpa+j, sizeof(float) );
+#endif
+                if( !ok )
+                    fprintf( stderr, "mbtree_finish FAILED: len %d mode %d [%d]: %.9g != %.9g\n", len, i%4, j, qpc[j], qpa[j] );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row, qcomp 0.6, fps_factor 512, no weightdelta */
+            float params[2] = { 2.f, 0.f };
+            bench_srand( 1101 );
+            for( int j = 0; j < 120; j++ )
+            {
+                intra[j] = bench_rand() & LOWRES_COST_MASK;
+                invq[j]  = 128 + bench_rand()%768;
+                prop[j]  = bench_rand() & 0xfff;
+                qp_aq[j] = ((bench_rand()&65535) - 32768) * (12.f/32768);
+            }
+            call_c2( mc_c.mbtree_finish, qpc, qp_aq, intra, invq, prop, params, 512, 120 );
+            call_a2( mc_a.mbtree_finish, qpa, qp_aq, intra, invq, prop, params, 512, 120 );
+        }
+    }
     report( "mbtree :" );
 
     if( mc_a.memcpy_aligned != mc_ref.memcpy_aligned )

@@ -1770,16 +1770,9 @@ static void x264_macroblock_tree_finish( x264_t *h, x264_frame_t *frame, float a
     /* Allow the strength to be adjusted via qcompress, since the two
      * concepts are very similar. */
     float strength = 5.0f * (1.0f - h->param.rc.f_qcompress);
-    for( int mb_index = 0; mb_index < h->mb.i_mb_count; mb_index++ )
-    {
-        int intra_cost = (frame->i_intra_cost[mb_index] * frame->i_inv_qscale_factor[mb_index] + 128) >> 8;
-        if( intra_cost )
-        {
-            int propagate_cost = (frame->i_propagate_cost[mb_index] * fps_factor + 128) >> 8;
-            float log2_ratio = x264_log2(intra_cost + propagate_cost) - x264_log2(intra_cost) + weightdelta;
-            frame->f_qp_offset[mb_index] = frame->f_qp_offset_aq[mb_index] - strength * log2_ratio;
-        }
-    }
+    float params[2] = { strength, weightdelta };
+    h->mc.mbtree_finish( frame->f_qp_offset, frame->f_qp_offset_aq, frame->i_intra_cost, frame->i_inv_qscale_factor,
+                         frame->i_propagate_cost, params, fps_factor, h->mb.i_mb_count );
 }
 
 static void x264_macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, float average_duration, int p0, int p1, int b, int referenced )

@@ -156,6 +156,9 @@ typedef struct
 
     /* sum of the lowres costs scaled by x264_exp2fix8( qp_offset ) */
     int (*mbtree_cost_scale)( uint16_t *lowres_costs, float *qp_offset, int len );
+    /* params: strength, weightdelta */
+    void (*mbtree_finish)( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+                           uint16_t *propagate_costs, float *params, int fps_factor, int len );
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)
