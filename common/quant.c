@@ -581,6 +581,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->dequant_8x8 = x264_dequant_8x8_avx2;
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx2;
         pf->denoise_dct = x264_denoise_dct_avx2;
+        if( cpu&X264_CPU_LZCNT )
+        {
+            pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx2_lzcnt;
+        }
     }
     if( cpu&X264_CPU_AVX512 )
     {
@@ -593,7 +597,11 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->coeff_last8 = x264_coeff_last8_avx512;
         pf->coeff_last[ DCT_LUMA_AC] = x264_coeff_last15_avx512;
         pf->coeff_last[DCT_LUMA_4x4] = x264_coeff_last16_avx512;
-        pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
+        /* coeff_last64 avx512 1.90x avx2_lzcnt on rack01 Zen 4 */
+        if( !(cpu&X264_CPU_LZCNT) )
+        {
+            pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
+        }
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
