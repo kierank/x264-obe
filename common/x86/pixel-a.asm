@@ -1106,6 +1106,69 @@ SSD_ICL 16,  8, _zmm
 %endif ; ARCH_X86_64
 
 ;=============================================================================
+; fenc_eq
+;=============================================================================
+
+;-----------------------------------------------------------------------------
+; int pixel_fenc_eq_16x16( pixel *fenc, pixel *fdec )
+; 1 if the block at fenc (FENC_STRIDE) equals that at fdec (FDEC_STRIDE), else 0;
+; leaves at the first 4 row group that differs. 8 wide reads 16 bytes a row of
+; each.
+;-----------------------------------------------------------------------------
+%macro FENC_EQ_RET 0
+    mov           eax, 1
+    RET
+.ne:
+    xor           eax, eax
+    RET
+%endmacro
+
+; 8-bit: fdec rows y | y+1, y+2 | y+3 by vinserti128 against fenc's contiguous row
+; pairs; 8 wide keeps the low qword of each lane (punpcklqdq), 16 wide all of it
+%macro FENC_EQ_AVX2 2 ; w, h
+cglobal pixel_fenc_eq_%1x%2, 2,2,3
+%assign %%y 0
+%rep %2/4
+%if HIGH_BIT_DEPTH == 0
+    movu          xm0, [r1+(%%y+0)*FDEC_STRIDEB]
+    movu          xm1, [r1+(%%y+2)*FDEC_STRIDEB]
+    vinserti128    m0, m0, [r1+(%%y+1)*FDEC_STRIDEB], 1
+    vinserti128    m1, m1, [r1+(%%y+3)*FDEC_STRIDEB], 1
+    pxor           m0, [r0+(%%y+0)*FENC_STRIDEB]
+    pxor           m1, [r0+(%%y+2)*FENC_STRIDEB]
+%if %1 == 16
+    por            m0, m1
+%else
+    punpcklqdq     m0, m1
+%endif
+%else ; a row a register: ymm (16 wide) or xmm (8 wide)
+    movu           m0, [r1+(%%y+0)*FDEC_STRIDEB]
+    movu           m1, [r1+(%%y+1)*FDEC_STRIDEB]
+    movu           m2, [r1+(%%y+2)*FDEC_STRIDEB]
+    pxor           m0, [r0+(%%y+0)*FENC_STRIDEB]
+    pxor           m1, [r0+(%%y+1)*FENC_STRIDEB]
+    pxor           m2, [r0+(%%y+2)*FENC_STRIDEB]
+    por            m0, m1
+    movu           m1, [r1+(%%y+3)*FDEC_STRIDEB]
+    pxor           m1, [r0+(%%y+3)*FENC_STRIDEB]
+    por            m2, m1
+    por            m0, m2
+%endif
+    ptest          m0, m0
+    jnz .ne
+%assign %%y %%y+4
+%endrep
+    FENC_EQ_RET
+%endmacro
+
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avx2
+FENC_EQ_AVX2 16, 16
+FENC_EQ_AVX2  8, 16
+FENC_EQ_AVX2  8,  8
+%endif
+
+;=============================================================================
 ; variance
 ;=============================================================================
 
