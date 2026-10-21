@@ -5084,6 +5084,21 @@ cglobal hadamard_ac_8x8%1
     {evex} vpdpwssd m11, m3, m12
     {evex} vpdpwssd  m1, m2, m12
     paddd     m1, m11
+%elif HIGH_BIT_DEPTH
+    ; word sums of at most 3 and 4 AC terms (each at most 8*1023, m1 two of them): < 32768
+    ABSW      m2, spill0
+    paddw     m1, m3
+    paddw     m1, m2
+    ABSW      m2, spill1
+    ABSW      m3, spill2
+    paddw     m2, m3
+    ABSW      m3, m6, m6
+    paddw     m2, m3
+    ABSW      m3, m7, m7
+    paddw     m2, m3
+    pmaddwd   m1, [pw_1]
+    pmaddwd   m2, [pw_1]
+    paddd     m1, m2
 %else
     AC_PREP   m1, [pw_1]
     ABSW      m2, spill0
