@@ -3597,6 +3597,69 @@ static int check_mc( int cpu_ref, int cpu_new )
     }
     report( "mbtree :" );
 
+    ok = 1; used_asm = 0;
+    if( mc_a.aq_variance_tail != mc_ref.aq_variance_tail )
+    {
+        used_asm = 1;
+        set_func_name( "aq_variance_tail" );
+        float *qpc = (float*)buf3;
+        float *qpa = qpc + 300;
+        float *qpc_aq = qpa + 300;
+        float *qpa_aq = (float*)buf4;
+        float *offsets = qpa_aq + 300;
+        uint16_t *invc = (uint16_t*)(offsets + 300);
+        uint16_t *inva = invc + 300;
+        uint32_t *energy = (uint32_t*)buf1;
+        for( int i = 0; i < 48 && ok; i++ )
+        {
+            /* i%3 0: AC energies, 1: every msb position with random low bits, 0 and 1, 2: strength up to 4, big offsets */
+            int len = i < 32 ? 1 + i : 120 + rand()%180;
+            float params[2] = { (i%3 == 2 ? 4.f : 1.f) * (rand()&65535) * (1.f/65536), 14.427f + 2*(rand()&1) };
+            float *quant_offsets = i&4 ? offsets : NULL;
+            uint16_t *inv_c = i&8 ? NULL : invc;
+            uint16_t *inv_a = i&8 ? NULL : inva;
+            for( int j = 0; j < len; j++ )
+            {
+                if( i%3 == 1 )
+                    energy[j] = j < 2 ? j : j%3 == 2 ? 0xffffffffu >> (rand()&31) /* rounds up unless truncated */
+                              : (uint32_t)(((uint64_t)rand() << 31 | rand()) >> (j&31));
+                else
+                    energy[j] = (rand() & 0xffffff) >> (rand()&15);
+                offsets[j] = ((rand()&65535) - 32768) * (i%3 == 2 ? 100.f/32768 : 6.f/32768);
+                qpc[j] = qpa[j] = qpc_aq[j] = qpa_aq[j] = -1.f;
+                invc[j] = inva[j] = 0x5555;
+            }
+            qpc[len] = qpa[len] = qpc_aq[len] = qpa_aq[len] = -1.f;
+            invc[len] = inva[len] = 0x5555;
+            call_c1( mc_c.aq_variance_tail, qpc, qpc_aq, inv_c, energy, quant_offsets, params, len );
+            call_a1( mc_a.aq_variance_tail, qpa, qpa_aq, inv_a, energy, quant_offsets, params, len );
+            /* -ffast-math may reorder the C's float sums; bit-exact otherwise */
+            for( int j = 0; j < len+1 && ok; j++ )
+            {
+#ifdef __FAST_MATH__
+                ok &= fabs( qpc[j] - qpa[j] ) < 1e-4 && inva[j] == (j < len && !(i&8) ? x264_exp2fix8( qpa[j] ) : 0x5555);
+#else
+                ok &= !memcmp( qpc+j, qpa+j, sizeof(float) ) && invc[j] == inva[j];
+#endif
+                ok &= !memcmp( qpa+j, qpa_aq+j, sizeof(float) ) && !memcmp( qpc+j, qpc_aq+j, sizeof(float) );
+                if( !ok )
+                    fprintf( stderr, "aq_variance_tail FAILED: len %d mode %d [%d]: %.9g %d != %.9g %d\n",
+                             len, i%3, j, qpc[j], invc[j], qpa[j], inva[j] );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row of AC energies, aq-strength 1, no quant offsets */
+            float params[2] = { 1.0397f, 14.427f };
+            bench_srand( 1102 );
+            for( int j = 0; j < 120; j++ )
+                energy[j] = (bench_rand() & 0xffffff) >> (bench_rand()&15);
+            call_c2( mc_c.aq_variance_tail, qpc, qpc_aq, invc, energy, NULL, params, 120 );
+            call_a2( mc_a.aq_variance_tail, qpa, qpa_aq, inva, energy, NULL, params, 120 );
+        }
+    }
+    report( "aq :" );
+
     if( mc_a.memcpy_aligned != mc_ref.memcpy_aligned )
     {
         set_func_name( "memcpy_aligned" );

@@ -636,6 +636,23 @@ static void mbtree_finish( float *qp_offset, float *qp_offset_aq, uint16_t *intr
     }
 }
 
+static void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+                              float *quant_offsets, float *params, int len )
+{
+    float strength = params[0];
+    float bias = params[1];
+    for( int i = 0; i < len; i++ )
+    {
+        float qp_adj = strength * (x264_log2( X264_MAX(energy[i], 1) ) - bias);
+        if( quant_offsets )
+            qp_adj += quant_offsets[i];
+        qp_offset[i] =
+        qp_offset_aq[i] = qp_adj;
+        if( inv_qscale )
+            inv_qscale[i] = x264_exp2fix8( qp_adj );
+    }
+}
+
 static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list )
@@ -774,6 +791,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->mbtree_propagate_list = mbtree_propagate_list;
     pf->mbtree_cost_scale = mbtree_cost_scale;
     pf->mbtree_finish = mbtree_finish;
+    pf->aq_variance_tail = aq_variance_tail;
 
 #if HAVE_MMX
     x264_mc_init_mmx( cpu, pf );
@@ -791,6 +809,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
         pf->mbtree_propagate_cost = mbtree_propagate_cost;
         pf->mbtree_propagate_list = mbtree_propagate_list;
         pf->mbtree_finish = mbtree_finish;
+        pf->aq_variance_tail = aq_variance_tail;
     }
 }
 
