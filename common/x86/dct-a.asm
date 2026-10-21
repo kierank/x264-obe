@@ -2482,10 +2482,10 @@ cglobal zigzag_scan_8x8_frame, 2,3,14
     movu         m1, [r1+32]
     movu         m2, [r1+64]
     movu         m3, [r1+96]
-    vpermq       m4, m0, q1032
-    vpermq       m5, m1, q1032
-    vpermq       m6, m2, q1032
-    vpermq       m7, m3, q1032
+    vperm2i128   m4, m0, m0, 0x01
+    vperm2i128   m5, m1, m1, 0x01
+    vperm2i128   m6, m2, m2, 0x01
+    vperm2i128   m7, m3, m3, 0x01
     pshufb       m8, m0, [r2+ 0*32]
     pshufb       m9, m4, [r2+ 1*32]
     pshufb      m10, m1, [r2+ 2*32]
