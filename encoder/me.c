@@ -91,6 +91,47 @@ static NOINLINE void sweep_mvc( x264_t *h, int i_pixel, int16_t (*mvc)[2], int n
     c[SW_A1_RED_CALLS] += red;
 }
 
+/* A3: lanes whose key over the first bh/2 rows is already >= best; -1 where fpelcmp isn't sad */
+static NOINLINE int sweep_pde_dead( x264_t *h, int i_pixel, pixel *fenc, intptr_t stride, int n,
+                                    pixel **ref, const uint32_t *key, int shift, uint32_t best )
+{
+    if( h->mb.i_me_method == X264_ME_TESA )
+        return -1;
+    int bw = x264_pixel_size[i_pixel].w;
+    int rows = x264_pixel_size[i_pixel].h >> 1;
+    int dead = 0;
+    for( int i = 0; i < n; i++ )
+    {
+        uint32_t sad = 0;
+        for( int y = 0; y < rows; y++ )
+            for( int x = 0; x < bw; x++ )
+                sad += abs( fenc[y*FENC_STRIDE+x] - ref[i][y*stride+x] );
+        dead += (sad << shift) + key[i] >= best;
+    }
+    return dead;
+}
+
+static NOINLINE void sweep_pde_count( x264_t *h, int step, int i_pixel, int n, int dead, int improved )
+{
+    if( dead < 0 )
+        return;
+    uint64_t *c = h->sweep.c.a3[h->sweep.la][step][i_pixel];
+    c[SW_A3_CALLS]++;
+    c[SW_A3_LANES] += n;
+    c[SW_A3_LANES_DEAD] += dead;
+    c[SW_A3_ALL_DEAD] += dead == n;
+    c[SW_A3_NO_IMPROVE] += !improved;
+}
+
+/* around one step on bcost: candidate i wins iff (sad_i << shift) + k_i < bcost */
+#define SWEEP_PDE_PRE( n, shift, p0, p1, p2, p3, k0, k1, k2, k3 )\
+    uint32_t sw_best = bcost;\
+    int sw_dead = sweep_pde_dead( h, i_pixel, p_fenc, stride, n, (pixel*[4]){ p0, p1, p2, p3 },\
+                                  (const uint32_t[4]){ k0, k1, k2, k3 }, shift, sw_best );
+
+#define SWEEP_PDE_POST( step, n )\
+    sweep_pde_count( h, step, i_pixel, n, sw_dead, (uint32_t)bcost != sw_best );
+
 #define COST_MV( mx, my )\
 do\
 {\
@@ -166,6 +207,11 @@ do\
 #define COST_MV_X3_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, i )\
 {\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
+    SWEEP_PDE_PRE( 3, 6, pix_base + (m0x) + (m0y)*stride, pix_base + (m1x) + (m1y)*stride,\
+                   pix_base + (m2x) + (m2y)*stride, NULL,\
+                   (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i),\
+                   (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1,\
+                   (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2, 0 )\
     COST_MIN_X3( bcost,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
@@ -173,11 +219,18 @@ do\
         (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i),\
         (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1,\
         (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2 );\
+    SWEEP_PDE_POST( (i) == 1 ? SW_STEP_HEXHALF : SW_STEP_HEX, 3 )\
 }
 
 #define COST_MV_X4_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, i )\
 {\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
+    SWEEP_PDE_PRE( 4, 6, pix_base + (m0x) + (m0y)*stride, pix_base + (m1x) + (m1y)*stride,\
+                   pix_base + (m2x) + (m2y)*stride, pix_base + (m3x) + (m3y)*stride,\
+                   (BITS_MVD( bmx+(m0x), bmy+(m0y) ) << 6) + (i),\
+                   (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1,\
+                   (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2,\
+                   (BITS_MVD( bmx+(m3x), bmy+(m3y) ) << 6) + (i)+3 )\
     COST_MIN_X4( bcost,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
@@ -187,6 +240,7 @@ do\
         (BITS_MVD( bmx+(m1x), bmy+(m1y) ) << 6) + (i)+1,\
         (BITS_MVD( bmx+(m2x), bmy+(m2y) ) << 6) + (i)+2,\
         (BITS_MVD( bmx+(m3x), bmy+(m3y) ) << 6) + (i)+3 );\
+    SWEEP_PDE_POST( (i) == 1 ? SW_STEP_SQ_CROSS : SW_STEP_SQ_DIAG, 4 )\
 }
 
 #define COST_MV_X4_DIR( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, costs )\
@@ -207,6 +261,10 @@ do\
 #define COST_MV_X4( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y )\
 {\
     pixel *pix_base = p_fref_w + omx + omy*stride;\
+    SWEEP_PDE_PRE( 4, 0, pix_base + (m0x) + (m0y)*stride, pix_base + (m1x) + (m1y)*stride,\
+                   pix_base + (m2x) + (m2y)*stride, pix_base + (m3x) + (m3y)*stride,\
+                   BITS_MVD( omx+(m0x), omy+(m0y) ), BITS_MVD( omx+(m1x), omy+(m1y) ),\
+                   BITS_MVD( omx+(m2x), omy+(m2y) ), BITS_MVD( omx+(m3x), omy+(m3y) ) )\
     h->pixf.fpelcmp_x4[i_pixel]( p_fenc,\
         pix_base + (m0x) + (m0y)*stride,\
         pix_base + (m1x) + (m1y)*stride,\
@@ -221,10 +279,14 @@ do\
     COPY3_IF_LT( bcost, costs[1], bmx, omx+(m1x), bmy, omy+(m1y) );\
     COPY3_IF_LT( bcost, costs[2], bmx, omx+(m2x), bmy, omy+(m2y) );\
     COPY3_IF_LT( bcost, costs[3], bmx, omx+(m3x), bmy, omy+(m3y) );\
+    SWEEP_PDE_POST( SW_STEP_X4, 4 )\
 }
 
 #define COST_MV_X3_ABS( m0x, m0y, m1x, m1y, m2x, m2y )\
 {\
+    SWEEP_PDE_PRE( 3, 0, p_fref_w + (m0x) + (m0y)*stride, p_fref_w + (m1x) + (m1y)*stride,\
+                   p_fref_w + (m2x) + (m2y)*stride, NULL,\
+                   p_cost_mvx[(m0x)<<2], p_cost_mvx[(m1x)<<2], p_cost_mvx[(m2x)<<2], 0 )\
     h->pixf.fpelcmp_x3[i_pixel]( p_fenc,\
         p_fref_w + (m0x) + (m0y)*stride,\
         p_fref_w + (m1x) + (m1y)*stride,\
@@ -236,6 +298,7 @@ do\
     COPY3_IF_LT( bcost, costs[0], bmx, m0x, bmy, m0y );\
     COPY3_IF_LT( bcost, costs[1], bmx, m1x, bmy, m1y );\
     COPY3_IF_LT( bcost, costs[2], bmx, m2x, bmy, m2y );\
+    SWEEP_PDE_POST( SW_STEP_X3_ABS, 3 )\
 }
 
 /*  1  */
@@ -434,11 +497,16 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             int i = i_me_range;
             do
             {
+                SWEEP_PDE_PRE( 4, 4, p_fref_w + bmx + (bmy-1)*stride, p_fref_w + bmx + (bmy+1)*stride,
+                               p_fref_w + bmx-1 + bmy*stride, p_fref_w + bmx+1 + bmy*stride,
+                               (BITS_MVD( bmx, bmy-1 ) << 4) + 1, (BITS_MVD( bmx, bmy+1 ) << 4) + 3,
+                               (BITS_MVD( bmx-1, bmy ) << 4) + 4, (BITS_MVD( bmx+1, bmy ) << 4) + 12 )
                 COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
                 COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
                 COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
                 COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
                 COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
+                SWEEP_PDE_POST( SW_STEP_DIA, 4 )
                 if( !(bcost&15) )
                     break;
                 bmx -= (bcost<<28)>>30;
