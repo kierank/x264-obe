@@ -7858,9 +7858,10 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     mov           r4d, 0xffff0000
     kmovd          k3, r4d
 %else
-    phaddd        xm0, xm0                 ; s0 s1 (top 0-3, top 4-7)
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1                 ; s0 s0 s1 s1 (top 0-3, top 4-7)
     movd          r3d, xm0
-    pextrd        r5d, xm0, 1
+    pextrd        r5d, xm0, 2
 %endif
     INTRA_X3_LEFT4 r6d, 0                  ; s2
     lea           r3d, [r3+r6+4]
