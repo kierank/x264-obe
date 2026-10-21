@@ -202,6 +202,15 @@ dct2x4_dc_idxw: dw 0, 16, 32, 48
 align 32
 zsub4_frame_hbd: dw  0, 1, 4, 8, 5, 2, 3, 6, 9,12,13,10, 7,11,14,15
 zsub4_field_hbd: dw  0, 4, 1, 8,12, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+align 64
+zsub8_frame_hbd: dw  0, 1, 8,16, 9, 2, 3,10,17,24,32,25,18,11, 4, 5
+                 dw 12,19,26,33,40,48,41,34,27,20,13, 6, 7,14,21,28
+                 dw 35,42,49,56,57,50,43,36,29,22,15,23,30,37,44,51
+                 dw 58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63
+zsub8_field_hbd: dw  0, 8,16, 1, 9,24,32,17, 2,25,40,48,56,33,10, 3
+                 dw 18,41,49,57,26,11, 4,19,34,42,50,58,27,12, 5,20
+                 dw 35,43,51,59,28,13, 6,21,36,44,52,60,29,14,22,37
+                 dw 45,53,61,30, 7,15,38,46,54,62,23,31,39,47,55,63
 %endif
 
 SECTION .text
@@ -2835,11 +2844,65 @@ cglobal zigzag_sub_4x4%1_%2, 3,5
     RET
 %endmacro
 
+;-----------------------------------------------------------------------------
+; int zigzag_sub_8x8_{frame,field}( int32_t level[64], const uint16_t *src, uint16_t *dst )
+;-----------------------------------------------------------------------------
+; avx512icl: 4 rows per zmm (merge-masked broadcasts), the word differences
+; put in scan order by vpermi2w and widened with vpmovsxwd, nz from vptestmw
+%macro ZIGZAG_SUB_8x8_HBD_ICL 1 ; frame/field
+cglobal zigzag_sub_8x8_%1, 3,4
+    mov         r3d, 0x00f0
+    kmovw        k5, r3d
+    mov         r3d, 0x0f00
+    kmovw        k6, r3d
+    mov         r3d, 0xf000
+    kmovw        k7, r3d
+%assign zsub_r 0
+%rep 2
+    movu            xm %+ zsub_r, [r1+(4*zsub_r+0)*FENC_STRIDEB]
+    vbroadcasti32x4  m %+ zsub_r {k5}, [r1+(4*zsub_r+1)*FENC_STRIDEB]
+    vbroadcasti32x4  m %+ zsub_r {k6}, [r1+(4*zsub_r+2)*FENC_STRIDEB]
+    vbroadcasti32x4  m %+ zsub_r {k7}, [r1+(4*zsub_r+3)*FENC_STRIDEB]
+    movu            xm4, [r2+(4*zsub_r+0)*FDEC_STRIDEB]
+    vbroadcasti32x4  m4 {k5}, [r2+(4*zsub_r+1)*FDEC_STRIDEB]
+    vbroadcasti32x4  m4 {k6}, [r2+(4*zsub_r+2)*FDEC_STRIDEB]
+    vbroadcasti32x4  m4 {k7}, [r2+(4*zsub_r+3)*FDEC_STRIDEB]
+    movu   [r2+(4*zsub_r+0)*FDEC_STRIDEB], xm %+ zsub_r
+    vextracti32x4 [r2+(4*zsub_r+1)*FDEC_STRIDEB], m %+ zsub_r, 1
+    vextracti32x4 [r2+(4*zsub_r+2)*FDEC_STRIDEB], m %+ zsub_r, 2
+    vextracti32x4 [r2+(4*zsub_r+3)*FDEC_STRIDEB], m %+ zsub_r, 3
+    psubw            m %+ zsub_r, m4
+%assign zsub_r zsub_r+1
+%endrep
+    vptestmw      k1, m0, m0
+    vptestmw      k2, m1, m1
+    mova          m2, [zsub8_%1_hbd]
+    mova          m3, [zsub8_%1_hbd+64]
+    vpermi2w      m2, m0, m1                 ; scan 0-31
+    vpermi2w      m3, m0, m1                 ; scan 32-63
+    vpmovsxwd     m0, ym2
+    vextracti64x4 ym2, m2, 1
+    vpmovsxwd     m2, ym2
+    vpmovsxwd     m1, ym3
+    vextracti64x4 ym3, m3, 1
+    vpmovsxwd     m3, ym3
+    movu  [r0+0*64], m0
+    movu  [r0+1*64], m2
+    movu  [r0+2*64], m1
+    movu  [r0+3*64], m3
+    xor          eax, eax
+    kortestd      k1, k2
+    setnz         al
+    RET
+%endmacro
+
 INIT_ZMM avx512icl
 ZIGZAG_SUB_4x4_HBD_ICL   , frame
 ZIGZAG_SUB_4x4_HBD_ICL ac, frame
 ZIGZAG_SUB_4x4_HBD_ICL   , field
 ZIGZAG_SUB_4x4_HBD_ICL ac, field
+ZIGZAG_SUB_8x8_HBD_ICL frame
+ZIGZAG_SUB_8x8_HBD_ICL field
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0

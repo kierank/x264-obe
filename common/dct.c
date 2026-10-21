@@ -956,6 +956,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->sub_4x4  = x264_zigzag_sub_4x4_frame_avx512icl;
         pf_interlaced->sub_4x4ac = x264_zigzag_sub_4x4ac_field_avx512icl;
         pf_progressive->sub_4x4ac= x264_zigzag_sub_4x4ac_frame_avx512icl;
+        pf_interlaced->sub_8x8   = x264_zigzag_sub_8x8_field_avx512icl;
+        pf_progressive->sub_8x8  = x264_zigzag_sub_8x8_frame_avx512icl;
     }
 #endif // HAVE_MMX
 #else
