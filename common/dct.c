@@ -1052,6 +1052,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
+        pf_interlaced->quant_8x8_scan       = x264_quant_8x8_scan_field_avx512icl;
+        pf_progressive->quant_8x8_scan      = x264_quant_8x8_scan_frame_avx512icl;
         pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx512icl;
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx512icl;
 #if HIGH_BIT_DEPTH
