@@ -792,6 +792,7 @@ struct x264_t
     x264_quant_function_t quantf;
     x264_deblock_function_t loopf;
     x264_bitstream_function_t bsf;
+    x264_mbcache_function_t mbcf;
 
     x264_lookahead_t *lookahead;
 

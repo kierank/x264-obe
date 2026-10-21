@@ -241,6 +241,15 @@ typedef struct
                                     uint8_t bs[2][8][4], int mode );
 } x264_deblock_function_t;
 
+typedef struct
+{
+    /* MBAFF: left neighbour nnz and intra4x4 modes into the cache; left_case indexes left_indices[].
+     * Reads 64 bytes at nnz_top/nnz_bot and 16 at i4x4_top/i4x4_bot. */
+    void (*load_left_mbaff)( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
+                             uint8_t *nnz_top, uint8_t *nnz_bot, int8_t *i4x4_top, int8_t *i4x4_bot,
+                             int left_case );
+} x264_mbcache_function_t;
+
 #define x264_frame_delete x264_template(frame_delete)
 void          x264_frame_delete( x264_frame_t *frame );
 

@@ -3723,6 +3723,74 @@ static int check_deblock( int cpu_ref, int cpu_new )
     return ret;
 }
 
+static int check_mbcache( int cpu_ref, int cpu_new )
+{
+    static const int fmts[3] = { CHROMA_420, CHROMA_422, CHROMA_444 };
+    static const char *fmt_names[3] = { "420", "422", "444" };
+    int ret = 0, ok = 1, used_asm = 0;
+
+    for( int f = 0; f < 3; f++ )
+    {
+        x264_mbcache_function_t mbcf_c, mbcf_ref, mbcf_a;
+        x264_mbcache_init( 0, &mbcf_c, fmts[f] );
+        x264_mbcache_init( cpu_ref, &mbcf_ref, fmts[f] );
+        x264_mbcache_init( cpu_new, &mbcf_a, fmts[f] );
+
+        if( mbcf_a.load_left_mbaff != mbcf_ref.load_left_mbaff )
+        {
+            used_asm = 1;
+            set_func_name( "mbcache_load_left_mbaff_%s", fmt_names[f] );
+            for( int i = 0; i < 200; i++ )
+            {
+                ALIGNED_ARRAY_64( uint8_t, nnz_src, [2],[64] );
+                ALIGNED_ARRAY_16( int8_t, i4x4_src, [2],[16] );
+                ALIGNED_ARRAY_16( uint8_t, nnz_cache, [2],[X264_SCAN8_SIZE] );
+                ALIGNED_ARRAY_16( int8_t, i4x4_cache, [2],[X264_SCAN8_LUMA_SIZE] );
+                int left_case = i&3;
+                /* i&4: one nonzero source byte in zeros, to catch a wrong index */
+                for( int j = 0; j < 64; j++ )
+                    nnz_src[0][j] = nnz_src[1][j] = 0;
+                for( int j = 0; j < 16; j++ )
+                    i4x4_src[0][j] = i4x4_src[1][j] = 0;
+                if( i&4 )
+                {
+                    int b = rand()&1;
+                    if( rand()&1 )
+                        nnz_src[b][rand()%48] = 1 + (rand()&0x7f);
+                    else
+                        i4x4_src[b][rand()&7] = 1 + (rand()&0x7f);
+                }
+                else
+                {
+                    for( int j = 0; j < 64; j++ )
+                        nnz_src[0][j] = rand(), nnz_src[1][j] = rand();
+                    for( int j = 0; j < 16; j++ )
+                        i4x4_src[0][j] = rand(), i4x4_src[1][j] = rand();
+                }
+                for( int j = 0; j < X264_SCAN8_SIZE; j++ )
+                    nnz_cache[0][j] = nnz_cache[1][j] = rand();
+                for( int j = 0; j < X264_SCAN8_LUMA_SIZE; j++ )
+                    i4x4_cache[0][j] = i4x4_cache[1][j] = rand();
+                call_c( mbcf_c.load_left_mbaff, nnz_cache[0], i4x4_cache[0], nnz_src[0], nnz_src[1],
+                        i4x4_src[0], i4x4_src[1], left_case );
+                call_a( mbcf_a.load_left_mbaff, nnz_cache[1], i4x4_cache[1], nnz_src[0], nnz_src[1],
+                        i4x4_src[0], i4x4_src[1], left_case );
+                if( memcmp( nnz_cache[0], nnz_cache[1], X264_SCAN8_SIZE ) ||
+                    memcmp( i4x4_cache[0], i4x4_cache[1], X264_SCAN8_LUMA_SIZE ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "mbcache_load_left_mbaff_%s (case=%d): [FAILED]\n", fmt_names[f], left_case );
+                    break;
+                }
+            }
+        }
+    }
+
+    report( "mbcache :" );
+
+    return ret;
+}
+
 #if HAVE_MMX && ARCH_X86_64
 /* the C trellis of encoder/rdo.c, which x86_64 never reaches, on the asm's arguments */
 #define x264_cabac_size_unary x264_template(cabac_size_unary)
@@ -5542,6 +5610,7 @@ static int check_all_funcs( int cpu_ref, int cpu_new )
          + check_mc( cpu_ref, cpu_new )
          + check_intra( cpu_ref, cpu_new )
          + check_deblock( cpu_ref, cpu_new )
+         + check_mbcache( cpu_ref, cpu_new )
          + check_quant( cpu_ref, cpu_new )
          + check_cabac( cpu_ref, cpu_new )
          + check_bitstream( cpu_ref, cpu_new );

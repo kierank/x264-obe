@@ -28,6 +28,9 @@
 
 #include "common.h"
 #include "encoder/me.h"
+#if HAVE_MMX
+#include "x86/mbcache.h"
+#endif
 
 #define MC_LUMA(list,p,w) \
     h->mc.mc_luma( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
@@ -712,6 +715,68 @@ static const x264_left_table_t left_indices[4] =
     {{ 4, 5, 6, 3}, { 3,  7, 11, 15}, {16+1, 16+5, 32+1, 32+5}, {0, 1, 2, 3}, {0, 0, 1, 1}}
 };
 
+static ALWAYS_INLINE void mbcache_load_left_mbaff( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
+                                                   uint8_t *nnz_top, uint8_t *nnz_bot, int8_t *i4x4_top, int8_t *i4x4_bot,
+                                                   int left_case, int chroma_format )
+{
+    const x264_left_table_t *t = &left_indices[left_case];
+    i4x4_cache[x264_scan8[ 0] - 1] = i4x4_top[t->intra[0]];
+    i4x4_cache[x264_scan8[ 2] - 1] = i4x4_top[t->intra[1]];
+    i4x4_cache[x264_scan8[ 8] - 1] = i4x4_bot[t->intra[2]];
+    i4x4_cache[x264_scan8[10] - 1] = i4x4_bot[t->intra[3]];
+
+    nnz_cache[x264_scan8[ 0] - 1] = nnz_top[t->nnz[0]];
+    nnz_cache[x264_scan8[ 2] - 1] = nnz_top[t->nnz[1]];
+    nnz_cache[x264_scan8[ 8] - 1] = nnz_bot[t->nnz[2]];
+    nnz_cache[x264_scan8[10] - 1] = nnz_bot[t->nnz[3]];
+
+    if( chroma_format >= CHROMA_422 )
+    {
+        int offset = chroma_format == CHROMA_444 ? 0 : -2;
+        nnz_cache[x264_scan8[16+ 0] - 1] = nnz_top[t->nnz[0]+16+offset];
+        nnz_cache[x264_scan8[16+ 2] - 1] = nnz_top[t->nnz[1]+16+offset];
+        nnz_cache[x264_scan8[16+ 8] - 1] = nnz_bot[t->nnz[2]+16+offset];
+        nnz_cache[x264_scan8[16+10] - 1] = nnz_bot[t->nnz[3]+16+offset];
+        nnz_cache[x264_scan8[32+ 0] - 1] = nnz_top[t->nnz[0]+32+offset];
+        nnz_cache[x264_scan8[32+ 2] - 1] = nnz_top[t->nnz[1]+32+offset];
+        nnz_cache[x264_scan8[32+ 8] - 1] = nnz_bot[t->nnz[2]+32+offset];
+        nnz_cache[x264_scan8[32+10] - 1] = nnz_bot[t->nnz[3]+32+offset];
+    }
+    else
+    {
+        nnz_cache[x264_scan8[16+ 0] - 1] = nnz_top[t->nnz_chroma[0]];
+        nnz_cache[x264_scan8[16+ 2] - 1] = nnz_bot[t->nnz_chroma[1]];
+        nnz_cache[x264_scan8[32+ 0] - 1] = nnz_top[t->nnz_chroma[2]];
+        nnz_cache[x264_scan8[32+ 2] - 1] = nnz_bot[t->nnz_chroma[3]];
+    }
+}
+
+#define MBCACHE_LOAD_LEFT_MBAFF_C( name, fmt )\
+static void mbcache_load_left_mbaff_##name( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],\
+                                            uint8_t *nnz_top, uint8_t *nnz_bot, int8_t *i4x4_top, int8_t *i4x4_bot,\
+                                            int left_case )\
+{\
+    mbcache_load_left_mbaff( nnz_cache, i4x4_cache, nnz_top, nnz_bot, i4x4_top, i4x4_bot, left_case, fmt );\
+}
+MBCACHE_LOAD_LEFT_MBAFF_C( 420, CHROMA_420 )
+MBCACHE_LOAD_LEFT_MBAFF_C( 422, CHROMA_422 )
+MBCACHE_LOAD_LEFT_MBAFF_C( 444, CHROMA_444 )
+
+void x264_mbcache_init( int cpu, x264_mbcache_function_t *pf, int chroma_format )
+{
+    pf->load_left_mbaff = chroma_format == CHROMA_444 ? mbcache_load_left_mbaff_444
+                        : chroma_format == CHROMA_422 ? mbcache_load_left_mbaff_422
+                        : mbcache_load_left_mbaff_420;
+#if HAVE_MMX && ARCH_X86_64
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf->load_left_mbaff = chroma_format == CHROMA_444 ? x264_mbcache_load_left_mbaff_444_avx512icl
+                            : chroma_format == CHROMA_422 ? x264_mbcache_load_left_mbaff_422_avx512icl
+                            : x264_mbcache_load_left_mbaff_420_avx512icl;
+    }
+#endif
+}
+
 static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int mb_x, int mb_y, int b_interlaced )
 {
     const int mb_interlaced = b_interlaced && MB_INTERLACED;
@@ -964,40 +1029,44 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             const int16_t top_luma = (cbp[ltop] >> (left_index_table->mv[0]&(~1))) & 2;
             const int16_t bot_luma = (cbp[lbot] >> (left_index_table->mv[2]&(~1))) & 2;
             h->mb.cache.i_cbp_left = (cbp[ltop] & 0xfff0) | (bot_luma<<2) | top_luma;
+            h->mbcf.load_left_mbaff( h->mb.cache.non_zero_count, h->mb.cache.intra4x4_pred_mode, nnz[ltop], nnz[lbot],
+                                     i4x4[ltop], i4x4[lbot], left_index_table - left_indices );
         }
         else
+        {
             h->mb.cache.i_cbp_left = cbp[ltop];
 
-        /* load intra4x4 */
-        h->mb.cache.intra4x4_pred_mode[x264_scan8[ 0] - 1] = i4x4[ltop][left_index_table->intra[0]];
-        h->mb.cache.intra4x4_pred_mode[x264_scan8[ 2] - 1] = i4x4[ltop][left_index_table->intra[1]];
-        h->mb.cache.intra4x4_pred_mode[x264_scan8[ 8] - 1] = i4x4[lbot][left_index_table->intra[2]];
-        h->mb.cache.intra4x4_pred_mode[x264_scan8[10] - 1] = i4x4[lbot][left_index_table->intra[3]];
+            /* load intra4x4 */
+            h->mb.cache.intra4x4_pred_mode[x264_scan8[ 0] - 1] = i4x4[ltop][left_index_table->intra[0]];
+            h->mb.cache.intra4x4_pred_mode[x264_scan8[ 2] - 1] = i4x4[ltop][left_index_table->intra[1]];
+            h->mb.cache.intra4x4_pred_mode[x264_scan8[ 8] - 1] = i4x4[lbot][left_index_table->intra[2]];
+            h->mb.cache.intra4x4_pred_mode[x264_scan8[10] - 1] = i4x4[lbot][left_index_table->intra[3]];
 
-        /* load non_zero_count */
-        h->mb.cache.non_zero_count[x264_scan8[ 0] - 1] = nnz[ltop][left_index_table->nnz[0]];
-        h->mb.cache.non_zero_count[x264_scan8[ 2] - 1] = nnz[ltop][left_index_table->nnz[1]];
-        h->mb.cache.non_zero_count[x264_scan8[ 8] - 1] = nnz[lbot][left_index_table->nnz[2]];
-        h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[lbot][left_index_table->nnz[3]];
+            /* load non_zero_count */
+            h->mb.cache.non_zero_count[x264_scan8[ 0] - 1] = nnz[ltop][left_index_table->nnz[0]];
+            h->mb.cache.non_zero_count[x264_scan8[ 2] - 1] = nnz[ltop][left_index_table->nnz[1]];
+            h->mb.cache.non_zero_count[x264_scan8[ 8] - 1] = nnz[lbot][left_index_table->nnz[2]];
+            h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[lbot][left_index_table->nnz[3]];
 
-        if( CHROMA_FORMAT >= CHROMA_422 )
-        {
-            int offset = (4>>CHROMA_H_SHIFT) - 4;
-            h->mb.cache.non_zero_count[x264_scan8[16+ 0] - 1] = nnz[ltop][left_index_table->nnz[0]+16+offset];
-            h->mb.cache.non_zero_count[x264_scan8[16+ 2] - 1] = nnz[ltop][left_index_table->nnz[1]+16+offset];
-            h->mb.cache.non_zero_count[x264_scan8[16+ 8] - 1] = nnz[lbot][left_index_table->nnz[2]+16+offset];
-            h->mb.cache.non_zero_count[x264_scan8[16+10] - 1] = nnz[lbot][left_index_table->nnz[3]+16+offset];
-            h->mb.cache.non_zero_count[x264_scan8[32+ 0] - 1] = nnz[ltop][left_index_table->nnz[0]+32+offset];
-            h->mb.cache.non_zero_count[x264_scan8[32+ 2] - 1] = nnz[ltop][left_index_table->nnz[1]+32+offset];
-            h->mb.cache.non_zero_count[x264_scan8[32+ 8] - 1] = nnz[lbot][left_index_table->nnz[2]+32+offset];
-            h->mb.cache.non_zero_count[x264_scan8[32+10] - 1] = nnz[lbot][left_index_table->nnz[3]+32+offset];
-        }
-        else
-        {
-            h->mb.cache.non_zero_count[x264_scan8[16+ 0] - 1] = nnz[ltop][left_index_table->nnz_chroma[0]];
-            h->mb.cache.non_zero_count[x264_scan8[16+ 2] - 1] = nnz[lbot][left_index_table->nnz_chroma[1]];
-            h->mb.cache.non_zero_count[x264_scan8[32+ 0] - 1] = nnz[ltop][left_index_table->nnz_chroma[2]];
-            h->mb.cache.non_zero_count[x264_scan8[32+ 2] - 1] = nnz[lbot][left_index_table->nnz_chroma[3]];
+            if( CHROMA_FORMAT >= CHROMA_422 )
+            {
+                int offset = (4>>CHROMA_H_SHIFT) - 4;
+                h->mb.cache.non_zero_count[x264_scan8[16+ 0] - 1] = nnz[ltop][left_index_table->nnz[0]+16+offset];
+                h->mb.cache.non_zero_count[x264_scan8[16+ 2] - 1] = nnz[ltop][left_index_table->nnz[1]+16+offset];
+                h->mb.cache.non_zero_count[x264_scan8[16+ 8] - 1] = nnz[lbot][left_index_table->nnz[2]+16+offset];
+                h->mb.cache.non_zero_count[x264_scan8[16+10] - 1] = nnz[lbot][left_index_table->nnz[3]+16+offset];
+                h->mb.cache.non_zero_count[x264_scan8[32+ 0] - 1] = nnz[ltop][left_index_table->nnz[0]+32+offset];
+                h->mb.cache.non_zero_count[x264_scan8[32+ 2] - 1] = nnz[ltop][left_index_table->nnz[1]+32+offset];
+                h->mb.cache.non_zero_count[x264_scan8[32+ 8] - 1] = nnz[lbot][left_index_table->nnz[2]+32+offset];
+                h->mb.cache.non_zero_count[x264_scan8[32+10] - 1] = nnz[lbot][left_index_table->nnz[3]+32+offset];
+            }
+            else
+            {
+                h->mb.cache.non_zero_count[x264_scan8[16+ 0] - 1] = nnz[ltop][left_index_table->nnz_chroma[0]];
+                h->mb.cache.non_zero_count[x264_scan8[16+ 2] - 1] = nnz[lbot][left_index_table->nnz_chroma[1]];
+                h->mb.cache.non_zero_count[x264_scan8[32+ 0] - 1] = nnz[ltop][left_index_table->nnz_chroma[2]];
+                h->mb.cache.non_zero_count[x264_scan8[32+ 2] - 1] = nnz[lbot][left_index_table->nnz_chroma[3]];
+            }
         }
     }
     else
