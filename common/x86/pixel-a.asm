@@ -3071,8 +3071,8 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
     SA8D_SATD_ACCUM 1, 0
 %endif
 
-; xop already has fast horizontal sums
-%if cpuflag(avx512icl) && HIGH_BIT_DEPTH==0
+; xop already has fast horizontal sums; avx and later: punpck instead of phaddd
+%if cpuflag(avx) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
     pmaddwd    xm10, [pw_1]
     punpcklqdq  xm1, xm0, xm10
     punpckhqdq  xm0, xm10
