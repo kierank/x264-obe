@@ -3496,6 +3496,48 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_free( hb );
         x264_free( mb );
     }
+
+    if( mc_a.mbtree_cost_scale != mc_ref.mbtree_cost_scale )
+    {
+        used_asm = 1;
+        set_func_name( "mbtree_cost_scale" );
+        uint16_t *costs = (uint16_t*)buf3;
+        float *qp = (float*)buf4;
+        for( int i = 0; i < 40 && ok; i++ )
+        {
+            /* i%4 0: the encoder's range, 1: exp2fix8 index over -64..1087, 2: clipped both ways, 3: max costs */
+            int len = i < 32 ? 1 + i : 120 + rand()%200;
+            for( int j = 0; j < len; j++ )
+            {
+                costs[j] = i%4 == 3 ? 0xffff : rand();
+                if( i%4 == 1 )
+                    qp[j] = ((rand()%1152) - 64 - 512 + (rand()&1)) * (6.f/-64.f);
+                else if( i%4 == 2 )
+                    qp[j] = (rand()&1 ? 1 : -1) * (j&1 ? 1e30f : 60.f + (rand()&1023));
+                else
+                    qp[j] = ((rand()&65535) - 32768) * (24.f/32768);
+            }
+            int resc = call_c1( mc_c.mbtree_cost_scale, costs, qp, len );
+            int resa = call_a1( mc_a.mbtree_cost_scale, costs, qp, len );
+            if( resc != resa )
+            {
+                ok = 0;
+                fprintf( stderr, "mbtree_cost_scale FAILED: len %d mode %d: %d != %d\n", len, i%4, resc, resa );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row, offsets in the encoder's range */
+            bench_srand( 1100 );
+            for( int j = 0; j < 120; j++ )
+            {
+                costs[j] = bench_rand();
+                qp[j] = ((bench_rand()&65535) - 32768) * (24.f/32768);
+            }
+            call_c2( mc_c.mbtree_cost_scale, costs, qp, 120 );
+            call_a2( mc_a.mbtree_cost_scale, costs, qp, 120 );
+        }
+    }
     report( "mbtree :" );
 
     if( mc_a.memcpy_aligned != mc_ref.memcpy_aligned )
