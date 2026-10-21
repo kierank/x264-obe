@@ -568,6 +568,36 @@ void x264_aq_variance_tail_avx512icl( float *qp_offset, float *qp_offset_aq, uin
 #define x264_aq_autovariance_tail_avx512 x264_template(aq_autovariance_tail_avx512)
 void x264_aq_autovariance_tail_avx512( float *qp_offset, uint32_t *energy, int len );
 
+/* layout twins of wip/x264-sweep-prologue: a kernel set to 1 dispatches its twin
+ * (common/mc.c: an alias of its C reference), so it runs the C */
+#define SWP_TWIN_COST   0
+#define SWP_TWIN_FINISH 0
+#define SWP_TWIN_AQ     0
+#define x264_twin_mbtree_cost_scale_avx2 x264_template(twin_mbtree_cost_scale_avx2)
+#define x264_twin_mbtree_cost_scale_icl x264_template(twin_mbtree_cost_scale_icl)
+#define x264_twin_mbtree_finish x264_template(twin_mbtree_finish)
+#define x264_twin_aq_variance_tail x264_template(twin_aq_variance_tail)
+int x264_twin_mbtree_cost_scale_avx2( uint16_t *lowres_costs, float *qp_offset, int len );
+int x264_twin_mbtree_cost_scale_icl( uint16_t *lowres_costs, float *qp_offset, int len );
+void x264_twin_mbtree_finish( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+                              uint16_t *propagate_costs, float *params, int fps_factor, int len );
+void x264_twin_aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+                                 float *quant_offsets, float *params, int len );
+#if SWP_TWIN_COST
+#undef x264_mbtree_cost_scale_avx2
+#define x264_mbtree_cost_scale_avx2 x264_twin_mbtree_cost_scale_avx2
+#undef x264_mbtree_cost_scale_avx512icl
+#define x264_mbtree_cost_scale_avx512icl x264_twin_mbtree_cost_scale_icl
+#endif
+#if SWP_TWIN_FINISH
+#undef x264_mbtree_finish_avx512
+#define x264_mbtree_finish_avx512 x264_twin_mbtree_finish
+#endif
+#if SWP_TWIN_AQ
+#undef x264_aq_variance_tail_avx512icl
+#define x264_aq_variance_tail_avx512icl x264_twin_aq_variance_tail
+#endif
+
 #define MC_CHROMA(cpu)\
 void x264_mc_chroma_##cpu( pixel *dstu, pixel *dstv, intptr_t i_dst, pixel *src, intptr_t i_src,\
                            int dx, int dy, int i_width, int i_height );
