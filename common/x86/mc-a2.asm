@@ -3521,6 +3521,51 @@ INIT_YMM avx512icl
 FRAME_INIT_LOWRES8
 
 ;-----------------------------------------------------------------------------
+; void plane_msb8( uint8_t *msb, uint16_t *src, intptr_t stride, int w, int h )
+; msb = src >> 2 for --me-8bit: h rows of w pixels (a multiple of 16), rows
+; stride pixels (src) and stride bytes (msb) apart
+;-----------------------------------------------------------------------------
+%macro PLANE_MSB8 0
+cglobal plane_msb8, 5,6,2
+    movsxdifnidn r3, r3d
+    add          r0, r3
+    lea          r1, [r1+r3*2]
+    neg          r3
+.loopy:
+    mov          r5, r3              ; -w
+    cmp          r5, -32
+    jg .tail
+.loopx:
+    movu         m0, [r1+r5*2]
+    movu         m1, [r1+r5*2+32]
+    psrlw        m0, 2
+    psrlw        m1, 2
+    packuswb     m0, m1              ; 0-7 16-23 | 8-15 24-31
+    vpermq       m0, m0, q3120
+    movu    [r0+r5], m0
+    add          r5, 32
+    cmp          r5, -32
+    jle .loopx
+.tail:
+    test         r5, r5
+    jz .next
+    movu         m0, [r1+r5*2]
+    psrlw        m0, 2
+    vextracti128 xm1, m0, 1
+    packuswb    xm0, xm1
+    movu    [r0+r5], xm0
+.next:
+    lea          r1, [r1+r2*2]
+    add          r0, r2
+    dec         r4d
+    jg .loopy
+    RET
+%endmacro
+
+INIT_YMM avx2
+PLANE_MSB8
+
+;-----------------------------------------------------------------------------
 ; void mc_copy_16x16_msb8( uint16_t *dst, uint8_t *msb, uint16_t *src, intptr_t i_src )
 ; the luma fenc load: copy[PIXEL_16x16] to dst (FENC_STRIDE) and the --me-8bit
 ; msb8 of it, src >> 2, to msb (FENC_STRIDE bytes, so two rows are 32 bytes)

@@ -584,6 +584,8 @@ void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dst
 #define x264_frame_init_lowres_core8_avx512icl x264_template(frame_init_lowres_core8_avx512icl)
 void x264_frame_init_lowres_core8_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                              intptr_t src_stride, intptr_t dst_stride, int width, int height );
+#define x264_plane_msb8_avx2 x264_template(plane_msb8_avx2)
+void x264_plane_msb8_avx2( uint8_t *msb, pixel *src, intptr_t i_stride, int w, int h );
 #define x264_mc_copy_16x16_msb8_avx2 x264_template(mc_copy_16x16_msb8_avx2)
 void x264_mc_copy_16x16_msb8_avx2( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src );
 
@@ -1453,6 +1455,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
 #if ARCH_X86_64
         pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx2;
+        pf->plane_msb8 = x264_plane_msb8_avx2;
         pf->copy_16x16_msb8 = x264_mc_copy_16x16_msb8_avx2;
 #endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;

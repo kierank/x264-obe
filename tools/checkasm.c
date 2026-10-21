@@ -3162,6 +3162,43 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "lowres init8 :" );
     }
 
+    if( mc_a.plane_msb8 != mc_ref.plane_msb8 )
+    {
+        /* rows of w pixels with a gap to the next row that must stay untouched,
+         * 0 and PIXEL_MAX runs; the outputs in 0xaa buffers compared whole */
+        ALIGNED_ARRAY_64( pixel, src,[3*400] );
+        uint8_t *msbc = buf3, *msba = buf4;
+        set_func_name( "plane_msb8" );
+        ok = 1; used_asm = 1;
+        for( int i = 0; i < 3*400; i++ )
+            src[i] = i % 7 == 3 ? PIXEL_MAX : i % 11 == 5 ? 0 : rand() & PIXEL_MAX;
+        for( int w = 16; w <= 352 && ok; w += 16 )
+            for( int hgt = 1; hgt <= 3 && ok; hgt++ )
+            {
+                intptr_t stride = w + 16 * (w % 48 == 16 ? 2 : 0) + 16;
+                memset( msbc, 0xaa, 2048 );
+                memset( msba, 0xaa, 2048 );
+                call_c( mc_c.plane_msb8, msbc, src, stride, w, hgt );
+                call_a( mc_a.plane_msb8, msba, src, stride, w, hgt );
+                if( memcmp( msbc, msba, 2048 ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "plane_msb8 differs, w=%d h=%d [FAILED]\n", w, hgt );
+                    break;
+                }
+                for( int y = 0; y < hgt && ok; y++ )
+                    for( int x = 0; x < w; x++ )
+                        if( msba[y*stride+x] != src[y*stride+x] >> (BIT_DEPTH-8) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "plane_msb8 w=%d h=%d x=%d y=%d: %d != %d >> %d [FAILED]\n",
+                                     w, hgt, x, y, msba[y*stride+x], src[y*stride+x], BIT_DEPTH-8 );
+                            break;
+                        }
+            }
+        report( "plane msb8 :" );
+    }
+
     if( mc_a.copy_16x16_msb8 != mc_ref.copy_16x16_msb8 )
     {
         /* the luma fenc load and its msb8: src 0-7 pixels past alignment at
