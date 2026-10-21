@@ -70,6 +70,7 @@ dbp_idx4:      dd 0, 0, 4, 4, 0, 0, 4, 4
 dbp_hex_bperm: dd 5, 0, 4, 6, 1, 3, 2, 6
 dbp_oct_bperm: dd 0, 1, 3, 2, 7, 5, 4, 6
 dbp_ring_bperm: dd 0, 2, 1, 3, 6, 4, 7, 5
+dbp_row_idx4:  dd 0, 0, 0, 0, 4, 4, 4, 4
 ; dir 0-5: dy, dx - j of me.c hex2[dir+j]
 dbp_hh_tab:    db -2,-1,  0,-3,  2,-3
                db  0,-2,  2,-2,  2,-1
@@ -2945,6 +2946,157 @@ SAD_CORNER_MIN 8, 8
 SAD_CORNER_MIN 8, 4
 SAD_CORNER_MIN 4, 8
 SAD_CORNER_MIN 4, 4
+
+;-----------------------------------------------------------------------------
+; void pixel_sad_row_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride, int n,
+;                         uint16_t *sads )
+; sads[k] = sad( fenc, pix + k ), k < n rounded up to 8
+;
+; 16 offsets a pass: windows of the ref row at x+o (offsets o..o+7, imm 0x94 and
+; 0xe9) and x+o+8, a ref lane each from a load and a merge-masked broadcast.
+; 16 wide: a row per ymm (lanes x+o, x+o+8: fenc dwords 2l, 2l+1); 8 wide: a row
+; pair; 4 wide: a row pair, the fenc dword in both qwords (offsets o..o+3,
+; o+4..o+7). Reads ref columns up to x+o+23 for the last pass, which starts at
+; most at n-1 for 16 offsets and n-8 for 8, so up to x+n+22.
+;-----------------------------------------------------------------------------
+; m0-m3: offsets o..o+3, o+4..o+7, o+8..o+11, o+12..o+15 (4 wide: m0, m1 o..o+7, o+8..o+15)
+
+%macro DBP_ROW_PASS 3 ; width, height, offsets (16 or 8)
+    mov             r5, r1
+%if %1 == 16
+    %assign %%step 1
+%else
+    %assign %%step 2
+%endif
+%assign %%r 0
+%rep %2 / %%step
+    %if %1 == 16 && %%r == %2-1
+    vbroadcasti128  m4, [r0+%%r*FENC_STRIDE]
+    vpermd          m4, m7, m4
+    %else
+    vpermd          m4, m7, [r0+%%r*FENC_STRIDE]
+    %endif
+    %if %1 == 16
+        %xdefine %%lane1 r5+8
+        %xdefine %%lane3 r5+16
+    %else
+        %xdefine %%lane1 r5+r2
+        %xdefine %%lane3 r5+r2+8
+    %endif
+    movu           xm5, [r5]
+    vbroadcasti32x4 m5 {k1}, [%%lane1]
+    %if %3 == 16
+    movu           xm6, [r5+8]
+    vbroadcasti32x4 m6 {k1}, [%%lane3]
+    %endif
+    %if %%r == 0
+    vdbpsadbw       m0, m4, m5, 0x94
+        %if %1 == 4
+            %if %3 == 16
+    vdbpsadbw       m1, m4, m6, 0x94
+            %endif
+        %else
+    vdbpsadbw       m1, m4, m5, 0xe9
+            %if %3 == 16
+    vdbpsadbw       m2, m4, m6, 0x94
+    vdbpsadbw       m3, m4, m6, 0xe9
+            %endif
+        %endif
+    %else
+    vdbpsadbw       m8, m4, m5, 0x94
+    paddw           m0, m8
+        %if %1 == 4
+            %if %3 == 16
+    vdbpsadbw       m9, m4, m6, 0x94
+    paddw           m1, m9
+            %endif
+        %else
+    vdbpsadbw       m9, m4, m5, 0xe9
+    paddw           m1, m9
+            %if %3 == 16
+    vdbpsadbw      m10, m4, m6, 0x94
+    paddw           m2, m10
+    vdbpsadbw      m11, m4, m6, 0xe9
+    paddw           m3, m11
+            %endif
+        %endif
+    %endif
+    %assign %%r %%r+%%step
+    %if %%r < %2
+        %if %%step == 1
+    add             r5, r2
+        %else
+    lea             r5, [r5+r2*2]
+        %endif
+    %endif
+%endrep
+    ; sum over the qwords (4 wide: the lanes), in offset order
+%if %1 == 4
+    %if %3 == 16
+    vinserti128     m2, m0, xm1, 1
+    vshufi64x2      m0, m0, m1, 3
+    paddw           m0, m2
+    movu          [r4], m0
+    %else
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+    movu          [r4], xm0
+    %endif
+%else
+    punpcklqdq      m8, m0, m1
+    punpckhqdq      m0, m0, m1
+    paddw           m0, m8
+    %if %3 == 16
+    punpcklqdq      m9, m2, m3
+    punpckhqdq      m2, m2, m3
+    paddw           m2, m9
+    vinserti128     m1, m0, xm2, 1
+    vshufi64x2      m0, m0, m2, 3
+    paddw           m0, m1
+    movu          [r4], m0
+    %else
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+    movu          [r4], xm0
+    %endif
+%endif
+%endmacro
+
+%macro SAD_ROW 2 ; width, height
+cglobal pixel_sad_row_%1x%2, 5,6,12
+%if %1 == 16
+    mova            m7, [sad_sq_idx16]
+%elif %1 == 8
+    mova            m7, [sad_sq_idx8]
+%else
+    mova            m7, [dbp_row_idx4]
+%endif
+    mov            r5d, 0xf0
+    kmovw           k1, r5d
+    cmp            r3d, 8
+    jle .last
+.loop:
+    DBP_ROW_PASS %1, %2, 16
+    add             r1, 16
+    add             r4, 32
+    sub            r3d, 16
+    cmp            r3d, 8
+    jg .loop
+    test           r3d, r3d
+    jle .end
+.last:
+    DBP_ROW_PASS %1, %2, 8
+.end:
+    RET
+%endmacro
+
+SAD_ROW 16, 16
+SAD_ROW 16, 8
+SAD_ROW 8, 16
+SAD_ROW 8, 8
+SAD_ROW 8, 4
+SAD_ROW 4, 8
+SAD_ROW 4, 4
 
 INIT_YMM avx2
 %endif ; ARCH_X86_64

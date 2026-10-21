@@ -1802,6 +1802,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_oct_min[PIXEL_8x8] = x264_pixel_sad_oct_min_8x8_avx512;
         pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx512;
         pixf->sad_corner_min[PIXEL_8x8] = x264_pixel_sad_corner_min_8x8_avx512;
+        pixf->sad_row[PIXEL_8x8] = x264_pixel_sad_row_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX
