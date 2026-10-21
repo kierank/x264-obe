@@ -1279,12 +1279,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
-        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
+        /* zen4 prune, neutral (>= 1.000): var2[8x16], ssd[16x16] zmm, ssd[8x8] */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
-        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmm_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
-        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
 #endif
@@ -1657,7 +1655,6 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx512icl;
         pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx512icl;
         pixf->sa8d[PIXEL_8x8] = x264_pixel_sa8d_8x8_avx512icl;
-        pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512icl;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx512icl;
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx512icl;
         /* zen4 prune: satd_pre[16x16] 1.028x avx2, slower in 11/11 runs (rack01, 36943197); dispatched on zen5/x264-weird-satd-zen4slow */
@@ -1666,7 +1663,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_avg2_pre[PIXEL_16x8] = x264_pixel_satd_avg2_pre_16x8_avx512icl;
         pixf->satd_avg2_pre[PIXEL_8x16] = x264_pixel_satd_avg2_pre_8x16_avx512icl;
         pixf->satd_avg2_pre[PIXEL_8x8] = x264_pixel_satd_avg2_pre_8x8_avx512icl;
-        pixf->intra_satd_lowres = x264_intra_satd_lowres_avx512icl;
+        /* zen4 prune, neutral (>= 1.000): intra_satd_x3_16x16, intra_satd_lowres */
         pixf->satd_bi[PIXEL_8x16] = x264_pixel_satd_bi_8x16_avx512icl;
         pixf->satd_bi[PIXEL_8x8] = x264_pixel_satd_bi_8x8_avx512icl;
         pixf->satd_bi4[PIXEL_8x16] = x264_pixel_satd_bi4_8x16_avx512icl;
@@ -1688,8 +1685,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* var[8x8] 1.089x, var2[8x16] 1.034x, ssd[16x16] zmm 1.085x, weightp_stats8 icl 1.076x (vs the avx2 rewrite) */
+        /* zen4 prune, neutral (>= 1.000): ssd[16x8] zmm */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
-        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;

@@ -791,7 +791,7 @@ static void x264_weight_cache_avx512( x264_t *h, x264_weight_t *w )
 /* x264_weight_scale_plane row by row over what its w16/w8 strips write (width
  * up to a multiple of 8, height up to even), for the weights whose w16/w8
  * kernels share the plane kernel's cache and op; 0 for the others (SSE2). */
-#define WEIGHT_PLANE(cpu, wtab, ns_wtab)\
+#define WEIGHT_PLANE(cpu, wtab, ns_wtab, offset_cpu)\
 static int weight_plane_##cpu( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,\
                                const x264_weight_t *w, int width, int height )\
 {\
@@ -801,9 +801,9 @@ static int weight_plane_##cpu( pixel *dst, intptr_t i_dst, pixel *src, intptr_t 
     else if( w->weightfn == ns_wtab )\
         f = x264_mc_weight_ns_plane_##cpu;\
     else if( w->weightfn == x264_mc_offsetadd_wtab_avx2 )\
-        f = x264_mc_offsetadd_plane_##cpu;\
+        f = x264_mc_offsetadd_plane_##offset_cpu;\
     else if( w->weightfn == x264_mc_offsetsub_wtab_avx2 )\
-        f = x264_mc_offsetsub_plane_##cpu;\
+        f = x264_mc_offsetsub_plane_##offset_cpu;\
     else\
         return 0;\
     if( width > 0 && height > 0 )\
@@ -811,8 +811,9 @@ static int weight_plane_##cpu( pixel *dst, intptr_t i_dst, pixel *src, intptr_t 
     return 1;\
 }
 
-WEIGHT_PLANE( avx2, x264_mc_weight_wtab_avx2, x264_mc_weight_ns_wtab_avx2 )
-WEIGHT_PLANE( avx512, x264_mc_weight_wtab_avx512, x264_mc_weight_ns_wtab_avx512 )
+WEIGHT_PLANE( avx2, x264_mc_weight_wtab_avx2, x264_mc_weight_ns_wtab_avx2, avx2 )
+/* zen4 prune, neutral (>= 1.000): offsetadd/offsetsub_plane avx512; kept assembled */
+WEIGHT_PLANE( avx512, x264_mc_weight_wtab_avx512, x264_mc_weight_ns_wtab_avx512, avx2 )
 #undef WEIGHT_PLANE
 #endif
 #else
@@ -1115,7 +1116,7 @@ PLANE_INTERLEAVE(sse2)
 #if HIGH_BIT_DEPTH
 PLANE_INTERLEAVE(avx)
 #endif
-#if ARCH_X86_64
+#if ARCH_X86_64 && !HIGH_BIT_DEPTH
 PLANE_INTERLEAVE(avx512icl)
 /* the avx512icl core's ymm non-temporal stores need 32-byte aligned rows */
 static void plane_copy_interleave_icl( pixel *dst,  intptr_t i_dst,
@@ -1123,11 +1124,7 @@ static void plane_copy_interleave_icl( pixel *dst,  intptr_t i_dst,
                                        pixel *srcv, intptr_t i_srcv, int w, int h )
 {
     if( ((intptr_t)dst | (i_dst * (intptr_t)sizeof(pixel))) & 31 )
-#if HIGH_BIT_DEPTH
-        x264_plane_copy_interleave_avx( dst, i_dst, srcu, i_srcu, srcv, i_srcv, w, h );
-#else
         x264_plane_copy_interleave_sse2( dst, i_dst, srcu, i_srcu, srcv, i_srcv, w, h );
-#endif
     else
         x264_plane_copy_interleave_avx512icl( dst, i_dst, srcu, i_srcu, srcv, i_srcv, w, h );
 }
@@ -1426,9 +1423,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
+        /* zen4 prune, neutral (>= 1.000): frame_init_lowres_core8, plane_copy_interleave; kept assembled */
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
-        pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx512icl;
-        pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
 #endif

@@ -558,11 +558,10 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
     if( cpu&X264_CPU_AVX512ICL )
     {
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
-        /* dct4x4dc 2.72x, idct4x4dc 2.64x, add16x16_idct 1.17x */
+        /* dct4x4dc 2.72x, idct4x4dc 2.64x, add16x16_idct 1.17x; neutral (>= 1.000): add8x8_idct */
 #if ARCH_X86_64
         dctf->sub16x16_dct8   = x264_sub16x16_dct8_avx512icl;
         dctf->add16x16_idct8  = x264_add16x16_idct8_avx512icl;
-        dctf->add8x8_idct     = x264_add8x8_idct_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
