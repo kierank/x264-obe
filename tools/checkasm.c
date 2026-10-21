@@ -4990,6 +4990,30 @@ static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
 DECL_CABAC(c)
 #if HAVE_MMX
 DECL_CABAC(asm)
+/* src: 4096 contexts and bins; the first 128 contexts start in states 2-127 from st
+ * (0-1: terminate only) */
+static void run_cabac_decision_states( x264_t *h, uint8_t *dst, const uint8_t *src, const uint8_t *st,
+                                       void (*decision)( x264_cabac_t *, int, int ) )
+{
+    x264_cabac_t cb;
+    x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );
+    for( int i = 0; i < 128; i++ )
+        cb.state[i] = 2 + st[i]%126;
+    x264_cabac_encode_init( &cb, dst, dst+0xff0 );
+    for( int i = 0; i < 0x1000; i++ )
+        decision( &cb, src[i]>>1, src[i]&1 );
+    x264_cabac_encode_flush( h, &cb );
+    memcpy( dst+0xe00, cb.state, 128 );
+}
+/* separate functions, so the bench tells them apart */
+static void run_cabac_decision_states_c( x264_t *h, uint8_t *dst, const uint8_t *src, const uint8_t *st )
+{
+    run_cabac_decision_states( h, dst, src, st, x264_cabac_encode_decision_c );
+}
+static void run_cabac_decision_states_bmi2( x264_t *h, uint8_t *dst, const uint8_t *src, const uint8_t *st )
+{
+    run_cabac_decision_states( h, dst, src, st, x264_cabac_encode_decision_bmi2 );
+}
 #else
 #define run_cabac_decision_asm run_cabac_decision_c
 #define run_cabac_bypass_asm run_cabac_bypass_c
@@ -5298,6 +5322,32 @@ name##fail:
     }
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     report( "cabac 4:2:2 dc :" );
+
+#if HAVE_MMX
+    if( (cpu_new & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT) &&
+        (cpu_ref & (X264_CPU_BMI2|X264_CPU_LZCNT)) != (X264_CPU_BMI2|X264_CPU_LZCNT) )
+    {
+        ok = 1; used_asm = 1;
+        x264_cabac_init( &h );
+        set_func_name( "cabac_encode_decision_bmi2" );
+        memcpy( buf4, buf3, 0x1000 );
+        call_c1( run_cabac_decision_states_c, &h, buf3, buf1, buf2 );
+        call_a1( run_cabac_decision_states_bmi2, &h, buf4, buf1, buf2 );
+        ok = !memcmp( buf3, buf4, 0x1000 );
+        report( "cabac decision bmi2:" );
+        /* bench: fixed contexts, bins and states from the private generator, private buffers */
+        uint8_t *cbuf = do_bench ? x264_malloc( 4*0x1000 ) : NULL;
+        if( cbuf )
+        {
+            bench_srand( 901 );
+            for( int i = 0; i < 0x2000; i++ )
+                cbuf[i] = bench_rand() >> 8;
+            call_c2( run_cabac_decision_states_c, &h, cbuf+0x2000, cbuf, cbuf+0x1000 );
+            call_a2( run_cabac_decision_states_bmi2, &h, cbuf+0x3000, cbuf, cbuf+0x1000 );
+            x264_free( cbuf );
+        }
+    }
+#endif
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;
