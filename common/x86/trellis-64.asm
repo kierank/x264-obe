@@ -1181,7 +1181,7 @@ clocal trellis_coefn
     %define TRELLIS_ICL_CMPMERGE 0
 %endif
 %ifndef TRELLIS_ICL_ZPREFIX
-    %define TRELLIS_ICL_ZPREFIX 1
+    %define TRELLIS_ICL_ZPREFIX 0
 %endif
 
 INIT_ZMM avx512icl
