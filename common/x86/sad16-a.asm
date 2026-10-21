@@ -1773,39 +1773,37 @@ SAD_AVG2_HBD  8,  8
 ; 16 wide: a row a ymm, fenc a memory operand; 8 wide: rows k, k+1 a ymm, the
 ; fenc row pairs in m4.. across the candidates.
 ;-----------------------------------------------------------------------------
+; m is slm (m for avx2, ym in the zmm functions)
 ; row k of the candidate at r6 (r7) -> m2, |fenc - it| added to m(k&1); rows
 ; 4g..4g+3 at 0, r2, 2*r2, r8 = 3*r2 past the pointers, which step after them
-%macro SAD_LIST_HBD_ROW16 3 ; avg2, row, height
+%macro SAD_LIST_HBD_ROW16 4 ; avg2, row, height, first row
+%assign %%a (%2) & 1
 %if (%2 & 3) == 0
-    movu           m2, [r6]
+    movu           %[slm]2, [r6]
 %elif (%2 & 3) == 1
-    movu           m2, [r6+r2]
+    movu           %[slm]2, [r6+r2]
 %elif (%2 & 3) == 2
-    movu           m2, [r6+2*r2]
+    movu           %[slm]2, [r6+2*r2]
 %else
-    movu           m2, [r6+r8]
+    movu           %[slm]2, [r6+r8]
 %endif
 %if %1
 %if (%2 & 3) == 0
-    pavgw          m2, [r7]
+    pavgw          %[slm]2, [r7]
 %elif (%2 & 3) == 1
-    pavgw          m2, [r7+r2]
+    pavgw          %[slm]2, [r7+r2]
 %elif (%2 & 3) == 2
-    pavgw          m2, [r7+2*r2]
+    pavgw          %[slm]2, [r7+2*r2]
 %else
-    pavgw          m2, [r7+r8]
+    pavgw          %[slm]2, [r7+r8]
 %endif
 %endif
-    psubw          m2, [r0+%2*FENC_STRIDEB]
-%if %2 < 2
-    pabsw         m%2, m2
+    psubw          %[slm]2, [r0+%2*FENC_STRIDEB]
+%if %2 < %4+2
+    pabsw         %[slm]%[%%a], %[slm]2
 %else
-    pabsw          m2, m2
-%if %2 & 1
-    paddw          m1, m2
-%else
-    paddw          m0, m2
-%endif
+    pabsw          %[slm]2, %[slm]2
+    paddw         %[slm]%[%%a], %[slm]2
 %endif
 %if (%2 & 3) == 3 && %2 < %3-1
     lea            r6, [r6+4*r2]
@@ -1816,35 +1814,32 @@ SAD_AVG2_HBD  8,  8
 %endmacro
 
 ; rows 2p, 2p+1 -> m2 (pointers as above, stepping every second pair)
-%macro SAD_LIST_HBD_PAIR8 3 ; avg2, p, pairs
+%macro SAD_LIST_HBD_PAIR8 4 ; avg2, p, pairs, first pair
+%assign %%a (%2) & 1
 %assign %%f 4+(%2)
 %if %2 & 1
     movu          xm2, [r6+2*r2]
-    vinserti128    m2, m2, [r6+r8], 1
+    vinserti128    %[slm]2, %[slm]2, [r6+r8], 1
 %else
     movu          xm2, [r6]
-    vinserti128    m2, m2, [r6+r2], 1
+    vinserti128    %[slm]2, %[slm]2, [r6+r2], 1
 %endif
 %if %1
 %if %2 & 1
     movu          xm3, [r7+2*r2]
-    vinserti128    m3, m3, [r7+r8], 1
+    vinserti128    %[slm]3, %[slm]3, [r7+r8], 1
 %else
     movu          xm3, [r7]
-    vinserti128    m3, m3, [r7+r2], 1
+    vinserti128    %[slm]3, %[slm]3, [r7+r2], 1
 %endif
-    pavgw          m2, m3
+    pavgw          %[slm]2, %[slm]3
 %endif
-    psubw          m2, m%[%%f]
-%if %2 < 2
-    pabsw         m%2, m2
+    psubw          %[slm]2, %[slm]%[%%f]
+%if %2 < %4+2
+    pabsw         %[slm]%[%%a], %[slm]2
 %else
-    pabsw          m2, m2
-%if %2 & 1
-    paddw          m1, m2
-%else
-    paddw          m0, m2
-%endif
+    pabsw          %[slm]2, %[slm]2
+    paddw         %[slm]%[%%a], %[slm]2
 %endif
 %if (%2 & 1) && %2 < %3-1
     lea            r6, [r6+4*r2]
@@ -1859,12 +1854,24 @@ SAD_AVG2_HBD  8,  8
 %assign %%k %4
 %rep %5-%4
 %if %2 == 16
-    SAD_LIST_HBD_ROW16 %1, %%k, %3
+    SAD_LIST_HBD_ROW16 %1, %%k, %3, %4
 %else
-    SAD_LIST_HBD_PAIR8 %1, %%k, %3/2
+    SAD_LIST_HBD_PAIR8 %1, %%k, %3/2, %4
 %endif
 %assign %%k %%k+1
 %endrep
+%endmacro
+
+; m0 + m1 (word sums) -> xm0 dword 0, as HADDW
+%macro SAD_LIST_HBD_SUM 0
+    paddw          %[slm]0, %[slm]1
+    pmaddwd        %[slm]0, [pw_1]
+    vextracti128  xm1, %[slm]0, 1
+    paddd         xm0, xm1
+    punpckhqdq    xm1, xm0, xm0
+    paddd         xm0, xm1
+    pshuflw       xm1, xm0, q1032
+    paddd         xm0, xm1
 %endmacro
 
 %macro SAD_LIST_HBD_FENC 1 ; pairs
@@ -1872,7 +1879,7 @@ SAD_AVG2_HBD  8,  8
 %rep %1
 %assign %%f 4+%%p
     movu         xm%[%%f], [r0+2*%%p*FENC_STRIDEB]
-    vinserti128   m%[%%f], m%[%%f], [r0+(2*%%p+1)*FENC_STRIDEB], 1
+    vinserti128   %[slm]%[%%f], %[slm]%[%%f], [r0+(2*%%p+1)*FENC_STRIDEB], 1
 %assign %%p %%p+1
 %endrep
 %endmacro
@@ -1901,8 +1908,7 @@ cglobal pixel_sad_list_min_%2x%3, 6,9,%%regs
     mov            r7, [r1+8]
 %endif
     SAD_LIST_HBD_ROWS %1, %2, %3, 0, %%rows
-    paddw          m0, m1
-    HADDW          m0, m1
+    SAD_LIST_HBD_SUM
     movd          r6d, xm0
     shl           r6d, 4
     add           r6d, [r4]
@@ -1917,6 +1923,7 @@ cglobal pixel_sad_list_min_%2x%3, 6,9,%%regs
 %endmacro
 
 INIT_YMM avx2
+%define slm m
 SAD_LIST_MIN_HBD 0, 16, 16
 SAD_LIST_MIN_HBD 0, 16, 8
 SAD_LIST_MIN_HBD 0, 8, 16
@@ -1925,6 +1932,95 @@ SAD_LIST_MIN_HBD 1, 16, 16
 SAD_LIST_MIN_HBD 1, 16, 8
 SAD_LIST_MIN_HBD 1, 8, 16
 SAD_LIST_MIN_HBD 1, 8, 8
+
+; avx512: the 8-bit kernels' partial-distortion exit (sad-a.asm), over rows
+; 0..h/2-1 then h/2..h-1 (16 wide) or the row pairs (8 wide)
+%macro SAD_LIST_MIN_HBD_PDE 3 ; avg2, width, height
+%assign %%hrow %3/2
+%if %2 == 16
+    %assign %%half %3/2
+    %assign %%all %3
+%else
+    %assign %%half %3/4
+    %assign %%all %3/2
+%endif
+%if %1
+cglobal pixel_sad_avg2_list_min_%2x%3, 6,12,14,64
+%else
+cglobal pixel_sad_list_min_%2x%3, 6,12,14,64
+%endif
+%if %2 == 8
+    SAD_LIST_HBD_FENC %3/2
+%endif
+    FIX_STRIDES    r2
+    lea            r8, [r2*3]
+    mov           r9d, 1
+    kmovw          k1, r9d
+    xor           r10d, r10d
+    mov            r9, r1
+.pass1:
+    mov            r6, [r9]
+%if %1
+    mov            r7, [r9+8]
+%endif
+    SAD_LIST_HBD_ROWS %1, %2, %3, 0, %%half
+    SAD_LIST_HBD_SUM
+    vpbroadcastd   m12 {k1}, xm0
+    movd   [rsp+4*r10], xm0
+    kshiftlw       k1, k1, 1
+    add            r9, 8+8*%1
+    inc           r10d
+    cmp           r10d, r3d
+    jl .pass1
+    mov           r9d, 1
+    shlx          r9d, r9d, r3d
+    dec           r9d
+    kmovw          k2, r9d
+    vmovdqu32      m13 {k2}{z}, [r4]
+    pslld          m12, 4
+    paddd          m12, m13
+    vpbroadcastd   m13, r5d
+    vpcmpd         k2 {k2}, m12, m13, 1
+    kortestw       k2, k2
+    jz .end
+    kmovw         r9d, k2
+.pass2:
+    tzcnt         r10d, r9d
+%if %1
+    lea           r11, [r10*2]
+    mov            r6, [r1+r11*8]
+    mov            r7, [r1+r11*8+8]
+    lea            r7, [r7+r2*%%hrow]
+%else
+    mov            r6, [r1+r10*8]
+%endif
+    lea            r6, [r6+r2*%%hrow]
+    SAD_LIST_HBD_ROWS %1, %2, %3, %%half, %%all
+    SAD_LIST_HBD_SUM
+    movd          r11d, xm0
+    add           r11d, [rsp+4*r10]
+    shl           r11d, 4
+    add           r11d, [r4+4*r10]
+    cmp           r11d, r5d
+    cmovl         r5d, r11d
+    blsr          r9d, r9d
+    jnz .pass2
+.end:
+    mov           eax, r5d
+    RET
+%endmacro
+
+INIT_ZMM avx512
+%define slm ym
+SAD_LIST_MIN_HBD_PDE 0, 16, 16
+SAD_LIST_MIN_HBD_PDE 0, 16, 8
+SAD_LIST_MIN_HBD_PDE 0, 8, 16
+SAD_LIST_MIN_HBD_PDE 0, 8, 8
+SAD_LIST_MIN_HBD_PDE 1, 16, 16
+SAD_LIST_MIN_HBD_PDE 1, 16, 8
+SAD_LIST_MIN_HBD_PDE 1, 8, 16
+SAD_LIST_MIN_HBD_PDE 1, 8, 8
+INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
 ; void intra_sad_x3_4x4( uint16_t *fenc, uint16_t *fdec, int res[3] );
