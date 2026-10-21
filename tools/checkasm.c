@@ -919,7 +919,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(4);
 
     /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
-     * me.c's 1<<30 in unused slots, 3 a maximal sad (~fenc) in slot j%12, winning */
+     * me.c's 1<<30 in unused slots, 3 a maximal sad (~fenc) in slot j%12, winning, 4 best
+     * around slot j%12's key over the first half of the rows */
     ok = 1; used_asm = 0;
     for( int i = 0; i < 7; i++ )
     {
@@ -930,14 +931,14 @@ static int check_pixel( int cpu_ref, int cpu_new )
             int wins[13] = {0};
             set_func_name( "sad_sq_min_%s", pixel_names[i] );
             used_asm = 1;
-            for( int j = 0; j < 256 && ok; j++ )
+            for( int j = 0; j < 320 && ok; j++ )
             {
                 int mode = j>>6;
                 pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
                 intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
                 pixel *pix = mode == 3 ? refm + 2*48 + 2 : pbuf2 + (j&31) + stride + 1;
                 ALIGNED_16( int32_t bias[12] );
-                int sad[12], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                int sad[12], half[12], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
                 if( mode == 3 )
                 {
                     int k = j%12;
@@ -950,6 +951,10 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 {
                     sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix + (k&3) - 1 + dys[k>>2]*stride, stride );
                     tmax = X264_MAX( tmax, sad[k] );
+                    half[k] = 0;
+                    for( int y = 0; y < x264_pixel_size[i].h/2; y++ )
+                        for( int x = 0; x < x264_pixel_size[i].w; x++ )
+                            half[k] += abs( fenc[y*FENC_STRIDE+x] - pix[(k&3) - 1 + (dys[k>>2] + y)*stride + x] );
                 }
                 for( int k = 0; k < 12; k++ )
                 {
@@ -970,6 +975,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
                 else if( mode == 3 )
                     best = INT_MAX;
+                else if( mode == 4 )
+                    best = (half[j%12] << 6) + bias[j%12] + (j&1 ? (rand()%3) - 1 : (rand()%2048) - 1024);
                 else
                     best = tmin + ((rand()&255) - 128) * 64 + (rand()&63);
                 res_c = best;

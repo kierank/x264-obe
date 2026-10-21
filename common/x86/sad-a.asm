@@ -2352,6 +2352,33 @@ INIT_YMM avx512
     RET
 %endmacro
 
+; partial-distortion exit: SAD_SQ_MIN_END's keys from the sums so far (every
+; acc lane a prefix of its rows, so lower bounds) into m10-m13, against best:
+; none below it, jump to .pde
+%macro SAD_SQ_PDE 0
+    vshufi64x2    m13, m0, m2, 0x3
+    vinserti128   m10, m0, xm2, 1
+    paddw         m10, m13
+    vpermq        m10, m10, q3120
+    vextracti128 xm13, m1, 1
+    paddw        xm11, xm1, xm13
+    vextracti128 xm12, m10, 1
+    paddw        xm10, xm12
+    punpckhqdq   xm13, xm11, xm11
+    paddw        xm11, xm13
+    pmovzxwd      m10, xm10
+    pmovzxwd     xm11, xm11
+    pslld         m10, 6
+    pslld        xm11, 6
+    paddd         m10, [r3]
+    paddd        xm11, [r3+32]
+    vpbroadcastd  m12, r4d
+    vpcmpd         k6, m10, m12, 1
+    vpcmpd         k7, xm11, xm12, 1
+    kortestw       k6, k7
+    jz .pde
+%endmacro
+
 %macro SAD_SQ_ACC 4 ; acc, fenc, ref, first
 %if %4
     vdbpsadbw     m%1, m%2, m%3, 0x94
@@ -2361,12 +2388,20 @@ INIT_YMM avx512
 %endif
 %endmacro
 
+%macro SAD_SQ_MIN_16x16 1 ; pde
+%if %1
+cglobal pixel_sad_sq_min_pde_16x16, 5,5,14
+%else
 cglobal pixel_sad_sq_min_16x16, 5,5,9
+%endif
     sub            r1, r2
     dec            r1
     mova           m3, [sad_sq_idx16]
 %assign sq_j -1
 %rep 18
+    %if %1 && sq_j == 8
+        SAD_SQ_PDE
+    %endif
     %assign sq_y sq_j+1
     %assign sq_f 4+(sq_y % 3)
     %if sq_y < 15
@@ -2394,8 +2429,19 @@ cglobal pixel_sad_sq_min_16x16, 5,5,9
     %assign sq_j sq_j+1
 %endrep
     SAD_SQ_MIN_END
+%if %1
+.pde:
+    mov           eax, r4d
+    RET
+%endif
+%endmacro
 
+%macro SAD_SQ_MIN_8x8 1 ; pde
+%if %1
+cglobal pixel_sad_sq_min_pde_8x8, 5,5,14
+%else
 cglobal pixel_sad_sq_min_8x8, 5,5,10
+%endif
     sub            r1, r2
     dec            r1
     mova           m3, [sad_sq_idx8]
@@ -2405,6 +2451,9 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
     vpermd         m7, m3, [r0+6*FENC_STRIDE]
 %assign sq_j -1
 %rep 9
+    %if %1 && sq_j == 3
+        SAD_SQ_PDE
+    %endif
     movu          xm9, [r1]
     vinserti128    m9, m9, [r1+r2], 1
     %if sq_j < 7
@@ -2426,6 +2475,17 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
     %assign sq_j sq_j+1
 %endrep
     SAD_SQ_MIN_END
+%if %1
+.pde:
+    mov           eax, r4d
+    RET
+%endif
+%endmacro
+
+SAD_SQ_MIN_16x16 0
+SAD_SQ_MIN_8x8 0
+SAD_SQ_MIN_16x16 1
+SAD_SQ_MIN_8x8 1
 %undef sq_j
 %undef sq_y
 %undef sq_f
