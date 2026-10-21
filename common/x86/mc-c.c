@@ -760,16 +760,7 @@ MC_WEIGHT_WTAB(weight,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(weight_ns,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(offsetadd,avx2,avx2,avx2,16)
 MC_WEIGHT_WTAB(offsetsub,avx2,avx2,sse2,16)
-/* zen4 prune: weight_w12 avx512 1.648x avx2 on rack01 Zen 4; kept assembled */
-static weight_fn_t x264_mc_weight_wtab_avx512[6] =
-{
-    x264_mc_weight_w4_avx2,
-    x264_mc_weight_w4_avx2,
-    x264_mc_weight_w8_avx2,
-    x264_mc_weight_w12_avx2,
-    x264_mc_weight_w16_avx512,
-    x264_mc_weight_w20_avx512,
-};
+MC_WEIGHT_WTAB(weight,avx512,avx2,avx2,12)
 static weight_fn_t x264_mc_weight_ns_wtab_avx512[6] =
 {
     x264_mc_weight_ns_w4_avx2,
