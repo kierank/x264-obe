@@ -2020,30 +2020,6 @@ VAR2_8x8_ICL 16, 7
 ; SATD
 ;=============================================================================
 
-; avx512icl functions between ICL_LOW_BEGIN and ICL_LOW_END keep m0-m15 on
-; ymm0-15 (x86inc's avx512 permutation undone): only the opmask/VBMI2/VNNI
-; instructions need EVEX, the rest keep their shorter VEX encodings and the
-; VEX-only ones (phaddw, phminposuw, ...) still assemble. vzeroupper on return
-; and WIN64 xmm6-15 saves as for avx2. VNNI needs {evex}: on ymm0-15 nasm
-; picks the VEX AVX-VNNI encoding, which avx512icl does not imply.
-%macro ICL_LOW_RESET 0
-    INIT_YMM avx512icl
-    AVX512_MM_PERMUTATION
-    %define RESET_MM_PERMUTATION ICL_LOW_RESET
-%endmacro
-
-%macro ICL_LOW_BEGIN 0
-    %define vzeroupper_required (mmsize > 16)
-    %define high_mm_regs 0
-    ICL_LOW_RESET
-%endmacro
-
-%macro ICL_LOW_END 0
-    %define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
-    %define high_mm_regs (16*cpuflag(avx512))
-    INIT_YMM avx512icl
-%endmacro
-
 %macro JDUP 2
 %if cpuflag(sse4)
     ; just use shufps on anything post conroe
@@ -8721,7 +8697,6 @@ SA8D_X9_8BIT
 ;   sum is unchanged;
 ; - 8 wide row pairs [k k | k+4 k+4] from a broadcast and a merge-masked
 ;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
-; The whole block is ICL_LOW (m0-m15 on ymm0-15).
 ;-----------------------------------------------------------------------------
 INIT_YMM avx512icl
 %macro SATD_ICL_KMASK 1 ; gpr (dword) to clobber
