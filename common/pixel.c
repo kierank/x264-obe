@@ -1271,6 +1271,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* sad_x3/sad_x4 (+_min) _avx512: 1.07-1.38x */
         /* zen4 prune, borderline: sad_avg2[16x16] _avx512 1.022x, slower in 11/11 runs */
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx512;
+        pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )

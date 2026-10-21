@@ -27,6 +27,17 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
+SECTION_RODATA 64
+
+; pshufb: word 2p of an xmm splat over lanes 0-1, word 2p+1 over lanes 2-3
+%assign i 0
+isadhbd_hidx16:
+%rep 8
+    times 16 db 2*i, 2*i+1
+%assign i i+1
+%endrep
+%undef i
+
 SECTION .text
 
 cextern pw_1
@@ -1356,6 +1367,76 @@ SAD_X_HBD8_ZMM 4, 16, 1
 SAD_X_HBD8_ZMM 4,  8, 1
 SAD_AVG2_HBD16_ZMM 16
 SAD_AVG2_HBD16_ZMM  8
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_16x16( uint16_t *fenc, uint16_t *fdec, int res[3] )
+; AVX-512: a fenc row pair a zmm, the three predictions built in registers
+; (no fdec stores), word sums (at most 8*1023 a lane) reduced by
+; SAD_X_HBD16_ZMM_END.
+;-----------------------------------------------------------------------------
+; xm%1 = words -1 of rows 4*%2 .. 4*%2+3 of fdec (r1)
+%macro INTRA_SAD_HBD_LEFT4 2
+    movq          xm%1, [r1+FDEC_STRIDEB*(4*%2+3)-8]
+    pinsrw        xm%1, [r1+FDEC_STRIDEB*(4*%2+0)-2], 0
+    pinsrw        xm%1, [r1+FDEC_STRIDEB*(4*%2+1)-2], 1
+    pinsrw        xm%1, [r1+FDEC_STRIDEB*(4*%2+2)-2], 2
+%endmacro
+
+cglobal intra_sad_x3_16x16, 3,7,12
+    INTRA_SAD_HBD_LEFT4 0, 0
+    INTRA_SAD_HBD_LEFT4 1, 1
+    INTRA_SAD_HBD_LEFT4 2, 2
+    INTRA_SAD_HBD_LEFT4 3, 3
+    punpcklqdq    xm8, xm0, xm1        ; left 0-7
+    punpcklqdq    xm9, xm2, xm3        ; left 8-15
+    movu         ym10, [r1-FDEC_STRIDEB]
+    paddw         xm1, xm8, xm9
+    paddw         xm1, xm10
+    vextracti128  xm2, ym10, 1
+    paddw         xm1, xm2             ; at most 4*1023 a word
+    pmaddwd       xm1, [pw_1]
+    pshufd        xm2, xm1, q1032
+    paddd         xm1, xm2
+    pshufd        xm2, xm1, q2301
+    paddd         xm1, xm2             ; sum, at most 32*1023
+    psrld         xm1, 4
+    pxor          xm2, xm2
+    pavgw         xm1, xm2             ; (sum+16)>>5
+    vpbroadcastw  m11, xm1             ; DC prediction
+    vshufi64x2    m10, m10, m10, q1010 ; V prediction
+    vshufi32x4     m8, m8, m8, 0
+    vshufi32x4     m9, m9, m9, 0
+%assign isad_g 0
+%rep 8
+    movu           m7, [r0+isad_g*2*FENC_STRIDEB]
+%if isad_g < 4
+    pshufb         m4, m8, [isadhbd_hidx16+isad_g*64]
+%else
+    pshufb         m4, m9, [isadhbd_hidx16+(isad_g-4)*64]
+%endif
+    psubw          m4, m7              ; H
+    psubw          m5, m7, m10         ; V
+    psubw          m6, m7, m11         ; DC
+%if isad_g == 0
+    pabsw          m1, m4
+    pabsw          m0, m5
+    pabsw          m2, m6
+%else
+    pabsw          m4, m4
+    pabsw          m5, m5
+    pabsw          m6, m6
+    paddw          m1, m4
+    paddw          m0, m5
+    paddw          m2, m6
+%endif
+%assign isad_g isad_g+1
+%endrep
+%undef isad_g
+    pxor           m3, m3
+    SAD_X_HBD16_ZMM_END pw_1           ; V H DC
+    movq       [r2+0], xm0
+    pextrd     [r2+8], xm0, 2
+    RET
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_WxH( uint16_t *pix1, intptr_t, uint16_t *pix2, intptr_t ), W = 8, 4
