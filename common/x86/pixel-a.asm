@@ -366,6 +366,40 @@ dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
 %endif
 ; ssim_end4 avx512icl: vpermi2d of blocks 0 1 | 2 3 to s1 | s2 and ss | s12
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+; intra_satd_x4, per lane: dc words s0 s1 s2 s3 s2 s3 s4 s5 to (a, b) of (a+b+4)>>3
+ALIGN 32
+x4c_dc_a:     times 2 db  0, 1, 2, 3, 6, 7, 2, 3,12,13, 2, 3,14,15, 2, 3
+x4c_dc_b:     times 2 db  4, 5, 2, 3, 6, 7, 6, 7,12,13,12,13,14,15,14,15
+%if HIGH_BIT_DEPTH == 0
+; the dc bytes of a row of 4x4 blocks, u | v
+x4c_dc_shuf:  times 2 db  0, 0, 0, 0, 1, 1, 1, 1, 8, 8, 8, 8, 9, 9, 9, 9
+              times 2 db  2, 2, 2, 2, 3, 3, 3, 3,10,10,10,10,11,11,11,11
+              times 2 db  4, 4, 4, 4, 5, 5, 5, 5,12,12,12,12,13,13,13,13
+              times 2 db  6, 6, 6, 6, 7, 7, 7, 7,14,14,14,14,15,15,15,15
+; row y of H, u | v, from the left pixels u | v
+%assign x4i 0
+x4c_h_shuf:
+%rep 8
+              times 2 db x4i,x4i,x4i,x4i,x4i,x4i,x4i,x4i, x4i+8,x4i+8,x4i+8,x4i+8,x4i+8,x4i+8,x4i+8,x4i+8
+%assign x4i x4i+1
+%endrep
+; planar: corner to bytes 0, 8; weights of t0-7 | l0-7 and the corner
+x4c_p_corner: times 2 db  7,-1,-1,-1,-1,-1,-1,-1, 7,-1,-1,-1,-1,-1,-1,-1
+x4c_p_w8:     times 4 db -3,-2,-1, 0, 1, 2, 3, 4
+x4c_p_wc8:    times 4 db -4, 0, 0, 0, 0, 0, 0, 0
+x4c_p_wh16:   times 2 db -3,-2,-1, 0, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0
+x4c_p_wc16:   times 2 db -4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+x4_p_w16:     times 2 db -7,-6,-5,-4,-3,-2,-1, 0, 1, 2, 3, 4, 5, 6, 7, 8
+x4_p_wc:      times 2 db -8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+x4c_p_wa:     times 2 db  0, 0, 0, 0, 0, 0, 0,16, 0, 0, 0, 0, 0, 0, 0,16
+x4c_p_bc16:   times 4 dw 17408, 17408, 2560, 2560 ; pmulhrsw: (17*H+16)>>5, (5*V+32)>>6
+x4_m3:        times 16 dw -3
+x4_m7:        times 16 dw -7
+x4_w0:        times 16 db 0, 1
+x4_w2:        times 16 db 4, 5
+x4_w3:        times 16 db 6, 7
+x4_w7:        times 16 db 14, 15
+%endif
 
 SECTION .text
 
@@ -5583,6 +5617,21 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
     SATD_BI_BODY %2, 1
 %endmacro
 
+; intra_satd_x4: xm%1..xm%4, 4 dword sums each -> res[0..3]
+%macro X4_END 4
+    punpckldq     xm4, xm%1, xm%2
+    punpckhdq    xm%1, xm%2
+    paddd        xm%1, xm4
+    punpckldq     xm4, xm%3, xm%4
+    punpckhdq    xm%3, xm%4
+    paddd        xm%3, xm4
+    punpcklqdq    xm4, xm%1, xm%3
+    punpckhqdq   xm%1, xm%3
+    paddd        xm%1, xm4
+    movu         [r2], xm%1
+    RET
+%endmacro
+
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
 ; 10-bit satd, ymm. Each 128-bit lane holds one row of an independent
@@ -7936,7 +7985,273 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     RET
 %endmacro
 
+;-----------------------------------------------------------------------------
+; void intra_satd_x4_8x8c( uint8_t *fenc, uint8_t *fdec, int res[4] )  (DC, H, V, P)
+; void intra_satd_x4_8x16c( uint8_t *fenc, uint8_t *fdec, int res[4] )
+; chroma: a fenc row is u | v, so one register holds a row of both planes in the
+; 16 wide layout of satd_16x8, and each mode's u and v satds are one sum. Edge
+; vectors hold u in lane 0, v in lane 1. fenc's first stage is stored, then the
+; modes run in turn, pred - fenc into SATD_8x4; P is built in registers and fdec
+; is not written.
+;-----------------------------------------------------------------------------
+; m%1 = punpckhbw of rows %3, %3+1; lane 0 from fdec+row*FDEC_STRIDE-16, lane 1 at +%4
+%macro X4_LEFT2 4 ; dst, tmp, row, lane 1 offset
+    movu          xm%1, [r1+(%3)*FDEC_STRIDE-16]
+    vinserti128    m%1, m%1, [r1+(%3)*FDEC_STRIDE-16+%4], 1
+    movu          xm%2, [r1+(%3+1)*FDEC_STRIDE-16]
+    vinserti128    m%2, m%2, [r1+(%3+1)*FDEC_STRIDE-16+%4], 1
+    punpckhbw      m%1, m%2
+%endmacro
+
+; m%1: per lane, bytes 8-15 = byte 15 of the loads of rows %5..%5+7 (the left pixels)
+%macro X4_LEFT8 6 ; dst, 3*tmp, first row, lane 1 offset
+    X4_LEFT2      %1, %2, %5,   %6
+    X4_LEFT2      %2, %3, %5+2, %6
+    punpckhwd     m%1, m%2
+    X4_LEFT2      %2, %3, %5+4, %6
+    X4_LEFT2      %3, %4, %5+6, %6
+    punpckhwd     m%2, m%3
+    punpckhdq     m%1, m%2
+%endmacro
+
+; m0-m3 rows less fenc's -> satd words into m%1
+%macro X4_SATD 2 ; accumulator, swap/add
+%if cpuflag(avx512icl)
+    SATD_ICL_8x4 %2, %1
+%else
+    SATD_8x4_SSE 0, 0, 1, 2, 3, 4, 5, %1, %2
+%endif
+%endmacro
+
+; m%1 += u8 m%2 by s8 %3: dwords (VNNI) or words (avx2, m%4 tmp)
+%macro X4_DOT 4 ; dst, src, weights, tmp
+%if cpuflag(avx512icl)
+    vpdpbusd      m%1, m%2, %3
+%else
+    pmaddubsw     m%4, m%2, %3
+    paddw         m%1, m%4
+%endif
+%endmacro
+
+; rows y, y+1 of P from m11 (row y, words), advancing it by m10 (c): to m%1, m%2
+; as u | v (chroma) or 16 pixel (16x16) bytes in both lanes, through the first stage
+%macro X4_P2 2
+    psraw          m4, m11, 5
+    paddw         m11, m10
+    psraw          m5, m11, 5
+    paddw         m11, m10
+    packuswb       m4, m5
+    vpermq        m%1, m4, q2020
+    vpermq        m%2, m4, q3131
+    pmaddubsw     m%1, m7
+    pmaddubsw     m%2, m7
+%endmacro
+
+; m0-m3 less the stored first stage of rows %1..%1+3, into SATD accumulator m6
+%macro X4_PASS 2 ; first row, swap/add
+    psubw          m0, [rsp+(%1+0)*32]
+    psubw          m1, [rsp+(%1+1)*32]
+    psubw          m2, [rsp+(%1+2)*32]
+    psubw          m3, [rsp+(%1+3)*32]
+    X4_SATD        6, %2
+%endmacro
+
+; the same for one prediction m%1 in every row
+%macro X4_PASS1 3 ; pred, first row, swap/add
+    psubw          m0, m%1, [rsp+(%2+0)*32]
+    psubw          m1, m%1, [rsp+(%2+1)*32]
+    psubw          m2, m%1, [rsp+(%2+2)*32]
+    psubw          m3, m%1, [rsp+(%2+3)*32]
+    X4_SATD        6, %3
+%endmacro
+
+; P passes over %1 rows; m6 -> 4 dword sums in xm6
+%macro X4_P_MODE 1
+%assign x4g 0
+%rep %1/4
+    X4_P2           0, 1
+    X4_P2           2, 3
+%if x4g
+    X4_PASS     4*x4g, add
+%else
+    X4_PASS     4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+%endmacro
+
+%macro X4_FENC 1 ; rows: the first stage of fenc's, stored
+%assign x4i 0
+%rep %1
+    vbroadcasti128 m0, [r0+x4i*FENC_STRIDE]
+    pmaddubsw      m0, m7
+    movu [rsp+x4i*32], m0
+%assign x4i x4i+1
+%endrep
+%endmacro
+
+%macro INTRA_SATD_X4_C8 1 ; height
+cglobal intra_satd_x4_8x%1c, 3,4,16, %1*32
+%if cpuflag(avx512icl)
+    mov           r3d, 0x5555
+    kmovd          k1, r3d
+%endif
+    mova           m7, [hmul_16p]
+    X4_FENC        %1
+    X4_LEFT8       12, 0, 1, 2, 0, 16     ; m12: l0-l7
+    movu          m13, [r1-FDEC_STRIDE-8] ; corner in byte 7, t0-t7 in 8-15
+    punpckhqdq    m14, m13, m12           ; t0-t7 l0-l7
+%if %1 == 16
+    X4_LEFT8       15, 0, 1, 2, 8, 16     ; m15: l8-l15
+    punpckhqdq    m11, m12, m15           ; l0-l7 l8-l15
+%endif
+
+    ; DC: s0-s3 (8x16c: s0-s5) of t0-3, t4-7, l0-3, l4-7, l8-11, l12-15
+%if cpuflag(avx512icl)
+    pxor           m0, m0
+    vpdpbusd       m0, m14, [pb_1]
+%if %1 == 16
+    pxor           m1, m1
+    vpdpbusd       m1, m11, [pb_1]
+%endif
+%else
+    pmaddubsw      m0, m14, [pb_1]
+    pmaddwd        m0, [pw_1]
+%if %1 == 16
+    pmaddubsw      m1, m11, [pb_1]
+    pmaddwd        m1, [pw_1]
+%endif
+%endif
+%if %1 == 16
+    packssdw       m0, m1                 ; s0 s1 s2 s3 s2 s3 s4 s5
+%else
+    packssdw       m0, m0
+%endif
+    pshufb         m1, m0, [x4c_dc_a]
+    pshufb         m0, [x4c_dc_b]
+    paddw          m0, m1
+    paddw          m0, [pw_4]
+    psrlw          m0, 3                  ; the blocks' dc, two a row of blocks
+    packuswb       m0, m0
+    vpermq         m8, m0, q2020          ; u | v in both lanes
+
+    ; P: H = sum (i+1)*(t[4+i]-t[2-i]), V likewise (8x16c: (i+1)*(l[8+i]-l[6-i]) over 8),
+    ; t[-1] = l[-1] = the corner
+    pshufb         m1, m13, [x4c_p_corner]
+    pxor           m0, m0
+%if %1 == 16
+    pxor           m2, m2
+    X4_DOT          0, 14, [x4c_p_wh16], 3
+    X4_DOT          0, 1, [x4c_p_wc16], 3
+    X4_DOT          2, 11, [x4_p_w16], 3
+    X4_DOT          2, 1, [x4_p_wc], 3
+%if notcpuflag(avx512icl)
+    pmaddwd        m0, [pw_1]
+    pmaddwd        m2, [pw_1]
+%endif
+    punpcklqdq     m1, m0, m2
+    punpckhqdq     m0, m2
+    paddd          m0, m1                 ; h0 h1 v0+v2 v1+v3
+%else
+    X4_DOT          0, 14, [x4c_p_w8], 3
+    X4_DOT          0, 1, [x4c_p_wc8], 3
+%if notcpuflag(avx512icl)
+    pmaddwd        m0, [pw_1]
+%endif
+%endif
+    pshufd         m1, m0, q2301
+    paddd          m0, m1                 ; H H V V
+    packssdw       m0, m0
+%if %1 == 16
+    pmulhrsw       m0, [x4c_p_bc16]       ; b b c c
+    shufpd         m1, m14, m11, 1010b    ; t0-t7 l8-l15
+    pmaddubsw      m1, [x4c_p_wa]
+%else
+    pmulhrsw       m0, [pw_17408]
+    pmaddubsw      m1, m14, [x4c_p_wa]    ; 16*t7 in word 3, 16*l7 (8x16c l15) in 7
+%endif
+    pshufb         m9, m0, [x4_w0]        ; b
+    pshufb        m10, m0, [x4_w2]        ; c
+    pshufb         m0, m1, [x4_w3]
+    pshufb         m1, [x4_w7]
+    paddw          m0, m1
+    paddw          m0, [pw_16]            ; a + 16
+    pmullw         m1, m9, [lowres_p_x]   ; b*(x-3)
+    paddw          m0, m1
+%if %1 == 16
+    pmullw         m1, m10, [x4_m7]
+%else
+    pmullw         m1, m10, [x4_m3]
+%endif
+    paddw         m11, m0, m1             ; row 0: a + 16 + b*(x-3) + c*(0-3), 8x16c c*(0-7)
+
+    ; DC
+%assign x4g 0
+%rep %1/4
+    pshufb         m4, m8, [x4c_dc_shuf+x4g*32]
+    pmaddubsw      m4, m7
+%if x4g
+    X4_PASS1        4, 4*x4g, add
+%else
+    X4_PASS1        4, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+    SWAP            6, 9
+    ; H
+    vpermq        m13, m12, q3131         ; left u | v in both lanes
+%if %1 == 16
+    vpermq        m14, m15, q3131
+%endif
+%assign x4g 0
+%rep %1/4
+%assign x4i 0
+%rep 4
+%if x4g < 2
+    pshufb         m %+ x4i, m13, [x4c_h_shuf+(4*x4g+x4i)*32]
+%else
+    pshufb         m %+ x4i, m14, [x4c_h_shuf+(4*x4g+x4i-8)*32]
+%endif
+    pmaddubsw      m %+ x4i, m7
+%assign x4i x4i+1
+%endrep
+%if x4g
+    X4_PASS     4*x4g, add
+%else
+    X4_PASS     4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+    SWAP            6, 12
+    ; V
+    vpermq        m13, [r1-FDEC_STRIDE], q2020 ; t u | t v in both lanes
+    pmaddubsw     m13, m7
+%assign x4g 0
+%rep %1/4
+%if x4g
+    X4_PASS1       13, 4*x4g, add
+%else
+    X4_PASS1       13, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+    SWAP            6, 13
+    ; P
+    X4_P_MODE      %1
+    X4_END          9, 12, 13, 6
+%endmacro
+
+%macro INTRA_SATD_X4_8BIT 0
+INTRA_SATD_X4_C8 8
+INTRA_SATD_X4_C8 16
+%endmacro
+
 INTRA_SATD_X3_8BIT
+INTRA_SATD_X4_8BIT
 INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
@@ -8974,6 +9289,7 @@ cglobal pixel_sa8d_8x8, 4,8,8
     RET
 
 INTRA_SATD_X3_8BIT
+INTRA_SATD_X4_8BIT
 SA8D_SATD
 SATD_PRE_FUNCS
 SATD_AVG2_PRE_FUNCS
