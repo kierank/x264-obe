@@ -2347,8 +2347,8 @@ static int check_mc( int cpu_ref, int cpu_new )
     int align_off = (aligned ? 0 : rand()%16); \
     for( int i = 1; i <= 5; i++ ) \
     { \
-        ALIGNED_16( pixel buffC[640] ); \
-        ALIGNED_16( pixel buffA[640] ); \
+        ALIGNED_ARRAY_64( pixel, buffC, [640] ); \
+        ALIGNED_ARRAY_64( pixel, buffA, [640] ); \
         int j = X264_MAX( i*4, 2 ); \
         memset( buffC, 0, 640 * sizeof(pixel) ); \
         memset( buffA, 0, 640 * sizeof(pixel) ); \
@@ -2379,7 +2379,7 @@ static int check_mc( int cpu_ref, int cpu_new )
     }
 
     /* weight sources: pbuf2, and one dense in 0, 1, PIXEL_MAX-1 and PIXEL_MAX */
-    ALIGNED_16( pixel wsrc_ext[16*32+64] );
+    ALIGNED_ARRAY_64( pixel, wsrc_ext, [16*32+64] );
     for( int i = 0; i < 16*32+64; i++ )
     {
         int r = rand();
@@ -2449,10 +2449,10 @@ static int check_mc( int cpu_ref, int cpu_new )
     ok = 1; used_asm = 0;
     {
         enum { WA_SS = 64, WA_DS = 32, WA_SRC = WA_SS*20+64, WA_DST = WA_DS*20+64 };
-        ALIGNED_16( pixel wa_src[2][WA_SRC] );
-        ALIGNED_16( pixel wa_avg[WA_DST] );
-        ALIGNED_16( pixel wa_c[WA_DST] );
-        ALIGNED_16( pixel wa_a[WA_DST] );
+        ALIGNED_ARRAY_64( pixel, wa_src, [2], [WA_SRC] );
+        ALIGNED_ARRAY_64( pixel, wa_avg, [WA_DST] );
+        ALIGNED_ARRAY_64( pixel, wa_c, [WA_DST] );
+        ALIGNED_ARRAY_64( pixel, wa_a, [WA_DST] );
         static const int wa_h[] = { 2, 4, 5, 8, 9, 16, 17 };
         x264_t *hwa = x264_malloc( sizeof(x264_t) );
         x264_t *hwr = x264_malloc( sizeof(x264_t) );
