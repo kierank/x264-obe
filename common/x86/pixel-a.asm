@@ -8514,13 +8514,18 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 %endif
 %endmacro
 
-; avx2, and avx512icl in the ymm0-15 block after the SATD_ICL macros (phaddw,
-; vpblendd, vperm2i128 and phminposuw have no EVEX form)
+; avx2, and avx512icl with EVEX forms of the VEX-only phaddw, vpblendd, vpblendw,
+; vperm2i128 and phminposuw
 %macro SA8D_X9_8BIT 0
 cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %if cpuflag(avx512icl)
-    mov         r5d, 0x5555
-    kmovd        k1, r5d
+    mov         r5d, 0x80805555
+    kmovd        k1, r5d              ; words 0x5555
+    kshiftrd     k2, k1, 16           ; words 0x8080
+    mov         r5d, 0xccf00f
+    kmovd        k3, r5d              ; dwords 0x0f
+    kshiftrd     k4, k3, 8            ; dwords 0xf0
+    kshiftrd     k5, k3, 16           ; dwords 0xcc
 %endif
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
@@ -8549,6 +8554,15 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     pavgw       xm5, xm0
     vpbroadcastb m5, xm5              ; dc
     vpermq      m12, m1, q1032        ; v | h
+%if cpuflag(avx512icl)
+    vpblendmd   m13 {k3}, m9, m5      ; dc | ddl
+    vpermq      m10, m9, q1010        ; ddr | vr odd rows
+    vpblendmd    m2 {k5}, m9, m8
+    vinserti128 m11, m9, xm2, 1       ; ddr | vr even rows
+    punpcklbw   m14, m8, m9
+    vpbroadcastb m0, [r2+7]
+    vpblendmw   m14 {k2}, m14, m0     ; hu
+%else
     vpblendd    m13, m9, m5, 0x0f     ; dc | ddl
     vpermq      m10, m9, q1010        ; ddr | vr odd rows
     vpblendd     m2, m9, m8, 0xcc
@@ -8556,14 +8570,22 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     punpcklbw   m14, m8, m9
     vpbroadcastb m0, [r2+7]
     vpblendw    m14, m14, m0, 0x80    ; hu
+%endif
     psrldq       m0, m9, 1
     punpcklbw    m0, m8, m0           ; HDT[0..15]: GL[0] FL[1] .. GL[7] FL[8]
     psrldq       m1, m9, 9
     palignr      m1, m1, m0, 6        ; HDT[6..21]
+%if cpuflag(avx512icl)
+    vpblendmd    m4 {k4}, m1, m8
+    vpblendmd    m3 {k4}, m1, m9
+    vpblendmd    m6 {k4}, m0, m8
+    vpblendmd    m7 {k4}, m0, m9
+%else
     vpblendd     m4, m1, m8, 0xf0
     vpblendd     m3, m1, m9, 0xf0
     vpblendd     m6, m0, m8, 0xf0
     vpblendd     m7, m0, m9, 0xf0
+%endif
 
     ; hd | vl
     pshufb       m0, m4, [x9b8_hdvl+0*32]
@@ -8591,7 +8613,7 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     mova        m10, m8
     sub          r5, 0x100
     call .sa8d
-    phaddw      m11, m0, m10          ; ddr hd | vr vl
+    HADD_ILV  w,  wd, m11,  m0, m10, m1 ; (ddr hd) x4 | (vr vl) x4
     ; v | h
 %assign x9i 0
 %rep 8
@@ -8609,8 +8631,8 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %endrep
     add          r5, 0x100
     call .sa8d
-    phaddw      m12, m0               ; v dc | h ddl
-    phaddw      m12, m11              ; v dc ddr hd | h ddl vr vl
+    HADD_ILV  w,  wd, m12, m12,  m0, m1 ; (v dc) x4 | (h ddl) x4
+    HADD_ILV  w,  dq, m12, m12, m11, m1 ; (v dc ddr hd) x2 | (h ddl vr vl) x2
     ; hu
 %assign x9i 0
 %rep 8
@@ -8620,9 +8642,9 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     add          r5, 0x300
     call .sa8d
 
-    phaddw       m0, m0
-    phaddw       m0, m0
-    phaddw      m12, m0               ; v dc ddr hd hu hu hu hu | h ddl vr vl x x x x
+    HADD_ILV  w,  wd,  m0,  m0,  m0, m1
+    HADD_ILV  w,  dq,  m0,  m0,  m0, m1 ; hu hu hu hu halves of hu
+    HADD_ILV  w, qdq, m12, m12,  m0, m1 ; v dc ddr hd hu hu hu hu | h ddl vr vl x x x x
     pxor        xm1, xm1
     pavgw       m12, m1
     vextracti128 xm1, m12, 1
@@ -8633,8 +8655,25 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     movzx       r2d, word [r3+16]
     add         r2d, r5d
     mov     [r4+16], r2w
+%if cpuflag(avx512icl)
+    pshufd      xm0, xm2, q1032
+    pminuw      xm0, xm2
+    pshuflw     xm1, xm0, q1032
+    pminuw      xm0, xm1
+    psrld       xm1, xm0, 16
+    pminuw      xm0, xm1
+    vpbroadcastw xm1, xm0
+    vpcmpeqw     k3, xm2, xm1
+    kmovd       r5d, k3
+    tzcnt       r5d, r5d             ; first minimum, as phminposuw
+    movd        eax, xm0
+    movzx       eax, ax
+    shl         r5d, 16
+    or          eax, r5d
+%else
     phminposuw  xm0, xm2
     movd        eax, xm0
+%endif
     add         r2d, 8<<16
     cmp          ax, r2w
     cmova       eax, r2d
@@ -8911,9 +8950,7 @@ SA8D_SATD
 SATD_PRE_FUNCS
 SATD_AVG2_PRE_FUNCS
 LOWRES_8BIT
-ICL_LOW_BEGIN
 SA8D_X9_8BIT
-ICL_LOW_END
 SATD_BI 16, 16, 0
 SATD_BI 16,  8, 0
 SATD_BI  8, 16, 0
