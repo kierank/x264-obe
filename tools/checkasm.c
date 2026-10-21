@@ -2119,8 +2119,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
-            call_c( mc_c.mc_chroma, dst1, dst1+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
-            call_a( mc_a.mc_chroma, dst2, dst2+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
+            call_c1( mc_c.mc_chroma, dst1, dst1+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
+            call_a1( mc_a.mc_chroma, dst2, dst2+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
             /* mc_chroma width=2 may write garbage to the right of dst. ignore that. */ \
             for( int j = 0; j < h; j++ ) \
                 for( int i = w; i < 8; i++ ) \
@@ -2311,6 +2311,24 @@ static int check_mc( int cpu_ref, int cpu_new )
             MC_TEST_CHROMA( 2, 4 );
             MC_TEST_CHROMA( 2, 2 );
         }
+    /* bench: a 64-byte aligned interleaved plane of stride 64, one mv (1/8 pel)
+     * per class: full (0,0), h (4,0), v (0,4), hv (3,5); the 4:2:0 and 4:2:2 sizes */
+    if( mc_a.mc_chroma != mc_ref.mc_chroma )
+    {
+        ALIGNED_ARRAY_64( pixel, cb_src, [64*20] );
+        static const int8_t cb_mv[4][2] = { {0,0}, {4,0}, {0,4}, {3,5} };
+        static const char *cb_name[4] = { "full", "h", "v", "hv" };
+        static const int8_t cb_size[10][2] = { {8,16}, {8,8}, {8,4}, {4,16}, {4,8}, {4,4}, {4,2}, {2,8}, {2,4}, {2,2} };
+        memcpy( cb_src, pbuf1, 64*20*sizeof(pixel) );
+        for( int k = 0; k < 4; k++ )
+            for( int j = 0; j < 10; j++ )
+            {
+                int w = cb_size[j][0], h = cb_size[j][1], dx = cb_mv[k][0], dy = cb_mv[k][1];
+                set_func_name( "mc_chroma_%s_%dx%d", cb_name[k], w, h );
+                call_c2( mc_c.mc_chroma, dst1, dst1+8, (intptr_t)16, cb_src, (intptr_t)64, dx, dy, w, h );
+                call_a2( mc_a.mc_chroma, dst2, dst2+8, (intptr_t)16, cb_src, (intptr_t)64, dx, dy, w, h );
+            }
+    }
     report( "mc chroma :" );
 #undef MC_TEST_LUMA
 #undef MC_TEST_CHROMA
