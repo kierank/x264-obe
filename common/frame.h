@@ -241,6 +241,16 @@ typedef struct
                                     uint8_t bs[2][8][4], int mode );
 } x264_deblock_function_t;
 
+/* MBAFF: the motion a later MB reads from this one (bottom row and right column), per list,
+ * as saved and as seen from an MB of the other field mode */
+typedef struct
+{
+    int16_t mv[8][2];    /* bottom row 0-3, right column rows 0-2 (4-6), bottom right (7) */
+    uint8_t mvd[8][2];
+    int8_t  ref[4];      /* 8x8 */
+    int8_t  ref_src[12]; /* unconverted: the 8x8 refs, then the 8x8 ref of each mv */
+} x264_mbaff_border_t;
+
 typedef struct
 {
     /* MBAFF: left neighbour nnz and intra4x4 modes into the cache; left_case indexes left_indices[].
@@ -248,6 +258,11 @@ typedef struct
     void (*load_left_mbaff)( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
                              uint8_t *nnz_top, uint8_t *nnz_bot, int8_t *i4x4_top, int8_t *i4x4_bot,
                              int left_case );
+    /* MBAFF: dst[0] as saved, dst[1] converted for the other field mode (field: ref>>1, mv.y<<1, mvd.y<<1;
+     * frame: ref<<1, mv.y/2, mvd.y>>1, where ref >= 0). Reads ref[0..31], mv[15..39], mvd[8..39]. */
+    void (*save_border_mbaff)( x264_mbaff_border_t dst[2], int8_t ref[X264_SCAN8_LUMA_SIZE],
+                               int16_t mv[X264_SCAN8_LUMA_SIZE][2], uint8_t mvd[X264_SCAN8_LUMA_SIZE][2],
+                               int field );
 } x264_mbcache_function_t;
 
 #define x264_frame_delete x264_template(frame_delete)

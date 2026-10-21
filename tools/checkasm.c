@@ -3784,6 +3784,43 @@ static int check_mbcache( int cpu_ref, int cpu_new )
                 }
             }
         }
+
+        if( f == 0 && mbcf_a.save_border_mbaff != mbcf_ref.save_border_mbaff )
+        {
+            used_asm = 1;
+            set_func_name( "mbcache_save_border_mbaff" );
+            for( int i = 0; i < 400; i++ )
+            {
+                ALIGNED_ARRAY_16( int8_t, ref, [X264_SCAN8_LUMA_SIZE] );
+                ALIGNED_ARRAY_16( int16_t, mv, [X264_SCAN8_LUMA_SIZE],[2] );
+                ALIGNED_ARRAY_16( uint8_t, mvd, [X264_SCAN8_LUMA_SIZE],[2] );
+                ALIGNED_ARRAY_64( x264_mbaff_border_t, dst, [2],[2] );
+                int field = i&1;
+                /* refs: -1 or 0..31; mv: small, full range and the extremes; mvd: all bytes */
+                for( int j = 0; j < X264_SCAN8_LUMA_SIZE; j++ )
+                {
+                    ref[j] = (rand()&3) ? rand()&31 : -1;
+                    for( int k = 0; k < 2; k++ )
+                    {
+                        int r = rand()&7;
+                        mv[j][k] = r == 0 ? -32768 : r == 1 ? 32767 : r == 2 ? (rand()&1) - 1 : r < 5 ? (rand()&63) - 32 : rand();
+                        mvd[j][k] = (i&2) ? rand() : rand()%34;
+                    }
+                }
+                if( i&4 )
+                    for( int j = 0; j < 4; j++ )
+                        ref[x264_scan8[4*j]] = -1;
+                memset( dst, 0xcd, sizeof(x264_mbaff_border_t)*4 );
+                call_c( mbcf_c.save_border_mbaff, dst[0], ref, mv, mvd, field );
+                call_a( mbcf_a.save_border_mbaff, dst[1], ref, mv, mvd, field );
+                if( memcmp( dst[0], dst[1], sizeof(x264_mbaff_border_t)*2 ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "mbcache_save_border_mbaff (field=%d): [FAILED]\n", field );
+                    break;
+                }
+            }
+        }
     }
 
     report( "mbcache :" );

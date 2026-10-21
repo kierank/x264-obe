@@ -774,6 +774,10 @@ struct x264_t
      * there are four extra values that need to be stored, located in [4][i]. */
     uint8_t (*deblock_strength[2])[2][8][4];
 
+    /* MBAFF neighbour motion of the last two MB pair rows, per thread:
+     * [(mb_y&3)*mb_stride + mb_x][list][converted to the other field mode] */
+    x264_mbaff_border_t (*mbaff_border)[2][2];
+
     /* CPU functions dependents */
     x264_predict_t      predict_16x16[4+3];
     x264_predict8x8_t   predict_8x8[9+3];

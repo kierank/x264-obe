@@ -392,6 +392,8 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 CHECKED_MALLOC( h->deblock_strength[i], sizeof(**h->deblock_strength) * h->mb.i_mb_width );
             h->deblock_strength[1] = h->deblock_strength[i];
         }
+        if( PARAM_INTERLACED )
+            CHECKED_MALLOC( h->mbaff_border, sizeof(*h->mbaff_border) * 4 * h->mb.i_mb_width );
         if( PARAM_INTERLACED && h->mb.b_adaptive_mbaff && h->param.analyse.i_weighted_pred > 0
             && h->i_thread_frames > 1 && h->mb.i_mb_height*16 > h->param.i_height )
             for( int i = 0; i < (CHROMA444 ? 3 : 2); i++ )
@@ -442,6 +444,7 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
                 x264_free( h->intra_border_backup[i][j] - 16 );
         for( int i = 0; i < 3; i++ )
             x264_free( h->mb.fenc_bot[i] );
+        x264_free( h->mbaff_border );
     }
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );
@@ -762,11 +765,58 @@ MBCACHE_LOAD_LEFT_MBAFF_C( 420, CHROMA_420 )
 MBCACHE_LOAD_LEFT_MBAFF_C( 422, CHROMA_422 )
 MBCACHE_LOAD_LEFT_MBAFF_C( 444, CHROMA_444 )
 
+/* mvd source of MBs without coded mvd */
+static const uint8_t mbaff_mvd_zero[X264_SCAN8_LUMA_SIZE][2];
+
+static void mbcache_save_border_mbaff( x264_mbaff_border_t dst[2], int8_t ref[X264_SCAN8_LUMA_SIZE],
+                                       int16_t mv[X264_SCAN8_LUMA_SIZE][2], uint8_t mvd[X264_SCAN8_LUMA_SIZE][2],
+                                       int field )
+{
+    /* bottom row, right column rows 0-2, bottom right */
+    static const uint8_t idx[8] = { X264_SCAN8_0+24, X264_SCAN8_0+25, X264_SCAN8_0+26, X264_SCAN8_0+27,
+                                    X264_SCAN8_0+ 3, X264_SCAN8_0+11, X264_SCAN8_0+19, X264_SCAN8_0+27 };
+    static const uint8_t ref8x8[8] = { 2, 2, 3, 3, 1, 1, 3, 3 };
+    int8_t r[4] = { ref[x264_scan8[0]], ref[x264_scan8[4]], ref[x264_scan8[8]], ref[x264_scan8[12]] };
+    for( int i = 0; i < 8; i++ )
+    {
+        CP32( dst[0].mv[i], mv[idx[i]] );
+        CP16( dst[0].mvd[i], mvd[idx[i]] );
+        dst[0].ref_src[4+i] = r[ref8x8[i]];
+    }
+    for( int i = 0; i < 4; i++ )
+        dst[0].ref[i] = dst[0].ref_src[i] = r[i];
+    dst[1] = dst[0];
+    /* the view of an MB of the other field mode */
+    for( int i = 0; i < 8; i++ )
+        if( r[ref8x8[i]] >= 0 )
+        {
+            if( field )
+            {
+                dst[1].mv[i][1] <<= 1;
+                dst[1].mvd[i][1] <<= 1;
+            }
+            else
+            {
+                dst[1].mv[i][1] /= 2;
+                dst[1].mvd[i][1] >>= 1;
+            }
+        }
+    for( int i = 0; i < 4; i++ )
+        if( r[i] >= 0 )
+        {
+            if( field )
+                dst[1].ref[i] >>= 1;
+            else
+                dst[1].ref[i] <<= 1;
+        }
+}
+
 void x264_mbcache_init( int cpu, x264_mbcache_function_t *pf, int chroma_format )
 {
     pf->load_left_mbaff = chroma_format == CHROMA_444 ? mbcache_load_left_mbaff_444
                         : chroma_format == CHROMA_422 ? mbcache_load_left_mbaff_422
                         : mbcache_load_left_mbaff_420;
+    pf->save_border_mbaff = mbcache_save_border_mbaff;
 #if HAVE_MMX && ARCH_X86_64
     if( cpu&X264_CPU_AVX512ICL )
     {
@@ -1158,6 +1208,154 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
     x264_prefetch_fenc( h, h->fenc, mb_x, mb_y );
 
     /* load ref/mv/mvd */
+    if( b_mbaff )
+    {
+        /* From the neighbours' saved borders: a neighbour of the other field mode has its
+         * converted copy, so no frame<->field remap is left to do here. */
+        x264_mbaff_border_t (*border)[2][2] = h->mbaff_border;
+        int stride = h->mb.i_mb_stride;
+        int cur = (mb_y&3)*stride + mb_x - h->mb.i_mb_xy; /* + xy of an MB in this pair row */
+        int left_conv = (h->mb.i_neighbour & MB_LEFT) && h->mb.field[left[0]] != MB_INTERLACED;
+        for( int l = 0; l < lists; l++ )
+        {
+            int8_t *cref = h->mb.cache.ref[l];
+            int16_t (*cmv)[2] = h->mb.cache.mv[l];
+            uint8_t (*cmvd)[2] = h->mb.cache.mvd[l];
+            const x264_mbaff_border_t *b;
+
+            int i8 = x264_scan8[0] - 1 - 1*8;
+            if( h->mb.i_neighbour & MB_TOPLEFT )
+            {
+                /* topleft_partition: the middle of the MB instead of its bottom right */
+                int part = h->mb.topleft_partition;
+                b = &border[(h->mb.i_mb_topleft_y&3)*stride + mb_x-1][l][h->mb.field[h->mb.i_mb_topleft_xy] != MB_INTERLACED];
+                cref[i8] = b->ref[part ? 1 : 3];
+                CP32( cmv[i8], b->mv[part ? 5 : 3] );
+            }
+            else
+            {
+                cref[i8] = -2;
+                M32( cmv[i8] ) = 0;
+            }
+
+            i8 = x264_scan8[0] - 8;
+            if( h->mb.i_neighbour & MB_TOP )
+            {
+                b = &border[(top_y&3)*stride + mb_x][l][h->mb.field[top] != MB_INTERLACED];
+                cref[i8+0] =
+                cref[i8+1] = b->ref[2];
+                cref[i8+2] =
+                cref[i8+3] = b->ref[3];
+                CP128( cmv[i8], b->mv[0] );
+                if( h->param.b_cabac )
+                    CP64( cmvd[i8], b->mvd[0] );
+            }
+            else
+            {
+                M128( cmv[i8] ) = M128_ZERO;
+                M32( &cref[i8] ) = (uint8_t)(-2) * 0x01010101U;
+                if( h->param.b_cabac )
+                    M64( cmvd[i8] ) = 0;
+            }
+
+            i8 = x264_scan8[0] + 4 - 1*8;
+            if( h->mb.i_neighbour & MB_TOPRIGHT )
+            {
+                b = &border[(h->mb.i_mb_topright_y&3)*stride + mb_x+1][l][h->mb.field[h->mb.i_mb_topright_xy] != MB_INTERLACED];
+                cref[i8] = b->ref[2];
+                CP32( cmv[i8], b->mv[0] );
+            }
+            else
+                cref[i8] = -2;
+
+            i8 = x264_scan8[0] - 1;
+            if( h->mb.i_neighbour & MB_LEFT )
+            {
+                /* left_index_table->intra is also the border index of each left mv row */
+                const x264_mbaff_border_t *bt = &border[cur + left[LTOP]][l][left_conv];
+                const x264_mbaff_border_t *bb = &border[cur + left[LBOT]][l][left_conv];
+                cref[i8+0*8] = bt->ref[1+2*left_index_table->ref[0]];
+                cref[i8+1*8] = bt->ref[1+2*left_index_table->ref[1]];
+                cref[i8+2*8] = bb->ref[1+2*left_index_table->ref[2]];
+                cref[i8+3*8] = bb->ref[1+2*left_index_table->ref[3]];
+                CP32( cmv[i8+0*8], bt->mv[left_index_table->intra[0]] );
+                CP32( cmv[i8+1*8], bt->mv[left_index_table->intra[1]] );
+                CP32( cmv[i8+2*8], bb->mv[left_index_table->intra[2]] );
+                CP32( cmv[i8+3*8], bb->mv[left_index_table->intra[3]] );
+
+                /* Extra logic for top right mv in mbaff.
+                 * . . . d  . . a .
+                 * . . . e  . . . .
+                 * . . . f  b . c .
+                 * . . . .  . . . .
+                 *
+                 * If the top right of the 4x4 partitions labeled a, b and c in the
+                 * above diagram do not exist, but the entries d, e and f exist (in
+                 * the macroblock to the left) then use those instead.
+                 */
+                if( left_conv )
+                {
+                    if( MB_INTERLACED )
+                    {
+                        /* left pair frame (left_indices[2]): rows 1 and 3 of its top MB, row 1 of its bottom */
+                        h->mb.cache.topright_ref[l][0] = bt->ref[1];
+                        h->mb.cache.topright_ref[l][1] = bt->ref[3];
+                        h->mb.cache.topright_ref[l][2] = bb->ref[1];
+                        CP32( h->mb.cache.topright_mv[l][0], bt->mv[5] );
+                        CP32( h->mb.cache.topright_mv[l][1], bt->mv[3] );
+                        CP32( h->mb.cache.topright_mv[l][2], bb->mv[5] );
+                    }
+                    else
+                    {
+                        /* Looking at the bottom field so always take the bottom macroblock of the pair. */
+                        const x264_mbaff_border_t *bf = &border[cur + left[0] + stride][l][1];
+                        h->mb.cache.topright_ref[l][0] = bf->ref[1+2*left_index_table->ref[0]];
+                        h->mb.cache.topright_ref[l][1] = bf->ref[1+2*left_index_table->ref[0]];
+                        h->mb.cache.topright_ref[l][2] = bf->ref[1+2*left_index_table->ref[2]];
+                        CP32( h->mb.cache.topright_mv[l][0], bf->mv[left_index_table->intra[0]] );
+                        CP32( h->mb.cache.topright_mv[l][1], bf->mv[left_index_table->intra[1]] );
+                        CP32( h->mb.cache.topright_mv[l][2], bf->mv[left_index_table->intra[2]] );
+                    }
+                }
+
+                if( h->param.b_cabac )
+                {
+                    if( cref[i8+0*8] >= 0 )
+                    {
+                        CP16( cmvd[i8+0*8], bt->mvd[left_index_table->intra[0]] );
+                        CP16( cmvd[i8+1*8], bt->mvd[left_index_table->intra[1]] );
+                    }
+                    else
+                    {
+                        M16( cmvd[i8+0*8] ) = 0;
+                        M16( cmvd[i8+1*8] ) = 0;
+                    }
+                    if( cref[i8+2*8] >= 0 )
+                    {
+                        CP16( cmvd[i8+2*8], bb->mvd[left_index_table->intra[2]] );
+                        CP16( cmvd[i8+3*8], bb->mvd[left_index_table->intra[3]] );
+                    }
+                    else
+                    {
+                        M16( cmvd[i8+2*8] ) = 0;
+                        M16( cmvd[i8+3*8] ) = 0;
+                    }
+                }
+            }
+            else
+            {
+                for( int i = 0; i < 4; i++ )
+                {
+                    cref[i8+i*8] = -2;
+                    M32( cmv[i8+i*8] ) = 0;
+                }
+                if( h->param.b_cabac )
+                    for( int i = 0; i < 4; i++ )
+                        M16( cmvd[i8+i*8] ) = 0;
+            }
+        }
+    }
+    else
     for( int l = 0; l < lists; l++ )
     {
         int16_t (*mv)[2] = h->mb.mv[l];
@@ -1166,17 +1364,8 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         int i8 = x264_scan8[0] - 1 - 1*8;
         if( h->mb.i_neighbour & MB_TOPLEFT )
         {
-            int ir = b_mbaff ? 2*(s8x8*h->mb.i_mb_topleft_y + mb_x-1)+1+s8x8 : top_8x8 - 1;
-            int iv = b_mbaff ? 4*(s4x4*h->mb.i_mb_topleft_y + mb_x-1)+3+3*s4x4 : top_4x4 - 1;
-            if( b_mbaff && h->mb.topleft_partition )
-            {
-                /* Take motion vector from the middle of macroblock instead of
-                 * the bottom right as usual. */
-                iv -= 2*s4x4;
-                ir -= s8x8;
-            }
-            h->mb.cache.ref[l][i8] = ref[ir];
-            CP32( h->mb.cache.mv[l][i8], mv[iv] );
+            h->mb.cache.ref[l][i8] = ref[top_8x8 - 1];
+            CP32( h->mb.cache.mv[l][i8], mv[top_4x4 - 1] );
         }
         else
         {
@@ -1202,10 +1391,8 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         i8 = x264_scan8[0] + 4 - 1*8;
         if( h->mb.i_neighbour & MB_TOPRIGHT )
         {
-            int ir = b_mbaff ? 2*(s8x8*h->mb.i_mb_topright_y + (mb_x+1))+s8x8 : top_8x8 + 2;
-            int iv = b_mbaff ? 4*(s4x4*h->mb.i_mb_topright_y + (mb_x+1))+3*s4x4 : top_4x4 + 4;
-            h->mb.cache.ref[l][i8] = ref[ir];
-            CP32( h->mb.cache.mv[l][i8], mv[iv] );
+            h->mb.cache.ref[l][i8] = ref[top_8x8 + 2];
+            CP32( h->mb.cache.mv[l][i8], mv[top_4x4 + 4] );
         }
         else
              h->mb.cache.ref[l][i8] = -2;
@@ -1213,32 +1400,17 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         i8 = x264_scan8[0] - 1;
         if( h->mb.i_neighbour & MB_LEFT )
         {
-            if( b_mbaff )
-            {
-                h->mb.cache.ref[l][i8+0*8] = ref[h->mb.left_b8[LTOP] + 1 + s8x8*left_index_table->ref[0]];
-                h->mb.cache.ref[l][i8+1*8] = ref[h->mb.left_b8[LTOP] + 1 + s8x8*left_index_table->ref[1]];
-                h->mb.cache.ref[l][i8+2*8] = ref[h->mb.left_b8[LBOT] + 1 + s8x8*left_index_table->ref[2]];
-                h->mb.cache.ref[l][i8+3*8] = ref[h->mb.left_b8[LBOT] + 1 + s8x8*left_index_table->ref[3]];
+            const int ir = h->mb.i_b8_xy - 1;
+            const int iv = h->mb.i_b4_xy - 1;
+            h->mb.cache.ref[l][i8+0*8] =
+            h->mb.cache.ref[l][i8+1*8] = ref[ir + 0*s8x8];
+            h->mb.cache.ref[l][i8+2*8] =
+            h->mb.cache.ref[l][i8+3*8] = ref[ir + 1*s8x8];
 
-                CP32( h->mb.cache.mv[l][i8+0*8], mv[h->mb.left_b4[LTOP] + 3 + s4x4*left_index_table->mv[0]] );
-                CP32( h->mb.cache.mv[l][i8+1*8], mv[h->mb.left_b4[LTOP] + 3 + s4x4*left_index_table->mv[1]] );
-                CP32( h->mb.cache.mv[l][i8+2*8], mv[h->mb.left_b4[LBOT] + 3 + s4x4*left_index_table->mv[2]] );
-                CP32( h->mb.cache.mv[l][i8+3*8], mv[h->mb.left_b4[LBOT] + 3 + s4x4*left_index_table->mv[3]] );
-            }
-            else
-            {
-                const int ir = h->mb.i_b8_xy - 1;
-                const int iv = h->mb.i_b4_xy - 1;
-                h->mb.cache.ref[l][i8+0*8] =
-                h->mb.cache.ref[l][i8+1*8] = ref[ir + 0*s8x8];
-                h->mb.cache.ref[l][i8+2*8] =
-                h->mb.cache.ref[l][i8+3*8] = ref[ir + 1*s8x8];
-
-                CP32( h->mb.cache.mv[l][i8+0*8], mv[iv + 0*s4x4] );
-                CP32( h->mb.cache.mv[l][i8+1*8], mv[iv + 1*s4x4] );
-                CP32( h->mb.cache.mv[l][i8+2*8], mv[iv + 2*s4x4] );
-                CP32( h->mb.cache.mv[l][i8+3*8], mv[iv + 3*s4x4] );
-            }
+            CP32( h->mb.cache.mv[l][i8+0*8], mv[iv + 0*s4x4] );
+            CP32( h->mb.cache.mv[l][i8+1*8], mv[iv + 1*s4x4] );
+            CP32( h->mb.cache.mv[l][i8+2*8], mv[iv + 2*s4x4] );
+            CP32( h->mb.cache.mv[l][i8+3*8], mv[iv + 3*s4x4] );
         }
         else
         {
@@ -1246,39 +1418,6 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             {
                 h->mb.cache.ref[l][i8+i*8] = -2;
                 M32( h->mb.cache.mv[l][i8+i*8] ) = 0;
-            }
-        }
-
-        /* Extra logic for top right mv in mbaff.
-         * . . . d  . . a .
-         * . . . e  . . . .
-         * . . . f  b . c .
-         * . . . .  . . . .
-         *
-         * If the top right of the 4x4 partitions labeled a, b and c in the
-         * above diagram do not exist, but the entries d, e and f exist (in
-         * the macroblock to the left) then use those instead.
-         */
-        if( b_mbaff && (h->mb.i_neighbour & MB_LEFT) )
-        {
-            if( MB_INTERLACED && !h->mb.field[h->mb.i_mb_xy-1] )
-            {
-                h->mb.cache.topright_ref[l][0] = ref[h->mb.left_b8[0] + 1 + s8x8*0];
-                h->mb.cache.topright_ref[l][1] = ref[h->mb.left_b8[0] + 1 + s8x8*1];
-                h->mb.cache.topright_ref[l][2] = ref[h->mb.left_b8[1] + 1 + s8x8*0];
-                CP32( h->mb.cache.topright_mv[l][0], mv[h->mb.left_b4[0] + 3 + s4x4*(left_index_table->mv[0]+1)] );
-                CP32( h->mb.cache.topright_mv[l][1], mv[h->mb.left_b4[0] + 3 + s4x4*(left_index_table->mv[1]+1)] );
-                CP32( h->mb.cache.topright_mv[l][2], mv[h->mb.left_b4[1] + 3 + s4x4*(left_index_table->mv[2]+1)] );
-            }
-            else if( !MB_INTERLACED && h->mb.field[h->mb.i_mb_xy-1] )
-            {
-                // Looking at the bottom field so always take the bottom macroblock of the pair.
-                h->mb.cache.topright_ref[l][0] = ref[h->mb.left_b8[0] + 1 + s8x8*2 + s8x8*left_index_table->ref[0]];
-                h->mb.cache.topright_ref[l][1] = ref[h->mb.left_b8[0] + 1 + s8x8*2 + s8x8*left_index_table->ref[0]];
-                h->mb.cache.topright_ref[l][2] = ref[h->mb.left_b8[0] + 1 + s8x8*2 + s8x8*left_index_table->ref[2]];
-                CP32( h->mb.cache.topright_mv[l][0], mv[h->mb.left_b4[0] + 3 + s4x4*4 + s4x4*left_index_table->mv[0]] );
-                CP32( h->mb.cache.topright_mv[l][1], mv[h->mb.left_b4[0] + 3 + s4x4*4 + s4x4*left_index_table->mv[1]] );
-                CP32( h->mb.cache.topright_mv[l][2], mv[h->mb.left_b4[0] + 3 + s4x4*4 + s4x4*left_index_table->mv[2]] );
             }
         }
 
@@ -1290,7 +1429,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             else
                 M64( h->mb.cache.mvd[l][x264_scan8[0] - 8] ) = 0;
 
-            if( h->mb.i_neighbour & MB_LEFT && (!b_mbaff || h->mb.cache.ref[l][x264_scan8[0]-1] >= 0) )
+            if( h->mb.i_neighbour & MB_LEFT )
             {
                 CP16( h->mb.cache.mvd[l][x264_scan8[0 ] - 1], mvd[left[LTOP]][left_index_table->intra[0]] );
                 CP16( h->mb.cache.mvd[l][x264_scan8[2 ] - 1], mvd[left[LTOP]][left_index_table->intra[1]] );
@@ -1300,7 +1439,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
                 M16( h->mb.cache.mvd[l][x264_scan8[0]-1+0*8] ) = 0;
                 M16( h->mb.cache.mvd[l][x264_scan8[0]-1+1*8] ) = 0;
             }
-            if( h->mb.i_neighbour & MB_LEFT && (!b_mbaff || h->mb.cache.ref[l][x264_scan8[0]-1+2*8] >=0) )
+            if( h->mb.i_neighbour & MB_LEFT )
             {
                 CP16( h->mb.cache.mvd[l][x264_scan8[8 ] - 1], mvd[left[LBOT]][left_index_table->intra[2]] );
                 CP16( h->mb.cache.mvd[l][x264_scan8[10] - 1], mvd[left[LBOT]][left_index_table->intra[3]] );
@@ -1309,64 +1448,6 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             {
                 M16( h->mb.cache.mvd[l][x264_scan8[0]-1+2*8] ) = 0;
                 M16( h->mb.cache.mvd[l][x264_scan8[0]-1+3*8] ) = 0;
-            }
-        }
-
-        /* If motion vectors are cached from frame macroblocks but this
-         * macroblock is a field macroblock then the motion vector must be
-         * halved. Similarly, motion vectors from field macroblocks are doubled. */
-        if( b_mbaff )
-        {
-#define MAP_MVS\
-                if( FIELD_DIFFERENT(h->mb.i_mb_topleft_xy) )\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 - 1*8)\
-                if( FIELD_DIFFERENT(top) )\
-                {\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 0 - 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 1 - 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 2 - 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 3 - 1*8)\
-                }\
-                if( FIELD_DIFFERENT(h->mb.i_mb_topright_xy) )\
-                    MAP_F2F(mv, ref, x264_scan8[0] + 4 - 1*8)\
-                if( FIELD_DIFFERENT(left[0]) )\
-                {\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 0*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 1*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 2*8)\
-                    MAP_F2F(mv, ref, x264_scan8[0] - 1 + 3*8)\
-                    MAP_F2F(topright_mv, topright_ref, 0)\
-                    MAP_F2F(topright_mv, topright_ref, 1)\
-                    MAP_F2F(topright_mv, topright_ref, 2)\
-                }
-
-            if( MB_INTERLACED )
-            {
-#define FIELD_DIFFERENT(macroblock) (macroblock >= 0 && !h->mb.field[macroblock])
-#define MAP_F2F(varmv, varref, index)\
-                if( h->mb.cache.varref[l][index] >= 0 )\
-                {\
-                    h->mb.cache.varref[l][index] <<= 1;\
-                    h->mb.cache.varmv[l][index][1] /= 2;\
-                    h->mb.cache.mvd[l][index][1] >>= 1;\
-                }
-                MAP_MVS
-#undef MAP_F2F
-#undef FIELD_DIFFERENT
-            }
-            else
-            {
-#define FIELD_DIFFERENT(macroblock) (macroblock >= 0 && h->mb.field[macroblock])
-#define MAP_F2F(varmv, varref, index)\
-                if( h->mb.cache.varref[l][index] >= 0 )\
-                {\
-                    h->mb.cache.varref[l][index] >>= 1;\
-                    h->mb.cache.varmv[l][index][1] <<= 1;\
-                    h->mb.cache.mvd[l][index][1] <<= 1;\
-                }
-                MAP_MVS
-#undef MAP_F2F
-#undef FIELD_DIFFERENT
             }
         }
     }
@@ -1940,6 +2021,27 @@ void x264_macroblock_cache_save( x264_t *h )
                 M128( &mv1[1*s4x4] ) = M128_ZERO;
                 M128( &mv1[2*s4x4] ) = M128_ZERO;
                 M128( &mv1[3*s4x4] ) = M128_ZERO;
+            }
+        }
+
+        if( SLICE_MBAFF )
+        {
+            x264_mbaff_border_t (*border)[2] = h->mbaff_border[(h->mb.i_mb_y&3)*h->mb.i_mb_stride + h->mb.i_mb_x];
+            int lists = h->sh.i_type == SLICE_TYPE_B ? 2 : 1;
+            if( IS_INTRA( i_mb_type ) )
+                for( int l = 0; l < lists; l++ )
+                    for( int i = 0; i < 2; i++ )
+                    {
+                        memset( border[l][i].mv, 0, sizeof(border[l][i].mv) + sizeof(border[l][i].mvd) );
+                        memset( border[l][i].ref, -1, sizeof(border[l][i].ref) + sizeof(border[l][i].ref_src) );
+                    }
+            else
+            {
+                /* mvd as cache_save stores it below: CAVLC never reads it */
+                int mvd_coded = h->param.b_cabac && ((0x3FF30 >> i_mb_type) & 1);
+                for( int l = 0; l < lists; l++ )
+                    h->mbcf.save_border_mbaff( border[l], h->mb.cache.ref[l], h->mb.cache.mv[l],
+                                               mvd_coded ? h->mb.cache.mvd[l] : (uint8_t (*)[2])mbaff_mvd_zero, MB_INTERLACED );
             }
         }
     }
