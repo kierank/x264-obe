@@ -60,7 +60,6 @@ pd_4567: dd 4, 5, 6, 7
 sq_1: dq 1, 0
 pq_128: times 2 dq 128
 pq_ffffffff: times 2 dq 0xffffffff
-pd_04152637: dd 0, 4, 1, 5, 2, 6, 3, 7
 
 ; avx512icl
 ALIGN 64
@@ -174,6 +173,7 @@ cextern_common cabac_entropy
 cextern_common cabac_transition
 cextern cabac_size_unary
 cextern cabac_transition_unary
+cextern deinterleave_shufd
 cextern_common dct4_weight_tab
 cextern_common dct8_weight_tab
 cextern_common dct4_weight2_tab
@@ -229,7 +229,7 @@ SECTION .text
     vpackssdw ymm4, ymm4, [r6+224]
     vpacksswb ymm1, ymm1, ymm2
     vpacksswb ymm3, ymm3, ymm4
-    vmovdqu   ymm0, [pd_04152637]
+    vmovdqu   ymm0, [deinterleave_shufd]
     vpermd    ymm1, ymm0, ymm1
     vpermd    ymm3, ymm0, ymm3
 %else
