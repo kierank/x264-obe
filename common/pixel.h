@@ -226,12 +226,27 @@ typedef struct
      * (8-bit) or the fenc at FENC_STRIDE (high bit depth). */
     int (*intra_satd_lowres) ( void *fenc, pixel *src, intptr_t i_stride );
     int (*intra_mbcmp_lowres)( void *fenc, pixel *src, intptr_t i_stride ); /* intra_satd_lowres where mbcmp is satd, else NULL */
+    /* asm only, NULL otherwise: the satds of the DC, H, V and P predictions of u (fenc,
+     * fdec) plus those of v (fenc + FENC_STRIDE/2, fdec + FDEC_STRIDE/2), without writing
+     * fdec. Reference x264_intra_satd_x4_chroma_c. */
+    void (*intra_satd_x4_8x8c) ( pixel *fenc, pixel *fdec, int res[4] );
+    void (*intra_satd_x4_8x16c)( pixel *fenc, pixel *fdec, int res[4] );
+    /* the one of the chroma format where intra_mbcmp_x3_chroma and mbcmp are satd, else NULL */
+    void (*intra_mbcmp_x4_chroma)( pixel *fenc, pixel *fdec, int res[4] );
+    /* asm only, NULL otherwise: intra_satd_x3_16x16 (V, H, DC) and the satd of P, without
+     * writing fdec. Reference x264_intra_satd_x4_16x16_c. */
+    void (*intra_satd_x4_16x16) ( pixel *fenc, pixel *fdec, int res[4] );
+    void (*intra_mbcmp_x4_16x16)( pixel *fenc, pixel *fdec, int res[4] ); /* where mbcmp is satd, else NULL */
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)
 void x264_pixel_init( int cpu, x264_pixel_function_t *pixf );
 #define x264_pixel_sad_sq_min_c x264_template(pixel_sad_sq_min_c)
 int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[12], int best );
+#define x264_intra_satd_x4_chroma_c x264_template(intra_satd_x4_chroma_c)
+void x264_intra_satd_x4_chroma_c( int height, pixel *fenc, pixel *fdec, int res[4] );
+#define x264_intra_satd_x4_16x16_c x264_template(intra_satd_x4_16x16_c)
+void x264_intra_satd_x4_16x16_c( pixel *fenc, pixel *fdec, int res[4] );
 #define x264_pixel_ssd_nv12 x264_template(pixel_ssd_nv12)
 void x264_pixel_ssd_nv12   ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2,
                              int i_width, int i_height, uint64_t *ssd_u, uint64_t *ssd_v );

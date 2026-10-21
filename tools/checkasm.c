@@ -295,6 +295,40 @@ uint64_t x264_checkasm_kmask;
 #define call_c2(func,...) ({ call_bench(func,0,__VA_ARGS__); })
 
 
+/* intra_satd_x4's --bench comparison: the x3 + predict P + satd it replaces */
+static x264_pixel_function_t *intra_x4_chain_pf;
+static x264_predict_t intra_x4_chain_p;
+static void intra_x4_chain_8x8c( pixel *fenc, pixel *fdec, int res[4] )
+{
+    int u[3], v[3];
+    intra_x4_chain_pf->intra_satd_x3_8x8c( fenc, fdec, u );
+    intra_x4_chain_pf->intra_satd_x3_8x8c( fenc+FENC_STRIDE/2, fdec+FDEC_STRIDE/2, v );
+    intra_x4_chain_p( fdec );
+    intra_x4_chain_p( fdec+FDEC_STRIDE/2 );
+    res[3] = intra_x4_chain_pf->satd[PIXEL_8x8]( fdec, FDEC_STRIDE, fenc, FENC_STRIDE )
+           + intra_x4_chain_pf->satd[PIXEL_8x8]( fdec+FDEC_STRIDE/2, FDEC_STRIDE, fenc+FENC_STRIDE/2, FENC_STRIDE );
+    for( int i = 0; i < 3; i++ )
+        res[i] = u[i] + v[i];
+}
+static void intra_x4_chain_8x16c( pixel *fenc, pixel *fdec, int res[4] )
+{
+    int u[3], v[3];
+    intra_x4_chain_pf->intra_satd_x3_8x16c( fenc, fdec, u );
+    intra_x4_chain_pf->intra_satd_x3_8x16c( fenc+FENC_STRIDE/2, fdec+FDEC_STRIDE/2, v );
+    intra_x4_chain_p( fdec );
+    intra_x4_chain_p( fdec+FDEC_STRIDE/2 );
+    res[3] = intra_x4_chain_pf->satd[PIXEL_8x16]( fdec, FDEC_STRIDE, fenc, FENC_STRIDE )
+           + intra_x4_chain_pf->satd[PIXEL_8x16]( fdec+FDEC_STRIDE/2, FDEC_STRIDE, fenc+FENC_STRIDE/2, FENC_STRIDE );
+    for( int i = 0; i < 3; i++ )
+        res[i] = u[i] + v[i];
+}
+static void intra_x4_chain_16x16( pixel *fenc, pixel *fdec, int res[4] )
+{
+    intra_x4_chain_pf->intra_satd_x3_16x16( fenc, fdec, res );
+    intra_x4_chain_p( fdec );
+    res[3] = intra_x4_chain_pf->satd[PIXEL_16x16]( fdec, FDEC_STRIDE, fenc, FENC_STRIDE );
+}
+
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -1485,6 +1519,115 @@ static int check_pixel( int cpu_ref, int cpu_new )
         TEST_INTRA_X3( intra_satd_x3_4x4, 0 );
     }
     report( "intra satd_x3 :" );
+
+    /* intra_satd_x4: against x264_intra_satd_x4_*_c, itself checked against intra_satd_x3 +
+     * predict P + satd (C); fdec must not be written. k = 0: random; 1, 2: fenc max, edges 0
+     * and the reverse; 3: random 0/max; 4-7: each edge pixel 0 or max, fenc random, 0/max
+     * checkerboard, 0 and max; 8: ramps; 9: edges steps at the middle, up or down by the bits
+     * of j (the planar gradient extremes), fenc 0, max or random */
+    ok = 1; used_asm = 0;
+    for( int s = 0; s < 3; s++ )
+    {
+        void (*fa)( pixel *, pixel *, int * ) = s == 0 ? pixel_asm.intra_satd_x4_8x8c :
+                                                s == 1 ? pixel_asm.intra_satd_x4_8x16c : pixel_asm.intra_satd_x4_16x16;
+        void (*fr)( pixel *, pixel *, int * ) = s == 0 ? pixel_ref.intra_satd_x4_8x8c :
+                                                s == 1 ? pixel_ref.intra_satd_x4_8x16c : pixel_ref.intra_satd_x4_16x16;
+        int height = s == 1 || s == 2 ? 16 : 8;
+        if( !fa || fa == fr )
+            continue;
+        used_asm = 1;
+        set_func_name( s == 0 ? "intra_satd_x4_8x8c" : s == 1 ? "intra_satd_x4_8x16c" : "intra_satd_x4_16x16" );
+        ALIGNED_ARRAY_64( pixel, x4_fenc,[16*FENC_STRIDE] );
+        ALIGNED_ARRAY_64( pixel, x4_dec,[18*FDEC_STRIDE] );
+        ALIGNED_ARRAY_64( pixel, x4_dec2,[18*FDEC_STRIDE] );
+        pixel *fdec = x4_dec + 2*FDEC_STRIDE;
+        for( int k = 0; k < 10 && ok; k++ )
+            for( int j = 0; j < (do_bench ? 1 : 64) && ok; j++ )
+            {
+                for( int i = 0; i < 16*FENC_STRIDE; i++ )
+                    x4_fenc[i] = k == 0 || k == 4 ? pbuf1[i+5*j] : k == 1 ? PIXEL_MAX : k == 2 ? 0
+                               : k == 3 ? -(pbuf1[i+3*j]&1) & PIXEL_MAX : k == 5 ? -((i^(i>>4)^j)&1) & PIXEL_MAX
+                               : k == 6 ? 0 : k == 7 ? PIXEL_MAX : k == 8 ? (i&15)*PIXEL_MAX/15
+                               : j < 16 ? 0 : j < 32 ? PIXEL_MAX : pbuf1[i+j];
+                for( int i = 0; i < 18*FDEC_STRIDE; i++ )
+                    x4_dec[i] = k == 0 || k == 9 ? pbuf2[i+7*j] : k == 1 ? 0 : k == 2 ? PIXEL_MAX
+                              : k == 8 ? (j&1 ? i : ~i)*(j+1) & PIXEL_MAX : -(pbuf2[i+3*j]&1) & PIXEL_MAX;
+                if( k == 8 )
+                    for( int y = 0; y < 16; y++ )
+                    {
+                        fdec[y*FDEC_STRIDE-1] = (j&2 ? y : 15-y)*PIXEL_MAX/15;
+                        fdec[y*FDEC_STRIDE+FDEC_STRIDE/2-1] = (j&4 ? y : 15-y)*PIXEL_MAX/15;
+                    }
+                if( k == 9 )
+                    for( int p = 0; p < (s == 2 ? 1 : 2); p++ )
+                    {
+                        /* u by bits 0-1 of j, v by 2-3: top up or down, left up or down */
+                        int w = s == 2 ? 16 : 8, b = j >> 2*p;
+                        pixel *e = fdec + p*FDEC_STRIDE/2;
+                        for( int x = -1; x < w; x++ )
+                            e[x-FDEC_STRIDE] = -((x >= w/2) ^ (b&1)) & PIXEL_MAX;
+                        for( int y = 0; y < height; y++ )
+                            e[y*FDEC_STRIDE-1] = -((y >= height/2) ^ ((b>>1)&1)) & PIXEL_MAX;
+                    }
+                memcpy( x4_dec2, x4_dec, sizeof(x4_dec) );
+                int res_c[4], res_x[4], res_a[4];
+                if( s == 2 )
+                {
+                    x264_intra_satd_x4_16x16_c( x4_fenc, fdec, res_c );
+                    pixel_c.intra_satd_x3_16x16( x4_fenc, x4_dec2 + 2*FDEC_STRIDE, res_x );
+                    x264_predict_16x16_p_c( x4_dec2 + 2*FDEC_STRIDE );
+                    res_x[3] = pixel_c.satd[PIXEL_16x16]( x4_dec2 + 2*FDEC_STRIDE, FDEC_STRIDE, x4_fenc, FENC_STRIDE );
+                }
+                else
+                {
+                    x264_intra_satd_x4_chroma_c( height, x4_fenc, fdec, res_c );
+                    for( int p = 0; p < 2; p++ )
+                    {
+                        int r[4];
+                        pixel *pf = x4_fenc + p*FENC_STRIDE/2, *pd = x4_dec2 + 2*FDEC_STRIDE + p*FDEC_STRIDE/2;
+                        if( height == 16 )
+                        {
+                            pixel_c.intra_satd_x3_8x16c( pf, pd, r );
+                            x264_predict_8x16c_p_c( pd );
+                            r[3] = pixel_c.satd[PIXEL_8x16]( pd, FDEC_STRIDE, pf, FENC_STRIDE );
+                        }
+                        else
+                        {
+                            pixel_c.intra_satd_x3_8x8c( pf, pd, r );
+                            x264_predict_8x8c_p_c( pd );
+                            r[3] = pixel_c.satd[PIXEL_8x8]( pd, FDEC_STRIDE, pf, FENC_STRIDE );
+                        }
+                        for( int i = 0; i < 4; i++ )
+                            res_x[i] = p ? res_x[i] + r[i] : r[i];
+                    }
+                }
+                memcpy( x4_dec2, x4_dec, sizeof(x4_dec) );
+                call_a( fa, x4_fenc, fdec, res_a );
+                if( memcmp( res_c, res_x, sizeof(res_c) ) || memcmp( res_c, res_a, sizeof(res_c) ) ||
+                    memcmp( x4_dec, x4_dec2, sizeof(x4_dec) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "%s k=%d j=%d: c %d,%d,%d,%d x3 %d,%d,%d,%d asm %d,%d,%d,%d%s [FAILED]\n", func_name, k, j,
+                             res_c[0], res_c[1], res_c[2], res_c[3], res_x[0], res_x[1], res_x[2], res_x[3],
+                             res_a[0], res_a[1], res_a[2], res_a[3], memcmp( x4_dec, x4_dec2, sizeof(x4_dec) ) ? " fdec written" : "" );
+                }
+            }
+        /* --bench: what it replaces, with cpu_new's functions */
+        x264_predict_t pred[7];
+        if( s == 2 )
+            x264_predict_16x16_init( cpu_new, pred );
+        else if( s == 1 )
+            x264_predict_8x16c_init( cpu_new, pred );
+        else
+            x264_predict_8x8c_init( cpu_new, pred );
+        intra_x4_chain_pf = &pixel_asm;
+        intra_x4_chain_p = pred[s == 2 ? I_PRED_16x16_P : I_PRED_CHROMA_P];
+        set_func_name( "%s_chain", func_name );
+        void (*fc)( pixel *, pixel *, int * ) = s == 2 ? intra_x4_chain_16x16 : s == 1 ? intra_x4_chain_8x16c : intra_x4_chain_8x8c;
+        int res[4];
+        call_a2( fc, x4_fenc, fdec, res );
+    }
+    report( "intra satd_x4 :" );
     ok = 1; used_asm = 0;
     for( int pat = 0; pat < (do_bench ? 1 : 4) && ok; pat++ )
     {

@@ -698,18 +698,26 @@ static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
     /* Prediction selection for chroma */
     if( predict_mode[3] >= 0 && !h->mb.b_lossless )
     {
-        int satdu[4], satdv[4];
-        h->pixf.intra_mbcmp_x3_chroma( h->mb.pic.p_fenc[1], h->mb.pic.p_fdec[1], satdu );
-        h->pixf.intra_mbcmp_x3_chroma( h->mb.pic.p_fenc[2], h->mb.pic.p_fdec[2], satdv );
-        h->predict_chroma[I_PRED_CHROMA_P]( h->mb.pic.p_fdec[1] );
-        h->predict_chroma[I_PRED_CHROMA_P]( h->mb.pic.p_fdec[2] );
-        satdu[I_PRED_CHROMA_P] = h->pixf.mbcmp[chromapix]( h->mb.pic.p_fdec[1], FDEC_STRIDE, h->mb.pic.p_fenc[1], FENC_STRIDE );
-        satdv[I_PRED_CHROMA_P] = h->pixf.mbcmp[chromapix]( h->mb.pic.p_fdec[2], FDEC_STRIDE, h->mb.pic.p_fenc[2], FENC_STRIDE );
+        int satd[4];
+        if( h->pixf.intra_mbcmp_x4_chroma )
+            h->pixf.intra_mbcmp_x4_chroma( h->mb.pic.p_fenc[1], h->mb.pic.p_fdec[1], satd );
+        else
+        {
+            int satdu[4], satdv[4];
+            h->pixf.intra_mbcmp_x3_chroma( h->mb.pic.p_fenc[1], h->mb.pic.p_fdec[1], satdu );
+            h->pixf.intra_mbcmp_x3_chroma( h->mb.pic.p_fenc[2], h->mb.pic.p_fdec[2], satdv );
+            h->predict_chroma[I_PRED_CHROMA_P]( h->mb.pic.p_fdec[1] );
+            h->predict_chroma[I_PRED_CHROMA_P]( h->mb.pic.p_fdec[2] );
+            satdu[I_PRED_CHROMA_P] = h->pixf.mbcmp[chromapix]( h->mb.pic.p_fdec[1], FDEC_STRIDE, h->mb.pic.p_fenc[1], FENC_STRIDE );
+            satdv[I_PRED_CHROMA_P] = h->pixf.mbcmp[chromapix]( h->mb.pic.p_fdec[2], FDEC_STRIDE, h->mb.pic.p_fenc[2], FENC_STRIDE );
+            for( int i = 0; i < 4; i++ )
+                satd[i] = satdu[i] + satdv[i];
+        }
 
         for( ; *predict_mode >= 0; predict_mode++ )
         {
             int i_mode = *predict_mode;
-            int i_satd = satdu[i_mode] + satdv[i_mode] + a->i_lambda * bs_size_ue( i_mode );
+            int i_satd = satd[i_mode] + a->i_lambda * bs_size_ue( i_mode );
 
             a->i_satd_chroma_dir[i_mode] = i_satd;
             COPY2_IF_LT( a->i_satd_chroma, i_satd, a->i_predict8x8chroma, i_mode );
@@ -777,7 +785,12 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
 
         if( !h->mb.b_lossless && predict_mode[3] >= 0 )
         {
-            h->pixf.intra_mbcmp_x3_16x16( p_src, p_dst, a->i_satd_i16x16_dir );
+            /* x4 where plane is always checked */
+            int b_x4 = h->pixf.intra_mbcmp_x4_16x16 && i16x16_thresh == COST_MAX;
+            if( b_x4 )
+                h->pixf.intra_mbcmp_x4_16x16( p_src, p_dst, a->i_satd_i16x16_dir );
+            else
+                h->pixf.intra_mbcmp_x3_16x16( p_src, p_dst, a->i_satd_i16x16_dir );
             a->i_satd_i16x16_dir[0] += lambda * bs_size_ue(0);
             a->i_satd_i16x16_dir[1] += lambda * bs_size_ue(1);
             a->i_satd_i16x16_dir[2] += lambda * bs_size_ue(2);
@@ -788,8 +801,11 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             /* Plane is expensive, so don't check it unless one of the previous modes was useful. */
             if( a->i_satd_i16x16 <= i16x16_thresh )
             {
-                h->predict_16x16[I_PRED_16x16_P]( p_dst );
-                a->i_satd_i16x16_dir[I_PRED_16x16_P] = h->pixf.mbcmp[PIXEL_16x16]( p_dst, FDEC_STRIDE, p_src, FENC_STRIDE );
+                if( !b_x4 )
+                {
+                    h->predict_16x16[I_PRED_16x16_P]( p_dst );
+                    a->i_satd_i16x16_dir[I_PRED_16x16_P] = h->pixf.mbcmp[PIXEL_16x16]( p_dst, FDEC_STRIDE, p_src, FENC_STRIDE );
+                }
                 a->i_satd_i16x16_dir[I_PRED_16x16_P] += lambda * bs_size_ue(3);
                 COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[I_PRED_16x16_P], a->i_predict16x16, 3 );
             }

@@ -1550,6 +1550,22 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     return 0;
 }
 
+/* intra_mbcmp_x3_chroma is set once, mbcmp by every mbcmp_init */
+static void intra_x4_chroma_init( x264_t *h )
+{
+    h->pixf.intra_mbcmp_x4_chroma = NULL;
+    if( CHROMA_FORMAT == CHROMA_420 && h->pixf.intra_mbcmp_x3_chroma == h->pixf.intra_satd_x3_8x8c &&
+        h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8] )
+    {
+        h->pixf.intra_mbcmp_x4_chroma = h->pixf.intra_satd_x4_8x8c;
+    }
+    else if( CHROMA_FORMAT == CHROMA_422 && h->pixf.intra_mbcmp_x3_chroma == h->pixf.intra_satd_x3_8x16c &&
+             h->pixf.mbcmp[PIXEL_8x16] == h->pixf.satd[PIXEL_8x16] )
+    {
+        h->pixf.intra_mbcmp_x4_chroma = h->pixf.intra_satd_x4_8x16c;
+    }
+}
+
 static void mbcmp_init( x264_t *h )
 {
     int satd = !h->mb.b_lossless && h->param.analyse.i_subpel_refine > 1;
@@ -1584,6 +1600,8 @@ static void mbcmp_init( x264_t *h )
     h->pixf.intra_mbcmp_x9_8x8 = h->param.b_cpu_independent || h->mb.b_lossless ? NULL
                                : satd ? h->pixf.intra_sa8d_x9_8x8 : h->pixf.intra_sad_x9_8x8;
     h->pixf.intra_mbcmp_lowres = satd ? h->pixf.intra_satd_lowres : NULL;
+    h->pixf.intra_mbcmp_x4_16x16 = satd ? h->pixf.intra_satd_x4_16x16 : NULL;
+    intra_x4_chroma_init( h );
     satd &= h->param.analyse.i_me_method == X264_ME_TESA;
     memcpy( h->pixf.fpelcmp, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.fpelcmp) );
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );
@@ -1631,6 +1649,7 @@ static void chroma_dsp_init( x264_t *h )
             h->loopf.deblock_chroma_intra_mbaff = h->loopf.deblock_luma_intra_mbaff;
             break;
     }
+    intra_x4_chroma_init( h );
 }
 
 static void x264_set_aspect_ratio( x264_t *h, x264_param_t *param, int initial )

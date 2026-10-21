@@ -658,6 +658,60 @@ INTRA_MBCMP(satd, 16x16,  v, h, dc,  , _neon, _neon )
 // or see x264_mb_analyse_intra for the entirely different algorithm we
 // use when lacking an asm implementation of it.
 
+/* References of the asm-only intra_satd_x4: the C predictions from a copy of fdec's
+ * edges, so fdec is not written. Chroma: u at fenc, fdec and v at fenc + FENC_STRIDE/2,
+ * fdec + FDEC_STRIDE/2, res[] the sums of u and v in DC, H, V, P order. */
+void x264_intra_satd_x4_chroma_c( int height, pixel *fenc, pixel *fdec, int res[4] )
+{
+    ALIGNED_ARRAY_32( pixel, buf,[17*FDEC_STRIDE+16] );
+    pixel *pix = buf + FDEC_STRIDE + 8;
+    x264_predict_t pred[4];
+    if( height == 16 )
+    {
+        pred[0] = x264_predict_8x16c_dc_c;
+        pred[1] = x264_predict_8x16c_h_c;
+        pred[2] = x264_predict_8x16c_v_c;
+        pred[3] = x264_predict_8x16c_p_c;
+    }
+    else
+    {
+        pred[0] = x264_predict_8x8c_dc_c;
+        pred[1] = x264_predict_8x8c_h_c;
+        pred[2] = x264_predict_8x8c_v_c;
+        pred[3] = x264_predict_8x8c_p_c;
+    }
+    for( int i = 0; i < 4; i++ )
+        res[i] = 0;
+    for( int p = 0; p < 2; p++ )
+    {
+        pixel *src = fdec + p*FDEC_STRIDE/2;
+        for( int y = -1; y < height; y++ )
+            memcpy( &pix[y*FDEC_STRIDE-1], &src[y*FDEC_STRIDE-1], 9*sizeof(pixel) );
+        for( int i = 0; i < 4; i++ )
+        {
+            pred[i]( pix );
+            res[i] += height == 16 ? x264_pixel_satd_8x16( pix, FDEC_STRIDE, fenc + p*FENC_STRIDE/2, FENC_STRIDE )
+                                   : x264_pixel_satd_8x8( pix, FDEC_STRIDE, fenc + p*FENC_STRIDE/2, FENC_STRIDE );
+        }
+    }
+}
+
+/* V, H, DC, P */
+void x264_intra_satd_x4_16x16_c( pixel *fenc, pixel *fdec, int res[4] )
+{
+    ALIGNED_ARRAY_32( pixel, buf,[17*FDEC_STRIDE+16] );
+    pixel *pix = buf + FDEC_STRIDE + 16;
+    static const x264_predict_t pred[4] = { x264_predict_16x16_v_c, x264_predict_16x16_h_c,
+                                            x264_predict_16x16_dc_c, x264_predict_16x16_p_c };
+    for( int y = -1; y < 16; y++ )
+        memcpy( &pix[y*FDEC_STRIDE-1], &fdec[y*FDEC_STRIDE-1], 17*sizeof(pixel) );
+    for( int i = 0; i < 4; i++ )
+    {
+        pred[i]( pix );
+        res[i] = x264_pixel_satd_16x16( pix, FDEC_STRIDE, fenc, FENC_STRIDE );
+    }
+}
+
 
 
 /****************************************************************************
