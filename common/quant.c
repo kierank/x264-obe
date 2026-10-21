@@ -814,6 +814,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
          * trellis_cabac 4x4 1.48-1.52x, 4x4_psy 1.16-1.20x, dc 1.26-1.52x, chroma_422_dc 1.31-1.34x */
         pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_avx512icl;
         pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_avx512icl;
+        if( h->param.i_cqm_preset != X264_CQM_FLAT )
+        {
+            pf->dequant_8x8 = x264_dequant_8x8_avx512icl;
+        }
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
         pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx512icl;

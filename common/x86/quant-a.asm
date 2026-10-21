@@ -1165,6 +1165,57 @@ cglobal dequant_4x4, 0,3
     RET
 %endif ; HIGH_BIT_DEPTH
 
+%if HIGH_BIT_DEPTH == 0 && ARCH_X86_64
+; avx512icl: the right shift path adds the rounding inside VNNI vpdpwssd,
+; one accumulator per vector
+INIT_ZMM avx512icl
+cglobal dequant_8x8, 0,3,12
+    DEQUANT_START_AVX512 8
+    mova          m0, [dmf+0*64]
+    mova          m1, [dmf+1*64]
+    mova          m2, [dmf+2*64]
+    mova          m3, [dmf+3*64]
+    mova          m6, [dequant_shuf_avx512]
+    sub          t0d, 6
+    jl .rshift
+    vpbroadcastw  m4, t0d
+    vpermt2w      m0, m6, m1
+    vpermt2w      m2, m6, m3
+    pmullw        m0, [r0]
+    pmullw        m2, [r0+64]
+    vpsllvw       m0, m4
+    vpsllvw       m2, m4
+    mova        [r0], m0
+    mova     [r0+64], m2
+    RET
+.rshift:
+    mov          r1d, 1<<31
+    shrx         r1d, r1d, t0d ; 1 << (-i_qbits-1)
+    neg          t0d
+    vpbroadcastd  m4, r1d
+    vpbroadcastd  m5, t0d
+    mova          m7, m4
+    mova          m8, m4
+    mova          m9, m4
+    pmovzxwd     m10, [r0+0*32]
+    pmovzxwd     m11, [r0+1*32]
+    vpdpwssd      m4, m0, m10
+    vpdpwssd      m7, m1, m11
+    pmovzxwd     m10, [r0+2*32]
+    pmovzxwd     m11, [r0+3*32]
+    vpdpwssd      m8, m2, m10
+    vpdpwssd      m9, m3, m11
+    vpsravd       m4, m5
+    vpsravd       m7, m5
+    vpsravd       m8, m5
+    vpsravd       m9, m5
+    vpermt2w      m4, m6, m7
+    vpermt2w      m8, m6, m9
+    mova        [r0], m4
+    mova     [r0+64], m8
+    RET
+%endif ; !HIGH_BIT_DEPTH && ARCH_X86_64
+
 %undef dmf
 
 %macro DEQUANT_DC 2
