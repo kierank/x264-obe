@@ -6674,11 +6674,13 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
     add          r5, 0x100
     call .sa8d
 
-    phaddd       m9, m10              ; v v dc dc | h h ddl ddl
-    phaddd      m11, m12              ; ddr ddr hd hd | vr vr vl vl
-    phaddd       m9, m11              ; v dc ddr hd | h ddl vr vl
-    phaddd      xm0, xm0
-    phaddd      xm0, xm0              ; hu
+    HADD_ILV  d,  dq,  m9,  m9, m10, m1 ; (v dc) x2 | (h ddl) x2
+    HADD_ILV  d,  dq, m11, m11, m12, m1 ; (ddr hd) x2 | (vr vl) x2
+    HADD_ILV  d, qdq,  m9,  m9, m11, m1 ; v dc ddr hd | h ddl vr vl
+    pshufd      xm1, xm0, q1032
+    paddd       xm0, xm1
+    pshufd      xm1, xm0, q2301
+    paddd       xm0, xm1              ; hu
     vpbroadcastd m1, [pd_1]
     paddd        m9, m1
     paddd       xm0, xm1
