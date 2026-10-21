@@ -126,6 +126,19 @@ save_mrf:
     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0
 gf_shr1: dq 0x0204081020408000 ; gf2p8affineqb: x >> 1
+; avx2: pshufb of ref[0..15] and ref[16..31], of [ref|ref_src] to the bytes they govern; remapped bytes
+ALIGN 32
+save_ref_shuf: db 12,14,-1,-1,12,14,-1,-1,-1,-1,-1,-1,14,14,-1,-1
+               db -1,-1,12,14,-1,-1,12,14,12,12,14,14,-1,-1,14,14
+save_q0_shuf:  db -1,-1, 8, 8,-1,-1, 9, 9,-1,-1,10,10,-1,-1,11,11
+               db -1,-1,12,12,-1,-1,13,13,-1,-1,14,14,-1,-1,15,15
+save_q1_shuf:  db -1, 8,-1, 9,-1,10,-1,11,-1,12,-1,13,-1,14,-1,15
+               db  0, 1, 2, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+save_cv0:      times 8 db 0,0,-1,-1
+save_cv1:      times 8 db 0,-1
+               times 4 db -1
+               times 12 db 0
+save_pb_7f:    times 32 db 0x7f
 
 SECTION .text
 
@@ -172,6 +185,55 @@ LOAD_LEFT_MBAFF 444, 422
 ; reads ref[0..31], mv[15..39], mvd[8..39]; field is 0 or 1
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
+INIT_YMM avx2
+cglobal mbcache_save_border_mbaff, 5,5,8
+    movu           xm0, [r2+144]
+    movd           xm1, [r2+60]
+    pinsrd         xm1, [r2+92], 1
+    pinsrd         xm1, [r2+124], 2
+    pinsrd         xm1, [r2+156], 3
+    vinserti128     m0, m0, xm1, 1        ; mv: bottom row, right column, bottom right
+    movq           xm2, [r3+72]
+    pinsrw         xm2, [r3+30], 4
+    pinsrw         xm2, [r3+46], 5
+    pinsrw         xm2, [r3+62], 6
+    pinsrw         xm2, [r3+78], 7        ; mvd
+    movu           xm3, [r1]
+    movu           xm4, [r1+16]
+    pshufb         xm3, [save_ref_shuf]
+    pshufb         xm4, [save_ref_shuf+16]
+    por            xm3, xm4               ; ref, ref_src
+    vinserti128     m2, m2, xm3, 1
+    mova      [r0+ 0], m0
+    mova      [r0+32], m2
+    vpermq          m5, m2, q3232
+    pcmpeqb         m7, m7
+    pshufb          m6, m5, [save_q0_shuf]
+    pshufb          m5, [save_q1_shuf]    ; the ref governing each byte
+    pcmpgtb         m6, m7
+    pcmpgtb         m5, m7
+    pand            m6, [save_cv0]        ; mv bytes to remap: ref >= 0
+    pand            m5, [save_cv1]        ; mvd, ref bytes to remap
+    neg            r4d
+    movd           xm7, r4d
+    vpbroadcastd    m7, xm7               ; field
+    psrlw           m3, m0, 15
+    paddw           m3, m0
+    psraw           m3, 1                 ; mv.y / 2
+    psllw           m4, m0, 1             ; mv.y << 1
+    vpblendvb       m3, m3, m4, m7
+    vpblendvb       m0, m0, m3, m6
+    psrlw           m3, m2, 1
+    pand            m3, [save_pb_7f]      ; bytes >> 1
+    paddb           m4, m2, m2            ; bytes << 1
+    vpblendd        m1, m3, m4, 0xf0      ; frame MB: mvd.y >> 1, ref << 1
+    vpblendd        m3, m4, m3, 0xf0      ; field MB: mvd.y << 1, ref >> 1
+    vpblendvb       m1, m1, m3, m7
+    vpblendvb       m2, m2, m1, m5
+    mova      [r0+64], m0
+    mova      [r0+96], m2
+    RET
+
 INIT_ZMM avx512icl
 cglobal mbcache_save_border_mbaff, 5,5,6
     movu            m0, [r2+60]

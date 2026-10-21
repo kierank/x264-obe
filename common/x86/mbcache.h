@@ -31,6 +31,10 @@ void x264_mbcache_load_left_mbaff_##fmt##_##cpu( uint8_t nnz_cache[X264_SCAN8_SI
 DECL_LOAD_LEFT_MBAFF( 420, avx512icl )
 DECL_LOAD_LEFT_MBAFF( 422, avx512icl )
 DECL_LOAD_LEFT_MBAFF( 444, avx512icl )
+#define x264_mbcache_save_border_mbaff_avx2 x264_template(mbcache_save_border_mbaff_avx2)
+void x264_mbcache_save_border_mbaff_avx2( x264_mbaff_border_t dst[2], int8_t ref[X264_SCAN8_LUMA_SIZE],
+                                          int16_t mv[X264_SCAN8_LUMA_SIZE][2], uint8_t mvd[X264_SCAN8_LUMA_SIZE][2],
+                                          int field );
 #define x264_mbcache_save_border_mbaff_avx512icl x264_template(mbcache_save_border_mbaff_avx512icl)
 void x264_mbcache_save_border_mbaff_avx512icl( x264_mbaff_border_t dst[2], int8_t ref[X264_SCAN8_LUMA_SIZE],
                                                int16_t mv[X264_SCAN8_LUMA_SIZE][2], uint8_t mvd[X264_SCAN8_LUMA_SIZE][2],

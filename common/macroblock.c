@@ -818,6 +818,10 @@ void x264_mbcache_init( int cpu, x264_mbcache_function_t *pf, int chroma_format 
                         : mbcache_load_left_mbaff_420;
     pf->save_border_mbaff = mbcache_save_border_mbaff;
 #if HAVE_MMX && ARCH_X86_64
+    if( cpu&X264_CPU_AVX2 )
+    {
+        pf->save_border_mbaff = x264_mbcache_save_border_mbaff_avx2;
+    }
     if( cpu&X264_CPU_AVX512ICL )
     {
         pf->save_border_mbaff = x264_mbcache_save_border_mbaff_avx512icl;
