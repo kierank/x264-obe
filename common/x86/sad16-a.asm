@@ -1054,6 +1054,150 @@ SAD_X4_HBD16 16, 1
 SAD_X4_HBD16  8, 1
 %endif
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_hpel_min_16x16( uint16_t *fenc, uint16_t *pixv, uint16_t *pixh, intptr_t i_stride,
+;                               uint64_t bias01, uint64_t bias23, int best )
+; sad_x4_min of pixv, pixv + i_stride, pixh, pixh + 1. Each pixv row is loaded
+; once, for candidate 0 at fenc row k and candidate 1 at fenc row k-1.
+; Reads pixv rows 0..h and pixh rows 0..h-1, w pixels (pixh w+1).
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; row %1 (0..4) of a 4 row group -> hpel_o in bytes
+%macro HPEL_ROWOFF_HBD 3 ; row, stride, 3*stride (pixels)
+%if %1 == 0
+    %xdefine hpel_o 0
+%elif %1 == 1
+    %xdefine hpel_o 2*%2
+%elif %1 == 2
+    %xdefine hpel_o 4*%2
+%elif %1 == 3
+    %xdefine hpel_o 2*%3
+%else
+    %xdefine hpel_o 8*%2
+%endif
+%endmacro
+
+%macro SAD_HPEL_MIN_HBD16 1 ; h
+cglobal pixel_sad_hpel_min_16x%1, 4,7,9
+    lea            r6, [3*r3]
+    movu           m5, [r1]
+%assign %%k 0
+%rep %1
+    mova           m4, [r0+%%k*FENC_STRIDEB]
+    HPEL_ROWOFF_HBD (%%k&3)+1, r3, r6
+    movu           m6, [r1+hpel_o]
+    HPEL_ROWOFF_HBD (%%k&3), r3, r6
+%if %%k == 0
+    psubw          m0, m4, m5
+    psubw          m1, m4, m6
+    psubw          m2, m4, [r2]
+    psubw          m3, m4, [r2+2]
+    pabsw          m0, m0
+    pabsw          m1, m1
+    pabsw          m2, m2
+    pabsw          m3, m3
+%else
+    psubw          m5, m4
+    psubw          m7, m6, m4
+    psubw          m8, m4, [r2+hpel_o]
+    psubw          m4, [r2+hpel_o+2]
+    pabsw          m5, m5
+    pabsw          m7, m7
+    pabsw          m8, m8
+    pabsw          m4, m4
+    paddw          m0, m5
+    paddw          m1, m7
+    paddw          m2, m8
+    paddw          m3, m4
+%endif
+    SWAP            5, 6
+%if (%%k&3) == 3 && %%k < %1-1
+    lea            r1, [r1+8*r3]
+    lea            r2, [r2+8*r3]
+%endif
+%assign %%k %%k+1
+%endrep
+    vpbroadcastd   m5, [pw_64]
+    pmaddwd        m0, m5
+    pmaddwd        m1, m5
+    pmaddwd        m2, m5
+    pmaddwd        m3, m5
+    movq          xm6, r5mp        ; b2 b3
+    punpckldq      m4, m0, m1
+    punpckhdq      m0, m1
+    punpckldq      m5, m2, m3
+    punpckhdq      m2, m3
+    paddd          m0, m4
+    paddd          m2, m5
+    movq          xm4, r4mp        ; b0 b1
+    SAD_X_HBD16_MIN_END r6m
+%endmacro
+
+; lanes: pixv rows k | k+1 (candidates 0 | 1), pixh row k at +0 | +1 (2 | 3)
+%macro SAD_HPEL_MIN_HBD8 1 ; h
+cglobal pixel_sad_hpel_min_8x%1, 4,7,8
+    lea            r6, [3*r3]
+    movu          xm5, [r1]
+%assign %%k 0
+%rep %1
+    vbroadcasti128 m4, [r0+%%k*FENC_STRIDEB]
+    HPEL_ROWOFF_HBD (%%k&3)+1, r3, r6
+    movu          xm6, [r1+hpel_o]
+    HPEL_ROWOFF_HBD (%%k&3), r3, r6
+    movu          xm7, [r2+hpel_o]
+    vinserti128    m7, m7, [r2+hpel_o+2], 1
+    vinserti128    m5, m5, xm6, 1
+%if %%k == 0
+    psubw          m0, m5, m4
+    psubw          m1, m7, m4
+    pabsw          m0, m0
+    pabsw          m1, m1
+%else
+    psubw          m5, m4
+    psubw          m7, m4
+    pabsw          m5, m5
+    pabsw          m7, m7
+    paddw          m0, m5
+    paddw          m1, m7
+%endif
+    SWAP            5, 6
+%if (%%k&3) == 3 && %%k < %1-1
+    lea            r1, [r1+8*r3]
+    lea            r2, [r2+8*r3]
+%endif
+%assign %%k %%k+1
+%endrep
+    ; m0 = { ref1 | ref2 }, m1 = { ref3 | ref4 }, as sad_x4_min
+    vpbroadcastd   m5, [pw_64]
+    movq          xm3, r4mp        ; b0 b1
+    movq          xm4, r5mp        ; b2 b3
+    pmaddwd        m0, m5
+    pmaddwd        m1, m5
+    punpckldq     xm3, xm4         ; b0 b2 b1 b3
+    vpbroadcastd  xm4, r6m
+    vpermq         m3, m3, q1100   ; b0 b2 _ _ | b1 b3 _ _
+    punpckldq      m2, m0, m1
+    punpckhdq      m0, m1
+    paddd          m0, m2
+    punpckhqdq     m1, m0, m0
+    paddd          m0, m3
+    paddd          m0, m1          ; c0 c2 | c1 c3
+    vextracti128  xm1, m0, 1
+    pminsd        xm0, xm1
+    psrlq         xm1, xm0, 32
+    pminsd        xm0, xm4
+    pminsd        xm0, xm1
+    movd          eax, xm0
+    RET
+%endmacro
+
+INIT_YMM avx2
+SAD_HPEL_MIN_HBD16 16
+SAD_HPEL_MIN_HBD16 8
+SAD_HPEL_MIN_HBD8 16
+SAD_HPEL_MIN_HBD8 8
+%endif ; ARCH_X86_64
+
 %if ARCH_X86_64
 ;=============================================================================
 ; 10-bit 16 wide sad, sad_x3/sad_x4 (and _min), AVX-512: rows k, k+1 a zmm.
