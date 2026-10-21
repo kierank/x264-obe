@@ -68,6 +68,7 @@ sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
 dbp_idx4:      dd 0, 0, 4, 4, 0, 0, 4, 4
 dbp_hex_bperm: dd 5, 0, 4, 6, 1, 3, 2, 6
+dbp_oct_bperm: dd 0, 1, 3, 2, 7, 5, 4, 6
 ; dir 0-5: dy, dx - j of me.c hex2[dir+j]
 dbp_hh_tab:    db -2,-1,  0,-3,  2,-3
                db  0,-2,  2,-2,  2,-1
@@ -2770,6 +2771,67 @@ SAD_HEXHALF_MIN 8, 8
 SAD_HEXHALF_MIN 8, 4
 SAD_HEXHALF_MIN 4, 8
 SAD_HEXHALF_MIN 4, 4
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_oct_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[8], int best )
+; umh's octagon (0,-2) (-1,-1) (1,-1) (-2,0) (2,0) (-1,1) (1,1) (0,2), s = 4.
+; Group 1: dy -2 bx 0 word 0, dy -1 bx -2 words 1, 3, dy 0 bx -4 word 2:
+; (0,-2) (-1,-1) (-2,0) (1,-1); group 2 the same at dy 2, 1 and dy 0 bx 0:
+; (0,2) (-1,1) (2,0) (1,1).
+;-----------------------------------------------------------------------------
+%macro SAD_OCT_MIN 2 ; width, height
+cglobal pixel_sad_oct_min_%1x%2, 5,13,12
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    %define dbp_p4 r11
+    %define dbp_p5 r12
+    DBP_MASKS 0x1111, 0xaaaa, 0x4444, 0x1111, 0xaaaa, 0x4444
+    DBP_PTR_INIT
+    DBP_PTR     dbp_p0, -2, 0
+    DBP_PTR     dbp_p1, -1, -2
+    DBP_PTR     dbp_p2, 0, -4
+    DBP_PTR     dbp_p3, 2, 0
+    DBP_PTR     dbp_p4, 1, -2
+    DBP_PTR     dbp_p5, 0, 0
+    DBP_INIT %1
+    mova           m11, [dbp_oct_bperm]
+    vpermd         m10, m11, [r3]
+    vpbroadcastd   xm11, r4d
+    DBP_ROWS %1, %2, 6
+%if %1 == 4
+    paddw          xm0, xm1
+    paddw          xm3, xm8
+    paddw          xm0, xm2
+    paddw          xm2, xm3, xm9
+%else
+    paddw           m0, m1
+    paddw           m3, m8
+    paddw           m0, m2
+    paddw           m2, m3, m9
+%endif
+    DBP_FOLD2 %1
+    pmovzxwd        m0, xm0
+    pslld           m0, 4
+    paddd           m0, m10
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    pminsd         xm0, xm11
+    DBP_MIN4
+    RET
+%endmacro
+
+SAD_OCT_MIN 16, 16
+SAD_OCT_MIN 16, 8
+SAD_OCT_MIN 8, 16
+SAD_OCT_MIN 8, 8
+SAD_OCT_MIN 8, 4
+SAD_OCT_MIN 4, 8
+SAD_OCT_MIN 4, 4
 
 INIT_YMM avx2
 %endif ; ARCH_X86_64
