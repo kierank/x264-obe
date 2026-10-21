@@ -3154,3 +3154,197 @@ MC_CHROMA_SSSE3 ; No known AVX CPU will trigger CPU_CACHELINE_64
 INIT_YMM avx2
 MC_CHROMA_SSSE3
 %endif ; HIGH_BIT_DEPTH
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void pixel_avg_bi4_WxH( pixel *dst, intptr_t dst_stride, pixel *src0a, pixel *src0b,
+;                         pixel *src1a, pixel *src1b, intptr_t src_stride, int weight )
+; avg( pavg( src0a, src0b ), pavg( src1a, src1b ), weight ), the bipred of two qpel
+; get_refs in one pass. Weight 32 is a third pavg, else clip( (p0*w + p1*(64-w) + 32) >> 6 )
+; as BIWEIGHT_SSSE3 (8-bit) or BIWEIGHT_AVX2 (high bit depth).
+;-----------------------------------------------------------------------------
+%if HIGH_BIT_DEPTH == 0
+; m%1 = pavgb of the sources at %3, %4: rows 0, 1 (width 16) or 0-3 (width 8); m%2 tmp
+%macro BI4_SRC 4
+%if bi4_w == 16
+    movu         xm%1, [%3]
+    vinserti128   m%1, m%1, [%3+r6], 1
+    movu         xm%2, [%4]
+    vinserti128   m%2, m%2, [%4+r6], 1
+%else
+    movq         xm%1, [%3]
+    movhps       xm%1, [%3+r6]
+    movq         xm%2, [%3+2*r6]
+    movhps       xm%2, [%3+r8]
+    vinserti128   m%1, m%1, xm%2, 1
+    movq         xm%2, [%4]
+    movhps       xm%2, [%4+r6]
+    movq          xm5, [%4+2*r6]
+    movhps        xm5, [%4+r8]
+    vinserti128   m%2, m%2, xm5, 1
+%endif
+    pavgb         m%1, m%2
+%endmacro
+
+%macro BI4_STORE 0 ; m0, r7 = 3*dst_stride
+%if bi4_w == 16
+    movu         [r0], xm0
+    vextracti128 [r0+r1], m0, 1
+%else
+    vextracti128  xm1, m0, 1
+    movq         [r0], xm0
+    movhps    [r0+r1], xm0
+    movq    [r0+2*r1], xm1
+    movhps    [r0+r7], xm1
+%endif
+    lea           r0, [r0+bi4_r*r1]
+    lea           r2, [r2+bi4_r*r6]
+    lea           r3, [r3+bi4_r*r6]
+    lea           r4, [r4+bi4_r*r6]
+    lea           r5, [r5+bi4_r*r6]
+%endmacro
+
+%macro AVG_BI4 2 ; width, height
+%assign bi4_w %1
+%assign bi4_r 32/%1                ; rows a register
+cglobal pixel_avg_bi4_%1x%2, 7,10,6
+    mov          r9d, r7m
+    lea           r8, [3*r6]
+    lea           r7, [3*r1]
+    cmp          r9d, 32
+    jne .weight
+    mov          r9d, %2/bi4_r
+.avg:
+    BI4_SRC        0, 1, r2, r3
+    BI4_SRC        1, 2, r4, r5
+    pavgb          m0, m1
+    BI4_STORE
+    dec          r9d
+    jg .avg
+    RET
+.weight:
+    movzx        r9d, r9b
+    imul         r9d, r9d, -255
+    add          r9d, 64<<8              ; w | (64-w)<<8 as in BIWEIGHT_START_SSSE3
+    movd          xm3, r9d
+    vpbroadcastw   m3, xm3
+    mova           m4, [pw_512]
+    mov          r9d, %2/bi4_r
+.wloop:
+    BI4_SRC        0, 1, r2, r3
+    BI4_SRC        1, 2, r4, r5
+    punpckhbw      m2, m0, m1
+    punpcklbw      m0, m1
+    pmaddubsw      m0, m3
+    pmaddubsw      m2, m3
+    pmulhrsw       m0, m4
+    pmulhrsw       m2, m4
+    packuswb       m0, m2
+    BI4_STORE
+    dec          r9d
+    jg .wloop
+    RET
+%endmacro
+
+INIT_YMM avx2
+AVG_BI4 16, 16
+AVG_BI4 16,  8
+AVG_BI4  8, 16
+AVG_BI4  8,  8
+
+%else ; HIGH_BIT_DEPTH
+; m%1 = pavgw of the sources at %3, %4: row %5 (width 16) or rows 0, 1 (width 8); m%2 tmp
+%macro BI4H_SRC 5
+%if bi4_w == 16
+    movu          m%1, [%3+%5*r6]
+    pavgw         m%1, [%4+%5*r6]
+%else
+    movu         xm%1, [%3]
+    vinserti128   m%1, m%1, [%3+r6], 1
+    movu         xm%2, [%4]
+    vinserti128   m%2, m%2, [%4+r6], 1
+    pavgw         m%1, m%2
+%endif
+%endmacro
+
+; the bipred of m%1 (src0) and m%2 (src1) into m%1: pavgw, or BIWEIGHT_AVX2 with
+; m%3 = w<<9, m%4 = 0
+%macro BIH_AVG 5 ; a, b, w<<9, zero, weighted
+%if %5
+    psubw         m%1, m%2
+    pmulhrsw      m%1, m%3
+    paddw         m%1, m%2
+    pmaxsw        m%1, m%4
+    pminsw        m%1, [pw_pixel_max]
+%else
+    pavgw         m%1, m%2
+%endif
+%endmacro
+
+; two rows
+%macro BI4H_ROWS 1 ; weighted
+%if bi4_w == 16
+    BI4H_SRC        0, 2, r2, r3, 0
+    BI4H_SRC        1, 2, r4, r5, 0
+    BIH_AVG         0, 1, 3, 4, %1
+    movu         [r0], m0
+    BI4H_SRC        0, 2, r2, r3, 1
+    BI4H_SRC        1, 2, r4, r5, 1
+    BIH_AVG         0, 1, 3, 4, %1
+    movu      [r0+r1], m0
+%else
+    BI4H_SRC        0, 2, r2, r3, 0
+    BI4H_SRC        1, 2, r4, r5, 0
+    BIH_AVG         0, 1, 3, 4, %1
+    movu         [r0], xm0
+    vextracti128 [r0+r1], m0, 1
+%endif
+    lea           r0, [r0+2*r1]
+    lea           r2, [r2+2*r6]
+    lea           r3, [r3+2*r6]
+    lea           r4, [r4+2*r6]
+    lea           r5, [r5+2*r6]
+%endmacro
+
+%macro AVG_BI4 2 ; width, height
+%assign bi4_w %1
+cglobal pixel_avg_bi4_%1x%2, 7,10,5
+    FIX_STRIDES    r1, r6
+    mov          r9d, r7m
+    cmp          r9d, 32
+    jne .weight
+    mov          r9d, %2/2
+.avg:
+    BI4H_ROWS       0
+    dec          r9d
+    jg .avg
+    RET
+.weight:
+    ; w >= 64: the lists swap and w is 64-w, so w<<9 fits a word (as pixel_avg_weight_w16)
+    mov          r8d, 64
+    sub          r8d, r9d
+    cmp          r9d, 64
+    jl .noswap
+    xchg           r2, r4
+    xchg           r3, r5
+    mov          r9d, r8d
+.noswap:
+    shl          r9d, 9
+    movd          xm3, r9d
+    vpbroadcastw   m3, xm3
+    pxor           m4, m4
+    mov          r9d, %2/2
+.wloop:
+    BI4H_ROWS       1
+    dec          r9d
+    jg .wloop
+    RET
+%endmacro
+
+INIT_YMM avx2
+AVG_BI4 16, 16
+AVG_BI4 16,  8
+AVG_BI4  8, 16
+AVG_BI4  8,  8
+%endif ; HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64

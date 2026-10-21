@@ -585,6 +585,17 @@ void x264_frame_init_lowres_core8_avx2( pixel *src0, uint8_t *dst0, uint8_t *dst
 void x264_frame_init_lowres_core8_avx512icl( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                              intptr_t src_stride, intptr_t dst_stride, int width, int height );
 
+#define DECL_AVG_BI4( w, h, cpu )\
+void x264_pixel_avg_bi4_##w##x##h##_##cpu( pixel *, intptr_t, pixel *, pixel *, pixel *, pixel *, intptr_t, int );
+#define x264_pixel_avg_bi4_16x16_avx2 x264_template(pixel_avg_bi4_16x16_avx2)
+#define x264_pixel_avg_bi4_16x8_avx2 x264_template(pixel_avg_bi4_16x8_avx2)
+#define x264_pixel_avg_bi4_8x16_avx2 x264_template(pixel_avg_bi4_8x16_avx2)
+#define x264_pixel_avg_bi4_8x8_avx2 x264_template(pixel_avg_bi4_8x8_avx2)
+DECL_AVG_BI4( 16, 16, avx2 )
+DECL_AVG_BI4( 16, 8, avx2 )
+DECL_AVG_BI4( 8, 16, avx2 )
+DECL_AVG_BI4( 8, 8, avx2 )
+
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
 /* This declares some functions that don't exist, but that isn't a problem. */
@@ -1467,6 +1478,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->offsetsub = x264_mc_offsetsub_wtab_avx2;
 #if ARCH_X86_64
         pf->weight_plane = weight_plane_avx2;
+        pf->avg_bi4[PIXEL_16x16] = x264_pixel_avg_bi4_16x16_avx2;
+        pf->avg_bi4[PIXEL_16x8]  = x264_pixel_avg_bi4_16x8_avx2;
+        pf->avg_bi4[PIXEL_8x16]  = x264_pixel_avg_bi4_8x16_avx2;
+        pf->avg_bi4[PIXEL_8x8]   = x264_pixel_avg_bi4_8x8_avx2;
 #endif
     }
 
@@ -1657,6 +1672,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init8h = x264_integral_init8h_avx2;
         pf->integral_init4h = x264_integral_init4h_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
+#if ARCH_X86_64
+        pf->avg_bi4[PIXEL_16x16] = x264_pixel_avg_bi4_16x16_avx2;
+        pf->avg_bi4[PIXEL_16x8]  = x264_pixel_avg_bi4_16x8_avx2;
+        pf->avg_bi4[PIXEL_8x16]  = x264_pixel_avg_bi4_8x16_avx2;
+        pf->avg_bi4[PIXEL_8x8]   = x264_pixel_avg_bi4_8x8_avx2;
+#endif
     }
 
     if( cpu&X264_CPU_AVX512 )
