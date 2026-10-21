@@ -106,27 +106,6 @@ static ALWAYS_INLINE int x264_quant_8x8( x264_t *h, dctcoef dct[64], int i_qp, i
         return h->quantf.quant_8x8( dct, h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp] );
 }
 
-/* x264_quant_8x8, then if nonzero: zigzag into level and dequant in place.
- * Returns 0, or 1 | min(decimate score, 9) << 4; with trellis the score is 9 unless b_decimate. */
-static ALWAYS_INLINE int x264_quant_8x8_scan( x264_t *h, dctcoef dct[64], dctcoef level[64], int i_qp, int ctx_block_cat,
-                                              int b_intra, int p, int idx, int b_decimate )
-{
-    int i_quant_cat = b_intra ? (p?CQM_8IC:CQM_8IY) : (p?CQM_8PC:CQM_8PY);
-    if( h->mb.b_trellis )
-    {
-        if( !x264_quant_8x8( h, dct, i_qp, ctx_block_cat, b_intra, p, idx ) )
-            return 0;
-        h->zigzagf.scan_8x8( level, dct );
-        int score = b_decimate ? h->quantf.decimate_score64( level ) : 9;
-        h->quantf.dequant_8x8( dct, h->dequant8_mf[i_quant_cat], i_qp );
-        return 1 | X264_MIN( score, 9 ) << 4;
-    }
-    if( h->mb.b_noise_reduction )
-        h->quantf.denoise_dct( dct, h->nr_residual_sum[1+!!p*2], h->nr_offset[1+!!p*2], 64 );
-    return h->zigzagf.quant_8x8_scan( dct, level, h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp],
-                                      h->dequant8_mf[i_quant_cat], i_qp );
-}
-
 #define STORE_8x8_NNZ( p, idx, nz )\
 do\
 {\
@@ -228,10 +207,12 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
 
     h->dctf.sub8x8_dct8( dct8x8, p_src, p_dst );
 
-    nz = x264_quant_8x8_scan( h, dct8x8, h->dct.luma8x8[p*4+idx], i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 1, p, idx, 0 );
+    nz = x264_quant_8x8( h, dct8x8, i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 1, p, idx );
     if( nz )
     {
         h->mb.i_cbp_luma |= 1<<idx;
+        h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8 );
+        h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[p?CQM_8IC:CQM_8IY], i_qp );
         h->dctf.add8x8_idct8( p_dst, dct8x8 );
         STORE_8x8_NNZ( p, idx, 1 );
     }
