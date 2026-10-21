@@ -3276,16 +3276,16 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
 %else
     mova      m10, [qscan4_frame_a]
     mova      m11, [qscan4_frame_b]
-    vpermq    m8, m0, q1032
-    vpermq    m9, m1, q1032
+    vperm2i128 m8, m0, m0, 0x01
+    vperm2i128 m9, m1, m1, 0x01
     pshufb    m4, m0, m10
     pshufb    m5, m1, m10
     pshufb    m8, m11
     pshufb    m9, m11
     por       m4, m8
     por       m5, m9
-    vpermq    m8, m2, q1032
-    vpermq    m9, m3, q1032
+    vperm2i128 m8, m2, m2, 0x01
+    vperm2i128 m9, m3, m3, 0x01
     pshufb    m6, m2, m10
     pshufb    m7, m3, m10
     pshufb    m8, m11
