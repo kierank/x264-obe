@@ -177,6 +177,9 @@ PREDICT_16x16_P_INLINE( ssse3, sse2 )
 PREDICT_16x16_P_INLINE( avx, avx )
 #endif // HIGH_BIT_DEPTH
 PREDICT_16x16_P_INLINE( avx2, avx2 )
+#if ARCH_X86_64 && HIGH_BIT_DEPTH
+PREDICT_16x16_P_INLINE( avx512icl, avx512icl )
+#endif
 
 #define PREDICT_8x16C_P_CORE\
     int H = 0, V = 0;\
@@ -407,6 +410,12 @@ void x264_predict_16x16_init_mmx( int cpu, x264_predict_t pf[7] )
         pf[I_PRED_16x16_DC_TOP]  = x264_predict_16x16_dc_top_avx2;
         pf[I_PRED_16x16_DC_LEFT] = x264_predict_16x16_dc_left_avx2;
     }
+#if ARCH_X86_64 && HIGH_BIT_DEPTH
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf[I_PRED_16x16_P]       = x264_predict_16x16_p_avx512icl;
+    }
+#endif
 }
 
 void x264_predict_8x8c_init_mmx( int cpu, x264_predict_t pf[7] )

@@ -1421,6 +1421,36 @@ cglobal predict_16x16_p_core, 1,2,8*HIGH_BIT_DEPTH
     jg .loop
     RET
 
+%if ARCH_X86_64 && HIGH_BIT_DEPTH
+; avx512icl: rows y|y+1 in the ymm halves
+INIT_ZMM avx512icl
+cglobal predict_16x16_p_core, 4,5
+    vpbroadcastw    m0, r1d
+    vpbroadcastw    m2, r2d
+    vpbroadcastw    m4, r3d
+    vbroadcasti32x8 m1, [pw_0to15]
+    pmullw          m2, m1            ; b*x
+    mov            r4d, 0xffff0000
+    kmovd           k1, r4d
+    vmovdqu16       m5{k1}{z}, m4     ; c*y
+    paddw           m4, m4
+    pxor            m6, m6
+    vpbroadcastd    m3, [pw_pixel_max]
+    mov            r4d, 8
+.loop:
+    paddsw          m1, m2, m5
+    paddsw          m1, m0
+    psraw           m1, 5
+    CLIPW           m1, m6, m3
+    paddw           m5, m4
+    mova            [r0+0*FDEC_STRIDEB], ym1
+    vextracti32x8   [r0+1*FDEC_STRIDEB], m1, 1
+    add             r0, 2*FDEC_STRIDEB
+    dec            r4d
+    jg .loop
+    RET
+%endif ; ARCH_X86_64 && HIGH_BIT_DEPTH
+
 %if HIGH_BIT_DEPTH == 0
 %macro PREDICT_8x8 0
 ;-----------------------------------------------------------------------------
