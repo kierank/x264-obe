@@ -2710,27 +2710,27 @@ cglobal integral_init4v, 3,5
     vpermt2w  m0, m9, m1
     movu    [r3], m2
     movu    [r4], m0
-%else
-    psrld     m2, m4, 16
-    psrld     m3, m5, 16
+%else ; lanes paired before the in-lane pack: no vpermq
+    vperm2i128 m2, m4, m5, 0x20
+    vperm2i128 m4, m4, m5, 0x31
+    psrld     m3, m2, 16
+    psrld     m5, m4, 16
+    pand      m2, m7
     pand      m4, m7
-    pand      m5, m7
-    packusdw  m4, m5
-    packusdw  m2, m3
-    vpermq    m4, m4, q3120
-    vpermq    m2, m2, q3120
-    movu    [r1], m4
-    movu    [r2], m2
-    psrld     m2, m0, 16
-    psrld     m3, m1, 16
+    packusdw  m2, m4
+    packusdw  m3, m5
+    movu    [r1], m2
+    movu    [r2], m3
+    vperm2i128 m2, m0, m1, 0x20
+    vperm2i128 m0, m0, m1, 0x31
+    psrld     m3, m2, 16
+    psrld     m1, m0, 16
+    pand      m2, m7
     pand      m0, m7
-    pand      m1, m7
-    packusdw  m0, m1
-    packusdw  m2, m3
-    vpermq    m0, m0, q3120
-    vpermq    m2, m2, q3120
-    movu    [r3], m0
-    movu    [r4], m2
+    packusdw  m2, m0
+    packusdw  m3, m1
+    movu    [r3], m2
+    movu    [r4], m3
 %endif
 %endmacro
 
