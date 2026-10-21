@@ -255,6 +255,17 @@ cextern pb_unpackbd1
     paddw       %1, %2
 %endmacro
 
+; in: %1=x2, %2=x1, %3=(p0+q0+1)>>1, %4=mask&tc (clobbered), %5=tmp
+; clip((x2+avg)>>1, x1-tc, x1+tc), as LUMA_Q1
+%macro LUMA_Q1_AVG 5
+    paddw       %1, %3
+    psraw       %1, 1
+    psubw       %5, %2, %4
+    paddw       %4, %2
+    pmaxsw      %1, %5
+    pminsw      %1, %4
+%endmacro
+
 %macro LUMA_DEBLOCK_ONE 3
     DIFF_LT     m5, %1, bm, m4, m6
     pxor        m6, m6
@@ -518,27 +529,19 @@ cglobal deblock_h_luma, 5,6,8,0-7*mmsize
 %endif
     DIFF_LT     m8, m1, m13, m10, m4
     DIFF_LT     m9, m2, m13, m11, m4
-    pand        m6, m7
-
-    mova       m14, m6
+    pand       m14, m6, m7
     pxor        m4, m4
-    pcmpgtw     m6, m4
-    pand        m6, m14
-
-    mova        m5, m10
-    pand        m5, m6
-    LUMA_Q1 m8, m0, m1, m2, m5, m4
-
-    mova        m5, m11
-    pand        m5, m6
-    LUMA_Q1 m9, m3, m1, m2, m5, m4
-
-    pxor        m4, m4
+    pmaxsw      m6, m14, m4     ; tc = max(tc0 & mask, 0)
+    psraw      m14, 15
+    pandn      m14, m7          ; mask, but not where tc0 < 0 (bS 0)
+    pavgw       m4, m1, m2      ; (p0+q0+1)>>1
+    pand        m5, m10, m6
+    LUMA_Q1_AVG m8, m0, m4, m5, m7
+    pand        m5, m11, m6
+    LUMA_Q1_AVG m9, m3, m4, m5, m7
     psubw       m6, m10
-    pcmpgtw     m4, m14
-    pandn       m4, m7
-    psubw       m6, m11
-    pand        m4, m6
+    psubw       m6, m11         ; tc + ap + aq
+    pand        m4, m6, m14
     DEBLOCK_P0_Q0 m1, m2, m0, m3, m4, m5, m6
 
 %endif
