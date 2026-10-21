@@ -6344,6 +6344,15 @@ INTRA_SATD_X3_16x16_HBD
 %endif
 %endif ; HIGH_BIT_DEPTH
 
+; %3 = per-lane interleave-and-add of %4, %5 at element size %2 (wd/dq/qdq), adds padd%1:
+; a phaddw/phaddd step in 3 single-uop ops (phadd is 3 uops at 2 cycles on Zen 2-4);
+; the elements land interleaved, not in phadd order. %6 tmp, not %3-%5.
+%macro HADD_ILV 6 ; w/d, size, dst, src1, src2, tmp
+    punpckl%2   %6, %4, %5
+    punpckh%2   %3, %4, %5
+    padd%1      %3, %6
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; int intra_satd_lowres( int16_t *fenc_pre, uint8_t *src, intptr_t stride )
 ; int intra_satd_lowres( uint16_t *fenc, uint16_t *src, intptr_t stride )
@@ -8316,8 +8325,8 @@ cglobal intra_sad_x9_8x8, 5,7,8
 
 ; m%1 = (8 maxes of mode %1 | 8 maxes of mode %2), their sums are the satds
 %macro X9B_MERGE 3
-    vperm2i128  m%3, m%1, m%2, 0x20
-    vperm2i128  m%1, m%1, m%2, 0x31
+    vperm2i128  m%3, m%1, m%2, 0x21
+    vpblendd    m%1, m%1, m%2, 0xf0
     pmaxsw      m%1, m%3
 %endmacro
 
@@ -8393,12 +8402,12 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
     X9B_SATD      3, 4
     X9B_MERGE     2, 3, 4             ; vl | hu
 
-    phaddw      m10, m1
-    phaddw       m0, m2
-    phaddw      m10, m0
-    phaddw       m9, m9
-    phaddw       m9, m9
-    phaddw      m10, m9               ; h ddl vr vl v v v v | dc ddr hd hu v v v v
+    HADD_ILV  w,  wd, m10, m10, m1, m3
+    HADD_ILV  w,  wd,  m0,  m0, m2, m3
+    HADD_ILV  w,  dq, m10, m10, m0, m3 ; (h ddl vr vl) x2 | (dc ddr hd hu) x2
+    HADD_ILV  w,  wd,  m9,  m9, m9, m3
+    HADD_ILV  w,  dq,  m9,  m9, m9, m3 ; v v v v halves of v
+    HADD_ILV  w, qdq, m10, m10, m9, m3 ; h ddl vr vl v v v v | dc ddr hd hu v v v v
     vextracti128 xm0, m10, 1
     pextrw      r3d, xm10, 4
     punpcklwd   xm0, xm10, xm0
