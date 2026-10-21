@@ -106,6 +106,10 @@ fsh_hex_mv:    db -2,-1, 1, 2, 1,-1, 0, 0
 ; square idx 0-8: dx, dy (me.c square1)
 fsh_sq_mv:     db  0, 0, 0,-1, 1,-1,-1, 1, 1, 0, 0, 0, 0, 0, 0, 0
                db  0,-1, 1, 0, 0,-1, 1,-1, 1, 0, 0, 0, 0, 0, 0, 0
+; sad_dia_search: keys by dword (0,-1) (-1,0) (0,1) (1,0), windows as the square's
+fsh_dia_xidx:  dd 4, 0, 4, 15
+fsh_dia_yidx:  dd 0, 4, 15, 4
+fsh_dia_rank:  dd 1, 4, 3, 12
 
 SECTION .text
 
@@ -3400,6 +3404,99 @@ cglobal pixel_sad_hex_search_%1x%2, 9,15,16
 
 FSH_HEX_SEARCH 16, 16
 FSH_HEX_SEARCH 8, 8
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_dia_search_WxH( uint8_t *fenc, uint8_t *ref, intptr_t i_stride,
+;                                    const uint16_t *cost_mvx, const uint16_t *cost_mvy,
+;                                    uint32_t bmv, int bcost, int iters, uint64_t range )
+; me.c's diamond search, as sad_hex_search: a step is sad_dia_min's 3 windows, the mv
+; costs by vpermi2w from two 8-word loads per axis, cost_mv[4*b-4..4*b+4], the keys
+; me.c's (cost << 4) + idx. Reads only around centres inside the mv range.
+;-----------------------------------------------------------------------------
+%macro FSH_DIA_SEARCH 2 ; width, height
+cglobal pixel_sad_dia_search_%1x%2, 9,15,16
+    %define dbp_o  r12
+    %define dbp_o1 r14
+    %define dbp_p0 r1-2
+    %define dbp_p1 r10
+    %define dbp_p2 r11-2
+    mov           r12d, 0xaaaa
+    kmovw           k1, r12d
+    mov           r12d, 0x1111
+    kmovw           k2, r12d
+    mov           r12d, 0x4444
+    kmovw           k3, r12d
+    mov           r12d, 0x5555
+    kmovw           k4, r12d
+%if %1 == 16
+    mova            m7, [sad_sq_idx16]
+%else
+    mova            m7, [sad_sq_idx8]
+%endif
+    FSH_START
+    mov           r12d, r6d
+    shl           r12d, 4
+    vpbroadcastd  xm12, r12d
+.step:
+    mov            r10, r1
+    sub            r10, r2
+    lea            r11, [r1+r2]
+    movu          xm10, [r3+r5*8-8]
+    mova           xm8, [fsh_dia_xidx]
+    vpermi2w       xm8 {k4}{z}, xm10, [r3+r5*8-6]
+    movu          xm11, [r4+r9*8-8]
+    mova           xm9, [fsh_dia_yidx]
+    vpermi2w       xm9 {k4}{z}, xm11, [r4+r9*8-6]
+    paddd          xm8, xm9
+    pslld          xm8, 4
+    paddd          xm8, [fsh_dia_rank]
+    xor         dbp_o, dbp_o
+%if %1 < 16
+    mov        dbp_o1, r2
+%endif
+    DBP_ROWS %1, %2, 3
+    paddw           m0, m1
+    paddw           m0, m2
+    DBP_FOLD1 %1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 4
+    paddd          xm0, xm8
+    vpcmpud         k6, xm0, xm12, 1
+    kortestw        k6, k6
+    jz .end
+    pshufd         xm1, xm0, q1032
+    pminud         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminud         xm0, xm1
+    movd          r12d, xm0
+    mov            r6d, r12d
+    shr            r6d, 4
+    ; me.c: bmx -= (bcost<<28)>>30, bmy -= (bcost<<30)>>30
+    mov           r14d, r12d
+    shl           r14d, 28
+    sar           r14d, 30
+    movsxd         r14, r14d
+    shl           r12d, 30
+    sar           r12d, 30
+    movsxd         r12, r12d
+    sub             r5, r14
+    sub             r9, r12
+    sub             r1, r14
+    imul           r12, r2
+    sub             r1, r12
+    mov           r12d, r6d
+    shl           r12d, 4
+    vpbroadcastd  xm12, r12d
+    dec            r7d
+    jz .end
+    FSH_MVRANGE
+    jz .step
+.end:
+    FSH_RET
+%endmacro
+
+FSH_DIA_SEARCH 16, 16
+FSH_DIA_SEARCH 8, 8
 
 INIT_YMM avx2
 %endif ; ARCH_X86_64
