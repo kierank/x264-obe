@@ -1656,6 +1656,21 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 }
             }
         }
+        /* ssim_end4 at every width: the blocks past it must not count */
+        for( int w = 1; w <= 4 && ok; w++ )
+        {
+            ALIGNED_16( int s[2][6][4] );
+            for( int z = 0; z < 2; z++ )
+                for( int i = 0; i < 3; i++ )
+                    pixel_c.ssim_4x4x2_core( pbuf1+8*i+4*z*32, 32, pbuf2+8*i+4*z*32, 32, s[z]+2*i );
+            float e_c = pixel_c.ssim_end4( s[0], s[1], w );
+            float e_a = pixel_asm.ssim_end4( s[0], s[1], w );
+            if( fabs( e_c - e_a ) > 1e-6 )
+            {
+                ok = 0;
+                fprintf( stderr, "ssim_end4 width %d: %.7f != %.7f [FAILED]\n", w, e_c, e_a );
+            }
+        }
         set_func_name( "ssim_core" );
         call_c2( pixel_c.ssim_4x4x2_core,   pbuf1+2, (intptr_t)32, pbuf2+2, (intptr_t)32, sums );
         call_a2( pixel_asm.ssim_4x4x2_core, pbuf1+2, (intptr_t)32, pbuf2+2, (intptr_t)32, sums );
