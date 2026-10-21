@@ -1423,7 +1423,7 @@ static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a 
     x264_me_t *m = &a->l0.me16x16;
     int i_mvc;
     ALIGNED_4( int16_t mvc[10][2] );
-    ALIGNED_4( int16_t mvc_fpel[11][2] );
+    ALIGNED_4( int16_t mvc_fpel[16][2] );
 
     m->i_pixel = PIXEL_16x16;
     LOAD_FENC( m, h->mb.pic.p_fenc, 0, 0 );
@@ -1442,7 +1442,9 @@ static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a 
     int bmx = x264_clip3( (m->mvp[0] + 2) >> 2, h->mb.mv_limit_fpel[0][0], h->mb.mv_limit_fpel[1][0] );
     int bmy = x264_clip3( (m->mvp[1] + 2) >> 2, h->mb.mv_limit_fpel[0][1], h->mb.mv_limit_fpel[1][1] );
     uint32_t pmv = pack16to32_mask( bmx, bmy );
-    int i_fpel = x264_predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+    int i_fpel = h->pixf.predictor_roundclip
+               ? h->pixf.predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
+               : x264_predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
     if( pmv )
     {
         M32( mvc_fpel[i_fpel] ) = 0;
