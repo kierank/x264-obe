@@ -5923,9 +5923,9 @@ cglobal pixel_sa8d_16x8_internal
     HADAMARD8_2D 0, 1, 2, 8, 4, 5, 3, 9, 6, amax
 %if cpuflag(avx512icl)
     pmaddwd   m0, m12
-    {evex} vpdpwssd  m0, m1, m12
+    vpdpwssd  m0, m1, m12
     pmaddwd   m2, m12
-    {evex} vpdpwssd  m2, m8, m12
+    vpdpwssd  m2, m8, m12
     paddd     m0, m2
 %else
     SA8D_SUM_HBD 0, 1, 2, 8
@@ -5954,9 +5954,8 @@ cglobal pixel_sa8d_16x16, 4,8,12+cpuflag(avx512icl)
 %endmacro
 
 SA8D_16x16_HBD
-ICL_LOW_BEGIN
+INIT_YMM avx512icl
 SA8D_16x16_HBD
-ICL_LOW_END
 INIT_YMM avx2
 %endif
 
