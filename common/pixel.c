@@ -1886,6 +1886,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT7( sad_ring_min, _avx512 );
         INIT7( sad_corner_min, _avx512 );
         INIT7( sad_row, _avx512 );
+        pixf->sad_hex_search[PIXEL_16x16] = x264_pixel_sad_hex_search_16x16_avx512;
+        pixf->sad_hex_search[PIXEL_8x8]   = x264_pixel_sad_hex_search_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX
