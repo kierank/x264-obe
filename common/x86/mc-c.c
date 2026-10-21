@@ -950,6 +950,31 @@ static void x264_weight_cache_avx512icl( x264_t *h, x264_weight_t *w )
     if( w->i_scale == 1<<w->i_denom )
         w->weightavgfn = w->i_offset < 0 ? x264_mc_offsetsub_avg_wtab_avx512icl : x264_mc_offsetadd_avg_wtab_avx512icl;
 }
+
+#define x264_mc_weight_plane_avx512icl x264_template(mc_weight_plane_avx512icl)
+#define x264_mc_offsetadd_plane_avx512icl x264_template(mc_offsetadd_plane_avx512icl)
+#define x264_mc_offsetsub_plane_avx512icl x264_template(mc_offsetsub_plane_avx512icl)
+void x264_mc_weight_plane_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+void x264_mc_offsetadd_plane_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+void x264_mc_offsetsub_plane_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+/* x264_weight_scale_plane over what its w16/w8 strips write, for the tables
+ * dispatched with the ssse3 cache at avx512icl */
+static int weight_plane_icl8( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+                              const x264_weight_t *w, int width, int height )
+{
+    void (*f)( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+    if( w->weightfn == x264_mc_weight_wtab_avx2 )
+        f = x264_mc_weight_plane_avx512icl;
+    else if( w->weightfn == x264_mc_offsetadd_wtab_sse2 )
+        f = x264_mc_offsetadd_plane_avx512icl;
+    else if( w->weightfn == x264_mc_offsetsub_wtab_sse2 )
+        f = x264_mc_offsetsub_plane_avx512icl;
+    else
+        return 0;
+    if( width > 0 && height > 0 )
+        f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );
+    return 1;
+}
 #endif
 #endif // !HIGH_BIT_DEPTH
 
@@ -1687,6 +1712,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init8h = x264_integral_init8h_avx512icl;
         pf->plane_copy_deinterleave_rgb = x264_plane_copy_deinterleave_rgb_avx512icl;
         pf->weight_cache = x264_weight_cache_avx512icl;
+        pf->weight_plane = weight_plane_icl8;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
         pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif
