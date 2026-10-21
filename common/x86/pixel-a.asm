@@ -402,6 +402,12 @@ x4h_xm3:      times 2 dd -3,-2,-1, 0
 x4h_m3:       times 8 dd -3
 x4h_m7:       times 8 dd -7
 x4h_d16:      times 8 dd 16
+x4h_d32:      times 8 dd 32
+; 16x16: lanes = x 0-7, 8-15
+x4h_w16:      dw -7,-6,-5,-4,-3,-2,-1, 0, 1, 2, 3, 4, 5, 6, 7, 8
+x4h_wc16:     dw -8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+x4h_wa16:     dw  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,16
+x4h_x16m7:    dd -7,-6,-5,-4, 1, 2, 3, 4
 %endif
 %if HIGH_BIT_DEPTH == 0
 ; the dc bytes of a row of 4x4 blocks, u | v
@@ -6433,6 +6439,7 @@ cglobal intra_satd_x3_8x16c, 3,7,16
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x4_8x8c( uint16_t *fenc, uint16_t *fdec, int res[4] )  (DC, H, V, P)
 ; void intra_satd_x4_8x16c( uint16_t *fenc, uint16_t *fdec, int res[4] )
+; void intra_satd_x4_16x16( uint16_t *fenc, uint16_t *fdec, int res[4] ) (V, H, DC, P)
 ; as the 8-bit ones in the layout of the 16 wide satd: a register is a fenc row,
 ; u | v (chroma) or columns 0-7 | 8-15, so pred - fenc goes straight into the
 ; vertical SATD_8x4_SSE. P is built in dwords (b*15 overflows words at 10-bit).
@@ -6638,9 +6645,101 @@ cglobal intra_satd_x4_8x%1c, 3,3,16
     X4_END         11, 12, 14, 6
 %endmacro
 
+%macro INTRA_SATD_X4_L10 0
+cglobal intra_satd_x4_16x16, 3,3,16
+    X4H_LEFT8      12, 0, 1, 2, 0, 8*FDEC_STRIDEB ; l0-l7 | l8-l15
+    movu           m14, [r1-FDEC_STRIDEB]   ; t0-t15 (V)
+
+    ; DC = (sum of top + sum of left + 16) >> 5
+    pmaddwd        m0, m14, [pw_1]
+    pmaddwd        m1, m12, [pw_1]
+    paddd          m0, m1
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    paddd         xm0, xm1
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1
+    paddd         xm0, [x4h_d16]
+    psrld         xm0, 5
+    vpbroadcastw   m11, xm0
+
+    ; P: H = sum i*(t[7+i]-t[7-i]), i = 1..8, V likewise, t[-1] = l[-1] = the corner
+    vpbroadcastw   m15, [r1-FDEC_STRIDEB-2]
+    pmaddwd        m0, m14, [x4h_w16]
+    X4H_DOTA        0, 15, [x4h_wc16], 2
+    pmaddwd        m1, m12, [x4h_w16]
+    X4H_DOTA        1, 15, [x4h_wc16], 2
+    punpckldq      m2, m0, m1
+    punpckhdq      m0, m1
+    paddd          m0, m2
+    pshufd         m2, m0, q1032
+    paddd          m0, m2
+    vpermq         m2, m0, q1032
+    paddd          m0, m2                   ; H V H V
+    pslld          m2, m0, 2
+    paddd          m0, m2
+    paddd          m0, [x4h_d32]
+    psrad          m0, 6                    ; b c: (5*x+32)>>6
+    paddw          m2, m14, m12
+    pmaddwd        m2, [x4h_wa16]           ; 16*(t15 + l15) in dword 7
+    vpermq         m2, m2, q3333
+    pshufd         m2, m2, q1111
+    paddd          m2, [x4h_d16]            ; a + 16
+    pshufd         m9, m0, q0000            ; b
+    pshufd        m10, m0, q1111            ; c
+    X4H_P_ROW0     [x4h_m7], [x4h_x16m7]
+
+    ; V
+%assign x4g 0
+%rep 4
+%if x4g
+    X4H_PASS1      14, 4*x4g, add
+%else
+    X4H_PASS1      14, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_HBD_FOLD  6, 1
+    SWAP            6, 14
+    ; H
+%assign x4y 0
+%rep 16
+%assign x4k x4y&3
+    vpbroadcastw   m %+ x4k, [r1+x4y*FDEC_STRIDEB-2]
+    psubw          m %+ x4k, [r0+x4y*FENC_STRIDEB]
+%if (x4y&3) == 3
+%if x4y == 3
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endif
+%endif
+%assign x4y x4y+1
+%endrep
+    INTRA_HBD_FOLD  6, 1
+    SWAP            6, 12
+    ; DC
+%assign x4g 0
+%rep 4
+%if x4g
+    X4H_PASS1      11, 4*x4g, add
+%else
+    X4H_PASS1      11, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_HBD_FOLD  6, 1
+    SWAP            6, 11
+    ; P
+    X4H_P_MODE     16, 1
+    X4_END         14, 12, 11, 6
+%endmacro
+
 %macro INTRA_SATD_X4_HBD 0
 INTRA_SATD_X4_C10 8
 INTRA_SATD_X4_C10 16
+INTRA_SATD_X4_L10
 %endmacro
 
 INIT_YMM avx2

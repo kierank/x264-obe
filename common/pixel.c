@@ -1310,6 +1310,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
         pixf->intra_satd_x4_8x8c  = x264_intra_satd_x4_8x8c_avx2;
         pixf->intra_satd_x4_8x16c = x264_intra_satd_x4_8x16c_avx2;
+        pixf->intra_satd_x4_16x16 = x264_intra_satd_x4_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
@@ -1366,6 +1367,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* zen4 prune: asd8 1.346x (rack01 checkasm --bench); kept assembled */
         pixf->intra_satd_x4_8x8c  = x264_intra_satd_x4_8x8c_avx512icl;
         pixf->intra_satd_x4_8x16c = x264_intra_satd_x4_8x16c_avx512icl;
+        pixf->intra_satd_x4_16x16 = x264_intra_satd_x4_16x16_avx512icl;
 #endif
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
