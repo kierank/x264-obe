@@ -1965,7 +1965,7 @@ cglobal pixel_sad_list_min_%2x%3, 6,12,14,64
 %endif
     SAD_LIST_HBD_ROWS %1, %2, %3, 0, %%half
     SAD_LIST_HBD_SUM
-    vpbroadcastd   m12 {k1}, xm0
+    vpbroadcastd  ym12 {k1}, xm0
     movd   [rsp+4*r10], xm0
     kshiftlw       k1, k1, 1
     add            r9, 8+8*%1
@@ -1976,14 +1976,15 @@ cglobal pixel_sad_list_min_%2x%3, 6,12,14,64
     shlx          r9d, r9d, r3d
     dec           r9d
     kmovw          k2, r9d
-    vmovdqu32      m13 {k2}{z}, [r4]
-    pslld          m12, 4
-    paddd          m12, m13
-    vpbroadcastd   m13, r5d
-    vpcmpd         k2 {k2}, m12, m13, 1
-    kortestw       k2, k2
+    vmovdqu32     ym13 {k2}{z}, [r4]
+    pslld         ym12, 4
+    paddd         ym12, ym13
+    vpbroadcastd  ym13, r5d
+    and           r9d, ~0xff
+    vpcmpd         k2 {k2}, ym12, ym13, 1
+    kmovw         r6d, k2
+    or            r9d, r6d
     jz .end
-    kmovw         r9d, k2
 .pass2:
     tzcnt         r10d, r9d
 %if %1
