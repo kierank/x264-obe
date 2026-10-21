@@ -2540,6 +2540,58 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
     movd           eax, xm0
 %endmacro
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_dia_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[4], int best )
+; candidates (0,-1) (0,1) (-1,0) (1,0), s = 4. Windows: dy 0 bx -2 words 1, 3;
+; dy -1 bx 0 word 0; dy 1 bx -2 word 2: (0,-1) (-1,0) (0,1) (1,0) by word
+;-----------------------------------------------------------------------------
+%macro SAD_DIA_MIN 2 ; width, height
+cglobal pixel_sad_dia_min_%1x%2, 5,10,10
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    mov            r5d, 0xaaaa
+    kmovw           k1, r5d
+    mov            r5d, 0x1111
+    kmovw           k2, r5d
+    mov            r5d, 0x4444
+    kmovw           k3, r5d
+    lea         dbp_p0, [r1-2]
+    mov         dbp_p1, r1
+    sub         dbp_p1, r2
+    lea         dbp_p2, [r1+r2-2]
+    DBP_INIT %1
+    movu           xm8, [r3]
+    pshufd         xm8, xm8, q3120
+    vpbroadcastd   xm9, r4d
+    DBP_ROWS %1, %2, 3
+%if %1 == 4
+    paddw          xm0, xm1
+    paddw          xm0, xm2
+%else
+    paddw           m0, m1
+    paddw           m0, m2
+%endif
+    DBP_FOLD1 %1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 4
+    paddd          xm0, xm8
+    pminsd         xm0, xm9
+    DBP_MIN4
+    RET
+%endmacro
+
+SAD_DIA_MIN 16, 16
+SAD_DIA_MIN 16, 8
+SAD_DIA_MIN 8, 16
+SAD_DIA_MIN 8, 8
+SAD_DIA_MIN 8, 4
+SAD_DIA_MIN 4, 8
+SAD_DIA_MIN 4, 4
+
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 
