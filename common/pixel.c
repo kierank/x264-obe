@@ -109,6 +109,15 @@ int x264_pixel_sad_hpel_min_c( int i_pixel, pixel *fenc, pixel *pixv, pixel *pix
     return best;
 }
 
+/* reference for fenc_eq */
+int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec )
+{
+    for( int y = 0; y < x264_pixel_size[i_pixel].h; y++ )
+        if( memcmp( fenc + y*FENC_STRIDE, fdec + y*FDEC_STRIDE, x264_pixel_size[i_pixel].w * sizeof(pixel) ) )
+            return 0;
+    return 1;
+}
+
 static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
                        int shift, const int32_t *bias, int best )
 {

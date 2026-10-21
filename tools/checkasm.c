@@ -1209,6 +1209,86 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel sad_hpel_min :" );
 
+    /* in fenc_buf/fdec_buf layouts at the luma, 4:2:0/4:2:2 u and v, and 4:4:4 offsets,
+     * pixels outside the block different: equal, then one pixel changed at every
+     * position (by 1, or to 0/PIXEL_MAX), then pixels outside the block changed */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( pixel_asm.fenc_eq[i] && pixel_asm.fenc_eq[i] != pixel_ref.fenc_eq[i] )
+        {
+            static const int fenc_off[4] = { 0, 16*FENC_STRIDE, 16*FENC_STRIDE+8, 32*FENC_STRIDE };
+            static const int fdec_off[4] = { 2*FDEC_STRIDE, 20*FDEC_STRIDE, 20*FDEC_STRIDE+16, 38*FDEC_STRIDE };
+            ALIGNED_64( pixel fenc_b[48*FENC_STRIDE] );
+            ALIGNED_64( pixel fdec_b[54*FDEC_STRIDE] );
+            int w = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+            set_func_name( "fenc_eq_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int o = 0; o < 4 && ok; o++ )
+            {
+                if( (w == 16) != (o == 0 || o == 3) )
+                    continue;
+                pixel *fenc = fenc_b + fenc_off[o];
+                pixel *fdec = fdec_b + fdec_off[o];
+                for( int j = 0; j < 2*w*bh + 64 && ok; j++ )
+                {
+                    for( int l = 0; l < 48*FENC_STRIDE; l++ )
+                        fenc_b[l] = rand() & PIXEL_MAX;
+                    for( int l = 0; l < 54*FDEC_STRIDE; l++ )
+                        fdec_b[l] = rand() & PIXEL_MAX;
+                    if( j&1 )
+                        for( int y = 0; y < bh; y++ )
+                            for( int x = 0; x < w; x++ )
+                                fenc[x+y*FENC_STRIDE] = (j&2) ? PIXEL_MAX : 0;
+                    for( int y = 0; y < bh; y++ )
+                        memcpy( fdec + y*FDEC_STRIDE, fenc + y*FENC_STRIDE, w*sizeof(pixel) );
+                    if( j < 2*w*bh )
+                    {
+                        /* pixel j>>1 of the block */
+                        pixel *p = fdec + ((j>>1)%w) + ((j>>1)/w)*FDEC_STRIDE;
+                        *p = (j&1) ? PIXEL_MAX - *p : (*p + 1) & PIXEL_MAX;
+                    }
+                    else
+                    {
+                        /* outside the block: the rest of a row, a row below (4:4:4 v: above),
+                         * a column left */
+                        int k = j - 2*w*bh;
+                        int yo = o == 3 ? -1 : bh;
+                        fdec[w + (k&15) + (k%bh)*FDEC_STRIDE] ^= 1;
+                        if( w == 8 )
+                            fenc[w + (k&7) + (k%bh)*FENC_STRIDE] ^= 1;
+                        else
+                            fenc[(k&15) + yo*FENC_STRIDE] ^= 1;
+                        fdec[(k&7) + yo*FDEC_STRIDE] ^= 1;
+                        fdec[-1 + (k%bh)*FDEC_STRIDE] ^= 1;
+                    }
+                    int res_c = x264_pixel_fenc_eq_c( i, fenc, fdec );
+                    if( res_c != (j >= 2*w*bh) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "fenc_eq[%d]: C reference %d at %d [FAILED]\n", i, res_c, j );
+                    }
+                    int res_a = call_a1( pixel_asm.fenc_eq[i], fenc, fdec );
+                    if( res_c != res_a )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "fenc_eq[%d]: offset %d case %d %d != %d [FAILED]\n", i, o, j, res_c, res_a );
+                    }
+                }
+                /* bench: equal (every row read), and the first row different */
+                for( int y = 0; y < bh; y++ )
+                    memcpy( fdec + y*FDEC_STRIDE, fenc + y*FENC_STRIDE, w*sizeof(pixel) );
+                set_func_name( "fenc_eq_%s_same", pixel_names[i] );
+                call_a2( pixel_asm.fenc_eq[i], fenc, fdec );
+                fdec[w-1] ^= 1;
+                set_func_name( "fenc_eq_%s_diff", pixel_names[i] );
+                call_a2( pixel_asm.fenc_eq[i], fenc, fdec );
+                set_func_name( "fenc_eq_%s", pixel_names[i] );
+            }
+        }
+    }
+    report( "pixel fenc_eq :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \
