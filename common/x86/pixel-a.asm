@@ -11750,7 +11750,7 @@ SSD_PSY_MB 422, 16
 ; 1..i_mvc the mvs (i_mvc <= 15). A lane is kept if its mv isn't 0 or pmv
 ; before the clip and vpconflictd finds no earlier kept lane (pmv included)
 ; with its clipped mv. The kept lanes but pmv's, compacted: 16 dwords stored.
-; The limits << 2 must fit in int16, as in x264_predictor_clip_mmx2.
+; The limits << 2 must fit in int16 (|limit| <= 8191).
 ;-----------------------------------------------------------------------------
 %macro PREDICTOR_CLIP 1 ; round
 %if %1
