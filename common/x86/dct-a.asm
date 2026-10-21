@@ -192,6 +192,11 @@ scan4frame_ymm_a: SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
 scan4frame_ymm_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
                   SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
 %endif
+%if HIGH_BIT_DEPTH == 0
+; dct2x4dc avx512icl: the dc of each 16-coef block
+dct2x4_dc_idxw: dw 0, 16, 32, 48
+                times 28 dw 0
+%endif
 
 SECTION .text
 
@@ -484,6 +489,50 @@ DCT2x4DC d, dq
 %else
 INIT_MMX mmx2
 DCT2x4DC w, wd
+
+; avx512icl: the 8 blocks in 4 zmm, the dcs picked with vpermi2w, the blocks
+; stored back with the dcs cleared by a zero-masking move. The 2x4 transform
+; in dwords with merge-masked vpsubd.
+INIT_ZMM avx512icl
+cglobal dct2x4dc, 2,3
+    mov          r2d, 0xfffefffe
+    kmovd         k2, r2d
+    movu         m0, [r1+0*64]
+    movu         m1, [r1+1*64]
+    movu         m2, [r1+2*64]
+    movu         m3, [r1+3*64]
+    movu         m4, [dct2x4_dc_idxw]
+    vpermi2w     m4, m0, m1              ; dc of blocks 0-3
+    vmovdqu16    m0 {k2}{z}, m0
+    vmovdqu16    m1 {k2}{z}, m1
+    movu  [r1+0*64], m0
+    movu  [r1+1*64], m1
+    movu         m5, [dct2x4_dc_idxw]
+    vpermi2w     m5, m2, m3              ; dc of blocks 4-7
+    vmovdqu16    m2 {k2}{z}, m2
+    vmovdqu16    m3 {k2}{z}, m3
+    movu  [r1+2*64], m2
+    movu  [r1+3*64], m3
+    punpcklqdq   xm4, xm5
+    pmovsxwd     ym0, xm4                   ; dc0-7
+    mov          r2d, 0xaa
+    kmovb         k1, r2d
+    pshufd        ym1, ym0, q2301
+    paddd         ym2, ym0, ym1
+    vpsubd        ym2 {k1}, ym1, ym0           ; a0 a4 a1 a5 | a2 a6 a3 a7
+    mov          r2d, 0xcc
+    kmovb         k1, r2d
+    pshufd        ym1, ym2, q1032
+    paddd         ym0, ym2, ym1
+    vpsubd        ym0 {k1}, ym1, ym2           ; b0 b2 b4 b6 | b1 b3 b5 b7
+    vextracti32x4 xm1, ym0, 1
+    paddd         xm2, xm0, xm1             ; dct 0 1 6 7
+    psubd         xm0, xm1                  ; dct 2 3 4 5
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+    packssdw      xm1, xm0
+    movu      [r0], xm1
+    RET
 %endif
 
 %if HIGH_BIT_DEPTH

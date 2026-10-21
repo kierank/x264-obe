@@ -681,6 +681,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
     {
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* dct4x4dc 1.75x, idct4x4dc 1.14x, add16x16_idct 1.25x, sub16x16_dct8 1.056x, add8x8_idct 1.054x */
+        dctf->dct2x4dc         = x264_dct2x4dc_avx512icl;
 #if ARCH_X86_64
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
 #endif
