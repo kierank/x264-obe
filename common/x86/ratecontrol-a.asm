@@ -144,3 +144,76 @@ cglobal mbtree_cost_scale, 3,4
     vpaddd      xm0, xm0, xm1
     vmovd       eax, xm0
     RET
+
+; avx2: exp2_lut in four pshufb tables, m12-m15
+%macro COST_SCALE_YMM 0 ; m1 = costs, m2 = qp
+    pand        m1, [rc_pd_3fff]
+    mulps       m2, [rc_pf_m64_6]
+    addps       m2, [rc_pf_512_5]
+    cvttps2dq   m2, m2
+    pminsd      m2, [rc_pd_1024]
+    psrad       m3, m2, 6
+    pand        m2, [rc_pd_63]
+    pslld       m4, m2, 3                    ; index bit 4 -> bit 7
+    pshufb      m5, m12, m2                  ; bytes 1-3 take exp2_lut[0] = 0
+    pshufb      m6, m13, m2
+    pblendvb    m5, m6, m4
+    pshufb      m6, m14, m2
+    pshufb      m7, m15, m2
+    pblendvb    m6, m7, m4
+    pslld       m4, m2, 2                    ; index bit 5 -> bit 7
+    pblendvb    m5, m6, m4
+    por         m5, [rc_pd_256]
+    vpsllvd     m5, m5, m3
+    psrld       m5, 8
+    pminud      m5, [rc_pd_ffff]
+    pmulld      m1, m5
+    paddd       m1, [rc_pd_128]
+    psrad       m1, 8
+    paddd       m0, m1
+%endmacro
+
+INIT_YMM avx2
+cglobal mbtree_cost_scale, 3,5,16, 64
+    vbroadcasti128 m12, [exp2_lut+ 0]
+    vbroadcasti128 m13, [exp2_lut+16]
+    vbroadcasti128 m14, [exp2_lut+32]
+    vbroadcasti128 m15, [exp2_lut+48]
+    pxor        m0, m0
+    sub         r2d, 8
+    jl .tail
+.loop:
+    pmovzxwd    m1, [r0]
+    movu        m2, [r1]
+    COST_SCALE_YMM
+    add          r0, 16
+    add          r1, 32
+    sub         r2d, 8
+    jge .loop
+.tail:
+    add         r2d, 8
+    jz .end
+    pxor        m1, m1                       ; the rest of the row through the stack, 0 past it
+    movu   [rsp+ 0], m1
+    movu   [rsp+32], xm1
+    xor         r3d, r3d
+.copy:
+    movzx       r4d, word [r0+r3*2]
+    mov  [rsp+32+r3*2], r4w
+    mov         r4d, [r1+r3*4]
+    mov   [rsp+r3*4], r4d
+    inc         r3d
+    cmp         r3d, r2d
+    jl .copy
+    pmovzxwd    m1, [rsp+32]
+    movu        m2, [rsp]
+    COST_SCALE_YMM
+.end:
+    vextracti128 xm1, m0, 1
+    paddd       xm0, xm1
+    pshufd      xm1, xm0, q1032
+    paddd       xm0, xm1
+    pshufd      xm1, xm0, q2301
+    paddd       xm0, xm1
+    movd        eax, xm0
+    RET
