@@ -1764,6 +1764,169 @@ SAD_AVG2_HBD  8, 16
 SAD_AVG2_HBD  8,  8
 
 ;-----------------------------------------------------------------------------
+; int pixel_sad_list_min_WxH( uint16_t *fenc, uint16_t **src, intptr_t i_stride,
+;                             int n, const int32_t *bias, int best )
+; int pixel_sad_avg2_list_min_WxH( ... ): the candidates avg( src[2i], src[2i+1] )
+; min( best, (sad_i << 4) + bias[i] ), i < n, 1 <= n <= 15, signed
+;
+; A candidate a pass, word sums (at most 16*1023 a lane), then a cmov min.
+; 16 wide: a row a ymm, fenc a memory operand; 8 wide: rows k, k+1 a ymm, the
+; fenc row pairs in m4.. across the candidates.
+;-----------------------------------------------------------------------------
+; row k of the candidate at r6 (r7) -> m2, |fenc - it| added to m(k&1); rows
+; 4g..4g+3 at 0, r2, 2*r2, r8 = 3*r2 past the pointers, which step after them
+%macro SAD_LIST_HBD_ROW16 3 ; avg2, row, height
+%if (%2 & 3) == 0
+    movu           m2, [r6]
+%elif (%2 & 3) == 1
+    movu           m2, [r6+r2]
+%elif (%2 & 3) == 2
+    movu           m2, [r6+2*r2]
+%else
+    movu           m2, [r6+r8]
+%endif
+%if %1
+%if (%2 & 3) == 0
+    pavgw          m2, [r7]
+%elif (%2 & 3) == 1
+    pavgw          m2, [r7+r2]
+%elif (%2 & 3) == 2
+    pavgw          m2, [r7+2*r2]
+%else
+    pavgw          m2, [r7+r8]
+%endif
+%endif
+    psubw          m2, [r0+%2*FENC_STRIDEB]
+%if %2 < 2
+    pabsw         m%2, m2
+%else
+    pabsw          m2, m2
+%if %2 & 1
+    paddw          m1, m2
+%else
+    paddw          m0, m2
+%endif
+%endif
+%if (%2 & 3) == 3 && %2 < %3-1
+    lea            r6, [r6+4*r2]
+%if %1
+    lea            r7, [r7+4*r2]
+%endif
+%endif
+%endmacro
+
+; rows 2p, 2p+1 -> m2 (pointers as above, stepping every second pair)
+%macro SAD_LIST_HBD_PAIR8 3 ; avg2, p, pairs
+%assign %%f 4+(%2)
+%if %2 & 1
+    movu          xm2, [r6+2*r2]
+    vinserti128    m2, m2, [r6+r8], 1
+%else
+    movu          xm2, [r6]
+    vinserti128    m2, m2, [r6+r2], 1
+%endif
+%if %1
+%if %2 & 1
+    movu          xm3, [r7+2*r2]
+    vinserti128    m3, m3, [r7+r8], 1
+%else
+    movu          xm3, [r7]
+    vinserti128    m3, m3, [r7+r2], 1
+%endif
+    pavgw          m2, m3
+%endif
+    psubw          m2, m%[%%f]
+%if %2 < 2
+    pabsw         m%2, m2
+%else
+    pabsw          m2, m2
+%if %2 & 1
+    paddw          m1, m2
+%else
+    paddw          m0, m2
+%endif
+%endif
+%if (%2 & 1) && %2 < %3-1
+    lea            r6, [r6+4*r2]
+%if %1
+    lea            r7, [r7+4*r2]
+%endif
+%endif
+%endmacro
+
+; rows r0..r1-1 (16 wide) or pairs (8 wide) -> m0 + m1
+%macro SAD_LIST_HBD_ROWS 5 ; avg2, width, height, from, to
+%assign %%k %4
+%rep %5-%4
+%if %2 == 16
+    SAD_LIST_HBD_ROW16 %1, %%k, %3
+%else
+    SAD_LIST_HBD_PAIR8 %1, %%k, %3/2
+%endif
+%assign %%k %%k+1
+%endrep
+%endmacro
+
+%macro SAD_LIST_HBD_FENC 1 ; pairs
+%assign %%p 0
+%rep %1
+%assign %%f 4+%%p
+    movu         xm%[%%f], [r0+2*%%p*FENC_STRIDEB]
+    vinserti128   m%[%%f], m%[%%f], [r0+(2*%%p+1)*FENC_STRIDEB], 1
+%assign %%p %%p+1
+%endrep
+%endmacro
+
+%macro SAD_LIST_MIN_HBD 3 ; avg2, width, height
+%if %2 == 16
+    %assign %%rows %3
+    %assign %%regs 4
+%else
+    %assign %%rows %3/2
+    %assign %%regs 4+%3/2
+%endif
+%if %1
+cglobal pixel_sad_avg2_list_min_%2x%3, 6,9,%%regs
+%else
+cglobal pixel_sad_list_min_%2x%3, 6,9,%%regs
+%endif
+%if %2 == 8
+    SAD_LIST_HBD_FENC %3/2
+%endif
+    FIX_STRIDES    r2
+    lea            r8, [r2*3]
+.loop:
+    mov            r6, [r1]
+%if %1
+    mov            r7, [r1+8]
+%endif
+    SAD_LIST_HBD_ROWS %1, %2, %3, 0, %%rows
+    paddw          m0, m1
+    HADDW          m0, m1
+    movd          r6d, xm0
+    shl           r6d, 4
+    add           r6d, [r4]
+    cmp           r6d, r5d
+    cmovl         r5d, r6d
+    add            r1, 8+8*%1
+    add            r4, 4
+    dec           r3d
+    jg .loop
+    mov           eax, r5d
+    RET
+%endmacro
+
+INIT_YMM avx2
+SAD_LIST_MIN_HBD 0, 16, 16
+SAD_LIST_MIN_HBD 0, 16, 8
+SAD_LIST_MIN_HBD 0, 8, 16
+SAD_LIST_MIN_HBD 0, 8, 8
+SAD_LIST_MIN_HBD 1, 16, 16
+SAD_LIST_MIN_HBD 1, 16, 8
+SAD_LIST_MIN_HBD 1, 8, 16
+SAD_LIST_MIN_HBD 1, 8, 8
+
+;-----------------------------------------------------------------------------
 ; void intra_sad_x3_4x4( uint16_t *fenc, uint16_t *fdec, int res[3] );
 ;-----------------------------------------------------------------------------
 
