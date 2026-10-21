@@ -63,6 +63,9 @@ ALIGN 64
 ; 8x8 H rows from edge[7..14] = l7..l0
 isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4,4,4
                db 3,3,3,3,3,3,3,3, 2,2,2,2,2,2,2,2, 1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0
+ALIGN 32
+sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
+sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
 
 SECTION .text
 
@@ -2291,6 +2294,142 @@ SAD_X3_W8_AVX2 8, 1
 SAD_X4_W8_AVX2 16, 1
 SAD_X4_W8_AVX2 8, 1
 %endif
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_sq_min_16x16( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                             const int32_t bias[12], int best )
+; the 12 candidates pix + dx + dy*i_stride, dx -1..2, bias[] by dy -1, 1, 0:
+; min( best, (sad_i << 6) + bias_i ), signed
+;
+; vdbpsadbw of fenc dword g, duplicated in its qword, against ref dwords 0 1 | 1 2
+; from x-1+4g: word k is that dword's sad at dx k-1. 16 wide: lane l holds g 2l
+; and 2l+1, ref from x-1+8l, and each ref row serves dy -1, 0 and 1. 8 wide: the
+; lanes are a row pair, g 0 and 1. The word sums reach at most 16*16*255.
+; m0-m15 on ymm0-15 (VEX but for vdbpsadbw), vzeroupper on return.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%macro SAD_SQ_LOW_RESET 0
+    INIT_YMM avx512
+    AVX512_MM_PERMUTATION
+    %define RESET_MM_PERMUTATION SAD_SQ_LOW_RESET
+%endmacro
+%define vzeroupper_required (mmsize > 16)
+%define high_mm_regs 0
+SAD_SQ_LOW_RESET
+
+; m0/m1/m2: dy -1/0/1, words by lane, g, dx -> eax
+%macro SAD_SQ_MIN_END 0
+    vperm2i128     m3, m0, m2, 0x31
+    vinserti128    m0, m0, xm2, 1
+    paddw          m0, m3         ; dy -1 g 0+2, 1+3 | dy 1 g 0+2, 1+3
+    vpermq         m0, m0, q3120
+    vextracti128  xm3, m1, 1
+    paddw         xm1, xm3        ; dy 0 g 0+2, 1+3
+    vextracti128  xm2, m0, 1
+    paddw         xm0, xm2        ; dy -1, dy 1
+    punpckhqdq    xm3, xm1, xm1
+    paddw         xm1, xm3        ; dy 0
+    pmovzxwd       m0, xm0
+    pmovzxwd      xm1, xm1
+    pslld          m0, 6
+    pslld         xm1, 6
+    paddd          m0, [r3]
+    paddd         xm1, [r3+32]
+    vextracti128  xm2, m0, 1
+    pminsd        xm0, xm1
+    pminsd        xm0, xm2
+    pshufd        xm1, xm0, q1032
+    pminsd        xm0, xm1
+    pshufd        xm1, xm0, q2301
+    pminsd        xm0, xm1
+    movd          eax, xm0
+    cmp           eax, r4d
+    cmovg         eax, r4d
+    RET
+%endmacro
+
+%macro SAD_SQ_ACC 4 ; acc, fenc, ref, first
+%if %4
+    vdbpsadbw     m%1, m%2, m%3, 0x94
+%else
+    vdbpsadbw      m8, m%2, m%3, 0x94
+    paddw         m%1, m8
+%endif
+%endmacro
+
+cglobal pixel_sad_sq_min_16x16, 5,5,9
+    sub            r1, r2
+    dec            r1
+    mova           m3, [sad_sq_idx16]
+%assign sq_j -1
+%rep 18
+    %assign sq_y sq_j+1
+    %assign sq_f 4+(sq_y % 3)
+    %if sq_y < 15
+        vpermd     m%[sq_f], m3, [r0+sq_y*FENC_STRIDE]
+    %elif sq_y == 15
+        vbroadcasti128 m%[sq_f], [r0+15*FENC_STRIDE]
+        vpermd     m%[sq_f], m3, m%[sq_f]
+    %endif
+    movu          xm7, [r1]
+    vinserti128    m7, m7, [r1+8], 1
+    %if sq_j < 16
+        add        r1, r2
+    %endif
+    %if sq_j < 15
+        SAD_SQ_ACC 0, %[sq_f], 7, sq_j == -1
+    %endif
+    %if sq_j >= 0 && sq_j < 16
+        %assign sq_f 4+(sq_j % 3)
+        SAD_SQ_ACC 1, %[sq_f], 7, sq_j == 0
+    %endif
+    %if sq_j >= 1
+        %assign sq_f 4+((sq_j-1) % 3)
+        SAD_SQ_ACC 2, %[sq_f], 7, sq_j == 1
+    %endif
+    %assign sq_j sq_j+1
+%endrep
+    SAD_SQ_MIN_END
+
+cglobal pixel_sad_sq_min_8x8, 5,5,10
+    sub            r1, r2
+    dec            r1
+    mova           m3, [sad_sq_idx8]
+    vpermd         m4, m3, [r0+0*FENC_STRIDE]
+    vpermd         m5, m3, [r0+2*FENC_STRIDE]
+    vpermd         m6, m3, [r0+4*FENC_STRIDE]
+    vpermd         m7, m3, [r0+6*FENC_STRIDE]
+%assign sq_j -1
+%rep 9
+    movu          xm9, [r1]
+    vinserti128    m9, m9, [r1+r2], 1
+    %if sq_j < 7
+        add        r1, r2
+    %endif
+    %if sq_j & 1
+        %if sq_j < 7
+            %assign sq_f 4+(sq_j+1)/2
+            SAD_SQ_ACC 0, %[sq_f], 9, sq_j == -1
+        %endif
+        %if sq_j > 0
+            %assign sq_f 4+(sq_j-1)/2
+            SAD_SQ_ACC 2, %[sq_f], 9, sq_j == 1
+        %endif
+    %else
+        %assign sq_f 4+sq_j/2
+        SAD_SQ_ACC 1, %[sq_f], 9, sq_j == 0
+    %endif
+    %assign sq_j sq_j+1
+%endrep
+    SAD_SQ_MIN_END
+%undef sq_j
+%undef sq_y
+%undef sq_f
+
+%define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
+%define high_mm_regs (16*cpuflag(avx512))
+INIT_YMM avx2
+%endif ; ARCH_X86_64
 
 %macro SAD_X_W4_AVX512 2 ; x, h
 cglobal pixel_sad_x%1_4x%2, %1+2,%1+3
