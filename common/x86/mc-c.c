@@ -417,6 +417,10 @@ MC_WEIGHT_AVG( weight, 12 )
 MC_WEIGHT_AVG( weight_ns, 12 )
 MC_WEIGHT_AVG( offsetadd, 12 )
 MC_WEIGHT_AVG( offsetsub, 12 )
+#define x264_mc_offsetadd_avg_w8_avx512icl x264_template(mc_offsetadd_avg_w8_avx512icl)
+#define x264_mc_offsetadd_avg_w16_avx512icl x264_template(mc_offsetadd_avg_w16_avx512icl)
+void x264_mc_offsetadd_avg_w8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
+void x264_mc_offsetadd_avg_w16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
 #endif
 #undef MC_WEIGHT_AVG_ALL
 #undef MC_WEIGHT_AVG
@@ -692,6 +696,16 @@ MC_WEIGHT_AVG_WTAB(weight,12)
 MC_WEIGHT_AVG_WTAB(weight_ns,12)
 MC_WEIGHT_AVG_WTAB(offsetadd,12)
 MC_WEIGHT_AVG_WTAB(offsetsub,12)
+/* avx512icl on the same cache: w8, w16 (the others are slower on Zen 4) */
+static weight_avg_fn_t x264_mc_offsetadd_avg_wtab_avx512icl[6] =
+{
+    x264_mc_offsetadd_avg_w4_avx2,
+    x264_mc_offsetadd_avg_w4_avx2,
+    x264_mc_offsetadd_avg_w8_avx512icl,
+    x264_mc_offsetadd_avg_w12_avx2,
+    x264_mc_offsetadd_avg_w16_avx512icl,
+    x264_mc_offsetadd_avg_w20_avx2,
+};
 #else
 MC_WEIGHT_AVG_WTAB(weight,16)
 MC_WEIGHT_AVG_WTAB(offsetadd,16)
@@ -799,6 +813,15 @@ static void x264_weight_cache_avx512( x264_t *h, x264_weight_t *w )
 {
     weight_cache_mulhrs( h, w, x264_mc_weight_ns_wtab_avx512 );
 }
+
+#if ARCH_X86_64
+static void x264_weight_cache_avx512icl( x264_t *h, x264_weight_t *w )
+{
+    weight_cache_mulhrs( h, w, x264_mc_weight_ns_wtab_avx512 );
+    if( w->weightavgfn == x264_mc_offsetadd_avg_wtab_avx2 )
+        w->weightavgfn = x264_mc_offsetadd_avg_wtab_avx512icl;
+}
+#endif
 
 #if ARCH_X86_64
 /* x264_weight_scale_plane row by row over what its w16/w8 strips write (width
@@ -1437,6 +1460,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     {
 #if ARCH_X86_64
         /* zen4 prune, neutral (>= 1.000): frame_init_lowres_core8, plane_copy_interleave; kept assembled */
+        pf->weight_cache = x264_weight_cache_avx512icl;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
