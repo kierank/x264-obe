@@ -91,6 +91,7 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         h->mb.i_subpel_refine = 2;
     }
     h->mb.b_chroma_me = 0;
+    h->sweep.la = 1;
 
     float *logs = x264_analyse_prepare_costs( h );
     if( !logs )
@@ -110,6 +111,11 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
 fail:
     x264_lowres8_free( c );
     return NULL;
+}
+
+x264_sweep_t *x264_lowres8_sweep( void *ctx )
+{
+    return &((lowres8_t*)ctx)->h.sweep;
 }
 
 void x264_lowres8_free( void *ctx )

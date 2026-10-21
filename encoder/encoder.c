@@ -4596,6 +4596,86 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
         sprintf( intra, " %4.1f%%", i_mb_count[I_PCM]  / i_count );
 }
 
+static void x264_sweep_add_ctx( x264_sweep_t *s, x264_t *t )
+{
+    x264_sweep_add( s, &t->sweep );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( t->lowres8 )
+        x264_sweep_add( s, x264_lowres8_sweep( t->lowres8 ) );
+#endif
+}
+
+/* test counters of every context, summed, to stderr. The lookahead thread's
+ * were added to thread 0 by x264_lookahead_delete. */
+static void x264_sweep_print( x264_t *h )
+{
+    static const char *pix_name[7] = { "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4" };
+    static const char *step_name[SW_STEP_N] = { "dia", "hex", "hexhalf", "sq_cross", "sq_diag", "x4", "x3_abs" };
+    static const char *la_name[2] = { "main", "la" };
+    x264_sweep_t s;
+    memset( &s, 0, sizeof(s) );
+    for( int i = 0; i < h->param.i_threads; i++ )
+        x264_sweep_add_ctx( &s, h->thread[i] );
+    if( h->param.i_lookahead_threads > 1 || h->param.b_sliced_threads )
+        for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+            x264_sweep_add_ctx( &s, h->lookahead_thread[i] );
+    x264_sweep_cnt_t *c = &s.c;
+
+    int frames = h->stat.i_frame_count[SLICE_TYPE_I] + h->stat.i_frame_count[SLICE_TYPE_P] + h->stat.i_frame_count[SLICE_TYPE_B];
+    fprintf( stderr, "sweep begin depth=%d csp=%d interlaced=%d frames=%d frames_i=%d frames_p=%d frames_b=%d "
+             "threads=%d lookahead_threads=%d sliced=%d me=%d subme=%d weightp=%d\n",
+             BIT_DEPTH, h->param.i_csp & X264_CSP_MASK, PARAM_INTERLACED, frames, h->stat.i_frame_count[SLICE_TYPE_I],
+             h->stat.i_frame_count[SLICE_TYPE_P], h->stat.i_frame_count[SLICE_TYPE_B], h->param.i_threads,
+             h->param.i_lookahead_threads, h->param.b_sliced_threads, h->param.analyse.i_me_method,
+             h->param.analyse.i_subpel_refine, h->param.analyse.i_weighted_pred );
+    for( int la = 0; la < 2; la++ )
+        for( int p = 0; p < 7; p++ )
+        {
+            uint64_t *a = c->a1[la][p];
+            if( !a[SW_A1_CALLS] )
+                continue;
+            fprintf( stderr, "sweep A1 %s %s calls=%"PRIu64" mvc=%"PRIu64" valid=%"PRIu64" eq_pmv=%"PRIu64" eq_zero=%"PRIu64
+                     " dup=%"PRIu64" red_calls=%"PRIu64" weighted=%"PRIu64"\n", la_name[la], pix_name[p],
+                     a[SW_A1_CALLS], a[SW_A1_MVC], a[SW_A1_VALID], a[SW_A1_EQ_PMV], a[SW_A1_EQ_ZERO],
+                     a[SW_A1_DUP], a[SW_A1_RED_CALLS], a[SW_A1_WEIGHTED] );
+        }
+    for( int la = 0; la < 2; la++ )
+        for( int st = 0; st < SW_STEP_N; st++ )
+            for( int p = 0; p < 7; p++ )
+            {
+                uint64_t *a = c->a3[la][st][p];
+                if( !a[SW_A3_CALLS] )
+                    continue;
+                fprintf( stderr, "sweep A3 %s %s %s calls=%"PRIu64" lanes=%"PRIu64" lanes_dead=%"PRIu64" all_dead=%"PRIu64
+                         " no_improve=%"PRIu64"\n", la_name[la], step_name[st], pix_name[p],
+                         a[SW_A3_CALLS], a[SW_A3_LANES], a[SW_A3_LANES_DEAD], a[SW_A3_ALL_DEAD], a[SW_A3_NO_IMPROVE] );
+            }
+    fprintf( stderr, "sweep A6 probes=%"PRIu64" skip=%"PRIu64" luma_eq=%"PRIu64" luma_eq_skip=%"PRIu64" all_eq=%"PRIu64"\n",
+             c->a6[SW_A6_PROBES], c->a6[SW_A6_SKIP], c->a6[SW_A6_LUMA_EQ], c->a6[SW_A6_LUMA_EQ_SKIP], c->a6[SW_A6_ALL_EQ] );
+    for( int inter = 0; inter < 2; inter++ )
+        for( int t = 0; t < 2; t++ )
+            fprintf( stderr, "sweep A10 %s %s coded=%"PRIu64" dc_only=%"PRIu64"\n", inter ? "inter" : "intra",
+                     t ? "4x4" : "8x8", c->a10[inter][t][0], c->a10[inter][t][1] );
+    for( int la = 0; la < 2; la++ )
+    {
+        uint64_t *a = c->wp[la];
+        fprintf( stderr, "sweep WP %s calls=%"PRIu64" luma=%"PRIu64" chroma=%"PRIu64" us=%"PRIu64" us_max=%"PRIu64
+                 " hist=%"PRIu64"/%"PRIu64"/%"PRIu64"/%"PRIu64"/%"PRIu64"/%"PRIu64"/%"PRIu64"\n",
+                 la ? "la" : "final", a[SW_WP_CALLS], a[SW_WP_LUMA], a[SW_WP_CHROMA], a[SW_WP_US], s.wp_us_max[la],
+                 a[SW_WP_HIST0+0], a[SW_WP_HIST0+1], a[SW_WP_HIST0+2], a[SW_WP_HIST0+3],
+                 a[SW_WP_HIST0+4], a[SW_WP_HIST0+5], a[SW_WP_HIST0+6] );
+    }
+    fprintf( stderr, "sweep WPMB p_mbs=%"PRIu64" inter=%"PRIu64" wref_luma=%"PRIu64" wref_any=%"PRIu64
+             " subpel_wgetref_main=%"PRIu64" subpel_wgetref_la=%"PRIu64"\n",
+             c->wpmb[SW_WPMB_P], c->wpmb[SW_WPMB_INTER], c->wpmb[SW_WPMB_WREF_LUMA], c->wpmb[SW_WPMB_WREF_ANY],
+             c->wpmb[SW_WPMB_SUBPEL_W0], c->wpmb[SW_WPMB_SUBPEL_W1] );
+    fprintf( stderr, "sweep C3 frames=%d cl_interlaced=%"PRIu64" cl_progressive=%"PRIu64" field_mbs=%"PRIu64
+             " f2f=%"PRIu64" strength_mbaff=%"PRIu64"\n", frames,
+             c->c3[SW_C3_CL_INTERLACED], c->c3[SW_C3_CL_PROGRESSIVE], c->c3[SW_C3_FIELD_MBS],
+             c->c3[SW_C3_F2F], c->c3[SW_C3_STRENGTH_MBAFF] );
+    fprintf( stderr, "sweep end\n" );
+}
+
 /****************************************************************************
  * x264_encoder_close:
  ****************************************************************************/
@@ -4640,6 +4720,8 @@ void    x264_encoder_close  ( x264_t *h )
         h->i_frame = thread_prev->i_frame + 1 - h->i_thread_frames;
     }
     h->i_frame++;
+
+    x264_sweep_print( h );
 
     /* Slices used and PSNR */
     for( int i = 0; i < 3; i++ )

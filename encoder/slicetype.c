@@ -1542,10 +1542,12 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
     int start_x = h->mb.i_mb_width - 2 + do_edges;
     int end_x = 1 - do_edges;
 
+    h->sweep.la = 1;
     for( h->mb.i_mb_y = start_y; h->mb.i_mb_y >= end_y; h->mb.i_mb_y-- )
         for( h->mb.i_mb_x = start_x; h->mb.i_mb_x >= end_x; h->mb.i_mb_x-- )
             x264_slicetype_mb_cost( h, s->a, s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
                                     s->do_search, s->w, s->output_inter, s->output_intra );
+    h->sweep.la = 0;
 }
 
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,

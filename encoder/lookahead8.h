@@ -38,6 +38,9 @@
 void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height, int stride, int lines );
 void  x264_lowres8_free( void *ctx );
 
+/* the context's test counters (common/sweepcnt.h) */
+x264_sweep_t *x264_lowres8_sweep( void *ctx );
+
 /* The MB loop of slicetype_slice_cost over rows [slice_start, slice_end). weights
  * is the high bit depth x264_weight_t[3] of frames[b] (or x264_weight_none);
  * it is re-cached for the 8-bit weight functions. */

@@ -177,6 +177,11 @@ void x264_lookahead_delete( x264_t *h )
         x264_pthread_cond_broadcast( &h->lookahead->ifbuf.cv_fill );
         x264_pthread_mutex_unlock( &h->lookahead->ifbuf.mutex );
         x264_pthread_join( h->lookahead->thread_handle, NULL );
+        x264_sweep_add( &h->sweep, &h->thread[h->param.i_threads]->sweep );
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+        if( h->thread[h->param.i_threads]->lowres8 )
+            x264_sweep_add( &h->sweep, x264_lowres8_sweep( h->thread[h->param.i_threads]->lowres8 ) );
+#endif
         x264_macroblock_cache_free( h->thread[h->param.i_threads] );
         x264_macroblock_thread_free( h->thread[h->param.i_threads], 1 );
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
