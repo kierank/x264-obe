@@ -83,6 +83,8 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         h->pixf.fpelcmp_ring_min[i] = satd ? NULL : h->pixf.sad_ring_min[i];
         h->pixf.fpelcmp_corner_min[i] = satd ? NULL : h->pixf.sad_corner_min[i];
         h->pixf.fpelcmp_row[i] = satd ? NULL : h->pixf.sad_row[i];
+        h->pixf.fpelcmp_dia_search[i] = satd ? NULL : h->pixf.sad_dia_search[i];
+        h->pixf.fpelcmp_hex_search[i] = satd ? NULL : h->pixf.sad_hex_search[i];
     }
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
 
