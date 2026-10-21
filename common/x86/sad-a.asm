@@ -2462,7 +2462,8 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %endif
 %endmacro
 
-%macro DBP_ROWS 3 ; width, height, windows
+; %4: a partial-distortion check before row h/2
+%macro DBP_ROWS 3-4 ; width, height, windows, check
 %if %1 == 16
     %assign %%step 1
 %else
@@ -2470,6 +2471,9 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %endif
 %assign %%r 0
 %rep %2 / %%step
+    %if %0 > 3 && %%r == %2/2
+    %4 %1
+    %endif
     %if %1 == 16 && %%r == %2-1
     vbroadcasti128  m4, [r0+%%r*FENC_STRIDE]
     vpermd          m4, m7, m4
@@ -2548,6 +2552,33 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %endif
 %endmacro
 
+; partial-distortion exit: the keys of the rows so far are lower bounds of the
+; final ones, so if none is below best the result is best. m12-m14 and k7 are
+; free in the kernels that use these.
+; m12 -> xm12: words 0-3 summed over the qwords
+%macro DBP_PDE_FOLD1 0
+    vextracti128  xm13, m12, 1
+    paddw         xm12, xm13
+    punpckhqdq    xm13, xm12, xm12
+    paddw         xm12, xm13
+%endmacro
+
+; m12, m13 -> xm12: words 0-3 of m12, 4-7 of m13, summed over the qwords
+%macro DBP_PDE_FOLD2 0
+    punpcklqdq     m14, m12, m13
+    punpckhqdq     m12, m12, m13
+    paddw          m12, m14
+    vextracti128  xm14, m12, 1
+    paddw         xm12, xm14
+%endmacro
+
+; the dword keys in m12 (xm12) against best in m13: none below, jump to .pde
+%macro DBP_PDE_EXIT 1 ; m or xm
+    vpcmpd          k7, %1 %+ 12, %1 %+ 13, 1
+    kortestw        k7, k7
+    jz .pde
+%endmacro
+
 ; min of the dwords of xm0 -> eax
 %macro DBP_MIN4 0
     pshufd         xm1, xm0, q1032
@@ -2596,8 +2627,24 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 ; candidates (0,-1) (0,1) (-1,0) (1,0), s = 4. Windows: dy 0 bx -2 words 1, 3;
 ; dy -1 bx 0 word 0; dy 1 bx -2 word 2: (0,-1) (-1,0) (0,1) (1,0) by word
 ;-----------------------------------------------------------------------------
-%macro SAD_DIA_MIN 2 ; width, height
+; the dia sums so far: keys (word sums << 4) + bias against best
+%macro DBP_PDE_DIA 1 ; width
+    paddw          m12, m0, m1
+    paddw          m12, m2
+    DBP_PDE_FOLD1
+    pmovzxwd      xm12, xm12
+    pslld         xm12, 4
+    paddd         xm12, xm8
+    vpbroadcastd  xm13, r4d
+    DBP_PDE_EXIT xm
+%endmacro
+
+%macro SAD_DIA_MIN 2-3 0 ; width, height, pde
+%if %3
+cglobal pixel_sad_dia_min_pde_%1x%2, 5,10,15
+%else
 cglobal pixel_sad_dia_min_%1x%2, 5,10,10
+%endif
     %define dbp_o  r5
     %define dbp_o1 r6
     %define dbp_p0 r7
@@ -2617,7 +2664,11 @@ cglobal pixel_sad_dia_min_%1x%2, 5,10,10
     movu           xm8, [r3]
     pshufd         xm8, xm8, q3120
     vpbroadcastd   xm9, r4d
+%if %3
+    DBP_ROWS %1, %2, 3, DBP_PDE_DIA
+%else
     DBP_ROWS %1, %2, 3
+%endif
 %if %1 == 4
     paddw          xm0, xm1
     paddw          xm0, xm2
@@ -2632,6 +2683,11 @@ cglobal pixel_sad_dia_min_%1x%2, 5,10,10
     pminsd         xm0, xm9
     DBP_MIN4
     RET
+%if %3
+.pde:
+    mov           eax, r4d
+    RET
+%endif
 %endmacro
 
 SAD_DIA_MIN 16, 16
@@ -2641,6 +2697,10 @@ SAD_DIA_MIN 8, 8
 SAD_DIA_MIN 8, 4
 SAD_DIA_MIN 4, 8
 SAD_DIA_MIN 4, 4
+SAD_DIA_MIN 16, 16, 1
+SAD_DIA_MIN 16, 8, 1
+SAD_DIA_MIN 8, 16, 1
+SAD_DIA_MIN 8, 8, 1
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_hex_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,

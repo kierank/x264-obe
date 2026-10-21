@@ -1872,6 +1872,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
         INIT7( sad_dia_min, _avx512 );
+        INIT4_NAME( sad_dia_min, sad_dia_min_pde, _avx512 );
         INIT7( sad_hex_min, _avx512 );
         INIT7( sad_hexhalf_min, _avx512 );
         INIT7( sad_oct_min, _avx512 );
