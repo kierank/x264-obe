@@ -90,6 +90,25 @@ int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_st
     return best;
 }
 
+/* reference for sad_hpel_min */
+int x264_pixel_sad_hpel_min_c( int i_pixel, pixel *fenc, pixel *pixv, pixel *pixh, intptr_t i_stride,
+                               uint64_t bias01, uint64_t bias23, int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    pixel *pix[4] = { pixv, pixv + i_stride, pixh, pixh + 1 };
+    int32_t bias[4] = { (int32_t)bias01, (int32_t)(bias01 >> 32), (int32_t)bias23, (int32_t)(bias23 >> 32) };
+    for( int i = 0; i < 4; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix[i], i_stride ) << 6) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
 static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
                        int shift, const int32_t *bias, int best )
 {

@@ -1120,6 +1120,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     ALIGNED_ARRAY_16( int, costs,[4] );
     pixel *p_fenc = m->p_fenc[0];
     x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
+    x264_pixel_cmp_hpel_min_t cmp_hpel_min = h->pixf.fpelcmp_hpel_min[i_pixel];
 
     int bmx = m->mv[0];
     int bmy = m->mv[1];
@@ -1158,13 +1159,18 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
                 src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
             }
-            src1 = src0 + stride;
-            src3 = src2 + 1;
-            COST_MIN_X4( bcost, src0, src1, src2, src3,
-                         ((p_cost_mvx[omx  ] + p_cost_mvy[omy-2]) << 6) + 2,
-                         ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6,
-                         ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16,
-                         ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48 );
+            int b0 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy-2]) << 6) + 2;
+            int b1 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6;
+            int b2 = ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16;
+            int b3 = ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48;
+            if( cmp_hpel_min )
+                bcost = cmp_hpel_min( p_fenc, src0, src2, stride, PACK2( b0, b1 ), PACK2( b2, b3 ), bcost );
+            else
+            {
+                src1 = src0 + stride;
+                src3 = src2 + 1;
+                COST_MIN_X4( bcost, src0, src1, src2, src3, b0, b1, b2, b3 );
+            }
             if( !(bcost&63) )
                 break;
             bmx -= (bcost<<26)>>29;

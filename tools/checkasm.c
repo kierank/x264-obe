@@ -1119,6 +1119,96 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     report( "pixel sad_pt_min :" );
 
+    /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
+     * 3 a maximal sad (~fenc) in slot j&3, winning */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( pixel_asm.sad_hpel_min[i] && pixel_asm.sad_hpel_min[i] != pixel_ref.sad_hpel_min[i] )
+        {
+            ALIGNED_16( pixel refm[40*48] );
+            int wins[5] = {0};
+            set_func_name( "sad_hpel_min_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 256 && ok; j++ )
+            {
+                int mode = j>>6;
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
+                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pixv = mode == 3 ? refm + 1 : pbuf2 + (j&31) + 1;
+                pixel *pixh = mode == 3 ? refm + 19*48 + 2 : pbuf2 + 18*stride + ((j*7)&31);
+                pixel *pix[4];
+                int sad[4], bias[4], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                pix[0] = pixv;
+                pix[1] = pixv + stride;
+                pix[2] = pixh;
+                pix[3] = pixh + 1;
+                if( mode == 3 )
+                {
+                    int k = j&3;
+                    for( int l = 0; l < 40*48; l++ )
+                        refm[l] = rand() & PIXEL_MAX;
+                    for( int y = 0; y < 16; y++ )
+                        memcpy( pix[k] + y*stride, pbuf4 + 16*y, 16*sizeof(pixel) );
+                }
+                for( int k = 0; k < 4; k++ )
+                {
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix[k], stride );
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < 4; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << 6) + 1 + ((k + j) & 3);
+                    else if( mode == 2 )
+                        bias[k] = ((((j>>k)&1) * 131070) << 6) + ((j>>(k+2))&1) * 63;
+                    else if( mode == 3 )
+                        bias[k] = k == (j&3) ? rand()&63 : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << 6) + (rand()&63);
+                    tmin = X264_MIN( tmin, (sad[k] << 6) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << 6) + (rand()%3 ? (int)(rand()&63) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 )
+                    best = INT_MAX;
+                else
+                    best = tmin + ((rand()&255) - 128) * 64 + (rand()&63);
+                uint64_t bias01 = (uint32_t)bias[0] | (uint64_t)(uint32_t)bias[1] << 32;
+                uint64_t bias23 = (uint32_t)bias[2] | (uint64_t)(uint32_t)bias[3] << 32;
+                res_c = best;
+                for( int k = 0; k < 4; k++ )
+                    if( (sad[k] << 6) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << 6) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                if( x264_pixel_sad_hpel_min_c( i, fenc, pixv, pixh, stride, bias01, bias23, best ) != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_hpel_min[%d]: C reference mismatch [FAILED]\n", i );
+                }
+                res_a = call_a( pixel_asm.sad_hpel_min[i], fenc, pixv, pixh, stride, bias01, bias23, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_hpel_min[%d]: mode %d %d != %d [FAILED]\n", i, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= 4 && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_hpel_min[%d]: %s %d never selected [FAILED]\n", i, k ? "slot" : "best", k-1 );
+                }
+        }
+    }
+    report( "pixel sad_hpel_min :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \
