@@ -5604,26 +5604,27 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
 
 ; m0-m3 = pix1-pix2 rows %1..%1+3 of the units at r0/r2 (lane 0) and r6/r7 (lane 1)
 %macro SATD_HBD_LOAD_X 0 ; 8 wide, ymm: lanes = rows i, i+4
+    ; each lane subtracted on its own, one lane insert a row
     movu         xm0, [r0]
-    vinserti128   m0, m0, [r6], 1
-    movu         xm4, [r2]
-    vinserti128   m4, m4, [r7], 1
+    psubw        xm0, [r2]
+    movu         xm4, [r6]
+    psubw        xm4, [r7]
+    vinserti128   m0, m0, xm4, 1
     movu         xm1, [r0+r1]
-    vinserti128   m1, m1, [r6+r1], 1
-    movu         xm5, [r2+r3]
-    vinserti128   m5, m5, [r7+r3], 1
-    psubw         m0, m4
-    psubw         m1, m5
+    psubw        xm1, [r2+r3]
+    movu         xm5, [r6+r1]
+    psubw        xm5, [r7+r3]
+    vinserti128   m1, m1, xm5, 1
     movu         xm2, [r0+2*r1]
-    vinserti128   m2, m2, [r6+2*r1], 1
-    movu         xm4, [r2+2*r3]
-    vinserti128   m4, m4, [r7+2*r3], 1
+    psubw        xm2, [r2+2*r3]
+    movu         xm4, [r6+2*r1]
+    psubw        xm4, [r7+2*r3]
+    vinserti128   m2, m2, xm4, 1
     movu         xm3, [r0+r4]
-    vinserti128   m3, m3, [r6+r4], 1
-    movu         xm5, [r2+r5]
-    vinserti128   m5, m5, [r7+r5], 1
-    psubw         m2, m4
-    psubw         m3, m5
+    psubw        xm3, [r2+r5]
+    movu         xm5, [r6+r4]
+    psubw        xm5, [r7+r5]
+    vinserti128   m3, m3, xm5, 1
 %endmacro
 
 %macro SATD_HBD_LOAD_Y 0 ; 16 wide, ymm: lanes = columns 0-7, 8-15 of one row
