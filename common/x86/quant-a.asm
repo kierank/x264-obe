@@ -611,7 +611,7 @@ cglobal quant_4x4x4, 3,3,6
     pabsd     %1, %2
     paddd     %1, %4
     pmulld    %1, %3
-    psrad     %1, 16
+    psrld     %1, 16
     vpmovd2m  k1, %2
     vpsubd    %1{k1}, m7, %1
 %else
