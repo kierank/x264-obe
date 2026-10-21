@@ -3288,10 +3288,40 @@ static int check_mc( int cpu_ref, int cpu_new )
                 if( !ok )
                     fprintf( stderr, "mbtree_propagate_list FAILED at %d: %d !~= %d\n", j, ref_costsc[j], ref_costsa[j] );
             }
-
-            call_c2( mc_c.mbtree_propagate_list, &h, ref_costsc, mvs, propagate_amount, lowres_costs, bipred_weight, mb_y, len, list );
-            call_a2( mc_a.mbtree_propagate_list, &h, ref_costsa, mvs, propagate_amount, lowres_costs, bipred_weight, mb_y, len, list );
         }
+        /* bench: a fixed 128-wide row in the middle of 4, each list: mvs +-32,
+         * bipred weight 32, lowres costs and amounts from the private generator */
+        x264_t *hb = do_bench ? x264_malloc( sizeof(x264_t) ) : NULL;
+        uint8_t *mb = do_bench ? x264_malloc( 64<<10 ) : NULL;
+        for( int list = 0; list < 2 && hb && mb; list++ )
+        {
+            static const uint8_t list_dist[2][8] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2}};
+            int width = 128, size = 4*width;
+            uint16_t *ref_costsc = (uint16_t*)mb + width;
+            uint16_t *ref_costsa = (uint16_t*)mb + 1024 + width;
+            int16_t (*mvs)[2] = (int16_t(*)[2])((uint16_t*)mb + 2048);
+            int16_t *propagate_amount = (int16_t*)(mvs + width);
+            uint16_t *lowres_costs = (uint16_t*)(propagate_amount + width);
+            hb->mb.i_mb_stride = width;
+            hb->mb.i_mb_width = width;
+            hb->mb.i_mb_height = 4;
+            hb->scratch_buffer2 = mb + (32<<10);
+            bench_srand( 600 + list );
+            for( int j = -width; j < size+width; j++ )
+                ref_costsc[j] = ref_costsa[j] = bench_rand()&32767;
+            for( int j = 0; j < width; j++ )
+            {
+                for( int k = 0; k < 2; k++ )
+                    mvs[j][k] = (bench_rand()&63) - 32;
+                propagate_amount[j] = bench_rand()&4095;
+                lowres_costs[j] = list_dist[list][bench_rand()&7] << LOWRES_COST_SHIFT;
+            }
+            set_func_name( "mbtree_propagate_list" );
+            call_c2( mc_c.mbtree_propagate_list, hb, ref_costsc, mvs, propagate_amount, lowres_costs, 32, 1, width, list );
+            call_a2( mc_a.mbtree_propagate_list, hb, ref_costsa, mvs, propagate_amount, lowres_costs, 32, 1, width, list );
+        }
+        x264_free( hb );
+        x264_free( mb );
     }
     report( "mbtree :" );
 
