@@ -972,6 +972,16 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twin of wip/x264-me-dbpsad: the sad_sq_min dispatch assigns undefined
+ * weak symbols, which link as 0, so the slots stay NULL as on speed-next */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+extern __typeof__( x264_pixel_sad_sq_min_16x16_avx512 ) x264_8_twin_sad_sq_min_16x16 __attribute__((weak, visibility("hidden")));
+extern __typeof__( x264_pixel_sad_sq_min_8x8_avx512 ) x264_8_twin_sad_sq_min_8x8 __attribute__((weak, visibility("hidden")));
+#undef x264_pixel_sad_sq_min_16x16_avx512
+#define x264_pixel_sad_sq_min_16x16_avx512 x264_8_twin_sad_sq_min_16x16
+#undef x264_pixel_sad_sq_min_8x8_avx512
+#define x264_pixel_sad_sq_min_8x8_avx512 x264_8_twin_sad_sq_min_8x8
+#endif
 
 /****************************************************************************
  * x264_pixel_init:
