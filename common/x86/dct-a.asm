@@ -179,6 +179,11 @@ zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
 zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
                db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
+%if HIGH_BIT_DEPTH
+ALIGN 32
+; add16x16_idct_dc avx2: dc0 x4 dc1 x4 | dc2 x4 dc3 x4 from packssdw'd dc0-3 in both lanes
+idct_dc16_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
+%endif
 
 SECTION .text
 
@@ -1538,18 +1543,18 @@ ADD_IDCT_DC
 
 ; One ymm per row: [dc0 x4, dc1 x4 | dc2 x4, dc3 x4]
 INIT_YMM avx2
-cglobal add16x16_idct_dc, 2,3,6
+cglobal add16x16_idct_dc, 2,3,8
     mov         r2d, 4
     mova         m5, [pw_pixel_max]
     pxor         m4, m4
+    vpbroadcastd m6, [pd_32]
+    mova         m7, [idct_dc16_shuf]
 .loop:
-    mova        xm3, [r1]
-    paddd       xm3, [pd_32]
-    psrad       xm3, 6
-    packssdw    xm3, xm3       ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3
-    punpcklwd   xm3, xm3       ; dc0 dc0 dc1 dc1 dc2 dc2 dc3 dc3
-    vpermq       m3, m3, q1100 ; dc0 dc0 dc1 dc1 dc0 dc0 dc1 dc1 | dc2 dc2 dc3 dc3 dc2 dc2 dc3 dc3
-    punpckldq    m3, m3        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
+    vbroadcasti128 m3, [r1]
+    paddd        m3, m6
+    psrad        m3, 6
+    packssdw     m3, m3        ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3 in both lanes
+    pshufb       m3, m7        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
     paddsw       m0, m3, [r0+FDEC_STRIDEB*0]
     paddsw       m1, m3, [r0+FDEC_STRIDEB*1]
     paddsw       m2, m3, [r0+FDEC_STRIDEB*2]
