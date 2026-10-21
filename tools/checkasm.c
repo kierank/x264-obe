@@ -2343,6 +2343,11 @@ static int check_mc( int cpu_ref, int cpu_new )
     }
     report( "mc copy :" );
 
+    /* bench weights, one per kernel x264_weight_cache picks: scale > 1<<denom,
+     * scale < 1<<denom (8-bit: the cachea < 256 path), offset > 0, offset < 0 */
+    static const int16_t wbench[4][3] = { { 72, 6, 4 }, { 56, 6, -4 }, { 64, 6, 8 }, { 64, 6, -8 } };
+    static const char *wbench_name[4] = { "weight", "weight_ns", "offsetadd", "offsetsub" };
+
 #define MC_TEST_WEIGHT( name, weight, aligned, src, height, bench ) \
     int align_off = (aligned ? 0 : rand()%16); \
     for( int i = 1; i <= 5; i++ ) \
@@ -2466,7 +2471,6 @@ static int check_mc( int cpu_ref, int cpu_new )
                 int r = rand();
                 wa_src[j][i] = r&8 ? -(r&1) & PIXEL_MAX : r&4 ? (r&1 ? PIXEL_MAX-1 : 1) : rand() & PIXEL_MAX;
             }
-        int bench_done[3] = {0};
         for( int s = HIGH_BIT_DEPTH ? -128 : 0; s <= 127 && ok; s++ )
             for( int o = -128; o <= 127 && ok; o++ )
                 for( int d = 0; d <= 7 && ok; d++ )
@@ -2507,12 +2511,26 @@ static int check_mc( int cpu_ref, int cpu_new )
                                 ok = 0;
                                 fprintf( stderr, "weightavgfn[%d] [FAILED] s:%d o:%d d:%d h:%d doff:%d\n", i, s, o, d, h, doff );
                             }
-                            if( h == 16 && !bench_done[kind] && s >= 0 && s * (1<<(8-d)) < 512 )
-                                call_a2( wa.weightavgfn[i], wa_a+doff, (intptr_t)WA_DS, s1, (intptr_t)WA_SS, &wa, h, s2 );
                         }
-                    if( s >= 0 && s * (1<<(8-d)) < 512 )
-                        bench_done[kind] = 1;
                 }
+        /* bench: src1 and dst 64-byte aligned, src2 one pixel on (mvx&3 == 3) */
+        for( int k = 0; k < 4; k++ )
+        {
+            x264_weight_t wa = { .i_scale = wbench[k][0], .i_denom = wbench[k][1], .i_offset = wbench[k][2] };
+            x264_weight_t wr = wa;
+            mc_a.weight_cache( hwa, &wa );
+            mc_ref.weight_cache( hwr, &wr );
+            if( !wa.weightavgfn )
+                continue;
+            for( int i = 1; i <= 5; i++ )
+            {
+                if( (i == 3 && wa.weightavgfn[3] == wa.weightavgfn[4]) ||
+                    (wr.weightavgfn && wa.weightavgfn[i] == wr.weightavgfn[i]) )
+                    continue;
+                set_func_name( "%s_avg_w%d", wbench_name[k], i*4 );
+                call_a2( wa.weightavgfn[i], wa_a+2*WA_DS, (intptr_t)WA_DS, wa_src[0], (intptr_t)WA_SS, &wa, 16, wa_src[1]+1 );
+            }
+        }
         x264_free( hwa );
         x264_free( hwr );
     }
