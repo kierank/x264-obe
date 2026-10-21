@@ -977,22 +977,20 @@ global current_function %+ .skip_prologue
     STOREx2_AVX2 2, 3, 4, 5, -2, 2, -1, 3, 7
     ret
 
-; 2xdst, 2xtmp, 4xsrcrow, 1xzero
+; 2xdst, 2xtmp, 4xsrcrow, 1xhsub_mul: fenc, fdec byte pairs by pmaddubsw (1, -1)
 %macro LOAD_DIFF8x2_AVX2 9
     movq    xm%1, [r1+%5*FENC_STRIDE]
     movq    xm%2, [r1+%6*FENC_STRIDE]
     vinserti128 m%1, m%1, [r1+%7*FENC_STRIDE], 1
     vinserti128 m%2, m%2, [r1+%8*FENC_STRIDE], 1
-    punpcklbw m%1, m%9
-    punpcklbw m%2, m%9
     movq    xm%3, [r2+(%5-4)*FDEC_STRIDE]
     movq    xm%4, [r2+(%6-4)*FDEC_STRIDE]
     vinserti128 m%3, m%3, [r2+(%7-4)*FDEC_STRIDE], 1
     vinserti128 m%4, m%4, [r2+(%8-4)*FDEC_STRIDE], 1
-    punpcklbw m%3, m%9
-    punpcklbw m%4, m%9
-    psubw    m%1, m%3
-    psubw    m%2, m%4
+    punpcklbw m%1, m%3
+    punpcklbw m%2, m%4
+    pmaddubsw m%1, m%9
+    pmaddubsw m%2, m%9
 %endmacro
 
 ; 4x src row, 2x tmp, 2x offset
@@ -1015,7 +1013,7 @@ global current_function %+ .skip_prologue
 
 INIT_YMM avx2
 cglobal sub8x8_dct, 3,3,7
-    pxor m6, m6
+    mova m6, [hsub_mul]
     add r2, 4*FDEC_STRIDE
     LOAD_DIFF8x2_AVX2 0, 1, 4, 5, 0, 1, 4, 5, 6
     LOAD_DIFF8x2_AVX2 2, 3, 4, 5, 2, 3, 6, 7, 6
