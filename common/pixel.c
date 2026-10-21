@@ -1041,7 +1041,7 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /* layout twin of the 8x8-only arm: both declare the hidden weak x264_8_twin_sad_*_min_8x8;
  * with DBP_TWIN8 1 the four 8x8 slots dispatch them, which link as 0, so they stay NULL */
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-#define DBP_TWIN8 0
+#define DBP_TWIN8 1
 #define DBP_TWIN1( k ) \
     extern __typeof__( x264_pixel_sad_##k##_min_8x8_avx512 ) x264_8_twin_sad_##k##_min_8x8 __attribute__((weak, visibility("hidden"))); \
     __asm__( ".weak x264_8_twin_sad_" #k "_min_8x8\n.hidden x264_8_twin_sad_" #k "_min_8x8" );
