@@ -6838,8 +6838,9 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pshufb       m3, m5, [lowres_h3]
     LOWRES_DIFF10
     LOWRES_SATD  m7
-    phaddw       m6, m7
     pmaddwd      m6, [pw_1]
+    pmaddwd      m7, [pw_1]
+    HADD_ILV  d,  dq,  m6,  m6,  m7, m4 ; (v h) x2
     ; dc
     phaddw      xm4, xm11, xm9
     phaddw      xm4, xm4              ; s0 s1 s3 s2
@@ -6902,8 +6903,10 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pmaddwd      m0, [lowres_p_w1]
     pmaddwd      m1, [lowres_p_w2]
     paddd        m0, m1
-    phaddd       m0, m0
-    phaddd       m0, m0               ; H | V
+    pshufd       m1, m0, q1032
+    paddd        m0, m1
+    pshufd       m1, m0, q2301
+    paddd        m0, m1               ; H | V
     psllw       xm2, 4
     vpbroadcastw m2, xm2
     paddw       m11, m2, [pw_16]      ; a + 16
@@ -6936,30 +6939,35 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pmaxsw       m3, m4
     LOWRES_DIFF10
     LOWRES_SATD  m8
-    phaddw       m7, m8
     pmaddwd      m7, [pw_1]
-    phaddd       m6, m7               ; v h dc p
+    pmaddwd      m8, [pw_1]
+    HADD_ILV  d,  dq,  m7,  m7,  m8, m4 ; (dc p) x2
+    HADD_ILV  d, qdq,  m6,  m6,  m7, m4 ; v h dc p
 
     LOWRES_ROWS10 [lr_f+20], [lr_f+22], [lr_f+24], [lr_f+26], [lr_f+28], [lr_f+30], [lr_f+32], [lr_f+34]
     LOWRES_SATD  m7                   ; ddl
     LOWRES_ROWS10 [lr_g+0], [lr_f+20], [lr_g+2], [lr_f+22], [lr_g+4], [lr_f+24], [lr_g+6], [lr_f+26]
     LOWRES_SATD  m8                   ; vl
-    phaddw       m7, m8
     pmaddwd      m7, [pw_1]
+    pmaddwd      m8, [pw_1]
+    HADD_ILV  d,  dq,  m7,  m7,  m8, m4 ; (ddl vl) x2
     LOWRES_ROWS10 [lr_f+16], [lr_f+14], [lr_f+12], [lr_f+10], [lr_f+8], [lr_f+6], [lr_f+4], [lr_f+2]
     LOWRES_SATD  m8                   ; ddr
     LOWRES_ROWS10 [lr_ce+8], [lr_co+6], [lr_ce+6], [lr_co+4], [lr_ce+4], [lr_co+2], [lr_ce+2], [lr_co+0]
     LOWRES_SATD  m9                   ; vr
-    phaddw       m8, m9
     pmaddwd      m8, [pw_1]
-    phaddd       m7, m8               ; ddl vl ddr vr
+    pmaddwd      m9, [pw_1]
+    HADD_ILV  d,  dq,  m8,  m8,  m9, m4 ; (ddr vr) x2
+    HADD_ILV  d, qdq,  m7,  m7,  m8, m4 ; ddl vl ddr vr
     LOWRES_ROWS10 [lr_p+28], [lr_p+24], [lr_p+20], [lr_p+16], [lr_p+12], [lr_p+8], [lr_p+4], [lr_p+0]
     LOWRES_SATD  m8                   ; hd
     LOWRES_ROWS10 [lr_q+4], [lr_q+8], [lr_q+12], [lr_q+16], [lr_q+20], [lr_q+24], [lr_q+28], [lr_q+32]
     LOWRES_SATD  m9                   ; hu
-    phaddw       m8, m9
     pmaddwd      m8, [pw_1]
-    phaddd       m8, m8               ; hd hu hd hu
+    pmaddwd      m9, [pw_1]
+    HADD_ILV  d,  dq,  m8,  m8,  m9, m4 ; (hd hu) x2
+    pshufd       m4, m8, q1032
+    paddd        m8, m4               ; hd hu hd hu
 
     vperm2i128   m0, m6, m7, 0x20
     vperm2i128   m1, m6, m7, 0x31
