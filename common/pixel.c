@@ -1266,6 +1266,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
         INIT2( sad, _avx512 );
+        pixf->sad[PIXEL_4x8] = x264_pixel_sad_4x8_avx512;
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* sad_x3/sad_x4 (+_min) _avx512: 1.07-1.38x */
         /* zen4 prune, borderline: sad_avg2[16x16] _avx512 1.022x, slower in 11/11 runs */
