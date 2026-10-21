@@ -1307,6 +1307,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
+        /* zen4 prune: asd8 1.346x (rack01 checkasm --bench); kept assembled */
 #endif
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
@@ -1719,6 +1720,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
+        pixf->asd8 = x264_pixel_asd8_avx512icl;
 #endif
     }
     /* vdbpsadbw (AVX512BW), ymm only; the exception to the note above
