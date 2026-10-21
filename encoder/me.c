@@ -806,6 +806,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             int16_t *xs = h->scratch_buffer;
             int xn;
             uint16_t *cost_fpel_mvx = h->cost_mv_fpel[h->mb.i_qp][-m->mvp[0]&3] + (-m->mvp[0]>>2);
+            /* a row of dense sads in place of the survivors' sad_x3 / sad when they are at
+             * least half the row: the same survivors, sads and order */
+            x264_pixel_sad_row_t esa_row = width <= 256 ? h->pixf.sad_row[i_pixel] : NULL;
 
             h->pixf.sad_x4[sad_size]( zero, p_fenc, p_fenc+delta,
                 p_fenc+delta*FENC_STRIDE, p_fenc+delta+delta*FENC_STRIDE,
@@ -834,7 +837,24 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     bsad -= ycost;
                     xn = h->pixf.ads[i_pixel]( enc_dc, sums_base + min_x + my * stride, delta,
                                                cost_fpel_mvx+min_x, xs, width, bsad * 17 >> 4 );
-                    for( i = 0; i < xn-2; i += 3 )
+                    i = 0;
+                    if( esa_row && xn && xn*2 >= width )
+                    {
+                        esa_row( p_fenc, p_fref_w + min_x + my*stride, stride, width, row_sads );
+                        for( ; i < xn; i++ )
+                        {
+                            int sad = row_sads[xs[i]] + cost_fpel_mvx[xs[i]];
+                            if( sad < bsad*sad_thresh>>3 )
+                            {
+                                COPY1_IF_LT( bsad, sad );
+                                mvsads[nmvsad].sad = sad + ycost;
+                                mvsads[nmvsad].mv[0] = min_x+xs[i];
+                                mvsads[nmvsad].mv[1] = my;
+                                nmvsad++;
+                            }
+                        }
+                    }
+                    for( ; i < xn-2; i += 3 )
                     {
                         pixel *ref = p_fref_w+min_x+my*stride;
                         ALIGNED_ARRAY_16( int, sads,[4] ); /* padded to [4] for asm */
@@ -925,7 +945,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     bcost -= ycost;
                     xn = h->pixf.ads[i_pixel]( enc_dc, sums_base + min_x + my * stride, delta,
                                                cost_fpel_mvx+min_x, xs, width, bcost );
-                    for( i = 0; i < xn-2; i += 3 )
+                    i = 0;
+                    if( esa_row && xn && xn*2 >= width )
+                    {
+                        esa_row( p_fenc, p_fref_w + min_x + my*stride, stride, width, row_sads );
+                        for( ; i < xn; i++ )
+                            COPY3_IF_LT( bcost, row_sads[xs[i]] + p_cost_mvx[(min_x+xs[i])<<2], bmx, min_x+xs[i], bmy, my );
+                    }
+                    for( ; i < xn-2; i += 3 )
                         COST_MV_X3_ABS( min_x+xs[i],my, min_x+xs[i+1],my, min_x+xs[i+2],my );
                     bcost += ycost;
                     for( ; i < xn; i++ )
