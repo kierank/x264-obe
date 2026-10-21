@@ -6013,9 +6013,9 @@ cglobal pixel_sa8d_8x8, 4,6,8
     pmaxsw      xm3, xm4
 %if cpuflag(avx512icl)
     pmaddwd     xm0, xm7
-    {evex} vpdpwssd    xm0, xm1, xm7
+    vpdpwssd    xm0, xm1, xm7
     pmaddwd     xm2, xm7
-    {evex} vpdpwssd    xm2, xm3, xm7
+    vpdpwssd    xm2, xm3, xm7
 %else
     pmaddwd     xm0, xm7
     pmaddwd     xm1, xm7
@@ -6034,9 +6034,8 @@ cglobal pixel_sa8d_8x8, 4,6,8
 
 SA8D_8x8_HBD
 %if ARCH_X86_64
-ICL_LOW_BEGIN
+INIT_YMM avx512icl
 SA8D_8x8_HBD
-ICL_LOW_END
 INIT_YMM avx2
 %endif
 %if ARCH_X86_64
