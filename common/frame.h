@@ -236,6 +236,9 @@ typedef struct
                                int16_t mv[2][X264_SCAN8_LUMA_SIZE][2], uint8_t bs[2][8][4], int mvy_limit,
                                int bframe );
     x264_deblock_mb_t deblock_luma_mb; /* NULL: per-edge path */
+    /* MBAFF left pair in the other field mode: bs[0][0], bs[0][4]; mode = MB_INTERLACED*2 + (mb_y&1) */
+    void (*deblock_strength_mbaff)( uint8_t nnz[X264_SCAN8_SIZE], uint8_t *nnz_left0, uint8_t *nnz_left1,
+                                    uint8_t bs[2][8][4], int mode );
 } x264_deblock_function_t;
 
 #define x264_frame_delete x264_template(frame_delete)

@@ -97,6 +97,23 @@ transpose_shuf: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 gf_par1: dq 0x0600000000000000
 gf_par2: dq 0x0c00000000000000
 mbaff_tc_shuf: times 2 db 0,0,1,1,2,2,3,3
+; deblock_strength_mbaff, per mode: bytes 0-3 -> bs[0][0], 4-7 -> bs[0][4]
+; avx512icl: vpermb of [left0|left1] bytes, then of scan8 bytes 12..43
+ALIGN 16
+strength_mbaff_idx: db  3, 3, 7, 7,19,19,23,23, 0,0,0,0,0,0,0,0, 0, 8,16,24, 0, 8,16,24, 0,0,0,0,0,0,0,0
+                    db 11,11,15,15,27,27,31,31, 0,0,0,0,0,0,0,0, 0, 8,16,24, 0, 8,16,24, 0,0,0,0,0,0,0,0
+                    db  3, 7,11,15,19,23,27,31, 0,0,0,0,0,0,0,0, 0, 0, 8, 8,16,16,24,24, 0,0,0,0,0,0,0,0
+                    db  3, 7,11,15,19,23,27,31, 0,0,0,0,0,0,0,0, 0, 0, 8, 8,16,16,24,24, 0,0,0,0,0,0,0,0
+; avx2: pshufb of left0, left1, and scan8 dwords 12,20,28,36
+%macro STRENGTH_MBAFF_SHUF 3
+    db %1, -1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1
+    db -1,-1,-1,-1, %1, -1,-1,-1,-1,-1,-1,-1,-1
+    db %2, %3, -1,-1,-1,-1,-1,-1,-1,-1, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+%endmacro
+strength_mbaff_shuf: STRENGTH_MBAFF_SHUF { 3, 3, 7, 7}, {0,4,8,12}, {0,4,8,12}
+                     STRENGTH_MBAFF_SHUF {11,11,15,15}, {0,4,8,12}, {0,4,8,12}
+                     STRENGTH_MBAFF_SHUF { 3, 7,11,15}, {0,0,4,4}, {8,8,12,12}
+                     STRENGTH_MBAFF_SHUF { 3, 7,11,15}, {0,0,4,4}, {8,8,12,12}
 
 SECTION .text
 
@@ -4733,5 +4750,50 @@ cglobal deblock_strength, 6,6,9
     vextracti128 [bs1], m8, 1
     pshufb         xm8, [transpose_shuf]
     mova         [bs0], xm8
+    RET
+%endif
+
+;-----------------------------------------------------------------------------
+; void deblock_strength_mbaff( uint8_t nnz[48], uint8_t *nnz_left0, uint8_t *nnz_left1,
+;                              uint8_t bs[2][8][4], int mode )
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_XMM avx2
+cglobal deblock_strength_mbaff, 5,6,3
+    lea             r5, [strength_mbaff_shuf]
+    shl            r4d, 6
+    add             r5, r4
+    movu            m0, [r1]
+    pshufb          m0, [r5]
+    movu            m1, [r2]
+    pshufb          m1, [r5+16]
+    movu            m2, [r0+12]
+    shufps          m2, [r0+28], q2020
+    pshufb          m2, [r5+32]
+    por             m0, m1
+    por             m0, m2
+    mova            m1, [pb_1]
+    pminub          m0, m1
+    paddb           m0, m1          ; nnz ? 2 : 1
+    movd         [r3], m0
+    pextrd    [r3+16], m0, 1
+    RET
+
+INIT_YMM avx512icl
+cglobal deblock_strength_mbaff, 5,6,3
+    lea             r5, [strength_mbaff_idx]
+    shl            r4d, 5
+    movu           xm0, [r1]
+    vinserti128     m0, m0, [r2], 1
+    mova           xm1, [r5+r4]
+    mova           xm2, [r5+r4+16]
+    vpermb          m1, m1, m0
+    vpermb          m2, m2, [r0+12]
+    por            xm1, xm2
+    vptestmb        k1, xm1, xm1
+    mova           xm0, [pb_1]
+    paddb          xm0 {k1}, xm0, xm0 ; nnz ? 2 : 1
+    movd         [r3], xm0
+    pextrd    [r3+16], xm0, 1
     RET
 %endif

@@ -320,6 +320,32 @@ static void deblock_strength_c( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X264
     }
 }
 
+/* MBAFF left edge, left pair in the other field mode: bs[0][0] and bs[0][4] from nnz alone.
+ * mode = MB_INTERLACED*2 + (mb_y&1) */
+static void deblock_strength_mbaff_c( uint8_t nnz[X264_SCAN8_SIZE], uint8_t *nnz_left0, uint8_t *nnz_left1,
+                                      uint8_t bs[2][8][4], int mode )
+{
+    static const uint8_t offset[2][2][8] =
+    {   {   { 0, 0, 0, 0, 1, 1, 1, 1 },
+            { 2, 2, 2, 2, 3, 3, 3, 3 }, },
+        {   { 0, 1, 2, 3, 0, 1, 2, 3 },
+            { 0, 1, 2, 3, 0, 1, 2, 3 }, }
+    };
+    int interlaced = mode >> 1;
+    const uint8_t *off = offset[interlaced][mode&1];
+    uint8_t tmpbs[8];
+    for( int i = 0; i < 8; i++ )
+    {
+        uint8_t *left = (interlaced ? i>>2 : i&1) ? nnz_left1 : nnz_left0;
+        tmpbs[i] = (left[3+4*off[i]] || nnz[X264_SCAN8_0+8*(i>>1)]) ? 2 : 1;
+    }
+    for( int i = 0; i < 4; i++ )
+    {
+        bs[0][0][i] = tmpbs[interlaced ? i : 2*i];
+        bs[0][4][i] = tmpbs[interlaced ? 4+i : 2*i+1];
+    }
+}
+
 static ALWAYS_INLINE void deblock_edge( x264_t *h, pixel *pix, intptr_t i_stride, uint8_t bS[4], int i_qp,
                                         int a, int b, int b_chroma, x264_deblock_inter_t pf_inter )
 {
@@ -735,6 +761,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
     pf->deblock_chroma_420_intra_mbaff = deblock_h_chroma_intra_mbaff_c;
     pf->deblock_strength = deblock_strength_c;
     pf->deblock_luma_mb = deblock_luma_mb_c;
+    pf->deblock_strength_mbaff = deblock_strength_mbaff_c;
 
 #if HAVE_MMX
     if( cpu&X264_CPU_MMX2 )
@@ -815,6 +842,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_strength = x264_deblock_strength_avx2;
 #if ARCH_X86_64
             pf->deblock_luma_mb = x264_deblock_luma_mb_avx2;
+            pf->deblock_strength_mbaff = x264_deblock_strength_mbaff_avx2;
 #endif
 #if HIGH_BIT_DEPTH && ARCH_X86_64
             pf->deblock_luma[1] = x264_deblock_v_luma_avx2;
@@ -830,6 +858,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 #if ARCH_X86_64
         if( cpu&X264_CPU_AVX512ICL )
         {
+            pf->deblock_strength_mbaff = x264_deblock_strength_mbaff_avx512icl;
             pf->deblock_luma[0] = x264_deblock_h_luma_avx512icl;
             pf->deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx512icl;
             pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx512icl;

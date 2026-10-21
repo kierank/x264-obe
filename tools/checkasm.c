@@ -3682,6 +3682,42 @@ static int check_deblock( int cpu_ref, int cpu_new )
         }
     }
 
+    if( db_a.deblock_strength_mbaff != db_ref.deblock_strength_mbaff )
+    {
+        used_asm = 1;
+        set_func_name( "deblock_strength_mbaff" );
+        for( int i = 0; i < 400; i++ )
+        {
+            ALIGNED_ARRAY_16( uint8_t, nnz, [X264_SCAN8_SIZE] );
+            ALIGNED_ARRAY_16( uint8_t, nnz_left, [2],[48] );
+            ALIGNED_ARRAY_16( uint8_t, bs, [2],[2][8][4] );
+            uint8_t *buf[3] = { nnz, nnz_left[0], nnz_left[1] };
+            int size[3] = { X264_SCAN8_SIZE, 48, 48 };
+            int mode = i&3;
+            /* sparse, dense, all zero, all nonzero, one nonzero byte */
+            int dist = (i>>2)%5;
+            for( int b = 0; b < 3; b++ )
+                for( int j = 0; j < size[b]; j++ )
+                    buf[b][j] = dist == 0 ? ((rand()&3) == 3) * (rand()&0xff) :
+                                dist == 1 ? ((rand()&3) != 3) * (rand()&0xff) :
+                                dist == 3 ? (rand()&0xff) | 1 : 0;
+            if( dist == 4 )
+            {
+                int b = rand()%3;
+                buf[b][rand()%size[b]] = 1 + (rand()&0x7f);
+            }
+            memset( bs, 99, sizeof(uint8_t)*2*2*8*4 );
+            call_c( db_c.deblock_strength_mbaff, nnz, nnz_left[0], nnz_left[1], bs[0], mode );
+            call_a( db_a.deblock_strength_mbaff, nnz, nnz_left[0], nnz_left[1], bs[1], mode );
+            if( memcmp( bs[0], bs[1], sizeof(uint8_t)*2*8*4 ) )
+            {
+                ok = 0;
+                fprintf( stderr, "deblock_strength_mbaff (mode=%d, dist=%d): [FAILED]\n", mode, dist );
+                break;
+            }
+        }
+    }
+
     report( "deblock :" );
 
     return ret;

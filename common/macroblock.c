@@ -1408,8 +1408,16 @@ void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y )
 
 static void x264_macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][4] )
 {
-    if( (h->mb.i_neighbour & MB_LEFT) && h->mb.field[h->mb.i_mb_left_xy[0]] != MB_INTERLACED )
+    int left_other = (h->mb.i_neighbour & MB_LEFT) && h->mb.field[h->mb.i_mb_left_xy[0]] != MB_INTERLACED;
+    if( left_other && (h->param.b_cabac || !h->pps->b_transform_8x8_mode) )
     {
+        h->loopf.deblock_strength_mbaff( h->mb.cache.non_zero_count, h->mb.non_zero_count[h->mb.i_mb_left_xy[0]],
+                                         h->mb.non_zero_count[h->mb.i_mb_left_xy[1]], bs,
+                                         MB_INTERLACED*2 + (h->mb.i_mb_y&1) );
+    }
+    else if( left_other )
+    {
+        /* CAVLC + 8x8dct: nnz of the left 8x8 blocks */
         static const uint8_t offset[2][2][8] =
         {   {   { 0, 0, 0, 0, 1, 1, 1, 1 },
                 { 2, 2, 2, 2, 3, 3, 3, 3 }, },
