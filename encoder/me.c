@@ -264,6 +264,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     ALIGNED_ARRAY_16( int, costs,[16] );
     x264_pixel_cmp_x3_min_t cmp_x3_min = h->pixf.fpelcmp_x3_min[i_pixel];
     x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
+    x264_pixel_cmp_sq_min_t cmp_sq_min = h->pixf.fpelcmp_sq_min[i_pixel];
 
     int mv_x_min = h->mb.mv_limit_fpel[0][0];
     int mv_y_min = h->mb.mv_limit_fpel[0][1];
@@ -462,8 +463,31 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     #endif
             /* square refine */
             bcost <<= 6;
-            COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
-            COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
+            if( cmp_sq_min )
+            {
+                /* the same candidates and idx as below; dx 2 and the centre can't win */
+                ALIGNED_16( int32_t sq_bias[12] );
+                int cx0 = p_cost_mvx[(bmx-1)<<2], cx1 = p_cost_mvx[bmx<<2], cx2 = p_cost_mvx[(bmx+1)<<2];
+                int cy0 = p_cost_mvy[(bmy-1)<<2], cy1 = p_cost_mvy[bmy<<2], cy2 = p_cost_mvy[(bmy+1)<<2];
+                sq_bias[ 0] = ((cx0 + cy0) << 6) + 5;
+                sq_bias[ 1] = ((cx1 + cy0) << 6) + 1;
+                sq_bias[ 2] = ((cx2 + cy0) << 6) + 7;
+                sq_bias[ 3] = 1 << 30;
+                sq_bias[ 4] = ((cx0 + cy2) << 6) + 6;
+                sq_bias[ 5] = ((cx1 + cy2) << 6) + 2;
+                sq_bias[ 6] = ((cx2 + cy2) << 6) + 8;
+                sq_bias[ 7] = 1 << 30;
+                sq_bias[ 8] = ((cx0 + cy1) << 6) + 3;
+                sq_bias[ 9] = 1 << 30;
+                sq_bias[10] = ((cx2 + cy1) << 6) + 4;
+                sq_bias[11] = 1 << 30;
+                bcost = cmp_sq_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, sq_bias, bcost );
+            }
+            else
+            {
+                COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
+                COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
+            }
             bmx += square1[bcost&63][0];
             bmy += square1[bcost&63][1];
             bcost >>= 6;

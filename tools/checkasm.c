@@ -918,6 +918,91 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(3);
     TEST_PIXEL_X_MIN(4);
 
+    /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
+     * me.c's 1<<30 in unused slots, 3 a maximal sad (~fenc) in slot j%12, winning */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( pixel_asm.sad_sq_min[i] && pixel_asm.sad_sq_min[i] != pixel_ref.sad_sq_min[i] )
+        {
+            static const int dys[3] = { -1, 1, 0 };
+            ALIGNED_16( pixel refm[20*48] );
+            int wins[13] = {0};
+            set_func_name( "sad_sq_min_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 256 && ok; j++ )
+            {
+                int mode = j>>6;
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
+                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pix = mode == 3 ? refm + 2*48 + 2 : pbuf2 + (j&31) + stride + 1;
+                ALIGNED_16( int32_t bias[12] );
+                int sad[12], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                if( mode == 3 )
+                {
+                    int k = j%12;
+                    for( int l = 0; l < 20*48; l++ )
+                        refm[l] = rand() & PIXEL_MAX;
+                    for( int y = 0; y < 16; y++ )
+                        memcpy( pix + (k&3) - 1 + (dys[k>>2] + y)*stride, pbuf4 + 16*y, 16*sizeof(pixel) );
+                }
+                for( int k = 0; k < 12; k++ )
+                {
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix + (k&3) - 1 + dys[k>>2]*stride, stride );
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < 12; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << 6) + 1 + (k + j) % 12;
+                    else if( mode == 2 )
+                        bias[k] = (j&4) && (k&3) == 3 ? 1 << 30
+                                : ((((j>>(k%6))&1) * 131070) << 6) + ((j>>(k%5))&1) * 63;
+                    else if( mode == 3 )
+                        bias[k] = k == j%12 ? rand()&63 : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << 6) + (rand()&63);
+                    tmin = X264_MIN( tmin, (sad[k] << 6) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << 6) + (rand()%3 ? (int)(rand()&63) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 )
+                    best = INT_MAX;
+                else
+                    best = tmin + ((rand()&255) - 128) * 64 + (rand()&63);
+                res_c = best;
+                for( int k = 0; k < 12; k++ )
+                    if( (sad[k] << 6) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << 6) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                if( x264_pixel_sad_sq_min_c( i, fenc, pix, stride, bias, best ) != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_sq_min[%d]: C reference mismatch [FAILED]\n", i );
+                }
+                res_a = call_a( pixel_asm.sad_sq_min[i], fenc, pix, stride, bias, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_sq_min[%d]: mode %d %d != %d [FAILED]\n", i, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= 12 && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_sq_min[%d]: %s %d never selected [FAILED]\n", i, k ? "slot" : "best", k-1 );
+                }
+        }
+    }
+    report( "pixel sad_sq_min :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \

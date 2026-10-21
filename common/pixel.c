@@ -73,6 +73,23 @@ PIXEL_SAD_C( x264_pixel_sad_4x16,   4, 16 )
 PIXEL_SAD_C( x264_pixel_sad_4x8,    4,  8 )
 PIXEL_SAD_C( x264_pixel_sad_4x4,    4,  4 )
 
+/* reference for sad_sq_min */
+int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[12], int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    static const int8_t dy[3] = { -1, 1, 0 };
+    for( int i = 0; i < 12; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix + (i&3) - 1 + dy[i>>2]*i_stride, i_stride ) << 6) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
