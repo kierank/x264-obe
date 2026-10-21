@@ -54,6 +54,9 @@ typedef int  (*x264_pixel_zscreen_t) ( pixel *fenc, pixel *fdec, const int32_t t
  * mv_min | mv_max << 32. Returns bcost | pack16to32_mask( bmx, bmy ) << 32 */
 typedef uint64_t (*x264_pixel_fpel_search_t) ( pixel *fenc, pixel *ref, intptr_t, const uint16_t *cost_mvx,
                                                const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );
+/* x264_predictor_clip/roundclip that also drop the candidates whose clipped mv equals pmv or
+ * that of an earlier one kept; i_mvc <= 15, writes 16 */
+typedef int  (*x264_predictor_clip_t) ( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -187,6 +190,9 @@ typedef struct
     x264_pixel_fpel_search_t sad_hex_search[7];
     x264_pixel_fpel_search_t fpelcmp_dia_search[7]; /* sad_*_search where fpelcmp is sad, else NULL */
     x264_pixel_fpel_search_t fpelcmp_hex_search[7];
+    /* asm only, NULL otherwise; references x264_predictor_{clip,roundclip}_c */
+    x264_predictor_clip_t predictor_clip;
+    x264_predictor_clip_t predictor_roundclip;
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
@@ -300,6 +306,10 @@ uint64_t x264_pixel_sad_dia_search_c( int i_pixel, pixel *fenc, pixel *ref, intp
 #define x264_pixel_sad_hex_search_c x264_template(pixel_sad_hex_search_c)
 uint64_t x264_pixel_sad_hex_search_c( int i_pixel, pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
                                       const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );
+#define x264_predictor_clip_c x264_template(predictor_clip_c)
+int x264_predictor_clip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
+#define x264_predictor_roundclip_c x264_template(predictor_roundclip_c)
+int x264_predictor_roundclip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
 #define x264_pixel_ssd_nv12 x264_template(pixel_ssd_nv12)
 void x264_pixel_ssd_nv12   ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2,
                              int i_width, int i_height, uint64_t *ssd_u, uint64_t *ssd_v );

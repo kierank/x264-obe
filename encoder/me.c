@@ -280,7 +280,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     pixel *p_fenc = m->p_fenc[0];
     pixel *p_fref_w = m->p_fref_w;
     ALIGNED_ARRAY_N( pixel, pix,[16*16] );
-    ALIGNED_ARRAY_8( int16_t, mvc_temp,[16],[2] );
+    ALIGNED_ARRAY_8( int16_t, mvc_temp,[18],[2] );
 
     ALIGNED_ARRAY_16( int, costs,[16] );
     x264_pixel_cmp_x3_min_t cmp_x3_min = h->pixf.fpelcmp_x3_min[i_pixel];
@@ -349,7 +349,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( i_mvc > 0 )
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
-            int valid_mvcs = x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            int valid_mvcs = h->pixf.predictor_clip
+                           ? h->pixf.predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
+                           : x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
@@ -418,7 +420,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( i_mvc > 0 )
         {
             /* Like in subme>=3, except we also round the candidates to fullpel. */
-            int valid_mvcs = x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            int valid_mvcs = h->pixf.predictor_roundclip
+                           ? h->pixf.predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
+                           : x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
