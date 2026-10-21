@@ -79,6 +79,8 @@ int x264_quant_4x4x4_avx2( dctcoef dct[4][16], udctcoef mf[16], udctcoef bias[16
 int x264_quant_4x4_avx512icl( dctcoef dct[16], udctcoef mf[16], udctcoef bias[16] );
 #define x264_quant_4x4_dc_avx512icl x264_template(quant_4x4_dc_avx512icl)
 int x264_quant_4x4_dc_avx512icl( dctcoef dct[16], int mf, int bias );
+#define x264_quant_2x2_dc_avx512icl x264_template(quant_2x2_dc_avx512icl)
+int x264_quant_2x2_dc_avx512icl( dctcoef dct[4], int mf, int bias );
 #define x264_quant_8x8_avx512icl x264_template(quant_8x8_avx512icl)
 int x264_quant_8x8_avx512icl( dctcoef dct[64], udctcoef mf[64], udctcoef bias[64] );
 #define x264_quant_4x4x4_avx512icl x264_template(quant_4x4x4_avx512icl)
