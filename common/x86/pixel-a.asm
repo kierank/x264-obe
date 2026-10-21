@@ -10801,6 +10801,19 @@ cglobal weightp_dc8x8, 5,7,8
     paddd      %1, %5
 %endmacro
 
+; as HADD4D, on the two words of each dword (wrapping word adds)
+%macro HADD4W 6 ; a, b, c, d, tmp, tmp
+    punpckldq  %5, %1, %2
+    punpckhdq  %1, %2
+    paddw      %1, %5
+    punpckldq  %6, %3, %4
+    punpckhdq  %3, %4
+    paddw      %3, %6
+    punpcklqdq %5, %1, %3
+    punpckhqdq %1, %3
+    paddw      %1, %5
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; void weightp_sum8( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom )
 ; void weightp_sum8_clip( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
@@ -11079,21 +11092,26 @@ cglobal weightp_sum8_nv, 6,8,16
     movu     [r0], m0
     movu     [r1], m8
 %else
-    ; one block a register: blocks 0-3, then 4-7, each the sum of its two lanes
-    WEIGHTP_NV_SPLIT m0, m1, m2, m3, m8, m9, m10, m11, m12, m13
-    vextracti128 xm12, m0, 1
-    paddd      xm0, xm12
-    vextracti128 xm12, m8, 1
-    paddd      xm8, xm12
-    movu     [r0], xm0
-    movu     [r1], xm8
-    WEIGHTP_NV_SPLIT m4, m5, m6, m7, m8, m9, m10, m11, m12, m13
-    vextracti128 xm12, m4, 1
-    paddd      xm4, xm12
-    vextracti128 xm12, m8, 1
-    paddd      xm8, xm12
-    movu  [r0+16], xm4
-    movu  [r1+16], xm8
+    ; one block a register: blocks 0-3, then 4-7, each the sum of its two lanes; u and v
+    ; summed as words first: 4 positions of up to 16 rows, at most 4*16*1023 < 65536
+    HADD4W     m0, m1, m2, m3, m8, m9
+    pand       m8, m0, m15
+    psrld      m0, 16
+    vextracti128 xm9, m8, 1
+    paddd      xm8, xm9
+    vextracti128 xm9, m0, 1
+    paddd      xm0, xm9
+    movu     [r0], xm8
+    movu     [r1], xm0
+    HADD4W     m4, m5, m6, m7, m8, m9
+    pand       m8, m4, m15
+    psrld      m4, 16
+    vextracti128 xm9, m8, 1
+    paddd      xm8, xm9
+    vextracti128 xm9, m4, 1
+    paddd      xm4, xm9
+    movu  [r0+16], xm8
+    movu  [r1+16], xm4
 %endif
     add        r0, mmsize
     add        r1, mmsize
