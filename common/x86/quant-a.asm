@@ -127,6 +127,22 @@ dct_coef_shuffle:
 %assign x x+1
 %endrep
 %endif
+; optimize_chroma_2x4_dc avx512icl: columns of the dc transform, rounding constants
+optchroma_col2x4: dd 1, 1, 1, 1, 1, 1, 1, 1
+                  dd 1,-1, 1,-1, 1,-1, 1,-1
+                  dd 1, 1, 1, 1,-1,-1,-1,-1
+                  dd 1,-1, 1,-1,-1, 1,-1, 1
+                  dd 1, 1,-1,-1,-1,-1, 1, 1
+                  dd 1,-1,-1, 1,-1, 1, 1,-1
+                  dd 1, 1,-1,-1, 1, 1,-1,-1
+                  dd 1,-1,-1, 1, 1,-1,-1, 1
+optchroma_2080:   dd 2080
+optchroma_m64:    dd -64
+%if HIGH_BIT_DEPTH
+; optimize_chroma_2x2_dc avx512icl
+optchroma_col2x2: dd 1, 1, 1, 1,  1, 1,-1,-1,  1,-1, 1,-1,  1,-1,-1, 1
+optchroma_32:     dd 32
+%endif
 
 SECTION .text
 
@@ -611,7 +627,7 @@ cglobal quant_4x4x4, 3,3,6
     pabsd     %1, %2
     paddd     %1, %4
     pmulld    %1, %3
-    psrad     %1, 16
+    psrld     %1, 16
     vpmovd2m  k1, %2
     vpsubd    %1{k1}, m7, %1
 %else
@@ -711,6 +727,42 @@ cglobal quant_4x4_dc, 3,3,8
     RET
 %endif
 %endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; int quant_2x2_dc( dctcoef dct[4], int mf, int bias )
+;-----------------------------------------------------------------------------
+INIT_XMM avx512icl
+cglobal quant_2x2_dc, 3,3
+%if HIGH_BIT_DEPTH
+    movu          m0, [r0]
+    vpbroadcastd  m2, r1d
+    vpbroadcastd  m3, r2d
+    pabsd         m1, m0
+    paddd         m1, m3
+    pmulld        m1, m2
+    psrld         m1, 16
+    vpmovd2m      k1, m0
+    pxor          m2, m2
+    vpsubd        m1 {k1}, m2, m1
+    movu        [r0], m1
+    vptestmd      k1, m1, m1
+%else
+    movq          m0, [r0]
+    vpbroadcastw  m2, r1d
+    vpbroadcastw  m3, r2d
+    pabsw         m1, m0
+    paddusw       m1, m3
+    pmulhuw       m1, m2
+    vpmovw2m      k1, m0
+    pxor          m2, m2
+    vpsubw        m1 {k1}, m2, m1
+    movq        [r0], m1
+    vptestmw      k1, m1, m1
+%endif
+    xor          eax, eax
+    ktestb        k1, k1
+    setnz         al
+    RET
 
 ;=============================================================================
 ; dequant
@@ -1103,6 +1155,83 @@ cglobal dequant_8x8_flat16, 0,3
     RET
 %endif
 
+%if HIGH_BIT_DEPTH
+; avx512icl: the right shift path adds the rounding inside VNNI vpdpwssd
+; (the accumulator starts at f)
+INIT_ZMM avx512icl
+cglobal dequant_4x4, 0,3
+    DEQUANT_START_AVX512 6
+    mova          m0, [dmf]
+    sub          t0d, 4
+    jl .rshift
+    pmaddwd       m0, [r0]
+    vpbroadcastd  m1, t0d
+    vpsllvd       m0, m1
+    mova        [r0], m0
+    RET
+.rshift:
+    mov          r1d, 1<<31
+    shrx         r1d, r1d, t0d ; 1 << (-i_qbits-1)
+    neg          t0d
+    vpbroadcastd  m1, r1d
+    vpbroadcastd  m2, t0d
+    vpdpwssd      m1, m0, [r0]
+    vpsravd       m1, m2
+    mova        [r0], m1
+    RET
+%endif ; HIGH_BIT_DEPTH
+
+%if HIGH_BIT_DEPTH == 0 && ARCH_X86_64
+; avx512icl: the right shift path adds the rounding inside VNNI vpdpwssd,
+; one accumulator per vector
+INIT_ZMM avx512icl
+cglobal dequant_8x8, 0,3,12
+    DEQUANT_START_AVX512 8
+    mova          m0, [dmf+0*64]
+    mova          m1, [dmf+1*64]
+    mova          m2, [dmf+2*64]
+    mova          m3, [dmf+3*64]
+    mova          m6, [dequant_shuf_avx512]
+    sub          t0d, 6
+    jl .rshift
+    vpbroadcastw  m4, t0d
+    vpermt2w      m0, m6, m1
+    vpermt2w      m2, m6, m3
+    pmullw        m0, [r0]
+    pmullw        m2, [r0+64]
+    vpsllvw       m0, m4
+    vpsllvw       m2, m4
+    mova        [r0], m0
+    mova     [r0+64], m2
+    RET
+.rshift:
+    mov          r1d, 1<<31
+    shrx         r1d, r1d, t0d ; 1 << (-i_qbits-1)
+    neg          t0d
+    vpbroadcastd  m4, r1d
+    vpbroadcastd  m5, t0d
+    mova          m7, m4
+    mova          m8, m4
+    mova          m9, m4
+    pmovzxwd     m10, [r0+0*32]
+    pmovzxwd     m11, [r0+1*32]
+    vpdpwssd      m4, m0, m10
+    vpdpwssd      m7, m1, m11
+    pmovzxwd     m10, [r0+2*32]
+    pmovzxwd     m11, [r0+3*32]
+    vpdpwssd      m8, m2, m10
+    vpdpwssd      m9, m3, m11
+    vpsravd       m4, m5
+    vpsravd       m7, m5
+    vpsravd       m8, m5
+    vpsravd       m9, m5
+    vpermt2w      m4, m6, m7
+    vpermt2w      m8, m6, m9
+    mova        [r0], m4
+    mova     [r0+64], m8
+    RET
+%endif ; !HIGH_BIT_DEPTH && ARCH_X86_64
+
 %undef dmf
 
 %macro DEQUANT_DC 2
@@ -1188,6 +1317,31 @@ INIT_XMM xop
 DEQUANT_DC d, pmaddwd
 INIT_YMM avx2
 DEQUANT_DC d, pmaddwd
+
+; avx512icl: the 16 coefficients in one zmm; the right shift adds the
+; rounding inside vpdpwssd
+INIT_ZMM avx512icl
+cglobal dequant_4x4dc, 0,3
+    DEQUANT_START 6, 6
+.lshift:
+    vpbroadcastd m3, [r1]
+    pmaddwd      m0, m3, [r0]
+    movd        xm2, t0d
+    pslld        m0, xm2
+    mova       [r0], m0
+    RET
+.rshift32:
+    neg         t0d
+    mov         t1d, 1
+    shlx        t1d, t1d, t0d
+    shr         t1d, 1
+    vpbroadcastd m0, t1d
+    vpbroadcastd m2, [r1]
+    vpdpwssd     m0, m2, [r0]
+    movd        xm3, t0d
+    psrad        m0, xm3
+    mova       [r0], m0
+    RET
 %else
 %if ARCH_X86_64 == 0
 INIT_MMX mmx2
@@ -1466,6 +1620,137 @@ OPTIMIZE_CHROMA_2x2_DC
 INIT_XMM avx
 OPTIMIZE_CHROMA_2x2_DC
 %endif ; !HIGH_BIT_DEPTH
+
+;-----------------------------------------------------------------------------
+; int optimize_chroma_2x2_dc( dctcoef dct[4], int dequant_mf )
+; int optimize_chroma_2x4_dc( dctcoef dct[8], int dequant_mf )
+;-----------------------------------------------------------------------------
+; avx512icl: the dc transform is linear, so lowering |dct[k]| by one moves the
+; pre-rounding values by -sign*dmf*T[:,k]: each trial is one vector subtract,
+; shift, xor and vptestmd against the reference, not a whole transform.
+; 2x2: out = (T*dct*dmf >> 5) + 32; 2x4: out = (T*dct*dmf + 2080) >> 6
+%macro OPT_CHROMA_T 0 ; m0: dwords -> T*m0, k1/k2 set; clobbers m1, m2
+%if mmsize == 16
+    pshufd        m1, m0, q2301
+    paddd         m2, m0, m1
+    vpsubd        m2 {k1}, m1, m0
+    pshufd        m1, m2, q1032
+    paddd         m0, m2, m1
+    vpsubd        m0 {k2}, m1, m2
+    pshufd        m0, m0, q3120
+%else
+    pshufd        m1, m0, q2301
+    paddd         m2, m0, m1
+    vpsubd        m2 {k1}, m1, m0
+    pshufd        m1, m2, q1032
+    paddd         m0, m2, m1
+    vpsubd        m0 {k2}, m1, m2
+    vextracti32x4 xm1, m0, 1
+    paddd         xm2, xm0, xm1
+    psubd         xm0, xm1
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+    vinserti32x4  m0, m1, xm0, 1
+%endif
+%endmacro
+
+%macro OPT_CHROMA_ROUND 2 ; dst, src
+%if mmsize == 16
+    psrad         %1, %2, 5
+    paddd         %1, m6
+%else
+    psrad         %1, %2, 6
+%endif
+%if HIGH_BIT_DEPTH == 0
+    pslld         %1, 16                     ; the C keeps the outputs in int16
+    psrad         %1, 16
+%endif
+%endmacro
+
+%macro OPTIMIZE_CHROMA_ICL 2 ; name, coefs
+%if %2 == 4
+    %define %%bc {1to4}
+%else
+    %define %%bc {1to8}
+%endif
+cglobal optimize_chroma_%1_dc, 2,6
+%if HIGH_BIT_DEPTH
+    movu          m0, [r0]
+%else
+    vpmovsxwd     m0, [r0]
+%endif
+%if mmsize == 16
+    mov          r2d, 0xa
+    kmovb         k1, r2d
+    mov          r2d, 0xc
+    kmovb         k2, r2d
+    vpbroadcastd  m6, [optchroma_32]
+%else
+    mov          r2d, 0xaa
+    kmovb         k1, r2d
+    mov          r2d, 0xcc
+    kmovb         k2, r2d
+%endif
+    OPT_CHROMA_T
+    vpbroadcastd  m3, r1d
+    pmulld        m0, m3
+%if mmsize == 32
+    vpaddd        m0, [optchroma_2080] {1to8}
+%endif
+    OPT_CHROMA_ROUND m4, m0                  ; reference output
+    xor          eax, eax
+    vptestmd      k3, m4, [optchroma_m64] %%bc
+    kortestb      k3, k3
+    jz .ret                                  ; already rounds to zero
+    mov          r2d, %2-1
+    lea           r5, [optchroma_col%1+(%2-1)*mmsize]
+.coef:
+%if HIGH_BIT_DEPTH
+    mov          r3d, [r0+r2*4]
+%else
+    movsx        r3d, word [r0+r2*2]
+%endif
+    test         r3d, r3d
+    jz .next
+    mov          r4d, r3d
+    sar          r4d, 31
+    or           r4d, 1                      ; sign
+    vpbroadcastd  m5, r4d
+    pmulld        m5, [r5]
+    pmulld        m5, m3                     ; sign*dmf*T[:,k]
+.try:
+    psubd         m1, m0, m5
+    OPT_CHROMA_ROUND m2, m1
+    pxor          m2, m4
+    vptestmd      k3, m2, [optchroma_m64] %%bc
+    kortestb      k3, k3
+    jz .accept
+    mov          eax, 1
+    jmp .store
+.accept:
+    mova          m0, m1
+    sub          r3d, r4d
+    jnz .try
+.store:
+%if HIGH_BIT_DEPTH
+    mov    [r0+r2*4], r3d
+%else
+    mov    [r0+r2*2], r3w
+%endif
+.next:
+    sub           r5, mmsize
+    dec          r2d
+    jge .coef
+.ret:
+    RET
+%endmacro
+
+INIT_YMM avx512icl
+OPTIMIZE_CHROMA_ICL 2x4, 8
+%if HIGH_BIT_DEPTH
+INIT_XMM avx512icl
+OPTIMIZE_CHROMA_ICL 2x2, 4
+%endif
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
@@ -3276,16 +3561,16 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
 %else
     mova      m10, [qscan4_frame_a]
     mova      m11, [qscan4_frame_b]
-    vpermq    m8, m0, q1032
-    vpermq    m9, m1, q1032
+    vperm2i128 m8, m0, m0, 0x01
+    vperm2i128 m9, m1, m1, 0x01
     pshufb    m4, m0, m10
     pshufb    m5, m1, m10
     pshufb    m8, m11
     pshufb    m9, m11
     por       m4, m8
     por       m5, m9
-    vpermq    m8, m2, q1032
-    vpermq    m9, m3, q1032
+    vperm2i128 m8, m2, m2, 0x01
+    vperm2i128 m9, m3, m3, 0x01
     pshufb    m6, m2, m10
     pshufb    m7, m3, m10
     pshufb    m8, m11

@@ -558,11 +558,10 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
     if( cpu&X264_CPU_AVX512ICL )
     {
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
-        /* dct4x4dc 2.72x, idct4x4dc 2.64x, add16x16_idct 1.17x */
+        /* dct4x4dc 2.72x, idct4x4dc 2.64x, add16x16_idct 1.17x; neutral (>= 1.000): add8x8_idct */
 #if ARCH_X86_64
         dctf->sub16x16_dct8   = x264_sub16x16_dct8_avx512icl;
         dctf->add16x16_idct8  = x264_add16x16_idct8_avx512icl;
-        dctf->add8x8_idct     = x264_add8x8_idct_avx512icl;
 #endif
     }
 #endif // HAVE_MMX
@@ -681,8 +680,8 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
     if( cpu&X264_CPU_AVX512ICL )
     {
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
-        /* dct4x4dc 1.75x, idct4x4dc 1.14x, add16x16_idct 1.25x, sub16x16_dct8 1.056x */
-        dctf->add8x8_idct      = x264_add8x8_idct_avx512icl;
+        /* dct4x4dc 1.75x, idct4x4dc 1.14x, add16x16_idct 1.25x, sub16x16_dct8 1.056x, add8x8_idct 1.054x */
+        dctf->dct2x4dc         = x264_dct2x4dc_avx512icl;
 #if ARCH_X86_64
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
 #endif
@@ -953,6 +952,12 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     if( cpu&X264_CPU_AVX512ICL )
     {
         pf_interlaced->scan_4x4  = x264_zigzag_scan_4x4_field_avx512icl;
+        pf_interlaced->sub_4x4   = x264_zigzag_sub_4x4_field_avx512icl;
+        pf_progressive->sub_4x4  = x264_zigzag_sub_4x4_frame_avx512icl;
+        pf_interlaced->sub_4x4ac = x264_zigzag_sub_4x4ac_field_avx512icl;
+        pf_progressive->sub_4x4ac= x264_zigzag_sub_4x4ac_frame_avx512icl;
+        pf_interlaced->sub_8x8   = x264_zigzag_sub_8x8_field_avx512icl;
+        pf_progressive->sub_8x8  = x264_zigzag_sub_8x8_frame_avx512icl;
     }
 #endif // HAVE_MMX
 #else
@@ -1000,6 +1005,7 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     {
         pf_interlaced->scan_4x4  = x264_zigzag_scan_4x4_field_avx2;
         pf_interlaced->scan_8x8  = x264_zigzag_scan_8x8_field_avx2;
+        pf_progressive->scan_4x4 = x264_zigzag_scan_4x4_frame_avx2;
 #if ARCH_X86_64
         pf_progressive->scan_8x8 = x264_zigzag_scan_8x8_frame_avx2;
 #endif

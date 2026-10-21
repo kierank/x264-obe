@@ -84,6 +84,8 @@ void x264_predict_16x16_p_core_sse2( pixel *src, int i00, int b, int c );
 void x264_predict_16x16_p_core_avx( pixel *src, int i00, int b, int c );
 #define x264_predict_16x16_p_core_avx2 x264_template(predict_16x16_p_core_avx2)
 void x264_predict_16x16_p_core_avx2( pixel *src, int i00, int b, int c );
+#define x264_predict_16x16_p_core_avx512icl x264_template(predict_16x16_p_core_avx512icl)
+void x264_predict_16x16_p_core_avx512icl( pixel *src, int i00, int b, int c );
 #define x264_predict_8x16c_dc_mmx2 x264_template(predict_8x16c_dc_mmx2)
 void x264_predict_8x16c_dc_mmx2( pixel *src );
 #define x264_predict_8x16c_dc_sse2 x264_template(predict_8x16c_dc_sse2)
@@ -112,6 +114,8 @@ void x264_predict_8x16c_p_core_sse2( pixel *src, int i00, int b, int c );
 void x264_predict_8x16c_p_core_avx ( pixel *src, int i00, int b, int c );
 #define x264_predict_8x16c_p_core_avx2 x264_template(predict_8x16c_p_core_avx2)
 void x264_predict_8x16c_p_core_avx2( pixel *src, int i00, int b, int c );
+#define x264_predict_8x16c_p_core_avx512icl x264_template(predict_8x16c_p_core_avx512icl)
+void x264_predict_8x16c_p_core_avx512icl( pixel *src, int i00, int b, int c );
 #define x264_predict_8x8c_p_core_mmx2 x264_template(predict_8x8c_p_core_mmx2)
 void x264_predict_8x8c_p_core_mmx2( uint8_t *src, int i00, int b, int c );
 #define x264_predict_8x8c_p_core_sse2 x264_template(predict_8x8c_p_core_sse2)
@@ -120,6 +124,8 @@ void x264_predict_8x8c_p_core_sse2( pixel *src, int i00, int b, int c );
 void x264_predict_8x8c_p_core_avx ( pixel *src, int i00, int b, int c );
 #define x264_predict_8x8c_p_core_avx2 x264_template(predict_8x8c_p_core_avx2)
 void x264_predict_8x8c_p_core_avx2( pixel *src, int i00, int b, int c );
+#define x264_predict_8x8c_p_core_avx512icl x264_template(predict_8x8c_p_core_avx512icl)
+void x264_predict_8x8c_p_core_avx512icl( pixel *src, int i00, int b, int c );
 #define x264_predict_8x8c_dc_mmx2 x264_template(predict_8x8c_dc_mmx2)
 void x264_predict_8x8c_dc_mmx2( pixel *src );
 #define x264_predict_8x8c_dc_sse2 x264_template(predict_8x8c_dc_sse2)
@@ -220,6 +226,8 @@ void x264_predict_8x8_filter_sse2( uint16_t *src, uint16_t edge[36], int i_neigh
 void x264_predict_8x8_filter_ssse3( pixel *src, pixel edge[36], int i_neighbor, int i_filters );
 #define x264_predict_8x8_filter_avx x264_template(predict_8x8_filter_avx)
 void x264_predict_8x8_filter_avx( uint16_t *src, uint16_t edge[36], int i_neighbor, int i_filters );
+#define x264_predict_8x8_filter_avx512icl x264_template(predict_8x8_filter_avx512icl)
+void x264_predict_8x8_filter_avx512icl( uint8_t *src, uint8_t edge[36], int i_neighbor, int i_filters );
 #define x264_predict_4x4_h_avx2 x264_template(predict_4x4_h_avx2)
 void x264_predict_4x4_h_avx2( uint16_t *src );
 #define x264_predict_4x4_h_sse2 x264_template(predict_4x4_h_sse2)

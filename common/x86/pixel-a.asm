@@ -355,6 +355,15 @@ ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
 weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
                   db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
 weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
+%if HIGH_BIT_DEPTH == 0
+; satd_mcc width 8: lane 0 as mcc_ch_shuf, lane 1 the pairs of bytes 8-17 from a load at +2
+ALIGN 32
+mcc_ch_shuf8: db 0, 2, 1, 3, 2, 4, 3, 5, 4, 6, 5, 7, 6, 8, 7, 9
+              db 6, 8, 7, 9, 8,10, 9,11,10,12,11,13,12,14,13,15
+; LOAD_DUP_4x16P_AVX2: bytes 8-15 twice | bytes 0-7 twice of a vbroadcasti128 row
+dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
+               db 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7
+%endif
 
 SECTION .text
 
@@ -2140,7 +2149,9 @@ VAR2_8x8_ICL 16, 7
 %endif
 %endmacro
 
+; per row: bytes 8-15 twice | bytes 0-7 twice
 %macro LOAD_DUP_4x16P_AVX2 8 ; 4*dst, 4*pointer
+%if cpuflag(avx512)
     mova  xm%3, %6
     mova  xm%4, %8
     mova  xm%1, %5
@@ -2149,6 +2160,16 @@ VAR2_8x8_ICL 16, 7
     vpermq m%4, m%4, q0011
     vpermq m%1, m%1, q0011
     vpermq m%2, m%2, q0011
+%else
+    vbroadcasti128 m%3, %6
+    vbroadcasti128 m%4, %8
+    vbroadcasti128 m%1, %5
+    vbroadcasti128 m%2, %7
+    pshufb m%3, [dup_hilo_shuf]
+    pshufb m%4, [dup_hilo_shuf]
+    pshufb m%1, [dup_hilo_shuf]
+    pshufb m%2, [dup_hilo_shuf]
+%endif
 %endmacro
 
 %macro LOAD_SUMSUB8_16x2P_AVX2 9
@@ -3037,8 +3058,8 @@ cglobal pixel_sa8d_satd_16x16, 4,8-(mmsize/32),16,SIZEOF_PIXEL*mmsize
     SA8D_SATD_ACCUM 1, 0
 %endif
 
-; xop already has fast horizontal sums
-%if cpuflag(avx512icl) && HIGH_BIT_DEPTH==0
+; xop already has fast horizontal sums; avx and later: punpck instead of phaddd
+%if cpuflag(avx) && notcpuflag(xop) && HIGH_BIT_DEPTH==0
     pmaddwd    xm10, [pw_1]
     punpcklqdq  xm1, xm0, xm10
     punpckhqdq  xm0, xm10
@@ -5054,6 +5075,21 @@ cglobal hadamard_ac_8x8%1
     vpdpwssd m11, m3, m12
     vpdpwssd  m1, m2, m12
     paddd     m1, m11
+%elif HIGH_BIT_DEPTH
+    ; word sums of at most 3 and 4 AC terms (each at most 8*1023, m1 two of them): < 32768
+    ABSW      m2, spill0
+    paddw     m1, m3
+    paddw     m1, m2
+    ABSW      m2, spill1
+    ABSW      m3, spill2
+    paddw     m2, m3
+    ABSW      m3, m6, m6
+    paddw     m2, m3
+    ABSW      m3, m7, m7
+    paddw     m2, m3
+    pmaddwd   m1, [pw_1]
+    pmaddwd   m2, [pw_1]
+    paddd     m1, m2
 %else
     AC_PREP   m1, [pw_1]
     ABSW      m2, spill0
@@ -5555,26 +5591,27 @@ cglobal pixel_satd_bi_%1x%2, 6,10,11
 
 ; m0-m3 = pix1-pix2 rows %1..%1+3 of the units at r0/r2 (lane 0) and r6/r7 (lane 1)
 %macro SATD_HBD_LOAD_X 0 ; 8 wide, ymm: lanes = rows i, i+4
+    ; each lane subtracted on its own, one lane insert a row
     movu         xm0, [r0]
-    vinserti128   m0, m0, [r6], 1
-    movu         xm4, [r2]
-    vinserti128   m4, m4, [r7], 1
+    psubw        xm0, [r2]
+    movu         xm4, [r6]
+    psubw        xm4, [r7]
+    vinserti128   m0, m0, xm4, 1
     movu         xm1, [r0+r1]
-    vinserti128   m1, m1, [r6+r1], 1
-    movu         xm5, [r2+r3]
-    vinserti128   m5, m5, [r7+r3], 1
-    psubw         m0, m4
-    psubw         m1, m5
+    psubw        xm1, [r2+r3]
+    movu         xm5, [r6+r1]
+    psubw        xm5, [r7+r3]
+    vinserti128   m1, m1, xm5, 1
     movu         xm2, [r0+2*r1]
-    vinserti128   m2, m2, [r6+2*r1], 1
-    movu         xm4, [r2+2*r3]
-    vinserti128   m4, m4, [r7+2*r3], 1
+    psubw        xm2, [r2+2*r3]
+    movu         xm4, [r6+2*r1]
+    psubw        xm4, [r7+2*r3]
+    vinserti128   m2, m2, xm4, 1
     movu         xm3, [r0+r4]
-    vinserti128   m3, m3, [r6+r4], 1
-    movu         xm5, [r2+r5]
-    vinserti128   m5, m5, [r7+r5], 1
-    psubw         m2, m4
-    psubw         m3, m5
+    psubw        xm3, [r2+r5]
+    movu         xm5, [r6+r4]
+    psubw        xm5, [r7+r5]
+    vinserti128   m3, m3, xm5, 1
 %endmacro
 
 %macro SATD_HBD_LOAD_Y 0 ; 16 wide, ymm: lanes = columns 0-7, 8-15 of one row
@@ -5686,20 +5723,18 @@ cglobal pixel_satd_16x16, 4,6,8
     %define satd_avg2_off %2*r3
 %endif
 %if %2
-    movu         xm%1, [r1+satd_avg2_off]
-    vinserti128   m%1, m%1, [r5+satd_avg2_off], 1
-    movu         xm4, [r2+satd_avg2_off]
-    vinserti128   m4, m4, [r6+satd_avg2_off], 1
+    %xdefine satd_avg2_o +satd_avg2_off
 %else
-    movu         xm%1, [r1]
-    vinserti128   m%1, m%1, [r5], 1
-    movu         xm4, [r2]
-    vinserti128   m4, m4, [r6], 1
+    %xdefine satd_avg2_o
 %endif
-    movu         xm5, [r0+%2*FENC_STRIDEB]
-    vinserti128   m5, m5, [r0+(%2+4)*FENC_STRIDEB], 1
-    pavgw         m%1, m4
-    psubw         m%1, m5
+    ; each lane averaged and subtracted on its own, one lane insert
+    movu         xm%1, [r1 satd_avg2_o]
+    pavgw        xm%1, [r2 satd_avg2_o]
+    psubw        xm%1, [r0+%2*FENC_STRIDEB]
+    movu         xm4, [r5 satd_avg2_o]
+    pavgw        xm4, [r6 satd_avg2_o]
+    psubw        xm4, [r0+(%2+4)*FENC_STRIDEB]
+    vinserti128   m%1, m%1, xm4, 1
 %endmacro
 
 %macro SATD_AVG2_LOAD_X 0
@@ -6382,8 +6417,8 @@ INTRA_SATD_X3_16x16_HBD
 
 ; m%1 = (8 maxes of mode %1 | 8 maxes of mode %2), their sums are the satds
 %macro X9H_MERGE 3
-    vperm2i128  m%3, m%1, m%2, 0x20
-    vperm2i128  m%1, m%1, m%2, 0x31
+    vperm2i128  m%3, m%1, m%2, 0x21
+    vpblendd    m%1, m%1, m%2, 0xf0
     pmaxsw      m%1, m%3
 %endmacro
 
@@ -6482,12 +6517,12 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
     X9H_SATD      0, 1
     X9H_MERGE     4, 0, 1             ; vl | hu
 
-    phaddw       m7, m5
-    phaddw      m10, m4
-    phaddw       m7, m10
-    phaddw       m9, m9
-    phaddw       m9, m9
-    phaddw       m7, m9               ; h ddl vr vl v v v v | dc ddr hd hu v v v v
+    HADD_ILV  w,  wd,  m7,  m7, m5, m1
+    HADD_ILV  w,  wd, m10, m10, m4, m1
+    HADD_ILV  w,  dq,  m7,  m7, m10, m1 ; (h ddl vr vl) x2 | (dc ddr hd hu) x2
+    HADD_ILV  w,  wd,  m9,  m9, m9, m1
+    HADD_ILV  w,  dq,  m9,  m9, m9, m1 ; v v v v halves of v
+    HADD_ILV  w, qdq,  m7,  m7, m9, m1 ; h ddl vr vl v v v v | dc ddr hd hu v v v v
     vextracti128 xm0, m7, 1
     pextrw      r3d, xm7, 4
     punpcklwd   xm0, xm7, xm0
@@ -6647,11 +6682,13 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
     add          r5, 0x100
     call .sa8d
 
-    phaddd       m9, m10              ; v v dc dc | h h ddl ddl
-    phaddd      m11, m12              ; ddr ddr hd hd | vr vr vl vl
-    phaddd       m9, m11              ; v dc ddr hd | h ddl vr vl
-    phaddd      xm0, xm0
-    phaddd      xm0, xm0              ; hu
+    HADD_ILV  d,  dq,  m9,  m9, m10, m1 ; (v dc) x2 | (h ddl) x2
+    HADD_ILV  d,  dq, m11, m11, m12, m1 ; (ddr hd) x2 | (vr vl) x2
+    HADD_ILV  d, qdq,  m9,  m9, m11, m1 ; v dc ddr hd | h ddl vr vl
+    pshufd      xm1, xm0, q1032
+    paddd       xm0, xm1
+    pshufd      xm1, xm0, q2301
+    paddd       xm0, xm1              ; hu
     vpbroadcastd m1, [pd_1]
     paddd        m9, m1
     paddd       xm0, xm1
@@ -6809,8 +6846,9 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pshufb       m3, m5, [lowres_h3]
     LOWRES_DIFF10
     LOWRES_SATD  m7
-    phaddw       m6, m7
     pmaddwd      m6, [pw_1]
+    pmaddwd      m7, [pw_1]
+    HADD_ILV  d,  dq,  m6,  m6,  m7, m4 ; (v h) x2
     ; dc
     phaddw      xm4, xm11, xm9
     phaddw      xm4, xm4              ; s0 s1 s3 s2
@@ -6873,8 +6911,10 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pmaddwd      m0, [lowres_p_w1]
     pmaddwd      m1, [lowres_p_w2]
     paddd        m0, m1
-    phaddd       m0, m0
-    phaddd       m0, m0               ; H | V
+    pshufd       m1, m0, q1032
+    paddd        m0, m1
+    pshufd       m1, m0, q2301
+    paddd        m0, m1               ; H | V
     psllw       xm2, 4
     vpbroadcastw m2, xm2
     paddw       m11, m2, [pw_16]      ; a + 16
@@ -6907,30 +6947,35 @@ cglobal intra_satd_lowres, 3,5,16, 0x160
     pmaxsw       m3, m4
     LOWRES_DIFF10
     LOWRES_SATD  m8
-    phaddw       m7, m8
     pmaddwd      m7, [pw_1]
-    phaddd       m6, m7               ; v h dc p
+    pmaddwd      m8, [pw_1]
+    HADD_ILV  d,  dq,  m7,  m7,  m8, m4 ; (dc p) x2
+    HADD_ILV  d, qdq,  m6,  m6,  m7, m4 ; v h dc p
 
     LOWRES_ROWS10 [lr_f+20], [lr_f+22], [lr_f+24], [lr_f+26], [lr_f+28], [lr_f+30], [lr_f+32], [lr_f+34]
     LOWRES_SATD  m7                   ; ddl
     LOWRES_ROWS10 [lr_g+0], [lr_f+20], [lr_g+2], [lr_f+22], [lr_g+4], [lr_f+24], [lr_g+6], [lr_f+26]
     LOWRES_SATD  m8                   ; vl
-    phaddw       m7, m8
     pmaddwd      m7, [pw_1]
+    pmaddwd      m8, [pw_1]
+    HADD_ILV  d,  dq,  m7,  m7,  m8, m4 ; (ddl vl) x2
     LOWRES_ROWS10 [lr_f+16], [lr_f+14], [lr_f+12], [lr_f+10], [lr_f+8], [lr_f+6], [lr_f+4], [lr_f+2]
     LOWRES_SATD  m8                   ; ddr
     LOWRES_ROWS10 [lr_ce+8], [lr_co+6], [lr_ce+6], [lr_co+4], [lr_ce+4], [lr_co+2], [lr_ce+2], [lr_co+0]
     LOWRES_SATD  m9                   ; vr
-    phaddw       m8, m9
     pmaddwd      m8, [pw_1]
-    phaddd       m7, m8               ; ddl vl ddr vr
+    pmaddwd      m9, [pw_1]
+    HADD_ILV  d,  dq,  m8,  m8,  m9, m4 ; (ddr vr) x2
+    HADD_ILV  d, qdq,  m7,  m7,  m8, m4 ; ddl vl ddr vr
     LOWRES_ROWS10 [lr_p+28], [lr_p+24], [lr_p+20], [lr_p+16], [lr_p+12], [lr_p+8], [lr_p+4], [lr_p+0]
     LOWRES_SATD  m8                   ; hd
     LOWRES_ROWS10 [lr_q+4], [lr_q+8], [lr_q+12], [lr_q+16], [lr_q+20], [lr_q+24], [lr_q+28], [lr_q+32]
     LOWRES_SATD  m9                   ; hu
-    phaddw       m8, m9
     pmaddwd      m8, [pw_1]
-    phaddd       m8, m8               ; hd hu hd hu
+    pmaddwd      m9, [pw_1]
+    HADD_ILV  d,  dq,  m8,  m8,  m9, m4 ; (hd hu) x2
+    pshufd       m4, m8, q1032
+    paddd        m8, m4               ; hd hu hd hu
 
     vperm2i128   m0, m6, m7, 0x20
     vperm2i128   m1, m6, m7, 0x31
@@ -7552,8 +7597,13 @@ SATD_AVG2_PRE_FUNCS
     pmulhrsw        m4, m9
     pmulhrsw       m%1, m9
     packuswb       m%1, m4
-    vpermq         m%2, m%1, q3232
+%if cpuflag(avx512)
+    vpermq         m%2, m%1, q3232      ; no EVEX vperm2i128
     vpermq         m%1, m%1, q1010
+%else
+    vperm2i128     m%2, m%1, m%1, 0x11
+    vinserti128    m%1, m%1, xm%1, 1
+%endif
     pmaddubsw      m%1, m7
     pmaddubsw      m%2, m7
     psubw          m%1, [r0+(bi_fr+%3)*32]
@@ -7796,9 +7846,10 @@ cglobal intra_satd_x3_8x8c, 3,7,16
     mov           r4d, 0xffff0000
     kmovd          k3, r4d
 %else
-    phaddd        xm0, xm0                 ; s0 s1 (top 0-3, top 4-7)
+    pshufd        xm1, xm0, q2301
+    paddd         xm0, xm1                 ; s0 s0 s1 s1 (top 0-3, top 4-7)
     movd          r3d, xm0
-    pextrd        r5d, xm0, 1
+    pextrd        r5d, xm0, 2
 %endif
     INTRA_X3_LEFT4 r6d, 0                  ; s2
     lea           r3d, [r3+r6+4]
@@ -8352,8 +8403,8 @@ cglobal intra_sad_x9_8x8, 5,7,8
 
 ; m%1 = (8 maxes of mode %1 | 8 maxes of mode %2), their sums are the satds
 %macro X9B_MERGE 3
-    vperm2i128  m%3, m%1, m%2, 0x20
-    vperm2i128  m%1, m%1, m%2, 0x31
+    vperm2i128  m%3, m%1, m%2, 0x21
+    vpblendd    m%1, m%1, m%2, 0xf0
     pmaxsw      m%1, m%3
 %endmacro
 
@@ -8429,12 +8480,12 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
     X9B_SATD      3, 4
     X9B_MERGE     2, 3, 4             ; vl | hu
 
-    phaddw      m10, m1
-    phaddw       m0, m2
-    phaddw      m10, m0
-    phaddw       m9, m9
-    phaddw       m9, m9
-    phaddw      m10, m9               ; h ddl vr vl v v v v | dc ddr hd hu v v v v
+    HADD_ILV  w,  wd, m10, m10, m1, m3
+    HADD_ILV  w,  wd,  m0,  m0, m2, m3
+    HADD_ILV  w,  dq, m10, m10, m0, m3 ; (h ddl vr vl) x2 | (dc ddr hd hu) x2
+    HADD_ILV  w,  wd,  m9,  m9, m9, m3
+    HADD_ILV  w,  dq,  m9,  m9, m9, m3 ; v v v v halves of v
+    HADD_ILV  w, qdq, m10, m10, m9, m3 ; h ddl vr vl v v v v | dc ddr hd hu v v v v
     vextracti128 xm0, m10, 1
     pextrw      r3d, xm10, 4
     punpcklwd   xm0, xm10, xm0
@@ -10324,14 +10375,15 @@ ADS_ICL 1, _zmm
 ; interleaved uv fenc plane, with the stride of src. 8-bit: fenc is int16_t
 ; 64*fenc - 32 from pixel_satd_mcc_fenc_pre, 32 bytes per row (width 8),
 ; per rows k | k+4 (width 4) or per rows 0 | 2 and 1 | 3 (4x4). The filter is
-; mc_chroma's in two exact passes, on words (8-bit pixels zero extended), as
-; the 10-bit AVX2 mc_chroma; 8-bit 4x4 in one, pmaddubsw as the 8-bit one.
+; mc_chroma's: high bit depth in two exact passes on words, as the 10-bit AVX2
+; mc_chroma; 8-bit in one, pmaddubsw on byte pairs (i, i+2) as the 8-bit one.
 ; Rows stay interleaved: u in even words, v in odd words, so the 4x4 Hadamard
 ; columns are dwords and u and v never mix. Width 8: one row per ymm; width 4:
 ; rows k and k+4 per ymm; 4x4: rows 0 | 2 and 1 | 3. Width 8: height 4, 8 or
 ; 16; width 4: height 4, 8 or 16.
 ;-----------------------------------------------------------------------------
-; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15
+; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15.
+; 8-bit: the row's byte pairs (i, i+2) by the m12 shuffle (width 8: lane 1 from %2+2)
 %macro MCC_SATD_H 2-3
 %if HIGH_BIT_DEPTH && %0 == 3
     movu         xm%1, [%2]
@@ -10341,34 +10393,38 @@ ADS_ICL 1, _zmm
 %elif HIGH_BIT_DEPTH
     movu          m%1, [%2]
     movu          m15, [%2+4]
-%elif %0 == 3
-    movq         xm%1, [%2]
-    movhps       xm%1, [%3]
-    vpmovzxbw     m%1, xm%1
-    movq         xm15, [%2+2]
-    movhps       xm15, [%3+2]
-    vpmovzxbw     m15, xm15
-%else
-    vpmovzxbw     m%1, [%2]
-    vpmovzxbw     m15, [%2+2]
 %endif
+%if HIGH_BIT_DEPTH
     pmullw        m%1, m8
     pmullw        m15, m9
     paddw         m%1, m15
+%elif %0 == 3
+    movu         xm%1, [%2]
+    vinserti128   m%1, m%1, [%3], 1
+    pshufb        m%1, m12
+%else
+    movu         xm%1, [%2]
+    vinserti128   m%1, m%1, [%2+2], 1
+    pshufb        m%1, m12
+%endif
 %endmacro
 
 ; prediction from H m%2 (row above) and m%3 -> m%1, interleaved uv; clobbers m15.
-; With %4 = 64*fenc - 32: minus fenc, (V+32-64*fenc)>>6 = ((V+32)>>6) - fenc
+; 8-bit: from the byte pairs of rows k (m%2) and k+1 (m%3), minus %4 = 64*fenc - 32:
+; (V+32-64*fenc)>>6 = ((V+32)>>6) - fenc
 %macro MCC_SATD_V 3-4
+%if HIGH_BIT_DEPTH
     pmullw        m15, m%2, m10
     pmullw        m%1, m%3, m11
     paddw         m%1, m15
-%if %0 == 4
-    psubw         m%1, %4
-    psraw         m%1, 6
-%else
     paddw         m%1, m12
     psrlw         m%1, 6
+%else
+    pmaddubsw     m15, m%2, m8
+    pmaddubsw     m%1, m%3, m9
+    paddw         m%1, m15
+    psubw         m%1, %4
+    psraw         m%1, 6
 %endif
 %endmacro
 
@@ -10403,16 +10459,17 @@ ADS_ICL 1, _zmm
     pmaxsw         m6, m0, m1
 %endmacro
 
-; res[0] = sum of the even words of m6, res[1] of the odd; clobbers m7
+; res[0] = sum of the even words of m6, res[1] of the odd; clobbers m4, m7
 %macro MCC_SATD_END 0
     ; at most 4 passes, two words each: unsigned words
+    pxor           m4, m4
     psrld          m7, m6, 16         ; v
-    pslld          m6, 16
-    psrld          m6, 16             ; u
-    phaddd         m6, m7
+    pblendw        m6, m6, m4, 0xaa   ; u
+    HADD_ILV  d,  dq, m6, m6, m7, m4  ; (u v) x2
     vextracti128  xm7, m6, 1
     paddd         xm6, xm7
-    phaddd        xm6, xm6
+    pshufd        xm7, xm6, q1032
+    paddd         xm6, xm7
     movq        [r1], xm6
     RET
 %endmacro
@@ -10456,11 +10513,32 @@ cglobal pixel_satd_mcc, 4,8,16
     and          r4d, 7
     and          r5d, 7
 %if HIGH_BIT_DEPTH == 0
+    ; pmaddubsw on byte pairs (i, i+2) of rows k and k+1 with mc_chroma's
+    ; A | B<<8 = (8-dx | dx<<8)*(8-dy) and C | D<<8 = (8-dx | dx<<8)*dy: each
+    ; at most 255*64, minus 64*fenc - 32, >> 6 = ((V+32)>>6) - fenc
+    imul         r6d, r4d, 255
+    add          r6d, 8               ; 8-dx | dx<<8
+    mov          r4d, 8
+    sub          r4d, r5d
+    imul         r4d, r6d
+    imul         r5d, r6d
+    movd         xm8, r4d
+    vpbroadcastw  m8, xm8              ; A | B<<8
+    movd         xm9, r5d
+    vpbroadcastw  m9, xm9              ; C | D<<8
+    lea           r4, [r3*3]
     mov          r6d, r6m
     add          r6d, r7m
     cmp          r6d, 8               ; width + height 8: 4x4
     je .w4h4
-%endif
+    mova         m12, [mcc_ch_shuf8]
+    mov          r7d, r7m
+    pxor          m6, m6
+    cmp dword    r6m, 4
+    jne .w8
+    vbroadcasti128 m12, [mcc_ch_shuf]
+    jmp .w4
+%else
     mov          r6d, 8
     sub          r6d, r4d
     movd         xm8, r6d
@@ -10473,15 +10551,15 @@ cglobal pixel_satd_mcc, 4,8,16
     vpbroadcastw m10, xm10             ; 8-dy
     movd        xm11, r5d
     vpbroadcastw m11, xm11             ; dy
-%if HIGH_BIT_DEPTH
     vpbroadcastw m12, [pw_32]
-%endif
     lea           r4, [r3*3]
     mov          r7d, r7m
     pxor          m6, m6
     cmp dword    r6m, 4
     je .w4
+%endif
 
+.w8:
     MCC_SATD_H     7, r2
 .loop8:
 %assign mcc_k 0
@@ -10567,21 +10645,7 @@ cglobal pixel_satd_mcc, 4,8,16
     psubw         m0, m2
     psubw         m1, m3
 %else
-    ; pmaddubsw on byte pairs (i, i+2) of rows k and k+1 with mc_chroma's
-    ; A | B<<8 = (8-dx | dx<<8)*(8-dy) and C | D<<8 = (8-dx | dx<<8)*dy: each
-    ; at most 255*64, minus 64*fenc - 32, >> 6 = ((V+32)>>6) - fenc
-    imul         r6d, r4d, 255
-    add          r6d, 8               ; 8-dx | dx<<8
-    mov          r4d, 8
-    sub          r4d, r5d
-    imul         r4d, r6d
-    imul         r5d, r6d
-    movd         xm8, r4d
-    vpbroadcastw  m8, xm8              ; A | B<<8
-    movd         xm9, r5d
-    vpbroadcastw  m9, xm9              ; C | D<<8
     vbroadcasti128 m7, [mcc_ch_shuf]
-    lea           r4, [r3*3]
     movu         xm0, [r2]
     vinserti128   m0, m0, [r2+r3*2], 1 ; rows 0 | 2
     movu         xm1, [r2+r3]
@@ -10815,6 +10879,19 @@ cglobal weightp_dc8x8, 5,7,8
     paddd      %1, %5
 %endmacro
 
+; as HADD4D, on the two words of each dword (wrapping word adds)
+%macro HADD4W 6 ; a, b, c, d, tmp, tmp
+    punpckldq  %5, %1, %2
+    punpckhdq  %1, %2
+    paddw      %1, %5
+    punpckldq  %6, %3, %4
+    punpckhdq  %3, %4
+    paddw      %3, %6
+    punpcklqdq %5, %1, %3
+    punpckhqdq %1, %3
+    paddw      %1, %5
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; void weightp_sum8( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom )
 ; void weightp_sum8_clip( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
@@ -10825,7 +10902,23 @@ cglobal weightp_dc8x8, 5,7,8
 ; mmsize/4. m5 = pw_1, xm6 = denom, m7 = { scale, round }, m10 = block order.
 ; _clip: each + offset, clipped to [0,pixel_max] as by mc weight. m9 = offset,
 ; m11 = pixel_max, m12 = 0.
+; 8-bit: on words as the avx512icl version, exact for H.264 weights (scale -128..127,
+; offset -128..127): pmullw, paddw, psraw [, + offset, clip], pmaddwd by 1 into dword pairs;
+; m7 = scale, m8 = round (words), m9 = offset, m11 = 255 (words).
 %macro WEIGHTP_SUM8_ROW 3 ; acc, offset, clip
+%if HIGH_BIT_DEPTH == 0
+    pmovzxbw   m4, [r7+%2]
+    pmullw     m4, m7
+    paddw      m4, m8
+    psraw      m4, xm6
+%if %3
+    paddw      m4, m9
+    pmaxsw     m4, m12
+    pminsw     m4, m11
+%endif
+    pmaddwd    m4, m5
+    paddd      %1, m4
+%else
     LOAD_PIXW  m4, [r7+%2]
     punpckhwd  m8, m4, m5
     punpcklwd  m4, m5
@@ -10843,15 +10936,27 @@ cglobal weightp_dc8x8, 5,7,8
 %endif
     paddd      %1, m4
     paddd      %1, m8
+%endif
 %endmacro
 
 %macro WEIGHTP_SUM8 1 ; clip
 %if %1
-cglobal weightp_sum8_clip, 8,9,13
+%if HIGH_BIT_DEPTH
+    %assign wp_clip_regs 13
+%else
+    %assign wp_clip_regs 14
+%endif
+cglobal weightp_sum8_clip, 8,9,wp_clip_regs
     movd      xm9, r7d
+%if HIGH_BIT_DEPTH
     vpbroadcastd m9, xm9
     pcmpeqd   m11, m11
     psrld     m11, 32-BIT_DEPTH
+%else
+    vpbroadcastw m9, xm9
+    pcmpeqw   m11, m11
+    psrlw     m11, 8
+%endif
     pxor      m12, m12
 %else
 cglobal weightp_sum8, 7,9,11
@@ -10860,10 +10965,18 @@ cglobal weightp_sum8, 7,9,11
     xor       r7d, r7d
     bts       r7d, r6d
     shr       r7d, 1
+%if HIGH_BIT_DEPTH
     shl       r7d, 16
+    movzx     r5d, r5w
     or        r7d, r5d
     movd      xm7, r7d
     vpbroadcastd m7, xm7
+%else
+    movd      xm8, r7d
+    vpbroadcastw m8, xm8
+    movd      xm7, r5d
+    vpbroadcastw m7, xm7
+%endif
     movd      xm6, r6d
     vpbroadcastd m5, [pw_1]
     WEIGHTP_PERM m10
@@ -10882,7 +10995,13 @@ cglobal weightp_sum8, 7,9,11
     add        r7, r2
     dec       r8d
     jg .loopy
+%if HIGH_BIT_DEPTH
     HADD4D     m0, m1, m2, m3, m4, m8
+%elif %1
+    HADD4D     m0, m1, m2, m3, m4, m13
+%else
+    HADD4D     m0, m1, m2, m3, m4, m9
+%endif
     vpermd     m0, m10, m0
     movu     [r0], m0
     add        r0, mmsize
@@ -10904,28 +11023,16 @@ cglobal weightp_sum8, 7,9,11
     pmaxuw     %3, m12
 %endmacro
 
-; min | max << 16 in dword 0 of each lane, from 8 words a lane
-%macro WEIGHTP_MINMAX 3 ; min, max, tmp
-    pshufd     %3, %1, q1032
+; min, ~max word pairs of 8 words a lane folded to 4 dwords; %2 clobbered, m15 = all ones
+%macro WEIGHTP_MINMAX_ILV 3 ; min, max, tmp
+    pxor       %2, m15
+    punpcklwd  %3, %1, %2
+    punpckhwd  %1, %2
     pminuw     %1, %3
-    pshufd     %3, %1, q2301
-    pminuw     %1, %3
-    psrld      %3, %1, 16
-    pminuw     %1, %3
-    pshufd     %3, %2, q1032
-    pmaxuw     %2, %3
-    pshufd     %3, %2, q2301
-    pmaxuw     %2, %3
-    psrld      %3, %2, 16
-    pmaxuw     %2, %3
-    pslld      %1, 16
-    psrld      %1, 16
-    pslld      %2, 16
-    por        %1, %2
 %endmacro
 
 %macro WEIGHTP_STATS8 0
-cglobal weightp_stats8, 6,8,15
+cglobal weightp_stats8, 6,8,16
     FIX_STRIDES r3
     vpbroadcastd m13, [pw_1]
     WEIGHTP_PERM m14
@@ -10952,13 +11059,24 @@ cglobal weightp_stats8, 6,8,15
     add        r6, r3
     dec       r7d
     jg .loopy
-    WEIGHTP_MINMAX m4, m8,  m12
-    WEIGHTP_MINMAX m5, m9,  m12
-    WEIGHTP_MINMAX m6, m10, m12
-    WEIGHTP_MINMAX m7, m11, m12
-    punpckldq  m4, m5
-    punpckldq  m6, m7
-    punpcklqdq m4, m6
+    ; one min reduction for both: min words interleaved with ~max words, so each dword
+    ; ends as min | ~max << 16 (u16 ~ reverses the order), then the high words flip back
+    ALL_ONES  m15
+    WEIGHTP_MINMAX_ILV m4, m8,  m12
+    WEIGHTP_MINMAX_ILV m5, m9,  m12
+    WEIGHTP_MINMAX_ILV m6, m10, m12
+    WEIGHTP_MINMAX_ILV m7, m11, m12
+    punpckldq  m8, m4, m5
+    punpckhdq  m4, m5
+    pminuw     m4, m8
+    punpckldq  m9, m6, m7
+    punpckhdq  m6, m7
+    pminuw     m6, m9
+    punpcklqdq m8, m4, m6
+    punpckhqdq m4, m6
+    pminuw     m4, m8
+    pslld     m15, 16
+    pxor       m4, m15
     vpermd     m4, m14, m4
     movu     [r1], m4
     pmaddwd    m0, m13
@@ -11052,21 +11170,26 @@ cglobal weightp_sum8_nv, 6,8,16
     movu     [r0], m0
     movu     [r1], m8
 %else
-    ; one block a register: blocks 0-3, then 4-7, each the sum of its two lanes
-    WEIGHTP_NV_SPLIT m0, m1, m2, m3, m8, m9, m10, m11, m12, m13
-    vextracti128 xm12, m0, 1
-    paddd      xm0, xm12
-    vextracti128 xm12, m8, 1
-    paddd      xm8, xm12
-    movu     [r0], xm0
-    movu     [r1], xm8
-    WEIGHTP_NV_SPLIT m4, m5, m6, m7, m8, m9, m10, m11, m12, m13
-    vextracti128 xm12, m4, 1
-    paddd      xm4, xm12
-    vextracti128 xm12, m8, 1
-    paddd      xm8, xm12
-    movu  [r0+16], xm4
-    movu  [r1+16], xm8
+    ; one block a register: blocks 0-3, then 4-7, each the sum of its two lanes; u and v
+    ; summed as words first: 4 positions of up to 16 rows, at most 4*16*1023 < 65536
+    HADD4W     m0, m1, m2, m3, m8, m9
+    pand       m8, m0, m15
+    psrld      m0, 16
+    vextracti128 xm9, m8, 1
+    paddd      xm8, xm9
+    vextracti128 xm9, m0, 1
+    paddd      xm0, xm9
+    movu     [r0], xm8
+    movu     [r1], xm0
+    HADD4W     m4, m5, m6, m7, m8, m9
+    pand       m8, m4, m15
+    psrld      m4, 16
+    vextracti128 xm9, m8, 1
+    paddd      xm8, xm9
+    vextracti128 xm9, m4, 1
+    paddd      xm4, xm9
+    movu  [r0+16], xm8
+    movu  [r1+16], xm4
 %endif
     add        r0, mmsize
     add        r1, mmsize

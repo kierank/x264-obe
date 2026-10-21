@@ -581,6 +581,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->dequant_8x8 = x264_dequant_8x8_avx2;
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx2;
         pf->denoise_dct = x264_denoise_dct_avx2;
+        if( cpu&X264_CPU_LZCNT )
+        {
+            pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx2_lzcnt;
+        }
     }
     if( cpu&X264_CPU_AVX512 )
     {
@@ -593,15 +597,26 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->coeff_last8 = x264_coeff_last8_avx512;
         pf->coeff_last[ DCT_LUMA_AC] = x264_coeff_last15_avx512;
         pf->coeff_last[DCT_LUMA_4x4] = x264_coeff_last16_avx512;
-        pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
+        /* coeff_last64 avx512 1.90x avx2_lzcnt on rack01 Zen 4 */
+        if( !(cpu&X264_CPU_LZCNT) )
+        {
+            pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx512;
+        }
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
-        INIT_TRELLIS( avx512icl );
+        pf->dequant_4x4 = x264_dequant_4x4_avx512icl;
+        pf->dequant_4x4_dc = x264_dequant_4x4dc_avx512icl;
+        pf->optimize_chroma_2x2_dc = x264_optimize_chroma_2x2_dc_avx512icl;
         pf->denoise_dct = x264_denoise_dct_avx512icl;
+        pf->quant_2x2_dc = x264_quant_2x2_dc_avx512icl;
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx512icl;
 #if ARCH_X86_64
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
-        /* decimate_score15/16/64 1.5-3.5x, quant_4x4 2.21x, quant_4x4_dc 1.13x, quant_4x4x4 1.056x */
+        /* decimate_score15/16/64 1.5-3.5x, quant_4x4 2.21x, quant_4x4_dc 1.13x, quant_4x4x4 1.056x;
+         * trellis_cabac 4x4 1.48-1.52x, 4x4_psy 1.16-1.20x, dc 1.26-1.52x, chroma_422_dc 1.31-1.34x */
+        pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_avx512icl;
+        pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_avx512icl;
         pf->quant_8x8 = x264_quant_8x8_avx512icl;
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
@@ -794,11 +809,19 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
-        INIT_TRELLIS( avx512icl );
         pf->denoise_dct = x264_denoise_dct_avx512icl;
+        pf->quant_2x2_dc = x264_quant_2x2_dc_avx512icl;
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx512icl;
 #if ARCH_X86_64
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
-        /* decimate_score15/16/64 1.5-4.1x, quant_8x8 1.08x, quant_4x4x4 1.25x */
+        /* decimate_score15/16/64 1.5-4.1x, quant_8x8 1.08x, quant_4x4x4 1.25x;
+         * trellis_cabac 4x4 1.48-1.52x, 4x4_psy 1.16-1.20x, dc 1.26-1.52x, chroma_422_dc 1.31-1.34x */
+        pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_avx512icl;
+        pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_avx512icl;
+        if( h->param.i_cqm_preset != X264_CQM_FLAT )
+        {
+            pf->dequant_8x8 = x264_dequant_8x8_avx512icl;
+        }
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
         pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx512icl;

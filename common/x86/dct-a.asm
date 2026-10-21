@@ -179,6 +179,39 @@ zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
 zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
                db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
+%if HIGH_BIT_DEPTH
+ALIGN 32
+; add16x16_idct_dc avx2: dc0 x4 dc1 x4 | dc2 x4 dc3 x4 from packssdw'd dc0-3 in both lanes
+idct_dc16_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
+%endif
+%if HIGH_BIT_DEPTH == 0
+ALIGN 32
+; zigzag_scan_4x4_frame avx2: words of coefs 0-7 | 8-15 (a), of 8-15 | 0-7 (b)
+scan4frame_ymm_a: SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
+                  SHUFFLE_MASK_W 0x80, 0x80, 0x80, 2, 5, 6, 3, 7
+scan4frame_ymm_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
+                  SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
+%endif
+%if HIGH_BIT_DEPTH == 0
+; dct2x4dc avx512icl: the dc of each 16-coef block
+dct2x4_dc_idxw: dw 0, 16, 32, 48
+                times 28 dw 0
+%endif
+%if HIGH_BIT_DEPTH
+; zigzag_sub avx512icl (high bit depth): raster index of each scan position
+align 32
+zsub4_frame_hbd: dw  0, 1, 4, 8, 5, 2, 3, 6, 9,12,13,10, 7,11,14,15
+zsub4_field_hbd: dw  0, 4, 1, 8,12, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+align 64
+zsub8_frame_hbd: dw  0, 1, 8,16, 9, 2, 3,10,17,24,32,25,18,11, 4, 5
+                 dw 12,19,26,33,40,48,41,34,27,20,13, 6, 7,14,21,28
+                 dw 35,42,49,56,57,50,43,36,29,22,15,23,30,37,44,51
+                 dw 58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63
+zsub8_field_hbd: dw  0, 8,16, 1, 9,24,32,17, 2,25,40,48,56,33,10, 3
+                 dw 18,41,49,57,26,11, 4,19,34,42,50,58,27,12, 5,20
+                 dw 35,43,51,59,28,13, 6,21,36,44,52,60,29,14,22,37
+                 dw 45,53,61,30, 7,15,38,46,54,62,23,31,39,47,55,63
+%endif
 
 SECTION .text
 
@@ -471,6 +504,50 @@ DCT2x4DC d, dq
 %else
 INIT_MMX mmx2
 DCT2x4DC w, wd
+
+; avx512icl: the 8 blocks in 4 zmm, the dcs picked with vpermi2w, the blocks
+; stored back with the dcs cleared by a zero-masking move. The 2x4 transform
+; in dwords with merge-masked vpsubd.
+INIT_ZMM avx512icl
+cglobal dct2x4dc, 2,3
+    mov          r2d, 0xfffefffe
+    kmovd         k2, r2d
+    movu         m0, [r1+0*64]
+    movu         m1, [r1+1*64]
+    movu         m2, [r1+2*64]
+    movu         m3, [r1+3*64]
+    movu         m4, [dct2x4_dc_idxw]
+    vpermi2w     m4, m0, m1              ; dc of blocks 0-3
+    vmovdqu16    m0 {k2}{z}, m0
+    vmovdqu16    m1 {k2}{z}, m1
+    movu  [r1+0*64], m0
+    movu  [r1+1*64], m1
+    movu         m5, [dct2x4_dc_idxw]
+    vpermi2w     m5, m2, m3              ; dc of blocks 4-7
+    vmovdqu16    m2 {k2}{z}, m2
+    vmovdqu16    m3 {k2}{z}, m3
+    movu  [r1+2*64], m2
+    movu  [r1+3*64], m3
+    punpcklqdq   xm4, xm5
+    pmovsxwd     ym0, xm4                   ; dc0-7
+    mov          r2d, 0xaa
+    kmovb         k1, r2d
+    pshufd        ym1, ym0, q2301
+    paddd         ym2, ym0, ym1
+    vpsubd        ym2 {k1}, ym1, ym0           ; a0 a4 a1 a5 | a2 a6 a3 a7
+    mov          r2d, 0xcc
+    kmovb         k1, r2d
+    pshufd        ym1, ym2, q1032
+    paddd         ym0, ym2, ym1
+    vpsubd        ym0 {k1}, ym1, ym2           ; b0 b2 b4 b6 | b1 b3 b5 b7
+    vextracti32x4 xm1, ym0, 1
+    paddd         xm2, xm0, xm1             ; dct 0 1 6 7
+    psubd         xm0, xm1                  ; dct 2 3 4 5
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+    packssdw      xm1, xm0
+    movu      [r0], xm1
+    RET
 %endif
 
 %if HIGH_BIT_DEPTH
@@ -972,22 +1049,20 @@ global current_function %+ .skip_prologue
     STOREx2_AVX2 2, 3, 4, 5, -2, 2, -1, 3, 7
     ret
 
-; 2xdst, 2xtmp, 4xsrcrow, 1xzero
+; 2xdst, 2xtmp, 4xsrcrow, 1xhsub_mul: fenc, fdec byte pairs by pmaddubsw (1, -1)
 %macro LOAD_DIFF8x2_AVX2 9
     movq    xm%1, [r1+%5*FENC_STRIDE]
     movq    xm%2, [r1+%6*FENC_STRIDE]
     vinserti128 m%1, m%1, [r1+%7*FENC_STRIDE], 1
     vinserti128 m%2, m%2, [r1+%8*FENC_STRIDE], 1
-    punpcklbw m%1, m%9
-    punpcklbw m%2, m%9
     movq    xm%3, [r2+(%5-4)*FDEC_STRIDE]
     movq    xm%4, [r2+(%6-4)*FDEC_STRIDE]
     vinserti128 m%3, m%3, [r2+(%7-4)*FDEC_STRIDE], 1
     vinserti128 m%4, m%4, [r2+(%8-4)*FDEC_STRIDE], 1
-    punpcklbw m%3, m%9
-    punpcklbw m%4, m%9
-    psubw    m%1, m%3
-    psubw    m%2, m%4
+    punpcklbw m%1, m%3
+    punpcklbw m%2, m%4
+    pmaddubsw m%1, m%9
+    pmaddubsw m%2, m%9
 %endmacro
 
 ; 4x src row, 2x tmp, 2x offset
@@ -1010,7 +1085,7 @@ global current_function %+ .skip_prologue
 
 INIT_YMM avx2
 cglobal sub8x8_dct, 3,3,7
-    pxor m6, m6
+    mova m6, [hsub_mul]
     add r2, 4*FDEC_STRIDE
     LOAD_DIFF8x2_AVX2 0, 1, 4, 5, 0, 1, 4, 5, 6
     LOAD_DIFF8x2_AVX2 2, 3, 4, 5, 2, 3, 6, 7, 6
@@ -1538,18 +1613,18 @@ ADD_IDCT_DC
 
 ; One ymm per row: [dc0 x4, dc1 x4 | dc2 x4, dc3 x4]
 INIT_YMM avx2
-cglobal add16x16_idct_dc, 2,3,6
+cglobal add16x16_idct_dc, 2,3,8
     mov         r2d, 4
     mova         m5, [pw_pixel_max]
     pxor         m4, m4
+    vpbroadcastd m6, [pd_32]
+    mova         m7, [idct_dc16_shuf]
 .loop:
-    mova        xm3, [r1]
-    paddd       xm3, [pd_32]
-    psrad       xm3, 6
-    packssdw    xm3, xm3       ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3
-    punpcklwd   xm3, xm3       ; dc0 dc0 dc1 dc1 dc2 dc2 dc3 dc3
-    vpermq       m3, m3, q1100 ; dc0 dc0 dc1 dc1 dc0 dc0 dc1 dc1 | dc2 dc2 dc3 dc3 dc2 dc2 dc3 dc3
-    punpckldq    m3, m3        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
+    vbroadcasti128 m3, [r1]
+    paddd        m3, m6
+    psrad        m3, 6
+    packssdw     m3, m3        ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3 in both lanes
+    pshufb       m3, m7        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
     paddsw       m0, m3, [r0+FDEC_STRIDEB*0]
     paddsw       m1, m3, [r0+FDEC_STRIDEB*1]
     paddsw       m2, m3, [r0+FDEC_STRIDEB*2]
@@ -2260,6 +2335,17 @@ SCAN_4x4_FRAME
 INIT_XMM avx
 SCAN_4x4_FRAME
 
+; one 32-byte load, one lane swap and two pshufb (the avx version takes 6 shuffles)
+INIT_YMM avx2
+cglobal zigzag_scan_4x4_frame, 2,2
+    movu         m0, [r1]
+    vperm2i128   m1, m0, m0, 0x01
+    pshufb       m0, [scan4frame_ymm_a]
+    pshufb       m1, [scan4frame_ymm_b]
+    por          m0, m1
+    movu       [r0], m0
+    RET
+
 INIT_XMM xop
 cglobal zigzag_scan_4x4_frame, 2,2
     mova   m0, [r1+ 0]
@@ -2482,10 +2568,10 @@ cglobal zigzag_scan_8x8_frame, 2,3,14
     movu         m1, [r1+32]
     movu         m2, [r1+64]
     movu         m3, [r1+96]
-    vpermq       m4, m0, q1032
-    vpermq       m5, m1, q1032
-    vpermq       m6, m2, q1032
-    vpermq       m7, m3, q1032
+    vperm2i128   m4, m0, m0, 0x01
+    vperm2i128   m5, m1, m1, 0x01
+    vperm2i128   m6, m2, m2, 0x01
+    vperm2i128   m7, m3, m3, 0x01
     pshufb       m8, m0, [r2+ 0*32]
     pshufb       m9, m4, [r2+ 1*32]
     pshufb      m10, m1, [r2+ 2*32]
@@ -2705,6 +2791,119 @@ ZIGZAG_SUB_4x4_ICL ac, field
 ZIGZAG_SUB_8x8_ICL frame
 ZIGZAG_SUB_8x8_ICL field
 %endif ; !HIGH_BIT_DEPTH
+
+%if HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; int zigzag_sub_4x4[ac]_{frame,field}( int32_t level[16], const uint16_t *src, uint16_t *dst[, int32_t *dc] )
+;-----------------------------------------------------------------------------
+; avx512icl: the 4 rows as qwords of a ymm (merge-masked broadcasts), the word
+; differences put in scan order by vpermw and widened with vpmovsxwd, nz from
+; vptestmw
+%macro ZIGZAG_SUB_4x4_HBD_ICL 2 ; ac, frame/field
+%ifidn %1, ac
+cglobal zigzag_sub_4x4%1_%2, 4,5
+%else
+cglobal zigzag_sub_4x4%1_%2, 3,5
+%endif
+    mov         r4d, 2
+    kmovb        k2, r4d
+    mov         r4d, 4
+    kmovb        k3, r4d
+    mov         r4d, 8
+    kmovb        k4, r4d
+    movq          xm0, [r1+0*FENC_STRIDEB]
+    vpbroadcastq  ym0 {k2}, [r1+1*FENC_STRIDEB]
+    vpbroadcastq  ym0 {k3}, [r1+2*FENC_STRIDEB]
+    vpbroadcastq  ym0 {k4}, [r1+3*FENC_STRIDEB]
+    movq          xm1, [r2+0*FDEC_STRIDEB]
+    vpbroadcastq  ym1 {k2}, [r2+1*FDEC_STRIDEB]
+    vpbroadcastq  ym1 {k3}, [r2+2*FDEC_STRIDEB]
+    vpbroadcastq  ym1 {k4}, [r2+3*FDEC_STRIDEB]
+    movq   [r2+0*FDEC_STRIDEB], xm0
+    movhps [r2+1*FDEC_STRIDEB], xm0
+    vextracti32x4 xm2, ym0, 1
+    movq   [r2+2*FDEC_STRIDEB], xm2
+    movhps [r2+3*FDEC_STRIDEB], xm2
+    psubw         ym1, ym0, ym1
+    mova          ym2, [zsub4_%2_hbd]
+    vpermw        ym1, ym2, ym1
+    vpmovsxwd      m2, ym1
+%ifidn %1, ac
+    movd         [r3], xm2
+    mov          r4d, 0xfffe
+    kmovw         k1, r4d
+    vmovdqa32      m2 {k1}{z}, m2
+    vptestmw      k1 {k1}, ym1, ym1
+%else
+    vptestmw      k1, ym1, ym1
+%endif
+    movu         [r0], m2
+    xor          eax, eax
+    kortestw      k1, k1
+    setnz         al
+    RET
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int zigzag_sub_8x8_{frame,field}( int32_t level[64], const uint16_t *src, uint16_t *dst )
+;-----------------------------------------------------------------------------
+; avx512icl: 4 rows per zmm (merge-masked broadcasts), the word differences
+; put in scan order by vpermi2w and widened with vpmovsxwd, nz from vptestmw
+%macro ZIGZAG_SUB_8x8_HBD_ICL 1 ; frame/field
+cglobal zigzag_sub_8x8_%1, 3,4
+    mov         r3d, 0x00f0
+    kmovw        k5, r3d
+    mov         r3d, 0x0f00
+    kmovw        k6, r3d
+    mov         r3d, 0xf000
+    kmovw        k7, r3d
+%assign zsub_r 0
+%rep 2
+    movu            xm %+ zsub_r, [r1+(4*zsub_r+0)*FENC_STRIDEB]
+    vbroadcasti32x4  m %+ zsub_r {k5}, [r1+(4*zsub_r+1)*FENC_STRIDEB]
+    vbroadcasti32x4  m %+ zsub_r {k6}, [r1+(4*zsub_r+2)*FENC_STRIDEB]
+    vbroadcasti32x4  m %+ zsub_r {k7}, [r1+(4*zsub_r+3)*FENC_STRIDEB]
+    movu            xm4, [r2+(4*zsub_r+0)*FDEC_STRIDEB]
+    vbroadcasti32x4  m4 {k5}, [r2+(4*zsub_r+1)*FDEC_STRIDEB]
+    vbroadcasti32x4  m4 {k6}, [r2+(4*zsub_r+2)*FDEC_STRIDEB]
+    vbroadcasti32x4  m4 {k7}, [r2+(4*zsub_r+3)*FDEC_STRIDEB]
+    movu   [r2+(4*zsub_r+0)*FDEC_STRIDEB], xm %+ zsub_r
+    vextracti32x4 [r2+(4*zsub_r+1)*FDEC_STRIDEB], m %+ zsub_r, 1
+    vextracti32x4 [r2+(4*zsub_r+2)*FDEC_STRIDEB], m %+ zsub_r, 2
+    vextracti32x4 [r2+(4*zsub_r+3)*FDEC_STRIDEB], m %+ zsub_r, 3
+    psubw            m %+ zsub_r, m4
+%assign zsub_r zsub_r+1
+%endrep
+    vptestmw      k1, m0, m0
+    vptestmw      k2, m1, m1
+    mova          m2, [zsub8_%1_hbd]
+    mova          m3, [zsub8_%1_hbd+64]
+    vpermi2w      m2, m0, m1                 ; scan 0-31
+    vpermi2w      m3, m0, m1                 ; scan 32-63
+    vpmovsxwd     m0, ym2
+    vextracti64x4 ym2, m2, 1
+    vpmovsxwd     m2, ym2
+    vpmovsxwd     m1, ym3
+    vextracti64x4 ym3, m3, 1
+    vpmovsxwd     m3, ym3
+    movu  [r0+0*64], m0
+    movu  [r0+1*64], m2
+    movu  [r0+2*64], m1
+    movu  [r0+3*64], m3
+    xor          eax, eax
+    kortestd      k1, k2
+    setnz         al
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+ZIGZAG_SUB_4x4_HBD_ICL   , frame
+ZIGZAG_SUB_4x4_HBD_ICL ac, frame
+ZIGZAG_SUB_4x4_HBD_ICL   , field
+ZIGZAG_SUB_4x4_HBD_ICL ac, field
+ZIGZAG_SUB_8x8_HBD_ICL frame
+ZIGZAG_SUB_8x8_HBD_ICL field
+%endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
 INIT_XMM xop

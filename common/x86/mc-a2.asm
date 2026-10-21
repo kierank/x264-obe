@@ -104,6 +104,27 @@ pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4
 pd_8: times 4 dd 8
 %if HIGH_BIT_DEPTH
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
+ALIGN 32
+pw_5_hbd: times 16 dw 5      ; hpel_filter: 5*(4*c - b)
+pw_8192_hbd: times 16 dw 8192 ; frame_init_lowres_core8: pmulhrsw, (x+2)>>2
+%else
+; avx512icl plane_copy_deinterleave_rgb: 16 pixels of pw bytes -> 16 a | 16 b | 16 c
+%assign lr_i 0
+deint_rgb3_icl:
+%rep 64
+%if lr_i < 48
+    db (lr_i & 15) * 3 + (lr_i >> 4)
+%else
+    db 0
+%endif
+    %assign lr_i lr_i+1
+%endrep
+%assign lr_i 0
+deint_rgb4_icl:
+%rep 64
+    db (lr_i & 15) * 4 + (lr_i >> 4)
+    %assign lr_i lr_i+1
+%endrep
 %endif
 
 SECTION .text
@@ -379,8 +400,7 @@ HPEL_FILTER
 %macro HPEL_FILT_HBD 3 ; a/dst, b, c (a, b, c clobbered): a - 5*b + 20*c, wrapping
     psllw      %3, 2
     psubw      %3, %2
-    paddw      %1, %3
-    psllw      %3, 2
+    pmullw     %3, [pw_5_hbd]
     paddw      %1, %3
 %endmacro
 
@@ -2070,6 +2090,72 @@ INIT_XMM sse2
 PLANE_DEINTERLEAVE_RGB
 INIT_XMM ssse3
 PLANE_DEINTERLEAVE_RGB
+
+%if ARCH_X86_64
+; avx512icl: 16 pixels per iteration, one masked load of 16*pw bytes and one vpermb
+; into a|b|c; the row tail loads and stores under masks, so it reads and writes
+; exactly w pixels (ssse3 writes w rounded up to 8 and reads past the row)
+INIT_ZMM avx512icl
+cglobal plane_copy_deinterleave_rgb, 8,13,3
+    mov          r8d, r8m               ; pw
+    mov          r9d, r9m               ; w
+    mov         r10d, r10m              ; h
+    lea          r11, [deint_rgb3_icl]
+    lea          r12, [deint_rgb4_icl]
+    cmp          r8d, 4
+    cmove        r11, r12
+    movu          m1, [r11]
+    mov          r11, -1
+    mov          r12, 0xffffffffffff
+    cmovne       r11, r12
+    kmovq         k1, r11               ; 16*pw bytes
+    mov         r11d, r9d
+    and         r11d, 15                ; tail pixels
+    xor         r12d, r12d
+    bts         r12d, r11d
+    dec         r12d
+    kmovw         k3, r12d              ; tail stores
+    imul        r11d, r8d               ; tail bytes, < 64
+    xor         r12d, r12d
+    bts          r12, r11
+    dec          r12
+    kmovq         k2, r12               ; tail loads
+    and          r9d, ~15
+    shl          r8d, 4                 ; source bytes per 16 pixels
+.row:
+    xor         r11d, r11d
+    xor         r12d, r12d
+    cmp         r11d, r9d
+    jge .tail
+.col:
+    vmovdqu8      m0 {k1}{z}, [r6+r12]
+    vpermb        m0, m1, m0
+    movu   [r0+r11], xm0
+    vextracti32x4 [r2+r11], m0, 1
+    vextracti32x4 [r4+r11], m0, 2
+    add          r11, 16
+    add          r12, r8
+    cmp         r11d, r9d
+    jl .col
+.tail:
+    kortestw      k3, k3
+    jz .next
+    vmovdqu8      m0 {k2}{z}, [r6+r12]
+    vpermb        m0, m1, m0
+    vextracti32x4 xm2, m0, 1
+    vmovdqu8 [r0+r11] {k3}, xm0
+    vmovdqu8 [r2+r11] {k3}, xm2
+    vextracti32x4 xm2, m0, 2
+    vmovdqu8 [r4+r11] {k3}, xm2
+.next:
+    add           r0, r1
+    add           r2, r3
+    add           r4, r5
+    add           r6, r7
+    dec         r10d
+    jg .row
+    RET
+%endif
 %endif ; !HIGH_BIT_DEPTH
 
 %macro PLANE_DEINTERLEAVE_V210 0
@@ -2382,6 +2468,48 @@ INIT_XMM avx
 INTEGRAL_INIT8H
 INIT_YMM avx2
 INTEGRAL_INIT8H
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; integral_init4h/8h, avx512icl: 32 outputs per iteration as words, log-step
+; window sums: a = p[x]+p[x+1], v = a[x]+a[x+2] (4-sum), v[x]+v[x+4] (8-sum).
+; Windows: valignq of the next 4 words, then immediate vpshrdq (word offsets
+; 1-3) or the valignq alone (offset 4). Reads and writes what avx2 does.
+;-----------------------------------------------------------------------------
+%macro INTEGRAL_ICL 1 ; 4/8
+cglobal integral_init%1h, 3,4,8
+    lea           r3, [r0+r2*2]
+    add           r1, r2
+    neg           r2
+.loop:
+    vpmovzxbw     m0, [r1+r2]           ; p[x..x+31]
+    vpmovzxbw    xm1, [r1+r2+32]        ; p[x+32..x+39]
+    valignq       m2, m1, m0, 1         ; p[x+4]
+    vpshrdq       m3, m0, m2, 16        ; p[x+1]
+    vpshrdq       m4, m0, m2, 32        ; p[x+2]
+    vpshrdq       m2, m0, m2, 48        ; p[x+3]
+    paddw         m0, m3
+    paddw         m4, m2
+    paddw         m0, m4                ; 4-sums
+%if %1 == 8
+    psrldq       xm3, xm1, 2
+    paddw        xm1, xm3               ; a[x+32..]
+    psrldq       xm3, xm1, 4
+    paddw        xm1, xm3               ; 4-sums at x+32..x+35
+    valignq       m1, m1, m0, 1
+    paddw         m0, m1
+%endif
+    paddw         m0, [r0+r2*2]
+    movu  [r3+r2*2], m0
+    add           r2, mmsize/2
+    jl .loop
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+INTEGRAL_ICL 4
+INTEGRAL_ICL 8
+%endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
 %macro INTEGRAL_INIT_8V 0
@@ -2511,6 +2639,51 @@ cglobal integral_init4v, 3,5
     jl .loop
     RET
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; integral_init4v/8v, avx512icl: 32 sums per zmm; 4v's x+4 window is a valignq
+; with the next 4 sums (a qword load, as avx2 reads 8 bytes past the row)
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal integral_init8v, 3,3
+    add           r1, r1
+    add           r0, r1
+    lea           r2, [r0+r1*8]
+    neg           r1
+.loop:
+    movu          m0, [r2+r1]
+    psubw         m0, [r0+r1]
+    movu     [r0+r1], m0
+    add           r1, mmsize
+    jl .loop
+    RET
+
+cglobal integral_init4v, 3,5,6
+    add           r2, r2
+    add           r0, r2
+    add           r1, r2
+    lea           r3, [r0+r2*4]
+    lea           r4, [r0+r2*8]
+    neg           r2
+.loop:
+    movu          m0, [r0+r2]           ; sum8[x]
+    movq         xm1, [r0+r2+mmsize]
+    movu          m2, [r4+r2]           ; sum8[x+8*stride]
+    movq         xm3, [r4+r2+mmsize]
+    valignq       m1, m1, m0, 1         ; sum8[x+4]
+    valignq       m3, m3, m2, 1
+    paddw         m1, m0
+    paddw         m3, m2
+    movu          m4, [r3+r2]
+    psubw         m3, m1
+    psubw         m4, m0
+    movu     [r0+r2], m3
+    movu     [r1+r2], m4
+    add           r2, mmsize
+    jl .loop
+    RET
+%endif
+
 %macro FILT8x4 7
     mova      %3, [r0+%7]
     mova      %4, [r0+r5+%7]
@@ -2561,23 +2734,23 @@ cglobal integral_init4v, 3,5
     mova    [%2], m0
     mova    [%3], m5
     mova    [%4], m1
-%else
+%else ; lanes paired before the in-lane even/odd split: no vpermq
+    vperm2i128 m4, m0, m2, 0x20
+    vperm2i128 m0, m0, m2, 0x31
+    vperm2i128 m5, m1, m3, 0x20
+    vperm2i128 m1, m1, m3, 0x31
+    pshufb    m4, m7
     pshufb    m0, m7
+    pshufb    m5, m7
     pshufb    m1, m7
-    pshufb    m2, m7
-    pshufb    m3, m7
-    punpckhqdq m4, m0, m2
-    punpcklqdq m0, m0, m2
-    punpckhqdq m5, m1, m3
-    punpcklqdq m2, m1, m3
-    vpermq    m0, m0, q3120
-    vpermq    m1, m4, q3120
-    vpermq    m2, m2, q3120
-    vpermq    m3, m5, q3120
-    mova    [%1], m0
-    mova    [%2], m1
-    mova    [%3], m2
-    mova    [%4], m3
+    punpcklqdq m2, m4, m0
+    punpckhqdq m4, m0
+    punpcklqdq m3, m5, m1
+    punpckhqdq m5, m1
+    mova    [%1], m2
+    mova    [%2], m4
+    mova    [%3], m3
+    mova    [%4], m5
 %endif
 %endmacro
 
@@ -2708,27 +2881,27 @@ cglobal integral_init4v, 3,5
     vpermt2w  m0, m9, m1
     movu    [r3], m2
     movu    [r4], m0
-%else
-    psrld     m2, m4, 16
-    psrld     m3, m5, 16
+%else ; lanes paired before the in-lane pack: no vpermq
+    vperm2i128 m2, m4, m5, 0x20
+    vperm2i128 m4, m4, m5, 0x31
+    psrld     m3, m2, 16
+    psrld     m5, m4, 16
+    pand      m2, m7
     pand      m4, m7
-    pand      m5, m7
-    packusdw  m4, m5
-    packusdw  m2, m3
-    vpermq    m4, m4, q3120
-    vpermq    m2, m2, q3120
-    movu    [r1], m4
-    movu    [r2], m2
-    psrld     m2, m0, 16
-    psrld     m3, m1, 16
+    packusdw  m2, m4
+    packusdw  m3, m5
+    movu    [r1], m2
+    movu    [r2], m3
+    vperm2i128 m2, m0, m1, 0x20
+    vperm2i128 m0, m0, m1, 0x31
+    psrld     m3, m2, 16
+    psrld     m1, m0, 16
+    pand      m2, m7
     pand      m0, m7
-    pand      m1, m7
-    packusdw  m0, m1
-    packusdw  m2, m3
-    vpermq    m0, m0, q3120
-    vpermq    m2, m2, q3120
-    movu    [r3], m0
-    movu    [r4], m2
+    packusdw  m2, m0
+    packusdw  m3, m1
+    movu    [r3], m2
+    movu    [r4], m3
 %endif
 %endmacro
 
@@ -3265,14 +3438,14 @@ cglobal mbtree_propagate_list_internal, 7,7,14
 cglobal frame_init_lowres_core8, 9,12,11
     FIX_STRIDES r5
 %if cpuflag(avx512icl)
-    vpbroadcastd   m7, [pw_2]
+    vpbroadcastd   m7, [pw_8192_hbd]
     mova           m9, [pb_lowres8_icl]
 %elif mmsize == 32
-    vpbroadcastd   m7, [pw_2]
+    vpbroadcastd   m7, [pw_8192_hbd]
     vbroadcasti128 m9, [deinterleave_shuf]
     pmovzxbd      m10, [lowres8_perm]
 %else
-    mova      m7, [pw_2]
+    mova      m7, [pw_8192_hbd]
     mova      m9, [deinterleave_shuf]
 %endif
 .vloop:
@@ -3296,14 +3469,10 @@ cglobal frame_init_lowres_core8, 9,12,11
     PAVGW_U   m1, m3, [r10+r11*4+mmsize+2]
     pavgw     m6, m0
     pavgw     m8, m1                ; rows 1, 2
-    paddw     m4, m7
-    paddw     m5, m7
-    paddw     m6, m7
-    paddw     m8, m7
-    psrlw     m4, 2
-    psrlw     m5, 2
-    psrlw     m6, 2
-    psrlw     m8, 2
+    pmulhrsw  m4, m7                ; (x+2)>>2
+    pmulhrsw  m5, m7
+    pmulhrsw  m6, m7
+    pmulhrsw  m8, m7
     packuswb  m4, m5                ; 256 saturates to 255
     packuswb  m6, m8
 %if cpuflag(avx512icl)

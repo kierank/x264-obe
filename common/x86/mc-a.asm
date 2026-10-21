@@ -256,36 +256,45 @@ AVG_WEIGHT 4,  8
 AVG_WEIGHT 8,  8
 AVG_WEIGHT 16, 8
 
-; packusdw clips negative sums to 0, pminuw clips the top
+; (a*w + b*(64-w) + 32) >> 6 = b + ((w*(a-b) + 32) >> 6) = b + pmulhrsw( a-b, w<<9 ), exact
+; for w << 9 in [-32768,32767] (w in [-64,63]); for w >= 64 the sources swap and w is
+; 64-w. m3 = w<<9, m4 = 0, m5 = pixel_max.
 %macro BIWEIGHT_AVX2 0 ; m0 = src1, m1 = src2 -> m0
-    punpckhwd    m2, m0, m1
-    punpcklwd    m0, m1
-    pmaddwd      m2, m3
-    pmaddwd      m0, m3
-    paddd        m2, m4
-    paddd        m0, m4
-    psrad        m2, 6
-    psrad        m0, 6
-    packusdw     m0, m2
-    pminuw       m0, m5
+    psubw        m0, m1
+    pmulhrsw     m0, m3
+    paddw        m0, m1
+    pmaxsw       m0, m4
+    pminsw       m0, m5
 %endmacro
 
+; before AVG_START
 %macro BIWEIGHT_START_AVX2 0
-    movzx       t6d, word r6m
+    movsx       t6d, word r6m
     mov         t7d, 64
     sub         t7d, t6d
-    shl         t7d, 16
-    add         t6d, t7d
+    cmp         t6d, 64
+    cmovge      t6d, t7d
+    shl         t6d, 9
     movd        xm3, t6d
-    vpbroadcastd  m3, xm3
-    vpbroadcastd  m4, [pd_32]
+    vpbroadcastw  m3, xm3
+    pxor          m4, m4
     mova          m5, [pw_pixel_max]
+%endmacro
+
+; after AVG_START: w >= 64 takes src2 as src1
+%macro BIWEIGHT_SWAP_AVX2 0
+    cmp    dword r6m, 64
+    jl .noswap
+    xchg         t2, t4
+    xchg         t3, t5
+.noswap:
 %endmacro
 
 INIT_YMM avx2
 cglobal pixel_avg_weight_w16
     BIWEIGHT_START_AVX2
     AVG_START 6
+    BIWEIGHT_SWAP_AVX2
 .height_loop:
     movu          m0, [t2]
     movu          m1, [t4]
@@ -300,6 +309,7 @@ cglobal pixel_avg_weight_w16
 cglobal pixel_avg_weight_w8
     BIWEIGHT_START_AVX2
     AVG_START 6
+    BIWEIGHT_SWAP_AVX2
 .height_loop:
     movu         xm0, [t2]
     movu         xm1, [t4]
@@ -1201,6 +1211,210 @@ OFFSET_AVG8_AVX2  4, sub
 OFFSET_AVG8_AVX2  8, sub
 OFFSET_AVG8_AVX2 16, sub
 OFFSET_AVG8_AVX2 20, sub
+
+;-----------------------------------------------------------------------------
+; 8-bit mc_offsetadd/offsetsub_avg_wN, avx512icl: two rows per iteration,
+; w4/w8/w12/w16 both rows in one register (the second merged in by a masked
+; broadcast or an insert), w20 one row per register under a 20-lane mask;
+; pavgb with src2, then paddusb/psubusb of the ssse3 cache's |offset| bytes.
+;-----------------------------------------------------------------------------
+%macro WEIGHT_ICL_MASKS 1 ; width
+%if %1 == 4 || %1 == 8
+    mov          r4d, 2
+    kmovb         k2, r4d               ; second dword/qword
+%elif %1 == 12 || %1 == 20
+    mov          r4d, (1 << %1) - 1
+    kmovd         k1, r4d
+%endif
+%endmacro
+
+; bytes of rows 0, 1 -> m0 (w4: dwords 0, 1; w8: qwords 0, 1; w12/w16: xmm lanes 0, 1; w20: m0, m1)
+%macro WEIGHT_ICL_LOADB 1
+%if %1 == 4
+    movd         xm0, [r2]
+    vpbroadcastd xm0 {k2}, [r2+r3]
+%elif %1 == 8
+    movq         xm0, [r2]
+    vpbroadcastq xm0 {k2}, [r2+r3]
+%elif %1 == 20
+    vmovdqu8     ym0 {k1}{z}, [r2]
+    vmovdqu8     ym1 {k1}{z}, [r2+r3]
+%elif %1 == 12
+    vmovdqu8     xm0 {k1}{z}, [r2]
+    vmovdqu8     xm1 {k1}{z}, [r2+r3]
+    vinserti32x4 ym0, ym0, xm1, 1
+%else
+    movu         xm0, [r2]
+    vinserti32x4 ym0, ym0, [r2+r3], 1
+%endif
+%endmacro
+
+; bytes of rows 0, 1 in m0 (w20: m0, m1) -> dst
+%macro WEIGHT_ICL_STOREB 1
+%if %1 == 4
+    movd       [r0], xm0
+    pextrd  [r0+r1], xm0, 1
+%elif %1 == 8
+    movq       [r0], xm0
+    movhps  [r0+r1], xm0
+%elif %1 == 12
+    vextracti32x4 xm1, ym0, 1
+    vmovdqu8   [r0] {k1}, xm0
+    vmovdqu8 [r0+r1] {k1}, xm1
+%elif %1 == 16
+    movu       [r0], xm0
+    vextracti32x4 [r0+r1], ym0, 1
+%else
+    vmovdqu8   [r0] {k1}, ym0
+    vmovdqu8 [r0+r1] {k1}, ym1
+%endif
+%endmacro
+
+; bytes of rows 0, 1 in m0 (w20: m0, m1) averaged with those of src2 (r6)
+%macro WEIGHT_ICL_AVGB 1
+%if %1 == 4
+    movd         xm6, [r6]
+    vpbroadcastd xm6 {k2}, [r6+r3]
+    pavgb        xm0, xm6
+%elif %1 == 8
+    movq         xm6, [r6]
+    vpbroadcastq xm6 {k2}, [r6+r3]
+    pavgb        xm0, xm6
+%elif %1 == 20
+    vmovdqu8     ym6 {k1}{z}, [r6]
+    vmovdqu8     ym7 {k1}{z}, [r6+r3]
+    pavgb        ym0, ym6
+    pavgb        ym1, ym7
+%else
+    movu         xm6, [r6]
+    vinserti32x4 ym6, ym6, [r6+r3], 1
+    pavgb        ym0, ym6
+%endif
+%endmacro
+
+%macro OFFSET_AVG_ICL 2 ; width, add/sub
+cglobal mc_offset%2_avg_w%1, 7,7,8
+    vpbroadcastb  m2, [r4]
+    WEIGHT_ICL_MASKS %1
+.loop:
+    WEIGHT_ICL_LOADB %1
+    WEIGHT_ICL_AVGB %1
+    p%2usb        m0, m2
+%if %1 == 20
+    p%2usb        m1, m2
+%endif
+    WEIGHT_ICL_STOREB %1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    lea           r6, [r6+r3*2]
+    sub          r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+INIT_YMM avx512icl
+OFFSET_AVG_ICL 20, add
+OFFSET_AVG_ICL 20, sub
+
+;-----------------------------------------------------------------------------
+; 8-bit mc_X_plane( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+;                   weight_t *w, int width, int height ), avx512icl: the ssse3
+; cache and the mc_X_wN ops over whole rows (x264_weight_scale_plane passes
+; width a multiple of 8, even height), weights 32 px per zmm as words, offsets
+; 64 px per zmm; the row tail loads and stores under k1
+;-----------------------------------------------------------------------------
+; %2: 0 = scale<<7 doesn't fit a word, shift the pixels instead
+%macro WEIGHT_ICL_OP 2 ; reg, fast
+    %if %2 == 0
+    psllw         %1, 7
+    %endif
+    pmulhrsw      %1, m3
+    paddw         %1, m4
+    pmaxsw        %1, m5
+%endmacro
+
+%macro PLANE_ICL8_TAIL 1 ; px per zmm
+    mov          r7d, r5d
+    and          r7d, %1-1
+    sub          r5d, r7d               ; full columns
+    xor          r8d, r8d
+    bts           r8, r7
+    dec           r8
+    kmovq         k1, r8
+%endmacro
+
+%macro WEIGHT_PLANE_ICL8_ROWS 1 ; fast
+.row%1:
+    xor          r8d, r8d
+    cmp          r8d, r5d
+    jge .tail%1
+.col%1:
+    vpmovzxbw     m0, [r2+r8]
+    WEIGHT_ICL_OP m0, %1
+    vpmovuswb ym0, m0
+    movu     [r0+r8], ym0
+    add           r8, 32
+    cmp          r8d, r5d
+    jl .col%1
+.tail%1:
+    kortestd      k1, k1
+    jz .next%1
+    vpmovzxbw     m0 {k1}{z}, [r2+r8]
+    WEIGHT_ICL_OP m0, %1
+    vpmovuswb    ym0, m0
+    vmovdqu8 [r0+r8] {k1}, ym0
+.next%1:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row%1
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal mc_weight_plane, 7,9,6
+    vpbroadcastw  m3, [r4]
+    vpbroadcastw  m4, [r4+16]
+    pxor          m5, m5
+    PLANE_ICL8_TAIL 32
+    cmp byte [r4+1], 0
+    jz .fast
+    WEIGHT_PLANE_ICL8_ROWS 0
+.fast:
+    psllw         m3, 7
+    WEIGHT_PLANE_ICL8_ROWS 1
+
+%macro OFFSET_PLANE_ICL8 1 ; add/sub
+cglobal mc_offset%1_plane, 7,9,3
+    vpbroadcastb  m2, [r4]
+    PLANE_ICL8_TAIL 64
+.row:
+    xor          r8d, r8d
+    cmp          r8d, r5d
+    jge .tail
+.col:
+    movu          m0, [r2+r8]
+    p%1usb        m0, m2
+    movu     [r0+r8], m0
+    add           r8, 64
+    cmp          r8d, r5d
+    jl .col
+.tail:
+    kortestq      k1, k1
+    jz .next
+    vmovdqu8      m0 {k1}{z}, [r2+r8]
+    p%1usb        m0, m2
+    vmovdqu8 [r0+r8] {k1}, m0
+.next:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row
+    RET
+%endmacro
+
+OFFSET_PLANE_ICL8 add
+OFFSET_PLANE_ICL8 sub
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 
@@ -2535,7 +2749,7 @@ ALIGN 4
 %macro MC_CHROMA_SSSE3 0
 cglobal mc_chroma
 %if cpuflag(avx2)
-    MC_CHROMA_START 9
+    MC_CHROMA_START 9+ARCH_X86_64
 %else
     MC_CHROMA_START 10
 %endif
@@ -2579,6 +2793,9 @@ cglobal mc_chroma
 %if ARCH_X86_64
     %define shiftround m8
     mova       m8, [pw_512]
+%if cpuflag(avx2)
+    mova       m9, [deinterleave_shufd]
+%endif
 %else
     %define shiftround [pw_512]
 %endif
@@ -2589,7 +2806,7 @@ cglobal mc_chroma
 .loop4:
     movu      xm0, [r3]
     movu      xm1, [r3+r4]
-    vinserti128 m0, m0, [r3+r4], 1
+    vinserti128 m0, m0, xm1, 1
     vinserti128 m1, m1, [r3+r4*2], 1
     pshufb     m0, m5
     pshufb     m1, m5
@@ -2633,8 +2850,12 @@ cglobal mc_chroma
     pmulhrsw   m1, shiftround
     pmulhrsw   m3, shiftround
     packuswb   m1, m3
+%if ARCH_X86_64
+    vpermd     m1, m9, m1
+%else
     mova       m2, [deinterleave_shufd]
     vpermd     m1, m2, m1
+%endif
     vextracti128 xm2, m1, 1
     movq      [r0], xm1
     movhps    [r1], xm1

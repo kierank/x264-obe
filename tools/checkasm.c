@@ -2577,7 +2577,10 @@ static int check_mc( int cpu_ref, int cpu_new )
                             set_func_name( "weight_plane" );
                             int ret_a = (int)call_a1( mc_a.weight_plane, wp_a+doff, (intptr_t)WP_STRIDE, src_p, sstride,
                                                       &weight, width, height );
-                            if( ret_a != handled || memcmp( wp_c, wp_a, WP_STRIDE*WP_ROWS*sizeof(pixel) ) )
+                            /* the avx512icl cache also takes the scales SSE2 gets at avx2/avx512 */
+                            if( ret_a && !handled )
+                                weight_plane_c( wp_c+doff, WP_STRIDE, src_p, sstride, &weight, width, height );
+                            if( (handled && !ret_a) || memcmp( wp_c, wp_a, WP_STRIDE*WP_ROWS*sizeof(pixel) ) )
                             {
                                 ok = 0;
                                 fprintf( stderr, "weight_plane [FAILED] s:%d o:%d d:%d w:%d h:%d ret:%d\n",
