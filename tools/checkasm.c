@@ -4344,8 +4344,8 @@ static int check_quant( int cpu_ref, int cpu_new )
             /* the DC is not part of the AC score */ \
             if( ac ) \
                 dct1[0] = i&1 ? 0 : (rand()&0x3ff) - 0x200; \
-            int result_c = call_c( qf_c.decname, dct1 ); \
-            int result_a = call_a( qf_a.decname, dct1 ); \
+            int result_c = call_c1( qf_c.decname, dct1 ); \
+            int result_a = call_a1( qf_a.decname, dct1 ); \
             if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
             { \
                 ok = 0; \
@@ -4361,8 +4361,8 @@ static int check_quant( int cpu_ref, int cpu_new )
                 dct1[p] = 1; \
                 if( q >= ac ) \
                     dct1[q] = -1; \
-                int result_c = call_c( qf_c.decname, dct1 ); \
-                int result_a = call_a( qf_a.decname, dct1 ); \
+                int result_c = call_c1( qf_c.decname, dct1 ); \
+                int result_a = call_a1( qf_a.decname, dct1 ); \
                 if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
                 { \
                     ok = 0; \
@@ -4375,6 +4375,35 @@ static int check_quant( int cpu_ref, int cpu_new )
     TEST_DECIMATE( decimate_score64, 8, 0, 6 );
     TEST_DECIMATE( decimate_score16, 4, 0, 6 );
     TEST_DECIMATE( decimate_score15, 4, 1, 7 );
+
+/* bench: 16 fixed blocks, the check's level distribution at each of its four zero rates */
+#define BENCH_DECIMATE( decname, w, ac ) \
+    if( qf_a.decname != qf_ref.decname && do_bench ) \
+    { \
+        set_func_name( #decname ); \
+        bench_srand( 700 + w*w + ac ); \
+        for( int i = 0; i < 16; i++ ) \
+        { \
+            static const int distrib[16] = {1,1,1,1,1,1,1,1,1,1,1,1,2,3,4}; \
+            int zero_rate = (4 << (i&3)) - 1; \
+            for( int idx = 0; idx < w*w; idx++ ) \
+            { \
+                int r = bench_rand(); \
+                int abs_level = distrib[r&15]; \
+                if( abs_level == 4 ) \
+                    abs_level = (r>>4)&0x3fff; \
+                dct1[idx] = !((r>>18)&zero_rate) * abs_level * ((r>>24)&1 ? -1 : 1); \
+            } \
+            if( ac ) \
+                dct1[0] = 0; \
+            call_c2( qf_c.decname, dct1 ); \
+            call_a2( qf_a.decname, dct1 ); \
+        } \
+    }
+
+    BENCH_DECIMATE( decimate_score64, 8, 0 );
+    BENCH_DECIMATE( decimate_score16, 4, 0 );
+    BENCH_DECIMATE( decimate_score15, 4, 1 );
     report( "decimate_score :" );
 
 /* i 8-15: dense +-1, else sparse with either sign and magnitudes up to the dctcoef range */
