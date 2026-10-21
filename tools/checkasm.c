@@ -1170,6 +1170,91 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel sad_row :" );
 
+    /* predictor_clip/roundclip, i_mvc 0..15. j>>5&3: 0 mvs from a small pool around the
+     * limits with 0 and pmv (repeats, clipped-equal), 1 any int16, 2 distinct, 3 one mv
+     * repeated; pmv in range or any. Nothing past dst[15] */
+    ok = 1; used_asm = 0;
+    for( int rnd = 0; rnd < 2; rnd++ )
+    {
+        x264_predictor_clip_t clip_asm = rnd ? pixel_asm.predictor_roundclip : pixel_asm.predictor_clip;
+        x264_predictor_clip_t clip_ref = rnd ? pixel_ref.predictor_roundclip : pixel_ref.predictor_clip;
+        if( !clip_asm || clip_asm == clip_ref )
+            continue;
+        set_func_name( rnd ? "predictor_roundclip" : "predictor_clip" );
+        used_asm = 1;
+        for( int j = 0; j < 2048 && ok; j++ )
+        {
+            ALIGNED_16( int16_t mvc[16][2] );
+            ALIGNED_16( int16_t dst_c[16][2] );
+            ALIGNED_16( int16_t dst_a[20][2] );
+            ALIGNED_4( int16_t limit[2][2] );
+            int n = j & 15, mode = (j>>5)&3, cnt_c, cnt_a;
+            for( int k = 0; k < 2; k++ )
+            {
+                int lo = -(rand()%8192), hi = rand()%8192;
+                if( j&16 )
+                    lo = hi = (rand()%16383) - 8191;
+                limit[0][k] = lo;
+                limit[1][k] = X264_MAX( lo, hi );
+            }
+            int scale = rnd ? 1 : 4;
+            uint32_t pmv;
+            if( mode == 1 && (j&64) )
+                pmv = rand() ^ ((uint32_t)rand() << 16);
+            else
+                pmv = pack16to32_mask( x264_clip3( (rand()%16384) - 8192, limit[0][0], limit[1][0] ) * scale,
+                                       x264_clip3( (rand()%16384) - 8192, limit[0][1], limit[1][1] ) * scale );
+            int16_t pool[4][2];
+            for( int k = 0; k < 4; k++ )
+                for( int c = 0; c < 2; c++ )
+                {
+                    int e = rand()&3, v = limit[e&1][c] + (e>>1 ? rand()%5 - 2 : 0);
+                    pool[k][c] = x264_clip3( rnd ? v*4 + (rand()&3) - 2 : v*4 + (rand()&7) - 4, -32768, 32767 );
+                }
+            if( mode == 0 && (j&256) )
+            {
+                int mx = rnd ? (pool[1][0] + 2) >> 2 : pool[1][0], my = rnd ? (pool[1][1] + 2) >> 2 : pool[1][1];
+                pmv = pack16to32_mask( x264_clip3( mx, limit[0][0] * scale, limit[1][0] * scale ),
+                                       x264_clip3( my, limit[0][1] * scale, limit[1][1] * scale ) );
+            }
+            for( int k = 0; k < 16; k++ )
+            {
+                uint32_t mv;
+                if( mode == 0 )
+                {
+                    int e = rand()%6;
+                    mv = e == 4 ? 0 : e == 5 ? (rnd ? M32( pool[0] ) : pmv) : M32( pool[e] );
+                    if( e == 5 && rnd )
+                        mv = pack16to32_mask( (int16_t)pmv * 4, (int16_t)(pmv >> 16) * 4 );
+                }
+                else if( mode == 1 )
+                    mv = rand() ^ ((uint32_t)rand() << 16) ^ (j&128 ? 0x7ffe7ffe : 0);
+                else if( mode == 2 )
+                    mv = pack16to32_mask( (k*2731 + j) % 30000 - 15000, (k*1301 - j) % 30000 );
+                else
+                    mv = k&1 ? M32( pool[0] ) : M32( pool[1] );
+                M32( mvc[k] ) = mv;
+            }
+            for( int k = 0; k < 20; k++ )
+                M32( dst_a[k] ) = 0x7fff8000;
+            cnt_c = (rnd ? x264_predictor_roundclip_c : x264_predictor_clip_c)( dst_c, mvc, n, limit, pmv );
+            cnt_a = call_a( clip_asm, dst_a, mvc, n, limit, pmv );
+            if( cnt_c != cnt_a || memcmp( dst_c, dst_a, cnt_c*sizeof(dst_c[0]) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "predictor_%sclip: n %d mode %d: %d != %d [FAILED]\n", rnd ? "round" : "", n, mode, cnt_c, cnt_a );
+            }
+            for( int k = 16; k < 20; k++ )
+                if( M32( dst_a[k] ) != 0x7fff8000 )
+                {
+                    ok = 0;
+                    fprintf( stderr, "predictor_%sclip: n %d wrote [%d] [FAILED]\n", rnd ? "round" : "", n, k );
+                    break;
+                }
+        }
+    }
+    report( "predictor clip :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \

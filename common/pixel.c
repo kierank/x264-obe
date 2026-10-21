@@ -156,6 +156,49 @@ void x264_pixel_sad_row_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stri
         sads[k] = sad[i_pixel]( fenc, FENC_STRIDE, pix + k, i_stride );
 }
 
+/* references for predictor_clip and predictor_roundclip */
+static int predictor_dedupe( int16_t (*dst)[2], int cnt, uint32_t mv, uint32_t pmv )
+{
+    if( mv == pmv )
+        return cnt;
+    for( int i = 0; i < cnt; i++ )
+        if( M32( dst[i] ) == mv )
+            return cnt;
+    M32( dst[cnt] ) = mv;
+    return cnt+1;
+}
+
+int x264_predictor_clip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv )
+{
+    int cnt = 0;
+    int qpel_limit[4] = {mv_limit[0][0] << 2, mv_limit[0][1] << 2, mv_limit[1][0] << 2, mv_limit[1][1] << 2};
+    for( int i = 0; i < i_mvc; i++ )
+    {
+        uint32_t mv = M32( mvc[i] );
+        if( !mv || mv == pmv ) continue;
+        int mx = x264_clip3( mvc[i][0], qpel_limit[0], qpel_limit[2] );
+        int my = x264_clip3( mvc[i][1], qpel_limit[1], qpel_limit[3] );
+        cnt = predictor_dedupe( dst, cnt, pack16to32_mask( mx, my ), pmv );
+    }
+    return cnt;
+}
+
+int x264_predictor_roundclip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv )
+{
+    int cnt = 0;
+    for( int i = 0; i < i_mvc; i++ )
+    {
+        int mx = (mvc[i][0] + 2) >> 2;
+        int my = (mvc[i][1] + 2) >> 2;
+        uint32_t mv = pack16to32_mask( mx, my );
+        if( !mv || mv == pmv ) continue;
+        mx = x264_clip3( mx, mv_limit[0][0], mv_limit[1][0] );
+        my = x264_clip3( my, mv_limit[0][1], mv_limit[1][1] );
+        cnt = predictor_dedupe( dst, cnt, pack16to32_mask( mx, my ), pmv );
+    }
+    return cnt;
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
