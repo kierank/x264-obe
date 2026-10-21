@@ -213,6 +213,9 @@ PREDICT_8x16C_P( mmx2 )
 PREDICT_8x16C_P( sse2 )
 PREDICT_8x16C_P( avx )
 PREDICT_8x16C_P( avx2 )
+#if ARCH_X86_64 && HIGH_BIT_DEPTH
+PREDICT_8x16C_P( avx512icl )
+#endif
 
 #define PREDICT_8x8C_P_CORE\
     int H = 0;\
@@ -530,6 +533,12 @@ void x264_predict_8x16c_init_mmx( int cpu, x264_predict_t pf[7] )
     {
         pf[I_PRED_CHROMA_P]   = x264_predict_8x16c_p_avx2;
     }
+#if ARCH_X86_64 && HIGH_BIT_DEPTH
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf[I_PRED_CHROMA_P]   = x264_predict_8x16c_p_avx512icl;
+    }
+#endif
 }
 
 void x264_predict_8x8_init_mmx( int cpu, x264_predict8x8_t pf[12], x264_predict_8x8_filter_t *predict_8x8_filter )

@@ -51,6 +51,10 @@ pb_p8x8c_rows:  times 8 db -3
                 times 8 db -2
                 times 8 db -1
                 times 8 db 0
+pb_p8x16c_rows: times 8 db -7
+                times 8 db -6
+                times 8 db -5
+                times 8 db -4
 %endif
 
 SECTION .text
@@ -1253,6 +1257,7 @@ cglobal predict_8x%1c_p_core, 4,5
 
 INIT_ZMM avx512icl
 PREDICT_CHROMA_P_ICL 8
+PREDICT_CHROMA_P_ICL 16
 %endif ; ARCH_X86_64 && HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
