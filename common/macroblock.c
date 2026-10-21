@@ -625,6 +625,12 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     }
     else
     {
+#if HIGH_BIT_DEPTH
+        /* analyse.i_me_8bit: the fenc's msb8 for the fullpel search, in the copy */
+        if( !i && h->me8 && h->sh.i_type != SLICE_TYPE_I )
+            h->mc.copy_16x16_msb8( h->mb.pic.p_fenc[0], h->mb.pic.fenc8, h->mb.pic.p_fenc_plane[0], i_stride2 );
+        else
+#endif
         h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[i], FENC_STRIDE, h->mb.pic.p_fenc_plane[i], i_stride2, 16 );
         memcpy( h->mb.pic.p_fdec[i]-FDEC_STRIDE, intra_fdec, 24*sizeof(pixel) );
         h->mb.pic.p_fdec[i][-FDEC_STRIDE-1] = intra_fdec[-1];
@@ -655,6 +661,10 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             filtered_src = h->fref[0][j]->filtered[i];
         }
         h->mb.pic.p_fref[0][j][i*4] = plane_src + ref_pix_offset[j&1];
+#if HIGH_BIT_DEPTH
+        if( !i && h->me8 )
+            h->mb.pic.p_fref8[0][j] = (mb_interlaced ? h->fref[0][j>>1]->msb8_fld : h->fref[0][j]->msb8) + ref_pix_offset[j&1];
+#endif
 
         if( !b_chroma )
         {
@@ -689,6 +699,10 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                 filtered_src = h->fref[1][j]->filtered[i];
             }
             h->mb.pic.p_fref[1][j][i*4] = plane_src + ref_pix_offset[j&1];
+#if HIGH_BIT_DEPTH
+            if( !i && h->me8 )
+                h->mb.pic.p_fref8[1][j] = (mb_interlaced ? h->fref[1][j>>1]->msb8_fld : h->fref[1][j]->msb8) + ref_pix_offset[j&1];
+#endif
 
             if( !b_chroma )
                 for( int k = 1; k < 4; k++ )

@@ -54,6 +54,15 @@ typedef struct
     int cost_mv;        /* lambda * nbits for the chosen mv */
     int cost;           /* satd + lambda * nbits */
     ALIGNED_4( int16_t mv[2] );
+
+#if HIGH_BIT_DEPTH
+    /* analyse.i_me_8bit, last so that the members above keep their offsets:
+     * msb8 of p_fref[0] for the fullpel search of an unweighted ref, set and
+     * read only with h->me8 (x264_mb_search_ref).
+     * p_fenc8: the msb8 of p_fenc[0]. */
+    uint8_t *p_fref8;
+    uint8_t *p_fenc8;
+#endif
 } ALIGNED_64( x264_me_t );
 
 typedef struct
@@ -66,6 +75,29 @@ typedef struct
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
+
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+/* analyse.i_me_8bit: x264_me_search_ref with the fullpel steps on the msb8
+ * planes (m->p_fref8, m->p_fenc8) */
+#define x264_me_search_ref_me8 x264_template(me_search_ref_me8)
+void x264_me_search_ref_me8( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
+#endif
+
+/* the macroblock analysis' searches: with h->me8 x264_me_search_ref_me8 where
+ * it applies, unweighted refs with DIA, HEX or UMH, else x264_me_search_ref */
+static ALWAYS_INLINE void x264_mb_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh )
+{
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( h->me8 && !m->weight[0].weightfn && h->mb.i_me_method <= X264_ME_UMH )
+    {
+        x264_me_search_ref_me8( h, m, mvc, i_mvc, p_fullpel_thresh );
+        return;
+    }
+#endif
+    x264_me_search_ref( h, m, mvc, i_mvc, p_fullpel_thresh );
+}
+#define x264_mb_search( h, m, mvc, i_mvc )\
+    x264_mb_search_ref( h, m, mvc, i_mvc, NULL )
 
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );

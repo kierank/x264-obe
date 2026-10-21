@@ -206,6 +206,14 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
             PREALLOC( frame->buffer[3], frame->i_stride[0] * (frame->i_lines[0] + 2*i_padv) * sizeof(uint16_t) << h->frames.b_have_sub8x8_esa );
         if( PARAM_INTERLACED )
             PREALLOC( frame->field, i_mb_count * sizeof(uint8_t) );
+#if HIGH_BIT_DEPTH
+        if( h->param.analyse.i_me_8bit )
+        {
+            PREALLOC( frame->buffer_msb8, frame->i_stride[0] * (frame->i_lines[0] + 2*i_padv) );
+            if( PARAM_INTERLACED )
+                PREALLOC( frame->buffer_msb8_fld, frame->i_stride[0] * (frame->i_lines[0] + 2*i_padv) );
+        }
+#endif
         if( h->param.analyse.b_mb_info )
             PREALLOC( frame->effective_qp, i_mb_count * sizeof(uint8_t) );
     }
@@ -284,6 +292,16 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
 
         if( h->param.analyse.i_me_method >= X264_ME_ESA )
             frame->integral = (uint16_t*)frame->buffer[3] + frame->i_stride[0] * i_padv + PADH;
+#if HIGH_BIT_DEPTH
+        /* padh_align is 0 at high bit depth: pixel x of a row is at x + PADH in
+         * both the 16-bit and the msb8 row */
+        if( h->param.analyse.i_me_8bit )
+        {
+            frame->msb8 = frame->buffer_msb8 + frame->i_stride[0] * i_padv + PADH;
+            if( PARAM_INTERLACED )
+                frame->msb8_fld = frame->buffer_msb8_fld + frame->i_stride[0] * i_padv + PADH;
+        }
+#endif
     }
     else
     {
@@ -646,6 +664,49 @@ void x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y )
             plane_expand_border( pix, stride, width, height, padh, padv, pad_top, pad_bot, h_shift );
         }
     }
+}
+
+#if HIGH_BIT_DEPTH
+/* rows [y0,y1) of a 16-bit luma plane with their side padding into msb */
+static void plane_msb8_rows( x264_t *h, x264_frame_t *frame, uint8_t *msb, pixel *src, int y0, int y1 )
+{
+    intptr_t stride = frame->i_stride[0];
+    h->mc.plane_msb8( msb + y0*stride - PADH, src + y0*stride - PADH, stride, 16*h->mb.i_mb_width + 2*PADH, y1 - y0 );
+}
+#endif
+
+/* analyse.i_me_8bit: msb8 of the luma rows x264_frame_expand_border( mb_y )
+ * just padded, so that each row is converted again whenever it changes. The
+ * field plane's rows are the frame plane's but for its vertical padding. */
+void x264_frame_msb8( x264_t *h, x264_frame_t *frame, int mb_y )
+{
+#if HIGH_BIT_DEPTH
+    int pad_top = mb_y == 0;
+    int pad_bot = mb_y == h->mb.i_mb_height - (1 << SLICE_MBAFF);
+    int b_start = mb_y == h->i_threadslice_start;
+    int b_end   = mb_y == h->i_threadslice_end - (1 << SLICE_MBAFF);
+    int lines = 16*h->mb.i_mb_height;
+    if( mb_y & SLICE_MBAFF )
+        return;
+    int height = pad_bot ? 16*(h->mb.i_mb_height - mb_y) : 16 << SLICE_MBAFF;
+    if( b_end && !b_start )
+        height += 4;
+    int y0 = 16*mb_y - 4*!b_start;
+    plane_msb8_rows( h, frame, frame->msb8, frame->plane[0], y0, y0 + height );
+    if( pad_top )
+        plane_msb8_rows( h, frame, frame->msb8, frame->plane[0], -PADV, 0 );
+    if( pad_bot )
+        plane_msb8_rows( h, frame, frame->msb8, frame->plane[0], lines, lines + PADV );
+    if( SLICE_MBAFF )
+    {
+        /* plane_fld may not have these rows yet, but they will be the frame's */
+        plane_msb8_rows( h, frame, frame->msb8_fld, frame->plane[0], y0, y0 + height );
+        if( pad_top )
+            plane_msb8_rows( h, frame, frame->msb8_fld, frame->plane_fld[0], -2*PADV, 0 );
+        if( pad_bot )
+            plane_msb8_rows( h, frame, frame->msb8_fld, frame->plane_fld[0], lines, lines + 2*PADV );
+    }
+#endif
 }
 
 void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )

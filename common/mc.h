@@ -153,6 +153,16 @@ typedef struct
     void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list );
+
+#if HIGH_BIT_DEPTH
+    /* analyse.i_me_8bit, last so that the members above keep their offsets.
+     * msb[x] = src[x] >> (BIT_DEPTH-8): h rows of w pixels (a multiple of 16),
+     * rows i_stride pixels (src) and bytes (msb) apart. */
+    void (*plane_msb8)( uint8_t *msb, pixel *src, intptr_t i_stride, int w, int h );
+    /* copy[PIXEL_16x16] of the luma fenc into dst (FENC_STRIDE) that also
+     * writes its msb8 to msb (FENC_STRIDE bytes a row) */
+    void (*copy_16x16_msb8)( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src );
+#endif
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)

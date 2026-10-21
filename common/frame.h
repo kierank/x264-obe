@@ -84,6 +84,11 @@ typedef struct x264_frame
     pixel *lowres[4]; /* half-size copy of input frame: Orig, H, V, HV */
     uint8_t *lowres8[4]; /* 8-bit copies of lowres for rc.b_lookahead_8bit, same layout */
     int     b_lowres_pending; /* rc.b_lookahead_8bit: lowres[] not computed yet, see x264_weights_analyse */
+    /* analyse.i_me_8bit, high bit depth: msb8 of filtered[0][0] and of
+     * filtered_fld[0][0], v >> 2 in the layout of the 16-bit plane (stride
+     * i_stride[0] bytes), padding included; NULL without */
+    uint8_t *msb8;
+    uint8_t *msb8_fld;
     uint16_t *integral;
 
     /* for unrestricted mv we allocate more data than needed
@@ -92,6 +97,8 @@ typedef struct x264_frame
     pixel *buffer_fld[4];
     pixel *buffer_lowres[4];
     uint8_t *buffer_lowres8;
+    uint8_t *buffer_msb8;
+    uint8_t *buffer_msb8_fld;
 
     x264_weight_t weight[X264_REF_MAX][3]; /* [ref_index][plane] */
     pixel *weighted[X264_REF_MAX]; /* plane[0] weighted of the reference frames */
@@ -250,6 +257,8 @@ void          x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_p
 
 #define x264_frame_expand_border x264_template(frame_expand_border)
 void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y );
+#define x264_frame_msb8 x264_template(frame_msb8)
+void          x264_frame_msb8( x264_t *h, x264_frame_t *frame, int mb_y );
 #define x264_frame_expand_border_filtered x264_template(frame_expand_border_filtered)
 void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 #define x264_frame_expand_border_lowres x264_template(frame_expand_border_lowres)

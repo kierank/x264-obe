@@ -591,6 +591,32 @@ static void frame_init_lowres_core8( pixel *src0, uint8_t *dst0, uint8_t *dsth, 
         dstc += dst_stride;
     }
 }
+
+static void plane_msb8( uint8_t *msb, pixel *src, intptr_t i_stride, int w, int h )
+{
+    for( int y = 0; y < h; y++ )
+    {
+        for( int x = 0; x < w; x++ )
+            msb[x] = src[x] >> (BIT_DEPTH-8);
+        msb += i_stride;
+        src += i_stride;
+    }
+}
+
+static void copy_16x16_msb8( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src )
+{
+    for( int y = 0; y < 16; y++ )
+    {
+        for( int x = 0; x < 16; x++ )
+        {
+            dst[x] = src[x];
+            msb[x] = src[x] >> (BIT_DEPTH-8);
+        }
+        dst += FENC_STRIDE;
+        msb += FENC_STRIDE;
+        src += i_src;
+    }
+}
 #endif
 
 /* Estimate the total amount of influence on future quality that could be had if we
@@ -738,6 +764,8 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->frame_init_lowres_core = frame_init_lowres_core;
 #if HIGH_BIT_DEPTH
     pf->frame_init_lowres_core8 = frame_init_lowres_core8;
+    pf->plane_msb8 = plane_msb8;
+    pf->copy_16x16_msb8 = copy_16x16_msb8;
 #endif
 
     pf->integral_init4h = integral_init4h;

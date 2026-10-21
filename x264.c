@@ -820,6 +820,10 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - 10: QP-RD - requires trellis=2, aq-mode>0\n"
         "                                  - 11: Full RD: disable all early terminations\n" );
     else H1( "                                  decision quality: 1=fast, 11=best\n" );
+    H2( "      --me-8bit <integer>     Fullpel motion search on 8-bit copies of the frames\n"
+        "                              (high bit depth only; changes output) [%d]\n"
+        "                                  - 0: off\n"
+        "                                  - 1: fullpel search on the 8-bit msb planes\n", defaults->analyse.i_me_8bit );
     H1( "      --psy-rd <float:float>  Strength of psychovisual optimization [\"%.1f:%.1f\"]\n"
         "                                  #1: RD (requires subme>=6)\n"
         "                                  #2: Trellis (requires trellis, experimental)\n",
@@ -1071,6 +1075,7 @@ static struct option long_options[] =
     { "mvrange",     required_argument, NULL, 0 },
     { "mvrange-thread", required_argument, NULL, 0 },
     { "subme",       required_argument, NULL, 'm' },
+    { "me-8bit",     required_argument, NULL, 0 },
     { "psy-rd",      required_argument, NULL, 0 },
     { "no-psy",            no_argument, NULL, 0 },
     { "psy",               no_argument, NULL, 0 },
