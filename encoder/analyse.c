@@ -3326,6 +3326,21 @@ static void x264_mb_analyse_intra_emerg( x264_t *h, x264_mb_analysis_t *a )
     h->mb.i_type = I_16x16;
 }
 
+#if HIGH_BIT_DEPTH
+/* analyse.i_me_8bit: prefetch_ref for the msb8 plane of ref 0 of list 0. A 64
+ * byte msb8 line holds 4 mbs, so each mb of a line fetches a quarter of the
+ * rows -16..31 of the line after the next, the fullpel search's. */
+static void x264_mb_prefetch_ref8( x264_t *h )
+{
+    uint8_t *f8 = h->mb.pic.p_fref8[0][0];
+    intptr_t stride = h->mb.pic.i_stride[0];
+    int q = ((intptr_t)f8 & 63) >> 4;
+    intptr_t x = 128 - ((intptr_t)f8 & 63);
+    for( int y = 12*q - 16; y < 12*q - 4; y++ )
+        x264_prefetch( f8 + y*stride + x );
+}
+#endif
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3374,6 +3389,10 @@ intra_analysis:
         int b_skip = 0;
 
         h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 0 );
+#if HIGH_BIT_DEPTH
+        if( h->me8 )
+            x264_mb_prefetch_ref8( h );
+#endif
 
         analysis.b_try_skip = 0;
         if( analysis.b_force_intra )
