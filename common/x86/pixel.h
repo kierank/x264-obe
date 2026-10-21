@@ -1065,6 +1065,22 @@ int x264_pixel_sad_dia_min_pde_16x8_avx512( pixel *, pixel *, intptr_t, const in
 int x264_pixel_sad_dia_min_pde_8x16_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
 #define x264_pixel_sad_dia_min_pde_8x8_avx512 x264_template(pixel_sad_dia_min_pde_8x8_avx512)
 int x264_pixel_sad_dia_min_pde_8x8_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
+#define x264_pixel_sad_hex_min_pde_16x16_avx512 x264_template(pixel_sad_hex_min_pde_16x16_avx512)
+int x264_pixel_sad_hex_min_pde_16x16_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
+#define x264_pixel_sad_hex_min_pde_16x8_avx512 x264_template(pixel_sad_hex_min_pde_16x8_avx512)
+int x264_pixel_sad_hex_min_pde_16x8_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
+#define x264_pixel_sad_hex_min_pde_8x16_avx512 x264_template(pixel_sad_hex_min_pde_8x16_avx512)
+int x264_pixel_sad_hex_min_pde_8x16_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
+#define x264_pixel_sad_hex_min_pde_8x8_avx512 x264_template(pixel_sad_hex_min_pde_8x8_avx512)
+int x264_pixel_sad_hex_min_pde_8x8_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
+#define x264_pixel_sad_hexhalf_min_pde_16x16_avx512 x264_template(pixel_sad_hexhalf_min_pde_16x16_avx512)
+int x264_pixel_sad_hexhalf_min_pde_16x16_avx512( pixel *, pixel *, intptr_t, int, const int32_t *, int );
+#define x264_pixel_sad_hexhalf_min_pde_16x8_avx512 x264_template(pixel_sad_hexhalf_min_pde_16x8_avx512)
+int x264_pixel_sad_hexhalf_min_pde_16x8_avx512( pixel *, pixel *, intptr_t, int, const int32_t *, int );
+#define x264_pixel_sad_hexhalf_min_pde_8x16_avx512 x264_template(pixel_sad_hexhalf_min_pde_8x16_avx512)
+int x264_pixel_sad_hexhalf_min_pde_8x16_avx512( pixel *, pixel *, intptr_t, int, const int32_t *, int );
+#define x264_pixel_sad_hexhalf_min_pde_8x8_avx512 x264_template(pixel_sad_hexhalf_min_pde_8x8_avx512)
+int x264_pixel_sad_hexhalf_min_pde_8x8_avx512( pixel *, pixel *, intptr_t, int, const int32_t *, int );
 #define x264_pixel_sad_hex_min_16x16_avx512 x264_template(pixel_sad_hex_min_16x16_avx512)
 int x264_pixel_sad_hex_min_16x16_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
 #define x264_pixel_sad_hex_min_16x8_avx512 x264_template(pixel_sad_hex_min_16x8_avx512)

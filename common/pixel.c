@@ -1875,6 +1875,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4_NAME( sad_dia_min, sad_dia_min_pde, _avx512 );
         INIT7( sad_hex_min, _avx512 );
         INIT7( sad_hexhalf_min, _avx512 );
+        INIT4_NAME( sad_hex_min, sad_hex_min_pde, _avx512 );
+        INIT4_NAME( sad_hexhalf_min, sad_hexhalf_min_pde, _avx512 );
         INIT7( sad_oct_min, _avx512 );
         INIT7( sad_ring_min, _avx512 );
         INIT7( sad_corner_min, _avx512 );

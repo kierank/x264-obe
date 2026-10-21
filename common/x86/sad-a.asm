@@ -2710,8 +2710,24 @@ SAD_DIA_MIN 8, 8, 1
 ; group 2: dy 2 bx -1 words 0, 2 and dy 0 bx 1 word 1: (-1,2) (2,0) (1,2).
 ; Word 3 is 0 in both, its bias best.
 ;-----------------------------------------------------------------------------
-%macro SAD_HEX_MIN 2 ; width, height
+; the hex sums so far: keys of both groups (lanes 3 and 7 are best) against best
+%macro DBP_PDE_HEX 1 ; width
+    paddw          m12, m0, m1
+    paddw          m13, m2, m3
+    DBP_PDE_FOLD2
+    pmovzxwd       m12, xm12
+    pslld          m12, 6
+    paddd          m12, m8
+    vpbroadcastd   m13, r4d
+    DBP_PDE_EXIT m
+%endmacro
+
+%macro SAD_HEX_MIN 2-3 0 ; width, height, pde
+%if %3
+cglobal pixel_sad_hex_min_pde_%1x%2, 5,11,15
+%else
 cglobal pixel_sad_hex_min_%1x%2, 5,11,11
+%endif
     %define dbp_o  r5
     %define dbp_o1 r6
     %define dbp_p0 r7
@@ -2739,7 +2755,11 @@ cglobal pixel_sad_hex_min_%1x%2, 5,11,11
     vmovdqu32       m8 {k5}{z}, [r3]
     vpbroadcastd    m8 {k6}, r4d
     vpermd          m8, m10, m8
+%if %3
+    DBP_ROWS %1, %2, 4, DBP_PDE_HEX
+%else
     DBP_ROWS %1, %2, 4
+%endif
 %if %1 == 4
     paddw          xm0, xm1
     paddw          xm2, xm3
@@ -2755,6 +2775,11 @@ cglobal pixel_sad_hex_min_%1x%2, 5,11,11
     pminsd         xm0, xm1
     DBP_MIN4
     RET
+%if %3
+.pde:
+    mov           eax, r4d
+    RET
+%endif
 %endmacro
 
 SAD_HEX_MIN 16, 16
@@ -2764,6 +2789,10 @@ SAD_HEX_MIN 8, 8
 SAD_HEX_MIN 8, 4
 SAD_HEX_MIN 4, 8
 SAD_HEX_MIN 4, 4
+SAD_HEX_MIN 16, 16, 1
+SAD_HEX_MIN 16, 8, 1
+SAD_HEX_MIN 8, 16, 1
+SAD_HEX_MIN 8, 8, 1
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_hexhalf_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
@@ -2771,8 +2800,24 @@ SAD_HEX_MIN 4, 4
 ; candidates me.c hex2[dir..dir+2], dir 0..5, s = 6: a window each, dy and
 ; bx = dx - j from dbp_hh_tab, word j. Word 3 is 0, its bias best.
 ;-----------------------------------------------------------------------------
-%macro SAD_HEXHALF_MIN 2 ; width, height
+; the hexhalf sums so far: keys (lane 3 is best) against best
+%macro DBP_PDE_HEXHALF 1 ; width
+    paddw          m12, m0, m1
+    paddw          m12, m2
+    DBP_PDE_FOLD1
+    pmovzxwd      xm12, xm12
+    pslld         xm12, 6
+    paddd         xm12, xm8
+    vpbroadcastd  xm13, r5d
+    DBP_PDE_EXIT xm
+%endmacro
+
+%macro SAD_HEXHALF_MIN 2-3 0 ; width, height, pde
+%if %3
+cglobal pixel_sad_hexhalf_min_pde_%1x%2, 6,11,15
+%else
 cglobal pixel_sad_hexhalf_min_%1x%2, 6,11,10
+%endif
     %define dbp_o  r6
     %define dbp_o1 r7
     %define dbp_p0 r8
@@ -2810,7 +2855,11 @@ cglobal pixel_sad_hexhalf_min_%1x%2, 6,11,10
     DBP_INIT %1
     vmovdqu32      xm8 {k4}{z}, [r4]
     vpbroadcastd   xm8 {k5}, r5d
+%if %3
+    DBP_ROWS %1, %2, 3, DBP_PDE_HEXHALF
+%else
     DBP_ROWS %1, %2, 3
+%endif
 %if %1 == 4
     paddw          xm0, xm1
     paddw          xm0, xm2
@@ -2824,6 +2873,11 @@ cglobal pixel_sad_hexhalf_min_%1x%2, 6,11,10
     paddd          xm0, xm8
     DBP_MIN4
     RET
+%if %3
+.pde:
+    mov           eax, r5d
+    RET
+%endif
 %endmacro
 
 SAD_HEXHALF_MIN 16, 16
@@ -2833,6 +2887,10 @@ SAD_HEXHALF_MIN 8, 8
 SAD_HEXHALF_MIN 8, 4
 SAD_HEXHALF_MIN 4, 8
 SAD_HEXHALF_MIN 4, 4
+SAD_HEXHALF_MIN 16, 16, 1
+SAD_HEXHALF_MIN 16, 8, 1
+SAD_HEXHALF_MIN 8, 16, 1
+SAD_HEXHALF_MIN 8, 8, 1
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_oct_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
