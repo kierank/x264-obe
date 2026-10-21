@@ -963,6 +963,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
     ALIGNED_ARRAY_64( dctcoef, dctscan,[4],[16] );
     ALIGNED_4( int16_t mvp[2] );
     int i_qp = h->mb.i_qp;
+    int b_luma_eq = 1;
 
     for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
     {
@@ -982,6 +983,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         /* prediction == fenc: no coefficients, decimate score 0 */
         if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
             continue;
+        b_luma_eq = 0;
 
         for( int i8x8 = 0, i_decimate_mb = 0; i8x8 < 4; i8x8++ )
         {
@@ -1031,6 +1033,11 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                 h->sh.weight[0][1+ch].weightfn[8>>2]( h->mb.pic.p_fdec[1+ch], FDEC_STRIDE,
                                                       h->mb.pic.p_fdec[1+ch], FDEC_STRIDE,
                                                       &h->sh.weight[0][1+ch], chroma422?16:8 );
+
+            /* prediction == fenc, tried where luma was: ssd 0, every quant 0 */
+            if( b_luma_eq && h->pixf.fenc_eq[chroma422?PIXEL_8x16:PIXEL_8x8]
+                && h->pixf.fenc_eq[chroma422?PIXEL_8x16:PIXEL_8x8]( p_src, p_dst ) )
+                continue;
 
             /* there is almost never a termination during chroma, but we can't avoid the check entirely */
             /* so instead we check SSD and skip the actual check if the score is low enough. */
