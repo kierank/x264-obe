@@ -1277,6 +1277,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
 #define MAP_F2F(varmv, varref, index)\
                 if( h->mb.cache.varref[l][index] >= 0 )\
                 {\
+                    h->sweep.c.c3[SW_C3_F2F]++;\
                     h->mb.cache.varref[l][index] <<= 1;\
                     h->mb.cache.varmv[l][index][1] /= 2;\
                     h->mb.cache.mvd[l][index][1] >>= 1;\
@@ -1291,6 +1292,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
 #define MAP_F2F(varmv, varref, index)\
                 if( h->mb.cache.varref[l][index] >= 0 )\
                 {\
+                    h->sweep.c.c3[SW_C3_F2F]++;\
                     h->mb.cache.varref[l][index] >>= 1;\
                     h->mb.cache.varmv[l][index][1] <<= 1;\
                     h->mb.cache.mvd[l][index][1] <<= 1;\
@@ -1659,7 +1661,10 @@ void x264_macroblock_deblock_strength( x264_t *h )
                                bs, 4 >> MB_INTERLACED, h->sh.i_type == SLICE_TYPE_B );
 
     if( SLICE_MBAFF )
+    {
+        h->sweep.c.c3[SW_C3_STRENGTH_MBAFF]++;
         x264_macroblock_deblock_strength_mbaff( h, bs );
+    }
 }
 
 static void ALWAYS_INLINE x264_macroblock_store_pic( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )

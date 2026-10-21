@@ -3203,9 +3203,16 @@ static intptr_t x264_slice_write( x264_t *h )
 
         /* load cache */
         if( SLICE_MBAFF )
+        {
+            h->sweep.c.c3[SW_C3_CL_INTERLACED]++;
+            h->sweep.c.c3[SW_C3_FIELD_MBS] += MB_INTERLACED;
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
+        }
         else
+        {
+            h->sweep.c.c3[SW_C3_CL_PROGRESSIVE]++;
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
+        }
 
         x264_macroblock_analyse( h );
 
