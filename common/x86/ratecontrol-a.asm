@@ -217,3 +217,69 @@ cglobal mbtree_cost_scale, 3,5,16, 64
     paddd       xm0, xm1
     movd        eax, xm0
     RET
+
+;-----------------------------------------------------------------------------
+; void mbtree_finish( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+;                     uint16_t *propagate_costs, float *params, int fps_factor, int len )
+; params: strength, weightdelta
+;-----------------------------------------------------------------------------
+%macro MBTREE_FINISH_ZMM 1 ; tail
+%if %1
+    vmovdqu16   ym0 {k2}{z}, [r2]
+    vmovdqu16   ym1 {k2}{z}, [r3]
+    vpmovzxwd   m0, ym0
+    vpmovzxwd   m1, ym1
+%else
+    vpmovzxwd   m0, [r2]
+    vpmovzxwd   m1, [r3]
+%endif
+    vpmulld     m0, m0, m1
+    vpaddd      m0, m0, [rc_pd_128] {1to16}
+    vpsrad      m0, m0, 8                    ; intra_cost, 0 past the row
+    vptestmd    k7, m0, m0
+%if %1
+    vmovdqu16   ym1 {k2}{z}, [r4]
+    vpmovzxwd   m1, ym1
+%else
+    vpmovzxwd   m1, [r4]
+%endif
+    vpmulld     m1, m1, m6
+    vpaddd      m1, m1, [rc_pd_128] {1to16}
+    vpsrad      m1, m1, 8                    ; propagate_cost
+    vpaddd      m1, m1, m0
+    LOG2_ZMM    m2, m1, m3, m4
+    LOG2_ZMM    m5, m0, m3, m4
+    vsubps      m2, m2, m5
+    vaddps      m2, m2, [r5+4] {1to16}       ; + weightdelta
+    vmulps      m2, m2, [r5] {1to16}         ; * strength
+%if %1
+    vmovups     m1 {k2}{z}, [r1]
+%else
+    vmovups     m1, [r1]
+%endif
+    vsubps      m1, m1, m2
+    vmovups     [r0] {k7}, m1
+%endmacro
+
+INIT_ZMM avx512
+cglobal mbtree_finish, 8,9
+    LOAD_LOG2_LUT
+    vpbroadcastd m6, r6d
+    sub         r7d, 16
+    jl .tail
+.loop:
+    MBTREE_FINISH_ZMM 0
+    add          r0, 64
+    add          r1, 64
+    add          r2, 32
+    add          r3, 32
+    add          r4, 32
+    sub         r7d, 16
+    jge .loop
+.tail:
+    add         r7d, 16
+    jz .end
+    TAIL_MASK   r7d, r8d
+    MBTREE_FINISH_ZMM 1
+.end:
+    RET
