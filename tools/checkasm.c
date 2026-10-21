@@ -1115,6 +1115,58 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     report( "pixel hadamard_ac :" );
 
+    ok = 1; used_asm = 0;
+    for( int c = 0; c < 2; c++ )
+        if( pixel_asm.ssd_psy_mb[c] && pixel_asm.ssd_psy_mb[c] != pixel_ref.ssd_psy_mb[c] )
+        {
+            /* reference: the C ssd and hadamard_ac of rdo.c's old path */
+            int csize = c ? PIXEL_8x16 : PIXEL_8x8;
+            /* the MB cache: fenc luma then u|v; fdec luma at row 2, u|v at row 20 */
+            ALIGNED_ARRAY_64( pixel, fenc,[48*FENC_STRIDE] );
+            ALIGNED_ARRAY_64( pixel, fdec,[54*FDEC_STRIDE] );
+            pixel *fenc_uv = fenc + 16*FENC_STRIDE, *fdec_y = fdec + 2*FDEC_STRIDE, *fdec_uv = fdec + 20*FDEC_STRIDE;
+            set_func_name( "ssd_psy_mb_%s", c ? "422" : "420" );
+            used_asm = 1;
+            /* k&3 = 0: random; 1: maxed differences; 2: fdec the maxed hadamard patterns of pbuf3,
+             * fenc its complement; 3: fdec PIXEL_MAX, fenc 0 */
+            for( int k = 0; k < 64 && ok; k++ )
+            {
+                for( int i = 0; i < 54*FDEC_STRIDE; i++ )
+                {
+                    int x = i%FDEC_STRIDE, y = i/FDEC_STRIDE;
+                    fdec[i] = (k&3) == 0 ? pbuf2[(i+131*k)%0xf00]
+                            : (k&3) == 1 ? -(pbuf2[(i+131*k)%0xf00]&1) & PIXEL_MAX
+                            : (k&3) == 2 ? pbuf3[((x&15)+16*y+256*(k>>2))&0xfff]
+                            : PIXEL_MAX;
+                }
+                for( int i = 0; i < 48*FENC_STRIDE; i++ )
+                {
+                    int x = i%FENC_STRIDE, y = i/FENC_STRIDE;
+                    pixel *d = y < 16 ? fdec_y + y*FDEC_STRIDE + x : fdec_uv + (y-16)*FDEC_STRIDE + x + (x&8);
+                    fenc[i] = (k&3) == 0 ? pbuf1[(i+67*k)%0x1e00]
+                            : (k&3) == 3 ? 0
+                            : ~*d & PIXEL_MAX;
+                }
+                int res_c[4], res_a[4];
+                uint64_t ac = pixel_c.hadamard_ac[PIXEL_16x16]( fdec_y, FDEC_STRIDE );
+                res_c[0] = pixel_c.ssd[PIXEL_16x16]( fenc, FENC_STRIDE, fdec_y, FDEC_STRIDE );
+                res_c[1] = pixel_c.ssd[csize]( fenc_uv, FENC_STRIDE, fdec_uv, FDEC_STRIDE )
+                         + pixel_c.ssd[csize]( fenc_uv+8, FENC_STRIDE, fdec_uv+16, FDEC_STRIDE );
+                res_c[2] = (uint32_t)ac;
+                res_c[3] = ac >> 32;
+                call_a1( pixel_asm.ssd_psy_mb[c], res_a, fenc, fdec_y, fenc_uv, fdec_uv );
+                if( memcmp( res_c, res_a, sizeof(res_c) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "ssd_psy_mb[%d] k %d: %d %d %d %d != %d %d %d %d\n", c, k, res_c[0], res_c[1],
+                             res_c[2], res_c[3], res_a[0], res_a[1], res_a[2], res_a[3] );
+                }
+            }
+            int res[4];
+            call_a2( pixel_asm.ssd_psy_mb[c], res, fenc, fdec_y, fenc_uv, fdec_uv );
+        }
+    report( "pixel ssd_psy_mb :" );
+
     // maximize sum
     for( int i = 0; i < 32; i++ )
         for( int j = 0; j < 16; j++ )
