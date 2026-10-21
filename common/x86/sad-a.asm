@@ -348,8 +348,8 @@ SAD_W48_AVX512 8, 16, q
 
 %macro SAD_W16_AVX512_END 0
     paddd          m0, m1
+    paddd          m2, m3
     paddd          m0, m2
-    paddd          m0, m3
 %if mmsize == 64
     vextracti32x8 ym1, m0, 1
     paddd         ym0, ym1
