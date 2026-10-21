@@ -570,8 +570,8 @@ void x264_aq_autovariance_tail_avx512( float *qp_offset, uint32_t *energy, int l
 
 /* layout twins of wip/x264-sweep-prologue: a kernel set to 1 dispatches its twin
  * (common/mc.c: an alias of its C reference), so it runs the C */
-#define SWP_TWIN_COST   0
-#define SWP_TWIN_FINISH 0
+#define SWP_TWIN_COST   1
+#define SWP_TWIN_FINISH 1
 #define SWP_TWIN_AQ     0
 #define x264_twin_mbtree_cost_scale_avx2 x264_template(twin_mbtree_cost_scale_avx2)
 #define x264_twin_mbtree_cost_scale_icl x264_template(twin_mbtree_cost_scale_icl)
