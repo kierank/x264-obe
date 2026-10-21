@@ -2083,8 +2083,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
-            call_c( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
-            call_a( mc_a.mc_luma, dst2, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            call_c1( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            call_a1( mc_a.mc_luma, dst2, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
             if( memcmp( pbuf3, pbuf4, 1024 * sizeof(pixel) ) ) \
             { \
                 fprintf( stderr, "mc_luma[mv(%d,%d) %2dx%-2d]     [FAILED]\n", dx, dy, w, h ); \
@@ -2101,8 +2101,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
-            call_c( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
-            ref = (pixel*)call_a( mc_a.get_ref, ref, &ref_stride, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            call_c1( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            ref = (pixel*)call_a1( mc_a.get_ref, ref, &ref_stride, src2, (intptr_t)64, dx, dy, w, h, weight ); \
             for( int i = 0; i < h; i++ ) \
                 if( memcmp( dst1+i*32, ref+i*ref_stride, w_checked * sizeof(pixel) ) ) \
                 { \
@@ -2149,6 +2149,39 @@ static int check_mc( int cpu_ref, int cpu_new )
             MC_TEST_LUMA( 4, 8 );
             MC_TEST_LUMA( 4, 4 );
         }
+    /* bench: 64-byte aligned planes of stride 64, one mv per class: fullpel
+     * (copy), qpel (1,0), qpel3 (3,0: src2 one pixel on), diag (1,1); the
+     * sizes of MC and of get_ref (bw x bh, bw x bh+1, bw+4 x bh) */
+    {
+        ALIGNED_ARRAY_64( pixel, lb_src, [4*64*24] );
+        pixel *lb_ref[4] = { lb_src, lb_src+64*24, lb_src+2*64*24, lb_src+3*64*24 };
+        static const int8_t lb_mv[4][2] = { {0,0}, {1,0}, {3,0}, {1,1} };
+        static const char *lb_name[4] = { "fullpel", "qpel", "qpel3", "diag" };
+        static const int8_t lb_size[19][2] = { {16,16}, {16,8}, {8,16}, {8,8}, {8,4}, {4,8}, {4,4},
+                                               {16,17}, {16,9}, {8,17}, {8,9}, {8,5}, {4,9}, {4,5},
+                                               {20,16}, {20,8}, {12,16}, {12,8}, {12,4} };
+        memcpy( lb_src, pbuf1, 4*64*24*sizeof(pixel) );
+        for( int k = 0; k < 4; k++ )
+            for( int j = 0; j < 19; j++ )
+            {
+                int w = lb_size[j][0], h = lb_size[j][1], dx = lb_mv[k][0], dy = lb_mv[k][1];
+                const x264_weight_t *weight = x264_weight_none;
+                if( mc_a.mc_luma != mc_ref.mc_luma && j < 7 )
+                {
+                    set_func_name( "mc_luma_%s_%dx%d", lb_name[k], w, h );
+                    call_c2( mc_c.mc_luma, dst1, (intptr_t)32, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                    call_a2( mc_a.mc_luma, dst2, (intptr_t)32, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                }
+                /* fullpel and hpel get_ref return a plane pointer */
+                if( mc_a.get_ref != mc_ref.get_ref && k )
+                {
+                    intptr_t ref_stride = 64;
+                    set_func_name( "get_ref_%s_%dx%d", lb_name[k], w, h );
+                    call_c2( mc_c.mc_luma, dst1, (intptr_t)64, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                    call_a2( mc_a.get_ref, dst2, &ref_stride, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                }
+            }
+    }
     report( "mc luma :" );
 
     /* weighted luma MC: mc_luma and get_ref with a weight against C at every
