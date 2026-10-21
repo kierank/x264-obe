@@ -92,6 +92,21 @@ static const char **intra_predict_8x16c_names = intra_predict_8x8c_names;
 
 #define set_func_name(...) snprintf( func_name, sizeof(func_name), __VA_ARGS__ )
 
+/* bench inputs: a private xorshift, not rand(), so they are the same at every
+ * cpu level, seed and --bench filter */
+static uint32_t bench_rng;
+static void bench_srand( uint32_t s )
+{
+    bench_rng = s * 2654435761u | 1;
+}
+static int bench_rand( void )
+{
+    bench_rng ^= bench_rng << 13;
+    bench_rng ^= bench_rng >> 17;
+    bench_rng ^= bench_rng << 5;
+    return bench_rng >> 1;
+}
+
 static inline uint32_t read_time(void)
 {
     uint32_t a = 0;
@@ -1757,8 +1772,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     thresh += abs( dc[1] - sums[k+32] );
             }
             used_asm = 1;
-            mvn_c = call_c( pixel_c.ads[i&3], dc, sums, 32, cost, mvs_c, width, thresh );
-            mvn_a = call_a( pixel_asm.ads[i&3], dc, sums, 32, cost, mvs_a, width, thresh );
+            mvn_c = call_c1( pixel_c.ads[i&3], dc, sums, 32, cost, mvs_c, width, thresh );
+            mvn_a = call_a1( pixel_asm.ads[i&3], dc, sums, 32, cost, mvs_a, width, thresh );
             if( mvn_c != mvn_a || memcmp( mvs_c, mvs_a, mvn_c*sizeof(*mvs_c) ) )
             {
                 ok = 0;
@@ -1771,6 +1786,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     printf( "%d ", mvs_a[j] );
                 printf( "\n\n" );
             }
+        }
+    /* bench: one fixed row per size, width 64, sums and dc clustered as in the check,
+     * a fixed threshold */
+    for( int i = 0; i < 4 && ok && do_bench; i++ )
+        if( pixel_asm.ads[i] != pixel_ref.ads[i] )
+        {
+            ALIGNED_16( uint16_t sums[192] );
+            ALIGNED_16( uint16_t cost[192] );
+            ALIGNED_16( int dc[4] );
+            ALIGNED_16( int16_t mvs[160] );
+            bench_srand( 400 + i );
+            for( int j = 0; j < 192; j++ )
+            {
+                sums[j] = (bench_rand() % 9) * 8 * PIXEL_MAX;
+                cost[j] = bench_rand() & 0x3ff;
+            }
+            for( int j = 0; j < 4; j++ )
+                dc[j] = 4 * 8 * PIXEL_MAX;
+            set_func_name( "esa_ads_%s", pixel_names[i] );
+            call_c2( pixel_c.ads[i], dc, sums, 32, cost, mvs, 64, 16 * PIXEL_MAX );
+            call_a2( pixel_asm.ads[i], dc, sums, 32, cost, mvs, 64, 16 * PIXEL_MAX );
         }
     report( "esa ads:" );
 
@@ -2204,8 +2240,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
-            call_c( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
-            call_a( mc_a.mc_luma, dst2, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            call_c1( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            call_a1( mc_a.mc_luma, dst2, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
             if( memcmp( pbuf3, pbuf4, 1024 * sizeof(pixel) ) ) \
             { \
                 fprintf( stderr, "mc_luma[mv(%d,%d) %2dx%-2d]     [FAILED]\n", dx, dy, w, h ); \
@@ -2222,8 +2258,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
-            call_c( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
-            ref = (pixel*)call_a( mc_a.get_ref, ref, &ref_stride, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            call_c1( mc_c.mc_luma, dst1, (intptr_t)32, src2, (intptr_t)64, dx, dy, w, h, weight ); \
+            ref = (pixel*)call_a1( mc_a.get_ref, ref, &ref_stride, src2, (intptr_t)64, dx, dy, w, h, weight ); \
             for( int i = 0; i < h; i++ ) \
                 if( memcmp( dst1+i*32, ref+i*ref_stride, w_checked * sizeof(pixel) ) ) \
                 { \
@@ -2240,8 +2276,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             used_asm = 1; \
             for( int i = 0; i < 1024; i++ ) \
                 pbuf3[i] = pbuf4[i] = 0xCD; \
-            call_c( mc_c.mc_chroma, dst1, dst1+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
-            call_a( mc_a.mc_chroma, dst2, dst2+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
+            call_c1( mc_c.mc_chroma, dst1, dst1+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
+            call_a1( mc_a.mc_chroma, dst2, dst2+8, (intptr_t)16, src, (intptr_t)64, dx, dy, w, h ); \
             /* mc_chroma width=2 may write garbage to the right of dst. ignore that. */ \
             for( int j = 0; j < h; j++ ) \
                 for( int i = w; i < 8; i++ ) \
@@ -2270,6 +2306,39 @@ static int check_mc( int cpu_ref, int cpu_new )
             MC_TEST_LUMA( 4, 8 );
             MC_TEST_LUMA( 4, 4 );
         }
+    /* bench: 64-byte aligned planes of stride 64, one mv per class: fullpel
+     * (copy), qpel (1,0), qpel3 (3,0: src2 one pixel on), diag (1,1); the
+     * sizes of MC and of get_ref (bw x bh, bw x bh+1, bw+4 x bh) */
+    {
+        ALIGNED_ARRAY_64( pixel, lb_src, [4*64*24] );
+        pixel *lb_ref[4] = { lb_src, lb_src+64*24, lb_src+2*64*24, lb_src+3*64*24 };
+        static const int8_t lb_mv[4][2] = { {0,0}, {1,0}, {3,0}, {1,1} };
+        static const char *lb_name[4] = { "fullpel", "qpel", "qpel3", "diag" };
+        static const int8_t lb_size[19][2] = { {16,16}, {16,8}, {8,16}, {8,8}, {8,4}, {4,8}, {4,4},
+                                               {16,17}, {16,9}, {8,17}, {8,9}, {8,5}, {4,9}, {4,5},
+                                               {20,16}, {20,8}, {12,16}, {12,8}, {12,4} };
+        memcpy( lb_src, pbuf1, 4*64*24*sizeof(pixel) );
+        for( int k = 0; k < 4; k++ )
+            for( int j = 0; j < 19; j++ )
+            {
+                int w = lb_size[j][0], h = lb_size[j][1], dx = lb_mv[k][0], dy = lb_mv[k][1];
+                const x264_weight_t *weight = x264_weight_none;
+                if( mc_a.mc_luma != mc_ref.mc_luma && j < 7 )
+                {
+                    set_func_name( "mc_luma_%s_%dx%d", lb_name[k], w, h );
+                    call_c2( mc_c.mc_luma, dst1, (intptr_t)32, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                    call_a2( mc_a.mc_luma, dst2, (intptr_t)32, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                }
+                /* fullpel and hpel get_ref return a plane pointer */
+                if( mc_a.get_ref != mc_ref.get_ref && k )
+                {
+                    intptr_t ref_stride = 64;
+                    set_func_name( "get_ref_%s_%dx%d", lb_name[k], w, h );
+                    call_c2( mc_c.mc_luma, dst1, (intptr_t)64, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                    call_a2( mc_a.get_ref, dst2, &ref_stride, lb_ref, (intptr_t)64, dx, dy, w, h, weight );
+                }
+            }
+    }
     report( "mc luma :" );
 
     /* weighted luma MC: mc_luma and get_ref with a weight against C at every
@@ -2399,6 +2468,24 @@ static int check_mc( int cpu_ref, int cpu_new )
             MC_TEST_CHROMA( 2, 4 );
             MC_TEST_CHROMA( 2, 2 );
         }
+    /* bench: a 64-byte aligned interleaved plane of stride 64, one mv (1/8 pel)
+     * per class: full (0,0), h (4,0), v (0,4), hv (3,5); the 4:2:0 and 4:2:2 sizes */
+    if( mc_a.mc_chroma != mc_ref.mc_chroma )
+    {
+        ALIGNED_ARRAY_64( pixel, cb_src, [64*20] );
+        static const int8_t cb_mv[4][2] = { {0,0}, {4,0}, {0,4}, {3,5} };
+        static const char *cb_name[4] = { "full", "h", "v", "hv" };
+        static const int8_t cb_size[10][2] = { {8,16}, {8,8}, {8,4}, {4,16}, {4,8}, {4,4}, {4,2}, {2,8}, {2,4}, {2,2} };
+        memcpy( cb_src, pbuf1, 64*20*sizeof(pixel) );
+        for( int k = 0; k < 4; k++ )
+            for( int j = 0; j < 10; j++ )
+            {
+                int w = cb_size[j][0], h = cb_size[j][1], dx = cb_mv[k][0], dy = cb_mv[k][1];
+                set_func_name( "mc_chroma_%s_%dx%d", cb_name[k], w, h );
+                call_c2( mc_c.mc_chroma, dst1, dst1+8, (intptr_t)16, cb_src, (intptr_t)64, dx, dy, w, h );
+                call_a2( mc_a.mc_chroma, dst2, dst2+8, (intptr_t)16, cb_src, (intptr_t)64, dx, dy, w, h );
+            }
+    }
     report( "mc chroma :" );
 #undef MC_TEST_LUMA
 #undef MC_TEST_CHROMA
@@ -2464,12 +2551,17 @@ static int check_mc( int cpu_ref, int cpu_new )
     }
     report( "mc copy :" );
 
-#define MC_TEST_WEIGHT( name, weight, aligned, src, height, bench ) \
+    /* bench weights, one per kernel x264_weight_cache picks: scale > 1<<denom,
+     * scale < 1<<denom (8-bit: the cachea < 256 path), offset > 0, offset < 0 */
+    static const int16_t wbench[4][3] = { { 72, 6, 4 }, { 56, 6, -4 }, { 64, 6, 8 }, { 64, 6, -8 } };
+    static const char *wbench_name[4] = { "weight", "weight_ns", "offsetadd", "offsetsub" };
+
+#define MC_TEST_WEIGHT( name, weight, aligned, src, height ) \
     int align_off = (aligned ? 0 : rand()%16); \
     for( int i = 1; i <= 5; i++ ) \
     { \
-        ALIGNED_16( pixel buffC[640] ); \
-        ALIGNED_16( pixel buffA[640] ); \
+        ALIGNED_ARRAY_64( pixel, buffC, [640] ); \
+        ALIGNED_ARRAY_64( pixel, buffA, [640] ); \
         int j = X264_MAX( i*4, 2 ); \
         memset( buffC, 0, 640 * sizeof(pixel) ); \
         memset( buffA, 0, 640 * sizeof(pixel) ); \
@@ -2491,16 +2583,11 @@ static int check_mc( int cpu_ref, int cpu_new )
                 ok = 0; \
                 fprintf( stderr, #name "[%d]: [FAILED] s:%d o:%d d:%d h:%d\n", i, s, o, d, height ); \
             } \
-            if( bench ) \
-            { \
-                call_c2( mc_c.weight[i],     buffC, (intptr_t)32, src+align_off, (intptr_t)32, &weight, 16 ); \
-                call_a2( weight.weightfn[i], buffA, (intptr_t)32, src+align_off, (intptr_t)32, &weight, 16 ); \
-            } \
         } \
     }
 
     /* weight sources: pbuf2, and one dense in 0, 1, PIXEL_MAX-1 and PIXEL_MAX */
-    ALIGNED_16( pixel wsrc_ext[16*32+64] );
+    ALIGNED_ARRAY_64( pixel, wsrc_ext, [16*32+64] );
     for( int i = 0; i < 16*32+64; i++ )
     {
         int r = rand();
@@ -2528,9 +2615,7 @@ static int check_mc( int cpu_ref, int cpu_new )
                 for( int k = 0; k < 8 && ok; k++ )
                 {
                     x264_weight_t weight = { .i_scale = s, .i_denom = d, .i_offset = o };
-                    /* omit unlikely high scales for benchmarking */
-                    MC_TEST_WEIGHT( weight, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1],
-                                    !k && s >= 0 && s * (1<<(8-d)) < 512 );
+                    MC_TEST_WEIGHT( weight, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1] );
                 }
             }
         }
@@ -2545,7 +2630,7 @@ static int check_mc( int cpu_ref, int cpu_new )
         for( int k = 0; k < 8 && ok; k++ )
         {
             x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
-            MC_TEST_WEIGHT( offsetadd, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1], !k );
+            MC_TEST_WEIGHT( offsetadd, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1] );
         }
     }
     report( "mc offsetadd :" );
@@ -2557,10 +2642,39 @@ static int check_mc( int cpu_ref, int cpu_new )
         for( int k = 0; k < 8 && ok; k++ )
         {
             x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
-            MC_TEST_WEIGHT( offsetsub, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1], !k );
+            MC_TEST_WEIGHT( offsetsub, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1] );
         }
     }
     report( "mc offsetsub :" );
+
+    /* bench: the weightfn x264_weight_cache picks per kind, aligned, 16 rows */
+    {
+        ALIGNED_ARRAY_64( pixel, wb_c, [16*32] );
+        ALIGNED_ARRAY_64( pixel, wb_a, [16*32] );
+        x264_t *hwa = x264_malloc( sizeof(x264_t) );
+        x264_t *hwr = x264_malloc( sizeof(x264_t) );
+        if( !hwa || !hwr )
+            return -1;
+        hwa->mc = mc_a;
+        hwr->mc = mc_ref;
+        for( int k = 0; k < 4; k++ )
+        {
+            x264_weight_t wa = { .i_scale = wbench[k][0], .i_denom = wbench[k][1], .i_offset = wbench[k][2] };
+            x264_weight_t wr = wa;
+            mc_a.weight_cache( hwa, &wa );
+            mc_ref.weight_cache( hwr, &wr );
+            for( int i = 1; i <= 5; i++ )
+            {
+                if( (i == 3 && wa.weightfn[3] == wa.weightfn[4]) || wa.weightfn[i] == wr.weightfn[i] )
+                    continue;
+                set_func_name( "%s_w%d", wbench_name[k], i*4 );
+                call_c2( mc_c.weight[i], wb_c, (intptr_t)32, pbuf2, (intptr_t)32, &wa, 16 );
+                call_a2( wa.weightfn[i], wb_a, (intptr_t)32, pbuf2, (intptr_t)32, &wa, 16 );
+            }
+        }
+        x264_free( hwa );
+        x264_free( hwr );
+    }
 
     /* weightavgfn against C: (src1+src2+1)>>1, then mc_c.weight. Every width,
      * the subpel ME's odd heights, unaligned sources and destination, edge
@@ -2570,10 +2684,10 @@ static int check_mc( int cpu_ref, int cpu_new )
     ok = 1; used_asm = 0;
     {
         enum { WA_SS = 64, WA_DS = 32, WA_SRC = WA_SS*20+64, WA_DST = WA_DS*20+64 };
-        ALIGNED_16( pixel wa_src[2][WA_SRC] );
-        ALIGNED_16( pixel wa_avg[WA_DST] );
-        ALIGNED_16( pixel wa_c[WA_DST] );
-        ALIGNED_16( pixel wa_a[WA_DST] );
+        ALIGNED_ARRAY_64( pixel, wa_src, [2], [WA_SRC] );
+        ALIGNED_ARRAY_64( pixel, wa_avg, [WA_DST] );
+        ALIGNED_ARRAY_64( pixel, wa_c, [WA_DST] );
+        ALIGNED_ARRAY_64( pixel, wa_a, [WA_DST] );
         static const int wa_h[] = { 2, 4, 5, 8, 9, 16, 17 };
         x264_t *hwa = x264_malloc( sizeof(x264_t) );
         x264_t *hwr = x264_malloc( sizeof(x264_t) );
@@ -2587,7 +2701,6 @@ static int check_mc( int cpu_ref, int cpu_new )
                 int r = rand();
                 wa_src[j][i] = r&8 ? -(r&1) & PIXEL_MAX : r&4 ? (r&1 ? PIXEL_MAX-1 : 1) : rand() & PIXEL_MAX;
             }
-        int bench_done[3] = {0};
         for( int s = HIGH_BIT_DEPTH ? -128 : 0; s <= 127 && ok; s++ )
             for( int o = -128; o <= 127 && ok; o++ )
                 for( int d = 0; d <= 7 && ok; d++ )
@@ -2628,12 +2741,26 @@ static int check_mc( int cpu_ref, int cpu_new )
                                 ok = 0;
                                 fprintf( stderr, "weightavgfn[%d] [FAILED] s:%d o:%d d:%d h:%d doff:%d\n", i, s, o, d, h, doff );
                             }
-                            if( h == 16 && !bench_done[kind] && s >= 0 && s * (1<<(8-d)) < 512 )
-                                call_a2( wa.weightavgfn[i], wa_a+doff, (intptr_t)WA_DS, s1, (intptr_t)WA_SS, &wa, h, s2 );
                         }
-                    if( s >= 0 && s * (1<<(8-d)) < 512 )
-                        bench_done[kind] = 1;
                 }
+        /* bench: src1 and dst 64-byte aligned, src2 one pixel on (mvx&3 == 3) */
+        for( int k = 0; k < 4; k++ )
+        {
+            x264_weight_t wa = { .i_scale = wbench[k][0], .i_denom = wbench[k][1], .i_offset = wbench[k][2] };
+            x264_weight_t wr = wa;
+            mc_a.weight_cache( hwa, &wa );
+            mc_ref.weight_cache( hwr, &wr );
+            if( !wa.weightavgfn )
+                continue;
+            for( int i = 1; i <= 5; i++ )
+            {
+                if( (i == 3 && wa.weightavgfn[3] == wa.weightavgfn[4]) ||
+                    (wr.weightavgfn && wa.weightavgfn[i] == wr.weightavgfn[i]) )
+                    continue;
+                set_func_name( "%s_avg_w%d", wbench_name[k], i*4 );
+                call_a2( wa.weightavgfn[i], wa_a+2*WA_DS, (intptr_t)WA_DS, wa_src[0], (intptr_t)WA_SS, &wa, 16, wa_src[1]+1 );
+            }
+        }
         x264_free( hwa );
         x264_free( hwr );
     }
@@ -2662,7 +2789,6 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
         for( int i = 0; ok && i < WP_STRIDE*WP_ROWS; i++ )
             wp_c[i] = wp_a[i] = rand() & PIXEL_MAX;
-        int bench_done[4] = {0};
         for( int d = 0; d <= 7 && ok; d++ )
             for( int si = 0; si < 11 && ok; si++ )
             {
@@ -2679,7 +2805,6 @@ static int check_mc( int cpu_ref, int cpu_new )
                     mc_a.weight_cache( &ha, &weight );
                     /* what x264_weight_cache_avx2/avx512 do not send to SSE2 */
                     int handled = s == 1<<d || (s >= 0 && s <= 0x7fff >> (BIT_DEPTH-d));
-                    int kind = s == 1<<d ? 2 + (of[oi] < 0) : s < 1<<d;
                     for( int wi = 0; wi < ARRAY_ELEMS(wp_w) && ok; wi++ )
                         for( int hi = 0; hi < ARRAY_ELEMS(wp_h) && ok; hi++ )
                         {
@@ -2708,21 +2833,20 @@ static int check_mc( int cpu_ref, int cpu_new )
                                          s, of[oi], d, width, height, ret_a );
                             }
                         }
-                    /* 1080p luma row width, one 16 row strip: C, the asm strips, the plane */
-                    if( handled && !bench_done[kind] && s >= 0 && s * (1<<(8-d)) < 512 )
-                    {
-                        static const char *kname[4] = { "weight", "weight_ns", "offsetadd", "offsetsub" };
-                        bench_done[kind] = 1;
-                        set_func_name( "weight_plane_%s_1984x16", kname[kind] );
-                        call_c2( weight_plane_c, wp_c, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
-                        call_a2( mc_a.weight_plane, wp_a, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
-                        set_func_name( "weight_plane_%s_1984x16_strips", kname[kind] );
-                        call_a2( weight_plane_strips, wp_a, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
-                        /* both wrote the same; keep the buffers equal */
-                        memcpy( wp_c, wp_a, WP_STRIDE*WP_ROWS*sizeof(pixel) );
-                    }
                 }
             }
+        /* bench: one weight per kind, the 1080p luma row width, one 16 row strip:
+         * C, the asm strips, the plane */
+        for( int k = 0; k < 4 && wp_src && wp_c && wp_a; k++ )
+        {
+            x264_weight_t weight = { .i_scale = wbench[k][0], .i_denom = wbench[k][1], .i_offset = wbench[k][2] };
+            mc_a.weight_cache( &ha, &weight );
+            set_func_name( "weight_plane_%s_1984x16", wbench_name[k] );
+            call_c2( weight_plane_c, wp_c, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
+            call_a2( mc_a.weight_plane, wp_a, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
+            set_func_name( "weight_plane_%s_1984x16_strips", wbench_name[k] );
+            call_a2( weight_plane_strips, wp_a, (intptr_t)WP_STRIDE, wp_src, (intptr_t)WP_STRIDE, &weight, 1984, 16 );
+        }
         x264_free( wp_src );
         x264_free( wp_c );
         x264_free( wp_a );
@@ -3285,10 +3409,40 @@ static int check_mc( int cpu_ref, int cpu_new )
                 if( !ok )
                     fprintf( stderr, "mbtree_propagate_list FAILED at %d: %d !~= %d\n", j, ref_costsc[j], ref_costsa[j] );
             }
-
-            call_c2( mc_c.mbtree_propagate_list, &h, ref_costsc, mvs, propagate_amount, lowres_costs, bipred_weight, mb_y, len, list );
-            call_a2( mc_a.mbtree_propagate_list, &h, ref_costsa, mvs, propagate_amount, lowres_costs, bipred_weight, mb_y, len, list );
         }
+        /* bench: a fixed 128-wide row in the middle of 4, each list: mvs +-32,
+         * bipred weight 32, lowres costs and amounts from the private generator */
+        x264_t *hb = do_bench ? x264_malloc( sizeof(x264_t) ) : NULL;
+        uint8_t *mb = do_bench ? x264_malloc( 64<<10 ) : NULL;
+        for( int list = 0; list < 2 && hb && mb; list++ )
+        {
+            static const uint8_t list_dist[2][8] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2}};
+            int width = 128, size = 4*width;
+            uint16_t *ref_costsc = (uint16_t*)mb + width;
+            uint16_t *ref_costsa = (uint16_t*)mb + 1024 + width;
+            int16_t (*mvs)[2] = (int16_t(*)[2])((uint16_t*)mb + 2048);
+            int16_t *propagate_amount = (int16_t*)(mvs + width);
+            uint16_t *lowres_costs = (uint16_t*)(propagate_amount + width);
+            hb->mb.i_mb_stride = width;
+            hb->mb.i_mb_width = width;
+            hb->mb.i_mb_height = 4;
+            hb->scratch_buffer2 = mb + (32<<10);
+            bench_srand( 600 + list );
+            for( int j = -width; j < size+width; j++ )
+                ref_costsc[j] = ref_costsa[j] = bench_rand()&32767;
+            for( int j = 0; j < width; j++ )
+            {
+                for( int k = 0; k < 2; k++ )
+                    mvs[j][k] = (bench_rand()&63) - 32;
+                propagate_amount[j] = bench_rand()&4095;
+                lowres_costs[j] = list_dist[list][bench_rand()&7] << LOWRES_COST_SHIFT;
+            }
+            set_func_name( "mbtree_propagate_list" );
+            call_c2( mc_c.mbtree_propagate_list, hb, ref_costsc, mvs, propagate_amount, lowres_costs, 32, 1, width, list );
+            call_a2( mc_a.mbtree_propagate_list, hb, ref_costsa, mvs, propagate_amount, lowres_costs, 32, 1, width, list );
+        }
+        x264_free( hb );
+        x264_free( mb );
     }
     report( "mbtree :" );
 
@@ -3455,8 +3609,34 @@ static int check_deblock( int cpu_ref, int cpu_new )
                 fprintf( stderr, "deblock_luma_mb (stride=%d, edges=%#x): [FAILED]\n", (int)stride, edges );
                 break;
             }
-            call_c2( db_c.deblock_luma_mb, pbuf3+off, stride, bs, e, edges );
-            call_a2( db_a.deblock_luma_mb, pbuf4+off, stride, bs, e, edges );
+        }
+        /* bench: one MB per class, edge classes at index 24 (mid qp), smooth pixels:
+         * bs12: every edge, bS 1-2; t8x8: the 8x8 transform's edges, bS 2;
+         * skip: bS 1 on the MB edges only; intra: bS 3 on the MB edges, bS 2 inside */
+        static const char *mb_name[4] = { "bs12", "t8x8", "skip", "intra" };
+        static const uint8_t mb_edges[4] = { 0xff, 0x55, 0xff, 0xff };
+        ALIGNED_ARRAY_64( pixel, mb_pix,[2][64*24] );
+        for( int c = 0; c < 3; c++ )
+        {
+            e[c].tc0[0] = -(1 << (BIT_DEPTH-8));
+            for( int j = 1; j < 4; j++ )
+                e[c].tc0[j] = tcs[24][j];
+            e[c].alpha = alphas[24];
+            e[c].beta = betas[24];
+        }
+        for( int m = 0; m < 4 && do_bench; m++ )
+        {
+            bench_srand( 100 + m );
+            for( int j = 0; j < 64*24; j++ )
+                mb_pix[0][j] = mb_pix[1][j] = PIXEL_MAX/4 + ((bench_rand()&15) << (BIT_DEPTH-8));
+            for( int dir = 0; dir < 2; dir++ )
+                for( int edge = 0; edge < 8; edge++ )
+                    for( int j = 0; j < 4; j++ )
+                        bs[dir][edge][j] = m == 0 ? 1 + (bench_rand()&1) : m == 1 ? 2 :
+                                           m == 2 ? !edge : edge ? 2 : 3;
+            set_func_name( "deblock_luma_mb_%s", mb_name[m] );
+            call_c2( db_c.deblock_luma_mb, mb_pix[0]+4*64+16, (intptr_t)64, bs, e, mb_edges[m] );
+            call_a2( db_a.deblock_luma_mb, mb_pix[1]+4*64+16, (intptr_t)64, bs, e, mb_edges[m] );
         }
     }
 
@@ -4145,8 +4325,6 @@ static int check_quant( int cpu_ref, int cpu_new )
                         oks[2] = 0; \
                         fprintf( stderr, #optname "(qp=%d, res_c=%d, res_asm=%d): [FAILED]\n", qp, res_c, res_asm ); \
                     } \
-                    call_c2( qf_c.optname, dct1, dmf ); \
-                    call_a2( qf_a.optname, dct2, dmf ); \
                     if( i >= PIXEL_MAX*16 ) \
                         break; \
                 } \
@@ -4173,8 +4351,35 @@ static int check_quant( int cpu_ref, int cpu_new )
             } \
         }
 
+/* bench: flat cqm only, chroma dc qps 12, 18, 21, four fixed blocks each of
+ * levels from coefs +-64 */
+#define BENCH_OPTIMIZE_CHROMA_DC( optname, size ) \
+        if( qf_a.optname != qf_ref.optname && !i_cqm && do_bench ) \
+        { \
+            static const int qpdcs[3] = { 12, 18, 21 }; \
+            set_func_name( #optname "_flat" ); \
+            bench_srand( 500 + size ); \
+            for( int q = 0; q < 3; q++ ) \
+            { \
+                int qpdc = qpdcs[q]; \
+                int dmf = h->dequant4_mf[CQM_4IC][qpdc%6][0] << qpdc/6; \
+                for( int blk = 0; blk < 4; blk++ ) \
+                { \
+                    for( int j = 0; j < size; j++ ) \
+                        dct1[j] = bench_rand()%129 - 64; \
+                    for( int j = 0; j < size; j += 4 ) \
+                        qf_c.quant_2x2_dc( &dct1[j], h->quant4_mf[CQM_4IC][qpdc][0]>>1, h->quant4_bias[CQM_4IC][qpdc][0]>>1 ); \
+                    memcpy( dct2, dct1, size*sizeof(dctcoef) ); \
+                    call_c2( qf_c.optname, dct1, dmf ); \
+                    call_a2( qf_a.optname, dct2, dmf ); \
+                } \
+            } \
+        }
+
         TEST_OPTIMIZE_CHROMA_DC( optimize_chroma_2x2_dc, 4 );
         TEST_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
+        BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x2_dc, 4 );
+        BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
 
         x264_cqm_delete( h );
     }
@@ -4260,8 +4465,8 @@ static int check_quant( int cpu_ref, int cpu_new )
             /* the DC is not part of the AC score */ \
             if( ac ) \
                 dct1[0] = i&1 ? 0 : (rand()&0x3ff) - 0x200; \
-            int result_c = call_c( qf_c.decname, dct1 ); \
-            int result_a = call_a( qf_a.decname, dct1 ); \
+            int result_c = call_c1( qf_c.decname, dct1 ); \
+            int result_a = call_a1( qf_a.decname, dct1 ); \
             if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
             { \
                 ok = 0; \
@@ -4277,8 +4482,8 @@ static int check_quant( int cpu_ref, int cpu_new )
                 dct1[p] = 1; \
                 if( q >= ac ) \
                     dct1[q] = -1; \
-                int result_c = call_c( qf_c.decname, dct1 ); \
-                int result_a = call_a( qf_a.decname, dct1 ); \
+                int result_c = call_c1( qf_c.decname, dct1 ); \
+                int result_a = call_a1( qf_a.decname, dct1 ); \
                 if( X264_MIN(result_c,thresh) != X264_MIN(result_a,thresh) ) \
                 { \
                     ok = 0; \
@@ -4291,6 +4496,35 @@ static int check_quant( int cpu_ref, int cpu_new )
     TEST_DECIMATE( decimate_score64, 8, 0, 6 );
     TEST_DECIMATE( decimate_score16, 4, 0, 6 );
     TEST_DECIMATE( decimate_score15, 4, 1, 7 );
+
+/* bench: 16 fixed blocks, the check's level distribution at each of its four zero rates */
+#define BENCH_DECIMATE( decname, w, ac ) \
+    if( qf_a.decname != qf_ref.decname && do_bench ) \
+    { \
+        set_func_name( #decname ); \
+        bench_srand( 700 + w*w + ac ); \
+        for( int i = 0; i < 16; i++ ) \
+        { \
+            static const int distrib[16] = {1,1,1,1,1,1,1,1,1,1,1,1,2,3,4}; \
+            int zero_rate = (4 << (i&3)) - 1; \
+            for( int idx = 0; idx < w*w; idx++ ) \
+            { \
+                int r = bench_rand(); \
+                int abs_level = distrib[r&15]; \
+                if( abs_level == 4 ) \
+                    abs_level = (r>>4)&0x3fff; \
+                dct1[idx] = !((r>>18)&zero_rate) * abs_level * ((r>>24)&1 ? -1 : 1); \
+            } \
+            if( ac ) \
+                dct1[0] = 0; \
+            call_c2( qf_c.decname, dct1 ); \
+            call_a2( qf_a.decname, dct1 ); \
+        } \
+    }
+
+    BENCH_DECIMATE( decimate_score64, 8, 0 );
+    BENCH_DECIMATE( decimate_score16, 4, 0 );
+    BENCH_DECIMATE( decimate_score15, 4, 1 );
     report( "decimate_score :" );
 
 /* i 8-15: dense +-1, else sparse with either sign and magnitudes up to the dctcoef range */
@@ -4407,10 +4641,15 @@ static int check_quant( int cpu_ref, int cpu_new )
         int num_coefs = v == 1 || v == 3 ? 64 : v == 5 ? 4 : v == 6 ? 8 : 16;
         int dc = v >= 4;
         int psy = v == 2 || v == 3;
-        /* same blocks at every cpu level, so the bench compares like with like */
+        /* same check blocks at every cpu level */
         srand( bench_seed * 7919 + v );
-        for( int it = 0; it < 8000; it++ )
+        for( int pass = 0; pass < 1 + do_bench && ok; pass++ )
+        for( int it = 0; it < (pass ? 32 : 8000); it++ )
         {
+            /* pass 1, bench: blocks 0-31 (kind 0, every mode, frame/field, ac) from the private generator */
+            int (*trand)( void ) = pass ? bench_rand : rand;
+            if( pass && !it )
+                bench_srand( 300 + v );
             ALIGNED_ARRAY_64( dctcoef, tdct, [3],[64] );
             ALIGNED_ARRAY_64( dctcoef, torig, [80] );
             ALIGNED_ARRAY_64( dctcoef, tfenc, [80] );
@@ -4427,85 +4666,85 @@ static int check_quant( int cpu_ref, int cpu_new )
             int b_ac = (v == 0 || v == 2) ? (it>>4)&1 : 0;
             const uint8_t *zigzag = num_coefs == 64 ? x264_zigzag_scan8[b_field] : num_coefs == 16 ? x264_zigzag_scan4[b_field] :
                                     num_coefs == 8 ? zz2x4 : zz2x2;
-            int lambda2 = x264_trellis_lambda2_tab[rand()&1][rand()%(QP_MAX+1)];
-            int psy_trellis = psy ? 1 + rand()%512 : 0;
+            int lambda2 = x264_trellis_lambda2_tab[trand()&1][trand()%(QP_MAX+1)];
+            int psy_trellis = psy ? 1 + trand()%512 : 0;
             int coef_max = (1 << (BIT_DEPTH+7)) - 1;
-            int unq_base = (16 + rand()%240) << (rand()%13);
-            int kmax = mode == 5 ? rand()%6 : num_coefs-1;
+            int unq_base = (16 + trand()%240) << (trand()%13);
+            int kmax = mode == 5 ? trand()%6 : num_coefs-1;
             int last_nnz = -1;
             for( int k = 0; k < 48; k++ )
-                tstate[k] = kind == 2 ? (rand()&1 ? 0 : 62 + (rand()&1)) : rand()&127;
+                tstate[k] = kind == 2 ? (trand()&1 ? 0 : 62 + (trand()&1)) : trand()&127;
             for( int k = 0; k < 64; k++ )
             {
-                tunquant[k] = kind == 2 ? 256 << (rand()%5) : unq_base * (16 + (rand()&15)) >> 4;
+                tunquant[k] = kind == 2 ? 256 << (trand()%5) : unq_base * (16 + (trand()&15)) >> 4;
                 tdct[0][k] = 0;
                 /* past num_coefs: junk, as in rdo.c */
-                tquant[k] = rand() - RAND_MAX/2;
+                tquant[k] = trand() - RAND_MAX/2;
             }
             if( kind == 2 )
-                lambda2 = rand()&3;
+                lambda2 = trand()&3;
             if( kind == 1 )
-                lambda2 = x264_trellis_lambda2_tab[1][QP_MAX/2 + rand()%(QP_MAX/2)];
+                lambda2 = x264_trellis_lambda2_tab[1][QP_MAX/2 + trand()%(QP_MAX/2)];
             for( int k = 0; k < 80; k++ )
             {
-                torig[k] = (rand()&0x3ff) - 0x200;
-                tfenc[k] = (rand()&0x3fff) - 0x2000;
+                torig[k] = (trand()&0x3ff) - 0x200;
+                tfenc[k] = (trand()&0x3fff) - 0x2000;
             }
             for( int i = 0; i < num_coefs; i++ )
             {
                 int pos = zigzag[i];
                 int unq = dc ? tunquant[0]<<1 : tunquant[pos];
                 int step = X264_MAX( unq>>8, 1 );
-                int rnd = rand();
+                int rnd = trand();
                 int level;
                 if( kind == 1 )
-                    level = (rand()%4) == 0 && i > num_coefs-12 ? 2 : (it&8) && (rand()%8) == 0 ? 2 : 1;
+                    level = (trand()%4) == 0 && i > num_coefs-12 ? 2 : (it&8) && (trand()%8) == 0 ? 2 : 1;
                 else if( i > kmax )
                     level = 0;
                 else if( mode == 1 )
-                    level = (rnd&7) ? 1 + (rand()&1) + !(rand()&3) : 0;
+                    level = (rnd&7) ? 1 + (trand()&1) + !(trand()&3) : 0;
                 else if( mode == 2 )
-                    level = (rnd&7) ? 0 : 1 + !(rand()&3);
+                    level = (rnd&7) ? 0 : 1 + !(trand()&3);
                 else if( mode == 3 )
-                    level = (rnd&3) ? 0 : !(rand()&3) ? 1 : (rand()&1) ? 15 + rand()%40 : 1 + rand()%2000;
+                    level = (rnd&3) ? 0 : !(trand()&3) ? 1 : (trand()&1) ? 15 + trand()%40 : 1 + trand()%2000;
                 else if( mode == 4 )
                     level = (rnd&3) ? 1 : 0;
                 else if( mode == 6 )
-                    level = (rnd&1) ? 0 : 1 + rand()%20;
+                    level = (rnd&1) ? 0 : 1 + trand()%20;
                 else if( mode == 7 )
-                    level = (rnd&1) ? 1 + (rand()&3) : 0;
+                    level = (rnd&1) ? 1 + (trand()&3) : 0;
                 else
-                    level = (rand()%(num_coefs+4)) < num_coefs-i ? 1 + !(rand()&3) + !(rand()&15)*(rand()&7) : 0;
+                    level = (trand()%(num_coefs+4)) < num_coefs-i ? 1 + !(trand()&3) + !(trand()&15)*(trand()&7) : 0;
                 /* the asm keeps unquant*level in 32 bits and the squared error in 32 bits */
                 while( level > 1 && ((int64_t)unq*level >= (1<<30) || (int64_t)step*level >= coef_max) )
                     level >>= 1;
-                int sign = (rand()&1) ? -1 : 1;
+                int sign = (trand()&1) ? -1 : 1;
                 int abs_coef;
                 if( kind == 2 && level )
-                    abs_coef = (rand()&1) ? ((unq*(2*level-1) + 256) >> 9) : (unq*(level-(rand()&1)) + 128) >> 8;
+                    abs_coef = (trand()&1) ? ((unq*(2*level-1) + 256) >> 9) : (unq*(level-(trand()&1)) + 128) >> 8;
                 else if( kind == 1 )
                     abs_coef = X264_MAX( (unq*level + 128) >> 8, 1 );
                 else
-                    abs_coef = level ? ((unq*level + 128) >> 8) + rand()%(step+1) - step/2 : rand()%((step>>1)+1);
+                    abs_coef = level ? ((unq*level + 128) >> 8) + trand()%(step+1) - step/2 : trand()%((step>>1)+1);
                 abs_coef = x264_clip3( abs_coef, 0, coef_max );
                 /* quant never makes a level from a zero coef, and keeps its sign */
                 if( level && !abs_coef )
                     abs_coef = 1;
                 torig[8+pos] = sign*abs_coef;
-                tfenc[8+pos] = torig[8+pos] + (rand()&0x3ff) - 0x200;
+                tfenc[8+pos] = torig[8+pos] + (trand()&0x3ff) - 0x200;
                 tquant[i] = sign*level;
                 tdct[0][pos] = sign*level;
                 if( level && i >= b_ac )
                     last_nnz = i;
             }
-            if( !kind && b_ac && (rand()&1) )
-                tdct[0][zigzag[0]] = tquant[0] = 1 + (rand()&3);
+            if( !kind && b_ac && (trand()&1) )
+                tdct[0][zigzag[0]] = tquant[0] = 1 + (trand()&3);
             int min_nnz = dc ? 0 : X264_MAX( b_ac, 1 );
             if( last_nnz < min_nnz )
             {
-                last_nnz = min_nnz + rand()%(num_coefs-min_nnz);
+                last_nnz = min_nnz + trand()%(num_coefs-min_nnz);
                 int pos = zigzag[last_nnz];
-                int sign = (rand()&1) ? 1 : -1;
+                int sign = (trand()&1) ? 1 : -1;
                 tdct[0][pos] = tquant[last_nnz] = sign;
                 torig[8+pos] = sign * X264_MAX( ((dc ? tunquant[0]<<1 : tunquant[pos]) + 128) >> 8, 1 );
             }
@@ -4516,6 +4755,23 @@ static int check_quant( int cpu_ref, int cpu_new )
             memcpy( tdct[1], tdct[0], sizeof(tdct[0]) );
             memcpy( tdct[2], tdct[0], sizeof(tdct[0]) );
 #define TRELLIS_ARGS_T(d) tunquant, zigzag, lambda2, last_nnz, torig+8, tquant, d, tstate, tstate+16, ls0, ls1
+            if( pass )
+            {
+                /* no C row: trellis_ref takes 17 args, x264_checkasm_call passes 15 */
+                if( v == 0 )
+                    call_a2( qf_a.trellis_cabac_4x4, TRELLIS_ARGS_T(tdct[2]), b_ac );
+                else if( v == 1 )
+                    call_a2( qf_a.trellis_cabac_8x8, TRELLIS_ARGS_T(tdct[2]), b_field );
+                else if( v == 2 )
+                    call_a2( qf_a.trellis_cabac_4x4_psy, TRELLIS_ARGS_T(tdct[2]), b_ac, tfenc+8, psy_trellis );
+                else if( v == 3 )
+                    call_a2( qf_a.trellis_cabac_8x8_psy, TRELLIS_ARGS_T(tdct[2]), b_field, tfenc+8, psy_trellis );
+                else if( v <= 5 )
+                    call_a2( qf_a.trellis_cabac_dc, TRELLIS_ARGS_T(tdct[2]), num_coefs-1 );
+                else
+                    call_a2( qf_a.trellis_cabac_chroma_422_dc, TRELLIS_ARGS_T(tdct[2]) );
+                continue;
+            }
             int res_c = trellis_ref( TRELLIS_ARGS_T(tdct[1]), num_coefs, dc, b_ac, b_field, tfenc+8, psy_trellis );
             int res_a;
             if( v == 0 )
@@ -4536,22 +4792,6 @@ static int check_quant( int cpu_ref, int cpu_new )
                 fprintf( stderr, "%s: [FAILED] kind %d mode %d last_nnz %d b_ac %d field %d: %d != %d\n",
                          names[v], kind, mode, last_nnz, b_ac, b_field, res_c, res_a );
                 break;
-            }
-            if( it == 4000-8 )
-            {
-                call_c2( trellis_ref, TRELLIS_ARGS_T(tdct[1]), num_coefs, dc, b_ac, b_field, tfenc+8, psy_trellis );
-                if( v == 0 )
-                    call_a2( qf_a.trellis_cabac_4x4, TRELLIS_ARGS_T(tdct[2]), b_ac );
-                else if( v == 1 )
-                    call_a2( qf_a.trellis_cabac_8x8, TRELLIS_ARGS_T(tdct[2]), b_field );
-                else if( v == 2 )
-                    call_a2( qf_a.trellis_cabac_4x4_psy, TRELLIS_ARGS_T(tdct[2]), b_ac, tfenc+8, psy_trellis );
-                else if( v == 3 )
-                    call_a2( qf_a.trellis_cabac_8x8_psy, TRELLIS_ARGS_T(tdct[2]), b_field, tfenc+8, psy_trellis );
-                else if( v <= 5 )
-                    call_a2( qf_a.trellis_cabac_dc, TRELLIS_ARGS_T(tdct[2]), num_coefs-1 );
-                else
-                    call_a2( qf_a.trellis_cabac_chroma_422_dc, TRELLIS_ARGS_T(tdct[2]) );
             }
 #undef TRELLIS_ARGS_T
         }
@@ -4718,24 +4958,24 @@ static int check_intra( int cpu_ref, int cpu_new )
 }
 
 #define DECL_CABAC(cpu) \
-static void run_cabac_decision_##cpu( x264_t *h, uint8_t *dst )\
+static void run_cabac_decision_##cpu( x264_t *h, uint8_t *dst, const uint8_t *src )\
 {\
     x264_cabac_t cb;\
     x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
-        x264_cabac_encode_decision_##cpu( &cb, buf1[i]>>1, buf1[i]&1 );\
+        x264_cabac_encode_decision_##cpu( &cb, src[i]>>1, src[i]&1 );\
     /* the bits still in low/queue, and the contexts: all in the compared 0x1000 bytes */\
     x264_cabac_encode_flush( h, &cb );\
     memcpy( dst+0xe00, cb.state, 128 );\
 }\
-static void run_cabac_bypass_##cpu( x264_t *h, uint8_t *dst )\
+static void run_cabac_bypass_##cpu( x264_t *h, uint8_t *dst, const uint8_t *src )\
 {\
     x264_cabac_t cb;\
     x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
-        x264_cabac_encode_bypass_##cpu( &cb, buf1[i]&1 );\
+        x264_cabac_encode_bypass_##cpu( &cb, src[i]&1 );\
     x264_cabac_encode_flush( h, &cb );\
 }\
 static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
@@ -4769,6 +5009,26 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
 void x264_cabac_block_residual_422_dc_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
+
+/* residual bench classes: nonzero coefs 1/16, 1/4, 7/8 with levels mostly 1-2;
+ * large: 1/4 nonzero, levels up to 64, some escapes in the hundreds and beyond */
+static const char *cabac_res_class[4] = { "sparse", "mid", "dense", "large" };
+static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
+{
+    int nz = 0;
+    memset( dct, 0, 2*64*sizeof(dctcoef) );
+    while( !nz )
+        for( int k = 0; k <= x264_count_cat_m1[cat]; k++ )
+        {
+            int r = bench_rand();
+            int coef = cls == 0 ? !(r&15) : cls == 2 ? !!(r&7) : !(r&3);
+            if( coef && cls < 3 )
+                coef += !(r&0x70) * ((r>>8)&3);
+            else if( coef )
+                coef += (r>>8)&63 ? (r>>14)&63 : (r>>14)&0x3fff;
+            nz |= dct[0][ac+k] = dct[1][ac+k] = r&0x80 ? -coef : coef;
+        }
+}
 
 static int check_cabac( int cpu_ref, int cpu_new )
 {
@@ -4889,14 +5149,45 @@ static int check_cabac( int cpu_ref, int cpu_new )
                         fprintf( stderr, "\n");\
                         goto name##fail;\
                     }\
-                    if( (j&15) == 0 )\
+                }\
+            }\
+        }\
+        /* bench: fixed blocks per class, frame and field, every category; contexts\
+         * of a P slice at qp 26, a fixed coder state on entry */\
+        uint8_t *bsb = do_bench ? x264_malloc( 2<<20 ) : NULL;\
+        for( int cls = 0; cls < 4 && bsb; cls++ )\
+        {\
+            set_func_name( #name "_%s", cabac_res_class[cls] );\
+            bench_srand( 1 + cls );\
+            for( int i = 0; i < 2; i++ )\
+                for( intptr_t ctx_block_cat = 0; ctx_block_cat < 14; ctx_block_cat++ )\
+                {\
+                    if( !(((cats) >> ctx_block_cat) & 1) )\
+                        continue;\
+                    static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};\
+                    int ac = ctx_ac[ctx_block_cat];\
+                    for( int blk = 0; blk < 4; blk++ )\
                     {\
+                        ALIGNED_ARRAY_64( dctcoef, dct, [2],[64] );\
+                        x264_cabac_t cb[2];\
+                        cabac_bench_block( dct, ctx_block_cat, ac, cls );\
+                        h.mb.b_interlaced = i;\
+                        x264_cabac_context_init( &h, &cb[0], SLICE_TYPE_P, 26, 0 );\
+                        memcpy( cb[1].state, cb[0].state, 1024 );\
+                        x264_cabac_encode_init( &cb[0], bsb, bsb+(1<<20)-16 );\
+                        x264_cabac_encode_init( &cb[1], bsb+(1<<20), bsb+(2<<20)-16 );\
+                        cb[0].f8_bits_encoded = cb[1].f8_bits_encoded = 0;\
+                        for( int k = 0; k < 13 && !rd; k++ )\
+                        {\
+                            x264_cabac_encode_bypass_c( &cb[0], -((0x1a5b >> k) & 1) );\
+                            x264_cabac_encode_bypass_c( &cb[1], -((0x1a5b >> k) & 1) );\
+                        }\
                         call_c2( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                         call_a2( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
                     }\
                 }\
-            }\
         }\
+        x264_free( bsb );\
     }\
 }\
 name##fail:
@@ -5015,17 +5306,33 @@ name##fail:
 
     set_func_name( "cabac_encode_decision" );
     memcpy( buf4, buf3, 0x1000 );
-    call_c( run_cabac_decision_c, &h, buf3 );
-    call_a( run_cabac_decision_asm, &h, buf4 );
+    call_c1( run_cabac_decision_c, &h, buf3, buf1 );
+    call_a1( run_cabac_decision_asm, &h, buf4, buf1 );
     ok = !memcmp( buf3, buf4, 0x1000 );
     report( "cabac decision:" );
 
     set_func_name( "cabac_encode_bypass" );
     memcpy( buf4, buf3, 0x1000 );
-    call_c( run_cabac_bypass_c, &h, buf3 );
-    call_a( run_cabac_bypass_asm, &h, buf4 );
+    call_c1( run_cabac_bypass_c, &h, buf3, buf1 );
+    call_a1( run_cabac_bypass_asm, &h, buf4, buf1 );
     ok = !memcmp( buf3, buf4, 0x1000 );
     report( "cabac bypass:" );
+
+    /* bench: 4096 fixed contexts and bins from the private generator, private buffers */
+    uint8_t *cbuf = do_bench ? x264_malloc( 3*0x1000 ) : NULL;
+    if( cbuf )
+    {
+        bench_srand( 900 );
+        for( int i = 0; i < 0x1000; i++ )
+            cbuf[i] = bench_rand() >> 8;
+        set_func_name( "cabac_encode_decision" );
+        call_c2( run_cabac_decision_c, &h, cbuf+0x1000, cbuf );
+        call_a2( run_cabac_decision_asm, &h, cbuf+0x2000, cbuf );
+        set_func_name( "cabac_encode_bypass" );
+        call_c2( run_cabac_bypass_c, &h, cbuf+0x1000, cbuf );
+        call_a2( run_cabac_bypass_asm, &h, cbuf+0x2000, cbuf );
+        x264_free( cbuf );
+    }
 
     set_func_name( "cabac_encode_terminal" );
     memcpy( buf4, buf3, 0x1000 );
@@ -5163,19 +5470,26 @@ static int check_bitstream( int cpu_ref, int cpu_new )
                 ok = 0;
             }
         }
-        for( int j = 0; j < size+32; j++ )
-            input[j] = rand();
-        call_c2( bs_c.nal_escape, output1, input, input+size );
-        call_a2( bs_a.nal_escape, output2, input, input+size );
-        /* escape-dense input */
-        set_func_name( "nal_escape_dense" );
-        for( int j = 0; j < size+32; j++ )
+        /* the draws of the former bench inputs: the rand() stream of the later checks */
+        for( int j = 0; j < 2*(size+32); j++ )
+            rand();
+        /* bench: 64-byte aligned buffers, 16 KiB of fixed bytes: uniform, and
+         * escape-dense (3/4 zero bytes, the rest 1-3) */
+        uint8_t *nb = do_bench ? x264_malloc( 5*size + NALU_ESCAPE_PADDING ) : NULL;
+        for( int k = 0; k < 2 && nb; k++ )
         {
-            int r = rand();
-            input[j] = (r & 3) ? 0 : (r >> 2) & 3;
+            uint8_t *src = nb, *dst_c = nb + size + NALU_ESCAPE_PADDING, *dst_a = dst_c + 2*size;
+            bench_srand( 800 + k );
+            for( int j = 0; j < size + NALU_ESCAPE_PADDING; j++ )
+            {
+                int r = bench_rand();
+                src[j] = k ? ((r & 3) ? 0 : (r >> 2) & 3) : r >> 8;
+            }
+            set_func_name( k ? "nal_escape_dense" : "nal_escape" );
+            call_c2( bs_c.nal_escape, dst_c, src, src+size );
+            call_a2( bs_a.nal_escape, dst_a, src, src+size );
         }
-        call_c2( bs_c.nal_escape, output1, input, input+size );
-        call_a2( bs_a.nal_escape, output2, input, input+size );
+        x264_free( nb );
         free(input);
         free(output1);
         free(output2);
