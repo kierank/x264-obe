@@ -106,6 +106,7 @@ pd_8: times 4 dd 8
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
 ALIGN 32
 pw_5_hbd: times 16 dw 5      ; hpel_filter: 5*(4*c - b)
+pw_8192_hbd: times 16 dw 8192 ; frame_init_lowres_core8: pmulhrsw, (x+2)>>2
 %endif
 
 SECTION .text
@@ -3266,14 +3267,14 @@ cglobal mbtree_propagate_list_internal, 7,7,14
 cglobal frame_init_lowres_core8, 9,12,11
     FIX_STRIDES r5
 %if cpuflag(avx512icl)
-    vpbroadcastd   m7, [pw_2]
+    vpbroadcastd   m7, [pw_8192_hbd]
     mova           m9, [pb_lowres8_icl]
 %elif mmsize == 32
-    vpbroadcastd   m7, [pw_2]
+    vpbroadcastd   m7, [pw_8192_hbd]
     vbroadcasti128 m9, [deinterleave_shuf]
     pmovzxbd      m10, [lowres8_perm]
 %else
-    mova      m7, [pw_2]
+    mova      m7, [pw_8192_hbd]
     mova      m9, [deinterleave_shuf]
 %endif
 .vloop:
@@ -3297,14 +3298,10 @@ cglobal frame_init_lowres_core8, 9,12,11
     PAVGW_U   m1, m3, [r10+r11*4+mmsize+2]
     pavgw     m6, m0
     pavgw     m8, m1                ; rows 1, 2
-    paddw     m4, m7
-    paddw     m5, m7
-    paddw     m6, m7
-    paddw     m8, m7
-    psrlw     m4, 2
-    psrlw     m5, 2
-    psrlw     m6, 2
-    psrlw     m8, 2
+    pmulhrsw  m4, m7                ; (x+2)>>2
+    pmulhrsw  m5, m7
+    pmulhrsw  m6, m7
+    pmulhrsw  m8, m7
     packuswb  m4, m5                ; 256 saturates to 255
     packuswb  m6, m8
 %if cpuflag(avx512icl)
