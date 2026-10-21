@@ -1453,14 +1453,34 @@ static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a 
 
     int bcost = h->pixf.fpelcmp[PIXEL_16x16]( m->p_fenc[0], FENC_STRIDE, &m->p_fref_w[bmy*stride+bmx], stride )
               + p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2];
-    for( int i = 0; i < i_fpel; i++ )
+    x264_pixel_cmp_list_min_t list_min = h->pixf.fpelcmp_list_min[PIXEL_16x16];
+    if( list_min && i_fpel )
     {
-        int mx = mvc_fpel[i][0];
-        int my = mvc_fpel[i][1];
-        int cost = h->pixf.fpelcmp[PIXEL_16x16]( m->p_fenc[0], FENC_STRIDE, &m->p_fref_w[my*stride+mx], stride )
-                 + p_cost_mvx[mx<<2] + p_cost_mvy[my<<2];
-        COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );
+        ALIGNED_ARRAY_16( pixel *, src,[16] );
+        ALIGNED_ARRAY_16( int32_t, bias,[16] );
+        for( int i = 0; i < i_fpel; i++ )
+        {
+            int mx = mvc_fpel[i][0];
+            int my = mvc_fpel[i][1];
+            src[i] = &m->p_fref_w[my*stride+mx];
+            bias[i] = ((p_cost_mvx[mx<<2] + p_cost_mvy[my<<2]) << 4) + i+1;
+        }
+        bcost = list_min( m->p_fenc[0], src, stride, i_fpel, bias, bcost << 4 );
+        if( bcost&15 )
+        {
+            bmx = mvc_fpel[(bcost&15)-1][0];
+            bmy = mvc_fpel[(bcost&15)-1][1];
+        }
     }
+    else
+        for( int i = 0; i < i_fpel; i++ )
+        {
+            int mx = mvc_fpel[i][0];
+            int my = mvc_fpel[i][1];
+            int cost = h->pixf.fpelcmp[PIXEL_16x16]( m->p_fenc[0], FENC_STRIDE, &m->p_fref_w[my*stride+mx], stride )
+                     + p_cost_mvx[mx<<2] + p_cost_mvy[my<<2];
+            COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );
+        }
 
     m->mv[0] = bmx << 2;
     m->mv[1] = bmy << 2;

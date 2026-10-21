@@ -90,6 +90,34 @@ int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_st
     return best;
 }
 
+/* references for sad_list_min and sad_avg2_list_min */
+static int sad_list_min( int i_pixel, pixel *fenc, pixel **src, intptr_t i_stride, int n, int avg2,
+                         const int32_t *bias, int best )
+{
+    int w = x264_pixel_size[i_pixel].w, h = x264_pixel_size[i_pixel].h;
+    for( int i = 0; i < n; i++ )
+    {
+        pixel *src1 = avg2 ? src[2*i] : src[i];
+        pixel *src2 = avg2 ? src[2*i+1] : src[i];
+        int sad = 0;
+        for( int y = 0; y < h; y++ )
+            for( int x = 0; x < w; x++ )
+                sad += abs( fenc[y*FENC_STRIDE+x] - ((src1[y*i_stride+x] + src2[y*i_stride+x] + 1) >> 1) );
+        best = X264_MIN( best, (sad << 4) + bias[i] );
+    }
+    return best;
+}
+
+int x264_pixel_sad_list_min_c( int i_pixel, pixel *fenc, pixel **src, intptr_t i_stride, int n, const int32_t *bias, int best )
+{
+    return sad_list_min( i_pixel, fenc, src, i_stride, n, 0, bias, best );
+}
+
+int x264_pixel_sad_avg2_list_min_c( int i_pixel, pixel *fenc, pixel **src, intptr_t i_stride, int n, const int32_t *bias, int best )
+{
+    return sad_list_min( i_pixel, fenc, src, i_stride, n, 1, bias, best );
+}
+
 /* references for predictor_clip and predictor_roundclip */
 static int predictor_dedupe( int16_t (*dst)[2], int cnt, uint32_t mv, uint32_t pmv )
 {
