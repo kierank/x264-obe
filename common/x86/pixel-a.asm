@@ -1161,7 +1161,13 @@ cglobal pixel_fenc_eq_%1x%2, 2,2,3
     FENC_EQ_RET
 %endmacro
 
-%if HIGH_BIT_DEPTH == 0
+%if HIGH_BIT_DEPTH
+INIT_YMM avx2
+FENC_EQ_AVX2 16, 16
+INIT_XMM avx2
+FENC_EQ_AVX2  8, 16
+FENC_EQ_AVX2  8,  8
+%else
 INIT_YMM avx2
 FENC_EQ_AVX2 16, 16
 FENC_EQ_AVX2  8, 16
