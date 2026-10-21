@@ -6409,8 +6409,8 @@ INTRA_SATD_X3_16x16_HBD
 
 ; m%1 = (8 maxes of mode %1 | 8 maxes of mode %2), their sums are the satds
 %macro X9H_MERGE 3
-    vperm2i128  m%3, m%1, m%2, 0x20
-    vperm2i128  m%1, m%1, m%2, 0x31
+    vperm2i128  m%3, m%1, m%2, 0x21
+    vpblendd    m%1, m%1, m%2, 0xf0
     pmaxsw      m%1, m%3
 %endmacro
 
@@ -6509,12 +6509,12 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
     X9H_SATD      0, 1
     X9H_MERGE     4, 0, 1             ; vl | hu
 
-    phaddw       m7, m5
-    phaddw      m10, m4
-    phaddw       m7, m10
-    phaddw       m9, m9
-    phaddw       m9, m9
-    phaddw       m7, m9               ; h ddl vr vl v v v v | dc ddr hd hu v v v v
+    HADD_ILV  w,  wd,  m7,  m7, m5, m1
+    HADD_ILV  w,  wd, m10, m10, m4, m1
+    HADD_ILV  w,  dq,  m7,  m7, m10, m1 ; (h ddl vr vl) x2 | (dc ddr hd hu) x2
+    HADD_ILV  w,  wd,  m9,  m9, m9, m1
+    HADD_ILV  w,  dq,  m9,  m9, m9, m1 ; v v v v halves of v
+    HADD_ILV  w, qdq,  m7,  m7, m9, m1 ; h ddl vr vl v v v v | dc ddr hd hu v v v v
     vextracti128 xm0, m7, 1
     pextrw      r3d, xm7, 4
     punpcklwd   xm0, xm7, xm0
