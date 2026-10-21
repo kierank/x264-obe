@@ -10811,7 +10811,23 @@ cglobal weightp_dc8x8, 5,7,8
 ; mmsize/4. m5 = pw_1, xm6 = denom, m7 = { scale, round }, m10 = block order.
 ; _clip: each + offset, clipped to [0,pixel_max] as by mc weight. m9 = offset,
 ; m11 = pixel_max, m12 = 0.
+; 8-bit: on words as the avx512icl version, exact for H.264 weights (scale -128..127,
+; offset -128..127): pmullw, paddw, psraw [, + offset, clip], pmaddwd by 1 into dword pairs;
+; m7 = scale, m8 = round (words), m9 = offset, m11 = 255 (words).
 %macro WEIGHTP_SUM8_ROW 3 ; acc, offset, clip
+%if HIGH_BIT_DEPTH == 0
+    pmovzxbw   m4, [r7+%2]
+    pmullw     m4, m7
+    paddw      m4, m8
+    psraw      m4, xm6
+%if %3
+    paddw      m4, m9
+    pmaxsw     m4, m12
+    pminsw     m4, m11
+%endif
+    pmaddwd    m4, m5
+    paddd      %1, m4
+%else
     LOAD_PIXW  m4, [r7+%2]
     punpckhwd  m8, m4, m5
     punpcklwd  m4, m5
@@ -10829,15 +10845,27 @@ cglobal weightp_dc8x8, 5,7,8
 %endif
     paddd      %1, m4
     paddd      %1, m8
+%endif
 %endmacro
 
 %macro WEIGHTP_SUM8 1 ; clip
 %if %1
-cglobal weightp_sum8_clip, 8,9,13
+%if HIGH_BIT_DEPTH
+    %assign wp_clip_regs 13
+%else
+    %assign wp_clip_regs 14
+%endif
+cglobal weightp_sum8_clip, 8,9,wp_clip_regs
     movd      xm9, r7d
+%if HIGH_BIT_DEPTH
     vpbroadcastd m9, xm9
     pcmpeqd   m11, m11
     psrld     m11, 32-BIT_DEPTH
+%else
+    vpbroadcastw m9, xm9
+    pcmpeqw   m11, m11
+    psrlw     m11, 8
+%endif
     pxor      m12, m12
 %else
 cglobal weightp_sum8, 7,9,11
@@ -10846,11 +10874,18 @@ cglobal weightp_sum8, 7,9,11
     xor       r7d, r7d
     bts       r7d, r6d
     shr       r7d, 1
+%if HIGH_BIT_DEPTH
     shl       r7d, 16
     movzx     r5d, r5w
     or        r7d, r5d
     movd      xm7, r7d
     vpbroadcastd m7, xm7
+%else
+    movd      xm8, r7d
+    vpbroadcastw m8, xm8
+    movd      xm7, r5d
+    vpbroadcastw m7, xm7
+%endif
     movd      xm6, r6d
     vpbroadcastd m5, [pw_1]
     WEIGHTP_PERM m10
@@ -10869,7 +10904,13 @@ cglobal weightp_sum8, 7,9,11
     add        r7, r2
     dec       r8d
     jg .loopy
+%if HIGH_BIT_DEPTH
     HADD4D     m0, m1, m2, m3, m4, m8
+%elif %1
+    HADD4D     m0, m1, m2, m3, m4, m13
+%else
+    HADD4D     m0, m1, m2, m3, m4, m9
+%endif
     vpermd     m0, m10, m0
     movu     [r0], m0
     add        r0, mmsize
