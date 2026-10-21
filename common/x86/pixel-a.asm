@@ -10351,16 +10351,17 @@ ADS_ICL 1, _zmm
     pmaxsw         m6, m0, m1
 %endmacro
 
-; res[0] = sum of the even words of m6, res[1] of the odd; clobbers m7
+; res[0] = sum of the even words of m6, res[1] of the odd; clobbers m4, m7
 %macro MCC_SATD_END 0
     ; at most 4 passes, two words each: unsigned words
+    pxor           m4, m4
     psrld          m7, m6, 16         ; v
-    pslld          m6, 16
-    psrld          m6, 16             ; u
-    phaddd         m6, m7
+    pblendw        m6, m6, m4, 0xaa   ; u
+    HADD_ILV  d,  dq, m6, m6, m7, m4  ; (u v) x2
     vextracti128  xm7, m6, 1
     paddd         xm6, xm7
-    phaddd        xm6, xm6
+    pshufd        xm7, xm6, q1032
+    paddd         xm6, xm7
     movq        [r1], xm6
     RET
 %endmacro
