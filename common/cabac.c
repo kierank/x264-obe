@@ -170,6 +170,48 @@ void x264_cabac_encode_terminal_c( x264_cabac_t *cb )
     x264_cabac_encode_renorm( cb );
 }
 
+void x264_cabac_encode_bins_c( x264_cabac_t *cb, uint64_t ctx, uint32_t bins, int n )
+{
+    for( int i = 0; i < n; i++ )
+    {
+        x264_cabac_encode_decision_c( cb, ctx & 0xff, (bins >> i) & 1 );
+        ctx = ctx >> 8 | ctx << 56;
+    }
+}
+
+static void cabac_encode_mvd_cpn_c( x264_cabac_t *cb, int ctxbase, int ctxinc, int mvd )
+{
+    static const uint8_t ctxes[8] = { 3,4,5,6,6,6,6,6 };
+
+    if( mvd == 0 )
+    {
+        x264_cabac_encode_decision_c( cb, ctxbase + ctxinc, 0 );
+        return;
+    }
+
+    int i_abs = abs( mvd );
+    x264_cabac_encode_decision_c( cb, ctxbase + ctxinc, 1 );
+    if( i_abs < 9 )
+    {
+        for( int i = 1; i < i_abs; i++ )
+            x264_cabac_encode_decision_c( cb, ctxbase + ctxes[i-1], 1 );
+        x264_cabac_encode_decision_c( cb, ctxbase + ctxes[i_abs-1], 0 );
+    }
+    else
+    {
+        for( int i = 1; i < 9; i++ )
+            x264_cabac_encode_decision_c( cb, ctxbase + ctxes[i-1], 1 );
+        x264_cabac_encode_ue_bypass( cb, 3, i_abs - 9 );
+    }
+    x264_cabac_encode_bypass_c( cb, mvd >> 31 );
+}
+
+void x264_cabac_encode_mvd_c( x264_cabac_t *cb, int mdx, int mdy, int amvd )
+{
+    cabac_encode_mvd_cpn_c( cb, 40, amvd & 0xff, mdx );
+    cabac_encode_mvd_cpn_c( cb, 47, amvd >> 8, mdy );
+}
+
 void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb )
 {
     cb->i_low += cb->i_range - 2;

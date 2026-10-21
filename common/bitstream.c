@@ -89,6 +89,8 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
     memset( pf, 0, sizeof(*pf) );
 
     pf->nal_escape = x264_nal_escape_c;
+    pf->cabac_encode_bins = x264_cabac_encode_bins_c;
+    pf->cabac_encode_mvd = x264_cabac_encode_mvd_c;
 #if HAVE_MMX
 #if ARCH_X86_64
     pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_sse2;
