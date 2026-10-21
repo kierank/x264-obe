@@ -5069,14 +5069,14 @@ cglobal hadamard_ac_8x8%1
     ABSW      m2, spill0
     pmaddwd  m11, m3, m12
     ABSW      m3, spill1
-    {evex} vpdpwssd  m1, m2, m12
+    vpdpwssd  m1, m2, m12
     ABSW      m2, spill2
-    {evex} vpdpwssd m11, m3, m12
+    vpdpwssd m11, m3, m12
     ABSW      m3, m6, m6
-    {evex} vpdpwssd  m1, m2, m12
+    vpdpwssd  m1, m2, m12
     ABSW      m2, m7, m7
-    {evex} vpdpwssd m11, m3, m12
-    {evex} vpdpwssd  m1, m2, m12
+    vpdpwssd m11, m3, m12
+    vpdpwssd  m1, m2, m12
     paddd     m1, m11
 %else
     AC_PREP   m1, [pw_1]
@@ -5112,13 +5112,13 @@ cglobal hadamard_ac_8x8%1
 %if HIGH_BIT_DEPTH && cpuflag(avx512icl)
     paddw    m13, m12, m12
     pmaddwd   m2, m13
-    {evex} vpdpwssd  m2, m3, m13
+    vpdpwssd  m2, m3, m13
     ABSW      m4, m4, m7
     pand      m0, [mask_ac8]
     ABSW      m0, m0, m7
     pmaddwd   m4, m12
-    {evex} vpdpwssd  m4, m0, m12
-    {evex} vpdpwssd  m2, m1, m13
+    vpdpwssd  m4, m0, m12
+    vpdpwssd  m2, m1, m13
     paddd     m2, m4
 %else
     AC_PREP   m2, [pw_1]
@@ -5907,9 +5907,8 @@ cglobal pixel_hadamard_ac_8x16, 2,5,11+3*cpuflag(avx512icl)
 %endmacro
 
 HADAMARD_AC_HBD_YMM
-ICL_LOW_BEGIN
+INIT_YMM avx512icl
 HADAMARD_AC_HBD_YMM
-ICL_LOW_END
 INIT_YMM avx2
 
 ; 16 pixel rows: lane 0 is pix[0], lane 1 is pix[8], the 8x8 transform is lane-local
