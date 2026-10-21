@@ -1065,32 +1065,18 @@ cglobal hpel_filter_h, 3,3,8
 %endif
     add       r3, mmsize
     add       r1, mmsize
-%if mmsize==32
-    vinserti128 %1, m1, xm4, 1
-    vperm2i128  %2, m1, m4, q0301
-%else
     mova      %1, m1
     mova      %2, m4
-%endif
     FILT_PACK m1, m4, m15, 5
     movntps  [r8+r4+%5], m1
 %endmacro
 
 %macro FILT_C 3
-%if mmsize==32
-    vperm2i128 m3, %2, %1, q0003
-%endif
     PALIGNR   m1, %2, %1, (mmsize-4), m3
     PALIGNR   m2, %2, %1, (mmsize-2), m3
-%if mmsize==32
-    vperm2i128 %1, %3, %2, q0003
-%endif
     PALIGNR   m3, %3, %2, 4, %1
     PALIGNR   m4, %3, %2, 2, %1
     paddw     m3, m2
-%if mmsize==32
-    mova      m2, %1
-%endif
     mova      %1, %3
     PALIGNR   %3, %3, %2, 6, m2
     paddw     m4, %2
@@ -1102,9 +1088,6 @@ cglobal hpel_filter_h, 3,3,8
     FILT_C %1, %2, %3
     FILT_C %2, %1, %4
     FILT_PACK %3, %4, m15, 6
-%if mmsize==32
-    vpermq %3, %3, q3120
-%endif
     movntps   [r5+r4], %3
 %endmacro
 
@@ -1118,14 +1101,8 @@ cglobal hpel_filter_h, 3,3,8
 %endmacro
 
 %macro DO_FILT_H 3
-%if mmsize==32
-    vperm2i128 m3, %2, %1, q0003
-%endif
     PALIGNR   m1, %2, %1, (mmsize-2), m3
     PALIGNR   m2, %2, %1, (mmsize-1), m3
-%if mmsize==32
-    vperm2i128 m3, %3, %2, q0003
-%endif
     PALIGNR   m4, %3, %2, 1 , m3
     PALIGNR   m5, %3, %2, 2 , m3
     PALIGNR   m6, %3, %2, 3 , m3
@@ -1152,6 +1129,91 @@ cglobal hpel_filter_h, 3,3,8
 %endif
     movntps [r0+r4], m1
     mova      %2, %3
+%endmacro
+
+; avx2: v of the block at r4+%1, words in lane order to m1 (0-7|16-23), m2 (8-15|24-31)
+%macro DO_FILT_V_AVX2 1
+    prefetcht0 [r1+r2*2+%1+mmsize]
+    mova      m1, [r3+%1]
+    punpckhbw m2, m1, [r3+r2+%1]
+    punpcklbw m1, m1, [r3+r2+%1]
+    mova      m3, [r1+r2+%1]
+    punpckhbw m4, m3, [r1+r2*2+%1]
+    punpcklbw m3, m3, [r1+r2*2+%1]
+    mova      m5, [r3+r2*2+%1]
+%if hpel_copy
+    movntps [r9+r4+%1], m5
+%endif
+    punpckhbw m6, m5, [r1+%1]
+    punpcklbw m5, m5, [r1+%1]
+    pmaddubsw m1, m12
+    pmaddubsw m2, m12
+    pmaddubsw m3, m0
+    pmaddubsw m4, m0
+    pmaddubsw m5, m14
+    pmaddubsw m6, m14
+    paddw     m1, m3
+    paddw     m2, m4
+    paddw     m1, m5
+    paddw     m2, m6
+    pmulhrsw  m3, m1, m15
+    pmulhrsw  m4, m2, m15
+    packuswb  m3, m4
+    movntps  [r8+r4+%1], m3
+%endmacro
+
+; avx2: c and h of the block at r4. v words m8 (0-7|16-23), m9 (8-15|24-31),
+; m10 (-8..-1|8-15), m1/m2 of the next block; leaves m8-m10 for the next block
+%macro DO_FILT_CH_AVX2 0
+    vperm2i128 m7, m1, m8, q0003 ; 16-23|32-39
+    palignr   m3, m8, m10, 12
+    palignr   m4, m9, m8, 6
+    palignr   m5, m8, m10, 14
+    palignr   m6, m9, m8, 4
+    paddw     m3, m4
+    paddw     m5, m6
+    palignr   m4, m9, m8, 2
+    paddw     m4, m8
+    FILT_H    m3, m5, m4
+    palignr   m4, m9, m8, 12
+    palignr   m5, m7, m9, 6
+    palignr   m6, m9, m8, 14
+    paddw     m4, m5
+    palignr   m5, m7, m9, 4
+    palignr   m7, m7, m9, 2
+    paddw     m5, m6
+    paddw     m7, m9
+    FILT_H    m4, m5, m7
+    pmulhrsw  m3, m13
+    pmulhrsw  m4, m13
+    packuswb  m3, m4
+    movntps   [r5+r4], m3
+    vperm2i128 m10, m2, m9, q0003
+    mova      m8, m1
+    mova      m9, m2
+    movu      m1, [r3+r2*2-2]
+    movu      m2, [r3+r2*2-1]
+    mova      m3, [r3+r2*2]
+    movu      m4, [r3+r2*2+1]
+    movu      m5, [r3+r2*2+2]
+    movu      m6, [r3+r2*2+3]
+    pmaddubsw m1, m12
+    pmaddubsw m2, m12
+    pmaddubsw m3, m14
+    pmaddubsw m4, m14
+    pmaddubsw m5, m0
+    pmaddubsw m6, m0
+    paddw     m1, m3
+    paddw     m2, m4
+    paddw     m1, m5
+    paddw     m2, m6
+    pmulhrsw  m1, m15
+    pmulhrsw  m2, m15
+    packuswb  m1, m2
+    pshufb    m1, m11
+    movntps [r0+r4], m1
+    add       r3, mmsize
+    add       r1, mmsize
 %endmacro
 
 %macro HPEL 0-1 0 ; copy
@@ -1197,6 +1259,23 @@ cglobal hpel_filter, 7,9,16
     pxor      m0, m0
     mova     m15, [pw_16]
 %endif
+%if mmsize == 32
+    mova     m11, [hpel_shuf]
+    mova     m13, [pw_512]
+.loopy:
+    DO_FILT_V_AVX2 0
+    vinserti128 m10, m2, xm2, 1
+    mova      m8, m1
+    mova      m9, m2
+.loopx:
+    DO_FILT_V_AVX2 mmsize
+.lastx:
+    DO_FILT_CH_AVX2
+    add      r4, mmsize
+    jl .loopx
+    cmp      r4, mmsize
+    jl .lastx
+%else
 ;ALIGN 16
 .loopy:
 ; first filter_v
@@ -1222,6 +1301,7 @@ cglobal hpel_filter, 7,9,16
     jl .loopx
     cmp      r4, mmsize
     jl .lastx
+%endif
 ; setup regs for next y
     sub      r4, r7
     sub      r4, r2
