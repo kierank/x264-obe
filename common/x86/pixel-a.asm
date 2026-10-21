@@ -10932,28 +10932,16 @@ cglobal weightp_sum8, 7,9,11
     pmaxuw     %3, m12
 %endmacro
 
-; min | max << 16 in dword 0 of each lane, from 8 words a lane
-%macro WEIGHTP_MINMAX 3 ; min, max, tmp
-    pshufd     %3, %1, q1032
+; min, ~max word pairs of 8 words a lane folded to 4 dwords; %2 clobbered, m15 = all ones
+%macro WEIGHTP_MINMAX_ILV 3 ; min, max, tmp
+    pxor       %2, m15
+    punpcklwd  %3, %1, %2
+    punpckhwd  %1, %2
     pminuw     %1, %3
-    pshufd     %3, %1, q2301
-    pminuw     %1, %3
-    psrld      %3, %1, 16
-    pminuw     %1, %3
-    pshufd     %3, %2, q1032
-    pmaxuw     %2, %3
-    pshufd     %3, %2, q2301
-    pmaxuw     %2, %3
-    psrld      %3, %2, 16
-    pmaxuw     %2, %3
-    pslld      %1, 16
-    psrld      %1, 16
-    pslld      %2, 16
-    por        %1, %2
 %endmacro
 
 %macro WEIGHTP_STATS8 0
-cglobal weightp_stats8, 6,8,15
+cglobal weightp_stats8, 6,8,16
     FIX_STRIDES r3
     vpbroadcastd m13, [pw_1]
     WEIGHTP_PERM m14
@@ -10980,13 +10968,24 @@ cglobal weightp_stats8, 6,8,15
     add        r6, r3
     dec       r7d
     jg .loopy
-    WEIGHTP_MINMAX m4, m8,  m12
-    WEIGHTP_MINMAX m5, m9,  m12
-    WEIGHTP_MINMAX m6, m10, m12
-    WEIGHTP_MINMAX m7, m11, m12
-    punpckldq  m4, m5
-    punpckldq  m6, m7
-    punpcklqdq m4, m6
+    ; one min reduction for both: min words interleaved with ~max words, so each dword
+    ; ends as min | ~max << 16 (u16 ~ reverses the order), then the high words flip back
+    ALL_ONES  m15
+    WEIGHTP_MINMAX_ILV m4, m8,  m12
+    WEIGHTP_MINMAX_ILV m5, m9,  m12
+    WEIGHTP_MINMAX_ILV m6, m10, m12
+    WEIGHTP_MINMAX_ILV m7, m11, m12
+    punpckldq  m8, m4, m5
+    punpckhdq  m4, m5
+    pminuw     m4, m8
+    punpckldq  m9, m6, m7
+    punpckhdq  m6, m7
+    pminuw     m6, m9
+    punpcklqdq m8, m4, m6
+    punpckhqdq m4, m6
+    pminuw     m4, m8
+    pslld     m15, 16
+    pxor       m4, m15
     vpermd     m4, m14, m4
     movu     [r1], m4
     pmaddwd    m0, m13
