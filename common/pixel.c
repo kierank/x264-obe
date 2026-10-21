@@ -1410,6 +1410,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
+        INIT4( sad_list_min, _avx2 );
+        INIT4( sad_avg2_list_min, _avx2 );
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
