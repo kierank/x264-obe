@@ -68,6 +68,9 @@ typedef struct
                                                   intptr_t ctx_block_cat, x264_cabac_t *cb );
     void (*cabac_block_residual_422_dc_rd_internal)( dctcoef *l, int b_interlaced,
                                                      intptr_t ctx_block_cat, x264_cabac_t *cb );
+    /* 4:2:0/4:2:2: every cbf and residual block of the MB; dct = h->dct, nnz = the scan8 nnz
+     * cache, flags: see x264_cabac_mb_residual_420_422 in encoder/cabac.c. NULL: the C */
+    void (*cabac_mb_residual)( dctcoef *dct, uint8_t *nnz, intptr_t flags, x264_cabac_t *cb );
 } x264_bitstream_function_t;
 
 #define x264_bitstream_init x264_template(bitstream_init)
