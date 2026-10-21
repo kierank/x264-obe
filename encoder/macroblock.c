@@ -979,6 +979,10 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                            mvp[0], mvp[1], 16, 16, &h->sh.weight[0][p] );
         }
 
+        /* prediction == fenc: no coefficients, decimate score 0 */
+        if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+            continue;
+
         for( int i8x8 = 0, i_decimate_mb = 0; i8x8 < 4; i8x8++ )
         {
             int fenc_offset = (i8x8&1) * 8 + (i8x8>>1) * FENC_STRIDE * 8;
