@@ -1038,6 +1038,29 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twin of the 8x8-only arm: both declare the hidden weak x264_8_twin_sad_*_min_8x8;
+ * with DBP_TWIN8 1 the four 8x8 slots dispatch them, which link as 0, so they stay NULL */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define DBP_TWIN8 0
+#define DBP_TWIN1( k ) \
+    extern __typeof__( x264_pixel_sad_##k##_min_8x8_avx512 ) x264_8_twin_sad_##k##_min_8x8 __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak x264_8_twin_sad_" #k "_min_8x8\n.hidden x264_8_twin_sad_" #k "_min_8x8" );
+DBP_TWIN1( dia )
+DBP_TWIN1( hex )
+DBP_TWIN1( oct )
+DBP_TWIN1( ring )
+#if DBP_TWIN8
+#undef x264_pixel_sad_dia_min_8x8_avx512
+#define x264_pixel_sad_dia_min_8x8_avx512 x264_8_twin_sad_dia_min_8x8
+#undef x264_pixel_sad_hex_min_8x8_avx512
+#define x264_pixel_sad_hex_min_8x8_avx512 x264_8_twin_sad_hex_min_8x8
+#undef x264_pixel_sad_oct_min_8x8_avx512
+#define x264_pixel_sad_oct_min_8x8_avx512 x264_8_twin_sad_oct_min_8x8
+#undef x264_pixel_sad_ring_min_8x8_avx512
+#define x264_pixel_sad_ring_min_8x8_avx512 x264_8_twin_sad_ring_min_8x8
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
@@ -1792,12 +1815,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
-        INIT7( sad_dia_min, _avx512 );
-        INIT7( sad_hex_min, _avx512 );
-        INIT7( sad_hexhalf_min, _avx512 );
-        INIT7( sad_oct_min, _avx512 );
-        INIT7( sad_ring_min, _avx512 );
-        INIT7( sad_corner_min, _avx512 );
+        /* 8x8 only: the sizes and kernels that win on rack01 Zen 4 */
+        pixf->sad_dia_min[PIXEL_8x8]  = x264_pixel_sad_dia_min_8x8_avx512;
+        pixf->sad_hex_min[PIXEL_8x8]  = x264_pixel_sad_hex_min_8x8_avx512;
+        pixf->sad_oct_min[PIXEL_8x8]  = x264_pixel_sad_oct_min_8x8_avx512;
+        pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx512;
         INIT7( sad_row, _avx512 );
 #endif
     }
