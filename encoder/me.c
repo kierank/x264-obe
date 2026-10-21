@@ -60,6 +60,37 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
 #define BITS_MVD( mx, my )\
     (p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
 
+/* A1: the clipped predictor list against pmv, zero and itself */
+static NOINLINE void sweep_mvc( x264_t *h, int i_pixel, int16_t (*mvc)[2], int n, uint32_t pmv )
+{
+    uint64_t *c = h->sweep.c.a1[h->sweep.la][i_pixel];
+    int red = 0;
+    c[SW_A1_VALID] += n;
+    for( int i = 0; i < n; i++ )
+    {
+        uint32_t mv = M32( mvc[i] );
+        if( mv == pmv )
+        {
+            c[SW_A1_EQ_PMV]++;
+            red = 1;
+        }
+        else if( !mv )
+        {
+            c[SW_A1_EQ_ZERO]++;
+            red = 1;
+        }
+        else
+            for( int j = 0; j < i; j++ )
+                if( M32( mvc[j] ) == mv )
+                {
+                    c[SW_A1_DUP]++;
+                    red = 1;
+                    break;
+                }
+    }
+    c[SW_A1_RED_CALLS] += red;
+}
+
 #define COST_MV( mx, my )\
 do\
 {\
@@ -281,6 +312,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
     const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
 
+    uint64_t *sw_a1 = h->sweep.c.a1[h->sweep.la][i_pixel];
+    sw_a1[SW_A1_CALLS]++;
+    sw_a1[SW_A1_MVC] += i_mvc;
+    sw_a1[SW_A1_WEIGHTED] += !!m->weight[0].weightfn;
+
     /* Try extra predictors if provided.  If subme >= 3, check subpel predictors,
      * otherwise round them to fullpel. */
     if( h->mb.i_subpel_refine >= 3 )
@@ -299,6 +335,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
             int valid_mvcs = x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            sweep_mvc( h, i_pixel, mvc_temp+2, valid_mvcs, pmv );
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
@@ -364,6 +401,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Like in subme>=3, except we also round the candidates to fullpel. */
             int valid_mvcs = x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            sweep_mvc( h, i_pixel, mvc_temp+2, valid_mvcs, pmv );
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
