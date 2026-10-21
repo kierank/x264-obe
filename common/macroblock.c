@@ -820,6 +820,7 @@ void x264_mbcache_init( int cpu, x264_mbcache_function_t *pf, int chroma_format 
 #if HAVE_MMX && ARCH_X86_64
     if( cpu&X264_CPU_AVX512ICL )
     {
+        pf->save_border_mbaff = x264_mbcache_save_border_mbaff_avx512icl;
         pf->load_left_mbaff = chroma_format == CHROMA_444 ? x264_mbcache_load_left_mbaff_444_avx512icl
                             : chroma_format == CHROMA_422 ? x264_mbcache_load_left_mbaff_422_avx512icl
                             : x264_mbcache_load_left_mbaff_420_avx512icl;

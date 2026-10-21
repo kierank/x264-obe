@@ -106,6 +106,27 @@ mbcache_left_mask_420: dq (1<<35)|(1<<43)
 mbcache_left_mask_422: dq (1<<11)|(1<<19)|(1<<35)|(1<<43)|(1<<51)|(1<<59)
 mbcache_left_mask_i4:  dd 0x08080808
 
+; save_border_mbaff: vpermi2d of mv entries 15..30 and 24..39, vpermi2b of [ref|mvd 8..39],
+; the governing ref of each byte (vpermb of the border), lane masks
+ALIGN 64
+save_mv_idx: dd 28,29,30,31, 0,8,23,31, 0,0,0,0, 0,0,0,0
+save_md_idx:
+    db 120,121,122,123,124,125,126,127,78,79,94,95,110,111,126,127,12,14,28,30,12,14,28,30,28,28,30,30,14,14,30,30
+    db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+save_q_idx:
+    db 0,0,56,56,0,0,57,57,0,0,58,58,0,0,59,59,0,0,60,60,0,0,61,61,0,0,62,62,0,0,63,63
+    db 0,56,0,57,0,58,0,59,0,60,0,61,0,62,0,63,48,49,50,51,0,0,0,0,0,0,0,0,0,0,0,0
+save_q_neg:
+    db 128,128,0,0,128,128,0,0,128,128,0,0,128,128,0,0,128,128,0,0,128,128,0,0,128,128,0,0,128,128,0,0
+    db 128,0,128,0,128,0,128,0,128,0,128,0,128,0,128,0,0,0,0,0,128,128,128,128,128,128,128,128,128,128,128,128
+save_mmv:
+    db 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255
+    db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+save_mrf:
+    db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0
+gf_shr1: dq 0x0204081020408000 ; gf2p8affineqb: x >> 1
+
 SECTION .text
 
 ;-----------------------------------------------------------------------------
@@ -143,4 +164,43 @@ INIT_ZMM avx512icl
 LOAD_LEFT_MBAFF 420, 420
 LOAD_LEFT_MBAFF 422, 422
 LOAD_LEFT_MBAFF 444, 422
+%endif
+
+;-----------------------------------------------------------------------------
+; void mbcache_save_border_mbaff( x264_mbaff_border_t dst[2], int8_t ref[40], int16_t mv[40][2],
+;                                 uint8_t mvd[40][2], int field )
+; reads ref[0..31], mv[15..39], mvd[8..39]; field is 0 or 1
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_ZMM avx512icl
+cglobal mbcache_save_border_mbaff, 5,5,6
+    movu            m0, [r2+60]
+    mova            m1, [save_mv_idx]
+    vpermi2d        m1, m0, [r2+96]       ; mv: bottom row, right column, bottom right
+    movu           ym2, [r1]
+    mova            m3, [save_md_idx]
+    vpermi2b        m3, m2, [r3+16]       ; mvd, ref, ref_src
+    vinserti64x4    m1, m1, ym3, 1
+    mova          [r0], m1
+    mova            m3, [save_q_idx]
+    vpermb          m3, m3, m1            ; the ref governing each byte
+    por             m3, [save_q_neg]
+    vpmovb2m        k1, m3
+    knotq           k1, k1                ; bytes to remap: ref >= 0
+    vgf2p8affineqb  m2, m1, [gf_shr1] {1to8}, 0 ; bytes >> 1
+    paddb           m3, m1, m1            ; bytes << 1
+    psllw           m4, m1, 1             ; mv.y << 1
+    psrlw           m5, m1, 15
+    paddw           m5, m1
+    psraw           m5, 1                 ; mv.y / 2
+    vpternlogd      m5, m2, [save_mmv], 0xe4 ; frame MB: mv.y / 2, mvd.y >> 1,
+    vpternlogd      m5, m3, [save_mrf], 0xd8 ;           ref << 1
+    vpternlogd      m4, m3, [save_mmv], 0xe4 ; field MB: mv.y << 1, mvd.y << 1,
+    vpternlogd      m4, m2, [save_mrf], 0xd8 ;           ref >> 1
+    neg            r4d
+    kmovb           k2, r4d
+    vpblendmq       m5 {k2}, m5, m4
+    vmovdqu8        m1 {k1}, m5
+    mova       [r0+64], m1
+    RET
 %endif
