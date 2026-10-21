@@ -10788,6 +10788,7 @@ cglobal weightp_sum8, 7,9,11
     bts       r7d, r6d
     shr       r7d, 1
     shl       r7d, 16
+    movzx     r5d, r5w
     or        r7d, r5d
     movd      xm7, r7d
     vpbroadcastd m7, xm7
