@@ -104,6 +104,8 @@ pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4
 pd_8: times 4 dd 8
 %if HIGH_BIT_DEPTH
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
+ALIGN 32
+pw_5_hbd: times 16 dw 5      ; hpel_filter: 5*(4*c - b)
 %endif
 
 SECTION .text
@@ -379,8 +381,7 @@ HPEL_FILTER
 %macro HPEL_FILT_HBD 3 ; a/dst, b, c (a, b, c clobbered): a - 5*b + 20*c, wrapping
     psllw      %3, 2
     psubw      %3, %2
-    paddw      %1, %3
-    psllw      %3, 2
+    pmullw     %3, [pw_5_hbd]
     paddw      %1, %3
 %endmacro
 
