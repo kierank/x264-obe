@@ -52,6 +52,13 @@ isad16_hidx:   db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
 isad8c_wperm:  dw 0, 4, 2, 2, 6, 6, 2, 6
 isad8c_wmul:   dw 1, 1, 1, 0, 1, 0, 1, 1
 isad8c_shift:  dd 2, 1, 1, 2
+ALIGN 64
+; 8x16c: dc4-dc7 (bytes 16-28) for rows 8-15; { s0+s2, s1, s3, s1+s3, s4, s1+s4, s5, s1+s5 }
+isad816c_dcidx: times 4 db 16,16,16,16,20,20,20,20
+                times 4 db 24,24,24,24,28,28,28,28
+isad816c_wperm: dw 0, 4, 2, 2, 6, 6, 2, 6, 8, 8, 2, 8, 10, 10, 2, 10
+isad816c_wmul:  dw 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1
+isad816c_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
 
 SECTION .text
 
@@ -1166,6 +1173,52 @@ cglobal intra_sad_x3_16x16, 3,3,10
 %endrep
 %undef isad_g
     INTRA_SAD_PACK3_END 4, 6, 5         ; V H DC
+
+; 8x16c: as 8x8c with { s4, s5 } from left 8-15 in lane 1 of the vdbpsadbw,
+; dc4-dc7 as bytes 16-28 of the vpermb source, H rows 8-15 from left 8-15
+cglobal intra_sad_x3_8x16c, 3,3,12
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    INTRA_SAD_LEFT4 3, 2
+    INTRA_SAD_LEFT4 4, 3
+    punpckldq     xm0, xm2              ; left 0-7
+    punpckldq     xm3, xm4              ; left 8-15
+    movq          xm1, [r1-FDEC_STRIDE]
+    pxor          xm5, xm5
+    punpcklqdq    xm2, xm1, xm0         ; top 0-7, left 0-7
+    movq          xm4, xm3
+    vinserti32x4  ym2, ym2, xm4, 1      ; | left 8-15, 0
+    vdbpsadbw     ym2, ym2, ym5, 0      ; s0 s0 s1 s1 s2 s2 s3 s3 | s4 s4 s5 s5 0 0 0 0
+    movu          ym4, [isad816c_wperm]
+    vpermw        ym2, ym4, ym2
+    pmaddwd       ym2, [isad816c_wmul]  ; s0+s2 s1 s3 s1+s3 s4 s1+s4 s5 s1+s5
+    vpsrlvd       ym2, ym2, [isad816c_shift]
+    pavgw         ym2, ym5              ; dc0 .. dc7
+    mova           m4, [isad8c_dcidx]
+    vpermb         m4, m4, m2           ; DC rows 0-7
+    mova           m6, [isad816c_dcidx]
+    vpermb         m6, m6, m2           ; DC rows 8-15
+    mova           m5, [isad8c_hidx]
+    vpermb         m7, m5, m0           ; H rows 0-7
+    vpermb         m8, m5, m3           ; H rows 8-15
+    vpbroadcastq   m1, [r1-FDEC_STRIDE] ; V prediction
+    mova          m11, [isad8c_qidx]
+    movu           m9, [r0]
+    movu           m5, [r0+4*FENC_STRIDE]
+    vpermt2q       m9, m11, m5          ; fenc rows 0-7
+    movu          m10, [r0+8*FENC_STRIDE]
+    movu           m5, [r0+12*FENC_STRIDE]
+    vpermt2q      m10, m11, m5          ; fenc rows 8-15
+    psadbw         m4, m9
+    psadbw         m6, m10
+    paddq          m4, m6
+    psadbw         m7, m9
+    psadbw         m8, m10
+    paddq          m7, m8
+    psadbw         m9, m1
+    psadbw         m1, m10
+    paddq          m1, m9
+    INTRA_SAD_PACK3_END 4, 7, 1         ; DC H V
 %endif ; ARCH_X86_64
 
 ;=============================================================================
