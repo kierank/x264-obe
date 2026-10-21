@@ -3519,4 +3519,30 @@ INIT_YMM avx2
 FRAME_INIT_LOWRES8
 INIT_YMM avx512icl
 FRAME_INIT_LOWRES8
+
+;-----------------------------------------------------------------------------
+; void mc_copy_16x16_msb8( uint16_t *dst, uint8_t *msb, uint16_t *src, intptr_t i_src )
+; the luma fenc load: copy[PIXEL_16x16] to dst (FENC_STRIDE) and the --me-8bit
+; msb8 of it, src >> 2, to msb (FENC_STRIDE bytes, so two rows are 32 bytes)
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal mc_copy_16x16_msb8, 4,5,2
+    FIX_STRIDES  r3
+    mov         r4d, 8
+.loop:
+    movu         m0, [r2]
+    movu         m1, [r2+r3]
+    mova       [r0], m0
+    mova [r0+FENC_STRIDEB], m1
+    psrlw        m0, 2
+    psrlw        m1, 2
+    packuswb     m0, m1              ; a 0-7, b 0-7 | a 8-15, b 8-15
+    vpermq       m0, m0, q3120
+    mova       [r1], m0
+    lea          r2, [r2+r3*2]
+    add          r0, 2*FENC_STRIDEB
+    add          r1, 2*FENC_STRIDE
+    dec         r4d
+    jg .loop
+    RET
 %endif ; HIGH_BIT_DEPTH && ARCH_X86_64
