@@ -160,6 +160,15 @@ tr_m16:    dq -16
 tr_8hi:    dq 8<<32
 tr_top:    dq 1<<63
 tr_pw1:    dd 0x00010001
+tr_q7:     dq 7
+; vpermi2b( entropy lo, entropy hi ) of 8 positions to qwords
+tr_qidx:
+%assign tr_j 0
+%rep 8
+    db tr_j, 64+tr_j, 0, 0, 0, 0, 0, 0
+    %assign tr_j tr_j+1
+%endrep
+%undef tr_j
 
 cextern_common cabac_entropy
 cextern_common cabac_transition
@@ -1171,6 +1180,9 @@ clocal trellis_coefn
 %ifndef TRELLIS_ICL_CMPMERGE
     %define TRELLIS_ICL_CMPMERGE 0
 %endif
+%ifndef TRELLIS_ICL_ZPREFIX
+    %define TRELLIS_ICL_ZPREFIX 1
+%endif
 
 INIT_ZMM avx512icl
 
@@ -1610,10 +1622,15 @@ INIT_ZMM avx512icl
     %define dct_weight1_tab dct4_weight_tab
     %define dct_weight2_tab dct4_weight2_tab
 %endif
+; zero-run prefix sums: 8x8 only, where runs of 20-55 zero coefs are typical
+%assign tr_zpfx 0
+%if TRELLIS_ICL_ZPREFIX && num_coefs == 64
+    %assign tr_zpfx 1
+%endif
 cglobal %1, 4,15,22
     mov r2d, r2d
     mov r3d, r3d
-    %assign pad 128 + 8*520 + 16-gprsize-(stack_offset&15)
+    %assign pad 128 + 8*520 + tr_zpfx*8*66 + 16-gprsize-(stack_offset&15)
     SUB  rsp, pad
 %if WIN64
     %define level_statem rsp+stack_offset+80
@@ -1635,6 +1652,8 @@ cglobal %1, 4,15,22
     %define ssd01m  [rsp+56]
     %define nodesp  rsp+64
     %define ltree   rsp+128
+    %define prefix  rsp+128+8*520 ; cost_sig0 of the positions below i, built at the first zero
+    %define pfxdone byte [rsp+128+8*520+8*65]
     mov    r6, r4mp
     mov    origp, r6
     mov    r6, r5mp
@@ -1740,6 +1759,9 @@ cglobal %1, 4,15,22
     mov    dword [ltree+4], 0
     vmovdqu64 m13, [tr_iotahi1]
     mov    r4d, 1
+%if tr_zpfx
+    mov    pfxdone, 0
+%endif
 
     TR_LOOP 0
 .next0:
@@ -1757,6 +1779,14 @@ cglobal %1, 4,15,22
     lea    r7d, [r3-1]
     cmp    r7d, r12d
     jle .zeros_done
+%if tr_zpfx
+    cmp    pfxdone, 0
+    je .prefix
+.prefix_done:
+    lea    r7d, [r12+1]
+    mov    r11, [prefix + r3*8]
+    sub    r11, [prefix + r7*8]
+%else
     mov    r9, cabac_state_sigm
 %if num_coefs == 64
     mov    r10, sigtabp
@@ -1778,6 +1808,7 @@ cglobal %1, 4,15,22
     dec    r7d
     cmp    r7d, r12d
     jg .zeros
+%endif
     shl    r11, 4
     vmovq  xm19, r11
     vpsubq m0, m0, m19
@@ -1797,6 +1828,54 @@ cglobal %1, 4,15,22
 %endif
     xor    eax, eax
     jmp .return
+
+%if tr_zpfx
+.prefix:
+    ; prefix[i] = sum of cost_sig0 of positions 0..i-1
+    mov    r6, cabac_state_sigm
+    vmovdqu8  xm15, [r6]
+    mov    r6, sigtabp
+    vmovdqu8  m16, [r6]
+    vpermb    m16, m16, m15               ; state of each position
+    vmovdqu64 m17, [tr_e0lo]
+    vpermt2b  m17, m16, [tr_e0lo+64]
+    vmovdqu64 m18, [tr_e0hi]
+    vpermt2b  m18, m16, [tr_e0hi+64]
+    vmovdqu64 m15, [tr_qidx]
+    mov    r6, 0x0303030303030303
+    kmovq     k2, r6
+    mov    r6d, 8
+    vpbroadcastb m2, r6d
+    vpbroadcastq m3, r2
+    vpbroadcastq m11, [tr_q7]
+    vpxord    m12, m12, m12
+    vpxord    m21, m21, m21
+    mov    qword [prefix], 0
+%assign %%g 0
+%rep 8
+    vmovdqa64 m19, m15
+    vpermi2b  m19{k2}{z}, m17, m18        ; entropy of positions 8g..8g+7
+%if %%g < 7
+    vpaddb    m15, m15, m2
+%endif
+    vpmuludq  m19, m19, m3
+    vpsrlq    m19, m19, CABAC_SIZE_BITS - LAMBDA_BITS
+    valignq   m20, m19, m21, 7
+    vpaddq    m19, m19, m20
+    valignq   m20, m19, m21, 6
+    vpaddq    m19, m19, m20
+    valignq   m20, m19, m21, 4
+    vpaddq    m19, m19, m20
+    vpaddq    m19, m19, m12
+    vmovdqu64 [prefix + 8 + 64*%%g], m19
+%if %%g < 7
+    vpermq    m12, m11, m19
+%endif
+%assign %%g %%g+1
+%endrep
+    mov    pfxdone, 1
+    jmp .prefix_done
+%endif
 
     TR_LOOP 1
 .next1:

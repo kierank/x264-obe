@@ -70,6 +70,13 @@ cavlc_shuf_avx512: dw 0x0080, 0x0184, 0x0288, 0x038c, 0x0490, 0x0594, 0x0698, 0x
 %endif
 
 pw_ppmmmmpp:    dw 1,1,-1,-1,-1,-1,1,1
+; dct4x4dc/idct4x4dc avx512icl: output order, butterfly masks
+dc4x4_perm:     db 0,8,12,4,2,10,14,6,3,11,15,7,1,9,13,5
+dc4x4_masks:    dw 0xaaaa,0xcccc,0xf0f0,0xff00
+; add8x8_idct high bit depth avx512icl: packed row pairs to 8-pixel rows
+add8x8_hbd_zmm_rows: db 0,2,1,3,4,6,5,7
+; zigzag_scan_4x4_field avx512icl
+scan4field_perm: db 0,1,4,2,3,5,6,7,8,9,10,11,12,13,14,15
 pb_sub4frame:   db 0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15
 pb_sub4field:   db 0,4,1,8,12,5,9,13,2,6,10,14,3,7,11,15
 pb_subacmask:   dw 0,-1,-1,-1,-1,-1,-1,-1
@@ -150,6 +157,27 @@ pb_scan8frame_avx2:    db 0,1,-1,-1,2,3,4,5,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,10,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,-1,-1,8,9,-1,-1,-1,-1,10,11,-1,-1,-1,-1,-1,-1,-1,-1,10,11,12,13,-1,-1,14,15
                        db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,-1,12,13,-1,-1,-1,-1,14,15,-1,-1
+align 64
+; zigzag_sub_8x8 avx512icl: vpermb indices into the 8x8 block packed as 8 bytes
+; per row; even bytes give coefs 0-31, odd bytes coefs 32-63
+zsub8_frame8:  db  0,35, 1,42, 8,49,16,56, 9,57, 2,50, 3,43,10,36
+               db 17,29,24,22,32,15,25,23,18,30,11,37, 4,44, 5,51
+               db 12,58,19,59,26,52,33,45,40,38,48,31,41,39,34,46
+               db 27,53,20,60,13,61, 6,54, 7,47,14,55,21,62,28,63
+zsub8_field8:  db  0,35, 8,43,16,51, 1,59, 9,28,24,13,32, 6,17,21
+               db  2,36,25,44,40,52,48,60,56,29,33,14,10,22, 3,37
+               db 18,45,41,53,49,61,57,30,26,7,11,15, 4,38,19,46
+               db 34,54,42,62,50,23,58,31,27,39,12,47, 5,55,20,63
+; vpermt2b indices packing the 8 src rows to 8 bytes each
+zsub8_pack:    db   0,  1,  2,  3,  4,  5,  6,  7, 16, 17, 18, 19, 20, 21, 22, 23
+               db  32, 33, 34, 35, 36, 37, 38, 39, 48, 49, 50, 51, 52, 53, 54, 55
+               db  64, 65, 66, 67, 68, 69, 70, 71, 80, 81, 82, 83, 84, 85, 86, 87
+               db  96, 97, 98, 99,100,101,102,103,112,113,114,115,116,117,118,119
+; zigzag_sub_4x4 avx512icl: even bytes index FENC_STRIDE rows, odd bytes the packed dst rows
+zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
+               db 33, 9,48,12,49,13,34,10,19, 7,35,11,50,14,51,15
+zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
+               db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
 
 SECTION .text
@@ -292,6 +320,86 @@ cglobal idct4x4dc, 1,1
     movq  [r0+24], m3
     RET
 %endif ; HIGH_BIT_DEPTH
+
+;-----------------------------------------------------------------------------
+; dct4x4dc/idct4x4dc avx512icl: the block in one register, rows in 4-coef
+; lanes. A butterfly is a shuffle, an add and a masked subtract; it leaves the
+; frequencies in order 0 3 1 2 on both axes, and one permute gives the
+; transposed order of the C. 8-bit dct4x4dc does the rows in words (the C
+; truncates there) and the columns in dwords (17 bits before the >>1).
+;-----------------------------------------------------------------------------
+%macro WALSH4_ICL 6 ; size, dst, src, tmp, shuffle, mask
+    %5
+    padd%1     %2, %3, %4
+    vpsub%1    %2 {%6}, %4, %3
+%endmacro
+
+%macro DC4x4_ICL_MASKS 0
+    kmovw      k1, [dc4x4_masks+0]
+    kmovw      k2, [dc4x4_masks+2]
+    kmovw      k3, [dc4x4_masks+4]
+    kmovw      k4, [dc4x4_masks+6]
+%endmacro
+
+; columns, dwords, from m0
+%macro DC4x4_ICL_COLS 0
+    WALSH4_ICL  d, m2, m0, m1, {vshufi32x4 m1, m0, m0, q2301}, k3
+    WALSH4_ICL  d, m0, m2, m1, {vshufi32x4 m1, m2, m2, q1032}, k4
+%endmacro
+
+INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH
+cglobal dct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova        m0, [r0]
+    WALSH4_ICL  d, m2, m0, m1, {pshufd m1, m0, q2301}, k1
+    WALSH4_ICL  d, m0, m2, m1, {pshufd m1, m2, q1032}, k2
+    DC4x4_ICL_COLS
+    vpmovzxbd   m1, [dc4x4_perm]
+    vpaddd      m0, m0, [pd_1] {1to16}
+    psrad       m0, 1
+    vpermd      m0, m1, m0
+    mova      [r0], m0
+    RET
+
+cglobal idct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova        m0, [r0]
+    WALSH4_ICL  d, m2, m0, m1, {pshufd m1, m0, q2301}, k1
+    WALSH4_ICL  d, m0, m2, m1, {pshufd m1, m2, q1032}, k2
+    DC4x4_ICL_COLS
+    vpmovzxbd   m1, [dc4x4_perm]
+    vpermd      m0, m1, m0
+    mova      [r0], m0
+    RET
+%else
+cglobal dct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova       ym0, [r0]
+    WALSH4_ICL  w, ym2, ym0, ym1, {vprold ym1, ym0, 16}, k1
+    WALSH4_ICL  w, ym0, ym2, ym1, {pshufd ym1, ym2, q2301}, k2
+    vpmovsxwd   m0, ym0
+    DC4x4_ICL_COLS
+    vpmovzxbd   m1, [dc4x4_perm]
+    vpaddd      m0, m0, [pd_1] {1to16}
+    psrad       m0, 1
+    vpermd      m0, m1, m0
+    vpmovdw    ym1, m0
+    mova      [r0], ym1
+    RET
+
+cglobal idct4x4dc, 1,1
+    DC4x4_ICL_MASKS
+    mova       ym0, [r0]
+    WALSH4_ICL  w, ym2, ym0, ym1, {vprold ym1, ym0, 16}, k1
+    WALSH4_ICL  w, ym0, ym2, ym1, {pshufd ym1, ym2, q2301}, k2
+    WALSH4_ICL  w, ym2, ym0, ym1, {pshufd ym1, ym0, q1032}, k3
+    WALSH4_ICL  w, ym0, ym2, ym1, {vpermq ym1, ym2, q1032}, k4
+    vpmovzxbw  ym1, [dc4x4_perm]
+    vpermw     ym0, ym1, ym0
+    mova      [r0], ym0
+    RET
+%endif
 
 ;-----------------------------------------------------------------------------
 ; void dct2x4dc( dctcoef dct[8], dctcoef dct4x4[8][16] )
@@ -663,6 +771,86 @@ cglobal add16x16_idct, 2,2,8
 .add8x8:
     ADD8x8_IDCT_HBD
     ret
+
+;-----------------------------------------------------------------------------
+; void add8x8_idct( pixel *p_dst, dctcoef dct[4][16] ), AVX-512
+; One pass for the four blocks: lane b holds block b, a register one row.
+; The rows come from a 4x4 transpose of the 128-bit lanes of the four
+; blocks; after the pack a vpermq gives four 8-pixel rows per register.
+;-----------------------------------------------------------------------------
+%macro ADD8x8_IDCT_HBD_ZMM_ROWS 5 ; reg, 4 pixel rows
+    movu         xm2, [r0+%2*FDEC_STRIDEB]
+    vinserti32x4  m2, m2, [r0+%3*FDEC_STRIDEB], 1
+    vinserti32x4  m2, m2, [r0+%4*FDEC_STRIDEB], 2
+    vinserti32x4  m2, m2, [r0+%5*FDEC_STRIDEB], 3
+    paddsw       m%1, m2
+    CLIPW        m%1, m7, m8
+    movu  [r0+%2*FDEC_STRIDEB], xm%1
+    vextracti32x4 [r0+%3*FDEC_STRIDEB], m%1, 1
+    vextracti32x4 [r0+%4*FDEC_STRIDEB], m%1, 2
+    vextracti32x4 [r0+%5*FDEC_STRIDEB], m%1, 3
+%endmacro
+
+%macro ADD8x8_IDCT_HBD_ZMM 0
+    mova          m0, [r1+  0]
+    mova          m1, [r1+ 64]
+    mova          m2, [r1+128]
+    mova          m3, [r1+192]
+    vshufi32x4    m4, m0, m1, q1010 ; b0r0 b0r1 b1r0 b1r1
+    vshufi32x4    m0, m0, m1, q3232 ; b0r2 b0r3 b1r2 b1r3
+    vshufi32x4    m1, m2, m3, q1010 ; b2r0 b2r1 b3r0 b3r1
+    vshufi32x4    m2, m2, m3, q3232 ; b2r2 b2r3 b3r2 b3r3
+    vshufi32x4    m3, m4, m1, q2020 ; row 0
+    vshufi32x4    m4, m4, m1, q3131 ; row 1
+    vshufi32x4    m1, m0, m2, q2020 ; row 2
+    vshufi32x4    m0, m0, m2, q3131 ; row 3
+    IDCT4_1D d, 3, 4, 1, 0, 2, 5
+    TRANSPOSE4x4D 3, 4, 1, 0, 2
+    paddd         m3, m6
+    IDCT4_1D d, 3, 4, 1, 0, 2, 5
+    psrad         m3, 6
+    psrad         m4, 6
+    psrad         m1, 6
+    psrad         m0, 6
+    packssdw      m3, m4            ; rows 0, 1 of each block
+    packssdw      m1, m0            ; rows 2, 3
+    vpermq        m3, m9, m3        ; pixel rows 0 1 4 5
+    vpermq        m1, m9, m1        ; pixel rows 2 3 6 7
+    ADD8x8_IDCT_HBD_ZMM_ROWS 3, 0, 1, 4, 5
+    ADD8x8_IDCT_HBD_ZMM_ROWS 1, 2, 3, 6, 7
+%endmacro
+
+%macro ADD8x8_IDCT_HBD_ZMM_INIT 0
+    vpbroadcastd  m6, [pd_32]
+    pxor         xm7, xm7
+    vpbroadcastw  m8, [pw_pixel_max]
+    vpmovzxbq     m9, [add8x8_hbd_zmm_rows]
+%endmacro
+
+%if ARCH_X86_64
+INIT_ZMM avx512icl
+cglobal add8x8_idct, 2,2,10
+    ADD8x8_IDCT_HBD_ZMM_INIT
+    ADD8x8_IDCT_HBD_ZMM
+    RET
+
+cglobal add16x16_idct, 2,2,10
+    ADD8x8_IDCT_HBD_ZMM_INIT
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*FDEC_STRIDEB-8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    add  r0, 8*SIZEOF_PIXEL
+    add  r1, 256
+    call .add8x8
+    RET
+.add8x8:
+    ADD8x8_IDCT_HBD_ZMM
+    ret
+%endif ; ARCH_X86_64
 
 %else ; !HIGH_BIT_DEPTH
 
@@ -1069,6 +1257,89 @@ cglobal add8x8_idct, 2,2
     packuswb        m1, m3
     vpscatterqq [r0+m5] {k3}, m1
     RET
+
+; fdec rows as qwords {0 3 1 2 4 7 5 6}, the order the packuswb output comes in
+%macro ADD8x8_IDCT_ZMM_INIT 0
+    mova            m8, [dct_avx512]
+    vbroadcasti32x4 m9, [pw_32]
+    psrlq          m13, m8, 28
+    psrlq          m14, m8, 24
+    mov            r2d, 0xf0f0f0f0
+    kmovd           k1, r2d
+%endmacro
+
+%macro ADD8x8_IDCT_ZMM 0
+    movq           xm6, [r0+0*FDEC_STRIDE]
+    movhps         xm6, [r0+3*FDEC_STRIDE]
+    movq           xm7, [r0+1*FDEC_STRIDE]
+    movhps         xm7, [r0+2*FDEC_STRIDE]
+    movq           xm4, [r0+4*FDEC_STRIDE]
+    movhps         xm4, [r0+7*FDEC_STRIDE]
+    movq           xm5, [r0+5*FDEC_STRIDE]
+    movhps         xm5, [r0+6*FDEC_STRIDE]
+    vinserti32x4   ym6, ym6, xm7, 1
+    vinserti32x4   ym4, ym4, xm5, 1
+    vinserti64x4    m6, m6, ym4, 1
+    mova            m1, [r1]
+    mova            m2, [r1+64]
+    vshufi32x4      m0, m1, m2, q2020 ; 0 1   4 5   8 9   c d
+    vshufi32x4      m1, m2, q3131     ; 2 3   6 7   a b   e f
+    SARSUMSUB        0, 1, 2
+    SBUTTERFLY      wd, 1, 0, 2
+    SUMSUB_BA        w, 0, 1, 2       ; 0+1+2+3>>1 0+1>>1-2-3
+    vprold          m1, 16            ; 0-1>>1-2+3 0-1+2-3>>1
+    SBUTTERFLY      dq, 0, 1, 2
+    mova            m3, m14
+    SARSUMSUB        0, 1, 2
+    vpermi2q        m3, m1, m0
+    vpermt2q        m1, m13, m0
+    paddw           m3, m9            ; += 32
+    SUMSUB_BA        w, 1, 3, 0
+    psraw           m1, 6             ; 0'+1'+2'+3'>>1 0'+1'>>1-2'-3'
+    psraw           m3, 6             ; 0'-1'+2'-3'>>1 0'-1'>>1-2'+3'
+    pxor           xm0, xm0
+    SBUTTERFLY      bw, 6, 0, 2
+    paddsw          m1, m6
+    paddsw          m3, m0
+    packuswb        m1, m3
+    vextracti32x4  xm0, m1, 1
+    vextracti32x4  xm2, m1, 2
+    vextracti32x4  xm3, m1, 3
+    movq   [r0+0*FDEC_STRIDE], xm1
+    movhps [r0+3*FDEC_STRIDE], xm1
+    movq   [r0+1*FDEC_STRIDE], xm0
+    movhps [r0+2*FDEC_STRIDE], xm0
+    movq   [r0+4*FDEC_STRIDE], xm2
+    movhps [r0+7*FDEC_STRIDE], xm2
+    movq   [r0+5*FDEC_STRIDE], xm3
+    movhps [r0+6*FDEC_STRIDE], xm3
+%endmacro
+
+; the avx512 versions above without vpgatherqq/vpscatterqq
+%if ARCH_X86_64
+INIT_ZMM avx512icl
+cglobal add8x8_idct, 2,3,15
+    ADD8x8_IDCT_ZMM_INIT
+    ADD8x8_IDCT_ZMM
+    RET
+
+cglobal add16x16_idct, 2,3,15
+    ADD8x8_IDCT_ZMM_INIT
+    call .add8x8
+    add             r0, 8
+    add             r1, 128
+    call .add8x8
+    add             r0, 8*FDEC_STRIDE-8
+    add             r1, 128
+    call .add8x8
+    add             r0, 8
+    add             r1, 128
+    call .add8x8
+    RET
+.add8x8:
+    ADD8x8_IDCT_ZMM
+    ret
+%endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
 INIT_MMX
@@ -2332,6 +2603,107 @@ ZIGZAG_SUB_4x4   , frame
 ZIGZAG_SUB_4x4 ac, frame
 ZIGZAG_SUB_4x4   , field
 ZIGZAG_SUB_4x4 ac, field
+
+; vpermb gathers the scan order and zero-extends in one step
+%macro ZIGZAG_SUB_4x4_ICL 2
+%ifidn %1, ac
+cglobal zigzag_sub_4x4%1_%2, 4,5
+%else
+cglobal zigzag_sub_4x4%1_%2, 3,5
+%endif
+    mov           r4, 0x000f000f000f000f
+    kmovq         k1, r4
+    mov          r4d, 0x55555555
+    kmovd         k3, r4d
+    vmovdqu8      m0 {k1}{z}, [r1]
+    movd         xm1, [r2+0*FDEC_STRIDE]
+    pinsrd       xm1, [r2+1*FDEC_STRIDE], 1
+    pinsrd       xm1, [r2+2*FDEC_STRIDE], 2
+    pinsrd       xm1, [r2+3*FDEC_STRIDE], 3
+    mova         ym3, [zsub4_%2]
+    psrlw        ym4, ym3, 8
+    vpermb        m0 {k3}{z}, m3, m0
+    vpermb        m1 {k3}{z}, m4, m1
+%assign %%i 0
+%rep 4
+    mov          r4d, [r1+%%i*FENC_STRIDE]
+    mov [r2+%%i*FDEC_STRIDE], r4d
+%assign %%i %%i+1
+%endrep
+    psubw        ym0, ym1
+%ifidn %1, ac
+    movd         r4d, xm0
+    mov          [r3], r4w
+    mov          r4d, 0xfffe
+    kmovw         k1, r4d
+    vmovdqu16    ym0 {k1}{z}, ym0
+%endif
+    mova        [r0], ym0
+    vptestmw      k0, ym0, ym0
+    xor          eax, eax
+    kortestw      k0, k0
+    setnz         al
+    RET
+%endmacro
+
+; 8x8: pack both blocks to 8 bytes per row, then vpermb each half of the scan
+%macro ZIGZAG_SUB_8x8_ICL 1
+cglobal zigzag_sub_8x8_%1, 3,4
+    mov           r3, 0x00ff00ff00ff00ff
+    kmovq         k1, r3
+    mov           r3, 0x5555555555555555
+    kmovq         k3, r3
+    vmovdqu8      m0 {k1}{z}, [r1]
+    vmovdqu8      m1 {k1}{z}, [r1+4*FENC_STRIDE]
+    movq         xm2, [r2+0*FDEC_STRIDE]
+    movhps       xm2, [r2+1*FDEC_STRIDE]
+    movq         xm3, [r2+2*FDEC_STRIDE]
+    movhps       xm3, [r2+3*FDEC_STRIDE]
+    movq         xm4, [r2+4*FDEC_STRIDE]
+    movhps       xm4, [r2+5*FDEC_STRIDE]
+    movq         xm5, [r2+6*FDEC_STRIDE]
+    movhps       xm5, [r2+7*FDEC_STRIDE]
+    mova          m6, [zsub8_pack]
+    vpermt2b      m0, m6, m1            ; src rows 0-7
+    vinserti32x4 ym2, ym2, xm3, 1
+    vinserti32x4 ym4, ym4, xm5, 1
+    vinserti64x4  m2, m2, ym4, 1        ; dst rows 0-7
+    mova          m6, [zsub8_%1 %+ 8]
+    psrlw         m7, m6, 8
+    vpermb        m1 {k3}{z}, m6, m0
+    vpermb        m3 {k3}{z}, m7, m0
+    vpermb        m4 {k3}{z}, m6, m2
+    vpermb        m5 {k3}{z}, m7, m2
+    psubw         m1, m4
+    psubw         m3, m5
+    vextracti32x4 xm4, m0, 1
+    vextracti32x4 xm5, m0, 2
+    vextracti32x4 xm6, m0, 3
+    movq   [r2+0*FDEC_STRIDE], xm0
+    movhps [r2+1*FDEC_STRIDE], xm0
+    movq   [r2+2*FDEC_STRIDE], xm4
+    movhps [r2+3*FDEC_STRIDE], xm4
+    movq   [r2+4*FDEC_STRIDE], xm5
+    movhps [r2+5*FDEC_STRIDE], xm5
+    movq   [r2+6*FDEC_STRIDE], xm6
+    movhps [r2+7*FDEC_STRIDE], xm6
+    mova      [r0], m1
+    mova   [r0+64], m3
+    vptestmw      k0, m1, m1
+    vptestmw      k1, m3, m3
+    xor          eax, eax
+    kortestd      k0, k1
+    setnz         al
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+ZIGZAG_SUB_4x4_ICL   , frame
+ZIGZAG_SUB_4x4_ICL ac, frame
+ZIGZAG_SUB_4x4_ICL   , field
+ZIGZAG_SUB_4x4_ICL ac, field
+ZIGZAG_SUB_8x8_ICL frame
+ZIGZAG_SUB_8x8_ICL field
 %endif ; !HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
@@ -2577,6 +2949,14 @@ cglobal zigzag_scan_4x4_field, 2,2
     movu    [r0+8], xmm1
     RET
 
+INIT_ZMM avx512icl
+cglobal zigzag_scan_4x4_field, 2,2
+    vpmovzxbd   m0, [scan4field_perm]
+    vpermd      m0, m0, [r1]
+    mova      [r0], m0
+    RET
+INIT_ZMM avx512
+
 cglobal zigzag_scan_8x8_frame, 2,2
     psrld       m0, [scan_frame_avx512], 4
     mova        m1, [r1+0*64]
@@ -2680,6 +3060,13 @@ cglobal zigzag_scan_4x4_field, 2,2
     pshuflw   xmm1, [r1+4], q3102
     mova      [r0], m0
     movq    [r0+4], xmm1
+    RET
+
+INIT_YMM avx512icl
+cglobal zigzag_scan_4x4_field, 2,2
+    vpmovzxbw   m0, [scan4field_perm]
+    vpermw      m0, m0, [r1]
+    mova      [r0], m0
     RET
 
 INIT_ZMM avx512

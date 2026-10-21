@@ -32,6 +32,8 @@ uint8_t *x264_nal_escape_mmx2( uint8_t *dst, uint8_t *src, uint8_t *end );
 uint8_t *x264_nal_escape_sse2( uint8_t *dst, uint8_t *src, uint8_t *end );
 #define x264_nal_escape_avx2 x264_template(nal_escape_avx2)
 uint8_t *x264_nal_escape_avx2( uint8_t *dst, uint8_t *src, uint8_t *end );
+#define x264_nal_escape_avx512icl x264_template(nal_escape_avx512icl)
+uint8_t *x264_nal_escape_avx512icl( uint8_t *dst, uint8_t *src, uint8_t *end );
 #define x264_cabac_block_residual_rd_internal_sse2 x264_template(cabac_block_residual_rd_internal_sse2)
 void x264_cabac_block_residual_rd_internal_sse2       ( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 #define x264_cabac_block_residual_rd_internal_sse2_lzcnt x264_template(cabac_block_residual_rd_internal_sse2_lzcnt)

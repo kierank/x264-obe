@@ -1265,8 +1265,32 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512;
+        INIT2( sad, _avx512 );
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* sad_x3/sad_x4 (+_min) _avx512: 1.07-1.38x */
+        /* zen4 prune, borderline: sad_avg2[16x16] _avx512 1.022x, slower in 11/11 runs */
+        pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx512;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        INIT_ADS( _zmm_avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
+        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_zmm_avx512icl;
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
+        pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+#endif
+    }
+    /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+    /* hadamard_ac 16x16/16x8/8x16 _avx512icl 1.06-1.10x, sa8d 16x16/8x8 _avx512icl 1.14x/1.05x */
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1619,9 +1643,62 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
 #endif
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        /* ymm, VBMI2 + opmask transform; not the X264_CPU_AVX512 zmm table below */
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* satd[16x16] 1.031x, satd_avg2[16x8] 1.073x, satd_pre[16x8] 1.069x, satd_bi[16x16] 1.038x, satd_bi4[16x8] 1.051x;
+         * borderline, slower in 11/11 interleaved runs beyond the spread: satd[16x8] 1.024x, satd_avg2_pre[16x16] 1.008x,
+         * satd_bi[16x8] (weighted 1.015x, unweighted 0.990x), satd_bi4[16x16] (weighted 1.024x, unweighted 0.999x) */
+        pixf->satd[PIXEL_8x16]  = x264_pixel_satd_8x16_avx512icl;
+        pixf->satd[PIXEL_8x8]   = x264_pixel_satd_8x8_avx512icl;
+        pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx512icl;
+        pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx512icl;
+        pixf->satd_avg2[PIXEL_8x8]   = x264_pixel_satd_avg2_8x8_avx512icl;
+        pixf->sa8d[PIXEL_8x8] = x264_pixel_sa8d_8x8_avx512icl;
+        pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx512icl;
+        pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx512icl;
+        pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx512icl;
+        /* zen4 prune: satd_pre[16x16] 1.028x avx2, slower in 11/11 runs (rack01, 36943197); dispatched on zen5/x264-weird-satd-zen4slow */
+        pixf->satd_pre[PIXEL_8x16] = x264_pixel_satd_pre_8x16_avx512icl;
+        pixf->satd_pre[PIXEL_8x8] = x264_pixel_satd_pre_8x8_avx512icl;
+        pixf->satd_avg2_pre[PIXEL_16x8] = x264_pixel_satd_avg2_pre_16x8_avx512icl;
+        pixf->satd_avg2_pre[PIXEL_8x16] = x264_pixel_satd_avg2_pre_8x16_avx512icl;
+        pixf->satd_avg2_pre[PIXEL_8x8] = x264_pixel_satd_avg2_pre_8x8_avx512icl;
+        pixf->intra_satd_lowres = x264_intra_satd_lowres_avx512icl;
+        pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;
+        pixf->satd_bi[PIXEL_8x16] = x264_pixel_satd_bi_8x16_avx512icl;
+        pixf->satd_bi[PIXEL_8x8] = x264_pixel_satd_bi_8x8_avx512icl;
+        pixf->satd_bi4[PIXEL_8x16] = x264_pixel_satd_bi4_8x16_avx512icl;
+        pixf->satd_bi4[PIXEL_8x8] = x264_pixel_satd_bi4_8x8_avx512icl;
+#endif
+    }
 
-    /* No 8-bit AVX-512 pixel functions: on Zen 4 they made real 8-bit encodes ~1.5% slower
-     * (rack01 ablation, obed low latency), although most win in checkasm. */
+    /* No 8-bit AVX-512 (avx512 level) pixel functions: on Zen 4 they made real 8-bit encodes
+     * ~1.5% slower (rack01 ablation, obed low latency), although most win in checkasm.
+     * The avx512icl ones below are ymm (VNNI, VBMI2) and need their own in situ A/B;
+     * intra sad_x3 is only used at subme <= 1, ads only by --me esa/tesa. */
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+#if ARCH_X86_64
+        pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512icl;
+        pixf->intra_sad_x3_8x8c  = x264_intra_sad_x3_8x8c_avx512icl;
+        INIT_ADS( _zmm_avx512icl );
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* var[8x8] 1.089x, var2[8x16] 1.034x, ssd[16x16] zmm 1.085x, weightp_stats8 icl 1.076x (vs the avx2 rewrite) */
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
+        pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
+        pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
+        pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+#endif
+    }
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6

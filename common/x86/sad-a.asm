@@ -29,10 +29,29 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
-SECTION_RODATA 32
+SECTION_RODATA 64
 
 pb_shuf8x8c2: times 2 db 0,0,0,0,8,8,8,8,-1,-1,-1,-1,-1,-1,-1,-1
 hpred_shuf: db 0,0,2,2,8,8,10,10,1,1,3,3,9,9,11,11
+
+ALIGN 64
+isad8c_qidx:   dq 0, 2, 4, 6, 8, 10, 12, 14
+isad8c_hidx:   db 0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3
+               db 4,4,4,4,4,4,4,4, 5,5,5,5,5,5,5,5, 6,6,6,6,6,6,6,6, 7,7,7,7,7,7,7,7
+isad8c_dcidx:  times 4 db 0,0,0,0,4,4,4,4
+               times 4 db 8,8,8,8,12,12,12,12
+isad16_hidx:   db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+               db 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+               db 4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4, 5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5
+               db 6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6, 7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
+               db 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9
+               db 10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10, 11,11,11,11,11,11,11,11,11,11,11,11,11,11,11,11
+               db 12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12, 13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13
+               db 14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14, 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
+; { s0 s0 s1 s1 s2 s2 s3 s3 } -> { s0+s2, s1, s3, s1+s3 } by vpermw + pmaddwd
+isad8c_wperm:  dw 0, 4, 2, 2, 6, 6, 2, 6
+isad8c_wmul:   dw 1, 1, 1, 0, 1, 0, 1, 1
+isad8c_shift:  dd 2, 1, 1, 2
 
 SECTION .text
 
@@ -1053,6 +1072,101 @@ cglobal intra_sad_x3_16x16, 3,5,6
     movd  [r2+4], xm3
     movd  [r2+8], xm4
     RET
+
+;-----------------------------------------------------------------------------
+; AVX512ICL intra_sad_x3: all rows of a mode in one zmm, the three sums packed
+; into the words of one qword (each at most 16*16*255) and reduced together.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; m%1 = { m%1 | m%2 << 16 | m%3 << 32 } qword sums -> words 0-2 to [r2], [r2+4], [r2+8]
+%macro INTRA_SAD_PACK3_END 3
+    psllq         m%2, 16
+    psllq         m%3, 32
+    vpternlogq    m%1, m%2, m%3, 0xfe
+    vextracti64x4 ym%2, m%1, 1
+    paddq         ym%1, ym%2
+    vextracti128  xm%2, ym%1, 1
+    paddq         xm%1, xm%2
+    punpckhqdq    xm%2, xm%1, xm%1
+    paddq         xm%1, xm%2
+    vpmovzxwd     xm%1, xm%1
+    movq      [r2+0], xm%1
+    pextrd    [r2+8], xm%1, 2
+    RET
+%endmacro
+
+; xm%1 = bytes -1 of rows %2*4 .. %2*4+3 of fdec (r1)
+%macro INTRA_SAD_LEFT4 2
+    movd          xm%1, [r1+FDEC_STRIDE*(%2*4+3)-4]
+    pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+0)-1], 0
+    pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+1)-1], 1
+    pinsrb        xm%1, [r1+FDEC_STRIDE*(%2*4+2)-1], 2
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal intra_sad_x3_8x8c, 3,3,8
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    movq          xm1, [r1-FDEC_STRIDE]
+    punpckldq     xm0, xm2              ; left 0-7
+    pxor          xm3, xm3
+    punpcklqdq    xm2, xm1, xm0         ; top 0-7, left 0-7
+    vdbpsadbw     xm2, xm2, xm3, 0      ; s0 s0 s1 s1 s2 s2 s3 s3
+    movu          xm4, [isad8c_wperm]
+    vpermw        xm2, xm4, xm2
+    pmaddwd       xm2, [isad8c_wmul]    ; s0+s2, s1, s3, s1+s3
+    vpsrlvd       xm2, xm2, [isad8c_shift]
+    pavgw         xm2, xm3              ; dc0 dc1 dc2 dc3
+    mova           m4, [isad8c_dcidx]
+    vpermb         m4, m4, m2           ; DC prediction
+    mova           m5, [isad8c_hidx]
+    vpermb         m5, m5, m0           ; H prediction
+    vpbroadcastq   m1, [r1-FDEC_STRIDE] ; V prediction
+    movu           m6, [r0]
+    movu           m7, [r0+4*FENC_STRIDE]
+    mova           m3, [isad8c_qidx]
+    vpermt2q       m6, m3, m7           ; fenc rows 0-7
+    psadbw         m4, m6
+    psadbw         m5, m6
+    psadbw         m1, m6
+    INTRA_SAD_PACK3_END 4, 5, 1         ; DC H V
+
+cglobal intra_sad_x3_16x16, 3,3,10
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    INTRA_SAD_LEFT4 1, 2
+    INTRA_SAD_LEFT4 4, 3
+    punpckldq     xm0, xm2
+    punpckldq     xm1, xm4
+    movu          xm3, [r1-FDEC_STRIDE]
+    pxor          xm5, xm5
+    punpcklqdq    xm0, xm1              ; left 0-15
+    psadbw        xm2, xm0, xm5
+    psadbw        xm3, xm5
+    paddw         xm2, xm3
+    punpckhqdq    xm3, xm2, xm2
+    paddw         xm2, xm3
+    psrlw         xm2, 4
+    pavgw         xm2, xm5              ; (sum+16)>>5
+    vpbroadcastb   m2, xm2              ; DC prediction
+    vbroadcasti32x4 m1, [r1-FDEC_STRIDE] ; V prediction
+    vshufi32x4     m0, m0, m0, 0        ; left in every lane
+%assign isad_g 0
+%rep 4
+    movu           m7, [r0+isad_g*4*FENC_STRIDE]
+    mova           m3, [isad16_hidx+isad_g*64]
+    pshufb         m3, m0, m3           ; H prediction, rows 4g..4g+3
+    psadbw         m3, m7
+    psadbw         m8, m1, m7
+    psadbw         m9, m2, m7
+    ACCUM       paddq, 6, 3, isad_g
+    ACCUM       paddq, 4, 8, isad_g
+    ACCUM       paddq, 5, 9, isad_g
+%assign isad_g isad_g+1
+%endrep
+%undef isad_g
+    INTRA_SAD_PACK3_END 4, 6, 5         ; V H DC
+%endif ; ARCH_X86_64
 
 ;=============================================================================
 ; SAD x3/x4 MMX

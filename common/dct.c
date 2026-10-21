@@ -555,6 +555,16 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->add16x16_idct   = x264_add16x16_idct_avx2;
         dctf->add16x16_idct_dc= x264_add16x16_idct_dc_avx2;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* dct4x4dc 2.72x, idct4x4dc 2.64x, add16x16_idct 1.17x */
+#if ARCH_X86_64
+        dctf->sub16x16_dct8   = x264_sub16x16_dct8_avx512icl;
+        dctf->add16x16_idct8  = x264_add16x16_idct8_avx512icl;
+        dctf->add8x8_idct     = x264_add8x8_idct_avx512icl;
+#endif
+    }
 #endif // HAVE_MMX
 #else // !HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -666,6 +676,16 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->sub16x16_dct     = x264_sub16x16_dct_avx512;
         dctf->sub8x8_dct_dc    = x264_sub8x8_dct_dc_avx512;
         dctf->sub8x16_dct_dc   = x264_sub8x16_dct_dc_avx512;
+    }
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* dct4x4dc 1.75x, idct4x4dc 1.14x, add16x16_idct 1.25x, sub16x16_dct8 1.056x */
+        dctf->add8x8_idct      = x264_add8x8_idct_avx512icl;
+#if ARCH_X86_64
+        dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
+#endif
     }
 #endif //HAVE_MMX
 
@@ -930,6 +950,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_interlaced->scan_8x8  = x264_zigzag_scan_8x8_field_avx512;
         pf_progressive->scan_8x8 = x264_zigzag_scan_8x8_frame_avx512;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf_interlaced->scan_4x4  = x264_zigzag_scan_4x4_field_avx512icl;
+    }
 #endif // HAVE_MMX
 #else
 #if HAVE_MMX
@@ -987,6 +1011,16 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_interlaced->scan_8x8  = x264_zigzag_scan_8x8_field_avx512;
         pf_progressive->scan_8x8 = x264_zigzag_scan_8x8_frame_avx512;
     }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf_interlaced->scan_4x4  = x264_zigzag_scan_4x4_field_avx512icl;
+        pf_interlaced->sub_4x4   = x264_zigzag_sub_4x4_field_avx512icl;
+        pf_progressive->sub_4x4  = x264_zigzag_sub_4x4_frame_avx512icl;
+        pf_interlaced->sub_4x4ac = x264_zigzag_sub_4x4ac_field_avx512icl;
+        pf_progressive->sub_4x4ac= x264_zigzag_sub_4x4ac_frame_avx512icl;
+        pf_interlaced->sub_8x8   = x264_zigzag_sub_8x8_field_avx512icl;
+        pf_progressive->sub_8x8  = x264_zigzag_sub_8x8_frame_avx512icl;
+    }
 #endif // HAVE_MMX
 #if HAVE_ALTIVEC
     if( cpu&X264_CPU_ALTIVEC )
@@ -1007,6 +1041,18 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx2;
         pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx2;
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
+    }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx512icl;
+        pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx512icl;
+#if HIGH_BIT_DEPTH
+        pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field_avx512icl;
+        pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx512icl;
+#else
+        /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
+        /* 8-bit field scan 1.04-1.07x, field scan_ac 1.05-1.07x */
+#endif
     }
 #endif
 
