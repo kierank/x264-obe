@@ -49,6 +49,7 @@
 #define x264_intra_sad_x3_8x8_ssse3 x264_template(intra_sad_x3_8x8_ssse3)
 #define x264_intra_sad_x3_8x8c_avx2 x264_template(intra_sad_x3_8x8c_avx2)
 #define x264_intra_sad_x3_8x8c_avx512 x264_template(intra_sad_x3_8x8c_avx512)
+#define x264_intra_sad_x3_8x16c_avx512 x264_template(intra_sad_x3_8x16c_avx512)
 #define x264_intra_sad_x3_8x8c_avx512icl x264_template(intra_sad_x3_8x8c_avx512icl)
 #define x264_intra_sad_x3_8x8c_mmx2 x264_template(intra_sad_x3_8x8c_mmx2)
 #define x264_intra_sad_x3_8x8c_sse2 x264_template(intra_sad_x3_8x8c_sse2)
@@ -839,6 +840,7 @@ void x264_intra_sad_x3_8x8c_ssse3  ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_8x8c_avx2   ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_8x8c_avx512icl( pixel *, pixel *, int * );
 void x264_intra_sad_x3_8x8c_avx512( pixel *, pixel *, int * );
+void x264_intra_sad_x3_8x16c_avx512( pixel *, pixel *, int * );
 void x264_intra_satd_x3_16x16_mmx2 ( pixel   *, pixel   *, int * );
 void x264_intra_satd_x3_16x16_ssse3( uint8_t *, uint8_t *, int * );
 #define x264_intra_satd_x3_16x16_avx2 x264_template(intra_satd_x3_16x16_avx2)

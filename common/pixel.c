@@ -1273,6 +1273,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx512;
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512;
         pixf->intra_sad_x3_8x8c  = x264_intra_sad_x3_8x8c_avx512;
+        pixf->intra_sad_x3_8x16c = x264_intra_sad_x3_8x16c_avx512;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )
