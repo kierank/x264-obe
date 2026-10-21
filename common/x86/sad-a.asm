@@ -66,6 +66,8 @@ isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4
 
 SECTION .text
 
+cextern pw_1
+cextern pb_unpackbd1
 cextern pb_3
 cextern pb_shuf8x8c
 cextern pw_8
@@ -1223,6 +1225,46 @@ cglobal intra_sad_x3_8x16c, 3,3,12
     psadbw         m1, m10
     paddq          m1, m9
     INTRA_SAD_PACK3_END 4, 7, 1         ; DC H V
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_4x4( uint8_t *fenc, uint8_t *fdec, int res[3] )
+; reached where intra_sad_x9_4x4 isn't used (frame edges, lossless)
+; fenc rows k-merged by vpbroadcastd and broadcast to every lane against
+; { V | H | DC } lanes: one psadbw. Tail: vpmovqw, pmaddwd (2 ops).
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x3_4x4, 3,4,5
+    mov           r3d, 2
+    kmovb          k1, r3d
+    add           r3d, r3d
+    kmovb          k2, r3d
+    add           r3d, r3d
+    kmovb          k3, r3d
+    movd          xm0, [r0]
+    vpbroadcastd  xm0 {k1}, [r0+1*FENC_STRIDE]
+    vpbroadcastd  xm0 {k2}, [r0+2*FENC_STRIDE]
+    vpbroadcastd  xm0 {k3}, [r0+3*FENC_STRIDE]
+    vshufi32x4     m0, m0, m0, 0        ; fenc in every lane
+    movd          xm1, [r1+3*FDEC_STRIDE-4]
+    pinsrb        xm1, [r1+0*FDEC_STRIDE-1], 0
+    pinsrb        xm1, [r1+1*FDEC_STRIDE-1], 1
+    pinsrb        xm1, [r1+2*FDEC_STRIDE-1], 2
+    movd          xm2, [r1-FDEC_STRIDE]
+    punpckldq     xm3, xm1, xm2         ; left 0-3, top 0-3
+    pxor          xm4, xm4
+    psadbw        xm3, xm4
+    psrlw         xm3, 2
+    pavgw         xm3, xm4              ; (sum+4)>>3
+    pshufb        xm3, xm4              ; DC
+    pshufb        xm1, [pb_unpackbd1]   ; H
+    vpbroadcastd  xm2, xm2              ; V
+    vinserti32x4  ym2, ym2, xm1, 1
+    vinserti32x4   m2, m2, xm3, 2       ; V | H | DC | 0
+    psadbw         m2, m0
+    vpmovqw       xm2, m2
+    pmaddwd       xm2, [pw_1]           ; V H DC _
+    movq      [r2+0], xm2
+    pextrd    [r2+8], xm2, 2
+    RET
 
 ;-----------------------------------------------------------------------------
 ; void intra_sad_x3_8x8( uint8_t *fenc, uint8_t edge[36], int res[3] )
