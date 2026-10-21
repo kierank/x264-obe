@@ -4837,24 +4837,24 @@ static int check_intra( int cpu_ref, int cpu_new )
 }
 
 #define DECL_CABAC(cpu) \
-static void run_cabac_decision_##cpu( x264_t *h, uint8_t *dst )\
+static void run_cabac_decision_##cpu( x264_t *h, uint8_t *dst, const uint8_t *src )\
 {\
     x264_cabac_t cb;\
     x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
-        x264_cabac_encode_decision_##cpu( &cb, buf1[i]>>1, buf1[i]&1 );\
+        x264_cabac_encode_decision_##cpu( &cb, src[i]>>1, src[i]&1 );\
     /* the bits still in low/queue, and the contexts: all in the compared 0x1000 bytes */\
     x264_cabac_encode_flush( h, &cb );\
     memcpy( dst+0xe00, cb.state, 128 );\
 }\
-static void run_cabac_bypass_##cpu( x264_t *h, uint8_t *dst )\
+static void run_cabac_bypass_##cpu( x264_t *h, uint8_t *dst, const uint8_t *src )\
 {\
     x264_cabac_t cb;\
     x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );\
     x264_cabac_encode_init( &cb, dst, dst+0xff0 );\
     for( int i = 0; i < 0x1000; i++ )\
-        x264_cabac_encode_bypass_##cpu( &cb, buf1[i]&1 );\
+        x264_cabac_encode_bypass_##cpu( &cb, src[i]&1 );\
     x264_cabac_encode_flush( h, &cb );\
 }\
 static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
@@ -5085,17 +5085,33 @@ name##fail:
 
     set_func_name( "cabac_encode_decision" );
     memcpy( buf4, buf3, 0x1000 );
-    call_c( run_cabac_decision_c, &h, buf3 );
-    call_a( run_cabac_decision_asm, &h, buf4 );
+    call_c1( run_cabac_decision_c, &h, buf3, buf1 );
+    call_a1( run_cabac_decision_asm, &h, buf4, buf1 );
     ok = !memcmp( buf3, buf4, 0x1000 );
     report( "cabac decision:" );
 
     set_func_name( "cabac_encode_bypass" );
     memcpy( buf4, buf3, 0x1000 );
-    call_c( run_cabac_bypass_c, &h, buf3 );
-    call_a( run_cabac_bypass_asm, &h, buf4 );
+    call_c1( run_cabac_bypass_c, &h, buf3, buf1 );
+    call_a1( run_cabac_bypass_asm, &h, buf4, buf1 );
     ok = !memcmp( buf3, buf4, 0x1000 );
     report( "cabac bypass:" );
+
+    /* bench: 4096 fixed contexts and bins from the private generator, private buffers */
+    uint8_t *cbuf = do_bench ? x264_malloc( 3*0x1000 ) : NULL;
+    if( cbuf )
+    {
+        bench_srand( 900 );
+        for( int i = 0; i < 0x1000; i++ )
+            cbuf[i] = bench_rand() >> 8;
+        set_func_name( "cabac_encode_decision" );
+        call_c2( run_cabac_decision_c, &h, cbuf+0x1000, cbuf );
+        call_a2( run_cabac_decision_asm, &h, cbuf+0x2000, cbuf );
+        set_func_name( "cabac_encode_bypass" );
+        call_c2( run_cabac_bypass_c, &h, cbuf+0x1000, cbuf );
+        call_a2( run_cabac_bypass_asm, &h, cbuf+0x2000, cbuf );
+        x264_free( cbuf );
+    }
 
     set_func_name( "cabac_encode_terminal" );
     memcpy( buf4, buf3, 0x1000 );
