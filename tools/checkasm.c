@@ -2348,7 +2348,7 @@ static int check_mc( int cpu_ref, int cpu_new )
     static const int16_t wbench[4][3] = { { 72, 6, 4 }, { 56, 6, -4 }, { 64, 6, 8 }, { 64, 6, -8 } };
     static const char *wbench_name[4] = { "weight", "weight_ns", "offsetadd", "offsetsub" };
 
-#define MC_TEST_WEIGHT( name, weight, aligned, src, height, bench ) \
+#define MC_TEST_WEIGHT( name, weight, aligned, src, height ) \
     int align_off = (aligned ? 0 : rand()%16); \
     for( int i = 1; i <= 5; i++ ) \
     { \
@@ -2374,11 +2374,6 @@ static int check_mc( int cpu_ref, int cpu_new )
             { \
                 ok = 0; \
                 fprintf( stderr, #name "[%d]: [FAILED] s:%d o:%d d:%d h:%d\n", i, s, o, d, height ); \
-            } \
-            if( bench ) \
-            { \
-                call_c2( mc_c.weight[i],     buffC, (intptr_t)32, src+align_off, (intptr_t)32, &weight, 16 ); \
-                call_a2( weight.weightfn[i], buffA, (intptr_t)32, src+align_off, (intptr_t)32, &weight, 16 ); \
             } \
         } \
     }
@@ -2412,9 +2407,7 @@ static int check_mc( int cpu_ref, int cpu_new )
                 for( int k = 0; k < 8 && ok; k++ )
                 {
                     x264_weight_t weight = { .i_scale = s, .i_denom = d, .i_offset = o };
-                    /* omit unlikely high scales for benchmarking */
-                    MC_TEST_WEIGHT( weight, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1],
-                                    !k && s >= 0 && s * (1<<(8-d)) < 512 );
+                    MC_TEST_WEIGHT( weight, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1] );
                 }
             }
         }
@@ -2429,7 +2422,7 @@ static int check_mc( int cpu_ref, int cpu_new )
         for( int k = 0; k < 8 && ok; k++ )
         {
             x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
-            MC_TEST_WEIGHT( offsetadd, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1], !k );
+            MC_TEST_WEIGHT( offsetadd, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1] );
         }
     }
     report( "mc offsetadd :" );
@@ -2441,10 +2434,39 @@ static int check_mc( int cpu_ref, int cpu_new )
         for( int k = 0; k < 8 && ok; k++ )
         {
             x264_weight_t weight = { .i_scale = 1, .i_denom = 0, .i_offset = o };
-            MC_TEST_WEIGHT( offsetsub, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1], !k );
+            MC_TEST_WEIGHT( offsetsub, weight, (align_cnt++ % 4), wsrc[k&1], wheight[k>>1] );
         }
     }
     report( "mc offsetsub :" );
+
+    /* bench: the weightfn x264_weight_cache picks per kind, aligned, 16 rows */
+    {
+        ALIGNED_ARRAY_64( pixel, wb_c, [16*32] );
+        ALIGNED_ARRAY_64( pixel, wb_a, [16*32] );
+        x264_t *hwa = x264_malloc( sizeof(x264_t) );
+        x264_t *hwr = x264_malloc( sizeof(x264_t) );
+        if( !hwa || !hwr )
+            return -1;
+        hwa->mc = mc_a;
+        hwr->mc = mc_ref;
+        for( int k = 0; k < 4; k++ )
+        {
+            x264_weight_t wa = { .i_scale = wbench[k][0], .i_denom = wbench[k][1], .i_offset = wbench[k][2] };
+            x264_weight_t wr = wa;
+            mc_a.weight_cache( hwa, &wa );
+            mc_ref.weight_cache( hwr, &wr );
+            for( int i = 1; i <= 5; i++ )
+            {
+                if( (i == 3 && wa.weightfn[3] == wa.weightfn[4]) || wa.weightfn[i] == wr.weightfn[i] )
+                    continue;
+                set_func_name( "%s_w%d", wbench_name[k], i*4 );
+                call_c2( mc_c.weight[i], wb_c, (intptr_t)32, pbuf2, (intptr_t)32, &wa, 16 );
+                call_a2( wa.weightfn[i], wb_a, (intptr_t)32, pbuf2, (intptr_t)32, &wa, 16 );
+            }
+        }
+        x264_free( hwa );
+        x264_free( hwr );
+    }
 
     /* weightavgfn against C: (src1+src2+1)>>1, then mc_c.weight. Every width,
      * the subpel ME's odd heights, unaligned sources and destination, edge
