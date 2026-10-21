@@ -2176,21 +2176,13 @@ SAD_X4_W8_AVX2 8, 1
 ; from x-1+4g: word k is that dword's sad at dx k-1. 16 wide: lane l holds g 2l
 ; and 2l+1, ref from x-1+8l, and each ref row serves dy -1, 0 and 1. 8 wide: the
 ; lanes are a row pair, g 0 and 1. The word sums reach at most 16*16*255.
-; m0-m15 on ymm0-15 (VEX but for vdbpsadbw), vzeroupper on return.
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
-%macro SAD_SQ_LOW_RESET 0
-    INIT_YMM avx512
-    AVX512_MM_PERMUTATION
-    %define RESET_MM_PERMUTATION SAD_SQ_LOW_RESET
-%endmacro
-%define vzeroupper_required (mmsize > 16)
-%define high_mm_regs 0
-SAD_SQ_LOW_RESET
+INIT_YMM avx512
 
 ; m0/m1/m2: dy -1/0/1, words by lane, g, dx -> eax
 %macro SAD_SQ_MIN_END 0
-    vperm2i128     m3, m0, m2, 0x31
+    vshufi64x2     m3, m0, m2, 0x3
     vinserti128    m0, m0, xm2, 1
     paddw          m0, m3         ; dy -1 g 0+2, 1+3 | dy 1 g 0+2, 1+3
     vpermq         m0, m0, q3120
@@ -2297,8 +2289,6 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %undef sq_y
 %undef sq_f
 
-%define vzeroupper_required (mmsize > 16 && (ARCH_X86_64 == 0 || xmm_regs_used > 16 || notcpuflag(avx512)))
-%define high_mm_regs (16*cpuflag(avx512))
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 
