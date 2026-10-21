@@ -11556,8 +11556,12 @@ cglobal weightp_sum8_nv, 6,8,13
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
 %macro PSY_MADD 3 ; acc, src (clobbered), mul
+%if cpuflag(avx512icl)
+    vpdpwssd    m%1, m%2, m%3
+%else
     pmaddwd     m%2, m%3
     paddd       m%1, m%2
+%endif
 %endmacro
 
 ; m%1 = fdec row %2, its ssd into m%3; clobbers m8
@@ -11670,6 +11674,9 @@ cglobal pixel_ssd_psy_mb_%1, 5,5,16
 %endmacro
 
 INIT_YMM avx2
+SSD_PSY_MB 420,  8
+SSD_PSY_MB 422, 16
+INIT_YMM avx512icl
 SSD_PSY_MB 420,  8
 SSD_PSY_MB 422, 16
 %endif ; ARCH_X86_64
