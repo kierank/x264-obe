@@ -99,7 +99,7 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src, c
 /* fsum[] */
 #define x264_weight_chroma_fenc_rows x264_template(weight_chroma_fenc_rows)
 void x264_weight_chroma_fenc_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, int mb_y1 );
-/* dst[], rsum[], minmax[] */
+/* dst[], rsum[], minmax[], and wsum[q] and orange[q] of the slots set (after fsum[]) */
 #define x264_weight_chroma_ref_rows x264_template(weight_chroma_ref_rows)
 void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, int mb_y1 );
 /* wsum[q] and orange[q] at wscale[q], wdenom[q] */

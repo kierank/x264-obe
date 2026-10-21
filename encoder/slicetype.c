@@ -260,33 +260,58 @@ void x264_weight_chroma_fenc_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, i
     x264_emms();
 }
 
+/* MB row mb_y of slot q from its weighted sums: less fsum, and the offsets no block clips at */
+static void x264_weight_chroma_wsum_finish( x264_weight_src_t *s, int q, int mb_y )
+{
+    int p = q / X264_WEIGHT_WSLOTS;
+    int scale = s->wscale[q];
+    int denom = s->wdenom[q];
+    int round = (1 << denom) >> 1;
+    int32_t *wsum = s->wsum[q] + mb_y*s->n16;
+    int32_t *fsum = s->fsum[p] + mb_y*s->n16;
+    uint32_t *minmax = s->minmax[p] + mb_y*s->n16;
+    /* x * scale + round >> denom + offset doesn't clip in any block of the row
+     * for offsets in [omin, omax] */
+    int omin = -(1 << 30);
+    int omax = 1 << 30;
+    for( int x = 0; x < s->mb_width; x++ )
+    {
+        wsum[x] -= fsum[x];
+        int lo = ((int)(minmax[x] & 0xffff) * scale + round) >> denom;
+        int hi = ((int)(minmax[x] >> 16) * scale + round) >> denom;
+        omin = X264_MAX( omin, -lo );
+        omax = X264_MIN( omax, PIXEL_MAX - hi );
+    }
+    s->orange[q][2*mb_y] = omin;
+    s->orange[q][2*mb_y+1] = omax;
+}
+
+/* also the wsum[] and orange[] of the slots */
 void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, int mb_y1 )
 {
     intptr_t i_stride = s->stride_chroma;
-    int v_shift = s->v_shift;
-    int height = 16 >> v_shift;
+    int height = 16 >> s->v_shift;
     int n = s->mb_width;
-    pixel *dst[2] = { s->dst[0], s->dst[1] };
-    pixel *ref = s->ref_chroma;
-
+    int16_t ws[2*X264_WEIGHT_WSLOTS][2];
+    for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
+    {
+        ws[q][0] = s->wscale[q];
+        ws[q][1] = s->wdenom[q];
+    }
     for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
     {
         int pel_offset_y = mb_y*height*i_stride;
-        if( s->mvs )
-            for( int x = 0, mb_xy = mb_y*n, pel_offset_x = 0; x < n; x++, mb_xy++, pel_offset_x += 8 )
-            {
-                pixel *src1 = ref + pel_offset_y + pel_offset_x*2; /* NV12/NV16 */
-                int mvx = s->mvs[mb_xy][0];
-                int mvy = s->mvs[mb_xy][1];
-                h->mc.mc_chroma( dst[0] + pel_offset_y + pel_offset_x, dst[1] + pel_offset_y + pel_offset_x, i_stride,
-                                 src1, i_stride, mvx, 2*mvy>>v_shift, 8, height );
-            }
-        else
-            h->mc.plane_copy_deinterleave( dst[0] + pel_offset_y, i_stride, dst[1] + pel_offset_y, i_stride,
-                                           ref + pel_offset_y, i_stride, 8*n, height );
-        for( int p = 0; p < 2; p++ )
-            h->pixf.weightp_stats8( s->rsum[p] + mb_y*s->n16, s->minmax[p] + mb_y*s->n16,
-                                    dst[p] + pel_offset_y, i_stride, n, height );
+        pixel *dst[2] = { (pixel*)s->dst[0] + pel_offset_y, (pixel*)s->dst[1] + pel_offset_y };
+        int32_t *sum[2] = { s->rsum[0] + mb_y*s->n16, s->rsum[1] + mb_y*s->n16 };
+        uint32_t *minmax[2] = { s->minmax[0] + mb_y*s->n16, s->minmax[1] + mb_y*s->n16 };
+        int32_t *wsum[2*X264_WEIGHT_WSLOTS];
+        for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
+            wsum[q] = s->wsum[q] + mb_y*s->n16;
+        h->pixf.weightp_chroma_ref_row( dst, i_stride, (pixel*)s->ref_chroma + pel_offset_y, s->mvs ? s->mvs + mb_y*n : NULL,
+                                        n, height, sum, minmax, (const int16_t (*)[2])ws, wsum );
+        for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
+            if( s->wscale[q] >= 0 )
+                x264_weight_chroma_wsum_finish( s, q, mb_y );
     }
     x264_emms();
 }
@@ -296,30 +321,11 @@ void x264_weight_chroma_wsum_rows( x264_t *h, x264_weight_src_t *s, int q, int m
     int p = q / X264_WEIGHT_WSLOTS;
     intptr_t i_stride = s->stride_chroma;
     int height = 16 >> s->v_shift;
-    int scale = s->wscale[q];
-    int denom = s->wdenom[q];
-    int round = (1 << denom) >> 1;
     for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
     {
-        int32_t *wsum = s->wsum[q] + mb_y*s->n16;
-        int32_t *fsum = s->fsum[p] + mb_y*s->n16;
-        uint32_t *minmax = s->minmax[p] + mb_y*s->n16;
-        h->pixf.weightp_sum8( wsum, (pixel*)s->dst[p] + mb_y*height*i_stride, i_stride,
-                              s->mb_width, height, scale, denom );
-        /* x * scale + round >> denom + offset doesn't clip in any block of the row
-         * for offsets in [omin, omax] */
-        int omin = -(1 << 30);
-        int omax = 1 << 30;
-        for( int x = 0; x < s->mb_width; x++ )
-        {
-            wsum[x] -= fsum[x];
-            int lo = ((int)(minmax[x] & 0xffff) * scale + round) >> denom;
-            int hi = ((int)(minmax[x] >> 16) * scale + round) >> denom;
-            omin = X264_MAX( omin, -lo );
-            omax = X264_MIN( omax, PIXEL_MAX - hi );
-        }
-        s->orange[q][2*mb_y] = omin;
-        s->orange[q][2*mb_y+1] = omax;
+        h->pixf.weightp_sum8( s->wsum[q] + mb_y*s->n16, (pixel*)s->dst[p] + mb_y*height*i_stride, i_stride,
+                              s->mb_width, height, s->wscale[q], s->wdenom[q] );
+        x264_weight_chroma_wsum_finish( s, q, mb_y );
     }
     x264_emms();
 }
@@ -563,9 +569,6 @@ static void x264_weight_chroma_init_band( x264_weight_band_t *b )
     if( !a->s->b_fsum )
         a->ops->chroma_fenc_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
     a->ops->chroma_ref_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
-    for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
-        if( a->s->wscale[q] >= 0 )
-            a->ops->chroma_wsum_rows( a->ops->k, a->s, q, b->mb_y0, b->mb_y1 );
     a->ops->chroma_search_rows( a->ops->k, a->s, a->ct, a->ccosts[b->i], b->mb_y0, b->mb_y1 );
 }
 
