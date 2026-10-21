@@ -741,6 +741,11 @@ void x264_macroblock_deblock( x264_t *h )
 
 #if HAVE_MMX
 #include "x86/deblock.h"
+#include "x86/sweep-mbaff-twin.h"
+#if ARCH_X86_64
+SWEEP_TWIN_DECL( x264_deblock_strength_mbaff_avx2 )
+SWEEP_TWIN_DECL( x264_deblock_strength_mbaff_avx512icl )
+#endif
 #endif
 
 void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
@@ -842,7 +847,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_strength = x264_deblock_strength_avx2;
 #if ARCH_X86_64
             pf->deblock_luma_mb = x264_deblock_luma_mb_avx2;
-            pf->deblock_strength_mbaff = x264_deblock_strength_mbaff_avx2;
+            pf->deblock_strength_mbaff = SWEEP_TWIN( SWEEP_MBAFF_DBS, x264_deblock_strength_mbaff_avx2 );
 #endif
 #if HIGH_BIT_DEPTH && ARCH_X86_64
             pf->deblock_luma[1] = x264_deblock_v_luma_avx2;
@@ -858,7 +863,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 #if ARCH_X86_64
         if( cpu&X264_CPU_AVX512ICL )
         {
-            pf->deblock_strength_mbaff = x264_deblock_strength_mbaff_avx512icl;
+            pf->deblock_strength_mbaff = SWEEP_TWIN( SWEEP_MBAFF_DBS, x264_deblock_strength_mbaff_avx512icl );
             pf->deblock_luma[0] = x264_deblock_h_luma_avx512icl;
             pf->deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx512icl;
             pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx512icl;
