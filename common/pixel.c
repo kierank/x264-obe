@@ -1001,6 +1001,66 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 }
 
 
+/* layout twins of wip/x264-sweep-hpelskip: every build declares the hidden weak
+ * x264_{8,10}_twin_{sad_hpel_min,fenc_eq}_*; a set marked 1 below dispatches its
+ * twins, which link as 0, so its slots stay NULL and the callers take the old path;
+ * HS_EQ_ICL_AVX2 dispatches the AVX2 fenc_eq in the avx512icl slots */
+#if HAVE_MMX && ARCH_X86_64
+#define HS_TWIN_HPEL      1
+#define HS_TWIN_EQ_LUMA   0
+#define HS_TWIN_EQ_CHROMA 1
+#define HS_EQ_ICL_AVX2    0
+#define HS_STR2( x ) #x
+#define HS_STR( x ) HS_STR2( x )
+#define HS_TWIN1( fn ) \
+    extern __typeof__( x264_pixel_##fn ) x264_template(twin_##fn) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak x264_" HS_STR(BIT_DEPTH) "_twin_" #fn "\n.hidden x264_" HS_STR(BIT_DEPTH) "_twin_" #fn );
+HS_TWIN1( sad_hpel_min_16x16_avx2 )
+HS_TWIN1( sad_hpel_min_16x8_avx2 )
+HS_TWIN1( sad_hpel_min_8x16_avx2 )
+HS_TWIN1( sad_hpel_min_8x8_avx2 )
+HS_TWIN1( fenc_eq_16x16_avx2 )
+HS_TWIN1( fenc_eq_8x16_avx2 )
+HS_TWIN1( fenc_eq_8x8_avx2 )
+HS_TWIN1( fenc_eq_16x16_avx512icl )
+HS_TWIN1( fenc_eq_8x16_avx512icl )
+HS_TWIN1( fenc_eq_8x8_avx512icl )
+#if HS_EQ_ICL_AVX2
+#undef x264_pixel_fenc_eq_16x16_avx512icl
+#define x264_pixel_fenc_eq_16x16_avx512icl x264_pixel_fenc_eq_16x16_avx2
+#undef x264_pixel_fenc_eq_8x16_avx512icl
+#define x264_pixel_fenc_eq_8x16_avx512icl x264_pixel_fenc_eq_8x16_avx2
+#undef x264_pixel_fenc_eq_8x8_avx512icl
+#define x264_pixel_fenc_eq_8x8_avx512icl x264_pixel_fenc_eq_8x8_avx2
+#endif
+#if HS_TWIN_HPEL
+#undef x264_pixel_sad_hpel_min_16x16_avx2
+#define x264_pixel_sad_hpel_min_16x16_avx2 x264_template(twin_sad_hpel_min_16x16_avx2)
+#undef x264_pixel_sad_hpel_min_16x8_avx2
+#define x264_pixel_sad_hpel_min_16x8_avx2 x264_template(twin_sad_hpel_min_16x8_avx2)
+#undef x264_pixel_sad_hpel_min_8x16_avx2
+#define x264_pixel_sad_hpel_min_8x16_avx2 x264_template(twin_sad_hpel_min_8x16_avx2)
+#undef x264_pixel_sad_hpel_min_8x8_avx2
+#define x264_pixel_sad_hpel_min_8x8_avx2 x264_template(twin_sad_hpel_min_8x8_avx2)
+#endif
+#if HS_TWIN_EQ_LUMA
+#undef x264_pixel_fenc_eq_16x16_avx2
+#define x264_pixel_fenc_eq_16x16_avx2 x264_template(twin_fenc_eq_16x16_avx2)
+#undef x264_pixel_fenc_eq_16x16_avx512icl
+#define x264_pixel_fenc_eq_16x16_avx512icl x264_template(twin_fenc_eq_16x16_avx512icl)
+#endif
+#if HS_TWIN_EQ_CHROMA
+#undef x264_pixel_fenc_eq_8x16_avx2
+#define x264_pixel_fenc_eq_8x16_avx2 x264_template(twin_fenc_eq_8x16_avx2)
+#undef x264_pixel_fenc_eq_8x8_avx2
+#define x264_pixel_fenc_eq_8x8_avx2 x264_template(twin_fenc_eq_8x8_avx2)
+#undef x264_pixel_fenc_eq_8x16_avx512icl
+#define x264_pixel_fenc_eq_8x16_avx512icl x264_template(twin_fenc_eq_8x16_avx512icl)
+#undef x264_pixel_fenc_eq_8x8_avx512icl
+#define x264_pixel_fenc_eq_8x8_avx512icl x264_template(twin_fenc_eq_8x8_avx512icl)
+#endif
+#endif
+
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
