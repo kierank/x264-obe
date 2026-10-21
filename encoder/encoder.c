@@ -3068,6 +3068,30 @@ static NOINLINE void sweep_mb_a10( x264_t *h, int b_intra, int b_skip )
     }
 }
 
+/* weightp: final MBs of P slices, and those with a partition on a weighted ref */
+static NOINLINE void sweep_mb_wp( x264_t *h, int b_intra )
+{
+    if( h->sh.i_type != SLICE_TYPE_P )
+        return;
+    uint64_t *c = h->sweep.c.wpmb;
+    c[SW_WPMB_P]++;
+    if( b_intra )
+        return;
+    int wl = 0, wa = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        int r = h->mb.cache.ref[0][x264_scan8[4*i]];
+        if( r < 0 )
+            continue;
+        x264_weight_t *w = h->sh.weight[r >> MB_INTERLACED];
+        wl |= !!w[0].weightfn;
+        wa |= w[0].weightfn || w[1].weightfn || w[2].weightfn;
+    }
+    c[SW_WPMB_INTER]++;
+    c[SW_WPMB_WREF_LUMA] += wl;
+    c[SW_WPMB_WREF_ANY] += wa;
+}
+
 static intptr_t x264_slice_write( x264_t *h )
 {
     int i_skip;
@@ -3313,6 +3337,7 @@ cont:
         int b_intra = IS_INTRA( h->mb.i_type );
         int b_skip = IS_SKIP( h->mb.i_type );
         sweep_mb_a10( h, b_intra, b_skip );
+        sweep_mb_wp( h, b_intra );
         if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
         {
             if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )

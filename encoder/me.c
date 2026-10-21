@@ -160,6 +160,7 @@ static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw
         return cmp( m->p_fenc[0], FENC_STRIDE, src1, stride );
     }
     intptr_t stride = 16;
+    h->sweep.c.wpmb[SW_WPMB_SUBPEL_W0 + h->sweep.la] += !!m->weight[0].weightfn;
     pixel *src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] );
     return cmp( m->p_fenc[0], FENC_STRIDE, src, stride );
 }
@@ -1021,6 +1022,7 @@ static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, 
         else
         {
             stride = 16;
+            h->sweep.c.wpmb[SW_WPMB_SUBPEL_W0 + h->sweep.la]++;
             src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] );
         }
         return h->pixf.mbcmp_pre[i_pixel]( fenc_pre, src, stride );
@@ -1203,6 +1205,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             }
             else
             {
+                h->sweep.c.wpmb[SW_WPMB_SUBPEL_W0 + h->sweep.la] += 2 * !!m->weight[0].weightfn;
                 src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
                 src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
             }

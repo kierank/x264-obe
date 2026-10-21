@@ -1171,6 +1171,26 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
     }
 }
 
+/* weightp: x264_weights_analyse, timed */
+static void sweep_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int b_lookahead )
+{
+    static const int edge[SW_WP_HIST-1] = { 100, 250, 500, 1000, 2000, 4000 };
+    int64_t t0 = x264_mdate();
+    x264_weights_analyse( h, fenc, ref, b_lookahead );
+    uint64_t us = x264_mdate() - t0;
+    uint64_t *c = h->sweep.c.wp[b_lookahead];
+    int b = 0;
+    while( b < SW_WP_HIST-1 && us >= (uint64_t)edge[b] )
+        b++;
+    c[SW_WP_CALLS]++;
+    c[SW_WP_LUMA] += !!fenc->weight[0][0].weightfn;
+    c[SW_WP_CHROMA] += fenc->weight[0][1].weightfn || fenc->weight[0][2].weightfn;
+    c[SW_WP_US] += us;
+    c[SW_WP_HIST0+b]++;
+    if( us > h->sweep.wp_us_max[b_lookahead] )
+        h->sweep.wp_us_max[b_lookahead] = us;
+}
+
 /* Output buffers are separated by 128 bytes to avoid false sharing of cachelines
  * in multithreaded lookahead. */
 #define PAD_SIZE 32
@@ -1577,7 +1597,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
             if( h->param.analyse.i_weighted_pred && b == p1 )
             {
                 x264_emms();
-                x264_weights_analyse( h, fenc, frames[p0], 1 );
+                sweep_weights_analyse( h, fenc, frames[p0], 1 );
                 w = fenc->weight[0];
             }
             fenc->lowres_mvs[0][b-p0-1][0][0] = 0;
@@ -2700,7 +2720,7 @@ void x264_slicetype_decide( x264_t *h )
         && h->param.analyse.i_weighted_pred >= X264_WEIGHTP_SIMPLE )
     {
         x264_emms();
-        x264_weights_analyse( h, h->lookahead->next.list[bframes], h->lookahead->last_nonb, 0 );
+        sweep_weights_analyse( h, h->lookahead->next.list[bframes], h->lookahead->last_nonb, 0 );
     }
 
     /* shift sequence to coded order.
