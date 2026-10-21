@@ -1600,6 +1600,8 @@ static void mbcmp_init( x264_t *h )
         h->pixf.fpelcmp_ring_min[i] = satd ? NULL : h->pixf.sad_ring_min[i];
         h->pixf.fpelcmp_corner_min[i] = satd ? NULL : h->pixf.sad_corner_min[i];
         h->pixf.fpelcmp_row[i] = satd ? NULL : h->pixf.sad_row[i];
+        h->pixf.fpelcmp_list_min[i] = satd ? NULL : h->pixf.sad_list_min[i];
+        h->pixf.fpelcmp_avg2_list_min[i] = satd ? NULL : h->pixf.sad_avg2_list_min[i];
     }
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
 }

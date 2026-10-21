@@ -311,7 +311,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     x264_pixel_cmp_pt_min_t cmp_ring_min = h->pixf.fpelcmp_ring_min[i_pixel];
     x264_pixel_cmp_pt_min_t cmp_corner_min = h->pixf.fpelcmp_corner_min[i_pixel];
     x264_pixel_sad_row_t cmp_row = h->pixf.fpelcmp_row[i_pixel];
+    x264_pixel_cmp_list_min_t cmp_list_min = h->pixf.fpelcmp_list_min[i_pixel];
+    x264_pixel_cmp_list_min_t cmp_avg2_list_min = h->pixf.fpelcmp_avg2_list_min[i_pixel];
     ALIGNED_ARRAY_16( int32_t, pt_bias,[8] );
+    ALIGNED_ARRAY_16( int32_t, list_bias,[16] );
+    ALIGNED_ARRAY_16( pixel *, list_src,[32] );
     ALIGNED_ARRAY_32( uint16_t, row_sads,[264] );
 
     int mv_x_min = h->mb.mv_limit_fpel[0][0];
@@ -357,13 +361,30 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                  * x264_predictor_clip. */
                 M32( mvc_temp[1] ) = pmv;
                 bpred_cost <<= 4;
-                do
+                if( cmp_avg2_list_min && !m->weight[0].weightfn )
                 {
-                    int mx = mvc_temp[i+1][0];
-                    int my = mvc_temp[i+1][1];
-                    COST_MV_HPEL( mx, my, cost );
-                    COPY1_IF_LT( bpred_cost, (cost << 4) + i );
-                } while( ++i <= valid_mvcs );
+                    /* subpel_cmp's planes, src2 = src1 where it reads one */
+                    for( ; i <= valid_mvcs; i++ )
+                    {
+                        int mx = mvc_temp[i+1][0];
+                        int my = mvc_temp[i+1][1];
+                        int qpel_idx = ((my&3)<<2) + (mx&3);
+                        intptr_t offset = (my>>2)*stride + (mx>>2);
+                        pixel *src1 = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+                        list_src[2*i-2] = src1;
+                        list_src[2*i-1] = qpel_idx & 5 ? m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3) : src1;
+                        list_bias[i-1] = ((p_cost_mvx[mx] + p_cost_mvy[my]) << 4) + i;
+                    }
+                    bpred_cost = cmp_avg2_list_min( p_fenc, list_src, stride, valid_mvcs, list_bias, bpred_cost );
+                }
+                else
+                    do
+                    {
+                        int mx = mvc_temp[i+1][0];
+                        int my = mvc_temp[i+1][1];
+                        COST_MV_HPEL( mx, my, cost );
+                        COPY1_IF_LT( bpred_cost, (cost << 4) + i );
+                    } while( ++i <= valid_mvcs );
                 bpred_mx = mvc_temp[(bpred_cost&15)+1][0];
                 bpred_my = mvc_temp[(bpred_cost&15)+1][1];
                 bpred_cost >>= 4;
@@ -421,13 +442,25 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 int i = 1, cost;
                 M32( mvc_temp[1] ) = pmv;
                 bcost <<= 4;
-                do
+                if( cmp_list_min )
                 {
-                    int mx = mvc_temp[i+1][0];
-                    int my = mvc_temp[i+1][1];
-                    cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my );
-                    COPY1_IF_LT( bcost, (cost << 4) + i );
-                } while( ++i <= valid_mvcs );
+                    for( ; i <= valid_mvcs; i++ )
+                    {
+                        int mx = mvc_temp[i+1][0];
+                        int my = mvc_temp[i+1][1];
+                        list_src[i-1] = &p_fref_w[my*stride+mx];
+                        list_bias[i-1] = (BITS_MVD( mx, my ) << 4) + i;
+                    }
+                    bcost = cmp_list_min( p_fenc, list_src, stride, valid_mvcs, list_bias, bcost );
+                }
+                else
+                    do
+                    {
+                        int mx = mvc_temp[i+1][0];
+                        int my = mvc_temp[i+1][1];
+                        cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my );
+                        COPY1_IF_LT( bcost, (cost << 4) + i );
+                    } while( ++i <= valid_mvcs );
                 bmx = mvc_temp[(bcost&15)+1][0];
                 bmy = mvc_temp[(bcost&15)+1][1];
                 bcost >>= 4;

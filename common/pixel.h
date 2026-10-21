@@ -49,6 +49,9 @@ typedef void (*x264_pixel_sad_row_t) ( pixel *fenc, pixel *pix, intptr_t, int n,
 /* x264_predictor_clip/roundclip that also drop the candidates whose clipped mv equals pmv or
  * that of an earlier one kept; i_mvc <= 15, writes 16 */
 typedef int  (*x264_predictor_clip_t) ( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
+/* min( best, (sad_i << 4) + bias[i] ), i < n, 1 <= n <= 15, compared as int: sad( fenc, src[i] )
+ * (list), sad( fenc, avg( src[2i], src[2i+1] ) ) (avg2_list, as cmp_avg2) */
+typedef int  (*x264_pixel_cmp_list_min_t) ( pixel *fenc, pixel **src, intptr_t, int n, const int32_t *bias, int best );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -182,6 +185,11 @@ typedef struct
     /* asm only, NULL otherwise; references x264_predictor_{clip,roundclip}_c */
     x264_predictor_clip_t predictor_clip;
     x264_predictor_clip_t predictor_roundclip;
+    /* asm only, NULL otherwise; references x264_pixel_sad_{list,avg2_list}_min_c */
+    x264_pixel_cmp_list_min_t sad_list_min[7];
+    x264_pixel_cmp_list_min_t sad_avg2_list_min[7];
+    x264_pixel_cmp_list_min_t fpelcmp_list_min[7]; /* sad_*list_min where fpelcmp is sad, else NULL */
+    x264_pixel_cmp_list_min_t fpelcmp_avg2_list_min[7];
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
@@ -280,6 +288,10 @@ void x264_pixel_sad_row_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stri
 int x264_predictor_clip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
 #define x264_predictor_roundclip_c x264_template(predictor_roundclip_c)
 int x264_predictor_roundclip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
+#define x264_pixel_sad_list_min_c x264_template(pixel_sad_list_min_c)
+int x264_pixel_sad_list_min_c( int i_pixel, pixel *fenc, pixel **src, intptr_t i_stride, int n, const int32_t *bias, int best );
+#define x264_pixel_sad_avg2_list_min_c x264_template(pixel_sad_avg2_list_min_c)
+int x264_pixel_sad_avg2_list_min_c( int i_pixel, pixel *fenc, pixel **src, intptr_t i_stride, int n, const int32_t *bias, int best );
 #define x264_pixel_ssd_nv12 x264_template(pixel_ssd_nv12)
 void x264_pixel_ssd_nv12   ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2,
                              int i_width, int i_height, uint64_t *ssd_u, uint64_t *ssd_v );

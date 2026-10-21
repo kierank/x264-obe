@@ -1255,6 +1255,131 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "predictor clip :" );
 
+    /* sad_list_min / sad_avg2_list_min, n 1..15. j>>6&7: 0 random costs, 1 equal costs (ties
+     * go by idx), 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning,
+     * 4 best around a slot's cost over the first half of the rows, 5 the same with the other
+     * half maximal, 6 repeated candidates, 7 all pixels maximal. avg2: src2 = src1 in some slots */
+    ok = 1; used_asm = 0;
+    for( int avg2 = 0; avg2 < 2; avg2++ )
+        for( int i = 0; i < 7; i++ )
+        {
+            x264_pixel_cmp_list_min_t list_asm = (avg2 ? pixel_asm.sad_avg2_list_min : pixel_asm.sad_list_min)[i];
+            x264_pixel_cmp_list_min_t list_ref = (avg2 ? pixel_ref.sad_avg2_list_min : pixel_ref.sad_list_min)[i];
+            if( !list_asm || list_asm == list_ref )
+                continue;
+            int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+            static pixel lbuf[40*80];
+            ALIGNED_16( pixel fmax[16*FENC_STRIDE] );
+            int wins[16] = {0};
+            set_func_name( "sad_%slist_min_%s", avg2 ? "avg2_" : "", pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 1024 && ok; j++ )
+            {
+                int mode = (j>>6)&7, n = 1 + j%15, win = 0;
+                intptr_t stride = 80 - (j&7);
+                pixel *fenc = mode == 3 || mode == 5 ? pbuf3 : pbuf1;
+                ALIGNED_ARRAY_16( pixel *, src,[32] );
+                ALIGNED_16( int32_t bias[16] );
+                int sad[16], half[16], best, tmin = INT_MAX, tmax = 0, res_c, res_r, res_a;
+                for( int k = 0; k < 40*80; k++ )
+                    lbuf[k] = mode == 7 ? PIXEL_MAX : rand() & PIXEL_MAX;
+                if( mode == 7 )
+                {
+                    for( int k = 0; k < 16*FENC_STRIDE; k++ )
+                        fmax[k] = 0;
+                    fenc = fmax;
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    pixel *p = lbuf + (rand()%41) + (rand()%17)*stride;
+                    src[2*k] = p;
+                    src[2*k+1] = (rand()&3) == 0 ? p : (rand()&1) ? p + 1 : p + stride;
+                    if( mode == 6 && k && (rand()&1) )
+                    {
+                        src[2*k] = src[0];
+                        src[2*k+1] = src[1];
+                    }
+                }
+                if( mode == 3 || mode == 5 )
+                {
+                    int k = j%n;
+                    src[2*k+1] = src[2*k];
+                    for( int y = mode == 5 ? bh/2 : 0; y < bh; y++ )
+                        memcpy( src[2*k] + y*stride, pbuf4 + 16*y, bw*sizeof(pixel) );
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    pixel *s1 = src[2*k], *s2 = avg2 ? src[2*k+1] : src[2*k];
+                    sad[k] = half[k] = 0;
+                    for( int y = 0; y < bh; y++ )
+                        for( int x = 0; x < bw; x++ )
+                        {
+                            int d = abs( fenc[y*FENC_STRIDE+x] - ((s1[y*stride+x] + s2[y*stride+x] + 1) >> 1) );
+                            sad[k] += d;
+                            half[k] += y < bh/2 ? d : 0;
+                        }
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << 4) + 1 + (k + j) % n;
+                    else if( mode == 2 )
+                        bias[k] = (((j>>(k%5))&1) * 131070 << 4) + ((j>>(k%4))&1) * 15;
+                    else if( mode == 3 )
+                        bias[k] = k == j%n ? rand()&15 : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << 4) + (rand()&15);
+                    tmin = X264_MIN( tmin, (sad[k] << 4) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << 4) + (rand()%3 ? (int)(rand()&15) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 || mode == 7 )
+                    best = INT_MAX;
+                else if( mode == 4 || mode == 5 )
+                {
+                    int k = rand()%n;
+                    best = (half[k] << 4) + bias[k] + (j&1 ? (rand()%3) - 1 : (rand()%512) - 256);
+                }
+                else
+                    best = tmin + ((rand()&255) - 128) * 16 + (rand()&15);
+                res_c = best;
+                win = 0;
+                for( int k = 0; k < n; k++ )
+                    if( (sad[k] << 4) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << 4) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                if( !avg2 )
+                    for( int k = 0; k < n; k++ )
+                        src[k] = src[2*k];
+                res_r = (avg2 ? x264_pixel_sad_avg2_list_min_c : x264_pixel_sad_list_min_c)( i, fenc, src, stride, n, bias, best );
+                if( res_r != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%slist_min[%d]: C reference mismatch [FAILED]\n", avg2 ? "avg2_" : "", i );
+                }
+                res_a = call_a( list_asm, fenc, src, stride, n, bias, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%slist_min[%d]: n %d mode %d %d != %d [FAILED]\n", avg2 ? "avg2_" : "", i, n, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= 15 && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%slist_min[%d]: %s %d never selected [FAILED]\n", avg2 ? "avg2_" : "", i, k ? "slot" : "best", k-1 );
+                }
+        }
+    report( "pixel sad_list_min :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \
