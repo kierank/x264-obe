@@ -981,6 +981,47 @@ static void pixel_weightp_satd8_search( uint32_t (*cost)[4], pixel *r, pixel *f,
     }
 }
 
+static void pixel_weightp_chroma_ref_row( pixel *dst[2], intptr_t i_stride, pixel *ref, int16_t (*mvs)[2], int n,
+                                          int height, int32_t *sum[2], uint32_t *minmax[2], const int16_t (*ws)[2],
+                                          int32_t *wsum[6] )
+{
+    int v_shift = height == 8;
+    for( int i = 0; i < n; i++ )
+    {
+        int mvx = mvs ? mvs[i][0] : 0;
+        int mvy = mvs ? 2*mvs[i][1] >> v_shift : 0;
+        int d8x = mvx&7;
+        int d8y = mvy&7;
+        int cA = (8-d8x)*(8-d8y);
+        int cB = d8x    *(8-d8y);
+        int cC = (8-d8x)*d8y;
+        int cD = d8x    *d8y;
+        pixel *src = ref + 16*i + (mvy >> 3) * i_stride + (mvx >> 3)*2;
+        int s[2] = { 0 }, mn[2] = { PIXEL_MAX, PIXEL_MAX }, mx[2] = { 0 }, w[6] = { 0 };
+        for( int y = 0; y < height; y++, src += i_stride )
+            for( int x = 0; x < 2*8; x++ )
+            {
+                int p = x&1;
+                int v = ( cA*src[x] + cB*src[x+2] + cC*src[x+i_stride] + cD*src[x+2+i_stride] + 32 ) >> 6;
+                dst[p][8*i + (x>>1) + y*i_stride] = v;
+                s[p] += v;
+                mn[p] = X264_MIN( mn[p], v );
+                mx[p] = X264_MAX( mx[p], v );
+                for( int q = 3*p; q < 3*p+3; q++ )
+                    if( ws[q][0] >= 0 )
+                        w[q] += (v * ws[q][0] + ((1 << ws[q][1]) >> 1)) >> ws[q][1];
+            }
+        for( int p = 0; p < 2; p++ )
+        {
+            sum[p][i] = s[p];
+            minmax[p][i] = mn[p] | (uint32_t)mx[p] << 16;
+        }
+        for( int q = 0; q < 6; q++ )
+            if( ws[q][0] >= 0 )
+                wsum[q][i] = w[q];
+    }
+}
+
 /****************************************************************************
  * successive elimination
  ****************************************************************************/
@@ -1099,6 +1140,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->weightp_sum8_nv = pixel_weightp_sum8_nv;
     pixf->weightp_dc8x8 = pixel_weightp_dc8x8;
     pixf->weightp_satd8_search = pixel_weightp_satd8_search;
+    pixf->weightp_chroma_ref_row = pixel_weightp_chroma_ref_row;
 
     pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4;
     pixf->intra_satd_x3_4x4   = x264_intra_satd_x3_4x4;

@@ -1438,6 +1438,173 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "weightp satd8 search :" );
 
+    ok = 1; used_asm = 0;
+    {
+        /* the C against mc_chroma (or plane_copy_deinterleave), weightp_stats8 and weightp_sum8 */
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+        intptr_t stride = 16*12 + 128;
+        pixel *ref = x264_malloc( 48*stride*sizeof(pixel) );
+        pixel *dbuf = x264_malloc( 4*16*stride*sizeof(pixel) );
+        ok = ref && dbuf;
+        for( int wt = 0; wt < 8 && ok; wt++ )
+        {
+            int height = wt & 1 ? 16 : 8, n = 9, v_shift = height == 8;
+            for( int i = 0; i < 48*stride; i++ )
+                ref[i] = rand() & PIXEL_MAX;
+            int16_t mvs[9][2];
+            for( int i = 0; i < n; i++ )
+            {
+                mvs[i][0] = (rand() & 63) - 32;
+                mvs[i][1] = (rand() & 63) - 32;
+            }
+            int16_t ws[6][2];
+            for( int q = 0; q < 6; q++ )
+            {
+                ws[q][0] = q == wt % 6 ? -1 : rand() & 127;
+                ws[q][1] = rand() & 7;
+            }
+            pixel *src = ref + 16*stride + 32;
+            pixel *dst_c[2] = { dbuf, dbuf + 16*stride };
+            pixel *dst_d[2] = { dbuf + 32*stride, dbuf + 48*stride };
+            int32_t sum[2][9], sumd[2][9], w[6][9], wd[9];
+            uint32_t mm[2][9], mmd[2][9];
+            int32_t *psum[2] = { sum[0], sum[1] }, *pw[6] = { w[0], w[1], w[2], w[3], w[4], w[5] };
+            uint32_t *pmm[2] = { mm[0], mm[1] };
+            int16_t (*m)[2] = wt & 2 ? NULL : mvs;
+            pixel_c.weightp_chroma_ref_row( dst_c, stride, src, m, n, height, psum, pmm, (const int16_t (*)[2])ws, pw );
+            if( m )
+                for( int i = 0; i < n; i++ )
+                    mc_c.mc_chroma( dst_d[0] + 8*i, dst_d[1] + 8*i, stride, src + 16*i, stride,
+                                    m[i][0], 2*m[i][1] >> v_shift, 8, height );
+            else
+                mc_c.plane_copy_deinterleave( dst_d[0], stride, dst_d[1], stride, src, stride, 8*n, height );
+            for( int p = 0; p < 2; p++ )
+            {
+                for( int y = 0; y < height; y++ )
+                    if( memcmp( dst_c[p] + y*stride, dst_d[p] + y*stride, 8*n*sizeof(pixel) ) )
+                        ok = 0;
+                pixel_c.weightp_stats8( sumd[p], mmd[p], dst_d[p], stride, n, height );
+                if( memcmp( sum[p], sumd[p], sizeof(sumd[p]) ) || memcmp( mm[p], mmd[p], sizeof(mmd[p]) ) )
+                    ok = 0;
+            }
+            for( int q = 0; q < 6; q++ )
+                if( ws[q][0] >= 0 )
+                {
+                    pixel_c.weightp_sum8( wd, dst_d[q/3], stride, n, height, ws[q][0], ws[q][1] );
+                    if( memcmp( w[q], wd, sizeof(wd) ) )
+                        ok = 0;
+                }
+            if( !ok )
+                fprintf( stderr, "weightp_chroma_ref_row C FAILED: t %d\n", wt );
+        }
+        x264_free( ref );
+        x264_free( dbuf );
+    }
+    used_asm = !ok;
+    if( ok && pixel_asm.weightp_chroma_ref_row != pixel_ref.weightp_chroma_ref_row )
+    {
+        /* random, near 0 and PIXEL_MAX, mvs within +-32 (or none), heights 8 and 16; slots
+         * unused, scale 0, scale 127 at denom 0, 7 */
+        intptr_t stride = 16*40 + 256;
+        int rows = 16 + 2*40;
+        pixel *ref = x264_malloc( rows*stride*sizeof(pixel) );
+        pixel *dbuf = x264_malloc( 4*16*stride*sizeof(pixel) );
+        int32_t *out = x264_malloc( 2*20*40*sizeof(int32_t) );
+        ok = ref && dbuf && out;
+        for( int wt = 0; wt < 32 && ok; wt++ )
+        {
+            int kind = wt % 3;
+            int height = wt & 1 ? 16 : 8;
+            int n = wt < 16 ? 1 + 5*(wt>>1) : 33 + (wt&7);
+            for( int i = 0; i < rows*stride; i++ )
+                ref[i] = kind == 0 ? rand() & PIXEL_MAX : kind == 1 ? rand() & 3 : PIXEL_MAX - (rand() & 3);
+            int16_t mvs[40][2];
+            for( int i = 0; i < 40; i++ )
+            {
+                mvs[i][0] = (rand() & 63) - 32;
+                mvs[i][1] = (rand() & 63) - 32;
+            }
+            int16_t ws[6][2];
+            for( int q = 0; q < 6; q++ )
+            {
+                int c = (wt + q) % 5;
+                ws[q][0] = c == 0 ? -1 : c == 1 ? 0 : c == 2 ? 127 : rand() & 127;
+                ws[q][1] = c == 2 ? (wt & 2 ? 7 : 0) : rand() & 7;
+            }
+            pixel *src = ref + 40*stride + 64;
+            pixel *dst_c[2] = { dbuf, dbuf + 16*stride };
+            pixel *dst_a[2] = { dbuf + 32*stride, dbuf + 48*stride };
+            int32_t *o_c = out, *o_a = out + 20*40;
+            int32_t *sum_c[2] = { o_c, o_c + 40 }, *sum_a[2] = { o_a, o_a + 40 };
+            uint32_t *mm_c[2] = { (uint32_t*)o_c + 80, (uint32_t*)o_c + 120 }, *mm_a[2] = { (uint32_t*)o_a + 80, (uint32_t*)o_a + 120 };
+            int32_t *w_c[6], *w_a[6];
+            for( int q = 0; q < 6; q++ )
+            {
+                w_c[q] = o_c + 160 + 40*q;
+                w_a[q] = o_a + 160 + 40*q;
+            }
+            memset( dbuf, 0, 4*16*stride*sizeof(pixel) );
+            memset( out, 0, 2*20*40*sizeof(int32_t) );
+            set_func_name( "weightp_chroma_ref_row" );
+            used_asm = 1;
+            call_c1( pixel_c.weightp_chroma_ref_row, dst_c, stride, src, wt & 4 ? NULL : mvs, n, height, sum_c, mm_c,
+                     (const int16_t (*)[2])ws, w_c );
+            call_a1( pixel_asm.weightp_chroma_ref_row, dst_a, stride, src, wt & 4 ? NULL : mvs, n, height, sum_a, mm_a,
+                     (const int16_t (*)[2])ws, w_a );
+            for( int p = 0; p < 2; p++ )
+                for( int y = 0; y < height; y++ )
+                    if( memcmp( dst_c[p] + y*stride, dst_a[p] + y*stride, 8*n*sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "weightp_chroma_ref_row FAILED: wt %d n %d height %d plane %d row %d\n", wt, n, height, p, y );
+                        y = height;
+                        p = 2;
+                    }
+            if( memcmp( o_c, o_a, 160*sizeof(int32_t) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "weightp_chroma_ref_row FAILED: wt %d n %d height %d: sums or minmax\n", wt, n, height );
+            }
+            for( int q = 0; q < 6; q++ )
+                if( ws[q][0] >= 0 && memcmp( w_c[q], w_a[q], n*sizeof(int32_t) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "weightp_chroma_ref_row FAILED: wt %d n %d height %d slot %d { %d %d }\n",
+                             wt, n, height, q, ws[q][0], ws[q][1] );
+                }
+        }
+        /* bench: a row of 40 blocks of 8x8, mvs within +-16, one slot a plane (lowlat), from a
+         * private generator */
+        if( ok && do_bench )
+        {
+            int16_t mvs[40][2];
+            int16_t ws[6][2] = { { 104, 7 }, { -1, -1 }, { -1, -1 }, { 100, 7 }, { -1, -1 }, { -1, -1 } };
+            pixel *src = ref + 40*stride + 64;
+            pixel *dst[2] = { dbuf, dbuf + 16*stride };
+            int32_t *sum[2] = { out, out + 40 };
+            uint32_t *mm[2] = { (uint32_t*)out + 80, (uint32_t*)out + 120 };
+            int32_t *w[6];
+            bench_srand( 710 );
+            for( int i = 0; i < rows*stride; i++ )
+                ref[i] = (PIXEL_MAX/4) + (bench_rand() & (PIXEL_MAX/4));
+            for( int i = 0; i < 40; i++ )
+            {
+                mvs[i][0] = (bench_rand() & 31) - 16;
+                mvs[i][1] = (bench_rand() & 31) - 16;
+            }
+            for( int q = 0; q < 6; q++ )
+                w[q] = out + 160 + 40*q;
+            set_func_name( "weightp_chroma_ref_row" );
+            call_c2( pixel_c.weightp_chroma_ref_row, dst, stride, src, mvs, 40, 8, sum, mm, (const int16_t (*)[2])ws, w );
+            call_a2( pixel_asm.weightp_chroma_ref_row, dst, stride, src, mvs, 40, 8, sum, mm, (const int16_t (*)[2])ws, w );
+        }
+        x264_free( ref );
+        x264_free( dbuf );
+        x264_free( out );
+    }
+    report( "weightp chroma ref :" );
+
 #define TEST_INTRA_X3( name, i8x8, ... ) \
     if( pixel_asm.name && pixel_asm.name != pixel_ref.name ) \
     { \
