@@ -2894,6 +2894,58 @@ SAD_RING_MIN 8, 4
 SAD_RING_MIN 4, 8
 SAD_RING_MIN 4, 4
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_corner_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                               const int32_t bias[4], int best )
+; umh's (-2,-2) (-2,2) (2,-2) (2,2), s = 4: a window each, dy -2 bx -2 word 0,
+; dy -2 bx 1 word 1, dy 2 bx -4 word 2, dy 2 bx -1 word 3:
+; (-2,-2) (2,-2) (-2,2) (2,2) by word
+;-----------------------------------------------------------------------------
+%macro SAD_CORNER_MIN 2 ; width, height
+cglobal pixel_sad_corner_min_%1x%2, 5,11,10
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    DBP_MASKS 0x1111, 0x2222, 0x4444, 0x8888
+    DBP_PTR_INIT
+    DBP_PTR     dbp_p0, -2, -2
+    DBP_PTR     dbp_p1, -2, 1
+    DBP_PTR     dbp_p2, 2, -4
+    DBP_PTR     dbp_p3, 2, -1
+    DBP_INIT %1
+    movu           xm8, [r3]
+    pshufd         xm8, xm8, q3120
+    vpbroadcastd   xm9, r4d
+    DBP_ROWS %1, %2, 4
+%if %1 == 4
+    paddw          xm0, xm1
+    paddw          xm2, xm3
+    paddw          xm0, xm2
+%else
+    paddw           m0, m1
+    paddw           m2, m3
+    paddw           m0, m2
+%endif
+    DBP_FOLD1 %1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 4
+    paddd          xm0, xm8
+    pminsd         xm0, xm9
+    DBP_MIN4
+    RET
+%endmacro
+
+SAD_CORNER_MIN 16, 16
+SAD_CORNER_MIN 16, 8
+SAD_CORNER_MIN 8, 16
+SAD_CORNER_MIN 8, 8
+SAD_CORNER_MIN 8, 4
+SAD_CORNER_MIN 4, 8
+SAD_CORNER_MIN 4, 4
+
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 

@@ -1797,6 +1797,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT7( sad_hexhalf_min, _avx512 );
         INIT7( sad_oct_min, _avx512 );
         INIT7( sad_ring_min, _avx512 );
+        INIT7( sad_corner_min, _avx512 );
 #endif
     }
 #endif //HAVE_MMX
