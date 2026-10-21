@@ -791,14 +791,14 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 int plane_cbp = 0;
                 for( int idx = 0; idx < 4; idx++ )
                 {
-                    nz = x264_quant_8x8( h, dct8x8[idx], i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 0, p, idx );
+                    nz = x264_quant_8x8_scan( h, dct8x8[idx], h->dct.luma8x8[p*4+idx], i_qp, ctx_cat_plane[DCT_LUMA_8x8][p],
+                                              0, p, idx, b_decimate );
 
                     if( nz )
                     {
-                        h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8[idx] );
                         if( b_decimate )
                         {
-                            int i_decimate_8x8 = h->quantf.decimate_score64( h->dct.luma8x8[p*4+idx] );
+                            int i_decimate_8x8 = nz >> 4;
                             i_decimate_mb += i_decimate_8x8;
                             if( i_decimate_8x8 >= 4 )
                                 plane_cbp |= 1<<idx;
@@ -813,7 +813,6 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     h->mb.i_cbp_luma |= plane_cbp;
                     FOREACH_BIT( idx, 0, plane_cbp )
                     {
-                        h->quantf.dequant_8x8( dct8x8[idx], h->dequant8_mf[p?CQM_8PC:CQM_8PY], i_qp );
                         h->dctf.add8x8_idct8( &h->mb.pic.p_fdec[p][8*(idx&1) + 8*(idx>>1)*FDEC_STRIDE], dct8x8[idx] );
                         STORE_8x8_NNZ( p, idx, 1 );
                     }
@@ -1202,29 +1201,20 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
         {
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
-                int quant_cat = p ? CQM_8PC : CQM_8PY;
                 pixel *p_fenc = h->mb.pic.p_fenc[p] + 8*x + 8*y*FENC_STRIDE;
                 pixel *p_fdec = h->mb.pic.p_fdec[p] + 8*x + 8*y*FDEC_STRIDE;
                 ALIGNED_ARRAY_64( dctcoef, dct8x8,[64] );
 
                 h->dctf.sub8x8_dct8( dct8x8, p_fenc, p_fdec );
-                int nnz8x8 = x264_quant_8x8( h, dct8x8, i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 0, p, i8 );
+                int nnz8x8 = x264_quant_8x8_scan( h, dct8x8, h->dct.luma8x8[4*p+i8], i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 0, p, i8, 0 );
+                if( nnz8x8 && b_decimate && !h->mb.b_trellis )
+                    nnz8x8 = 4 <= nnz8x8 >> 4;
+
                 if( nnz8x8 )
                 {
-                    h->zigzagf.scan_8x8( h->dct.luma8x8[4*p+i8], dct8x8 );
-
-                    if( b_decimate && !h->mb.b_trellis )
-                        nnz8x8 = 4 <= h->quantf.decimate_score64( h->dct.luma8x8[4*p+i8] );
-
-                    if( nnz8x8 )
-                    {
-                        h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[quant_cat], i_qp );
-                        h->dctf.add8x8_idct8( p_fdec, dct8x8 );
-                        STORE_8x8_NNZ( p, i8, 1 );
-                        h->mb.i_cbp_luma |= 1 << i8;
-                    }
-                    else
-                        STORE_8x8_NNZ( p, i8, 0 );
+                    h->dctf.add8x8_idct8( p_fdec, dct8x8 );
+                    STORE_8x8_NNZ( p, i8, 1 );
+                    h->mb.i_cbp_luma |= 1 << i8;
                 }
                 else
                     STORE_8x8_NNZ( p, i8, 0 );

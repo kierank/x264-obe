@@ -394,6 +394,33 @@ int x264_quant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], ud
     return quant_4x4x4_scan( dct, level, mf, bias, dequant_mf, i_qp, 1, 1 );
 }
 
+/* quant_8x8, then if nonzero: zigzag into level, decimate score, dequant in place
+ * (unless dequant_mf is NULL). Returns 0, or 1 | min(score, 9) << 4. */
+static ALWAYS_INLINE int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
+                                         int dequant_mf[6][64], int i_qp, int b_field )
+{
+    int nz = 0;
+    for( int i = 0; i < 64; i++ )
+        QUANT_ONE( dct[i], mf[i], bias[i] );
+    if( !nz )
+        return 0;
+    for( int i = 0; i < 64; i++ )
+        level[i] = dct[x264_zigzag_scan8[b_field][i]];
+    int score = x264_decimate_score_internal( level, 64 );
+    if( dequant_mf )
+        dequant_8x8( dct, dequant_mf, i_qp );
+    return 1 | X264_MIN( score, 9 ) << 4;
+}
+
+int x264_quant_8x8_scan_frame( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp )
+{
+    return quant_8x8_scan( dct, level, mf, bias, dequant_mf, i_qp, 0 );
+}
+int x264_quant_8x8_scan_field( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp )
+{
+    return quant_8x8_scan( dct, level, mf, bias, dequant_mf, i_qp, 1 );
+}
+
 #define last(num)\
 static int x264_coeff_last##num( dctcoef *l )\
 {\

@@ -920,6 +920,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame;
     pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac;
     pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac;
+    pf_interlaced->quant_8x8_scan       = x264_quant_8x8_scan_field;
+    pf_progressive->quant_8x8_scan      = x264_quant_8x8_scan_frame;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX

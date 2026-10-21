@@ -72,6 +72,10 @@ typedef struct
                                  int dequant_mf[6][16], int i_qp );
     int  (*quant_4x4x4_scan_ac)( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
                                  int dequant_mf[6][16], int i_qp );
+    /* quant_8x8, then if nonzero scan_8x8, decimate_score64 and dequant_8x8 (skipped if dequant_mf is NULL).
+     * Returns 0, or 1 | min(score, 9) << 4. */
+    int  (*quant_8x8_scan)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
+                            int dequant_mf[6][64], int i_qp );
 
 } x264_zigzag_function_t;
 
