@@ -127,6 +127,17 @@ dct_coef_shuffle:
 %assign x x+1
 %endrep
 %endif
+; optimize_chroma_2x4_dc avx512icl: columns of the dc transform, rounding constants
+optchroma_col2x4: dd 1, 1, 1, 1, 1, 1, 1, 1
+                  dd 1,-1, 1,-1, 1,-1, 1,-1
+                  dd 1, 1, 1, 1,-1,-1,-1,-1
+                  dd 1,-1, 1,-1,-1, 1,-1, 1
+                  dd 1, 1,-1,-1,-1,-1, 1, 1
+                  dd 1,-1,-1, 1,-1, 1, 1,-1
+                  dd 1, 1,-1,-1, 1, 1,-1,-1
+                  dd 1,-1,-1, 1, 1,-1,-1, 1
+optchroma_2080:   dd 2080
+optchroma_m64:    dd -64
 
 SECTION .text
 
@@ -1604,6 +1615,133 @@ OPTIMIZE_CHROMA_2x2_DC
 INIT_XMM avx
 OPTIMIZE_CHROMA_2x2_DC
 %endif ; !HIGH_BIT_DEPTH
+
+;-----------------------------------------------------------------------------
+; int optimize_chroma_2x2_dc( dctcoef dct[4], int dequant_mf )
+; int optimize_chroma_2x4_dc( dctcoef dct[8], int dequant_mf )
+;-----------------------------------------------------------------------------
+; avx512icl: the dc transform is linear, so lowering |dct[k]| by one moves the
+; pre-rounding values by -sign*dmf*T[:,k]: each trial is one vector subtract,
+; shift, xor and vptestmd against the reference, not a whole transform.
+; 2x2: out = (T*dct*dmf >> 5) + 32; 2x4: out = (T*dct*dmf + 2080) >> 6
+%macro OPT_CHROMA_T 0 ; m0: dwords -> T*m0, k1/k2 set; clobbers m1, m2
+%if mmsize == 16
+    pshufd        m1, m0, q2301
+    paddd         m2, m0, m1
+    vpsubd        m2 {k1}, m1, m0
+    pshufd        m1, m2, q1032
+    paddd         m0, m2, m1
+    vpsubd        m0 {k2}, m1, m2
+    pshufd        m0, m0, q3120
+%else
+    pshufd        m1, m0, q2301
+    paddd         m2, m0, m1
+    vpsubd        m2 {k1}, m1, m0
+    pshufd        m1, m2, q1032
+    paddd         m0, m2, m1
+    vpsubd        m0 {k2}, m1, m2
+    vextracti32x4 xm1, m0, 1
+    paddd         xm2, xm0, xm1
+    psubd         xm0, xm1
+    punpcklqdq    xm1, xm2, xm0
+    punpckhqdq    xm0, xm2
+    vinserti32x4  m0, m1, xm0, 1
+%endif
+%endmacro
+
+%macro OPT_CHROMA_ROUND 2 ; dst, src
+%if mmsize == 16
+    psrad         %1, %2, 5
+    paddd         %1, m6
+%else
+    psrad         %1, %2, 6
+%endif
+%if HIGH_BIT_DEPTH == 0
+    pslld         %1, 16                     ; the C keeps the outputs in int16
+    psrad         %1, 16
+%endif
+%endmacro
+
+%macro OPTIMIZE_CHROMA_ICL 2 ; name, coefs
+%if %2 == 4
+    %define %%bc {1to4}
+%else
+    %define %%bc {1to8}
+%endif
+cglobal optimize_chroma_%1_dc, 2,6
+%if HIGH_BIT_DEPTH
+    movu          m0, [r0]
+%else
+    vpmovsxwd     m0, [r0]
+%endif
+%if mmsize == 16
+    mov          r2d, 0xa
+    kmovb         k1, r2d
+    mov          r2d, 0xc
+    kmovb         k2, r2d
+    vpbroadcastd  m6, [optchroma_32]
+%else
+    mov          r2d, 0xaa
+    kmovb         k1, r2d
+    mov          r2d, 0xcc
+    kmovb         k2, r2d
+%endif
+    OPT_CHROMA_T
+    vpbroadcastd  m3, r1d
+    pmulld        m0, m3
+%if mmsize == 32
+    vpaddd        m0, [optchroma_2080] {1to8}
+%endif
+    OPT_CHROMA_ROUND m4, m0                  ; reference output
+    xor          eax, eax
+    vptestmd      k3, m4, [optchroma_m64] %%bc
+    kortestb      k3, k3
+    jz .ret                                  ; already rounds to zero
+    mov          r2d, %2-1
+    lea           r5, [optchroma_col%1+(%2-1)*mmsize]
+.coef:
+%if HIGH_BIT_DEPTH
+    mov          r3d, [r0+r2*4]
+%else
+    movsx        r3d, word [r0+r2*2]
+%endif
+    test         r3d, r3d
+    jz .next
+    mov          r4d, r3d
+    sar          r4d, 31
+    or           r4d, 1                      ; sign
+    vpbroadcastd  m5, r4d
+    pmulld        m5, [r5]
+    pmulld        m5, m3                     ; sign*dmf*T[:,k]
+.try:
+    psubd         m1, m0, m5
+    OPT_CHROMA_ROUND m2, m1
+    pxor          m2, m4
+    vptestmd      k3, m2, [optchroma_m64] %%bc
+    kortestb      k3, k3
+    jz .accept
+    mov          eax, 1
+    jmp .store
+.accept:
+    mova          m0, m1
+    sub          r3d, r4d
+    jnz .try
+.store:
+%if HIGH_BIT_DEPTH
+    mov    [r0+r2*4], r3d
+%else
+    mov    [r0+r2*2], r3w
+%endif
+.next:
+    sub           r5, mmsize
+    dec          r2d
+    jge .coef
+.ret:
+    RET
+%endmacro
+
+INIT_YMM avx512icl
+OPTIMIZE_CHROMA_ICL 2x4, 8
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------

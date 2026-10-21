@@ -609,6 +609,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->dequant_4x4_dc = x264_dequant_4x4dc_avx512icl;
         pf->denoise_dct = x264_denoise_dct_avx512icl;
         pf->quant_2x2_dc = x264_quant_2x2_dc_avx512icl;
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx512icl;
 #if ARCH_X86_64
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* decimate_score15/16/64 1.5-3.5x, quant_4x4 2.21x, quant_4x4_dc 1.13x, quant_4x4x4 1.056x;
@@ -809,6 +810,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     {
         pf->denoise_dct = x264_denoise_dct_avx512icl;
         pf->quant_2x2_dc = x264_quant_2x2_dc_avx512icl;
+        pf->optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx512icl;
 #if ARCH_X86_64
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* decimate_score15/16/64 1.5-4.1x, quant_8x8 1.08x, quant_4x4x4 1.25x;
