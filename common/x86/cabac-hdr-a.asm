@@ -149,3 +149,85 @@ cglobal cabac_encode_bins_bmi2, 4,10
     mov [r0+cb.queue], r5d
     RET
     HDR_PUTBYTE
+
+; one mvd component: %1 = ctx base; in: r10d = mvd, r1 = ctx inc
+; clobbers r1, r2, r6, r8, r9
+%macro HDR_MVD 1
+    mov      r6, ((%1+6)<<32) | ((%1+5)<<24) | ((%1+4)<<16) | ((%1+3)<<8) | %1
+    add      r1, r6                 ; ctx: base+inc, base+3, +4, +5, +6..
+    mov     r9d, r10d
+    neg     r9d
+    cmovs   r9d, r10d               ; a = |mvd|
+; a < 9: a ones, a zero; else 9 ones. stop bit after them
+    mov     r2d, 3
+    shlx    r2d, r2d, r9d
+    dec     r2d
+    mov     r6d, 0x3ff
+    cmp     r9d, 9
+    cmovae  r2d, r6d
+    HDR_BINS
+    test    r10d, r10d
+    jz %%end
+    mov     r9d, r10d
+    neg     r9d
+    cmovs   r9d, r10d
+    mov     r6d, r10d
+    shr     r6d, 31                 ; sign
+    mov     r8d, 1                  ; bypass bins
+    cmp     r9d, 9
+    jae %%suffix
+%%bypass:
+; low = (low << n) + bins * range, then putbyte as needed
+    imul     r6, r4
+    shlx     r3, r3, r8
+    add      r3, r6
+    add     r5d, r8d
+    jl %%end
+    call .putbyte
+    jmp %%end
+%%suffix:
+; x264_cabac_encode_ue_bypass( cb, 3, a-9 ) and the sign in one string:
+; v = a-1, k = msb(v), x = v - (3 << k) + (1 << (2k-2)) in 2k-2 bits
+    dec     r9d
+    lzcnt   r8d, r9d
+    xor     r8d, 31                 ; k
+    mov     r1d, 3
+    shlx    r1d, r1d, r8d
+    sub     r9d, r1d
+    lea     r2d, [r8*2-2]
+    mov     r1d, 1
+    shlx    r1d, r1d, r2d
+    add     r9d, r1d                ; x
+    lea     r6d, [r9*2+r6]          ; x, sign
+    lea     r8d, [r2+1]
+    jmp %%bypass
+%%end:
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void cabac_encode_mvd( x264_cabac_t *cb, int mdx, int mdy, int amvd )
+;-----------------------------------------------------------------------------
+cglobal cabac_encode_mvd_bmi2, 4,12
+%ifdef PIC
+    lea      r7, [$$]
+%endif
+    mov    r11d, r2d
+    shl    r11d, 8
+    mov     r6d, r3d
+    shr     r6d, 8
+    or     r11d, r6d                ; mdy, y ctx inc
+    mov    r10d, r1d
+    movzx   r1d, r3b
+    mov     r3d, [r0+cb.low]
+    mov     r4d, [r0+cb.range]
+    mov     r5d, [r0+cb.queue]
+    HDR_MVD 40
+    mov    r10d, r11d
+    sar    r10d, 8
+    movzx   r1d, r11b
+    HDR_MVD 47
+    mov [r0+cb.low], r3d
+    mov [r0+cb.range], r4d
+    mov [r0+cb.queue], r5d
+    RET
+    HDR_PUTBYTE
