@@ -207,27 +207,66 @@ do\
     COPY3_IF_LT( bcost, costs[2], bmx, m2x, bmy, m2y );\
 }
 
+/* umh's COST_MV_X4 groups around omx, omy in one call: (cost << 4) + j+1, j in pts[] order,
+ * against bcost << 4, so the min is the COPY3_IF_LT sequence */
+static const int8_t umh_dia[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+static const int8_t umh_oct[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+static const int8_t umh_corner[4][2] = {{-2,-2}, {-2,2}, {2,-2}, {2,2}};
+#define COST_MV_PT_MIN( fn, pts, n )\
+{\
+    for( int j = 0; j < n; j++ )\
+        pt_bias[j] = (BITS_MVD( omx+pts[j][0], omy+pts[j][1] ) << 4) + j+1;\
+    int pt_cost = fn( p_fenc, p_fref_w + omx + omy*stride, stride, pt_bias, bcost << 4 );\
+    if( pt_cost&15 )\
+    {\
+        bmx = omx + pts[(pt_cost&15)-1][0];\
+        bmy = omy + pts[(pt_cost&15)-1][1];\
+    }\
+    bcost = pt_cost >> 4;\
+}
+
 /*  1  */
 /* 101 */
 /*  1  */
 #define DIA1_ITER( mx, my )\
 {\
     omx = mx; omy = my;\
-    COST_MV_X4( 0,-1, 0,1, -1,0, 1,0 );\
+    if( cmp_dia_min )\
+        COST_MV_PT_MIN( cmp_dia_min, umh_dia, 4 )\
+    else\
+        COST_MV_X4( 0,-1, 0,1, -1,0, 1,0 );\
 }
 
+/* cmp_row: the horizontal candidates from one row of sads, in the same order */
 #define CROSS( start, x_max, y_max )\
 {\
     int i = start;\
-    if( (x_max) <= X264_MIN(mv_x_max-omx, omx-mv_x_min) )\
-        for( ; i < (x_max)-2; i+=4 )\
-            COST_MV_X4( i,0, -i,0, i+2,0, -i-2,0 );\
-    for( ; i < (x_max); i+=2 )\
+    int row_lo = X264_MAX( omx-(x_max)+1, mv_x_min );\
+    int row_hi = X264_MIN( omx+(x_max)-1, mv_x_max );\
+    if( cmp_row && row_lo <= row_hi && row_hi-row_lo < 256 )\
     {\
-        if( omx+i <= mv_x_max )\
-            COST_MV( omx+i, omy );\
-        if( omx-i >= mv_x_min )\
-            COST_MV( omx-i, omy );\
+        cmp_row( p_fenc, p_fref_w + row_lo + omy*stride, stride, row_hi-row_lo+1, row_sads );\
+        for( ; i < (x_max); i+=2 )\
+        {\
+            if( omx+i <= row_hi )\
+                COPY3_IF_LT( bcost, row_sads[omx+i-row_lo] + BITS_MVD( omx+i, omy ), bmx, omx+i, bmy, omy );\
+            if( omx-i >= row_lo )\
+                COPY3_IF_LT( bcost, row_sads[omx-i-row_lo] + BITS_MVD( omx-i, omy ), bmx, omx-i, bmy, omy );\
+        }\
+    }\
+    else\
+    {\
+        if( (x_max) <= X264_MIN(mv_x_max-omx, omx-mv_x_min) )\
+            for( ; i < (x_max)-2; i+=4 )\
+                COST_MV_X4( i,0, -i,0, i+2,0, -i-2,0 );\
+        for( ; i < (x_max); i+=2 )\
+        {\
+            if( omx+i <= mv_x_max )\
+                COST_MV( omx+i, omy );\
+            if( omx-i >= mv_x_min )\
+                COST_MV( omx-i, omy );\
+        }\
     }\
     i = start;\
     if( (y_max) <= X264_MIN(mv_y_max-omy, omy-mv_y_min) )\
@@ -268,7 +307,12 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     x264_pixel_cmp_pt_min_t cmp_dia_min = h->pixf.fpelcmp_dia_min[i_pixel];
     x264_pixel_cmp_pt_min_t cmp_hex_min = h->pixf.fpelcmp_hex_min[i_pixel];
     x264_pixel_cmp_hexhalf_min_t cmp_hexhalf_min = h->pixf.fpelcmp_hexhalf_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_oct_min = h->pixf.fpelcmp_oct_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_ring_min = h->pixf.fpelcmp_ring_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_corner_min = h->pixf.fpelcmp_corner_min[i_pixel];
+    x264_pixel_sad_row_t cmp_row = h->pixf.fpelcmp_row[i_pixel];
     ALIGNED_ARRAY_16( int32_t, pt_bias,[8] );
+    ALIGNED_ARRAY_32( uint16_t, row_sads,[264] );
 
     int mv_x_min = h->mb.mv_limit_fpel[0][0];
     int mv_y_min = h->mb.mv_limit_fpel[0][1];
@@ -558,16 +602,26 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define SAD_THRESH(v) ( bcost < ( v >> x264_pixel_size_shift[i_pixel] ) )
             if( bcost == ucost2 && SAD_THRESH(2000) )
             {
-                COST_MV_X4( 0,-2, -1,-1, 1,-1, -2,0 );
-                COST_MV_X4( 2, 0, -1, 1, 1, 1,  0,2 );
+                if( cmp_oct_min )
+                    COST_MV_PT_MIN( cmp_oct_min, umh_oct, 8 )
+                else
+                {
+                    COST_MV_X4( 0,-2, -1,-1, 1,-1, -2,0 );
+                    COST_MV_X4( 2, 0, -1, 1, 1, 1,  0,2 );
+                }
                 if( bcost == ucost1 && SAD_THRESH(500) )
                     break;
                 if( bcost == ucost2 )
                 {
                     int range = (i_me_range>>1) | 1;
                     CROSS( 3, range, range );
-                    COST_MV_X4( -1,-2, 1,-2, -2,-1, 2,-1 );
-                    COST_MV_X4( -2, 1, 2, 1, -1, 2, 1, 2 );
+                    if( cmp_ring_min )
+                        COST_MV_PT_MIN( cmp_ring_min, umh_ring, 8 )
+                    else
+                    {
+                        COST_MV_X4( -1,-2, 1,-2, -2,-1, 2,-1 );
+                        COST_MV_X4( -2, 1, 2, 1, -1, 2, 1, 2 );
+                    }
                     if( bcost == ucost2 )
                         break;
                     cross_start = range + 2;
@@ -631,7 +685,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
              * we are still centered on the same place as the DIA2. is this desirable? */
             CROSS( cross_start, i_me_range, i_me_range>>1 );
 
-            COST_MV_X4( -2,-2, -2,2, 2,-2, 2,2 );
+            if( cmp_corner_min )
+                COST_MV_PT_MIN( cmp_corner_min, umh_corner, 4 )
+            else
+                COST_MV_X4( -2,-2, -2,2, 2,-2, 2,2 );
 
             /* hexagon grid */
             omx = bmx; omy = bmy;

@@ -1003,37 +1003,51 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel sad_sq_min :" );
 
-    /* dia (s 4), hex, hexhalf (s 6). j>>7: 0 random costs, 1 equal costs (ties go by idx),
-     * 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning. hexhalf: dir j%6 */
+    /* dia, oct, ring, corner (s 4), hex, hexhalf (s 6). j>>7: 0 random costs, 1 equal costs (ties
+     * go by idx), 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning.
+     * hexhalf: dir j%6 */
     ok = 1; used_asm = 0;
-    for( int kind = 0; kind < 3; kind++ )
+    for( int kind = 0; kind < 6; kind++ )
         for( int i = 0; i < 7; i++ )
         {
             static const int8_t dia_pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
             static const int8_t hex_pt[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
-            static const char *kind_names[3] = { "dia", "hex", "hexhalf" };
-            x264_pixel_cmp_pt_min_t pt_asm = kind == 0 ? pixel_asm.sad_dia_min[i] : pixel_asm.sad_hex_min[i];
-            x264_pixel_cmp_pt_min_t pt_ref = kind == 0 ? pixel_ref.sad_dia_min[i] : pixel_ref.sad_hex_min[i];
-            int n = kind == 0 ? 4 : kind == 1 ? 6 : 3;
-            int s = kind == 0 ? 4 : 6;
+            static const int8_t oct_pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+            static const int8_t ring_pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+            static const int8_t corner_pt[4][2] = {{-2,-2}, {-2,2}, {2,-2}, {2,2}};
+            static const char *kind_names[6] = { "dia", "hex", "hexhalf", "oct", "ring", "corner" };
+            static int (* const pt_c[6])( int, pixel *, pixel *, intptr_t, const int32_t *, int ) =
+            {
+                x264_pixel_sad_dia_min_c, x264_pixel_sad_hex_min_c, NULL,
+                x264_pixel_sad_oct_min_c, x264_pixel_sad_ring_min_c, x264_pixel_sad_corner_min_c
+            };
+            x264_pixel_cmp_pt_min_t pt_asm = (kind == 0 ? pixel_asm.sad_dia_min : kind == 1 ? pixel_asm.sad_hex_min
+                                            : kind == 3 ? pixel_asm.sad_oct_min : kind == 4 ? pixel_asm.sad_ring_min
+                                            : pixel_asm.sad_corner_min)[i];
+            x264_pixel_cmp_pt_min_t pt_ref = (kind == 0 ? pixel_ref.sad_dia_min : kind == 1 ? pixel_ref.sad_hex_min
+                                            : kind == 3 ? pixel_ref.sad_oct_min : kind == 4 ? pixel_ref.sad_ring_min
+                                            : pixel_ref.sad_corner_min)[i];
+            int n = kind == 0 || kind == 5 ? 4 : kind == 1 ? 6 : kind == 2 ? 3 : 8;
+            int s = kind == 1 || kind == 2 ? 6 : 4;
             if( kind == 2 ? !pixel_asm.sad_hexhalf_min[i] || pixel_asm.sad_hexhalf_min[i] == pixel_ref.sad_hexhalf_min[i]
                           : !pt_asm || pt_asm == pt_ref )
                 continue;
             int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
             ALIGNED_16( pixel refm[24*48] );
-            int wins[7] = {0};
+            int wins[9] = {0};
             set_func_name( "sad_%s_min_%s", kind_names[kind], pixel_names[i] );
             used_asm = 1;
             for( int j = 0; j < 512 && ok; j++ )
             {
                 int mode = j>>7;
                 int dir = j%6;
-                const int8_t (*pt)[2] = kind == 0 ? dia_pt : kind == 1 ? hex_pt+1 : hex_pt+dir;
+                const int8_t (*pt)[2] = kind == 0 ? dia_pt : kind == 1 ? hex_pt+1 : kind == 2 ? hex_pt+dir
+                                      : kind == 3 ? oct_pt : kind == 4 ? ring_pt : corner_pt;
                 pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
                 intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
                 pixel *pix = mode == 3 ? refm + 4*48 + 8 : pbuf2 + (j&31) + 2*stride + 4;
                 ALIGNED_16( int32_t bias[8] );
-                int sad[6], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                int sad[8], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
                 if( mode == 3 )
                 {
                     int k = j%n;
@@ -1075,9 +1089,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
                         win = k+1;
                     }
                 wins[win]++;
-                int res_r = kind == 0 ? x264_pixel_sad_dia_min_c( i, fenc, pix, stride, bias, best )
-                          : kind == 1 ? x264_pixel_sad_hex_min_c( i, fenc, pix, stride, bias, best )
-                          : x264_pixel_sad_hexhalf_min_c( i, fenc, pix, stride, dir, bias, best );
+                int res_r = kind == 2 ? x264_pixel_sad_hexhalf_min_c( i, fenc, pix, stride, dir, bias, best )
+                          : pt_c[kind]( i, fenc, pix, stride, bias, best );
                 if( res_r != res_c )
                 {
                     ok = 0;
@@ -1102,6 +1115,60 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 }
         }
     report( "pixel sad_pt_min :" );
+
+    /* sad_row: n 1..264, 0: random, 1: maximal sads (255 against 0); nothing past n rounded up to 8 */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( !pixel_asm.sad_row[i] || pixel_asm.sad_row[i] == pixel_ref.sad_row[i] )
+            continue;
+        set_func_name( "sad_row_%s", pixel_names[i] );
+        used_asm = 1;
+        for( int j = 0; j < 128 && ok; j++ )
+        {
+            ALIGNED_ARRAY_32( uint16_t, sads_c,[272] );
+            ALIGNED_ARRAY_32( uint16_t, sads_a,[272] );
+            ALIGNED_16( pixel fmax[16*FENC_STRIDE] );
+            ALIGNED_16( static pixel rowbuf[17*320] );
+            int n = j < 64 ? 1 + j : j < 96 ? 1 + (j&7) : 200 + (rand()%65);
+            int mode = (j&15) == 15;
+            intptr_t stride = 320 - (j&7);
+            pixel *pix = rowbuf + (j&31);
+            pixel *fenc = pbuf1;
+            for( int k = 0; k < 17*320; k++ )
+                rowbuf[k] = mode ? 0 : rand() & PIXEL_MAX;
+            if( mode )
+            {
+                for( int k = 0; k < 16*FENC_STRIDE; k++ )
+                    fmax[k] = PIXEL_MAX;
+                fenc = fmax;
+            }
+            for( int k = 0; k < 272; k++ )
+                sads_c[k] = sads_a[k] = 0xdead;
+            x264_pixel_sad_row_c( i, fenc, pix, stride, n, sads_c );
+            for( int k = 0; k < n; k++ )
+                if( sads_c[k] != (uint16_t)pixel_c.sad[i]( fenc, FENC_STRIDE, pix + k, stride ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_row[%d]: C reference mismatch [FAILED]\n", i );
+                    break;
+                }
+            call_a( pixel_asm.sad_row[i], fenc, pix, stride, n, sads_a );
+            if( memcmp( sads_c, sads_a, n*sizeof(uint16_t) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "sad_row[%d]: n %d mode %d [FAILED]\n", i, n, mode );
+            }
+            for( int k = (n+7)&~7; k < 272; k++ )
+                if( sads_a[k] != 0xdead )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_row[%d]: n %d wrote [%d] [FAILED]\n", i, n, k );
+                    break;
+                }
+        }
+    }
+    report( "pixel sad_row :" );
 
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
