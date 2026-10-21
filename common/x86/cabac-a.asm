@@ -515,6 +515,49 @@ cabac_lps_trans:
     db 128,158,187,216,120,124,0,0, 128,158,187,216,125,121,0,0
     db 128,167,197,227,122,126,0,0, 128,167,197,227,127,123,0,0
     db 128,176,208,240,124,127,0,0, 128,176,208,240,126,125,0,0
+; cabac_mb_residual slots: 0 luma dc, 1-16 luma ac, 17-32 luma 4x4, 33-36 luma 8x8,
+; 37-38 chroma dc 4:2:0, 39-40 chroma dc 4:2:2, 41-48 u ac, 49-56 v ac.
+; cbf context (0: none), coefficient offset from h->dct (luma16x16_dc, chroma_dc,
+; luma8x8, luma4x4 at 0, 48, 64, 832 coefs), ctx_block_cat (0x80: 4:2:2 dc)
+mbr_slot_cbf:       dw 85
+                    times 16 dw 89
+                    times 16 dw 93
+                    times 4 dw 0
+                    times 4 dw 97
+                    times 16 dw 101
+mbr_slot_off:       dw 0
+%assign mbr_i 0
+%rep 16
+                    dw (832+16*mbr_i+1)*SIZEOF_DCTCOEF
+%assign mbr_i mbr_i+1
+%endrep
+%assign mbr_i 0
+%rep 16
+                    dw (832+16*mbr_i)*SIZEOF_DCTCOEF
+%assign mbr_i mbr_i+1
+%endrep
+%assign mbr_i 0
+%rep 4
+                    dw (64+64*mbr_i)*SIZEOF_DCTCOEF
+%assign mbr_i mbr_i+1
+%endrep
+                    dw 48*SIZEOF_DCTCOEF, 56*SIZEOF_DCTCOEF, 48*SIZEOF_DCTCOEF, 56*SIZEOF_DCTCOEF
+%assign mbr_i 0
+%rep 16
+                    dw (832+16*(16+mbr_i+(mbr_i&8))+1)*SIZEOF_DCTCOEF
+%assign mbr_i mbr_i+1
+%endrep
+mbr_slot_cat:       db 0
+                    times 16 db 1
+                    times 16 db 2
+                    times 4 db 5
+                    db 3, 3, 0x83, 0x83
+                    times 16 db 4
+; node ctx 0-7 as coeff_abs_level1_ctx etc., 8-15 the same with the chroma dc levelgt1 contexts
+mbr_level1_ctx:     db 1, 2, 3, 4, 0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 0
+mbr_levelgt1_ctx:   db 5, 5, 5, 5, 6, 7, 8, 9, 5, 5, 5, 5, 6, 7, 8, 8
+mbr_level_trans:    db 1, 2, 3, 3, 4, 5, 6, 7, 9, 10, 11, 11, 12, 13, 14, 15
+                    db 4, 4, 4, 4, 5, 6, 7, 7, 12, 12, 12, 12, 13, 14, 15, 15
 
 SECTION .text
 
@@ -2240,6 +2283,337 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     PUTBYTE_STUBS
 %endmacro
 
+;-----------------------------------------------------------------------------
+; void cabac_mb_residual( dctcoef *dct, uint8_t *nnz, intptr_t flags, x264_cabac_t *cb )
+; 4:2:0/4:2:2: the cbf bins and residual blocks of one MB, in the order of
+; x264_cabac_mb_residual_internal, with low/range/queue in r8-r10 throughout.
+; dct = h->dct, nnz = the scan8 nnz cache; flags: cbp_luma 0-3, cbp_chroma 4-5,
+; b_intra 6, b_interlaced 7, I_16x16 8, transform_8x8 9, 4:2:2 10, bits 8-10
+; of cbp_left 12-14 and of cbp_top 15-17.
+; Every block is a slot (mbr_slot_*); the visit, coded and cbf left/top masks
+; have one bit per slot. The nnz bits come from one vptestmb per 64 bytes of
+; the cache (0x80, an unavailable neighbour, counts for intra only), the
+; own/left/top bits of the 4x4 blocks from pext of those masks.
+;-----------------------------------------------------------------------------
+%macro CABAC_MB_RESIDUAL 0
+cglobal cabac_mb_residual, 4,15,3,-4*88
+%ifdef PIC
+    lea      r7, [$$]
+    %define GLOBAL +r7-$$
+%else
+    %define GLOBAL
+%endif
+    %define cbm    [rsp+0]
+    %define levelm [rsp+8]
+    %define lastm  [rsp+16]
+    %define nodem  [rsp+24]
+    %define coeffs rsp+32
+    %define visitm [rsp+288]
+    %define codedm [rsp+296]
+    %define incam  [rsp+304]
+    %define incbm  [rsp+312]
+    %define dctm   [rsp+320]
+    %define statem [rsp+328]
+    %define il16m  [rsp+336]
+    %define lowd   r8d
+    %define lowq   r8
+    %define ranged r9d
+    %define rangeq r9
+    %define queued r10d
+    %define queueq r10
+    %assign pb_count 0
+
+    mov      cbm, r3
+    mov     dctm, r0
+    add       r3, cb.state
+    mov   statem, r3
+    mov      r0d, r2d
+    shr      r0d, 3
+    and      r0d, 16
+    mov    il16m, r0                ; b_interlaced*16
+    mov      r0d, r2d
+    add      r0d, r0d
+    and      r0d, 0x80
+    or       r0d, 0x7f
+    vpbroadcastb m0, r0d
+    vptestmb  k1, m0, [r1]
+    vptestmb  k2, m0, [r1+56]
+    kmovq    r11, k1                ; nnz bytes 0-63
+    kmovq    r12, k2                ; nnz bytes 56-119
+    vpternlogd m2, m2, m2, 0xff
+; dc slots 0 (luma), 37/39 (u), 38/40 (v): coded, cbf left (r14) and top (r3)
+    mov       r0, r12
+    shr       r0, 24
+    and      r0d, 1
+    add      r0d, r0d
+    bt       r11, 40
+    adc      r0d, 0
+    lea      r0d, [r0+r0*4]
+    shl       r0, 37
+    mov     r13d, r11d
+    and     r13d, 1
+    or       r13, r0                ; coded
+    mov      r0d, r2d
+    shr      r0d, 12
+    and      r0d, 7
+    mov     r14d, r0d
+    and     r14d, 1
+    shr      r0d, 1
+    lea      r0d, [r0+r0*4]
+    shl       r0, 37
+    or       r14, r0                ; left
+    mov      r0d, r2d
+    shr      r0d, 15
+    and      r0d, 7
+    mov      r3d, r0d
+    and      r3d, 1
+    shr      r0d, 1
+    lea      r0d, [r0+r0*4]
+    shl       r0, 37
+    or        r3, r0                ; top
+; luma: visit mask in r6, 4x4 slot base in r5
+    mov      r1d, r2d
+    and      r1d, 15                ; cbp_luma
+    bt       r2d, 8
+    jc .i16x16
+    mov       r6, r1
+    shl       r6, 33
+    bt       r2d, 9
+    jc .chroma
+    mov      r4d, 0x1111
+    pdep     r6d, r1d, r4d
+    imul     r6d, r6d, 15
+    shl       r6, 17
+    mov      r5d, 17
+    test     r1d, r1d
+    jz .chroma
+    jmp .luma
+.i16x16:
+    mov      r6d, 1
+    test     r1d, r1d
+    jz .chroma
+    or       r6d, 0x1fffe
+    mov      r5d, 1
+.luma:
+; own, left and top of the 16 blocks in raster order (y1 y0 x1 x0), in
+; 16-bit lanes; swapping index bits 1 and 2 gives the block order (y1 x1 y0 x0)
+    mov       r0, 0xf0f0f0f000
+    pext      r4, r11, r0
+    mov       r0, 0x7878787800
+    pext      r1, r11, r0
+    mov      r0d, 0xf0f0f0f0
+    pext      r0, r11, r0
+    shl       r1, 16
+    shl       r0, 32
+    or        r4, r1
+    or        r4, r0
+    mov       r0, r4
+    shr       r0, 2
+    xor       r0, r4
+    mov       r1, 0x00000c0c0c0c0c0c
+    and       r0, r1
+    xor       r4, r0
+    shl       r0, 2
+    xor       r4, r0
+    movzx    r0d, r4w
+    shlx      r0, r0, r5
+    or       r13, r0
+    rorx      r0, r4, 16
+    movzx    r0d, r0w
+    shlx      r0, r0, r5
+    or       r14, r0
+    shr       r4, 32
+    shlx      r4, r4, r5
+    or        r3, r4
+.chroma:
+    mov      r1d, r2d
+    shr      r1d, 4
+    and      r1d, 3                 ; cbp_chroma
+    jz .masks_done
+    mov       r0, 3 << 37
+    mov       r4, 3 << 39
+    bt       r2d, 10
+    cmovc     r0, r4
+    or        r6, r0
+    cmp      r1d, 2
+    jne .masks_done
+; ac: u (rows 5-9) and v (rows 10-14) windows laid out as the luma one,
+; blocks 2 wide so raster order is block order; v at slot 41+8
+    mov       r0, r11
+    shr       r0, 40
+    mov       r4, r12
+    shl       r4, 16
+    or        r0, r4                ; u window (nnz bytes 40-79)
+    shr       r12, 24               ; v window (nnz bytes 80-119)
+    mov       r1, 0x303000
+    mov       r4, 0x3030303000
+    bt       r2d, 10
+    cmovc     r1, r4
+    mov       r8, r1
+    shr       r8, 1
+    mov       r9, r1
+    shr       r9, 8
+    pext      r4, r0, r1
+    pext      r5, r12, r1
+    shl       r5, 8
+    or        r4, r5
+    shl       r4, 41
+    or       r13, r4
+    pext      r4, r0, r8
+    pext      r5, r12, r8
+    shl       r5, 8
+    or        r4, r5
+    shl       r4, 41
+    or       r14, r4
+    pext      r4, r0, r9
+    pext      r5, r12, r9
+    shl       r5, 8
+    or        r4, r5
+    shl       r4, 41
+    or        r3, r4
+    mov       r0, 0x0f0f << 41
+    mov       r4, 0xffff << 41
+    bt       r2d, 10
+    cmovc     r0, r4
+    or        r6, r0
+.masks_done:
+    mov   visitm, r6
+    mov   codedm, r13
+    mov    incam, r14
+    mov    incbm, r3
+    mov       r6, cbm
+    mov     lowd, [r6+cb.low]
+    mov   ranged, [r6+cb.range]
+    mov   queued, [r6+cb.queue]
+    sub   queued, 24
+    jmp .next
+
+.cbf0:
+    CABAC_BIN 0, r11
+.next:
+    mov      r12, visitm
+    tzcnt    r13, r12
+    jc .done
+    blsr     r12, r12
+    mov   visitm, r12
+    movzx   r11d, word [mbr_slot_cbf+r13*2 GLOBAL]
+    test    r11d, r11d
+    jz .coded
+    mov       r1, incam
+    mov       r5, incbm
+    shrx      r1, r1, r13
+    shrx      r5, r5, r13
+    and      r1d, 1
+    and      r5d, 1
+    lea     r11d, [r11+r5*2]
+    add     r11d, r1d
+    add      r11, statem            ; cbf ctx state
+    mov       r1, codedm
+    bt        r1, r13
+    jnc .cbf0
+    CABAC_BIN 1, r11
+.coded:
+    movzx    r2d, byte [mbr_slot_cat+r13 GLOBAL]
+    movzx   r14d, word [mbr_slot_off+r13*2 GLOBAL]
+    add      r14, dctm              ; l
+    mov     r12d, r2d
+    and      r2d, 15                ; ctx_block_cat
+    xor      r1d, r1d
+    cmp      r2d, 3                 ; DCT_CHROMA_DC
+    sete     r1b
+    shl      r1d, 3
+    mov    nodem, r1d               ; node ctx 8-15: chroma dc levelgt1 contexts
+    mov      r1d, il16m
+    add      r1d, r2d
+    movzx    r3d, word [significant_coeff_flag_offset+r1*2 GLOBAL]
+    movzx   r11d, word [last_coeff_flag_offset+r1*2 GLOBAL]
+    movzx    r4d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]
+    mov       r5, statem
+    add       r3, r5                ; ctx_sig state
+    add      r11, r5                ; ctx_last state
+    add       r4, r5
+    mov   levelm, r4                ; ctx_level state
+    movzx    r0d, byte [count_cat_m1+r2 GLOBAL]
+    mov      r1d, 7
+    test    r12b, r12b
+    cmovs    r0d, r1d               ; 4:2:2 chroma dc: 8 coefs
+    mov     r13d, -1                ; coeff_idx
+    cmp      r0d, 63
+    je .block_8x8
+; last of 4, 8, 15 or 16 coefs; as coeff_last15, the lane before an ac block counts
+    xor      r6d, r6d
+    cmp      r0d, 14
+    sete     r6b
+    lea      r5d, [r0+r6+1]
+    mov      r1d, -1
+    bzhi     r1d, r1d, r5d
+    kmovd     k1, r1d
+    neg       r6
+    lea       r5, [r14+r6*SIZEOF_DCTCOEF]
+%if HIGH_BIT_DEPTH
+    vmovdqu32 m0 {k1}{z}, [r5]
+    vptestmd  k1, m0, m0
+%else
+    vmovdqu16 ym0 {k1}{z}, [r5]
+    vptestmw  k1, ym0, ym0
+%endif
+    kmovd    r1d, k1
+    lzcnt    r1d, r1d
+    xor      r1d, 31
+    add      r1d, r6d
+    mov    lastm, r1d
+    test    r12b, r12b
+    js .block_422dc
+    xor     r12d, r12d              ; i
+    SIGMAP_BMI2 0, r0d
+.block_422dc:
+    lea       r0, [coeff_flag_offset_chroma_422_dc GLOBAL]
+    xor     r12d, r12d
+    SIGMAP_BMI2 2, 7
+    jmp .level_loop_start
+.block_8x8:
+%if HIGH_BIT_DEPTH
+    vptestmd  k1, m2, [r14+0*64]
+    vptestmd  k2, m2, [r14+1*64]
+    vptestmd  k3, m2, [r14+2*64]
+    vptestmd  k4, m2, [r14+3*64]
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k4, k3
+    kunpckdq  k1, k3, k1
+%else
+    vptestmw  k1, m2, [r14+0*64]
+    vptestmw  k2, m2, [r14+1*64]
+    kunpckdq  k1, k2, k1
+%endif
+    kmovq     r1, k1
+    lzcnt     r1, r1
+    xor      r1d, 63
+    mov    lastm, r1d
+    mov      r0d, il16m
+    lea       r0, [significant_coeff_flag_offset_8x8+r0*4 GLOBAL]
+    xor     r12d, r12d
+    SIGMAP_BMI2 1, 63
+.level_loop_start:
+    mov       r3, levelm
+    mov     r12d, nodem
+    RESIDUAL_LEVELS_BMI2 mbr_level1_ctx, mbr_levelgt1_ctx, mbr_level_trans, 16
+    jmp .next
+.done:
+; queue -9 on entry (a slice start) and cbf bins only: no whole byte pending
+    cmp   queued, -32
+    jl .done_nobytes
+    RESIDUAL_FLUSH_BMI2
+.done_nobytes:
+    mov       r6, cbm
+    add   queued, 24
+    mov [r6+cb.low], lowd
+    mov [r6+cb.range], ranged
+    mov [r6+cb.queue], queued
+    RET
+
+    PUTBYTE_STUBS
+%endmacro
+
 %if ARCH_X86_64
 INIT_XMM sse2
 CABAC_RESIDUAL coeff_last_sse2
@@ -2251,4 +2625,6 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+INIT_ZMM avx512
+CABAC_MB_RESIDUAL
 %endif
