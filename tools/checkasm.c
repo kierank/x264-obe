@@ -4174,8 +4174,6 @@ static int check_quant( int cpu_ref, int cpu_new )
                         oks[2] = 0; \
                         fprintf( stderr, #optname "(qp=%d, res_c=%d, res_asm=%d): [FAILED]\n", qp, res_c, res_asm ); \
                     } \
-                    call_c2( qf_c.optname, dct1, dmf ); \
-                    call_a2( qf_a.optname, dct2, dmf ); \
                     if( i >= PIXEL_MAX*16 ) \
                         break; \
                 } \
@@ -4202,8 +4200,35 @@ static int check_quant( int cpu_ref, int cpu_new )
             } \
         }
 
+/* bench: flat cqm only, chroma dc qps 12, 18, 21, four fixed blocks each of
+ * levels from coefs +-64 */
+#define BENCH_OPTIMIZE_CHROMA_DC( optname, size ) \
+        if( qf_a.optname != qf_ref.optname && !i_cqm && do_bench ) \
+        { \
+            static const int qpdcs[3] = { 12, 18, 21 }; \
+            set_func_name( #optname "_flat" ); \
+            bench_srand( 500 + size ); \
+            for( int q = 0; q < 3; q++ ) \
+            { \
+                int qpdc = qpdcs[q]; \
+                int dmf = h->dequant4_mf[CQM_4IC][qpdc%6][0] << qpdc/6; \
+                for( int blk = 0; blk < 4; blk++ ) \
+                { \
+                    for( int j = 0; j < size; j++ ) \
+                        dct1[j] = bench_rand()%129 - 64; \
+                    for( int j = 0; j < size; j += 4 ) \
+                        qf_c.quant_2x2_dc( &dct1[j], h->quant4_mf[CQM_4IC][qpdc][0]>>1, h->quant4_bias[CQM_4IC][qpdc][0]>>1 ); \
+                    memcpy( dct2, dct1, size*sizeof(dctcoef) ); \
+                    call_c2( qf_c.optname, dct1, dmf ); \
+                    call_a2( qf_a.optname, dct2, dmf ); \
+                } \
+            } \
+        }
+
         TEST_OPTIMIZE_CHROMA_DC( optimize_chroma_2x2_dc, 4 );
         TEST_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
+        BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x2_dc, 4 );
+        BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
 
         x264_cqm_delete( h );
     }
