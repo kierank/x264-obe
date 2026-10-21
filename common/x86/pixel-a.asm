@@ -7985,7 +7985,7 @@ cglobal intra_satd_lowres, 3,5,16
     ; h
     LOWRES_SHUF8 h, m12, m12, m12, m12
     LOWRES_SATD  m7
-    phaddw       m6, m7
+    HADD_ILV  w,  wd,  m6,  m6,  m7, m4 ; (v h) x4
     ; dc
     vpblendd    xm4, xm10, xm12, 0x0c ; t0..t7 l7..l0
     pmaddubsw   xm4, [pb_1]
@@ -8037,8 +8037,8 @@ cglobal intra_satd_lowres, 3,5,16
     packuswb     m3, m3
     LOWRES_PRE8
     LOWRES_SATD  m8
-    phaddw       m7, m8
-    phaddw       m6, m7               ; v h dc p
+    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (dc p) x4
+    HADD_ILV  w,  dq,  m6,  m6,  m7, m4 ; (v h dc p) x2
 
     ; ddl, vl
     pshufb      m10, m13, [lowres_shuf_t2] ; E17..E32
@@ -8049,7 +8049,7 @@ cglobal intra_satd_lowres, 3,5,16
     LOWRES_SATD  m7
     LOWRES_SHUF8 vl, m9, m12, m9, m12
     LOWRES_SATD  m8
-    phaddw       m7, m8
+    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (ddl vl) x4
     ; ddr, vr
     palignr     m10, m13, m14, 8      ; E8..E23
     palignr     m11, m13, m14, 7      ; E7..E22
@@ -8061,9 +8061,9 @@ cglobal intra_satd_lowres, 3,5,16
     vpblendd    m10, m9, m11, 0x33
     LOWRES_SHUF8 vr, m10, m11, m10, m11
     LOWRES_SATD m12
-    phaddw       m8, m12
-    phaddw       m7, m8               ; ddl vl ddr vr
-    phaddw       m6, m7               ; v h dc p ddl vl ddr vr
+    HADD_ILV  w,  wd,  m8,  m8, m12, m4 ; (ddr vr) x4
+    HADD_ILV  w,  dq,  m7,  m7,  m8, m4 ; (ddl vl ddr vr) x2
+    HADD_ILV  w, qdq,  m6,  m6,  m7, m4 ; v h dc p ddl vl ddr vr
     ; hd, hu
     pshufd      m10, m9, q0001
     pblendw     m10, m11, q3330
@@ -8075,9 +8075,11 @@ cglobal intra_satd_lowres, 3,5,16
     pblendw     m11, m11, m10, 0x80   ; E7 in byte 15
     LOWRES_SHUF8 hu, m11, m11, m11, m11
     LOWRES_SATD  m8
-    phaddw       m7, m8
-    phaddw       m7, m7
-    phaddw       m7, m7               ; hd hu hd hu
+    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (hd hu) x4
+    pshufd       m4, m7, q1032
+    paddw        m7, m4
+    pshufd       m4, m7, q2301
+    paddw        m7, m4               ; hd hu hd hu
 
     vperm2i128   m0, m6, m7, 0x20
     vperm2i128   m1, m6, m7, 0x31
