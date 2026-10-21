@@ -1430,6 +1430,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512;
         pixf->intra_sad_x3_8x8c  = x264_intra_sad_x3_8x8c_avx512;
         pixf->intra_sad_x3_8x16c = x264_intra_sad_x3_8x16c_avx512;
+        INIT4( sad_list_min, _avx512 );
+        INIT4( sad_avg2_list_min, _avx512 );
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #endif
