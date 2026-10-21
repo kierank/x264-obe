@@ -3682,7 +3682,7 @@ static int check_deblock( int cpu_ref, int cpu_new )
         }
     }
 
-    if( db_a.deblock_strength_mbaff != db_ref.deblock_strength_mbaff )
+    if( db_a.deblock_strength_mbaff && db_a.deblock_strength_mbaff != db_ref.deblock_strength_mbaff )
     {
         used_asm = 1;
         set_func_name( "deblock_strength_mbaff" );
@@ -3736,7 +3736,7 @@ static int check_mbcache( int cpu_ref, int cpu_new )
         x264_mbcache_init( cpu_ref, &mbcf_ref, fmts[f] );
         x264_mbcache_init( cpu_new, &mbcf_a, fmts[f] );
 
-        if( mbcf_a.load_left_mbaff != mbcf_ref.load_left_mbaff )
+        if( mbcf_a.load_left_mbaff && mbcf_a.load_left_mbaff != mbcf_ref.load_left_mbaff )
         {
             used_asm = 1;
             set_func_name( "mbcache_load_left_mbaff_%s", fmt_names[f] );
@@ -3785,7 +3785,7 @@ static int check_mbcache( int cpu_ref, int cpu_new )
             }
         }
 
-        if( f == 0 && mbcf_a.save_border_mbaff != mbcf_ref.save_border_mbaff )
+        if( f == 0 && mbcf_a.save_border_mbaff && mbcf_a.save_border_mbaff != mbcf_ref.save_border_mbaff )
         {
             used_asm = 1;
             set_func_name( "mbcache_save_border_mbaff" );
