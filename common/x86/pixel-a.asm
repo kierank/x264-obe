@@ -6341,6 +6341,15 @@ INTRA_SATD_X3_16x16_HBD
 %endif
 %endif ; HIGH_BIT_DEPTH
 
+; %3 = per-lane interleave-and-add of %4, %5 at element size %2 (wd/dq/qdq), adds padd%1:
+; a phaddw/phaddd step in 3 single-uop ops (phadd is 3 uops at 2 cycles on Zen 2-4);
+; the elements land interleaved, not in phadd order. %6 tmp, not %3-%5.
+%macro HADD_ILV 6 ; w/d, size, dst, src1, src2, tmp
+    punpckl%2   %6, %4, %5
+    punpckh%2   %3, %4, %5
+    padd%1      %3, %6
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; int intra_satd_lowres( int16_t *fenc_pre, uint8_t *src, intptr_t stride )
 ; int intra_satd_lowres( uint16_t *fenc, uint16_t *src, intptr_t stride )
@@ -7924,13 +7933,19 @@ INIT_YMM avx2
     LOWRES_PRE8
 %endmacro
 
-; avx2, and avx512icl in the ymm0-15 block after the SATD_ICL macros (phaddw,
-; pblendw, vpblendd, vperm2i128 and phminposuw have no EVEX form)
+; avx2, and avx512icl with EVEX forms of the VEX-only phaddw, pblendw, vpblendd,
+; vperm2i128 and phminposuw
 %macro LOWRES_8BIT 0
 cglobal intra_satd_lowres, 3,5,16
 %if cpuflag(avx512icl)
-    mov         r3d, 0x5555
-    kmovd        k1, r3d
+    mov         r3d, 0x80805555
+    kmovd        k1, r3d              ; words 0x5555
+    kshiftrd     k2, k1, 16           ; words 0x8080
+    mov         r3d, 0xee33f00c
+    kmovd        k3, r3d              ; dwords 0x0c
+    kshiftrd     k4, k3, 8            ; dwords 0xf0
+    kshiftrd     k5, k3, 16           ; dwords 0x33
+    kshiftrd     k6, k3, 24           ; dwords 0xee
 %endif
     sub          r1, r2               ; top row, row k at r1+(k+1)*r2
     lea          r3, [3*r2]
@@ -7971,11 +7986,18 @@ cglobal intra_satd_lowres, 3,5,16
     ; h
     LOWRES_SHUF8 h, m12, m12, m12, m12
     LOWRES_SATD  m7
-    phaddw       m6, m7
+    HADD_ILV  w,  wd,  m6,  m6,  m7, m4 ; (v h) x4
     ; dc
+%if cpuflag(avx512icl)
+    vpblendmd   xm4 {k3}, xm10, xm12  ; t0..t7 l7..l0
+    pmaddubsw   xm4, [pb_1]
+    pmaddwd     xm4, [pw_1]
+    packssdw    xm4, xm4              ; s0 s1 s3 s2
+%else
     vpblendd    xm4, xm10, xm12, 0x0c ; t0..t7 l7..l0
     pmaddubsw   xm4, [pb_1]
     phaddw      xm4, xm4              ; s0 s1 s3 s2
+%endif
     pshuflw     xm5, xm4, q1210
     pshuflw     xm4, xm4, q2213
     paddw       xm4, xm5              ; s0+s2 2*s1 2*s3 s1+s3
@@ -7993,11 +8015,22 @@ cglobal intra_satd_lowres, 3,5,16
     ; p: clip((a + 16 + b*(x-3) + c*(y-3)) >> 5)
     pmaddubsw   xm0, xm11, [lowres_p_wh]
     pmaddubsw   xm1, xm9, [lowres_p_wv]
+%if cpuflag(avx512icl)
+    vpblendmd   xm2 {k3}, xm10, xm12
+    pmaddubsw   xm2, [lowres_p_wa]
+    HADD_ILV  w, wd, xm0, xm0, xm1, xm3
+    punpckldq   xm3, xm0, xm2
+    punpckhdq   xm0, xm2
+    paddw       xm0, xm3
+    pshufd      xm3, xm0, q1032
+    paddw       xm0, xm3              ; H V, words 2+3: 16*t7+16*l7
+%else
     vpblendd    xm2, xm10, xm12, 0x0c
     pmaddubsw   xm2, [lowres_p_wa]
     phaddw      xm0, xm1
     phaddw      xm0, xm2
     phaddw      xm0, xm0              ; H V 16*t7 16*l7
+%endif
     pmulhrsw    xm1, xm0, [pw_17408]  ; b c
     pmaddwd     xm0, [pw_1]
     pshufd      xm0, xm0, q1111
@@ -8023,8 +8056,8 @@ cglobal intra_satd_lowres, 3,5,16
     packuswb     m3, m3
     LOWRES_PRE8
     LOWRES_SATD  m8
-    phaddw       m7, m8
-    phaddw       m6, m7               ; v h dc p
+    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (dc p) x4
+    HADD_ILV  w,  dq,  m6,  m6,  m7, m4 ; (v h dc p) x2
 
     ; ddl, vl
     pshufb      m10, m13, [lowres_shuf_t2] ; E17..E32
@@ -8035,7 +8068,7 @@ cglobal intra_satd_lowres, 3,5,16
     LOWRES_SATD  m7
     LOWRES_SHUF8 vl, m9, m12, m9, m12
     LOWRES_SATD  m8
-    phaddw       m7, m8
+    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (ddl vl) x4
     ; ddr, vr
     palignr     m10, m13, m14, 8      ; E8..E23
     palignr     m11, m13, m14, 7      ; E7..E22
@@ -8044,33 +8077,63 @@ cglobal intra_satd_lowres, 3,5,16
     PRED4x4_LOWPASS m11, m12, m10, m11, m0
     LOWRES_SHUF8 ddr, m11, m11, m11, m11
     LOWRES_SATD  m8
+%if cpuflag(avx512icl)
+    vpblendmd   m10 {k5}, m9, m11
+%else
     vpblendd    m10, m9, m11, 0x33
+%endif
     LOWRES_SHUF8 vr, m10, m11, m10, m11
     LOWRES_SATD m12
-    phaddw       m8, m12
-    phaddw       m7, m8               ; ddl vl ddr vr
-    phaddw       m6, m7               ; v h dc p ddl vl ddr vr
+    HADD_ILV  w,  wd,  m8,  m8, m12, m4 ; (ddr vr) x4
+    HADD_ILV  w,  dq,  m7,  m7,  m8, m4 ; (ddl vl ddr vr) x2
+    HADD_ILV  w, qdq,  m6,  m6,  m7, m4 ; v h dc p ddl vl ddr vr
     ; hd, hu
     pshufd      m10, m9, q0001
+%if cpuflag(avx512icl)
+    vpblendmd   m10 {k6}, m10, m11
+    punpcklbw   m11, m9
+    vpblendmd   m10 {k4}, m10, m11    ; rows 0-3 | rows 4-7
+%else
     pblendw     m10, m11, q3330
     punpcklbw   m11, m9
     vpblendd    m10, m10, m11, 0xf0   ; rows 0-3 | rows 4-7
+%endif
     LOWRES_SHUF8 hd, m10, m10, m10, m10
     LOWRES_SATD  m7
     pshufd      m10, m14, q1000
+%if cpuflag(avx512icl)
+    vpblendmw   m11 {k2}, m11, m10    ; E7 in byte 15
+%else
     pblendw     m11, m11, m10, 0x80   ; E7 in byte 15
+%endif
     LOWRES_SHUF8 hu, m11, m11, m11, m11
     LOWRES_SATD  m8
-    phaddw       m7, m8
-    phaddw       m7, m7
-    phaddw       m7, m7               ; hd hu hd hu
+    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (hd hu) x4
+    pshufd       m4, m7, q1032
+    paddw        m7, m4
+    pshufd       m4, m7, q2301
+    paddw        m7, m4               ; hd hu hd hu
 
+%if cpuflag(avx512icl)
+    vinserti128  m0, m6, xm7, 1
+    vshufi32x4   m1, m6, m7, 3
+%else
     vperm2i128   m0, m6, m7, 0x20
     vperm2i128   m1, m6, m7, 0x31
+%endif
     paddw        m0, m1
     vextracti128 xm1, m0, 1
     pminuw      xm0, xm1
+%if cpuflag(avx512icl)
+    pshufd      xm1, xm0, q1032
+    pminuw      xm0, xm1
+    pshuflw     xm1, xm0, q1032
+    pminuw      xm0, xm1
+    psrld       xm1, xm0, 16
+    pminuw      xm0, xm1
+%else
     phminposuw  xm0, xm0
+%endif
     movd        eax, xm0
     movzx       eax, ax
     RET
@@ -8847,8 +8910,8 @@ INTRA_SATD_X3_8BIT
 SA8D_SATD
 SATD_PRE_FUNCS
 SATD_AVG2_PRE_FUNCS
-ICL_LOW_BEGIN
 LOWRES_8BIT
+ICL_LOW_BEGIN
 SA8D_X9_8BIT
 ICL_LOW_END
 SATD_BI 16, 16, 0
