@@ -3327,12 +3327,17 @@ DEBLOCK_LUMA_MBAFF
     paddw   %7, %4
     psraw   %6, 2
     psraw   %7, 2
+%if cpuflag(avx)
+    pblendvb %1, %1, %6, %5
+    pblendvb %2, %2, %7, %5
+%else
     psubw   %6, %1
     psubw   %7, %2
     pand    %6, %5
     pand    %7, %5
     paddw   %1, %6
     paddw   %2, %7
+%endif
 %endmacro
 
 ; out: m0-m3
