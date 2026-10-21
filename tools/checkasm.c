@@ -1651,8 +1651,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     thresh += abs( dc[1] - sums[k+32] );
             }
             used_asm = 1;
-            mvn_c = call_c( pixel_c.ads[i&3], dc, sums, 32, cost, mvs_c, width, thresh );
-            mvn_a = call_a( pixel_asm.ads[i&3], dc, sums, 32, cost, mvs_a, width, thresh );
+            mvn_c = call_c1( pixel_c.ads[i&3], dc, sums, 32, cost, mvs_c, width, thresh );
+            mvn_a = call_a1( pixel_asm.ads[i&3], dc, sums, 32, cost, mvs_a, width, thresh );
             if( mvn_c != mvn_a || memcmp( mvs_c, mvs_a, mvn_c*sizeof(*mvs_c) ) )
             {
                 ok = 0;
@@ -1665,6 +1665,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     printf( "%d ", mvs_a[j] );
                 printf( "\n\n" );
             }
+        }
+    /* bench: one fixed row per size, width 64, sums and dc clustered as in the check,
+     * a fixed threshold */
+    for( int i = 0; i < 4 && ok && do_bench; i++ )
+        if( pixel_asm.ads[i] != pixel_ref.ads[i] )
+        {
+            ALIGNED_16( uint16_t sums[192] );
+            ALIGNED_16( uint16_t cost[192] );
+            ALIGNED_16( int dc[4] );
+            ALIGNED_16( int16_t mvs[160] );
+            bench_srand( 400 + i );
+            for( int j = 0; j < 192; j++ )
+            {
+                sums[j] = (bench_rand() % 9) * 8 * PIXEL_MAX;
+                cost[j] = bench_rand() & 0x3ff;
+            }
+            for( int j = 0; j < 4; j++ )
+                dc[j] = 4 * 8 * PIXEL_MAX;
+            set_func_name( "esa_ads_%s", pixel_names[i] );
+            call_c2( pixel_c.ads[i], dc, sums, 32, cost, mvs, 64, 16 * PIXEL_MAX );
+            call_a2( pixel_asm.ads[i], dc, sums, 32, cost, mvs, 64, 16 * PIXEL_MAX );
         }
     report( "esa ads:" );
 
