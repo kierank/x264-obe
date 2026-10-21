@@ -3437,8 +3437,34 @@ static int check_deblock( int cpu_ref, int cpu_new )
                 fprintf( stderr, "deblock_luma_mb (stride=%d, edges=%#x): [FAILED]\n", (int)stride, edges );
                 break;
             }
-            call_c2( db_c.deblock_luma_mb, pbuf3+off, stride, bs, e, edges );
-            call_a2( db_a.deblock_luma_mb, pbuf4+off, stride, bs, e, edges );
+        }
+        /* bench: one MB per class, edge classes at index 24 (mid qp), smooth pixels:
+         * bs12: every edge, bS 1-2; t8x8: the 8x8 transform's edges, bS 2;
+         * skip: bS 1 on the MB edges only; intra: bS 3 on the MB edges, bS 2 inside */
+        static const char *mb_name[4] = { "bs12", "t8x8", "skip", "intra" };
+        static const uint8_t mb_edges[4] = { 0xff, 0x55, 0xff, 0xff };
+        ALIGNED_ARRAY_64( pixel, mb_pix,[2][64*24] );
+        for( int c = 0; c < 3; c++ )
+        {
+            e[c].tc0[0] = -(1 << (BIT_DEPTH-8));
+            for( int j = 1; j < 4; j++ )
+                e[c].tc0[j] = tcs[24][j];
+            e[c].alpha = alphas[24];
+            e[c].beta = betas[24];
+        }
+        for( int m = 0; m < 4 && do_bench; m++ )
+        {
+            bench_srand( 100 + m );
+            for( int j = 0; j < 64*24; j++ )
+                mb_pix[0][j] = mb_pix[1][j] = PIXEL_MAX/4 + ((bench_rand()&15) << (BIT_DEPTH-8));
+            for( int dir = 0; dir < 2; dir++ )
+                for( int edge = 0; edge < 8; edge++ )
+                    for( int j = 0; j < 4; j++ )
+                        bs[dir][edge][j] = m == 0 ? 1 + (bench_rand()&1) : m == 1 ? 2 :
+                                           m == 2 ? !edge : edge ? 2 : 3;
+            set_func_name( "deblock_luma_mb_%s", mb_name[m] );
+            call_c2( db_c.deblock_luma_mb, mb_pix[0]+4*64+16, (intptr_t)64, bs, e, mb_edges[m] );
+            call_a2( db_a.deblock_luma_mb, mb_pix[1]+4*64+16, (intptr_t)64, bs, e, mb_edges[m] );
         }
     }
 
