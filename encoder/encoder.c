@@ -3032,6 +3032,42 @@ static void x264_threadslice_filter( x264_t *h )
     }
 }
 
+static int sweep_dc_only( dctcoef *l, int n )
+{
+    if( !l[0] )
+        return 0;
+    for( int i = 1; i < n; i++ )
+        if( l[i] )
+            return 0;
+    return 1;
+}
+
+/* A10: the final MB's coded luma blocks, DC only after quant (scan order, DC first) */
+static NOINLINE void sweep_mb_a10( x264_t *h, int b_intra, int b_skip )
+{
+    if( b_skip || h->mb.i_type == I_16x16 || h->mb.i_type == I_PCM || h->mb.b_lossless )
+        return;
+    uint64_t (*a)[2] = h->sweep.c.a10[!b_intra];
+    if( h->mb.b_transform_8x8 )
+    {
+        for( int i = 0; i < 4; i++ )
+            if( h->mb.cache.non_zero_count[x264_scan8[4*i]] )
+            {
+                a[0][0]++;
+                a[0][1] += sweep_dc_only( h->dct.luma8x8[i], 64 );
+            }
+    }
+    else
+    {
+        for( int i = 0; i < 16; i++ )
+            if( h->mb.cache.non_zero_count[x264_scan8[i]] )
+            {
+                a[1][0]++;
+                a[1][1] += sweep_dc_only( h->dct.luma4x4[i], 16 );
+            }
+    }
+}
+
 static intptr_t x264_slice_write( x264_t *h )
 {
     int i_skip;
@@ -3276,6 +3312,7 @@ cont:
 
         int b_intra = IS_INTRA( h->mb.i_type );
         int b_skip = IS_SKIP( h->mb.i_type );
+        sweep_mb_a10( h, b_intra, b_skip );
         if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
         {
             if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )
