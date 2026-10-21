@@ -517,4 +517,6 @@ cglobal weightp_satd8_search, 8,13,16, 10*64+26*mmsize
 
 INIT_YMM avx2
 WEIGHTP_SATD8_SEARCH
+INIT_ZMM avx512icl
+WEIGHTP_SATD8_SEARCH
 %endif ; ARCH_X86_64

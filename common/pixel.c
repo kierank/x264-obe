@@ -1527,6 +1527,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd[PIXEL_4x16] = x264_pixel_ssd_4x16_avx512icl;
         pixf->ssd[PIXEL_4x8]  = x264_pixel_ssd_4x8_avx512icl;
         /* zen4: icl ssd_psy_mb slower in situ; kept assembled, the avx2 one stays */
+        pixf->weightp_satd8_search = x264_weightp_satd8_search_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
@@ -1949,6 +1950,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* zen4: icl ssd_psy_mb slower in situ; kept assembled, the avx2 one stays */
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
+        pixf->weightp_satd8_search = x264_weightp_satd8_search_avx512icl;
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
