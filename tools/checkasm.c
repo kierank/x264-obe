@@ -6512,6 +6512,112 @@ static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
         }
 }
 
+#define x264_cabac_mb_residual_c x264_template(cabac_mb_residual_c)
+#define x264_cabac_mb_residual x264_template(cabac_mb_residual)
+void x264_cabac_mb_residual_c( x264_t *h, x264_cabac_t *cb );
+void x264_cabac_mb_residual( x264_t *h, x264_cabac_t *cb );
+
+/* n coefficients of a coded block, at least one nonzero; classes as cabac_bench_block */
+static void cabac_mb_block( dctcoef *l, int n, int cls, int (*rnd)( void ) )
+{
+    int nz = 0;
+    while( !nz )
+        for( int k = 0; k < n; k++ )
+        {
+            int r = rnd();
+            int coef = cls == 0 ? !(r&15) : cls == 2 ? !!(r&7) : !(r&3);
+            if( coef && cls < 3 )
+                coef += !(r&0x70) * ((r>>8)&3);
+            else if( coef )
+                coef += (r>>8)&63 ? (r>>14)&63 : (r>>14)&0x3fff;
+            nz |= l[k] = r&0x80 ? -coef : coef;
+        }
+}
+
+/* a 4:2:0 or 4:2:2 MB for the residual driver: I_16x16, 8x8 or 4x4 transform, intra or
+ * inter, frame or field, cbp, cbp_left/top (-1: unavailable), nnz neighbours 0/1/0x80,
+ * own nnz consistent with the coded blocks, garbage in every coefficient not coded */
+static void cabac_mb_gen( x264_t *h, int cls, int (*rnd)( void ) )
+{
+    int r = rnd();
+    int chroma422 = r&1;
+    int mode = (r>>1)%3; /* 0: I_16x16, 1: 8x8, 2: 4x4 */
+    int intra = !mode || (r>>3)&1;
+    int cbp_luma = 0, cbp_chroma = (r>>5)%3;
+    uint8_t *nnz = h->mb.cache.non_zero_count;
+    h->sps->i_chroma_format_idc = chroma422 ? CHROMA_422 : CHROMA_420;
+    h->mb.chroma_h_shift = 1;
+    h->mb.chroma_v_shift = !chroma422;
+    h->mb.i_type = !mode ? I_16x16 : !intra ? P_L0 : mode == 1 ? I_8x8 : I_4x4;
+    h->mb.b_transform_8x8 = mode == 1;
+    h->mb.b_interlaced = (r>>4)&1;
+    h->mb.cache.i_cbp_left = rnd()&3 ? rnd()&0x7ff : -1;
+    h->mb.cache.i_cbp_top  = rnd()&3 ? rnd()&0x7ff : -1;
+    for( int i = 0; i < X264_SCAN8_SIZE; i++ )
+    {
+        int v = rnd()%5;
+        nnz[i] = v == 2 ? 0x80 : v&1;
+    }
+    for( int i = 0; i < 16*3; i++ )
+        nnz[x264_scan8[i]] = 0;
+    for( int i = 0; i < 3; i++ )
+        nnz[x264_scan8[LUMA_DC+i]] = 0;
+    for( size_t i = 0; i < sizeof(h->dct)/sizeof(dctcoef); i++ )
+        ((dctcoef*)&h->dct)[i] = (rnd()&0x3ff) - 0x200;
+    if( !mode )
+    {
+        cbp_luma = rnd()&1 ? 15 : 0;
+        if( rnd()&3 )
+        {
+            nnz[x264_scan8[LUMA_DC]] = 1;
+            cabac_mb_block( h->dct.luma16x16_dc[0], 16, cls, rnd );
+        }
+        for( int i = 0; i < 16 && cbp_luma; i++ )
+            if( rnd()&1 )
+            {
+                nnz[x264_scan8[i]] = 1;
+                cabac_mb_block( h->dct.luma4x4[i]+1, 15, cls, rnd );
+            }
+    }
+    else
+        for( int i8 = 0; i8 < 4; i8++ )
+        {
+            int coded = rnd()&3;
+            if( mode == 1 && coded )
+            {
+                cbp_luma |= 1 << i8;
+                M16( &nnz[x264_scan8[i8*4+0]] ) = M16( &nnz[x264_scan8[i8*4+2]] ) = 0x0101;
+                cabac_mb_block( h->dct.luma8x8[i8], 64, cls, rnd );
+            }
+            else if( mode == 2 )
+            {
+                /* the cbp bit sometimes without a coded block */
+                cbp_luma |= !!coded << i8;
+                for( int i = i8*4; i < i8*4+4 && coded; i++ )
+                    if( rnd()&1 )
+                    {
+                        nnz[x264_scan8[i]] = 1;
+                        cabac_mb_block( h->dct.luma4x4[i], 16, cls, rnd );
+                    }
+            }
+        }
+    for( int ch = 0; ch < 2 && cbp_chroma; ch++ )
+        if( rnd()&1 )
+        {
+            nnz[x264_scan8[CHROMA_DC+ch]] = 1;
+            cabac_mb_block( h->dct.chroma_dc[ch], chroma422 ? 8 : 4, cls, rnd );
+        }
+    for( int ch = 0; ch < 2 && cbp_chroma == 2; ch++ )
+        for( int i = 16+16*ch; i < 16+16*ch+(chroma422 ? 8 : 4); i++ )
+            if( rnd()&1 )
+            {
+                nnz[x264_scan8[i]] = 1;
+                cabac_mb_block( h->dct.luma4x4[i]+1, 15, cls, rnd );
+            }
+    h->mb.i_cbp_luma = cbp_luma;
+    h->mb.i_cbp_chroma = cbp_chroma;
+}
+
 static int check_cabac( int cpu_ref, int cpu_new )
 {
     int ret = 0, ok = 1, used_asm = 0;
@@ -6780,6 +6886,103 @@ name##fail:
     }
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     report( "cabac 4:2:2 dc :" );
+
+    /* MB residual driver: every cbf and residual block of a 4:2:0/4:2:2 MB against the
+     * C path with the same leaves (the writers of this level, the encoder's decision) */
+    ok = 1; used_asm = 0;
+    if( bs_a.cabac_mb_residual && bs_a.cabac_mb_residual != bs_ref.cabac_mb_residual )
+    {
+        void (*decision)( x264_cabac_t *, intptr_t, intptr_t ) = x264_cabac_encode_decision_ptr;
+#if HAVE_MMX
+        if( (cpu_new & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT) )
+            x264_cabac_encode_decision_ptr = x264_cabac_encode_decision_bmi2;
+#endif
+        used_asm = 1;
+        set_func_name( "cabac_mb_residual" );
+        h.bsf = bs_a;
+        x264_cabac_init( &h );
+        for( int j = 0; j < 20000 && ok; j++ )
+        {
+            uint8_t bitstream[2][1<<12];
+            x264_cabac_t cb[2];
+            cabac_mb_gen( &h, j&3, rand );
+            h.quantf.coeff_last[DCT_CHROMA_DC] = h.sps->i_chroma_format_idc == CHROMA_422 ? h.quantf.coeff_last8 : h.quantf.coeff_last4;
+            memset( cb[0].state, 0, 1024 );
+            x264_cabac_context_init( &h, &cb[0], (j&32) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>6)%3 );
+            /* states reachable from the init states */
+            if( j&128 )
+                for( int k = 0; k < 460; k++ )
+                    for( int t = rand()%48; t > 0; t-- )
+                        cb[0].state[k] = x264_cabac_transition[cb[0].state[k]][rand()&1];
+            memcpy( cb[1].state, cb[0].state, 1024 );
+            x264_cabac_encode_init( &cb[0], bitstream[0], bitstream[0]+sizeof(bitstream[0])-16 );
+            x264_cabac_encode_init( &cb[1], bitstream[1], bitstream[1]+sizeof(bitstream[1])-16 );
+            memcpy( bitstream[1], bitstream[0], 0x400 );
+            /* start mid-stream, sometimes with pending 0xff bytes, as the residual test */
+            for( int k = (rand()&63) | (j&2)*12; k > 0; k-- )
+            {
+                int bit = -(rand()&1);
+                x264_cabac_encode_bypass_c( &cb[0], bit );
+                x264_cabac_encode_bypass_c( &cb[1], bit );
+            }
+            if( (j&2) && cb[0].p > cb[0].p_start )
+            {
+                cb[0].i_low = cb[1].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);
+                for( int k = (j&1) * (8 + (rand()&31)); k > 0; k-- )
+                {
+                    int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));
+                    x264_cabac_encode_bypass_c( &cb[0], bit );
+                    x264_cabac_encode_bypass_c( &cb[1], bit );
+                }
+            }
+            call_c1( x264_cabac_mb_residual_c, &h, &cb[0] );
+            call_a1( x264_cabac_mb_residual, &h, &cb[1] );
+            x264_cabac_t fl[2];
+            ok = !memcmp( cb[0].state, cb[1].state, 1024 ) && x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) &&
+                 cb[0].i_range == cb[1].i_range && cb[0].i_queue == cb[1].i_queue;
+            memcpy( &fl[0], &cb[0], sizeof(x264_cabac_t) );
+            memcpy( &fl[1], &cb[1], sizeof(x264_cabac_t) );
+            x264_cabac_encode_bypass_c( &fl[0], 0 );
+            x264_cabac_encode_bypass_c( &fl[1], 0 );
+            x264_cabac_encode_flush( &h, &fl[0] );
+            x264_cabac_encode_flush( &h, &fl[1] );
+            ok &= fl[0].p - bitstream[0] == fl[1].p - bitstream[1] &&
+                  !memcmp( bitstream[1], bitstream[0], fl[0].p - bitstream[0] );
+            if( !ok )
+                fprintf( stderr, "cabac_mb_residual :  [FAILED] type %d cbp %x/%d t8x8 %d field %d 4:2:%d\n", h.mb.i_type,
+                         h.mb.i_cbp_luma, h.mb.i_cbp_chroma, h.mb.b_transform_8x8, h.mb.b_interlaced, h.sps->i_chroma_format_idc == CHROMA_422 ? 2 : 0 );
+        }
+        /* bench: 64 fixed MBs per class, contexts of a P slice at qp 26, a fixed coder state on entry */
+        uint8_t *bsb = do_bench ? x264_malloc( 2<<20 ) : NULL;
+        for( int cls = 0; cls < 4 && bsb; cls++ )
+        {
+            set_func_name( "cabac_mb_residual_%s", cabac_res_class[cls] );
+            bench_srand( 20 + cls );
+            for( int j = 0; j < 64; j++ )
+            {
+                x264_cabac_t cb[2];
+                cabac_mb_gen( &h, cls, bench_rand );
+                h.quantf.coeff_last[DCT_CHROMA_DC] = h.sps->i_chroma_format_idc == CHROMA_422 ? h.quantf.coeff_last8 : h.quantf.coeff_last4;
+                memset( cb[0].state, 0, 1024 );
+                x264_cabac_context_init( &h, &cb[0], SLICE_TYPE_P, 26, 0 );
+                memcpy( cb[1].state, cb[0].state, 1024 );
+                x264_cabac_encode_init( &cb[0], bsb, bsb+(1<<20)-16 );
+                x264_cabac_encode_init( &cb[1], bsb+(1<<20), bsb+(2<<20)-16 );
+                for( int k = 0; k < 13; k++ )
+                {
+                    x264_cabac_encode_bypass_c( &cb[0], -((0x1a5b >> k) & 1) );
+                    x264_cabac_encode_bypass_c( &cb[1], -((0x1a5b >> k) & 1) );
+                }
+                call_c2( x264_cabac_mb_residual_c, &h, &cb[0] );
+                call_a2( x264_cabac_mb_residual, &h, &cb[1] );
+            }
+        }
+        x264_free( bsb );
+        x264_cabac_encode_decision_ptr = decision;
+        h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
+        h.sps->i_chroma_format_idc = 3;
+    }
+    report( "cabac mb residual :" );
 
 #if HAVE_MMX
     if( (cpu_new & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT) &&
