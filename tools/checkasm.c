@@ -2355,6 +2355,32 @@ static void weight_plane_strips( pixel *dst, intptr_t i_dst, pixel *src, intptr_
     }
 }
 
+/* avg_bi4 / mc_chroma_bi --bench comparisons: the get_ref, mc_chroma and avg chains they replace */
+static x264_mc_functions_t *mc_chain_a;
+static int mc_chain_size;
+static void avg_bi4_chain( pixel *dst, intptr_t i_dst, pixel **hp0, pixel **hp1, int mvx, int mvy, int weight )
+{
+    ALIGNED_ARRAY_64( pixel, tmp0,[16*16] );
+    ALIGNED_ARRAY_64( pixel, tmp1,[16*16] );
+    intptr_t s0 = 16, s1 = 16;
+    int w = x264_pixel_size[mc_chain_size].w, h = x264_pixel_size[mc_chain_size].h;
+    pixel *src0 = mc_chain_a->get_ref( tmp0, &s0, hp0, 64, mvx, mvy, w, h, x264_weight_none );
+    pixel *src1 = mc_chain_a->get_ref( tmp1, &s1, hp1, 64, mvx, mvy, w, h, x264_weight_none );
+    mc_chain_a->avg[mc_chain_size]( dst, i_dst, src0, s0, src1, s1, weight );
+}
+static void mc_chroma_bi_chain( int w, pixel *dst, pixel *src0, pixel *src1, int dxy0, int dxy1, int weight )
+{
+    ALIGNED_ARRAY_64( pixel, tmp0,[16*16] );
+    ALIGNED_ARRAY_64( pixel, tmp1,[16*16] );
+    int h = mc_chain_size;
+    int pix = w == 8 ? (h == 16 ? PIXEL_8x16 : h == 8 ? PIXEL_8x8 : PIXEL_8x4)
+                     : (h == 16 ? PIXEL_4x16 : h == 8 ? PIXEL_4x8 : PIXEL_4x4);
+    mc_chain_a->mc_chroma( tmp0, tmp0+8, 16, src0, 64, dxy0&7, dxy0>>8, w, h );
+    mc_chain_a->mc_chroma( tmp1, tmp1+8, 16, src1, 64, dxy1&7, dxy1>>8, w, h );
+    mc_chain_a->avg[pix]( dst, FDEC_STRIDE, tmp0, 16, tmp1, 16, weight );
+    mc_chain_a->avg[pix]( dst+FDEC_STRIDE/2, FDEC_STRIDE, tmp0+8, 16, tmp1+8, 16, weight );
+}
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -2660,6 +2686,102 @@ static int check_mc( int cpu_ref, int cpu_new )
     for( int w = -63; w <= 127 && ok; w++ )
         MC_TEST_AVG( avg, w );
     report( "mc wpredb :" );
+
+    /* avg_bi4: against x264_mc_avg_bi4_c on x264_mc_hpel_pair's sources at every qpel mv
+     * fraction, weights 32 and -63..127; nothing written outside the block */
+    ok = 1, used_asm = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        if( !mc_a.avg_bi4[i] || mc_a.avg_bi4[i] == mc_ref.avg_bi4[i] )
+            continue;
+        int w = x264_pixel_size[i].w, h = x264_pixel_size[i].h;
+        used_asm = 1;
+        set_func_name( "avg_bi4_%s", pixel_names[i] );
+        pixel *hp0[4] = { pbuf1+2*64+8, pbuf1+6*64+8, pbuf1+10*64+8, pbuf1+14*64+8 };
+        pixel *hp1[4] = { pbuf2+2*64+8, pbuf2+6*64+8, pbuf2+10*64+8, pbuf2+14*64+8 };
+        for( int k = 0; k < 64 && ok; k++ )
+        {
+            int weight = k == 0 ? -63 : k == 1 ? 127 : k&1 ? 32 : (rand() % 191) - 63;
+            int mvx0 = k&15, mvy0 = (k>>2)&15, mvx1 = rand()&15, mvy1 = rand()&15;
+            pixel *s0[2], *s1[2];
+            x264_mc_hpel_pair( s0, hp0, 64, mvx0, mvy0 );
+            x264_mc_hpel_pair( s1, hp1, 64, mvx1, mvy1 );
+            for( int j = 0; j < 1024; j++ )
+                pbuf3[j] = pbuf4[j] = 0xCD;
+            x264_mc_avg_bi4_c( w, h, pbuf3+64, FDEC_STRIDE, s0[0], s0[1], s1[0], s1[1], 64, weight );
+            call_a( mc_a.avg_bi4[i], pbuf4+64, (intptr_t)FDEC_STRIDE, s0[0], s0[1], s1[0], s1[1], (intptr_t)64, weight );
+            if( memcmp( pbuf3, pbuf4, 1024*sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "avg_bi4_%s mv %d,%d %d,%d weight %d [FAILED]\n", pixel_names[i], mvx0, mvy0, mvx1, mvy1, weight );
+            }
+        }
+        /* --bench: the get_ref + get_ref + avg it replaces */
+        set_func_name( "avg_bi4_%s_chain", pixel_names[i] );
+        mc_chain_a = &mc_a;
+        mc_chain_size = i;
+        call_a2( avg_bi4_chain, pbuf4+64, (intptr_t)FDEC_STRIDE, hp0, hp1, 7, 9, 32 );
+        set_func_name( "avg_bi4w_%s_chain", pixel_names[i] );
+        call_a2( avg_bi4_chain, pbuf4+64, (intptr_t)FDEC_STRIDE, hp0, hp1, 7, 9, 20 );
+        pixel *s0[2], *s1[2];
+        x264_mc_hpel_pair( s0, hp0, 64, 7, 9 );
+        x264_mc_hpel_pair( s1, hp1, 64, 7, 9 );
+        set_func_name( "avg_bi4w_%s", pixel_names[i] );
+        call_a2( mc_a.avg_bi4[i], pbuf4+64, (intptr_t)FDEC_STRIDE, s0[0], s0[1], s1[0], s1[1], (intptr_t)64, 20 );
+    }
+    report( "mc avg_bi4 :" );
+
+    /* mc_chroma_bi: against x264_mc_chroma_bi_c at every eighth-pel fraction, the heights of
+     * 4:2:0 and 4:2:2, weights 32 and -63..127, extreme sources; only u and v written */
+    ok = 1, used_asm = 0;
+    ALIGNED_ARRAY_64( pixel, cbx,[2],[20*64] );
+    for( int i = 0; i < 2; i++ )
+    {
+        if( !mc_a.mc_chroma_bi[i] || mc_a.mc_chroma_bi[i] == mc_ref.mc_chroma_bi[i] )
+            continue;
+        int w = 8 >> i;
+        used_asm = 1;
+        for( int hgt = 4; hgt <= 16 && ok; hgt <<= 1 )
+        {
+            set_func_name( "mc_chroma_bi_%dx%d", w, hgt );
+            for( int k = 0; k < 128 && ok; k++ )
+            {
+                int weight = k == 0 ? -63 : k == 1 ? 127 : k&1 ? 32 : (rand() % 191) - 63;
+                int dxy0 = (k&7) | ((k>>3)&7)<<8, dxy1 = (rand()&7) | (rand()&7)<<8;
+                pixel *src0 = pbuf1 + 64 + (k&3)*2, *src1 = pbuf2 + 64 + (k>>2&3)*2;
+                if( k >= 96 )
+                {
+                    /* every source 0 or max */
+                    src0 = cbx[0] + 64;
+                    src1 = cbx[1] + 64;
+                    for( int j = 0; j < 18*64; j++ )
+                    {
+                        src0[j] = -(rand()&1) & PIXEL_MAX;
+                        src1[j] = -((j^k)&1) & PIXEL_MAX;
+                    }
+                }
+                for( int j = 0; j < 1024; j++ )
+                    pbuf3[j] = pbuf4[j] = 0xCD;
+                x264_mc_chroma_bi_c( w, pbuf3+64, src0, src1, 64, dxy0, dxy1, hgt, weight );
+                call_a( mc_a.mc_chroma_bi[i], pbuf4+64, src0, src1, (intptr_t)64, dxy0, dxy1, hgt, weight );
+                if( memcmp( pbuf3, pbuf4, 1024*sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "mc_chroma_bi_%dx%d dxy %x %x weight %d k %d [FAILED]\n", w, hgt, dxy0, dxy1, weight, k );
+                }
+            }
+            /* --bench: the mc_chroma + mc_chroma + 2 avg it replaces */
+            mc_chain_a = &mc_a;
+            mc_chain_size = hgt;
+            set_func_name( "mc_chroma_bi_%dx%d_chain", w, hgt );
+            call_a2( mc_chroma_bi_chain, w, pbuf4+64, pbuf1+64, pbuf2+64, 3, 0x502, 32 );
+            set_func_name( "mc_chroma_biw_%dx%d_chain", w, hgt );
+            call_a2( mc_chroma_bi_chain, w, pbuf4+64, pbuf1+64, pbuf2+64, 3, 0x502, 20 );
+            set_func_name( "mc_chroma_biw_%dx%d", w, hgt );
+            call_a2( mc_a.mc_chroma_bi[i], pbuf4+64, pbuf1+64, pbuf2+64, (intptr_t)64, 3, 0x502, hgt, 20 );
+        }
+    }
+    report( "mc chroma_bi :" );
 
     /* copy[16x16] (aligned), copy[8x8], copy[4x4] (height 4 or 8), copy_16x16_unaligned: every
      * height the encoder uses, src aligned and not, nothing written past w x h */

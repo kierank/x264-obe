@@ -107,12 +107,23 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
 }
 
 #define MC_LUMA_BI(p) \
-    src0 = h->mc.get_ref( tmp0, &i_stride0, &h->mb.pic.p_fref[0][i_ref0][p*4], h->mb.pic.i_stride[p], \
-                          mvx0, mvy0, 4*width, 4*height, x264_weight_none ); \
-    src1 = h->mc.get_ref( tmp1, &i_stride1, &h->mb.pic.p_fref[1][i_ref1][p*4], h->mb.pic.i_stride[p], \
-                          mvx1, mvy1, 4*width, 4*height, x264_weight_none ); \
-    h->mc.avg[i_mode]( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
-                       src0, i_stride0, src1, i_stride1, weight );
+    if( i_mode < 4 && h->mc.avg_bi4[i_mode] ) \
+    { \
+        pixel *pix0[2], *pix1[2]; \
+        x264_mc_hpel_pair( pix0, &h->mb.pic.p_fref[0][i_ref0][p*4], h->mb.pic.i_stride[p], mvx0, mvy0 ); \
+        x264_mc_hpel_pair( pix1, &h->mb.pic.p_fref[1][i_ref1][p*4], h->mb.pic.i_stride[p], mvx1, mvy1 ); \
+        h->mc.avg_bi4[i_mode]( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
+                               pix0[0], pix0[1], pix1[0], pix1[1], h->mb.pic.i_stride[p], weight ); \
+    } \
+    else \
+    { \
+        src0 = h->mc.get_ref( tmp0, &i_stride0, &h->mb.pic.p_fref[0][i_ref0][p*4], h->mb.pic.i_stride[p], \
+                              mvx0, mvy0, 4*width, 4*height, x264_weight_none ); \
+        src1 = h->mc.get_ref( tmp1, &i_stride1, &h->mb.pic.p_fref[1][i_ref1][p*4], h->mb.pic.i_stride[p], \
+                              mvx1, mvy1, 4*width, 4*height, x264_weight_none ); \
+        h->mc.avg[i_mode]( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
+                           src0, i_stride0, src1, i_stride1, weight ); \
+    }
 
 static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int height )
 {
@@ -148,17 +159,25 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
         int uv_dy0 = 2*mvy0>>v_shift;
         int uv_dy1 = 2*mvy1>>v_shift;
         int chroma_height = 4*height>>v_shift;
-        h->mc.mc_chroma( tmp0, tmp0+8, 16,
-                         x264_mb_fref_uv( h, h->mb.pic.p_fref[0][i_ref0], h->mb.pic.i_fld_uv_y, uv_dy0, chroma_height ),
-                         h->mb.pic.i_stride[1], mvx0, uv_dy0, 2*width, chroma_height );
-        h->mc.mc_chroma( tmp1, tmp1+8, 16,
-                         x264_mb_fref_uv( h, h->mb.pic.p_fref[1][i_ref1], h->mb.pic.i_fld_uv_y, uv_dy1, chroma_height ),
-                         h->mb.pic.i_stride[1], mvx1, uv_dy1, 2*width, chroma_height );
-
-        int chromapix = h->luma2chroma_pixel[i_mode];
         int offset = (4*FDEC_STRIDE>>v_shift)*y + 2*x;
-        h->mc.avg[chromapix]( &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE, tmp0,   16, tmp1,   16, weight );
-        h->mc.avg[chromapix]( &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE, tmp0+8, 16, tmp1+8, 16, weight );
+        pixel *uv0 = x264_mb_fref_uv( h, h->mb.pic.p_fref[0][i_ref0], h->mb.pic.i_fld_uv_y, uv_dy0, chroma_height );
+        pixel *uv1 = x264_mb_fref_uv( h, h->mb.pic.p_fref[1][i_ref1], h->mb.pic.i_fld_uv_y, uv_dy1, chroma_height );
+        int cw = width == 4 ? 0 : width == 2 ? 1 : 2;
+        if( cw < 2 && h->mc.mc_chroma_bi[cw] )
+        {
+            intptr_t stride = h->mb.pic.i_stride[1];
+            h->mc.mc_chroma_bi[cw]( &h->mb.pic.p_fdec[1][offset],
+                                    uv0 + (uv_dy0>>3)*stride + (mvx0>>3)*2, uv1 + (uv_dy1>>3)*stride + (mvx1>>3)*2,
+                                    stride, (mvx0&7) | (uv_dy0&7)<<8, (mvx1&7) | (uv_dy1&7)<<8, chroma_height, weight );
+        }
+        else
+        {
+            h->mc.mc_chroma( tmp0, tmp0+8, 16, uv0, h->mb.pic.i_stride[1], mvx0, uv_dy0, 2*width, chroma_height );
+            h->mc.mc_chroma( tmp1, tmp1+8, 16, uv1, h->mb.pic.i_stride[1], mvx1, uv_dy1, 2*width, chroma_height );
+            int chromapix = h->luma2chroma_pixel[i_mode];
+            h->mc.avg[chromapix]( &h->mb.pic.p_fdec[1][offset], FDEC_STRIDE, tmp0,   16, tmp1,   16, weight );
+            h->mc.avg[chromapix]( &h->mb.pic.p_fdec[2][offset], FDEC_STRIDE, tmp0+8, 16, tmp1+8, 16, weight );
+        }
     }
 }
 

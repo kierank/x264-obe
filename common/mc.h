@@ -90,6 +90,18 @@ typedef struct
     void (*avg[12])( pixel *dst,  intptr_t dst_stride, pixel *src1, intptr_t src1_stride,
                      pixel *src2, intptr_t src2_stride, int i_weight );
 
+    /* asm only, NULL otherwise: avg[i]( dst, pavg( src0a, src0b ), pavg( src1a, src1b ), weight ),
+     * the bipred of get_ref's unweighted predictions from the hpel planes (x264_mc_hpel_pair),
+     * 16x16, 16x8, 8x16 and 8x8. Reference x264_mc_avg_bi4_c. */
+    void (*avg_bi4[4])( pixel *dst, intptr_t dst_stride, pixel *src0a, pixel *src0b, pixel *src1a,
+                        pixel *src1b, intptr_t src_stride, int i_weight );
+    /* asm only, NULL otherwise: the chroma bipred avg( mc_chroma( src0 ), mc_chroma( src1 ), weight )
+     * into u at dst and v at dst + FDEC_STRIDE/2 (FDEC_STRIDE), width 8 ([0]) or 4 ([1]). src0,
+     * src1: interleaved uv at the mvs' whole positions, dxy = dx | dy << 8, the eighth-pel
+     * fractions. Reference x264_mc_chroma_bi_c. */
+    void (*mc_chroma_bi[2])( pixel *dst, pixel *src0, pixel *src1, intptr_t src_stride, int dxy0, int dxy1,
+                             int i_height, int i_weight );
+
     /* only 16x16, 8x8, and 4x4 defined */
     void (*copy[7])( pixel *dst, intptr_t dst_stride, pixel *src, intptr_t src_stride, int i_height );
     void (*copy_16x16_unaligned)( pixel *dst, intptr_t dst_stride, pixel *src, intptr_t src_stride, int i_height );
@@ -157,6 +169,12 @@ typedef struct
 
 #define x264_mc_init x264_template(mc_init)
 void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent );
+#define x264_mc_avg_bi4_c x264_template(mc_avg_bi4_c)
+void x264_mc_avg_bi4_c( int i_width, int i_height, pixel *dst, intptr_t i_dst, pixel *src0a, pixel *src0b,
+                        pixel *src1a, pixel *src1b, intptr_t i_src, int i_weight );
+#define x264_mc_chroma_bi_c x264_template(mc_chroma_bi_c)
+void x264_mc_chroma_bi_c( int i_width, pixel *dst, pixel *src0, pixel *src1, intptr_t i_src,
+                          int dxy0, int dxy1, int i_height, int i_weight );
 
 /* the two hpel planes' sources whose pavg is get_ref's unweighted luma prediction
  * at mv (the same one twice where it needs no average) */

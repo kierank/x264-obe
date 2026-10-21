@@ -277,6 +277,36 @@ static void mc_chroma( pixel *dstu, pixel *dstv, intptr_t i_dst_stride,
     }
 }
 
+/* References of the asm-only avg_bi4 and mc_chroma_bi */
+void x264_mc_avg_bi4_c( int i_width, int i_height, pixel *dst, intptr_t i_dst, pixel *src0a, pixel *src0b,
+                        pixel *src1a, pixel *src1b, intptr_t i_src, int i_weight )
+{
+    ALIGNED_ARRAY_32( pixel, tmp0,[16*16] );
+    ALIGNED_ARRAY_32( pixel, tmp1,[16*16] );
+    pixel_avg( tmp0, 16, src0a, i_src, src0b, i_src, i_width, i_height );
+    pixel_avg( tmp1, 16, src1a, i_src, src1b, i_src, i_width, i_height );
+    if( i_weight == 32 )
+        pixel_avg_wxh( dst, i_dst, tmp0, 16, tmp1, 16, i_width, i_height );
+    else
+        pixel_avg_weight_wxh( dst, i_dst, tmp0, 16, tmp1, 16, i_width, i_height, i_weight );
+}
+
+void x264_mc_chroma_bi_c( int i_width, pixel *dst, pixel *src0, pixel *src1, intptr_t i_src,
+                          int dxy0, int dxy1, int i_height, int i_weight )
+{
+    ALIGNED_ARRAY_32( pixel, tmp0,[16*16] );
+    ALIGNED_ARRAY_32( pixel, tmp1,[16*16] );
+    mc_chroma( tmp0, tmp0+8, 16, src0, i_src, dxy0&7, dxy0>>8&7, i_width, i_height );
+    mc_chroma( tmp1, tmp1+8, 16, src1, i_src, dxy1&7, dxy1>>8&7, i_width, i_height );
+    for( int p = 0; p < 2; p++ )
+    {
+        if( i_weight == 32 )
+            pixel_avg_wxh( dst+p*FDEC_STRIDE/2, FDEC_STRIDE, tmp0+p*8, 16, tmp1+p*8, 16, i_width, i_height );
+        else
+            pixel_avg_weight_wxh( dst+p*FDEC_STRIDE/2, FDEC_STRIDE, tmp0+p*8, 16, tmp1+p*8, 16, i_width, i_height, i_weight );
+    }
+}
+
 #define MC_COPY(W) \
 static void mc_copy_w##W( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int i_height ) \
 { \
@@ -705,6 +735,8 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->avg[PIXEL_2x8]  = pixel_avg_2x8;
     pf->avg[PIXEL_2x4]  = pixel_avg_2x4;
     pf->avg[PIXEL_2x2]  = pixel_avg_2x2;
+    memset( pf->avg_bi4, 0, sizeof(pf->avg_bi4) );
+    memset( pf->mc_chroma_bi, 0, sizeof(pf->mc_chroma_bi) );
 
     pf->weight    = x264_mc_weight_wtab;
     pf->offsetadd = x264_mc_weight_wtab;
