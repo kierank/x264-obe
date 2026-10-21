@@ -1807,44 +1807,42 @@ SAD_X 4,  4,  4
 %endif
 %endmacro
 
+; x4 as x3: one 32-byte load of fenc rows j | j+1 (FENC_STRIDE == 16), one accumulator
+; per reference with rows j | j+1 in its lanes
 %macro SAD_X4_START_2x16P_AVX2 0
-    vbroadcasti128 m4, [r0]
-    vbroadcasti128 m5, [r0+FENC_STRIDE]
+    movu    m4, [r0]
     movu   xm0, [r1]
     movu   xm1, [r2]
-    movu   xm2, [r1+r5]
-    movu   xm3, [r2+r5]
-    vinserti128 m0, m0, [r3], 1
-    vinserti128 m1, m1, [r4], 1
+    movu   xm2, [r3]
+    movu   xm3, [r4]
+    vinserti128 m0, m0, [r1+r5], 1
+    vinserti128 m1, m1, [r2+r5], 1
     vinserti128 m2, m2, [r3+r5], 1
     vinserti128 m3, m3, [r4+r5], 1
     psadbw  m0, m4
     psadbw  m1, m4
-    psadbw  m2, m5
-    psadbw  m3, m5
-    paddw   m0, m2
-    paddw   m1, m3
+    psadbw  m2, m4
+    psadbw  m3, m4
 %endmacro
 
-%macro SAD_X4_2x16P_AVX2 4
-    vbroadcasti128 m6, [r0+%1]
-    vbroadcasti128 m7, [r0+%3]
-    movu   xm2, [r1+%2]
-    movu   xm3, [r2+%2]
-    movu   xm4, [r1+%4]
-    movu   xm5, [r2+%4]
-    vinserti128 m2, m2, [r3+%2], 1
-    vinserti128 m3, m3, [r4+%2], 1
-    vinserti128 m4, m4, [r3+%4], 1
-    vinserti128 m5, m5, [r4+%4], 1
-    psadbw  m2, m6
-    psadbw  m3, m6
-    psadbw  m4, m7
-    psadbw  m5, m7
-    paddw   m0, m2
-    paddw   m1, m3
+%macro SAD_X4_2x16P_AVX2 3 ; fenc offset of row j, ref offsets of rows j, j+1
+    movu    m6, [r0+%1]
+    movu   xm4, [r1+%2]
+    movu   xm5, [r2+%2]
+    vinserti128 m4, m4, [r1+%3], 1
+    vinserti128 m5, m5, [r2+%3], 1
+    psadbw  m4, m6
+    psadbw  m5, m6
     paddw   m0, m4
     paddw   m1, m5
+    movu   xm4, [r3+%2]
+    movu   xm5, [r4+%2]
+    vinserti128 m4, m4, [r3+%3], 1
+    vinserti128 m5, m5, [r4+%3], 1
+    psadbw  m4, m6
+    psadbw  m5, m6
+    paddw   m2, m4
+    paddw   m3, m5
 %endmacro
 
 %macro SAD_X4_4x16P_AVX2 2
@@ -1852,9 +1850,9 @@ SAD_X 4,  4,  4
     lea  r6, [r5*3]
     SAD_X4_START_2x16P_AVX2
 %else
-    SAD_X4_2x16P_AVX2 FENC_STRIDE*(0+(%1&1)*4), r5*0, FENC_STRIDE*(1+(%1&1)*4), r5*1
+    SAD_X4_2x16P_AVX2 FENC_STRIDE*(0+(%1&1)*4), r5*0, r5*1
 %endif
-    SAD_X4_2x16P_AVX2 FENC_STRIDE*(2+(%1&1)*4), r5*2, FENC_STRIDE*(3+(%1&1)*4), r6
+    SAD_X4_2x16P_AVX2 FENC_STRIDE*(2+(%1&1)*4), r5*2, r6
 %if %1 != %2-1
 %if (%1&1) != 0
     add  r0, 8*FENC_STRIDE
@@ -1879,9 +1877,11 @@ SAD_X 4,  4,  4
 
 %macro SAD_X4_END_AVX2 0
     mov       r0, r6mp
-    packssdw  m0, m1        ; 0 0 1 1 2 2 3 3
+    packssdw  m0, m1        ; 0 0 1 1 | 0 0 1 1
+    packssdw  m2, m3        ; 2 2 3 3 | 2 2 3 3
+    phaddd    m0, m2        ; 0 1 2 3 | 0 1 2 3
     vextracti128 xm1, m0, 1
-    phaddd   xm0, xm1       ; 0 1 2 3
+    paddd    xm0, xm1
     mova    [r0], xm0
     RET
 %endmacro
@@ -1956,8 +1956,8 @@ cglobal pixel_sad_x%1_%2x%3, 2+%1,3+%1,%4
 INIT_YMM avx2
 SAD_X_AVX2 3, 16, 16, 7
 SAD_X_AVX2 3, 16,  8, 7
-SAD_X_AVX2 4, 16, 16, 8
-SAD_X_AVX2 4, 16,  8, 8
+SAD_X_AVX2 4, 16, 16, 7
+SAD_X_AVX2 4, 16,  8, 7
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_x3_min_16x16( uint8_t *fenc, uint8_t *pix0, uint8_t *pix1, uint8_t *pix2,
@@ -2008,10 +2008,12 @@ SAD_X_AVX2 4, 16,  8, 8
 
 %macro SAD_X4_MIN_END_AVX2 0
     SAD_X4_MIN_ARGS 4, 5
-    packssdw  m0, m1        ; 0 0 1 1 | 2 2 3 3
-    pslld     m0, 6
+    packssdw  m0, m1        ; 0 0 1 1 | 0 0 1 1
+    packssdw  m2, m3        ; 2 2 3 3 | 2 2 3 3
+    phaddd    m0, m2        ; 0 1 2 3 | 0 1 2 3
     vextracti128 xm1, m0, 1
-    phaddd   xm0, xm1
+    paddd    xm0, xm1
+    pslld    xm0, 6
     paddd    xm0, xm4
     SAD_X_MIN_TREE 0, 5, 1
 %endmacro
@@ -2028,8 +2030,8 @@ cglobal pixel_sad_x%1_min_%2x%3, 2+%1,7,%4
 
 SAD_X_MIN_AVX2 3, 16, 16, 7
 SAD_X_MIN_AVX2 3, 16,  8, 7
-SAD_X_MIN_AVX2 4, 16, 16, 8
-SAD_X_MIN_AVX2 4, 16,  8, 8
+SAD_X_MIN_AVX2 4, 16, 16, 7
+SAD_X_MIN_AVX2 4, 16,  8, 7
 %endif ; ARCH_X86_64
 
 ; 8 wide: ymm = { p row j, q row j | p row j+1, q row j+1 } against a vmovddup
