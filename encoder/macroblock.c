@@ -1090,14 +1090,45 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
     return 1;
 }
 
+static int sweep_pix_eq( pixel *a, pixel *b, int w, int hgt )
+{
+    for( int y = 0; y < hgt; y++, a += FENC_STRIDE, b += FDEC_STRIDE )
+        if( memcmp( a, b, w * sizeof(pixel) ) )
+            return 0;
+    return 1;
+}
+
+/* A6: after a P probe, fdec holds the skip prediction of every plane up to the
+ * first one that differs from fenc (a plane equal to fenc never ends the probe) */
+static NOINLINE void sweep_probe( x264_t *h, int ret )
+{
+    uint64_t *c = h->sweep.c.a6;
+    int eq = sweep_pix_eq( h->mb.pic.p_fenc[0], h->mb.pic.p_fdec[0], 16, 16 );
+    c[SW_A6_PROBES]++;
+    c[SW_A6_SKIP] += ret;
+    c[SW_A6_LUMA_EQ] += eq;
+    c[SW_A6_LUMA_EQ_SKIP] += eq && ret;
+    if( CHROMA_FORMAT == CHROMA_444 )
+        for( int p = 1; p < 3 && eq; p++ )
+            eq = sweep_pix_eq( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], 16, 16 );
+    else if( CHROMA_FORMAT )
+        for( int p = 1; p < 3 && eq; p++ )
+            eq = sweep_pix_eq( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], 8, 16 >> CHROMA_V_SHIFT );
+    c[SW_A6_ALL_EQ] += eq;
+}
+
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir )
 {
+    int ret;
     if( CHROMA_FORMAT == CHROMA_444 )
-        return x264_macroblock_probe_skip_internal( h, b_bidir, 3, CHROMA_444 );
+        ret = x264_macroblock_probe_skip_internal( h, b_bidir, 3, CHROMA_444 );
     else if( CHROMA_FORMAT == CHROMA_422 )
-        return x264_macroblock_probe_skip_internal( h, b_bidir, 1, CHROMA_422 );
+        ret = x264_macroblock_probe_skip_internal( h, b_bidir, 1, CHROMA_422 );
     else
-        return x264_macroblock_probe_skip_internal( h, b_bidir, 1, CHROMA_420 );
+        ret = x264_macroblock_probe_skip_internal( h, b_bidir, 1, CHROMA_420 );
+    if( !b_bidir )
+        sweep_probe( h, ret );
+    return ret;
 }
 
 /****************************************************************************
