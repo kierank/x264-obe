@@ -5735,20 +5735,18 @@ cglobal pixel_satd_16x16, 4,6,8
     %define satd_avg2_off %2*r3
 %endif
 %if %2
-    movu         xm%1, [r1+satd_avg2_off]
-    vinserti128   m%1, m%1, [r5+satd_avg2_off], 1
-    movu         xm4, [r2+satd_avg2_off]
-    vinserti128   m4, m4, [r6+satd_avg2_off], 1
+    %xdefine satd_avg2_o +satd_avg2_off
 %else
-    movu         xm%1, [r1]
-    vinserti128   m%1, m%1, [r5], 1
-    movu         xm4, [r2]
-    vinserti128   m4, m4, [r6], 1
+    %xdefine satd_avg2_o
 %endif
-    movu         xm5, [r0+%2*FENC_STRIDEB]
-    vinserti128   m5, m5, [r0+(%2+4)*FENC_STRIDEB], 1
-    pavgw         m%1, m4
-    psubw         m%1, m5
+    ; each lane averaged and subtracted on its own, one lane insert
+    movu         xm%1, [r1 satd_avg2_o]
+    pavgw        xm%1, [r2 satd_avg2_o]
+    psubw        xm%1, [r0+%2*FENC_STRIDEB]
+    movu         xm4, [r5 satd_avg2_o]
+    pavgw        xm4, [r6 satd_avg2_o]
+    psubw        xm4, [r0+(%2+4)*FENC_STRIDEB]
+    vinserti128   m%1, m%1, xm4, 1
 %endmacro
 
 %macro SATD_AVG2_LOAD_X 0
