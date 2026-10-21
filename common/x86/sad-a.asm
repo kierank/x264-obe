@@ -2439,6 +2439,7 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 ; per qword (xmm). The word sums reach at most 16*16*255.
 ;-----------------------------------------------------------------------------
 ; window w: ref dbp_p<w> (+dbp_o: row r, +dbp_o1: row r+1), mask k<w+1>, sum m<w>
+; (m<w+4> from the fifth)
 ; m4: fenc, m5: ref, m6: sad, m7: fenc dword permutation
 %macro DBP_SAD 4 ; width, sum, mask, first
 %if %1 == 4
@@ -2475,6 +2476,11 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
     %assign %%w 0
     %rep %3
         %assign %%k %%w+1
+        %if %%w < 4
+            %assign %%a %%w
+        %else
+            %assign %%a %%w+4
+        %endif
         %if %1 == 16
     movu           xm5, [dbp_p%[%%w]+dbp_o]
     vinserti128     m5, m5, [dbp_p%[%%w]+dbp_o+8], 1
@@ -2485,7 +2491,7 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
     movq           xm5, [dbp_p%[%%w]+dbp_o]
     movhps         xm5, [dbp_p%[%%w]+dbp_o1]
         %endif
-    DBP_SAD %1, %[%%w], %[%%k], %%r == 0
+    DBP_SAD %1, %[%%a], %[%%k], %%r == 0
         %assign %%w %%w+1
     %endrep
     %assign %%r %%r+%%step
@@ -2546,6 +2552,39 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
     pshufd         xm1, xm0, q2301
     pminsd         xm0, xm1
     movd           eax, xm0
+%endmacro
+
+; window pointer pix + dy*i_stride + bx; r5 = pix - 2*i_stride, r6 = pix + 2*i_stride
+%macro DBP_PTR 3 ; reg, dy, bx
+%if %2 == -2
+    lea             %1, [r5+(%3)]
+%elif %2 == -1
+    lea             %1, [r5+r2+(%3)]
+%elif %2 == 0
+    lea             %1, [r1+(%3)]
+%elif %2 == 1
+    lea             %1, [r1+r2+(%3)]
+%else
+    lea             %1, [r6+(%3)]
+%endif
+%endmacro
+
+%macro DBP_PTR_INIT 0
+    mov             r5, r1
+    sub             r5, r2
+    sub             r5, r2
+    lea             r6, [r1+r2*2]
+%endmacro
+
+; k<1..> word masks
+%macro DBP_MASKS 1-*
+%assign %%i 1
+%rep %0
+    mov            r5d, %1
+    kmovw     k%[%%i], r5d
+    %assign %%i %%i+1
+    %rotate 1
+%endrep
 %endmacro
 
 ;-----------------------------------------------------------------------------
