@@ -2563,23 +2563,23 @@ cglobal integral_init4v, 3,5
     mova    [%2], m0
     mova    [%3], m5
     mova    [%4], m1
-%else
+%else ; lanes paired before the in-lane even/odd split: no vpermq
+    vperm2i128 m4, m0, m2, 0x20
+    vperm2i128 m0, m0, m2, 0x31
+    vperm2i128 m5, m1, m3, 0x20
+    vperm2i128 m1, m1, m3, 0x31
+    pshufb    m4, m7
     pshufb    m0, m7
+    pshufb    m5, m7
     pshufb    m1, m7
-    pshufb    m2, m7
-    pshufb    m3, m7
-    punpckhqdq m4, m0, m2
-    punpcklqdq m0, m0, m2
-    punpckhqdq m5, m1, m3
-    punpcklqdq m2, m1, m3
-    vpermq    m0, m0, q3120
-    vpermq    m1, m4, q3120
-    vpermq    m2, m2, q3120
-    vpermq    m3, m5, q3120
-    mova    [%1], m0
-    mova    [%2], m1
-    mova    [%3], m2
-    mova    [%4], m3
+    punpcklqdq m2, m4, m0
+    punpckhqdq m4, m0
+    punpcklqdq m3, m5, m1
+    punpckhqdq m5, m1
+    mova    [%1], m2
+    mova    [%2], m4
+    mova    [%3], m3
+    mova    [%4], m5
 %endif
 %endmacro
 
