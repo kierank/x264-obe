@@ -477,8 +477,8 @@ cglobal pixel_vsad, 3,3
     psubw     m2, m3
     pabsw     m1, m1
     pabsw     m2, m2
+    paddw     m1, m2
     paddw     m0, m1
-    paddw     m0, m2
     mova      m1, m3
     sub      r2d, 2
     jg .loop

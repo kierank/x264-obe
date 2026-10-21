@@ -632,8 +632,8 @@ cglobal pixel_vsad_sse2, 3,3
     lea       r0, [r0+r1*2]
     psadbw    m1, m2
     psadbw    m2, m3
+    paddw     m1, m2
     paddw     m0, m1
-    paddw     m0, m2
     mova      m1, m3
     sub      r2d, 2
     jg .loop
