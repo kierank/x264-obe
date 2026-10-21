@@ -92,6 +92,21 @@ static const char **intra_predict_8x16c_names = intra_predict_8x8c_names;
 
 #define set_func_name(...) snprintf( func_name, sizeof(func_name), __VA_ARGS__ )
 
+/* bench inputs: a private xorshift, not rand(), so they are the same at every
+ * cpu level, seed and --bench filter */
+static uint32_t bench_rng;
+static void bench_srand( uint32_t s )
+{
+    bench_rng = s * 2654435761u | 1;
+}
+static int bench_rand( void )
+{
+    bench_rng ^= bench_rng << 13;
+    bench_rng ^= bench_rng >> 17;
+    bench_rng ^= bench_rng << 5;
+    return bench_rng >> 1;
+}
+
 static inline uint32_t read_time(void)
 {
     uint32_t a = 0;
@@ -4733,6 +4748,26 @@ void x264_cabac_block_residual_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
+/* residual bench classes: nonzero coefs 1/16, 1/4, 7/8 with levels mostly 1-2;
+ * large: 1/4 nonzero, levels up to 64, some escapes in the hundreds and beyond */
+static const char *cabac_res_class[4] = { "sparse", "mid", "dense", "large" };
+static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
+{
+    int nz = 0;
+    memset( dct, 0, 2*64*sizeof(dctcoef) );
+    while( !nz )
+        for( int k = 0; k <= x264_count_cat_m1[cat]; k++ )
+        {
+            int r = bench_rand();
+            int coef = cls == 0 ? !(r&15) : cls == 2 ? !!(r&7) : !(r&3);
+            if( coef && cls < 3 )
+                coef += !(r&0x70) * ((r>>8)&3);
+            else if( coef )
+                coef += (r>>8)&63 ? (r>>14)&63 : (r>>14)&0x3fff;
+            nz |= dct[0][ac+k] = dct[1][ac+k] = r&0x80 ? -coef : coef;
+        }
+}
+
 static int check_cabac( int cpu_ref, int cpu_new )
 {
     int ret = 0, ok = 1, used_asm = 0;
@@ -4852,14 +4887,45 @@ static int check_cabac( int cpu_ref, int cpu_new )
                         fprintf( stderr, "\n");\
                         goto name##fail;\
                     }\
-                    if( (j&15) == 0 )\
+                }\
+            }\
+        }\
+        /* bench: fixed blocks per class, frame and field, every category; contexts\
+         * of a P slice at qp 26, a fixed coder state on entry */\
+        uint8_t *bsb = do_bench ? x264_malloc( 2<<20 ) : NULL;\
+        for( int cls = 0; cls < 4 && bsb; cls++ )\
+        {\
+            set_func_name( #name "_%s", cabac_res_class[cls] );\
+            bench_srand( 1 + cls );\
+            for( int i = 0; i < 2; i++ )\
+                for( intptr_t ctx_block_cat = 0; ctx_block_cat < 14; ctx_block_cat++ )\
+                {\
+                    if( !(((cats) >> ctx_block_cat) & 1) )\
+                        continue;\
+                    static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};\
+                    int ac = ctx_ac[ctx_block_cat];\
+                    for( int blk = 0; blk < 4; blk++ )\
                     {\
+                        ALIGNED_ARRAY_64( dctcoef, dct, [2],[64] );\
+                        x264_cabac_t cb[2];\
+                        cabac_bench_block( dct, ctx_block_cat, ac, cls );\
+                        h.mb.b_interlaced = i;\
+                        x264_cabac_context_init( &h, &cb[0], SLICE_TYPE_P, 26, 0 );\
+                        memcpy( cb[1].state, cb[0].state, 1024 );\
+                        x264_cabac_encode_init( &cb[0], bsb, bsb+(1<<20)-16 );\
+                        x264_cabac_encode_init( &cb[1], bsb+(1<<20), bsb+(2<<20)-16 );\
+                        cb[0].f8_bits_encoded = cb[1].f8_bits_encoded = 0;\
+                        for( int k = 0; k < 13 && !rd; k++ )\
+                        {\
+                            x264_cabac_encode_bypass_c( &cb[0], -((0x1a5b >> k) & 1) );\
+                            x264_cabac_encode_bypass_c( &cb[1], -((0x1a5b >> k) & 1) );\
+                        }\
                         call_c2( x264_##name##_c, &h, &cb[0], ctx_block_cat, dct[0]+ac );\
                         call_a2( bs_a.name##_internal, dct[1]+ac, i, ctx_block_cat, &cb[1] );\
                     }\
                 }\
-            }\
         }\
+        x264_free( bsb );\
     }\
 }\
 name##fail:
