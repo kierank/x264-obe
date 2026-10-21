@@ -48,6 +48,9 @@ pw_wclip: times 16 dw 0x7fff-((1 << BIT_DEPTH)-1) ; weight clip: 0x7fff-PIXEL_MA
 sq_1: times 1 dq 1
 %if HIGH_BIT_DEPTH
 plane_tail: dd 0, 0xff, 0xffff, 0xffffff ; weight plane zmm tail, by tail bytes/16
+%else
+; mc_chroma_bi width 4: list 0 | list 1 bytes of a row interleaved
+bi_ilv_shuf: times 2 db 0, 8, 1, 9, 2,10, 3,11, 4,12, 5,13, 6,14, 7,15
 %endif
 
 SECTION .text
@@ -3162,6 +3165,14 @@ MC_CHROMA_SSSE3
 ; avg( pavg( src0a, src0b ), pavg( src1a, src1b ), weight ), the bipred of two qpel
 ; get_refs in one pass. Weight 32 is a third pavg, else clip( (p0*w + p1*(64-w) + 32) >> 6 )
 ; as BIWEIGHT_SSSE3 (8-bit) or BIWEIGHT_AVX2 (high bit depth).
+;
+; void mc_chroma_bi_wW( pixel *dst, pixel *src0, pixel *src1, intptr_t src_stride,
+;                       int dxy0, int dxy1, int height, int weight )
+; avg( mc_chroma( src0 ), mc_chroma( src1 ), weight ) to u at dst and v at dst +
+; FDEC_STRIDE/2, src at the whole-pel position, dxy = dx | dy << 8; each list as mc_chroma
+; (8-bit avx2: ch_shuf pairs and pmaddubsw; avx512icl: the four taps of an output in one
+; vpdpbusd), the average as pixel_avg. May read one row past (width 4, high bit depth) and
+; up to 24 (8-bit) or 8 pixels past a row.
 ;-----------------------------------------------------------------------------
 %if HIGH_BIT_DEPTH == 0
 ; m%1 = pavgb of the sources at %3, %4: rows 0, 1 (width 16) or 0-3 (width 8); m%2 tmp
@@ -3246,11 +3257,172 @@ cglobal pixel_avg_bi4_%1x%2, 7,10,6
     RET
 %endmacro
 
+; dxy %2 -> taps (8-dx)*(8-dy), dx*(8-dy), (8-dx)*dy, dx*dy: avx2 the top (m%1) and bottom
+; (m%1+1) byte pairs as words, avx512icl the dword of all four (m%1); gprs %2-%4 clobbered
+%macro MCB_COEF 4
+    mov            %3, %2
+    and            %3, 7
+    imul           %3, %3, 255
+    add            %3, 8                ; 8-dx | dx<<8
+    shr            %2, 8                ; dy
+    mov            %4, 8
+    sub            %4, %2
+    imul           %4, %3               ; top
+    imul           %3, %2               ; bottom
+%if cpuflag(avx512icl)
+    shl            %3, 16
+    or             %3, %4
+    vpbroadcastd  m%1, %3
+%else
+    movd         xm%1, %4
+    vpbroadcastw  m%1, xm%1
+    %assign mcb_n %1+1
+    movd         xm %+ mcb_n, %3
+    vpbroadcastw  m %+ mcb_n, xm %+ mcb_n
+%endif
+%endmacro
+
+; m%1 = ch_shuf pairs of the row at %2 (width 8: lane 1 from +8; width 4: of rows %2 | %3)
+%macro MCB_ROW 2-3
+    movu          xm%1, [%2]
+%if mcb_w == 8
+    vinserti128    m%1, m%1, [%2+8], 1
+%else
+    vinserti128    m%1, m%1, [%3], 1
+%endif
+    pshufb         m%1, m5
+%endmacro
+
+; m%1 = words u0-3 v0-3 | u4-7 v4-7 (width 4: | the next row) of the output rows whose
+; top and bottom pairs are m%2, m%3; taps m%4 (avx2: and m%4+1); m%5, m%6 tmp
+%macro MCB_FILT 6
+%if cpuflag(avx512icl)
+    punpcklwd      m%5, m%2, m%3        ; u: (top pair, bottom pair) of each output
+    punpckhwd      m%1, m%2, m%3        ; v
+    mova           m%6, m10             ; pd_32
+    vpdpbusd       m%6, m%5, m%4
+    mova           m%5, m10
+    vpdpbusd       m%5, m%1, m%4
+    psrld          m%6, 6
+    psrld          m%5, 6
+    packusdw       m%1, m%6, m%5
+%else
+    %assign mcb_n %4+1
+    pmaddubsw      m%1, m%2, m%4
+    pmaddubsw      m%5, m%3, m %+ mcb_n
+    paddw          m%1, m%5
+    pmulhrsw       m%1, m10             ; pw_512: (x + 32) >> 6
+%endif
+%endmacro
+
+; m0 (list 0) and m1 (list 1) bytes -> the bipred in m0, m2 tmp
+%macro MCB_AVG 1 ; weighted
+%if %1
+    punpckhbw      m2, m0, m1
+    punpcklbw      m0, m1
+    pmaddubsw      m0, m12
+    pmaddubsw      m2, m12
+    pmulhrsw       m0, [pw_512]
+    pmulhrsw       m2, [pw_512]
+    packuswb       m0, m2
+%else
+    pavgb          m0, m1
+%endif
+%endmacro
+
+; two output rows a pass; width 8: m13, m14 = the top pairs of lists 0 and 1
+%macro MCB_LOOP 1 ; weighted
+.loop %+ %1:
+%if mcb_w == 8
+    MCB_ROW         1, r1+r3
+    MCB_ROW         2, r1+2*r3
+    MCB_FILT        0, 13, 1, 6, 3, 4
+    MCB_FILT       15, 1, 2, 6, 3, 4
+    mova           m13, m2
+    packuswb       m0, m15
+    MCB_ROW         1, r2+r3
+    MCB_ROW         2, r2+2*r3
+    MCB_FILT       15, 14, 1, 8, 3, 4
+    MCB_FILT        3, 1, 2, 8, 4, 14
+    mova           m14, m2
+    packuswb       m1, m15, m3
+    MCB_AVG        %1
+    vpermd         m0, m11, m0           ; u | v of row 0 | row 1
+    vextracti128  xm1, m0, 1
+    movq         [r0], xm0
+    movhps [r0+FDEC_STRIDE/2], xm0
+    movq  [r0+FDEC_STRIDE], xm1
+    movhps [r0+FDEC_STRIDE*3/2], xm1
+%else
+    MCB_ROW         1, r1, r1+r3
+    MCB_ROW         2, r1+r3, r1+2*r3
+    MCB_FILT        0, 1, 2, 6, 3, 4
+    MCB_ROW         1, r2, r2+r3
+    MCB_ROW         2, r2+r3, r2+2*r3
+    MCB_FILT        3, 1, 2, 8, 4, 15
+    packuswb       m0, m3                ; per row: list 0 u v | list 1 u v
+%if %1
+    pshufb         m0, [bi_ilv_shuf]
+    pmaddubsw      m0, m12
+    pmulhrsw       m0, [pw_512]
+    packuswb       m0, m0
+%else
+    pshufd         m1, m0, q1032
+    pavgb          m0, m1
+%endif
+    vextracti128  xm1, m0, 1
+    movd         [r0], xm0
+    pextrd [r0+FDEC_STRIDE/2], xm0, 1
+    movd  [r0+FDEC_STRIDE], xm1
+    pextrd [r0+FDEC_STRIDE*3/2], xm1, 1
+%endif
+    lea            r0, [r0+2*FDEC_STRIDE]
+    lea            r1, [r1+2*r3]
+    lea            r2, [r2+2*r3]
+    sub           r9d, 2
+    jg .loop %+ %1
+    RET
+%endmacro
+
+%macro MC_CHROMA_BI 1 ; width
+%assign mcb_w %1
+cglobal mc_chroma_bi_w%1, 6,10,16
+    MCB_COEF        6, r4d, r6d, r7d
+    MCB_COEF        8, r5d, r6d, r7d
+    mova            m5, [ch_shuf]
+%if cpuflag(avx512icl)
+    vpbroadcastd   m10, [pd_32]
+%else
+    mova           m10, [pw_512]
+%endif
+    mova           m11, [deinterleave_shufd]
+    mov           r9d, r6m
+%if %1 == 8
+    MCB_ROW        13, r1
+    MCB_ROW        14, r2
+%endif
+    cmp     dword r7m, 32
+    jne .weight
+    MCB_LOOP        0
+.weight:
+    movzx         r7d, byte r7m
+    imul          r7d, r7d, -255
+    add           r7d, 64<<8             ; w | (64-w)<<8 as in BIWEIGHT_START_SSSE3
+    movd         xm12, r7d
+    vpbroadcastw  m12, xm12
+    MCB_LOOP        1
+%endmacro
+
 INIT_YMM avx2
 AVG_BI4 16, 16
 AVG_BI4 16,  8
 AVG_BI4  8, 16
 AVG_BI4  8,  8
+MC_CHROMA_BI 8
+MC_CHROMA_BI 4
+INIT_YMM avx512icl
+MC_CHROMA_BI 8
+MC_CHROMA_BI 4
 
 %else ; HIGH_BIT_DEPTH
 ; m%1 = pavgw of the sources at %3, %4: row %5 (width 16) or rows 0, 1 (width 8); m%2 tmp

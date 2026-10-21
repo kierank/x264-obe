@@ -595,6 +595,16 @@ DECL_AVG_BI4( 16, 16, avx2 )
 DECL_AVG_BI4( 16, 8, avx2 )
 DECL_AVG_BI4( 8, 16, avx2 )
 DECL_AVG_BI4( 8, 8, avx2 )
+#define DECL_MC_CHROMA_BI( w, cpu )\
+void x264_mc_chroma_bi_w##w##_##cpu( pixel *, pixel *, pixel *, intptr_t, int, int, int, int );
+#define x264_mc_chroma_bi_w8_avx2 x264_template(mc_chroma_bi_w8_avx2)
+#define x264_mc_chroma_bi_w4_avx2 x264_template(mc_chroma_bi_w4_avx2)
+#define x264_mc_chroma_bi_w8_avx512icl x264_template(mc_chroma_bi_w8_avx512icl)
+#define x264_mc_chroma_bi_w4_avx512icl x264_template(mc_chroma_bi_w4_avx512icl)
+DECL_MC_CHROMA_BI( 8, avx2 )
+DECL_MC_CHROMA_BI( 4, avx2 )
+DECL_MC_CHROMA_BI( 8, avx512icl )
+DECL_MC_CHROMA_BI( 4, avx512icl )
 
 #define PIXEL_AVG_W(width,cpu)\
 void x264_pixel_avg2_w##width##_##cpu( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t );
@@ -1677,6 +1687,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg_bi4[PIXEL_16x8]  = x264_pixel_avg_bi4_16x8_avx2;
         pf->avg_bi4[PIXEL_8x16]  = x264_pixel_avg_bi4_8x16_avx2;
         pf->avg_bi4[PIXEL_8x8]   = x264_pixel_avg_bi4_8x8_avx2;
+        pf->mc_chroma_bi[0] = x264_mc_chroma_bi_w8_avx2;
+        pf->mc_chroma_bi[1] = x264_mc_chroma_bi_w4_avx2;
 #endif
     }
 
@@ -1696,6 +1708,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
+        pf->mc_chroma_bi[0] = x264_mc_chroma_bi_w8_avx512icl;
+        pf->mc_chroma_bi[1] = x264_mc_chroma_bi_w4_avx512icl;
         pf->integral_init4h = x264_integral_init4h_avx512icl;
         pf->integral_init8h = x264_integral_init8h_avx512icl;
         pf->plane_copy_deinterleave_rgb = x264_plane_copy_deinterleave_rgb_avx512icl;
