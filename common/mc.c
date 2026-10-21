@@ -611,6 +611,14 @@ static void mbtree_propagate_cost( int16_t *dst, uint16_t *propagate_in, uint16_
     }
 }
 
+static int mbtree_cost_scale( uint16_t *lowres_costs, float *qp_offset, int len )
+{
+    int sum = 0;
+    for( int i = 0; i < len; i++ )
+        sum += ((lowres_costs[i] & LOWRES_COST_MASK) * x264_exp2fix8( qp_offset[i] ) + 128) >> 8;
+    return sum;
+}
+
 static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list )
@@ -747,6 +755,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 
     pf->mbtree_propagate_cost = mbtree_propagate_cost;
     pf->mbtree_propagate_list = mbtree_propagate_list;
+    pf->mbtree_cost_scale = mbtree_cost_scale;
 
 #if HAVE_MMX
     x264_mc_init_mmx( cpu, pf );

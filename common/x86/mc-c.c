@@ -555,6 +555,8 @@ void x264_mbtree_propagate_cost_avx2_fma3( int16_t *dst, uint16_t *propagate_in,
                                            uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
 void x264_mbtree_propagate_cost_avx512( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
                                         uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
+#define x264_mbtree_cost_scale_avx512icl x264_template(mbtree_cost_scale_avx512icl)
+int x264_mbtree_cost_scale_avx512icl( uint16_t *lowres_costs, float *qp_offset, int len );
 
 #define MC_CHROMA(cpu)\
 void x264_mc_chroma_##cpu( pixel *dstu, pixel *dstv, intptr_t i_dst, pixel *src, intptr_t i_src,\
@@ -1713,4 +1715,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;
 #endif
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx512icl;
+    }
 }

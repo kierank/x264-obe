@@ -153,6 +153,9 @@ typedef struct
     void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list );
+
+    /* sum of the lowres costs scaled by x264_exp2fix8( qp_offset ) */
+    int (*mbtree_cost_scale)( uint16_t *lowres_costs, float *qp_offset, int len );
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)

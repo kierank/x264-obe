@@ -1739,22 +1739,21 @@ static int x264_slicetype_frame_cost_recalculate( x264_t *h, x264_frame_t **fram
     x264_emms();
     for( h->mb.i_mb_y = h->mb.i_mb_height - 1; h->mb.i_mb_y >= 0; h->mb.i_mb_y-- )
     {
-        row_satd[ h->mb.i_mb_y ] = 0;
-        for( h->mb.i_mb_x = h->mb.i_mb_width - 1; h->mb.i_mb_x >= 0; h->mb.i_mb_x-- )
+        int i_mb_xy = h->mb.i_mb_y*h->mb.i_mb_stride;
+        uint16_t *lowres_costs = frames[b]->lowres_costs[b-p0][p1-b] + i_mb_xy;
+        int row = h->mc.mbtree_cost_scale( lowres_costs, qp_offset + i_mb_xy, h->mb.i_mb_width );
+        row_satd[ h->mb.i_mb_y ] = row;
+        if( h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2 )
+            i_score += row;
+        else if( h->mb.i_mb_y > 0 && h->mb.i_mb_y < h->mb.i_mb_height - 1 )
         {
-            int i_mb_xy = h->mb.i_mb_x + h->mb.i_mb_y*h->mb.i_mb_stride;
-            int i_mb_cost = frames[b]->lowres_costs[b-p0][p1-b][i_mb_xy] & LOWRES_COST_MASK;
-            float qp_adj = qp_offset[i_mb_xy];
-            i_mb_cost = (i_mb_cost * x264_exp2fix8(qp_adj) + 128) >> 8;
-            row_satd[ h->mb.i_mb_y ] += i_mb_cost;
-            if( (h->mb.i_mb_y > 0 && h->mb.i_mb_y < h->mb.i_mb_height - 1 &&
-                 h->mb.i_mb_x > 0 && h->mb.i_mb_x < h->mb.i_mb_width - 1) ||
-                 h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2 )
-            {
-                i_score += i_mb_cost;
-            }
+            /* the inner MBs: all but the first and last of the row */
+            int last = h->mb.i_mb_width - 1;
+            i_score += row - (((lowres_costs[0] & LOWRES_COST_MASK) * x264_exp2fix8( qp_offset[i_mb_xy] ) + 128) >> 8)
+                           - (((lowres_costs[last] & LOWRES_COST_MASK) * x264_exp2fix8( qp_offset[i_mb_xy+last] ) + 128) >> 8);
         }
     }
+    h->mb.i_mb_x = -1;
     return i_score;
 }
 
