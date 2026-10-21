@@ -90,6 +90,42 @@ int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_st
     return best;
 }
 
+static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
+                       int shift, const int32_t *bias, int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    for( int i = 0; i < n; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix + pt[i][0] + pt[i][1]*i_stride, i_stride ) << shift) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
+/* me.c's hex2[] */
+static const int8_t sad_hex_pt[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
+
+/* references for sad_dia_min, sad_hex_min and sad_hexhalf_min */
+int x264_pixel_sad_dia_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[4], int best )
+{
+    static const int8_t pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 4, 4, bias, best );
+}
+
+int x264_pixel_sad_hex_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[6], int best )
+{
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, sad_hex_pt+1, 6, 6, bias, best );
+}
+
+int x264_pixel_sad_hexhalf_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, int dir, const int32_t bias[3], int best )
+{
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, sad_hex_pt+dir, 3, 6, bias, best );
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
