@@ -66,6 +66,8 @@ isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4
 ALIGN 32
 sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
+ALIGN 32
+sad_hpel_shuf8: times 2 db 0,1,2,3,4,5,6,7, 1,2,3,4,5,6,7,8
 
 SECTION .text
 
@@ -2294,6 +2296,141 @@ SAD_X3_W8_AVX2 8, 1
 SAD_X4_W8_AVX2 16, 1
 SAD_X4_W8_AVX2 8, 1
 %endif
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_hpel_min_16x16( uint8_t *fenc, uint8_t *pixv, uint8_t *pixh, intptr_t i_stride,
+;                               uint64_t bias01, uint64_t bias23, int best )
+; sad_x4_min of pixv, pixv + i_stride, pixh, pixh + 1. Each pixv row is loaded
+; once: lane 1 of candidate 0's row pair is lane 0 of candidate 1's.
+; Reads pixv rows 0..h and pixh rows 0..h-1, bytes 0..15 (16 wide: pixh 0..16;
+; 8 wide: pixv 0..7).
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; row %1 (0..4) of a 4 row group -> hpel_o
+%macro HPEL_ROWOFF 3 ; row, stride, 3*stride
+%if %1 == 0
+    %xdefine hpel_o 0
+%elif %1 == 1
+    %xdefine hpel_o %2
+%elif %1 == 2
+    %xdefine hpel_o 2*%2
+%elif %1 == 3
+    %xdefine hpel_o %3
+%else
+    %xdefine hpel_o 4*%2
+%endif
+%endmacro
+
+%macro SAD_HPEL_MIN_W16_AVX2 1 ; h
+cglobal pixel_sad_hpel_min_16x%1, 4,7,10
+    lea            r6, [3*r3]
+    movu          xm5, [r1]
+%assign %%k 0
+%rep %1/2
+    movu           m4, [r0+%%k*FENC_STRIDE]
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    movu          xm6, [r1+hpel_o]
+    HPEL_ROWOFF (%%k&3)+2, r3, r6
+    movu          xm7, [r1+hpel_o]
+    vinserti128    m5, m5, xm6, 1        ; v rows k, k+1
+    vinserti128    m6, m6, xm7, 1        ; v rows k+1, k+2
+    HPEL_ROWOFF (%%k&3), r3, r6
+    %xdefine hpel_o0 hpel_o
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    movu          xm8, [r2+hpel_o0]
+    movu          xm9, [r2+hpel_o0+1]
+    vinserti128    m8, m8, [r2+hpel_o], 1
+    vinserti128    m9, m9, [r2+hpel_o+1], 1
+%if %%k == 0
+    psadbw         m0, m5, m4
+    psadbw         m1, m6, m4
+    psadbw         m2, m8, m4
+    psadbw         m3, m9, m4
+%else
+    psadbw         m5, m4
+    psadbw         m6, m4
+    psadbw         m8, m4
+    psadbw         m9, m4
+    paddw          m0, m5
+    paddw          m1, m6
+    paddw          m2, m8
+    paddw          m3, m9
+%endif
+    SWAP            5, 7
+%if (%%k&3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+    movq          xm4, r4mp
+    pinsrq        xm4, r5mp, 1
+    vpbroadcastd  xm5, r6m
+    packssdw       m0, m1
+    packssdw       m2, m3
+    phaddd         m0, m2
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    pslld         xm0, 6
+    paddd         xm0, xm4
+    SAD_X_MIN_TREE 0, 5, 1
+%endmacro
+
+; vpbroadcastq rows: v k, k+1 | k+1, k+2 against fenc k, k | k+1, k+1;
+; pixh rows k | k+1 by pshufb to bytes 0-7, 1-8
+%macro SAD_HPEL_MIN_W8_AVX2 1 ; h
+cglobal pixel_sad_hpel_min_8x%1, 4,7,8
+    lea            r6, [3*r3]
+    vpbroadcastq   m5, [r1]
+    mova           m7, [sad_hpel_shuf8]
+%assign %%k 0
+%rep %1/2
+    vmovddup       m4, [r0+%%k*FENC_STRIDE]
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    vpbroadcastq   m2, [r1+hpel_o]
+    HPEL_ROWOFF (%%k&3)+2, r3, r6
+    vpbroadcastq   m3, [r1+hpel_o]
+    HPEL_ROWOFF (%%k&3), r3, r6
+    %xdefine hpel_o0 hpel_o
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    movu          xm6, [r2+hpel_o0]
+    vinserti128    m6, m6, [r2+hpel_o], 1
+    vpblendd       m2, m2, m5, 0x03
+    vpblendd       m2, m2, m3, 0xc0
+    pshufb         m6, m7
+%if %%k == 0
+    psadbw         m0, m2, m4
+    psadbw         m1, m6, m4
+%else
+    psadbw         m2, m4
+    psadbw         m6, m4
+    paddw          m0, m2
+    paddw          m1, m6
+%endif
+    SWAP            3, 5
+%if (%%k&3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+    movq          xm2, r4mp
+    pinsrq        xm2, r5mp, 1
+    vpbroadcastd  xm3, r6m
+    packssdw       m0, m1
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm2
+    paddd         xm0, xm1
+    SAD_X_MIN_TREE 0, 3, 1
+%endmacro
+
+INIT_YMM avx2
+SAD_HPEL_MIN_W16_AVX2 16
+SAD_HPEL_MIN_W16_AVX2 8
+SAD_HPEL_MIN_W8_AVX2 16
+SAD_HPEL_MIN_W8_AVX2 8
+%endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
 ; int pixel_sad_sq_min_16x16( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
