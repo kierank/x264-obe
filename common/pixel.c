@@ -126,6 +126,36 @@ int x264_pixel_sad_hexhalf_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t
     return sad_pt_min( i_pixel, fenc, pix, i_stride, sad_hex_pt+dir, 3, 6, bias, best );
 }
 
+/* references for umh's sad_oct_min, sad_ring_min, sad_corner_min and sad_row */
+int x264_pixel_sad_oct_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best )
+{
+    static const int8_t pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 8, 4, bias, best );
+}
+
+int x264_pixel_sad_ring_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best )
+{
+    static const int8_t pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 8, 4, bias, best );
+}
+
+int x264_pixel_sad_corner_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[4], int best )
+{
+    static const int8_t pt[4][2] = {{-2,-2}, {-2,2}, {2,-2}, {2,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 4, 4, bias, best );
+}
+
+void x264_pixel_sad_row_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, int n, uint16_t *sads )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    for( int k = 0; k < n; k++ )
+        sads[k] = sad[i_pixel]( fenc, FENC_STRIDE, pix + k, i_stride );
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/

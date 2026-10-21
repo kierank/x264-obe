@@ -44,6 +44,8 @@ typedef int  (*x264_pixel_cmp_sq_min_t) ( pixel *fenc, pixel *pix, intptr_t, con
 typedef int  (*x264_pixel_cmp_pt_min_t) ( pixel *fenc, pixel *pix, intptr_t, const int32_t *bias, int best );
 /* the same over hex2[dir..dir+2], dir 0..5, s = 6 */
 typedef int  (*x264_pixel_cmp_hexhalf_min_t) ( pixel *fenc, pixel *pix, intptr_t, int dir, const int32_t bias[3], int best );
+/* sads[k] = sad( fenc, pix + k ), k < n; writes n rounded up to 8 */
+typedef void (*x264_pixel_sad_row_t) ( pixel *fenc, pixel *pix, intptr_t, int n, uint16_t *sads );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -164,6 +166,16 @@ typedef struct
     x264_pixel_cmp_pt_min_t fpelcmp_dia_min[7]; /* sad_*_min where fpelcmp is sad, else NULL */
     x264_pixel_cmp_pt_min_t fpelcmp_hex_min[7];
     x264_pixel_cmp_hexhalf_min_t fpelcmp_hexhalf_min[7];
+    /* umh, s = 4: oct (0,-2) (-1,-1) (1,-1) (-2,0) (2,0) (-1,1) (1,1) (0,2), ring (-1,-2) (1,-2)
+     * (-2,-1) (2,-1) (-2,1) (2,1) (-1,2) (1,2), corner (-2,-2) (-2,2) (2,-2) (2,2) */
+    x264_pixel_cmp_pt_min_t sad_oct_min[7];
+    x264_pixel_cmp_pt_min_t sad_ring_min[7];
+    x264_pixel_cmp_pt_min_t sad_corner_min[7];
+    x264_pixel_cmp_pt_min_t fpelcmp_oct_min[7];
+    x264_pixel_cmp_pt_min_t fpelcmp_ring_min[7];
+    x264_pixel_cmp_pt_min_t fpelcmp_corner_min[7];
+    x264_pixel_sad_row_t sad_row[7]; /* asm only, NULL otherwise; reference x264_pixel_sad_row_c */
+    x264_pixel_sad_row_t fpelcmp_row[7];
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
@@ -250,6 +262,14 @@ int x264_pixel_sad_dia_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_s
 int x264_pixel_sad_hex_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[6], int best );
 #define x264_pixel_sad_hexhalf_min_c x264_template(pixel_sad_hexhalf_min_c)
 int x264_pixel_sad_hexhalf_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, int dir, const int32_t bias[3], int best );
+#define x264_pixel_sad_oct_min_c x264_template(pixel_sad_oct_min_c)
+int x264_pixel_sad_oct_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best );
+#define x264_pixel_sad_ring_min_c x264_template(pixel_sad_ring_min_c)
+int x264_pixel_sad_ring_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best );
+#define x264_pixel_sad_corner_min_c x264_template(pixel_sad_corner_min_c)
+int x264_pixel_sad_corner_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[4], int best );
+#define x264_pixel_sad_row_c x264_template(pixel_sad_row_c)
+void x264_pixel_sad_row_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, int n, uint16_t *sads );
 #define x264_pixel_ssd_nv12 x264_template(pixel_ssd_nv12)
 void x264_pixel_ssd_nv12   ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2,
                              int i_width, int i_height, uint64_t *ssd_u, uint64_t *ssd_v );
