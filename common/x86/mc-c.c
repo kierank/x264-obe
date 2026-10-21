@@ -612,10 +612,12 @@ static void (* const x264_pixel_avg_wtab_##instr[6])( pixel *, intptr_t, pixel *
 #undef x264_pixel_avg2_w12_cache64_ssse3
 #undef x264_pixel_avg2_w12_cache64_sse2
 #undef x264_pixel_avg2_w12_sse2
+#undef x264_pixel_avg2_w12_avx2
 #define x264_pixel_avg2_w12_cache64_ssse3 x264_pixel_avg2_w16_cache64_ssse3
 #define x264_pixel_avg2_w12_cache64_sse2 x264_pixel_avg2_w16_cache64_sse2
 #define x264_pixel_avg2_w12_sse3         x264_pixel_avg2_w16_sse3
 #define x264_pixel_avg2_w12_sse2         x264_pixel_avg2_w16_sse2
+#define x264_pixel_avg2_w12_avx2         x264_pixel_avg2_w16_avx2
 #endif // HIGH_BIT_DEPTH
 
 PIXEL_AVG_WTAB(mmx2, mmx2, mmx2, mmx2, mmx2, mmx2)
@@ -631,7 +633,7 @@ PIXEL_AVG_WTAB(sse2, mmx2, mmx2, sse2, sse2, sse2)
 PIXEL_AVG_WTAB(cache64_sse2, mmx2, cache64_mmx2, cache64_sse2, cache64_sse2, cache64_sse2)
 PIXEL_AVG_WTAB(cache64_ssse3, mmx2, cache64_mmx2, cache64_ssse3, cache64_ssse3, cache64_sse2)
 PIXEL_AVG_WTAB(cache64_ssse3_atom, mmx2, mmx2, cache64_ssse3, cache64_ssse3, sse2)
-PIXEL_AVG_WTAB(avx2, mmx2, mmx2, sse2, sse2, avx2)
+PIXEL_AVG_WTAB(avx2, mmx2, mmx2, avx2, avx2, avx2)
 #endif // HIGH_BIT_DEPTH
 
 #define MC_COPY_WTAB(instr, name1, name2, name3)\
