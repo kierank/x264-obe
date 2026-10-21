@@ -94,6 +94,7 @@
 #define x264_pixel_asd8_sse2 x264_template(pixel_asd8_sse2)
 #define x264_pixel_asd8_ssse3 x264_template(pixel_asd8_ssse3)
 #define x264_pixel_asd8_xop x264_template(pixel_asd8_xop)
+#define x264_pixel_asd8_avx512icl x264_template(pixel_asd8_avx512icl)
 #define x264_weightp_stats8_avx2 x264_template(weightp_stats8_avx2)
 #define x264_weightp_sum8_avx2 x264_template(weightp_sum8_avx2)
 #define x264_weightp_sum8_clip_avx2 x264_template(weightp_sum8_clip_avx2)
@@ -663,6 +664,7 @@
 #define x264_pixel_ssim_4x4x2_core_mmx2 x264_template(pixel_ssim_4x4x2_core_mmx2)
 #define x264_pixel_ssim_4x4x2_core_sse2 x264_template(pixel_ssim_4x4x2_core_sse2)
 #define x264_pixel_ssim_end4_avx x264_template(pixel_ssim_end4_avx)
+#define x264_pixel_ssim_end4_avx512icl x264_template(pixel_ssim_end4_avx512icl)
 #define x264_pixel_ssim_end4_sse2 x264_template(pixel_ssim_end4_sse2)
 #define x264_pixel_var2_8x16_avx2 x264_template(pixel_var2_8x16_avx2)
 #define x264_pixel_var2_8x16_mmx2 x264_template(pixel_var2_8x16_mmx2)
@@ -1007,6 +1009,10 @@ int x264_pixel_sad_x4_min_16x8_avx2( pixel *, pixel *, pixel *, pixel *, pixel *
 int x264_pixel_sad_x4_min_8x16_avx2( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t, int );
 #define x264_pixel_sad_x4_min_8x8_avx2 x264_template(pixel_sad_x4_min_8x8_avx2)
 int x264_pixel_sad_x4_min_8x8_avx2( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t, int );
+#define x264_pixel_sad_sq_min_16x16_avx512 x264_template(pixel_sad_sq_min_16x16_avx512)
+int x264_pixel_sad_sq_min_16x16_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
+#define x264_pixel_sad_sq_min_8x8_avx512 x264_template(pixel_sad_sq_min_8x8_avx512)
+int x264_pixel_sad_sq_min_8x8_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
 #define x264_pixel_sad_x3_min_16x16_avx512 x264_template(pixel_sad_x3_min_16x16_avx512)
 int x264_pixel_sad_x3_min_16x16_avx512( pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t );
 #define x264_pixel_sad_x3_min_16x8_avx512 x264_template(pixel_sad_x3_min_16x8_avx512)
@@ -1073,6 +1079,7 @@ void x264_pixel_ssim_4x4x2_core_avx512icl( const pixel *pix1, intptr_t stride1,
                                           const pixel *pix2, intptr_t stride2, int sums[2][4] );
 float x264_pixel_ssim_end4_sse2( int sum0[5][4], int sum1[5][4], int width );
 float x264_pixel_ssim_end4_avx ( int sum0[5][4], int sum1[5][4], int width );
+float x264_pixel_ssim_end4_avx512icl( int sum0[5][4], int sum1[5][4], int width );
 int  x264_pixel_var2_8x8_mmx2  ( pixel *,   intptr_t, pixel *,   intptr_t, int * );
 int  x264_pixel_var2_8x8_sse2  ( pixel *,   intptr_t, pixel *,   intptr_t, int * );
 int  x264_pixel_var2_8x8_ssse3 ( uint8_t *, intptr_t, uint8_t *, intptr_t, int * );
@@ -1100,6 +1107,7 @@ int  x264_pixel_vsad_avx2 ( uint16_t *src, intptr_t stride, int height );
 int x264_pixel_asd8_sse2 ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 int x264_pixel_asd8_ssse3( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 int x264_pixel_asd8_xop  ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
+int x264_pixel_asd8_avx512icl( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 #define DECL_WEIGHTP( cpu )\
 void x264_weightp_stats8_##cpu( int32_t *sum, uint32_t *minmax, pixel *src, intptr_t i_src, int n, int height );\
 void x264_weightp_sum8_##cpu( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom );\

@@ -3058,6 +3058,33 @@ cglobal deblock_h_luma, 5,10,16
     RET
 
 ;-----------------------------------------------------------------------------
+; void deblock_v_luma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal deblock_v_luma, 5,6,16
+    lea         r5, [r1*3]
+    neg         r5
+    add         r5, r0            ; pix-3*stride
+    movu       xm0, [r5+r1*2]
+    movu       xm1, [r5+r1]
+    movu       xm2, [r5]
+    vinserti128 m0, m0, [r0], 1   ; [p0|q0]
+    vinserti128 m1, m1, [r0+r1], 1
+    vinserti128 m2, m2, [r0+r1*2], 1
+    movu       xm4, [r0]
+    movu       xm5, [r0+r1]
+    movu       xm6, [r0+r1*2]
+    vinserti128 m4, m4, xm0, 1    ; [q0|p0]
+    vinserti128 m5, m5, xm1, 1
+    vinserti128 m6, m6, xm2, 1
+    LUMA_INTER_ICL y, 4, 8, pb_unpackbd1
+    movu  [r5+r1*2], xm0
+    vextracti128 [r0], m0, 1
+    movu    [r5+r1], xm1
+    vextracti128 [r0+r1], m1, 1
+    RET
+
+;-----------------------------------------------------------------------------
 ; avx512icl MBAFF mixed edge, 8 rows: one vpermb turns the 8x8 block of
 ; p3..q3 into [pN|qN] qword pairs, the xmm forms of the filters above run once.
 ;-----------------------------------------------------------------------------
@@ -4166,6 +4193,118 @@ cglobal deblock_h_chroma_intra_mbaff, 4,6,8
     call chroma_intra_body
     TRANSPOSE4x2W_STORE PASS8ROWS(t5, r0, r1, t6, 2)
     RET
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; avx512icl 8-bit chroma: EVEX filters, OR3 + vptestnmb for the filter mask,
+; k-mask selects, vpternlogd for NOT and the parity bits
+;-----------------------------------------------------------------------------
+; in: %1m0-%1m3 = p1 p0 q0 q1, r2d = alpha, r3d = beta; out: k1 = mask
+; clobbers: %1m4-%1m8
+%macro CHROMA_MASK_ICL8 1 ; x|y
+    vpbroadcastb %1m4, r2d
+    vpbroadcastb %1m5, r3d
+    psubusb     %1m4, [pb_1]      ; alpha-1
+    psubusb     %1m5, [pb_1]      ; beta-1
+    psubusb     %1m6, %1m1, %1m2
+    psubusb     %1m7, %1m2, %1m1
+    por         %1m6, %1m7
+    psubusb     %1m6, %1m4        ; |p0-q0| > alpha-1
+    psubusb     %1m7, %1m0, %1m1
+    psubusb     %1m4, %1m1, %1m0
+    por         %1m7, %1m4
+    psubusb     %1m7, %1m5        ; |p1-p0| > beta-1
+    psubusb     %1m4, %1m3, %1m2
+    psubusb     %1m8, %1m2, %1m3
+    por         %1m4, %1m8
+    psubusb     %1m4, %1m5        ; |q1-q0| > beta-1
+    vpternlogd  %1m4, %1m6, %1m7, 0xfe
+    vptestnmb   k1, %1m4, %1m4
+%endmacro
+
+; in: %1m0-%1m3 = p1 p0 q0 q1, %1m7 = tc & mask; out: %1m1 = p0', %1m2 = q0'
+; clobbers: %1m3-%1m6, %1m8
+%macro DEBLOCK_P0_Q0_ICL 1
+    vpbroadcastd %1m5, [pb_1]
+    vpternlogd  %1m5, %1m1, %1m2, 0x60 ; (p0^q0)&1
+    vpternlogd  %1m3, %1m3, %1m3, 0x0f ; ~q1
+    pavgb       %1m3, %1m0        ; (p1 - q1 + 256)>>1
+    vpbroadcastd %1m6, [pb_3]
+    pavgb       %1m3, %1m6        ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    vpternlogd  %1m4, %1m1, %1m1, 0x33 ; ~p0
+    pavgb       %1m4, %1m2        ; (q0 - p0 + 256)>>1
+    pavgb       %1m3, %1m5
+    paddusb     %1m3, %1m4        ; d+128+33
+    vpbroadcastd %1m8, [pb_a1]
+    psubusb     %1m6, %1m8, %1m3
+    psubusb     %1m3, %1m8
+    pminub      %1m6, %1m7
+    pminub      %1m3, %1m7
+    psubusb     %1m1, %1m6
+    psubusb     %1m2, %1m3
+    paddusb     %1m1, %1m3
+    paddusb     %1m2, %1m6
+%endmacro
+
+; in: %1m0-%1m3 = p1 p0 q0 q1, r2d, r3d, r4 = tc0; out: %1m1 = p0', %1m2 = q0'
+%macro CHROMA_INTER_ICL8 2 ; x|y, tc0 shuffle
+    CHROMA_MASK_ICL8 %1
+    vpbroadcastd %1m7, [r4]
+    pshufb      %1m7, [%2]
+    vmovdqu8    %1m7 {k1}{z}, %1m7 ; tc & mask
+    DEBLOCK_P0_Q0_ICL %1
+%endmacro
+
+INIT_ZMM avx512icl
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_chroma, 5,6,9
+    mov         r5, r0
+    sub         r5, r1
+    sub         r5, r1
+    mova       xm0, [r5]
+    mova       xm1, [r5+r1]
+    mova       xm2, [r0]
+    mova       xm3, [r0+r1]
+    CHROMA_INTER_ICL8 x, pb_unpackbd1
+    mova   [r5+r1], xm1
+    mova      [r0], xm2
+    RET
+
+; in: %1m0-%1m3 = p1 p0 q0 q1, r2d = alpha, r3d = beta; out: %1m1 = p0', %1m2 = q0'
+%macro CHROMA_INTRA_ICL8 1
+    CHROMA_MASK_ICL8 %1
+    vpbroadcastd %1m4, [pb_1]
+    mova        %1m5, %1m4
+    vpternlogd  %1m4, %1m1, %1m3, 0x60 ; (p0^q1)&1
+    vpternlogd  %1m5, %1m2, %1m0, 0x60 ; (q0^p1)&1
+    pavgb       %1m6, %1m1, %1m3
+    pavgb       %1m7, %1m2, %1m0
+    psubusb     %1m6, %1m4
+    psubusb     %1m7, %1m5
+    pavgb       %1m6, %1m0        ; (2*p1 + p0 + q1 + 2) >> 2
+    pavgb       %1m7, %1m3        ; (2*q1 + q0 + p1 + 2) >> 2
+    vmovdqu8    %1m1 {k1}, %1m6
+    vmovdqu8    %1m2 {k1}, %1m7
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_chroma_intra, 4,5,9
+    mov         r4, r0
+    sub         r4, r1
+    sub         r4, r1
+    mova       xm0, [r4]
+    mova       xm1, [r4+r1]
+    mova       xm2, [r0]
+    mova       xm3, [r0+r1]
+    CHROMA_INTRA_ICL8 x
+    mova   [r4+r1], xm1
+    mova      [r0], xm2
+    RET
+%endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
 

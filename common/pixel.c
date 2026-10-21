@@ -73,6 +73,23 @@ PIXEL_SAD_C( x264_pixel_sad_4x16,   4, 16 )
 PIXEL_SAD_C( x264_pixel_sad_4x8,    4,  8 )
 PIXEL_SAD_C( x264_pixel_sad_4x4,    4,  4 )
 
+/* reference for sad_sq_min */
+int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[12], int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    static const int8_t dy[3] = { -1, 1, 0 };
+    for( int i = 0; i < 12; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix + (i&3) - 1 + dy[i>>2]*i_stride, i_stride ) << 6) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
@@ -1289,6 +1306,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+        pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
+        /* zen4 prune: asd8 1.346x (rack01 checkasm --bench); kept assembled */
 #endif
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
@@ -1700,6 +1719,17 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
+        pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
+        pixf->asd8 = x264_pixel_asd8_avx512icl;
+#endif
+    }
+    /* vdbpsadbw (AVX512BW), ymm only; the exception to the note above
+     * (rack01 Zen 4 in situ, 8-bit: -0.67 to -0.98 % CPU) */
+    if( cpu&X264_CPU_AVX512 )
+    {
+#if ARCH_X86_64
+        pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
+        pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX

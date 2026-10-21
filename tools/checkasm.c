@@ -918,6 +918,91 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(3);
     TEST_PIXEL_X_MIN(4);
 
+    /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
+     * me.c's 1<<30 in unused slots, 3 a maximal sad (~fenc) in slot j%12, winning */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( pixel_asm.sad_sq_min[i] && pixel_asm.sad_sq_min[i] != pixel_ref.sad_sq_min[i] )
+        {
+            static const int dys[3] = { -1, 1, 0 };
+            ALIGNED_16( pixel refm[20*48] );
+            int wins[13] = {0};
+            set_func_name( "sad_sq_min_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 256 && ok; j++ )
+            {
+                int mode = j>>6;
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
+                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pix = mode == 3 ? refm + 2*48 + 2 : pbuf2 + (j&31) + stride + 1;
+                ALIGNED_16( int32_t bias[12] );
+                int sad[12], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                if( mode == 3 )
+                {
+                    int k = j%12;
+                    for( int l = 0; l < 20*48; l++ )
+                        refm[l] = rand() & PIXEL_MAX;
+                    for( int y = 0; y < 16; y++ )
+                        memcpy( pix + (k&3) - 1 + (dys[k>>2] + y)*stride, pbuf4 + 16*y, 16*sizeof(pixel) );
+                }
+                for( int k = 0; k < 12; k++ )
+                {
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix + (k&3) - 1 + dys[k>>2]*stride, stride );
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < 12; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << 6) + 1 + (k + j) % 12;
+                    else if( mode == 2 )
+                        bias[k] = (j&4) && (k&3) == 3 ? 1 << 30
+                                : ((((j>>(k%6))&1) * 131070) << 6) + ((j>>(k%5))&1) * 63;
+                    else if( mode == 3 )
+                        bias[k] = k == j%12 ? rand()&63 : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << 6) + (rand()&63);
+                    tmin = X264_MIN( tmin, (sad[k] << 6) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << 6) + (rand()%3 ? (int)(rand()&63) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 )
+                    best = INT_MAX;
+                else
+                    best = tmin + ((rand()&255) - 128) * 64 + (rand()&63);
+                res_c = best;
+                for( int k = 0; k < 12; k++ )
+                    if( (sad[k] << 6) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << 6) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                if( x264_pixel_sad_sq_min_c( i, fenc, pix, stride, bias, best ) != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_sq_min[%d]: C reference mismatch [FAILED]\n", i );
+                }
+                res_a = call_a( pixel_asm.sad_sq_min[i], fenc, pix, stride, bias, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_sq_min[%d]: mode %d %d != %d [FAILED]\n", i, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= 12 && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_sq_min[%d]: %s %d never selected [FAILED]\n", i, k ? "slot" : "best", k-1 );
+                }
+        }
+    }
+    report( "pixel sad_sq_min :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \
@@ -1071,6 +1156,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 fprintf( stderr, "asd: extreme %d: %d != %d\n", j, res_c, res_a );
             }
         }
+        /* every height: random, and PIXEL_MAX against 0 either way */
+        ALIGNED_16( pixel hi[8*16] );
+        ALIGNED_16( pixel lo[8*16] );
+        for( int i = 0; i < 8*16; i++ )
+        {
+            hi[i] = PIXEL_MAX;
+            lo[i] = 0;
+        }
+        for( int h = 4; h <= 16 && ok; h += 4 )
+            for( int k = 0; k < 3 && ok; k++ )
+            {
+                pixel *p1 = k == 0 ? pbuf1 : k == 1 ? hi : lo;
+                pixel *p2 = k == 0 ? pbuf2 : k == 1 ? lo : hi;
+                res_c = pixel_c.asd8( p1, 8, p2, 8, h );
+                res_a = pixel_asm.asd8( p1, 8, p2, 8, h );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "asd: height %d %d: %d != %d\n", h, k, res_c, res_a );
+                }
+            }
     }
     report( "pixel asd :" );
 
@@ -1569,6 +1675,21 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     ok = 0;
                     fprintf( stderr, "ssim_4x4x2_core %d [FAILED]\n", j );
                 }
+            }
+        }
+        /* ssim_end4 at every width: the blocks past it must not count */
+        for( int w = 1; w <= 4 && ok; w++ )
+        {
+            ALIGNED_16( int s[2][6][4] );
+            for( int z = 0; z < 2; z++ )
+                for( int i = 0; i < 3; i++ )
+                    pixel_c.ssim_4x4x2_core( pbuf1+8*i+4*z*32, 32, pbuf2+8*i+4*z*32, 32, s[z]+2*i );
+            float e_c = pixel_c.ssim_end4( s[0], s[1], w );
+            float e_a = pixel_asm.ssim_end4( s[0], s[1], w );
+            if( fabs( e_c - e_a ) > 1e-6 )
+            {
+                ok = 0;
+                fprintf( stderr, "ssim_end4 width %d: %.7f != %.7f [FAILED]\n", w, e_c, e_a );
             }
         }
         set_func_name( "ssim_core" );
@@ -4642,6 +4763,10 @@ extern const uint8_t x264_count_cat_m1[14];
 void x264_cabac_block_residual_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_8x8_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
+#define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_c)
+#define x264_cabac_block_residual_422_dc_rd_c x264_template(cabac_block_residual_422_dc_rd_c)
+void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
+void x264_cabac_block_residual_422_dc_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
@@ -4786,6 +4911,102 @@ name##fail:
     CABAC_RESIDUAL( cabac_block_residual_8x8_rd, CATS_8x8, 1 )
 #undef CATS_8x8
     report( "cabac residual rd:" );
+
+    /* 4:2:2 chroma dc (8 coefs, repeated sig/last contexts): writer and rd; the C finds last
+     * through coeff_last[DCT_CHROMA_DC], which the encoder sets to coeff_last8 for 4:2:2 */
+    ok = 1; used_asm = 0;
+    h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last8;
+    for( int rd = 0; rd < 2; rd++ )
+    {
+        void (*fa)( dctcoef *, int, intptr_t, x264_cabac_t * ) = rd ? bs_a.cabac_block_residual_422_dc_rd_internal : bs_a.cabac_block_residual_422_dc_internal;
+        void (*fr)( dctcoef *, int, intptr_t, x264_cabac_t * ) = rd ? bs_ref.cabac_block_residual_422_dc_rd_internal : bs_ref.cabac_block_residual_422_dc_internal;
+        if( !fa || fa == fr )
+            continue;
+        used_asm = 1;
+        set_func_name( rd ? "cabac_block_residual_422_dc_rd" : "cabac_block_residual_422_dc" );
+        for( int i = 0; i < 2 && ok; i++ )
+            for( int j = 0; j < 2048 && ok; j++ )
+            {
+                static const int lv[12] = { 1, 2, 3, 4, 13, 14, 15, 16, 17, 255, 0x7f00, 0x7fff };
+                ALIGNED_ARRAY_64( dctcoef, dct, [2],[16] );
+                uint8_t bitstream[2][1<<16];
+                x264_cabac_t cb[2];
+                int mask = (j & 255) ? (j & 255) : 1 + (rand() & 127);
+                for( int k = 0; k < 16; k++ )
+                {
+                    int v = (j&256) ? lv[rand()%12] : 1 + (rand()&3);
+                    dct[0][k] = dct[1][k] = k < 8 && (mask >> k & 1) ? v * ((rand()&1) ? 1 : -1) : 0;
+                }
+                h.mb.b_interlaced = i;
+                x264_cabac_context_init( &h, &cb[0], (j&512) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>10)%3 );
+                /* states reachable from the init states (rd: any state) */
+                if( j&1024 )
+                    for( int k = 0; k < 1024; k++ )
+                    {
+                        if( rd )
+                            cb[0].state[k] = rand()&127;
+                        else
+                            for( int t = rand()%48; t > 0; t-- )
+                                cb[0].state[k] = x264_cabac_transition[cb[0].state[k]][rand()&1];
+                    }
+                memcpy( cb[1].state, cb[0].state, 1024 );
+                x264_cabac_encode_init( &cb[0], bitstream[0], bitstream[0]+0xfff0 );
+                x264_cabac_encode_init( &cb[1], bitstream[1], bitstream[1]+0xfff0 );
+                cb[0].f8_bits_encoded = cb[1].f8_bits_encoded = 0;
+                if( !rd )
+                {
+                    memcpy( bitstream[1], bitstream[0], 0x400 );
+                    for( int k = (rand()&63) | (j&2)*12; k > 0; k-- )
+                    {
+                        int bit = -(rand()&1);
+                        x264_cabac_encode_bypass_c( &cb[0], bit );
+                        x264_cabac_encode_bypass_c( &cb[1], bit );
+                    }
+                    if( (j&2) && cb[0].p > cb[0].p_start )
+                    {
+                        cb[0].i_low = cb[1].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);
+                        for( int k = (j&1) * (8 + (rand()&31)); k > 0; k-- )
+                        {
+                            int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));
+                            x264_cabac_encode_bypass_c( &cb[0], bit );
+                            x264_cabac_encode_bypass_c( &cb[1], bit );
+                        }
+                    }
+                }
+                if( rd )
+                    call_c1( x264_cabac_block_residual_422_dc_rd_c, &h, &cb[0], DCT_CHROMA_DC, dct[0] );
+                else
+                    call_c1( x264_cabac_block_residual_422_dc_c, &h, &cb[0], DCT_CHROMA_DC, dct[0] );
+                call_a1( fa, dct[1], i, DCT_CHROMA_DC, &cb[1] );
+                ok = cb[0].f8_bits_encoded == cb[1].f8_bits_encoded && !memcmp( cb[0].state, cb[1].state, 1024 );
+                if( !rd )
+                {
+                    x264_cabac_t fl[2];
+                    ok &= x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) &&
+                          cb[0].i_range == cb[1].i_range && cb[0].i_queue == cb[1].i_queue;
+                    memcpy( &fl[0], &cb[0], sizeof(x264_cabac_t) );
+                    memcpy( &fl[1], &cb[1], sizeof(x264_cabac_t) );
+                    x264_cabac_encode_bypass_c( &fl[0], 0 );
+                    x264_cabac_encode_bypass_c( &fl[1], 0 );
+                    x264_cabac_encode_flush( &h, &fl[0] );
+                    x264_cabac_encode_flush( &h, &fl[1] );
+                    ok &= fl[0].p - bitstream[0] == fl[1].p - bitstream[1] &&
+                          !memcmp( bitstream[1], bitstream[0], fl[0].p - bitstream[0] );
+                }
+                if( !ok )
+                    fprintf( stderr, "%s :  [FAILED] mask %02x field %d\n", rd ? "cabac_block_residual_422_dc_rd" : "cabac_block_residual_422_dc", mask, i );
+                if( (j&255) == 0 )
+                {
+                    if( rd )
+                        call_c2( x264_cabac_block_residual_422_dc_rd_c, &h, &cb[0], DCT_CHROMA_DC, dct[0] );
+                    else
+                        call_c2( x264_cabac_block_residual_422_dc_c, &h, &cb[0], DCT_CHROMA_DC, dct[0] );
+                    call_a2( fa, dct[1], i, DCT_CHROMA_DC, &cb[1] );
+                }
+            }
+    }
+    h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
+    report( "cabac 4:2:2 dc :" );
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;
