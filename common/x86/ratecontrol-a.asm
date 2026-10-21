@@ -283,3 +283,67 @@ cglobal mbtree_finish, 8,9
     MBTREE_FINISH_ZMM 1
 .end:
     RET
+
+;-----------------------------------------------------------------------------
+; void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+;                        float *quant_offsets, float *params, int len )
+; params: strength, bias; inv_qscale and quant_offsets may be NULL
+;-----------------------------------------------------------------------------
+%macro AQ_VARIANCE_ZMM 1 ; tail
+%if %1
+    vmovdqu32   m0 {k2}{z}, [r3+r7*4]
+%else
+    vmovdqu32   m0, [r3+r7*4]
+%endif
+    vpmaxud     m0, m0, [rc_pd_1] {1to16}
+    LOG2_ZMM    m1, m0, m2, m3
+    vsubps      m1, m1, [r5+4] {1to16}       ; - bias
+    vmulps      m1, m1, [r5] {1to16}         ; * strength
+    test         r4, r4
+    jz %%no_offsets
+%if %1
+    vmovups     m2 {k2}{z}, [r4+r7*4]
+    vaddps      m1, m1, m2
+%else
+    vaddps      m1, m1, [r4+r7*4]
+%endif
+%%no_offsets:
+%if %1
+    vmovups     [r0+r7*4] {k2}, m1
+    vmovups     [r1+r7*4] {k2}, m1
+%else
+    vmovups     [r0+r7*4], m1
+    vmovups     [r1+r7*4], m1
+%endif
+    test         r2, r2
+    jz %%no_qscale
+    EXP2FIX8_ZMM m1, m2, m7
+%if %1
+    vpmovusdw   [r2+r7*2] {k2}, m1           ; 65536 -> 0xffff
+%else
+    vpmovusdw   [r2+r7*2], m1
+%endif
+%%no_qscale:
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal aq_variance_tail, 7,9
+    LOAD_LOG2_LUT
+    vmovdqu8    m7, [exp2_lut]
+    mov          r7, 0x1111111111111111
+    kmovq       k1, r7
+    xor         r7d, r7d
+    sub         r6d, 16
+    jl .tail
+.loop:
+    AQ_VARIANCE_ZMM 0
+    add         r7d, 16
+    sub         r6d, 16
+    jge .loop
+.tail:
+    add         r6d, 16
+    jz .end
+    TAIL_MASK   r6d, r8d
+    AQ_VARIANCE_ZMM 1
+.end:
+    RET
