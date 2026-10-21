@@ -7614,8 +7614,8 @@ SATD_AVG2_PRE_FUNCS
     pmulhrsw        m4, m9
     pmulhrsw       m%1, m9
     packuswb       m%1, m4
-    vpermq         m%2, m%1, q3232
-    vpermq         m%1, m%1, q1010
+    vperm2i128     m%2, m%1, m%1, 0x11
+    vinserti128    m%1, m%1, xm%1, 1
     pmaddubsw      m%1, m7
     pmaddubsw      m%2, m7
     psubw          m%1, [r0+(bi_fr+%3)*32]
