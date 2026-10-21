@@ -68,6 +68,13 @@ sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
 dbp_idx4:      dd 0, 0, 4, 4, 0, 0, 4, 4
 dbp_hex_bperm: dd 5, 0, 4, 6, 1, 3, 2, 6
+; dir 0-5: dy, dx - j of me.c hex2[dir+j]
+dbp_hh_tab:    db -2,-1,  0,-3,  2,-3
+               db  0,-2,  2,-2,  2,-1
+               db  2,-1,  2, 0,  0, 0
+               db  2, 1,  0, 1, -2,-1
+               db  0, 2, -2, 0, -2,-3
+               db -2, 1, -2,-2,  0,-4
 
 SECTION .text
 
@@ -2655,6 +2662,75 @@ SAD_HEX_MIN 8, 8
 SAD_HEX_MIN 8, 4
 SAD_HEX_MIN 4, 8
 SAD_HEX_MIN 4, 4
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_hexhalf_min_WxH( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                                int dir, const int32_t bias[3], int best )
+; candidates me.c hex2[dir..dir+2], dir 0..5, s = 6: a window each, dy and
+; bx = dx - j from dbp_hh_tab, word j. Word 3 is 0, its bias best.
+;-----------------------------------------------------------------------------
+%macro SAD_HEXHALF_MIN 2 ; width, height
+cglobal pixel_sad_hexhalf_min_%1x%2, 6,11,10
+    %define dbp_o  r6
+    %define dbp_o1 r7
+    %define dbp_p0 r8
+    %define dbp_p1 r9
+    %define dbp_p2 r10
+    movsxdifnidn    r3, r3d
+    lea             r6, [r3*3]
+    lea             r7, [dbp_hh_tab]
+    lea             r7, [r7+r6*2]
+    movsx       dbp_p0, byte [r7+0]
+    movsx       dbp_p1, byte [r7+2]
+    movsx       dbp_p2, byte [r7+4]
+    imul        dbp_p0, r2
+    imul        dbp_p1, r2
+    imul        dbp_p2, r2
+    movsx           r3, byte [r7+1]
+    movsx           r6, byte [r7+3]
+    add         dbp_p0, r1
+    add         dbp_p1, r1
+    add         dbp_p0, r3
+    add         dbp_p1, r6
+    movsx           r3, byte [r7+5]
+    add         dbp_p2, r1
+    add         dbp_p2, r3
+    mov            r6d, 0x1111
+    kmovw           k1, r6d
+    mov            r6d, 0x2222
+    kmovw           k2, r6d
+    mov            r6d, 0x4444
+    kmovw           k3, r6d
+    mov            r6d, 0x7
+    kmovw           k4, r6d
+    mov            r6d, 0x8
+    kmovw           k5, r6d
+    DBP_INIT %1
+    vmovdqu32      xm8 {k4}{z}, [r4]
+    vpbroadcastd   xm8 {k5}, r5d
+    DBP_ROWS %1, %2, 3
+%if %1 == 4
+    paddw          xm0, xm1
+    paddw          xm0, xm2
+%else
+    paddw           m0, m1
+    paddw           m0, m2
+%endif
+    DBP_FOLD1 %1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 6
+    paddd          xm0, xm8
+    DBP_MIN4
+    RET
+%endmacro
+
+SAD_HEXHALF_MIN 16, 16
+SAD_HEXHALF_MIN 16, 8
+SAD_HEXHALF_MIN 8, 16
+SAD_HEXHALF_MIN 8, 8
+SAD_HEXHALF_MIN 8, 4
+SAD_HEXHALF_MIN 4, 8
+SAD_HEXHALF_MIN 4, 4
 
 INIT_YMM avx2
 %endif ; ARCH_X86_64

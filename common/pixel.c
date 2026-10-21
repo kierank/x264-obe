@@ -1768,6 +1768,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
         pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_8x8_avx512;
         pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_8x8_avx512;
+        pixf->sad_hexhalf_min[PIXEL_8x8] = x264_pixel_sad_hexhalf_min_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX
