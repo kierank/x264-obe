@@ -1336,6 +1336,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx512;
         pixf->intra_sad_x3_8x8c  = x264_intra_sad_x3_8x8c_avx512;
         pixf->intra_sad_x3_8x16c = x264_intra_sad_x3_8x16c_avx512;
+        pixf->predictor_clip = x264_predictor_clip_avx512;
+        pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )
@@ -1785,6 +1787,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
+        pixf->predictor_clip = x264_predictor_clip_avx512;
+        pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #endif
     }
 #endif //HAVE_MMX

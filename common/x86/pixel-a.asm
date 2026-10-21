@@ -11740,3 +11740,62 @@ INIT_YMM avx512icl
 SSD_PSY_MB 420,  8
 SSD_PSY_MB 422, 16
 %endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; int predictor_clip( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc,
+;                     int16_t mv_limit[2][2], uint32_t pmv )
+; int predictor_roundclip( ... ): the mvs rounded to fullpel first
+;
+; x264_predictor_clip/roundclip without the duplicates: lane 0 is pmv, lanes
+; 1..i_mvc the mvs (i_mvc <= 15). A lane is kept if its mv isn't 0 or pmv
+; before the clip and vpconflictd finds no earlier kept lane (pmv included)
+; with its clipped mv. The kept lanes but pmv's, compacted: 16 dwords stored.
+; The limits << 2 must fit in int16, as in x264_predictor_clip_mmx2.
+;-----------------------------------------------------------------------------
+%macro PREDICTOR_CLIP 1 ; round
+%if %1
+cglobal predictor_roundclip, 5,6,4
+%else
+cglobal predictor_clip, 5,6,4
+%endif
+    mov           r5d, 2
+    shlx          r5d, r5d, r2d
+    sub           r5d, 2
+    kmovw          k1, r5d
+    vmovdqu32      m0 {k1}{z}, [r1-4]
+%if %1
+    vpternlogd     m3, m3, m3, 0xff
+    psraw          m0, 1
+    psubw          m0, m3
+    psraw          m0, 1           ; (mv + 2) >> 2 without the int16 overflow
+%endif
+    vpbroadcastd   m1, r4d
+    vptestmd       k2 {k1}, m0, m0
+    vpcmpd         k2 {k2}, m0, m1, 4
+    vpbroadcastd   m2, [r3]
+    vpbroadcastd   m3, [r3+4]
+%if %1 == 0
+    psllw          m2, 2
+    psllw          m3, 2
+%endif
+    pmaxsw         m0, m2
+    pminsw         m0, m3
+    mov           r5d, 1
+    kmovw          k3, r5d
+    vmovdqa32      m0 {k3}, m1
+    korw           k2, k2, k3
+    vpconflictd    m2, m0
+    kmovw         r5d, k2
+    vpbroadcastd   m3, r5d
+    vptestnmd      k2 {k2}, m2, m3
+    kandnw         k2, k3, k2
+    vpcompressd    m0 {k2}{z}, m0
+    movu         [r0], m0
+    kmovw         eax, k2
+    popcnt        eax, eax
+    RET
+%endmacro
+
+INIT_ZMM avx512
+PREDICTOR_CLIP 0
+PREDICTOR_CLIP 1
