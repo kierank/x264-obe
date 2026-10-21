@@ -2563,7 +2563,7 @@ ALIGN 4
 %macro MC_CHROMA_SSSE3 0
 cglobal mc_chroma
 %if cpuflag(avx2)
-    MC_CHROMA_START 9
+    MC_CHROMA_START 9+ARCH_X86_64
 %else
     MC_CHROMA_START 10
 %endif
@@ -2607,6 +2607,9 @@ cglobal mc_chroma
 %if ARCH_X86_64
     %define shiftround m8
     mova       m8, [pw_512]
+%if cpuflag(avx2)
+    mova       m9, [deinterleave_shufd]
+%endif
 %else
     %define shiftround [pw_512]
 %endif
@@ -2617,7 +2620,7 @@ cglobal mc_chroma
 .loop4:
     movu      xm0, [r3]
     movu      xm1, [r3+r4]
-    vinserti128 m0, m0, [r3+r4], 1
+    vinserti128 m0, m0, xm1, 1
     vinserti128 m1, m1, [r3+r4*2], 1
     pshufb     m0, m5
     pshufb     m1, m5
@@ -2661,8 +2664,12 @@ cglobal mc_chroma
     pmulhrsw   m1, shiftround
     pmulhrsw   m3, shiftround
     packuswb   m1, m3
+%if ARCH_X86_64
+    vpermd     m1, m9, m1
+%else
     mova       m2, [deinterleave_shufd]
     vpermd     m1, m2, m1
+%endif
     vextracti128 xm2, m1, 1
     movq      [r0], xm1
     movhps    [r1], xm1
