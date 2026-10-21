@@ -2837,7 +2837,9 @@ cglobal zigzag_sub_4x4%1_%2, 3,5
 
 INIT_ZMM avx512icl
 ZIGZAG_SUB_4x4_HBD_ICL   , frame
+ZIGZAG_SUB_4x4_HBD_ICL ac, frame
 ZIGZAG_SUB_4x4_HBD_ICL   , field
+ZIGZAG_SUB_4x4_HBD_ICL ac, field
 %endif ; HIGH_BIT_DEPTH
 
 %if HIGH_BIT_DEPTH == 0
