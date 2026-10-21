@@ -723,7 +723,16 @@ MC_WEIGHT_WTAB(weight,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(weight_ns,avx2,avx2,avx2,12)
 MC_WEIGHT_WTAB(offsetadd,avx2,avx2,avx2,16)
 MC_WEIGHT_WTAB(offsetsub,avx2,avx2,sse2,16)
-MC_WEIGHT_WTAB(weight,avx512,avx2,avx2,12)
+/* zen4 prune: weight_w12 avx512 1.648x avx2 on rack01 Zen 4; kept assembled */
+static weight_fn_t x264_mc_weight_wtab_avx512[6] =
+{
+    x264_mc_weight_w4_avx2,
+    x264_mc_weight_w4_avx2,
+    x264_mc_weight_w8_avx2,
+    x264_mc_weight_w12_avx2,
+    x264_mc_weight_w16_avx512,
+    x264_mc_weight_w20_avx512,
+};
 static weight_fn_t x264_mc_weight_ns_wtab_avx512[6] =
 {
     x264_mc_weight_ns_w4_avx2,
@@ -1632,7 +1641,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 
     if( !(cpu&X264_CPU_AVX512) )
         return;
-    pf->memcpy_aligned = x264_memcpy_aligned_avx512;
+    /* zen4 prune: memcpy_aligned avx512 8-bit 1.103x avx, 10-bit neutral (>= 1.000) on rack01 Zen 4; kept assembled */
     pf->memzero_aligned = x264_memzero_aligned_avx512;
     pf->plane_copy = x264_plane_copy_avx512;
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
