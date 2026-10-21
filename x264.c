@@ -823,7 +823,9 @@ static void help( x264_param_t *defaults, int longhelp )
     H2( "      --me-8bit <integer>     Fullpel motion search on 8-bit copies of the frames\n"
         "                              (high bit depth only; changes output) [%d]\n"
         "                                  - 0: off\n"
-        "                                  - 1: fullpel search on the 8-bit msb planes\n", defaults->analyse.i_me_8bit );
+        "                                  - 1: fullpel search on the 8-bit msb planes\n"
+        "                                  - 3: as 1, the final hex square refine at\n"
+        "                                       high bit depth\n", defaults->analyse.i_me_8bit );
     H1( "      --psy-rd <float:float>  Strength of psychovisual optimization [\"%.1f:%.1f\"]\n"
         "                                  #1: RD (requires subme>=6)\n"
         "                                  #2: Trellis (requires trellis, experimental)\n",

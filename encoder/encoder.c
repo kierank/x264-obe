@@ -1783,9 +1783,12 @@ x264_t *x264_encoder_open( x264_param_t *param )
 #endif
     if( h->param.analyse.i_me_8bit > 0 && me8_off )
         x264_log( h, X264_LOG_WARNING, "--me-8bit %d is off with %s\n", h->param.analyse.i_me_8bit, me8_off );
-    else if( h->param.analyse.i_me_8bit > 1 )
+    else if( h->param.analyse.i_me_8bit == 2 || h->param.analyse.i_me_8bit > 3 )
+    {
         x264_log( h, X264_LOG_WARNING, "--me-8bit %d is not supported, using 1\n", h->param.analyse.i_me_8bit );
-    h->param.analyse.i_me_8bit = me8_off ? 0 : x264_clip3( h->param.analyse.i_me_8bit, 0, 1 );
+        h->param.analyse.i_me_8bit = 1;
+    }
+    h->param.analyse.i_me_8bit = me8_off ? 0 : X264_MAX( h->param.analyse.i_me_8bit, 0 );
 
     h->frames.i_last_idr =
     h->frames.i_last_keyframe = - h->param.i_keyint_max;

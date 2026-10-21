@@ -81,16 +81,22 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * planes (m->p_fref8, m->p_fenc8) */
 #define x264_me_search_ref_me8 x264_template(me_search_ref_me8)
 void x264_me_search_ref_me8( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
+/* --me-8bit 3: x264_me_search_ref_me8 with the hex square refine on the 16-bit planes */
+#define x264_me_search_ref_me8x x264_template(me_search_ref_me8x)
+void x264_me_search_ref_me8x( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
 #endif
 
-/* the macroblock analysis' searches: with h->me8 x264_me_search_ref_me8 where
+/* the macroblock analysis' searches: with h->me8 x264_me_search_ref_me8(x) where
  * it applies, unweighted refs with DIA, HEX or UMH, else x264_me_search_ref */
 static ALWAYS_INLINE void x264_mb_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh )
 {
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     if( h->me8 && !m->weight[0].weightfn && h->mb.i_me_method <= X264_ME_UMH )
     {
-        x264_me_search_ref_me8( h, m, mvc, i_mvc, p_fullpel_thresh );
+        if( h->param.analyse.i_me_8bit == 3 )
+            x264_me_search_ref_me8x( h, m, mvc, i_mvc, p_fullpel_thresh );
+        else
+            x264_me_search_ref_me8( h, m, mvc, i_mvc, p_fullpel_thresh );
         return;
     }
 #endif

@@ -361,8 +361,9 @@ do\
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
 #if ME8_BUILD
+/* b8x (with b8i): --me-8bit 3, the hex square refine on the 16-bit planes */
 static ALWAYS_INLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh,
-                                         const int b8 )
+                                         const int b8i, const int b8x )
 #else
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 #endif
@@ -385,7 +386,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
     x264_pixel_cmp_sq_min_t cmp_sq_min = h->pixf.fpelcmp_sq_min[i_pixel];
 #if ME8_BUILD
-    /* b8: the fullpel steps' planes and cmps (see ME8_SEL); unused at b8 0 */
+    /* b8: the fullpel steps' planes and cmps (see ME8_SEL); unused at b8 0.
+     * b8 is the instance's b8i, but for b8x's square refine (b8 0). */
+    int b8 = b8i;
     const x264_me8_func_t *pf8 = b8 ? h->me8 : NULL;
     uint8_t *p_fenc8 = b8 ? m->p_fenc8 : NULL;
     uint8_t *p_fref8 = b8 ? m->p_fref8 : NULL;
@@ -590,6 +593,17 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             bcost >>= ME_PACK;
     #endif
             /* square refine */
+#if ME8_BUILD
+            if( b8x )
+            {
+                /* on the 16-bit planes, from bmv's cost as the end of the search
+                 * rescores it; that rescore is then skipped (b8 0) */
+                b8 = 0;
+                bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride );
+                if( h->mb.i_subpel_refine >= 3 || pack16to32_mask( bmx, bmy ) != pmv )
+                    bcost += BITS_MVD( bmx, bmy );
+            }
+#endif
             bcost <<= ME_PACK;
             if( ME8_SEL( !!cmp8_sq_min, !!cmp_sq_min ) )
             {
@@ -1043,13 +1057,18 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #if ME8_BUILD
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
-    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 0 );
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 0, 0 );
 }
 
 /* unweighted refs with DIA, HEX or UMH only (x264_mb_search_ref) */
 void x264_me_search_ref_me8( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
-    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 1 );
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 1, 0 );
+}
+
+void x264_me_search_ref_me8x( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+{
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh, 1, 1 );
 }
 #endif
 
