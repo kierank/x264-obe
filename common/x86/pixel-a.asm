@@ -392,7 +392,10 @@ x4c_p_wc16:   times 2 db -4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 x4_p_w16:     times 2 db -7,-6,-5,-4,-3,-2,-1, 0, 1, 2, 3, 4, 5, 6, 7, 8
 x4_p_wc:      times 2 db -8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 x4c_p_wa:     times 2 db  0, 0, 0, 0, 0, 0, 0,16, 0, 0, 0, 0, 0, 0, 0,16
+x4l_p_wa:     times 2 db  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,16
 x4c_p_bc16:   times 4 dw 17408, 17408, 2560, 2560 ; pmulhrsw: (17*H+16)>>5, (5*V+32)>>6
+pw_2560:      times 16 dw 2560
+x4l_p_x:      dw -7,-6,-5,-4,-3,-2,-1, 0, 1, 2, 3, 4, 5, 6, 7, 8
 x4_m3:        times 16 dw -3
 x4_m7:        times 16 dw -7
 x4_w0:        times 16 db 0, 1
@@ -7988,6 +7991,7 @@ cglobal intra_satd_x3_8x8c, 3,7,16
 ;-----------------------------------------------------------------------------
 ; void intra_satd_x4_8x8c( uint8_t *fenc, uint8_t *fdec, int res[4] )  (DC, H, V, P)
 ; void intra_satd_x4_8x16c( uint8_t *fenc, uint8_t *fdec, int res[4] )
+; void intra_satd_x4_16x16( uint8_t *fenc, uint8_t *fdec, int res[4] ) (V, H, DC, P)
 ; chroma: a fenc row is u | v, so one register holds a row of both planes in the
 ; 16 wide layout of satd_16x8, and each mode's u and v satds are one sum. Edge
 ; vectors hold u in lane 0, v in lane 1. fenc's first stage is stored, then the
@@ -8245,9 +8249,114 @@ cglobal intra_satd_x4_8x%1c, 3,4,16, %1*32
     X4_END          9, 12, 13, 6
 %endmacro
 
+%macro INTRA_SATD_X4_L8 0
+cglobal intra_satd_x4_16x16, 3,4,16, 16*32
+%if cpuflag(avx512icl)
+    mov           r3d, 0x5555
+    kmovd          k1, r3d
+%endif
+    mova           m7, [hmul_16p]
+    X4_FENC        16
+    X4_LEFT8       12, 0, 1, 2, 0, 8*FDEC_STRIDE ; lanes: l0-l7 | l8-l15 in bytes 8-15
+    vpermq        m12, m12, q3131         ; l0-l15 in both lanes
+    movu          m13, [r1-FDEC_STRIDE-16] ; corner in byte 15 | t0-t15
+%if cpuflag(avx512)
+    vshufi32x4    m14, m13, m12, 1
+%else
+    vperm2i128    m14, m13, m12, 0x21     ; t0-t15 | l0-l15
+%endif
+
+    ; DC = (sum of top + sum of left + 16) >> 5
+    pxor           m0, m0
+    psadbw         m1, m14, m0
+    pshufd         m2, m1, q1032
+    paddw          m1, m2
+    vpermq         m2, m1, q1032
+    paddw          m1, m2
+    paddw          m1, [pw_16]
+    psrlw          m1, 5
+    vpbroadcastb   m8, xm1
+    pmaddubsw      m8, m7
+
+    ; P: H = sum i*(t[7+i]-t[7-i]), i = 1..8, V likewise, t[-1] = l[-1] = the corner
+    vpbroadcastb   m1, [r1-FDEC_STRIDE-1]
+    pxor           m0, m0
+    X4_DOT          0, 14, [x4_p_w16], 3
+    X4_DOT          0, 1, [x4_p_wc], 3
+%if notcpuflag(avx512icl)
+    pmaddwd        m0, [pw_1]
+%endif
+    pshufd         m1, m0, q1032
+    paddd          m0, m1
+    pshufd         m1, m0, q2301
+    paddd          m0, m1                 ; H | V
+    packssdw       m0, m0
+    pmulhrsw       m0, [pw_2560]          ; b | c: (5*H+32)>>6, (5*V+32)>>6
+    vpermq         m9, m0, q0000          ; b
+    vpermq        m10, m0, q2222          ; c
+    pmaddubsw      m1, m14, [x4l_p_wa]    ; 16*t15 | 16*l15 in word 7
+    pshufb         m1, [x4_w7]
+    vpermq         m0, m1, q1032
+    paddw          m0, m1
+    paddw          m0, [pw_16]            ; a + 16
+    pmullw         m1, m9, [x4l_p_x]      ; b*(x-7), x 0-7 | 8-15
+    paddw          m0, m1
+    pmullw         m1, m10, [x4_m7]
+    paddw         m11, m0, m1             ; row 0
+
+    ; V
+    vbroadcasti128 m12, [r1-FDEC_STRIDE]
+    pmaddubsw     m12, m7
+%assign x4g 0
+%rep 4
+%if x4g
+    X4_PASS1       12, 4*x4g, add
+%else
+    X4_PASS1       12, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+    SWAP            6, 12
+    ; H
+%assign x4g 0
+%rep 4
+%assign x4i 0
+%rep 4
+    vpbroadcastb   m %+ x4i, [r1+(4*x4g+x4i)*FDEC_STRIDE-1]
+    pmaddubsw      m %+ x4i, m7
+%assign x4i x4i+1
+%endrep
+%if x4g
+    X4_PASS     4*x4g, add
+%else
+    X4_PASS     4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+    SWAP            6, 13
+    ; DC
+%assign x4g 0
+%rep 4
+%if x4g
+    X4_PASS1        8, 4*x4g, add
+%else
+    X4_PASS1        8, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_X3_FOLD   6
+    SWAP            6, 8
+    ; P
+    X4_P_MODE      16
+    X4_END         12, 13, 8, 6
+%endmacro
+
 %macro INTRA_SATD_X4_8BIT 0
 INTRA_SATD_X4_C8 8
 INTRA_SATD_X4_C8 16
+INTRA_SATD_X4_L8
 %endmacro
 
 INTRA_SATD_X3_8BIT
