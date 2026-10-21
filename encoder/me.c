@@ -265,6 +265,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     x264_pixel_cmp_x3_min_t cmp_x3_min = h->pixf.fpelcmp_x3_min[i_pixel];
     x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
     x264_pixel_cmp_sq_min_t cmp_sq_min = h->pixf.fpelcmp_sq_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_dia_min = h->pixf.fpelcmp_dia_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_hex_min = h->pixf.fpelcmp_hex_min[i_pixel];
+    x264_pixel_cmp_hexhalf_min_t cmp_hexhalf_min = h->pixf.fpelcmp_hexhalf_min[i_pixel];
+    ALIGNED_ARRAY_16( int32_t, pt_bias,[8] );
 
     int mv_x_min = h->mb.mv_limit_fpel[0][0];
     int mv_y_min = h->mb.mv_limit_fpel[0][1];
@@ -396,11 +400,23 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             int i = i_me_range;
             do
             {
-                COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
-                COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
-                COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
-                COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
-                COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
+                if( cmp_dia_min )
+                {
+                    /* the same packed costs; the min doesn't depend on the order */
+                    pt_bias[0] = (BITS_MVD( bmx, bmy-1 ) << 4) + 1;
+                    pt_bias[1] = (BITS_MVD( bmx, bmy+1 ) << 4) + 3;
+                    pt_bias[2] = (BITS_MVD( bmx-1, bmy ) << 4) + 4;
+                    pt_bias[3] = (BITS_MVD( bmx+1, bmy ) << 4) + 12;
+                    bcost = cmp_dia_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+                }
+                else
+                {
+                    COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
+                    COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
+                    COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
+                    COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
+                    COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
+                }
                 if( !(bcost&15) )
                     break;
                 bmx -= (bcost<<28)>>30;
@@ -435,8 +451,18 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
             /* hexagon */
             bcost <<= 6;
-            COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
-            COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+            if( cmp_hex_min )
+            {
+                /* hex2[1..6], idx 2..7, as below */
+                for( int j = 0; j < 6; j++ )
+                    pt_bias[j] = (BITS_MVD( bmx+hex2[j+1][0], bmy+hex2[j+1][1] ) << 6) + j+2;
+                bcost = cmp_hex_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+            }
+            else
+            {
+                COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
+                COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+            }
 
             if( bcost&63 )
             {
@@ -448,9 +474,17 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
                 {
                     bcost &= ~63;
-                    COST_MV_X3_DIR_MIN( hex2[dir+0][0], hex2[dir+0][1],
-                                        hex2[dir+1][0], hex2[dir+1][1],
-                                        hex2[dir+2][0], hex2[dir+2][1], 1 );
+                    if( cmp_hexhalf_min )
+                    {
+                        /* hex2[dir..dir+2], idx 1..3, as below */
+                        for( int j = 0; j < 3; j++ )
+                            pt_bias[j] = (BITS_MVD( bmx+hex2[dir+j][0], bmy+hex2[dir+j][1] ) << 6) + j+1;
+                        bcost = cmp_hexhalf_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, dir, pt_bias, bcost );
+                    }
+                    else
+                        COST_MV_X3_DIR_MIN( hex2[dir+0][0], hex2[dir+0][1],
+                                            hex2[dir+1][0], hex2[dir+1][1],
+                                            hex2[dir+2][0], hex2[dir+2][1], 1 );
                     if( !(bcost&63) )
                         break;
                     dir += (bcost&63)-2;
