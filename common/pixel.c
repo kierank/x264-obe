@@ -1719,6 +1719,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
 #endif
     }
+    /* vdbpsadbw (AVX512BW) on ymm0-15 with vzeroupper, so no zmm16-31 state;
+     * the exception to the note above */
+    if( cpu&X264_CPU_AVX512 )
+    {
+#if ARCH_X86_64
+        pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
+#endif
+    }
 #endif //HAVE_MMX
 
 #if HAVE_ARMV6
