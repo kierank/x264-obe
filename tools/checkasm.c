@@ -4415,10 +4415,15 @@ static int check_quant( int cpu_ref, int cpu_new )
         int num_coefs = v == 1 || v == 3 ? 64 : v == 5 ? 4 : v == 6 ? 8 : 16;
         int dc = v >= 4;
         int psy = v == 2 || v == 3;
-        /* same blocks at every cpu level, so the bench compares like with like */
+        /* same check blocks at every cpu level */
         srand( bench_seed * 7919 + v );
-        for( int it = 0; it < 8000; it++ )
+        for( int pass = 0; pass < 1 + do_bench && ok; pass++ )
+        for( int it = 0; it < (pass ? 32 : 8000); it++ )
         {
+            /* pass 1, bench: blocks 0-31 (kind 0, every mode, frame/field, ac) from the private generator */
+            int (*trand)( void ) = pass ? bench_rand : rand;
+            if( pass && !it )
+                bench_srand( 300 + v );
             ALIGNED_ARRAY_64( dctcoef, tdct, [3],[64] );
             ALIGNED_ARRAY_64( dctcoef, torig, [80] );
             ALIGNED_ARRAY_64( dctcoef, tfenc, [80] );
@@ -4435,85 +4440,85 @@ static int check_quant( int cpu_ref, int cpu_new )
             int b_ac = (v == 0 || v == 2) ? (it>>4)&1 : 0;
             const uint8_t *zigzag = num_coefs == 64 ? x264_zigzag_scan8[b_field] : num_coefs == 16 ? x264_zigzag_scan4[b_field] :
                                     num_coefs == 8 ? zz2x4 : zz2x2;
-            int lambda2 = x264_trellis_lambda2_tab[rand()&1][rand()%(QP_MAX+1)];
-            int psy_trellis = psy ? 1 + rand()%512 : 0;
+            int lambda2 = x264_trellis_lambda2_tab[trand()&1][trand()%(QP_MAX+1)];
+            int psy_trellis = psy ? 1 + trand()%512 : 0;
             int coef_max = (1 << (BIT_DEPTH+7)) - 1;
-            int unq_base = (16 + rand()%240) << (rand()%13);
-            int kmax = mode == 5 ? rand()%6 : num_coefs-1;
+            int unq_base = (16 + trand()%240) << (trand()%13);
+            int kmax = mode == 5 ? trand()%6 : num_coefs-1;
             int last_nnz = -1;
             for( int k = 0; k < 48; k++ )
-                tstate[k] = kind == 2 ? (rand()&1 ? 0 : 62 + (rand()&1)) : rand()&127;
+                tstate[k] = kind == 2 ? (trand()&1 ? 0 : 62 + (trand()&1)) : trand()&127;
             for( int k = 0; k < 64; k++ )
             {
-                tunquant[k] = kind == 2 ? 256 << (rand()%5) : unq_base * (16 + (rand()&15)) >> 4;
+                tunquant[k] = kind == 2 ? 256 << (trand()%5) : unq_base * (16 + (trand()&15)) >> 4;
                 tdct[0][k] = 0;
                 /* past num_coefs: junk, as in rdo.c */
-                tquant[k] = rand() - RAND_MAX/2;
+                tquant[k] = trand() - RAND_MAX/2;
             }
             if( kind == 2 )
-                lambda2 = rand()&3;
+                lambda2 = trand()&3;
             if( kind == 1 )
-                lambda2 = x264_trellis_lambda2_tab[1][QP_MAX/2 + rand()%(QP_MAX/2)];
+                lambda2 = x264_trellis_lambda2_tab[1][QP_MAX/2 + trand()%(QP_MAX/2)];
             for( int k = 0; k < 80; k++ )
             {
-                torig[k] = (rand()&0x3ff) - 0x200;
-                tfenc[k] = (rand()&0x3fff) - 0x2000;
+                torig[k] = (trand()&0x3ff) - 0x200;
+                tfenc[k] = (trand()&0x3fff) - 0x2000;
             }
             for( int i = 0; i < num_coefs; i++ )
             {
                 int pos = zigzag[i];
                 int unq = dc ? tunquant[0]<<1 : tunquant[pos];
                 int step = X264_MAX( unq>>8, 1 );
-                int rnd = rand();
+                int rnd = trand();
                 int level;
                 if( kind == 1 )
-                    level = (rand()%4) == 0 && i > num_coefs-12 ? 2 : (it&8) && (rand()%8) == 0 ? 2 : 1;
+                    level = (trand()%4) == 0 && i > num_coefs-12 ? 2 : (it&8) && (trand()%8) == 0 ? 2 : 1;
                 else if( i > kmax )
                     level = 0;
                 else if( mode == 1 )
-                    level = (rnd&7) ? 1 + (rand()&1) + !(rand()&3) : 0;
+                    level = (rnd&7) ? 1 + (trand()&1) + !(trand()&3) : 0;
                 else if( mode == 2 )
-                    level = (rnd&7) ? 0 : 1 + !(rand()&3);
+                    level = (rnd&7) ? 0 : 1 + !(trand()&3);
                 else if( mode == 3 )
-                    level = (rnd&3) ? 0 : !(rand()&3) ? 1 : (rand()&1) ? 15 + rand()%40 : 1 + rand()%2000;
+                    level = (rnd&3) ? 0 : !(trand()&3) ? 1 : (trand()&1) ? 15 + trand()%40 : 1 + trand()%2000;
                 else if( mode == 4 )
                     level = (rnd&3) ? 1 : 0;
                 else if( mode == 6 )
-                    level = (rnd&1) ? 0 : 1 + rand()%20;
+                    level = (rnd&1) ? 0 : 1 + trand()%20;
                 else if( mode == 7 )
-                    level = (rnd&1) ? 1 + (rand()&3) : 0;
+                    level = (rnd&1) ? 1 + (trand()&3) : 0;
                 else
-                    level = (rand()%(num_coefs+4)) < num_coefs-i ? 1 + !(rand()&3) + !(rand()&15)*(rand()&7) : 0;
+                    level = (trand()%(num_coefs+4)) < num_coefs-i ? 1 + !(trand()&3) + !(trand()&15)*(trand()&7) : 0;
                 /* the asm keeps unquant*level in 32 bits and the squared error in 32 bits */
                 while( level > 1 && ((int64_t)unq*level >= (1<<30) || (int64_t)step*level >= coef_max) )
                     level >>= 1;
-                int sign = (rand()&1) ? -1 : 1;
+                int sign = (trand()&1) ? -1 : 1;
                 int abs_coef;
                 if( kind == 2 && level )
-                    abs_coef = (rand()&1) ? ((unq*(2*level-1) + 256) >> 9) : (unq*(level-(rand()&1)) + 128) >> 8;
+                    abs_coef = (trand()&1) ? ((unq*(2*level-1) + 256) >> 9) : (unq*(level-(trand()&1)) + 128) >> 8;
                 else if( kind == 1 )
                     abs_coef = X264_MAX( (unq*level + 128) >> 8, 1 );
                 else
-                    abs_coef = level ? ((unq*level + 128) >> 8) + rand()%(step+1) - step/2 : rand()%((step>>1)+1);
+                    abs_coef = level ? ((unq*level + 128) >> 8) + trand()%(step+1) - step/2 : trand()%((step>>1)+1);
                 abs_coef = x264_clip3( abs_coef, 0, coef_max );
                 /* quant never makes a level from a zero coef, and keeps its sign */
                 if( level && !abs_coef )
                     abs_coef = 1;
                 torig[8+pos] = sign*abs_coef;
-                tfenc[8+pos] = torig[8+pos] + (rand()&0x3ff) - 0x200;
+                tfenc[8+pos] = torig[8+pos] + (trand()&0x3ff) - 0x200;
                 tquant[i] = sign*level;
                 tdct[0][pos] = sign*level;
                 if( level && i >= b_ac )
                     last_nnz = i;
             }
-            if( !kind && b_ac && (rand()&1) )
-                tdct[0][zigzag[0]] = tquant[0] = 1 + (rand()&3);
+            if( !kind && b_ac && (trand()&1) )
+                tdct[0][zigzag[0]] = tquant[0] = 1 + (trand()&3);
             int min_nnz = dc ? 0 : X264_MAX( b_ac, 1 );
             if( last_nnz < min_nnz )
             {
-                last_nnz = min_nnz + rand()%(num_coefs-min_nnz);
+                last_nnz = min_nnz + trand()%(num_coefs-min_nnz);
                 int pos = zigzag[last_nnz];
-                int sign = (rand()&1) ? 1 : -1;
+                int sign = (trand()&1) ? 1 : -1;
                 tdct[0][pos] = tquant[last_nnz] = sign;
                 torig[8+pos] = sign * X264_MAX( ((dc ? tunquant[0]<<1 : tunquant[pos]) + 128) >> 8, 1 );
             }
@@ -4524,6 +4529,23 @@ static int check_quant( int cpu_ref, int cpu_new )
             memcpy( tdct[1], tdct[0], sizeof(tdct[0]) );
             memcpy( tdct[2], tdct[0], sizeof(tdct[0]) );
 #define TRELLIS_ARGS_T(d) tunquant, zigzag, lambda2, last_nnz, torig+8, tquant, d, tstate, tstate+16, ls0, ls1
+            if( pass )
+            {
+                /* no C row: trellis_ref takes 17 args, x264_checkasm_call passes 15 */
+                if( v == 0 )
+                    call_a2( qf_a.trellis_cabac_4x4, TRELLIS_ARGS_T(tdct[2]), b_ac );
+                else if( v == 1 )
+                    call_a2( qf_a.trellis_cabac_8x8, TRELLIS_ARGS_T(tdct[2]), b_field );
+                else if( v == 2 )
+                    call_a2( qf_a.trellis_cabac_4x4_psy, TRELLIS_ARGS_T(tdct[2]), b_ac, tfenc+8, psy_trellis );
+                else if( v == 3 )
+                    call_a2( qf_a.trellis_cabac_8x8_psy, TRELLIS_ARGS_T(tdct[2]), b_field, tfenc+8, psy_trellis );
+                else if( v <= 5 )
+                    call_a2( qf_a.trellis_cabac_dc, TRELLIS_ARGS_T(tdct[2]), num_coefs-1 );
+                else
+                    call_a2( qf_a.trellis_cabac_chroma_422_dc, TRELLIS_ARGS_T(tdct[2]) );
+                continue;
+            }
             int res_c = trellis_ref( TRELLIS_ARGS_T(tdct[1]), num_coefs, dc, b_ac, b_field, tfenc+8, psy_trellis );
             int res_a;
             if( v == 0 )
@@ -4544,22 +4566,6 @@ static int check_quant( int cpu_ref, int cpu_new )
                 fprintf( stderr, "%s: [FAILED] kind %d mode %d last_nnz %d b_ac %d field %d: %d != %d\n",
                          names[v], kind, mode, last_nnz, b_ac, b_field, res_c, res_a );
                 break;
-            }
-            if( it == 4000-8 )
-            {
-                call_c2( trellis_ref, TRELLIS_ARGS_T(tdct[1]), num_coefs, dc, b_ac, b_field, tfenc+8, psy_trellis );
-                if( v == 0 )
-                    call_a2( qf_a.trellis_cabac_4x4, TRELLIS_ARGS_T(tdct[2]), b_ac );
-                else if( v == 1 )
-                    call_a2( qf_a.trellis_cabac_8x8, TRELLIS_ARGS_T(tdct[2]), b_field );
-                else if( v == 2 )
-                    call_a2( qf_a.trellis_cabac_4x4_psy, TRELLIS_ARGS_T(tdct[2]), b_ac, tfenc+8, psy_trellis );
-                else if( v == 3 )
-                    call_a2( qf_a.trellis_cabac_8x8_psy, TRELLIS_ARGS_T(tdct[2]), b_field, tfenc+8, psy_trellis );
-                else if( v <= 5 )
-                    call_a2( qf_a.trellis_cabac_dc, TRELLIS_ARGS_T(tdct[2]), num_coefs-1 );
-                else
-                    call_a2( qf_a.trellis_cabac_chroma_422_dc, TRELLIS_ARGS_T(tdct[2]) );
             }
 #undef TRELLIS_ARGS_T
         }
