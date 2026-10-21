@@ -1757,6 +1757,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
         pixf->asd8 = x264_pixel_asd8_avx512icl;
+        pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx512icl;
+        pixf->fenc_eq[PIXEL_8x16]  = x264_pixel_fenc_eq_8x16_avx512icl;
+        pixf->fenc_eq[PIXEL_8x8]   = x264_pixel_fenc_eq_8x8_avx512icl;
 #endif
     }
     /* vdbpsadbw (AVX512BW), ymm only; the exception to the note above

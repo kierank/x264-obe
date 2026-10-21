@@ -1161,6 +1161,49 @@ cglobal pixel_fenc_eq_%1x%2, 2,2,3
     FENC_EQ_RET
 %endmacro
 
+; vpcmpneqb into k, kortest; 8-bit 8 wide masks the high qword of each lane
+%macro FENC_EQ_ICL 2 ; w, h
+%if HIGH_BIT_DEPTH == 0 && %1 == 8
+cglobal pixel_fenc_eq_%1x%2, 2,3,2
+    mov           r2d, 0x00ff00ff
+    kmovd          k3, r2d
+%else
+cglobal pixel_fenc_eq_%1x%2, 2,2,4
+%endif
+%assign %%y 0
+%rep %2/4
+%if HIGH_BIT_DEPTH == 0
+    movu          xm0, [r1+(%%y+0)*FDEC_STRIDEB]
+    movu          xm1, [r1+(%%y+2)*FDEC_STRIDEB]
+    vinserti128    m0, m0, [r1+(%%y+1)*FDEC_STRIDEB], 1
+    vinserti128    m1, m1, [r1+(%%y+3)*FDEC_STRIDEB], 1
+%if %1 == 16
+    vpcmpb         k1, m0, [r0+(%%y+0)*FENC_STRIDEB], 4
+    vpcmpb         k2, m1, [r0+(%%y+2)*FENC_STRIDEB], 4
+%else
+    vpcmpb      k1{k3}, m0, [r0+(%%y+0)*FENC_STRIDEB], 4
+    vpcmpb      k2{k3}, m1, [r0+(%%y+2)*FENC_STRIDEB], 4
+%endif
+    kortestd       k1, k2
+%else ; a row a register: ymm (16 wide) or xmm (8 wide)
+    movu           m0, [r1+(%%y+0)*FDEC_STRIDEB]
+    movu           m1, [r1+(%%y+1)*FDEC_STRIDEB]
+    movu           m2, [r1+(%%y+2)*FDEC_STRIDEB]
+    movu           m3, [r1+(%%y+3)*FDEC_STRIDEB]
+    vpcmpb         k1, m0, [r0+(%%y+0)*FENC_STRIDEB], 4
+    vpcmpb         k2, m1, [r0+(%%y+1)*FENC_STRIDEB], 4
+    vpcmpb         k3, m2, [r0+(%%y+2)*FENC_STRIDEB], 4
+    vpcmpb         k4, m3, [r0+(%%y+3)*FENC_STRIDEB], 4
+    kord           k1, k1, k2
+    kord           k3, k3, k4
+    kortestd       k1, k3
+%endif
+    jnz .ne
+%assign %%y %%y+4
+%endrep
+    FENC_EQ_RET
+%endmacro
+
 %if HIGH_BIT_DEPTH
 INIT_YMM avx2
 FENC_EQ_AVX2 16, 16
@@ -1172,6 +1215,12 @@ INIT_YMM avx2
 FENC_EQ_AVX2 16, 16
 FENC_EQ_AVX2  8, 16
 FENC_EQ_AVX2  8,  8
+%if ARCH_X86_64
+INIT_YMM avx512icl
+FENC_EQ_ICL 16, 16
+FENC_EQ_ICL  8, 16
+FENC_EQ_ICL  8,  8
+%endif
 %endif
 
 ;=============================================================================
