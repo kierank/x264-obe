@@ -1008,6 +1008,72 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twins of wip/x264-dbpsad-hex: every build declares the hidden weak
+ * x264_8_twin_sad_{dia,hex,hexhalf}_min_WxH; a kernel set to 1 below dispatches
+ * its twin, which links as 0, so its slots stay NULL and me.c takes the old path */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define DBP_TWIN_DIA     0
+#define DBP_TWIN_HEX     0
+#define DBP_TWIN_HEXHALF 0
+#define DBP_TWIN1( k, s ) \
+    extern __typeof__( x264_pixel_sad_##k##_min_##s##_avx512 ) x264_8_twin_sad_##k##_min_##s __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak x264_8_twin_sad_" #k "_min_" #s "\n.hidden x264_8_twin_sad_" #k "_min_" #s );
+#define DBP_TWIN7( k ) \
+    DBP_TWIN1( k, 16x16 ) DBP_TWIN1( k, 16x8 ) DBP_TWIN1( k, 8x16 ) DBP_TWIN1( k, 8x8 ) \
+    DBP_TWIN1( k, 8x4 ) DBP_TWIN1( k, 4x8 ) DBP_TWIN1( k, 4x4 )
+DBP_TWIN7( dia )
+DBP_TWIN7( hex )
+DBP_TWIN7( hexhalf )
+#if DBP_TWIN_DIA
+#undef x264_pixel_sad_dia_min_16x16_avx512
+#define x264_pixel_sad_dia_min_16x16_avx512 x264_8_twin_sad_dia_min_16x16
+#undef x264_pixel_sad_dia_min_16x8_avx512
+#define x264_pixel_sad_dia_min_16x8_avx512 x264_8_twin_sad_dia_min_16x8
+#undef x264_pixel_sad_dia_min_8x16_avx512
+#define x264_pixel_sad_dia_min_8x16_avx512 x264_8_twin_sad_dia_min_8x16
+#undef x264_pixel_sad_dia_min_8x8_avx512
+#define x264_pixel_sad_dia_min_8x8_avx512 x264_8_twin_sad_dia_min_8x8
+#undef x264_pixel_sad_dia_min_8x4_avx512
+#define x264_pixel_sad_dia_min_8x4_avx512 x264_8_twin_sad_dia_min_8x4
+#undef x264_pixel_sad_dia_min_4x8_avx512
+#define x264_pixel_sad_dia_min_4x8_avx512 x264_8_twin_sad_dia_min_4x8
+#undef x264_pixel_sad_dia_min_4x4_avx512
+#define x264_pixel_sad_dia_min_4x4_avx512 x264_8_twin_sad_dia_min_4x4
+#endif
+#if DBP_TWIN_HEX
+#undef x264_pixel_sad_hex_min_16x16_avx512
+#define x264_pixel_sad_hex_min_16x16_avx512 x264_8_twin_sad_hex_min_16x16
+#undef x264_pixel_sad_hex_min_16x8_avx512
+#define x264_pixel_sad_hex_min_16x8_avx512 x264_8_twin_sad_hex_min_16x8
+#undef x264_pixel_sad_hex_min_8x16_avx512
+#define x264_pixel_sad_hex_min_8x16_avx512 x264_8_twin_sad_hex_min_8x16
+#undef x264_pixel_sad_hex_min_8x8_avx512
+#define x264_pixel_sad_hex_min_8x8_avx512 x264_8_twin_sad_hex_min_8x8
+#undef x264_pixel_sad_hex_min_8x4_avx512
+#define x264_pixel_sad_hex_min_8x4_avx512 x264_8_twin_sad_hex_min_8x4
+#undef x264_pixel_sad_hex_min_4x8_avx512
+#define x264_pixel_sad_hex_min_4x8_avx512 x264_8_twin_sad_hex_min_4x8
+#undef x264_pixel_sad_hex_min_4x4_avx512
+#define x264_pixel_sad_hex_min_4x4_avx512 x264_8_twin_sad_hex_min_4x4
+#endif
+#if DBP_TWIN_HEXHALF
+#undef x264_pixel_sad_hexhalf_min_16x16_avx512
+#define x264_pixel_sad_hexhalf_min_16x16_avx512 x264_8_twin_sad_hexhalf_min_16x16
+#undef x264_pixel_sad_hexhalf_min_16x8_avx512
+#define x264_pixel_sad_hexhalf_min_16x8_avx512 x264_8_twin_sad_hexhalf_min_16x8
+#undef x264_pixel_sad_hexhalf_min_8x16_avx512
+#define x264_pixel_sad_hexhalf_min_8x16_avx512 x264_8_twin_sad_hexhalf_min_8x16
+#undef x264_pixel_sad_hexhalf_min_8x8_avx512
+#define x264_pixel_sad_hexhalf_min_8x8_avx512 x264_8_twin_sad_hexhalf_min_8x8
+#undef x264_pixel_sad_hexhalf_min_8x4_avx512
+#define x264_pixel_sad_hexhalf_min_8x4_avx512 x264_8_twin_sad_hexhalf_min_8x4
+#undef x264_pixel_sad_hexhalf_min_4x8_avx512
+#define x264_pixel_sad_hexhalf_min_4x8_avx512 x264_8_twin_sad_hexhalf_min_4x8
+#undef x264_pixel_sad_hexhalf_min_4x4_avx512
+#define x264_pixel_sad_hexhalf_min_4x4_avx512 x264_8_twin_sad_hexhalf_min_4x4
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
