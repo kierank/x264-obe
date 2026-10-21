@@ -56,6 +56,11 @@ pb_p8x16c_rows: times 8 db -7
                 times 8 db -5
                 times 8 db -4
 %endif
+%if HIGH_BIT_DEPTH == 0
+pb_filt_left:   db 55,63,63,55,47,39,31,23,15,7,71,72,0,0,0,0
+pb_filt_r:      db 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
+pb_filt_l:      db 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+%endif
 
 SECTION .text
 
@@ -172,6 +177,17 @@ cextern pw_0to15
     PRED_H_STORE m1, 3-4*%2, %1
 %endmacro
 
+; %1 = (%1 ^ %2) & 1 in each byte
+%macro PARITY_B 2
+%if sizeof%1 == 64
+    vpternlogd  %1, %2, [pb_1]{1to16}, 0x28
+%elif sizeof%1 == 32
+    vpternlogd  %1, %2, [pb_1]{1to8}, 0x28
+%else
+    vpternlogd  %1, %2, [pb_1]{1to4}, 0x28
+%endif
+%endmacro
+
 ; dest, left, right, src, tmp
 ; output: %1 = (t[n-1] + t[n]*2 + t[n+1] + 2) >> 2
 %macro PRED8x8_LOWPASS 4-5
@@ -179,6 +195,11 @@ cextern pw_0to15
     paddw       %2, %3
     psrlw       %2, 1
     pavgw       %1, %4, %2
+%elif cpuflag(avx512icl)
+    pavgb       %5, %2, %3
+    PARITY_B    %2, %3
+    psubb       %5, %2
+    pavgb       %1, %4, %5
 %else
     mova        %5, %2
     pavgb       %2, %3
@@ -770,6 +791,65 @@ PREDICT_FILTER b, w, d, q
 INIT_MMX ssse3
 PREDICT_FILTER b, w, d, q
 %endif
+
+%if ARCH_X86_64 && HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void predict_8x8_filter( pixel *src, pixel edge[36], int i_neighbor, int i_filters )
+;-----------------------------------------------------------------------------
+; avx512icl: the 8 rows ending at the left column go to qword lanes 0-7 by
+; merge-masked vpbroadcastq, vpermi2b gathers l6 l7 l7 l6 .. l0 lt t0 from
+; them; the top row's shifts are vpermb, lt merged by k-mask.
+INIT_ZMM avx512icl
+cglobal predict_8x8_filter, 4,6
+    test        r3b, 1
+    jz .check_top
+    mov         r4d, 1
+    kmovb        k1, r4d
+%assign Y 0
+%rep 8
+    vpbroadcastq m0{k1}, [r0+Y*FDEC_STRIDEB-8]
+%if Y < 7
+    kshiftlb     k1, k1, 1
+%endif
+%assign Y Y+1
+%endrep
+    mov         r4d, r2d
+    and         r4d, 8
+    neg          r4
+    movq        xm1, [r0+r4*(FDEC_STRIDEB/8)-8] ; lt, or l0 without MB_TOPLEFT
+    movhps      xm1, [r0-FDEC_STRIDEB]
+    mov         r4d, 0x3ff
+    kmovw        k2, r4d
+    movu        xm2, [pb_filt_left]
+    vpermi2b     m2, m0, m1
+    psrldq      xm3, xm2, 1
+    psrldq      xm4, xm2, 2
+    PRED8x8_LOWPASS xm2, xm2, xm4, xm3, xm5
+    vmovdqu8  [r1+6*SIZEOF_PIXEL]{k2}, xm2
+    test        r3b, 2
+    jz .done
+.check_top:
+    movu        xm3, [r0-FDEC_STRIDEB]
+    mov         r4d, r2d
+    and         r4d, 4
+    lea          r5, [shuf_fixtr]
+    pshufb      xm3, [r5+r4*4]
+    movu        xm0, [pb_filt_r]
+    vpermb      xm1, xm0, xm3
+    movu        xm0, [pb_filt_l]
+    vpermb      xm2, xm0, xm3
+    shr         r2d, 3
+    and         r2d, 1
+    kmovb        k1, r2d
+    vpbroadcastb xm2{k1}, [r0-FDEC_STRIDEB-SIZEOF_PIXEL]
+    PRED8x8_LOWPASS xm0, xm2, xm1, xm3, xm4
+    movu [r1+16*SIZEOF_PIXEL], xm0
+    mov         r4d, 0x8000
+    kmovw        k2, r4d
+    vmovdqu8  [r1+17*SIZEOF_PIXEL]{k2}, xm0 ; edge[32] = edge[31]
+.done:
+    RET
+%endif ; ARCH_X86_64 && !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; void predict_8x8_v( pixel *src, pixel *edge )
