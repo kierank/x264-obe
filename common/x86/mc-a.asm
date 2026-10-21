@@ -1336,6 +1336,110 @@ OFFSET_AVG8_AVX2  4, sub
 OFFSET_AVG8_AVX2  8, sub
 OFFSET_AVG8_AVX2 16, sub
 OFFSET_AVG8_AVX2 20, sub
+
+;-----------------------------------------------------------------------------
+; 8-bit mc_offsetadd/offsetsub_avg_wN, avx512icl: two rows per iteration,
+; w4/w8/w12/w16 both rows in one register (the second merged in by a masked
+; broadcast or an insert), w20 one row per register under a 20-lane mask;
+; pavgb with src2, then paddusb/psubusb of the ssse3 cache's |offset| bytes.
+;-----------------------------------------------------------------------------
+%macro WEIGHT_ICL_MASKS 1 ; width
+%if %1 == 4 || %1 == 8
+    mov          r4d, 2
+    kmovb         k2, r4d               ; second dword/qword
+%elif %1 == 12 || %1 == 20
+    mov          r4d, (1 << %1) - 1
+    kmovd         k1, r4d
+%endif
+%endmacro
+
+; bytes of rows 0, 1 -> m0 (w4: dwords 0, 1; w8: qwords 0, 1; w12/w16: xmm lanes 0, 1; w20: m0, m1)
+%macro WEIGHT_ICL_LOADB 1
+%if %1 == 4
+    movd         xm0, [r2]
+    vpbroadcastd xm0 {k2}, [r2+r3]
+%elif %1 == 8
+    movq         xm0, [r2]
+    vpbroadcastq xm0 {k2}, [r2+r3]
+%elif %1 == 20
+    vmovdqu8     ym0 {k1}{z}, [r2]
+    vmovdqu8     ym1 {k1}{z}, [r2+r3]
+%elif %1 == 12
+    vmovdqu8     xm0 {k1}{z}, [r2]
+    vmovdqu8     xm1 {k1}{z}, [r2+r3]
+    vinserti32x4 ym0, ym0, xm1, 1
+%else
+    movu         xm0, [r2]
+    vinserti32x4 ym0, ym0, [r2+r3], 1
+%endif
+%endmacro
+
+; bytes of rows 0, 1 in m0 (w20: m0, m1) -> dst
+%macro WEIGHT_ICL_STOREB 1
+%if %1 == 4
+    movd       [r0], xm0
+    pextrd  [r0+r1], xm0, 1
+%elif %1 == 8
+    movq       [r0], xm0
+    movhps  [r0+r1], xm0
+%elif %1 == 12
+    vextracti32x4 xm1, ym0, 1
+    vmovdqu8   [r0] {k1}, xm0
+    vmovdqu8 [r0+r1] {k1}, xm1
+%elif %1 == 16
+    movu       [r0], xm0
+    vextracti32x4 [r0+r1], ym0, 1
+%else
+    vmovdqu8   [r0] {k1}, ym0
+    vmovdqu8 [r0+r1] {k1}, ym1
+%endif
+%endmacro
+
+; bytes of rows 0, 1 in m0 (w20: m0, m1) averaged with those of src2 (r6)
+%macro WEIGHT_ICL_AVGB 1
+%if %1 == 4
+    movd         xm6, [r6]
+    vpbroadcastd xm6 {k2}, [r6+r3]
+    pavgb        xm0, xm6
+%elif %1 == 8
+    movq         xm6, [r6]
+    vpbroadcastq xm6 {k2}, [r6+r3]
+    pavgb        xm0, xm6
+%elif %1 == 20
+    vmovdqu8     ym6 {k1}{z}, [r6]
+    vmovdqu8     ym7 {k1}{z}, [r6+r3]
+    pavgb        ym0, ym6
+    pavgb        ym1, ym7
+%else
+    movu         xm6, [r6]
+    vinserti32x4 ym6, ym6, [r6+r3], 1
+    pavgb        ym0, ym6
+%endif
+%endmacro
+
+%macro OFFSET_AVG_ICL 2 ; width, add/sub
+cglobal mc_offset%2_avg_w%1, 7,7,8
+    vpbroadcastb  m2, [r4]
+    WEIGHT_ICL_MASKS %1
+.loop:
+    WEIGHT_ICL_LOADB %1
+    WEIGHT_ICL_AVGB %1
+    p%2usb        m0, m2
+%if %1 == 20
+    p%2usb        m1, m2
+%endif
+    WEIGHT_ICL_STOREB %1
+    lea           r0, [r0+r1*2]
+    lea           r2, [r2+r3*2]
+    lea           r6, [r6+r3*2]
+    sub          r5d, 2
+    jg .loop
+    RET
+%endmacro
+
+INIT_YMM avx512icl
+OFFSET_AVG_ICL 20, add
+OFFSET_AVG_ICL 20, sub
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 

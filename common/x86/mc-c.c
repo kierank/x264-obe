@@ -421,6 +421,11 @@ MC_WEIGHT_AVG( offsetsub, 12 )
 #define x264_mc_offsetadd_avg_w16_avx512icl x264_template(mc_offsetadd_avg_w16_avx512icl)
 void x264_mc_offsetadd_avg_w8_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
 void x264_mc_offsetadd_avg_w16_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
+#else
+#define x264_mc_offsetadd_avg_w20_avx512icl x264_template(mc_offsetadd_avg_w20_avx512icl)
+#define x264_mc_offsetsub_avg_w20_avx512icl x264_template(mc_offsetsub_avg_w20_avx512icl)
+void x264_mc_offsetadd_avg_w20_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
+void x264_mc_offsetsub_avg_w20_avx512icl( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, pixel * );
 #endif
 #undef MC_WEIGHT_AVG_ALL
 #undef MC_WEIGHT_AVG
@@ -710,6 +715,25 @@ static weight_avg_fn_t x264_mc_offsetadd_avg_wtab_avx512icl[6] =
 MC_WEIGHT_AVG_WTAB(weight,16)
 MC_WEIGHT_AVG_WTAB(offsetadd,16)
 MC_WEIGHT_AVG_WTAB(offsetsub,16)
+/* avx512icl on the same cache: w20 (the others are slower or neutral on Zen 4) */
+static weight_avg_fn_t x264_mc_offsetadd_avg_wtab_avx512icl[6] =
+{
+    x264_mc_offsetadd_avg_w4_avx2,
+    x264_mc_offsetadd_avg_w4_avx2,
+    x264_mc_offsetadd_avg_w8_avx2,
+    x264_mc_offsetadd_avg_w16_avx2,
+    x264_mc_offsetadd_avg_w16_avx2,
+    x264_mc_offsetadd_avg_w20_avx512icl,
+};
+static weight_avg_fn_t x264_mc_offsetsub_avg_wtab_avx512icl[6] =
+{
+    x264_mc_offsetsub_avg_w4_avx2,
+    x264_mc_offsetsub_avg_w4_avx2,
+    x264_mc_offsetsub_avg_w8_avx2,
+    x264_mc_offsetsub_avg_w16_avx2,
+    x264_mc_offsetsub_avg_w16_avx2,
+    x264_mc_offsetsub_avg_w20_avx512icl,
+};
 #endif
 #undef MC_WEIGHT_AVG_WTAB
 #endif
@@ -918,6 +942,13 @@ static void x264_weight_cache_avx2( x264_t *h, x264_weight_t *w )
         w->weightavgfn = x264_mc_weight_avg_wtab_avx2;
     else
         w->weightavgfn = w->i_offset < 0 ? x264_mc_offsetsub_avg_wtab_avx2 : x264_mc_offsetadd_avg_wtab_avx2;
+}
+
+static void x264_weight_cache_avx512icl( x264_t *h, x264_weight_t *w )
+{
+    x264_weight_cache_avx2( h, w );
+    if( w->i_scale == 1<<w->i_denom )
+        w->weightavgfn = w->i_offset < 0 ? x264_mc_offsetsub_avg_wtab_avx512icl : x264_mc_offsetadd_avg_wtab_avx512icl;
 }
 #endif
 #endif // !HIGH_BIT_DEPTH
@@ -1655,6 +1686,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init4h = x264_integral_init4h_avx512icl;
         pf->integral_init8h = x264_integral_init8h_avx512icl;
         pf->plane_copy_deinterleave_rgb = x264_plane_copy_deinterleave_rgb_avx512icl;
+        pf->weight_cache = x264_weight_cache_avx512icl;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
         pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif
