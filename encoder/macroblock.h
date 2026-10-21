@@ -63,8 +63,8 @@ void x264_macroblock_encode_p4x4( x264_t *h, int i4 );
 #define x264_mb_encode_chroma x264_template(mb_encode_chroma)
 void x264_mb_encode_chroma( x264_t *h, int b_inter, int i_qp );
 
-#define x264_cabac_mb_skip x264_template(cabac_mb_skip)
-void x264_cabac_mb_skip( x264_t *h, int b_skip );
+#define x264_cabac_mb_term_skip x264_template(cabac_mb_term_skip)
+void x264_cabac_mb_term_skip( x264_t *h, int b_term, int b_skip );
 
 #define x264_quant_luma_dc_trellis x264_template(quant_luma_dc_trellis)
 int x264_quant_luma_dc_trellis( x264_t *h, dctcoef *dct, int i_quant_cat, int i_qp,
