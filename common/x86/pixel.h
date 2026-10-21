@@ -829,6 +829,8 @@ DECL_PIXELS( uint64_t, hadamard_ac, avx2,  ( pixel *pix, intptr_t i_stride ))
 
 void x264_intra_satd_x3_4x4_mmx2   ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_4x4_mmx2    ( pixel   *, pixel   *, int * );
+#define x264_intra_sad_x3_8x8_avx512icl x264_template(intra_sad_x3_8x8_avx512icl)
+void x264_intra_sad_x3_8x8_avx512icl( pixel *, pixel *, int * );
 void x264_intra_sad_x3_4x4_sse2    ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_4x4_ssse3   ( pixel   *, pixel   *, int * );
 void x264_intra_sad_x3_4x4_avx     ( pixel   *, pixel   *, int * );

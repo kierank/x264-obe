@@ -59,6 +59,10 @@ isad816c_dcidx: times 4 db 16,16,16,16,20,20,20,20
 isad816c_wperm: dw 0, 4, 2, 2, 6, 6, 2, 6, 8, 8, 2, 8, 10, 10, 2, 10
 isad816c_wmul:  dw 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1
 isad816c_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
+ALIGN 64
+; 8x8 H rows from edge[7..14] = l7..l0
+isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4,4,4
+               db 3,3,3,3,3,3,3,3, 2,2,2,2,2,2,2,2, 1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0
 
 SECTION .text
 
@@ -1219,6 +1223,34 @@ cglobal intra_sad_x3_8x16c, 3,3,12
     psadbw         m1, m10
     paddq          m1, m9
     INTRA_SAD_PACK3_END 4, 7, 1         ; DC H V
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_8x8( uint8_t *fenc, uint8_t edge[36], int res[3] )
+; reached where intra_sad_x9_8x8 isn't used (frame edges, lossless)
+; all 8 rows of a mode in one zmm, the sums packed as in the 8x8c kernel
+;-----------------------------------------------------------------------------
+cglobal intra_sad_x3_8x8, 3,3,8
+    movq          xm0, [r1+7]           ; l7 .. l0
+    movq          xm1, [r1+16]          ; t0 .. t7
+    punpcklqdq    xm2, xm0, xm1
+    pxor          xm3, xm3
+    psadbw        xm2, xm3
+    punpckhqdq    xm4, xm2, xm2
+    paddw         xm2, xm4
+    psrlw         xm2, 3
+    pavgw         xm2, xm3              ; (sum+8)>>4
+    vpbroadcastb   m2, xm2              ; DC
+    mova           m4, [isad8_hidxr]
+    vpermb         m4, m4, m0           ; H
+    vpbroadcastq   m1, xm1              ; V
+    movu           m6, [r0]
+    movu           m7, [r0+4*FENC_STRIDE]
+    mova           m5, [isad8c_qidx]
+    vpermt2q       m6, m5, m7           ; fenc rows 0-7
+    psadbw         m1, m6
+    psadbw         m4, m6
+    psadbw         m2, m6
+    INTRA_SAD_PACK3_END 1, 4, 2         ; V H DC
 %endif ; ARCH_X86_64
 
 ;=============================================================================
