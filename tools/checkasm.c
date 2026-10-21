@@ -5233,19 +5233,26 @@ static int check_bitstream( int cpu_ref, int cpu_new )
                 ok = 0;
             }
         }
-        for( int j = 0; j < size+32; j++ )
-            input[j] = rand();
-        call_c2( bs_c.nal_escape, output1, input, input+size );
-        call_a2( bs_a.nal_escape, output2, input, input+size );
-        /* escape-dense input */
-        set_func_name( "nal_escape_dense" );
-        for( int j = 0; j < size+32; j++ )
+        /* the draws of the former bench inputs: the rand() stream of the later checks */
+        for( int j = 0; j < 2*(size+32); j++ )
+            rand();
+        /* bench: 64-byte aligned buffers, 16 KiB of fixed bytes: uniform, and
+         * escape-dense (3/4 zero bytes, the rest 1-3) */
+        uint8_t *nb = do_bench ? x264_malloc( 5*size + NALU_ESCAPE_PADDING ) : NULL;
+        for( int k = 0; k < 2 && nb; k++ )
         {
-            int r = rand();
-            input[j] = (r & 3) ? 0 : (r >> 2) & 3;
+            uint8_t *src = nb, *dst_c = nb + size + NALU_ESCAPE_PADDING, *dst_a = dst_c + 2*size;
+            bench_srand( 800 + k );
+            for( int j = 0; j < size + NALU_ESCAPE_PADDING; j++ )
+            {
+                int r = bench_rand();
+                src[j] = k ? ((r & 3) ? 0 : (r >> 2) & 3) : r >> 8;
+            }
+            set_func_name( k ? "nal_escape_dense" : "nal_escape" );
+            call_c2( bs_c.nal_escape, dst_c, src, src+size );
+            call_a2( bs_a.nal_escape, dst_a, src, src+size );
         }
-        call_c2( bs_c.nal_escape, output1, input, input+size );
-        call_a2( bs_a.nal_escape, output2, input, input+size );
+        x264_free( nb );
         free(input);
         free(output1);
         free(output2);
