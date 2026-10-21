@@ -179,6 +179,19 @@ zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
 zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
                db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
+%if HIGH_BIT_DEPTH
+ALIGN 32
+; add16x16_idct_dc avx2: dc0 x4 dc1 x4 | dc2 x4 dc3 x4 from packssdw'd dc0-3 in both lanes
+idct_dc16_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
+%endif
+%if HIGH_BIT_DEPTH == 0
+ALIGN 32
+; zigzag_scan_4x4_frame avx2: words of coefs 0-7 | 8-15 (a), of 8-15 | 0-7 (b)
+scan4frame_ymm_a: SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
+                  SHUFFLE_MASK_W 0x80, 0x80, 0x80, 2, 5, 6, 3, 7
+scan4frame_ymm_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
+                  SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
+%endif
 
 SECTION .text
 
@@ -972,22 +985,20 @@ global current_function %+ .skip_prologue
     STOREx2_AVX2 2, 3, 4, 5, -2, 2, -1, 3, 7
     ret
 
-; 2xdst, 2xtmp, 4xsrcrow, 1xzero
+; 2xdst, 2xtmp, 4xsrcrow, 1xhsub_mul: fenc, fdec byte pairs by pmaddubsw (1, -1)
 %macro LOAD_DIFF8x2_AVX2 9
     movq    xm%1, [r1+%5*FENC_STRIDE]
     movq    xm%2, [r1+%6*FENC_STRIDE]
     vinserti128 m%1, m%1, [r1+%7*FENC_STRIDE], 1
     vinserti128 m%2, m%2, [r1+%8*FENC_STRIDE], 1
-    punpcklbw m%1, m%9
-    punpcklbw m%2, m%9
     movq    xm%3, [r2+(%5-4)*FDEC_STRIDE]
     movq    xm%4, [r2+(%6-4)*FDEC_STRIDE]
     vinserti128 m%3, m%3, [r2+(%7-4)*FDEC_STRIDE], 1
     vinserti128 m%4, m%4, [r2+(%8-4)*FDEC_STRIDE], 1
-    punpcklbw m%3, m%9
-    punpcklbw m%4, m%9
-    psubw    m%1, m%3
-    psubw    m%2, m%4
+    punpcklbw m%1, m%3
+    punpcklbw m%2, m%4
+    pmaddubsw m%1, m%9
+    pmaddubsw m%2, m%9
 %endmacro
 
 ; 4x src row, 2x tmp, 2x offset
@@ -1010,7 +1021,7 @@ global current_function %+ .skip_prologue
 
 INIT_YMM avx2
 cglobal sub8x8_dct, 3,3,7
-    pxor m6, m6
+    mova m6, [hsub_mul]
     add r2, 4*FDEC_STRIDE
     LOAD_DIFF8x2_AVX2 0, 1, 4, 5, 0, 1, 4, 5, 6
     LOAD_DIFF8x2_AVX2 2, 3, 4, 5, 2, 3, 6, 7, 6
@@ -1538,18 +1549,18 @@ ADD_IDCT_DC
 
 ; One ymm per row: [dc0 x4, dc1 x4 | dc2 x4, dc3 x4]
 INIT_YMM avx2
-cglobal add16x16_idct_dc, 2,3,6
+cglobal add16x16_idct_dc, 2,3,8
     mov         r2d, 4
     mova         m5, [pw_pixel_max]
     pxor         m4, m4
+    vpbroadcastd m6, [pd_32]
+    mova         m7, [idct_dc16_shuf]
 .loop:
-    mova        xm3, [r1]
-    paddd       xm3, [pd_32]
-    psrad       xm3, 6
-    packssdw    xm3, xm3       ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3
-    punpcklwd   xm3, xm3       ; dc0 dc0 dc1 dc1 dc2 dc2 dc3 dc3
-    vpermq       m3, m3, q1100 ; dc0 dc0 dc1 dc1 dc0 dc0 dc1 dc1 | dc2 dc2 dc3 dc3 dc2 dc2 dc3 dc3
-    punpckldq    m3, m3        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
+    vbroadcasti128 m3, [r1]
+    paddd        m3, m6
+    psrad        m3, 6
+    packssdw     m3, m3        ; dc0 dc1 dc2 dc3 dc0 dc1 dc2 dc3 in both lanes
+    pshufb       m3, m7        ; dc0 x4 dc1 x4 | dc2 x4 dc3 x4
     paddsw       m0, m3, [r0+FDEC_STRIDEB*0]
     paddsw       m1, m3, [r0+FDEC_STRIDEB*1]
     paddsw       m2, m3, [r0+FDEC_STRIDEB*2]
@@ -2260,6 +2271,17 @@ SCAN_4x4_FRAME
 INIT_XMM avx
 SCAN_4x4_FRAME
 
+; one 32-byte load, one lane swap and two pshufb (the avx version takes 6 shuffles)
+INIT_YMM avx2
+cglobal zigzag_scan_4x4_frame, 2,2
+    movu         m0, [r1]
+    vperm2i128   m1, m0, m0, 0x01
+    pshufb       m0, [scan4frame_ymm_a]
+    pshufb       m1, [scan4frame_ymm_b]
+    por          m0, m1
+    movu       [r0], m0
+    RET
+
 INIT_XMM xop
 cglobal zigzag_scan_4x4_frame, 2,2
     mova   m0, [r1+ 0]
@@ -2482,10 +2504,10 @@ cglobal zigzag_scan_8x8_frame, 2,3,14
     movu         m1, [r1+32]
     movu         m2, [r1+64]
     movu         m3, [r1+96]
-    vpermq       m4, m0, q1032
-    vpermq       m5, m1, q1032
-    vpermq       m6, m2, q1032
-    vpermq       m7, m3, q1032
+    vperm2i128   m4, m0, m0, 0x01
+    vperm2i128   m5, m1, m1, 0x01
+    vperm2i128   m6, m2, m2, 0x01
+    vperm2i128   m7, m3, m3, 0x01
     pshufb       m8, m0, [r2+ 0*32]
     pshufb       m9, m4, [r2+ 1*32]
     pshufb      m10, m1, [r2+ 2*32]

@@ -104,6 +104,9 @@ pd_0123: dd 0,1,2,3,4,5,6,7 ; 32 bytes, as upstream's const-a.asm pd_0123 + pd_4
 pd_8: times 4 dd 8
 %if HIGH_BIT_DEPTH
 lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it moves
+ALIGN 32
+pw_5_hbd: times 16 dw 5      ; hpel_filter: 5*(4*c - b)
+pw_8192_hbd: times 16 dw 8192 ; frame_init_lowres_core8: pmulhrsw, (x+2)>>2
 %endif
 
 SECTION .text
@@ -379,8 +382,7 @@ HPEL_FILTER
 %macro HPEL_FILT_HBD 3 ; a/dst, b, c (a, b, c clobbered): a - 5*b + 20*c, wrapping
     psllw      %3, 2
     psubw      %3, %2
-    paddw      %1, %3
-    psllw      %3, 2
+    pmullw     %3, [pw_5_hbd]
     paddw      %1, %3
 %endmacro
 
@@ -2561,23 +2563,23 @@ cglobal integral_init4v, 3,5
     mova    [%2], m0
     mova    [%3], m5
     mova    [%4], m1
-%else
+%else ; lanes paired before the in-lane even/odd split: no vpermq
+    vperm2i128 m4, m0, m2, 0x20
+    vperm2i128 m0, m0, m2, 0x31
+    vperm2i128 m5, m1, m3, 0x20
+    vperm2i128 m1, m1, m3, 0x31
+    pshufb    m4, m7
     pshufb    m0, m7
+    pshufb    m5, m7
     pshufb    m1, m7
-    pshufb    m2, m7
-    pshufb    m3, m7
-    punpckhqdq m4, m0, m2
-    punpcklqdq m0, m0, m2
-    punpckhqdq m5, m1, m3
-    punpcklqdq m2, m1, m3
-    vpermq    m0, m0, q3120
-    vpermq    m1, m4, q3120
-    vpermq    m2, m2, q3120
-    vpermq    m3, m5, q3120
-    mova    [%1], m0
-    mova    [%2], m1
-    mova    [%3], m2
-    mova    [%4], m3
+    punpcklqdq m2, m4, m0
+    punpckhqdq m4, m0
+    punpcklqdq m3, m5, m1
+    punpckhqdq m5, m1
+    mova    [%1], m2
+    mova    [%2], m4
+    mova    [%3], m3
+    mova    [%4], m5
 %endif
 %endmacro
 
@@ -2708,27 +2710,27 @@ cglobal integral_init4v, 3,5
     vpermt2w  m0, m9, m1
     movu    [r3], m2
     movu    [r4], m0
-%else
-    psrld     m2, m4, 16
-    psrld     m3, m5, 16
+%else ; lanes paired before the in-lane pack: no vpermq
+    vperm2i128 m2, m4, m5, 0x20
+    vperm2i128 m4, m4, m5, 0x31
+    psrld     m3, m2, 16
+    psrld     m5, m4, 16
+    pand      m2, m7
     pand      m4, m7
-    pand      m5, m7
-    packusdw  m4, m5
-    packusdw  m2, m3
-    vpermq    m4, m4, q3120
-    vpermq    m2, m2, q3120
-    movu    [r1], m4
-    movu    [r2], m2
-    psrld     m2, m0, 16
-    psrld     m3, m1, 16
+    packusdw  m2, m4
+    packusdw  m3, m5
+    movu    [r1], m2
+    movu    [r2], m3
+    vperm2i128 m2, m0, m1, 0x20
+    vperm2i128 m0, m0, m1, 0x31
+    psrld     m3, m2, 16
+    psrld     m1, m0, 16
+    pand      m2, m7
     pand      m0, m7
-    pand      m1, m7
-    packusdw  m0, m1
-    packusdw  m2, m3
-    vpermq    m0, m0, q3120
-    vpermq    m2, m2, q3120
-    movu    [r3], m0
-    movu    [r4], m2
+    packusdw  m2, m0
+    packusdw  m3, m1
+    movu    [r3], m2
+    movu    [r4], m3
 %endif
 %endmacro
 
@@ -3265,14 +3267,14 @@ cglobal mbtree_propagate_list_internal, 7,7,14
 cglobal frame_init_lowres_core8, 9,12,11
     FIX_STRIDES r5
 %if cpuflag(avx512icl)
-    vpbroadcastd   m7, [pw_2]
+    vpbroadcastd   m7, [pw_8192_hbd]
     mova           m9, [pb_lowres8_icl]
 %elif mmsize == 32
-    vpbroadcastd   m7, [pw_2]
+    vpbroadcastd   m7, [pw_8192_hbd]
     vbroadcasti128 m9, [deinterleave_shuf]
     pmovzxbd      m10, [lowres8_perm]
 %else
-    mova      m7, [pw_2]
+    mova      m7, [pw_8192_hbd]
     mova      m9, [deinterleave_shuf]
 %endif
 .vloop:
@@ -3296,14 +3298,10 @@ cglobal frame_init_lowres_core8, 9,12,11
     PAVGW_U   m1, m3, [r10+r11*4+mmsize+2]
     pavgw     m6, m0
     pavgw     m8, m1                ; rows 1, 2
-    paddw     m4, m7
-    paddw     m5, m7
-    paddw     m6, m7
-    paddw     m8, m7
-    psrlw     m4, 2
-    psrlw     m5, 2
-    psrlw     m6, 2
-    psrlw     m8, 2
+    pmulhrsw  m4, m7                ; (x+2)>>2
+    pmulhrsw  m5, m7
+    pmulhrsw  m6, m7
+    pmulhrsw  m8, m7
     packuswb  m4, m5                ; 256 saturates to 255
     packuswb  m6, m8
 %if cpuflag(avx512icl)

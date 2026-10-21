@@ -998,6 +998,7 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     {
         pf_interlaced->scan_4x4  = x264_zigzag_scan_4x4_field_avx2;
         pf_interlaced->scan_8x8  = x264_zigzag_scan_8x8_field_avx2;
+        pf_progressive->scan_4x4 = x264_zigzag_scan_4x4_frame_avx2;
 #if ARCH_X86_64
         pf_progressive->scan_8x8 = x264_zigzag_scan_8x8_frame_avx2;
 #endif

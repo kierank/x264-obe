@@ -256,36 +256,45 @@ AVG_WEIGHT 4,  8
 AVG_WEIGHT 8,  8
 AVG_WEIGHT 16, 8
 
-; packusdw clips negative sums to 0, pminuw clips the top
+; (a*w + b*(64-w) + 32) >> 6 = b + ((w*(a-b) + 32) >> 6) = b + pmulhrsw( a-b, w<<9 ), exact
+; for w << 9 in [-32768,32767] (w in [-64,63]); for w >= 64 the sources swap and w is
+; 64-w. m3 = w<<9, m4 = 0, m5 = pixel_max.
 %macro BIWEIGHT_AVX2 0 ; m0 = src1, m1 = src2 -> m0
-    punpckhwd    m2, m0, m1
-    punpcklwd    m0, m1
-    pmaddwd      m2, m3
-    pmaddwd      m0, m3
-    paddd        m2, m4
-    paddd        m0, m4
-    psrad        m2, 6
-    psrad        m0, 6
-    packusdw     m0, m2
-    pminuw       m0, m5
+    psubw        m0, m1
+    pmulhrsw     m0, m3
+    paddw        m0, m1
+    pmaxsw       m0, m4
+    pminsw       m0, m5
 %endmacro
 
+; before AVG_START
 %macro BIWEIGHT_START_AVX2 0
-    movzx       t6d, word r6m
+    movsx       t6d, word r6m
     mov         t7d, 64
     sub         t7d, t6d
-    shl         t7d, 16
-    add         t6d, t7d
+    cmp         t6d, 64
+    cmovge      t6d, t7d
+    shl         t6d, 9
     movd        xm3, t6d
-    vpbroadcastd  m3, xm3
-    vpbroadcastd  m4, [pd_32]
+    vpbroadcastw  m3, xm3
+    pxor          m4, m4
     mova          m5, [pw_pixel_max]
+%endmacro
+
+; after AVG_START: w >= 64 takes src2 as src1
+%macro BIWEIGHT_SWAP_AVX2 0
+    cmp    dword r6m, 64
+    jl .noswap
+    xchg         t2, t4
+    xchg         t3, t5
+.noswap:
 %endmacro
 
 INIT_YMM avx2
 cglobal pixel_avg_weight_w16
     BIWEIGHT_START_AVX2
     AVG_START 6
+    BIWEIGHT_SWAP_AVX2
 .height_loop:
     movu          m0, [t2]
     movu          m1, [t4]
@@ -300,6 +309,7 @@ cglobal pixel_avg_weight_w16
 cglobal pixel_avg_weight_w8
     BIWEIGHT_START_AVX2
     AVG_START 6
+    BIWEIGHT_SWAP_AVX2
 .height_loop:
     movu         xm0, [t2]
     movu         xm1, [t4]
@@ -2535,7 +2545,7 @@ ALIGN 4
 %macro MC_CHROMA_SSSE3 0
 cglobal mc_chroma
 %if cpuflag(avx2)
-    MC_CHROMA_START 9
+    MC_CHROMA_START 9+ARCH_X86_64
 %else
     MC_CHROMA_START 10
 %endif
@@ -2579,6 +2589,9 @@ cglobal mc_chroma
 %if ARCH_X86_64
     %define shiftround m8
     mova       m8, [pw_512]
+%if cpuflag(avx2)
+    mova       m9, [deinterleave_shufd]
+%endif
 %else
     %define shiftround [pw_512]
 %endif
@@ -2589,7 +2602,7 @@ cglobal mc_chroma
 .loop4:
     movu      xm0, [r3]
     movu      xm1, [r3+r4]
-    vinserti128 m0, m0, [r3+r4], 1
+    vinserti128 m0, m0, xm1, 1
     vinserti128 m1, m1, [r3+r4*2], 1
     pshufb     m0, m5
     pshufb     m1, m5
@@ -2633,8 +2646,12 @@ cglobal mc_chroma
     pmulhrsw   m1, shiftround
     pmulhrsw   m3, shiftround
     packuswb   m1, m3
+%if ARCH_X86_64
+    vpermd     m1, m9, m1
+%else
     mova       m2, [deinterleave_shufd]
     vpermd     m1, m2, m1
+%endif
     vextracti128 xm2, m1, 1
     movq      [r0], xm1
     movhps    [r1], xm1

@@ -477,8 +477,8 @@ cglobal pixel_vsad, 3,3
     psubw     m2, m3
     pabsw     m1, m1
     pabsw     m2, m2
+    paddw     m1, m2
     paddw     m0, m1
-    paddw     m0, m2
     mova      m1, m3
     sub      r2d, 2
     jg .loop
@@ -834,23 +834,29 @@ SAD_X4_HBD_Y 16
 ; 10-bit sad_x3/sad_x4 16x16 and 16x8, AVX2: one row per ymm, fenc - ref with
 ; the reference as the memory operand, 4 rows per pointer step.
 ;=============================================================================
-; m0..m%1-1 = 16 word sums each (at most 16*1023 a lane) -> 8 dword sums each
-; folded to m0 = { sad1 | sad2 } and, for x4, m1 = { sad3 | sad4 } (4 dwords a lane)
-%macro SAD_X_HBD16_FOLD 1 ; refs
+; m0..m%1-1 = 16 word sums each (at most 16*1023 a lane) -> xm0 = { sad1, sad2, sad3,
+; sad4 (x3: sad3) }: in-lane dword interleave-and-add steps, one lane fold
+%macro SAD_X_HBD16_END 1 ; refs
     pmaddwd        m0, [pw_1]
     pmaddwd        m1, [pw_1]
     pmaddwd        m2, [pw_1]
 %if %1 == 4
     pmaddwd        m3, [pw_1]
+    punpckldq      m4, m2, m3
+    punpckhdq      m2, m3
+%else
+    punpckldq      m4, m2, m2
+    punpckhdq      m2, m2
 %endif
-    vperm2i128     m%1, m0, m1, q0301
-    vinserti128    m0, m0, xm1, 1
-    paddd          m0, m%1
-%if %1 == 4
-    vperm2i128     m4, m2, m3, q0301
-    vinserti128    m2, m2, xm3, 1
-    paddd          m1, m2, m4
-%endif
+    paddd          m2, m4          ; { 3 4 3 4 } (x3: { 3 3 3 3 })
+    punpckldq      m4, m0, m1
+    punpckhdq      m0, m1
+    paddd          m0, m4          ; { 1 2 1 2 }
+    punpcklqdq     m4, m0, m2
+    punpckhqdq     m0, m2
+    paddd          m0, m4
+    vextracti128  xm4, m0, 1
+    paddd         xm0, xm4
 %endmacro
 
 ; m0 = { 1 2 1 2 | 1 2 1 2 }, m2 = { 3 4 3 4 | 3 4 3 4 } dword sums of refs 1-4,
@@ -932,11 +938,9 @@ cglobal pixel_sad_x3_16x%1, 6,7,6
     movq          xm4, r5mp        ; b0 b1
     SAD_X_HBD16_MIN_END
 %else
-    SAD_X_HBD16_FOLD 3
-    SAD_HBD_X_END  0, 2, 3
-    paddd         xm0, xm2
-    movq      [r5+0], xm3
-    pextrd    [r5+8], xm0, 1
+    SAD_X_HBD16_END 3
+    movq      [r5+0], xm0
+    pextrd    [r5+8], xm0, 2
     RET
 %endif
 %endmacro
@@ -1000,10 +1004,9 @@ cglobal pixel_sad_x4_16x%1, 6,7,8
     movq          xm4, r6mp        ; b0 b1
     SAD_X_HBD16_MIN_END r8m
 %else
-    SAD_X_HBD16_FOLD 4
-    SAD_HBD_X_END  0, 1, 2
+    SAD_X_HBD16_END 4
     mov            r6, r6mp
-    movu         [r6], xm2
+    movu         [r6], xm0
     RET
 %endif
 %endmacro
