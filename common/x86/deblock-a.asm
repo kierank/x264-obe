@@ -4080,12 +4080,17 @@ cglobal chroma_intra_body
     mova   m6, m2
     CHROMA_INTRA_P0  m1, m0, m3
     CHROMA_INTRA_P0  m2, m3, m0
+%if cpuflag(avx)
+    pblendvb m1, m5, m1, m7
+    pblendvb m2, m6, m2, m7
+%else
     psubb  m1, m5
     psubb  m2, m6
     pand   m1, m7
     pand   m2, m7
     paddb  m1, m5
     paddb  m2, m6
+%endif
     ret
 %endmacro
 
