@@ -162,6 +162,8 @@ typedef struct
     /* aq-mode 1 offsets from the MB energies; params: strength, bias; inv_qscale, quant_offsets may be NULL */
     void (*aq_variance_tail)( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
                               float *quant_offsets, float *params, int len );
+    /* aq-mode 2 (energy + 1)^(1/8) as three square roots */
+    void (*aq_autovariance_tail)( float *qp_offset, uint32_t *energy, int len );
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)

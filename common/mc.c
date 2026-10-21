@@ -653,6 +653,12 @@ static void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *i
     }
 }
 
+static void aq_autovariance_tail( float *qp_offset, uint32_t *energy, int len )
+{
+    for( int i = 0; i < len; i++ )
+        qp_offset[i] = sqrtf( sqrtf( sqrtf( energy[i] + 1 ) ) );
+}
+
 static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list )
@@ -792,6 +798,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->mbtree_cost_scale = mbtree_cost_scale;
     pf->mbtree_finish = mbtree_finish;
     pf->aq_variance_tail = aq_variance_tail;
+    pf->aq_autovariance_tail = aq_autovariance_tail;
 
 #if HAVE_MMX
     x264_mc_init_mmx( cpu, pf );
@@ -810,6 +817,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
         pf->mbtree_propagate_list = mbtree_propagate_list;
         pf->mbtree_finish = mbtree_finish;
         pf->aq_variance_tail = aq_variance_tail;
+        pf->aq_autovariance_tail = aq_autovariance_tail;
     }
 }
 

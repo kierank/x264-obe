@@ -3606,6 +3606,40 @@ static int check_mc( int cpu_ref, int cpu_new )
             call_a2( mc_a.aq_variance_tail, qpa, qpa_aq, inva, energy, NULL, params, 120 );
         }
     }
+
+    if( mc_a.aq_autovariance_tail != mc_ref.aq_autovariance_tail )
+    {
+        used_asm = 1;
+        set_func_name( "aq_autovariance_tail" );
+        float *qpc = (float*)buf3;
+        float *qpa = qpc + 300;
+        uint32_t *energy = (uint32_t*)buf4;
+        for( int i = 0; i < 40 && ok; i++ )
+        {
+            int len = i < 32 ? 1 + i : 120 + rand()%180;
+            for( int j = 0; j < len; j++ )
+                energy[j] = i&1 ? (uint32_t)(((uint64_t)rand() << 31 | rand()) >> (j&31)) : (rand() & 0xffffff) >> (rand()&15);
+            energy[0] = i&2 ? 0xffffffff : energy[0];
+            for( int j = 0; j <= len; j++ )
+                qpc[j] = qpa[j] = -1.f;
+            call_c1( mc_c.aq_autovariance_tail, qpc, energy, len );
+            call_a1( mc_a.aq_autovariance_tail, qpa, energy, len );
+            if( memcmp( qpc, qpa, (len+1) * sizeof(float) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "aq_autovariance_tail FAILED: len %d\n", len );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row of AC energies */
+            bench_srand( 1103 );
+            for( int j = 0; j < 120; j++ )
+                energy[j] = (bench_rand() & 0xffffff) >> (bench_rand()&15);
+            call_c2( mc_c.aq_autovariance_tail, qpc, energy, 120 );
+            call_a2( mc_a.aq_autovariance_tail, qpa, energy, 120 );
+        }
+    }
     report( "aq :" );
 
     if( mc_a.memcpy_aligned != mc_ref.memcpy_aligned )

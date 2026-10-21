@@ -347,3 +347,37 @@ cglobal aq_variance_tail, 7,9
     AQ_VARIANCE_ZMM 1
 .end:
     RET
+
+;-----------------------------------------------------------------------------
+; void aq_autovariance_tail( float *qp_offset, uint32_t *energy, int len )
+; qp_offset[i] = sqrtf( sqrtf( sqrtf( energy[i] + 1 ) ) )
+;-----------------------------------------------------------------------------
+%macro AQ_AUTOVARIANCE_ZMM 0
+    vpaddd      m0, m0, [rc_pd_1] {1to16}
+    vcvtudq2ps  m0, m0
+    vsqrtps     m0, m0
+    vsqrtps     m0, m0
+    vsqrtps     m0, m0
+%endmacro
+
+INIT_ZMM avx512
+cglobal aq_autovariance_tail, 3,4
+    sub         r2d, 16
+    jl .tail
+.loop:
+    vmovdqu32   m0, [r1]
+    AQ_AUTOVARIANCE_ZMM
+    vmovups   [r0], m0
+    add          r0, 64
+    add          r1, 64
+    sub         r2d, 16
+    jge .loop
+.tail:
+    add         r2d, 16
+    jz .end
+    TAIL_MASK   r2d, r3d
+    vmovdqu32   m0 {k2}{z}, [r1]
+    AQ_AUTOVARIANCE_ZMM
+    vmovups   [r0] {k2}, m0
+.end:
+    RET

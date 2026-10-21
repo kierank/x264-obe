@@ -372,6 +372,12 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
     return var;
 }
 
+/* 1: aq-mode 2 takes energy^(1/8) as three square roots (mc.aq_autovariance_tail)
+ * instead of powf. Output-changing against -fno-fast-math builds; needs BD first. */
+#ifndef X264_AQ_SQRT8
+#define X264_AQ_SQRT8 0
+#endif
+
 /* Per-MB part of x264_adaptive_quant_frame for MB rows [mb_y0,mb_y1). It reads
  * only the fenc pixels of those MBs, writes only their entries, and adds the
  * weightp pixel sums into pixel_sum/pixel_ssd, so disjoint bands can run
@@ -392,12 +398,24 @@ void x264_adaptive_quant_frame_rows( x264_t *h, x264_frame_t *frame, float *quan
     else if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
     {
         /* The per-MB term; the averages over it are taken in MB order by _end */
+#if X264_AQ_SQRT8
+        ALIGNED_ARRAY_64( uint32_t, energy,[128] );
+        for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
+            for( int mb_x0 = 0; mb_x0 < h->mb.i_mb_width; mb_x0 += 128 )
+            {
+                int n = X264_MIN( h->mb.i_mb_width - mb_x0, 128 );
+                for( int i = 0; i < n; i++ )
+                    energy[i] = x264_ac_energy_mb( h, mb_x0 + i, mb_y, frame, pixel_sum, pixel_ssd );
+                h->mc.aq_autovariance_tail( frame->f_qp_offset + mb_x0 + mb_y*h->mb.i_mb_stride, energy, n );
+            }
+#else
         for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
             for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x++ )
             {
                 uint32_t energy = x264_ac_energy_mb( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd );
                 frame->f_qp_offset[mb_x + mb_y*h->mb.i_mb_stride] = powf( energy + 1, 0.125f );
             }
+#endif
     }
     else
     {
