@@ -8621,7 +8621,7 @@ SA8D_X9_8BIT
 ;   broadcast (k2 = 0xc) instead of two broadcasts and vpblendd.
 ; The whole block is ICL_LOW (m0-m15 on ymm0-15).
 ;-----------------------------------------------------------------------------
-ICL_LOW_BEGIN
+INIT_YMM avx512icl
 %macro SATD_ICL_KMASK 1 ; gpr (dword) to clobber
     mov       %1, 0x5555000c
     kmovd     k2, %1
@@ -8843,6 +8843,7 @@ cglobal pixel_sa8d_8x8, 4,8,8
     shr      eax, 1
     RET
 
+ICL_LOW_BEGIN
 INTRA_SATD_X3_8BIT
 SA8D_SATD
 SATD_PRE_FUNCS
