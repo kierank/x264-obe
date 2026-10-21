@@ -2540,10 +2540,10 @@ SAD_LIST_MIN 1, 8, 8
 
 ;-----------------------------------------------------------------------------
 ; avx512: the same with a partial-distortion exit. Pass 1 takes every candidate
-; over the first half of the rows, its sad to lane i of m12 (merge-masked
-; broadcast) and to [rsp+4*i]; vpcmpd of (that << 4) + bias against best is the
-; k-mask of the candidates that can still win, none (kortestw): best. Pass 2
-; completes those (tzcnt/blsr over the mask) into the cmov min. A dropped
+; over the first half of the rows, its sad to [rsp+4*i] and, i < 8, to lane i
+; of ym12 (merge-masked broadcast); vpcmpd of (that << 4) + bias against best is
+; the k-mask of the candidates 0-7 that can still win, 8.. always do; none: best.
+; Pass 2 completes those (tzcnt/blsr over the mask) into the cmov min. A dropped
 ; candidate's key is at least its half key, which is at least best, so the
 ; result is that of the full computation as long as (sad << 4) + bias doesn't
 ; overflow (me.c's stay below 2^22).
@@ -2569,7 +2569,7 @@ cglobal pixel_sad_list_min_%2x%3, 6,12,14,64
 %endif
     SAD_LIST_ROWS %1, 0, %%half, %3/2
     SAD_LIST_SUM %2
-    vpbroadcastd   m12 {k1}, xm0
+    vpbroadcastd  ym12 {k1}, xm0
     movd   [rsp+4*r10], xm0
     kshiftlw       k1, k1, 1
     add            r9, 8+8*%1
@@ -2580,14 +2580,15 @@ cglobal pixel_sad_list_min_%2x%3, 6,12,14,64
     shlx          r9d, r9d, r3d
     dec           r9d
     kmovw          k2, r9d
-    vmovdqu32      m13 {k2}{z}, [r4]
-    pslld          m12, 4
-    paddd          m12, m13
-    vpbroadcastd   m13, r5d
-    vpcmpd         k2 {k2}, m12, m13, 1
-    kortestw       k2, k2
+    vmovdqu32     ym13 {k2}{z}, [r4]
+    pslld         ym12, 4
+    paddd         ym12, ym13
+    vpbroadcastd  ym13, r5d
+    and           r9d, ~0xff
+    vpcmpd         k2 {k2}, ym12, ym13, 1
+    kmovw         r6d, k2
+    or            r9d, r6d
     jz .end
-    kmovw         r9d, k2
 .pass2:
     tzcnt         r10d, r9d
 %if %1
