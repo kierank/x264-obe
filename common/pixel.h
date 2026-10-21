@@ -199,6 +199,13 @@ typedef struct
     /* x264_weights_analyse luma: the sums of pix1 - pix2 over the 4x4 blocks of an 8x8,
      * in raster order */
     void (*weightp_dc8x8)( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 );
+    /* x264_weights_analyse luma search, a row of n 8x8 blocks of r and f: for k < nk <= 10,
+     * wp[k] = { scale, denom, offset << (BIT_DEPTH-8), offsets (1 to 4) }, and j < offsets,
+     * cost[k][j] += min( satd_8x8( w - f ), icost[i] << (BIT_DEPTH-8) ), w = x264_clip_pixel(
+     * ((r * scale + ((1 << denom) >> 1)) >> denom) + offset + (j << (BIT_DEPTH-8)) ); the other
+     * cost[k][j] are undefined. asm may read 24 pixels past the row. */
+    void (*weightp_satd8_search)( uint32_t (*cost)[4], pixel *r, pixel *f, intptr_t i_stride, int n,
+                                  uint16_t *icost, const int16_t (*wp)[4], int nk );
     uint64_t (*sa8d_satd[1])( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
 
     uint64_t (*var[4])( pixel *pix, intptr_t stride );

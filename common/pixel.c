@@ -1080,6 +1080,64 @@ static void pixel_weightp_dc8x8( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pi
     }
 }
 
+static void pixel_weight8x8( pixel *dst, pixel *src, intptr_t i_src, int scale, int denom, int offset )
+{
+    int round = (1 << denom) >> 1;
+    for( int y = 0; y < 8; y++ )
+        for( int x = 0; x < 8; x++ )
+            dst[x+8*y] = x264_clip_pixel( ((src[x+y*i_src] * scale + round) >> denom) + offset );
+}
+
+/* An offset changes every weighted pixel by the same amount while nothing clips (per
+ * block, from the min and max of r, as the weighting is monotonic), so only the DC of
+ * each 4x4 Hadamard, the sum D of the 4x4 differences, changes: by 16 * the offset
+ * difference. satd_8x8 is half the sum of |coefficients| of its 4 4x4 transforms (each
+ * even: all of a transform's coefficients have the parity of D), so it changes by the
+ * sum of ( |D + 16*d| - |D| ) / 2, exactly. */
+static void pixel_weightp_satd8_search( uint32_t (*cost)[4], pixel *r, pixel *f, intptr_t i_stride, int n,
+                                        uint16_t *icost, const int16_t (*wp)[4], int nk )
+{
+    ALIGNED_ARRAY_16( pixel, buf,[8*8] );
+    for( int i = 0; i < n; i++, r += 8, f += 8 )
+    {
+        int ic = icost[i] << (BIT_DEPTH-8);
+        int mn = PIXEL_MAX, mx = 0;
+        for( int y = 0; y < 8; y++ )
+            for( int x = 0; x < 8; x++ )
+            {
+                mn = X264_MIN( mn, r[x+y*i_stride] );
+                mx = X264_MAX( mx, r[x+y*i_stride] );
+            }
+        for( int k = 0; k < nk; k++ )
+        {
+            int scale = wp[k][0], denom = wp[k][1], o0 = wp[k][2];
+            int round = (1 << denom) >> 1;
+            int lo = ((mn * scale + round) >> denom) + o0;
+            int hi = ((mx * scale + round) >> denom) + o0;
+            int32_t dc[4];
+            pixel_weight8x8( buf, r, i_stride, scale, denom, o0 );
+            int base = x264_pixel_satd_8x8( buf, 8, f, i_stride );
+            cost[k][0] += X264_MIN( base, ic );
+            if( wp[k][3] > 1 && lo >= 0 )
+                pixel_weightp_dc8x8( dc, buf, 8, f, i_stride );
+            for( int j = 1; j < wp[k][3]; j++ )
+            {
+                int d = j << (BIT_DEPTH-8);
+                int cj;
+                if( lo >= 0 && hi + d <= PIXEL_MAX )
+                    cj = base + ( abs( dc[0] + 16*d ) - abs( dc[0] ) + abs( dc[1] + 16*d ) - abs( dc[1] )
+                                + abs( dc[2] + 16*d ) - abs( dc[2] ) + abs( dc[3] + 16*d ) - abs( dc[3] ) ) / 2;
+                else
+                {
+                    pixel_weight8x8( buf, r, i_stride, scale, denom, o0 + d );
+                    cj = x264_pixel_satd_8x8( buf, 8, f, i_stride );
+                }
+                cost[k][j] += X264_MIN( cj, ic );
+            }
+        }
+    }
+}
+
 /****************************************************************************
  * successive elimination
  ****************************************************************************/
@@ -1197,6 +1255,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->weightp_sum8_clip = pixel_weightp_sum8_clip;
     pixf->weightp_sum8_nv = pixel_weightp_sum8_nv;
     pixf->weightp_dc8x8 = pixel_weightp_dc8x8;
+    pixf->weightp_satd8_search = pixel_weightp_satd8_search;
 
     pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4;
     pixf->intra_satd_x3_4x4   = x264_intra_satd_x3_4x4;
