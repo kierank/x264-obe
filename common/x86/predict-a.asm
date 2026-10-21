@@ -46,6 +46,12 @@ pw_reverse:  db 14,15,12,13,10,11,8,9,6,7,4,5,2,3,0,1
 ALIGN 16
 pb_128:      times 16 db 0x80
 %endif
+%if HIGH_BIT_DEPTH
+pb_p8x8c_rows:  times 8 db -3
+                times 8 db -2
+                times 8 db -1
+                times 8 db 0
+%endif
 
 SECTION .text
 
@@ -1211,6 +1217,43 @@ PREDICT_CHROMA_P 16
 INIT_YMM avx2
 PREDICT_CHROMA_P 8
 PREDICT_CHROMA_P 16
+
+%if ARCH_X86_64 && HIGH_BIT_DEPTH
+; avx512icl: rows y..y+3 in the lanes
+%macro PREDICT_CHROMA_P_ICL 1
+cglobal predict_8x%1c_p_core, 4,5
+    vpbroadcastw    m0, r1d
+    vpbroadcastw    m2, r2d
+    vpbroadcastw    m4, r3d
+    vbroadcasti32x4 m1, [pw_43210123]
+    vpmovsxbw       m5, [pb_p8x%1c_rows]
+    pmullw          m2, m1            ; b*(x-3)
+    pmullw          m5, m4            ; c*(y-3) or c*(y-7)
+    vpbroadcastd    m1, [pw_16]
+    paddw           m5, m1
+    psllw           m4, 2
+    pxor            m1, m1
+    vpbroadcastd    m3, [pw_pixel_max]
+    mov            r4d, %1/4
+.loop:
+    paddsw          m6, m2, m5
+    paddsw          m6, m0
+    psraw           m6, 5
+    CLIPW           m6, m1, m3
+    paddw           m5, m4
+    mova            [r0+0*FDEC_STRIDEB], xm6
+    vextracti32x4   [r0+1*FDEC_STRIDEB], m6, 1
+    vextracti32x4   [r0+2*FDEC_STRIDEB], m6, 2
+    vextracti32x4   [r0+3*FDEC_STRIDEB], m6, 3
+    add             r0, 4*FDEC_STRIDEB
+    dec            r4d
+    jg .loop
+    RET
+%endmacro ; PREDICT_CHROMA_P_ICL
+
+INIT_ZMM avx512icl
+PREDICT_CHROMA_P_ICL 8
+%endif ; ARCH_X86_64 && HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; void predict_16x16_p_core( uint8_t *src, int i00, int b, int c )
