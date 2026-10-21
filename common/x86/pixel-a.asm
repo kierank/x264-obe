@@ -370,6 +370,39 @@ ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 ALIGN 32
 x4c_dc_a:     times 2 db  0, 1, 2, 3, 6, 7, 2, 3,12,13, 2, 3,14,15, 2, 3
 x4c_dc_b:     times 2 db  4, 5, 2, 3, 6, 7, 6, 7,12,13,12,13,14,15,14,15
+%if HIGH_BIT_DEPTH
+; 10-bit intra_satd_x4: the dc words of a row of 4x4 blocks
+x4h_dc_shuf:  times 2 db  0, 1, 0, 1, 0, 1, 0, 1, 2, 3, 2, 3, 2, 3, 2, 3
+              times 2 db  4, 5, 4, 5, 4, 5, 4, 5, 6, 7, 6, 7, 6, 7, 6, 7
+              times 2 db  8, 9, 8, 9, 8, 9, 8, 9,10,11,10,11,10,11,10,11
+              times 2 db 12,13,12,13,12,13,12,13,14,15,14,15,14,15,14,15
+; row y of H from the left pixels
+%assign x4i 0
+x4h_h_shuf:
+%rep 8
+              times 16 db 2*x4i, 2*x4i+1
+%assign x4i x4i+1
+%endrep
+; planar weights of t0-7, l0-7 (8x16c: l0-7, l8-15), the corner in word 7 (-4, 8x16c -8),
+; 16*t7 | 16*l7
+x4h_wp:       times 2 dw -3,-2,-1, 0, 1, 2, 3, 4
+x4h_wl:       times 2 dw -7,-6,-5,-4,-3,-2,-1, 0
+              times 2 dw  1, 2, 3, 4, 5, 6, 7, 8
+x4h_wc:       times 2 dw  0, 0, 0, 0, 0, 0, 0,-4
+              times 2 dw  0, 0, 0, 0, 0, 0, 0,-8
+x4h_wa:       times 2 dw  0, 0, 0, 0, 0, 0, 0,16
+; (m*H + a) >> s: b b c c, 8x8c then 8x16c
+x4h_bc:       times 8 dd 17
+              times 8 dd 16
+              times 8 dd 5
+              times 2 dd 17, 17, 5, 5
+              times 2 dd 16, 16, 32, 32
+              times 2 dd 5, 5, 6, 6
+x4h_xm3:      times 2 dd -3,-2,-1, 0
+x4h_m3:       times 8 dd -3
+x4h_m7:       times 8 dd -7
+x4h_d16:      times 8 dd 16
+%endif
 %if HIGH_BIT_DEPTH == 0
 ; the dc bytes of a row of 4x4 blocks, u | v
 x4c_dc_shuf:  times 2 db  0, 0, 0, 0, 1, 1, 1, 1, 8, 8, 8, 8, 9, 9, 9, 9
@@ -6397,10 +6430,226 @@ cglobal intra_satd_x3_8x16c, 3,7,16
     INTRA_HBD_X3_END 14, 15, 6, 0
 %endmacro
 
+;-----------------------------------------------------------------------------
+; void intra_satd_x4_8x8c( uint16_t *fenc, uint16_t *fdec, int res[4] )  (DC, H, V, P)
+; void intra_satd_x4_8x16c( uint16_t *fenc, uint16_t *fdec, int res[4] )
+; as the 8-bit ones in the layout of the 16 wide satd: a register is a fenc row,
+; u | v (chroma) or columns 0-7 | 8-15, so pred - fenc goes straight into the
+; vertical SATD_8x4_SSE. P is built in dwords (b*15 overflows words at 10-bit).
+;-----------------------------------------------------------------------------
+; m%1 = punpckhwd of rows %3, %3+1; lane 0 from fdec+row*FDEC_STRIDEB-16, lane 1 at +%4
+%macro X4H_LEFT2 4 ; dst, tmp, row, lane 1 offset
+    movu          xm%1, [r1+(%3)*FDEC_STRIDEB-16]
+    vinserti128    m%1, m%1, [r1+(%3)*FDEC_STRIDEB-16+%4], 1
+    movu          xm%2, [r1+(%3+1)*FDEC_STRIDEB-16]
+    vinserti128    m%2, m%2, [r1+(%3+1)*FDEC_STRIDEB-16+%4], 1
+    punpckhwd      m%1, m%2
+%endmacro
+
+; m%1: per lane, word 7 of the loads of rows %5..%5+7 (the left pixels)
+%macro X4H_LEFT8 6 ; dst, 3*tmp, first row, lane 1 offset
+    X4H_LEFT2     %1, %2, %5,   %6
+    X4H_LEFT2     %2, %3, %5+2, %6
+    punpckhdq     m%1, m%2
+    X4H_LEFT2     %2, %3, %5+4, %6
+    X4H_LEFT2     %3, %4, %5+6, %6
+    punpckhdq     m%2, m%3
+    punpckhqdq    m%1, m%2
+%endmacro
+
+; m%1 += dwords of words m%2 by %3 (m%4 tmp)
+%macro X4H_DOTA 4
+%if cpuflag(avx512icl)
+    vpdpwssd      m%1, m%2, %3
+%else
+    pmaddwd       m%4, m%2, %3
+    paddd         m%1, m%4
+%endif
+%endmacro
+
+; m0-m3 = m%1 - fenc rows %2..%2+3, into the SATD accumulator m6
+%macro X4H_PASS1 3 ; pred, first row, swap/add
+    psubw          m0, m%1, [r0+(%2+0)*FENC_STRIDEB]
+    psubw          m1, m%1, [r0+(%2+1)*FENC_STRIDEB]
+    psubw          m2, m%1, [r0+(%2+2)*FENC_STRIDEB]
+    psubw          m3, m%1, [r0+(%2+3)*FENC_STRIDEB]
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, %3
+%endmacro
+
+; P over %1 rows: x 0-3 in m8, 4-7 in m9 (16x16 lanes: 0-3 | 8-11, 4-7 | 12-15),
+; dwords, advanced by c (m10); %2: fold words over 32767
+%macro X4H_P_MODE 2
+%assign x4y 0
+%rep %1
+%assign x4k x4y&3
+    psrad          m4, m8, 5
+    psrad          m5, m9, 5
+    packusdw       m %+ x4k, m4, m5
+    pminsw         m %+ x4k, [pw_pixel_max]
+    psubw          m %+ x4k, [r0+x4y*FENC_STRIDEB]
+%if x4y < %1-1
+    paddd          m8, m10
+    paddd          m9, m10
+%endif
+%if (x4y&3) == 3
+%if x4y == 3
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endif
+%endif
+%assign x4y x4y+1
+%endrep
+    INTRA_HBD_FOLD  6, %2
+%endmacro
+
+; m8, m9 = row 0 of P from m2 = a + 16 + b*(x0-%2) per lane, m9 = b, m10 = c, m1 tmp
+%macro X4H_P_ROW0 2 ; c factor of row 0 (memory), b*x of x0-3 (memory)
+    pmulld         m1, m9, %2
+    paddd          m2, m1
+    pmulld         m1, m10, %1
+    paddd          m8, m2, m1
+    pslld          m1, m9, 2
+    paddd          m9, m8, m1
+%endmacro
+
+%macro INTRA_SATD_X4_C10 1 ; height
+cglobal intra_satd_x4_8x%1c, 3,3,16
+    X4H_LEFT8      12, 0, 1, 2, 0, 32       ; l0-l7, u | v
+%if %1 == 16
+    X4H_LEFT8      13, 0, 1, 2, 8, 32       ; l8-l15
+%endif
+    movu          xm14, [r1-FDEC_STRIDEB]
+    vinserti128    m14, m14, [r1-FDEC_STRIDEB+32], 1   ; t0-t7 (V)
+    movu          xm15, [r1-FDEC_STRIDEB-16]
+    vinserti128    m15, m15, [r1-FDEC_STRIDEB+16], 1   ; the corner in word 7
+
+    ; DC: s0-s3 (8x16c: s0-s5) of t0-3, t4-7, l0-3, l4-7, l8-11, l12-15
+    pmaddwd        m0, m14, [pw_1]
+    pmaddwd        m1, m12, [pw_1]
+    shufps         m2, m0, m1, q2020
+    shufps         m0, m1, q3131
+    paddd          m0, m2
+%if %1 == 16
+    pmaddwd        m2, m13, [pw_1]
+    shufps         m3, m1, m2, q2020
+    shufps         m1, m2, q3131
+    paddd          m1, m3
+    packssdw       m0, m1                   ; s0 s1 s2 s3 s2 s3 s4 s5
+%else
+    packssdw       m0, m0
+%endif
+    pshufb         m1, m0, [x4c_dc_a]
+    pshufb         m0, [x4c_dc_b]
+    paddw          m0, m1
+    paddw          m0, [pw_4]
+    psrlw         m11, m0, 3                ; the blocks' dc, two a row of blocks
+
+    ; P: H = sum (i+1)*(t[4+i]-t[2-i]), V likewise (8x16c: (i+1)*(l[8+i]-l[6-i]) over 8),
+    ; t[-1] = l[-1] = the corner
+    pmaddwd        m0, m14, [x4h_wp]
+    X4H_DOTA        0, 15, [x4h_wc], 2
+%if %1 == 16
+    pmaddwd        m1, m12, [x4h_wl]
+    X4H_DOTA        1, 13, [x4h_wl+32], 2
+    X4H_DOTA        1, 15, [x4h_wc+32], 2
+%else
+    pmaddwd        m1, m12, [x4h_wp]
+    X4H_DOTA        1, 15, [x4h_wc], 2
+%endif
+    shufps         m2, m0, m1, q2020
+    shufps         m0, m1, q3131
+    paddd          m0, m2
+    pshufd         m2, m0, q2301
+    paddd          m0, m2                   ; H H V V
+%if %1 == 16
+    pmulld         m0, [x4h_bc+96]
+    paddd          m0, [x4h_bc+128]
+    vpsravd        m0, m0, [x4h_bc+160]     ; b b c c: (17*H+16)>>5, (5*V+32)>>6
+%else
+    pmulld         m0, [x4h_bc]
+    paddd          m0, [x4h_bc+32]
+    psrad          m0, 5                    ; b b c c: (17*x+16)>>5
+%endif
+    pmaddwd        m2, m14, [x4h_wa]
+%if %1 == 16
+    X4H_DOTA        2, 13, [x4h_wa], 1
+%else
+    X4H_DOTA        2, 12, [x4h_wa], 1
+%endif
+    pshufd         m2, m2, q3333
+    paddd          m2, [x4h_d16]            ; a + 16 = 16*(t7 + l7 (8x16c l15)) + 16
+    pshufd         m9, m0, q0000            ; b
+    pshufd        m10, m0, q2222            ; c
+%if %1 == 16
+    X4H_P_ROW0     [x4h_m7], [x4h_xm3]
+%else
+    X4H_P_ROW0     [x4h_m3], [x4h_xm3]
+%endif
+
+    ; DC
+%assign x4g 0
+%rep %1/4
+    pshufb         m5, m11, [x4h_dc_shuf+x4g*32]
+%if x4g
+    X4H_PASS1       5, 4*x4g, add
+%else
+    X4H_PASS1       5, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_HBD_FOLD  6, %1 == 16
+    SWAP            6, 11
+    ; H
+%assign x4y 0
+%rep %1
+%assign x4k x4y&3
+%if x4y < 8
+    pshufb         m %+ x4k, m12, [x4h_h_shuf+x4y*32]
+%else
+    pshufb         m %+ x4k, m13, [x4h_h_shuf+(x4y-8)*32]
+%endif
+    psubw          m %+ x4k, [r0+x4y*FENC_STRIDEB]
+%if (x4y&3) == 3
+%if x4y == 3
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%else
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endif
+%endif
+%assign x4y x4y+1
+%endrep
+    INTRA_HBD_FOLD  6, %1 == 16
+    SWAP            6, 12
+    ; V
+%assign x4g 0
+%rep %1/4
+%if x4g
+    X4H_PASS1      14, 4*x4g, add
+%else
+    X4H_PASS1      14, 4*x4g, swap
+%endif
+%assign x4g x4g+1
+%endrep
+    INTRA_HBD_FOLD  6, %1 == 16
+    SWAP            6, 14
+    ; P
+    X4H_P_MODE     %1, %1 == 16
+    X4_END         11, 12, 14, 6
+%endmacro
+
+%macro INTRA_SATD_X4_HBD 0
+INTRA_SATD_X4_C10 8
+INTRA_SATD_X4_C10 16
+%endmacro
+
 INIT_YMM avx2
 INTRA_SATD_X3_16x16_HBD
 INTRA_SATD_X3_8x8C_HBD
 INTRA_SATD_X3_8x16C_HBD
+INTRA_SATD_X4_HBD
+INIT_YMM avx512icl
+INTRA_SATD_X4_HBD
 INIT_ZMM avx512
 INTRA_SATD_X3_16x16_HBD
 %endif
