@@ -1725,6 +1725,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     {
 #if ARCH_X86_64
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
+        pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX
