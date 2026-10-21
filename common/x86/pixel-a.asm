@@ -355,6 +355,12 @@ ads_idx_w: dw  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
 weightp_mm_perm:  db  0,0,32,0,  4,0,36,0, 16,0,48,0, 20,0,52,0
                   db  8,0,40,0, 12,0,44,0, 24,0,56,0, 28,0,60,0
 weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
+%if HIGH_BIT_DEPTH == 0
+; satd_mcc width 8: lane 0 as mcc_ch_shuf, lane 1 the pairs of bytes 8-17 from a load at +2
+ALIGN 32
+mcc_ch_shuf8: db 0, 2, 1, 3, 2, 4, 3, 5, 4, 6, 5, 7, 6, 8, 7, 9
+              db 6, 8, 7, 9, 8,10, 9,11,10,12,11,13,12,14,13,15
+%endif
 
 SECTION .text
 
@@ -10272,14 +10278,15 @@ ADS_ICL 1, _zmm
 ; interleaved uv fenc plane, with the stride of src. 8-bit: fenc is int16_t
 ; 64*fenc - 32 from pixel_satd_mcc_fenc_pre, 32 bytes per row (width 8),
 ; per rows k | k+4 (width 4) or per rows 0 | 2 and 1 | 3 (4x4). The filter is
-; mc_chroma's in two exact passes, on words (8-bit pixels zero extended), as
-; the 10-bit AVX2 mc_chroma; 8-bit 4x4 in one, pmaddubsw as the 8-bit one.
+; mc_chroma's: high bit depth in two exact passes on words, as the 10-bit AVX2
+; mc_chroma; 8-bit in one, pmaddubsw on byte pairs (i, i+2) as the 8-bit one.
 ; Rows stay interleaved: u in even words, v in odd words, so the 4x4 Hadamard
 ; columns are dwords and u and v never mix. Width 8: one row per ymm; width 4:
 ; rows k and k+4 per ymm; 4x4: rows 0 | 2 and 1 | 3. Width 8: height 4, 8 or
 ; 16; width 4: height 4, 8 or 16.
 ;-----------------------------------------------------------------------------
-; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15
+; H of the interleaved row at %2 (and at %3 into lane 1) -> m%1; clobbers m15.
+; 8-bit: the row's byte pairs (i, i+2) by the m12 shuffle (width 8: lane 1 from %2+2)
 %macro MCC_SATD_H 2-3
 %if HIGH_BIT_DEPTH && %0 == 3
     movu         xm%1, [%2]
@@ -10289,34 +10296,38 @@ ADS_ICL 1, _zmm
 %elif HIGH_BIT_DEPTH
     movu          m%1, [%2]
     movu          m15, [%2+4]
-%elif %0 == 3
-    movq         xm%1, [%2]
-    movhps       xm%1, [%3]
-    vpmovzxbw     m%1, xm%1
-    movq         xm15, [%2+2]
-    movhps       xm15, [%3+2]
-    vpmovzxbw     m15, xm15
-%else
-    vpmovzxbw     m%1, [%2]
-    vpmovzxbw     m15, [%2+2]
 %endif
+%if HIGH_BIT_DEPTH
     pmullw        m%1, m8
     pmullw        m15, m9
     paddw         m%1, m15
+%elif %0 == 3
+    movu         xm%1, [%2]
+    vinserti128   m%1, m%1, [%3], 1
+    pshufb        m%1, m12
+%else
+    movu         xm%1, [%2]
+    vinserti128   m%1, m%1, [%2+2], 1
+    pshufb        m%1, m12
+%endif
 %endmacro
 
 ; prediction from H m%2 (row above) and m%3 -> m%1, interleaved uv; clobbers m15.
-; With %4 = 64*fenc - 32: minus fenc, (V+32-64*fenc)>>6 = ((V+32)>>6) - fenc
+; 8-bit: from the byte pairs of rows k (m%2) and k+1 (m%3), minus %4 = 64*fenc - 32:
+; (V+32-64*fenc)>>6 = ((V+32)>>6) - fenc
 %macro MCC_SATD_V 3-4
+%if HIGH_BIT_DEPTH
     pmullw        m15, m%2, m10
     pmullw        m%1, m%3, m11
     paddw         m%1, m15
-%if %0 == 4
-    psubw         m%1, %4
-    psraw         m%1, 6
-%else
     paddw         m%1, m12
     psrlw         m%1, 6
+%else
+    pmaddubsw     m15, m%2, m8
+    pmaddubsw     m%1, m%3, m9
+    paddw         m%1, m15
+    psubw         m%1, %4
+    psraw         m%1, 6
 %endif
 %endmacro
 
@@ -10405,11 +10416,32 @@ cglobal pixel_satd_mcc, 4,8,16
     and          r4d, 7
     and          r5d, 7
 %if HIGH_BIT_DEPTH == 0
+    ; pmaddubsw on byte pairs (i, i+2) of rows k and k+1 with mc_chroma's
+    ; A | B<<8 = (8-dx | dx<<8)*(8-dy) and C | D<<8 = (8-dx | dx<<8)*dy: each
+    ; at most 255*64, minus 64*fenc - 32, >> 6 = ((V+32)>>6) - fenc
+    imul         r6d, r4d, 255
+    add          r6d, 8               ; 8-dx | dx<<8
+    mov          r4d, 8
+    sub          r4d, r5d
+    imul         r4d, r6d
+    imul         r5d, r6d
+    movd         xm8, r4d
+    vpbroadcastw  m8, xm8              ; A | B<<8
+    movd         xm9, r5d
+    vpbroadcastw  m9, xm9              ; C | D<<8
+    lea           r4, [r3*3]
     mov          r6d, r6m
     add          r6d, r7m
     cmp          r6d, 8               ; width + height 8: 4x4
     je .w4h4
-%endif
+    mova         m12, [mcc_ch_shuf8]
+    mov          r7d, r7m
+    pxor          m6, m6
+    cmp dword    r6m, 4
+    jne .w8
+    vbroadcasti128 m12, [mcc_ch_shuf]
+    jmp .w4
+%else
     mov          r6d, 8
     sub          r6d, r4d
     movd         xm8, r6d
@@ -10422,15 +10454,15 @@ cglobal pixel_satd_mcc, 4,8,16
     vpbroadcastw m10, xm10             ; 8-dy
     movd        xm11, r5d
     vpbroadcastw m11, xm11             ; dy
-%if HIGH_BIT_DEPTH
     vpbroadcastw m12, [pw_32]
-%endif
     lea           r4, [r3*3]
     mov          r7d, r7m
     pxor          m6, m6
     cmp dword    r6m, 4
     je .w4
+%endif
 
+.w8:
     MCC_SATD_H     7, r2
 .loop8:
 %assign mcc_k 0
@@ -10516,21 +10548,7 @@ cglobal pixel_satd_mcc, 4,8,16
     psubw         m0, m2
     psubw         m1, m3
 %else
-    ; pmaddubsw on byte pairs (i, i+2) of rows k and k+1 with mc_chroma's
-    ; A | B<<8 = (8-dx | dx<<8)*(8-dy) and C | D<<8 = (8-dx | dx<<8)*dy: each
-    ; at most 255*64, minus 64*fenc - 32, >> 6 = ((V+32)>>6) - fenc
-    imul         r6d, r4d, 255
-    add          r6d, 8               ; 8-dx | dx<<8
-    mov          r4d, 8
-    sub          r4d, r5d
-    imul         r4d, r6d
-    imul         r5d, r6d
-    movd         xm8, r4d
-    vpbroadcastw  m8, xm8              ; A | B<<8
-    movd         xm9, r5d
-    vpbroadcastw  m9, xm9              ; C | D<<8
     vbroadcasti128 m7, [mcc_ch_shuf]
-    lea           r4, [r3*3]
     movu         xm0, [r2]
     vinserti128   m0, m0, [r2+r3*2], 1 ; rows 0 | 2
     movu         xm1, [r2+r3]
