@@ -3101,6 +3101,122 @@ SAD_ROW 4, 4
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_list_min_WxH( uint8_t *fenc, uint8_t **src, intptr_t i_stride,
+;                             int n, const int32_t *bias, int best )
+; int pixel_sad_avg2_list_min_WxH( ... ): the candidates avg( src[2i], src[2i+1] )
+; min( best, (sad_i << 4) + bias[i] ), i < n, 1 <= n <= 15, signed
+;
+; fenc row pairs stay in m4.. across the candidates; a candidate a pass, rows
+; k, k+1 a ymm, psadbw, the sum then a cmov min. 8 wide: rows read 16 wide as in
+; sad_avg2_8x8 (8 bytes past the block, +1 for avg2), qword 1 of each lane
+; dropped at the end.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; rows 2p, 2p+1 of the candidate at r6 (r7) -> m2, its psadbw added to m(p&1);
+; r8 = 3*i_stride, the pointers step every second pair
+%macro SAD_LIST_PAIR 4 ; avg2, p, pairs, first pair in m0/m1
+%assign %%a (%2) & 1
+%assign %%f 4+(%2)
+%if %2 & 1
+    movu          xm2, [r6+2*r2]
+    vinserti128    m2, m2, [r6+r8], 1
+%else
+    movu          xm2, [r6]
+    vinserti128    m2, m2, [r6+r2], 1
+%endif
+%if %1
+%if %2 & 1
+    movu          xm3, [r7+2*r2]
+    vinserti128    m3, m3, [r7+r8], 1
+%else
+    movu          xm3, [r7]
+    vinserti128    m3, m3, [r7+r2], 1
+%endif
+    pavgb          m2, m3
+%endif
+%if %4
+    psadbw        m%[%%a], m2, m%[%%f]
+%else
+    psadbw         m2, m%[%%f]
+    paddd         m%[%%a], m2
+%endif
+%if (%2 & 1) && %2 < %3-1
+    lea            r6, [r6+4*r2]
+%if %1
+    lea            r7, [r7+4*r2]
+%endif
+%endif
+%endmacro
+
+; pairs p0..p1-1 of the candidate src[r3] -> m0 + m1
+%macro SAD_LIST_ROWS 4 ; avg2, p0, p1, pairs
+%assign %%p %2
+%rep %3-%2
+    SAD_LIST_PAIR %1, %%p, %4, %%p < %2+2
+%assign %%p %%p+1
+%endrep
+%endmacro
+
+; m0 + m1 -> xm0 dword 0
+%macro SAD_LIST_SUM 1 ; width
+    paddd          m0, m1
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+%if %1 == 16
+    punpckhqdq    xm1, xm0, xm0
+    paddd         xm0, xm1
+%endif
+%endmacro
+
+%macro SAD_LIST_FENC 1 ; pairs
+%assign %%p 0
+%rep %1
+%assign %%f 4+%%p
+    movu          m%[%%f], [r0+%%p*2*FENC_STRIDE]
+%assign %%p %%p+1
+%endrep
+%endmacro
+
+%macro SAD_LIST_MIN 3 ; avg2, width, height
+%if %1
+cglobal pixel_sad_avg2_list_min_%2x%3, 6,9,4+%3/2
+%else
+cglobal pixel_sad_list_min_%2x%3, 6,9,4+%3/2
+%endif
+    SAD_LIST_FENC %3/2
+    lea            r8, [r2*3]
+.loop:
+    mov            r6, [r1]
+%if %1
+    mov            r7, [r1+8]
+%endif
+    SAD_LIST_ROWS %1, 0, %3/2, %3/2
+    SAD_LIST_SUM %2
+    movd          r6d, xm0
+    shl           r6d, 4
+    add           r6d, [r4]
+    cmp           r6d, r5d
+    cmovl         r5d, r6d
+    add            r1, 8+8*%1
+    add            r4, 4
+    dec           r3d
+    jg .loop
+    mov           eax, r5d
+    RET
+%endmacro
+
+INIT_YMM avx2
+SAD_LIST_MIN 0, 16, 16
+SAD_LIST_MIN 0, 16, 8
+SAD_LIST_MIN 0, 8, 16
+SAD_LIST_MIN 0, 8, 8
+SAD_LIST_MIN 1, 16, 16
+SAD_LIST_MIN 1, 16, 8
+SAD_LIST_MIN 1, 8, 16
+SAD_LIST_MIN 1, 8, 8
+%endif ; ARCH_X86_64
+
 %macro SAD_X_W4_AVX512 2 ; x, h
 cglobal pixel_sad_x%1_4x%2, %1+2,%1+3
     mov           t1d, 0xa
