@@ -1139,6 +1139,32 @@ cglobal dequant_8x8_flat16, 0,3
     RET
 %endif
 
+%if HIGH_BIT_DEPTH
+; avx512icl: the right shift path adds the rounding inside VNNI vpdpwssd
+; (the accumulator starts at f)
+INIT_ZMM avx512icl
+cglobal dequant_4x4, 0,3
+    DEQUANT_START_AVX512 6
+    mova          m0, [dmf]
+    sub          t0d, 4
+    jl .rshift
+    pmaddwd       m0, [r0]
+    vpbroadcastd  m1, t0d
+    vpsllvd       m0, m1
+    mova        [r0], m0
+    RET
+.rshift:
+    mov          r1d, 1<<31
+    shrx         r1d, r1d, t0d ; 1 << (-i_qbits-1)
+    neg          t0d
+    vpbroadcastd  m1, r1d
+    vpbroadcastd  m2, t0d
+    vpdpwssd      m1, m0, [r0]
+    vpsravd       m1, m2
+    mova        [r0], m1
+    RET
+%endif ; HIGH_BIT_DEPTH
+
 %undef dmf
 
 %macro DEQUANT_DC 2
