@@ -28,6 +28,8 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
+%assign cabac_oldlps 0
+
 SECTION_RODATA 64
 
 ; rd 4x4 sig/last map (avx512icl): entropy[state^bin] split in bytes, and
@@ -731,6 +733,151 @@ cabac_putbyte_%1:
 
 CABAC asm
 CABAC bmi2
+
+; test: the speed-next decision_bmi2 (range_lps load on the range chain)
+%macro CABAC_OLDLPS 1
+; t3 must be ecx, since it's used for shift.
+%if WIN64
+    DECLARE_REG_TMP 3,1,2,0,5,6,4,4
+%elif ARCH_X86_64
+    DECLARE_REG_TMP 0,1,2,3,4,5,6,6
+%else
+    DECLARE_REG_TMP 0,4,2,1,3,5,6,2
+%endif
+
+cglobal cabac_encode_decision_%1, 1,7
+    movifnidn t1d, r1m
+    mov   t5d, [r0+cb.range]
+    movzx t6d, byte [r0+cb.state+t1]
+    movifnidn t0,  r0 ; WIN64
+    mov   t4d, ~1
+    mov   t3d, t5d
+    and   t4d, t6d
+    shr   t5d, 6
+    movifnidn t2d, r2m
+%if WIN64
+    PUSH r7
+%endif
+%ifdef PIC
+    lea    r7, [$$]
+%endif
+    LOAD_GLOBAL t5d, cabac_range_lps-4, t5, t4*2, t4
+    LOAD_GLOBAL t4d, cabac_transition, t2, t6*2, t4
+    and   t6d, 1
+    sub   t3d, t5d
+    cmp   t6d, t2d
+    mov   t6d, [t0+cb.low]
+    lea    t2, [t6+t3]
+    cmovne t3d, t5d
+    cmovne t6d, t2d
+    mov   [t0+cb.state+t1], t4b
+;cabac_encode_renorm
+    mov   t4d, t3d
+%if 1
+    lzcnt t3d, t3d
+    sub   t3d, 23
+    shlx  t4d, t4d, t3d
+    shlx  t6d, t6d, t3d
+%else
+    shr   t3d, 3
+    LOAD_GLOBAL t3d, cabac_renorm_shift, t3
+    shl   t4d, t3b
+    shl   t6d, t3b
+%endif
+%if WIN64
+    POP r7
+%endif
+    mov   [t0+cb.range], t4d
+    add   t3d, [t0+cb.queue]
+    jge cabac_putbyte_%1
+.update_queue_low:
+    mov   [t0+cb.low], t6d
+    mov   [t0+cb.queue], t3d
+    RET
+
+cglobal cabac_encode_bypass_%1, 2,3
+    mov       t7d, [r0+cb.low]
+    and       r1d, [r0+cb.range]
+    lea       t7d, [t7*2+r1]
+    movifnidn  t0, r0 ; WIN64
+    mov       t3d, [r0+cb.queue]
+    inc       t3d
+%if ARCH_X86_64 ; .putbyte compiles to nothing but a jmp
+    jge cabac_putbyte_%1
+%else
+    jge .putbyte
+%endif
+    mov   [t0+cb.low], t7d
+    mov   [t0+cb.queue], t3d
+    RET
+%if ARCH_X86_64 == 0
+.putbyte:
+    PROLOGUE 0,7
+    movifnidn t6d, t7d
+    jmp cabac_putbyte_%1
+%endif
+
+%if 0
+cglobal cabac_encode_terminal_%1, 1,3
+    sub  dword [r0+cb.range], 2
+; shortcut: the renormalization shift in terminal
+; can only be 0 or 1 and is zero over 99% of the time.
+    test dword [r0+cb.range], 0x100
+    je .renorm
+    RET
+.renorm:
+    shl  dword [r0+cb.low], 1
+    shl  dword [r0+cb.range], 1
+    inc  dword [r0+cb.queue]
+    jge .putbyte
+    RET
+.putbyte:
+    PROLOGUE 0,7
+    movifnidn t0, r0 ; WIN64
+    mov t3d, [r0+cb.queue]
+    mov t6d, [t0+cb.low]
+%endif
+
+cabac_putbyte_%1:
+    ; alive: t0=cb t3=queue t6=low
+%if WIN64
+    DECLARE_REG_TMP 3,6,1,0,2,5,4
+%endif
+%if 1
+    add   t3d, 10
+    shrx  t2d, t6d, t3d
+    bzhi  t6d, t6d, t3d
+    sub   t3d, 18
+%else
+    mov   t1d, -1
+    add   t3d, 10
+    mov   t2d, t6d
+    shl   t1d, t3b
+    shr   t2d, t3b ; out
+    not   t1d
+    sub   t3d, 18
+    and   t6d, t1d
+%endif
+    mov   t5d, [t0+cb.bytes_outstanding]
+    cmp   t2b, 0xff ; FIXME is a 32bit op faster?
+    jz    .postpone
+    mov    t1, [t0+cb.p]
+    add   [t1-1], t2h
+    dec   t2h
+.loop_outstanding:
+    mov   [t1], t2h
+    inc   t1
+    dec   t5d
+    jge .loop_outstanding
+    mov   [t1-1], t2b
+    mov   [t0+cb.p], t1
+.postpone:
+    inc   t5d
+    mov   [t0+cb.bytes_outstanding], t5d
+    jmp mangle(private_prefix %+ _cabac_encode_decision_%1.update_queue_low)
+%endmacro
+
+CABAC_OLDLPS bmi2_oldlps
 
 ; temporaries of COEFF_ABS_LEVEL_GT1 and the rd sig/last code
 %macro RD_TMP_REGS 3 ; t0, t1, ctx
@@ -1820,6 +1967,41 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 ; in: r2d = state if no %2; out: r2d = next state
 ; clobbers r1, r4-r6
 %macro CABAC_BIN 1-2
+%if cabac_oldlps
+%if %0 > 1
+    movzx   r2d, byte [%2]
+%endif
+    mov     r4d, ranged
+    mov     r5d, r2d
+    shr     r4d, 6
+    and     r5d, ~1
+%ifdef PIC
+    lea      r5, [r7+r5*2]
+    movzx   r4d, byte [r5+r4+cabac_range_lps-4-$$]
+%else
+    movzx   r4d, byte [cabac_range_lps-4+r4+r5*2]
+%endif
+    sub  ranged, r4d
+    lea      r6, [lowq+rangeq]
+    test    r2b, 1
+%if %1
+    cmovz  ranged, r4d
+    cmovz    lowq, r6
+%else
+    cmovnz ranged, r4d
+    cmovnz   lowq, r6
+%endif
+    movzx   r2d, byte [cabac_transition+%1+r2*2 GLOBAL]
+%if %0 > 1
+    mov    [%2], r2b
+%endif
+    lzcnt   r5d, ranged
+    sub     r5d, 23
+    shlx ranged, ranged, r5d
+    shlx   lowq, lowq, r5
+    add  queued, r5d
+    PUTBYTE
+%else
 %if %0 > 1
     movzx   r2d, byte [%2]
 %endif
@@ -1849,6 +2031,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     shlx   lowq, lowq, r5
     add  queued, r5d
     PUTBYTE
+%endif
 %endmacro
 
 ; %1 = 8x8 mode, %2 = count_m1
@@ -1924,8 +2107,12 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 
 ; %2 = 4:2:2 chroma dc (cabac_block_residual_422_dc_internal, ctx_block_cat = DCT_CHROMA_DC)
 %macro CABAC_RESIDUAL_BMI2 1-2 0
-%if %2
+%if %2 && cabac_oldlps
+cglobal cabac_block_residual_422_dc_internal_oldlps, 4,15,0,-4*72
+%elif %2
 cglobal cabac_block_residual_422_dc_internal, 4,15,0,-4*72
+%elif cabac_oldlps
+cglobal cabac_block_residual_internal_oldlps, 4,15,0,-4*72
 %else
 cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %endif
@@ -2241,4 +2428,10 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+%assign cabac_oldlps 1
+INIT_XMM avx512
+CABAC_RESIDUAL_BMI2 coeff_last_avx512
+INIT_XMM avx512icl
+CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+%assign cabac_oldlps 0
 %endif

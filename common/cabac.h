@@ -79,6 +79,8 @@ void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb );
 #if HAVE_MMX
 #define x264_cabac_encode_decision_bmi2 x264_template(cabac_encode_decision_bmi2)
 void x264_cabac_encode_decision_bmi2( x264_cabac_t *cb, int i_ctx, int b );
+#define x264_cabac_encode_decision_bmi2_oldlps x264_template(cabac_encode_decision_bmi2_oldlps)
+void x264_cabac_encode_decision_bmi2_oldlps( x264_cabac_t *cb, int i_ctx, int b );
 /* the BMI2 version where the CPU has it, set by x264_encoder_open. Both give
  * the same result; the BMI2 one renormalizes with lzcnt/shlx instead of a
  * table load, which sits on the serial range dependency from one bin to the

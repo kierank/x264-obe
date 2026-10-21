@@ -5012,7 +5012,7 @@ static void run_cabac_decision_states_c( x264_t *h, uint8_t *dst, const uint8_t 
 }
 static void run_cabac_decision_states_bmi2( x264_t *h, uint8_t *dst, const uint8_t *src, const uint8_t *st )
 {
-    run_cabac_decision_states( h, dst, src, st, x264_cabac_encode_decision_bmi2 );
+    run_cabac_decision_states( h, dst, src, st, x264_cabac_encode_decision_bmi2_oldlps );
 }
 #else
 #define run_cabac_decision_asm run_cabac_decision_c
