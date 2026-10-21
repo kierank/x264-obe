@@ -586,6 +586,8 @@ void x264_frame_init_lowres_core8_avx512icl( pixel *src0, uint8_t *dst0, uint8_t
                                              intptr_t src_stride, intptr_t dst_stride, int width, int height );
 #define x264_plane_msb8_avx2 x264_template(plane_msb8_avx2)
 void x264_plane_msb8_avx2( uint8_t *msb, pixel *src, intptr_t i_stride, int w, int h );
+#define x264_plane_msb8_avx512icl x264_template(plane_msb8_avx512icl)
+void x264_plane_msb8_avx512icl( uint8_t *msb, pixel *src, intptr_t i_stride, int w, int h );
 #define x264_mc_copy_16x16_msb8_avx2 x264_template(mc_copy_16x16_msb8_avx2)
 void x264_mc_copy_16x16_msb8_avx2( pixel *dst, uint8_t *msb, pixel *src, intptr_t i_src );
 
@@ -1495,6 +1497,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
         pf->integral_init8v = x264_integral_init8v_avx512icl;
+        pf->plane_msb8 = x264_plane_msb8_avx512icl;
 #endif
     }
 #else // !HIGH_BIT_DEPTH

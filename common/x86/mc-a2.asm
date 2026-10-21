@@ -127,6 +127,13 @@ deint_rgb4_icl:
 %endrep
 %endif
 
+%if HIGH_BIT_DEPTH
+ALIGN 32
+; plane_msb8 avx512icl: the low bytes of the words of two registers
+msb8_even: db  0,  2,  4,  6,  8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
+           db 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62
+%endif
+
 SECTION .text
 
 cextern pb_0
@@ -3526,11 +3533,14 @@ FRAME_INIT_LOWRES8
 ; stride pixels (src) and stride bytes (msb) apart
 ;-----------------------------------------------------------------------------
 %macro PLANE_MSB8 0
-cglobal plane_msb8, 5,6,2
+cglobal plane_msb8, 5,6,4
     movsxdifnidn r3, r3d
     add          r0, r3
     lea          r1, [r1+r3*2]
     neg          r3
+%if cpuflag(avx512icl)
+    movu         m3, [msb8_even]
+%endif
 .loopy:
     mov          r5, r3              ; -w
     cmp          r5, -32
@@ -3540,8 +3550,12 @@ cglobal plane_msb8, 5,6,2
     movu         m1, [r1+r5*2+32]
     psrlw        m0, 2
     psrlw        m1, 2
+%if cpuflag(avx512icl)
+    vpermt2b     m0, m3, m1
+%else
     packuswb     m0, m1              ; 0-7 16-23 | 8-15 24-31
     vpermq       m0, m0, q3120
+%endif
     movu    [r0+r5], m0
     add          r5, 32
     cmp          r5, -32
@@ -3551,8 +3565,12 @@ cglobal plane_msb8, 5,6,2
     jz .next
     movu         m0, [r1+r5*2]
     psrlw        m0, 2
+%if cpuflag(avx512icl)
+    vpermb       m0, m3, m0
+%else
     vextracti128 xm1, m0, 1
     packuswb    xm0, xm1
+%endif
     movu    [r0+r5], xm0
 .next:
     lea          r1, [r1+r2*2]
@@ -3563,6 +3581,8 @@ cglobal plane_msb8, 5,6,2
 %endmacro
 
 INIT_YMM avx2
+PLANE_MSB8
+INIT_YMM avx512icl
 PLANE_MSB8
 
 ;-----------------------------------------------------------------------------
