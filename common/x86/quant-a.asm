@@ -138,6 +138,11 @@ optchroma_col2x4: dd 1, 1, 1, 1, 1, 1, 1, 1
                   dd 1,-1,-1, 1, 1,-1,-1, 1
 optchroma_2080:   dd 2080
 optchroma_m64:    dd -64
+%if HIGH_BIT_DEPTH
+; optimize_chroma_2x2_dc avx512icl
+optchroma_col2x2: dd 1, 1, 1, 1,  1, 1,-1,-1,  1,-1, 1,-1,  1,-1,-1, 1
+optchroma_32:     dd 32
+%endif
 
 SECTION .text
 
@@ -1742,6 +1747,10 @@ cglobal optimize_chroma_%1_dc, 2,6
 
 INIT_YMM avx512icl
 OPTIMIZE_CHROMA_ICL 2x4, 8
+%if HIGH_BIT_DEPTH
+INIT_XMM avx512icl
+OPTIMIZE_CHROMA_ICL 2x2, 4
+%endif
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------

@@ -155,6 +155,8 @@ int x264_optimize_chroma_2x2_dc_ssse3( dctcoef dct[4], int dequant_mf );
 int x264_optimize_chroma_2x2_dc_sse4( dctcoef dct[4], int dequant_mf );
 #define x264_optimize_chroma_2x2_dc_avx x264_template(optimize_chroma_2x2_dc_avx)
 int x264_optimize_chroma_2x2_dc_avx( dctcoef dct[4], int dequant_mf );
+#define x264_optimize_chroma_2x2_dc_avx512icl x264_template(optimize_chroma_2x2_dc_avx512icl)
+int x264_optimize_chroma_2x2_dc_avx512icl( dctcoef dct[4], int dequant_mf );
 #define x264_optimize_chroma_2x4_dc_avx512icl x264_template(optimize_chroma_2x4_dc_avx512icl)
 int x264_optimize_chroma_2x4_dc_avx512icl( dctcoef dct[8], int dequant_mf );
 #define x264_denoise_dct_mmx x264_template(denoise_dct_mmx)
