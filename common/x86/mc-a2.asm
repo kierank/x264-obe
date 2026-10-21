@@ -2384,6 +2384,48 @@ INIT_XMM avx
 INTEGRAL_INIT8H
 INIT_YMM avx2
 INTEGRAL_INIT8H
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; integral_init4h/8h, avx512icl: 32 outputs per iteration as words, log-step
+; window sums: a = p[x]+p[x+1], v = a[x]+a[x+2] (4-sum), v[x]+v[x+4] (8-sum).
+; Windows: valignq of the next 4 words, then immediate vpshrdq (word offsets
+; 1-3) or the valignq alone (offset 4). Reads and writes what avx2 does.
+;-----------------------------------------------------------------------------
+%macro INTEGRAL_ICL 1 ; 4/8
+cglobal integral_init%1h, 3,4,8
+    lea           r3, [r0+r2*2]
+    add           r1, r2
+    neg           r2
+.loop:
+    vpmovzxbw     m0, [r1+r2]           ; p[x..x+31]
+    vpmovzxbw    xm1, [r1+r2+32]        ; p[x+32..x+39]
+    valignq       m2, m1, m0, 1         ; p[x+4]
+    vpshrdq       m3, m0, m2, 16        ; p[x+1]
+    vpshrdq       m4, m0, m2, 32        ; p[x+2]
+    vpshrdq       m2, m0, m2, 48        ; p[x+3]
+    paddw         m0, m3
+    paddw         m4, m2
+    paddw         m0, m4                ; 4-sums
+%if %1 == 8
+    psrldq       xm3, xm1, 2
+    paddw        xm1, xm3               ; a[x+32..]
+    psrldq       xm3, xm1, 4
+    paddw        xm1, xm3               ; 4-sums at x+32..x+35
+    valignq       m1, m1, m0, 1
+    paddw         m0, m1
+%endif
+    paddw         m0, [r0+r2*2]
+    movu  [r3+r2*2], m0
+    add           r2, mmsize/2
+    jl .loop
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+INTEGRAL_ICL 4
+INTEGRAL_ICL 8
+%endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
 %macro INTEGRAL_INIT_8V 0
@@ -2512,6 +2554,51 @@ cglobal integral_init4v, 3,5
     add     r2, 32
     jl .loop
     RET
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; integral_init4v/8v, avx512icl: 32 sums per zmm; 4v's x+4 window is a valignq
+; with the next 4 sums (a qword load, as avx2 reads 8 bytes past the row)
+;-----------------------------------------------------------------------------
+INIT_ZMM avx512icl
+cglobal integral_init8v, 3,3
+    add           r1, r1
+    add           r0, r1
+    lea           r2, [r0+r1*8]
+    neg           r1
+.loop:
+    movu          m0, [r2+r1]
+    psubw         m0, [r0+r1]
+    movu     [r0+r1], m0
+    add           r1, mmsize
+    jl .loop
+    RET
+
+cglobal integral_init4v, 3,5,6
+    add           r2, r2
+    add           r0, r2
+    add           r1, r2
+    lea           r3, [r0+r2*4]
+    lea           r4, [r0+r2*8]
+    neg           r2
+.loop:
+    movu          m0, [r0+r2]           ; sum8[x]
+    movq         xm1, [r0+r2+mmsize]
+    movu          m2, [r4+r2]           ; sum8[x+8*stride]
+    movq         xm3, [r4+r2+mmsize]
+    valignq       m1, m1, m0, 1         ; sum8[x+4]
+    valignq       m3, m3, m2, 1
+    paddw         m1, m0
+    paddw         m3, m2
+    movu          m4, [r3+r2]
+    psubw         m3, m1
+    psubw         m4, m0
+    movu     [r0+r2], m3
+    movu     [r1+r2], m4
+    add           r2, mmsize
+    jl .loop
+    RET
+%endif
 
 %macro FILT8x4 7
     mova      %3, [r0+%7]
