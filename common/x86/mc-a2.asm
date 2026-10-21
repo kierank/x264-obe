@@ -107,6 +107,24 @@ lowres8_perm: db 0,4,1,5,2,6,3,7 ; vpermd indices, last so nothing after it move
 ALIGN 32
 pw_5_hbd: times 16 dw 5      ; hpel_filter: 5*(4*c - b)
 pw_8192_hbd: times 16 dw 8192 ; frame_init_lowres_core8: pmulhrsw, (x+2)>>2
+%else
+; avx512icl plane_copy_deinterleave_rgb: 16 pixels of pw bytes -> 16 a | 16 b | 16 c
+%assign lr_i 0
+deint_rgb3_icl:
+%rep 64
+%if lr_i < 48
+    db (lr_i & 15) * 3 + (lr_i >> 4)
+%else
+    db 0
+%endif
+    %assign lr_i lr_i+1
+%endrep
+%assign lr_i 0
+deint_rgb4_icl:
+%rep 64
+    db (lr_i & 15) * 4 + (lr_i >> 4)
+    %assign lr_i lr_i+1
+%endrep
 %endif
 
 SECTION .text
@@ -2072,6 +2090,72 @@ INIT_XMM sse2
 PLANE_DEINTERLEAVE_RGB
 INIT_XMM ssse3
 PLANE_DEINTERLEAVE_RGB
+
+%if ARCH_X86_64
+; avx512icl: 16 pixels per iteration, one masked load of 16*pw bytes and one vpermb
+; into a|b|c; the row tail loads and stores under masks, so it reads and writes
+; exactly w pixels (ssse3 writes w rounded up to 8 and reads past the row)
+INIT_ZMM avx512icl
+cglobal plane_copy_deinterleave_rgb, 8,13,3
+    mov          r8d, r8m               ; pw
+    mov          r9d, r9m               ; w
+    mov         r10d, r10m              ; h
+    lea          r11, [deint_rgb3_icl]
+    lea          r12, [deint_rgb4_icl]
+    cmp          r8d, 4
+    cmove        r11, r12
+    movu          m1, [r11]
+    mov          r11, -1
+    mov          r12, 0xffffffffffff
+    cmovne       r11, r12
+    kmovq         k1, r11               ; 16*pw bytes
+    mov         r11d, r9d
+    and         r11d, 15                ; tail pixels
+    xor         r12d, r12d
+    bts         r12d, r11d
+    dec         r12d
+    kmovw         k3, r12d              ; tail stores
+    imul        r11d, r8d               ; tail bytes, < 64
+    xor         r12d, r12d
+    bts          r12, r11
+    dec          r12
+    kmovq         k2, r12               ; tail loads
+    and          r9d, ~15
+    shl          r8d, 4                 ; source bytes per 16 pixels
+.row:
+    xor         r11d, r11d
+    xor         r12d, r12d
+    cmp         r11d, r9d
+    jge .tail
+.col:
+    vmovdqu8      m0 {k1}{z}, [r6+r12]
+    vpermb        m0, m1, m0
+    movu   [r0+r11], xm0
+    vextracti32x4 [r2+r11], m0, 1
+    vextracti32x4 [r4+r11], m0, 2
+    add          r11, 16
+    add          r12, r8
+    cmp         r11d, r9d
+    jl .col
+.tail:
+    kortestw      k3, k3
+    jz .next
+    vmovdqu8      m0 {k2}{z}, [r6+r12]
+    vpermb        m0, m1, m0
+    vextracti32x4 xm2, m0, 1
+    vmovdqu8 [r0+r11] {k3}, xm0
+    vmovdqu8 [r2+r11] {k3}, xm2
+    vextracti32x4 xm2, m0, 2
+    vmovdqu8 [r4+r11] {k3}, xm2
+.next:
+    add           r0, r1
+    add           r2, r3
+    add           r4, r5
+    add           r6, r7
+    dec         r10d
+    jg .row
+    RET
+%endif
 %endif ; !HIGH_BIT_DEPTH
 
 %macro PLANE_DEINTERLEAVE_V210 0

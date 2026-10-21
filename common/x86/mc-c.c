@@ -275,6 +275,7 @@
 #define x264_plane_copy_deinterleave_mmx x264_template(plane_copy_deinterleave_mmx)
 #define x264_plane_copy_deinterleave_rgb_sse2 x264_template(plane_copy_deinterleave_rgb_sse2)
 #define x264_plane_copy_deinterleave_rgb_ssse3 x264_template(plane_copy_deinterleave_rgb_ssse3)
+#define x264_plane_copy_deinterleave_rgb_avx512icl x264_template(plane_copy_deinterleave_rgb_avx512icl)
 #define x264_plane_copy_deinterleave_sse2 x264_template(plane_copy_deinterleave_sse2)
 #define x264_plane_copy_deinterleave_ssse3 x264_template(plane_copy_deinterleave_ssse3)
 #define x264_plane_copy_deinterleave_v210_avx x264_template(plane_copy_deinterleave_v210_avx)
@@ -470,6 +471,10 @@ void x264_plane_copy_deinterleave_rgb_ssse3( pixel *dsta, intptr_t i_dsta,
                                              pixel *dstb, intptr_t i_dstb,
                                              pixel *dstc, intptr_t i_dstc,
                                              pixel *src,  intptr_t i_src, int pw, int w, int h );
+void x264_plane_copy_deinterleave_rgb_avx512icl( pixel *dsta, intptr_t i_dsta,
+                                                 pixel *dstb, intptr_t i_dstb,
+                                                 pixel *dstc, intptr_t i_dstc,
+                                                 pixel *src,  intptr_t i_src, int pw, int w, int h );
 void x264_plane_copy_deinterleave_v210_ssse3( uint16_t *dstu, intptr_t i_dstu,
                                               uint16_t *dstv, intptr_t i_dstv,
                                               uint32_t *src,  intptr_t i_src, int w, int h );
@@ -1625,6 +1630,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->integral_init4h = x264_integral_init4h_avx512icl;
         pf->integral_init8h = x264_integral_init8h_avx512icl;
+        pf->plane_copy_deinterleave_rgb = x264_plane_copy_deinterleave_rgb_avx512icl;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
         pf->integral_init8v = x264_integral_init8v_avx512icl;
 #endif
