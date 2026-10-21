@@ -184,6 +184,14 @@ ALIGN 32
 ; add16x16_idct_dc avx2: dc0 x4 dc1 x4 | dc2 x4 dc3 x4 from packssdw'd dc0-3 in both lanes
 idct_dc16_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
 %endif
+%if HIGH_BIT_DEPTH == 0
+ALIGN 32
+; zigzag_scan_4x4_frame avx2: words of coefs 0-7 | 8-15 (a), of 8-15 | 0-7 (b)
+scan4frame_ymm_a: SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
+                  SHUFFLE_MASK_W 0x80, 0x80, 0x80, 2, 5, 6, 3, 7
+scan4frame_ymm_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
+                  SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
+%endif
 
 SECTION .text
 
@@ -2262,6 +2270,17 @@ INIT_XMM ssse3
 SCAN_4x4_FRAME
 INIT_XMM avx
 SCAN_4x4_FRAME
+
+; one 32-byte load, one lane swap and two pshufb (the avx version takes 6 shuffles)
+INIT_YMM avx2
+cglobal zigzag_scan_4x4_frame, 2,2
+    movu         m0, [r1]
+    vperm2i128   m1, m0, m0, 0x01
+    pshufb       m0, [scan4frame_ymm_a]
+    pshufb       m1, [scan4frame_ymm_b]
+    por          m0, m1
+    movu       [r0], m0
+    RET
 
 INIT_XMM xop
 cglobal zigzag_scan_4x4_frame, 2,2
