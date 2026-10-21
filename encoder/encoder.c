@@ -4679,7 +4679,7 @@ static void x264_sweep_add_ctx( x264_sweep_t *s, x264_t *t )
 static void x264_sweep_print( x264_t *h )
 {
     static const char *pix_name[7] = { "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4" };
-    static const char *step_name[SW_STEP_N] = { "dia", "hex", "hexhalf", "sq_cross", "sq_diag", "x4", "x3_abs" };
+    static const char *step_name[SW_STEP_N] = { "dia", "hex", "hexhalf", "sq_cross", "sq_diag", "x4", "x3_abs", "sq8" };
     static const char *la_name[2] = { "main", "la" };
     x264_sweep_t s;
     memset( &s, 0, sizeof(s) );

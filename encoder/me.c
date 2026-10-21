@@ -570,6 +570,18 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     #endif
             /* square refine */
             bcost <<= 6;
+            /* all 8 against the best before them, as cmp_sq_min sees them */
+            uint32_t sw_sq_best = bcost;
+            int sw_sq_dead = sweep_pde_dead( h, i_pixel, p_fenc, stride, 8,
+                (pixel*[8]){ p_fref_w + bmx + (bmy-1)*stride, p_fref_w + bmx + (bmy+1)*stride,
+                             p_fref_w + bmx-1 + bmy*stride, p_fref_w + bmx+1 + bmy*stride,
+                             p_fref_w + bmx-1 + (bmy-1)*stride, p_fref_w + bmx-1 + (bmy+1)*stride,
+                             p_fref_w + bmx+1 + (bmy-1)*stride, p_fref_w + bmx+1 + (bmy+1)*stride },
+                (const uint32_t[8]){ (BITS_MVD( bmx, bmy-1 ) << 6) + 1, (BITS_MVD( bmx, bmy+1 ) << 6) + 2,
+                                     (BITS_MVD( bmx-1, bmy ) << 6) + 3, (BITS_MVD( bmx+1, bmy ) << 6) + 4,
+                                     (BITS_MVD( bmx-1, bmy-1 ) << 6) + 5, (BITS_MVD( bmx-1, bmy+1 ) << 6) + 6,
+                                     (BITS_MVD( bmx+1, bmy-1 ) << 6) + 7, (BITS_MVD( bmx+1, bmy+1 ) << 6) + 8 },
+                6, sw_sq_best );
             if( cmp_sq_min )
             {
                 /* the same candidates and idx as below; dx 2 and the centre can't win */
@@ -595,6 +607,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
                 COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
             }
+            sweep_pde_count( h, SW_STEP_SQ8, i_pixel, 8, sw_sq_dead, (uint32_t)bcost != sw_sq_best );
             bmx += square1[bcost&63][0];
             bmy += square1[bcost&63][1];
             bcost >>= 6;

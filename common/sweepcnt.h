@@ -50,6 +50,7 @@ enum
     SW_STEP_SQ_DIAG,
     SW_STEP_X4,         /* COST_MV_X4: umh, cross */
     SW_STEP_X3_ABS,     /* COST_MV_X3_ABS: esa */
+    SW_STEP_SQ8,        /* the whole square refine, all 8 against the best before it (cmp_sq_min or not) */
     SW_STEP_N
 };
 enum
