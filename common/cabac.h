@@ -75,6 +75,15 @@ void x264_cabac_encode_terminal_asm( x264_cabac_t *cb );
 void x264_cabac_encode_ue_bypass( x264_cabac_t *cb, int exp_bits, int val );
 #define x264_cabac_encode_flush x264_template(cabac_encode_flush)
 void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb );
+/* n = 1..32 bins, lsb first. bin i is coded with ctx byte i, or with the top nonzero byte
+ * once only that one is left. ctx 0 (SI mb_type, unused) is the terminate bin, coded as 0:
+ * the slice init gives it state 0 (rLPS 2, never adapts), so decision( 0, 0 ) == terminal.
+ * It can't be the top byte of a multi-bin string. */
+#define x264_cabac_encode_bins_c x264_template(cabac_encode_bins_c)
+void x264_cabac_encode_bins_c( x264_cabac_t *cb, uint64_t ctx, uint32_t bins, int n );
+/* both mvd components: amvd = ctx inc of x | ctx inc of y << 8 */
+#define x264_cabac_encode_mvd_c x264_template(cabac_encode_mvd_c)
+void x264_cabac_encode_mvd_c( x264_cabac_t *cb, int mdx, int mdy, int amvd );
 
 #if HAVE_MMX
 #define x264_cabac_encode_decision_bmi2 x264_template(cabac_encode_decision_bmi2)

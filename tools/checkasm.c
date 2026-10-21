@@ -5299,6 +5299,140 @@ name##fail:
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     report( "cabac 4:2:2 dc :" );
 
+    /* header bin strings and mvds: the whole coder state, the contexts and the bytes */
+    ok = 1; used_asm = 0;
+    for( int f = 0; f < 2; f++ )
+    {
+        if( f ? bs_a.cabac_encode_mvd == bs_ref.cabac_encode_mvd : bs_a.cabac_encode_bins == bs_ref.cabac_encode_bins )
+            continue;
+        used_asm = 1;
+        set_func_name( f ? "cabac_encode_mvd" : "cabac_encode_bins" );
+        for( int j = 0; j < 8192 && ok; j++ )
+        {
+            uint8_t bitstream[2][1<<12];
+            x264_cabac_t cb[2];
+            x264_cabac_context_init( &h, &cb[0], (j&1) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>1)%3 );
+            cb[0].state[0] = 0; /* the terminate ctx, as the slice init in encoder.c */
+            /* states reachable from the init states */
+            if( j&4 )
+                for( int k = 1; k < 1024; k++ )
+                    for( int t = rand()%48; t > 0; t-- )
+                        cb[0].state[k] = x264_cabac_transition[cb[0].state[k]][rand()&1];
+            memcpy( cb[1].state, cb[0].state, 1024 );
+            memset( bitstream[0], 0, 16 );
+            x264_cabac_encode_init( &cb[0], bitstream[0]+16, bitstream[0]+sizeof(bitstream[0]) );
+            x264_cabac_encode_init( &cb[1], bitstream[1]+16, bitstream[1]+sizeof(bitstream[1]) );
+            cb[0].f8_bits_encoded = cb[1].f8_bits_encoded = 0;
+            for( int k = (rand()&63) | (j&2)*12; k > 0; k-- )
+            {
+                int bit = -(rand()&1);
+                x264_cabac_encode_bypass_c( &cb[0], bit );
+            }
+            /* low just below a byte boundary: 0xff bytes, outstanding on entry or not, then a carry or not */
+            if( (j&2) && cb[0].p > cb[0].p_start )
+            {
+                cb[0].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);
+                for( int k = (j&8) ? 8 + (rand()&31) : 0; k > 0; k-- )
+                    x264_cabac_encode_bypass_c( &cb[0], -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18))) );
+            }
+            memcpy( bitstream[1], bitstream[0], sizeof(bitstream[0]) );
+            cb[1].i_low = cb[0].i_low;
+            cb[1].i_range = cb[0].i_range;
+            cb[1].i_queue = cb[0].i_queue;
+            cb[1].i_bytes_outstanding = cb[0].i_bytes_outstanding;
+            cb[1].p = cb[0].p - bitstream[0] + bitstream[1];
+            for( int c = 1 + rand()%6; c > 0 && ok; c-- )
+            {
+                if( f )
+                {
+                    int mv[2];
+                    for( int k = 0; k < 2; k++ )
+                    {
+                        int r = rand(), a;
+                        switch( r&7 )
+                        {
+                            case 0: case 1: a = 0; break;
+                            case 2: case 3: a = 1 + (r>>3)%8; break;
+                            case 4: a = 9 + (r>>3)%24; break;
+                            case 5: a = (1 << (3 + (r>>3)%14)) + (r>>8)%3; break; /* suffix length steps */
+                            case 6: a = (r>>3) & 0xffff; break;
+                            default: a = 0xffff - ((r>>3)&3); break;
+                        }
+                        mv[k] = (r>>20)&1 ? -a : a;
+                    }
+                    int amvd = rand()%3 + ((rand()%3)<<8);
+                    call_c1( x264_cabac_encode_mvd_c, &cb[0], mv[0], mv[1], amvd );
+                    call_a1( bs_a.cabac_encode_mvd, &cb[1], mv[0], mv[1], amvd );
+                }
+                else
+                {
+                    int n, top = rand()&7;
+                    uint32_t bins = ((uint32_t)rand() << 16) ^ rand();
+                    uint64_t ctx = 0;
+                    switch( rand()&3 )
+                    {
+                        case 0: n = 1 + rand()%32; break;
+                        case 1: n = 1 + rand()%9; break;
+                        case 2: n = 32; break;
+                        default: n = 1 + top; break;
+                    }
+                    switch( rand()&3 )
+                    {
+                        case 0: bins = 0; break;
+                        case 1: bins = ~0U; break;
+                        case 2: bins = (1U << (n-1)) - 1; break; /* unary */
+                        default: break;
+                    }
+                    /* ctx 0 (terminate, bin 0 only) anywhere below the top byte */
+                    for( int k = 0; k <= top; k++ )
+                    {
+                        int v = k == top || (rand()&3) ? 1 + rand()%255 : 0;
+                        if( !v )
+                            bins &= ~(1U << k);
+                        ctx |= (uint64_t)v << (8*k);
+                    }
+                    call_c1( x264_cabac_encode_bins_c, &cb[0], ctx, bins, n );
+                    call_a1( bs_a.cabac_encode_bins, &cb[1], ctx, bins, n );
+                }
+                ok &= cb[0].i_low == cb[1].i_low && cb[0].i_range == cb[1].i_range &&
+                      cb[0].i_queue == cb[1].i_queue && cb[0].i_bytes_outstanding == cb[1].i_bytes_outstanding &&
+                      cb[0].p - bitstream[0] == cb[1].p - bitstream[1] &&
+                      !memcmp( bitstream[0], bitstream[1], cb[0].p - bitstream[0] ) &&
+                      !memcmp( cb[0].state, cb[1].state, 1024 );
+            }
+            if( ok )
+            {
+                x264_cabac_encode_flush( &h, &cb[0] );
+                x264_cabac_encode_flush( &h, &cb[1] );
+                ok = cb[0].p - bitstream[0] == cb[1].p - bitstream[1] &&
+                     !memcmp( bitstream[0], bitstream[1], cb[0].p - bitstream[0] );
+            }
+            if( !ok )
+                fprintf( stderr, "%s :  [FAILED] test %d\n", f ? "cabac_encode_mvd" : "cabac_encode_bins", j );
+        }
+        if( ok )
+        {
+            /* a P mb_type / dqp sized string, a mid-size mvd */
+            uint8_t bitstream[1<<16];
+            x264_cabac_t cbb;
+            x264_cabac_context_init( &h, &cbb, SLICE_TYPE_P, 26, 0 );
+            x264_cabac_encode_init( &cbb, bitstream+16, bitstream+sizeof(bitstream) );
+            if( f )
+            {
+                call_c2( x264_cabac_encode_mvd_c, &cbb, 5, -12, 0x0102 );
+                x264_cabac_encode_init( &cbb, bitstream+16, bitstream+sizeof(bitstream) );
+                call_a2( bs_a.cabac_encode_mvd, &cbb, 5, -12, 0x0102 );
+            }
+            else
+            {
+                call_c2( x264_cabac_encode_bins_c, &cbb, 0x3f3e3c, 0x3, 3 );
+                x264_cabac_encode_init( &cbb, bitstream+16, bitstream+sizeof(bitstream) );
+                call_a2( bs_a.cabac_encode_bins, &cbb, 0x3f3e3c, 0x3, 3 );
+            }
+        }
+    }
+    report( "cabac header :" );
+
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;
     ok = 1; used_asm = 0;
