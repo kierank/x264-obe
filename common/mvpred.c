@@ -126,6 +126,7 @@ median:
         goto median;
 }
 
+#if BIT_DEPTH == 8
 /* The count/median tail of x264_mb_predict_mv without branches: the median
  * is always computed and the result picked with masks. */
 static ALWAYS_INLINE uint32_t mvp_select( int i_ref, int i_refa, int i_refb, int i_refc,
@@ -217,6 +218,7 @@ void x264_mb_predict_mv_8x16( x264_t *h, int i_list, int i, int16_t mvp[2] )
     M32( mvp ) = s ? x : r;
 }
 #undef MVP_LOAD
+#endif
 
 void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i_ref, int16_t mvp[2] )
 {
