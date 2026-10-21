@@ -1492,6 +1492,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->avg_bi4[PIXEL_16x8]  = x264_pixel_avg_bi4_16x8_avx2;
         pf->avg_bi4[PIXEL_8x16]  = x264_pixel_avg_bi4_8x16_avx2;
         pf->avg_bi4[PIXEL_8x8]   = x264_pixel_avg_bi4_8x8_avx2;
+        pf->mc_chroma_bi[0] = x264_mc_chroma_bi_w8_avx2;
+        pf->mc_chroma_bi[1] = x264_mc_chroma_bi_w4_avx2;
 #endif
     }
 

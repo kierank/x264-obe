@@ -3513,10 +3513,147 @@ cglobal pixel_avg_bi4_%1x%2, 7,10,5
     RET
 %endmacro
 
+; m%1 = H = (8-dx)*s[x] + dx*s[x+2] of the row at %2 (width 8: u v interleaved, a
+; register; width 4: rows %2, %2+stride), taps m%3 (8-dx), m%3+1 (dx); m%4 tmp
+%macro MCBH_H 4
+    %assign mcb_n %3+1
+%if mcb_w == 8
+    pmullw        m%1, m%3, [%2]
+    pmullw        m%4, m %+ mcb_n, [%2+4]
+%else
+    movu          xm%1, [%2]
+    vinserti128    m%1, m%1, [%2+r3], 1
+    movu          xm%4, [%2+4]
+    vinserti128    m%4, m%4, [%2+r3+4], 1
+    pmullw         m%1, m%3
+    pmullw         m%4, m %+ mcb_n
+%endif
+    paddw          m%1, m%4
+%endmacro
+
+; m%1 = (m%2*(8-dy) + m%3*dy + 32) >> 6, taps m%4+2, m%4+3; m%3 clobbered
+%macro MCBH_V 4
+    %assign mcb_n %4+2
+    pmullw         m%1, m%2, m %+ mcb_n
+    %assign mcb_n %4+3
+    pmullw         m%3, m %+ mcb_n
+    paddw          m%1, m%3
+    paddw          m%1, [pw_32]
+    psrlw          m%1, 6
+%endmacro
+
+; m0, m1 = the H carried of lists 0 and 1; taps m8-m11 and m12-m15
+%macro MCBH_LOOP 1 ; weighted
+.loop %+ %1:
+%if mcb_w == 8
+    MCBH_H          2, r1+r3, 8, 3
+    mova            m3, m2
+    MCBH_V          4, 0, 3, 8
+    mova            m0, m2
+    MCBH_H          2, r2+r3, 12, 3
+    mova            m3, m2
+    MCBH_V          5, 1, 3, 12
+    mova            m1, m2
+    BIH_AVG         4, 5, 6, 7, %1
+    pshufb          m4, [chroma_deint_shuf]
+    vpermq          m4, m4, q3120        ; u0-u7 | v0-v7
+    movu          [r0], xm4
+    vextracti128 [r0+FDEC_STRIDEB/2], m4, 1
+    add            r0, FDEC_STRIDEB
+    add            r1, r3
+    add            r2, r3
+    dec           r9d
+%else
+    lea            r1, [r1+2*r3]
+    MCBH_H          2, r1, 8, 3          ; H of rows 2, 3
+%if cpuflag(avx512)
+    vshufi32x4      m3, m0, m2, 1
+%else
+    vperm2i128      m3, m0, m2, 0x21     ; H of rows 1, 2
+%endif
+    MCBH_V          4, 0, 3, 8
+    mova            m0, m2
+    lea            r2, [r2+2*r3]
+    MCBH_H          2, r2, 12, 3
+%if cpuflag(avx512)
+    vshufi32x4      m3, m1, m2, 1
+%else
+    vperm2i128      m3, m1, m2, 0x21
+%endif
+    MCBH_V          5, 1, 3, 12
+    mova            m1, m2
+    BIH_AVG         4, 5, 6, 7, %1
+    pshufb          m4, [chroma_deint_shuf] ; per row: u0-u3 v0-v3
+    vextracti128   xm2, m4, 1
+    movq          [r0], xm4
+    movhps [r0+FDEC_STRIDEB/2], xm4
+    movq  [r0+FDEC_STRIDEB], xm2
+    movhps [r0+FDEC_STRIDEB*3/2], xm2
+    lea            r0, [r0+2*FDEC_STRIDEB]
+    sub           r9d, 2
+%endif
+    jg .loop %+ %1
+    RET
+%endmacro
+
+; m%1.. = 8-dx, dx, 8-dy, dy of the dxy in %2 (clobbered); %3, %4 gpr tmp
+%macro MCBH_COEF 4
+    mov            %3, %2
+    and            %3, 7
+    mov            %4, 8
+    sub            %4, %3
+    movd         xm%1, %4
+    vpbroadcastw  m%1, xm%1
+    %assign mcb_n %1+1
+    movd         xm %+ mcb_n, %3
+    vpbroadcastw  m %+ mcb_n, xm %+ mcb_n
+    shr            %2, 8
+    mov            %4, 8
+    sub            %4, %2
+    %assign mcb_n %1+2
+    movd         xm %+ mcb_n, %4
+    vpbroadcastw  m %+ mcb_n, xm %+ mcb_n
+    %assign mcb_n %1+3
+    movd         xm %+ mcb_n, %2
+    vpbroadcastw  m %+ mcb_n, xm %+ mcb_n
+%endmacro
+
+%macro MC_CHROMA_BI 1 ; width
+%assign mcb_w %1
+cglobal mc_chroma_bi_w%1, 6,10,16
+    FIX_STRIDES    r3
+    mov           r8d, r7m
+    cmp           r8d, 64
+    jl .noswap
+    ; w >= 64: the lists swap and w is 64-w, as pixel_avg_bi4
+    xchg           r1, r2
+    xchg          r4d, r5d
+    mov           r7d, 64
+    sub           r7d, r8d
+    mov           r8d, r7d
+.noswap:
+    MCBH_COEF       8, r4d, r6d, r7d
+    MCBH_COEF      12, r5d, r6d, r7d
+    MCBH_H          0, r1, 8, 3          ; H of row 0 (width 4: rows 0, 1) of each list
+    MCBH_H          1, r2, 12, 3
+    mov           r9d, r6m
+    cmp           r8d, 32
+    jne .weight
+    MCBH_LOOP       0
+.weight:
+    shl           r8d, 9
+    movd          xm6, r8d
+    vpbroadcastw   m6, xm6
+    pxor           m7, m7
+    MCBH_LOOP       1
+%endmacro
+
 INIT_YMM avx2
 AVG_BI4 16, 16
 AVG_BI4 16,  8
 AVG_BI4  8, 16
 AVG_BI4  8,  8
+MC_CHROMA_BI 8
+MC_CHROMA_BI 4
 %endif ; HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
