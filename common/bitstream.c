@@ -114,6 +114,11 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
             pf->nal_escape = x264_nal_escape_sse2;
     }
 #if ARCH_X86_64
+    if( (cpu&X264_CPU_BMI2) && (cpu&X264_CPU_LZCNT) )
+    {
+        pf->cabac_encode_bins = x264_cabac_encode_bins_bmi2;
+    }
+
     if( cpu&X264_CPU_SSSE3 )
     {
         pf->cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_ssse3;
