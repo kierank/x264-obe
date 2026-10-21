@@ -360,6 +360,9 @@ weightp_sum_perm: dd  0, 2, 4, 6, 8,10,12,14
 ALIGN 32
 mcc_ch_shuf8: db 0, 2, 1, 3, 2, 4, 3, 5, 4, 6, 5, 7, 6, 8, 7, 9
               db 6, 8, 7, 9, 8,10, 9,11,10,12,11,13,12,14,13,15
+; LOAD_DUP_4x16P_AVX2: bytes 8-15 twice | bytes 0-7 twice of a vbroadcasti128 row
+dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
+               db 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7
 %endif
 
 SECTION .text
@@ -2170,15 +2173,16 @@ VAR2_8x8_ICL 16, 7
 %endif
 %endmacro
 
+; per row: bytes 8-15 twice | bytes 0-7 twice
 %macro LOAD_DUP_4x16P_AVX2 8 ; 4*dst, 4*pointer
-    mova  xm%3, %6
-    mova  xm%4, %8
-    mova  xm%1, %5
-    mova  xm%2, %7
-    vpermq m%3, m%3, q0011
-    vpermq m%4, m%4, q0011
-    vpermq m%1, m%1, q0011
-    vpermq m%2, m%2, q0011
+    vbroadcasti128 m%3, %6
+    vbroadcasti128 m%4, %8
+    vbroadcasti128 m%1, %5
+    vbroadcasti128 m%2, %7
+    pshufb m%3, [dup_hilo_shuf]
+    pshufb m%4, [dup_hilo_shuf]
+    pshufb m%1, [dup_hilo_shuf]
+    pshufb m%2, [dup_hilo_shuf]
 %endmacro
 
 %macro LOAD_SUMSUB8_16x2P_AVX2 9
