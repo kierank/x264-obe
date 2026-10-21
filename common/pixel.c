@@ -1125,6 +1125,32 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twins of wip/x264-sweep-fpelsearch: every build declares the hidden weak
+ * x264_8_twin_sad_{dia,hex}_search_WxH; a size set to 1 below dispatches the twins
+ * of both its kernels, which link as 0, so its slots stay NULL and me.c takes the
+ * per-step path at that size */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define FSH_TWIN_16x16 1
+#define FSH_TWIN_8x8   0
+#define FSH_TWIN1( k, s ) \
+    extern __typeof__( x264_pixel_sad_##k##_search_##s##_avx512 ) x264_8_twin_sad_##k##_search_##s __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak x264_8_twin_sad_" #k "_search_" #s "\n.hidden x264_8_twin_sad_" #k "_search_" #s );
+FSH_TWIN1( dia, 16x16 ) FSH_TWIN1( dia, 8x8 )
+FSH_TWIN1( hex, 16x16 ) FSH_TWIN1( hex, 8x8 )
+#if FSH_TWIN_16x16
+#undef x264_pixel_sad_dia_search_16x16_avx512
+#define x264_pixel_sad_dia_search_16x16_avx512 x264_8_twin_sad_dia_search_16x16
+#undef x264_pixel_sad_hex_search_16x16_avx512
+#define x264_pixel_sad_hex_search_16x16_avx512 x264_8_twin_sad_hex_search_16x16
+#endif
+#if FSH_TWIN_8x8
+#undef x264_pixel_sad_dia_search_8x8_avx512
+#define x264_pixel_sad_dia_search_8x8_avx512 x264_8_twin_sad_dia_search_8x8
+#undef x264_pixel_sad_hex_search_8x8_avx512
+#define x264_pixel_sad_hex_search_8x8_avx512 x264_8_twin_sad_hex_search_8x8
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
