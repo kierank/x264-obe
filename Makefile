@@ -118,7 +118,7 @@ SRCASM_X = common/x86/const-a.asm common/x86/cabac-a.asm \
            common/x86/mc-a.asm common/x86/mc-a2.asm \
            common/x86/pixel-a.asm common/x86/predict-a.asm \
            common/x86/quant-a.asm common/x86/bitstream-a.asm \
-           common/x86/trellis-64.asm
+           common/x86/trellis-64.asm common/x86/weightp-a.asm
 SRCS_X  += common/x86/mc-c.c common/x86/predict-c.c
 
 # Not templated: cpu detection has no per-bitdepth variation (common/cpu.h
