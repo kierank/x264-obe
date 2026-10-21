@@ -37,6 +37,19 @@ isadhbd_hidx16:
 %assign i i+1
 %endrep
 %undef i
+; pshufb: word i of an xmm splat over lane i (rows 0-3), word i+4 (rows 4-7)
+%assign i 0
+isadhbd_hidx8:
+%rep 8
+    times 8 db 2*i, 2*i+1
+%assign i i+1
+%endrep
+%undef i
+; pshufb: { dc0 x4, dc1 x4 } and { dc2 x4, dc3 x4 } from dwords dc0-3
+isadhbd_dcidx: times 4 db 0,1,0,1,0,1,0,1,4,5,4,5,4,5,4,5
+               times 4 db 8,9,8,9,8,9,8,9,12,13,12,13,12,13,12,13
+; chroma DC rounding: (s+2)>>2 = ((s>>1)+1)>>1, (s+4)>>3 = ((s>>2)+1)>>1
+isadhbd_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
 
 SECTION .text
 
@@ -1434,6 +1447,82 @@ cglobal intra_sad_x3_16x16, 3,7,12
 %undef isad_g
     pxor           m3, m3
     SAD_X_HBD16_ZMM_END pw_1           ; V H DC
+    movq       [r2+0], xm0
+    pextrd     [r2+8], xm0, 2
+    RET
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_8x8c( uint16_t *fenc, uint16_t *fdec, int res[3] )
+; four 8 pixel rows a zmm from 16 byte loads merged by k3-k5 (no line splits)
+;-----------------------------------------------------------------------------
+; k3-k5 = 128-bit lanes 1-3
+%macro INTRA_SAD_HBD_FENC4_K 0
+    mov           r6d, 0xf0
+    kmovw          k3, r6d
+    shl           r6d, 4
+    kmovw          k4, r6d
+    shl           r6d, 4
+    kmovw          k5, r6d
+%endmacro
+
+; m%1 = fenc rows 4*%2 .. 4*%2+3
+%macro INTRA_SAD_HBD_FENC4 2
+    movu          xm%1, [r0+(4*%2)*FENC_STRIDEB]
+    vbroadcasti32x4 m%1 {k3}, [r0+(4*%2+1)*FENC_STRIDEB]
+    vbroadcasti32x4 m%1 {k4}, [r0+(4*%2+2)*FENC_STRIDEB]
+    vbroadcasti32x4 m%1 {k5}, [r0+(4*%2+3)*FENC_STRIDEB]
+%endmacro
+
+; xm%1 = { s0, s1, s2, s3 } (4 pixel sums) from words top xm%2, left xm%3
+%macro INTRA_SAD_HBD_SUM4 4 ; dst, top, left, tmp
+    pmaddwd       xm%1, xm%2, [pw_1]
+    pmaddwd       xm%4, xm%3, [pw_1]
+    shufps        xm%2, xm%1, xm%4, q2020
+    shufps        xm%1, xm%4, q3131
+    paddd         xm%1, xm%2
+%endmacro
+
+cglobal intra_sad_x3_8x8c, 3,7,13
+    INTRA_SAD_HBD_LEFT4 8, 0
+    INTRA_SAD_HBD_LEFT4 1, 1
+    movu          xm9, [r1-FDEC_STRIDEB]
+    punpcklqdq    xm8, xm1              ; left 0-7
+    INTRA_SAD_HBD_SUM4 1, 9, 8, 2       ; s0 s1 s2 s3
+    mov           r6d, 9
+    kmovb          k1, r6d
+    pshufd        xm2, xm1, q1310       ; s0 s1 s3 s1
+    vpshufd       xm3 {k1}{z}, xm1, q3002 ; s2 0 0 s3
+    paddd         xm2, xm3
+    vpsrlvd       xm2, xm2, [isadhbd_shift]
+    pxor          xm3, xm3
+    pavgw         xm2, xm3              ; dc0 dc1 dc2 dc3
+    vshufi32x4     m2, m2, m2, 0
+    pshufb        m11, m2, [isadhbd_dcidx]    ; DC rows 0-3
+    pshufb        m12, m2, [isadhbd_dcidx+64] ; DC rows 4-7
+    vbroadcasti32x4 m10, [r1-FDEC_STRIDEB]    ; V
+    vshufi32x4     m8, m8, m8, 0
+    INTRA_SAD_HBD_FENC4_K
+    INTRA_SAD_HBD_FENC4 7, 0
+    psubw          m0, m7, m11
+    pshufb         m1, m8, [isadhbd_hidx8]
+    psubw          m1, m7
+    psubw          m2, m7, m10
+    pabsw          m0, m0
+    pabsw          m1, m1
+    pabsw          m2, m2
+    INTRA_SAD_HBD_FENC4 7, 1
+    psubw          m4, m7, m12
+    pshufb         m5, m8, [isadhbd_hidx8+64]
+    psubw          m5, m7
+    psubw          m6, m7, m10
+    pabsw          m4, m4
+    pabsw          m5, m5
+    pabsw          m6, m6
+    paddw          m0, m4
+    paddw          m1, m5
+    paddw          m2, m6
+    pxor           m3, m3
+    SAD_X_HBD16_ZMM_END pw_1            ; DC H V
     movq       [r2+0], xm0
     pextrd     [r2+8], xm0, 2
     RET
