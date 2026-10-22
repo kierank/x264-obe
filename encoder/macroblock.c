@@ -29,6 +29,14 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#define DCONLY_TWIN 0
+#define DCONLY_STR2( x ) #x
+#define DCONLY_STR( x ) DCONLY_STR2( x )
+#if !DCONLY_TWIN
+__asm__( ".weak " DCONLY_STR( x264_dconly_tgate ) "\n.hidden " DCONLY_STR( x264_dconly_tgate ) "\n"
+         ".set " DCONLY_STR( x264_dconly_tgate ) ", " DCONLY_STR( x264_macroblock_encode ) );
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];

@@ -107,10 +107,16 @@ static ALWAYS_INLINE int x264_quant_8x8( x264_t *h, dctcoef dct[64], int i_qp, i
         return h->quantf.quant_8x8( dct, h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp] );
 }
 
+/* layout pair test/x264-dconly-trellis / -twin: hidden weak x264_N_dconly_tgate, defined in macroblock.c (no bytes)
+ * unless DCONLY_TWIN; the twin links it as 0, DCONLY_T_OFF is 1 and trellis reports every coded block as having ac */
+#define x264_dconly_tgate x264_template(dconly_tgate)
+extern void x264_dconly_tgate( void ) __attribute__((weak, visibility("hidden")));
+#define DCONLY_T_OFF (!x264_dconly_tgate)
+
 /* trellis: clear bit 8 (may have ac) of nz when the zigzagged levels are dc-only */
 static ALWAYS_INLINE int x264_trellis_8x8_ac( x264_t *h, int nz, dctcoef level[64] )
 {
-    if( (nz & 0x100) && !h->quantf.coeff_last[DCT_LUMA_8x8]( level ) )
+    if( (nz & 0x100) && !DCONLY_T_OFF && !h->quantf.coeff_last[DCT_LUMA_8x8]( level ) )
         nz &= ~0x100;
     return nz;
 }
@@ -118,7 +124,7 @@ static ALWAYS_INLINE int x264_trellis_8x8_ac( x264_t *h, int nz, dctcoef level[6
 /* trellis: 1 if the 4x4 may have ac (bit 0 of may_ac) and its zigzagged levels are not dc-only */
 static ALWAYS_INLINE int x264_trellis_4x4_ac( x264_t *h, int may_ac, dctcoef level[16] )
 {
-    return (may_ac & 1) && h->quantf.coeff_last[DCT_LUMA_4x4]( level );
+    return (may_ac & 1) && (DCONLY_T_OFF || h->quantf.coeff_last[DCT_LUMA_4x4]( level ));
 }
 
 /* x264_quant_8x8, then if nonzero: zigzag into level and dequant in place; needs zigzagf.quant_8x8_scan.

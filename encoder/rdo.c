@@ -1198,7 +1198,7 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
             nza |= nzi << i;
             acm |= (nzi & ac) << i;
         }
-    return nza | (b_ac ? 0 : acm << 8);
+    return nza | (b_ac ? 0 : (acm | DCONLY_T_OFF * 0xf) << 8);
 }
 
 int x264_quant_8x8_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
@@ -1211,7 +1211,7 @@ int x264_quant_8x8_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
             h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias0[i_quant_cat][i_qp],
             h->unquant8_mf[i_quant_cat][i_qp], x264_zigzag_scan8[MB_INTERLACED],
             ctx_block_cat, h->mb.i_trellis_lambda2[b_chroma][b_intra], 0, b_chroma, 0, 64, idx, &ac );
-        return nz | (nz & ac) << 8;
+        return nz | (nz & (ac | DCONLY_T_OFF)) << 8;
     }
 
     /* 8x8 CAVLC is split into 4 4x4 blocks */
