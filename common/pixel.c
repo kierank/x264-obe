@@ -1323,6 +1323,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx2;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx2;
+        pixf->weightp_chroma_ref_row = x264_weightp_chroma_ref_row_avx2;
 #endif
         INIT2( ssd, _avx2 );
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
@@ -1708,6 +1709,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx2;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx2;
+        pixf->weightp_chroma_ref_row = x264_weightp_chroma_ref_row_avx2;
 #endif
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
