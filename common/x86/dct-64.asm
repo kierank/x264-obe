@@ -566,9 +566,11 @@ cglobal add16x16_idct8, 2,3,18
 %define IR8H_ZT    1376     ; zero screen thresholds, broadcast
 %define IR8H_SIZE  1440
 
-%macro INTER_RESID_8x8_HBD 2 ; name, field
+%macro INTER_RESID_8x8_HBD 3 ; name, field, zero screen (else A6)
 cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
+%if %3
     IR8_ZSCREEN_INIT IR8H_ZT
+%endif
     mov [rsp+IR8H_NNZ], r3
     imul      r9d, r7d, 0x2b
     shr       r9d, 8            ; i_qp / 6
@@ -632,6 +634,7 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
     psubw     xm %+ ir8h_i, [r2+ir8h_i*FDEC_STRIDEB]
 %assign ir8h_i ir8h_i+1
 %endrep
+%if %3
     ; zero screen: 64*sum(r^2) - sum(r)^2 <= D_max (unsigned), |sum(r)| < t0
     pmaddwd   xm8, xm0, xm0
     pmaddwd   xm9, xm1, xm1
@@ -671,6 +674,17 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
     movd      r6d, xm8
     test      r6d, r6d
     jnz .zero
+%else
+    por       xm8, xm0, xm1
+    por       xm9, xm2, xm3
+    por       xm8, xm9
+    por       xm9, xm4, xm5
+    por       xm8, xm9
+    por       xm9, xm6, xm7
+    por       xm8, xm9
+    ptest     xm8, xm8          ; no residual
+    jz .zero
+%endif
     DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
     TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
 %assign ir8h_i 0
@@ -1110,8 +1124,10 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
 %endmacro
 
 INIT_YMM avx2
-INTER_RESID_8x8_HBD frame, 0
-INTER_RESID_8x8_HBD field, 1
+INTER_RESID_8x8_HBD frame, 0, 1
+INTER_RESID_8x8_HBD field, 1, 1
+INTER_RESID_8x8_HBD a6_frame, 0, 0
+INTER_RESID_8x8_HBD a6_field, 1, 0
 %undef ir8h_i
 %undef ir8h_j
 
@@ -1454,9 +1470,11 @@ cglobal add16x16_idct8, 2,2,12
     psubw      m%1, m11
 %endmacro
 
-%macro INTER_RESID_8x8 2 ; name, field
+%macro INTER_RESID_8x8 3 ; name, field, zero screen (else A6)
 cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
+%if %3
     IR8_ZSCREEN_INIT IR8_ZT
+%endif
     imul      r9d, r7d, 0x2b
     shr       r9d, 8            ; i_qp / 6
     lea       r11d, [r9*3]
@@ -1530,6 +1548,7 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
     LOAD_DIFF16x2_AVX2 2, 3, 4, 5, 2, 3
     LOAD_DIFF16x2_AVX2 4, 5, 6, 7, 4, 5
     LOAD_DIFF16x2_AVX2 6, 7, 8, 9, 6, 7
+%if %3
     ; zero screen of the left, right 8x8: 64*sum(r^2) - sum(r)^2 <= D_max (unsigned), |sum(r)| < t0
     pmaddwd   m8, m0, m0
     pmaddwd   m9, m1, m1
@@ -1573,6 +1592,24 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
     or        r6d, r7d
     and       r6d, 3            ; proven zero: left, right
     mov [rsp+IR8_ZM], r6d
+%else
+    por       m8, m0, m1
+    por       m9, m2, m3
+    por       m8, m9
+    por       m9, m4, m5
+    por       m8, m9
+    por       m9, m6, m7
+    por       m8, m9
+    vextracti128 xm9, m8, 1
+    xor       r6d, r6d
+    xor       r7d, r7d
+    ptest     xm8, xm8
+    setz      r6b
+    ptest     xm9, xm9
+    setz      r7b
+    lea       r6d, [r6+r7*2]    ; no residual: left, right
+    mov [rsp+IR8_ZM], r6d
+%endif
     cmp       r6d, 3
     je .no_dct
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
@@ -1898,8 +1935,10 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
 %endmacro
 
 INIT_YMM avx2
-INTER_RESID_8x8 frame, 0
-INTER_RESID_8x8 field, 1
+INTER_RESID_8x8 frame, 0, 1
+INTER_RESID_8x8 field, 1, 1
+INTER_RESID_8x8 a6_frame, 0, 0
+INTER_RESID_8x8 a6_field, 1, 0
 %undef ir8_i
 %undef ir8_j
 

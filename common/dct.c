@@ -1011,6 +1011,18 @@ int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst
     return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr, 1 );
 }
 
+/* layout pair test/x264-zscreen-encode / -twin: hidden weak x264_N_zscreen_gate, defined here (no bytes) unless
+ * ZSCREEN_TWIN; the twin links it as 0 and dispatches the A6 kernels (zero residual only) */
+#define ZSCREEN_TWIN 0
+#define ZSCREEN_STR2( x ) #x
+#define ZSCREEN_STR( x ) ZSCREEN_STR2( x )
+#define x264_zscreen_gate x264_template(zscreen_gate)
+extern void x264_zscreen_gate( void ) __attribute__((weak, visibility("hidden")));
+#if !ZSCREEN_TWIN
+__asm__( ".set " ZSCREEN_STR( x264_zscreen_gate ) ", " ZSCREEN_STR( x264_zigzag_init ) );
+#endif
+#define ZSCREEN_OFF (!x264_zscreen_gate)
+
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {
     pf_interlaced->scan_8x8   = zigzag_scan_8x8_field;
@@ -1162,10 +1174,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx2;
         pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx2;
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
-        pf_interlaced->inter_resid_4x4      = x264_inter_resid_4x4_field_avx2;
-        pf_progressive->inter_resid_4x4     = x264_inter_resid_4x4_frame_avx2;
-        pf_interlaced->inter_resid_8x8      = x264_inter_resid_8x8_field_avx2;
-        pf_progressive->inter_resid_8x8     = x264_inter_resid_8x8_frame_avx2;
+        pf_interlaced->inter_resid_4x4      = ZSCREEN_OFF ? x264_inter_resid_4x4_a6_field_avx2 : x264_inter_resid_4x4_field_avx2;
+        pf_progressive->inter_resid_4x4     = ZSCREEN_OFF ? x264_inter_resid_4x4_a6_frame_avx2 : x264_inter_resid_4x4_frame_avx2;
+        pf_interlaced->inter_resid_8x8      = ZSCREEN_OFF ? x264_inter_resid_8x8_a6_field_avx2 : x264_inter_resid_8x8_field_avx2;
+        pf_progressive->inter_resid_8x8     = ZSCREEN_OFF ? x264_inter_resid_8x8_a6_frame_avx2 : x264_inter_resid_8x8_frame_avx2;
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

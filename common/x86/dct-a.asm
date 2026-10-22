@@ -1042,9 +1042,11 @@ cglobal add16x16_idct, 2,2,10
 %endif
 %endmacro
 
-%macro INTER_RESID_4x4_HBD 2 ; name, field
+%macro INTER_RESID_4x4_HBD 3 ; name, field, zero screen (else A6)
 cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
+%if %3
     IR_ZSCREEN_INIT IRH_ZT
+%endif
     mov [rsp+IRH_NNZ], r3
     imul      r9d, r7d, 0x2b
     shr       r9d, 8            ; i_qp / 6
@@ -1089,9 +1091,17 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
     xor       r14d, r14d        ; coded 8x8s | ac << 8
 .loop:
     SUB8x8_DCT_HBD_LOAD
+%if %3
     IR_ZSCREEN4 IRH_ZT, r10d
     cmp       r10d, 0x33
     je .zero
+%else
+    por       m5, m0, m1
+    por       m6, m2, m3
+    por       m5, m6
+    ptest     m5, m5            ; no residual
+    jz .zero
+%endif
     SUB8x8_DCT_HBD_TX
     IRH_QUANT m0,   0
     IRH_QUANT m1,  32
@@ -1350,8 +1360,10 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
 %endmacro
 
 INIT_YMM avx2
-INTER_RESID_4x4_HBD frame, 0
-INTER_RESID_4x4_HBD field, 1
+INTER_RESID_4x4_HBD frame, 0, 1
+INTER_RESID_4x4_HBD field, 1, 1
+INTER_RESID_4x4_HBD a6_frame, 0, 0
+INTER_RESID_4x4_HBD a6_field, 1, 0
 %undef irh_i
 %endif ; ARCH_X86_64
 
@@ -1915,9 +1927,11 @@ cglobal add16x16_idct, 2,3,15
     packssdw  %1, m9
 %endmacro
 
-%macro INTER_RESID_4x4 2 ; name, field
+%macro INTER_RESID_4x4 3 ; name, field, zero screen (else A6)
 cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
+%if %3
     IR_ZSCREEN_INIT IR_ZT
+%endif
     mova      m15, [r4]
     mova      m14, [r5]
     imul      r4d, r7d, 0x2b
@@ -1974,9 +1988,17 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
 .loop:
     IR_LOAD_DIFF8x2 0, 1, 0, 1
     IR_LOAD_DIFF8x2 2, 3, 2, 3
+%if %3
     IR_ZSCREEN4 IR_ZT, r4d
     cmp       r4d, 0x33
     je .zero
+%else
+    por       m4, m0, m1
+    por       m5, m2, m3
+    por       m4, m5
+    ptest     m4, m4            ; no residual
+    jz .zero
+%endif
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4
@@ -2239,8 +2261,10 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
 %endmacro
 
 INIT_YMM avx2
-INTER_RESID_4x4 frame, 0
-INTER_RESID_4x4 field, 1
+INTER_RESID_4x4 frame, 0, 1
+INTER_RESID_4x4 field, 1, 1
+INTER_RESID_4x4 a6_frame, 0, 0
+INTER_RESID_4x4 a6_field, 1, 0
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
