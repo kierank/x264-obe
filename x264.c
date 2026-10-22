@@ -844,6 +844,9 @@ static void help( x264_param_t *defaults, int longhelp )
     H2( "      --ref0-exit <integer>   Experimental: P 16x16 searches no other refs and\n"
         "                              no partitions when ref 0 is within 1 qpel of the\n"
         "                              skip mv with distortion < k*lambda [0 (off)]\n" );
+    H2( "      --hex-cap <integer>     Experimental: one dia step, or one hexagon and the\n"
+        "                              square, when >= n mv candidates all equal the\n"
+        "                              mvp or 0 [0 (off)]\n" );
     H1( "      --nr <integer>          Noise reduction [%d]\n", defaults->analyse.i_noise_reduction );
     H2( "\n" );
     H2( "      --deadzone-inter <int>  Set the size of the inter luma quantization deadzone [%d]\n", defaults->analyse.i_luma_deadzone[0] );
@@ -1095,6 +1098,7 @@ static struct option long_options[] =
     { "me-seed-exit", required_argument, NULL, 0 },
     { "qpel-skip",   required_argument, NULL, 0 },
     { "ref0-exit",   required_argument, NULL, 0 },
+    { "hex-cap",     required_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },

@@ -470,6 +470,7 @@ struct x264_t
         /* experimental ME levers, main analysis only (0 in the lowres context) */
         int     i_me_seed_exit[2];
         int     i_qpel_skip;
+        int     i_hex_cap;
         int     b_chroma_me;
         int     b_trellis;
         int     b_noise_reduction;

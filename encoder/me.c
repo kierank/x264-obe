@@ -276,6 +276,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     int i_me_range = h->param.analyse.i_me_range;
     int bmx, bmy, bcost = COST_MAX;
     int bpred_cost = COST_MAX;
+    int me_agree = 0; /* --hex-cap: every mvc is the mvp or 0 */
     int omx, omy, pmx, pmy;
     pixel *p_fenc = m->p_fenc[0];
     pixel *p_fref_w = m->p_fref_w;
@@ -350,6 +351,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
             int valid_mvcs = x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            me_agree = !valid_mvcs && h->mb.i_hex_cap && i_mvc >= h->mb.i_hex_cap;
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
@@ -419,6 +421,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
             /* Like in subme>=3, except we also round the candidates to fullpel. */
             int valid_mvcs = x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
+            me_agree = !valid_mvcs && h->mb.i_hex_cap && i_mvc >= h->mb.i_hex_cap;
             if( valid_mvcs > 0 )
             {
                 int i = 1, cost;
@@ -457,14 +460,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             {
                 /* the loop below in one call */
                 uint64_t res = dia_search( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy, pack16to32_mask( bmx, bmy ),
-                                           bcost, i_me_range, mv_min | (uint64_t)mv_max << 32 );
+                                           bcost, me_agree ? 1 : i_me_range, mv_min | (uint64_t)mv_max << 32 );
                 bcost = (uint32_t)res;
                 bmx = (int16_t)(res >> 32);
                 bmy = (int16_t)(res >> 48);
                 break;
             }
             bcost <<= 4;
-            int i = i_me_range;
+            int i = me_agree ? 1 : i_me_range;
             do
             {
                 if( cmp_dia_min )
@@ -502,7 +505,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             {
                 /* the hexagon, half hexagons and square refine below in one call */
                 uint64_t res = h->pixf.fpelcmp_hex_search[i_pixel]( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
-                                                                    pack16to32_mask( bmx, bmy ), bcost, i_me_range,
+                                                                    pack16to32_mask( bmx, bmy ), bcost, me_agree ? 2 : i_me_range,
                                                                     mv_min | (uint64_t)mv_max << 32 );
                 bcost = (uint32_t)res;
                 bmx = (int16_t)(res >> 32);
@@ -549,7 +552,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 bmy += hex2[dir+1][1];
 
                 /* half hexagon, not overlapping the previous iteration */
-                for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
+                for( int i = me_agree ? 0 : (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
                 {
                     bcost &= ~63;
                     COST_MV_X3_DIR_MIN( hex2[dir+0][0], hex2[dir+0][1],

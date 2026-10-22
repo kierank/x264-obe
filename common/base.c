@@ -1178,6 +1178,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->analyse.i_qpel_skip = atoi(value);
     OPT("ref0-exit")
         p->analyse.i_ref0_exit = atoi(value);
+    OPT("hex-cap")
+        p->analyse.i_hex_cap = atoi(value);
     OPT("chroma-me")
         p->analyse.b_chroma_me = atobool(value);
     OPT("mixed-refs")
@@ -1362,6 +1364,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         s += sprintf( s, " qpel_skip=%d", p->analyse.i_qpel_skip );
     if( p->analyse.i_ref0_exit )
         s += sprintf( s, " ref0_exit=%d", p->analyse.i_ref0_exit );
+    if( p->analyse.i_hex_cap )
+        s += sprintf( s, " hex_cap=%d", p->analyse.i_hex_cap );
     s += sprintf( s, " chroma_me=%d", p->analyse.b_chroma_me );
     s += sprintf( s, " trellis=%d", p->analyse.i_trellis );
     s += sprintf( s, " 8x8dct=%d", p->analyse.b_transform_8x8 );

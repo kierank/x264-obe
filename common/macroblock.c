@@ -537,6 +537,7 @@ void x264_macroblock_thread_init( x264_t *h )
     h->mb.i_me_seed_exit[0] = h->param.analyse.i_me_seed_exit[0];
     h->mb.i_me_seed_exit[1] = h->param.analyse.i_me_seed_exit[1];
     h->mb.i_qpel_skip = h->param.analyse.i_qpel_skip;
+    h->mb.i_hex_cap = h->param.analyse.i_hex_cap;
     h->mb.b_chroma_me = h->param.analyse.b_chroma_me &&
                         ((h->sh.i_type == SLICE_TYPE_P && h->mb.i_subpel_refine >= 5) ||
                          (h->sh.i_type == SLICE_TYPE_B && h->mb.i_subpel_refine >= 9));
