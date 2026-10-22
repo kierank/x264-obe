@@ -79,6 +79,8 @@ typedef struct
     int i_satd_i16x16;
     int i_satd_i16x16_dir[7];
     int i_predict16x16;
+    int b_i16x16_reuse; /* i_satd_i16x16_dir holds the costs of this fenc at i_lambda_i16x16 */
+    int i_lambda_i16x16;
 
     int i_satd_i8x8;
     int i_cbp_i8x8_luma;
@@ -378,6 +380,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     a->i_satd_i8x8   =
     a->i_satd_i4x4   =
     a->i_satd_chroma = COST_MAX;
+    a->b_i16x16_reuse = 0;
 
     /* non-RD PCM decision is inaccurate (as is psy-rd), so don't do it.
      * PCM cost can overflow with high lambda2, so cap it at COST_MAX. */
@@ -744,25 +747,11 @@ static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
     h->mb.i_chroma_pred_mode = a->i_predict8x8chroma;
 }
 
-/* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
-static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+/* i16x16 analysis; 0 where it ends the intra analysis */
+static int x264_mb_analyse_intra16x16( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
-    const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
     pixel *p_src = h->mb.pic.p_fenc[0];
     pixel *p_dst = h->mb.pic.p_fdec[0];
-    static const int8_t intra_analysis_shortcut[2][2][2][5] =
-    {
-        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
-          {I_PRED_4x4_DDL, I_PRED_4x4_VL, -1, -1, -1}},
-         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
-          {I_PRED_4x4_DDL, I_PRED_4x4_DDR, I_PRED_4x4_VR, I_PRED_4x4_VL, -1}}},
-        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
-          {-1, -1, -1, -1, -1}},
-         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
-          {I_PRED_4x4_DDR, I_PRED_4x4_VR, -1, -1, -1}}},
-    };
-
-    int idx;
     int lambda = a->i_lambda;
 
     /*---------------- Try all mode and calculate their score ---------------*/
@@ -775,7 +764,19 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         static const uint8_t i16x16_thresh_lut[11] = { 2, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4 };
         int i16x16_thresh = a->b_fast_intra ? (i16x16_thresh_lut[h->mb.i_subpel_refine]*i_satd_inter)>>1 : COST_MAX;
 
-        if( !h->mb.b_lossless && predict_mode[3] >= 0 )
+        if( a->b_i16x16_reuse )
+        {
+            /* same fenc and edges: only the mode costs move with lambda */
+            int i_dlambda = lambda - a->i_lambda_i16x16;
+            a->b_i16x16_reuse = 0;
+            for( ; *predict_mode >= 0; predict_mode++ )
+            {
+                int i_mode = *predict_mode;
+                a->i_satd_i16x16_dir[i_mode] += i_dlambda * bs_size_ue( x264_mb_pred_mode16x16_fix[i_mode] );
+                COPY2_IF_LT( a->i_satd_i16x16, a->i_satd_i16x16_dir[i_mode], a->i_predict16x16, i_mode );
+            }
+        }
+        else if( !h->mb.b_lossless && predict_mode[3] >= 0 )
         {
             h->pixf.intra_mbcmp_x3_16x16( p_src, p_dst, a->i_satd_i16x16_dir );
             a->i_satd_i16x16_dir[0] += lambda * bs_size_ue(0);
@@ -818,8 +819,30 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             a->i_satd_i16x16 += lambda * i_mb_b_cost_table[I_16x16];
 
         if( a->i_satd_i16x16 > i16x16_thresh )
-            return;
+            return 0;
     }
+    return 1;
+}
+
+static void x264_mb_analyse_intra_sub16x16( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+{
+    const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
+    pixel *p_src = h->mb.pic.p_fenc[0];
+    pixel *p_dst = h->mb.pic.p_fdec[0];
+    static const int8_t intra_analysis_shortcut[2][2][2][5] =
+    {
+        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
+          {I_PRED_4x4_DDL, I_PRED_4x4_VL, -1, -1, -1}},
+         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
+          {I_PRED_4x4_DDL, I_PRED_4x4_DDR, I_PRED_4x4_VR, I_PRED_4x4_VL, -1}}},
+        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
+          {-1, -1, -1, -1, -1}},
+         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
+          {I_PRED_4x4_DDR, I_PRED_4x4_VR, -1, -1, -1}}},
+    };
+
+    int idx;
+    int lambda = a->i_lambda;
 
     uint16_t *cost_i4x4_mode = (uint16_t*)ALIGN((intptr_t)x264_cost_i4x4_mode,64) + a->i_qp_cost*32 + 8;
     /* 8x8 prediction selection */
@@ -1055,6 +1078,13 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         else
             a->i_satd_i4x4 = COST_MAX;
     }
+}
+
+/* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
+static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+{
+    if( x264_mb_analyse_intra16x16( h, a, i_satd_inter ) )
+        x264_mb_analyse_intra_sub16x16( h, a, i_satd_inter );
 }
 
 static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
@@ -3242,6 +3272,23 @@ static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cos
         x264_mb_analyse_intra( h, a, i_cost );
 }
 
+/* Whether the prediction in p_fdec is the fenc in every plane */
+static int x264_mb_pred_is_fenc( x264_t *h )
+{
+    for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+        if( h->pixf.fenc_eq[PIXEL_16x16] ? !h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] )
+                                         : h->pixf.sad[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE ) )
+            return 0;
+    if( !CHROMA444 )
+    {
+        int chromapix = h->luma2chroma_pixel[PIXEL_16x16];
+        for( int p = 1; p < 3; p++ )
+            if( h->pixf.sad[chromapix]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE ) )
+                return 0;
+    }
+    return 1;
+}
+
 /* Fast P_SKIP: the probe passes when the residual quantises away, which at a
  * high qp holds for a skip mv far from the motion.  Reject the skip where a
  * candidate mv predicts the luma at under half the skip sad and by more than
@@ -3646,7 +3693,17 @@ skip_analysis:
                 }
             }
 
-            if( !b_intra_first )
+            if( b_intra_first )
+            {
+                /* intra done against the 16x16 */
+            }
+            else if( i_cost <= 4 * analysis.i_lambda && !analysis.i_mbrd && !h->mb.b_chroma_me &&
+                     !h->mb.b_noise_reduction )
+            {
+                /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
+                x264_mb_analyse_intra16x16( h, &analysis, i_cost );
+            }
+            else
                 x264_mb_analyse_intra_p( h, &analysis, i_cost );
 
             i_satd_inter = i_cost;
@@ -3682,22 +3739,43 @@ skip_analysis:
                 /* Intra masking: copy fdec to fenc and re-encode the block as intra in order to make it appear as if
                  * it was an inter block. */
                 x264_analyse_update_cache( h, &analysis );
-                x264_macroblock_encode( h );
-                for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
-                    h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE, 16 );
-                h->mb.pic.i_fenc_pre = 0;
-                if( !CHROMA444 )
+                /* A prediction equal to the fenc leaves no residual: the recon is the
+                 * fenc and the masking changes nothing. */
+                int b_static = 0;
+                int b_mc = h->mb.i_type == P_L0 && h->mb.i_partition == D_16x16 &&
+                           analysis.l0.me16x16.cost <= analysis.l0.me16x16.cost_mv + analysis.l0.me16x16.i_ref_cost &&
+                           !h->mb.b_skip_mc && !h->mb.b_lossless && !h->mb.b_trellis && !h->mb.b_noise_reduction;
+                if( b_mc )
                 {
-                    int height = 16 >> CHROMA_V_SHIFT;
-                    h->mc.copy[PIXEL_8x8]  ( h->mb.pic.p_fenc[1], FENC_STRIDE, h->mb.pic.p_fdec[1], FDEC_STRIDE, height );
-                    h->mc.copy[PIXEL_8x8]  ( h->mb.pic.p_fenc[2], FENC_STRIDE, h->mb.pic.p_fdec[2], FDEC_STRIDE, height );
+                    x264_mb_mc( h );
+                    b_static = x264_mb_pred_is_fenc( h );
+                    h->mb.b_skip_mc = 1;
                 }
+                if( !b_static )
+                {
+                    x264_macroblock_encode( h );
+                    for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+                        h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE, 16 );
+                    if( !CHROMA444 )
+                    {
+                        int height = 16 >> CHROMA_V_SHIFT;
+                        h->mc.copy[PIXEL_8x8]  ( h->mb.pic.p_fenc[1], FENC_STRIDE, h->mb.pic.p_fdec[1], FDEC_STRIDE, height );
+                        h->mc.copy[PIXEL_8x8]  ( h->mb.pic.p_fenc[2], FENC_STRIDE, h->mb.pic.p_fdec[2], FDEC_STRIDE, height );
+                    }
+                }
+                if( b_mc )
+                    h->mb.b_skip_mc = 0;
+                h->mb.pic.i_fenc_pre = 0;
+                int i_lambda_inter = analysis.i_lambda;
                 x264_mb_analyse_init_qp( h, &analysis, X264_MAX( h->mb.i_qp - h->mb.ip_offset, h->param.rc.i_qp_min ) );
                 /* the inter pass's intra costs are of the old fenc */
                 analysis.i_satd_i16x16 =
                 analysis.i_satd_i8x8   =
                 analysis.i_satd_i4x4   =
                 analysis.i_satd_chroma = COST_MAX;
+                /* unless the fenc is unchanged: then its i16x16 satds stand */
+                analysis.b_i16x16_reuse = b_static && !analysis.b_fast_intra;
+                analysis.i_lambda_i16x16 = i_lambda_inter;
                 goto intra_analysis;
             }
 
