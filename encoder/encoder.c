@@ -1914,6 +1914,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
     }
 #endif
 
+    if( h->param.rc.b_vbv_redo_mekeep )
+        CHECKED_MALLOCZERO( h->mekeep_cnt, MEKEEP_CNT_N * sizeof(uint64_t) );
     h->thread[0] = h;
     for( int i = 1; i < h->param.i_threads + !!h->param.i_sync_lookahead; i++ )
         CHECKED_MALLOC( h->thread[i], sizeof(x264_t) );
@@ -3099,6 +3101,7 @@ static intptr_t x264_slice_write( x264_t *h )
     i_mb_y = h->sh.i_first_mb / h->mb.i_mb_width;
     i_mb_x = h->sh.i_first_mb % h->mb.i_mb_width;
     i_skip = 0;
+    h->mb.i_redo_y = -1;
 
     while( 1 )
     {
@@ -3264,9 +3267,12 @@ cont:
 
         /* save cache */
         x264_macroblock_cache_save( h );
+        if( h->mb.mekeep )
+            x264_mekeep_save( h );
 
         if( x264_ratecontrol_mb( h, mb_size ) < 0 )
         {
+            h->mb.i_redo_y = i_mb_y;
             x264_bitstream_restore( h, &bs_bak[BS_BAK_ROW_VBV], &i_skip, 1 );
             h->mb.b_reencode_mb = 1;
             i_mb_x = 0;
@@ -4614,6 +4620,7 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+    x264_mekeep_print( h );
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );
@@ -4911,6 +4918,7 @@ void    x264_encoder_close  ( x264_t *h )
 
     /* rc */
     x264_ratecontrol_delete( h );
+    x264_free( h->mekeep_cnt );
     x264_speedcontrol_delete( h );
 
     /* param */

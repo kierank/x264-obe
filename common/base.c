@@ -1277,6 +1277,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->b_vfr_input = !atobool(value);
     OPT("nal-hrd")
         b_error |= parse_enum( value, x264_nal_hrd_names, &p->i_nal_hrd );
+    OPT("vbv-redo-mekeep")
+        p->rc.b_vbv_redo_mekeep = atobool(value);
     OPT("filler")
         p->rc.b_filler = atobool(value);
     OPT("pic-struct")
@@ -1415,6 +1417,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         {
             s += sprintf( s, " vbv_maxrate=%d vbv_bufsize=%d",
                           p->rc.i_vbv_max_bitrate, p->rc.i_vbv_buffer_size );
+            if( p->rc.b_vbv_redo_mekeep )
+                s += sprintf( s, " vbv_redo_mekeep=1" );
             if( p->rc.i_rc_method == X264_RC_CRF )
                 s += sprintf( s, " crf_max=%.1f", p->rc.f_rf_constant_max );
         }

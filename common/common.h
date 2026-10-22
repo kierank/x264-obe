@@ -269,6 +269,18 @@ typedef struct
     int i_ssim_cnt;
 } x264_frame_stat_t;
 
+/* --vbv-redo-mekeep: an mb of the previous pass of a row */
+typedef struct
+{
+    int i_frame;
+    int16_t i_mb_y;
+    int8_t b_ok;        /* P_L0 16x16 from the 16x16 ME */
+    int8_t i_ref;
+    int8_t i_vbv_emerg;
+    int16_t i_qp;       /* the qp the mv was searched at */
+    ALIGNED_4( int16_t mv[2] );
+} x264_mekeep_t;
+
 struct x264_t
 {
     /* encoder parameters */
@@ -578,6 +590,12 @@ struct x264_t
         int b_overflow; /* If CAVLC had a level code overflow during bitstream writing. */
         int i_vbv_emerg; /* one-frame VBV emergency step of this row, enum vbv_emerg_e */
 
+        /* --vbv-redo-mekeep: a row VBV re-encode keeps the previous pass's 16x16 ME */
+        int i_redo_y;          /* last row of the rows being redone, -1 outside a redo */
+        int b_redo_full;       /* this redo analyses in full */
+        int b_mekeep_me;       /* this mb's l0.me16x16 is a search result or a kept one */
+        int i_mekeep_qp;       /* the qp the mv was searched at */
+        x264_mekeep_t *mekeep; /* [i_mb_count]: the previous pass of each mb */
         struct
         {
             /* space for p_fenc and p_fdec */
@@ -714,6 +732,7 @@ struct x264_t
 
     /* rate control encoding only */
     x264_ratecontrol_t *rc;
+    uint64_t *mekeep_cnt; /* --vbv-redo-mekeep counters, in thread[0], enum mekeep_cnt_e */
     x264_speedcontrol_t *sc;
 
     /* stats */

@@ -418,6 +418,10 @@ typedef struct x264_param_t
          * Implied by NAL-HRD CBR. */
         int         b_filler;
 
+        /* VBV row re-encode: an inter mb keeps the previous pass's 16x16 ref and mv
+         * instead of a new 16x16 search (changes output) */
+        int         b_vbv_redo_mekeep;
+
         int         i_aq_mode;      /* psy adaptive QP. (X264_AQ_*) */
         float       f_aq_strength;
         int         b_mb_tree;      /* Macroblock-tree ratecontrol. */

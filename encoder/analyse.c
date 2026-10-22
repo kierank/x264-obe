@@ -1416,6 +1416,129 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+/* --vbv-redo-mekeep: in the redo pass of a VBV row re-encode, the previous pass's
+ * 16x16 ref and mv, costed at this qp, in place of the 16x16 search. The search
+ * where the previous pass has no 16x16 search result (intra, skip, another
+ * partition), on a last-row redo at qp_hard_max, where the emergency step
+ * changed, or more than MEKEEP_DQP_MAX from the qp the mv was searched at. */
+#define MEKEEP_DQP_MAX 6
+
+static int x264_mb_analyse_inter_p16x16_keep( x264_t *h, x264_mb_analysis_t *a, int i_ref, int16_t mv[2] )
+{
+    x264_me_t m;
+    m.i_pixel = PIXEL_16x16;
+    LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
+    m.i_ref_cost = REF_COST( 0, i_ref );
+    LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 0, 0 );
+    LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 0 );
+    x264_mb_predict_mv_16x16( h, 0, i_ref, m.mvp );
+    CP32( m.mv, mv );
+    if( !x264_me_cost_mv( h, &m ) )
+        return 0;
+    CP32( h->mb.mvp16[0][i_ref], m.mvp );
+    h->mb.mvp16_valid[0] |= 1U << i_ref;
+
+    /* save mv for predicting neighbors */
+    CP32( h->mb.mvr[0][i_ref][h->mb.i_mb_xy], m.mv );
+    CP32( a->l0.mvc[i_ref][0], m.mv );
+
+    if( i_ref == 0
+        && a->b_try_skip
+        && m.cost-m.cost_mv < 300*a->i_lambda
+        &&  abs(m.mv[0]-h->mb.cache.pskip_mv[0])
+          + abs(m.mv[1]-h->mb.cache.pskip_mv[1]) <= 1
+        && x264_macroblock_probe_pskip( h ) )
+    {
+        h->mb.i_type = P_SKIP;
+        x264_analyse_update_cache( h, a );
+        return 1;
+    }
+
+    m.cost += m.i_ref_cost;
+    h->mc.memcpy_aligned( &a->l0.me16x16, &m, sizeof(x264_me_t) );
+    x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, i_ref );
+
+    h->mb.i_type = P_L0;
+    if( a->i_mbrd )
+    {
+        x264_mb_init_fenc_cache( h, a->i_mbrd >= 2 || h->param.analyse.inter & X264_ANALYSE_PSUB8x8 );
+        if( i_ref == 0 && M32( a->l0.me16x16.mv ) == M32( h->mb.cache.pskip_mv ) && !a->b_force_intra )
+        {
+            h->mb.i_partition = D_16x16;
+            x264_macroblock_cache_mv_ptr( h, 0, 0, 4, 4, 0, a->l0.me16x16.mv );
+            a->l0.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+            if( !(h->mb.i_cbp_luma|h->mb.i_cbp_chroma) )
+                h->mb.i_type = P_SKIP;
+        }
+    }
+    return 1;
+}
+
+static void x264_mb_analyse_inter_p16x16_redo( x264_t *h, x264_mb_analysis_t *a )
+{
+    if( h->mb.mekeep && h->mb.i_mb_y <= h->mb.i_redo_y )
+    {
+        int c;
+        x264_mekeep_t *k = &h->mb.mekeep[h->mb.i_mb_xy];
+        if( k->i_frame != h->fdec->i_frame || k->i_mb_y != h->mb.i_mb_y )
+            c = MEKEEP_NOREC;
+        else if( !k->b_ok )
+            c = MEKEEP_PREV;
+        else if( h->mb.b_redo_full )
+            c = MEKEEP_HARDMAX;
+        else if( k->i_vbv_emerg != h->mb.i_vbv_emerg )
+            c = MEKEEP_EMERG;
+        else if( abs( h->mb.i_qp - k->i_qp ) > MEKEEP_DQP_MAX )
+            c = MEKEEP_DQP;
+        else if( k->i_ref >= h->mb.pic.i_fref[0]
+                 || k->mv[0] < h->mb.mv_min_spel[0] || k->mv[0] > h->mb.mv_max_spel[0]
+                 || k->mv[1] < h->mb.mv_min_spel[1] || k->mv[1] > h->mb.mv_max_spel[1] )
+            c = MEKEEP_RANGE;
+        else if( x264_mb_analyse_inter_p16x16_keep( h, a, k->i_ref, k->mv ) )
+            c = MEKEEP_KEPT;
+        else
+            c = MEKEEP_COST;
+        __atomic_fetch_add( &h->thread[0]->mekeep_cnt[c], 1, __ATOMIC_RELAXED );
+        if( c == MEKEEP_KEPT )
+        {
+            h->mb.b_mekeep_me = 1;
+            h->mb.i_mekeep_qp = k->i_qp;
+            return;
+        }
+    }
+    x264_mb_analyse_inter_p16x16( h, a );
+    h->mb.b_mekeep_me = 1;
+    h->mb.i_mekeep_qp = h->mb.i_qp;
+}
+
+/* The previous pass of this mb, for a row VBV re-encode */
+void x264_mekeep_save( x264_t *h )
+{
+    x264_mekeep_t *k = &h->mb.mekeep[h->mb.i_mb_xy];
+    k->i_frame = h->fdec->i_frame;
+    k->i_mb_y = h->mb.i_mb_y;
+    k->b_ok = h->mb.b_mekeep_me && h->mb.i_type == P_L0 && h->mb.i_partition == D_16x16;
+    k->i_ref = h->mb.cache.ref[0][x264_scan8[0]];
+    k->i_vbv_emerg = h->mb.i_vbv_emerg;
+    k->i_qp = h->mb.i_mekeep_qp;
+    CP32( k->mv, h->mb.cache.mv[0][x264_scan8[0]] );
+}
+
+void x264_mekeep_print( x264_t *h )
+{
+    uint64_t *c = h->mekeep_cnt;
+    if( !c )
+        return;
+    uint64_t n = 0;
+    for( int i = 0; i < MEKEEP_CNT_N; i++ )
+        n += c[i];
+    x264_log( h, X264_LOG_INFO, "vbv-redo-mekeep: redo P mbs at the 16x16 search %"PRIu64", kept %"PRIu64" (%.1f%%); full search: "
+              "previous pass not 16x16 ME %"PRIu64", qp_hard_max last row %"PRIu64", emerg changed %"PRIu64", dqp>%d %"PRIu64", "
+              "range %"PRIu64", no subpel cost %"PRIu64", no record %"PRIu64"\n",
+              n, c[MEKEEP_KEPT], n ? 100.0 * c[MEKEEP_KEPT] / n : 0.0, c[MEKEEP_PREV], c[MEKEEP_HARDMAX], c[MEKEEP_EMERG],
+              MEKEEP_DQP_MAX, c[MEKEEP_DQP], c[MEKEEP_RANGE], c[MEKEEP_COST], c[MEKEEP_NOREC] );
+}
+
 /* l0.me16x16 at the best fullpel ref 0 predictor (mvp, mvc, zero), without a search:
  * fpelcmp picks it, cost is mbcmp + mv + ref. No mbrd. */
 static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a )
@@ -3318,6 +3441,7 @@ void x264_macroblock_analyse( x264_t *h )
     x264_mb_analysis_t analysis;
     int i_cost = COST_MAX;
 
+    h->mb.b_mekeep_me = 0;
     h->mb.i_qp = x264_ratecontrol_mb_qp( h );
     /* If the QP of this MB is within 1 of the previous MB, code the same QP as the previous MB,
      * to lower the bit cost of the qp_delta.  Don't do this if QPRD is enabled. */
@@ -3478,7 +3602,7 @@ skip_analysis:
             }
 
             if( !b_intra_skip_me )
-                x264_mb_analyse_inter_p16x16( h, &analysis );
+                x264_mb_analyse_inter_p16x16_redo( h, &analysis );
 
             if( h->mb.i_type == P_SKIP )
             {

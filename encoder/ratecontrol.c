@@ -1874,6 +1874,7 @@ static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
     h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
     row_err_expect( h, rc, y - SLICE_MBAFF, rc->qpm );
     h->mb.i_vbv_emerg = rc->emerg_step;
+    h->mb.b_redo_full = 0;
     return -1;
 }
 
@@ -1887,7 +1888,9 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
     float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
     rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
     rc->last_row_reencodes++;
-    return reencode_row( h, rc, y );
+    reencode_row( h, rc, y );
+    h->mb.b_redo_full = rc->qpm >= qp_hard_max;
+    return -1;
 }
 
 /* Least excess, of the rest of the slice, an emergency step is taken on. */

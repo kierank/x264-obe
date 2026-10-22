@@ -61,4 +61,14 @@ void x264_lookahead_get_frames( x264_t *h );
 #define x264_lookahead_delete x264_template(lookahead_delete)
 void x264_lookahead_delete( x264_t *h );
 
+/* --vbv-redo-mekeep counters, at the 16x16 search of redo-pass P mbs: kept, or the
+ * search for a guard (previous pass without a 16x16 search result, qp_hard_max
+ * last-row redo, emergency step changed, dqp, mv or ref out of range, no subpel
+ * cost, no record) */
+enum mekeep_cnt_e { MEKEEP_KEPT, MEKEEP_PREV, MEKEEP_HARDMAX, MEKEEP_EMERG, MEKEEP_DQP, MEKEEP_RANGE, MEKEEP_COST, MEKEEP_NOREC, MEKEEP_CNT_N };
+#define x264_mekeep_save x264_template(mekeep_save)
+void x264_mekeep_save( x264_t *h );
+#define x264_mekeep_print x264_template(mekeep_print)
+void x264_mekeep_print( x264_t *h );
+
 #endif

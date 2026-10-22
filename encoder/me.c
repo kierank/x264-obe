@@ -947,6 +947,18 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
     refine_subpel( h, m, 0, X264_MIN( 2, subpel_iterations[h->mb.i_subpel_refine][3] ), p_halfpel_thresh, 0 );
 }
 
+/* m->cost and m->cost_mv at m->mv as a search ending there gets them: mbcmp, the
+ * chroma cost with chroma ME, and the mv cost. 0, leaving m as it was, at subme < 2
+ * or where that cost is the fpelcmp of the search. */
+int x264_me_cost_mv( x264_t *h, x264_me_t *m )
+{
+    if( h->mb.i_subpel_refine < 2 || (h->pixf.mbcmp_unaligned[0] == h->pixf.fpelcmp[0] && !h->mb.b_chroma_me) )
+        return 0;
+    m->cost = COST_MAX;
+    refine_subpel( h, m, 0, 0, NULL, 0 );
+    return 1;
+}
+
 #define COST_MV_SAD( mx, my ) \
 { \
     int cost = subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel] ) \

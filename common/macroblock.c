@@ -396,6 +396,15 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 int rows = 2*(16 >> (i && CHROMA_V_SHIFT)) + 2;
                 CHECKED_MALLOCZERO( h->mb.fenc_bot[i], h->thread[0]->fdec->i_stride[i] * rows * sizeof(pixel) );
             }
+        h->mb.mekeep = NULL;
+        /* sliced threads share thread 0's, as the slices copy its mb */
+        if( h->param.rc.b_vbv_redo_mekeep && (!h->param.b_sliced_threads || h == h->thread[0]) )
+        {
+            CHECKED_MALLOCZERO( h->mb.mekeep, h->mb.i_mb_count * sizeof(*h->mb.mekeep) );
+            for( int i = 0; i < h->mb.i_mb_count; i++ )
+                h->mb.mekeep[i].i_frame = -1;
+        }
+        h->mb.i_redo_y = -1;
     }
 
     /* Allocate scratch buffer */
@@ -439,6 +448,8 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
                 x264_free( h->intra_border_backup[i][j] - 16 );
         for( int i = 0; i < 3; i++ )
             x264_free( h->mb.fenc_bot[i] );
+        if( !h->param.b_sliced_threads || h == h->thread[0] )
+            x264_free( h->mb.mekeep );
     }
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );
