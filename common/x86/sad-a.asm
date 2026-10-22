@@ -68,6 +68,7 @@ sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
 dbp_hex_bperm: dd 5, 0, 4, 6, 1, 3, 2, 6
 dbp_oct_bperm: dd 0, 1, 3, 2, 7, 5, 4, 6
+dbp_ring_bperm: dd 0, 2, 1, 3, 6, 4, 7, 5
 
 SECTION .text
 
@@ -2644,6 +2645,49 @@ cglobal pixel_sad_oct_min_8x8, 5,13,12
     DBP_PTR     dbp_p5, 0, 0
     DBP_INIT
     mova           m11, [dbp_oct_bperm]
+    vpermd         m10, m11, [r3]
+    vpbroadcastd   xm11, r4d
+    DBP_ROWS 8, 6
+    paddw           m0, m1
+    paddw           m3, m8
+    paddw           m0, m2
+    paddw           m2, m3, m9
+    DBP_FOLD2
+    pmovzxwd        m0, xm0
+    pslld           m0, 4
+    paddd           m0, m10
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    pminsd         xm0, xm11
+    DBP_MIN4
+    RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_ring_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                             const int32_t bias[8], int best )
+; umh's ring (-1,-2) (1,-2) (-2,-1) (2,-1) (-2,1) (2,1) (-1,2) (1,2), s = 4.
+; Group 1: dy -2 bx -1 words 0, 2, dy -1 bx -3 word 1, dy -1 bx -1 word 3:
+; (-1,-2) (-2,-1) (1,-2) (2,-1); group 2 the same at dy 2 and 1.
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_ring_min_8x8, 5,13,12
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    %define dbp_p4 r11
+    %define dbp_p5 r12
+    DBP_MASKS 0x5555, 0x2222, 0x8888, 0x5555, 0x2222, 0x8888
+    DBP_PTR_INIT
+    DBP_PTR     dbp_p0, -2, -1
+    DBP_PTR     dbp_p1, -1, -3
+    DBP_PTR     dbp_p2, -1, -1
+    DBP_PTR     dbp_p3, 2, -1
+    DBP_PTR     dbp_p4, 1, -3
+    DBP_PTR     dbp_p5, 1, -1
+    DBP_INIT
+    mova           m11, [dbp_ring_bperm]
     vpermd         m10, m11, [r3]
     vpbroadcastd   xm11, r4d
     DBP_ROWS 8, 6
