@@ -29,7 +29,7 @@
 #include "common/common.h"
 #include "macroblock.h"
 
-#define DCONLY_TWIN 0
+#define DCONLY_TWIN 1
 #define DCONLY_STR2( x ) #x
 #define DCONLY_STR( x ) DCONLY_STR2( x )
 #if !DCONLY_TWIN
