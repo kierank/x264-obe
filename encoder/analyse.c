@@ -34,6 +34,17 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* layout pair test/x264-i8x8-fuse / -twin: hidden weak x264_N_i8x8f_gate, defined here (no bytes) unless
+ * I8X8F_TWIN; the twin links it as 0 and i8x8 analysis keeps the filter, the separate x9 and x264_mb_encode_i8x8 */
+#define I8X8F_TWIN 0
+#define I8X8F_STR2( x ) #x
+#define I8X8F_STR( x ) I8X8F_STR2( x )
+#define x264_i8x8f_gate x264_template(i8x8f_gate)
+extern void x264_i8x8f_gate( void ) __attribute__((weak, visibility("hidden")));
+#if !I8X8F_TWIN
+__asm__( ".set " I8X8F_STR( x264_i8x8f_gate ) ", " I8X8F_STR( x264_macroblock_analyse ) );
+#endif
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -839,7 +850,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         /* predict_8x8_filter and x264_mb_encode_i8x8 in the x9 call, as x264_quant_8x8 without noise reduction or trellis */
         int (*x9_recon)( pixel *, pixel *, uint16_t *, uint16_t *, dctcoef *, x264_quant8_recon_t *, int, int ) =
             h->pixf.intra_mbcmp_x9_8x8 == h->pixf.intra_sa8d_x9_8x8 && !h->mb.b_noise_reduction && !h->mb.b_trellis
-            ? h->zigzagf.intra_sa8d_x9_8x8_recon : NULL;
+            && x264_i8x8f_gate ? h->zigzagf.intra_sa8d_x9_8x8_recon : NULL;
 
         for( idx = 0;; idx++ )
         {
