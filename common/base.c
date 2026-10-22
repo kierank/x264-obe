@@ -1184,6 +1184,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->analyse.i_skip_static = atoi(value);
     OPT("me-pred-intra")
         p->analyse.b_me_pred_intra = atobool(value);
+    OPT("subpel-fit")
+        p->analyse.i_subpel_fit = atoi(value);
     OPT("chroma-me")
         p->analyse.b_chroma_me = atobool(value);
     OPT("mixed-refs")
@@ -1374,6 +1376,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         s += sprintf( s, " skip_static=%d", p->analyse.i_skip_static );
     if( p->analyse.b_me_pred_intra )
         s += sprintf( s, " me_pred_intra=1" );
+    if( p->analyse.i_subpel_fit )
+        s += sprintf( s, " subpel_fit=%d", p->analyse.i_subpel_fit );
     s += sprintf( s, " chroma_me=%d", p->analyse.b_chroma_me );
     s += sprintf( s, " trellis=%d", p->analyse.i_trellis );
     s += sprintf( s, " 8x8dct=%d", p->analyse.b_transform_8x8 );

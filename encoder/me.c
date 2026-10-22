@@ -985,11 +985,41 @@ fpel_done:;
         m->cost = X264_MIN( bpred_cost, bcost );
     }
 
+    /* experimental: subpel start at the vertex of a parabola per axis through the
+     * fullpel winner and its 4 neighbours, where it is a strict minimum */
+    int b_fit = 0;
+    if( h->mb.i_subpel_fit && h->mb.i_subpel_refine >= 2 && M32( m->mv ) == bmv_spel &&
+        bmx > mv_x_min && bmx < mv_x_max && bmy > mv_y_min && bmy < mv_y_max &&
+        m->cost > p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2] )
+    {
+        int c0 = m->cost;
+        pixel *p = p_fref_w + bmx + bmy*stride;
+        h->pixf.fpelcmp_x4[i_pixel]( p_fenc, p-1, p+1, p-stride, p+stride, stride, costs );
+        costs[0] += p_cost_mvx[(bmx-1)<<2] + p_cost_mvy[bmy<<2];
+        costs[1] += p_cost_mvx[(bmx+1)<<2] + p_cost_mvy[bmy<<2];
+        costs[2] += p_cost_mvx[bmx<<2] + p_cost_mvy[(bmy-1)<<2];
+        costs[3] += p_cost_mvx[bmx<<2] + p_cost_mvy[(bmy+1)<<2];
+        if( costs[0] > c0 && costs[1] > c0 && costs[2] > c0 && costs[3] > c0 )
+        {
+            /* vertex (l-r)/(2(l+r-2c)) pel, |.| < 1/2; rounded to qpel */
+            for( int i = 0; i < 2; i++ )
+            {
+                int l = costs[2*i], r = costs[2*i+1];
+                int den = 2*(l + r - 2*c0);
+                int num = 4*(l - r);
+                m->mv[i] += (num + (num < 0 ? -den : den)/2) / den;
+            }
+            b_fit = 1;
+        }
+    }
+
     /* subpel refine */
     if( h->mb.i_subpel_refine >= 2 )
     {
         int hpel = subpel_iterations[h->mb.i_subpel_refine][2];
         int qpel = subpel_iterations[h->mb.i_subpel_refine][3];
+        if( b_fit )
+            hpel = h->mb.i_subpel_fit == 1 ? 0 : X264_MAX( hpel-1, 0 );
         refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
     }
 }
