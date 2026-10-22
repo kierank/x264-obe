@@ -146,7 +146,8 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
     intptr_t i_stride = s->stride_luma;
     int n = s->mb_width;
     int b_dc = 0;
-    int b_search8 = h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8] && s->intra_cost_shift == BIT_DEPTH-8;
+    int b_search8 = h->pixf.weightp_satd8_search && h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8]
+                 && s->intra_cost_shift == BIT_DEPTH-8;
     for( int k = 0; k < t->i_scales; k++ )
     {
         b_dc |= t->i_offsets[k] > 1;

@@ -203,7 +203,8 @@ typedef struct
      * wp[k] = { scale, denom, offset << (BIT_DEPTH-8), offsets (1 to 4) }, and j < offsets,
      * cost[k][j] += min( satd_8x8( w - f ), icost[i] << (BIT_DEPTH-8) ), w = x264_clip_pixel(
      * ((r * scale + ((1 << denom) >> 1)) >> denom) + offset + (j << (BIT_DEPTH-8)) ); the other
-     * cost[k][j] are undefined. asm may read 24 pixels past the row. */
+     * cost[k][j] are undefined. Reads up to 24 pixels past the row. asm only, NULL otherwise
+     * (x264_weight_luma_search_rows). */
     void (*weightp_satd8_search)( uint32_t (*cost)[4], pixel *r, pixel *f, intptr_t i_stride, int n,
                                   uint16_t *icost, const int16_t (*wp)[4], int nk );
     uint64_t (*sa8d_satd[1])( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
