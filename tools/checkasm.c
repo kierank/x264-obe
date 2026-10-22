@@ -1885,6 +1885,32 @@ static int check_cacheprog( int cpu_ref, int cpu_new )
                 }
             }
         }
+
+        if( cp_a.load_border && cp_a.load_border != cp_ref.load_border )
+        {
+            void (*load_border_c)( pixel *, pixel *, pixel *, pixel * ) =
+                f ? x264_cacheprog_load_border_422_c : x264_cacheprog_load_border_420_c;
+            used_asm = 1;
+            set_func_name( "cacheprog_load_border_%s", fmt_names[f] );
+            for( int i = 0; i < 100 && ok; i++ )
+            {
+                ALIGNED_ARRAY_64( pixel, fdec, [2],[54*FDEC_STRIDE] );
+                ALIGNED_ARRAY_16( pixel, intra, [2],[64] );
+                /* random, all 0, all PIXEL_MAX */
+                int dist = i%3;
+                for( int j = 0; j < 54*FDEC_STRIDE; j++ )
+                    fdec[0][j] = fdec[1][j] = dist == 0 ? rand() & PIXEL_MAX : dist == 1 ? 0 : PIXEL_MAX;
+                for( int j = 0; j < 64; j++ )
+                    intra[0][j] = intra[1][j] = dist == 0 ? rand() & PIXEL_MAX : dist == 1 ? PIXEL_MAX : 0;
+                call_c( load_border_c, fdec[0]+2*FDEC_STRIDE, fdec[0]+20*FDEC_STRIDE, intra[0]+16, intra[1]+40 );
+                call_a( cp_a.load_border, fdec[1]+2*FDEC_STRIDE, fdec[1]+20*FDEC_STRIDE, intra[0]+16, intra[1]+40 );
+                if( memcmp( fdec[0], fdec[1], sizeof(pixel)*54*FDEC_STRIDE ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "cacheprog_load_border_%s (dist=%d): [FAILED]\n", fmt_names[f], dist );
+                }
+            }
+        }
     }
 
     report( "cacheprog :" );

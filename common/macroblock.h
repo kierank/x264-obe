@@ -344,6 +344,10 @@ void x264_cacheprog_load_nnz_420_c( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i
 #define x264_cacheprog_load_nnz_422_c x264_template(cacheprog_load_nnz_422_c)
 void x264_cacheprog_load_nnz_422_c( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
                                     uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left );
+#define x264_cacheprog_load_border_420_c x264_template(cacheprog_load_border_420_c)
+void x264_cacheprog_load_border_420_c( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c );
+#define x264_cacheprog_load_border_422_c x264_template(cacheprog_load_border_422_c)
+void x264_cacheprog_load_border_422_c( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c );
 
 /* x264_mb_predict_mv_16x16:
  *      set mvp with predicted mv for D_16x16 block

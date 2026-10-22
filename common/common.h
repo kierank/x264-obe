@@ -251,6 +251,9 @@ typedef struct
      * unavailable rows; reads 64 bytes at nnz_top/nnz_left and 8 at i4x4_top/i4x4_left */
     void (*load_nnz)( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
                       uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left );
+    /* fdec left column (from column 15 of luma, 7 of chroma) and top row (from intra_y[-1..23],
+     * intra_c[-9..15]); fdec_v = fdec_u + 16 */
+    void (*load_border)( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c );
 } x264_cacheprog_function_t;
 
 /* Current frame stats */

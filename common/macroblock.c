@@ -992,6 +992,34 @@ void x264_cacheprog_load_nnz_422_c( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i
     cacheprog_load_nnz( nnz_cache, i4x4_cache, nnz_top, nnz_left, i4x4_top, i4x4_left, CHROMA_422 );
 }
 
+static ALWAYS_INLINE void cacheprog_load_border( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c, int cf )
+{
+    pixel *fdec_v = fdec_u + 16;
+    for( int i = 0; i < 16; i++ )
+        fdec_y[-1+i*FDEC_STRIDE] = fdec_y[15+i*FDEC_STRIDE];
+    memcpy( fdec_y-FDEC_STRIDE, intra_y, 24*sizeof(pixel) );
+    fdec_y[-FDEC_STRIDE-1] = intra_y[-1];
+    for( int i = 0; i < (cf == CHROMA_422 ? 16 : 8); i++ )
+    {
+        fdec_u[-1+i*FDEC_STRIDE] = fdec_u[7+i*FDEC_STRIDE];
+        fdec_v[-1+i*FDEC_STRIDE] = fdec_v[7+i*FDEC_STRIDE];
+    }
+    memcpy( fdec_u-FDEC_STRIDE, intra_c, 8*sizeof(pixel) );
+    memcpy( fdec_v-FDEC_STRIDE, intra_c+8, 8*sizeof(pixel) );
+    fdec_u[-FDEC_STRIDE-1] = intra_c[-1-8];
+    fdec_v[-FDEC_STRIDE-1] = intra_c[-1];
+}
+
+void x264_cacheprog_load_border_420_c( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c )
+{
+    cacheprog_load_border( fdec_y, fdec_u, intra_y, intra_c, CHROMA_420 );
+}
+
+void x264_cacheprog_load_border_422_c( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c )
+{
+    cacheprog_load_border( fdec_y, fdec_u, intra_y, intra_c, CHROMA_422 );
+}
+
 #if HAVE_MMX
 #include "x86/cacheprog.h"
 #endif
@@ -1014,6 +1042,7 @@ void x264_cacheprog_init( int cpu, x264_cacheprog_function_t *pf, int chroma_for
     if( cpu&X264_CPU_AVX512ICL )
     {
         pf->load_nnz = b_422 ? x264_cacheprog_load_nnz_422_avx512icl : x264_cacheprog_load_nnz_420_avx512icl;
+        pf->load_border = b_422 ? x264_cacheprog_load_border_422_avx512icl : x264_cacheprog_load_border_420_avx512icl;
     }
 #endif
 }
@@ -1301,21 +1330,26 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_prog( x264_t *h, int mb_x, 
         pixel *intra_c = &h->intra_border_backup[!(mb_y&1)][1][mb_x*16];
 
         /* fdec left column and top row */
-        x264_copy_column8( fdec_y-1+ 4*FDEC_STRIDE, fdec_y+15+ 4*FDEC_STRIDE );
-        x264_copy_column8( fdec_y-1+12*FDEC_STRIDE, fdec_y+15+12*FDEC_STRIDE );
-        memcpy( fdec_y-FDEC_STRIDE, intra_y, 24*sizeof(pixel) );
-        fdec_y[-FDEC_STRIDE-1] = intra_y[-1];
-        x264_copy_column8( fdec_u-1+ 4*FDEC_STRIDE, fdec_u+ 7+ 4*FDEC_STRIDE );
-        x264_copy_column8( fdec_v-1+ 4*FDEC_STRIDE, fdec_v+ 7+ 4*FDEC_STRIDE );
-        if( cf == CHROMA_422 )
+        if( h->cachef.load_border )
+            h->cachef.load_border( fdec_y, fdec_u, intra_y, intra_c );
+        else
         {
-            x264_copy_column8( fdec_u-1+12*FDEC_STRIDE, fdec_u+ 7+12*FDEC_STRIDE );
-            x264_copy_column8( fdec_v-1+12*FDEC_STRIDE, fdec_v+ 7+12*FDEC_STRIDE );
+            x264_copy_column8( fdec_y-1+ 4*FDEC_STRIDE, fdec_y+15+ 4*FDEC_STRIDE );
+            x264_copy_column8( fdec_y-1+12*FDEC_STRIDE, fdec_y+15+12*FDEC_STRIDE );
+            memcpy( fdec_y-FDEC_STRIDE, intra_y, 24*sizeof(pixel) );
+            fdec_y[-FDEC_STRIDE-1] = intra_y[-1];
+            x264_copy_column8( fdec_u-1+ 4*FDEC_STRIDE, fdec_u+ 7+ 4*FDEC_STRIDE );
+            x264_copy_column8( fdec_v-1+ 4*FDEC_STRIDE, fdec_v+ 7+ 4*FDEC_STRIDE );
+            if( cf == CHROMA_422 )
+            {
+                x264_copy_column8( fdec_u-1+12*FDEC_STRIDE, fdec_u+ 7+12*FDEC_STRIDE );
+                x264_copy_column8( fdec_v-1+12*FDEC_STRIDE, fdec_v+ 7+12*FDEC_STRIDE );
+            }
+            memcpy( fdec_u-FDEC_STRIDE, intra_c, 8*sizeof(pixel) );
+            memcpy( fdec_v-FDEC_STRIDE, intra_c+8, 8*sizeof(pixel) );
+            fdec_u[-FDEC_STRIDE-1] = intra_c[-1-8];
+            fdec_v[-FDEC_STRIDE-1] = intra_c[-1];
         }
-        memcpy( fdec_u-FDEC_STRIDE, intra_c, 8*sizeof(pixel) );
-        memcpy( fdec_v-FDEC_STRIDE, intra_c+8, 8*sizeof(pixel) );
-        fdec_u[-FDEC_STRIDE-1] = intra_c[-1-8];
-        fdec_v[-FDEC_STRIDE-1] = intra_c[-1];
         if( h->mb.b_reencode_mb )
             x264_macroblock_load_left_reencode( h, off_y, off_c, height_c );
 

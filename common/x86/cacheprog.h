@@ -40,4 +40,11 @@ void x264_cacheprog_load_nnz_##fmt##_##cpu( uint8_t nnz_cache[X264_SCAN8_SIZE], 
 DECL_LOAD_NNZ( 420, avx512icl )
 DECL_LOAD_NNZ( 422, avx512icl )
 
+#define DECL_LOAD_BORDER( fmt, cpu )\
+void x264_cacheprog_load_border_##fmt##_##cpu( pixel *fdec_y, pixel *fdec_u, pixel *intra_y, pixel *intra_c );
+#define x264_cacheprog_load_border_420_avx512icl x264_template(cacheprog_load_border_420_avx512icl)
+#define x264_cacheprog_load_border_422_avx512icl x264_template(cacheprog_load_border_422_avx512icl)
+DECL_LOAD_BORDER( 420, avx512icl )
+DECL_LOAD_BORDER( 422, avx512icl )
+
 #endif
