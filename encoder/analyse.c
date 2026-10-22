@@ -3257,6 +3257,35 @@ static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cos
         x264_mb_analyse_intra( h, a, i_cost );
 }
 
+/* Lower bound on x264_rd_cost_mb of any intra type in a P slice. ssd and psy are
+ * >= 0 and every CABAC bin adds >= 0 to f8_bits_encoded, so the bins whose context
+ * state is the slice's state here bound the bits: the mb_type prefix and suffix,
+ * and the first bin of each later context, at its best value and context. */
+static int x264_mb_intra_rd_floor_p( x264_t *h, x264_mb_analysis_t *a )
+{
+    uint8_t *s = h->cabac.state;
+#define E(ctx,b) x264_cabac_entropy[s[ctx]^(b)]
+#define EMIN(ctx) X264_MIN( E(ctx,0), E(ctx,1) )
+    int chroma_pred = CHROMA444 ? 0 : X264_MIN3( EMIN(64), EMIN(65), EMIN(66) );
+    /* I_4x4, I_8x8: suffix 0, transform_size_8x8_flag, first pred mode flag,
+     * chroma pred mode, first luma and chroma cbp bins */
+    int nxn = E(17,0) + EMIN(68) + chroma_pred
+            + X264_MIN( X264_MIN( EMIN(73), EMIN(74) ), X264_MIN( EMIN(75), EMIN(76) ) );
+    if( h->pps->b_transform_8x8_mode )
+        nxn += X264_MIN3( EMIN(399), EMIN(400), EMIN(401) );
+    if( !CHROMA444 )
+        nxn += X264_MIN( X264_MIN( EMIN(77), EMIN(78) ), X264_MIN( EMIN(79), EMIN(80) ) );
+    /* I_16x16: suffix 1, terminal, cbp luma and chroma bins, first pred bin,
+     * chroma pred mode, first mb_qp_delta bin */
+    int i16 = E(17,1) + 7 + EMIN(18) + EMIN(19) + EMIN(20) + chroma_pred + X264_MIN( EMIN(60), EMIN(61) );
+#undef E
+#undef EMIN
+    int64_t f8 = (int64_t)h->cabac.f8_bits_encoded + x264_cabac_entropy[s[14]^1] + X264_MIN( nxn, i16 );
+    if( f8 < 0 )
+        return 0;
+    return X264_MIN( ((uint64_t)f8 * a->i_lambda2 + 32768) >> 16, COST_MAX );
+}
+
 /* Fast P_SKIP: the probe passes when the residual quantises away, which at a
  * high qp holds for a skip mv far from the motion.  Reject the skip where a
  * candidate mv predicts the luma at under half the skip sad and by more than
@@ -3670,6 +3699,14 @@ skip_analysis:
             {
                 /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
                 x264_mb_analyse_intra16x16( h, &analysis, i_cost );
+            }
+            else if( analysis.i_mbrd && !analysis.b_force_intra && !(flags & X264_ANALYSE_PSUB16x16) &&
+                     !h->mb.b_noise_reduction && analysis.i_lambda2 <= x264_lambda2_tab[QP_MAX_SPEC] &&
+                     analysis.l0.i_rd16x16 < COST_MAX && analysis.l0.i_rd16x16 <= analysis.i_satd_pcm &&
+                     analysis.l0.i_rd16x16 <= x264_mb_intra_rd_floor_p( h, &analysis ) )
+            {
+                /* The 16x16 rd cost is known and no intra rd cost is below it; the
+                 * transform rd only lowers it. No intra analysis, no intra rd. */
             }
             else
                 x264_mb_analyse_intra_p( h, &analysis, i_cost );
