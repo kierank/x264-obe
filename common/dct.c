@@ -904,6 +904,56 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
     }
 }
 
+/* layout twins of wip/x264-trellis-wrap: every build declares the hidden weak
+ * x264_<depth>_twin_quant_{4x4x4,4x4,8x8}_scan_last_{frame,field}_{avx2,avx512icl}; a kernel set
+ * to 1 below dispatches its twins, which link as 0, so its slots stay NULL and rdo.c takes the
+ * old path (memcpy + quant + scan + coeff_last) */
+#if HAVE_MMX && ARCH_X86_64
+#define TRW_TWIN_Q4x4x4 0
+#define TRW_TWIN_Q4x4   1
+#define TRW_TWIN_Q8x8   1
+#define TRW_STR2(x) #x
+#define TRW_STR(x) TRW_STR2(x)
+#define TRW_TWIN1( n, c ) \
+    extern __typeof__( x264_##n##_##c ) x264_template(twin_##n##_##c) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak " TRW_STR(x264_template(twin_##n##_##c)) "\n.hidden " TRW_STR(x264_template(twin_##n##_##c)) );
+#define TRW_TWIN4( n ) \
+    TRW_TWIN1( n, frame_avx2 ) TRW_TWIN1( n, field_avx2 ) TRW_TWIN1( n, frame_avx512icl ) TRW_TWIN1( n, field_avx512icl )
+TRW_TWIN4( quant_4x4x4_scan_last )
+TRW_TWIN4( quant_4x4_scan_last )
+TRW_TWIN4( quant_8x8_scan_last )
+#if TRW_TWIN_Q4x4x4
+#undef x264_quant_4x4x4_scan_last_frame_avx2
+#define x264_quant_4x4x4_scan_last_frame_avx2 x264_template(twin_quant_4x4x4_scan_last_frame_avx2)
+#undef x264_quant_4x4x4_scan_last_field_avx2
+#define x264_quant_4x4x4_scan_last_field_avx2 x264_template(twin_quant_4x4x4_scan_last_field_avx2)
+#undef x264_quant_4x4x4_scan_last_frame_avx512icl
+#define x264_quant_4x4x4_scan_last_frame_avx512icl x264_template(twin_quant_4x4x4_scan_last_frame_avx512icl)
+#undef x264_quant_4x4x4_scan_last_field_avx512icl
+#define x264_quant_4x4x4_scan_last_field_avx512icl x264_template(twin_quant_4x4x4_scan_last_field_avx512icl)
+#endif
+#if TRW_TWIN_Q4x4
+#undef x264_quant_4x4_scan_last_frame_avx2
+#define x264_quant_4x4_scan_last_frame_avx2 x264_template(twin_quant_4x4_scan_last_frame_avx2)
+#undef x264_quant_4x4_scan_last_field_avx2
+#define x264_quant_4x4_scan_last_field_avx2 x264_template(twin_quant_4x4_scan_last_field_avx2)
+#undef x264_quant_4x4_scan_last_frame_avx512icl
+#define x264_quant_4x4_scan_last_frame_avx512icl x264_template(twin_quant_4x4_scan_last_frame_avx512icl)
+#undef x264_quant_4x4_scan_last_field_avx512icl
+#define x264_quant_4x4_scan_last_field_avx512icl x264_template(twin_quant_4x4_scan_last_field_avx512icl)
+#endif
+#if TRW_TWIN_Q8x8
+#undef x264_quant_8x8_scan_last_frame_avx2
+#define x264_quant_8x8_scan_last_frame_avx2 x264_template(twin_quant_8x8_scan_last_frame_avx2)
+#undef x264_quant_8x8_scan_last_field_avx2
+#define x264_quant_8x8_scan_last_field_avx2 x264_template(twin_quant_8x8_scan_last_field_avx2)
+#undef x264_quant_8x8_scan_last_frame_avx512icl
+#define x264_quant_8x8_scan_last_frame_avx512icl x264_template(twin_quant_8x8_scan_last_frame_avx512icl)
+#undef x264_quant_8x8_scan_last_field_avx512icl
+#define x264_quant_8x8_scan_last_field_avx512icl x264_template(twin_quant_8x8_scan_last_field_avx512icl)
+#endif
+#endif
+
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {
     pf_interlaced->scan_8x8   = zigzag_scan_8x8_field;
