@@ -94,6 +94,14 @@ typedef struct
      * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24. */
     int  (*intra_satd_x9_4x4_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
                                      x264_quant4_recon_t *q, int limit );
+    /* Inter residual of a 16x16 plane: sub16x16_dct, quant_4x4x4_scan of each 8x8 (quant_8x8_scan for _8x8),
+     * the decimation of x264_macroblock_encode (i_decimate_mb: the score of the earlier planes, or -1 for none),
+     * nnz of the plane (scan8 layout, nnz = non_zero_count at scan8[0] of the plane), then add the idct of the
+     * coded 8x8s to p_dst. Returns the coded 8x8s | the summed score << 4 (0 without decimation). */
+    int  (*inter_resid_4x4)( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                             udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
+    int  (*inter_resid_8x8)( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                             udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
 
 } x264_zigzag_function_t;
 
@@ -102,5 +110,18 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf );
 void x264_dct_init_weights( void );
 #define x264_zigzag_init x264_template(zigzag_init)
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced );
+/* C references of the asm-only inter_resid functions */
+#define x264_inter_resid_4x4_frame x264_template(inter_resid_4x4_frame)
+int x264_inter_resid_4x4_frame( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
+#define x264_inter_resid_4x4_field x264_template(inter_resid_4x4_field)
+int x264_inter_resid_4x4_field( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
+#define x264_inter_resid_8x8_frame x264_template(inter_resid_8x8_frame)
+int x264_inter_resid_8x8_frame( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
+#define x264_inter_resid_8x8_field x264_template(inter_resid_8x8_field)
+int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
 
 #endif
