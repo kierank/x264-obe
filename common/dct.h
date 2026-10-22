@@ -94,12 +94,12 @@ typedef struct
     /* probe_skip, asm only (NULL otherwise). Luma, references x264_probe_skip_luma_c: 2 if fenc == fdec over
      * 16x16, else 0 if sub8x8_dct + quant_4x4x4_scan over the four 8x8s sum to a score >= 6, else 1.
      * thr: zscreen_thr of mf/bias. */
-    int  (*probe_skip_luma)( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[4] );
+    int  (*probe_skip_luma)( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[2] );
     /* chroma plane, 8x8 [0] or 8x16 [1], references x264_probe_skip_chroma_c: 1 if ssd < thresh, 0 if
      * quant_2x2_dc( dc_mf, dc_bias ) of the DC transform is nonzero, 1 if ssd < 4*thresh, else 0 if
      * quant_4x4x4_scan_ac over the 8x8s (DCs zeroed) sums to a score >= 7, else 1. thr: zscreen_thr of mf/bias. */
     int  (*probe_skip_chroma[2])( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh,
-                                  int dc_mf, int dc_bias, const int32_t thr[4] );
+                                  int dc_mf, int dc_bias, const int32_t thr[2] );
 
 } x264_zigzag_function_t;
 
