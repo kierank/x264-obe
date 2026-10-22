@@ -82,10 +82,14 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
+/* lowlat (tune zerolatency): no B-frames, rc lookahead or mb-tree, so the lowres
+ * mvs only feed scenecut, ratecontrol, weightp and the mv predictors */
+#define X264_LOWRES_LOWLAT( param ) ( !(param)->i_bframe && !(param)->rc.i_lookahead && !(param)->rc.b_mb_tree )
+
 /* me method and subme of the lowres (lookahead) analysis */
 static inline void x264_me_lowres_method( const x264_param_t *param, int *me_method, int *subme )
 {
-    if( param->analyse.i_subpel_refine > 1 )
+    if( param->analyse.i_subpel_refine > 1 && !X264_LOWRES_LOWLAT( param ) )
     {
         *me_method = X264_MIN( X264_ME_HEX, param->analyse.i_me_method );
         *subme = 4;
