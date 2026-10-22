@@ -357,8 +357,8 @@ struct x264_t
     udctcoef        (*quant8_bias0[4])[64];  /* [4][QP_MAX_SPEC+1][64] */
     x264_quant4_recon_t *quant4_recon;       /* [QP_MAX_SPEC+1], CQM_4IY */
     udctcoef        (*nr_offset_emergency)[4][64];
-    /* probe_skip zscreen_16x16 thresholds, [CQM_4PY, CQM_4PC][qp] */
-    int32_t         zscreen_thr[2][QP_MAX_SPEC+1][2];
+    /* probe_skip zscreen_16x16 thresholds, [CQM_4PY, CQM_4PC][qp]: D, DC, range + 1 (probe_skip_luma / _chroma) */
+    int32_t         zscreen_thr[2][QP_MAX_SPEC+1][4];
 
     /* mv/ref cost arrays. */
     uint16_t *cost_mv[QP_MAX+1];

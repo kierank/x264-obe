@@ -111,6 +111,7 @@ probe_scan_frame: times 2 db 0, 8, 1, 2, 9, 4,12, 5,10, 3,11, 6,13,14, 7,15
                   times 2 db 4,12, 5, 6,13, 0, 8, 1,14, 7,15, 2, 9,10, 3,11
 probe_scan_field: times 2 db 0, 1, 8, 2, 3, 9,10,11, 4, 5, 6, 7,12,13,14,15
                   times 2 db 4, 5,12, 6, 7,13,14,15, 0, 1, 2, 3, 8, 9,10,11
+probe_swapw:      times 2 db 2, 3, 0, 1, 6, 7, 4, 5,10,11, 8, 9,14,15,12,13
 probe_acmask:     times 4 dw 0, -1, -1, -1
 probe_key_mask:   times 4 dd 0x7ffc
 probe_key_idx:    dd 0, 1, 2, 3
@@ -4086,7 +4087,8 @@ QUANT_8x8_SCAN_AVX512 field
 ;=============================================================================
 
 ; m%1: sum(r^2) pairs, m%2: sum(r) pairs of the 16 wide residual rows %3 to %3+3; m8: pw_1
-%macro PROBE_SCREEN_ROWS 3
+; m%4: all ones (words) on each 4x4 whose residual range is < m15 (PROBE_RANGE)
+%macro PROBE_SCREEN_ROWS 4
 %assign %%y %3
 %rep 4
 %if HIGH_BIT_DEPTH
@@ -4100,22 +4102,44 @@ QUANT_8x8_SCAN_AVX512 field
 %if %%y == %3
     pmaddwd       m%1, m6, m6
     mova          m%2, m6
+    mova           m9, m6
+    mova          m10, m6
 %else
     pmaddwd        m7, m6, m6
     paddd         m%1, m7
     paddw         m%2, m6
+    pmaxsw         m9, m6
+    pminsw        m10, m6
 %endif
 %assign %%y %%y+1
 %endrep
     pmaddwd       m%2, m8
+    PROBE_RANGE   %4
 %endmacro
 
-; m%1: E, m%2: S of 4x4 blocks -> m%1: all ones where 16*E - S^2 <= thr[0] (m6) and |S| < thr[1] (m7)
-%macro PROBE_SCREEN_TEST 2
+; m9, m10: max, min (words) of 4x4 rows of blocks 0 1 | 2 3 -> m%1: all ones on the qword of each
+; block whose range max - min is < m15; m6, m7: temps
+%macro PROBE_RANGE 1
+    pshufb         m6, m9, [probe_swapw]
+    pshufb         m7, m10, [probe_swapw]
+    pmaxsw         m9, m6
+    pminsw        m10, m7
+    pshufd         m6, m9, q2301
+    pshufd         m7, m10, q2301
+    pmaxsw         m9, m6
+    pminsw        m10, m7
+    psubw          m9, m10
+    pcmpgtw       m%1, m15, m9
+%endmacro
+
+; m%1: E, m%2: S of 4x4 blocks, m%3: range test -> m%1: all ones where |S| < thr[1] (m7) and
+; 16*E - S^2 <= thr[0] (m6) or the range test holds
+%macro PROBE_SCREEN_TEST 3
     pslld         m%1, 4
-    pmulld         m9, m%2, m%2
-    psubd         m%1, m9
+    pmulld        m14, m%2, m%2
+    psubd         m%1, m14
     pcmpgtd       m%1, m6
+    pandn         m%1, m%3, m%1
     pabsd         m%2, m%2
     pcmpgtd       m%2, m7, m%2
     pandn         m%1, m%2
@@ -4302,17 +4326,20 @@ QUANT_8x8_SCAN_AVX512 field
 ; int probe_skip_luma( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[2] )
 ;-----------------------------------------------------------------------------
 ; 2 if fenc == fdec over 16x16. Else 0 if the residual's 4x4 blocks (sub4x4_dct, quant mf/bias) have a
-; level > 1 or a summed decimate score >= 6, else 1. Rows of 4x4 blocks that zscreen_16x16's test with thr
-; proves 0 are skipped; the rest go largest sum(r^2) first.
+; level > 1 or a summed decimate score >= 6, else 1. Rows of 4x4 blocks proven 0 are skipped: |S| < thr[1] and
+; zscreen_16x16's 16*E - S^2 <= thr[0] or a residual range < thr[2]. The rest go largest sum(r^2) first.
 %macro PROBE_SKIP_LUMA 1 ; field
 cglobal probe_skip_luma_%1, 5,9,16
     vpbroadcastd   m8, [pw_1]
-    PROBE_SCREEN_ROWS 0, 1, 0
-    PROBE_SCREEN_ROWS 2, 3, 4
+    vpbroadcastw  m15, [r4+8]
+    PROBE_SCREEN_ROWS 0, 1, 0, 11
+    PROBE_SCREEN_ROWS 2, 3, 4, 12
     phaddd         m0, m2           ; E of 4x4 rows 0, 1: blocks 0 1 of each | 2 3
     phaddd         m1, m3           ; S
-    PROBE_SCREEN_ROWS 2, 3, 8
-    PROBE_SCREEN_ROWS 4, 5, 12
+    shufps        m11, m12, q2020   ; range test, blocks as E
+    PROBE_SCREEN_ROWS 2, 3, 8, 12
+    PROBE_SCREEN_ROWS 4, 5, 12, 13
+    shufps        m12, m13, q2020
     phaddd         m2, m4           ; rows 2, 3
     phaddd         m3, m5
     phaddd         m4, m0, m2
@@ -4322,8 +4349,8 @@ cglobal probe_skip_luma_%1, 5,9,16
     jz .eq
     vpbroadcastd   m6, [r4]
     vpbroadcastd   m7, [r4+4]
-    PROBE_SCREEN_TEST 0, 1
-    PROBE_SCREEN_TEST 2, 3
+    PROBE_SCREEN_TEST 0, 1, 11
+    PROBE_SCREEN_TEST 2, 3, 12
     packssdw       m0, m2
     vextracti128  xm1, m0, 1
     pand          xm0, xm1
@@ -4361,6 +4388,51 @@ cglobal probe_skip_luma_%1, 5,9,16
 .eq:
     mov           eax, 2
     RET
+%endmacro
+
+; jumps to %1 if every AC coefficient of the 4x4 blocks in m0-m3 (PROBE_BLOCKS' layout) is proven 0:
+; 16*E - S^2 <= thr[0] or a residual range < thr[2] (r3: thr); m4-m7 temps
+%macro PROBE_SCREEN8 1
+    pmaddwd        m4, m0, m0
+    pmaddwd        m5, m1, m1
+    paddd          m4, m5
+    pmaddwd        m5, m2, m2
+    paddd          m4, m5
+    pmaddwd        m5, m3, m3
+    paddd          m4, m5
+    paddw          m5, m0, m1
+    paddw          m6, m2, m3
+    paddw          m5, m6
+    pmaddwd        m5, [pw_1]
+    phaddd         m4, m5           ; E, S of blocks 0 1 | 2 3: E0 E1 S0 S1
+    pshufd         m5, m4, q3232
+    pslld          m4, 4
+    pmulld         m5, m5
+    psubd          m4, m5
+    vpbroadcastd   m5, [r3]
+    pcmpgtd        m4, m5
+    pmaxsw         m5, m0, m1
+    pminsw         m6, m0, m1
+    pmaxsw         m5, m2
+    pminsw         m6, m2
+    pmaxsw         m5, m3
+    pminsw         m6, m3
+    pshufb         m7, m5, [probe_swapw]
+    pmaxsw         m5, m7
+    pshufd         m7, m5, q2301
+    pmaxsw         m5, m7
+    pshufb         m7, m6, [probe_swapw]
+    pminsw         m6, m7
+    pshufd         m7, m6, q2301
+    pminsw         m6, m7
+    psubw          m5, m6
+    vpbroadcastw   m6, [r3+8]
+    pcmpgtw        m6, m5
+    pshufd         m6, m6, q2020
+    pandn          m4, m6, m4       ; not proven
+    movmskps      r5d, m4
+    test          r5d, 0x33
+    jz %1
 %endmacro
 
 ; m4: ssd (dwords), m5: 4x4 DCs, A B A B | C D C D, of the residual in m0-m3
@@ -4403,13 +4475,14 @@ cglobal probe_skip_luma_%1, 5,9,16
 
 ;-----------------------------------------------------------------------------
 ; int probe_skip_chroma( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh,
-;                        int dc_mf, int dc_bias )
+;                        int dc_mf, int dc_bias, const int32_t thr[4] )
 ;-----------------------------------------------------------------------------
 ; One 8x8 (4:2:0) or 8x16 (4:2:2) plane: 1 if ssd < thresh; 0 if a DC (sub8x8_dct_dc / sub8x16_dct_dc)
 ; quantises nonzero (quant_2x2_dc, dc_mf, dc_bias); 1 if ssd < 4*thresh; else 0 if the AC levels
-; (sub8x8_dct, quant mf/bias) have one > 1 or a summed decimate score >= 7, else 1.
+; (sub8x8_dct, quant mf/bias) have one > 1 or a summed decimate score >= 7, else 1. An 8x8 whose
+; AC PROBE_SCREEN8 proves 0 with thr (zscreen_thr of mf/bias) is not transformed.
 %macro PROBE_SKIP_CHROMA 2 ; 420/422, field
-cglobal probe_skip_chroma_%1_%2, 7,9,16
+cglobal probe_skip_chroma_%1_%2, 8,9,16
 %if %1 == 422
     PROBE_LOAD8    8
     PROBE_SSD_DC
@@ -4428,8 +4501,8 @@ cglobal probe_skip_chroma_%1_%2, 7,9,16
     paddd         xm4, xm6
     pshufd        xm6, xm4, q2301
     paddd         xm4, xm6
-    movd          r7d, xm4
-    cmp           r7d, r4d
+    movd          r8d, xm4
+    cmp           r8d, r4d
     jl .pass
 %if %1 == 422
     punpcklqdq     m6, m5, m10      ; 4x4 rows 0, 2 | 1, 3
@@ -4457,17 +4530,21 @@ cglobal probe_skip_chroma_%1_%2, 7,9,16
 %endif
     jnz .reject
     lea           r4d, [r4*4]
-    cmp           r7d, r4d
+    cmp           r8d, r4d
     jl .pass
     PROBE_LOAD_QUANT
+    mov            r3, r7
     xor           r2d, r2d
-    PROBE_BLOCKS    1, %2, r2d, .reject
 %if %1 == 422
+    PROBE_SCREEN8 .half1
+    PROBE_BLOCKS    1, %2, r2d, .reject
     cmp           r2d, 7
     jge .reject
+.half1:
     PROBE_LOAD8    8
-    PROBE_BLOCKS    1, %2, r2d, .reject
 %endif
+    PROBE_SCREEN8 .pass
+    PROBE_BLOCKS    1, %2, r2d, .reject
     cmp           r2d, 7
     jge .reject
 .pass:

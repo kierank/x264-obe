@@ -1083,7 +1083,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             {
                 if( !h->zigzagf.probe_skip_chroma[chroma422]( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
                                                                h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
-                                                               h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1 ) )
+                                                               h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1, h->zscreen_thr[1][i_qp] ) )
                     return 0;
                 continue;
             }
