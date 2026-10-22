@@ -4768,6 +4768,80 @@ static int zscreen_sum7sq( int64_t q, int x[7] )
     return 0;
 }
 
+/* probe_skip residuals, w x h at fenc / fdec, by j % 6: 0 none, 1 noise, 2 one to three transform basis images
+ * per 4x4 with coefficients about the level 1 and 2 thresholds of mf/bias, 3 a flat offset per 4x4 (DC only),
+ * 4 +-PIXEL_MAX, 5 one of those per 4x4 */
+static void probe_residual( pixel *fenc, pixel *fdec, int w, int h, int j, udctcoef *mf, udctcoef *bias )
+{
+    static const int8_t basis[4][4] = { {1,1,1,1}, {2,1,-1,-2}, {1,-1,-1,1}, {1,-2,2,-1} };
+    static const int norm[4] = { 4, 10, 4, 10 };
+    int amp = (1 << (rand() % (BIT_DEPTH+1))) - 1;
+    for( int y = 0; y < h; y++ )
+        for( int x = 0; x < w; x++ )
+            fenc[x+y*FENC_STRIDE] = PIXEL_MAX/4 + rand() % (PIXEL_MAX/2 + 1);
+    for( int by = 0; by < h; by += 4 )
+        for( int bx = 0; bx < w; bx += 4 )
+        {
+            int mode = j%6 == 5 ? rand()%5 : j%6;
+            int r[4][4] = {{0}};
+            if( mode == 1 )
+            {
+                int a = amp >> (rand()&3);
+                for( int y = 0; y < 4; y++ )
+                    for( int x = 0; x < 4; x++ )
+                        r[y][x] = a ? rand() % (2*a+1) - a : 0;
+            }
+            else if( mode == 2 )
+                for( int n = 1 + rand()%3; n; n-- )
+                {
+                    /* coefficient 4*hf + vf of a * basis[vf][y] * basis[hf][x] is a * norm[hf] * norm[vf] */
+                    int pos = rand()&15, hf = pos>>2, vf = pos&3, nn = norm[hf]*norm[vf];
+                    int t1 = ((1<<16) + mf[pos] - 1) / mf[pos] - bias[pos];
+                    int t2 = ((1<<17) + mf[pos] - 1) / mf[pos] - bias[pos];
+                    int t = rand()&1 ? t1 - 1 + rand()%3 : rand()&1 ? t1 + rand() % X264_MAX( t2 - t1, 1 ) : t2;
+                    int a = X264_MIN( (X264_MAX( t, 0 ) + nn - 1) / nn, PIXEL_MAX/8 );
+                    if( rand()&1 )
+                        a = -a;
+                    for( int y = 0; y < 4; y++ )
+                        for( int x = 0; x < 4; x++ )
+                            r[y][x] += a * basis[vf][y] * basis[hf][x];
+                }
+            else if( mode == 3 )
+            {
+                int a = (rand() % (2*amp+1) - amp) >> (rand()&7);
+                for( int y = 0; y < 4; y++ )
+                    for( int x = 0; x < 4; x++ )
+                        r[y][x] = a;
+            }
+            for( int y = 0; y < 4; y++ )
+                for( int x = 0; x < 4; x++ )
+                {
+                    pixel *pe = &fenc[bx+x+(by+y)*FENC_STRIDE];
+                    if( mode == 4 )
+                    {
+                        *pe = rand()&1 ? PIXEL_MAX : 0;
+                        r[y][x] = 2 * *pe - PIXEL_MAX;
+                    }
+                    fdec[bx+x+(by+y)*FDEC_STRIDE] = x264_clip3( *pe - r[y][x], 0, PIXEL_MAX );
+                }
+        }
+}
+
+/* largest |level| (C quant arithmetic) of the 4x4 blocks of a w x h residual; DCs excluded if ac */
+static int probe_max_level( x264_dct_function_t *dctf, pixel *fenc, pixel *fdec, int w, int h, udctcoef *mf, udctcoef *bias, int ac )
+{
+    ALIGNED_ARRAY_32( dctcoef, dct,[16] );
+    int max = 0;
+    for( int by = 0; by < h; by += 4 )
+        for( int bx = 0; bx < w; bx += 4 )
+        {
+            dctf->sub4x4_dct( dct, fenc + bx + by*FENC_STRIDE, fdec + bx + by*FDEC_STRIDE );
+            for( int i = ac; i < 16; i++ )
+                max = X264_MAX( max, (int)((bias[i] + abs( dct[i] )) * mf[i] >> 16) );
+        }
+    return max;
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4785,9 +4859,14 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     int ret = 0, ok, used_asm;
-    int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
+    int oks[5] = {1,1,1,1,1}, used_asms[5] = {0,0,0,0,0};
+    x264_dct_function_t dctf_c;
+    ALIGNED_64( pixel pfenc[16*FENC_STRIDE] );
+    ALIGNED_64( pixel pfdec[16*FDEC_STRIDE] );
+    int probe_luma_exits[6] = {0}, probe_chroma_exits[2][6] = {{0}};
     x264_t h_buf;
     x264_t *h = &h_buf;
+    x264_dct_init( 0, &dctf_c );
     memset( h, 0, sizeof(*h) );
     h->sps->i_chroma_format_idc = 1;
     x264_param_default( &h->param );
@@ -5202,6 +5281,92 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IY, 1 );
         TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IC, 1 );
 
+        /* probe_skip_luma / probe_skip_chroma against the C checks of macroblock_probe_skip, every qp of the
+         * lists the probe uses, residuals from probe_residual; chroma thresh at the ssd and 4*ssd boundaries,
+         * 0 or random. Every exit is counted and must be hit. */
+        for( int fld = 0; fld < 2; fld++ )
+        {
+            if( zz_a[fld].probe_skip_luma && zz_a[fld].probe_skip_luma != zz_ref[fld].probe_skip_luma )
+            {
+                set_func_name( "probe_skip_luma_%s", fld?"field":"frame" );
+                used_asms[4] = 1;
+                for( int c = 0; c < 2; c++ )
+                    for( int qp = h->param.rc.i_qp_min; qp <= h->param.rc.i_qp_max && oks[4]; qp++ )
+                    {
+                        int i_list = c ? CQM_4PC : CQM_4PY;
+                        udctcoef *mf = h->quant4_mf[i_list][qp], *bias = h->quant4_bias[i_list][qp];
+                        for( int j = 0; j < 24; j++ )
+                        {
+                            probe_residual( pfenc, pfdec, 16, 16, j, mf, bias );
+                            int res_c = x264_probe_skip_luma_c( pfenc, pfdec, mf, bias, fld );
+                            int res_a = call_a1( zz_a[fld].probe_skip_luma, pfenc, pfdec, mf, bias, h->zscreen_thr[c][qp] );
+                            if( res_c != res_a )
+                            {
+                                oks[4] = 0;
+                                fprintf( stderr, "probe_skip_luma_%s (cqm=%d, list=%d, qp=%d, j=%d): %d != %d [FAILED]\n",
+                                         fld?"field":"frame", i_cqm, i_list, qp, j, res_c, res_a );
+                                break;
+                            }
+                            /* 0 equal, 1 all levels 0, 2 coded, 3 a level > 1, 4 score >= 6, 5 every 4x4 screened */
+                            int max = probe_max_level( &dctf_c, pfenc, pfdec, 16, 16, mf, bias, 0 );
+                            probe_luma_exits[res_c == 2 ? 0 : res_c ? 1 + !!max : 3 + (max <= 1)]++;
+                            ALIGNED_16( int32_t e8[4] );
+                            probe_luma_exits[5] += x264_pixel_zscreen_c( pfenc, pfdec, h->zscreen_thr[c][qp], e8 ) == 0xffff;
+                        }
+                    }
+                call_c2( x264_probe_skip_luma_c, pfenc, pfdec, h->quant4_mf[CQM_4PY][26], h->quant4_bias[CQM_4PY][26], fld );
+                call_a2( zz_a[fld].probe_skip_luma, pfenc, pfdec, h->quant4_mf[CQM_4PY][26], h->quant4_bias[CQM_4PY][26], h->zscreen_thr[0][26] );
+            }
+            for( int chroma422 = 0; chroma422 < 2; chroma422++ )
+                if( zz_a[fld].probe_skip_chroma[chroma422] && zz_a[fld].probe_skip_chroma[chroma422] != zz_ref[fld].probe_skip_chroma[chroma422] )
+                {
+                    set_func_name( "probe_skip_chroma_%s_%s", chroma422?"422":"420", fld?"field":"frame" );
+                    used_asms[4] = 1;
+                    for( int qp = h->param.rc.i_qp_min; qp <= h->param.rc.i_qp_max - 3*chroma422 && oks[4]; qp++ )
+                    {
+                        udctcoef *mf = h->quant4_mf[CQM_4PC][qp], *bias = h->quant4_bias[CQM_4PC][qp];
+                        int dc_mf = h->quant4_mf[CQM_4PC][qp+3*chroma422][0] >> 1;
+                        int dc_bias = h->quant4_bias[CQM_4PC][qp+3*chroma422][0] << 1;
+                        for( int j = 0; j < 24; j++ )
+                        {
+                            int hgt = 8 << chroma422, ssd = 0, dc_nz = 0;
+                            probe_residual( pfenc, pfdec, 8, hgt, j, mf, bias );
+                            for( int y = 0; y < hgt; y++ )
+                                for( int x = 0; x < 8; x++ )
+                                {
+                                    int d = pfenc[x+y*FENC_STRIDE] - pfdec[x+y*FDEC_STRIDE];
+                                    ssd += d*d;
+                                }
+                            int thresh = (j&3) == 0 ? ssd + (rand()&1)
+                                       : (j&3) == 1 ? ssd/4 + rand()%3 - 1
+                                       : (j&3) == 2 ? 0 : rand() % (2*ssd + 1);
+                            int res_c = x264_probe_skip_chroma_c( pfenc, pfdec, mf, bias, thresh, dc_mf, dc_bias, chroma422, fld );
+                            int res_a = call_a1( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, mf, bias, thresh, dc_mf, dc_bias );
+                            if( res_c != res_a )
+                            {
+                                oks[4] = 0;
+                                fprintf( stderr, "probe_skip_chroma_%s_%s (cqm=%d, qp=%d, j=%d, ssd=%d, thresh=%d): %d != %d [FAILED]\n",
+                                         chroma422?"422":"420", fld?"field":"frame", i_cqm, qp, j, ssd, thresh, res_c, res_a );
+                                break;
+                            }
+                            /* 0 ssd < thresh, 1 a DC, 2 ssd < 4*thresh, 3 an AC level > 1, 4 AC score >= 7, 5 AC pass */
+                            ALIGNED_ARRAY_16( dctcoef, dc,[8] );
+                            if( chroma422 )
+                                dctf_c.sub8x16_dct_dc( dc, pfenc, pfdec );
+                            else
+                                dctf_c.sub8x8_dct_dc( dc, pfenc, pfdec );
+                            for( int i = 0; i < (4<<chroma422); i++ )
+                                dc_nz |= (dc_bias + abs( dc[i] )) * dc_mf >> 16;
+                            int max = probe_max_level( &dctf_c, pfenc, pfdec, 8, hgt, mf, bias, 1 );
+                            probe_chroma_exits[chroma422][ssd < thresh ? 0 : dc_nz ? 1 : ssd < 4*thresh ? 2 : res_c ? 5 : 3 + (max <= 1)]++;
+                        }
+                    }
+                    int dc_mf = h->quant4_mf[CQM_4PC][26+3*chroma422][0] >> 1, dc_bias = h->quant4_bias[CQM_4PC][26+3*chroma422][0] << 1;
+                    call_c2( x264_probe_skip_chroma_c, pfenc, pfdec, h->quant4_mf[CQM_4PC][26], h->quant4_bias[CQM_4PC][26], 0, dc_mf, dc_bias, chroma422, fld );
+                    call_a2( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, h->quant4_mf[CQM_4PC][26], h->quant4_bias[CQM_4PC][26], 0, dc_mf, dc_bias );
+                }
+        }
+
         /* j: bits 0-1 level size (full range, about +-1, about +-3, extremes), bits 2-3 nonzero rate 1, 1/4, 1/16,
          * 1/64, bit 4 no dequant, bit 5 all zero. Checked against C and the C calls it replaces. */
 #define TEST_QUANT8_SCAN( block ) \
@@ -5468,6 +5633,16 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[3]; used_asm = used_asms[3];
     report( "quant scan :" );
+
+    for( int i = 0; i < 6 && used_asms[4]; i++ )
+        if( !probe_luma_exits[i] || !probe_chroma_exits[0][i] || !probe_chroma_exits[1][i] )
+        {
+            oks[4] = 0;
+            fprintf( stderr, "probe_skip: exit %d hit luma %d, chroma 420 %d, 422 %d times [FAILED]\n",
+                     i, probe_luma_exits[i], probe_chroma_exits[0][i], probe_chroma_exits[1][i] );
+        }
+    ok = oks[4]; used_asm = used_asms[4];
+    report( "probe skip :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

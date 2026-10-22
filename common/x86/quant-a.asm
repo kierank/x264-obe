@@ -106,6 +106,17 @@ qscan4_field:   SHUFFLE_MASK_W 0, 1, 4, 2, 3, 5, 6, 7
 %endif
 qscan4_acmask:  db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
                 db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+; probe_skip: level bytes of a block (rows 0 2 1 3 of the even block, 2 0 3 1 of the odd) to scan order
+probe_scan_frame: times 2 db 0, 8, 1, 2, 9, 4,12, 5,10, 3,11, 6,13,14, 7,15
+                  times 2 db 4,12, 5, 6,13, 0, 8, 1,14, 7,15, 2, 9,10, 3,11
+probe_scan_field: times 2 db 0, 1, 8, 2, 3, 9,10,11, 4, 5, 6, 7,12,13,14,15
+                  times 2 db 4, 5,12, 6, 7,13,14,15, 0, 1, 2, 3, 8, 9,10,11
+probe_acmask:     times 4 dw 0, -1, -1, -1
+probe_key_mask:   times 4 dd 0x7ffc
+probe_key_idx:    dd 0, 1, 2, 3
+; [run<1], [run<3], [run<6] terms of the decimate score, see QUANT_SCAN_SCORE; then for ac
+probe_score:      dq 0x0001000100010001, 0x0007000700070007, 0x003f003f003f003f
+                  dq 0x0003000300030003, 0x000f000f000f000f, 0x007f007f007f007f
 
 %if HIGH_BIT_DEPTH==0
 dct_coef_shuffle:
@@ -169,6 +180,7 @@ SECTION .text
 
 cextern pb_1
 cextern pw_1
+cextern hsub_mul
 cextern pw_2
 cextern pw_256
 cextern pw_m2
@@ -4068,4 +4080,409 @@ cglobal quant_8x8_scan_%1, 6,9,10
 INIT_ZMM avx512icl
 QUANT_8x8_SCAN_AVX512 frame
 QUANT_8x8_SCAN_AVX512 field
+
+;=============================================================================
+; probe_skip
+;=============================================================================
+
+; m%1: sum(r^2) pairs, m%2: sum(r) pairs of the 16 wide residual rows %3 to %3+3; m8: pw_1
+%macro PROBE_SCREEN_ROWS 3
+%assign %%y %3
+%rep 4
+%if HIGH_BIT_DEPTH
+    movu           m6, [r0+%%y*FENC_STRIDEB]
+    psubw          m6, [r1+%%y*FDEC_STRIDEB]
+%else
+    pmovzxbw       m6, [r0+%%y*FENC_STRIDEB]
+    pmovzxbw       m7, [r1+%%y*FDEC_STRIDEB]
+    psubw          m6, m7
+%endif
+%if %%y == %3
+    pmaddwd       m%1, m6, m6
+    mova          m%2, m6
+%else
+    pmaddwd        m7, m6, m6
+    paddd         m%1, m7
+    paddw         m%2, m6
+%endif
+%assign %%y %%y+1
+%endrep
+    pmaddwd       m%2, m8
+%endmacro
+
+; m%1: E, m%2: S of 4x4 blocks -> m%1: all ones where 16*E - S^2 <= thr[0] (m6) and |S| < thr[1] (m7)
+%macro PROBE_SCREEN_TEST 2
+    pslld         m%1, 4
+    pmulld         m9, m%2, m%2
+    psubd         m%1, m9
+    pcmpgtd       m%1, m6
+    pabsd         m%2, m%2
+    pcmpgtd       m%2, m7, m%2
+    pandn         m%1, m%2
+%endmacro
+
+; m0-m3: residual of the 16 wide rows at %1 (fenc), %2 (fdec)
+%macro PROBE_LOAD16 2
+%assign probe_i 0
+%rep 4
+%if HIGH_BIT_DEPTH
+    movu          m %+ probe_i, [%1+probe_i*FENC_STRIDEB]
+    psubw         m %+ probe_i, [%2+probe_i*FDEC_STRIDEB]
+%else
+    pmovzxbw      m %+ probe_i, [%1+probe_i*FENC_STRIDE]
+    pmovzxbw      m4, [%2+probe_i*FDEC_STRIDE]
+    psubw         m %+ probe_i, m4
+%endif
+%assign probe_i probe_i+1
+%endrep
+%endmacro
+
+; m0-m3: residual of the 8 wide rows %1+i | %1+i+4 at r0 (fenc), r1 (fdec)
+%macro PROBE_LOAD8 1
+%assign probe_i 0
+%rep 4
+%if HIGH_BIT_DEPTH
+    movu         xm %+ probe_i, [r0+(%1+probe_i)*FENC_STRIDEB]
+    vinserti128   m %+ probe_i, m %+ probe_i, [r0+(%1+probe_i+4)*FENC_STRIDEB], 1
+    movu         xm4, [r1+(%1+probe_i)*FDEC_STRIDEB]
+    vinserti128   m4, m4, [r1+(%1+probe_i+4)*FDEC_STRIDEB], 1
+    psubw         m %+ probe_i, m4
+%else
+    movq         xm %+ probe_i, [r0+(%1+probe_i)*FENC_STRIDE]
+    vinserti128   m %+ probe_i, m %+ probe_i, [r0+(%1+probe_i+4)*FENC_STRIDE], 1
+    movq         xm4, [r1+(%1+probe_i)*FDEC_STRIDE]
+    vinserti128   m4, m4, [r1+(%1+probe_i+4)*FDEC_STRIDE], 1
+    punpcklbw     m %+ probe_i, m4
+    pmaddubsw     m %+ probe_i, [hsub_mul]
+%endif
+%assign probe_i probe_i+1
+%endrep
+%endmacro
+
+; m8-m11, m12-m15: mf, bias of coefficient rows 0-3 in the layout of PROBE_BLOCKS
+%macro PROBE_LOAD_QUANT 0
+%if HIGH_BIT_DEPTH
+    vbroadcasti128 m8,  [r2+ 0]
+    vbroadcasti128 m9,  [r2+16]
+    vbroadcasti128 m10, [r2+32]
+    vbroadcasti128 m11, [r2+48]
+    vbroadcasti128 m12, [r3+ 0]
+    vbroadcasti128 m13, [r3+16]
+    vbroadcasti128 m14, [r3+32]
+    vbroadcasti128 m15, [r3+48]
+%else
+    vpbroadcastq   m8,  [r2+ 0]
+    vpbroadcastq   m9,  [r2+ 8]
+    vpbroadcastq   m10, [r2+16]
+    vpbroadcastq   m11, [r2+24]
+    vpbroadcastq   m12, [r3+ 0]
+    vpbroadcastq   m13, [r3+ 8]
+    vpbroadcastq   m14, [r3+16]
+    vpbroadcastq   m15, [r3+24]
+%endif
+%endmacro
+
+; quant's |level|
+%macro PROBE_QUANT 3 ; coefs, mf, bias
+%if HIGH_BIT_DEPTH
+    pabsd         m%1, m%1
+    paddd         m%1, m%3
+    pmulld        m%1, m%2
+    psrld         m%1, 16
+%else
+    pabsw         m%1, m%1
+    paddusw       m%1, m%3
+    pmulhuw       m%1, m%2
+%endif
+%endmacro
+
+; |levels| of coefficient rows 0-3 in m%5-m%8 (words, blocks 0 1 | 2 3), temps m%9, m%10
+; %3 += decimate score of the 4 blocks in %2 scan order; jumps to %4 on a level > 1
+%macro PROBE_SCORE 10 ; ac, field, score, label, rows 0-3, tmp x2
+    por          m%9, m%5, m%6
+    por         m%10, m%7, m%8
+    por          m%9, m%10
+    ptest        m%9, m%9
+    jz %%done
+    psrlw        m%9, 1
+    ptest        m%9, m%9
+    jnz %4
+    packuswb     m%5, m%6           ; dwords: block 0 row 0, block 1 row 0, block 0 row 1, block 1 row 1
+    packuswb     m%7, m%8           ; rows 2, 3
+    psllw        m%5, 7
+    psllw        m%7, 7
+    pshufd       m%7, m%7, q2301
+    vpblendd     m%9, m%5, m%7, 0xaa
+    vpblendd    m%10, m%7, m%5, 0xaa
+    pshufb       m%9, [probe_scan_%2]
+    pshufb      m%10, [probe_scan_%2+32]
+    pmovmskb     r5d, m%9
+    pmovmskb     r6d, m%10
+    shl           r6, 32
+    or            r5, r6            ; nonzero levels in scan order, 16 bits a block
+    lea           r6, [r5+r5]
+    lea           r7, [r5*4]
+    lea           r8, [r5*8]
+    or            r7, r6
+    or            r7, r8
+    lea           r8, [r7*8]
+    or            r8, r7
+    or            r6, [probe_score+%1*24]
+    or            r7, [probe_score+%1*24+8]
+    or            r8, [probe_score+%1*24+16]
+    and           r6, r5
+    and           r7, r5
+    and           r8, r5
+    popcnt        r6, r6
+    popcnt        r7, r7
+    popcnt        r8, r8
+    add           %3, r6d
+    add           %3, r7d
+    add           %3, r8d
+%%done:
+%endmacro
+
+; m0-m3: residual rows 0-3 of four 4x4 blocks, 0 1 | 2 3 (sub8x8_dct's layout)
+; %3 += their decimate score (sub4x4_dct, deadzone quant, %2 scan; ac: DCs zeroed); jumps to %4 on a level > 1
+%macro PROBE_BLOCKS 4 ; ac, field, score, label
+    DCT4_1D         0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+%if HIGH_BIT_DEPTH
+    SUMSUB_BADC   w, 3, 0, 2, 1     ; s03, d03, s12, d12
+    SUMSUB_BA     w, 2, 3, 4        ; s03 + s12, s03 - s12
+%if %1
+    pand          m2, [probe_acmask]
+%endif
+    ; dwords of blocks 0 | 2 (lo) and 1 | 3 (hi); rows 1 and 3 can pass 16 bits
+    punpcklwd     m4, m2, m2
+    punpckhwd     m2, m2
+    punpcklwd     m5, m3, m3
+    punpckhwd     m3, m3
+    psrad         m4, 16
+    psrad         m2, 16
+    psrad         m5, 16
+    psrad         m3, 16
+    PROBE_QUANT    4,  8, 12
+    PROBE_QUANT    2,  8, 12
+    PROBE_QUANT    5, 10, 14
+    PROBE_QUANT    3, 10, 14
+    packusdw      m4, m2            ; row 0
+    packusdw      m5, m3            ; row 2
+    punpcklwd     m2, m0, m0
+    punpcklwd     m3, m1, m1
+    punpckhwd     m0, m0
+    punpckhwd     m1, m1
+    psrad         m2, 16
+    psrad         m3, 16
+    psrad         m0, 16
+    psrad         m1, 16
+    SUMSUB2_AB    d, 2, 3, 6        ; 2*d03 + d12, d03 - 2*d12
+    SUMSUB2_AB    d, 0, 1, 3
+    PROBE_QUANT    2,  9, 13
+    PROBE_QUANT    0,  9, 13
+    PROBE_QUANT    6, 11, 15
+    PROBE_QUANT    3, 11, 15
+    packusdw      m2, m0            ; row 1
+    packusdw      m6, m3            ; row 3
+    PROBE_SCORE   %1, %2, %3, %4, 4, 2, 5, 6, 0, 1
+%else
+    DCT4_1D       0, 1, 2, 3, 4
+%if %1
+    pand          m0, [probe_acmask]
+%endif
+    PROBE_QUANT    0,  8, 12
+    PROBE_QUANT    1,  9, 13
+    PROBE_QUANT    2, 10, 14
+    PROBE_QUANT    3, 11, 15
+    PROBE_SCORE   %1, %2, %3, %4, 0, 1, 2, 3, 4, 5
+%endif
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int probe_skip_luma( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[2] )
+;-----------------------------------------------------------------------------
+; 2 if fenc == fdec over 16x16. Else 0 if the residual's 4x4 blocks (sub4x4_dct, quant mf/bias) have a
+; level > 1 or a summed decimate score >= 6, else 1. Rows of 4x4 blocks that zscreen_16x16's test with thr
+; proves 0 are skipped; the rest go largest sum(r^2) first.
+%macro PROBE_SKIP_LUMA 1 ; field
+cglobal probe_skip_luma_%1, 5,9,16
+    vpbroadcastd   m8, [pw_1]
+    PROBE_SCREEN_ROWS 0, 1, 0
+    PROBE_SCREEN_ROWS 2, 3, 4
+    phaddd         m0, m2           ; E of 4x4 rows 0, 1: blocks 0 1 of each | 2 3
+    phaddd         m1, m3           ; S
+    PROBE_SCREEN_ROWS 2, 3, 8
+    PROBE_SCREEN_ROWS 4, 5, 12
+    phaddd         m2, m4           ; rows 2, 3
+    phaddd         m3, m5
+    phaddd         m4, m0, m2
+    vextracti128  xm5, m4, 1
+    paddd         xm4, xm5          ; E of 4x4 rows 0-3
+    ptest         xm4, xm4
+    jz .eq
+    vpbroadcastd   m6, [r4]
+    vpbroadcastd   m7, [r4+4]
+    PROBE_SCREEN_TEST 0, 1
+    PROBE_SCREEN_TEST 2, 3
+    packssdw       m0, m2
+    vextracti128  xm1, m0, 1
+    pand          xm0, xm1
+    psrld         xm1, xm0, 16
+    pand          xm0, xm1          ; dword i: 0xffff if every block of 4x4 row i is proven 0
+    psrld         xm4, 7+4*HIGH_BIT_DEPTH
+    pandn         xm4, [probe_key_mask]
+    por           xm4, [probe_key_idx]
+    por           xm4, xm0
+    packusdw      xm7, xm4, xm4     ; keys: largest E smallest, proven 0xffff
+    PROBE_LOAD_QUANT
+    xor           r4d, r4d
+.loop:
+    phminposuw    xm0, xm7
+    movd          eax, xm0
+    cmp           eax, 0xffff
+    je .pass
+    vpbroadcastw  xm0, xm0
+    pcmpeqw       xm0, xm7
+    por           xm7, xm0
+    and           eax, 3
+    shl           eax, 6+HIGH_BIT_DEPTH
+    lea            r5, [r0+r6]
+    lea            r7, [r1+r6*2]
+    PROBE_LOAD16   r5, r7
+    PROBE_BLOCKS    0, %1, r4d, .reject
+    cmp           r4d, 6
+    jl .loop
+.reject:
+    xor           eax, eax
+    RET
+.pass:
+    mov           eax, 1
+    RET
+.eq:
+    mov           eax, 2
+    RET
+%endmacro
+
+; m4: ssd (dwords), m5: 4x4 DCs, A B A B | C D C D, of the residual in m0-m3
+%macro PROBE_SSD_DC 0
+    pmaddwd        m4, m0, m0
+    pmaddwd        m5, m1, m1
+    paddd          m4, m5
+    pmaddwd        m5, m2, m2
+    paddd          m4, m5
+    pmaddwd        m5, m3, m3
+    paddd          m4, m5
+    paddw          m5, m0, m1
+    paddw          m6, m2, m3
+    paddw          m5, m6
+    pmaddwd        m5, [pw_1]
+    phaddd         m5, m5
+%endmacro
+
+; quant_2x2_dc's arithmetic on the DCs in %1 5, mf r5d, bias r6d; ZF clear if a level is nonzero
+%macro PROBE_QUANT_DC 1 ; m, xm
+    movd          xm6, r5d
+    movd          xm7, r6d
+%if HIGH_BIT_DEPTH
+    vpbroadcastd  %1 %+ 6, xm6
+    vpbroadcastd  %1 %+ 7, xm7
+    pabsd         %1 %+ 5, %1 %+ 5
+    paddd         %1 %+ 5, %1 %+ 7
+    pmulld        %1 %+ 5, %1 %+ 6
+    psrld         %1 %+ 5, 16
+%else
+    packssdw      %1 %+ 5, %1 %+ 5
+    vpbroadcastw  %1 %+ 6, xm6
+    vpbroadcastw  %1 %+ 7, xm7
+    pabsw         %1 %+ 5, %1 %+ 5
+    paddusw       %1 %+ 5, %1 %+ 7
+    pmulhuw       %1 %+ 5, %1 %+ 6
+%endif
+    ptest         %1 %+ 5, %1 %+ 5
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int probe_skip_chroma( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh,
+;                        int dc_mf, int dc_bias )
+;-----------------------------------------------------------------------------
+; One 8x8 (4:2:0) or 8x16 (4:2:2) plane: 1 if ssd < thresh; 0 if a DC (sub8x8_dct_dc / sub8x16_dct_dc)
+; quantises nonzero (quant_2x2_dc, dc_mf, dc_bias); 1 if ssd < 4*thresh; else 0 if the AC levels
+; (sub8x8_dct, quant mf/bias) have one > 1 or a summed decimate score >= 7, else 1.
+%macro PROBE_SKIP_CHROMA 2 ; 420/422, field
+cglobal probe_skip_chroma_%1_%2, 7,9,16
+%if %1 == 422
+    PROBE_LOAD8    8
+    PROBE_SSD_DC
+    mova           m9, m4
+    mova          m10, m5
+    PROBE_LOAD8    0
+    PROBE_SSD_DC
+    paddd          m4, m9
+%else
+    PROBE_LOAD8    0
+    PROBE_SSD_DC
+%endif
+    vextracti128  xm6, m4, 1
+    paddd         xm4, xm6
+    pshufd        xm6, xm4, q1032
+    paddd         xm4, xm6
+    pshufd        xm6, xm4, q2301
+    paddd         xm4, xm6
+    movd          r7d, xm4
+    cmp           r7d, r4d
+    jl .pass
+%if %1 == 422
+    punpcklqdq     m6, m5, m10      ; 4x4 rows 0, 2 | 1, 3
+    vextracti128  xm7, m6, 1
+    paddd         xm5, xm6, xm7
+    psubd         xm6, xm7
+    punpcklqdq    xm7, xm5, xm6
+    punpckhqdq    xm5, xm6
+    paddd         xm6, xm7, xm5
+    psubd         xm7, xm5
+    phaddd        xm5, xm6, xm7
+    phsubd        xm6, xm7
+    vinserti128    m5, m5, xm6, 1   ; the 2x4 DC transform's outputs
+    PROBE_QUANT_DC m
+%else
+    vextracti128  xm6, m5, 1
+    punpcklqdq    xm5, xm6
+    phaddd        xm6, xm5, xm5
+    phsubd        xm5, xm5
+    punpcklqdq    xm6, xm5
+    phaddd        xm5, xm6, xm6
+    phsubd        xm6, xm6
+    punpcklqdq    xm5, xm6          ; the 2x2 DC transform's outputs
+    PROBE_QUANT_DC xm
+%endif
+    jnz .reject
+    lea           r4d, [r4*4]
+    cmp           r7d, r4d
+    jl .pass
+    PROBE_LOAD_QUANT
+    xor           r2d, r2d
+    PROBE_BLOCKS    1, %2, r2d, .reject
+%if %1 == 422
+    cmp           r2d, 7
+    jge .reject
+    PROBE_LOAD8    8
+    PROBE_BLOCKS    1, %2, r2d, .reject
+%endif
+    cmp           r2d, 7
+    jge .reject
+.pass:
+    mov           eax, 1
+    RET
+.reject:
+    xor           eax, eax
+    RET
+%endmacro
+
+INIT_YMM avx2
+PROBE_SKIP_LUMA frame
+PROBE_SKIP_LUMA field
+PROBE_SKIP_CHROMA 420, frame
+PROBE_SKIP_CHROMA 420, field
+PROBE_SKIP_CHROMA 422, frame
+PROBE_SKIP_CHROMA 422, field
 %endif ; ARCH_X86_64

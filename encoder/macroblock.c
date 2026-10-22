@@ -987,6 +987,17 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                            mvp[0], mvp[1], 16, 16, &h->sh.weight[0][p] );
         }
 
+        /* the fenc_eq check, the screen and the 8x8 loop below in one call (fenc_eq is set with it) */
+        if( h->zigzagf.probe_skip_luma && !h->mb.b_noise_reduction )
+        {
+            int ret = h->zigzagf.probe_skip_luma( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->quant4_mf[quant_cat][i_qp],
+                                                  h->quant4_bias[quant_cat][i_qp], h->zscreen_thr[!!p][i_qp] );
+            if( !ret )
+                return 0;
+            b_luma_eq |= !p && ret == 2;
+            continue;
+        }
+
         /* prediction == fenc: no coefficients, decimate score 0 */
         if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
         {
@@ -1064,6 +1075,16 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                 h->sh.weight[0][1+ch].weightfn[8>>2]( h->mb.pic.p_fdec[1+ch], FDEC_STRIDE,
                                                       h->mb.pic.p_fdec[1+ch], FDEC_STRIDE,
                                                       &h->sh.weight[0][1+ch], chroma422?16:8 );
+
+            /* the checks below in one call */
+            if( h->zigzagf.probe_skip_chroma[chroma422] && !h->mb.b_noise_reduction )
+            {
+                if( !h->zigzagf.probe_skip_chroma[chroma422]( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
+                                                               h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
+                                                               h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1 ) )
+                    return 0;
+                continue;
+            }
 
             /* there is almost never a termination during chroma, but we can't avoid the check entirely */
             /* so instead we check SSD and skip the actual check if the score is low enough. */
