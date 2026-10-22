@@ -1562,6 +1562,11 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         x264_log( h, X264_LOG_ERROR, "not compiled with slice-max-size support (configure --enable-slice-max-size)\n" );
         return -1;
     }
+    if( !HAS_CONSTRAINED_INTRA && h->param.b_constrained_intra )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with constrained intra support (configure --enable-constrained-intra)\n" );
+        return -1;
+    }
 
     return 0;
 }

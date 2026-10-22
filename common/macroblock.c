@@ -833,7 +833,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             h->mb.i_neighbour |= MB_LEFT;
 
             // FIXME: We don't currently support constrained intra + mbaff.
-            if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_left[0] ) )
+            if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_left[0] ) )
                 h->mb.i_neighbour_intra |= MB_LEFT;
         }
     }
@@ -851,7 +851,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             {
                 h->mb.i_neighbour |= MB_TOP;
 
-                if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_top ) )
+                if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_top ) )
                     h->mb.i_neighbour_intra |= MB_TOP;
 
                 /* We only need to prefetch the top blocks because the left was just written
@@ -876,7 +876,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             {
                 h->mb.i_neighbour |= MB_TOPLEFT;
 
-                if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topleft ) )
+                if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topleft ) )
                     h->mb.i_neighbour_intra |= MB_TOPLEFT;
             }
         }
@@ -891,7 +891,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             {
                 h->mb.i_neighbour |= MB_TOPRIGHT;
 
-                if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topright ) )
+                if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topright ) )
                     h->mb.i_neighbour_intra |= MB_TOPRIGHT;
             }
         }
@@ -1782,7 +1782,7 @@ void x264_macroblock_cache_save( x264_t *h )
                                      h->mb.cache.intra4x4_pred_mode[x264_scan8[7] ],
                                      h->mb.cache.intra4x4_pred_mode[x264_scan8[13] ], 0);
     }
-    else if( !h->param.b_constrained_intra || IS_INTRA(i_mb_type) )
+    else if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA(i_mb_type) )
         M64( i4x4 ) = I_PRED_4x4_DC * 0x0101010101010101ULL;
     else
         M64( i4x4 ) = (uint8_t)(-1) * 0x0101010101010101ULL;
