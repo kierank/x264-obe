@@ -1269,8 +1269,15 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         b_chroma_me = 1;
     }
 
+    /* experimental: no qpel from a cheap fullpel start that hpel kept */
+    int b_qpel_skip = h->mb.i_qpel_skip && !((bmx|bmy)&3) && bmx == m->mv[0] && bmy == m->mv[1]
+                   && (int64_t)bcost * 256 <= (int64_t)h->mb.i_qpel_skip * x264_lambda_tab[h->mb.i_qp] * bw * bh;
+
     /* quarterpel diamond search */
-    if( h->mb.i_subpel_refine != 1 )
+    if( b_qpel_skip )
+    {
+    }
+    else if( h->mb.i_subpel_refine != 1 )
     {
         bdir = -1;
         if( !b_chroma_me )

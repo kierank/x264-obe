@@ -1174,6 +1174,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         if( sscanf( value, "%d:%d", &p->analyse.i_me_seed_exit[0], &p->analyse.i_me_seed_exit[1] ) < 1 )
             b_error = 1;
     }
+    OPT("qpel-skip")
+        p->analyse.i_qpel_skip = atoi(value);
     OPT("chroma-me")
         p->analyse.b_chroma_me = atobool(value);
     OPT("mixed-refs")
@@ -1354,6 +1356,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
     s += sprintf( s, " me_range=%d", p->analyse.i_me_range );
     if( p->analyse.i_me_seed_exit[0] || p->analyse.i_me_seed_exit[1] )
         s += sprintf( s, " me_seed_exit=%d:%d", p->analyse.i_me_seed_exit[0], p->analyse.i_me_seed_exit[1] );
+    if( p->analyse.i_qpel_skip )
+        s += sprintf( s, " qpel_skip=%d", p->analyse.i_qpel_skip );
     s += sprintf( s, " chroma_me=%d", p->analyse.b_chroma_me );
     s += sprintf( s, " trellis=%d", p->analyse.i_trellis );
     s += sprintf( s, " 8x8dct=%d", p->analyse.b_transform_8x8 );

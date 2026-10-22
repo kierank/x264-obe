@@ -838,6 +838,9 @@ static void help( x264_param_t *defaults, int longhelp )
     H2( "      --me-seed-exit <k[:k]>  Experimental: no fullpel pattern when the best ME\n"
         "                              seed costs <= k per pixel [0 (off)]\n"
         "                                  #1: 16x16, 16x8, 8x16  #2: 8x8 and below\n" );
+    H2( "      --qpel-skip <integer>   Experimental: no qpel refinement when the subpel\n"
+        "                              search starts and stays on a fullpel mv costing\n"
+        "                              <= k*lambda*area/256 [0 (off)]\n" );
     H1( "      --nr <integer>          Noise reduction [%d]\n", defaults->analyse.i_noise_reduction );
     H2( "\n" );
     H2( "      --deadzone-inter <int>  Set the size of the inter luma quantization deadzone [%d]\n", defaults->analyse.i_luma_deadzone[0] );
@@ -1087,6 +1090,7 @@ static struct option long_options[] =
     { "no-fast-pskip",     no_argument, NULL, 0 },
     { "no-dct-decimate",   no_argument, NULL, 0 },
     { "me-seed-exit", required_argument, NULL, 0 },
+    { "qpel-skip",   required_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },
