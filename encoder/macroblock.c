@@ -819,6 +819,20 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 if( i_decimate_mb >= 6 || !b_decimate )
                 {
                     h->mb.i_cbp_luma |= plane_cbp;
+                    if( plane_cbp )
+                    {
+                        int n8 = 0, t8 = 0;
+                        FOREACH_BIT( idx, 0, plane_cbp )
+                        {
+                            n8++;
+                            t8 += !dcc_has_ac( dct8x8[idx], 64 );
+                        }
+                        DCC_ADD( DCC_INTER8, DCC_UNITS, 1 );
+                        DCC_ADD( DCC_INTER8, DCC_TAKEN, !(plane_ac & plane_cbp) );
+                        DCC_ADD( DCC_INTER8, DCC_TRUE, t8 == n8 );
+                        DCC_ADD( DCC_INTER8, DCC_8X8, n8 );
+                        DCC_ADD( DCC_INTER8, DCC_8X8_TRUE, t8 );
+                    }
                     if( plane_ac & plane_cbp )
                         FOREACH_BIT( idx, 0, plane_cbp )
                         {
@@ -903,6 +917,21 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 else
                 {
                     h->mb.i_cbp_luma |= plane_cbp;
+                    if( plane_cbp )
+                    {
+                        int n8 = 0, t8 = 0;
+                        FOREACH_BIT( i8x8, 0, plane_cbp )
+                        {
+                            n8++;
+                            t8 += !dcc_has_ac( dct4x4[i8x8*4+0], 16 ) && !dcc_has_ac( dct4x4[i8x8*4+1], 16 )
+                               && !dcc_has_ac( dct4x4[i8x8*4+2], 16 ) && !dcc_has_ac( dct4x4[i8x8*4+3], 16 );
+                        }
+                        DCC_ADD( DCC_INTER4, DCC_UNITS, 1 );
+                        DCC_ADD( DCC_INTER4, DCC_TAKEN, !(plane_ac & plane_cbp) );
+                        DCC_ADD( DCC_INTER4, DCC_TRUE, t8 == n8 );
+                        DCC_ADD( DCC_INTER4, DCC_8X8, n8 );
+                        DCC_ADD( DCC_INTER4, DCC_8X8_TRUE, t8 );
+                    }
                     if( plane_ac & plane_cbp )
                         FOREACH_BIT( i8x8, 0, plane_cbp )
                         {
@@ -1248,6 +1277,14 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                     {
                         if( !b_q8s )
                             h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[quant_cat], i_qp );
+                        {
+                            int t = !dcc_has_ac( dct8x8, 64 );
+                            DCC_ADD( DCC_P8X8_8, DCC_UNITS, 1 );
+                            DCC_ADD( DCC_P8X8_8, DCC_TAKEN, !b_ac );
+                            DCC_ADD( DCC_P8X8_8, DCC_TRUE, t );
+                            DCC_ADD( DCC_P8X8_8, DCC_8X8, 1 );
+                            DCC_ADD( DCC_P8X8_8, DCC_8X8_TRUE, t );
+                        }
                         if( b_ac )
                             h->dctf.add8x8_idct8( p_fdec, dct8x8 );
                         else
@@ -1314,6 +1351,15 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                         STORE_8x8_NNZ( p, i8, 0 );
                     else
                     {
+                        {
+                            int t = !dcc_has_ac( dct4x4[0], 16 ) && !dcc_has_ac( dct4x4[1], 16 )
+                                 && !dcc_has_ac( dct4x4[2], 16 ) && !dcc_has_ac( dct4x4[3], 16 );
+                            DCC_ADD( DCC_P8X8_4, DCC_UNITS, 1 );
+                            DCC_ADD( DCC_P8X8_4, DCC_TAKEN, !b_ac );
+                            DCC_ADD( DCC_P8X8_4, DCC_TRUE, t );
+                            DCC_ADD( DCC_P8X8_4, DCC_8X8, 1 );
+                            DCC_ADD( DCC_P8X8_4, DCC_8X8_TRUE, t );
+                        }
                         if( b_ac )
                             h->dctf.add8x8_idct( p_fdec, dct4x4 );
                         else
@@ -1414,4 +1460,25 @@ void x264_macroblock_encode_p4x4( x264_t *h, int i8 )
         x264_macroblock_encode_p4x4_internal( h, i8, 3 );
     else
         x264_macroblock_encode_p4x4_internal( h, i8, 1 );
+}
+
+uint64_t x264_dconly_cnt[3][2][DCC_TYPES][DCC_STATS];
+__thread int x264_dconly_rd;
+
+void x264_dconly_cnt_print( x264_t *h )
+{
+    static const char *tname[DCC_TYPES] = { "inter16 4x4", "inter16 8x8t", "p8x8 4x4", "p8x8 8x8t", "i8x8" };
+    static const char sname[3] = { 'P', 'B', 'I' };
+    for( int s = 0; s < 3; s++ )
+        for( int r = 0; r < 2; r++ )
+            for( int t = 0; t < DCC_TYPES; t++ )
+            {
+                uint64_t *c = x264_dconly_cnt[s][r][t];
+                if( !c[DCC_UNITS] )
+                    continue;
+                x264_log( h, X264_LOG_INFO, "dconly %d-bit %c %s %-12s: coded %8"PRIu64" taken %5.1f%% dc-only %5.1f%% | 8x8 %8"PRIu64" dc-only %5.1f%%\n",
+                          BIT_DEPTH, sname[s], r ? "rd   " : "other", tname[t], c[DCC_UNITS],
+                          100.0 * c[DCC_TAKEN] / c[DCC_UNITS], 100.0 * c[DCC_TRUE] / c[DCC_UNITS],
+                          c[DCC_8X8], c[DCC_8X8] ? 100.0 * c[DCC_8X8_TRUE] / c[DCC_8X8] : 0.0 );
+            }
 }

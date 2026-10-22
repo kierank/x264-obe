@@ -159,6 +159,24 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* dconly counters: [slice type][in rdo][block type][stat] */
+enum { DCC_INTER4, DCC_INTER8, DCC_P8X8_4, DCC_P8X8_8, DCC_I8X8, DCC_TYPES };
+enum { DCC_UNITS, DCC_TAKEN, DCC_TRUE, DCC_8X8, DCC_8X8_TRUE, DCC_STATS };
+#define x264_dconly_cnt x264_template(dconly_cnt)
+extern uint64_t x264_dconly_cnt[3][2][DCC_TYPES][DCC_STATS];
+#define x264_dconly_rd x264_template(dconly_rd)
+extern __thread int x264_dconly_rd;
+#define x264_dconly_cnt_print x264_template(dconly_cnt_print)
+void x264_dconly_cnt_print( x264_t *h );
+#define DCC_ADD( type, stat, v ) __atomic_fetch_add( &x264_dconly_cnt[h->sh.i_type][x264_dconly_rd][type][stat], (v), __ATOMIC_RELAXED )
+static inline int dcc_has_ac( dctcoef *dct, int n )
+{
+    for( int i = 1; i < n; i++ )
+        if( dct[i] )
+            return 1;
+    return 0;
+}
+
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
@@ -261,6 +279,14 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
         {
             h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8 );
             h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[p?CQM_8IC:CQM_8IY], i_qp );
+        }
+        {
+            int t = !dcc_has_ac( dct8x8, 64 );
+            DCC_ADD( DCC_I8X8, DCC_UNITS, 1 );
+            DCC_ADD( DCC_I8X8, DCC_TAKEN, b_q8s && !(nz >> 8) );
+            DCC_ADD( DCC_I8X8, DCC_TRUE, t );
+            DCC_ADD( DCC_I8X8, DCC_8X8, 1 );
+            DCC_ADD( DCC_I8X8, DCC_8X8_TRUE, t );
         }
         if( b_q8s && !(nz >> 8) )
             x264_mb_add_dconly( h, p_dst, dct8x8, 1, 1 );

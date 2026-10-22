@@ -179,7 +179,9 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     int i_bits;
     int type_bak = h->mb.i_type;
 
+    x264_dconly_rd = 1;
     x264_macroblock_encode( h );
+    x264_dconly_rd = 0;
 
     if( h->mb.b_deblock_rdo )
         x264_macroblock_deblock( h );
@@ -259,11 +261,13 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i4, int i_pixel )
 
     h->mb.i_cbp_luma = 0;
 
+    x264_dconly_rd = 1;
     x264_macroblock_encode_p8x8( h, i8 );
     if( i_pixel == PIXEL_16x8 )
         x264_macroblock_encode_p8x8( h, i8+1 );
     if( i_pixel == PIXEL_8x16 )
         x264_macroblock_encode_p8x8( h, i8+2 );
+    x264_dconly_rd = 0;
 
     int ssd_x = 8*(i8&1);
     int ssd_y = 8*(i8>>1);
@@ -296,7 +300,9 @@ static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode,
 
     for( int p = 0; p < plane_count; p++ )
     {
+        x264_dconly_rd = 1;
         x264_mb_encode_i8x8( h, p, i8, i_qp, i_mode, edge[p], 1 );
+        x264_dconly_rd = 0;
         i_qp = h->mb.i_chroma_qp;
     }
 
