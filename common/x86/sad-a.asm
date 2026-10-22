@@ -2418,6 +2418,118 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %undef sq_y
 %undef sq_f
 
+;-----------------------------------------------------------------------------
+; min( best, (sad_i << s) + bias_i ) over a few candidates around pix, 8x8
+;
+; A window is vdbpsadbw of the fenc dwords, each duplicated in its qword, against
+; the ref row at pix + dy*i_stride + bx: words 0-3 of the qword are the dword's
+; sads at dx bx..bx+3. Its zero-mask keeps the candidates' words, so the windows
+; of a group add up to the candidates of the group by word, summed over the
+; qwords at the end. A row pair per ymm, a row per lane. The word sums reach at
+; most 8*8*255.
+;-----------------------------------------------------------------------------
+; window w: ref dbp_p<w> (+dbp_o: row r, +dbp_o1: row r+1), mask k<w+1>, sum m<w>
+; (m<w+4> from the fifth)
+; m4: fenc, m5: ref, m6: sad, m7: fenc dword permutation
+%macro DBP_SAD 3 ; sum, mask, first
+%if %3
+    vdbpsadbw      m%1 {k%2}{z}, m4, m5, 0x94
+%else
+    vdbpsadbw      m6 {k%2}{z}, m4, m5, 0x94
+    paddw          m%1, m6
+%endif
+%endmacro
+
+%macro DBP_ROWS 2 ; height, windows
+%assign %%r 0
+%rep %1 / 2
+    vpermd          m4, m7, [r0+%%r*FENC_STRIDE]
+    %assign %%w 0
+    %rep %2
+        %assign %%k %%w+1
+        %if %%w < 4
+            %assign %%a %%w
+        %else
+            %assign %%a %%w+4
+        %endif
+    movu           xm5, [dbp_p%[%%w]+dbp_o]
+    vinserti128     m5, m5, [dbp_p%[%%w]+dbp_o1], 1
+    DBP_SAD %[%%a], %[%%k], %%r == 0
+        %assign %%w %%w+1
+    %endrep
+    %assign %%r %%r+2
+    %if %%r < %1
+    lea          dbp_o, [dbp_o+r2*2]
+    lea         dbp_o1, [dbp_o1+r2*2]
+    %endif
+%endrep
+%endmacro
+
+%macro DBP_INIT 0 ; fenc permutation, row offsets
+    mova            m7, [sad_sq_idx8]
+    xor          dbp_o, dbp_o
+    mov         dbp_o1, r2
+%endmacro
+
+; m0 -> xm0: words 0-3 summed over the qwords
+%macro DBP_FOLD1 0
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+    punpckhqdq     xm1, xm0, xm0
+    paddw          xm0, xm1
+%endmacro
+
+; m0, m2 -> xm0: words 0-3 of m0, 4-7 of m2, summed over the qwords
+%macro DBP_FOLD2 0
+    punpcklqdq      m1, m0, m2
+    punpckhqdq      m0, m0, m2
+    paddw           m0, m1
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+%endmacro
+
+; min of the dwords of xm0 -> eax
+%macro DBP_MIN4 0
+    pshufd         xm1, xm0, q1032
+    pminsd         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminsd         xm0, xm1
+    movd           eax, xm0
+%endmacro
+
+; window pointer pix + dy*i_stride + bx; r5 = pix - 2*i_stride, r6 = pix + 2*i_stride
+%macro DBP_PTR 3 ; reg, dy, bx
+%if %2 == -2
+    lea             %1, [r5+(%3)]
+%elif %2 == -1
+    lea             %1, [r5+r2+(%3)]
+%elif %2 == 0
+    lea             %1, [r1+(%3)]
+%elif %2 == 1
+    lea             %1, [r1+r2+(%3)]
+%else
+    lea             %1, [r6+(%3)]
+%endif
+%endmacro
+
+%macro DBP_PTR_INIT 0
+    mov             r5, r1
+    sub             r5, r2
+    sub             r5, r2
+    lea             r6, [r1+r2*2]
+%endmacro
+
+; k<1..> word masks
+%macro DBP_MASKS 1-*
+%assign %%i 1
+%rep %0
+    mov            r5d, %1
+    kmovw     k%[%%i], r5d
+    %assign %%i %%i+1
+    %rotate 1
+%endrep
+%endmacro
+
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 
