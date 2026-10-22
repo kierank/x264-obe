@@ -1024,6 +1024,58 @@ void x264_cacheprog_load_border_422_c( pixel *fdec_y, pixel *fdec_u, pixel *intr
 #include "x86/cacheprog.h"
 #endif
 
+/* layout twins of wip/x264-cacheprog: every build declares the hidden weak
+ * x264_N_twin_cacheprog_*; a kernel set to 1 below dispatches its twin, which
+ * links as 0, so its slot stays NULL and cache_load/cache_save run the C */
+#if HAVE_MMX
+#define CP_TWIN_SAVE   0
+#define CP_TWIN_NNZ    0
+#define CP_TWIN_BORDER 0
+#define CP_STR( x ) #x
+#define CP_XSTR( x ) CP_STR( x )
+#define CP_TWIN1( f ) \
+    extern __typeof__( x264_cacheprog_##f ) x264_template(twin_cacheprog_##f) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak " CP_XSTR( x264_template(twin_cacheprog_##f) ) "\n.hidden " CP_XSTR( x264_template(twin_cacheprog_##f) ) );
+CP_TWIN1( save_nnz_420_avx2 )
+CP_TWIN1( save_nnz_422_avx2 )
+CP_TWIN1( save_nnz_420_avx512 )
+CP_TWIN1( save_nnz_422_avx512 )
+CP_TWIN1( load_nnz_420_avx512icl )
+CP_TWIN1( load_nnz_422_avx512icl )
+CP_TWIN1( load_border_420_avx512icl )
+CP_TWIN1( load_border_422_avx512icl )
+/* the kernels themselves stay in the link in every arm */
+static void (*const cp_twin_keep[])( void ) __attribute__((used)) =
+{
+    (void (*)( void ))x264_cacheprog_save_nnz_420_avx2, (void (*)( void ))x264_cacheprog_save_nnz_422_avx2,
+    (void (*)( void ))x264_cacheprog_save_nnz_420_avx512, (void (*)( void ))x264_cacheprog_save_nnz_422_avx512,
+    (void (*)( void ))x264_cacheprog_load_nnz_420_avx512icl, (void (*)( void ))x264_cacheprog_load_nnz_422_avx512icl,
+    (void (*)( void ))x264_cacheprog_load_border_420_avx512icl, (void (*)( void ))x264_cacheprog_load_border_422_avx512icl,
+};
+#if CP_TWIN_SAVE
+#undef x264_cacheprog_save_nnz_420_avx2
+#define x264_cacheprog_save_nnz_420_avx2 x264_template(twin_cacheprog_save_nnz_420_avx2)
+#undef x264_cacheprog_save_nnz_422_avx2
+#define x264_cacheprog_save_nnz_422_avx2 x264_template(twin_cacheprog_save_nnz_422_avx2)
+#undef x264_cacheprog_save_nnz_420_avx512
+#define x264_cacheprog_save_nnz_420_avx512 x264_template(twin_cacheprog_save_nnz_420_avx512)
+#undef x264_cacheprog_save_nnz_422_avx512
+#define x264_cacheprog_save_nnz_422_avx512 x264_template(twin_cacheprog_save_nnz_422_avx512)
+#endif
+#if CP_TWIN_NNZ
+#undef x264_cacheprog_load_nnz_420_avx512icl
+#define x264_cacheprog_load_nnz_420_avx512icl x264_template(twin_cacheprog_load_nnz_420_avx512icl)
+#undef x264_cacheprog_load_nnz_422_avx512icl
+#define x264_cacheprog_load_nnz_422_avx512icl x264_template(twin_cacheprog_load_nnz_422_avx512icl)
+#endif
+#if CP_TWIN_BORDER
+#undef x264_cacheprog_load_border_420_avx512icl
+#define x264_cacheprog_load_border_420_avx512icl x264_template(twin_cacheprog_load_border_420_avx512icl)
+#undef x264_cacheprog_load_border_422_avx512icl
+#define x264_cacheprog_load_border_422_avx512icl x264_template(twin_cacheprog_load_border_422_avx512icl)
+#endif
+#endif
+
 void x264_cacheprog_init( int cpu, x264_cacheprog_function_t *pf, int chroma_format )
 {
     memset( pf, 0, sizeof(*pf) );
