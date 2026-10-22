@@ -526,7 +526,7 @@ void x264_crew_publish( x264_t *h, int *progress, int *target, int value )
 static int x264_crew_init( x264_t *h )
 {
     if( !h->param.b_sliced_threads || h->param.i_threads < 2 || h->param.i_lookahead_threads < 2 ||
-        h->param.i_sync_lookahead || h->mb.i_mb_height < 4 )
+        h->param.i_sync_lookahead || h->mb.i_mb_height < 4 || !x264_pw_crew_gate )
         return 0;
     int lookahead = h->param.i_lookahead_threads;
     int slots = X264_MIN3( 1 + lookahead + h->param.i_threads, x264_cpu_num_processors(), X264_CREW_MAX );

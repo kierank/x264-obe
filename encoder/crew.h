@@ -29,6 +29,26 @@
 
 #define X264_CREW_MAX 32
 
+/* prologue-wide layout set: x264_pw_crew_gate gates the crew (off: the static
+ * bands of speed-next), x264_pw_wave_gate the lowres cost wavefront (off: the
+ * cost bands on the lookahead pool). On: x264_pw_arm, defined in api.c. Off:
+ * the never defined x264_pw_twin, which links as 0. The code is the same.
+ * test/x264-prologue-wide: 0 0; -nowave: 0 1; -twin: 1 1. */
+#define PW_CREW_TWIN 0
+#define PW_WAVE_TWIN 0
+extern const char x264_pw_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_pw_twin __attribute__((weak, visibility("hidden")));
+#if PW_CREW_TWIN
+#define x264_pw_crew_gate (&x264_pw_twin != NULL)
+#else
+#define x264_pw_crew_gate (&x264_pw_arm != NULL)
+#endif
+#if PW_WAVE_TWIN
+#define x264_pw_wave_gate (&x264_pw_twin != NULL)
+#else
+#define x264_pw_wave_gate (&x264_pw_arm != NULL)
+#endif
+
 typedef void (*x264_crew_func_t)( x264_t *ctx, void *arg, int chunk );
 
 /* Run func on chunks [0,chunks) and return once all are done. 0 without a crew. */

@@ -1835,10 +1835,10 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                     output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
                     output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
 
-                    if( !h->crew )
+                    if( !(h->crew && x264_pw_wave_gate) )
                         x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
                 }
-                if( h->crew )
+                if( h->crew && x264_pw_wave_gate )
                     x264_slicetype_wave( h, s, h->param.i_lookahead_threads );
                 else
                     for( int i = 0; i < h->param.i_lookahead_threads; i++ )
