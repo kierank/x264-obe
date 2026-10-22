@@ -182,6 +182,8 @@ struct x264_ratecontrol_t
      * thread's decayed mean log2 overshoot of rows over that prediction */
     float plan_pred;
     float plan_over;
+    float rq_pred[272];         /* rowqp counters: predicted MB bits of each row (pair) at its qpm */
+    int rq_src;
     predictor_t row_preds[3][2];
     predictor_t row_pred_last[3]; /* the last row of this thread's slice */
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
@@ -246,6 +248,7 @@ static void update_vbv_plan( x264_t *h, int overhead );
 static float predict_size( predictor_t *p, float q, float var );
 static void update_predictor( predictor_t *p, float q, float var, float bits );
 static void update_row_predictor( predictor_t *p, float q, float var, float bits );
+static void rq_print( void );
 
 #define CMP_OPT_FIRST_PASS( opt, param_val )\
 {\
@@ -1488,6 +1491,8 @@ void x264_ratecontrol_delete( x264_t *h )
     }
     if( rc->p_mbtree_stat_file_in )
         fclose( rc->p_mbtree_stat_file_in );
+    if( rc->b_vbv )
+        rq_print();
     x264_free( rc->pred );
     x264_free( rc->pred_b_from_p );
     x264_free( rc->entry );
@@ -1626,6 +1631,10 @@ void x264_ratecontrol_start( x264_t *h, int i_force_qp, int overhead )
     rc->b_floor_off = rc->qp >= QP_MAX_SPEC - 10 && h->frames.b_have_lowres
                       && floor_d <= h->param.i_bframe + 1 && h->fenc->i_cost_est[floor_d][0] >= 0
                       && h->fenc->i_intra_mbs[floor_d] * 8 > floor_scored;
+    h->fdec->i_rq_cat = h->sh.i_type == SLICE_TYPE_I ? 0
+                      : h->frames.b_have_lowres && floor_d <= h->param.i_bframe + 1 && h->fenc->i_cost_est[floor_d][0] >= 0
+                        && h->fenc->i_intra_mbs[floor_d] * 2 > floor_scored ? 1 : 2;
+    h->fdec->i_rq_ev = 0;
     h->fdec->f_qp_avg_rc =
     h->fdec->f_qp_avg_aq =
     rc->qpm = q;
@@ -1745,6 +1754,114 @@ static float predict_rest_reserved( x264_t *h, int y, float qp )
     return next * exp2f( ROW_PLAN_K * rc->plan_over ) + after;
 }
 
+/* rowqp counters */
+enum
+{
+    RQ_FRAMES, RQ_FR_REENC, RQ_EV, RQ_EV_JUMP, RQ_EV_ROOM, RQ_EV_EMERG, RQ_EV_LAST, RQ_EV_LASTEMERG,
+    RQ_POS0, RQ_POS1, RQ_POS3, RQ_POS8, RQ_POSLAST,
+    RQ_MBS, RQ_REDO_MBS, RQ_DQP100,
+    RQ_ROWS, RQ_ERR_ABS, RQ_ERR_SGN, RQ_ROW0, RQ_ERR0_ABS, RQ_ERR0_SGN,
+    RQ_UNDER, RQ_MARGIN_MIN, RQ_MAX_AU, RQ_BITS, RQ_QPMAD100, RQ_QP100, RQ_PLAN_DQP100, RQ_PLANNED,
+    RQ_N
+};
+enum { RQ_SRC_JUMP, RQ_SRC_ROOM, RQ_SRC_EMERG, RQ_SRC_LAST, RQ_SRC_LASTEMERG };
+static int64_t rqn[3][RQ_N];
+#define RQ_ADD(c,i,v) __atomic_fetch_add( &rqn[c][i], (int64_t)(v), __ATOMIC_RELAXED )
+
+static float rq_expect( x264_t *h, int y0, float qp )
+{
+    float qscale = qp2qscale( qp );
+    return predict_row( h, y0, qscale ) + (SLICE_MBAFF ? predict_row( h, y0 + 1, qscale ) : 0);
+}
+
+/* a row (pair) kept: its bits against the prediction it was coded on */
+static void rq_row_kept( x264_t *h, x264_ratecontrol_t *rc, int y )
+{
+    int y0 = y - SLICE_MBAFF;
+    int c = h->fdec->i_rq_cat;
+    float bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+    float pred = rc->rq_pred[y0];
+    if( pred > 0 && bits > 0 )
+    {
+        float e = log2f( bits / pred );
+        RQ_ADD( c, RQ_ROWS, 1 );
+        RQ_ADD( c, RQ_ERR_ABS, fabsf( e ) * 1000 );
+        RQ_ADD( c, RQ_ERR_SGN, e * 1000 );
+        if( y0 == h->i_threadslice_start )
+        {
+            RQ_ADD( c, RQ_ROW0, 1 );
+            RQ_ADD( c, RQ_ERR0_ABS, fabsf( e ) * 1000 );
+            RQ_ADD( c, RQ_ERR0_SGN, e * 1000 );
+        }
+    }
+    if( y + 1 < h->i_threadslice_end )
+        rc->rq_pred[y+1] = rq_expect( h, y + 1, rc->qpm );
+}
+
+static void rq_reencode( x264_t *h, x264_ratecontrol_t *rc, int y )
+{
+    int c = h->fdec->i_rq_cat;
+    int y0 = y - SLICE_MBAFF;
+    int rel = y0 - h->i_threadslice_start;
+    RQ_ADD( c, RQ_EV, 1 );
+    RQ_ADD( c, RQ_EV_JUMP + rc->rq_src, 1 );
+    RQ_ADD( c, y >= h->i_threadslice_end - 1 ? RQ_POSLAST : rel == 0 ? RQ_POS0 : rel < 3 ? RQ_POS1 : rel < 8 ? RQ_POS3 : RQ_POS8, 1 );
+    RQ_ADD( c, RQ_REDO_MBS, h->mb.i_mb_width << SLICE_MBAFF );
+    RQ_ADD( c, RQ_DQP100, (rc->qpm - h->fdec->f_row_qp[y]) * 100.f );
+    __atomic_fetch_add( &h->fdec->i_rq_ev, 1, __ATOMIC_RELAXED );
+    rc->rq_pred[y0] = rq_expect( h, y0, rc->qpm );
+}
+
+/* after the frame: VBV margin, size, row QP spread */
+static void rq_frame_end( x264_t *h, double fill_before, int bits )
+{
+    int c = h->fdec->i_rq_cat;
+    x264_ratecontrol_t *rc = h->rc;
+    int64_t *n = rqn[c];
+    if( !n[RQ_FRAMES] )
+        n[RQ_MARGIN_MIN] = 1000000;
+    n[RQ_FRAMES]++;
+    n[RQ_FR_REENC] += h->fdec->i_rq_ev > 0;
+    n[RQ_MBS] += h->mb.i_mb_count;
+    n[RQ_BITS] += bits;
+    n[RQ_MAX_AU] = X264_MAX( n[RQ_MAX_AU], bits );
+    int64_t margin = (int64_t)((fill_before - bits) / rc->buffer_size * 10000);
+    n[RQ_MARGIN_MIN] = X264_MIN( n[RQ_MARGIN_MIN], margin );
+    n[RQ_UNDER] += fill_before < bits;
+    float mean = 0, mad = 0;
+    for( int y = 0; y < h->mb.i_mb_height; y++ )
+        mean += h->fdec->f_row_qp[y];
+    mean /= h->mb.i_mb_height;
+    for( int y = 0; y < h->mb.i_mb_height; y++ )
+        mad += fabsf( h->fdec->f_row_qp[y] - mean );
+    n[RQ_QPMAD100] += mad / h->mb.i_mb_height * 100;
+    n[RQ_QP100] += mean * 100;
+}
+
+static void rq_print( void )
+{
+    static const char *cat[3] = { "I", "Pcut", "P" };
+    for( int c = 0; c < 3; c++ )
+    {
+        int64_t *n = rqn[c];
+        if( !n[RQ_FRAMES] )
+            continue;
+        double fr = n[RQ_FRAMES];
+        fprintf( stderr, "rowqp %-4s fr=%"PRId64" reenc_fr=%.1f%% ev/f=%.3f [jump %"PRId64" room %"PRId64" emerg %"PRId64" last %"PRId64" lastemerg %"PRId64"]"
+                 " pos[0 %"PRId64" 1-2 %"PRId64" 3-7 %"PRId64" 8+ %"PRId64" last %"PRId64"] redo_mb=%.3f%% dqp=%.2f"
+                 " rowerr abs=%.3f sgn=%+.3f row0 abs=%.3f sgn=%+.3f plan_dqp=%.2f(%"PRId64")"
+                 " under=%"PRId64" min_margin=%.3f max_au=%"PRId64" kbit/f=%.1f qp=%.2f qp_mad=%.3f\n",
+                 cat[c], n[RQ_FRAMES], 100. * n[RQ_FR_REENC] / fr, n[RQ_EV] / fr,
+                 n[RQ_EV_JUMP], n[RQ_EV_ROOM], n[RQ_EV_EMERG], n[RQ_EV_LAST], n[RQ_EV_LASTEMERG],
+                 n[RQ_POS0], n[RQ_POS1], n[RQ_POS3], n[RQ_POS8], n[RQ_POSLAST],
+                 100. * n[RQ_REDO_MBS] / X264_MAX( n[RQ_MBS], 1 ), n[RQ_DQP100] / 100. / X264_MAX( n[RQ_EV], 1 ),
+                 n[RQ_ERR_ABS] / 1000. / X264_MAX( n[RQ_ROWS], 1 ), n[RQ_ERR_SGN] / 1000. / X264_MAX( n[RQ_ROWS], 1 ),
+                 n[RQ_ERR0_ABS] / 1000. / X264_MAX( n[RQ_ROW0], 1 ), n[RQ_ERR0_SGN] / 1000. / X264_MAX( n[RQ_ROW0], 1 ),
+                 n[RQ_PLAN_DQP100] / 100. / X264_MAX( n[RQ_PLANNED], 1 ), n[RQ_PLANNED],
+                 n[RQ_UNDER], n[RQ_MARGIN_MIN] / 10000., n[RQ_MAX_AU], n[RQ_BITS] / fr / 1000., n[RQ_QP100] / 100. / fr, n[RQ_QPMAD100] / 100. / fr );
+    }
+}
+
 /* Near QP_MAX_SPEC the chroma QP hardly moves with qpm, and above it only the emergency
  * deadzone does, so rows shrink less than 1/qscale. Row (pair) y0 at qp, to compare. */
 static void row_err_expect( x264_t *h, x264_ratecontrol_t *rc, int y0, float qp )
@@ -1862,6 +1979,8 @@ static void row_plan( x264_t *h, x264_ratecontrol_t *rc )
         qp += 0.5f;
     if( qp > rc->qpm + h->param.rc.i_qp_step )
     {
+        RQ_ADD( h->fdec->i_rq_cat, RQ_PLANNED, 1 );
+        RQ_ADD( h->fdec->i_rq_cat, RQ_PLAN_DQP100, (X264_MIN( qp, qp_hard_max ) - rc->qpm) * 100 );
         rc->qpm = X264_MIN( qp, qp_hard_max );
         __atomic_store_n( &rc->slice_qp8, (int)(rc->qpm * 256 + 0.5f), __ATOMIC_RELEASE );
     }
@@ -1888,6 +2007,8 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->room_reencodes = 0;
     rc->plan_pred = 0;
     row_plan( h, rc );
+    if( rc->b_vbv )
+        rc->rq_pred[h->i_threadslice_start] = rq_expect( h, h->i_threadslice_start, rc->qpm );
 }
 
 #define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
@@ -1927,6 +2048,7 @@ static float reencode_qp( float qp, float bits, float excess )
 
 static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
 {
+    rq_reencode( h, rc, y );
     rc->qpa_rc = rc->qpa_rc_prev;
     rc->qpa_aq = rc->qpa_aq_prev;
     h->fdec->i_row_bits[y] = 0;
@@ -1948,6 +2070,7 @@ static int last_row_reencode( x264_t *h, x264_ratecontrol_t *rc, int y, float ex
     float qp = rc->last_row_reencodes == 3 ? qp_hard_max : reencode_qp( rc->qpm, row_bits, excess );
     rc->qpm = x264_clip3f( qp, qp_max, qp_hard_max );
     rc->last_row_reencodes++;
+    rc->rq_src = RQ_SRC_LAST;
     return reencode_row( h, rc, y );
 }
 
@@ -2007,6 +2130,7 @@ static int emerg_last_row( x264_t *h, x264_ratecontrol_t *rc, int y, float exces
 {
     if( excess <= 0 || !rc->single_frame_vbv || !X264_VBV_EMERG_STEPS || !emerg_raise( h, rc, row_qp, qp_hard_max ) )
         return 0;
+    rc->rq_src = RQ_SRC_LASTEMERG;
     return reencode_row( h, rc, y );
 }
 
@@ -2305,7 +2429,10 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         if( b_emerg )
+        {
+            rc->rq_src = RQ_SRC_EMERG;
             return reencode_row( h, rc, y );
+        }
 
         /* Every other slice final, and the rest of this one can't fit the room left
          * (less the last row's escape bound) even at the highest QP: this row too,
@@ -2319,6 +2446,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
                 rc->qpm = x264_clip3f( reencode_qp( prev_row_qp, row_bits, over ), prev_row_qp + 1.0f, qp_hard_max );
                 rc->room_reencodes++;
+                rc->rq_src = RQ_SRC_ROOM;
                 return reencode_row( h, rc, y );
             }
         }
@@ -2328,6 +2456,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         {
             /* Bump QP to halfway in between... close enough. */
             rc->qpm = x264_clip3f( (prev_row_qp + rc->qpm)*0.5f, prev_row_qp + 1.0f, qp_max );
+            rc->rq_src = RQ_SRC_JUMP;
             return reencode_row( h, rc, y );
         }
     }
@@ -2359,6 +2488,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
                 return -1;
         }
     }
+
+    rq_row_kept( h, rc, y );
 
     /* the last row as kept, not its re-encodes */
     if( b_last_row && !h->mb.i_vbv_emerg )
@@ -2847,6 +2978,7 @@ static int update_vbv( x264_t *h, int bits )
     if( !rcc->b_vbv )
         return filler;
 
+    rq_frame_end( h, (double)rct->buffer_fill_final / h->sps->vui.i_time_scale, bits );
     rct->buffer_fill_final -= (uint64_t)bits * h->sps->vui.i_time_scale;
 
     if( rct->buffer_fill_final < 0 )

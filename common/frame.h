@@ -132,6 +132,8 @@ typedef struct x264_frame
     int     *i_row_satd;
     int     *i_row_bits;
     float   *f_row_qp;
+    int     i_rq_cat;   /* rowqp counters: frame category */
+    int     i_rq_ev;    /* rowqp counters: row re-encodes this frame */
     float   *f_row_qscale;
     float   *f_qp_offset;
     float   *f_qp_offset_aq;
