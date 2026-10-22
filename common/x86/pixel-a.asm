@@ -203,6 +203,7 @@ x9h_uhi:          db 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
                   db 0, 1, 2, 3, 4, 5, 4, 5, 2, 3, 10, 11, 12, 13, 14, 15
 x9h_ulo_l:        db 12, 13, 14, 15, 14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5
 x9h_ulo_m:        db 2, 3, 0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+x9h_acmask:       dd 0, -1, -1, -1, -1, -1, -1, -1
 %endif
 
 %if HIGH_BIT_DEPTH == 0
@@ -287,6 +288,7 @@ x9r8_ulo_l:       db 14, 15, 15, 14, 13, 12, 11, 10, 9, 8, -1, -1, -1, -1, -1, -
 x9r8_ulo_t:       db -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 8, 9, 10, 11, 12
 x9r8_uhi:         db 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15, 14, -1, -1, -1
 x9r8_lo8:         dd -1, -1, 0, 0
+x9r8_acmask:      dw 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 %endif
 %if ARCH_X86_64
 ALIGN 16
@@ -7492,6 +7494,36 @@ cglobal intra_sa8d_x9_8x8_recon_%1, 8,11,16, 0x840
 %assign x9i x9i+1
 %endrep
 .idct:
+    por          m8, m1, m2
+    por          m9, m3, m4
+    por          m8, m5
+    por          m9, m6
+    por          m8, m7
+    pand        m10, m0, [x9h_acmask]
+    por          m8, m9
+    por          m8, m10
+    ptest        m8, m8
+    jnz .full
+    ; DC only: add8x8_idct8 adds (dc+32)>>6 to every pixel
+    vpbroadcastd xm8, [pd_32]
+    paddd       xm8, xm0
+    psrad       xm8, 6
+    packssdw    xm8, xm8
+    vpbroadcastw m8, xm8
+    pxor         m9, m9
+    mova        m10, [pw_pixel_max]
+%assign x9i 0
+%rep 4
+    mova       xm11, [r5+x9i*64]
+    vinserti128 m11, m11, [r5+x9i*64+32], 1
+    paddw       m11, m8
+    CLIPW       m11, m9, m10
+    movu [r1+(2*x9i+0)*FDEC_STRIDEB], xm11
+    vextracti128 [r1+(2*x9i+1)*FDEC_STRIDEB], m11, 1
+%assign x9i x9i+1
+%endrep
+    jmp .scan
+.full:
     X9R_IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
     TRANSPOSE4x4D 0,1,2,3,8
     TRANSPOSE4x4D 4,5,6,7,8
@@ -7523,6 +7555,7 @@ cglobal intra_sa8d_x9_8x8_recon_%1, 8,11,16, 0x840
     vextracti128 [r1+x9j*FDEC_STRIDEB], m %+ x9i, 1
 %assign x9i x9i+2
 %endrep
+.scan:
     lea          r3, [coef_buf]
 %if %2
     X9H_SCAN8_FIELD r8, r3, r2
@@ -9676,6 +9709,8 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 ; transforms of the asm. fdec is stored once. Returns cost | mode<<16 | nz<<24.
 ; dequant_8x8 avx2 saturates only below qp 36, where no dequantised coefficient
 ; of an 8-bit intra 8x8 exceeds 27376 (any cqm and deadzone); above, it also wraps.
+; With no AC after the dequant, the add8x8_idct8 of the DC, (dc+32)>>6 on every pixel,
+; in the same 16-bit (8-bit) or dword (10-bit) arithmetic.
 
 ; predict_8x8_filter with all neighbours, the topright if r7: edge[i] = F2(U[i-1], U[i], U[i+1]),
 ; U = l7 l7 l6..l0 lt t0..t15 t15 t14, t8..t15 = t7 without the topright. Leaves the rows of
@@ -9896,6 +9931,29 @@ cglobal intra_sa8d_x9_8x8_recon_%1, 8,11,16, 0x680
     pmullw       m4, [r10+320]
     pmullw       m6, [r10+352]
 .idct:
+    por          m8, m2, m4
+    por          m8, m6
+    pand         m9, m0, [x9r8_acmask]
+    por          m8, m9
+    ptest        m8, m8
+    jnz .full
+    ; DC only: add8x8_idct8 adds (dc+32)>>6 to every pixel
+    paddw       xm8, xm0, [pw_32]
+    psraw       xm8, 6
+    vpbroadcastw xm8, xm8
+%assign x9i 0
+%rep 4
+    pmovzxbw    xm9, [r5+x9i*64]
+    pmovzxbw   xm10, [r5+x9i*64+32]
+    paddsw      xm9, xm8
+    paddsw     xm10, xm8
+    packuswb    xm9, xm10
+    movq   [r1+(2*x9i+0)*FDEC_STRIDE], xm9
+    movhps [r1+(2*x9i+1)*FDEC_STRIDE], xm9
+%assign x9i x9i+1
+%endrep
+    jmp .scan
+.full:
     vextracti128 xm1, m0, 1
     vextracti128 xm3, m2, 1
     vextracti128 xm5, m4, 1
@@ -9923,6 +9981,7 @@ cglobal intra_sa8d_x9_8x8_recon_%1, 8,11,16, 0x680
     movhps [r1+5*FDEC_STRIDE], xm4
     movq   [r1+6*FDEC_STRIDE], xm6
     movhps [r1+7*FDEC_STRIDE], xm6
+.scan:
     lea          r3, [coef_buf]
 %if %2
     X9R8_SCAN8_FIELD r8, r3, r2
