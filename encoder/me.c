@@ -1576,7 +1576,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
         dst = COST_MAX; \
 }
 
-#define COST_MV_RD( mx, my, satd, do_dir, mdir ) \
+#define COST_MV_RD( mx, my, satd, do_dir, mdir, bound ) \
 { \
     if( satd <= SATD_THRESH(bsatd) ) \
     { \
@@ -1597,7 +1597,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
             if( m->weight[2].weightfn ) \
                 m->weight[2].weightfn[bw>>3]( pixv, FDEC_STRIDE, pixv, FDEC_STRIDE, &m->weight[2], bh>>chroma_v_shift ); \
         } \
-        cost = x264_rd_cost_part( h, i_lambda2, i4, m->i_pixel ); \
+        cost = x264_rd_cost_part_bound( h, i_lambda2, i4, m->i_pixel, bound ); \
         COPY4_IF_LT( bcost, cost, bmx, mx, bmy, my, dir, do_dir?mdir:dir ); \
     } \
 }
@@ -1644,17 +1644,21 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     p_cost_mvy = m->p_cost_mv - pmy;
     COST_MV_SATD( bmx, bmy, bsatd, 0 );
     if( m->i_pixel != PIXEL_16x16 )
-        COST_MV_RD( bmx, bmy, 0, 0, 0 )
+        COST_MV_RD( bmx, bmy, 0, 0, 0, RD_NO_BOUND )
     else
         bcost = m->cost;
 
+#define RD_EDGE( mx, my ) ( (my) < h->mb.mv_min_spel[1] + 3 || (my) > h->mb.mv_max_spel[1] - 3 ||\
+                            (mx) < h->mb.mv_min_spel[0] + 3 || (mx) > h->mb.mv_max_spel[0] - 3 )
     /* check the predicted mv */
     if( (bmx != pmx || bmy != pmy)
         && pmx >= h->mb.mv_min_spel[0] && pmx <= h->mb.mv_max_spel[0]
         && pmy >= h->mb.mv_min_spel[1] && pmy <= h->mb.mv_max_spel[1] )
     {
+        /* the early return below keeps the mvd cache of the last costed mv */
+        uint64_t pbound = RD_EDGE( bmx, bmy ) || RD_EDGE( pmx, pmy ) ? RD_NO_BOUND : bcost;
         COST_MV_SATD( pmx, pmy, satd, 0 );
-        COST_MV_RD  ( pmx, pmy, satd, 0, 0 );
+        COST_MV_RD  ( pmx, pmy, satd, 0, 0, pbound );
         /* The hex motion search is guaranteed to not repeat the center candidate,
          * so if pmv is chosen, set the "MV to avoid checking" to bmv instead. */
         if( bmx == pmx && bmy == pmy )
@@ -1678,7 +1682,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     for( int j = 0; j < 6; j++ )
     {
         COST_MV_SATD( omx + hex2[j+1][0], omy + hex2[j+1][1], satd, 1 );
-        COST_MV_RD  ( omx + hex2[j+1][0], omy + hex2[j+1][1], satd, 1, j );
+        COST_MV_RD  ( omx + hex2[j+1][0], omy + hex2[j+1][1], satd, 1, j, bcost );
     }
 
     if( dir != -2 )
@@ -1696,7 +1700,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
             for( int j = 0; j < 3; j++ )
             {
                 COST_MV_SATD( omx + hex2[odir+j][0], omy + hex2[odir+j][1], satd, 1 );
-                COST_MV_RD  ( omx + hex2[odir+j][0], omy + hex2[odir+j][1], satd, 1, odir-1+j );
+                COST_MV_RD  ( omx + hex2[odir+j][0], omy + hex2[odir+j][1], satd, 1, odir-1+j, bcost );
             }
             if( dir == -2 )
                 break;
@@ -1709,7 +1713,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     for( int i = 0; i < 8; i++ )
     {
         COST_MV_SATD( omx + square1[i+1][0], omy + square1[i+1][1], satd, 1 );
-        COST_MV_RD  ( omx + square1[i+1][0], omy + square1[i+1][1], satd, 0, 0 );
+        COST_MV_RD  ( omx + square1[i+1][0], omy + square1[i+1][1], satd, 0, 0, bcost );
     }
 
     m->cost = bcost;

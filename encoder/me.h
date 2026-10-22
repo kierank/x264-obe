@@ -29,6 +29,7 @@
 
 #define COST_MAX (1<<28)
 #define COST_MAX64 (1ULL<<60)
+#define RD_NO_BOUND UINT64_MAX
 
 typedef struct
 {
@@ -79,6 +80,8 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
 void x264_me_refine_bidir_satd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_weight );
 #define x264_rd_cost_part x264_template(rd_cost_part)
 uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
+#define x264_rd_cost_part_bound x264_template(rd_cost_part_bound)
+uint64_t x264_rd_cost_part_bound( x264_t *h, int i_lambda2, int i8, int i_pixel, uint64_t bound );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
