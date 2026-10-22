@@ -888,6 +888,30 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
     }
 }
 
+/* i_neighbour8/i_neighbour4 of a progressive MB by its i_neighbour_intra, the entries
+ * x264_macroblock_slice_init sets included */
+#define NB_A(n) (((n)&(MB_TOP|MB_LEFT|MB_TOPLEFT)) | (((n)&MB_TOP) ? MB_TOPRIGHT : 0))
+#define NB_B(n) (MB_LEFT | (((n)&MB_TOP) ? (MB_TOP|MB_TOPLEFT|MB_TOPRIGHT) : 0))
+#define NB_C(n) (MB_TOP|MB_TOPRIGHT | (((n)&MB_LEFT) ? (MB_LEFT|MB_TOPLEFT) : 0))
+#define NB_D(n) (MB_LEFT | ((n)&MB_TOPRIGHT) | (((n)&MB_TOP) ? MB_TOP|MB_TOPLEFT : 0))
+#define NB_E    (MB_LEFT|MB_TOP|MB_TOPLEFT|MB_TOPRIGHT)
+#define NB_F    (MB_LEFT|MB_TOP|MB_TOPLEFT)
+#define NB_ROW(n) {{ NB_A(n), NB_D(n), NB_C(n), NB_F },\
+                   { NB_A(n), NB_B(n), NB_C(n), NB_F, NB_B(n), NB_D(n), NB_E, NB_F,\
+                     NB_C(n), NB_E, NB_C(n), NB_F, NB_E, NB_F, NB_E, NB_F }}
+static const struct { unsigned int n8[4], n4[16]; } neighbour_rows[16] =
+{
+    NB_ROW(0),  NB_ROW(1),  NB_ROW(2),  NB_ROW(3),  NB_ROW(4),  NB_ROW(5),  NB_ROW(6),  NB_ROW(7),
+    NB_ROW(8),  NB_ROW(9),  NB_ROW(10), NB_ROW(11), NB_ROW(12), NB_ROW(13), NB_ROW(14), NB_ROW(15),
+};
+#undef NB_ROW
+#undef NB_F
+#undef NB_E
+#undef NB_D
+#undef NB_C
+#undef NB_B
+#undef NB_A
+
 /* Reencode: the left column from the frame, progressive 4:2:0 or 4:2:2 */
 static NOINLINE void x264_macroblock_load_left_reencode( x264_t *h, int off_y, int off_c, int height_c )
 {
@@ -1315,18 +1339,8 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_prog( x264_t *h, int mb_x, 
     if( h->sh.i_type == SLICE_TYPE_P )
         x264_mb_predict_mv_pskip( h, h->mb.cache.pskip_mv );
 
-    h->mb.i_neighbour4[0] =
-    h->mb.i_neighbour8[0] = (neighbour_intra & (MB_TOP|MB_LEFT|MB_TOPLEFT))
-                            | ((neighbour_intra & MB_TOP) ? MB_TOPRIGHT : 0);
-    h->mb.i_neighbour4[4] =
-    h->mb.i_neighbour4[1] = MB_LEFT | ((neighbour_intra & MB_TOP) ? (MB_TOP|MB_TOPLEFT|MB_TOPRIGHT) : 0);
-    h->mb.i_neighbour4[2] =
-    h->mb.i_neighbour4[8] =
-    h->mb.i_neighbour4[10] =
-    h->mb.i_neighbour8[2] = MB_TOP|MB_TOPRIGHT | ((neighbour_intra & MB_LEFT) ? (MB_LEFT|MB_TOPLEFT) : 0);
-    h->mb.i_neighbour4[5] =
-    h->mb.i_neighbour8[1] = MB_LEFT | (neighbour_intra & MB_TOPRIGHT)
-                            | ((neighbour_intra & MB_TOP) ? MB_TOP|MB_TOPLEFT : 0);
+    memcpy( h->mb.i_neighbour8, neighbour_rows[neighbour_intra].n8, sizeof(h->mb.i_neighbour8) );
+    memcpy( h->mb.i_neighbour4, neighbour_rows[neighbour_intra].n4, sizeof(h->mb.i_neighbour4) );
 }
 
 #define LTOP 0
