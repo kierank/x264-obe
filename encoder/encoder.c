@@ -261,7 +261,7 @@ static void x264_slicepool_run( x264_slicepool_t *pool, int i )
 /* A crew stage on worker i, only if it has no job pending or running: a later
  * x264_slicepool_run replaces a crew job not yet started. *slot_gen is the
  * slot's stage, read by the worker. */
-static void x264_slicepool_run_crew( x264_slicepool_t *pool, int i, void *slot, int *slot_gen, int gen )
+static int x264_slicepool_run_crew( x264_slicepool_t *pool, int i, void *slot, int *slot_gen, int gen )
 {
     x264_slice_worker_t *w = &pool->workers[i].w;
     x264_pthread_mutex_lock( &w->mutex );
@@ -276,6 +276,7 @@ static void x264_slicepool_run_crew( x264_slicepool_t *pool, int i, void *slot, 
     x264_pthread_mutex_unlock( &w->mutex );
     if( b_wake )
         x264_pthread_cond_broadcast( &w->cv_go );
+    return b_idle;
 }
 
 /* Result for job i when it isn't run. */
@@ -376,6 +377,31 @@ typedef struct
     int i_gen;                  /* stage it was dispatched for */
 } x264_crew_slot_t;
 
+/* counters / trace (test branch): one frame in CREW_TRACE_EVERY, the first
+ * CREW_TRACE_FRAMES of those, per chunk start/end tsc, printed at close */
+#include <x86intrin.h>
+#define CREW_TRACE_EVERY  50
+#define CREW_TRACE_FRAMES 16
+#define CREW_TRACE_STAGES 8
+#define CREW_TRACE_EVENTS 1024
+typedef struct
+{
+    uint8_t stage;
+    uint8_t slot;
+    uint16_t chunk;
+    uint32_t t0;
+    uint32_t t1;
+} x264_crew_event_t;
+typedef struct
+{
+    int i_frame;
+    int i_stages;
+    int i_events;
+    uint64_t t_base;
+    struct { int chunks, pool, workers; uint32_t t0, t1; } stage[CREW_TRACE_STAGES];
+    x264_crew_event_t ev[CREW_TRACE_EVENTS];
+} x264_crew_trace_t;
+
 typedef struct x264_crew_t
 {
     x264_pthread_mutex_t mutex;
@@ -401,6 +427,21 @@ typedef struct x264_crew_t
     uint32_t (*pixel_sum)[3];
     uint64_t (*pixel_ssd)[3];
     int *rows;                  /* x264_crew_rows */
+    /* counters */
+    int64_t i_frames;
+    int64_t i_stages;
+    int64_t i_slot_chunks[X264_CREW_MAX];
+    int64_t i_dispatch_pool;
+    int64_t i_dispatch_workers;
+    int64_t i_worker_declined;
+    int64_t i_main_waits;
+    uint64_t i_main_wait_ticks;
+    int64_t i_wave_sleeps;
+    uint64_t i_wave_sleep_ticks;
+    int64_t i_wave_waits;
+    x264_crew_trace_t *trace;   /* CREW_TRACE_FRAMES */
+    int i_traced;
+    x264_crew_trace_t *cur;     /* frame being traced, or NULL */
 } x264_crew_t;
 
 /* Claim the next chunk of stage gen, -1 if there is none */
@@ -430,7 +471,18 @@ static void x264_crew_work( x264_crew_slot_t *slot, int gen )
         int c = x264_crew_claim( crew, gen, chunks );
         if( c < 0 )
             return;
+        x264_crew_trace_t *tr = CREW_LOAD( &crew->cur );
+        int s = slot - crew->slot;
+        uint64_t t0 = tr ? __rdtsc() : 0;
         x264_stack_align( func, slot->ctx, arg, c );
+        __atomic_add_fetch( &crew->i_slot_chunks[s], 1, __ATOMIC_RELAXED );
+        if( tr )
+        {
+            uint64_t t1 = __rdtsc();
+            int e = __atomic_fetch_add( &tr->i_events, 1, __ATOMIC_RELAXED );
+            if( e < CREW_TRACE_EVENTS )
+                tr->ev[e] = (x264_crew_event_t){ tr->i_stages - 1, s, c, t0 - tr->t_base, t1 - tr->t_base };
+        }
         if( __atomic_add_fetch( &crew->i_done, 1, __ATOMIC_ACQ_REL ) == chunks )
         {
             x264_pthread_mutex_lock( &crew->mutex );
@@ -452,6 +504,20 @@ int x264_crew_run( x264_t *h, x264_crew_func_t func, void *arg, int chunks )
     x264_crew_t *crew = h->crew;
     if( !crew )
         return 0;
+    x264_crew_trace_t *tr = crew->cur;
+    int ts = tr ? tr->i_stages : 0;
+    if( tr && ts < CREW_TRACE_STAGES )
+    {
+        tr->stage[ts].chunks = chunks;
+        tr->stage[ts].t0 = __rdtsc() - tr->t_base;
+        tr->i_stages++;
+    }
+    else if( tr )
+    {
+        CREW_STORE( &crew->cur, NULL );
+        tr = NULL;
+    }
+    crew->i_stages++;
     int gen = ++crew->i_gen;
     CREW_STORE( &crew->stage[gen&1].func, func );
     CREW_STORE( &crew->stage[gen&1].arg, arg );
@@ -467,21 +533,34 @@ int x264_crew_run( x264_t *h, x264_crew_func_t func, void *arg, int chunks )
         {
             crew->slot[i].i_gen = gen;
             x264_threadpool_run( h->lookaheadpool, x264_crew_helper, &crew->slot[i] );
+            crew->i_dispatch_pool++;
         }
         else
+        {
             /* the last workers first: worker 0 filters slice 0 last */
-            x264_slicepool_run_crew( h->slicepool, h->param.i_threads - 1 - (i - pool - 1),
-                                     &crew->slot[i], &crew->slot[i].i_gen, gen );
+            crew->i_dispatch_workers++;
+            crew->i_worker_declined += !x264_slicepool_run_crew( h->slicepool, h->param.i_threads - 1 - (i - pool - 1),
+                                                                 &crew->slot[i], &crew->slot[i].i_gen, gen );
+        }
     }
     crew->slot[0].i_gen = gen;
     x264_crew_work( &crew->slot[0], gen );
 
     if( CREW_LOAD( &crew->i_done ) < chunks )
     {
+        uint64_t w0 = __rdtsc();
         x264_pthread_mutex_lock( &crew->mutex );
         while( CREW_LOAD( &crew->i_done ) < chunks )
             x264_pthread_cond_wait( &crew->cv_done, &crew->mutex );
         x264_pthread_mutex_unlock( &crew->mutex );
+        crew->i_main_waits++;
+        crew->i_main_wait_ticks += __rdtsc() - w0;
+    }
+    if( tr )
+    {
+        tr->stage[ts].pool = pool;
+        tr->stage[ts].workers = helpers - pool;
+        tr->stage[ts].t1 = __rdtsc() - tr->t_base;
     }
     /* pool jobs are reclaimed here; a worker that starts late finds no chunk */
     for( int i = 1; i <= pool; i++ )
@@ -497,12 +576,21 @@ int *x264_crew_rows( x264_t *h )
 int x264_crew_wait( x264_t *h, int *progress, int *target, int need )
 {
     x264_crew_t *crew = h->crew;
+    uint64_t w0 = __rdtsc();
+    int b_slept = 0;
     x264_pthread_mutex_lock( &crew->mutex );
     __atomic_store_n( target, need, __ATOMIC_SEQ_CST );
     int v;
     while( (v = __atomic_load_n( progress, __ATOMIC_SEQ_CST )) < need )
+    {
         x264_pthread_cond_wait( &crew->cv_wait, &crew->mutex );
+        b_slept = 1;
+    }
     CREW_STORE_X( target, 0 );
+    /* under the mutex */
+    crew->i_wave_waits++;
+    crew->i_wave_sleeps += b_slept;
+    crew->i_wave_sleep_ticks += __rdtsc() - w0;
     x264_pthread_mutex_unlock( &crew->mutex );
     return v;
 }
@@ -560,9 +648,67 @@ static int x264_crew_init( x264_t *h )
     CHECKED_MALLOC( crew->pixel_sum, chunks * sizeof(*crew->pixel_sum) );
     CHECKED_MALLOC( crew->pixel_ssd, chunks * sizeof(*crew->pixel_ssd) );
     CHECKED_MALLOC( crew->rows, h->mb.i_mb_height * X264_CREW_ROW * sizeof(int) );
+    CHECKED_MALLOCZERO( crew->trace, CREW_TRACE_FRAMES * sizeof(x264_crew_trace_t) );
     return 0;
 fail:
     return -1;
+}
+
+/* Main thread, before the frame's first stage */
+static void x264_crew_trace_frame( x264_t *h, int i_frame )
+{
+    x264_crew_t *crew = h->crew;
+    if( !crew )
+        return;
+    x264_crew_trace_t *tr = NULL;
+    if( !(crew->i_frames++ % CREW_TRACE_EVERY) && crew->i_traced < CREW_TRACE_FRAMES )
+    {
+        tr = &crew->trace[crew->i_traced++];
+        tr->i_frame = i_frame;
+        tr->i_stages = 0;
+        tr->i_events = 0;
+        tr->t_base = __rdtsc();
+    }
+    CREW_STORE( &crew->cur, tr );
+}
+
+static void x264_crew_print( x264_crew_t *crew )
+{
+    fprintf( stderr, "crew: slots %d pool %d workers %d; frames %"PRId64" stages %"PRId64"\n",
+             crew->i_slots, crew->i_pool, crew->i_slots - 1 - crew->i_pool, crew->i_frames, crew->i_stages );
+    fprintf( stderr, "crew: chunks per slot:" );
+    for( int i = 0; i < crew->i_slots; i++ )
+        fprintf( stderr, " %"PRId64, crew->i_slot_chunks[i] );
+    fprintf( stderr, "\n" );
+    fprintf( stderr, "crew: dispatched pool %"PRId64" workers %"PRId64" (declined busy %"PRId64"); main done-waits %"PRId64" ticks %"PRIu64"\n",
+             crew->i_dispatch_pool, crew->i_dispatch_workers, crew->i_worker_declined, crew->i_main_waits, crew->i_main_wait_ticks );
+    fprintf( stderr, "crew: wave waits %"PRId64" sleeps %"PRId64" ticks %"PRIu64"\n",
+             crew->i_wave_waits, crew->i_wave_sleeps, crew->i_wave_sleep_ticks );
+    /* ticks from the frame's first stage; stage 0 copy, 1 AQ + lowres, then lowres cost calls */
+    for( int f = 0; f < crew->i_traced; f++ )
+    {
+        x264_crew_trace_t *tr = &crew->trace[f];
+        int n = X264_MIN( tr->i_events, CREW_TRACE_EVENTS );
+        for( int s = 0; s < tr->i_stages; s++ )
+        {
+            fprintf( stderr, "crew trace frame %d stage %d chunks %d pool %d workers %d: %u-%u\n", tr->i_frame, s,
+                     tr->stage[s].chunks, tr->stage[s].pool, tr->stage[s].workers, tr->stage[s].t0, tr->stage[s].t1 );
+            for( int k = 0; k < X264_CREW_MAX; k++ )
+            {
+                int b_any = 0;
+                for( int e = 0; e < n; e++ )
+                    if( tr->ev[e].stage == s && tr->ev[e].slot == k )
+                    {
+                        if( !b_any )
+                            fprintf( stderr, "crew trace frame %d stage %d slot %d:", tr->i_frame, s, k );
+                        b_any = 1;
+                        fprintf( stderr, " %d@%u-%u", tr->ev[e].chunk, tr->ev[e].t0, tr->ev[e].t1 );
+                    }
+                if( b_any )
+                    fprintf( stderr, "\n" );
+            }
+        }
+    }
 }
 
 static void x264_crew_delete( x264_t *h )
@@ -570,6 +716,8 @@ static void x264_crew_delete( x264_t *h )
     x264_crew_t *crew = h->crew;
     if( !crew )
         return;
+    x264_crew_print( crew );
+    x264_free( crew->trace );
     for( int i = 0; i < crew->i_extra; i++ )
     {
         x264_t *t = crew->slot[crew->i_extra_base + i].ctx;
@@ -601,6 +749,7 @@ int x264_crew_wait( x264_t *h, int *progress, int *target, int need ) { return n
 int *x264_crew_rows( x264_t *h ) { return NULL; }
 void x264_crew_publish( x264_t *h, int *progress, int *target, int value ) {}
 static inline int x264_crew_init( x264_t *h ) { return 0; }
+static inline void x264_crew_trace_frame( x264_t *h, int i_frame ) {}
 static inline void x264_crew_delete( x264_t *h ) {}
 #endif
 
@@ -4147,6 +4296,7 @@ int     x264_encoder_encode( x264_t *h,
             if( x264_frame_copy_picture_init( h, fenc, pic_in ) < 0 )
                 return -1;
             x264_prologue_bands_init( h, prologue, prologue_bands, fenc, pic_in );
+            x264_crew_trace_frame( h, h->frames.i_input );
             x264_prologue_run( h, prologue, prologue_bands, x264_prologue_copy_band, x264_prologue_copy_chunk );
         }
         else
