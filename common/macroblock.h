@@ -327,7 +327,7 @@ void x264_macroblock_deblock_strength( x264_t *h );
 /* bs0 layout pair: x264_bs0_gate gates the bS 0 pre-test. Arm: x264_bs0_arm,
  * defined in api.c. Twin (BS0_TWIN 1): the never defined x264_bs0_twin, which
  * links as 0. The code is the same in both. */
-#define BS0_TWIN 0
+#define BS0_TWIN 1
 extern const char x264_bs0_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_bs0_twin __attribute__((weak, visibility("hidden")));
 #if BS0_TWIN
