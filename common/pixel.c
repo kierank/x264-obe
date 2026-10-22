@@ -1824,5 +1824,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->ads[PIXEL_8x4] =
     pixf->ads[PIXEL_4x8] = pixf->ads[PIXEL_16x8];
     pixf->ads[PIXEL_4x4] = pixf->ads[PIXEL_8x8];
+    /* twin: the kernels assembled and referenced, not dispatched */
+    pixf->weightp_satd8_search = NULL;
+    pixf->weightp_chroma_ref_row = NULL;
+    memset( pixf->sad_avg2_w, 0, sizeof(pixf->sad_avg2_w) );
+    memset( pixf->satd_avg2_pre_w, 0, sizeof(pixf->satd_avg2_pre_w) );
 }
 
