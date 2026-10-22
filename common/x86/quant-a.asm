@@ -4341,3 +4341,141 @@ INIT_ZMM avx512icl
 QUANT_4x4x4_SCAN_LAST_AVX512 frame, 0
 QUANT_4x4x4_SCAN_LAST_AVX512 field, 1
 %endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; int quant_4x4_scan_last( dctcoef dct[16], dctcoef orig[16], dctcoef level[16],
+;                          udctcoef mf[16], udctcoef bias[16] )
+;-----------------------------------------------------------------------------
+; orig = dct, quant_4x4 dct, zigzag into level. Returns 0, or 1 | last << 4.
+%if ARCH_X86_64
+
+; r5d: nonzero coefs in scan order, %1 bits per coef -> eax; clobbers r3
+%macro QUANT_SCAN_LAST1 1
+    bsr      r3d, r5d         ; r5d == 0: r3d unused
+%if %1 == 2
+    shr      r3d, 1
+%endif
+    shl      r3d, 4
+    or       r3d, 1
+    xor      eax, eax
+    test     r5d, r5d
+    cmovnz   eax, r3d
+%endmacro
+
+INIT_YMM avx2
+%if HIGH_BIT_DEPTH
+%macro QUANT_4x4_SCAN_LAST 2 ; name, field
+cglobal quant_4x4_scan_last_%1, 5,6,7
+    mova      m0, [r0]
+    mova      m1, [r0+32]
+    mova    [r1], m0
+    mova [r1+32], m1
+    QUANT_SCAN_LAST_ONE m0, m2, [r3   ], [r4   ]
+    QUANT_SCAN_LAST_ONE m1, m3, [r3+32], [r4+32]
+    mova    [r0], m0
+    mova [r0+32], m1
+%if %2
+    mova      m4, [qscan4_field]
+    vpermd    m2, m4, m0
+    mova      m3, m1
+%else
+    mova      m4, [qscan4_frame_i]
+    mova      m5, [qscan4_frame_j]
+    vpermd    m2, m4, m0
+    vpermd    m3, m5, m1
+    vpblendd  m2, m2, m3, 0xe0
+    vpermd    m3, m5, m0
+    vpermd    m6, m4, m1
+    vpblendd  m3, m3, m6, 0xf8
+%endif
+    mova    [r2], m2
+    mova [r2+32], m3
+    packssdw  m2, m3
+    vpermq    m2, m2, q3120
+    pxor      m0, m0
+    pcmpeqw   m2, m0
+    pmovmskb r5d, m2
+    not      r5d
+    QUANT_SCAN_LAST1 2
+    RET
+%endmacro
+
+%else ; !HIGH_BIT_DEPTH
+%macro QUANT_4x4_SCAN_LAST 2 ; name, field
+cglobal quant_4x4_scan_last_%1, 5,6,4
+    mova      m0, [r0]
+    mova    [r1], m0
+    pabsw     m1, m0
+    paddusw   m1, [r4]
+    pmulhuw   m1, [r3]
+    psignw    m0, m1, m0
+    mova    [r0], m0
+%if %2
+    pshufb    m1, m0, [qscan4_field]
+%else
+    vperm2i128 m2, m0, m0, 0x01
+    pshufb    m1, m0, [qscan4_frame_a]
+    pshufb    m2, [qscan4_frame_b]
+    por       m1, m2
+%endif
+    mova    [r2], m1
+    pxor      m2, m2
+    pcmpeqw   m1, m2
+    pmovmskb r5d, m1
+    not      r5d
+    QUANT_SCAN_LAST1 2
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+QUANT_4x4_SCAN_LAST frame, 0
+QUANT_4x4_SCAN_LAST field, 1
+
+%if HIGH_BIT_DEPTH
+INIT_ZMM avx512icl
+%macro QUANT_4x4_SCAN_LAST_AVX512 2 ; name, field
+cglobal quant_4x4_scan_last_%1, 5,6,4
+    movu      m0, [r0]
+    movu    [r1], m0
+    pabsd     m1, m0
+    paddd     m1, [r4]
+    pmulld    m1, [r3]
+    psrld     m1, 16
+    vpmovd2m  k1, m0
+    pxor     xm2, xm2
+    vpsubd    m1{k1}, m2, m1
+    movu    [r0], m1
+    movu      m3, [qscan4_%1_avx512]
+    vpermd    m1, m3, m1
+    movu    [r2], m1
+    vptestmd  k1, m1, m1
+    kmovw    r5d, k1
+    QUANT_SCAN_LAST1 1
+    RET
+%endmacro
+%else
+INIT_YMM avx512icl
+%macro QUANT_4x4_SCAN_LAST_AVX512 2 ; name, field
+cglobal quant_4x4_scan_last_%1, 5,6,4
+    movu      m0, [r0]
+    movu    [r1], m0
+    pabsw     m1, m0
+    paddusw   m1, [r4]
+    pmulhuw   m1, [r3]
+    vpmovw2m  k1, m0
+    pxor     xm2, xm2
+    vpsubw    m1{k1}, m2, m1
+    movu    [r0], m1
+    movu      m3, [qscan4_%1_avx512]
+    vpermw    m1, m3, m1
+    movu    [r2], m1
+    vptestmw  k1, m1, m1
+    kmovw    r5d, k1
+    QUANT_SCAN_LAST1 1
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+QUANT_4x4_SCAN_LAST_AVX512 frame, 0
+QUANT_4x4_SCAN_LAST_AVX512 field, 1
+%endif ; ARCH_X86_64

@@ -423,11 +423,11 @@ int x264_quant_8x8_scan_field( dctcoef dct[64], dctcoef level[64], udctcoef mf[6
 
 /* orig = dct, quant_4x4x4 dct, zigzag the nonzero blocks into level (other blocks unspecified).
  * Returns nz | last << (4+4*j) per nonzero block j: its last nonzero coef in scan order */
-static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
-                                                udctcoef mf[16], udctcoef bias[16], int b_field )
+static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef (*dct)[16], dctcoef (*orig)[16], dctcoef (*level)[16],
+                                                udctcoef mf[16], udctcoef bias[16], int nblk, int b_field )
 {
     int ret = 0;
-    for( int j = 0; j < 4; j++ )
+    for( int j = 0; j < nblk; j++ )
     {
         int nz = 0;
         for( int i = 0; i < 16; i++ )
@@ -451,11 +451,21 @@ static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig
 
 int x264_quant_4x4x4_scan_last_frame( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
 {
-    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 0 );
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 4, 0 );
 }
 int x264_quant_4x4x4_scan_last_field( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
 {
-    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 1 );
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 4, 1 );
+}
+
+/* quant_4x4x4_scan_last of one block: returns 0, or 1 | last << 4 */
+int x264_quant_4x4_scan_last_frame( dctcoef dct[16], dctcoef orig[16], dctcoef level[16], udctcoef mf[16], udctcoef bias[16] )
+{
+    return quant_4x4x4_scan_last( (dctcoef (*)[16])dct, (dctcoef (*)[16])orig, (dctcoef (*)[16])level, mf, bias, 1, 0 );
+}
+int x264_quant_4x4_scan_last_field( dctcoef dct[16], dctcoef orig[16], dctcoef level[16], udctcoef mf[16], udctcoef bias[16] )
+{
+    return quant_4x4x4_scan_last( (dctcoef (*)[16])dct, (dctcoef (*)[16])orig, (dctcoef (*)[16])level, mf, bias, 1, 1 );
 }
 
 #define last(num)\

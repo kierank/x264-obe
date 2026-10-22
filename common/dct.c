@@ -925,6 +925,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_8x8_scan      = NULL;
     pf_interlaced->quant_4x4x4_scan_last  = x264_quant_4x4x4_scan_last_field;
     pf_progressive->quant_4x4x4_scan_last = x264_quant_4x4x4_scan_last_frame;
+    pf_interlaced->quant_4x4_scan_last    = x264_quant_4x4_scan_last_field;
+    pf_progressive->quant_4x4_scan_last   = x264_quant_4x4_scan_last_frame;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1054,6 +1056,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->quant_4x4x4_scan_last  = x264_quant_4x4x4_scan_last_field_avx2;
         pf_progressive->quant_4x4x4_scan_last = x264_quant_4x4x4_scan_last_frame_avx2;
+        pf_interlaced->quant_4x4_scan_last    = x264_quant_4x4_scan_last_field_avx2;
+        pf_progressive->quant_4x4_scan_last   = x264_quant_4x4_scan_last_frame_avx2;
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
@@ -1061,6 +1065,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx512icl;
         pf_interlaced->quant_4x4x4_scan_last  = x264_quant_4x4x4_scan_last_field_avx512icl;
         pf_progressive->quant_4x4x4_scan_last = x264_quant_4x4x4_scan_last_frame_avx512icl;
+        pf_interlaced->quant_4x4_scan_last    = x264_quant_4x4_scan_last_field_avx512icl;
+        pf_progressive->quant_4x4_scan_last   = x264_quant_4x4_scan_last_frame_avx512icl;
 #if HIGH_BIT_DEPTH
         pf_interlaced->quant_4x4x4_scan     = x264_quant_4x4x4_scan_field_avx512icl;
         pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx512icl;

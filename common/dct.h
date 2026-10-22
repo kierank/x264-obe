@@ -80,6 +80,9 @@ typedef struct
      * Returns nz | last << (4+4*j) for each nonzero block j, last = its last nonzero coef in scan order. */
     int  (*quant_4x4x4_scan_last)( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
                                    udctcoef mf[16], udctcoef bias[16] );
+    /* the same for one block: returns 0, or 1 | last << 4 */
+    int  (*quant_4x4_scan_last)( dctcoef dct[16], dctcoef orig[16], dctcoef level[16],
+                                 udctcoef mf[16], udctcoef bias[16] );
 
 } x264_zigzag_function_t;
 

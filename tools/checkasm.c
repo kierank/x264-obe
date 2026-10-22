@@ -4439,6 +4439,8 @@ static int check_quant( int cpu_ref, int cpu_new )
 
         TEST_QUANT_SCAN_LAST( quant_4x4x4_scan_last, CQM_4PY, 4 );
         TEST_QUANT_SCAN_LAST( quant_4x4x4_scan_last, CQM_4IC, 4 );
+        TEST_QUANT_SCAN_LAST( quant_4x4_scan_last, CQM_4IY, 1 );
+        TEST_QUANT_SCAN_LAST( quant_4x4_scan_last, CQM_4PC, 1 );
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \
