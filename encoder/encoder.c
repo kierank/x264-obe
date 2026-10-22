@@ -4634,6 +4634,7 @@ void    x264_encoder_close  ( x264_t *h )
         x264_threadpool_delete( h->threadpool );
     if( h->param.i_lookahead_threads > 1 )
         x264_threadpool_delete( h->lookaheadpool );
+    x264_deblock_chroma_mb_counters_print();
     if( h->i_thread_frames > 1 )
     {
         for( int i = 0; i < h->i_thread_frames; i++ )

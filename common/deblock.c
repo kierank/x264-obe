@@ -442,8 +442,13 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
         h->mb.i_neighbour |= MB_TOP;
 }
 
+/* counters: MBs, deblock_chroma_mb calls, calls with a vertical edge, vertical edges,
+ * horizontal edges (bS != 0), calls whose left edge ran per edge */
+static uint64_t dbcmb_cnt[6];
+
 void x264_frame_deblock_row( x264_t *h, int mb_y )
 {
+    uint64_t cnt[6] = {0};
     int b_interlaced = SLICE_MBAFF;
     int a = h->sh.i_alpha_c0_offset - QP_BD_OFFSET;
     int b = h->sh.i_beta_offset - QP_BD_OFFSET;
@@ -696,11 +701,38 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                 h->loopf.deblock_chroma_mb( pixuv, stride2uv, bs, mb_c, mb_cedges );
             if( mb_edges )
                 h->loopf.deblock_luma_mb( pixy, stride2y, bs, mb_e, mb_edges );
+            if( chroma_mb )
+            {
+                int act = 0;
+                for( int i = 0; i < 8; i++ )
+                    if( (mb_cedges >> i & 1) && M32( bs[i>>2][i&3] ) )
+                        act |= 1 << i;
+                cnt[1] += !!mb_cedges;
+                cnt[2] += !!(act & 5);
+                cnt[3] += !!(act & 1) + !!(act & 4);
+                cnt[4] += __builtin_popcount( act >> 4 );
+                cnt[5] += (h->mb.i_neighbour & MB_LEFT) && !(mb_cedges & 1);
+            }
         }
+        cnt[0]++;
 
         #undef FILTER
         #undef MB_EDGE
     }
+    for( int i = 0; i < 6; i++ )
+        __atomic_fetch_add( &dbcmb_cnt[i], cnt[i], __ATOMIC_RELAXED );
+}
+
+void x264_deblock_chroma_mb_counters_print( void )
+{
+    uint64_t c[6];
+    for( int i = 0; i < 6; i++ )
+        c[i] = __atomic_load_n( &dbcmb_cnt[i], __ATOMIC_RELAXED );
+    if( !c[0] )
+        return;
+    fprintf( stderr, "deblock_chroma_mb %d-bit: mbs %"PRIu64" calls %"PRIu64" (%.2f%%) vpass %"PRIu64" (%.2f%%) "
+             "vedges %"PRIu64" hedges %"PRIu64" (%.3f/call) left per edge %"PRIu64"\n", BIT_DEPTH,
+             c[0], c[1], 100.0*c[1]/c[0], c[2], 100.0*c[2]/c[0], c[3], c[4], c[1] ? (double)(c[3]+c[4])/c[1] : 0., c[5] );
 }
 
 /* For deblock-aware RD.

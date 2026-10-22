@@ -296,6 +296,8 @@ void          x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame );
 void          x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff );
 #define x264_deblock_edge_init x264_template(deblock_edge_init)
 int           x264_deblock_edge_init( x264_deblock_edge_t *e, int qp, int a, int b, int chroma );
+#define x264_deblock_chroma_mb_counters_print x264_template(deblock_chroma_mb_counters_print)
+void          x264_deblock_chroma_mb_counters_print( void );
 
 #define x264_frame_cond_broadcast x264_template(frame_cond_broadcast)
 void          x264_frame_cond_broadcast( x264_frame_t *frame, int i_lines_completed );
