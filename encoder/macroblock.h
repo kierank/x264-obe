@@ -161,6 +161,12 @@ do\
 
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
+/* layout pair test/x264-inter-resid / -twin: hidden weak x264_N_inter_resid_gate, defined in macroblock.c (no
+ * bytes) unless INTER_RESID_TWIN; the twin links it as 0, INTER_RESID_OFF is 1 and every plane takes the calls */
+#define x264_inter_resid_gate x264_template(inter_resid_gate)
+extern void x264_inter_resid_gate( void ) __attribute__((weak, visibility("hidden")));
+#define INTER_RESID_OFF (!x264_inter_resid_gate)
+
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
 {
     ALIGNED_ARRAY_32( dctcoef, dc,[16] );

@@ -29,6 +29,13 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#define INTER_RESID_TWIN 0
+#define INTER_RESID_STR2( x ) #x
+#define INTER_RESID_STR( x ) INTER_RESID_STR2( x )
+#if !INTER_RESID_TWIN
+__asm__( ".set " INTER_RESID_STR( x264_inter_resid_gate ) ", " INTER_RESID_STR( x264_macroblock_encode ) );
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -785,7 +792,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
-                if( h->zigzagf.inter_resid_8x8 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
+                if( h->zigzagf.inter_resid_8x8 && !INTER_RESID_OFF && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
                     int i_quant_cat = p?CQM_8PC:CQM_8PY;
                     int ret = h->zigzagf.inter_resid_8x8( &h->dct.luma8x8[p*4], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
@@ -797,7 +804,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     continue;
                 }
                 CLEAR_16x16_NNZ( p );
-                if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                if( !INTER_RESID_OFF && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
                     h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
@@ -858,7 +865,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
-                if( h->zigzagf.inter_resid_4x4 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
+                if( h->zigzagf.inter_resid_4x4 && !INTER_RESID_OFF && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
                     int ret = h->zigzagf.inter_resid_4x4( &h->dct.luma4x4[p*16], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
@@ -869,7 +876,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     continue;
                 }
                 CLEAR_16x16_NNZ( p );
-                if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                if( !INTER_RESID_OFF && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
                     h->nr_count[0+!!p*2] += h->mb.b_noise_reduction * 16;
