@@ -62,7 +62,7 @@ void x264_cabac_encode_init ( x264_cabac_t *cb, uint8_t *p_data, uint8_t *p_end 
 #define x264_cabac_encode_decision_c x264_template(cabac_encode_decision_c)
 void x264_cabac_encode_decision_c( x264_cabac_t *cb, int i_ctx, int b );
 #define x264_cabac_encode_decision_asm x264_template(cabac_encode_decision_asm)
-void x264_cabac_encode_decision_asm( x264_cabac_t *cb, int i_ctx, int b );
+void x264_cabac_encode_decision_asm( x264_cabac_t *cb, intptr_t i_ctx, intptr_t b );
 #define x264_cabac_encode_bypass_c x264_template(cabac_encode_bypass_c)
 void x264_cabac_encode_bypass_c( x264_cabac_t *cb, int b );
 #define x264_cabac_encode_bypass_asm x264_template(cabac_encode_bypass_asm)
@@ -78,13 +78,13 @@ void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb );
 
 #if HAVE_MMX
 #define x264_cabac_encode_decision_bmi2 x264_template(cabac_encode_decision_bmi2)
-void x264_cabac_encode_decision_bmi2( x264_cabac_t *cb, int i_ctx, int b );
+void x264_cabac_encode_decision_bmi2( x264_cabac_t *cb, intptr_t i_ctx, intptr_t b );
 /* the BMI2 version where the CPU has it, set by x264_encoder_open. Both give
  * the same result; the BMI2 one renormalizes with lzcnt/shlx instead of a
  * table load, which sits on the serial range dependency from one bin to the
  * next. A pointer keeps each call site to one well predicted indirect call. */
 #define x264_cabac_encode_decision_ptr x264_template(cabac_encode_decision_ptr)
-extern void (*x264_cabac_encode_decision_ptr)( x264_cabac_t *cb, int i_ctx, int b );
+extern void (*x264_cabac_encode_decision_ptr)( x264_cabac_t *cb, intptr_t i_ctx, intptr_t b );
 #define x264_cabac_encode_decision x264_cabac_encode_decision_ptr
 #define x264_cabac_encode_bypass x264_cabac_encode_bypass_asm
 #define x264_cabac_encode_terminal x264_cabac_encode_terminal_asm
