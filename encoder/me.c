@@ -321,6 +321,31 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         COST_MV_HPEL( bpred_mx, bpred_my, bpred_cost );
         int pmv_cost = bpred_cost;
 
+        /* pred == fenc at the unclipped mvp: every other mv costs more, so with
+         * strict < neither the search nor refine_subpel moves off it */
+        if( bpred_cost == 2*m->p_cost_mv[0] )
+        {
+            if( !h->mb.b_chroma_me || (i_pixel > PIXEL_8x8 && !CHROMA444) )
+            {
+                /* refine_subpel's result: satd 0 at the mvp */
+                M32( m->mv ) = pmv;
+                m->cost = bpred_cost;
+                if( p_halfpel_thresh )
+                {
+                    if( (bpred_cost*7)>>3 > *p_halfpel_thresh )
+                        return;
+                    if( bpred_cost < *p_halfpel_thresh )
+                        *p_halfpel_thresh = bpred_cost;
+                }
+                m->cost_mv = bpred_cost;
+                return;
+            }
+            bpred_mv = pmv;
+            bmx = pmx;
+            bmy = pmy;
+            goto fpel_done;
+        }
+
         if( i_mvc > 0 )
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
@@ -385,6 +410,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
          *
          * Disclaimer: this is a post-hoc rationalization for why this hack works. */
         bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride );
+
+        /* pred == fenc at the mvp, which has no mv cost here: every other mv costs more */
+        if( !bcost )
+            goto fpel_done;
 
         if( i_mvc > 0 )
         {
@@ -926,6 +955,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         break;
     }
 
+fpel_done:;
     /* -> qpel mv */
     uint32_t bmv = pack16to32_mask(bmx,bmy);
     uint32_t bmv_spel = SPELx2(bmv);
