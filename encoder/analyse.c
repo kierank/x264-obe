@@ -34,6 +34,24 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* sub16 counters: P mbs, forced intra P mbs, masked, sub-16x16 intra skipped (all / forced) */
+static uint64_t s16_cnt[5];
+#define S16_CNT(i) __atomic_fetch_add( &s16_cnt[i], 1, __ATOMIC_RELAXED )
+
+void x264_s16_print( void )
+{
+    static const char *name[5] = { "p_mbs", "forced", "masked", "sub16_skip", "sub16_skip_forced" };
+    uint64_t c[5];
+    for( int i = 0; i < 5; i++ )
+        c[i] = __atomic_load_n( &s16_cnt[i], __ATOMIC_RELAXED );
+    if( !c[0] )
+        return;
+    fprintf( stderr, "sub16_%d:", BIT_DEPTH );
+    for( int i = 0; i < 5; i++ )
+        fprintf( stderr, " %s %"PRIu64, name[i], c[i] );
+    fprintf( stderr, "\n" );
+}
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -3371,6 +3389,9 @@ intra_analysis:
     else if( h->sh.i_type == SLICE_TYPE_P )
     {
         int b_skip = 0;
+        S16_CNT(0);
+        if( analysis.b_force_intra )
+            S16_CNT(1);
 
         h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 0 );
 
@@ -3669,6 +3690,9 @@ skip_analysis:
                      !h->mb.b_noise_reduction )
             {
                 /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
+                S16_CNT(3);
+                if( analysis.b_force_intra )
+                    S16_CNT(4);
                 x264_mb_analyse_intra16x16( h, &analysis, i_cost );
             }
             else
@@ -3704,6 +3728,7 @@ skip_analysis:
 
             if( analysis.b_force_intra && !IS_INTRA(i_type) )
             {
+                S16_CNT(2);
                 /* Intra masking: copy fdec to fenc and re-encode the block as intra in order to make it appear as if
                  * it was an inter block. */
                 x264_analyse_update_cache( h, &analysis );
