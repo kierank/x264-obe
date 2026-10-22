@@ -642,8 +642,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* decimate_score15/16/64 1.5-3.5x, quant_4x4 2.21x, quant_4x4_dc 1.13x, quant_4x4x4 1.056x;
          * trellis_cabac 4x4 1.48-1.52x, 4x4_psy 1.16-1.20x, dc 1.26-1.52x, chroma_422_dc 1.31-1.34x */
-        pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_avx512icl;
-        pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_avx512icl;
+        /* test: trellis_cabac_8x8(_psy) icl 1.21-1.27x avx2 on the fixed-input bench; avx2 stays */
         pf->quant_8x8 = x264_quant_8x8_avx512icl;
         pf->coeff_level_run4 = x264_coeff_level_run4_avx512icl;
         pf->coeff_level_run8 = x264_coeff_level_run8_avx512icl;
@@ -843,8 +842,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* decimate_score15/16/64 1.5-4.1x, quant_8x8 1.08x, quant_4x4x4 1.25x;
          * trellis_cabac 4x4 1.48-1.52x, 4x4_psy 1.16-1.20x, dc 1.26-1.52x, chroma_422_dc 1.31-1.34x */
-        pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_avx512icl;
-        pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_avx512icl;
+        /* test: trellis_cabac_8x8(_psy) icl 1.21-1.27x avx2 on the fixed-input bench; avx2 stays */
         if( h->param.i_cqm_preset != X264_CQM_FLAT )
         {
             pf->dequant_8x8 = x264_dequant_8x8_avx512icl;
