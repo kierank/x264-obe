@@ -29,6 +29,8 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+uint64_t x264_cf_cnt[4];
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -283,8 +285,10 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
         a.b_decimate = b_decimate;
         h->mb.i_cbp_chroma = h->zigzagf.chroma_encode[chroma422]( &h->dct.luma4x4[16], h->mb.pic.p_fenc[1], h->mb.pic.p_fdec[1],
                                                                    h->mb.cache.non_zero_count, h->dct.chroma_dc, &a );
+        __atomic_fetch_add( &x264_cf_cnt[h->mb.i_cbp_chroma], 1, __ATOMIC_RELAXED );
         return;
     }
+    __atomic_fetch_add( &x264_cf_cnt[3], 1, __ATOMIC_RELAXED );
     h->mb.i_cbp_chroma = 0;
     h->nr_count[2] += h->mb.b_noise_reduction * 4;
 

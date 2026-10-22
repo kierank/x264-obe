@@ -4614,6 +4614,8 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+    fprintf( stderr, "chroma_encode cnt: cbp0 %"PRIu64" cbp1 %"PRIu64" cbp2 %"PRIu64" separate %"PRIu64"\n",
+             x264_cf_cnt[0], x264_cf_cnt[1], x264_cf_cnt[2], x264_cf_cnt[3] );
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );
