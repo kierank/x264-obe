@@ -290,6 +290,7 @@ struct x264_t
     x264_threadpool_t *threadpool;
     x264_threadpool_t *lookaheadpool;
     struct x264_slicepool_t *slicepool; /* sliced threads: one worker per thread slice */
+    struct x264_crew_t *crew; /* sliced threads: per-frame input work on every idle thread */
     x264_pthread_mutex_t mutex;
     x264_pthread_cond_t cv;
 

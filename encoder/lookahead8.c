@@ -497,4 +497,30 @@ void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
                              do_search, w, output_inter, output_intra );
 }
 
+void x264_lowres8_row_cost( void *ctx, void **frames, int p0, int p1, int b,
+                            int dist_scale_factor, int do_search[2], const void *weights,
+                            int *output_inter, int *output_intra, int slice_end, int mb_y,
+                            int start_x, int end_x, void (*sync)( void *arg, int i ), void *sync_arg )
+{
+    lowres8_t *c = ctx;
+    x264_t *h = &c->h;
+    x264_weight_t w[3];
+    memcpy( w, weights, sizeof(w) );
+    w[1].weightfn = w[2].weightfn = NULL;
+    if( w[0].weightfn )
+        h->mc.weight_cache( h, &w[0] );
+    h->i_threadslice_start = mb_y;
+    h->i_threadslice_end = slice_end;
+
+    h->mb.i_mb_y = mb_y;
+    int i = 0;
+    for( h->mb.i_mb_x = start_x; h->mb.i_mb_x >= end_x; h->mb.i_mb_x--, i++ )
+    {
+        sync( sync_arg, i );
+        lowres8_mb_cost( c, (x264_frame_t**)frames, p0, p1, b, dist_scale_factor,
+                         do_search, w, output_inter, output_intra );
+    }
+    sync( sync_arg, i );
+}
+
 #endif

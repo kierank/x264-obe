@@ -46,6 +46,14 @@ void  x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
                                int *output_inter, int *output_intra,
                                int slice_start, int slice_end );
 
+/* One MB row of that loop, MBs start_x down to end_x of row mb_y in the slice
+ * ending at slice_end, with output_inter/intra's row satd at NUM_INTS. sync is
+ * called before each MB with the count done, and after the last. */
+void  x264_lowres8_row_cost( void *ctx, void **frames, int p0, int p1, int b,
+                             int dist_scale_factor, int do_search[2], const void *weights,
+                             int *output_inter, int *output_intra, int slice_end, int mb_y,
+                             int start_x, int end_x, void (*sync)( void *arg, int i ), void *sync_arg );
+
 /* Weight ref's 8-bit lowres plane (padding included) into the context's buffer
  * and point fenc->weighted8 at it, like the high bit depth weighted[0]. */
 void  x264_lowres8_weight_plane( void *ctx, void *fenc, void *ref, const void *weight );

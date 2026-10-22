@@ -29,6 +29,7 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#include "crew.h"
 #include "weightp.h"
 
 // Indexed by pic_struct values
@@ -1548,6 +1549,198 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
                                     s->do_search, s->w, s->output_inter, s->output_intra );
 }
 
+/* The cost bands on a crew (encoder/crew.h), one MB row per chunk. The band
+ * partition is kept, as band tops have no MV candidates from below. A row takes
+ * its MV candidates from the row below in its band, claimed before it, so it
+ * follows that row at 2 MBs or more: rows of one band run as a wavefront on any
+ * number of threads. Each row sums into a line of its own, reduced in row order
+ * afterwards, so every row and sum is the same as with one thread per band. */
+#define WAVE_LAG 8 /* MBs a row waits for beyond its need, to sleep less often */
+
+typedef struct
+{
+    x264_t *h;
+    x264_slicetype_slice_t *s;
+    int bands;
+    int band_start[X264_LOOKAHEAD_THREAD_MAX];
+    int band_end[X264_LOOKAHEAD_THREAD_MAX];
+    int row_top[X264_LOOKAHEAD_THREAD_MAX];
+    int row_count[X264_LOOKAHEAD_THREAD_MAX];
+    int next[X264_LOOKAHEAD_THREAD_MAX]; /* rows claimed */
+    int start_x;
+    int end_x;
+    int b_dep;
+    int i_me_method;
+    int i_subpel_refine;
+    int b_chroma_me;
+    int *rows;
+} x264_slicetype_wave_t;
+
+typedef struct
+{
+    x264_t *h;
+    int *progress;      /* this row's, NULL if no row follows it */
+    int *dep_progress;  /* the row it follows, NULL if none */
+    int len;
+    int known;
+} x264_slicetype_wave_row_t;
+
+/* Before MB i of the row (i MBs done), and after the last with i = len */
+static void x264_slicetype_wave_sync( void *arg, int i )
+{
+    x264_slicetype_wave_row_t *row = arg;
+    if( row->progress && i && (!(i&3) || i == row->len) )
+        x264_crew_publish( row->h, row->progress, row->progress+1, i );
+    if( row->dep_progress && i < row->len )
+    {
+        /* MBs x+1, x and x-1 of the row below */
+        int need = X264_MIN( i + 2, row->len );
+        /* a row starts half a row behind the one below, so that at equal
+         * speed it does not catch up and sleep again */
+        if( !i )
+            need = X264_MAX( need, row->len / 2 );
+        if( row->known < need )
+        {
+            row->known = __atomic_load_n( row->dep_progress, __ATOMIC_ACQUIRE );
+            if( row->known < need )
+                row->known = x264_crew_wait( row->h, row->dep_progress, row->dep_progress+1,
+                                             i ? X264_MIN( need + WAVE_LAG, row->len ) : need );
+        }
+    }
+}
+
+/* The next row of the band whose last claimed row is furthest along, so that
+ * rows queue less behind a slow or preempted thread. A row only ever waits for
+ * one claimed before it. */
+static int x264_slicetype_wave_claim( x264_slicetype_wave_t *wv, int *p_band )
+{
+    int len = wv->start_x - wv->end_x + 1;
+    for( ;; )
+    {
+        int best = -1, best_r = 0, best_score = -1;
+        for( int i = 0; i < wv->bands; i++ )
+        {
+            int r = __atomic_load_n( &wv->next[i], __ATOMIC_ACQUIRE );
+            if( r >= wv->row_count[i] )
+                continue;
+            int score = len + 1;
+            if( wv->b_dep && r )
+                score = __atomic_load_n( wv->rows + (wv->row_top[i] - r + 1) * X264_CREW_ROW, __ATOMIC_RELAXED );
+            if( score > best_score )
+            {
+                best = i;
+                best_r = r;
+                best_score = score;
+            }
+        }
+        if( best < 0 )
+            return -1;
+        if( __atomic_compare_exchange_n( &wv->next[best], &best_r, best_r + 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ) )
+        {
+            *p_band = best;
+            return best_r;
+        }
+    }
+}
+
+/* One chunk per row; the chunk takes the row x264_slicetype_wave_claim gives */
+static void x264_slicetype_wave_row( x264_t *t, void *arg, int c )
+{
+    x264_slicetype_wave_t *wv = arg;
+    int band;
+    int r = x264_slicetype_wave_claim( wv, &band );
+    if( r < 0 )
+        return;
+    int y = wv->row_top[band] - r;
+    int *line = wv->rows + y * X264_CREW_ROW;
+    int *output_inter = line + 16;
+    int *output_intra = line + 24;
+    x264_slicetype_wave_row_t row = { wv->h, NULL, NULL, wv->start_x - wv->end_x + 1, 0 };
+    if( wv->b_dep && r + 1 < wv->row_count[band] )
+        row.progress = line;
+    if( wv->b_dep && r )
+        row.dep_progress = line + X264_CREW_ROW;
+    x264_slicetype_slice_t *s = &wv->s[band];
+
+    t->mb.i_me_method = wv->i_me_method;
+    t->mb.i_subpel_refine = wv->i_subpel_refine;
+    t->mb.b_chroma_me = wv->b_chroma_me;
+    /* ROW_SATD is the row's own line */
+    t->i_threadslice_start = y;
+    t->i_threadslice_end = wv->band_end[band];
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    if( t->lowres8 )
+    {
+        x264_lowres8_row_cost( t->lowres8, (void**)s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
+                               s->do_search, s->w, output_inter, output_intra, wv->band_end[band], y,
+                               wv->start_x, wv->end_x, x264_slicetype_wave_sync, &row );
+        return;
+    }
+#endif
+    int i = 0;
+    t->mb.i_mb_y = y;
+    for( t->mb.i_mb_x = wv->start_x; t->mb.i_mb_x >= wv->end_x; t->mb.i_mb_x--, i++ )
+    {
+        x264_slicetype_wave_sync( &row, i );
+        x264_slicetype_mb_cost( t, s->a, s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
+                                s->do_search, s->w, output_inter, output_intra );
+    }
+    x264_slicetype_wave_sync( &row, i );
+}
+
+/* s[i] as set up for the lookahead pool, with lookahead_thread[i]'s band */
+static void x264_slicetype_wave( x264_t *h, x264_slicetype_slice_t *s, int bands )
+{
+    x264_slicetype_wave_t wv;
+    /* as x264_slicetype_slice_cost on band 0's context */
+    x264_t *t0 = s[0].h;
+    int do_edges = t0->param.rc.b_mb_tree || t0->param.rc.i_vbv_buffer_size || t0->mb.i_mb_width <= 2 || t0->mb.i_mb_height <= 2;
+    int rows = 0;
+    wv.h = h;
+    wv.s = s;
+    wv.bands = bands;
+    for( int i = 0; i < bands; i++ )
+    {
+        x264_t *t = s[i].h;
+        int start_y = X264_MIN( t->i_threadslice_end - 1, h->mb.i_mb_height - 2 + do_edges );
+        int end_y = X264_MAX( t->i_threadslice_start, 1 - do_edges );
+        wv.band_start[i] = t->i_threadslice_start;
+        wv.band_end[i] = t->i_threadslice_end;
+        wv.row_top[i] = start_y;
+        wv.row_count[i] = X264_MAX( start_y - end_y + 1, 0 );
+        wv.next[i] = 0;
+        rows += wv.row_count[i];
+    }
+    wv.start_x = h->mb.i_mb_width - 2 + do_edges;
+    wv.end_x = 1 - do_edges;
+    /* MV candidates are read only with a search */
+    wv.b_dep = s[0].do_search[0] || s[0].do_search[1];
+    wv.i_me_method = h->mb.i_me_method;
+    wv.i_subpel_refine = h->mb.i_subpel_refine;
+    wv.b_chroma_me = h->mb.b_chroma_me;
+    wv.rows = x264_crew_rows( h );
+    memset( wv.rows, 0, h->mb.i_mb_height * X264_CREW_ROW * sizeof(int) );
+
+    x264_crew_run( h, x264_slicetype_wave_row, &wv, rows );
+
+    /* integer sums, in row order */
+    for( int i = 0; i < bands; i++ )
+        for( int r = 0; r < wv.row_count[i]; r++ )
+        {
+            int y = wv.row_top[i] - r;
+            int *line = wv.rows + y * X264_CREW_ROW;
+            for( int k = 0; k < 2; k++ )
+            {
+                int *src = line + 16 + 8*k;
+                int *dst = k ? s[i].output_intra : s[i].output_inter;
+                dst[COST_EST] += src[COST_EST];
+                dst[COST_EST_AQ] += src[COST_EST_AQ];
+                dst[INTRA_MBS] += src[INTRA_MBS];
+                dst[NUM_INTS + y - wv.band_start[i]] += src[NUM_INTS];
+            }
+        }
+}
+
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                                       x264_frame_t **frames, int p0, int p1, int b,
                                       int b_intra_penalty )
@@ -1642,10 +1835,14 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                     output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
                     output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
 
-                    x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
+                    if( !h->crew )
+                        x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
                 }
-                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-                    x264_threadpool_wait( h->lookaheadpool, &s[i] );
+                if( h->crew )
+                    x264_slicetype_wave( h, s, h->param.i_lookahead_threads );
+                else
+                    for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+                        x264_threadpool_wait( h->lookaheadpool, &s[i] );
             }
             else
             {

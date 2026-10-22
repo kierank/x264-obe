@@ -33,6 +33,7 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#include "crew.h"
 
 //#define DEBUG_MB_TYPE
 
@@ -79,6 +80,7 @@ static void x264_threadslice_filter( x264_t *h );
 
 #if HAVE_THREAD
 static void x264_encoder_thread_init( x264_t *h );
+static void *x264_crew_helper( void *arg );
 
 #define SLICE_LOAD(p)    __atomic_load_n( (p), __ATOMIC_ACQUIRE )
 #define SLICE_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
@@ -99,6 +101,7 @@ typedef struct
     intptr_t ret;
     x264_t *snap;               /* frame state to copy before encoding */
     struct x264_slicepool_t *pool;
+    void *crew;                 /* job is a crew stage (x264_crew_slot_t), not the slice */
 } x264_slice_worker_t;
 
 /* Each worker's flags on their own cache lines. */
@@ -204,6 +207,7 @@ static void *x264_slice_worker_thread( void *arg )
             w->b_sleeping = 0;
         }
         int go = SLICE_LOAD( &w->i_go );
+        void *crew = w->crew;
         x264_pthread_mutex_unlock( &w->mutex );
         /* exit only with nothing pending */
         if( go == gen )
@@ -211,6 +215,17 @@ static void *x264_slice_worker_thread( void *arg )
         gen = go;
 
         intptr_t ret = 0;
+        if( crew )
+        {
+            /* the slice's ret stays for x264_slicepool_wait */
+            x264_crew_helper( crew );
+            x264_pthread_mutex_lock( &w->mutex );
+            w->i_done = gen;
+            if( w->b_waiting )
+                x264_pthread_cond_broadcast( &w->cv_done );
+            x264_pthread_mutex_unlock( &w->mutex );
+            continue;
+        }
         if( w->i_idx )
         {
             x264_threadslice_sync( w->h, w->snap );
@@ -234,10 +249,31 @@ static void x264_slicepool_run( x264_slicepool_t *pool, int i )
 {
     x264_slice_worker_t *w = &pool->workers[i].w;
     x264_pthread_mutex_lock( &w->mutex );
+    w->crew = NULL;
     SLICE_STORE( &w->i_go, w->i_go + 1 );
     int b_wake = w->b_sleeping;
     x264_pthread_mutex_unlock( &w->mutex );
     /* a spinning worker needs no wakeup */
+    if( b_wake )
+        x264_pthread_cond_broadcast( &w->cv_go );
+}
+
+/* A crew stage on worker i, only if it has no job pending or running: a later
+ * x264_slicepool_run replaces a crew job not yet started. *slot_gen is the
+ * slot's stage, read by the worker. */
+static void x264_slicepool_run_crew( x264_slicepool_t *pool, int i, void *slot, int *slot_gen, int gen )
+{
+    x264_slice_worker_t *w = &pool->workers[i].w;
+    x264_pthread_mutex_lock( &w->mutex );
+    int b_idle = w->i_done == w->i_go;
+    if( b_idle )
+    {
+        *slot_gen = gen;
+        w->crew = slot;
+        SLICE_STORE( &w->i_go, w->i_go + 1 );
+    }
+    int b_wake = b_idle && w->b_sleeping;
+    x264_pthread_mutex_unlock( &w->mutex );
     if( b_wake )
         x264_pthread_cond_broadcast( &w->cv_go );
 }
@@ -323,6 +359,234 @@ fail:
         x264_free( pool );
     return -1;
 }
+
+/****************************************************************************
+ * Crew: a stage of chunks on the calling thread, the lookahead pool and the
+ * idle slice workers (encoder/crew.h).
+ ****************************************************************************/
+#define CREW_LOAD(p)      __atomic_load_n( (p), __ATOMIC_ACQUIRE )
+#define CREW_STORE(p,v)   __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
+#define CREW_LOAD_X(p)    __atomic_load_n( (p), __ATOMIC_RELAXED )
+#define CREW_STORE_X(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELAXED )
+
+typedef struct
+{
+    struct x264_crew_t *crew;
+    x264_t *ctx;
+    int i_gen;                  /* stage it was dispatched for */
+} x264_crew_slot_t;
+
+typedef struct x264_crew_t
+{
+    x264_pthread_mutex_t mutex;
+    x264_pthread_cond_t cv_done;
+    x264_pthread_cond_t cv_wait;
+    int i_slots;                /* slot 0 is the caller */
+    int i_pool;                 /* slots 1..i_pool on the lookahead pool */
+    int i_extra;                /* contexts allocated for slots i_extra_base.. */
+    int i_extra_base;
+    int i_gen;                  /* caller only */
+    /* (gen << 32) + next chunk: a chunk is claimed only while its stage is current */
+    uint64_t ticket;
+    int i_done;                 /* chunks of the current stage finished */
+    /* stage gen in stage[gen&1]: rewritten for gen+2, after gen+1 is current */
+    struct
+    {
+        x264_crew_func_t func;
+        void *arg;
+        int i_chunks;
+    } stage[2];
+    x264_crew_slot_t slot[X264_CREW_MAX];
+    /* prologue sums, per chunk */
+    uint32_t (*pixel_sum)[3];
+    uint64_t (*pixel_ssd)[3];
+    int *rows;                  /* x264_crew_rows */
+} x264_crew_t;
+
+/* Claim the next chunk of stage gen, -1 if there is none */
+static int x264_crew_claim( x264_crew_t *crew, int gen, int chunks )
+{
+    uint64_t t = CREW_LOAD( &crew->ticket );
+    for( ;; )
+    {
+        if( (int)(t >> 32) != gen || (int)(uint32_t)t >= chunks )
+            return -1;
+        if( __atomic_compare_exchange_n( &crew->ticket, &t, t + 1, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ) )
+            return (uint32_t)t;
+    }
+}
+
+/* A slot may run after its stage ended. The stage's parameters are then those
+ * of gen+2 at the earliest, written after gen+1 became current, so the claim
+ * fails; and every claim of gen succeeds before gen+1 is made current. */
+static void x264_crew_work( x264_crew_slot_t *slot, int gen )
+{
+    x264_crew_t *crew = slot->crew;
+    for( ;; )
+    {
+        x264_crew_func_t func = CREW_LOAD( &crew->stage[gen&1].func );
+        void *arg = CREW_LOAD( &crew->stage[gen&1].arg );
+        int chunks = CREW_LOAD( &crew->stage[gen&1].i_chunks );
+        int c = x264_crew_claim( crew, gen, chunks );
+        if( c < 0 )
+            return;
+        x264_stack_align( func, slot->ctx, arg, c );
+        if( __atomic_add_fetch( &crew->i_done, 1, __ATOMIC_ACQ_REL ) == chunks )
+        {
+            x264_pthread_mutex_lock( &crew->mutex );
+            x264_pthread_cond_broadcast( &crew->cv_done );
+            x264_pthread_mutex_unlock( &crew->mutex );
+        }
+    }
+}
+
+static void *x264_crew_helper( void *arg )
+{
+    x264_crew_slot_t *slot = arg;
+    x264_crew_work( slot, slot->i_gen );
+    return NULL;
+}
+
+int x264_crew_run( x264_t *h, x264_crew_func_t func, void *arg, int chunks )
+{
+    x264_crew_t *crew = h->crew;
+    if( !crew )
+        return 0;
+    int gen = ++crew->i_gen;
+    CREW_STORE( &crew->stage[gen&1].func, func );
+    CREW_STORE( &crew->stage[gen&1].arg, arg );
+    CREW_STORE( &crew->stage[gen&1].i_chunks, chunks );
+    CREW_STORE_X( &crew->i_done, 0 );
+    CREW_STORE( &crew->ticket, (uint64_t)gen << 32 );
+
+    int helpers = X264_MIN( crew->i_slots, chunks ) - 1;
+    int pool = X264_MIN( crew->i_pool, helpers );
+    for( int i = 1; i <= helpers; i++ )
+    {
+        if( i <= pool )
+        {
+            crew->slot[i].i_gen = gen;
+            x264_threadpool_run( h->lookaheadpool, x264_crew_helper, &crew->slot[i] );
+        }
+        else
+            /* the last workers first: worker 0 filters slice 0 last */
+            x264_slicepool_run_crew( h->slicepool, h->param.i_threads - 1 - (i - pool - 1),
+                                     &crew->slot[i], &crew->slot[i].i_gen, gen );
+    }
+    crew->slot[0].i_gen = gen;
+    x264_crew_work( &crew->slot[0], gen );
+
+    if( CREW_LOAD( &crew->i_done ) < chunks )
+    {
+        x264_pthread_mutex_lock( &crew->mutex );
+        while( CREW_LOAD( &crew->i_done ) < chunks )
+            x264_pthread_cond_wait( &crew->cv_done, &crew->mutex );
+        x264_pthread_mutex_unlock( &crew->mutex );
+    }
+    /* pool jobs are reclaimed here; a worker that starts late finds no chunk */
+    for( int i = 1; i <= pool; i++ )
+        x264_threadpool_wait( h->lookaheadpool, &crew->slot[i] );
+    return 1;
+}
+
+int *x264_crew_rows( x264_t *h )
+{
+    return h->crew->rows;
+}
+
+int x264_crew_wait( x264_t *h, int *progress, int *target, int need )
+{
+    x264_crew_t *crew = h->crew;
+    x264_pthread_mutex_lock( &crew->mutex );
+    __atomic_store_n( target, need, __ATOMIC_SEQ_CST );
+    int v;
+    while( (v = __atomic_load_n( progress, __ATOMIC_SEQ_CST )) < need )
+        x264_pthread_cond_wait( &crew->cv_wait, &crew->mutex );
+    CREW_STORE_X( target, 0 );
+    x264_pthread_mutex_unlock( &crew->mutex );
+    return v;
+}
+
+void x264_crew_publish( x264_t *h, int *progress, int *target, int value )
+{
+    __atomic_store_n( progress, value, __ATOMIC_SEQ_CST );
+    int t = __atomic_load_n( target, __ATOMIC_SEQ_CST );
+    if( t && value >= t )
+    {
+        x264_crew_t *crew = h->crew;
+        x264_pthread_mutex_lock( &crew->mutex );
+        x264_pthread_cond_broadcast( &crew->cv_wait );
+        x264_pthread_mutex_unlock( &crew->mutex );
+    }
+}
+
+/* Slots: the caller, the lookahead pool, then slice workers, up to the CPUs we
+ * may run on. Slot i < i_lookahead_threads runs on lookahead_thread[i]; the
+ * others get copies made here, at the same point. */
+static int x264_crew_init( x264_t *h )
+{
+    if( !h->param.b_sliced_threads || h->param.i_threads < 2 || h->param.i_lookahead_threads < 2 ||
+        h->param.i_sync_lookahead || h->mb.i_mb_height < 4 )
+        return 0;
+    int lookahead = h->param.i_lookahead_threads;
+    int slots = X264_MIN3( 1 + lookahead + h->param.i_threads, x264_cpu_num_processors(), X264_CREW_MAX );
+    if( slots < 2 )
+        return 0;
+
+    x264_crew_t *crew;
+    CHECKED_MALLOCZERO( crew, sizeof(x264_crew_t) );
+    h->crew = crew;
+    if( x264_pthread_mutex_init( &crew->mutex, NULL ) ||
+        x264_pthread_cond_init( &crew->cv_done, NULL ) ||
+        x264_pthread_cond_init( &crew->cv_wait, NULL ) )
+        goto fail;
+    crew->i_slots = slots;
+    crew->i_pool = X264_MIN( lookahead, slots - 1 );
+    crew->i_extra_base = lookahead;
+    for( int i = 0; i < slots; i++ )
+    {
+        crew->slot[i].crew = crew;
+        if( i < lookahead )
+            crew->slot[i].ctx = h->lookahead_thread[i];
+        else
+        {
+            CHECKED_MALLOC( crew->slot[i].ctx, sizeof(x264_t) );
+            *crew->slot[i].ctx = *h;
+            crew->slot[i].ctx->crew = NULL;
+            crew->i_extra++;
+        }
+    }
+    int chunks = (h->mb.i_mb_height + 1) / 2;
+    CHECKED_MALLOC( crew->pixel_sum, chunks * sizeof(*crew->pixel_sum) );
+    CHECKED_MALLOC( crew->pixel_ssd, chunks * sizeof(*crew->pixel_ssd) );
+    CHECKED_MALLOC( crew->rows, h->mb.i_mb_height * X264_CREW_ROW * sizeof(int) );
+    return 0;
+fail:
+    return -1;
+}
+
+static void x264_crew_delete( x264_t *h )
+{
+    x264_crew_t *crew = h->crew;
+    if( !crew )
+        return;
+    for( int i = 0; i < crew->i_extra; i++ )
+    {
+        x264_t *t = crew->slot[crew->i_extra_base + i].ctx;
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+        x264_lowres8_free( t->lowres8 );
+#endif
+        x264_free( t );
+    }
+    x264_free( crew->pixel_sum );
+    x264_free( crew->pixel_ssd );
+    x264_free( crew->rows );
+    x264_pthread_mutex_destroy( &crew->mutex );
+    x264_pthread_cond_destroy( &crew->cv_done );
+    x264_pthread_cond_destroy( &crew->cv_wait );
+    x264_free( crew );
+    h->crew = NULL;
+}
 #else
 static inline int x264_slicepool_init( x264_t *h ) { return -1; }
 static inline void x264_slicepool_run( struct x264_slicepool_t *pool, int i ) {}
@@ -332,6 +596,12 @@ static inline void x264_slicepool_delete( struct x264_slicepool_t *pool ) {}
 static inline void x264_slicepool_snapshot( x264_t *h ) {}
 static inline void x264_slicepool_weight_init( x264_t *h ) { x264_analyse_weight_frame( h, h->mb.i_mb_height*16 + 16 ); }
 static inline void x264_slicepool_weight( x264_t *h, struct x264_slicepool_t *pool ) {}
+int x264_crew_run( x264_t *h, x264_crew_func_t func, void *arg, int chunks ) { return 0; }
+int x264_crew_wait( x264_t *h, int *progress, int *target, int need ) { return need; }
+int *x264_crew_rows( x264_t *h ) { return NULL; }
+void x264_crew_publish( x264_t *h, int *progress, int *target, int value ) {}
+static inline int x264_crew_init( x264_t *h ) { return 0; }
+static inline void x264_crew_delete( x264_t *h ) {}
 #endif
 
 static int x264_slicepool_wait_all( x264_t *h )
@@ -1928,13 +2198,19 @@ x264_t *x264_encoder_open( x264_param_t *param )
             *h->lookahead_thread[i] = *h;
         }
     *h->reconfig_h = *h;
+    /* the crew's contexts are copies made with the lookahead ones */
+    if( x264_crew_init( h ) < 0 )
+        goto fail;
 
     for( int i = 0; i < h->param.i_threads; i++ )
     {
         int init_nal_count = h->param.i_slice_count + 3;
         int allocate_threadlocal_data = !h->param.b_sliced_threads || !i;
         if( i > 0 )
+        {
             *h->thread[i] = *h;
+            h->thread[i]->crew = NULL;
+        }
 
         if( x264_pthread_mutex_init( &h->thread[i]->mutex, NULL ) )
             goto fail;
@@ -2020,6 +2296,15 @@ x264_t *x264_encoder_open( x264_param_t *param )
             for( int i = 0; i < h->param.i_lookahead_threads; i++ )
                 if( !(h->lookahead_thread[i]->lowres8 = x264_lowres8_init( &h->param, h->mb.i_mb_width, h->mb.i_mb_height, stride, lines )) )
                     goto fail;
+#if HAVE_THREAD
+        if( h->crew )
+            for( int i = 0; i < h->crew->i_extra; i++ )
+            {
+                x264_t *t = h->crew->slot[h->crew->i_extra_base + i].ctx;
+                if( !(t->lowres8 = x264_lowres8_init( &h->param, h->mb.i_mb_width, h->mb.i_mb_height, stride, lines )) )
+                    goto fail;
+            }
+#endif
     }
 #endif
 
@@ -3602,7 +3887,12 @@ static int x264_threaded_slices_write( x264_t *h )
  * point; the main thread takes band 0 and keeps every decision. The slice pool
  * is not used: its job slots stay taken by the previous frame's slices until
  * x264_threadpool_wait_all. Two passes with a join between them: the copy, then
- * AQ and lowres, which read source rows of the neighbouring band. */
+ * AQ and lowres, which read source rows of the neighbouring band.
+ * With a crew (encoder/crew.h) the bands are chunks of PROLOGUE_CHUNK MB rows,
+ * claimed by the main thread, the lookahead pool and the idle slice workers.
+ * Every row's work is the same whichever thread does it; the sums are integer. */
+#define PROLOGUE_CHUNK 2
+
 typedef struct
 {
     x264_t *h;
@@ -3619,6 +3909,8 @@ typedef struct
 
 static int x264_prologue_band_count( x264_t *h )
 {
+    if( h->crew )
+        return (h->mb.i_mb_height + PROLOGUE_CHUNK - 1) / PROLOGUE_CHUNK;
     /* At least 4 MB rows per band, so the last band holds every row that the
      * padding below the picture copies from. */
     int bands = X264_MIN( h->param.i_lookahead_threads, h->mb.i_mb_height / 4 );
@@ -3627,9 +3919,12 @@ static int x264_prologue_band_count( x264_t *h )
     return bands;
 }
 
+/* With a crew only band[0] is used, as the chunks' parameters. */
 static void x264_prologue_bands_init( x264_t *h, x264_prologue_band_t *band, int bands,
                                       x264_frame_t *fenc, x264_picture_t *pic )
 {
+    if( h->crew )
+        bands = 1;
     for( int i = 0; i < bands; i++ )
     {
         band[i].h = h;
@@ -3640,8 +3935,11 @@ static void x264_prologue_bands_init( x264_t *h, x264_prologue_band_t *band, int
     }
 }
 
-static void x264_prologue_run( x264_t *h, x264_prologue_band_t *band, int bands, void *(*func)( x264_prologue_band_t * ) )
+static void x264_prologue_run( x264_t *h, x264_prologue_band_t *band, int bands, void *(*func)( x264_prologue_band_t * ),
+                               x264_crew_func_t chunk_func )
 {
+    if( x264_crew_run( h, chunk_func, band, bands ) )
+        return;
     for( int i = 1; i < bands; i++ )
         x264_threadpool_run( h->lookaheadpool, (void*)func, &band[i] );
     x264_stack_align( func, &band[0] );
@@ -3649,36 +3947,68 @@ static void x264_prologue_run( x264_t *h, x264_prologue_band_t *band, int bands,
         x264_threadpool_wait( h->lookaheadpool, &band[i] );
 }
 
-static void *x264_prologue_copy_band( x264_prologue_band_t *band )
+/* Luma rows [16*mb_y0,16*mb_y1). The last band pads below the picture from its
+ * own rows: a chunk of PROLOGUE_CHUNK MB rows holds them too. */
+static void x264_prologue_copy_rows( x264_t *h, x264_frame_t *fenc, x264_picture_t *pic, int mb_y0, int mb_y1 )
 {
-    x264_t *h = band->h;
-    int y0 = 16 * band->mb_y0;
-    int y1 = 16 * band->mb_y1;
-    x264_frame_copy_picture_rows( h, band->fenc, band->pic, y0, y1 );
+    int y0 = 16 * mb_y0;
+    int y1 = 16 * mb_y1;
+    x264_frame_copy_picture_rows( h, fenc, pic, y0, y1 );
     if( h->param.i_width != 16 * h->mb.i_mb_width ||
         h->param.i_height != 16 * h->mb.i_mb_height )
-        x264_frame_expand_border_mod16_rows( h, band->fenc, y0, y1 );
+        x264_frame_expand_border_mod16_rows( h, fenc, y0, y1 );
     /* the lowres source edge, here so the second pass only reads the source */
     if( h->frames.b_have_lowres )
-        x264_frame_init_lowres_edge( band->fenc, y0, y1 );
+        x264_frame_init_lowres_edge( fenc, y0, y1 );
+}
+
+static void x264_prologue_analyse_rows( x264_t *h, x264_prologue_band_t *band, int mb_y0, int mb_y1,
+                                        uint32_t pixel_sum[3], uint64_t pixel_ssd[3] )
+{
+    for( int i = 0; i < 3; i++ )
+    {
+        pixel_sum[i] = 0;
+        pixel_ssd[i] = 0;
+    }
+    if( band->b_aq )
+        x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, mb_y0, mb_y1,
+                                        pixel_sum, pixel_ssd );
+    if( h->frames.b_have_lowres )
+        x264_frame_init_lowres_rows( h, band->fenc, mb_y0, mb_y1 );
+}
+
+static void *x264_prologue_copy_band( x264_prologue_band_t *band )
+{
+    x264_prologue_copy_rows( band->h, band->fenc, band->pic, band->mb_y0, band->mb_y1 );
     return NULL;
 }
 
 static void *x264_prologue_analyse_band( x264_prologue_band_t *band )
 {
-    x264_t *h = band->h;
-    for( int i = 0; i < 3; i++ )
-    {
-        band->pixel_sum[i] = 0;
-        band->pixel_ssd[i] = 0;
-    }
-    if( band->b_aq )
-        x264_adaptive_quant_frame_rows( h, band->fenc, band->quant_offsets, band->mb_y0, band->mb_y1,
-                                        band->pixel_sum, band->pixel_ssd );
-    if( h->frames.b_have_lowres )
-        x264_frame_init_lowres_rows( h, band->fenc, band->mb_y0, band->mb_y1 );
+    x264_prologue_analyse_rows( band->h, band, band->mb_y0, band->mb_y1, band->pixel_sum, band->pixel_ssd );
     return NULL;
 }
+
+#if HAVE_THREAD
+static void x264_prologue_copy_chunk( x264_t *ctx, void *arg, int c )
+{
+    x264_prologue_band_t *band = arg;
+    x264_t *h = band->h;
+    x264_prologue_copy_rows( h, band->fenc, band->pic, PROLOGUE_CHUNK * c,
+                             X264_MIN( PROLOGUE_CHUNK * (c+1), h->mb.i_mb_height ) );
+}
+
+static void x264_prologue_analyse_chunk( x264_t *ctx, void *arg, int c )
+{
+    x264_prologue_band_t *band = arg;
+    x264_t *h = band->h;
+    x264_prologue_analyse_rows( h, band, PROLOGUE_CHUNK * c, X264_MIN( PROLOGUE_CHUNK * (c+1), h->mb.i_mb_height ),
+                                h->crew->pixel_sum[c], h->crew->pixel_ssd[c] );
+}
+#else
+#define x264_prologue_copy_chunk NULL
+#define x264_prologue_analyse_chunk NULL
+#endif
 
 /* x264_adaptive_quant_frame (or x264_macroblock_tree_read) and
  * x264_frame_init_lowres, after the bands were copied */
@@ -3689,12 +4019,12 @@ static int x264_prologue_analyse( x264_t *h, x264_prologue_band_t *band, int ban
     if( !b_aq && x264_macroblock_tree_read( h, fenc, quant_offsets ) )
         return -1;
 
-    for( int i = 0; i < bands; i++ )
+    for( int i = 0; i < (h->crew ? 1 : bands); i++ )
     {
         band[i].b_aq = b_aq;
         band[i].quant_offsets = quant_offsets;
     }
-    x264_prologue_run( h, band, bands, x264_prologue_analyse_band );
+    x264_prologue_run( h, band, bands, x264_prologue_analyse_band, x264_prologue_analyse_chunk );
 
     if( b_aq )
     {
@@ -3705,6 +4035,14 @@ static int x264_prologue_analyse( x264_t *h, x264_prologue_band_t *band, int ban
             fenc->i_pixel_ssd[p] = 0;
             for( int i = 0; i < bands; i++ )
             {
+#if HAVE_THREAD
+                if( h->crew )
+                {
+                    fenc->i_pixel_sum[p] += h->crew->pixel_sum[i][p];
+                    fenc->i_pixel_ssd[p] += h->crew->pixel_ssd[i][p];
+                    continue;
+                }
+#endif
                 fenc->i_pixel_sum[p] += band[i].pixel_sum[p];
                 fenc->i_pixel_ssd[p] += band[i].pixel_ssd[p];
             }
@@ -3809,7 +4147,7 @@ int     x264_encoder_encode( x264_t *h,
             if( x264_frame_copy_picture_init( h, fenc, pic_in ) < 0 )
                 return -1;
             x264_prologue_bands_init( h, prologue, prologue_bands, fenc, pic_in );
-            x264_prologue_run( h, prologue, prologue_bands, x264_prologue_copy_band );
+            x264_prologue_run( h, prologue, prologue_bands, x264_prologue_copy_band, x264_prologue_copy_chunk );
         }
         else
         {
@@ -4951,6 +5289,7 @@ void    x264_encoder_close  ( x264_t *h )
 #endif
             x264_free( h->lookahead_thread[i] );
         }
+    x264_crew_delete( h );
 
     for( int i = h->param.i_threads - 1; i >= 0; i-- )
     {
