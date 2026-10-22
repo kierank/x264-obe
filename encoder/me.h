@@ -67,6 +67,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
 
+/* zsad counters (test only), printed at x264_encoder_close */
+#define x264_zsad_lowres x264_template(zsad_lowres)
+extern __thread int x264_zsad_lowres;
+#define x264_zsad_a7 x264_template(zsad_a7)
+void x264_zsad_a7( x264_t *h, int b_skip );
+#define x264_me_zsad_print x264_template(me_zsad_print)
+void x264_me_zsad_print( void );
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)

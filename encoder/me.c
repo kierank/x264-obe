@@ -267,8 +267,49 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* zsad counters: [P, B, lowres][subme < 3, subme >= 3][calls, exits, exits past
+ * refine_subpel, loose]; loose: distortion 0 at the clipped mvp, an mvc or mv 0 */
+__thread int x264_zsad_lowres;
+static uint64_t zsad_cnt[3][2][4];
+static uint64_t zsad_a7_cnt[2];
+#define ZSAD_CNT( i ) __atomic_fetch_add( &zsad_cnt[zsad_cls][zsad_hi][i], 1, __ATOMIC_RELAXED )
+
+void x264_zsad_a7( x264_t *h, int b_skip )
+{
+    __atomic_fetch_add( &zsad_a7_cnt[0], 1, __ATOMIC_RELAXED );
+    if( b_skip == 2 )
+        __atomic_fetch_add( &zsad_a7_cnt[1], 1, __ATOMIC_RELAXED );
+}
+
+void x264_me_zsad_print( void )
+{
+    static const char *cls[3] = { "P", "B", "lowres" };
+    for( int c = 0; c < 3; c++ )
+        for( int s = 0; s < 2; s++ )
+        {
+            uint64_t *n = zsad_cnt[c][s];
+            uint64_t calls = __atomic_load_n( &n[0], __ATOMIC_RELAXED );
+            if( !calls )
+                continue;
+            uint64_t ex = __atomic_load_n( &n[1], __ATOMIC_RELAXED );
+            uint64_t full = __atomic_load_n( &n[2], __ATOMIC_RELAXED );
+            uint64_t loose = __atomic_load_n( &n[3], __ATOMIC_RELAXED );
+            fprintf( stderr, "zsad %d-bit %-6s %s: calls %"PRIu64" exits %"PRIu64" (%.2f%%) past-refine %"PRIu64" (%.2f%%) loose %"PRIu64" (%.2f%%)\n",
+                     BIT_DEPTH, cls[c], s ? "subme>=3" : "subme<3 ", calls, ex, 100.0*ex/calls,
+                     full, 100.0*full/calls, loose, 100.0*loose/calls );
+        }
+    uint64_t probes = __atomic_load_n( &zsad_a7_cnt[0], __ATOMIC_RELAXED );
+    if( probes )
+        fprintf( stderr, "zsad %d-bit a7: fast-skip skips %"PRIu64" mispredicted skipped %"PRIu64" (%.2f%%)\n",
+                 BIT_DEPTH, probes, zsad_a7_cnt[1], 100.0*zsad_a7_cnt[1]/probes );
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
+    int zsad_cls = x264_zsad_lowres ? 2 : h->sh.i_type == SLICE_TYPE_B;
+    int zsad_hi = h->mb.i_subpel_refine >= 3;
+    int zsad_loose = 0;
+    ZSAD_CNT( 0 );
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
     const int i_pixel = m->i_pixel;
@@ -320,13 +361,17 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         COST_MV_HPEL( bpred_mx, bpred_my, bpred_cost );
         int pmv_cost = bpred_cost;
+        zsad_loose = pmv_cost == p_cost_mvx[bpred_mx] + p_cost_mvy[bpred_my];
 
         /* pred == fenc at the unclipped mvp: every other mv costs more, so with
          * strict < neither the search nor refine_subpel moves off it */
         if( bpred_cost == 2*m->p_cost_mv[0] )
         {
+            ZSAD_CNT( 1 );
             if( !h->mb.b_chroma_me || (i_pixel > PIXEL_8x8 && !CHROMA444) )
             {
+                ZSAD_CNT( 2 );
+                ZSAD_CNT( 3 );
                 /* refine_subpel's result: satd 0 at the mvp */
                 M32( m->mv ) = pmv;
                 m->cost = bpred_cost;
@@ -363,6 +408,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     int mx = mvc_temp[i+1][0];
                     int my = mvc_temp[i+1][1];
                     COST_MV_HPEL( mx, my, cost );
+                    zsad_loose |= cost == p_cost_mvx[mx] + p_cost_mvy[my];
                     COPY1_IF_LT( bpred_cost, (cost << 4) + i );
                 } while( ++i <= valid_mvcs );
                 bpred_mx = mvc_temp[(bpred_cost&15)+1][0];
@@ -413,7 +459,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         /* pred == fenc at the mvp, which has no mv cost here: every other mv costs more */
         if( !bcost )
+        {
+            ZSAD_CNT( 1 );
+            zsad_loose = 1;
             goto fpel_done;
+        }
 
         if( i_mvc > 0 )
         {
@@ -429,6 +479,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     int mx = mvc_temp[i+1][0];
                     int my = mvc_temp[i+1][1];
                     cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my );
+                    zsad_loose |= cost == BITS_MVD( mx, my );
                     COPY1_IF_LT( bcost, (cost << 4) + i );
                 } while( ++i <= valid_mvcs );
                 bmx = mvc_temp[(bcost&15)+1][0];
@@ -441,6 +492,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( pmv )
             COST_MV( 0, 0 );
     }
+    if( CHECK_MVRANGE( 0, 0 ) )
+        zsad_loose |= !h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, p_fref_w, stride );
 
     switch( h->mb.i_me_method )
     {
@@ -933,7 +986,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         break;
     }
 
-fpel_done:;
+fpel_done:
+    if( zsad_loose )
+        ZSAD_CNT( 3 );
     /* -> qpel mv */
     uint32_t bmv = pack16to32_mask(bmx,bmy);
     uint32_t bmv_spel = SPELx2(bmv);
