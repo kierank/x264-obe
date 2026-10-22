@@ -84,6 +84,30 @@ static ALWAYS_INLINE void x264_cabac_tape_step( x264_t *h )
         x264_cabac_tape_chunk( h );
 }
 
+/* --wavefront bin tape, encoder/cabac_wf.c. An entry: bits 10-11 0 or 1, a decision
+ * with that bin on ctxIdx bits 0-9; 2, bypass bins only; 3, a special, kind bits 0-3
+ * and value bits 16-31. Bits 12-15: n <= 15 bypass bins after it, values bits 16+n-1..16,
+ * msb first. The coder applies the context states in raster order. */
+#define X264_WF_BYPASS_MAX 15
+enum
+{
+    X264_WF_TERM,   /* terminal bin 0 */
+    X264_WF_MB,     /* MB start: QP bits 0-7, mb_qp_delta coded bit 8, empty I_16x16 bit 9, end_of_slice_flag 0 first bit 10 */
+    X264_WF_HDR,    /* MB header start (mv bits) */
+    X264_WF_TEX,    /* residual start (tex bits) */
+    X264_WF_DQP,    /* mb_qp_delta */
+};
+/* entries of an MB at most: a coef takes sig, last, 14 level bins and up to 4 bypass-only entries */
+#define X264_WF_TAPE_MB (768*20+1024)
+static ALWAYS_INLINE void x264_cabac_wf_special( x264_cabac_t *cb, int kind, uint32_t v )
+{
+    *cb->p_tape++ = (3 << 10) | kind | (v << 16);
+}
+#define x264_macroblock_write_cabac_wf x264_template(macroblock_write_cabac_wf)
+void x264_macroblock_write_cabac_wf( x264_t *h, x264_cabac_t *cb );
+#define x264_cabac_mb_skip_wf x264_template(cabac_mb_skip_wf)
+void x264_cabac_mb_skip_wf( x264_t *h, int b_skip );
+
 #define x264_quant_luma_dc_trellis x264_template(quant_luma_dc_trellis)
 int x264_quant_luma_dc_trellis( x264_t *h, dctcoef *dct, int i_quant_cat, int i_qp,
                                 int ctx_block_cat, int b_intra, int idx );

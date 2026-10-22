@@ -557,6 +557,12 @@ typedef struct x264_param_t
      * e.g. if doing multiple encodes in one process.
      */
     void (*nalu_process) ( x264_t *h, x264_nal_t *nal, void *opaque );
+
+    /* Sliced threads as one slice: the threads code MB rows in a wavefront, a row
+     * two MBs behind the row above. Progressive, CABAC. */
+    int b_wavefront;
+    /* Rows between a coded row and the row whose QP its ratecontrol decides; 0: threads+1. */
+    int i_wavefront_lag;
 } x264_param_t;
 
 void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );

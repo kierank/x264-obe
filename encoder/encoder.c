@@ -76,6 +76,13 @@ static double x264_ssim( double ssim )
  ****************************************************************************/
 static void *x264_slices_write( x264_t *h );
 static void x264_threadslice_filter( x264_t *h );
+static int x264_wf_init( x264_t *h );
+static void x264_wf_delete( x264_t *h );
+static int x264_wf_frame( x264_t *h );
+#if HAVE_THREAD
+struct x264_slicepool_t;
+static intptr_t x264_wf_pool_job( x264_t *h, int idx, x264_t *snap, struct x264_slicepool_t *pool );
+#endif
 
 #if HAVE_THREAD
 static void x264_encoder_thread_init( x264_t *h );
@@ -211,7 +218,9 @@ static void *x264_slice_worker_thread( void *arg )
         gen = go;
 
         intptr_t ret = 0;
-        if( w->i_idx )
+        if( w->h->param.b_wavefront )
+            ret = x264_wf_pool_job( w->h, w->i_idx, w->snap, w->pool );
+        else if( w->i_idx )
         {
             x264_threadslice_sync( w->h, w->snap );
             x264_stack_align( x264_slicepool_weight, w->h, w->pool );
@@ -799,7 +808,26 @@ static int x264_validate_parameters( x264_t *h, int b_open )
             h->param.i_threads = X264_MIN( h->param.i_threads, max_sliced_threads );
     }
     h->param.i_threads = x264_clip3( h->param.i_threads, 1, X264_THREAD_MAX );
-    if( h->param.i_threads == 1 )
+    if( h->param.b_wavefront )
+    {
+        if( !HAVE_THREAD || !h->param.b_cabac || PARAM_INTERLACED )
+        {
+            x264_log( h, X264_LOG_WARNING, "--wavefront needs threads, CABAC and progressive; disabled\n" );
+            h->param.b_wavefront = 0;
+        }
+        else
+        {
+            /* one thread too: the coder runs beside it */
+            h->param.b_sliced_threads = 1;
+            h->param.i_slice_max_size = 0;
+            h->param.i_slice_max_mbs = 0;
+            h->param.i_slice_count_max = 0;
+            if( h->param.i_wavefront_lag <= 0 )
+                h->param.i_wavefront_lag = h->param.i_threads + 1;
+            h->param.i_wavefront_lag = X264_MIN( h->param.i_wavefront_lag, (h->param.i_height+15)/16 );
+        }
+    }
+    if( h->param.i_threads == 1 && !h->param.b_wavefront )
     {
         h->param.b_sliced_threads = 0;
         h->param.i_lookahead_threads = 1;
@@ -1545,7 +1573,24 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     BOOLIFY( rc.b_stat_read );
     BOOLIFY( rc.b_mb_tree );
     BOOLIFY( rc.b_filler );
+    BOOLIFY( b_wavefront );
 #undef BOOLIFY
+
+    if( h->param.b_wavefront )
+    {
+        if( !h->param.b_cabac )
+        {
+            x264_log( h, X264_LOG_ERROR, "--wavefront needs CABAC\n" );
+            return -1;
+        }
+        h->param.i_slice_count = 1;
+        /* the hpel bands don't build the integral image in order */
+        if( h->param.analyse.i_me_method >= X264_ME_ESA )
+        {
+            x264_log( h, X264_LOG_WARNING, "--wavefront: me esa/tesa unsupported, using umh\n" );
+            h->param.analyse.i_me_method = X264_ME_UMH;
+        }
+    }
 
     return 0;
 }
@@ -1975,6 +2020,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
         goto fail;
 
     if( h->param.b_sliced_threads && x264_slicepool_init( h ) < 0 )
+        goto fail;
+    if( h->param.b_wavefront && x264_wf_init( h ) < 0 )
         goto fail;
 
     if( h->param.i_nal_hrd )
@@ -2697,7 +2744,15 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
     /* PSNR/SSIM measure the deblocked recon: deblock unreferenced frames, and sliced threads in pass 0 */
     int b_full_recon = h->param.b_full_recon || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
     b_deblock &= b_hpel || b_full_recon || h->param.psz_dump_yuv;
-    if( h->param.b_sliced_threads )
+    if( h->param.b_wavefront )
+    {
+        /* 3: the coder, rows as they are final. 1: after the frame, a band (the
+         * thread slice); 2: then its first row's hpel, once the band above is done. */
+        b_deblock &= pass == 3;
+        b_hpel &= pass == 2 || (pass == 1 && !(b_start && min_y > 0));
+        b_measure_quality = pass == 3;
+    }
+    else if( h->param.b_sliced_threads )
     {
         switch( pass )
         {
@@ -3024,6 +3079,79 @@ static ALWAYS_INLINE void x264_bitstream_restore( x264_t *h, x264_bs_bak_t *bak,
     }
 }
 
+/* the MB's frame stats */
+static ALWAYS_INLINE void x264_slice_mb_stats( x264_t *h )
+{
+    h->stat.frame.i_mb_count[h->mb.i_type]++;
+
+    int b_intra = IS_INTRA( h->mb.i_type );
+    int b_skip = IS_SKIP( h->mb.i_type );
+    if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
+    {
+        if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )
+        {
+            if( h->mb.i_partition != D_8x8 )
+                h->stat.frame.i_mb_partition[h->mb.i_partition] += 4;
+            else
+                for( int i = 0; i < 4; i++ )
+                    h->stat.frame.i_mb_partition[h->mb.i_sub_partition[i]] ++;
+            if( h->param.i_frame_reference > 1 )
+                for( int i_list = 0; i_list <= (h->sh.i_type == SLICE_TYPE_B); i_list++ )
+                    for( int i = 0; i < 4; i++ )
+                    {
+                        int i_ref = h->mb.cache.ref[i_list][ x264_scan8[4*i] ];
+                        if( i_ref >= 0 )
+                            h->stat.frame.i_mb_count_ref[i_list][i_ref] ++;
+                    }
+        }
+    }
+
+    if( h->param.i_log_level >= X264_LOG_INFO )
+    {
+        if( h->mb.i_cbp_luma | h->mb.i_cbp_chroma )
+        {
+            if( CHROMA444 )
+            {
+                for( int i = 0; i < 4; i++ )
+                    if( h->mb.i_cbp_luma & (1 << i) )
+                        for( int p = 0; p < 3; p++ )
+                        {
+                            int s8 = i*4+p*16;
+                            int nnz8x8 = M16( &h->mb.cache.non_zero_count[x264_scan8[s8]+0] )
+                                       | M16( &h->mb.cache.non_zero_count[x264_scan8[s8]+8] );
+                            h->stat.frame.i_mb_cbp[!b_intra + p*2] += !!nnz8x8;
+                        }
+            }
+            else
+            {
+                int cbpsum = (h->mb.i_cbp_luma&1) + ((h->mb.i_cbp_luma>>1)&1)
+                           + ((h->mb.i_cbp_luma>>2)&1) + (h->mb.i_cbp_luma>>3);
+                h->stat.frame.i_mb_cbp[!b_intra + 0] += cbpsum;
+                h->stat.frame.i_mb_cbp[!b_intra + 2] += !!h->mb.i_cbp_chroma;
+                h->stat.frame.i_mb_cbp[!b_intra + 4] += h->mb.i_cbp_chroma >> 1;
+            }
+        }
+        if( h->mb.i_cbp_luma && !b_intra )
+        {
+            h->stat.frame.i_mb_count_8x8dct[0] ++;
+            h->stat.frame.i_mb_count_8x8dct[1] += h->mb.b_transform_8x8;
+        }
+        if( b_intra && h->mb.i_type != I_PCM )
+        {
+            if( h->mb.i_type == I_16x16 )
+                h->stat.frame.i_mb_pred_mode[0][h->mb.i_intra16x16_pred_mode]++;
+            else if( h->mb.i_type == I_8x8 )
+                for( int i = 0; i < 16; i += 4 )
+                    h->stat.frame.i_mb_pred_mode[1][h->mb.cache.intra4x4_pred_mode[x264_scan8[i]]]++;
+            else //if( h->mb.i_type == I_4x4 )
+                for( int i = 0; i < 16; i++ )
+                    h->stat.frame.i_mb_pred_mode[2][h->mb.cache.intra4x4_pred_mode[x264_scan8[i]]]++;
+            h->stat.frame.i_mb_pred_mode[3][x264_mb_chroma_pred_mode_fix[h->mb.i_chroma_pred_mode]]++;
+        }
+        h->stat.frame.i_mb_field[b_intra?0:b_skip?2:1] += MB_INTERLACED;
+    }
+}
+
 /* Post-encode passes of a thread slice. */
 static void x264_threadslice_filter( x264_t *h )
 {
@@ -3306,74 +3434,7 @@ cont:
         }
 
         /* accumulate mb stats */
-        h->stat.frame.i_mb_count[h->mb.i_type]++;
-
-        int b_intra = IS_INTRA( h->mb.i_type );
-        int b_skip = IS_SKIP( h->mb.i_type );
-        if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
-        {
-            if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )
-            {
-                if( h->mb.i_partition != D_8x8 )
-                        h->stat.frame.i_mb_partition[h->mb.i_partition] += 4;
-                    else
-                        for( int i = 0; i < 4; i++ )
-                            h->stat.frame.i_mb_partition[h->mb.i_sub_partition[i]] ++;
-                if( h->param.i_frame_reference > 1 )
-                    for( int i_list = 0; i_list <= (h->sh.i_type == SLICE_TYPE_B); i_list++ )
-                        for( int i = 0; i < 4; i++ )
-                        {
-                            int i_ref = h->mb.cache.ref[i_list][ x264_scan8[4*i] ];
-                            if( i_ref >= 0 )
-                                h->stat.frame.i_mb_count_ref[i_list][i_ref] ++;
-                        }
-            }
-        }
-
-        if( h->param.i_log_level >= X264_LOG_INFO )
-        {
-            if( h->mb.i_cbp_luma | h->mb.i_cbp_chroma )
-            {
-                if( CHROMA444 )
-                {
-                    for( int i = 0; i < 4; i++ )
-                        if( h->mb.i_cbp_luma & (1 << i) )
-                            for( int p = 0; p < 3; p++ )
-                            {
-                                int s8 = i*4+p*16;
-                                int nnz8x8 = M16( &h->mb.cache.non_zero_count[x264_scan8[s8]+0] )
-                                           | M16( &h->mb.cache.non_zero_count[x264_scan8[s8]+8] );
-                                h->stat.frame.i_mb_cbp[!b_intra + p*2] += !!nnz8x8;
-                            }
-                }
-                else
-                {
-                    int cbpsum = (h->mb.i_cbp_luma&1) + ((h->mb.i_cbp_luma>>1)&1)
-                               + ((h->mb.i_cbp_luma>>2)&1) + (h->mb.i_cbp_luma>>3);
-                    h->stat.frame.i_mb_cbp[!b_intra + 0] += cbpsum;
-                    h->stat.frame.i_mb_cbp[!b_intra + 2] += !!h->mb.i_cbp_chroma;
-                    h->stat.frame.i_mb_cbp[!b_intra + 4] += h->mb.i_cbp_chroma >> 1;
-                }
-            }
-            if( h->mb.i_cbp_luma && !b_intra )
-            {
-                h->stat.frame.i_mb_count_8x8dct[0] ++;
-                h->stat.frame.i_mb_count_8x8dct[1] += h->mb.b_transform_8x8;
-            }
-            if( b_intra && h->mb.i_type != I_PCM )
-            {
-                if( h->mb.i_type == I_16x16 )
-                    h->stat.frame.i_mb_pred_mode[0][h->mb.i_intra16x16_pred_mode]++;
-                else if( h->mb.i_type == I_8x8 )
-                    for( int i = 0; i < 16; i += 4 )
-                        h->stat.frame.i_mb_pred_mode[1][h->mb.cache.intra4x4_pred_mode[x264_scan8[i]]]++;
-                else //if( h->mb.i_type == I_4x4 )
-                    for( int i = 0; i < 16; i++ )
-                        h->stat.frame.i_mb_pred_mode[2][h->mb.cache.intra4x4_pred_mode[x264_scan8[i]]]++;
-                h->stat.frame.i_mb_pred_mode[3][x264_mb_chroma_pred_mode_fix[h->mb.i_chroma_pred_mode]]++;
-            }
-            h->stat.frame.i_mb_field[b_intra?0:b_skip?2:1] += MB_INTERLACED;
-        }
+        x264_slice_mb_stats( h );
 
         /* calculate deblock strength values (actual deblocking is done per-row along with hpel) */
         if( b_deblock )
@@ -3544,8 +3605,13 @@ fail:
     return (void *)-1;
 }
 
+#include "wavefront.c"
+
 static int x264_threaded_slices_write( x264_t *h )
 {
+    if( h->param.b_wavefront )
+        return x264_wf_frame( h );
+
     /* set first/last mb */
     for( int i = 0; i < h->param.i_threads; i++ )
     {
@@ -4657,6 +4723,7 @@ void    x264_encoder_close  ( x264_t *h )
     if( h->slicepool )
         x264_slicepool_delete( h->slicepool );
     h->slicepool = NULL;
+    x264_wf_delete( h );
     if( h->threadpool )
         x264_threadpool_delete( h->threadpool );
     if( h->param.i_lookahead_threads > 1 )

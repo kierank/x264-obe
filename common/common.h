@@ -781,6 +781,10 @@ struct x264_t
         int      b_pending;
     } tape;
 
+    /* --wavefront (encoder/wavefront.c), the same in every context */
+    struct x264_wf_t *wf;
+    int i_wf_intra; /* intra MBs so far in the row */
+
     void *scratch_hpel; /* x264_frame_filter: the sliced filter pass of thread[0] runs beside the lookahead */
     pixel *intra_border_backup[5][3]; /* bottom pixels of the previous mb row, used for intra prediction after the framebuffer has been deblocked */
     /* Deblock strength values are stored for each 4x4 partition. In MBAFF

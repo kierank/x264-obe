@@ -99,6 +99,14 @@ int  x264_ratecontrol_nal_epb( uint8_t *p, int size );
 int  x264_ratecontrol_mb( x264_t *, int bits );
 #define x264_ratecontrol_mb_bits x264_template(ratecontrol_mb_bits)
 void x264_ratecontrol_mb_bits( x264_t *, int y, int bits );
+#define x264_ratecontrol_wf_row x264_template(ratecontrol_wf_row)
+int  x264_ratecontrol_wf_row( x264_t *h, int y, int bits, int qp_sum, const float *qpm, const int *emerg, int first_free );
+#define x264_ratecontrol_wf_new x264_template(ratecontrol_wf_new)
+x264_ratecontrol_t *x264_ratecontrol_wf_new( void );
+#define x264_ratecontrol_wf_set_qpm x264_template(ratecontrol_wf_set_qpm)
+void x264_ratecontrol_wf_set_qpm( x264_t *h, float qpm );
+#define x264_ratecontrol_wf_qpm x264_template(ratecontrol_wf_qpm)
+float x264_ratecontrol_wf_qpm( x264_t *h );
 #define x264_ratecontrol_qp x264_template(ratecontrol_qp)
 int  x264_ratecontrol_qp( x264_t * );
 #define x264_ratecontrol_mb_qp x264_template(ratecontrol_mb_qp)

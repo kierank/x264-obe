@@ -38,7 +38,10 @@
 /* Not declared in macroblock.h in this fork; still need unique symbols per
  * BIT_DEPTH object set since these are non-static and cabac.c is also built
  * as its own translation unit (see Makefile SRCS). */
-#if CABAC_TAPE
+#if CABAC_TAPE == 2
+#define x264_cabac_block_residual_c x264_template(cabac_block_residual_wf_c)
+#define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_wf_c)
+#elif CABAC_TAPE
 #define x264_cabac_block_residual_c x264_template(cabac_block_residual_tape_c)
 #define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_tape_c)
 #else
@@ -167,6 +170,11 @@ static void x264_cabac_cbp_chroma( x264_t *h, x264_cabac_t *cb )
 
 static void x264_cabac_qp_delta( x264_t *h, x264_cabac_t *cb )
 {
+#if CABAC_TAPE == 2
+    /* the coder knows the previous MB in raster order */
+    x264_cabac_wf_special( cb, X264_WF_DQP, 0 );
+    return;
+#endif
     int i_dqp = h->mb.i_qp - h->mb.i_last_qp;
     int ctx;
 
@@ -781,7 +789,9 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
 
 static void ALWAYS_INLINE x264_cabac_block_residual( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
 {
-#if CABAC_TAPE
+#if CABAC_TAPE == 2
+    x264_cabac_block_residual_c( h, cb, ctx_block_cat, l );
+#elif CABAC_TAPE
     if( h->bsf.cabac_block_residual_tape_internal )
         h->bsf.cabac_block_residual_tape_internal( l, MB_INTERLACED, ctx_block_cat, cb );
     else
@@ -796,7 +806,8 @@ static void x264_cabac_block_residual_422_dc( x264_t *h, x264_cabac_t *cb, int c
 {
     /* Template a version specifically for chroma 4:2:2 DC in order to avoid
      * slowing down everything else due to the added complexity. */
-#if CABAC_TAPE
+#if CABAC_TAPE == 2
+#elif CABAC_TAPE
     if( h->bsf.cabac_block_residual_422_dc_tape_internal )
     {
         h->bsf.cabac_block_residual_422_dc_tape_internal( l, MB_INTERLACED, DCT_CHROMA_DC, cb );
@@ -974,7 +985,9 @@ static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_
 {
     const int i_mb_type = h->mb.i_type;
 
-#if CABAC_TAPE
+#if CABAC_TAPE == 2
+    x264_cabac_wf_special( cb, X264_WF_HDR, 0 );
+#elif CABAC_TAPE
     h->tape.mark[0] = cb->p_tape;
     h->tape.i_mark = 0;
 #elif !RDO_SKIP_BS
@@ -996,7 +1009,9 @@ static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_
     else //if( h->sh.i_type == SLICE_TYPE_I )
         x264_cabac_mb_header_i( h, cb, i_mb_type, SLICE_TYPE_I, chroma );
 
-#if CABAC_TAPE
+#if CABAC_TAPE == 2
+    x264_cabac_wf_special( cb, X264_WF_TEX, 0 );
+#elif CABAC_TAPE
     h->tape.mark[1] = cb->p_tape;
 #elif !RDO_SKIP_BS
     i_mb_pos_tex = x264_cabac_pos( cb );

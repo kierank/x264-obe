@@ -2315,6 +2315,258 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     return 0;
 }
 
+/* --wavefront: the row end of x264_ratecontrol_mb for one slice, run by the coder
+ * after row y, coded at qpm[y] in bits with the MBs' QPs summing to qp_sum. Rows
+ * y+1 .. first_free-1 already have their QPs qpm[] and are counted at them; rc->qpm
+ * is the last of them on entry and the QP of row first_free on return.
+ * Returns -1: row y again at rc->qpm; 1: the rows after y again from rc->qpm at
+ * emergency step h->mb.i_vbv_emerg; else 0. With first_free == y+1 this is the
+ * single slice path of x264_ratecontrol_mb. */
+int x264_ratecontrol_wf_row( x264_t *h, int y, int bits, int qp_sum, const float *qpm, const int *emerg, int first_free )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    float row_qp = qpm[y];
+
+    h->fdec->i_row_bits[y] = bits;
+    rc->qpa_aq += qp_sum;
+
+    x264_emms();
+    rc->qpa_rc += row_qp * h->mb.i_mb_width;
+
+    if( !rc->b_vbv )
+        return 0;
+
+    float qscale = qp2qscale( row_qp );
+    RC_STOREF( &h->fdec->f_row_qp[y], row_qp );
+    h->fdec->f_row_qscale[y] = qscale;
+
+    if( !emerg[y] )
+    {
+        update_row_predictor( &rc->row_pred[0], qscale, h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
+        if( h->sh.i_type != SLICE_TYPE_I && row_qp < h->fref[0][0]->f_row_qp[y] )
+            update_row_predictor( &rc->row_pred[1], qscale, h->fdec->i_row_satds[0][0][y], h->fdec->i_row_bits[y] );
+    }
+
+    int can_reencode_row = h->sh.i_first_mb <= y * h->mb.i_mb_stride;
+    int last = h->i_threadslice_end - 1;
+
+    /* row y for re-encodes, the row before the one decided for the QP step */
+    float prev_row_qp = row_qp;
+    float last_row_qp = first_free > y + 1 ? qpm[first_free-1] : row_qp;
+    float qp_absolute_max = h->param.rc.i_qp_max;
+    if( rc->rate_factor_max_increment )
+        qp_absolute_max = X264_MIN( qp_absolute_max, rc->qp_novbv + rc->rate_factor_max_increment );
+    float qp_hard_max = qp_absolute_max;
+    float qp_max_row = X264_MIN( prev_row_qp + h->param.rc.i_qp_step, qp_absolute_max );
+    float qp_max = X264_MIN( last_row_qp + h->param.rc.i_qp_step, qp_absolute_max );
+    float qp_min = X264_MAX( last_row_qp - h->param.rc.i_qp_step, h->param.rc.i_qp_min );
+    float step_size = 0.5f;
+    float slice_size_planned = rc->frame_size_planned;
+    int b_last_row = y >= last;
+    int b_repin = 0;
+    int epb_nal = rc->epb_nal, epb_pos = rc->epb_pos, epb_bytes = rc->epb_bytes;
+    int epb_left = epb_scan( h, &epb_nal, &epb_pos, &epb_bytes, b_last_row );
+    int mb_bits = row_bits_so_far( h, y );
+    float bits_so_far = mb_bits + rc->slice_bits + epb_bytes * 8;
+    if( b_last_row )
+        bits_so_far += (epb_left + 1) / 2 * 8;
+    rc->epb_scale = 1.f + (float)(epb_bytes * 8) / X264_MAX( mb_bits, 1 );
+    RC_STOREF( &rc->bits_so_far, bits_so_far );
+    RC_STOREF( &rc->frame_bits_coded, bits_so_far );
+    if( rc->row_err_next > 0 )
+    {
+        rc->row_err_bits += h->fdec->i_row_bits[y];
+        rc->row_err_pred += rc->row_err_next;
+        rc->row_err_next = 0;
+        rc->row_err_scale = x264_clip3f( rc->row_err_bits / rc->row_err_pred, 1.f, 2.f );
+    }
+    if( rc->emerg_next > 0 )
+    {
+        rc->emerg_bits += h->fdec->i_row_bits[y];
+        rc->emerg_pred += rc->emerg_next;
+        rc->emerg_next = 0;
+        rc->emerg_scale = x264_clip3f( rc->emerg_bits / rc->emerg_pred, 1.f/64, 64.f );
+    }
+    float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
+    float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
+    max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
+    float vbv_limit = rc->buffer_fill;
+    if( rc->single_frame_vbv )
+        vbv_limit -= rc->buffer_rate * max_frame_error * 0.5f;
+    vbv_limit = X264_MIN( rc->frame_size_maximum, vbv_limit );
+    if( y < last )
+    {
+        float qp_absolute_max0 = qp_absolute_max;
+        float bits_known, b1;
+        int ff;
+        for( ;; )
+        {
+            /* the rows that have their QPs, at those */
+            float pinned = 0;
+            for( int i = y + 1; i < first_free; i++ )
+                pinned += predict_row( h, i, qp2qscale( qpm[i] ) );
+            pinned *= rc->epb_scale * (rc->emerg_step ? rc->emerg_scale : rc->row_err_scale);
+            bits_known = bits_so_far + pinned;
+            ff = first_free - 1;
+            last_row_qp = first_free > y + 1 ? qpm[first_free-1] : row_qp;
+            qp_absolute_max = qp_absolute_max0;
+            qp_max = X264_MIN( last_row_qp + h->param.rc.i_qp_step, qp_absolute_max );
+            qp_min = X264_MAX( last_row_qp - h->param.rc.i_qp_step, h->param.rc.i_qp_min );
+            rc->qpm = last_row_qp;
+
+            if( h->sh.i_type == SLICE_TYPE_B && first_free <= last )
+            {
+                qp_min = X264_MAX( qp_min, X264_MAX( h->fref[0][0]->f_row_qp[first_free], h->fref[1][0]->f_row_qp[first_free] ) );
+                rc->qpm = X264_MAX( rc->qpm, qp_min );
+            }
+
+            float buffer_left_planned = rc->buffer_fill - rc->frame_size_planned;
+            buffer_left_planned = X264_MAX( buffer_left_planned, 0.f );
+            float rc_tol = buffer_left_planned * rc->rate_tolerance;
+            b1 = bits_known + predict_row_size_to_end( h, ff, rc->qpm );
+            float trust_coeff = x264_clip3f( bits_so_far / slice_size_planned, 0.0, 1.0 );
+
+            if( trust_coeff < 0.05f )
+                qp_max = qp_absolute_max = last_row_qp;
+
+            if( h->sh.i_type != SLICE_TYPE_I )
+                rc_tol *= 0.5f;
+
+            if( !rc->b_vbv_min_rate )
+                qp_min = X264_MAX( qp_min, rc->qp_novbv );
+
+            if( rc->single_frame_vbv )
+                qp_min = X264_MAX( qp_min, rc->qp - (rc->b_floor_off ? 12.0f : 6.0f) );
+
+            while( rc->qpm < qp_max
+                   && ((b1 > rc->frame_size_planned + rc_tol) ||
+                       (b1 > rc->frame_size_planned && rc->qpm < rc->qp_novbv) ||
+                       (b1 > rc->buffer_fill - buffer_left_planned * 0.5f)) )
+            {
+                rc->qpm += step_size;
+                b1 = bits_known + predict_row_size_to_end( h, ff, rc->qpm );
+            }
+
+            double b_max_target = rc->single_frame_vbv ? max_frame_size
+                                : (rc->buffer_fill - rc->buffer_size + rc->buffer_rate) * 0.90f;
+            float b_max_trust = rc->single_frame_vbv ? 1.0f : trust_coeff;
+            float b_max = b1 + (b_max_target - b1) * b_max_trust;
+            rc->qpm -= step_size;
+            float b2 = bits_known + predict_row_size_to_end( h, ff, rc->qpm );
+            while( rc->qpm > qp_min && rc->qpm < last_row_qp
+                   && (rc->single_frame_vbv || rc->qpm > RC_LOADF( &h->fdec->f_row_qp[0] ))
+                   && (b2 < max_frame_size)
+                   && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
+            {
+                b1 = b2;
+                rc->qpm -= step_size;
+                b2 = bits_known + predict_row_size_to_end( h, ff, rc->qpm );
+            }
+            rc->qpm += step_size;
+
+            while( rc->qpm < qp_absolute_max && (b1 > max_frame_size) )
+            {
+                rc->qpm += step_size;
+                b1 = bits_known + predict_row_size_to_end( h, ff, rc->qpm );
+            }
+
+            /* Over the frame with the rows that have their QPs: those rows again, from
+             * the QP the row after y would get without them. */
+            if( rc->qpm > qp_max && first_free > y + 1 )
+            {
+                first_free = y + 1;
+                b_repin = 1;
+                continue;
+            }
+            break;
+        }
+
+        int b_emerg = 0;
+        if( rc->single_frame_vbv && X264_VBV_EMERG_STEPS && (rc->emerg_step || rc->qpm >= qp_hard_max) )
+        {
+            float room = vbv_limit - bits_so_far - 32;
+            int rows, left = last - y;
+            float rest = emerg_rest( h, rc, y, qp_hard_max, &rows );
+            int b_over_now = bits_so_far + 32 > vbv_limit;
+            int b_over = b_over_now || (rows && rest * (1.f - VBV_EMERG_EXCESS) > room);
+            if( rc->emerg_step && rows < 2 && left > 2 && !b_over_now )
+                b_over = 0;
+            if( !rc->emerg_step && rc->qpm > qp_max_row && prev_row_qp < qp_max_row && can_reencode_row )
+                b_over = 0;
+            int step = rc->emerg_step;
+            if( b_over && emerg_raise( h, rc, prev_row_qp, qp_hard_max ) )
+            {
+                b_emerg = can_reencode_row;
+                if( !b_emerg )
+                {
+                    rc->emerg_row0 = y + 1;
+                    /* the rows after y that have their QPs: again at the step */
+                    b_repin |= step != rc->emerg_step && first_free > y + 1;
+                }
+            }
+            if( rc->emerg_step )
+            {
+                rc->qpm = X264_MAX( rc->qpm, qp_hard_max );
+                b1 = bits_known + predict_row_size_to_end( h, ff, rc->qpm );
+            }
+        }
+
+        RC_STOREF( &h->rc->frame_size_estimated, b1 );
+
+        if( b_emerg )
+            return reencode_row( h, rc, y );
+
+        if( rc->qpm > qp_max && prev_row_qp < qp_max_row && can_reencode_row )
+        {
+            rc->qpm = x264_clip3f( (prev_row_qp + rc->qpm)*0.5f, prev_row_qp + 1.0f, qp_max_row );
+            return reencode_row( h, rc, y );
+        }
+    }
+    else
+    {
+        RC_STOREF( &h->rc->frame_size_estimated, bits_so_far );
+        rc->qpm = prev_row_qp;
+        if( can_reencode_row
+            && (last_row_reencode( h, rc, y, bits_so_far - vbv_limit, qp_max_row, qp_hard_max )
+                || emerg_last_row( h, rc, y, bits_so_far - vbv_limit, prev_row_qp, qp_hard_max )) )
+            return -1;
+    }
+
+    if( b_last_row && !emerg[y] )
+        update_predictor( &rc->row_pred_last[h->sh.i_type], h->fdec->f_row_qscale[y],
+                          h->fdec->i_row_satd[y], h->fdec->i_row_bits[y] );
+    else if( !b_last_row )
+        row_err_expect( h, rc, y + 1, y + 1 < first_free ? qpm[y+1] : rc->qpm );
+    h->mb.i_vbv_emerg = rc->emerg_step;
+
+    rc->qpa_rc_prev = rc->qpa_rc;
+    rc->qpa_aq_prev = rc->qpa_aq;
+    rc->epb_nal = epb_nal;
+    rc->epb_pos = epb_pos;
+    rc->epb_bytes = epb_bytes;
+
+    return b_repin;
+}
+
+/* --wavefront: a ratecontrol for a context that only reads qpm */
+x264_ratecontrol_t *x264_ratecontrol_wf_new( void )
+{
+    x264_ratecontrol_t *rc = x264_malloc( sizeof(x264_ratecontrol_t) );
+    if( rc )
+        memset( rc, 0, sizeof(x264_ratecontrol_t) );
+    return rc;
+}
+
+void x264_ratecontrol_wf_set_qpm( x264_t *h, float qpm )
+{
+    h->rc->qpm = qpm;
+}
+
+float x264_ratecontrol_wf_qpm( x264_t *h )
+{
+    return h->rc->qpm;
+}
+
 int x264_ratecontrol_qp( x264_t *h )
 {
     x264_emms();
