@@ -1040,64 +1040,93 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_prog( x264_t *h, int mb_x, 
     h->mb.left_index_table = &left_indices[3];
     h->mb.topleft_partition = 0;
 
-    if( mb_x > 0 )
+    /* Slices are runs of MBs in raster order: with the top left MB in this slice, the top, top right
+     * and left ones are too. */
+    if( mb_x > 0 && mb_x < h->mb.i_mb_width - 1 && h->i_threadslice_start != mb_y &&
+        slice_table[mb_xy - mb_stride - 1] == first_mb )
     {
-        neighbour_frame |= MB_LEFT;
         left = mb_xy - 1;
+        top = mb_xy - mb_stride;
+        topleft = top - 1;
+        topright = top + 1;
+        top_y = mb_y - 1;
+        h->mb.i_mb_topleft_y = top_y;
+        h->mb.i_mb_topright_y = top_y;
         type_left = mb_type[left];
-        if( slice_table[left] == first_mb )
-        {
-            neighbour |= MB_LEFT;
-            if( !b_ci || IS_INTRA( type_left ) )
-                neighbour_intra |= MB_LEFT;
-        }
+        type_top = mb_type[top];
+        type_topleft = mb_type[topleft];
+        type_topright = mb_type[topright];
+        neighbour = neighbour_frame = neighbour_intra = MB_LEFT|MB_TOP|MB_TOPLEFT|MB_TOPRIGHT;
+        if( b_ci )
+            neighbour_intra = (IS_INTRA( type_left ) ? MB_LEFT : 0) | (IS_INTRA( type_top ) ? MB_TOP : 0)
+                            | (IS_INTRA( type_topleft ) ? MB_TOPLEFT : 0) | (IS_INTRA( type_topright ) ? MB_TOPRIGHT : 0);
+        x264_prefetch( &cbp[top] );
+        x264_prefetch( i4x4[top] );
+        x264_prefetch( &nnz[top][12] );
+        x264_prefetch( &h->mb.mb_transform_size[top] );
+        x264_prefetch( &h->mb.skipbp[top] );
     }
-
-    /* We can't predict from the previous threadslice since it hasn't been encoded yet. */
-    if( h->i_threadslice_start != mb_y )
+    else
     {
-        if( mb_xy - mb_stride >= 0 )
+        if( mb_x > 0 )
         {
-            neighbour_frame |= MB_TOP;
-            top = mb_xy - mb_stride;
-            top_y = mb_y - 1;
-            type_top = mb_type[top];
-            if( slice_table[top] == first_mb )
+            neighbour_frame |= MB_LEFT;
+            left = mb_xy - 1;
+            type_left = mb_type[left];
+            if( slice_table[left] == first_mb )
             {
-                neighbour |= MB_TOP;
-                if( !b_ci || IS_INTRA( type_top ) )
-                    neighbour_intra |= MB_TOP;
-                x264_prefetch( &cbp[top] );
-                x264_prefetch( i4x4[top] );
-                x264_prefetch( &nnz[top][12] );
-                x264_prefetch( &h->mb.mb_transform_size[top] );
-                x264_prefetch( &h->mb.skipbp[top] );
+                neighbour |= MB_LEFT;
+                if( !b_ci || IS_INTRA( type_left ) )
+                    neighbour_intra |= MB_LEFT;
             }
         }
-        if( mb_x > 0 && mb_y - 1 >= 0 )
+
+        /* We can't predict from the previous threadslice since it hasn't been encoded yet. */
+        if( h->i_threadslice_start != mb_y )
         {
-            neighbour_frame |= MB_TOPLEFT;
-            topleft = mb_xy - mb_stride - 1;
-            h->mb.i_mb_topleft_y = mb_y - 1;
-            type_topleft = mb_type[topleft];
-            if( slice_table[topleft] == first_mb )
+            if( mb_xy - mb_stride >= 0 )
             {
-                neighbour |= MB_TOPLEFT;
-                if( !b_ci || IS_INTRA( type_topleft ) )
-                    neighbour_intra |= MB_TOPLEFT;
+                neighbour_frame |= MB_TOP;
+                top = mb_xy - mb_stride;
+                top_y = mb_y - 1;
+                type_top = mb_type[top];
+                if( slice_table[top] == first_mb )
+                {
+                    neighbour |= MB_TOP;
+                    if( !b_ci || IS_INTRA( type_top ) )
+                        neighbour_intra |= MB_TOP;
+                    x264_prefetch( &cbp[top] );
+                    x264_prefetch( i4x4[top] );
+                    x264_prefetch( &nnz[top][12] );
+                    x264_prefetch( &h->mb.mb_transform_size[top] );
+                    x264_prefetch( &h->mb.skipbp[top] );
+                }
             }
-        }
-        if( mb_x < h->mb.i_mb_width - 1 && mb_y - 1 >= 0 )
-        {
-            neighbour_frame |= MB_TOPRIGHT;
-            topright = mb_xy - mb_stride + 1;
-            h->mb.i_mb_topright_y = mb_y - 1;
-            type_topright = mb_type[topright];
-            if( slice_table[topright] == first_mb )
+            if( mb_x > 0 && mb_y - 1 >= 0 )
             {
-                neighbour |= MB_TOPRIGHT;
-                if( !b_ci || IS_INTRA( type_topright ) )
-                    neighbour_intra |= MB_TOPRIGHT;
+                neighbour_frame |= MB_TOPLEFT;
+                topleft = mb_xy - mb_stride - 1;
+                h->mb.i_mb_topleft_y = mb_y - 1;
+                type_topleft = mb_type[topleft];
+                if( slice_table[topleft] == first_mb )
+                {
+                    neighbour |= MB_TOPLEFT;
+                    if( !b_ci || IS_INTRA( type_topleft ) )
+                        neighbour_intra |= MB_TOPLEFT;
+                }
+            }
+            if( mb_x < h->mb.i_mb_width - 1 && mb_y - 1 >= 0 )
+            {
+                neighbour_frame |= MB_TOPRIGHT;
+                topright = mb_xy - mb_stride + 1;
+                h->mb.i_mb_topright_y = mb_y - 1;
+                type_topright = mb_type[topright];
+                if( slice_table[topright] == first_mb )
+                {
+                    neighbour |= MB_TOPRIGHT;
+                    if( !b_ci || IS_INTRA( type_topright ) )
+                        neighbour_intra |= MB_TOPRIGHT;
+                }
             }
         }
     }
@@ -1315,8 +1344,12 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_prog( x264_t *h, int mb_x, 
     h->mb.b_allow_skip = 1;
 
     if( h->param.b_cabac )
-        h->mb.cache.i_neighbour_skip = ((neighbour & MB_LEFT) && !IS_SKIP( type_left ))
-                                     + ((neighbour & MB_TOP)  && !IS_SKIP( type_top ));
+    {
+        /* !IS_SKIP of the available neighbours' types */
+        const uint32_t not_skip = ~((1u << P_SKIP) | (1u << B_SKIP));
+        h->mb.cache.i_neighbour_skip = ((neighbour >> 0) & (not_skip >> (type_left&31)) & 1)
+                                     + ((neighbour >> 1) & (not_skip >> (type_top&31)) & 1);
+    }
 
     /* load skip */
     if( h->sh.i_type == SLICE_TYPE_B )
