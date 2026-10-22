@@ -1057,8 +1057,13 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
     }
 }
 
-static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
+/* i_inter: the cost the caller compares the intra costs against (COST_MAX for none),
+ * with strict less-than, 16x16 first, then 8x8 before 4x4 if b_i8x8_first else 4x4
+ * before 8x8. A cost that can't win comes back as COST_MAX. */
+static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh, int i_inter, int b_i8x8_first )
 {
+    uint64_t bound = i_inter < COST_MAX ? (uint64_t)i_inter : RD_NO_BOUND;
+
     if( !a->b_early_terminate )
         i_satd_thresh = COST_MAX;
 
@@ -1066,7 +1071,8 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
     {
         h->mb.i_type = I_16x16;
         x264_analyse_update_cache( h, a );
-        a->i_satd_i16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_satd_i16x16 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        bound = X264_MIN( bound, (uint64_t)a->i_satd_i16x16 );
     }
     else
         a->i_satd_i16x16 = COST_MAX;
@@ -1075,7 +1081,9 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
     {
         h->mb.i_type = I_4x4;
         x264_analyse_update_cache( h, a );
-        a->i_satd_i4x4 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_satd_i4x4 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        /* a tie goes to the type compared first */
+        bound = X264_MIN( bound, (uint64_t)a->i_satd_i4x4 + b_i8x8_first );
     }
     else
         a->i_satd_i4x4 = COST_MAX;
@@ -1084,7 +1092,7 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
     {
         h->mb.i_type = I_8x8;
         x264_analyse_update_cache( h, a );
-        a->i_satd_i8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_satd_i8x8 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
         a->i_cbp_i8x8_luma = h->mb.i_cbp_luma;
     }
     else
@@ -3342,7 +3350,7 @@ intra_analysis:
             x264_mb_init_fenc_cache( h, analysis.i_mbrd >= 2 );
         x264_mb_analyse_intra( h, &analysis, COST_MAX );
         if( analysis.i_mbrd )
-            x264_intra_rd( h, &analysis, COST_MAX );
+            x264_intra_rd( h, &analysis, COST_MAX, COST_MAX, 0 );
 
         i_cost = analysis.i_satd_i16x16;
         h->mb.i_type = I_16x16;
@@ -3668,7 +3676,7 @@ skip_analysis:
                 h->mb.i_partition = i_partition;
                 if( i_cost < COST_MAX )
                     x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
-                x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1 );
+                x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1, i_cost, 1 );
             }
 
             COPY2_IF_LT( i_cost, analysis.i_satd_i16x16, i_type, I_16x16 );
@@ -4078,7 +4086,7 @@ skip_analysis:
             if( analysis.i_mbrd )
             {
                 x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
-                x264_intra_rd( h, &analysis, i_satd_inter * 17/16 + 1 );
+                x264_intra_rd( h, &analysis, i_satd_inter * 17/16 + 1, i_cost, 1 );
             }
 
             COPY2_IF_LT( i_cost, analysis.i_satd_i16x16, i_type, I_16x16 );
