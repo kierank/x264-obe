@@ -34,6 +34,17 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* layout pair test/x264-i4x4-fuse / -twin: hidden weak x264_N_i4x4f_gate, defined here (no bytes) unless
+ * I4X4F_TWIN; the twin links it as 0 and i4x4 analysis keeps the separate x9 and x264_mb_encode_i4x4 */
+#define I4X4F_TWIN 0
+#define I4X4F_STR2( x ) #x
+#define I4X4F_STR( x ) I4X4F_STR2( x )
+#define x264_i4x4f_gate x264_template(i4x4f_gate)
+extern void x264_i4x4f_gate( void ) __attribute__((weak, visibility("hidden")));
+#if !I4X4F_TWIN
+__asm__( ".set " I4X4F_STR( x264_i4x4f_gate ) ", " I4X4F_STR( x264_macroblock_analyse ) );
+#endif
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -956,7 +967,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         /* x264_mb_encode_i4x4 in the x9 call, as x264_quant_4x4 without noise reduction or trellis */
         int (*x9_recon)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
             h->pixf.intra_mbcmp_x9_4x4 == h->pixf.intra_satd_x9_4x4 && !h->mb.b_noise_reduction && !h->mb.b_trellis
-            ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
+            && x264_i4x4f_gate ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
 
         for( idx = 0;; idx++ )
         {
