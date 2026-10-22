@@ -35,6 +35,8 @@ void x264_rdo_init( void );
 /* 0: no skip, 1: skip, 2: P skip with the luma prediction equal to fenc */
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
+#define x264_sadbound_print x264_template(sadbound_print)
+void x264_sadbound_print( void );
 
 #define x264_macroblock_probe_pskip( h )\
     x264_macroblock_probe_skip( h, 0 )

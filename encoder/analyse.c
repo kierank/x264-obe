@@ -1334,6 +1334,97 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
     return i_ref == dupe ? 0 : -1;
 }
 
+/* sadbound counters: probes by site [P after ME (subme >= 3), P fast skip before ME, B], and at the first:
+ * mv == the clipped pskip mv, of those distortion 0, bound proves luma, of those distortion > 0, probe passes
+ * when proven, every luma level 0 (the best any bound can do), probe passes.
+ * Self-check: with the same mv the probe's luma mbcmp is <= the ME distortion; a proven luma has no
+ * nonzero level. Else abort. */
+static uint64_t sadbound_cnt[10];
+#define SB_CNT( i ) __atomic_fetch_add( &sadbound_cnt[i], 1, __ATOMIC_RELAXED )
+
+void x264_sadbound_print( void )
+{
+    uint64_t n[10];
+    for( int i = 0; i < 10; i++ )
+        n[i] = __atomic_load_n( &sadbound_cnt[i], __ATOMIC_RELAXED );
+    if( !(n[0] + n[1] + n[2]) )
+        return;
+    fprintf( stderr, "sadbound %d-bit: probes P-after-ME %"PRIu64" P-fast %"PRIu64" B %"PRIu64"; after ME: same mv %"PRIu64
+             " (%.2f%%) dist 0 %"PRIu64" (%.2f%%) proven %"PRIu64" (%.2f%%) proven dist>0 %"PRIu64" (%.2f%%) proven+pass %"PRIu64
+             " luma all 0 %"PRIu64" (%.2f%%) pass %"PRIu64" (%.2f%%)\n", BIT_DEPTH, n[0], n[1], n[2],
+             n[3], n[0] ? 100.0*n[3]/n[0] : 0, n[4], n[0] ? 100.0*n[4]/n[0] : 0, n[5], n[0] ? 100.0*n[5]/n[0] : 0,
+             n[6], n[0] ? 100.0*n[6]/n[0] : 0, n[7], n[8], n[0] ? 100.0*n[8]/n[0] : 0, n[9], n[0] ? 100.0*n[9]/n[0] : 0 );
+}
+
+/* largest 16x16 luma distortion (sad: mbcmp is sad, else satd) that proves every 4x4 level 0:
+ * |c| <= w * sad with w = 1, 2, 4 by position; |c| <= m * satd4 / 8 with m = 16, 24, 36
+ * (c = M H M^T / 16, M = C A^T has row maxima 4, 6, 4, 6, sum |H| = 2 satd4); level 0 iff |c| < t */
+static int sadbound_thr( x264_t *h, int i_qp, int b_sad )
+{
+    static const int wr[4] = { 1, 2, 1, 2 }, mr[4] = { 4, 6, 4, 6 };
+    int thr = INT_MAX;
+    for( int i = 0; i < 16; i++ )
+    {
+        int64_t mf = h->quant4_mf[CQM_4PY][i_qp][i];
+        int64_t t = ((1 << 16) + mf - 1) / mf - h->quant4_bias[CQM_4PY][i_qp][i];
+        int64_t b = b_sad ? (t - 1) / (wr[i>>2] * wr[i&3]) : (8*t - 1) / (mr[i>>2] * mr[i&3]);
+        if( t <= 0 )
+            b = -1;
+        thr = X264_MIN( thr, b );
+    }
+    return thr;
+}
+
+static NOINLINE int sadbound_probe( x264_t *h, x264_me_t *m )
+{
+    int mvx = x264_clip3( h->mb.cache.pskip_mv[0], h->mb.mv_min[0], h->mb.mv_max[0] );
+    int mvy = x264_clip3( h->mb.cache.pskip_mv[1], h->mb.mv_min[1], h->mb.mv_max[1] );
+    int same = mvx == m->mv[0] && mvy == m->mv[1];
+    int b_sad = h->pixf.mbcmp[PIXEL_16x16] != h->pixf.satd[PIXEL_16x16];
+    int dist = m->cost - m->cost_mv;
+    int proven = same && dist <= sadbound_thr( h, h->mb.i_qp, b_sad );
+    SB_CNT( 0 );
+    int ret = x264_macroblock_probe_pskip( h );
+    if( same )
+    {
+        SB_CNT( 3 );
+        if( !dist )
+            SB_CNT( 4 );
+        int act = (b_sad ? h->pixf.sad : h->pixf.satd)[PIXEL_16x16]( h->mb.pic.p_fdec[0], FDEC_STRIDE, h->mb.pic.p_fenc[0], FENC_STRIDE );
+        if( act > dist )
+        {
+            fprintf( stderr, "sadbound: probe %s %d > ME %d: mb %d,%d\n", b_sad ? "sad" : "satd", act, dist, h->mb.i_mb_x, h->mb.i_mb_y );
+            abort();
+        }
+        ALIGNED_ARRAY_64( dctcoef, dct4x4,[4],[16] );
+        int nz = 0;
+        for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+        {
+            h->dctf.sub8x8_dct( dct4x4, h->mb.pic.p_fenc[0] + (i8x8&1)*8 + (i8x8>>1)*8*FENC_STRIDE,
+                                        h->mb.pic.p_fdec[0] + (i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE );
+            nz |= h->quantf.quant_4x4x4( dct4x4, h->quant4_mf[CQM_4PY][h->mb.i_qp], h->quant4_bias[CQM_4PY][h->mb.i_qp] );
+        }
+        if( !nz )
+            SB_CNT( 8 );
+        if( proven )
+        {
+            if( nz )
+            {
+                fprintf( stderr, "sadbound: proven luma coded: mb %d,%d dist %d qp %d\n", h->mb.i_mb_x, h->mb.i_mb_y, dist, h->mb.i_qp );
+                abort();
+            }
+            SB_CNT( 5 );
+            if( dist )
+                SB_CNT( 6 );
+            if( ret )
+                SB_CNT( 7 );
+        }
+    }
+    if( ret )
+        SB_CNT( 9 );
+    return ret;
+}
+
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
@@ -1383,7 +1474,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
             && m.cost-m.cost_mv < 300*a->i_lambda
             &&  abs(m.mv[0]-h->mb.cache.pskip_mv[0])
               + abs(m.mv[1]-h->mb.cache.pskip_mv[1]) <= 1
-            && x264_macroblock_probe_pskip( h ) )
+            && sadbound_probe( h, &m ) )
         {
             h->mb.i_type = P_SKIP;
             x264_analyse_update_cache( h, a );
@@ -3436,6 +3527,7 @@ intra_analysis:
                          h->mb.i_mb_type_topleft == P_SKIP ||
                          h->mb.i_mb_type_topright == P_SKIP )
                 {
+                    SB_CNT( 1 );
                     b_skip = x264_macroblock_probe_pskip( h );
                     /* 2: luma sad 0, never mispredicted */
                     if( b_skip == 1 && x264_mb_pskip_mispredicted( h ) )
@@ -3780,6 +3872,7 @@ skip_analysis:
                     if( b_changed )
                     {
                         x264_mb_mc( h );
+                        SB_CNT( 2 );
                         b_skip = x264_macroblock_probe_bskip( h );
                     }
                     h->stat.frame.i_direct_score[ h->sh.b_direct_spatial_mv_pred ] += b_skip;
@@ -3809,6 +3902,7 @@ skip_analysis:
             {
                 /* Conditioning the probe on neighboring block types
                  * doesn't seem to help speed or quality. */
+                SB_CNT( 2 );
                 analysis.b_try_skip = x264_macroblock_probe_bskip( h );
                 if( h->param.analyse.i_subpel_refine < 3 )
                     b_skip = analysis.b_try_skip;
