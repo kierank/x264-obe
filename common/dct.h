@@ -80,6 +80,18 @@ typedef struct
     int      dq_round;
 } x264_quant8_recon_t;
 
+/* in and out of intra_satd_x9_4x4_mb; the offsets are fixed in pixel-a.asm */
+typedef struct
+{
+    int8_t  *pred_mode;  /* h->mb.cache.intra4x4_pred_mode */
+    uint8_t *nnz;        /* h->mb.cache.non_zero_count */
+    int     *mode;       /* i_predict4x4 */
+    int      cost;       /* in: the cost before block 0, out: after the last block analysed */
+    int      thresh;     /* i_satd_thresh */
+    int      cbp;        /* out: i_cbp_luma */
+    int      topright;   /* the MB's topright neighbour is available */
+} x264_intra4x4_mb_t;
+
 typedef struct
 {
     void (*scan_8x8)( dctcoef level[64], dctcoef dct[64] );
@@ -107,6 +119,12 @@ typedef struct
      * dequant_8x8 and add8x8_idct8. Returns cost | mode << 16 | nz << 24. */
     int  (*intra_sa8d_x9_8x8_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, uint16_t *satds,
                                      dctcoef level[64], x264_quant8_recon_t *q, int limit, int b_tr );
+    /* the i4x4 loop of x264_mb_analyse_intra over an MB whose 16 blocks all have their left, top and topleft
+     * neighbours (no topright avoidance): in order, intra_satd_x9_4x4_recon with limit thresh - cost (-1 for
+     * block 15) until the cost exceeds thresh or block 15 is done. The fdec, level, mode, mode cache, nnz cache
+     * and cbp outputs are those of the C loop. Returns the index of the last block analysed. */
+    int  (*intra_satd_x9_4x4_mb)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16][16],
+                                  x264_quant4_recon_t *q, x264_intra4x4_mb_t *s );
 
 } x264_zigzag_function_t;
 

@@ -927,6 +927,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
     pf_interlaced->intra_sa8d_x9_8x8_recon  = NULL;
     pf_progressive->intra_sa8d_x9_8x8_recon = NULL;
+    pf_interlaced->intra_satd_x9_4x4_mb     = NULL;
+    pf_progressive->intra_satd_x9_4x4_mb    = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1058,6 +1060,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
         pf_interlaced->intra_sa8d_x9_8x8_recon  = x264_intra_sa8d_x9_8x8_recon_field_avx2;
         pf_progressive->intra_sa8d_x9_8x8_recon = x264_intra_sa8d_x9_8x8_recon_frame_avx2;
+        pf_interlaced->intra_satd_x9_4x4_mb     = x264_intra_satd_x9_4x4_mb_field_avx2;
+        pf_progressive->intra_satd_x9_4x4_mb    = x264_intra_satd_x9_4x4_mb_frame_avx2;
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

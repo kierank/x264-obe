@@ -981,7 +981,23 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             h->pixf.intra_mbcmp_x9_4x4 == h->pixf.intra_satd_x9_4x4 && !h->mb.b_noise_reduction && !h->mb.b_trellis
             ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
 
-        for( idx = 0;; idx++ )
+        /* the whole loop in one call when every block has predict_mode[8] >= 0 */
+        if( x9_recon && (h->mb.i_neighbour4[0] & (MB_TOP|MB_LEFT|MB_TOPLEFT)) == (MB_TOP|MB_LEFT|MB_TOPLEFT)
+            && !a->b_avoid_topright )
+        {
+            x264_intra4x4_mb_t s;
+            s.pred_mode = h->mb.cache.intra4x4_pred_mode;
+            s.nnz = h->mb.cache.non_zero_count;
+            s.mode = a->i_predict4x4;
+            s.cost = i_cost;
+            s.thresh = i_satd_thresh;
+            s.topright = !!(h->mb.i_neighbour4[5] & MB_TOPRIGHT);
+            idx = h->zigzagf.intra_satd_x9_4x4_mb( p_src, p_dst, cost_i4x4_mode, h->dct.luma4x4,
+                                                    &h->quant4_recon[a->i_qp], &s );
+            i_cost = s.cost;
+            h->mb.i_cbp_luma = s.cbp;
+        }
+        else for( idx = 0;; idx++ )
         {
             pixel *p_src_by = p_src + block_idx_xy_fenc[idx];
             pixel *p_dst_by = p_dst + block_idx_xy_fdec[idx];

@@ -293,6 +293,85 @@ x9r8_acmask:      dw 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 
 %if ARCH_X86_64
 ALIGN 16
 x9r_hi:           dw 0, 0, 0, 0, -1, -1, -1, -1
+
+; intra_satd_x9_4x4_mb: per block (x, y) in coding order, pshufb masks building the x9 edge from
+; T (bottom rows by column), L (right columns by row) and X (topleft by row, topright of block 5),
+; then x, y, the fenc and fdec offsets and scan8. 8-bit: e = l3 l3 l2 l1 l0 lt t0 .. t7 t7 t7 from T, L, X.
+; 10-bit: the emulation of t4-t7 in t0 .. t7 = T[4x..4x+7], the lt of e from X, the topright of block 5.
+%macro X9M_TAB 2 ; x, y
+%assign %%t 4*%1
+%assign %%l 4*%2
+%if HIGH_BIT_DEPTH
+%if %1 == 3 || (%1 == 1 && (%2 & 1))
+    SHUFFLE_MASK_W 0, 1, 2, 3, 3, 3, 3, 3
+%else
+    SHUFFLE_MASK_W 0, 1, 2, 3, 4, 5, 6, 7
+%endif
+    SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, %2, 0x80, 0x80, 0x80
+%if %1 == 3 && %2 == 0
+    dw 0, 0, 0, 0, -1, -1, -1, -1
+%else
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+%endif
+    dw %1, %2, 2*%1, 2*%2
+%else
+%if %1 == 3 && %2 == 0
+    db -1, -1, -1, -1, -1, -1, %%t, %%t+1, %%t+2, %%t+3, -1, -1, -1, -1, -1, -1
+%elif %1 == 3 || (%1 == 1 && (%2 & 1))
+    db -1, -1, -1, -1, -1, -1, %%t, %%t+1, %%t+2, %%t+3, %%t+3, %%t+3, %%t+3, %%t+3, %%t+3, %%t+3
+%else
+    db -1, -1, -1, -1, -1, -1, %%t, %%t+1, %%t+2, %%t+3, %%t+4, %%t+5, %%t+6, %%t+7, %%t+7, %%t+7
+%endif
+    db %%l+3, %%l+3, %%l+2, %%l+1, %%l, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+%if %1 == 3 && %2 == 0
+    db -1, -1, -1, -1, -1, %2, -1, -1, -1, -1, 4, 5, 6, 7, 7, 7
+%else
+    db -1, -1, -1, -1, -1, %2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+%endif
+    dd %1, %2
+%endif
+    dw (4*%1+4*%2*FENC_STRIDE)*SIZEOF_PIXEL, (4*%1+4*%2*FDEC_STRIDE)*SIZEOF_PIXEL
+    db 12+%1+8*%2, 0, 0, 0
+%endmacro
+ALIGN 64
+x9m_tab: X9M_TAB 0, 0
+         X9M_TAB 1, 0
+         X9M_TAB 0, 1
+         X9M_TAB 1, 1
+         X9M_TAB 2, 0
+         X9M_TAB 3, 0
+         X9M_TAB 2, 1
+         X9M_TAB 3, 1
+         X9M_TAB 0, 2
+         X9M_TAB 1, 2
+         X9M_TAB 0, 3
+         X9M_TAB 1, 3
+         X9M_TAB 2, 2
+         X9M_TAB 3, 2
+         X9M_TAB 2, 3
+         X9M_TAB 3, 3
+; the cache nnz of blocks in raster order from the nz bits of blocks in coding order
+x9m_nzbits: dw 0x0001, 0x0002, 0x0010, 0x0020, 0x0004, 0x0008, 0x0040, 0x0080
+            dw 0x0100, 0x0200, 0x1000, 0x2000, 0x0400, 0x0800, 0x4000, 0x8000
+x9m_d0123:  dd 0, 1, 2, 3, 4, 5, 6, 7
+%if HIGH_BIT_DEPTH
+x9m_q0123:  dw 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3
+x9m_rcol:   db 6, 7, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+            db 6, 7, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+x9m_d04:    dd 0, 4, 0, 4, 0, 4, 0, 4
+x9m_w0123:  dw 0, 1, 2, 3, -1, -1, -1, -1
+x9m_w3:     SHUFFLE_MASK_W 3, 3, 3, 3, 3, 3, 3, 3
+x9m_w7:     SHUFFLE_MASK_W 7, 7, 7, 7, 7, 7, 7, 7
+x9m_lrev:   SHUFFLE_MASK_W 3, 2, 1, 0, 0x80, 0x80, 0x80, 0x80
+x9m_klo:    SHUFFLE_MASK_W 0x80, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
+x9m_khi:    SHUFFLE_MASK_W 0x80, 0x80, 0x80, 3, 0x80, 0x80, 0x80, 0x80
+%else
+x9m_b0123:  db 0, 1, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+x9m_b9:     times 16 db 9
+x9m_b15:    times 16 db 15
+x9m_rcol:   times 4 db 3, 7, 15, 11
+x9m_kinit:  db -1, 3, 7, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+%endif
 %endif
 
 ; intra_satd_lowres
@@ -6689,6 +6768,140 @@ INTRA_SATD_X3_16x16_HBD
 %endif
 %endmacro
 
+;-----------------------------------------------------------------------------
+; intra_satd_x9_4x4_mb, both depths: the i4x4 loop of x264_mb_analyse_intra,
+; each block as intra_satd_x9_4x4_recon with limit thresh - cost (-1 for block 15).
+; The edge of the next block comes from three registers, kept whole at
+; rsp+9*32+32 across the x9: T, the bottom row of the latest block of each column;
+; L, the right column of the latest block of each row; X, the topleft of the
+; next block of each row (0-3) and the topright of block 5 (4-7).
+; r9 fenc, r10 fdec, r11 cost, r12 nz of blocks 0-15 | emulated topright of
+; blocks 0-15 << 16, r13 block, r3 its level; [rsp+9*32] bitcosts,
+; [rsp+9*32+8] the target of the emulation store of other blocks.
+;-----------------------------------------------------------------------------
+%define X9M_PRED  0  ; x264_intra4x4_mb_t
+%define X9M_NNZ   8
+%define X9M_MODE 16
+%define X9M_COST 24
+%define X9M_THR  28
+%define X9M_CBP  32
+%define X9M_TR   36
+
+%macro X9M_INIT 0
+    mov          r9, r0
+    mov         r10, r1
+    mov  [rsp+9*32], r2
+    mov        r11d, [r5+X9M_COST]
+    xor        r13d, r13d
+    cmp  dword [r5+X9M_TR], 0
+    sete       r13b
+    shl        r13d, 21
+    mov        r12d, 0xa888<<16       ; blocks 3 7 11 13 15, 5 without the topright MB
+    or         r12d, r13d
+    xor        r13d, r13d
+%endmacro
+
+; r8 = x9m_tab entry of block r13. r%1: gpr tmp
+%macro X9M_TABPTR 1
+    lea          r8, [x9m_tab]
+    mov        r%1d, r13d
+    shl        r%1d, 6
+    add          r8, r%1
+%endmacro
+
+; after the x9 (eax = cost | mode<<16): mode out, the break test, mode cache; r2 = &nnz[scan8]
+%macro X9M_DECIDE 0
+    movzx       r8d, ax
+    add        r11d, r8d
+    shr         eax, 16
+    mov          r8, [r5+X9M_MODE]
+    mov  [r8+r13*4], eax
+    cmp        r11d, [r5+X9M_THR]
+    jg .brk
+    cmp        r13d, 15
+    je .brk
+    X9M_TABPTR 2
+    movzx       r8d, byte [r8+60]
+    mov          r2, [r5+X9M_PRED]
+    mov    [r2+r8], al
+    mov          r2, [r5+X9M_NNZ]
+    add          r2, r8
+%endmacro
+
+; r0, r1 of block r13 (table entry r8); r6 = the target of its topright emulation store
+%macro X9M_BLOCK 0
+    movzx       r7d, word [r8+56]
+    lea          r0, [r9+r7]
+    movzx       r7d, word [r8+58]
+    lea          r1, [r10+r7]
+    lea         r7d, [r13+16]
+    lea          r2, [rsp+9*32+8]
+    bt         r12d, r7d
+    lea          r6, [r1+4*SIZEOF_PIXEL-FDEC_STRIDEB]
+    cmovnc       r6, r2
+%endmacro
+
+; r2 = bitcosts - predicted mode, as x264_mb_predict_intra4x4_mode from the mode cache
+%macro X9M_PREDMODE 0
+    movzx       r7d, byte [r8+60]
+    mov          r8, [r5+X9M_PRED]
+    movsx       eax, byte [r8+r7-1]
+    movsx       r8d, byte [r8+r7-8]
+    mov         r7d, 2
+    cmp         eax, 9
+    cmovge      eax, r7d
+    cmp         r8d, 9
+    cmovge      r8d, r7d
+    cmp         eax, r8d
+    cmovg       eax, r8d
+    test        eax, eax
+    cmovs       eax, r7d
+    mov          r2, [rsp+9*32]
+    add         eax, eax
+    sub          r2, rax
+%endmacro
+
+; cost and cbp out; after block 15 the nnz cache rows again as dwords (block 15 kept)
+%macro X9M_END 0
+    mov [r5+X9M_COST], r11d
+    movzx       r7d, r12w
+    mov         r8d, r7d
+    shr         r8d, 1
+    or          r7d, r8d
+    mov         r8d, r7d
+    shr         r8d, 2
+    or          r7d, r8d
+    and         r7d, 0x1111
+    mov         r8d, r7d
+    shr         r8d, 3
+    or          r8d, r7d
+    shr         r7d, 6
+    or          r8d, r7d
+    shr         r7d, 3
+    or          r8d, r7d
+    and         r8d, 15
+    mov [r5+X9M_CBP], r8d
+    cmp        r13d, 15
+    jne .ret
+    movd        xm0, r12d
+    vpbroadcastw m0, xm0
+    mova         m1, [x9m_nzbits]
+    pand         m0, m1
+    pcmpeqw      m0, m1
+    psrlw        m0, 15
+    vextracti128 xm1, m0, 1
+    packuswb    xm0, xm1
+    mov          r8, [r5+X9M_NNZ]
+    pinsrb      xm0, [r8+39], 15
+    movd   [r8+12], xm0
+    pextrd [r8+20], xm0, 1
+    pextrd [r8+28], xm0, 2
+    pextrd [r8+36], xm0, 3
+.ret:
+    mov         eax, r13d
+    RET
+%endmacro
+
 %if HIGH_BIT_DEPTH && ARCH_X86_64
 ;-----------------------------------------------------------------------------
 ; 10-bit intra x9: all nine predictions are scored, bitcosts added and the
@@ -6722,8 +6935,9 @@ INTRA_SATD_X3_16x16_HBD
 
 INIT_YMM avx2
 ; intra_satd_x9_4x4 up to the choice: eax = cost | mode<<16, r%2 = mode*32,
-; the predictions at pred_buf + 32*mode, fenc in m8. r%1: gpr tmp
-%macro X9H_4x4_SCORE 2
+; the predictions at pred_buf + 32*mode, fenc in m8. r%1: gpr tmp; %3: the edge is in xm10
+; (t0 .. t7) and xm11 (l3 l2 l1 l0 lt t0 t1 t2), not read from fdec
+%macro X9H_4x4_SCORE 2-3 0
     movq        xm8, [r0+0*FENC_STRIDEB]
     movhps      xm8, [r0+1*FENC_STRIDEB]
     movq        xm0, [r0+2*FENC_STRIDEB]
@@ -6735,7 +6949,11 @@ INIT_YMM avx2
     vbroadcasti128 m15, [pw_ppppmmmm]
 
     ; v, ddl, vl: lane 1 of the top edge is lane 0 advanced by one sample
+%if %3
+    vinserti128  m0, m10, xm10, 1
+%else
     vbroadcasti128 m0, [r1-FDEC_STRIDEB]
+%endif
     punpcklqdq   m9, m0, m0
     pshufb       m1, m0, [x9h_top0]
     pshufb       m2, m0, [x9h_top1]
@@ -6758,12 +6976,17 @@ INIT_YMM avx2
     pmaxsw       m9, m0
 
     ; left edge: e = l3 l2 l1 l0 lt t0 t1 t2 (t3)
+%if %3
+    mova        xm0, xm11
+    psrldq      xm1, xm10, 6
+%else
     movu        xm0, [r1-FDEC_STRIDEB-10]
     pinsrw      xm0, [r1+3*FDEC_STRIDEB-2], 0
     pinsrw      xm0, [r1+2*FDEC_STRIDEB-2], 1
     pinsrw      xm0, [r1+1*FDEC_STRIDEB-2], 2
     pinsrw      xm0, [r1+0*FDEC_STRIDEB-2], 3
     movq        xm1, [r1-FDEC_STRIDEB+6]
+%endif
     palignr     xm1, xm1, xm0, 2      ; l2 l1 l0 lt t0 t1 t2 t3
     vpblendd    xm2, xm0, xm1, 0x0c   ; l3 l2 l1 l0 t0 t1 t2 t3
     pmaddwd     xm2, [pw_1]
@@ -6790,6 +7013,9 @@ INIT_YMM avx2
     X9H_SATD      7, 0
     X9H_SATD      2, 0
     X9H_MERGE     7, 2, 0             ; h | dc
+%if %3
+    vpbroadcastw m2, xm11             ; l3
+%endif
     pshufb      m10, m3, [x9h_ddr]
     movu [pred_buf+4*32], m10
     X9H_SATD     10, 0
@@ -6807,8 +7033,12 @@ INIT_YMM avx2
     X9H_MERGE    10, 11, 0            ; vr | hd
     punpcklwd    m0, m6, m3
     pshufb       m0, [x9h_hu]
+%if %3
+    vpblendd     m0, m0, m2, 0xe0
+%else
     vpbroadcastw m1, [r1+3*FDEC_STRIDEB-2]
     vpblendd     m0, m0, m1, 0xe0
+%endif
     movu [pred_buf+8*32], m0
     X9H_SATD      0, 1
     X9H_MERGE     4, 0, 1             ; vl | hu
@@ -6981,6 +7211,196 @@ cglobal intra_satd_x9_4x4_recon_%1, 6,9,16, 9*32
 
 X9H_4x4_RECON frame, 0
 X9H_4x4_RECON field, 1
+
+;-----------------------------------------------------------------------------
+; int intra_satd_x9_4x4_mb( uint16_t *fenc, uint16_t *fdec, uint16_t *bitcosts, int32_t level[16][16],
+;                           x264_quant4_recon_t *q, x264_intra4x4_mb_t *s )
+;-----------------------------------------------------------------------------
+; T and L in words by lane, X in words; the x9 takes t0 .. t7 in xm10 and e in xm11.
+%macro X9H_4x4_MB 2 ; name, field
+cglobal intra_satd_x9_4x4_mb_%1, 6,14,16, 9*32+128
+    %define pred_buf rsp
+    X9M_INIT
+    movu         m4, [r1-FDEC_STRIDEB]         ; T
+    movzx       r7d, word [r1-2]
+    movd        xm5, r7d
+    movzx       r7d, word [r1+8*FDEC_STRIDEB-2]
+    movd        xm0, r7d
+%assign %%i 1
+%rep 7
+    pinsrw      xm5, [r1+%%i*FDEC_STRIDEB-2], %%i
+    pinsrw      xm0, [r1+(%%i+8)*FDEC_STRIDEB-2], %%i
+%assign %%i %%i+1
+%endrep
+    pshufb      xm1, xm5, [x9m_klo]
+    pshufb      xm2, xm0, [x9m_khi]
+    por         xm1, xm2
+    pinsrw      xm1, [r1-FDEC_STRIDEB-2], 0
+    vinserti128  m5, m5, xm0, 1                 ; L
+    movq        xm6, [r1-FDEC_STRIDEB+16*SIZEOF_PIXEL]
+    test       r12d, 1<<21
+    jz .tr
+    vextracti128 xm6, m4, 1
+    pshufb      xm6, [x9m_w7]
+.tr:
+    pslldq      xm6, 8
+    por         xm6, xm1                        ; X
+    jmp .next
+.loop:
+    X9H_4x4_SCORE 8, 7, 1
+    X9M_DECIDE
+    movu         m9, [pred_buf+r7]
+    psubw        m1, m8, m9           ; 0|1, 2|3
+    mova        xm7, [x9r_hi]
+    vextracti128 xm2, m1, 1
+    pshufd      xm2, xm2, q1032
+    X9R_FDCT    xm1, xm2, xm3, xm4, xm7
+    X9R_TRANSPOSE xm1, xm2, xm3
+    pshufd      xm2, xm2, q1032       ; c3|c2
+    paddw       xm3, xm1, xm2         ; s03|s12
+    psubw       xm1, xm2              ; d03|d12
+    punpcklqdq  xm2, xm3, xm1         ; s03|d03
+    punpckhqdq  xm3, xm1              ; s12|d12
+    pmovsxwd     m2, xm2
+    pmovsxwd     m3, xm3
+    mova         m6, [x9r_shift01]
+    vpsllvd      m4, m2, m6
+    vpsllvd      m5, m3, m6
+    paddd        m4, m3               ; dct 0-7
+    psubd        m2, m5               ; dct 8-15
+    pabsd        m5, m4
+    pabsd        m6, m2
+    paddd        m5, [r4+64]
+    paddd        m6, [r4+96]
+    pmulld       m5, [r4]
+    pmulld       m6, [r4+32]
+    psrld        m5, 16
+    psrld        m6, 16
+    psignd       m5, m4
+    psignd       m6, m2
+    por          m0, m5, m6
+    ptest        m0, m0
+    jz .zero
+%if %2
+    mova         m0, [x9r_scan_field]
+    vpermd       m0, m0, m5
+    mova    [r3+ 0], m0
+    mova    [r3+32], m6
+%else
+    mova        m10, [x9r_scan_frame_i]
+    mova        m11, [x9r_scan_frame_j]
+    vpermd       m0, m10, m5
+    vpermd       m1, m11, m6
+    vpblendd     m0, m0, m1, 0xe0
+    vpermd       m1, m11, m5
+    vpermd       m2, m10, m6
+    vpblendd     m1, m1, m2, 0xf8
+    mova    [r3+ 0], m0
+    mova    [r3+32], m1
+%endif
+    mov   byte [r2], 1
+    bts        r12d, r13d
+    pmulld       m5, [r4+128]
+    pmulld       m6, [r4+160]
+    mov         r8d, [r4+192]
+    test        r8d, r8d
+    jnz .dq_round
+.idct:
+    mova         m3, [x9r_tr_idx]
+    X9H_IDCT      5, 6, 0, 1, 2       ; g0|g1, g3|g2
+    punpckldq    m0, m1, m2
+    punpckhdq    m1, m2
+    vpermd       m5, m3, m0
+    vpermd       m6, m3, m1
+    paddd        m5, [x9r_pd_32_0]
+    X9H_IDCT      5, 6, 0, 1, 2       ; 0|1, 3|2
+    psrad        m1, 6
+    psrad        m2, 6
+    packssdw     m1, m2
+    vpermq       m1, m1, q1320
+    paddsw       m1, m9
+    pxor         m0, m0
+    pmaxsw       m1, m0
+    pminsw       m1, [pw_pixel_max]
+    vextracti128 xm0, m1, 1
+    movq   [r1+0*FDEC_STRIDEB], xm1
+    movhps [r1+1*FDEC_STRIDEB], xm1
+    movq   [r1+2*FDEC_STRIDEB], xm0
+    movhps [r1+3*FDEC_STRIDEB], xm0
+.update:                              ; m1: rows 0 1 | 2 3
+    X9M_TABPTR 7
+    vpbroadcastw m0, [r8+48]
+    vpbroadcastw m2, [r8+50]
+    mova         m3, [x9m_q0123]
+    pcmpeqw      m0, m3               ; column x
+    pcmpeqw      m2, m3               ; row y
+    vpermq       m3, m1, q3333
+    pshufb       m1, [x9m_rcol]
+    mova         m7, [x9m_d04]
+    vpermd       m1, m7, m1
+    mova         m4, [rsp+9*32+32]
+    mova         m5, [rsp+9*32+64]
+    mova        xm6, [rsp+9*32+96]
+    pblendvb     m4, m4, m3, m0
+    pblendvb     m5, m5, m1, m2
+    inc        r13d
+    add          r3, 16*SIZEOF_DCTCOEF
+.next:                                ; the edge of block r13 in xm10, xm11
+    X9M_TABPTR 7
+    vpbroadcastw m0, [r8+52]
+    paddd        m0, [x9m_d0123]
+    vpermd      m10, m0, m4
+    pshufb     xm10, [r8+0]
+    mova        xm0, [r8+32]
+    pblendvb   xm10, xm10, xm6, xm0   ; t0 .. t7
+    vpbroadcastw m0, [r8+54]
+    paddd        m0, [x9m_d0123]
+    vpermd      m11, m0, m5
+    pshufb     xm11, [x9m_lrev]
+    pslldq      xm2, xm10, 10
+    pshufb      xm3, xm6, [r8+16]
+    por        xm11, xm2
+    por        xm11, xm3              ; l3 l2 l1 l0 lt t0 t1 t2
+    vpbroadcastw xm0, [r8+50]
+    pcmpeqw     xm0, [x9m_w0123]
+    pshufb      xm2, xm10, [x9m_w3]
+    pblendvb    xm6, xm6, xm2, xm0    ; t3 is the topleft of the next block of the row
+    mova [rsp+9*32+32], m4
+    mova [rsp+9*32+64], m5
+    mova [rsp+9*32+96], xm6
+    X9M_BLOCK
+    movhps     [r6], xm10
+    X9M_PREDMODE
+    jmp .loop
+.dq_round:
+    vpbroadcastd m0, [r4+196]
+    movd        xm1, r8d
+    paddd        m5, m0
+    paddd        m6, m0
+    psrad        m5, xm1
+    psrad        m6, xm1
+    jmp .idct
+.zero:
+    vextracti128 xm0, m9, 1
+    movq   [r1+0*FDEC_STRIDEB], xm9
+    movhps [r1+1*FDEC_STRIDEB], xm9
+    movq   [r1+2*FDEC_STRIDEB], xm0
+    movhps [r1+3*FDEC_STRIDEB], xm0
+    mov   byte [r2], 0
+    mova         m1, m9
+    jmp .update
+.brk:
+    movu        xm0, [pred_buf+r7]
+    movu        xm1, [pred_buf+r7+16]
+    movq   [r1+0*FDEC_STRIDEB], xm0
+    movhps [r1+1*FDEC_STRIDEB], xm0
+    movq   [r1+2*FDEC_STRIDEB], xm1
+    movhps [r1+3*FDEC_STRIDEB], xm1
+    X9M_END
+%endmacro
+
+X9H_4x4_MB frame, 0
+X9H_4x4_MB field, 1
 
 ;-----------------------------------------------------------------------------
 ; int intra_sa8d_x9_8x8( uint16_t *fenc, uint16_t *fdec, uint16_t edge[36], uint16_t *bitcosts, uint16_t *satds )
@@ -9246,6 +9666,11 @@ cglobal intra_sad_x9_8x8, 5,7,8
     pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
     pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
     pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+    X9B_4x4_SCORE_E %1, %2, %3
+%endmacro
+
+; X9B_4x4_SCORE from the edge in xm1
+%macro X9B_4x4_SCORE_E 3
     pxor        xm4, xm4
     pshufb      xm2, xm1, [intrax9a_dc]
     psadbw      xm2, xm4
@@ -9452,6 +9877,161 @@ cglobal intra_satd_x9_4x4_recon_%1, 6,9,16, 9*32
 
 X9B_4x4_RECON frame, 0
 X9B_4x4_RECON field, 1
+
+;-----------------------------------------------------------------------------
+; int intra_satd_x9_4x4_mb( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts, int16_t level[16][16],
+;                           x264_quant4_recon_t *q, x264_intra4x4_mb_t *s )
+;-----------------------------------------------------------------------------
+%macro X9B_4x4_MB 2 ; name, field
+cglobal intra_satd_x9_4x4_mb_%1, 6,14,16, 9*32+96
+    %define pred_buf rsp
+    X9M_INIT
+    movu        xm4, [r1-FDEC_STRIDE]          ; T
+    movd        xm6, [r1-FDEC_STRIDE+16]
+    movzx       r7d, byte [r1-1]
+    movd        xm5, r7d
+%assign %%i 1
+%rep 15
+    pinsrb      xm5, [r1+%%i*FDEC_STRIDE-1], %%i
+%assign %%i %%i+1
+%endrep                                        ; L
+    test       r12d, 1<<21
+    jz .tr
+    pshufb      xm6, xm4, [x9m_b15]
+.tr:
+    pslldq      xm6, 4
+    pshufb      xm0, xm5, [x9m_kinit]
+    pinsrb      xm0, [r1-FDEC_STRIDE-1], 0
+    por         xm6, xm0                       ; X
+    jmp .next
+.loop:
+    X9B_4x4_SCORE_E 8, 7, 1
+    X9M_DECIDE
+    mova         m1, [x9r_pred_idx]
+    vpermd       m0, m1, [pred_buf+r7] ; xm0: prediction rows 0-3
+    mova        xm3, [hsub_mul]
+    mova        xm7, [x9r_hi]
+    punpcklbw   xm1, xm15, xm0
+    punpckhbw   xm2, xm15, xm0
+    pmaddubsw   xm1, xm3              ; 0|1
+    pmaddubsw   xm2, xm3              ; 2|3
+    pshufd      xm2, xm2, q1032
+    X9R_FDCT    xm1, xm2, xm3, xm4, xm7
+    X9R_TRANSPOSE xm1, xm2, xm3
+    pshufd      xm2, xm2, q1032
+    X9R_FDCT    xm1, xm2, xm3, xm4, xm7
+    vinserti128  m1, m1, xm2, 1        ; dct
+    pabsw        m2, m1
+    paddusw      m2, [r4+32]
+    pmulhuw      m2, [r4]
+    psignw       m2, m1
+    ptest        m2, m2
+    jz .zero
+%if %2
+    pshufb       m3, m2, [x9r_scan_field]
+%else
+    vperm2i128   m4, m2, m2, 0x01
+    pshufb       m3, m2, [x9r_scan_frame_a]
+    pshufb       m4, [x9r_scan_frame_b]
+    por          m3, m4
+%endif
+    mova       [r3], m3
+    mov   byte [r2], 1
+    bts        r12d, r13d
+    mov         r8d, [r4+96]
+    test        r8d, r8d
+    jnz .dq_round
+    pmullw       m2, [r4+64]
+.idct:
+    vextracti128 xm3, m2, 1
+    X9R_IDCT    xm2, xm3, xm4, xm5
+    pshufd      xm3, xm3, q1032
+    X9R_TRANSPOSE xm2, xm3, xm4
+    paddw       xm2, [pw_32_0]
+    X9R_IDCT    xm2, xm3, xm4, xm5    ; 0|1, 3|2
+    psraw       xm2, 6
+    psraw       xm3, 6
+    pxor        xm5, xm5
+    punpcklbw   xm4, xm0, xm5
+    pshufd      xm0, xm0, q2301
+    punpckhbw   xm0, xm5
+    paddsw      xm2, xm4
+    paddsw      xm3, xm0
+    packuswb    xm2, xm3
+    movd   [r1+0*FDEC_STRIDE], xm2
+    pextrd [r1+1*FDEC_STRIDE], xm2, 1
+    pextrd [r1+3*FDEC_STRIDE], xm2, 2
+    pextrd [r1+2*FDEC_STRIDE], xm2, 3
+.update:                              ; xm2: rows 0 1 3 2
+    X9M_TABPTR 7
+    vpbroadcastd xm0, [r8+48]
+    vpbroadcastd xm1, [r8+52]
+    mova        xm3, [x9m_d0123]
+    pcmpeqd     xm0, xm3              ; column x
+    pcmpeqd     xm1, xm3              ; row y
+    pshufd      xm3, xm2, q2222
+    pshufb      xm2, [x9m_rcol]
+    mova        xm4, [rsp+9*32+32]
+    mova        xm5, [rsp+9*32+48]
+    mova        xm6, [rsp+9*32+64]
+    pblendvb    xm4, xm4, xm3, xm0
+    pblendvb    xm5, xm5, xm2, xm1
+    inc        r13d
+    add          r3, 16*SIZEOF_DCTCOEF
+.next:                                ; the edge of block r13 in xm1
+    X9M_TABPTR 7
+    pshufb      xm1, xm4, [r8+ 0]
+    pshufb      xm2, xm5, [r8+16]
+    pshufb      xm3, xm6, [r8+32]
+    por         xm1, xm2
+    por         xm1, xm3
+    vpbroadcastb xm0, [r8+52]
+    pcmpeqb     xm0, [x9m_b0123]
+    pshufb      xm2, xm1, [x9m_b9]
+    pblendvb    xm6, xm6, xm2, xm0    ; t3 is the topleft of the next block of the row
+    mova [rsp+9*32+32], xm4
+    mova [rsp+9*32+48], xm5
+    mova [rsp+9*32+64], xm6
+    X9M_BLOCK
+    pextrd     [r6], xm1, 3
+    X9M_PREDMODE
+    jmp .loop
+.dq_round:
+    vpbroadcastd m5, [r4+100]
+    movd        xm6, r8d
+    mova         m4, [r4+64]
+    pmullw       m3, m2, m4
+    pmulhw       m2, m4
+    punpcklwd    m4, m3, m2
+    punpckhwd    m3, m2
+    paddd        m4, m5
+    paddd        m3, m5
+    psrad        m4, xm6
+    psrad        m3, xm6
+    packssdw     m2, m4, m3
+    jmp .idct
+.zero:
+    movd   [r1+0*FDEC_STRIDE], xm0
+    pextrd [r1+1*FDEC_STRIDE], xm0, 1
+    pextrd [r1+2*FDEC_STRIDE], xm0, 2
+    pextrd [r1+3*FDEC_STRIDE], xm0, 3
+    mov   byte [r2], 0
+    pshufd      xm2, xm0, q2310
+    jmp .update
+.brk:
+    mov         r8d, [pred_buf+r7+ 0]
+    mov         r2d, [pred_buf+r7+ 8]
+    mov [r1+0*FDEC_STRIDE], r8d
+    mov [r1+1*FDEC_STRIDE], r2d
+    mov         r8d, [pred_buf+r7+16]
+    mov         r2d, [pred_buf+r7+24]
+    mov [r1+2*FDEC_STRIDE], r8d
+    mov [r1+3*FDEC_STRIDE], r2d
+    X9M_END
+%endmacro
+
+X9B_4x4_MB frame, 0
+X9B_4x4_MB field, 1
 
 ;-----------------------------------------------------------------------------
 ; int intra_sa8d_x9_8x8( uint8_t *fenc, uint8_t *fdec, uint8_t edge[36], uint16_t *bitcosts, uint16_t *satds )
