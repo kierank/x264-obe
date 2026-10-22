@@ -648,6 +648,97 @@ int trellis_coefn_1( int abs_level, uint64_t ssd0, uint64_t ssd1, int cost_sigla
     return levels_used;
 }
 
+/* the trellis of a block whose only nonzero rounded level is at p = last_nnz (not a dc-only luma block):
+ * the same scores, so the same levels and ties. q = 1 compares 1 with an empty block, which saves the
+ * sig = 0 cost of every position below p; q > 1 compares q-1 with q, and q-1 wins ties. */
+static ALWAYS_INLINE
+int trellis_cabac_1c( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *unquant_mf, const uint8_t *zigzag,
+                      int lambda2, int b_ac, int b_chroma, int dc, int num_coefs, int idx, int p, int q,
+                      uint8_t *cabac_state_sig, uint8_t *cabac_state_last, uint8_t *cabac_state )
+{
+    const uint32_t *coef_weight1 = num_coefs == 64 ? x264_dct8_weight_tab : x264_dct4_weight_tab;
+    const uint32_t *coef_weight2 = num_coefs == 64 ? x264_dct8_weight2_tab : x264_dct4_weight2_tab;
+    const int b_interlaced = MB_INTERLACED;
+    const uint64_t bias = 1ULL << 60;
+    int zp = zigzag[p];
+    int sign_coef = orig_coefs[zp];
+    int abs_coef = abs( sign_coef );
+    int unquant = dc ? unquant_mf[0]<<1 : unquant_mf[zp];
+    uint64_t ssd[2];
+    for( int k = 0; k < 2; k++ )
+    {
+        int unquant_abs_level = (unquant * (q-1+k) + 128) >> 8;
+        int d = abs_coef - unquant_abs_level;
+        if( h->mb.i_psy_trellis && p && !dc && !b_chroma )
+        {
+            int orig_coef = num_coefs == 64 ? h->mb.pic.fenc_dct8[idx&3][zp] : h->mb.pic.fenc_dct4[idx&15][zp];
+            int predicted_coef = orig_coef - sign_coef;
+            int psy_value = abs(unquant_abs_level + SIGN(predicted_coef, sign_coef));
+            int psy_weight = coef_weight1[zp] * h->mb.i_psy_trellis;
+            int64_t tmp = (int64_t)d*d * coef_weight2[zp] - (int64_t)psy_weight * psy_value;
+            ssd[k] = (uint64_t)tmp;
+        }
+        else
+            ssd[k] = (int64_t)d*d * (dc?256:coef_weight2[zp]);
+    }
+
+    unsigned cost_sig0 = 0, cost_coded = 0;
+    if( p < num_coefs-1 )
+    {
+        int sigindex  = !dc && num_coefs == 64 ? x264_significant_coeff_flag_offset_8x8[b_interlaced][p] :
+                        b_chroma && dc && num_coefs == 8 ? x264_coeff_flag_offset_chroma_422_dc[p] : p;
+        int lastindex = !dc && num_coefs == 64 ? x264_last_coeff_flag_offset_8x8[p] :
+                        b_chroma && dc && num_coefs == 8 ? x264_coeff_flag_offset_chroma_422_dc[p] : p;
+        cost_sig0  = x264_cabac_size_decision_noup2( &cabac_state_sig[sigindex], 0 );
+        cost_coded = x264_cabac_size_decision_noup2( &cabac_state_sig[sigindex], 1 )
+                   + x264_cabac_size_decision_noup2( &cabac_state_last[lastindex], 1 );
+    }
+
+    if( q == 1 )
+    {
+        uint64_t base = ssd[0] + ((uint64_t)cost_sig0 * lambda2 >> ( CABAC_SIZE_BITS - LAMBDA_BITS ));
+        uint64_t score0 = bias + (ssd[0] - base);
+        unsigned f8_bits = cost_coded + x264_cabac_entropy[cabac_state[1]] + (1 << CABAC_SIZE_BITS);
+        uint64_t score1 = bias + (ssd[1] - base) + ((uint64_t)f8_bits * lambda2 >> ( CABAC_SIZE_BITS - LAMBDA_BITS ));
+        /* the empty block's score only falls below p */
+        for( int i = p-1; i >= b_ac && score1 < score0; i-- )
+        {
+            int sigindex = !dc && num_coefs == 64 ? x264_significant_coeff_flag_offset_8x8[b_interlaced][i] :
+                           b_chroma && dc && num_coefs == 8 ? x264_coeff_flag_offset_chroma_422_dc[i] : i;
+            score0 -= x264_cabac_size_decision_noup2( &cabac_state_sig[sigindex], 0 )
+                    * (uint64_t)lambda2 >> ( CABAC_SIZE_BITS - LAMBDA_BITS );
+        }
+        if( score1 < score0 )
+        {
+            dct[zp] = SIGN( 1, dct[zp] );
+            return 1;
+        }
+        if( num_coefs == 16 && !dc )
+            memset( dct, 0, 16 * sizeof(dctcoef) );
+        return 0;
+    }
+
+    uint64_t score[2];
+    for( int k = 0; k < 2; k++ )
+    {
+        int abs_level = q-1+k;
+        unsigned f8_bits = cost_coded;
+        if( abs_level > 1 )
+        {
+            int prefix = X264_MIN( abs_level-1, 14 );
+            f8_bits += x264_cabac_entropy[cabac_state[1]^1] + x264_cabac_size_unary[prefix][cabac_state[5]];
+            if( abs_level >= 15 )
+                f8_bits += bs_size_ue_big( abs_level - 15 ) << CABAC_SIZE_BITS;
+        }
+        else
+            f8_bits += x264_cabac_entropy[cabac_state[1]] + (1 << CABAC_SIZE_BITS);
+        score[k] = bias + ssd[k] + ((uint64_t)f8_bits * lambda2 >> ( CABAC_SIZE_BITS - LAMBDA_BITS ));
+    }
+    int level = score[1] < score[0] ? q : q-1;
+    dct[zp] = SIGN( level, dct[zp] );
+    return 1;
+}
+
 /* dct: nonzero after round-to-nearest quant; orig_coefs: dct before quant */
 static ALWAYS_INLINE
 int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *unquant_mf,
@@ -682,6 +773,14 @@ int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const
         dct[0] = trellis_dc_shortcut( orig_coefs[0], quant_coefs[0], unquant_mf[0], coef_weight2[0], lambda2, cabac_state, cost_sig );
         return !!dct[0];
     }
+
+    /* one nonzero level */
+    int i1 = b_ac;
+    while( i1 < last_nnz && !quant_coefs[i1] )
+        i1++;
+    if( i1 == last_nnz )
+        return trellis_cabac_1c( h, dct, orig_coefs, unquant_mf, zigzag, lambda2, b_ac, b_chroma, dc, num_coefs, idx,
+                                 last_nnz, abs( quant_coefs[last_nnz] ), cabac_state_sig, cabac_state_last, cabac_state );
 
 #if HAVE_MMX && ARCH_X86_64
 #define TRELLIS_ARGS unquant_mf, zigzag, lambda2, last_nnz, orig_coefs, quant_coefs, dct,\
