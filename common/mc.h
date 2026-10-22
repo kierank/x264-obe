@@ -50,11 +50,10 @@ typedef struct x264_weight_t
     /* set by weight_cache, read only with weightfn: weightfn of the qpel average
      * (src1+src2+1)>>1, the w x h of pixel_avg2 then weightfn in place, or NULL */
     weight_avg_fn_t *weightavgfn;
-#if !HIGH_BIT_DEPTH
-    /* set by weight_cache where pixel sad_avg2_w and satd_avg2_pre_w may read it: the
-     * weight of every value */
+    /* 8-bit: set by weight_cache where pixel sad_avg2_w and satd_avg2_pre_w may read it,
+     * the weight of every value. At every bit depth: encoder/lookahead8.c reads high bit
+     * depth frames and weights with the 8-bit layout of this and of x264_frame_t. */
     uint8_t lut[256];
-#endif
 } ALIGNED_16( x264_weight_t );
 
 #if !HIGH_BIT_DEPTH
