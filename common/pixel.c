@@ -1043,6 +1043,93 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twins of wip/x264-sweep-mepred-sn-*: every build declares the hidden weak
+ * x264_N_twin_* below. A group set to 1: clip and list dispatch those (they link as 0,
+ * so the slots stay NULL and me.c/analyse.c take the old paths), list512 the AVX2 list
+ * kernels in place of the AVX512 ones. Nothing else differs between the arms. */
+#if HAVE_MMX && ARCH_X86_64
+#define MEPRED_TWIN_CLIP    0
+#define MEPRED_TWIN_LIST    0
+#define MEPRED_TWIN_LIST512 0
+#define MEPRED_WEAK( sym ) extern __typeof__( x264_##sym ) x264_template(twin_##sym) __attribute__((weak, visibility("hidden")));
+MEPRED_WEAK( predictor_clip_avx512 )
+MEPRED_WEAK( predictor_roundclip_avx512 )
+MEPRED_WEAK( pixel_sad_list_min_16x16_avx2 )
+MEPRED_WEAK( pixel_sad_list_min_16x8_avx2 )
+MEPRED_WEAK( pixel_sad_list_min_8x16_avx2 )
+MEPRED_WEAK( pixel_sad_list_min_8x8_avx2 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_16x16_avx2 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_16x8_avx2 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_8x16_avx2 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_8x8_avx2 )
+MEPRED_WEAK( pixel_sad_list_min_16x16_avx512 )
+MEPRED_WEAK( pixel_sad_list_min_16x8_avx512 )
+MEPRED_WEAK( pixel_sad_list_min_8x16_avx512 )
+MEPRED_WEAK( pixel_sad_list_min_8x8_avx512 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_16x16_avx512 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_16x8_avx512 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_8x16_avx512 )
+MEPRED_WEAK( pixel_sad_avg2_list_min_8x8_avx512 )
+#if MEPRED_TWIN_CLIP
+#undef x264_predictor_clip_avx512
+#define x264_predictor_clip_avx512 x264_template(twin_predictor_clip_avx512)
+#undef x264_predictor_roundclip_avx512
+#define x264_predictor_roundclip_avx512 x264_template(twin_predictor_roundclip_avx512)
+#endif
+#if MEPRED_TWIN_LIST
+#undef x264_pixel_sad_list_min_16x16_avx2
+#define x264_pixel_sad_list_min_16x16_avx2 x264_template(twin_pixel_sad_list_min_16x16_avx2)
+#undef x264_pixel_sad_list_min_16x8_avx2
+#define x264_pixel_sad_list_min_16x8_avx2 x264_template(twin_pixel_sad_list_min_16x8_avx2)
+#undef x264_pixel_sad_list_min_8x16_avx2
+#define x264_pixel_sad_list_min_8x16_avx2 x264_template(twin_pixel_sad_list_min_8x16_avx2)
+#undef x264_pixel_sad_list_min_8x8_avx2
+#define x264_pixel_sad_list_min_8x8_avx2 x264_template(twin_pixel_sad_list_min_8x8_avx2)
+#undef x264_pixel_sad_avg2_list_min_16x16_avx2
+#define x264_pixel_sad_avg2_list_min_16x16_avx2 x264_template(twin_pixel_sad_avg2_list_min_16x16_avx2)
+#undef x264_pixel_sad_avg2_list_min_16x8_avx2
+#define x264_pixel_sad_avg2_list_min_16x8_avx2 x264_template(twin_pixel_sad_avg2_list_min_16x8_avx2)
+#undef x264_pixel_sad_avg2_list_min_8x16_avx2
+#define x264_pixel_sad_avg2_list_min_8x16_avx2 x264_template(twin_pixel_sad_avg2_list_min_8x16_avx2)
+#undef x264_pixel_sad_avg2_list_min_8x8_avx2
+#define x264_pixel_sad_avg2_list_min_8x8_avx2 x264_template(twin_pixel_sad_avg2_list_min_8x8_avx2)
+#undef x264_pixel_sad_list_min_16x16_avx512
+#define x264_pixel_sad_list_min_16x16_avx512 x264_template(twin_pixel_sad_list_min_16x16_avx512)
+#undef x264_pixel_sad_list_min_16x8_avx512
+#define x264_pixel_sad_list_min_16x8_avx512 x264_template(twin_pixel_sad_list_min_16x8_avx512)
+#undef x264_pixel_sad_list_min_8x16_avx512
+#define x264_pixel_sad_list_min_8x16_avx512 x264_template(twin_pixel_sad_list_min_8x16_avx512)
+#undef x264_pixel_sad_list_min_8x8_avx512
+#define x264_pixel_sad_list_min_8x8_avx512 x264_template(twin_pixel_sad_list_min_8x8_avx512)
+#undef x264_pixel_sad_avg2_list_min_16x16_avx512
+#define x264_pixel_sad_avg2_list_min_16x16_avx512 x264_template(twin_pixel_sad_avg2_list_min_16x16_avx512)
+#undef x264_pixel_sad_avg2_list_min_16x8_avx512
+#define x264_pixel_sad_avg2_list_min_16x8_avx512 x264_template(twin_pixel_sad_avg2_list_min_16x8_avx512)
+#undef x264_pixel_sad_avg2_list_min_8x16_avx512
+#define x264_pixel_sad_avg2_list_min_8x16_avx512 x264_template(twin_pixel_sad_avg2_list_min_8x16_avx512)
+#undef x264_pixel_sad_avg2_list_min_8x8_avx512
+#define x264_pixel_sad_avg2_list_min_8x8_avx512 x264_template(twin_pixel_sad_avg2_list_min_8x8_avx512)
+#elif MEPRED_TWIN_LIST512
+#undef x264_pixel_sad_list_min_16x16_avx512
+#define x264_pixel_sad_list_min_16x16_avx512 x264_pixel_sad_list_min_16x16_avx2
+#undef x264_pixel_sad_list_min_16x8_avx512
+#define x264_pixel_sad_list_min_16x8_avx512 x264_pixel_sad_list_min_16x8_avx2
+#undef x264_pixel_sad_list_min_8x16_avx512
+#define x264_pixel_sad_list_min_8x16_avx512 x264_pixel_sad_list_min_8x16_avx2
+#undef x264_pixel_sad_list_min_8x8_avx512
+#define x264_pixel_sad_list_min_8x8_avx512 x264_pixel_sad_list_min_8x8_avx2
+#undef x264_pixel_sad_avg2_list_min_16x16_avx512
+#define x264_pixel_sad_avg2_list_min_16x16_avx512 x264_pixel_sad_avg2_list_min_16x16_avx2
+#undef x264_pixel_sad_avg2_list_min_16x8_avx512
+#define x264_pixel_sad_avg2_list_min_16x8_avx512 x264_pixel_sad_avg2_list_min_16x8_avx2
+#undef x264_pixel_sad_avg2_list_min_8x16_avx512
+#define x264_pixel_sad_avg2_list_min_8x16_avx512 x264_pixel_sad_avg2_list_min_8x16_avx2
+#undef x264_pixel_sad_avg2_list_min_8x8_avx512
+#define x264_pixel_sad_avg2_list_min_8x8_avx512 x264_pixel_sad_avg2_list_min_8x8_avx2
+#endif
+#endif
+
+
 
 /****************************************************************************
  * x264_pixel_init:
