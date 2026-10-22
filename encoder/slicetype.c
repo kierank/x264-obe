@@ -1741,6 +1741,81 @@ static void x264_slicetype_wave( x264_t *h, x264_slicetype_slice_t *s, int bands
         }
 }
 
+/* debug: the wavefront's results against x264_slicetype_slice_cost run band
+ * by band on this thread, as with one thread per band. Aborts on a difference. */
+static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int bands, int *const *outs,
+                                       x264_frame_t **frames, int p0, int p1, int b )
+{
+    static int64_t checked_frames, checked_mbs;
+    x264_frame_t *fenc = frames[b];
+    int n = h->mb.i_mb_count;
+    int obuf = h->mb.i_mb_height + (NUM_INTS + PAD_SIZE) * bands;
+    int *out_w = malloc( 2 * obuf * sizeof(int) );
+    uint16_t *cost_w = malloc( n * sizeof(uint16_t) );
+    uint16_t *icost_w = malloc( n * sizeof(uint16_t) );
+    int16_t (*mv_w)[2] = malloc( 2 * n * sizeof(*mv_w) );
+    int *mvc_w = malloc( 2 * n * sizeof(int) );
+    int b_intra = !fenc->b_intra_calculated;
+    int sizes[X264_LOOKAHEAD_THREAD_MAX];
+    int *o = out_w;
+    for( int i = 0; i < bands; i++ )
+    {
+        sizes[i] = s[i].h->i_threadslice_end - s[i].h->i_threadslice_start + NUM_INTS;
+        memcpy( o, s[i].output_inter, sizes[i] * sizeof(int) ); o += sizes[i];
+        memcpy( o, s[i].output_intra, sizes[i] * sizeof(int) ); o += sizes[i];
+    }
+    memcpy( cost_w, fenc->lowres_costs[b-p0][p1-b], n * sizeof(uint16_t) );
+    if( b_intra )
+        memcpy( icost_w, fenc->i_intra_cost, n * sizeof(uint16_t) );
+    for( int l = 0; l < 2; l++ )
+        if( s[0].do_search[l] )
+        {
+            int d = l ? p1-b-1 : b-p0-1;
+            memcpy( mv_w + l*n, fenc->lowres_mvs[l][d], n * sizeof(*mv_w) );
+            memcpy( mvc_w + l*n, fenc->lowres_mv_costs[l][d], n * sizeof(int) );
+        }
+
+    for( int i = 0; i < bands; i++ )
+    {
+        x264_t *t = s[i].h;
+        memset( s[i].output_inter, 0, sizes[i] * sizeof(int) );
+        memset( s[i].output_intra, 0, sizes[i] * sizeof(int) );
+        s[i].output_inter[NUM_ROWS] = s[i].output_intra[NUM_ROWS] = sizes[i] - NUM_INTS;
+        t->mb.i_me_method = h->mb.i_me_method;
+        t->mb.i_subpel_refine = h->mb.i_subpel_refine;
+        t->mb.b_chroma_me = h->mb.b_chroma_me;
+        x264_slicetype_slice_cost( &s[i] );
+    }
+
+    int bad = 0;
+    o = out_w;
+    for( int i = 0; i < bands; i++ )
+    {
+        bad |= memcmp( o, s[i].output_inter, sizes[i] * sizeof(int) ) ? 1 : 0; o += sizes[i];
+        bad |= memcmp( o, s[i].output_intra, sizes[i] * sizeof(int) ) ? 2 : 0; o += sizes[i];
+    }
+    bad |= memcmp( cost_w, fenc->lowres_costs[b-p0][p1-b], n * sizeof(uint16_t) ) ? 4 : 0;
+    if( b_intra )
+        bad |= memcmp( icost_w, fenc->i_intra_cost, n * sizeof(uint16_t) ) ? 8 : 0;
+    for( int l = 0; l < 2; l++ )
+        if( s[0].do_search[l] )
+        {
+            int d = l ? p1-b-1 : b-p0-1;
+            bad |= memcmp( mv_w + l*n, fenc->lowres_mvs[l][d], n * sizeof(*mv_w) ) ? 16 : 0;
+            bad |= memcmp( mvc_w + l*n, fenc->lowres_mv_costs[l][d], n * sizeof(int) ) ? 32 : 0;
+        }
+    checked_frames++;
+    checked_mbs += n;
+    if( bad )
+    {
+        fprintf( stderr, "wave check: MISMATCH %d frame %d p0 %d p1 %d b %d\n", bad, fenc->i_frame, p0, p1, b );
+        abort();
+    }
+    if( !(checked_frames & 15) )
+        fprintf( stderr, "wave check: %"PRId64" cost calls equal (dep %d)\n", checked_frames, s[0].do_search[0] || s[0].do_search[1] );
+    free( out_w ); free( cost_w ); free( icost_w ); free( mv_w ); free( mvc_w );
+}
+
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                                       x264_frame_t **frames, int p0, int p1, int b,
                                       int b_intra_penalty )
@@ -1839,7 +1914,10 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                         x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
                 }
                 if( h->crew )
+                {
                     x264_slicetype_wave( h, s, h->param.i_lookahead_threads );
+                    x264_slicetype_wave_check( h, s, h->param.i_lookahead_threads, NULL, frames, p0, p1, b );
+                }
                 else
                     for( int i = 0; i < h->param.i_lookahead_threads; i++ )
                         x264_threadpool_wait( h->lookaheadpool, &s[i] );
