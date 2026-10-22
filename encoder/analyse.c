@@ -34,6 +34,25 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* rdf counters: mbrd P mbs at the type decision, 16x16 rd known before intra,
+ * intra skipped, inter rd at most the floor after transform rd, inter chosen */
+static uint64_t rdf_cnt[5];
+#define RDF_CNT(i) __atomic_fetch_add( &rdf_cnt[i], 1, __ATOMIC_RELAXED )
+
+void x264_rdf_print( void )
+{
+    static const char *name[5] = { "mbrd_p", "rd16_known", "skipped", "below_floor", "inter_won" };
+    uint64_t c[5];
+    for( int i = 0; i < 5; i++ )
+        c[i] = __atomic_load_n( &rdf_cnt[i], __ATOMIC_RELAXED );
+    if( !c[0] )
+        return;
+    fprintf( stderr, "rdf%d:", BIT_DEPTH );
+    for( int i = 0; i < 5; i++ )
+        fprintf( stderr, " %s %"PRIu64, name[i], c[i] );
+    fprintf( stderr, "\n" );
+}
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -3707,6 +3726,7 @@ skip_analysis:
             {
                 /* The 16x16 rd cost is known and no intra rd cost is below it; the
                  * transform rd only lowers it. No intra analysis, no intra rd. */
+                RDF_CNT(2);
             }
             else
                 x264_mb_analyse_intra_p( h, &analysis, i_cost );
@@ -3718,6 +3738,9 @@ skip_analysis:
 
             if( analysis.i_mbrd )
             {
+                RDF_CNT(0);
+                if( analysis.l0.i_rd16x16 < COST_MAX )
+                    RDF_CNT(1);
                 x264_mb_analyse_p_rd( h, &analysis, X264_MIN(i_satd_inter, i_satd_intra) );
                 i_type = P_L0;
                 i_partition = D_16x16;
@@ -3729,6 +3752,10 @@ skip_analysis:
                 h->mb.i_partition = i_partition;
                 if( i_cost < COST_MAX )
                     x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
+                if( !analysis.b_force_intra && !(flags & X264_ANALYSE_PSUB16x16) && !h->mb.b_noise_reduction &&
+                    analysis.i_lambda2 <= x264_lambda2_tab[QP_MAX_SPEC] && i_cost <= analysis.i_satd_pcm &&
+                    i_cost <= x264_mb_intra_rd_floor_p( h, &analysis ) )
+                    RDF_CNT(3);
                 x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1 );
             }
 
@@ -3737,6 +3764,8 @@ skip_analysis:
             COPY2_IF_LT( i_cost, analysis.i_satd_i4x4, i_type, I_4x4 );
             COPY2_IF_LT( i_cost, analysis.i_satd_pcm, i_type, I_PCM );
 
+            if( analysis.i_mbrd && !IS_INTRA( i_type ) )
+                RDF_CNT(4);
             h->mb.i_type = i_type;
 
             if( analysis.b_force_intra && !IS_INTRA(i_type) )
