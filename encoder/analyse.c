@@ -34,6 +34,18 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* layout pair test/x264-i4x4-mb / -twin: hidden weak x264_N_i4x4mb_gate, defined here (no bytes) unless
+ * I4MB_TWIN; the twin links it as 0, I4MB_OFF is 1 and every MB takes the per-block loop */
+#define I4MB_TWIN 0
+#define I4MB_STR2( x ) #x
+#define I4MB_STR( x ) I4MB_STR2( x )
+#define x264_i4x4mb_gate x264_template(i4x4mb_gate)
+extern void x264_i4x4mb_gate( void ) __attribute__((weak, visibility("hidden")));
+#if !I4MB_TWIN
+__asm__( ".set " I4MB_STR( x264_i4x4mb_gate ) ", " I4MB_STR( x264_macroblock_analyse ) );
+#endif
+#define I4MB_OFF (!x264_i4x4mb_gate)
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -982,7 +994,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
 
         /* the whole loop in one call when every block has predict_mode[8] >= 0 */
-        if( x9_recon && (h->mb.i_neighbour4[0] & (MB_TOP|MB_LEFT|MB_TOPLEFT)) == (MB_TOP|MB_LEFT|MB_TOPLEFT)
+        if( x9_recon && !I4MB_OFF && (h->mb.i_neighbour4[0] & (MB_TOP|MB_LEFT|MB_TOPLEFT)) == (MB_TOP|MB_LEFT|MB_TOPLEFT)
             && !a->b_avoid_topright )
         {
             x264_intra4x4_mb_t s;
