@@ -1565,6 +1565,18 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
                                     s->do_search, s->w, s->output_inter, s->output_intra, s->iprev );
 }
 
+/* lowres-intra-reuse layout pair: x264_lri_gate gates the choice of iprev. Arm:
+ * x264_lri_arm, defined in api.c. Twin (LRI_TWIN 1): the never defined
+ * x264_lri_twin, which links as 0. The code is the same in both. */
+#define LRI_TWIN 0
+extern const char x264_lri_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_lri_twin __attribute__((weak, visibility("hidden")));
+#if LRI_TWIN
+#define x264_lri_gate (&x264_lri_twin != NULL)
+#else
+#define x264_lri_gate (&x264_lri_arm != NULL)
+#endif
+
 /* What the i_intra_cost of a frame costed on context h depends on besides its lowres
  * pixels: lambda is X264_LOOKAHEAD_QP's and the MBs costed (do_edges) are fixed, but
  * the cost functions and modes follow subme, unless the 8-bit context's from open. */
@@ -1647,7 +1659,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
              * fenc's lowres-static blocks: the display order neighbour, else the reference. */
             x264_frame_t *iprev = NULL;
             int intra_tag = x264_lowres_intra_tag( h->param.i_lookahead_threads > 1 ? h->lookahead_thread[0] : h );
-            if( !fenc->b_intra_calculated && b )
+            if( x264_lri_gate && !fenc->b_intra_calculated && b )
             {
                 x264_frame_t *cand[2] = { frames[b-1], b != p0 ? frames[p0] : NULL };
                 for( int i = 0; i < 2 && !iprev; i++ )

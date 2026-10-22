@@ -31,6 +31,9 @@
  ****************************************************************************/
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
+/* lowres-intra-reuse layout pair: the gate of the arm, see encoder/slicetype.c */
+__attribute__((visibility("hidden"))) const char x264_lri_arm = 1;
+
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
 void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
