@@ -555,6 +555,16 @@ void x264_mbtree_propagate_cost_avx2_fma3( int16_t *dst, uint16_t *propagate_in,
                                            uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
 void x264_mbtree_propagate_cost_avx512( int16_t *dst, uint16_t *propagate_in, uint16_t *intra_costs,
                                         uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len );
+#define x264_mbtree_cost_scale_avx512icl x264_template(mbtree_cost_scale_avx512icl)
+int x264_mbtree_cost_scale_avx512icl( uint16_t *lowres_costs, float *qp_offset, int len );
+#define x264_mbtree_cost_scale_avx2 x264_template(mbtree_cost_scale_avx2)
+int x264_mbtree_cost_scale_avx2( uint16_t *lowres_costs, float *qp_offset, int len );
+#define x264_mbtree_finish_avx512 x264_template(mbtree_finish_avx512)
+void x264_mbtree_finish_avx512( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+                                uint16_t *propagate_costs, float *params, int fps_factor, int len );
+#define x264_aq_variance_tail_avx512icl x264_template(aq_variance_tail_avx512icl)
+void x264_aq_variance_tail_avx512icl( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+                                      float *quant_offsets, float *params, int len );
 
 #define MC_CHROMA(cpu)\
 void x264_mc_chroma_##cpu( pixel *dstu, pixel *dstv, intptr_t i_dst, pixel *src, intptr_t i_src,\
@@ -1700,6 +1710,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->memcpy_aligned = x264_memcpy_aligned_avx;
     pf->plane_copy = x264_plane_copy_avx2;
     pf->get_ref = get_ref_avx2;
+    pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx2;
 
     if( cpu&X264_CPU_FMA3 )
         pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx2_fma3;
@@ -1712,5 +1723,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;
+    pf->mbtree_finish = x264_mbtree_finish_avx512;
 #endif
+
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx512icl;
+        /* zen4: aq_variance_tail icl raised sliced lowlat CPU/frame in situ; kept assembled */
+    }
 }

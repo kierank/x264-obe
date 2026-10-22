@@ -66,6 +66,11 @@ isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4
 ALIGN 32
 sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
+dbp_hex_bperm: dd 5, 0, 4, 6, 1, 3, 2, 6
+dbp_oct_bperm: dd 0, 1, 3, 2, 7, 5, 4, 6
+dbp_ring_bperm: dd 0, 2, 1, 3, 6, 4, 7, 5
+ALIGN 32
+sad_hpel_shuf8: times 2 db 0,1,2,3,4,5,6,7, 1,2,3,4,5,6,7,8
 
 SECTION .text
 
@@ -2296,6 +2301,141 @@ SAD_X4_W8_AVX2 8, 1
 %endif
 
 ;-----------------------------------------------------------------------------
+; int pixel_sad_hpel_min_16x16( uint8_t *fenc, uint8_t *pixv, uint8_t *pixh, intptr_t i_stride,
+;                               uint64_t bias01, uint64_t bias23, int best )
+; sad_x4_min of pixv, pixv + i_stride, pixh, pixh + 1. Each pixv row is loaded
+; once: lane 1 of candidate 0's row pair is lane 0 of candidate 1's.
+; Reads pixv rows 0..h and pixh rows 0..h-1, bytes 0..15 (16 wide: pixh 0..16;
+; 8 wide: pixv 0..7).
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+; row %1 (0..4) of a 4 row group -> hpel_o
+%macro HPEL_ROWOFF 3 ; row, stride, 3*stride
+%if %1 == 0
+    %xdefine hpel_o 0
+%elif %1 == 1
+    %xdefine hpel_o %2
+%elif %1 == 2
+    %xdefine hpel_o 2*%2
+%elif %1 == 3
+    %xdefine hpel_o %3
+%else
+    %xdefine hpel_o 4*%2
+%endif
+%endmacro
+
+%macro SAD_HPEL_MIN_W16_AVX2 1 ; h
+cglobal pixel_sad_hpel_min_16x%1, 4,7,10
+    lea            r6, [3*r3]
+    movu          xm5, [r1]
+%assign %%k 0
+%rep %1/2
+    movu           m4, [r0+%%k*FENC_STRIDE]
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    movu          xm6, [r1+hpel_o]
+    HPEL_ROWOFF (%%k&3)+2, r3, r6
+    movu          xm7, [r1+hpel_o]
+    vinserti128    m5, m5, xm6, 1        ; v rows k, k+1
+    vinserti128    m6, m6, xm7, 1        ; v rows k+1, k+2
+    HPEL_ROWOFF (%%k&3), r3, r6
+    %xdefine hpel_o0 hpel_o
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    movu          xm8, [r2+hpel_o0]
+    movu          xm9, [r2+hpel_o0+1]
+    vinserti128    m8, m8, [r2+hpel_o], 1
+    vinserti128    m9, m9, [r2+hpel_o+1], 1
+%if %%k == 0
+    psadbw         m0, m5, m4
+    psadbw         m1, m6, m4
+    psadbw         m2, m8, m4
+    psadbw         m3, m9, m4
+%else
+    psadbw         m5, m4
+    psadbw         m6, m4
+    psadbw         m8, m4
+    psadbw         m9, m4
+    paddw          m0, m5
+    paddw          m1, m6
+    paddw          m2, m8
+    paddw          m3, m9
+%endif
+    SWAP            5, 7
+%if (%%k&3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+    movq          xm4, r4mp
+    pinsrq        xm4, r5mp, 1
+    vpbroadcastd  xm5, r6m
+    packssdw       m0, m1
+    packssdw       m2, m3
+    phaddd         m0, m2
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+    pslld         xm0, 6
+    paddd         xm0, xm4
+    SAD_X_MIN_TREE 0, 5, 1
+%endmacro
+
+; vpbroadcastq rows: v k, k+1 | k+1, k+2 against fenc k, k | k+1, k+1;
+; pixh rows k | k+1 by pshufb to bytes 0-7, 1-8
+%macro SAD_HPEL_MIN_W8_AVX2 1 ; h
+cglobal pixel_sad_hpel_min_8x%1, 4,7,8
+    lea            r6, [3*r3]
+    vpbroadcastq   m5, [r1]
+    mova           m7, [sad_hpel_shuf8]
+%assign %%k 0
+%rep %1/2
+    vmovddup       m4, [r0+%%k*FENC_STRIDE]
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    vpbroadcastq   m2, [r1+hpel_o]
+    HPEL_ROWOFF (%%k&3)+2, r3, r6
+    vpbroadcastq   m3, [r1+hpel_o]
+    HPEL_ROWOFF (%%k&3), r3, r6
+    %xdefine hpel_o0 hpel_o
+    HPEL_ROWOFF (%%k&3)+1, r3, r6
+    movu          xm6, [r2+hpel_o0]
+    vinserti128    m6, m6, [r2+hpel_o], 1
+    vpblendd       m2, m2, m5, 0x03
+    vpblendd       m2, m2, m3, 0xc0
+    pshufb         m6, m7
+%if %%k == 0
+    psadbw         m0, m2, m4
+    psadbw         m1, m6, m4
+%else
+    psadbw         m2, m4
+    psadbw         m6, m4
+    paddw          m0, m2
+    paddw          m1, m6
+%endif
+    SWAP            3, 5
+%if (%%k&3) == 2 && %%k < %1-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+    movq          xm2, r4mp
+    pinsrq        xm2, r5mp, 1
+    vpbroadcastd  xm3, r6m
+    packssdw       m0, m1
+    pslld          m0, 6
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm2
+    paddd         xm0, xm1
+    SAD_X_MIN_TREE 0, 3, 1
+%endmacro
+
+INIT_YMM avx2
+SAD_HPEL_MIN_W16_AVX2 16
+SAD_HPEL_MIN_W16_AVX2 8
+SAD_HPEL_MIN_W8_AVX2 16
+SAD_HPEL_MIN_W8_AVX2 8
+%endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
 ; int pixel_sad_sq_min_16x16( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
 ;                             const int32_t bias[12], int best )
 ; the 12 candidates pix + dx + dy*i_stride, dx -1..2, bias[] by dy -1, 1, 0:
@@ -2417,6 +2557,290 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %undef sq_j
 %undef sq_y
 %undef sq_f
+
+;-----------------------------------------------------------------------------
+; min( best, (sad_i << s) + bias_i ) over a few candidates around pix, 8x8
+;
+; A window is vdbpsadbw of the fenc dwords, each duplicated in its qword, against
+; the ref row at pix + dy*i_stride + bx: words 0-3 of the qword are the dword's
+; sads at dx bx..bx+3. Its zero-mask keeps the candidates' words, so the windows
+; of a group add up to the candidates of the group by word, summed over the
+; qwords at the end. A row pair per ymm, a row per lane. The word sums reach at
+; most 8*8*255.
+;-----------------------------------------------------------------------------
+; window w: ref dbp_p<w> (+dbp_o: row r, +dbp_o1: row r+1), mask k<w+1>, sum m<w>
+; (m<w+4> from the fifth)
+; m4: fenc, m5: ref, m6: sad, m7: fenc dword permutation
+%macro DBP_SAD 3 ; sum, mask, first
+%if %3
+    vdbpsadbw      m%1 {k%2}{z}, m4, m5, 0x94
+%else
+    vdbpsadbw      m6 {k%2}{z}, m4, m5, 0x94
+    paddw          m%1, m6
+%endif
+%endmacro
+
+%macro DBP_ROWS 2 ; height, windows
+%assign %%r 0
+%rep %1 / 2
+    vpermd          m4, m7, [r0+%%r*FENC_STRIDE]
+    %assign %%w 0
+    %rep %2
+        %assign %%k %%w+1
+        %if %%w < 4
+            %assign %%a %%w
+        %else
+            %assign %%a %%w+4
+        %endif
+    movu           xm5, [dbp_p%[%%w]+dbp_o]
+    vinserti128     m5, m5, [dbp_p%[%%w]+dbp_o1], 1
+    DBP_SAD %[%%a], %[%%k], %%r == 0
+        %assign %%w %%w+1
+    %endrep
+    %assign %%r %%r+2
+    %if %%r < %1
+    lea          dbp_o, [dbp_o+r2*2]
+    lea         dbp_o1, [dbp_o1+r2*2]
+    %endif
+%endrep
+%endmacro
+
+%macro DBP_INIT 0 ; fenc permutation, row offsets
+    mova            m7, [sad_sq_idx8]
+    xor          dbp_o, dbp_o
+    mov         dbp_o1, r2
+%endmacro
+
+; m0 -> xm0: words 0-3 summed over the qwords
+%macro DBP_FOLD1 0
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+    punpckhqdq     xm1, xm0, xm0
+    paddw          xm0, xm1
+%endmacro
+
+; m0, m2 -> xm0: words 0-3 of m0, 4-7 of m2, summed over the qwords
+%macro DBP_FOLD2 0
+    punpcklqdq      m1, m0, m2
+    punpckhqdq      m0, m0, m2
+    paddw           m0, m1
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+%endmacro
+
+; min of the dwords of xm0 -> eax
+%macro DBP_MIN4 0
+    pshufd         xm1, xm0, q1032
+    pminsd         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminsd         xm0, xm1
+    movd           eax, xm0
+%endmacro
+
+; window pointer pix + dy*i_stride + bx; r5 = pix - 2*i_stride, r6 = pix + 2*i_stride
+%macro DBP_PTR 3 ; reg, dy, bx
+%if %2 == -2
+    lea             %1, [r5+(%3)]
+%elif %2 == -1
+    lea             %1, [r5+r2+(%3)]
+%elif %2 == 0
+    lea             %1, [r1+(%3)]
+%elif %2 == 1
+    lea             %1, [r1+r2+(%3)]
+%else
+    lea             %1, [r6+(%3)]
+%endif
+%endmacro
+
+%macro DBP_PTR_INIT 0
+    mov             r5, r1
+    sub             r5, r2
+    sub             r5, r2
+    lea             r6, [r1+r2*2]
+%endmacro
+
+; k<1..> word masks
+%macro DBP_MASKS 1-*
+%assign %%i 1
+%rep %0
+    mov            r5d, %1
+    kmovw     k%[%%i], r5d
+    %assign %%i %%i+1
+    %rotate 1
+%endrep
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_dia_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[4], int best )
+; candidates (0,-1) (0,1) (-1,0) (1,0), s = 4. Windows: dy 0 bx -2 words 1, 3;
+; dy -1 bx 0 word 0; dy 1 bx -2 word 2: (0,-1) (-1,0) (0,1) (1,0) by word
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_dia_min_8x8, 5,10,10
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    mov            r5d, 0xaaaa
+    kmovw           k1, r5d
+    mov            r5d, 0x1111
+    kmovw           k2, r5d
+    mov            r5d, 0x4444
+    kmovw           k3, r5d
+    lea         dbp_p0, [r1-2]
+    mov         dbp_p1, r1
+    sub         dbp_p1, r2
+    lea         dbp_p2, [r1+r2-2]
+    DBP_INIT
+    movu           xm8, [r3]
+    pshufd         xm8, xm8, q3120
+    vpbroadcastd   xm9, r4d
+    DBP_ROWS 8, 3
+    paddw           m0, m1
+    paddw           m0, m2
+    DBP_FOLD1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 4
+    paddd          xm0, xm8
+    pminsd         xm0, xm9
+    DBP_MIN4
+    RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_hex_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[6], int best )
+; candidates me.c hex2[1..6]: (-2,0) (-1,2) (1,2) (2,0) (1,-2) (-1,-2), s = 6.
+; Group 1: dy -2 bx -1 words 0, 2 and dy 0 bx -3 word 1: (-1,-2) (-2,0) (1,-2);
+; group 2: dy 2 bx -1 words 0, 2 and dy 0 bx 1 word 1: (-1,2) (2,0) (1,2).
+; Word 3 is 0 in both, its bias best.
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_hex_min_8x8, 5,11,11
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    mov            r5d, 0x5555
+    kmovw           k1, r5d
+    kmovw           k3, r5d
+    mov            r5d, 0x2222
+    kmovw           k2, r5d
+    kmovw           k4, r5d
+    mov            r5d, 0x3f
+    kmovw           k5, r5d
+    mov            r5d, 0xc0
+    kmovw           k6, r5d
+    lea         dbp_p2, [r2*2+1]
+    mov         dbp_p0, r1
+    sub         dbp_p0, dbp_p2
+    lea         dbp_p1, [r1-3]
+    lea         dbp_p2, [r1+r2*2-1]
+    lea         dbp_p3, [r1+1]
+    DBP_INIT
+    mova           m10, [dbp_hex_bperm]
+    vmovdqu32       m8 {k5}{z}, [r3]
+    vpbroadcastd    m8 {k6}, r4d
+    vpermd          m8, m10, m8
+    DBP_ROWS 8, 4
+    paddw           m0, m1
+    paddw           m2, m3
+    DBP_FOLD2
+    pmovzxwd        m0, xm0
+    pslld           m0, 6
+    paddd           m0, m8
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    DBP_MIN4
+    RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_oct_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[8], int best )
+; umh's octagon (0,-2) (-1,-1) (1,-1) (-2,0) (2,0) (-1,1) (1,1) (0,2), s = 4.
+; Group 1: dy -2 bx 0 word 0, dy -1 bx -2 words 1, 3, dy 0 bx -4 word 2:
+; (0,-2) (-1,-1) (-2,0) (1,-1); group 2 the same at dy 2, 1 and dy 0 bx 0:
+; (0,2) (-1,1) (2,0) (1,1).
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_oct_min_8x8, 5,13,12
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    %define dbp_p4 r11
+    %define dbp_p5 r12
+    DBP_MASKS 0x1111, 0xaaaa, 0x4444, 0x1111, 0xaaaa, 0x4444
+    DBP_PTR_INIT
+    DBP_PTR     dbp_p0, -2, 0
+    DBP_PTR     dbp_p1, -1, -2
+    DBP_PTR     dbp_p2, 0, -4
+    DBP_PTR     dbp_p3, 2, 0
+    DBP_PTR     dbp_p4, 1, -2
+    DBP_PTR     dbp_p5, 0, 0
+    DBP_INIT
+    mova           m11, [dbp_oct_bperm]
+    vpermd         m10, m11, [r3]
+    vpbroadcastd   xm11, r4d
+    DBP_ROWS 8, 6
+    paddw           m0, m1
+    paddw           m3, m8
+    paddw           m0, m2
+    paddw           m2, m3, m9
+    DBP_FOLD2
+    pmovzxwd        m0, xm0
+    pslld           m0, 4
+    paddd           m0, m10
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    pminsd         xm0, xm11
+    DBP_MIN4
+    RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_ring_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                             const int32_t bias[8], int best )
+; umh's ring (-1,-2) (1,-2) (-2,-1) (2,-1) (-2,1) (2,1) (-1,2) (1,2), s = 4.
+; Group 1: dy -2 bx -1 words 0, 2, dy -1 bx -3 word 1, dy -1 bx -1 word 3:
+; (-1,-2) (-2,-1) (1,-2) (2,-1); group 2 the same at dy 2 and 1.
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_ring_min_8x8, 5,13,12
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    %define dbp_p4 r11
+    %define dbp_p5 r12
+    DBP_MASKS 0x5555, 0x2222, 0x8888, 0x5555, 0x2222, 0x8888
+    DBP_PTR_INIT
+    DBP_PTR     dbp_p0, -2, -1
+    DBP_PTR     dbp_p1, -1, -3
+    DBP_PTR     dbp_p2, -1, -1
+    DBP_PTR     dbp_p3, 2, -1
+    DBP_PTR     dbp_p4, 1, -3
+    DBP_PTR     dbp_p5, 1, -1
+    DBP_INIT
+    mova           m11, [dbp_ring_bperm]
+    vpermd         m10, m11, [r3]
+    vpbroadcastd   xm11, r4d
+    DBP_ROWS 8, 6
+    paddw           m0, m1
+    paddw           m3, m8
+    paddw           m0, m2
+    paddw           m2, m3, m9
+    DBP_FOLD2
+    pmovzxwd        m0, xm0
+    pslld           m0, 4
+    paddd           m0, m10
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    pminsd         xm0, xm11
+    DBP_MIN4
+    RET
 
 INIT_YMM avx2
 %endif ; ARCH_X86_64

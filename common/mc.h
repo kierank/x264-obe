@@ -153,6 +153,15 @@ typedef struct
     void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list );
+
+    /* sum of the lowres costs scaled by x264_exp2fix8( qp_offset ) */
+    int (*mbtree_cost_scale)( uint16_t *lowres_costs, float *qp_offset, int len );
+    /* params: strength, weightdelta */
+    void (*mbtree_finish)( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+                           uint16_t *propagate_costs, float *params, int fps_factor, int len );
+    /* aq-mode 1 offsets from the MB energies; params: strength, bias; inv_qscale, quant_offsets may be NULL */
+    void (*aq_variance_tail)( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+                              float *quant_offsets, float *params, int len );
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)

@@ -1018,6 +1018,277 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel sad_sq_min :" );
 
+    /* dia, oct, ring (s 4), hex (s 6). j>>7: 0 random costs, 1 equal costs (ties go by idx),
+     * 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning */
+    ok = 1; used_asm = 0;
+    for( int kind = 0; kind < 4; kind++ )
+        for( int i = 0; i < 7; i++ )
+        {
+            static const int8_t dia_pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+            static const int8_t hex_pt[6][2] = {{-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}};
+            static const int8_t oct_pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+            static const int8_t ring_pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+            static const char *kind_names[4] = { "dia", "hex", "oct", "ring" };
+            static int (* const pt_c[4])( int, pixel *, pixel *, intptr_t, const int32_t *, int ) =
+            {
+                x264_pixel_sad_dia_min_c, x264_pixel_sad_hex_min_c, x264_pixel_sad_oct_min_c, x264_pixel_sad_ring_min_c
+            };
+            x264_pixel_cmp_pt_min_t pt_asm = (kind == 0 ? pixel_asm.sad_dia_min : kind == 1 ? pixel_asm.sad_hex_min
+                                            : kind == 2 ? pixel_asm.sad_oct_min : pixel_asm.sad_ring_min)[i];
+            x264_pixel_cmp_pt_min_t pt_ref = (kind == 0 ? pixel_ref.sad_dia_min : kind == 1 ? pixel_ref.sad_hex_min
+                                            : kind == 2 ? pixel_ref.sad_oct_min : pixel_ref.sad_ring_min)[i];
+            const int8_t (*pt)[2] = kind == 0 ? dia_pt : kind == 1 ? hex_pt : kind == 2 ? oct_pt : ring_pt;
+            int n = kind == 0 ? 4 : kind == 1 ? 6 : 8;
+            int s = kind == 1 ? 6 : 4;
+            if( !pt_asm || pt_asm == pt_ref )
+                continue;
+            int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+            ALIGNED_16( pixel refm[24*48] );
+            int wins[9] = {0};
+            set_func_name( "sad_%s_min_%s", kind_names[kind], pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 512 && ok; j++ )
+            {
+                int mode = j>>7;
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
+                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pix = mode == 3 ? refm + 4*48 + 8 : pbuf2 + (j&31) + 2*stride + 4;
+                ALIGNED_16( int32_t bias[8] );
+                int sad[8], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                if( mode == 3 )
+                {
+                    int k = j%n;
+                    for( int l = 0; l < 24*48; l++ )
+                        refm[l] = rand() & PIXEL_MAX;
+                    for( int y = 0; y < bh; y++ )
+                        memcpy( pix + pt[k][0] + (pt[k][1] + y)*stride, pbuf4 + 16*y, bw*sizeof(pixel) );
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix + pt[k][0] + pt[k][1]*stride, stride );
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << s) + 1 + (k + j) % n;
+                    else if( mode == 2 )
+                        bias[k] = ((((j>>(k%5))&1) * 131070) << s) + ((j>>(k%4))&1) * ((1<<s)-1);
+                    else if( mode == 3 )
+                        bias[k] = k == j%n ? rand()&((1<<s)-1) : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << s) + (rand()&((1<<s)-1));
+                    tmin = X264_MIN( tmin, (sad[k] << s) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << s) + (rand()%3 ? (int)(rand()&((1<<s)-1)) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 )
+                    best = INT_MAX;
+                else
+                    best = tmin + ((rand()&255) - 128) * (1<<s) + (rand()&((1<<s)-1));
+                res_c = best;
+                for( int k = 0; k < n; k++ )
+                    if( (sad[k] << s) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << s) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                int res_r = pt_c[kind]( i, fenc, pix, stride, bias, best );
+                if( res_r != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_min[%d]: C reference mismatch [FAILED]\n", kind_names[kind], i );
+                }
+                res_a = call_a( pt_asm, fenc, pix, stride, bias, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_min[%d]: mode %d %d != %d [FAILED]\n", kind_names[kind], i, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= n && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_min[%d]: %s %d never selected [FAILED]\n", kind_names[kind], i, k ? "slot" : "best", k-1 );
+                }
+        }
+    report( "pixel sad_pt_min :" );
+
+    /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
+     * 3 a maximal sad (~fenc) in slot j&3, winning */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( pixel_asm.sad_hpel_min[i] && pixel_asm.sad_hpel_min[i] != pixel_ref.sad_hpel_min[i] )
+        {
+            ALIGNED_16( pixel refm[40*48] );
+            int wins[5] = {0};
+            set_func_name( "sad_hpel_min_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 256 && ok; j++ )
+            {
+                int mode = j>>6;
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
+                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pixv = mode == 3 ? refm + 1 : pbuf2 + (j&31) + 1;
+                pixel *pixh = mode == 3 ? refm + 19*48 + 2 : pbuf2 + 18*stride + ((j*7)&31);
+                pixel *pix[4];
+                int sad[4], bias[4], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                pix[0] = pixv;
+                pix[1] = pixv + stride;
+                pix[2] = pixh;
+                pix[3] = pixh + 1;
+                if( mode == 3 )
+                {
+                    int k = j&3;
+                    for( int l = 0; l < 40*48; l++ )
+                        refm[l] = rand() & PIXEL_MAX;
+                    for( int y = 0; y < 16; y++ )
+                        memcpy( pix[k] + y*stride, pbuf4 + 16*y, 16*sizeof(pixel) );
+                }
+                for( int k = 0; k < 4; k++ )
+                {
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix[k], stride );
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < 4; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << 6) + 1 + ((k + j) & 3);
+                    else if( mode == 2 )
+                        bias[k] = ((((j>>k)&1) * 131070) << 6) + ((j>>(k+2))&1) * 63;
+                    else if( mode == 3 )
+                        bias[k] = k == (j&3) ? rand()&63 : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << 6) + (rand()&63);
+                    tmin = X264_MIN( tmin, (sad[k] << 6) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << 6) + (rand()%3 ? (int)(rand()&63) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 )
+                    best = INT_MAX;
+                else
+                    best = tmin + ((rand()&255) - 128) * 64 + (rand()&63);
+                uint64_t bias01 = (uint32_t)bias[0] | (uint64_t)(uint32_t)bias[1] << 32;
+                uint64_t bias23 = (uint32_t)bias[2] | (uint64_t)(uint32_t)bias[3] << 32;
+                res_c = best;
+                for( int k = 0; k < 4; k++ )
+                    if( (sad[k] << 6) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << 6) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                if( x264_pixel_sad_hpel_min_c( i, fenc, pixv, pixh, stride, bias01, bias23, best ) != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_hpel_min[%d]: C reference mismatch [FAILED]\n", i );
+                }
+                res_a = call_a( pixel_asm.sad_hpel_min[i], fenc, pixv, pixh, stride, bias01, bias23, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_hpel_min[%d]: mode %d %d != %d [FAILED]\n", i, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= 4 && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_hpel_min[%d]: %s %d never selected [FAILED]\n", i, k ? "slot" : "best", k-1 );
+                }
+        }
+    }
+    report( "pixel sad_hpel_min :" );
+
+    /* in fenc_buf/fdec_buf layouts at the luma, 4:2:0/4:2:2 u and v, and 4:4:4 offsets,
+     * pixels outside the block different: equal, then one pixel changed at every
+     * position (by 1, or to 0/PIXEL_MAX), then pixels outside the block changed */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 7; i++ )
+    {
+        if( pixel_asm.fenc_eq[i] && pixel_asm.fenc_eq[i] != pixel_ref.fenc_eq[i] )
+        {
+            static const int fenc_off[4] = { 0, 16*FENC_STRIDE, 16*FENC_STRIDE+8, 32*FENC_STRIDE };
+            static const int fdec_off[4] = { 2*FDEC_STRIDE, 20*FDEC_STRIDE, 20*FDEC_STRIDE+16, 38*FDEC_STRIDE };
+            ALIGNED_64( pixel fenc_b[48*FENC_STRIDE] );
+            ALIGNED_64( pixel fdec_b[54*FDEC_STRIDE] );
+            int w = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+            set_func_name( "fenc_eq_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int o = 0; o < 4 && ok; o++ )
+            {
+                if( (w == 16) != (o == 0 || o == 3) )
+                    continue;
+                pixel *fenc = fenc_b + fenc_off[o];
+                pixel *fdec = fdec_b + fdec_off[o];
+                for( int j = 0; j < 2*w*bh + 64 && ok; j++ )
+                {
+                    for( int l = 0; l < 48*FENC_STRIDE; l++ )
+                        fenc_b[l] = rand() & PIXEL_MAX;
+                    for( int l = 0; l < 54*FDEC_STRIDE; l++ )
+                        fdec_b[l] = rand() & PIXEL_MAX;
+                    if( j&1 )
+                        for( int y = 0; y < bh; y++ )
+                            for( int x = 0; x < w; x++ )
+                                fenc[x+y*FENC_STRIDE] = (j&2) ? PIXEL_MAX : 0;
+                    for( int y = 0; y < bh; y++ )
+                        memcpy( fdec + y*FDEC_STRIDE, fenc + y*FENC_STRIDE, w*sizeof(pixel) );
+                    if( j < 2*w*bh )
+                    {
+                        /* pixel j>>1 of the block */
+                        pixel *p = fdec + ((j>>1)%w) + ((j>>1)/w)*FDEC_STRIDE;
+                        *p = (j&1) ? PIXEL_MAX - *p : (*p + 1) & PIXEL_MAX;
+                    }
+                    else
+                    {
+                        /* outside the block: the rest of a row, a row below (4:4:4 v: above),
+                         * a column left */
+                        int k = j - 2*w*bh;
+                        int yo = o == 3 ? -1 : bh;
+                        fdec[w + (k&15) + (k%bh)*FDEC_STRIDE] ^= 1;
+                        if( w == 8 )
+                            fenc[w + (k&7) + (k%bh)*FENC_STRIDE] ^= 1;
+                        else
+                            fenc[(k&15) + yo*FENC_STRIDE] ^= 1;
+                        fdec[(k&7) + yo*FDEC_STRIDE] ^= 1;
+                        fdec[-1 + (k%bh)*FDEC_STRIDE] ^= 1;
+                    }
+                    int res_c = x264_pixel_fenc_eq_c( i, fenc, fdec );
+                    if( res_c != (j >= 2*w*bh) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "fenc_eq[%d]: C reference %d at %d [FAILED]\n", i, res_c, j );
+                    }
+                    int res_a = call_a1( pixel_asm.fenc_eq[i], fenc, fdec );
+                    if( res_c != res_a )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "fenc_eq[%d]: offset %d case %d %d != %d [FAILED]\n", i, o, j, res_c, res_a );
+                    }
+                }
+                /* bench: equal (every row read), and the first row different */
+                for( int y = 0; y < bh; y++ )
+                    memcpy( fdec + y*FDEC_STRIDE, fenc + y*FENC_STRIDE, w*sizeof(pixel) );
+                set_func_name( "fenc_eq_%s_same", pixel_names[i] );
+                call_a2( pixel_asm.fenc_eq[i], fenc, fdec );
+                fdec[w-1] ^= 1;
+                set_func_name( "fenc_eq_%s_diff", pixel_names[i] );
+                call_a2( pixel_asm.fenc_eq[i], fenc, fdec );
+                set_func_name( "fenc_eq_%s", pixel_names[i] );
+            }
+        }
+    }
+    report( "pixel fenc_eq :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \
@@ -3496,7 +3767,169 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_free( hb );
         x264_free( mb );
     }
+
+    if( mc_a.mbtree_cost_scale != mc_ref.mbtree_cost_scale )
+    {
+        used_asm = 1;
+        set_func_name( "mbtree_cost_scale" );
+        uint16_t *costs = (uint16_t*)buf3;
+        float *qp = (float*)buf4;
+        for( int i = 0; i < 40 && ok; i++ )
+        {
+            /* i%4 0: the encoder's range, 1: exp2fix8 index over -64..1087, 2: clipped both ways, 3: max costs */
+            int len = i < 32 ? 1 + i : 120 + rand()%200;
+            for( int j = 0; j < len; j++ )
+            {
+                costs[j] = i%4 == 3 ? 0xffff : rand();
+                if( i%4 == 1 )
+                    qp[j] = ((rand()%1152) - 64 - 512 + (rand()&1)) * (6.f/-64.f);
+                else if( i%4 == 2 )
+                    qp[j] = (rand()&1 ? 1 : -1) * (j&1 ? 1e30f : 60.f + (rand()&1023));
+                else
+                    qp[j] = ((rand()&65535) - 32768) * (24.f/32768);
+            }
+            int resc = call_c1( mc_c.mbtree_cost_scale, costs, qp, len );
+            int resa = call_a1( mc_a.mbtree_cost_scale, costs, qp, len );
+            if( resc != resa )
+            {
+                ok = 0;
+                fprintf( stderr, "mbtree_cost_scale FAILED: len %d mode %d: %d != %d\n", len, i%4, resc, resa );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row, offsets in the encoder's range */
+            bench_srand( 1100 );
+            for( int j = 0; j < 120; j++ )
+            {
+                costs[j] = bench_rand();
+                qp[j] = ((bench_rand()&65535) - 32768) * (24.f/32768);
+            }
+            call_c2( mc_c.mbtree_cost_scale, costs, qp, 120 );
+            call_a2( mc_a.mbtree_cost_scale, costs, qp, 120 );
+        }
+    }
+
+    if( mc_a.mbtree_finish != mc_ref.mbtree_finish )
+    {
+        used_asm = 1;
+        set_func_name( "mbtree_finish" );
+        float *qpc = (float*)buf3;
+        float *qpa = qpc + 300;
+        float *qp_aq = qpa + 300;
+        uint16_t *intra = (uint16_t*)buf4;
+        uint16_t *invq = intra + 300;
+        uint16_t *prop = invq + 300;
+        for( int i = 0; i < 40 && ok; i++ )
+        {
+            /* i%4 0: the encoder's ranges, 1: weightdelta, 2: maxed inputs, 3: half the MBs with intra 0 */
+            int len = i < 32 ? 1 + i : 120 + rand()%180;
+            int fps_factor = i%4 == 2 ? 0x7fff : 384 + rand()%256;
+            float params[2] = { i%4 == 2 ? 5.f : (rand()%5000) * (5.f/5000), i%4 == 1 ? (rand()&65535) * (1.f/65536) : 0.f };
+            for( int j = 0; j < len; j++ )
+            {
+                intra[j] = i%4 == 2 ? LOWRES_COST_MASK : rand() & LOWRES_COST_MASK;
+                invq[j]  = i%4 == 2 ? 0xffff : 128 + rand()%768;
+                prop[j]  = i%4 == 2 ? 0xffff : rand() & 0xffff >> (rand()&15);
+                if( i%4 == 3 && (rand()&1) )
+                    intra[j] = rand()&1;
+                qp_aq[j] = ((rand()&65535) - 32768) * (12.f/32768);
+                qpc[j] = qpa[j] = rand() * (1.f/RAND_MAX);
+            }
+            call_c1( mc_c.mbtree_finish, qpc, qp_aq, intra, invq, prop, params, fps_factor, len );
+            call_a1( mc_a.mbtree_finish, qpa, qp_aq, intra, invq, prop, params, fps_factor, len );
+            /* -ffast-math may reorder the C's float sums; bit-exact otherwise */
+            for( int j = 0; j < len && ok; j++ )
+            {
+#ifdef __FAST_MATH__
+                ok &= fabs( qpc[j] - qpa[j] ) < 1e-4;
+#else
+                ok &= !memcmp( qpc+j, qpa+j, sizeof(float) );
+#endif
+                if( !ok )
+                    fprintf( stderr, "mbtree_finish FAILED: len %d mode %d [%d]: %.9g != %.9g\n", len, i%4, j, qpc[j], qpa[j] );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row, qcomp 0.6, fps_factor 512, no weightdelta */
+            float params[2] = { 2.f, 0.f };
+            bench_srand( 1101 );
+            for( int j = 0; j < 120; j++ )
+            {
+                intra[j] = bench_rand() & LOWRES_COST_MASK;
+                invq[j]  = 128 + bench_rand()%768;
+                prop[j]  = bench_rand() & 0xfff;
+                qp_aq[j] = ((bench_rand()&65535) - 32768) * (12.f/32768);
+            }
+            call_c2( mc_c.mbtree_finish, qpc, qp_aq, intra, invq, prop, params, 512, 120 );
+            call_a2( mc_a.mbtree_finish, qpa, qp_aq, intra, invq, prop, params, 512, 120 );
+        }
+    }
     report( "mbtree :" );
+
+    ok = 1; used_asm = 0;
+    if( mc_a.aq_variance_tail != mc_ref.aq_variance_tail )
+    {
+        used_asm = 1;
+        set_func_name( "aq_variance_tail" );
+        float *qpc = (float*)buf3;
+        float *qpa = qpc + 300;
+        float *qpc_aq = qpa + 300;
+        float *qpa_aq = (float*)buf4;
+        float *offsets = qpa_aq + 300;
+        uint16_t *invc = (uint16_t*)(offsets + 300);
+        uint16_t *inva = invc + 300;
+        uint32_t *energy = (uint32_t*)buf1;
+        for( int i = 0; i < 48 && ok; i++ )
+        {
+            /* i%3 0: AC energies, 1: every msb position with random low bits, 0 and 1, 2: strength up to 4, big offsets */
+            int len = i < 32 ? 1 + i : 120 + rand()%180;
+            float params[2] = { (i%3 == 2 ? 4.f : 1.f) * (rand()&65535) * (1.f/65536), 14.427f + 2*(rand()&1) };
+            float *quant_offsets = i&4 ? offsets : NULL;
+            uint16_t *inv_c = i&8 ? NULL : invc;
+            uint16_t *inv_a = i&8 ? NULL : inva;
+            for( int j = 0; j < len; j++ )
+            {
+                if( i%3 == 1 )
+                    energy[j] = j < 2 ? j : j%3 == 2 ? 0xffffffffu >> (rand()&31) /* rounds up unless truncated */
+                              : (uint32_t)(((uint64_t)rand() << 31 | rand()) >> (j&31));
+                else
+                    energy[j] = (rand() & 0xffffff) >> (rand()&15);
+                offsets[j] = ((rand()&65535) - 32768) * (i%3 == 2 ? 100.f/32768 : 6.f/32768);
+                qpc[j] = qpa[j] = qpc_aq[j] = qpa_aq[j] = -1.f;
+                invc[j] = inva[j] = 0x5555;
+            }
+            qpc[len] = qpa[len] = qpc_aq[len] = qpa_aq[len] = -1.f;
+            invc[len] = inva[len] = 0x5555;
+            call_c1( mc_c.aq_variance_tail, qpc, qpc_aq, inv_c, energy, quant_offsets, params, len );
+            call_a1( mc_a.aq_variance_tail, qpa, qpa_aq, inv_a, energy, quant_offsets, params, len );
+            /* -ffast-math may reorder the C's float sums; bit-exact otherwise */
+            for( int j = 0; j < len+1 && ok; j++ )
+            {
+#ifdef __FAST_MATH__
+                ok &= fabs( qpc[j] - qpa[j] ) < 1e-4 && inva[j] == (j < len && !(i&8) ? x264_exp2fix8( qpa[j] ) : 0x5555);
+#else
+                ok &= !memcmp( qpc+j, qpa+j, sizeof(float) ) && invc[j] == inva[j];
+#endif
+                ok &= !memcmp( qpa+j, qpa_aq+j, sizeof(float) ) && !memcmp( qpc+j, qpc_aq+j, sizeof(float) );
+                if( !ok )
+                    fprintf( stderr, "aq_variance_tail FAILED: len %d mode %d [%d]: %.9g %d != %.9g %d\n",
+                             len, i%3, j, qpc[j], invc[j], qpa[j], inva[j] );
+            }
+        }
+        if( do_bench )
+        {
+            /* bench: a fixed 1080p row of AC energies, aq-strength 1, no quant offsets */
+            float params[2] = { 1.0397f, 14.427f };
+            bench_srand( 1102 );
+            for( int j = 0; j < 120; j++ )
+                energy[j] = (bench_rand() & 0xffffff) >> (bench_rand()&15);
+            call_c2( mc_c.aq_variance_tail, qpc, qpc_aq, invc, energy, NULL, params, 120 );
+            call_a2( mc_a.aq_variance_tail, qpa, qpa_aq, inva, energy, NULL, params, 120 );
+        }
+    }
+    report( "aq :" );
 
     if( mc_a.memcpy_aligned != mc_ref.memcpy_aligned )
     {

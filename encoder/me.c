@@ -207,13 +207,34 @@ do\
     COPY3_IF_LT( bcost, costs[2], bmx, m2x, bmy, m2y );\
 }
 
+/* umh's COST_MV_X4 groups around omx, omy in one call: (cost << 4) + j+1, j in pts[] order,
+ * against bcost << 4, so the min is the COPY3_IF_LT sequence */
+static const int8_t umh_dia[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+static const int8_t umh_oct[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+#define COST_MV_PT_MIN( fn, pts, n )\
+{\
+    for( int j = 0; j < n; j++ )\
+        pt_bias[j] = (BITS_MVD( omx+pts[j][0], omy+pts[j][1] ) << 4) + j+1;\
+    int pt_cost = fn( p_fenc, p_fref_w + omx + omy*stride, stride, pt_bias, bcost << 4 );\
+    if( pt_cost&15 )\
+    {\
+        bmx = omx + pts[(pt_cost&15)-1][0];\
+        bmy = omy + pts[(pt_cost&15)-1][1];\
+    }\
+    bcost = pt_cost >> 4;\
+}
+
 /*  1  */
 /* 101 */
 /*  1  */
 #define DIA1_ITER( mx, my )\
 {\
     omx = mx; omy = my;\
-    COST_MV_X4( 0,-1, 0,1, -1,0, 1,0 );\
+    if( cmp_dia_min )\
+        COST_MV_PT_MIN( cmp_dia_min, umh_dia, 4 )\
+    else\
+        COST_MV_X4( 0,-1, 0,1, -1,0, 1,0 );\
 }
 
 #define CROSS( start, x_max, y_max )\
@@ -265,6 +286,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     x264_pixel_cmp_x3_min_t cmp_x3_min = h->pixf.fpelcmp_x3_min[i_pixel];
     x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
     x264_pixel_cmp_sq_min_t cmp_sq_min = h->pixf.fpelcmp_sq_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_dia_min = h->pixf.fpelcmp_dia_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_hex_min = h->pixf.fpelcmp_hex_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_oct_min = h->pixf.fpelcmp_oct_min[i_pixel];
+    x264_pixel_cmp_pt_min_t cmp_ring_min = h->pixf.fpelcmp_ring_min[i_pixel];
+    ALIGNED_ARRAY_16( int32_t, pt_bias,[8] );
 
     int mv_x_min = h->mb.mv_limit_fpel[0][0];
     int mv_y_min = h->mb.mv_limit_fpel[0][1];
@@ -396,11 +422,23 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             int i = i_me_range;
             do
             {
-                COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
-                COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
-                COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
-                COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
-                COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
+                if( cmp_dia_min )
+                {
+                    /* the same packed costs; the min doesn't depend on the order */
+                    pt_bias[0] = (BITS_MVD( bmx, bmy-1 ) << 4) + 1;
+                    pt_bias[1] = (BITS_MVD( bmx, bmy+1 ) << 4) + 3;
+                    pt_bias[2] = (BITS_MVD( bmx-1, bmy ) << 4) + 4;
+                    pt_bias[3] = (BITS_MVD( bmx+1, bmy ) << 4) + 12;
+                    bcost = cmp_dia_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+                }
+                else
+                {
+                    COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
+                    COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
+                    COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
+                    COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
+                    COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
+                }
                 if( !(bcost&15) )
                     break;
                 bmx -= (bcost<<28)>>30;
@@ -435,8 +473,18 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
             /* hexagon */
             bcost <<= 6;
-            COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
-            COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+            if( cmp_hex_min )
+            {
+                /* hex2[1..6], idx 2..7, as below */
+                for( int j = 0; j < 6; j++ )
+                    pt_bias[j] = (BITS_MVD( bmx+hex2[j+1][0], bmy+hex2[j+1][1] ) << 6) + j+2;
+                bcost = cmp_hex_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+            }
+            else
+            {
+                COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
+                COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+            }
 
             if( bcost&63 )
             {
@@ -524,16 +572,26 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define SAD_THRESH(v) ( bcost < ( v >> x264_pixel_size_shift[i_pixel] ) )
             if( bcost == ucost2 && SAD_THRESH(2000) )
             {
-                COST_MV_X4( 0,-2, -1,-1, 1,-1, -2,0 );
-                COST_MV_X4( 2, 0, -1, 1, 1, 1,  0,2 );
+                if( cmp_oct_min )
+                    COST_MV_PT_MIN( cmp_oct_min, umh_oct, 8 )
+                else
+                {
+                    COST_MV_X4( 0,-2, -1,-1, 1,-1, -2,0 );
+                    COST_MV_X4( 2, 0, -1, 1, 1, 1,  0,2 );
+                }
                 if( bcost == ucost1 && SAD_THRESH(500) )
                     break;
                 if( bcost == ucost2 )
                 {
                     int range = (i_me_range>>1) | 1;
                     CROSS( 3, range, range );
-                    COST_MV_X4( -1,-2, 1,-2, -2,-1, 2,-1 );
-                    COST_MV_X4( -2, 1, 2, 1, -1, 2, 1, 2 );
+                    if( cmp_ring_min )
+                        COST_MV_PT_MIN( cmp_ring_min, umh_ring, 8 )
+                    else
+                    {
+                        COST_MV_X4( -1,-2, 1,-2, -2,-1, 2,-1 );
+                        COST_MV_X4( -2, 1, 2, 1, -1, 2, 1, 2 );
+                    }
                     if( bcost == ucost2 )
                         break;
                     cross_start = range + 2;
@@ -1062,6 +1120,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     ALIGNED_ARRAY_16( int, costs,[4] );
     pixel *p_fenc = m->p_fenc[0];
     x264_pixel_cmp_x4_min_t cmp_x4_min = h->pixf.fpelcmp_x4_min[i_pixel];
+    x264_pixel_cmp_hpel_min_t cmp_hpel_min = h->pixf.fpelcmp_hpel_min[i_pixel];
 
     int bmx = m->mv[0];
     int bmy = m->mv[1];
@@ -1100,13 +1159,18 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
                 src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
             }
-            src1 = src0 + stride;
-            src3 = src2 + 1;
-            COST_MIN_X4( bcost, src0, src1, src2, src3,
-                         ((p_cost_mvx[omx  ] + p_cost_mvy[omy-2]) << 6) + 2,
-                         ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6,
-                         ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16,
-                         ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48 );
+            int b0 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy-2]) << 6) + 2;
+            int b1 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6;
+            int b2 = ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16;
+            int b3 = ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48;
+            if( cmp_hpel_min )
+                bcost = cmp_hpel_min( p_fenc, src0, src2, stride, PACK2( b0, b1 ), PACK2( b2, b3 ), bcost );
+            else
+            {
+                src1 = src0 + stride;
+                src3 = src2 + 1;
+                COST_MIN_X4( bcost, src0, src1, src2, src3, b0, b1, b2, b3 );
+            }
             if( !(bcost&63) )
                 break;
             bmx -= (bcost<<26)>>29;

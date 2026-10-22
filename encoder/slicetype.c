@@ -1739,22 +1739,21 @@ static int x264_slicetype_frame_cost_recalculate( x264_t *h, x264_frame_t **fram
     x264_emms();
     for( h->mb.i_mb_y = h->mb.i_mb_height - 1; h->mb.i_mb_y >= 0; h->mb.i_mb_y-- )
     {
-        row_satd[ h->mb.i_mb_y ] = 0;
-        for( h->mb.i_mb_x = h->mb.i_mb_width - 1; h->mb.i_mb_x >= 0; h->mb.i_mb_x-- )
+        int i_mb_xy = h->mb.i_mb_y*h->mb.i_mb_stride;
+        uint16_t *lowres_costs = frames[b]->lowres_costs[b-p0][p1-b] + i_mb_xy;
+        int row = h->mc.mbtree_cost_scale( lowres_costs, qp_offset + i_mb_xy, h->mb.i_mb_width );
+        row_satd[ h->mb.i_mb_y ] = row;
+        if( h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2 )
+            i_score += row;
+        else if( h->mb.i_mb_y > 0 && h->mb.i_mb_y < h->mb.i_mb_height - 1 )
         {
-            int i_mb_xy = h->mb.i_mb_x + h->mb.i_mb_y*h->mb.i_mb_stride;
-            int i_mb_cost = frames[b]->lowres_costs[b-p0][p1-b][i_mb_xy] & LOWRES_COST_MASK;
-            float qp_adj = qp_offset[i_mb_xy];
-            i_mb_cost = (i_mb_cost * x264_exp2fix8(qp_adj) + 128) >> 8;
-            row_satd[ h->mb.i_mb_y ] += i_mb_cost;
-            if( (h->mb.i_mb_y > 0 && h->mb.i_mb_y < h->mb.i_mb_height - 1 &&
-                 h->mb.i_mb_x > 0 && h->mb.i_mb_x < h->mb.i_mb_width - 1) ||
-                 h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2 )
-            {
-                i_score += i_mb_cost;
-            }
+            /* the inner MBs: all but the first and last of the row */
+            int last = h->mb.i_mb_width - 1;
+            i_score += row - (((lowres_costs[0] & LOWRES_COST_MASK) * x264_exp2fix8( qp_offset[i_mb_xy] ) + 128) >> 8)
+                           - (((lowres_costs[last] & LOWRES_COST_MASK) * x264_exp2fix8( qp_offset[i_mb_xy+last] ) + 128) >> 8);
         }
     }
+    h->mb.i_mb_x = -1;
     return i_score;
 }
 
@@ -1771,16 +1770,9 @@ static void x264_macroblock_tree_finish( x264_t *h, x264_frame_t *frame, float a
     /* Allow the strength to be adjusted via qcompress, since the two
      * concepts are very similar. */
     float strength = 5.0f * (1.0f - h->param.rc.f_qcompress);
-    for( int mb_index = 0; mb_index < h->mb.i_mb_count; mb_index++ )
-    {
-        int intra_cost = (frame->i_intra_cost[mb_index] * frame->i_inv_qscale_factor[mb_index] + 128) >> 8;
-        if( intra_cost )
-        {
-            int propagate_cost = (frame->i_propagate_cost[mb_index] * fps_factor + 128) >> 8;
-            float log2_ratio = x264_log2(intra_cost + propagate_cost) - x264_log2(intra_cost) + weightdelta;
-            frame->f_qp_offset[mb_index] = frame->f_qp_offset_aq[mb_index] - strength * log2_ratio;
-        }
-    }
+    float params[2] = { strength, weightdelta };
+    h->mc.mbtree_finish( frame->f_qp_offset, frame->f_qp_offset_aq, frame->i_intra_cost, frame->i_inv_qscale_factor,
+                         frame->i_propagate_cost, params, fps_factor, h->mb.i_mb_count );
 }
 
 static void x264_macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, float average_duration, int p0, int p1, int b, int referenced )

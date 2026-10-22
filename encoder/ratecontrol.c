@@ -404,18 +404,18 @@ void x264_adaptive_quant_frame_rows( x264_t *h, x264_frame_t *frame, float *quan
         /* constants chosen to result in approximately the same overall bitrate as without AQ.
          * FIXME: while they're written in 5 significant digits, they're only tuned to 2. */
         float strength = h->param.rc.f_aq_strength * 1.0397f;
+        float params[2] = { strength, 14.427f + 2*(BIT_DEPTH-8) };
+        ALIGNED_ARRAY_64( uint32_t, energy,[128] );
         for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
-            for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x++ )
+            for( int mb_x0 = 0; mb_x0 < h->mb.i_mb_width; mb_x0 += 128 )
             {
-                int mb_xy = mb_x + mb_y*h->mb.i_mb_stride;
-                uint32_t energy = x264_ac_energy_mb( h, mb_x, mb_y, frame, pixel_sum, pixel_ssd );
-                float qp_adj = strength * (x264_log2( X264_MAX(energy, 1) ) - (14.427f + 2*(BIT_DEPTH-8)));
-                if( quant_offsets )
-                    qp_adj += quant_offsets[mb_xy];
-                frame->f_qp_offset[mb_xy] =
-                frame->f_qp_offset_aq[mb_xy] = qp_adj;
-                if( h->frames.b_have_lowres )
-                    frame->i_inv_qscale_factor[mb_xy] = x264_exp2fix8(qp_adj);
+                int n = X264_MIN( h->mb.i_mb_width - mb_x0, 128 );
+                int mb_xy = mb_x0 + mb_y*h->mb.i_mb_stride;
+                for( int i = 0; i < n; i++ )
+                    energy[i] = x264_ac_energy_mb( h, mb_x0 + i, mb_y, frame, pixel_sum, pixel_ssd );
+                h->mc.aq_variance_tail( frame->f_qp_offset + mb_xy, frame->f_qp_offset_aq + mb_xy,
+                                        h->frames.b_have_lowres ? frame->i_inv_qscale_factor + mb_xy : NULL, energy,
+                                        quant_offsets ? quant_offsets + mb_xy : NULL, params, n );
             }
     }
 }

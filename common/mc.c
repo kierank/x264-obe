@@ -611,6 +611,48 @@ static void mbtree_propagate_cost( int16_t *dst, uint16_t *propagate_in, uint16_
     }
 }
 
+static int mbtree_cost_scale( uint16_t *lowres_costs, float *qp_offset, int len )
+{
+    int sum = 0;
+    for( int i = 0; i < len; i++ )
+        sum += ((lowres_costs[i] & LOWRES_COST_MASK) * x264_exp2fix8( qp_offset[i] ) + 128) >> 8;
+    return sum;
+}
+
+static void mbtree_finish( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+                           uint16_t *propagate_costs, float *params, int fps_factor, int len )
+{
+    float strength = params[0];
+    float weightdelta = params[1];
+    for( int i = 0; i < len; i++ )
+    {
+        int intra_cost = (intra_costs[i] * inv_qscales[i] + 128) >> 8;
+        if( intra_cost )
+        {
+            int propagate_cost = (propagate_costs[i] * fps_factor + 128) >> 8;
+            float log2_ratio = x264_log2(intra_cost + propagate_cost) - x264_log2(intra_cost) + weightdelta;
+            qp_offset[i] = qp_offset_aq[i] - strength * log2_ratio;
+        }
+    }
+}
+
+static void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+                              float *quant_offsets, float *params, int len )
+{
+    float strength = params[0];
+    float bias = params[1];
+    for( int i = 0; i < len; i++ )
+    {
+        float qp_adj = strength * (x264_log2( X264_MAX(energy[i], 1) ) - bias);
+        if( quant_offsets )
+            qp_adj += quant_offsets[i];
+        qp_offset[i] =
+        qp_offset_aq[i] = qp_adj;
+        if( inv_qscale )
+            inv_qscale[i] = x264_exp2fix8( qp_adj );
+    }
+}
+
 static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list )
@@ -747,6 +789,9 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 
     pf->mbtree_propagate_cost = mbtree_propagate_cost;
     pf->mbtree_propagate_list = mbtree_propagate_list;
+    pf->mbtree_cost_scale = mbtree_cost_scale;
+    pf->mbtree_finish = mbtree_finish;
+    pf->aq_variance_tail = aq_variance_tail;
 
 #if HAVE_MMX
     x264_mc_init_mmx( cpu, pf );
@@ -763,6 +808,8 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     {
         pf->mbtree_propagate_cost = mbtree_propagate_cost;
         pf->mbtree_propagate_list = mbtree_propagate_list;
+        pf->mbtree_finish = mbtree_finish;
+        pf->aq_variance_tail = aq_variance_tail;
     }
 }
 

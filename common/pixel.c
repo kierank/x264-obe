@@ -90,6 +90,76 @@ int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_st
     return best;
 }
 
+/* reference for sad_hpel_min */
+int x264_pixel_sad_hpel_min_c( int i_pixel, pixel *fenc, pixel *pixv, pixel *pixh, intptr_t i_stride,
+                               uint64_t bias01, uint64_t bias23, int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    pixel *pix[4] = { pixv, pixv + i_stride, pixh, pixh + 1 };
+    int32_t bias[4] = { (int32_t)bias01, (int32_t)(bias01 >> 32), (int32_t)bias23, (int32_t)(bias23 >> 32) };
+    for( int i = 0; i < 4; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix[i], i_stride ) << 6) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
+/* reference for fenc_eq */
+int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec )
+{
+    for( int y = 0; y < x264_pixel_size[i_pixel].h; y++ )
+        if( memcmp( fenc + y*FENC_STRIDE, fdec + y*FDEC_STRIDE, x264_pixel_size[i_pixel].w * sizeof(pixel) ) )
+            return 0;
+    return 1;
+}
+
+static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
+                       int shift, const int32_t *bias, int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    for( int i = 0; i < n; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix + pt[i][0] + pt[i][1]*i_stride, i_stride ) << shift) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
+/* references for sad_dia_min, sad_hex_min, and umh's sad_oct_min and sad_ring_min */
+int x264_pixel_sad_dia_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[4], int best )
+{
+    static const int8_t pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 4, 4, bias, best );
+}
+
+/* me.c's hex2[1..6] */
+int x264_pixel_sad_hex_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[6], int best )
+{
+    static const int8_t pt[6][2] = {{-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 6, 6, bias, best );
+}
+
+int x264_pixel_sad_oct_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best )
+{
+    static const int8_t pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 8, 4, bias, best );
+}
+
+int x264_pixel_sad_ring_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best )
+{
+    static const int8_t pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 8, 4, bias, best );
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
@@ -1275,6 +1345,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
+        pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1664,6 +1735,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_avg2[PIXEL_8x8]   = x264_pixel_sad_avg2_8x8_avx2;
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
+        INIT4( sad_hpel_min, _avx2 );
+        pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
@@ -1742,6 +1815,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
+        /* point sets: 8x8 only, the size that wins on rack01 Zen 4 */
+        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_8x8_avx512;
+        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_8x8_avx512;
+        pixf->sad_oct_min[PIXEL_8x8] = x264_pixel_sad_oct_min_8x8_avx512;
+        pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX
