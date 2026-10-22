@@ -29,6 +29,13 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#define CF_TWIN 0
+#define CF_STR2( x ) #x
+#define CF_STR( x ) CF_STR2( x )
+#if !CF_TWIN
+__asm__( ".set " CF_STR( x264_chroma_fuse_gate ) ", " CF_STR( x264_macroblock_encode ) );
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -266,7 +273,7 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
     int (*dequant_mf)[16] = h->dequant4_mf[CQM_4IC + b_inter];
     ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
 
-    if( h->zigzagf.chroma_encode[chroma422] && !h->mb.b_trellis && !h->mb.b_noise_reduction && !h->mb.b_lossless )
+    if( !CF_OFF && h->zigzagf.chroma_encode[chroma422] && !h->mb.b_trellis && !h->mb.b_noise_reduction && !h->mb.b_lossless )
     {
         int i_qp_dc = i_qp + 3*chroma422;
         x264_chroma_encode_t a;

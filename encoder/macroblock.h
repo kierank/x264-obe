@@ -159,6 +159,12 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* layout pair test/x264-chroma-fuse / -twin: hidden weak x264_N_chroma_fuse_gate, defined in macroblock.c (no bytes)
+ * unless CF_TWIN; the twin links it as 0, CF_OFF is 1 and the chroma takes the separate calls */
+#define x264_chroma_fuse_gate x264_template(chroma_fuse_gate)
+extern void x264_chroma_fuse_gate( void ) __attribute__((weak, visibility("hidden")));
+#define CF_OFF (!x264_chroma_fuse_gate)
+
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
