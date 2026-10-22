@@ -1729,6 +1729,6 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     if( cpu&X264_CPU_AVX512ICL )
     {
         pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx512icl;
-        pf->aq_variance_tail = x264_aq_variance_tail_avx512icl;
+        /* zen4: aq_variance_tail icl raised sliced lowlat CPU/frame in situ; kept assembled */
     }
 }
