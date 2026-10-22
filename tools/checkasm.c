@@ -4742,6 +4742,32 @@ static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf
     return 1 | X264_MIN( score, 9 ) << 4;
 }
 
+/* q as a sum of 7 squares of at most PIXEL_MAX: greedy, stepping the first one down on a miss */
+static int zscreen_sum7sq( int64_t q, int x[7] )
+{
+    int64_t a0 = X264_MIN( (int64_t)sqrt( q ), PIXEL_MAX );
+    while( a0*a0 > q )
+        a0--;
+    for( int64_t a = a0; a >= 0 && a > a0 - 64; a-- )
+    {
+        int64_t rem = q - a*a;
+        x[0] = a;
+        for( int k = 1; k < 7; k++ )
+        {
+            int64_t b = X264_MIN( (int64_t)sqrt( rem ), PIXEL_MAX );
+            while( b*b > rem )
+                b--;
+            while( b < PIXEL_MAX && (b+1)*(b+1) <= rem )
+                b++;
+            x[k] = b;
+            rem -= b*b;
+        }
+        if( !rem )
+            return 1;
+    }
+    return 0;
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4846,15 +4872,17 @@ static int check_quant( int cpu_ref, int cpu_new )
 
         /* zscreen thresholds, once per cqm: t - 1 quantises to 0 and t does not, and every 4x4
          * the C screen proves quantises to 0 */
-        static int zscreen_tested[7];
-        if( !zscreen_tested[i_cqm] )
+        static int zscreen_tested[7][2];
+        x264_pixel_function_t zpf;
+        x264_pixel_init( cpu_new, &zpf );
+        if( !zscreen_tested[i_cqm][!!zpf.zscreen_16x16] )
         {
             x264_dct_function_t dctf;
             ALIGNED_64( pixel zfenc[16*FENC_STRIDE] );
             ALIGNED_64( pixel zfdec[16*FDEC_STRIDE] );
             ALIGNED_16( int32_t e8[4] );
-            int proven = 0, unproven = 0;
-            zscreen_tested[i_cqm] = 1;
+            int proven = 0, unproven = 0, edge[2] = {0};
+            zscreen_tested[i_cqm][!!zpf.zscreen_16x16] = 1;
             used_asms[0] = 1;
             x264_dct_init( 0, &dctf );
             for( int c = 0; c < 2; c++ )
@@ -4868,7 +4896,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                         if( !mf[i] )
                             continue;
                         int t = ((1 << 16) + mf[i] - 1) / mf[i] - bias[i];
-                        if( t > (1 << (sizeof(dctcoef)*8 - 1)) - 1 )
+                        if( t >= ((int64_t)1 << (sizeof(dctcoef)*8 - 1)) )
                             continue;
                         for( int v = t-1; v <= t; v++ )
                         {
@@ -4919,11 +4947,93 @@ static int check_quant( int cpu_ref, int cpu_new )
                             }
                         }
                     }
+
+                    /* the thresholds again: t by search on the quant, the AC one as the largest D with
+                     * n*D < 16*t^2 */
+                    int64_t dref = INT32_MAX, tref = INT32_MAX;
+                    for( int i = 0; i < 16; i++ )
+                    {
+                        if( !mf[i] )
+                            continue;
+                        int64_t lo = 0, hi = 1 << 17; /* lo quantises to 0, hi does not */
+                        while( hi - lo > 1 )
+                        {
+                            int64_t mid = (lo + hi) >> 1;
+                            if( ((mid + bias[i]) * (int64_t)mf[i]) >> 16 )
+                                hi = mid;
+                            else
+                                lo = mid;
+                        }
+                        int64_t n = (i&1 ? 10 : 4) * (i&4 ? 10 : 4);
+                        if( !i )
+                            tref = hi;
+                        else
+                            dref = X264_MIN( dref, (16*hi*hi + n - 1) / n - 1 );
+                    }
+                    if( thr[0] != dref || thr[1] != tref )
+                    {
+                        oks[0] = 0;
+                        fprintf( stderr, "zscreen: cqm %d list %d qp %d thresholds %d %d != %"PRId64" %"PRId64" [FAILED]\n",
+                                 i_cqm, i_list, qp, thr[0], thr[1], dref, tref );
+                    }
+
+                    /* 4x4s with 16*E - S^2 at every reachable value in dref -32..+32: proven iff
+                     * 16*E - S^2 <= dref and |S| < tref */
+                    for( int64_t dt = X264_MAX( dref - 32, 0 ); dt <= dref + 32; dt++ )
+                    {
+                        int x[7], s, pos[16];
+                        for( s = 0; s < 8; s++ )
+                            if( dt >= 15*s*s && !((dt - 15*s*s) & 31) )
+                                break;
+                        if( s == 8 || !zscreen_sum7sq( (dt - 15*s*s) >> 5, x ) )
+                            continue;
+                        int sg = (rand()&1) ? 1 : -1;
+                        int b = rand()&15;
+                        int off = (b&1)*4 + (b&4)*2 + ((b&2)*2 + (b&8)) * FENC_STRIDE;
+                        int offd = (b&1)*4 + (b&4)*2 + ((b&2)*2 + (b&8)) * FDEC_STRIDE;
+                        for( int i = 0; i < 16; i++ )
+                        {
+                            int j = rand() % (i+1);
+                            pos[i] = pos[j];
+                            pos[j] = i;
+                        }
+                        for( int y = 0; y < 16; y++ )
+                            for( int xx = 0; xx < 16; xx++ )
+                                zfenc[xx+y*FENC_STRIDE] = zfdec[xx+y*FDEC_STRIDE] = rand() & PIXEL_MAX;
+                        for( int i = 0; i < 16; i++ )
+                        {
+                            /* one s, x_k and -x_k: S = s, 16*E - S^2 = 15*s^2 + 32*sum(x_k^2) */
+                            int r = sg * (!i ? s : i < 8 ? x[i-1] : i < 15 ? -x[i-8] : 0);
+                            int a = r > 0 ? r + rand() % (PIXEL_MAX - r + 1) : rand() % (PIXEL_MAX + r + 1);
+                            zfenc[off + (pos[i]&3) + (pos[i]>>2)*FENC_STRIDE] = a;
+                            zfdec[offd + (pos[i]&3) + (pos[i]>>2)*FDEC_STRIDE] = a - r;
+                        }
+                        int expect = dt <= dref && s < tref;
+                        int res_c = x264_pixel_zscreen_c( zfenc, zfdec, thr, e8 ) >> b & 1;
+                        int res_a = zpf.zscreen_16x16 ? zpf.zscreen_16x16( zfenc, zfdec, thr, e8 ) >> b & 1 : expect;
+                        if( res_c != expect || res_a != expect )
+                        {
+                            oks[0] = 0;
+                            fprintf( stderr, "zscreen: cqm %d list %d qp %d D %"PRId64" (max %"PRId64") S %d: c %d asm %d [FAILED]\n",
+                                     i_cqm, i_list, qp, dt, dref, sg*s, res_c, res_a );
+                        }
+                        if( expect )
+                        {
+                            dctf.sub4x4_dct( dct1, zfenc + off, zfdec + offd );
+                            if( qf_c.quant_4x4( dct1, mf, bias ) )
+                            {
+                                oks[0] = 0;
+                                fprintf( stderr, "zscreen: cqm %d list %d qp %d D %"PRId64" proven but coded [FAILED]\n", i_cqm, i_list, qp, dt );
+                            }
+                        }
+                        edge[expect]++;
+                    }
                 }
-            if( !proven || !unproven )
+            if( !proven || !unproven || !edge[0] || !edge[1] )
             {
                 oks[0] = 0;
-                fprintf( stderr, "zscreen: cqm %d proven %d unproven %d [FAILED]\n", i_cqm, proven, unproven );
+                fprintf( stderr, "zscreen: cqm %d proven %d unproven %d, at the threshold %d %d [FAILED]\n",
+                         i_cqm, proven, unproven, edge[1], edge[0] );
             }
         }
 
