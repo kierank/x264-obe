@@ -3324,7 +3324,7 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.rc.i_aq_mode && h->param.analyse.i_subpel_refine < 10 )
         h->mb.i_qp = abs(h->mb.i_qp - h->mb.i_last_qp) == 1 ? h->mb.i_last_qp : h->mb.i_qp;
 
-    if( h->param.analyse.b_mb_info )
+    if( HAS_MBINFO && h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
 
@@ -3373,7 +3373,7 @@ intra_analysis:
         else
         {
             /* Special fast-skip logic using information from mb_info. */
-            if( h->fdec->mb_info && (h->fdec->mb_info[h->mb.i_mb_xy]&X264_MBINFO_CONSTANT) )
+            if( HAS_MBINFO && h->fdec->mb_info && (h->fdec->mb_info[h->mb.i_mb_xy]&X264_MBINFO_CONSTANT) )
             {
                 if( !SLICE_MBAFF && (h->fdec->i_frame - h->fref[0][0]->i_frame) == 1 && !h->sh.b_weighted_pred &&
                     h->fref[0][0]->effective_qp[h->mb.i_mb_xy] <= h->mb.i_qp )
