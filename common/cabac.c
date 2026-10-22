@@ -170,6 +170,7 @@ void x264_cabac_encode_terminal_c( x264_cabac_t *cb )
     x264_cabac_encode_renorm( cb );
 }
 
+#if HIGH_BIT_DEPTH
 void x264_cabac_encode_bins_c( x264_cabac_t *cb, uint64_t ctx, uint32_t bins, int n )
 {
     for( int i = 0; i < n; i++ )
@@ -211,6 +212,7 @@ void x264_cabac_encode_mvd_c( x264_cabac_t *cb, int mdx, int mdy, int amvd )
     cabac_encode_mvd_cpn_c( cb, 40, amvd & 0xff, mdx );
     cabac_encode_mvd_cpn_c( cb, 47, amvd >> 8, mdy );
 }
+#endif
 
 void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb )
 {

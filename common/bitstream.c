@@ -89,8 +89,10 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
     memset( pf, 0, sizeof(*pf) );
 
     pf->nal_escape = x264_nal_escape_c;
+#if HIGH_BIT_DEPTH
     pf->cabac_encode_bins = x264_cabac_encode_bins_c;
     pf->cabac_encode_mvd = x264_cabac_encode_mvd_c;
+#endif
 #if HAVE_MMX
 #if ARCH_X86_64
     pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_sse2;
@@ -114,11 +116,13 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
             pf->nal_escape = x264_nal_escape_sse2;
     }
 #if ARCH_X86_64
+#if HIGH_BIT_DEPTH
     if( (cpu&X264_CPU_BMI2) && (cpu&X264_CPU_LZCNT) )
     {
         pf->cabac_encode_bins = x264_cabac_encode_bins_bmi2;
         pf->cabac_encode_mvd = x264_cabac_encode_mvd_bmi2;
     }
+#endif
 
     if( cpu&X264_CPU_SSSE3 )
     {

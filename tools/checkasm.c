@@ -5030,6 +5030,7 @@ static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
         }
 }
 
+#if HIGH_BIT_DEPTH
 /* header bench: a fixed mix of bin strings (n) and mvd pairs (n = 0), coded per bin as the
  * writer did before the bin-string API (decision_ptr, ue_bypass, bypass_asm) or by the kernels */
 typedef struct
@@ -5098,6 +5099,7 @@ static void run_cabac_hdr_kernel( x264_bitstream_function_t *bs, x264_cabac_t *c
             bs->cabac_encode_mvd( cb, e->mx, e->my, e->amvd );
     }
 }
+#endif
 
 static int check_cabac( int cpu_ref, int cpu_new )
 {
@@ -5368,6 +5370,8 @@ name##fail:
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     report( "cabac 4:2:2 dc :" );
 
+#if HIGH_BIT_DEPTH
+    /* 10-bit only, as the encoder */
     /* header bin strings and mvds: the whole coder state, the contexts and the bytes */
     ok = 1; used_asm = 0;
     for( int f = 0; f < 2; f++ )
@@ -5560,6 +5564,7 @@ name##fail:
         x264_free( dst );
         x264_free( cbb );
     }
+#endif
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;

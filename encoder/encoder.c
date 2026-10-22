@@ -3079,8 +3079,7 @@ static intptr_t x264_slice_write( x264_t *h )
         bs_align_1( &h->out.bs );
 
         /* init cabac */
-        x264_cabac_context_init( h, &h->cabac, h->sh.i_type, x264_clip3( h->sh.i_qp-QP_BD_OFFSET, 0, 51 ), h->sh.i_cabac_init_idc );
-        h->cabac.state[0] = 0; /* the terminate bin of x264_cabac_encode_bins */
+        x264_cabac_context_init( h, &h->cabac, h->sh.i_type, x264_clip3( h->sh.i_qp-QP_BD_OFFSET, 0, 51 ), h->sh.i_cabac_init_idc ); x264_cabac_hdr_ctx_init( &h->cabac );
         x264_cabac_encode_init ( &h->cabac, h->out.bs.p, h->out.bs.p_end );
         last_emu_check = h->cabac.p;
     }

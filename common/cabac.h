@@ -135,4 +135,11 @@ static ALWAYS_INLINE int x264_cabac_size_decision_noup2( uint8_t *state, long b 
     return x264_cabac_entropy[*state^b];
 }
 
+/* slice init: ctx 0, the terminate bin of x264_cabac_encode_bins (10-bit writer only) */
+#if HIGH_BIT_DEPTH
+#define x264_cabac_hdr_ctx_init( cb ) ((cb)->state[0] = 0)
+#else
+#define x264_cabac_hdr_ctx_init( cb )
+#endif
+
 #endif
