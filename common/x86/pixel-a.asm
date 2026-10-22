@@ -1185,11 +1185,12 @@ SSD_ICL 16,  8, _zmm
 %endmacro
 
 ; 8-bit: fdec rows y | y+1, y+2 | y+3 by vinserti128 against fenc's contiguous row
-; pairs
+; pairs; high bit depth: a row a ymm
 %macro FENC_EQ_AVX2 2 ; w, h
 cglobal pixel_fenc_eq_%1x%2, 2,2,3
 %assign %%y 0
 %rep %2/4
+%if HIGH_BIT_DEPTH == 0
     movu          xm0, [r1+(%%y+0)*FDEC_STRIDEB]
     movu          xm1, [r1+(%%y+2)*FDEC_STRIDEB]
     vinserti128    m0, m0, [r1+(%%y+1)*FDEC_STRIDEB], 1
@@ -1197,6 +1198,19 @@ cglobal pixel_fenc_eq_%1x%2, 2,2,3
     pxor           m0, [r0+(%%y+0)*FENC_STRIDEB]
     pxor           m1, [r0+(%%y+2)*FENC_STRIDEB]
     por            m0, m1
+%else ; a row a ymm
+    movu           m0, [r1+(%%y+0)*FDEC_STRIDEB]
+    movu           m1, [r1+(%%y+1)*FDEC_STRIDEB]
+    movu           m2, [r1+(%%y+2)*FDEC_STRIDEB]
+    pxor           m0, [r0+(%%y+0)*FENC_STRIDEB]
+    pxor           m1, [r0+(%%y+1)*FENC_STRIDEB]
+    pxor           m2, [r0+(%%y+2)*FENC_STRIDEB]
+    por            m0, m1
+    movu           m1, [r1+(%%y+3)*FDEC_STRIDEB]
+    pxor           m1, [r0+(%%y+3)*FENC_STRIDEB]
+    por            m2, m1
+    por            m0, m2
+%endif
     ptest          m0, m0
     jnz .ne
 %assign %%y %%y+4
@@ -1204,10 +1218,8 @@ cglobal pixel_fenc_eq_%1x%2, 2,2,3
     FENC_EQ_RET
 %endmacro
 
-%if HIGH_BIT_DEPTH == 0
 INIT_YMM avx2
 FENC_EQ_AVX2 16, 16
-%endif
 
 ;=============================================================================
 ; variance
