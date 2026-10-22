@@ -291,7 +291,7 @@ enum { MVX_MVC, MVX_ZERO, MVX_DIA0, MVX_DIAN, MVX_HEX, MVX_HHEX, MVX_SQ, MVX_UDI
 enum { MVX_C_STEPS, MVX_C_CANDS, MVX_C_SKIP_MV, MVX_C_SKIPC_MV, MVX_C_SKIP_DC, MVX_C_SKIPC_DC,
        MVX_C_SKIP_MS, MVX_C_SKIPC_MS, MVX_C_CAND_MV, MVX_C_CAND_MS, MVX_C_N };
 enum { MVX_S_CALLS, MVX_S_ZSAD, MVX_S_PAT, MVX_S_WHOLE_MV, MVX_S_TAIL_MV, MVX_S_WHOLE_MS, MVX_S_TAIL_MS,
-       MVX_S_SUB, MVX_S_SUB_MV, MVX_S_TAILC_MV, MVX_S_TAILC_MS, MVX_S_PATC, MVX_S_SUBC, MVX_S_SUBC_MV, MVX_S_GLOB, MVX_S_N };
+       MVX_S_SUB, MVX_S_SUB_MV, MVX_S_TAILC_MV, MVX_S_TAILC_MS, MVX_S_PATC, MVX_S_SUBC, MVX_S_SUBC_MV, MVX_S_GLOB, MVX_S_GLOB2, MVX_S_N };
 #if BIT_DEPTH == 8
 uint64_t x264_mvx_step[3][4][MVX_NSTEP][MVX_C_N];
 uint64_t x264_mvx_srch[3][4][MVX_S_N];
@@ -310,12 +310,12 @@ void x264_mvx_print( void )
                 continue;
             fprintf( stderr, "mvx %-6s %-5s calls %"PRIu64" zsad %"PRIu64" pattern %"PRIu64" | whole-skip mv %"PRIu64" ms %"PRIu64
                      " | tail-skip mv %"PRIu64" ms %"PRIu64" | pattern cands %"PRIu64" tail cands mv %.2f%% ms %.2f%%"
-                     " | refine %"PRIu64" any-skip %"PRIu64" cands %"PRIu64" skippable %.2f%% | glob %"PRIu64"\n",
+                     " | refine %"PRIu64" any-skip %"PRIu64" cands %"PRIu64" skippable %.2f%% | glob %"PRIu64" glob2 %"PRIu64"\n",
                      cls[c], sz[s], n[MVX_S_CALLS], n[MVX_S_ZSAD], n[MVX_S_PAT], n[MVX_S_WHOLE_MV], n[MVX_S_WHOLE_MS],
                      n[MVX_S_TAIL_MV], n[MVX_S_TAIL_MS], n[MVX_S_PATC],
                      100.0*n[MVX_S_TAILC_MV]/X264_MAX(n[MVX_S_PATC],1),
                      100.0*n[MVX_S_TAILC_MS]/X264_MAX(n[MVX_S_PATC],1),
-                     n[MVX_S_SUB], n[MVX_S_SUB_MV], n[MVX_S_SUBC], 100.0*n[MVX_S_SUBC_MV]/X264_MAX(n[MVX_S_SUBC],1), n[MVX_S_GLOB] );
+                     n[MVX_S_SUB], n[MVX_S_SUB_MV], n[MVX_S_SUBC], 100.0*n[MVX_S_SUBC_MV]/X264_MAX(n[MVX_S_SUBC],1), n[MVX_S_GLOB], n[MVX_S_GLOB2] );
             for( int t = 0; t < MVX_NSTEP; t++ )
             {
                 uint64_t *k = x264_mvx_step[c][s][t];
@@ -654,6 +654,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         int g = X264_MIN( cx0 + p_cost_mvy[fy<<2], p_cost_mvx[fx<<2] + cy0 );
         if( g >= bcost )
             MVX_ADD( x264_mvx_srch[mvx.cls][mvx.sz][MVX_S_GLOB], 1 );
+        if( g >= X264_MIN( bcost, bpred_cost+1 ) )
+            MVX_ADD( x264_mvx_srch[mvx.cls][mvx.sz][MVX_S_GLOB2], 1 );
     }
     switch( h->mb.i_me_method )
     {
