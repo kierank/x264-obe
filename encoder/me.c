@@ -1140,6 +1140,14 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         else if( bcost < *p_halfpel_thresh )
             *p_halfpel_thresh = bcost;
     }
+    /* test/x264-hp-counters: the cut a 16x8/8x16 two-ref search would take, not taken */
+    else if( h->hpc_hp_thresh )
+    {
+        if( (bcost*7)>>3 > *h->hpc_hp_thresh )
+            h->hpc_hp_fired = 1;
+        else if( bcost < *h->hpc_hp_thresh )
+            *h->hpc_hp_thresh = bcost;
+    }
 
     /* past the cut: the chroma cost here and chroma ME */
     if( b_chroma_cut )

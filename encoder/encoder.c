@@ -4641,6 +4641,30 @@ void    x264_encoder_close  ( x264_t *h )
     }
     h->i_frame++;
 
+    /* test/x264-hp-counters */
+    {
+        int64_t c[HPC_COUNT] = {0};
+        for( int i = 0; i < h->param.i_threads; i++ )
+            for( int j = 0; j < HPC_COUNT; j++ )
+                c[j] += h->thread[i]->hpc[j];
+        x264_log( h, X264_LOG_INFO, "hpc mixref: n %"PRId64" fire %"PRId64" saved %"PRId64" flip %"PRId64"\n",
+                  c[HPC_MIX_N], c[HPC_MIX_FIRE], c[HPC_MIX_SAVED], c[HPC_MIX_FLIP] );
+        x264_log( h, X264_LOG_INFO, "hpc hpel16x8: n %"PRId64" fire %"PRId64" flip %"PRId64"\n",
+                  c[HPC_HP_N], c[HPC_HP_FIRE], c[HPC_HP_FLIP] );
+        for( int b = 0; b < 2; b++ )
+            x264_log( h, X264_LOG_INFO, "hpc partgate %c: n %"PRId64" fire/flip 64:%"PRId64"/%"PRId64" 128:%"PRId64"/%"PRId64
+                      " 256:%"PRId64"/%"PRId64" 512:%"PRId64"/%"PRId64"\n", b ? 'B' : 'P', c[HPC_PG_N+b],
+                      c[HPC_PG_FIRE+b*HPC_PG_T+0], c[HPC_PG_FLIP+b*HPC_PG_T+0], c[HPC_PG_FIRE+b*HPC_PG_T+1], c[HPC_PG_FLIP+b*HPC_PG_T+1],
+                      c[HPC_PG_FIRE+b*HPC_PG_T+2], c[HPC_PG_FLIP+b*HPC_PG_T+2], c[HPC_PG_FIRE+b*HPC_PG_T+3], c[HPC_PG_FLIP+b*HPC_PG_T+3] );
+        x264_log( h, X264_LOG_INFO, "hpc chromame: n %"PRId64" fire/flip 1:%"PRId64"/%"PRId64" 2:%"PRId64"/%"PRId64" 4:%"PRId64"/%"PRId64
+                  " 8:%"PRId64"/%"PRId64" 16:%"PRId64"/%"PRId64"\n", c[HPC_CME_N],
+                  c[HPC_CME_FIRE+0], c[HPC_CME_FLIP+0], c[HPC_CME_FIRE+1], c[HPC_CME_FLIP+1], c[HPC_CME_FIRE+2], c[HPC_CME_FLIP+2],
+                  c[HPC_CME_FIRE+3], c[HPC_CME_FLIP+3], c[HPC_CME_FIRE+4], c[HPC_CME_FLIP+4] );
+        for( int b = 0; b < 2; b++ )
+            x264_log( h, X264_LOG_INFO, "hpc fieldref %c: n %"PRId64" fire %"PRId64" saved %"PRId64" flip %"PRId64"\n",
+                      b ? 'B' : 'P', c[HPC_FR_N+b], c[HPC_FR_FIRE+b], c[HPC_FR_SAVED+b], c[HPC_FR_FLIP+b] );
+    }
+
     /* Slices used and PSNR */
     for( int i = 0; i < 3; i++ )
     {

@@ -269,6 +269,32 @@ typedef struct
     int i_ssim_cnt;
 } x264_frame_stat_t;
 
+/* test/x264-hp-counters: shadow counts of the exp/x264-hp-* gates (none is
+ * applied), per x264_t, summed and printed at x264_encoder_close */
+#define HPC_PG_T 4      /* partgate thresholds 64, 128, 256, 512 */
+#define HPC_CME_T 5     /* chroma AC energy per pixel below 1, 2, 4, 8, 16 */
+enum
+{
+    HPC_MIX_N,          /* mixed-ref 8x8 searches (per list) the any-ref limit sees */
+    HPC_MIX_FIRE,       /* ... where it is below speed-next's limit */
+    HPC_MIX_SAVED,      /* refs it would not search */
+    HPC_MIX_FLIP,       /* fired, and an 8x8 chose a ref past it */
+    HPC_HP_N,           /* 16x8/8x16 two-ref searches (per partition, list) */
+    HPC_HP_FIRE,        /* the second ref stops at hpel */
+    HPC_HP_FLIP,        /* ... and its qpel cost is below the first ref's */
+    HPC_PG_N,           /* progressive mbrd MBs at the partition gate, P then B */
+    HPC_PG_FIRE = HPC_PG_N + 2,                 /* [P,B][threshold] */
+    HPC_PG_FLIP = HPC_PG_FIRE + 2*HPC_PG_T,     /* fired, and a sub-16x16 partition won */
+    HPC_CME_N = HPC_PG_FLIP + 2*HPC_PG_T,       /* P MBs with chroma ME */
+    HPC_CME_FIRE,                               /* [threshold] */
+    HPC_CME_FLIP = HPC_CME_FIRE + HPC_CME_T,    /* fired, and the ref 0 16x16 MV differs on luma alone */
+    HPC_FR_N = HPC_CME_FLIP + HPC_CME_T,        /* field MB 16x16 list searches under the limit, P then B */
+    HPC_FR_SAVED = HPC_FR_N + 2,                /* refs it would not search */
+    HPC_FR_FIRE = HPC_FR_SAVED + 2,             /* searches where it saves a ref */
+    HPC_FR_FLIP = HPC_FR_FIRE + 2,              /* fired, and 16x16 chose a ref past it */
+    HPC_COUNT = HPC_FR_FLIP + 2
+};
+
 struct x264_t
 {
     /* encoder parameters */
@@ -802,6 +828,12 @@ struct x264_t
 #if HAVE_OPENCL
     x264_opencl_t opencl;
 #endif
+
+    /* test/x264-hp-counters */
+    int64_t hpc[HPC_COUNT];
+    int *hpc_hp_thresh;     /* shadow halfpel threshold of a 16x8/8x16 search, or NULL */
+    int hpc_hp_fired;
+    int hpc_cme_mask;       /* the chroma ME thresholds this P MB is below */
 };
 
 // included at the end because it needs x264_t
