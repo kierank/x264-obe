@@ -205,6 +205,30 @@ int x264_cqm_init( x264_t *h )
                 }
     }
 
+    /* zscreen_16x16 thresholds. A 4x4 coefficient c quantises to 0 iff (|c| + bias) * mf < 2^16,
+     * iff |c| < t = ceil(2^16 / mf) - bias. With E = sum(r^2), S = sum(r) over the residual:
+     * the DC is S; the transform rows have norm^2 4, 10, 4, 10 and every AC basis sums to 0, so
+     * c^2 <= n * (16*E - S^2) / 16, n = 16, 40, 100, which is < t^2 if 16*E - S^2 <= (16*t^2 - 1) / n. */
+    for( int c = 0; c < 2; c++ )
+        for( int q = 0; q <= QP_MAX_SPEC; q++ )
+        {
+            int i_list = c ? CQM_4PC : CQM_4PY;
+            int64_t dmax = INT32_MAX, tdc = INT32_MAX;
+            for( int i = 0; i < 16; i++ )
+            {
+                int64_t mf = h->quant4_mf[i_list][q][i];
+                if( !mf )
+                    continue;
+                int64_t t = ((1 << 16) + mf - 1) / mf - h->quant4_bias[i_list][q][i];
+                if( !i )
+                    tdc = t;
+                else
+                    dmax = X264_MIN( dmax, (16*t*t - 1) / ((i&1 ? 10 : 4) * (i&4 ? 10 : 4)) );
+            }
+            h->zscreen_thr[c][q][0] = dmax;
+            h->zscreen_thr[c][q][1] = tdc;
+        }
+
     /* Emergency mode denoising. */
     x264_emms();
     CHECKED_MALLOC( h->nr_offset_emergency, sizeof(*h->nr_offset_emergency)*(QP_MAX-QP_MAX_SPEC) );
