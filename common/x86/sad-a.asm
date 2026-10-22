@@ -2530,6 +2530,43 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %endrep
 %endmacro
 
+;-----------------------------------------------------------------------------
+; int pixel_sad_dia_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[4], int best )
+; candidates (0,-1) (0,1) (-1,0) (1,0), s = 4. Windows: dy 0 bx -2 words 1, 3;
+; dy -1 bx 0 word 0; dy 1 bx -2 word 2: (0,-1) (-1,0) (0,1) (1,0) by word
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_dia_min_8x8, 5,10,10
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    mov            r5d, 0xaaaa
+    kmovw           k1, r5d
+    mov            r5d, 0x1111
+    kmovw           k2, r5d
+    mov            r5d, 0x4444
+    kmovw           k3, r5d
+    lea         dbp_p0, [r1-2]
+    mov         dbp_p1, r1
+    sub         dbp_p1, r2
+    lea         dbp_p2, [r1+r2-2]
+    DBP_INIT
+    movu           xm8, [r3]
+    pshufd         xm8, xm8, q3120
+    vpbroadcastd   xm9, r4d
+    DBP_ROWS 8, 3
+    paddw           m0, m1
+    paddw           m0, m2
+    DBP_FOLD1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 4
+    paddd          xm0, xm8
+    pminsd         xm0, xm9
+    DBP_MIN4
+    RET
+
 INIT_YMM avx2
 %endif ; ARCH_X86_64
 
