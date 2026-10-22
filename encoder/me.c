@@ -418,6 +418,17 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         case X264_ME_DIA:
         {
             /* diamond search, radius 1 */
+            x264_pixel_fpel_search_t dia_search = h->pixf.fpelcmp_dia_search[i_pixel];
+            if( dia_search )
+            {
+                /* the loop below in one call */
+                uint64_t res = dia_search( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy, pack16to32_mask( bmx, bmy ),
+                                           bcost, i_me_range, mv_min | (uint64_t)mv_max << 32 );
+                bcost = (uint32_t)res;
+                bmx = (int16_t)(res >> 32);
+                bmy = (int16_t)(res >> 48);
+                break;
+            }
             bcost <<= 4;
             int i = i_me_range;
             do
@@ -453,6 +464,17 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         {
     me_hex2:
             /* hexagon search, radius 2 */
+            if( h->pixf.fpelcmp_hex_search[i_pixel] )
+            {
+                /* the hexagon, half hexagons and square refine below in one call */
+                uint64_t res = h->pixf.fpelcmp_hex_search[i_pixel]( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
+                                                                    pack16to32_mask( bmx, bmy ), bcost, i_me_range,
+                                                                    mv_min | (uint64_t)mv_max << 32 );
+                bcost = (uint32_t)res;
+                bmx = (int16_t)(res >> 32);
+                bmy = (int16_t)(res >> 48);
+                break;
+            }
     #if 0
             for( int i = 0; i < i_me_range/2; i++ )
             {

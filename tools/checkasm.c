@@ -294,6 +294,129 @@ uint64_t x264_checkasm_kmask;
 #define call_a2(func,...) ({ call_bench(func,cpu_new,__VA_ARGS__); })
 #define call_c2(func,...) ({ call_bench(func,0,__VA_ARGS__); })
 
+#if !HIGH_BIT_DEPTH
+/* me.c's dia / hex search through sad_x3 / sad_x4 and sad_sq_min_c, as me.c does them without the
+ * search kernels. st: 0 no move, 1 the walk ended without a move, 2 iteration limit, 3 out of range,
+ * 4 four or more moves, 5.. square idx 0-8 (dia: the dir of each move, 1 3 4 12) */
+static uint64_t fpel_search_model( int hex, int i_pixel, pixel *p_fenc, pixel *p_fref_w, intptr_t stride,
+                                   const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy, int bmx, int bmy, int bcost,
+                                   int i_me_range, uint32_t mv_min, uint32_t mv_max, int *st,
+                                   x264_pixel_cmp_x3_t sad_x3, x264_pixel_cmp_x4_t sad_x4 )
+{
+    static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
+    static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
+    static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+#define BITS_MVD( mx, my ) (p_cost_mvx[(mx)*4] + p_cost_mvy[(my)*4])
+#define pack16to32_mask2(mx,my) (((uint32_t)(mx)<<16)|((my)&0x7FFF))
+#define CHECK_MVRANGE(mx,my) (!(((pack16to32_mask2(mx,my) + mv_min) | (mv_max - pack16to32_mask2(mx,my))) & 0x80004000))
+    int32_t pt_bias[12];
+    int costs[4];
+#define MIN1( key ) { int k_ = key; if( k_ < bcost ) bcost = k_; }
+    int moves = 0;
+    if( !hex )
+    {
+        bcost <<= 4;
+        int i = i_me_range;
+        do
+        {
+            pixel *pb = p_fref_w + bmx + bmy*stride;
+            sad_x4( p_fenc, pb - stride, pb + stride, pb - 1, pb + 1, stride, costs );
+            MIN1( ((costs[0] + BITS_MVD( bmx, bmy-1 )) << 4) + 1 );
+            MIN1( ((costs[1] + BITS_MVD( bmx, bmy+1 )) << 4) + 3 );
+            MIN1( ((costs[2] + BITS_MVD( bmx-1, bmy )) << 4) + 4 );
+            MIN1( ((costs[3] + BITS_MVD( bmx+1, bmy )) << 4) + 12 );
+            if( !(bcost&15) )
+            {
+                st[0]++;
+                break;
+            }
+            st[5 + ((bcost&15) == 3) + 2*((bcost&15) == 4) + 3*((bcost&15) == 12)]++;
+            moves++;
+            bmx -= (bcost<<28)>>30;
+            bmy -= (bcost<<30)>>30;
+            bcost &= ~15;
+            if( i == 1 )
+                st[2]++;
+            else if( !CHECK_MVRANGE(bmx, bmy) )
+                st[3]++;
+        } while( --i && CHECK_MVRANGE(bmx, bmy) );
+        bcost >>= 4;
+    }
+    else
+    {
+        bcost <<= 6;
+        for( int g = 0; g < 2; g++ )
+        {
+            pixel *pb = p_fref_w + bmx + bmy*stride;
+            sad_x3( p_fenc, pb + hex2[3*g+1][0] + hex2[3*g+1][1]*stride, pb + hex2[3*g+2][0] + hex2[3*g+2][1]*stride,
+                    pb + hex2[3*g+3][0] + hex2[3*g+3][1]*stride, stride, costs );
+            for( int j = 0; j < 3; j++ )
+                MIN1( ((costs[j] + BITS_MVD( bmx+hex2[3*g+j+1][0], bmy+hex2[3*g+j+1][1] )) << 6) + 3*g+j+2 );
+        }
+        if( bcost&63 )
+        {
+            int dir = (bcost&63)-2;
+            int i = (i_me_range>>1) - 1;
+            bmx += hex2[dir+1][0];
+            bmy += hex2[dir+1][1];
+            moves++;
+            for( ; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
+            {
+                bcost &= ~63;
+                pixel *pb = p_fref_w + bmx + bmy*stride;
+                sad_x3( p_fenc, pb + hex2[dir][0] + hex2[dir][1]*stride, pb + hex2[dir+1][0] + hex2[dir+1][1]*stride,
+                        pb + hex2[dir+2][0] + hex2[dir+2][1]*stride, stride, costs );
+                for( int j = 0; j < 3; j++ )
+                    MIN1( ((costs[j] + BITS_MVD( bmx+hex2[dir+j][0], bmy+hex2[dir+j][1] )) << 6) + j+1 );
+                if( !(bcost&63) )
+                {
+                    st[1]++;
+                    break;
+                }
+                dir += (bcost&63)-2;
+                dir = mod6m1[dir+1];
+                bmx += hex2[dir+1][0];
+                bmy += hex2[dir+1][1];
+                moves++;
+            }
+            if( i <= 0 )
+                st[2]++;
+            else if( !CHECK_MVRANGE(bmx, bmy) )
+                st[3]++;
+        }
+        else
+            st[0]++;
+        bcost >>= 6;
+        bcost <<= 6;
+        int cx0 = p_cost_mvx[(bmx-1)*4], cx1 = p_cost_mvx[bmx*4], cx2 = p_cost_mvx[(bmx+1)*4];
+        int cy0 = p_cost_mvy[(bmy-1)*4], cy1 = p_cost_mvy[bmy*4], cy2 = p_cost_mvy[(bmy+1)*4];
+        pt_bias[ 0] = ((cx0 + cy0) << 6) + 5;
+        pt_bias[ 1] = ((cx1 + cy0) << 6) + 1;
+        pt_bias[ 2] = ((cx2 + cy0) << 6) + 7;
+        pt_bias[ 3] = 1 << 30;
+        pt_bias[ 4] = ((cx0 + cy2) << 6) + 6;
+        pt_bias[ 5] = ((cx1 + cy2) << 6) + 2;
+        pt_bias[ 6] = ((cx2 + cy2) << 6) + 8;
+        pt_bias[ 7] = 1 << 30;
+        pt_bias[ 8] = ((cx0 + cy1) << 6) + 3;
+        pt_bias[ 9] = 1 << 30;
+        pt_bias[10] = ((cx2 + cy1) << 6) + 4;
+        pt_bias[11] = 1 << 30;
+        bcost = x264_pixel_sad_sq_min_c( i_pixel, p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+        st[5 + (bcost&63)]++;
+        bmx += square1[bcost&63][0];
+        bmy += square1[bcost&63][1];
+        bcost >>= 6;
+    }
+    if( moves >= 4 )
+        st[4]++;
+#undef BITS_MVD
+#undef pack16to32_mask2
+#undef CHECK_MVRANGE
+#undef MIN1
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+#endif
 
 static int check_pixel( int cpu_ref, int cpu_new )
 {
@@ -1288,6 +1411,104 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     }
     report( "pixel fenc_eq :" );
+
+#if !HIGH_BIT_DEPTH
+    /* sad_dia_search, sad_hex_search: whole searches from a random start inside random mv limits
+     * (0-40 each side), i_me_range 1-40, against the C reference and me.c's per-step path.
+     * j&3: 0 smooth ref with fenc cut from it near the start (walks), 1 flat ref and fenc (sad 0,
+     * the mv costs decide; ties), 2 noise, 3 extreme sads. (j>>2)&3 mv costs: x264's log2 shape,
+     * zero (ties), random, 0/65535. Every exit, 4+ moves and every square idx (dia: dir) must occur */
+    ok = 1; used_asm = 0;
+    for( int hex = 0; hex < 2; hex++ )
+        for( int i = 0; i < 7; i++ )
+        {
+            x264_pixel_fpel_search_t fn_asm = (hex ? pixel_asm.sad_hex_search : pixel_asm.sad_dia_search)[i];
+            x264_pixel_fpel_search_t fn_ref = (hex ? pixel_ref.sad_hex_search : pixel_ref.sad_dia_search)[i];
+            if( !fn_asm || fn_asm == fn_ref )
+                continue;
+            ALIGNED_16( static pixel planes[4][176*256] );
+            ALIGNED_16( pixel fenc[16*FENC_STRIDE] );
+            static uint16_t cost_tab[2][2*8192+1];
+            int flat[4] = {0};
+            int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+            int st[16] = {0};
+            set_func_name( "sad_%s_search_%s", hex ? "hex" : "dia", pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 4096 && ok; j++ )
+            {
+                int mode = j&3, cmode = (j>>2)&3;
+                intptr_t stride = 192 + (rand()&63);
+                int xmin = -(rand()%41), xmax = rand()%41, ymin = -(rand()%41), ymax = rand()%41;
+                if( j&16 )
+                    xmin = -(rand()&3), xmax = rand()&3;
+                if( j&32 )
+                    ymin = -(rand()&3), ymax = rand()&3;
+                int bmx = xmin + rand()%(xmax-xmin+1), bmy = ymin + rand()%(ymax-ymin+1);
+                /* mv 0 at (96, 80): reads stay inside the plane. A new plane per mode every 64 */
+                pixel *plane = planes[mode];
+                pixel *ref = plane + 96 + 80*stride;
+                if( !(j&60) )
+                {
+                    flat[mode] = rand() & PIXEL_MAX;
+                    for( int k = 0; k < 176*256; k++ )
+                        plane[k] = mode == 1 ? flat[mode] : mode == 3 ? ((rand()&7) ? 0 : PIXEL_MAX) : rand() & PIXEL_MAX;
+                    for( int pass = 0; pass < 3*(mode == 0); pass++ )
+                        for( int k = 0; k < 176*256 - 2*256; k++ )
+                            plane[k] = (plane[k] + plane[k+1] + plane[k+256] + plane[k+257] + 2) >> 2;
+                }
+                if( mode == 0 )
+                {
+                    int tx = bmx + rand()%17 - 8, ty = bmy + rand()%17 - 8;
+                    for( int y = 0; y < bh; y++ )
+                        for( int x = 0; x < bw; x++ )
+                            fenc[y*FENC_STRIDE+x] = x264_clip_pixel( ref[tx+x + (ty+y)*stride] + (rand()%5) - 2 );
+                }
+                else
+                    for( int k = 0; k < 16*FENC_STRIDE; k++ )
+                        fenc[k] = mode == 1 ? flat[mode] : mode == 2 ? rand() & PIXEL_MAX : (rand()&7) ? PIXEL_MAX : 0;
+                int lambda = 1 + rand()%40;
+                for( int t = 0; t < 2; t++ )
+                    for( int k = -512; k <= 512; k++ ) /* the part read: |4*mv - mvp| < 400 */
+                    {
+                        int v = cmode == 0 ? (int)(lambda * (2*log2f( abs(k)+1 ) + 1) + .5f)
+                              : cmode == 1 ? 0 : cmode == 2 ? rand()%4096 : (rand()&1) * 65535;
+                        cost_tab[t][k+8192] = X264_MIN( v, 65535 );
+                    }
+                int mvpx = rand()%321 - 160, mvpy = rand()%321 - 160;
+                const uint16_t *cmx = cost_tab[0] + 8192 - mvpx, *cmy = cost_tab[1] + 8192 - mvpy;
+                uint32_t mv_min = (((uint32_t)-xmin)<<16) | (-ymin&0x7FFF);
+                uint32_t mv_max = (((uint32_t)xmax<<16) | (ymax&0x7FFF)) | 0x8000;
+                uint64_t range = mv_min | (uint64_t)mv_max << 32;
+                int iters = (j&64) ? 1 + rand()%40 : 4 + rand()%13;
+                int bcost = pixel_c.sad[i]( fenc, FENC_STRIDE, ref + bmx + bmy*stride, stride ) + cmx[bmx*4] + cmy[bmy*4];
+                if( (j&0x380) == 0x380 )
+                    bcost = rand()%3 ? 0 : rand()%(bcost+1);
+                uint32_t bmv = pack16to32_mask( bmx, bmy );
+                uint64_t res_m = fpel_search_model( hex, i, fenc, ref, stride, cmx, cmy, bmx, bmy, bcost, iters, mv_min, mv_max, st, pixel_c.sad_x3[i], pixel_c.sad_x4[i] );
+                uint64_t res_c = (hex ? x264_pixel_sad_hex_search_c : x264_pixel_sad_dia_search_c)( i, fenc, ref, stride, cmx, cmy, bmv, bcost, iters, range );
+                uint64_t res_a = call_a( fn_asm, fenc, ref, stride, cmx, cmy, bmv, bcost, iters, range );
+                if( res_c != res_m )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_search[%d]: C reference mismatch [FAILED]\n", hex ? "hex" : "dia", i );
+                }
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_search[%d]: mode %d %d: %d (%d,%d) != %d (%d,%d) [FAILED]\n", hex ? "hex" : "dia", i, mode, cmode,
+                             (int)(uint32_t)res_c, (int16_t)(res_c>>32), (int16_t)(res_c>>48),
+                             (int)(uint32_t)res_a, (int16_t)(res_a>>32), (int16_t)(res_a>>48) );
+                }
+            }
+            for( int k = 0; k < (hex ? 14 : 9) && ok; k++ )
+                if( !st[k] && (hex || k != 1) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_search[%d]: case %d never occurred [FAILED]\n", hex ? "hex" : "dia", i, k );
+                }
+        }
+    report( "pixel fpel_search :" );
+#endif
 
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
