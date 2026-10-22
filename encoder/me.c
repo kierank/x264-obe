@@ -442,6 +442,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             COST_MV( 0, 0 );
     }
 
+    /* experimental: the best seed is cheap enough, no fullpel pattern */
+    int seed_exit = h->mb.i_me_seed_exit[i_pixel >= PIXEL_8x8];
+    if( seed_exit && X264_MIN( bcost, bpred_cost ) <= seed_exit * bw * bh )
+        goto fpel_done;
+
     switch( h->mb.i_me_method )
     {
         case X264_ME_DIA:

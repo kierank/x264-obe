@@ -384,6 +384,9 @@ typedef struct x264_param_t
         float        f_psy_trellis; /* Psy trellis strength */
         int          b_psy; /* Toggle all psy optimizations */
 
+        /* experimental, output-changing; 0 = off */
+        int          i_me_seed_exit[2]; /* no fullpel pattern when the best seed costs <= K per pixel: {16x16/16x8/8x16, 8x8 and below} */
+
         int          b_mb_info;            /* Use input mb_info data in x264_picture_t */
         int          b_mb_info_update; /* Update the values in mb_info according to the results of encoding. */
 

@@ -1309,6 +1309,8 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     if( h->param.analyse.i_me_method == X264_ME_TESA &&
         (h->mb.b_lossless || h->param.analyse.i_subpel_refine <= 1) )
         h->param.analyse.i_me_method = X264_ME_ESA;
+    for( int i = 0; i < 2; i++ )
+        h->param.analyse.i_me_seed_exit[i] = x264_clip3( h->param.analyse.i_me_seed_exit[i], 0, 4096 );
     h->param.analyse.b_mixed_references = h->param.analyse.b_mixed_references && h->param.i_frame_reference > 1;
     h->param.analyse.inter &= X264_ANALYSE_PSUB16x16|X264_ANALYSE_PSUB8x8|X264_ANALYSE_BSUB16x16|
                               X264_ANALYSE_I4x4|X264_ANALYSE_I8x8;

@@ -835,6 +835,9 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - 2: enabled on all mode decisions\n", defaults->analyse.i_trellis );
     H2( "      --no-fast-pskip         Disables early SKIP detection on P-frames\n" );
     H2( "      --no-dct-decimate       Disables coefficient thresholding on P-frames\n" );
+    H2( "      --me-seed-exit <k[:k]>  Experimental: no fullpel pattern when the best ME\n"
+        "                              seed costs <= k per pixel [0 (off)]\n"
+        "                                  #1: 16x16, 16x8, 8x16  #2: 8x8 and below\n" );
     H1( "      --nr <integer>          Noise reduction [%d]\n", defaults->analyse.i_noise_reduction );
     H2( "\n" );
     H2( "      --deadzone-inter <int>  Set the size of the inter luma quantization deadzone [%d]\n", defaults->analyse.i_luma_deadzone[0] );
@@ -1083,6 +1086,7 @@ static struct option long_options[] =
     { "fast-pskip",        no_argument, NULL, 0 },
     { "no-fast-pskip",     no_argument, NULL, 0 },
     { "no-dct-decimate",   no_argument, NULL, 0 },
+    { "me-seed-exit", required_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },

@@ -1168,6 +1168,12 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
     }
     OPT("psy")
         p->analyse.b_psy = atobool(value);
+    OPT("me-seed-exit")
+    {
+        p->analyse.i_me_seed_exit[1] = 0;
+        if( sscanf( value, "%d:%d", &p->analyse.i_me_seed_exit[0], &p->analyse.i_me_seed_exit[1] ) < 1 )
+            b_error = 1;
+    }
     OPT("chroma-me")
         p->analyse.b_chroma_me = atobool(value);
     OPT("mixed-refs")
@@ -1346,6 +1352,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         s += sprintf( s, " psy_rd=%.2f:%.2f", p->analyse.f_psy_rd, p->analyse.f_psy_trellis );
     s += sprintf( s, " mixed_ref=%d", p->analyse.b_mixed_references );
     s += sprintf( s, " me_range=%d", p->analyse.i_me_range );
+    if( p->analyse.i_me_seed_exit[0] || p->analyse.i_me_seed_exit[1] )
+        s += sprintf( s, " me_seed_exit=%d:%d", p->analyse.i_me_seed_exit[0], p->analyse.i_me_seed_exit[1] );
     s += sprintf( s, " chroma_me=%d", p->analyse.b_chroma_me );
     s += sprintf( s, " trellis=%d", p->analyse.i_trellis );
     s += sprintf( s, " 8x8dct=%d", p->analyse.b_transform_8x8 );

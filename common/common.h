@@ -467,6 +467,8 @@ struct x264_t
         /* Search parameters */
         int     i_me_method;
         int     i_subpel_refine;
+        /* experimental ME levers, main analysis only (0 in the lowres context) */
+        int     i_me_seed_exit[2];
         int     b_chroma_me;
         int     b_trellis;
         int     b_noise_reduction;
