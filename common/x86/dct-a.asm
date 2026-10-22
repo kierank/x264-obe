@@ -693,14 +693,19 @@ cglobal sub4x4_dct, 3,3,6
     SUB8x8_DCT_HBD_STORE 4, 7, 6, %2+32
 %endmacro
 
-%macro SUB8x8_DCT_HBD 0
-    SUB8x8_DCT_HBD_LOAD
+; the dct of the residual SUB8x8_DCT_HBD_LOAD left in m0-m3
+%macro SUB8x8_DCT_HBD_TX 0
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     SUMSUB_BADC w, 3, 0, 2, 1   ; s03, d03, s12, d12
     SUMSUB_BA   w, 2, 3, 4      ; s03 + s12, s03 - s12
     SUB8x8_DCT_HBD_HALF l, 0
     SUB8x8_DCT_HBD_HALF h, 64
+%endmacro
+
+%macro SUB8x8_DCT_HBD 0
+    SUB8x8_DCT_HBD_LOAD
+    SUB8x8_DCT_HBD_TX
 %endmacro
 
 INIT_YMM avx2
@@ -1046,7 +1051,13 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
     xor       r13d, r13d        ; 256 * 8x8
     xor       r14d, r14d        ; coded 8x8s | ac << 8
 .loop:
-    SUB8x8_DCT_HBD
+    SUB8x8_DCT_HBD_LOAD
+    por       m5, m0, m1
+    por       m6, m2, m3
+    por       m5, m6
+    ptest     m5, m5            ; no residual
+    jz .zero
+    SUB8x8_DCT_HBD_TX
     IRH_QUANT m0,   0
     IRH_QUANT m1,  32
     IRH_QUANT m2,  64
@@ -1925,6 +1936,11 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
 .loop:
     IR_LOAD_DIFF8x2 0, 1, 0, 1
     IR_LOAD_DIFF8x2 2, 3, 2, 3
+    por       m4, m0, m1
+    por       m5, m2, m3
+    por       m4, m5
+    ptest     m4, m4            ; no residual
+    jz .zero
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4

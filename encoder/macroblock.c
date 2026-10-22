@@ -797,6 +797,12 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     continue;
                 }
                 CLEAR_16x16_NNZ( p );
+                if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                {
+                    /* prediction == fenc: every coefficient and the decimate score are 0 */
+                    h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
+                    continue;
+                }
                 h->dctf.sub16x16_dct8( dct8x8, h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] );
                 h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
 
@@ -863,6 +869,12 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     continue;
                 }
                 CLEAR_16x16_NNZ( p );
+                if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                {
+                    /* prediction == fenc: every coefficient and the decimate score are 0 */
+                    h->nr_count[0+!!p*2] += h->mb.b_noise_reduction * 16;
+                    continue;
+                }
                 h->dctf.sub16x16_dct( dct4x4, h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] );
 
                 if( h->mb.b_noise_reduction )

@@ -619,6 +619,15 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
     psubw     xm %+ ir8h_i, [r2+ir8h_i*FDEC_STRIDEB]
 %assign ir8h_i ir8h_i+1
 %endrep
+    por       xm8, xm0, xm1
+    por       xm9, xm2, xm3
+    por       xm8, xm9
+    por       xm9, xm4, xm5
+    por       xm8, xm9
+    por       xm9, xm6, xm7
+    por       xm8, xm9
+    ptest     xm8, xm8          ; no residual
+    jz .zero
     DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
     TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
 %assign ir8h_i 0
@@ -1368,6 +1377,7 @@ cglobal add16x16_idct8, 2,2,12
 %define IR8_SL    968
 %define IR8_F     972
 %define IR8_SR    976
+%define IR8_ZM    980       ; 8x8s of the current 8x8 row without residual
 %define IR8_SIZE  992
 
 ; rows a, b (b = a+1) to dst r7 (+4*FDEC_STRIDE); m9: 0
@@ -1474,6 +1484,24 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
     LOAD_DIFF16x2_AVX2 2, 3, 4, 5, 2, 3
     LOAD_DIFF16x2_AVX2 4, 5, 6, 7, 4, 5
     LOAD_DIFF16x2_AVX2 6, 7, 8, 9, 6, 7
+    por       m8, m0, m1
+    por       m9, m2, m3
+    por       m8, m9
+    por       m9, m4, m5
+    por       m8, m9
+    por       m9, m6, m7
+    por       m8, m9
+    vextracti128 xm9, m8, 1
+    xor       r6d, r6d
+    xor       r7d, r7d
+    ptest     xm8, xm8
+    setz      r6b
+    ptest     xm9, xm9
+    setz      r7b
+    lea       r6d, [r6+r7*2]    ; no residual: left, right
+    mov [rsp+IR8_ZM], r6d
+    cmp       r6d, 3
+    je .no_dct
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
     TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
     DCT8_1D    w, 0,1,2,3,4,5,6,7,8,9
@@ -1486,9 +1514,16 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
     mova [rsp+IR8_T+128+ir8_i*16], m %+ ir8_i
 %assign ir8_i ir8_i+2
 %endrep
+.no_dct:
     add       r1, 8*FENC_STRIDE
     add       r2, 8*FDEC_STRIDE
 .block:
+    mov       r6d, r13d
+    shr       r6d, 7
+    and       r6d, 1            ; left, right
+    mov       r7d, [rsp+IR8_ZM]
+    bt        r7d, r6d
+    jc .zero
     mov       r6d, r13d
     and       r6d, 128
     mova      m0, [rsp+r6+IR8_T+ 0]
