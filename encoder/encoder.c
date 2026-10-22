@@ -743,6 +743,11 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         return -1;
     }
 #endif
+    if( !HAS_444 && i_csp >= X264_CSP_I444 && i_csp <= X264_CSP_RGB )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with 4:4:4 support (configure --enable-444)\n" );
+        return -1;
+    }
     if( i_csp <= X264_CSP_NONE || i_csp >= X264_CSP_MAX )
     {
         x264_log( h, X264_LOG_ERROR, "invalid CSP (only I420/YV12/NV12/I422/YV16/NV16/I444/YV24/BGR/BGRA/RGB supported)\n" );

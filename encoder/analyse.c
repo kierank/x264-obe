@@ -1856,7 +1856,7 @@ static ALWAYS_INLINE int x264_mb_analyse_inter_p4x4_chroma_internal( x264_t *h, 
 
 static int x264_mb_analyse_inter_p4x4_chroma( x264_t *h, x264_mb_analysis_t *a, pixel **p_fref, int i8x8, int size )
 {
-    if( CHROMA_FORMAT == CHROMA_444 )
+    if( CHROMA444 )
         return x264_mb_analyse_inter_p4x4_chroma_internal( h, a, p_fref, i8x8, size, CHROMA_444 );
     else if( CHROMA_FORMAT == CHROMA_422 )
         return x264_mb_analyse_inter_p4x4_chroma_internal( h, a, p_fref, i8x8, size, CHROMA_422 );

@@ -1103,7 +1103,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
 
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir )
 {
-    if( CHROMA_FORMAT == CHROMA_444 )
+    if( CHROMA444 )
         return x264_macroblock_probe_skip_internal( h, b_bidir, 3, CHROMA_444 );
     else if( CHROMA_FORMAT == CHROMA_422 )
         return x264_macroblock_probe_skip_internal( h, b_bidir, 1, CHROMA_422 );
