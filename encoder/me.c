@@ -270,12 +270,12 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 /* [0..3] seed exit 16x16-class checks, exits, 8x8-and-below checks, exits
  * [4..6] qpel skip in the search: checks, fullpel kept, skips; [7..9] the same in refine_qpel
  * [10,11] ref0 exit checks, exits; [12,13] dia/hex searches with --hex-cap, capped */
-uint64_t x264_me_lever_cnt[24];
+uint64_t x264_me_lever_cnt[32];
 
 void x264_me_lever_print( void )
 {
-    uint64_t c[24];
-    for( int i = 0; i < 24; i++ )
+    uint64_t c[32];
+    for( int i = 0; i < 32; i++ )
         c[i] = __atomic_load_n( &x264_me_lever_cnt[i], __ATOMIC_RELAXED );
 #define PCT( a, b ) ((b) ? 100.0*(a)/(b) : 0.0)
     if( c[0] || c[2] )
@@ -297,6 +297,12 @@ void x264_me_lever_print( void )
     if( c[20] )
         fprintf( stderr, "melev %d-bit subpel-fit: %"PRIu64"/%"PRIu64" (%.2f%%) fullpel start %"PRIu64" (%.2f%% of fits)\n", BIT_DEPTH,
                  c[21], c[20], PCT( c[21], c[20] ), c[22], PCT( c[22], c[21] ) );
+    if( c[24] )
+        fprintf( stderr, "melev %d-bit fpel-fit: seeds %"PRIu64" start moved %"PRIu64" (%.2f%%) vertex tested %"PRIu64" won %"PRIu64"\n", BIT_DEPTH,
+                 c[24], c[25], PCT( c[25], c[24] ), c[26], c[27] );
+    if( c[28] )
+        fprintf( stderr, "melev %d-bit fpel-fit qpel: %"PRIu64"/%"PRIu64" (%.2f%%) satd tested %"PRIu64" (%.2f per fit) moved %"PRIu64"\n", BIT_DEPTH,
+                 c[29], c[28], PCT( c[29], c[28] ), c[30], c[29] ? (double)c[30]/c[29] : 0.0, c[31] );
 #undef PCT
 }
 
@@ -524,10 +530,19 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         COPY3_IF_LT( bcost, costs[1], bmx, cx+1, bmy, cy );
         COPY3_IF_LT( bcost, costs[2], bmx, cx, bmy, cy-1 );
         COPY3_IF_LT( bcost, costs[3], bmx, cx, bmy, cy+1 );
+        ME_LEVER_CNT( 24 );
         int vx = cx + o[0], vy = cy + o[1];
         if( abs( o[0] ) + abs( o[1] ) > 1 &&
             vx >= mv_x_min && vx <= mv_x_max && vy >= mv_y_min && vy <= mv_y_max )
+        {
+            int pc = bcost;
+            ME_LEVER_CNT( 26 );
             COST_MV( vx, vy );
+            if( bcost < pc )
+                ME_LEVER_CNT( 27 );
+        }
+        if( bmx != cx || bmy != cy )
+            ME_LEVER_CNT( 25 );
     }
 
     switch( h->mb.i_me_method )
@@ -1422,6 +1437,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     else if( h->mb.i_subpel_refine != 1 )
     {
         bdir = -1;
+        if( !b_chroma_me && h->mb.i_fpel_fit == 2 && qpel_iters )
+            ME_LEVER_CNT( 28 );
         if( !b_chroma_me && h->mb.i_fpel_fit == 2 && hfit && qpel_iters &&
             hc[0] > hc[4] && hc[1] > hc[4] && hc[2] > hc[4] && hc[3] > hc[4] &&
             bmy > h->mb.mv_min_spel[1] && bmy < h->mb.mv_max_spel[1] && bmx > h->mb.mv_min_spel[0] && bmx < h->mb.mv_max_spel[0] )
@@ -1430,6 +1447,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
              * toward the parabola vertex on each axis (the cheaper hpel side) */
             int omx = bmx, omy = bmy;
             uint64_t bkey = (uint64_t)bcost << 4;
+            ME_LEVER_CNT( 29 );
+            __atomic_fetch_add( &x264_me_lever_cnt[30], (hc[0] != hc[1]) + (hc[2] != hc[3]), __ATOMIC_RELAXED );
             if( hc[0] < hc[1] )
                 COST_MV_SATD_KEY( omx, omy - 1, 0 );
             if( hc[1] < hc[0] )
@@ -1439,6 +1458,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             if( hc[3] < hc[2] )
                 COST_MV_SATD_KEY( omx + 1, omy, 3 );
             int bidx = bkey & 15;
+            if( bidx )
+                ME_LEVER_CNT( 31 );
             if( bidx )
             {
                 bcost = bkey >> 4;
