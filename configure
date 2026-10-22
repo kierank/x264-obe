@@ -35,6 +35,7 @@ Configuration options:
   --enable-444             enable 4:4:4 and RGB encoding
   --enable-mbinfo          enable mb_info input
   --enable-slice-max-size  enable slice-max-size
+  --enable-constrained-intra enable constrained intra prediction
 
 Advanced options:
   --disable-asm            disable platform-specific assembly optimizations
@@ -283,6 +284,7 @@ chroma_format="all"
 has_444="no"
 has_mbinfo="no"
 has_slice_max_size="no"
+has_constrained_intra="no"
 compiler="GNU"
 opencl="yes"
 
@@ -346,6 +348,9 @@ for opt do
             ;;
         --enable-slice-max-size)
             has_slice_max_size="yes"
+            ;;
+        --enable-constrained-intra)
+            has_constrained_intra="yes"
             ;;
         --disable-avs)
             avs="no"
@@ -1113,6 +1118,7 @@ fi
 [ $has_444 = yes ] && define HAS_444 1 || define HAS_444 0
 [ $has_mbinfo = yes ] && define HAS_MBINFO 1 || define HAS_MBINFO 0
 [ $has_slice_max_size = yes ] && define HAS_SLICE_MAX_SIZE 1 || define HAS_SLICE_MAX_SIZE 0
+[ $has_constrained_intra = yes ] && define HAS_CONSTRAINED_INTRA 1 || define HAS_CONSTRAINED_INTRA 0
 
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
@@ -1374,6 +1380,7 @@ chroma format: $chroma_format
 444:           $has_444
 mb_info:       $has_mbinfo
 slice-max-size: $has_slice_max_size
+constr. intra: $has_constrained_intra
 EOF
 
 echo >> config.log
