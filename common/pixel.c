@@ -1045,7 +1045,7 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /* layout twin of the fenc_eq confirm pair: both declare the hidden weak x264_<depth>_twin_fenc_eq_16x16;
  * with FENCEQ_TWIN 1 the 16x16 slot dispatches it, which links as 0, so it stays NULL */
 #if HAVE_MMX && ARCH_X86_64
-#define FENCEQ_TWIN 0
+#define FENCEQ_TWIN 1
 #define FENCEQ_STR2( d ) #d
 #define FENCEQ_STR( d ) FENCEQ_STR2( d )
 #define FENCEQ_SYM "x264_" FENCEQ_STR( BIT_DEPTH ) "_twin_fenc_eq_16x16"
