@@ -2819,11 +2819,16 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
         a->l0.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
 
+    /* the caller keeps the first cheapest of 16x16, 16x8, 8x16, 8x8; the sub-8x8 RD
+     * below reads the mvd cache the bit counts leave behind, so no bound with it */
+    uint64_t bound = h->param.analyse.inter & X264_ANALYSE_PSUB8x8 ? RD_NO_BOUND : (uint64_t)a->l0.i_rd16x16;
+
     if( a->l0.i_cost16x8 < thresh )
     {
         h->mb.i_partition = D_16x8;
         x264_analyse_update_cache( h, a );
-        a->l0.i_cost16x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_cost16x8 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        bound = X264_MIN( bound, (uint64_t)a->l0.i_cost16x8 );
     }
     else
         a->l0.i_cost16x8 = COST_MAX;
@@ -2832,7 +2837,8 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_8x16;
         x264_analyse_update_cache( h, a );
-        a->l0.i_cost8x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_cost8x16 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        bound = X264_MIN( bound, (uint64_t)a->l0.i_cost8x16 );
     }
     else
         a->l0.i_cost8x16 = COST_MAX;
@@ -2876,7 +2882,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
         }
         else
             x264_analyse_update_cache( h, a );
-        a->l0.i_cost8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_cost8x8 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
     }
     else
         a->l0.i_cost8x8 = COST_MAX;
