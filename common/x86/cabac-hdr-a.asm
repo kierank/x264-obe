@@ -187,3 +187,112 @@ cglobal cabac_encode_bins_bmi2, 4,hdr_regs
     mov [r0+cb.queue], r5d
     RET
     HDR_PUTBYTE
+
+; one mvd component: %1 = ctx base; in: mvdd = mvd, r1 = ctx inc
+; prefix: bin 0 at base+inc, then base+3,4,5,6,6..; a >= 8 takes a second string
+; for its 9th bin. Then the k=3 exp-Golomb suffix and the sign as one bypass string.
+; clobbers r1, r2, r6, r8, tmp
+%macro HDR_MVD 1
+    mov      r6, ((%1+6)*0x01010101<<32) | ((%1+5)<<24) | ((%1+4)<<16) | ((%1+3)<<8) | %1
+    add      r1, r6
+    mov     r8d, mvdd
+    neg     r8d
+    cmovs   r8d, mvdd               ; a = |mvd|
+    cmp     r8d, 8
+    jae %%long
+    mov     r2d, 3
+    shlx    r2d, r2d, r8d
+    dec     r2d                     ; a ones, a zero, stop bit
+    call .bins
+    jmp %%sign
+%%long:
+    mov     r2d, 0x1ff              ; 8 ones, stop bit
+    call .bins
+    mov     r8d, mvdd
+    neg     r8d
+    cmovs   r8d, mvdd
+    xor     r2d, r2d
+    cmp     r8d, 8
+    seta    r2b
+    or      r2d, 2                  ; a > 8, stop bit
+    mov     r1d, %1+6
+    call .bins
+%%sign:
+    test    mvdd, mvdd
+    jz %%end
+    mov     r8d, mvdd
+    neg     r8d
+    cmovs   r8d, mvdd
+    mov     r6d, mvdd
+    shr     r6d, 31                 ; sign
+    cmp     r8d, 9
+    jae %%suffix
+    mov     r8d, 1
+%%bypass:
+; low = (low << n) + bins * range, then putbyte as needed
+    imul     r6, r4
+    shlx     r3, r3, r8
+    add      r3, r6
+    add     r5d, r8d
+    jl %%end
+    call .putbyte
+    jmp %%end
+%%suffix:
+; x264_cabac_encode_ue_bypass( cb, 3, a-9 ) and the sign in one string:
+; v = a-1, k = msb(v), x = v - (3 << k) + (1 << (2k-2)) in 2k-2 bits
+    lea    tmpd, [r8-1]
+    lzcnt   r8d, tmpd
+    xor     r8d, 31                 ; k
+    mov     r1d, 3
+    shlx    r1d, r1d, r8d
+    sub    tmpd, r1d
+    lea     r2d, [r8*2-2]
+    mov     r1d, 1
+    shlx    r1d, r1d, r2d
+    add    tmpd, r1d                ; x
+    lea     r6d, [tmpq*2+r6]        ; x, sign
+    lea     r8d, [r2+1]
+    jmp %%bypass
+%%end:
+%endmacro
+
+%ifdef PIC
+    %define mvdd r10d
+    %define pkd r11d
+    %define pkb r11b
+%else
+    %define mvdd r9d
+    %define pkd r10d
+    %define pkb r10b
+%endif
+
+;-----------------------------------------------------------------------------
+; void cabac_encode_mvd( x264_cabac_t *cb, int mdx, int mdy, int amvd )
+;-----------------------------------------------------------------------------
+cglobal cabac_encode_mvd_bmi2, 4,hdr_regs+2
+%ifdef PIC
+    lea      r7, [$$]
+%endif
+    mov     pkd, r2d
+    shl     pkd, 8
+    mov     r6d, r3d
+    shr     r6d, 8
+    or      pkd, r6d                ; mdy, y ctx inc
+    mov    mvdd, r1d
+    movzx   r1d, r3b
+    mov     r3d, [r0+cb.low]
+    mov     r4d, [r0+cb.range]
+    mov     r5d, [r0+cb.queue]
+    HDR_MVD 40
+    mov    mvdd, pkd
+    sar    mvdd, 8
+    movzx   r1d, pkb
+    HDR_MVD 47
+    mov [r0+cb.low], r3d
+    mov [r0+cb.range], r4d
+    mov [r0+cb.queue], r5d
+    RET
+.bins:
+    HDR_BINS
+    ret
+    HDR_PUTBYTE

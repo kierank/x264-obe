@@ -5030,6 +5030,75 @@ static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
         }
 }
 
+/* header bench: a fixed mix of bin strings (n) and mvd pairs (n = 0), coded per bin as the
+ * writer did before the bin-string API (decision_ptr, ue_bypass, bypass_asm) or by the kernels */
+typedef struct
+{
+    uint64_t ctx;
+    uint32_t bins;
+    int n, mx, my, amvd;
+} hdr_elem_t;
+#define HDR_ELEMS 64
+
+static void run_cabac_hdr_perbin( x264_cabac_t *cb, uint8_t *dst, const uint8_t *state, const hdr_elem_t *e )
+{
+    static const uint8_t ctxes[8] = { 3,4,5,6,6,6,6,6 };
+    memcpy( cb->state, state, 460 );
+    x264_cabac_encode_init( cb, dst, dst+0x8000 );
+    for( int i = 0; i < HDR_ELEMS; i++, e++ )
+    {
+        if( e->n )
+        {
+            uint64_t ctx = e->ctx;
+            for( int k = 0; k < e->n; k++ )
+            {
+                x264_cabac_encode_decision( cb, ctx & 0xff, (e->bins >> k) & 1 );
+                ctx = ctx >> 8 | ctx << 56;
+            }
+            continue;
+        }
+        for( int l = 0; l < 2; l++ )
+        {
+            int ctxbase = l ? 47 : 40;
+            int mvd = l ? e->my : e->mx;
+            int inc = l ? e->amvd >> 8 : e->amvd & 0xff;
+            if( mvd == 0 )
+            {
+                x264_cabac_encode_decision( cb, ctxbase + inc, 0 );
+                continue;
+            }
+            int i_abs = abs( mvd );
+            x264_cabac_encode_decision( cb, ctxbase + inc, 1 );
+            if( i_abs < 9 )
+            {
+                for( int k = 1; k < i_abs; k++ )
+                    x264_cabac_encode_decision( cb, ctxbase + ctxes[k-1], 1 );
+                x264_cabac_encode_decision( cb, ctxbase + ctxes[i_abs-1], 0 );
+            }
+            else
+            {
+                for( int k = 1; k < 9; k++ )
+                    x264_cabac_encode_decision( cb, ctxbase + ctxes[k-1], 1 );
+                x264_cabac_encode_ue_bypass( cb, 3, i_abs - 9 );
+            }
+            x264_cabac_encode_bypass( cb, mvd >> 31 );
+        }
+    }
+}
+
+static void run_cabac_hdr_kernel( x264_bitstream_function_t *bs, x264_cabac_t *cb, uint8_t *dst, const uint8_t *state, const hdr_elem_t *e )
+{
+    memcpy( cb->state, state, 460 );
+    x264_cabac_encode_init( cb, dst, dst+0x8000 );
+    for( int i = 0; i < HDR_ELEMS; i++, e++ )
+    {
+        if( e->n )
+            bs->cabac_encode_bins( cb, e->ctx, e->bins, e->n );
+        else
+            bs->cabac_encode_mvd( cb, e->mx, e->my, e->amvd );
+    }
+}
+
 static int check_cabac( int cpu_ref, int cpu_new )
 {
     int ret = 0, ok = 1, used_asm = 0;
@@ -5398,11 +5467,15 @@ name##fail:
                     call_c1( x264_cabac_encode_bins_c, &cb[0], ctx, bins, n );
                     call_a1( bs_a.cabac_encode_bins, &cb[1], ctx, bins, n );
                 }
-                ok &= cb[0].i_low == cb[1].i_low && cb[0].i_range == cb[1].i_range &&
-                      cb[0].i_queue == cb[1].i_queue && cb[0].i_bytes_outstanding == cb[1].i_bytes_outstanding &&
-                      cb[0].p - bitstream[0] == cb[1].p - bitstream[1] &&
-                      !memcmp( bitstream[0], bitstream[1], cb[0].p - bitstream[0] ) &&
-                      !memcmp( cb[0].state, cb[1].state, 1024 );
+                /* bins: the per-bin state exactly. mvd codes its bypass bins in one step, so a
+                 * carry the C holds in low may already be in the bytes: the position here, the
+                 * stream after the flush below */
+                ok &= x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) && cb[0].i_range == cb[1].i_range &&
+                      cb[0].i_queue == cb[1].i_queue && !memcmp( cb[0].state, cb[1].state, 1024 );
+                if( !f )
+                    ok &= cb[0].i_low == cb[1].i_low && cb[0].i_bytes_outstanding == cb[1].i_bytes_outstanding &&
+                          cb[0].p - bitstream[0] == cb[1].p - bitstream[1] &&
+                          !memcmp( bitstream[0], bitstream[1], cb[0].p - bitstream[0] );
             }
             if( ok )
             {
@@ -5436,6 +5509,57 @@ name##fail:
         }
     }
     report( "cabac header :" );
+
+    /* the mix per bin through cabac_encode_decision_ptr (column c) against the kernels */
+    if( do_bench && bs_a.cabac_encode_bins != bs_ref.cabac_encode_bins &&
+        (cpu_new & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT) )
+    {
+        hdr_elem_t *e = x264_malloc( HDR_ELEMS * sizeof(hdr_elem_t) );
+        uint8_t *dst = x264_malloc( 0x8000 );
+        x264_cabac_t *cbb = x264_malloc( sizeof(x264_cabac_t) );
+        void (*dptr)( x264_cabac_t *, int, int ) = x264_cabac_encode_decision_ptr;
+        if( e && dst && cbb )
+        {
+            uint8_t state[460];
+            x264_cabac_context_init( &h, cbb, SLICE_TYPE_P, 26, 0 );
+            memcpy( state, cbb->state, 460 );
+            bench_srand( 910 );
+            /* P-frame like: 3 in 8 mvd pairs, |mvd| 0 / 1-8 / 9-64 / 65-512;
+             * strings of 1-8 bins on header contexts 11-84 */
+            for( int i = 0; i < HDR_ELEMS; i++ )
+            {
+                memset( &e[i], 0, sizeof(hdr_elem_t) );
+                if( bench_rand()%8 < 3 )
+                {
+                    int mv[2];
+                    for( int k = 0; k < 2; k++ )
+                    {
+                        int r = bench_rand()%20;
+                        int a = r < 6 ? 0 : r < 16 ? 1 + bench_rand()%8 : r < 19 ? 9 + bench_rand()%56 : 65 + bench_rand()%448;
+                        mv[k] = bench_rand()&1 ? -a : a;
+                    }
+                    e[i].mx = mv[0];
+                    e[i].my = mv[1];
+                    e[i].amvd = bench_rand()%3 + ((bench_rand()%3) << 8);
+                }
+                else
+                {
+                    e[i].n = 1 + bench_rand()%8;
+                    for( int k = 0; k < e[i].n; k++ )
+                        e[i].ctx |= (uint64_t)(11 + bench_rand()%74) << (8*k);
+                    e[i].bins = bench_rand() & ((1 << e[i].n) - 1);
+                }
+            }
+            x264_cabac_encode_decision_ptr = x264_cabac_encode_decision_bmi2;
+            set_func_name( "cabac_header_mix" );
+            call_c2( run_cabac_hdr_perbin, cbb, dst, state, e );
+            call_a2( run_cabac_hdr_kernel, &bs_a, cbb, dst, state, e );
+            x264_cabac_encode_decision_ptr = dptr;
+        }
+        x264_free( e );
+        x264_free( dst );
+        x264_free( cbb );
+    }
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;

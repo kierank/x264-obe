@@ -117,6 +117,7 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
     if( (cpu&X264_CPU_BMI2) && (cpu&X264_CPU_LZCNT) )
     {
         pf->cabac_encode_bins = x264_cabac_encode_bins_bmi2;
+        pf->cabac_encode_mvd = x264_cabac_encode_mvd_bmi2;
     }
 
     if( cpu&X264_CPU_SSSE3 )

@@ -70,5 +70,7 @@ void x264_cabac_block_residual_422_dc_internal_avx512icl( dctcoef *l, int b_inte
 void x264_cabac_block_residual_422_dc_rd_internal_avx512icl( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 #define x264_cabac_encode_bins_bmi2 x264_template(cabac_encode_bins_bmi2)
 void x264_cabac_encode_bins_bmi2( x264_cabac_t *cb, uint64_t ctx, uint32_t bins, int n );
+#define x264_cabac_encode_mvd_bmi2 x264_template(cabac_encode_mvd_bmi2)
+void x264_cabac_encode_mvd_bmi2( x264_cabac_t *cb, int mdx, int mdy, int amvd );
 
 #endif
