@@ -69,4 +69,13 @@ void x264_cabac_block_residual_422_dc_internal_avx512icl( dctcoef *l, int b_inte
 #define x264_cabac_block_residual_422_dc_rd_internal_avx512icl x264_template(cabac_block_residual_422_dc_rd_internal_avx512icl)
 void x264_cabac_block_residual_422_dc_rd_internal_avx512icl( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 
+#define x264_cabac_block_residual_internal_p6_avx512 x264_template(cabac_block_residual_internal_p6_avx512)
+void x264_cabac_block_residual_internal_p6_avx512( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_422_dc_internal_p6_avx512icl x264_template(cabac_block_residual_422_dc_internal_p6_avx512icl)
+void x264_cabac_block_residual_422_dc_internal_p6_avx512icl( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_internal_sn_avx512 x264_template(cabac_block_residual_internal_sn_avx512)
+void x264_cabac_block_residual_internal_sn_avx512( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_422_dc_internal_sn_avx512icl x264_template(cabac_block_residual_422_dc_internal_sn_avx512icl)
+void x264_cabac_block_residual_422_dc_internal_sn_avx512icl( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+
 #endif

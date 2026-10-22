@@ -1819,7 +1819,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         x264_stack_align( x264_cavlc_init, h );
 #if HAVE_MMX
     x264_cabac_encode_decision_ptr = (h->param.cpu & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT)
-                                   ? x264_cabac_encode_decision_bmi2 : x264_cabac_encode_decision_asm;
+                                   ? x264_cabac_encode_decision_bmi2_sn : x264_cabac_encode_decision_asm;
 #endif
 
     mbcmp_init( h );

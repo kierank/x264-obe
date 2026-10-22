@@ -28,6 +28,9 @@
 %include "x86inc.asm"
 %include "x86util.asm"
 
+; test: 0 = this tree, 1 = *_p6 copies (61a04cd5), 2 = *_sn copies (speed-next)
+%assign chain_var 0
+
 SECTION_RODATA 64
 
 ; rd 4x4 sig/last map (avx512icl): entropy[state^bin] split in bytes, and
@@ -588,6 +591,74 @@ cabac_chain:
     %endrep
     %assign chain_tab chain_tab+1
 %endrep
+; test: the wip/x264-sweep-cabac 61a04cd5 entry, for the *_p6 copies
+; per state: range_lps[state>>1][(range>>6)&3] in bytes 0-3, transition[state][bin] in bytes 4-5
+align 8
+cabac_lps_trans:
+    db 2,2,2,2,0,0,0,0, 2,2,2,2,1,1,0,0
+    db 6,7,8,9,2,50,0,0, 6,7,8,9,51,3,0,0
+    db 6,7,9,10,2,50,0,0, 6,7,9,10,51,3,0,0
+    db 6,8,9,11,4,52,0,0, 6,8,9,11,53,5,0,0
+    db 7,8,10,11,6,52,0,0, 7,8,10,11,53,7,0,0
+    db 7,9,10,12,8,52,0,0, 7,9,10,12,53,9,0,0
+    db 7,9,11,12,10,54,0,0, 7,9,11,12,55,11,0,0
+    db 8,9,11,13,12,54,0,0, 8,9,11,13,55,13,0,0
+    db 8,10,12,14,14,54,0,0, 8,10,12,14,55,15,0,0
+    db 9,11,12,14,16,56,0,0, 9,11,12,14,57,17,0,0
+    db 9,11,13,15,18,56,0,0, 9,11,13,15,57,19,0,0
+    db 10,12,14,16,20,56,0,0, 10,12,14,16,57,21,0,0
+    db 10,12,15,17,22,58,0,0, 10,12,15,17,59,23,0,0
+    db 11,13,15,18,24,58,0,0, 11,13,15,18,59,25,0,0
+    db 11,14,16,19,26,60,0,0, 11,14,16,19,61,27,0,0
+    db 12,14,17,20,28,60,0,0, 12,14,17,20,61,29,0,0
+    db 12,15,18,21,30,60,0,0, 12,15,18,21,61,31,0,0
+    db 13,16,19,22,32,62,0,0, 13,16,19,22,63,33,0,0
+    db 14,17,20,23,34,62,0,0, 14,17,20,23,63,35,0,0
+    db 14,18,21,24,36,64,0,0, 14,18,21,24,65,37,0,0
+    db 15,19,22,25,38,66,0,0, 15,19,22,25,67,39,0,0
+    db 16,20,23,27,40,66,0,0, 16,20,23,27,67,41,0,0
+    db 17,21,25,28,42,66,0,0, 17,21,25,28,67,43,0,0
+    db 18,22,26,30,44,68,0,0, 18,22,26,30,69,45,0,0
+    db 19,23,27,31,46,68,0,0, 19,23,27,31,69,47,0,0
+    db 20,24,29,33,48,70,0,0, 20,24,29,33,71,49,0,0
+    db 21,26,30,35,50,72,0,0, 21,26,30,35,73,51,0,0
+    db 22,27,32,37,52,72,0,0, 22,27,32,37,73,53,0,0
+    db 23,28,33,39,54,74,0,0, 23,28,33,39,75,55,0,0
+    db 24,30,35,41,56,74,0,0, 24,30,35,41,75,57,0,0
+    db 26,31,37,43,58,76,0,0, 26,31,37,43,77,59,0,0
+    db 27,33,39,45,60,78,0,0, 27,33,39,45,79,61,0,0
+    db 29,35,41,48,62,78,0,0, 29,35,41,48,79,63,0,0
+    db 30,37,43,50,64,80,0,0, 30,37,43,50,81,65,0,0
+    db 32,39,46,53,66,82,0,0, 32,39,46,53,83,67,0,0
+    db 33,41,48,56,68,82,0,0, 33,41,48,56,83,69,0,0
+    db 35,43,51,59,70,84,0,0, 35,43,51,59,85,71,0,0
+    db 37,45,54,62,72,84,0,0, 37,45,54,62,85,73,0,0
+    db 39,48,56,65,74,88,0,0, 39,48,56,65,89,75,0,0
+    db 41,50,59,69,76,88,0,0, 41,50,59,69,89,77,0,0
+    db 43,53,63,72,78,90,0,0, 43,53,63,72,91,79,0,0
+    db 46,56,66,76,80,90,0,0, 46,56,66,76,91,81,0,0
+    db 48,59,69,80,82,94,0,0, 48,59,69,80,95,83,0,0
+    db 51,62,73,85,84,94,0,0, 51,62,73,85,95,85,0,0
+    db 53,65,77,89,86,96,0,0, 53,65,77,89,97,87,0,0
+    db 56,69,81,94,88,96,0,0, 56,69,81,94,97,89,0,0
+    db 59,72,86,99,90,100,0,0, 59,72,86,99,101,91,0,0
+    db 62,76,90,104,92,100,0,0, 62,76,90,104,101,93,0,0
+    db 66,80,95,110,94,102,0,0, 66,80,95,110,103,95,0,0
+    db 69,85,100,116,96,104,0,0, 69,85,100,116,105,97,0,0
+    db 73,89,105,122,98,104,0,0, 73,89,105,122,105,99,0,0
+    db 77,94,111,128,100,108,0,0, 77,94,111,128,109,101,0,0
+    db 81,99,117,135,102,108,0,0, 81,99,117,135,109,103,0,0
+    db 85,104,123,142,104,110,0,0, 85,104,123,142,111,105,0,0
+    db 90,110,130,150,106,112,0,0, 90,110,130,150,113,107,0,0
+    db 95,116,137,158,108,114,0,0, 95,116,137,158,115,109,0,0
+    db 100,122,144,166,110,116,0,0, 100,122,144,166,117,111,0,0
+    db 105,128,152,175,112,118,0,0, 105,128,152,175,119,113,0,0
+    db 111,135,160,185,114,118,0,0, 111,135,160,185,119,115,0,0
+    db 116,142,169,195,116,122,0,0, 116,142,169,195,123,117,0,0
+    db 123,150,178,205,118,122,0,0, 123,150,178,205,123,119,0,0
+    db 128,158,187,216,120,124,0,0, 128,158,187,216,125,121,0,0
+    db 128,167,197,227,122,126,0,0, 128,167,197,227,127,123,0,0
+    db 128,176,208,240,124,127,0,0, 128,176,208,240,126,125,0,0
 %endif ; ARCH_X86_64
 
 SECTION .text
@@ -654,8 +725,12 @@ endstruc
 
 cglobal cabac_encode_decision_%1, 1,7
     movifnidn t1d, r1m
+%assign chain_bmi2 1
+%ifidn %1, asm
+    %assign chain_bmi2 0
+%endif
 %assign chain_dec 0
-%ifidn %1, bmi2
+%if chain_bmi2 && chain_var == 0
     %assign chain_dec ARCH_X86_64
 %endif
 %if chain_dec
@@ -694,6 +769,24 @@ cglobal cabac_encode_decision_%1, 1,7
     mov   t5d, [r0+cb.range]
     movzx t6d, byte [r0+cb.state+t1]
     movifnidn t0,  r0 ; WIN64
+%if chain_bmi2 && chain_var == 1
+    mov   t3d, t5d
+    and   t5d, 0xc0
+    shr   t5d, 3
+    movifnidn t2d, r2m
+%if WIN64
+    PUSH r7
+%endif
+%ifdef PIC
+    lea    r7, [$$]
+    mov    t4, [r7+t6*8+cabac_lps_trans-$$]
+%else
+    mov    t4, [cabac_lps_trans+t6*8]
+%endif
+    shrx  t5d, t4d, t5d
+    movzx t5d, t5b
+    LOAD_GLOBAL t4d, cabac_lps_trans+4, t2, t6*8, t4
+%else
     mov   t4d, ~1
     mov   t3d, t5d
     and   t4d, t6d
@@ -707,6 +800,7 @@ cglobal cabac_encode_decision_%1, 1,7
 %endif
     LOAD_GLOBAL t5d, cabac_range_lps-4, t5, t4*2, t4
     LOAD_GLOBAL t4d, cabac_transition, t2, t6*2, t4
+%endif
     and   t6d, 1
     sub   t3d, t5d
     cmp   t6d, t2d
@@ -717,7 +811,7 @@ cglobal cabac_encode_decision_%1, 1,7
     mov   [t0+cb.state+t1], t4b
 ;cabac_encode_renorm
     mov   t4d, t3d
-%ifidn %1, bmi2
+%if chain_bmi2
     lzcnt t3d, t3d
     sub   t3d, 23
     shlx  t4d, t4d, t3d
@@ -762,7 +856,7 @@ cglobal cabac_encode_bypass_%1, 2,3
     jmp cabac_putbyte_%1
 %endif
 
-%ifnidn %1,bmi2
+%if chain_bmi2 == 0
 cglobal cabac_encode_terminal_%1, 1,3
     sub  dword [r0+cb.range], 2
 ; shortcut: the renormalization shift in terminal
@@ -788,7 +882,7 @@ cabac_putbyte_%1:
 %if WIN64
     DECLARE_REG_TMP 3,6,1,0,2,5,4
 %endif
-%ifidn %1, bmi2
+%if chain_bmi2
     add   t3d, 10
     shrx  t2d, t6d, t3d
     bzhi  t6d, t6d, t3d
@@ -824,6 +918,14 @@ cabac_putbyte_%1:
 
 CABAC asm
 CABAC bmi2
+%if ARCH_X86_64
+; test: the 61a04cd5 and speed-next decisions (with their bypass and putbyte)
+%assign chain_var 1
+CABAC bmi2_p6
+%assign chain_var 2
+CABAC bmi2_sn
+%assign chain_var 0
+%endif
 
 ; temporaries of COEFF_ABS_LEVEL_GT1 and the rd sig/last code
 %macro RD_TMP_REGS 3 ; t0, t1, ctx
@@ -1914,6 +2016,54 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 ; in: r2d = state if no %2; out: r2d = next state if no %2
 ; range is u = range-256; clobbers r1, r4-r6
 %macro CABAC_BIN 1-2
+%if chain_var
+%if %0 > 1
+    movzx   r2d, byte [%2]
+%endif
+%if chain_var == 2
+    mov     r4d, ranged
+    mov     r5d, r2d
+    shr     r4d, 6
+    and     r5d, ~1
+%ifdef PIC
+    lea      r5, [r7+r5*2]
+    movzx   r4d, byte [r5+r4+cabac_range_lps-4-$$]
+%else
+    movzx   r4d, byte [cabac_range_lps-4+r4+r5*2]
+%endif
+%else
+    mov      r5, [cabac_lps_trans+r2*8 GLOBAL] ; off the range chain
+    mov     r4d, ranged
+    and     r4d, 0xc0
+    shr     r4d, 3
+    shrx    r4d, r5d, r4d
+    movzx   r4d, r4b                ; range_lps
+%endif
+    sub  ranged, r4d
+    lea      r6, [lowq+rangeq]
+    test    r2b, 1
+%if %1
+    cmovz  ranged, r4d
+    cmovz    lowq, r6
+%else
+    cmovnz ranged, r4d
+    cmovnz   lowq, r6
+%endif
+%if chain_var == 2
+    movzx   r2d, byte [cabac_transition+%1+r2*2 GLOBAL]
+%else
+    movzx   r2d, byte [cabac_lps_trans+4+%1+r2*8 GLOBAL]
+%endif
+%if %0 > 1
+    mov    [%2], r2b
+%endif
+    lzcnt   r5d, ranged
+    sub     r5d, 23
+    shlx ranged, ranged, r5d
+    shlx   lowq, lowq, r5
+    add  queued, r5d
+    PUTBYTE
+%else
 %define chain_x cabac_chain+CHAIN_X+%1*1024+r2*8
 %if %0 > 1
     movzx   r2d, byte [%2]
@@ -1942,6 +2092,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     shlx    lowq, lowq, r4
     add  queued, r4d
     PUTBYTE
+%endif
 %endmacro
 
 ; %1 = 8x8 mode, %2 = count_m1
@@ -2017,8 +2168,16 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 
 ; %2 = 4:2:2 chroma dc (cabac_block_residual_422_dc_internal, ctx_block_cat = DCT_CHROMA_DC)
 %macro CABAC_RESIDUAL_BMI2 1-2 0
-%if %2
+%if %2 && chain_var == 2
+cglobal cabac_block_residual_422_dc_internal_sn, 4,15,0,-4*72
+%elif %2 && chain_var == 1
+cglobal cabac_block_residual_422_dc_internal_p6, 4,15,0,-4*72
+%elif %2
 cglobal cabac_block_residual_422_dc_internal, 4,15,0,-4*72
+%elif chain_var == 2
+cglobal cabac_block_residual_internal_sn, 4,15,0,-4*72
+%elif chain_var == 1
+cglobal cabac_block_residual_internal_p6, 4,15,0,-4*72
 %else
 cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %endif
@@ -2140,7 +2299,11 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %endif
     mov      r6, cbm
     mov    lowd, [r6+cb.low]
+%if chain_var
+    mov  ranged, [r6+cb.range]
+%else
     movzx ranged, byte [r6+cb.range] ; u = range-256
+%endif
     mov  queued, [r6+cb.queue]
     sub  queued, 24
 %if %2
@@ -2228,8 +2391,12 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     sub    r14d, r11d
     shrx    r1d, r2d, r14d
     movzx   r1d, r1b
+%if chain_var
+    imul    r1d, ranged
+%else
     lea     r4d, [rangeq+256]
     imul    r1d, r4d
+%endif
     shlx   lowq, lowq, r11
     add    lowq, r1
     add  queued, r11d
@@ -2243,8 +2410,12 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 ; x264_cabac_encode_bypass( cb, coeff_sign )
     LOAD_COEFFS r1d
     sar     r1d, 31
+%if chain_var
+    and     r1d, ranged
+%else
     lea     r4d, [rangeq+256]
     and     r1d, r4d
+%endif
     lea     lowq, [lowq*2+r1]
     inc  queued
     PUTBYTE
@@ -2278,7 +2449,9 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 .flush_end:
     add  queued, 24
     mov [r6+cb.low], lowd
+%if chain_var == 0
     add  ranged, 256
+%endif
     mov [r6+cb.range], ranged
     mov [r6+cb.queue], queued
     RET
@@ -2338,4 +2511,15 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+%assign chain_var 1
+INIT_XMM avx512
+CABAC_RESIDUAL_BMI2 coeff_last_avx512
+INIT_XMM avx512icl
+CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+%assign chain_var 2
+INIT_XMM avx512
+CABAC_RESIDUAL_BMI2 coeff_last_avx512
+INIT_XMM avx512icl
+CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+%assign chain_var 0
 %endif

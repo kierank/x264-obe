@@ -5608,7 +5608,7 @@ static void run_cabac_decision_states_c( x264_t *h, uint8_t *dst, const uint8_t 
 {
     run_cabac_decision_states( h, dst, src, st, cabac_decision_c );
 }
-#define cabac_decision_bmi2_tested x264_cabac_encode_decision_bmi2
+#define cabac_decision_bmi2_tested x264_cabac_encode_decision_bmi2_sn
 static void run_cabac_decision_states_bmi2( x264_t *h, uint8_t *dst, const uint8_t *src, const uint8_t *st )
 {
     run_cabac_decision_states( h, dst, src, st, cabac_decision_bmi2_tested );
