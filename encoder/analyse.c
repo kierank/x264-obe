@@ -387,6 +387,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
 
     a->b_fast_intra = 0;
     a->b_ref0_exit = 0;
+    h->mb.b_me_pred_only = 0;
     a->b_avoid_topright = 0;
     h->mb.i_skip_intra =
         h->mb.b_lossless ? 0 :
@@ -3505,6 +3506,7 @@ skip_analysis:
             int i_partition;
             int i_satd_inter, i_satd_intra;
 
+            h->mb.b_me_pred_only = h->param.analyse.b_me_pred_intra && x264_mb_lowres_intra( h );
             x264_mb_analyse_load_costs( h, &analysis );
 
             /* Intra heavy: intra first against the 16x16 predictors, and the 16x16

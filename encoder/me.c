@@ -445,6 +445,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             COST_MV( 0, 0 );
     }
 
+    /* experimental: a lowres-intra mb, predictors only */
+    if( h->mb.b_me_pred_only )
+        goto fpel_done;
+
     /* experimental: the best seed is cheap enough, no fullpel pattern */
     int seed_exit = h->mb.i_me_seed_exit[i_pixel >= PIXEL_8x8];
     if( seed_exit && X264_MIN( bcost, bpred_cost ) <= seed_exit * bw * bh )

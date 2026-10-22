@@ -471,6 +471,7 @@ struct x264_t
         int     i_me_seed_exit[2];
         int     i_qpel_skip;
         int     i_hex_cap;
+        int     b_me_pred_only;
         int     b_chroma_me;
         int     b_trellis;
         int     b_noise_reduction;

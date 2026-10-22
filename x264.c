@@ -850,6 +850,8 @@ static void help( x264_param_t *defaults, int longhelp )
     H2( "      --skip-static <integer> Experimental: P skip probe before ME where the\n"
         "                              skip mv is 0 and the lookahead found the mb\n"
         "                              inter, mv 0, lowres cost <= n [0 (off)]\n" );
+    H2( "      --me-pred-intra         Experimental: P ME tests only the mv predictors\n"
+        "                              on mbs the lookahead coded intra\n" );
     H1( "      --nr <integer>          Noise reduction [%d]\n", defaults->analyse.i_noise_reduction );
     H2( "\n" );
     H2( "      --deadzone-inter <int>  Set the size of the inter luma quantization deadzone [%d]\n", defaults->analyse.i_luma_deadzone[0] );
@@ -1103,6 +1105,7 @@ static struct option long_options[] =
     { "ref0-exit",   required_argument, NULL, 0 },
     { "hex-cap",     required_argument, NULL, 0 },
     { "skip-static", required_argument, NULL, 0 },
+    { "me-pred-intra",     no_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },
