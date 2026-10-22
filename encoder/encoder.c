@@ -36,6 +36,8 @@
 
 #define x264_weightp_cnt_print x264_template(weightp_cnt_print)
 void x264_weightp_cnt_print( void );
+#define x264_me_dupe_cnt_print x264_template(me_dupe_cnt_print)
+void x264_me_dupe_cnt_print( void );
 
 //#define DEBUG_MB_TYPE
 
@@ -4620,6 +4622,7 @@ void    x264_encoder_close  ( x264_t *h )
 
     x264_lookahead_delete( h );
     x264_weightp_cnt_print();
+    x264_me_dupe_cnt_print();
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );

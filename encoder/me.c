@@ -57,6 +57,10 @@ static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 
+/* blind dupe counters: [refdupe calls, dupe subpel costs, subpel costs, weighted subpel costs] */
+static __thread int dupe_cnt_on;
+static uint64_t dupe_cnt[4];
+
 #define BITS_MVD( mx, my )\
     (p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
 
@@ -966,7 +970,10 @@ void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
 
 void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh )
 {
+    __atomic_fetch_add( &dupe_cnt[0], 1, __ATOMIC_RELAXED );
+    dupe_cnt_on = 1;
     refine_subpel( h, m, 0, X264_MIN( 2, subpel_iterations[h->mb.i_subpel_refine][3] ), p_halfpel_thresh, 0 );
+    dupe_cnt_on = 0;
 }
 
 #define COST_MV_SAD( mx, my ) \
@@ -976,9 +983,25 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
     COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my ); \
 }
 
+#define x264_me_dupe_cnt_print x264_template(me_dupe_cnt_print)
+void x264_me_dupe_cnt_print( void );
+void x264_me_dupe_cnt_print( void )
+{
+    static const char *name[4] = { "refdupe calls", "dupe subpel costs", "subpel costs", "weighted subpel costs" };
+    if( !__atomic_load_n( &dupe_cnt[2], __ATOMIC_RELAXED ) )
+        return;
+    for( int i = 0; i < 4; i++ )
+        fprintf( stderr, "dupecnt %d-bit %-24s %"PRIu64"\n", BIT_DEPTH, name[i], __atomic_load_n( &dupe_cnt[i], __ATOMIC_RELAXED ) );
+}
+
 static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my,
                                             int16_t *fenc_pre )
 {
+    __atomic_fetch_add( &dupe_cnt[2], 1, __ATOMIC_RELAXED );
+    if( dupe_cnt_on )
+        __atomic_fetch_add( &dupe_cnt[1], 1, __ATOMIC_RELAXED );
+    if( m->weight[0].weightfn )
+        __atomic_fetch_add( &dupe_cnt[3], 1, __ATOMIC_RELAXED );
     if( fenc_pre )
     {
         /* subpel_cmp against fenc_pre */
