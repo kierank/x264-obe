@@ -593,6 +593,9 @@ __asm__( S2D_GLOBL( mbtree_cost_scale_avx2 ) S2D_GLOBL( mbtree_cost_scale_avx512
 #undef x264_aq_variance_tail_avx512icl
 #define x264_aq_variance_tail_avx512icl x264_template(twin_aq_variance_tail)
 #endif
+/* PnoAQ: prologue asm without aq_variance_tail */
+#undef x264_aq_variance_tail_avx512icl
+#define x264_aq_variance_tail_avx512icl x264_template(twin_aq_variance_tail)
 
 #define MC_CHROMA(cpu)\
 void x264_mc_chroma_##cpu( pixel *dstu, pixel *dstv, intptr_t i_dst, pixel *src, intptr_t i_src,\
