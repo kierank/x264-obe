@@ -3219,6 +3219,33 @@ static int x264_mb_intra_heavy( x264_t *h )
     return h->fenc->b_unweighted_cut;
 }
 
+/* P chroma ME per MB: the slice's (x264_macroblock_thread_init), off when the
+ * source chroma is flat, both planes' AC energy below CHROMAME_FLAT_THRESH per
+ * pixel in 8-bit units (0 = never). 4:2:0 and 4:2:2 only. */
+#ifndef CHROMAME_FLAT_THRESH
+#define CHROMAME_FLAT_THRESH 4
+#endif
+
+static void x264_mb_chroma_me_p( x264_t *h )
+{
+    int b_chroma_me = h->param.analyse.b_chroma_me && h->mb.i_subpel_refine >= 5;
+    if( CHROMAME_FLAT_THRESH > 0 && b_chroma_me && (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) )
+    {
+        int chromapix = CHROMA_V_SHIFT ? PIXEL_8x8 : PIXEL_8x16;
+        int shift = 7 - CHROMA_V_SHIFT;
+        uint32_t thresh = (uint32_t)CHROMAME_FLAT_THRESH << (shift + 2*(BIT_DEPTH-8));
+        b_chroma_me = 0;
+        for( int p = 1; p <= 2; p++ )
+        {
+            uint64_t res = h->pixf.var[chromapix]( h->mb.pic.p_fenc[p], FENC_STRIDE );
+            uint32_t sum = res;
+            uint32_t ssd = res >> 32;
+            b_chroma_me |= ssd - ((uint64_t)sum * sum >> shift) >= thresh;
+        }
+    }
+    h->mb.b_chroma_me = b_chroma_me;
+}
+
 /* P intra analysis against an inter cost, chroma included with chroma ME */
 static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cost )
 {
@@ -3463,6 +3490,7 @@ skip_analysis:
             int i_satd_inter, i_satd_intra;
 
             x264_mb_analyse_load_costs( h, &analysis );
+            x264_mb_chroma_me_p( h );
 
             /* Intra heavy: intra first against the 16x16 predictors, and the 16x16
              * search only where they come close to the intra cost */
