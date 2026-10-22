@@ -108,7 +108,8 @@ static ALWAYS_INLINE int x264_quant_8x8( x264_t *h, dctcoef dct[64], int i_qp, i
 }
 
 /* x264_quant_8x8, then if nonzero: zigzag into level and dequant in place; needs zigzagf.quant_8x8_scan.
- * Returns 0, or 1 | min(decimate score, 9) << 4; with trellis the score is 9 unless b_decimate. */
+ * Returns 0, or 1 | min(decimate score, 9) << 4 | a nonzero ac level << 8; with trellis the score is 9
+ * unless b_decimate, and bit 8 is always set. */
 static ALWAYS_INLINE int x264_quant_8x8_scan( x264_t *h, dctcoef dct[64], dctcoef level[64], int i_qp, int ctx_block_cat,
                                               int b_intra, int p, int idx, int b_decimate )
 {
@@ -120,7 +121,7 @@ static ALWAYS_INLINE int x264_quant_8x8_scan( x264_t *h, dctcoef dct[64], dctcoe
         h->zigzagf.scan_8x8( level, dct );
         int score = b_decimate ? h->quantf.decimate_score64( level ) : 9;
         h->quantf.dequant_8x8( dct, h->dequant8_mf[i_quant_cat], i_qp );
-        return 1 | X264_MIN( score, 9 ) << 4;
+        return 1 | X264_MIN( score, 9 ) << 4 | 1 << 8;
     }
     if( h->mb.b_noise_reduction )
         h->quantf.denoise_dct( dct, h->nr_residual_sum[1+!!p*2], h->nr_offset[1+!!p*2], 64 );
@@ -158,6 +159,26 @@ do\
 /* A special for loop that iterates branchlessly over each set
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
+
+/* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
+ * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
+static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
+{
+    ALIGNED_ARRAY_16( dctcoef, dc,[16] );
+    if( cbp == 0xf )
+    {
+        for( int i = 0; i < 16; i++ )
+            dc[block_idx_xy_1d[i]] = b_8x8 ? dct[(i>>2)*64] : dct[i*16];
+        h->dctf.add16x16_idct_dc( p_dst, dc );
+    }
+    else
+        FOREACH_BIT( i8x8, 0, cbp )
+        {
+            for( int i = 0; i < 4; i++ )
+                dc[i] = b_8x8 ? dct[i8x8*64] : dct[(i8x8*4+i)*16];
+            h->dctf.add8x8_idct_dc( &p_dst[(i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE], dc );
+        }
+}
 
 static ALWAYS_INLINE void x264_mb_encode_i4x4( x264_t *h, int p, int idx, int i_qp, int i_mode, int b_predict )
 {
@@ -242,7 +263,10 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
             h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8 );
             h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[p?CQM_8IC:CQM_8IY], i_qp );
         }
-        h->dctf.add8x8_idct8( p_dst, dct8x8 );
+        if( b_q8s && !(nz >> 8) )
+            x264_mb_add_dconly( h, p_dst, dct8x8, 1, 1 );
+        else
+            h->dctf.add8x8_idct8( p_dst, dct8x8 );
         STORE_8x8_NNZ( p, idx, 1 );
     }
     else
