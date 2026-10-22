@@ -4453,7 +4453,7 @@ static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf
     int score = q8s_qf->decimate_score64( level );
     if( dequant_mf )
         q8s_qf->dequant_8x8( dct, dequant_mf, i_qp );
-    return 1 | X264_MIN( score, 9 ) << 4;
+    return 1 | X264_MIN( score, 9 ) << 4 | (q8s_qf->coeff_last[DCT_LUMA_8x8]( level ) > 0) << 8;
 }
 
 static int check_quant( int cpu_ref, int cpu_new )
