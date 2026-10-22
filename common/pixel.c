@@ -1059,6 +1059,23 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twin of test/x264-fpel8-sn: every build declares the hidden weak
+ * x264_8_twin_sad_{dia,hex}_search_8x8; set to 1, the dispatch points at them,
+ * they link as 0, the slots stay NULL and me.c takes speed-next's path */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define FSN_TWIN 0
+extern __typeof__( x264_pixel_sad_dia_search_8x8_avx512 ) x264_8_twin_sad_dia_search_8x8 __attribute__((weak, visibility("hidden")));
+extern __typeof__( x264_pixel_sad_hex_search_8x8_avx512 ) x264_8_twin_sad_hex_search_8x8 __attribute__((weak, visibility("hidden")));
+__asm__( ".weak x264_8_twin_sad_dia_search_8x8\n.hidden x264_8_twin_sad_dia_search_8x8" );
+__asm__( ".weak x264_8_twin_sad_hex_search_8x8\n.hidden x264_8_twin_sad_hex_search_8x8" );
+#if FSN_TWIN
+#undef x264_pixel_sad_dia_search_8x8_avx512
+#define x264_pixel_sad_dia_search_8x8_avx512 x264_8_twin_sad_dia_search_8x8
+#undef x264_pixel_sad_hex_search_8x8_avx512
+#define x264_pixel_sad_hex_search_8x8_avx512 x264_8_twin_sad_hex_search_8x8
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
