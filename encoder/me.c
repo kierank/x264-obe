@@ -323,7 +323,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         /* pred == fenc at the unclipped mvp: every other mv costs more, so with
          * strict < neither the search nor refine_subpel moves off it */
-        if( bpred_cost == 2*m->p_cost_mv[0] )
+        if( bpred_cost == 2*m->p_cost_mv[0] && x264_zsad_gate )
         {
             if( !h->mb.b_chroma_me || (i_pixel > PIXEL_8x8 && !CHROMA444) )
             {
@@ -412,7 +412,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride );
 
         /* pred == fenc at the mvp, which has no mv cost here: every other mv costs more */
-        if( !bcost )
+        if( !bcost && x264_zsad_gate )
             goto fpel_done;
 
         if( i_mvc > 0 )

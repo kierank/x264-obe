@@ -3438,7 +3438,7 @@ intra_analysis:
                 {
                     b_skip = x264_macroblock_probe_pskip( h );
                     /* 2: luma sad 0, never mispredicted */
-                    if( b_skip == 1 && x264_mb_pskip_mispredicted( h ) )
+                    if( b_skip && (b_skip == 1 || !x264_zsad_gate) && x264_mb_pskip_mispredicted( h ) )
                         b_skip = h->mb.b_skip_mc = 0;
                 }
             }
