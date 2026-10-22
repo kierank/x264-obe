@@ -1568,7 +1568,7 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 /* lowres-intra-reuse layout pair: x264_lri_gate gates the choice of iprev. Arm:
  * x264_lri_arm, defined in api.c. Twin (LRI_TWIN 1): the never defined
  * x264_lri_twin, which links as 0. The code is the same in both. */
-#define LRI_TWIN 0
+#define LRI_TWIN 1
 extern const char x264_lri_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_lri_twin __attribute__((weak, visibility("hidden")));
 #if LRI_TWIN
