@@ -1030,6 +1030,51 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
+/* layout twins of wip/x264-sweep-intrabi: every build declares the hidden weak
+ * twins of the intra_satd_x4 kernels; a group set to 1 dispatches its twins, which link
+ * as 0, so SWIB_SET keeps the slot's previous value (NULL: the old path, or the
+ * avx2 kernel under an avx512icl twin) */
+#if HAVE_MMX && ARCH_X86_64
+#define SWIB_TWIN_X4C_AVX2  1
+#define SWIB_TWIN_X4C_ICL   1
+#define SWIB_TWIN_X4L_AVX2  0
+#define SWIB_TWIN_X4L_ICL   0
+#define SWIB_STR2( x ) #x
+#define SWIB_STR( x ) SWIB_STR2( x )
+#define SWIB_TWIN1( f ) \
+    extern __typeof__( f ) x264_template(twin_##f) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak " SWIB_STR( x264_template(twin_##f) ) "\n.hidden " SWIB_STR( x264_template(twin_##f) ) );
+SWIB_TWIN1( x264_intra_satd_x4_8x8c_avx2 )
+SWIB_TWIN1( x264_intra_satd_x4_8x16c_avx2 )
+SWIB_TWIN1( x264_intra_satd_x4_8x8c_avx512icl )
+SWIB_TWIN1( x264_intra_satd_x4_8x16c_avx512icl )
+SWIB_TWIN1( x264_intra_satd_x4_16x16_avx2 )
+SWIB_TWIN1( x264_intra_satd_x4_16x16_avx512icl )
+#if SWIB_TWIN_X4C_AVX2
+#undef x264_intra_satd_x4_8x8c_avx2
+#define x264_intra_satd_x4_8x8c_avx2 x264_template(twin_x264_intra_satd_x4_8x8c_avx2)
+#undef x264_intra_satd_x4_8x16c_avx2
+#define x264_intra_satd_x4_8x16c_avx2 x264_template(twin_x264_intra_satd_x4_8x16c_avx2)
+#endif
+#if SWIB_TWIN_X4C_ICL
+#undef x264_intra_satd_x4_8x8c_avx512icl
+#define x264_intra_satd_x4_8x8c_avx512icl x264_template(twin_x264_intra_satd_x4_8x8c_avx512icl)
+#undef x264_intra_satd_x4_8x16c_avx512icl
+#define x264_intra_satd_x4_8x16c_avx512icl x264_template(twin_x264_intra_satd_x4_8x16c_avx512icl)
+#endif
+#if SWIB_TWIN_X4L_AVX2
+#undef x264_intra_satd_x4_16x16_avx2
+#define x264_intra_satd_x4_16x16_avx2 x264_template(twin_x264_intra_satd_x4_16x16_avx2)
+#endif
+#if SWIB_TWIN_X4L_ICL
+#undef x264_intra_satd_x4_16x16_avx512icl
+#define x264_intra_satd_x4_16x16_avx512icl x264_template(twin_x264_intra_satd_x4_16x16_avx512icl)
+#endif
+#endif
+/* the empty asm hides whether f is a twin, so every arm compiles the same test */
+#define SWIB_SET( slot, f ) do { intptr_t swib_p = (intptr_t)(f); __asm__( "" : "+r"(swib_p) ); \
+                                 if( swib_p ) slot = (__typeof__(slot))swib_p; } while( 0 )
+
 void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 {
     memset( pixf, 0, sizeof(*pixf) );
@@ -1308,9 +1353,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
-        pixf->intra_satd_x4_8x8c  = x264_intra_satd_x4_8x8c_avx2;
-        pixf->intra_satd_x4_8x16c = x264_intra_satd_x4_8x16c_avx2;
-        pixf->intra_satd_x4_16x16 = x264_intra_satd_x4_16x16_avx2;
+        SWIB_SET( pixf->intra_satd_x4_8x8c, x264_intra_satd_x4_8x8c_avx2 );
+        SWIB_SET( pixf->intra_satd_x4_8x16c, x264_intra_satd_x4_8x16c_avx2 );
+        SWIB_SET( pixf->intra_satd_x4_16x16, x264_intra_satd_x4_16x16_avx2 );
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
@@ -1365,9 +1410,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
         /* zen4 prune: asd8 1.346x (rack01 checkasm --bench); kept assembled */
-        pixf->intra_satd_x4_8x8c  = x264_intra_satd_x4_8x8c_avx512icl;
-        pixf->intra_satd_x4_8x16c = x264_intra_satd_x4_8x16c_avx512icl;
-        pixf->intra_satd_x4_16x16 = x264_intra_satd_x4_16x16_avx512icl;
+        SWIB_SET( pixf->intra_satd_x4_8x8c, x264_intra_satd_x4_8x8c_avx512icl );
+        SWIB_SET( pixf->intra_satd_x4_8x16c, x264_intra_satd_x4_8x16c_avx512icl );
+        SWIB_SET( pixf->intra_satd_x4_16x16, x264_intra_satd_x4_16x16_avx512icl );
 #endif
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
@@ -1722,9 +1767,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
-        pixf->intra_satd_x4_8x8c  = x264_intra_satd_x4_8x8c_avx2;
-        pixf->intra_satd_x4_8x16c = x264_intra_satd_x4_8x16c_avx2;
-        pixf->intra_satd_x4_16x16 = x264_intra_satd_x4_16x16_avx2;
+        SWIB_SET( pixf->intra_satd_x4_8x8c, x264_intra_satd_x4_8x8c_avx2 );
+        SWIB_SET( pixf->intra_satd_x4_8x16c, x264_intra_satd_x4_8x16c_avx2 );
+        SWIB_SET( pixf->intra_satd_x4_16x16, x264_intra_satd_x4_16x16_avx2 );
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )
@@ -1754,9 +1799,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_bi[PIXEL_8x8] = x264_pixel_satd_bi_8x8_avx512icl;
         pixf->satd_bi4[PIXEL_8x16] = x264_pixel_satd_bi4_8x16_avx512icl;
         pixf->satd_bi4[PIXEL_8x8] = x264_pixel_satd_bi4_8x8_avx512icl;
-        pixf->intra_satd_x4_8x8c  = x264_intra_satd_x4_8x8c_avx512icl;
-        pixf->intra_satd_x4_8x16c = x264_intra_satd_x4_8x16c_avx512icl;
-        pixf->intra_satd_x4_16x16 = x264_intra_satd_x4_16x16_avx512icl;
+        SWIB_SET( pixf->intra_satd_x4_8x8c, x264_intra_satd_x4_8x8c_avx512icl );
+        SWIB_SET( pixf->intra_satd_x4_8x16c, x264_intra_satd_x4_8x16c_avx512icl );
+        SWIB_SET( pixf->intra_satd_x4_16x16, x264_intra_satd_x4_16x16_avx512icl );
 #endif
     }
 
