@@ -137,6 +137,9 @@ typedef struct x264_frame
     float   *f_qp_offset_aq;
     int     b_intra_calculated;
     int     b_unweighted_cut; /* P: the unweighted lowres cost of the final weightp analysis is near intra */
+    /* vbv-reuse counters: slice sums, and per thread slice redo / slice / reusable tsc */
+    uint64_t rcn[48];
+    uint64_t rcn_slice[X264_THREAD_MAX][3];
     uint16_t *i_intra_cost;
     uint16_t *i_propagate_cost;
     uint16_t *i_inv_qscale_factor;

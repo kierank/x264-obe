@@ -34,6 +34,284 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* vbv-reuse counters (test only) */
+__thread uint64_t x264_rcn[RCN_N];
+__thread int x264_rcn_src;
+
+typedef struct
+{
+    int redo;
+    uint64_t me, intra, i16c, pskip, trans;
+    int mvp_valid;
+    ALIGNED_4( int16_t mvp[2] );
+} rcn_mb_t;
+
+typedef struct
+{
+    int frame, y, same;
+    int8_t type, part, field, i16, chroma, mvp_valid;
+    int8_t ref[4];
+    int8_t i4[16];
+    ALIGNED_4( int16_t mv[4][2] );
+    ALIGNED_4( int16_t mvp[2] );
+    pixel col[48];
+} rcn_rec_t;
+
+static __thread rcn_mb_t rcn_mb;
+static __thread int rcn_redo_frame = -1, rcn_redo_y = -1;
+static __thread rcn_rec_t *rcn_rec;
+static __thread int rcn_rec_w;
+
+static int rcn_probe_pskip( x264_t *h )
+{
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    int ret = x264_macroblock_probe_pskip( h );
+    if( t )
+        rcn_mb.pskip += x264_rcn_tsc() - t;
+    return ret;
+}
+
+void x264_rcn_mb_begin( x264_t *h )
+{
+    rcn_mb.redo = h->fdec->i_frame == rcn_redo_frame && h->mb.i_mb_y <= rcn_redo_y;
+    rcn_mb.me = rcn_mb.intra = rcn_mb.i16c = rcn_mb.pskip = rcn_mb.trans = 0;
+    rcn_mb.mvp_valid = 0;
+}
+
+void x264_rcn_restart( x264_t *h, int y )
+{
+    rcn_redo_frame = h->fdec->i_frame;
+    rcn_redo_y = y;
+}
+
+void x264_rcn_mb_end( x264_t *h, uint64_t t0, uint64_t t1, uint64_t t2 )
+{
+    uint64_t *c = x264_rcn;
+    int x = h->mb.i_mb_x, y = h->mb.i_mb_y;
+    c[RCN_MB]++;
+    c[RCN_TSC_AN] += t1 - t0;
+    c[RCN_TSC_ENC] += t2 - t1;
+
+    if( rcn_rec_w < h->mb.i_mb_width )
+    {
+        free( rcn_rec );
+        rcn_rec = calloc( 2 * h->mb.i_mb_width, sizeof(rcn_rec_t) );
+        rcn_rec_w = h->mb.i_mb_width;
+        for( int i = 0; i < 2 * rcn_rec_w; i++ )
+            rcn_rec[i].frame = -1;
+    }
+    rcn_rec_t cur;
+    memset( &cur, 0, sizeof(cur) );
+    cur.frame = h->fdec->i_frame;
+    cur.y = y;
+    cur.type = h->mb.i_type;
+    cur.part = h->mb.i_partition;
+    cur.field = MB_INTERLACED;
+    cur.i16 = h->mb.i_intra16x16_pred_mode;
+    cur.chroma = h->mb.i_chroma_pred_mode;
+    for( int i = 0; i < 16; i++ )
+        cur.i4[i] = h->mb.cache.intra4x4_pred_mode[x264_scan8[i]];
+    for( int i = 0; i < 4; i++ )
+    {
+        cur.ref[i] = h->mb.cache.ref[0][x264_scan8[4*i]];
+        CP32( cur.mv[i], h->mb.cache.mv[0][x264_scan8[4*i]] );
+    }
+    cur.mvp_valid = rcn_mb.mvp_valid;
+    CP32( cur.mvp, rcn_mb.mvp );
+    int n = 0;
+    for( int i = 0; i < 16; i++ )
+        cur.col[n++] = h->mb.pic.p_fdec[0][15 + i*FDEC_STRIDE];
+    if( CHROMA_FORMAT != CHROMA_400 )
+    {
+        int cw = 16 >> h->mb.chroma_h_shift, ch = 16 >> h->mb.chroma_v_shift;
+        for( int p = 1; p < 3; p++ )
+            for( int i = 0; i < ch; i++ )
+                cur.col[n++] = h->mb.pic.p_fdec[p][cw - 1 + i*FDEC_STRIDE];
+    }
+
+    rcn_rec_t *r = &rcn_rec[(y&1)*rcn_rec_w + x];
+    int prev = r->frame == cur.frame && r->y == y;
+    cur.same = prev && r->field == cur.field && !memcmp( r->col, cur.col, n * sizeof(pixel) );
+
+    if( rcn_mb.redo )
+    {
+        int b_intra = IS_INTRA( cur.type );
+        c[RCN_MB_REDO]++;
+        c[RCN_MB_REDO_EMERG] += !!h->mb.i_vbv_emerg;
+        c[RCN_MB_REDO_INTRA] += b_intra;
+        c[RCN_MB_REDO_SKIP] += IS_SKIP( cur.type );
+        c[RCN_TSC_REDO_AN] += t1 - t0;
+        c[RCN_TSC_REDO_ENC] += t2 - t1;
+        c[RCN_TSC_REDO_ME] += rcn_mb.me;
+        c[RCN_TSC_REDO_INTRA] += rcn_mb.intra;
+        c[RCN_TSC_REDO_I16C] += rcn_mb.i16c;
+        c[RCN_TSC_REDO_PSKIP] += rcn_mb.pskip;
+        c[RCN_TSC_REDO_TRANS] += rcn_mb.trans;
+        int left_same;
+        if( !x )
+        {
+            c[RCN_EDGE_X0]++;
+            left_same = 1;
+        }
+        else
+        {
+            left_same = SLICE_MBAFF ? rcn_rec[x-1].same && rcn_rec[rcn_rec_w + x-1].same
+                                    : rcn_rec[(y&1)*rcn_rec_w + x-1].same;
+            c[RCN_EDGE_CHK]++;
+            c[RCN_EDGE_SAME] += left_same;
+        }
+        if( left_same )
+            c[RCN_TSC_REDO_I16C_SAME] += rcn_mb.i16c;
+        if( prev )
+        {
+            c[RCN_MB_REDO_CMP]++;
+            c[RCN_SAME_TYPE] += r->type == cur.type;
+            int same_mode = r->type == cur.type;
+            if( same_mode && b_intra )
+            {
+                same_mode = r->chroma == cur.chroma;
+                if( cur.type == I_16x16 )
+                    same_mode &= r->i16 == cur.i16;
+                else if( cur.type == I_4x4 || cur.type == I_8x8 )
+                    same_mode &= !memcmp( r->i4, cur.i4, 16 );
+            }
+            if( !IS_INTRA( r->type ) && !b_intra )
+            {
+                int same_mv = r->part == cur.part && !memcmp( r->ref, cur.ref, 4 ) && !memcmp( r->mv, cur.mv, sizeof(cur.mv) );
+                c[RCN_INTER_BOTH]++;
+                c[RCN_SAME_MV] += same_mv;
+                same_mode &= same_mv;
+            }
+            c[RCN_SAME_MODE] += same_mode;
+            if( r->mvp_valid && cur.mvp_valid )
+            {
+                c[RCN_MVP_BOTH]++;
+                c[RCN_SAME_MVP] += M32( r->mvp ) == M32( cur.mvp );
+            }
+            c[RCN_COL_SAME] += cur.same;
+        }
+    }
+    *r = cur;
+}
+
+void x264_rcn_slice_end( x264_t *h, uint64_t tsc )
+{
+    uint64_t *c = x264_rcn;
+    uint64_t *s = h->fdec->rcn_slice[h->i_thread_idx];
+    __atomic_fetch_add( &s[0], c[RCN_TSC_REDO_AN] + c[RCN_TSC_REDO_ENC], __ATOMIC_RELAXED );
+    __atomic_fetch_add( &s[1], tsc, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &s[2], c[RCN_TSC_REDO_ME] + c[RCN_TSC_REDO_I16C_SAME], __ATOMIC_RELAXED );
+    for( int i = 0; i < RCN_N; i++ )
+        if( c[i] )
+        {
+            __atomic_fetch_add( &h->fdec->rcn[i], c[i], __ATOMIC_RELAXED );
+            c[i] = 0;
+        }
+}
+
+#define RCN_CATS 5
+#define RCN_BINS 8
+static const char *rcn_cat_name[RCN_CATS] = { "I", "P cut", "P intra>=30%", "P other", "B" };
+static uint64_t rcn_sum[RCN_CATS][RCN_N];
+static uint64_t rcn_frames[RCN_CATS], rcn_frames_re[RCN_CATS], rcn_hist[RCN_CATS][RCN_BINS], rcn_ev_max[RCN_CATS];
+static uint64_t rcn_tsc_slice[RCN_CATS], rcn_w_redo[RCN_CATS], rcn_w_slice[RCN_CATS], rcn_w_ub[RCN_CATS];
+static uint64_t rcn_w_max_redo[RCN_CATS], rcn_w_max_slice[RCN_CATS], rcn_w_max_ub[RCN_CATS];
+static uint64_t rcn_w10[RCN_CATS], rcn_w20[RCN_CATS];
+static uint64_t rcn_tsc0;
+static int64_t rcn_mdate0;
+
+void x264_rcn_frame_fold( x264_t *h )
+{
+    x264_frame_t *f = h->fdec;
+    if( !rcn_tsc0 )
+    {
+        rcn_tsc0 = x264_rcn_tsc();
+        rcn_mdate0 = x264_mdate();
+    }
+    int intra = h->stat.frame.i_mb_count[I_4x4] + h->stat.frame.i_mb_count[I_8x8]
+              + h->stat.frame.i_mb_count[I_16x16] + h->stat.frame.i_mb_count[I_PCM];
+    int cat = h->sh.i_type == SLICE_TYPE_I ? 0 : h->sh.i_type == SLICE_TYPE_B ? 4
+            : h->fenc->b_unweighted_cut ? 1 : intra * 10 >= h->mb.i_mb_count * 3 ? 2 : 3;
+    for( int i = 0; i < RCN_N; i++ )
+        rcn_sum[cat][i] += f->rcn[i];
+    uint64_t ev = f->rcn[RCN_EV];
+    rcn_frames[cat]++;
+    rcn_frames_re[cat] += !!ev;
+    rcn_ev_max[cat] = X264_MAX( rcn_ev_max[cat], ev );
+    int bin = ev <= 2 ? ev : ev <= 4 ? 3 : ev <= 8 ? 4 : ev <= 16 ? 5 : ev <= 32 ? 6 : 7;
+    rcn_hist[cat][bin]++;
+    int w = -1;
+    for( int i = 0; i < X264_THREAD_MAX; i++ )
+    {
+        uint64_t *s = f->rcn_slice[i];
+        rcn_tsc_slice[cat] += s[1];
+        if( s[1] && (w < 0 || s[0] * f->rcn_slice[w][1] > f->rcn_slice[w][0] * s[1]) )
+            w = i;
+    }
+    if( ev && w >= 0 && f->rcn_slice[w][0] )
+    {
+        uint64_t *s = f->rcn_slice[w];
+        rcn_w_redo[cat] += s[0];
+        rcn_w_slice[cat] += s[1];
+        rcn_w_ub[cat] += s[2];
+        rcn_w10[cat] += s[0] * 10 > s[1];
+        rcn_w20[cat] += s[0] * 5 > s[1];
+        if( s[0] > rcn_w_max_redo[cat] )
+        {
+            rcn_w_max_redo[cat] = s[0];
+            rcn_w_max_slice[cat] = s[1];
+            rcn_w_max_ub[cat] = s[2];
+        }
+    }
+    memset( f->rcn, 0, sizeof(f->rcn) );
+    memset( f->rcn_slice, 0, sizeof(f->rcn_slice) );
+}
+
+void x264_rcn_print( x264_t *h )
+{
+    if( !rcn_tsc0 )
+        return;
+    double tpu = (double)(x264_rcn_tsc() - rcn_tsc0) / X264_MAX( x264_mdate() - rcn_mdate0, 1 );
+#define PCT( a, b ) ((b) ? 100.0 * (a) / (b) : 0.0)
+    for( int k = 0; k < RCN_CATS; k++ )
+    {
+        uint64_t *c = rcn_sum[k];
+        if( !rcn_frames[k] )
+            continue;
+        x264_log( h, X264_LOG_INFO, "vbvreuse %d-bit %-12s: frames %"PRIu64" with re-encodes %"PRIu64" (%.1f%%) | events %"PRIu64" (%.3f/frame, max %"PRIu64") emerg %"PRIu64" room %"PRIu64" jump %"PRIu64" last %"PRIu64" lastemerg %"PRIu64" | mean dQP %.2f | MB rows %"PRIu64"\n",
+                  BIT_DEPTH, rcn_cat_name[k], rcn_frames[k], rcn_frames_re[k], PCT( rcn_frames_re[k], rcn_frames[k] ),
+                  c[RCN_EV], (double)c[RCN_EV] / rcn_frames[k], rcn_ev_max[k],
+                  c[RCN_EV_EMERG], c[RCN_EV_ROOM], c[RCN_EV_JUMP], c[RCN_EV_LAST], c[RCN_EV_LASTEMERG],
+                  c[RCN_EV] ? (int64_t)c[RCN_DQP100] / 100.0 / c[RCN_EV] : 0.0, c[RCN_EV] << PARAM_INTERLACED );
+        x264_log( h, X264_LOG_INFO, "vbvreuse %d-bit %-12s: re-encodes/frame 0:%"PRIu64" 1:%"PRIu64" 2:%"PRIu64" 3-4:%"PRIu64" 5-8:%"PRIu64" 9-16:%"PRIu64" 17-32:%"PRIu64" 33+:%"PRIu64"\n",
+                  BIT_DEPTH, rcn_cat_name[k], rcn_hist[k][0], rcn_hist[k][1], rcn_hist[k][2], rcn_hist[k][3],
+                  rcn_hist[k][4], rcn_hist[k][5], rcn_hist[k][6], rcn_hist[k][7] );
+        if( !c[RCN_EV] )
+            continue;
+        uint64_t redo = c[RCN_TSC_REDO_AN] + c[RCN_TSC_REDO_ENC];
+        x264_log( h, X264_LOG_INFO, "vbvreuse %d-bit %-12s: redo MBs %.2f%% of MBs (emerg %.1f%% intra %.1f%% skip %.1f%%) | redo analysis %.2f%% of analysis, redo %.2f%% of slice tsc\n",
+                  BIT_DEPTH, rcn_cat_name[k], PCT( c[RCN_MB_REDO], c[RCN_MB] ),
+                  PCT( c[RCN_MB_REDO_EMERG], c[RCN_MB_REDO] ), PCT( c[RCN_MB_REDO_INTRA], c[RCN_MB_REDO] ), PCT( c[RCN_MB_REDO_SKIP], c[RCN_MB_REDO] ),
+                  PCT( c[RCN_TSC_REDO_AN], c[RCN_TSC_AN] ), PCT( redo, rcn_tsc_slice[k] ) );
+        x264_log( h, X264_LOG_INFO, "vbvreuse %d-bit %-12s: redo split: analysis %.1f%% (ME %.1f%% intra %.1f%% [i16+chroma %.1f%%, edges same %.1f%%] pskip probe %.1f%% transform %.1f%% other %.1f%%) encode+write %.1f%% | exact-reuse bound %.1f%% of redo\n",
+                  BIT_DEPTH, rcn_cat_name[k], PCT( c[RCN_TSC_REDO_AN], redo ), PCT( c[RCN_TSC_REDO_ME], redo ),
+                  PCT( c[RCN_TSC_REDO_INTRA], redo ), PCT( c[RCN_TSC_REDO_I16C], redo ), PCT( c[RCN_TSC_REDO_I16C_SAME], redo ),
+                  PCT( c[RCN_TSC_REDO_PSKIP], redo ), PCT( c[RCN_TSC_REDO_TRANS], redo ),
+                  PCT( (double)c[RCN_TSC_REDO_AN] - c[RCN_TSC_REDO_ME] - c[RCN_TSC_REDO_INTRA] - c[RCN_TSC_REDO_PSKIP] - c[RCN_TSC_REDO_TRANS], redo ), PCT( c[RCN_TSC_REDO_ENC], redo ),
+                  PCT( c[RCN_TSC_REDO_ME] + c[RCN_TSC_REDO_I16C_SAME], redo ) );
+        x264_log( h, X264_LOG_INFO, "vbvreuse %d-bit %-12s: vs previous pass: same type %.1f%% same mode %.1f%% | both inter %.1f%%, same mv %.1f%% | same mvp %.1f%% of %"PRIu64" | right column same %.1f%% | left edge same %.1f%% of %"PRIu64" (+%"PRIu64" at x=0)\n",
+                  BIT_DEPTH, rcn_cat_name[k], PCT( c[RCN_SAME_TYPE], c[RCN_MB_REDO_CMP] ), PCT( c[RCN_SAME_MODE], c[RCN_MB_REDO_CMP] ),
+                  PCT( c[RCN_INTER_BOTH], c[RCN_MB_REDO_CMP] ), PCT( c[RCN_SAME_MV], c[RCN_INTER_BOTH] ),
+                  PCT( c[RCN_SAME_MVP], c[RCN_MVP_BOTH] ), c[RCN_MVP_BOTH], PCT( c[RCN_COL_SAME], c[RCN_MB_REDO_CMP] ),
+                  PCT( c[RCN_EDGE_SAME], c[RCN_EDGE_CHK] ), c[RCN_EDGE_CHK], c[RCN_EDGE_X0] );
+        x264_log( h, X264_LOG_INFO, "vbvreuse %d-bit %-12s: worst slice of re-encoded frames: redo %.1f%% of its tsc (bound %.1f%%), >10%% in %"PRIu64", >20%% in %"PRIu64" | max redo %.3f ms of %.3f ms (bound %.3f ms)\n",
+                  BIT_DEPTH, rcn_cat_name[k], PCT( rcn_w_redo[k], rcn_w_slice[k] ), PCT( rcn_w_ub[k], rcn_w_slice[k] ),
+                  rcn_w10[k], rcn_w20[k], rcn_w_max_redo[k] / tpu / 1000, rcn_w_max_slice[k] / tpu / 1000, rcn_w_max_ub[k] / tpu / 1000 );
+    }
+#undef PCT
+}
+
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -663,7 +941,20 @@ static inline void x264_mb_init_fenc_cache( x264_t *h, int b_satd )
         h->mc.memzero_aligned( h->mb.pic.fenc_satd_cache, sizeof(h->mb.pic.fenc_satd_cache) );
 }
 
+static void x264_mb_analyse_intra_chroma_rcn( x264_t *h, x264_mb_analysis_t *a );
 static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
+{
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    x264_mb_analyse_intra_chroma_rcn( h, a );
+    if( t )
+    {
+        t = x264_rcn_tsc() - t;
+        rcn_mb.intra += t;
+        rcn_mb.i16c += t;
+    }
+}
+
+static void x264_mb_analyse_intra_chroma_rcn( x264_t *h, x264_mb_analysis_t *a )
 {
     if( a->i_satd_chroma < COST_MAX )
         return;
@@ -745,8 +1036,18 @@ static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
 }
 
 /* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
+static void x264_mb_analyse_intra_rcn( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter );
 static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    x264_mb_analyse_intra_rcn( h, a, i_satd_inter );
+    if( t )
+        rcn_mb.intra += x264_rcn_tsc() - t;
+}
+
+static void x264_mb_analyse_intra_rcn( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+{
+    uint64_t rcn_t = rcn_mb.redo ? x264_rcn_tsc() : 0;
     const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
     pixel *p_src = h->mb.pic.p_fenc[0];
     pixel *p_dst = h->mb.pic.p_fdec[0];
@@ -812,6 +1113,9 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 a->i_satd_i16x16_dir[i_mode] = i_satd;
             }
         }
+
+        if( rcn_t )
+            rcn_mb.i16c += x264_rcn_tsc() - rcn_t;
 
         if( h->sh.i_type == SLICE_TYPE_B )
             /* cavlc mb type prefix */
@@ -1334,7 +1638,19 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
     return i_ref == dupe ? 0 : -1;
 }
 
+static void x264_mb_analyse_inter_p16x16_rcn( x264_t *h, x264_mb_analysis_t *a );
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
+{
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    uint64_t pskip = rcn_mb.pskip;
+    x264_mb_analyse_inter_p16x16_rcn( h, a );
+    if( t )
+        rcn_mb.me += x264_rcn_tsc() - t - (rcn_mb.pskip - pskip);
+    rcn_mb.mvp_valid = 1;
+    CP32( rcn_mb.mvp, h->mb.mvp16[0][0] );
+}
+
+static void x264_mb_analyse_inter_p16x16_rcn( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
     int i_mvc;
@@ -1383,7 +1699,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
             && m.cost-m.cost_mv < 300*a->i_lambda
             &&  abs(m.mv[0]-h->mb.cache.pskip_mv[0])
               + abs(m.mv[1]-h->mb.cache.pskip_mv[1]) <= 1
-            && x264_macroblock_probe_pskip( h ) )
+            && rcn_probe_pskip( h ) )
         {
             h->mb.i_type = P_SKIP;
             x264_analyse_update_cache( h, a );
@@ -1418,7 +1734,18 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 
 /* l0.me16x16 at the best fullpel ref 0 predictor (mvp, mvc, zero), without a search:
  * fpelcmp picks it, cost is mbcmp + mv + ref. No mbrd. */
+static void x264_mb_analyse_inter_p16x16_pred_rcn( x264_t *h, x264_mb_analysis_t *a );
 static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a )
+{
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    x264_mb_analyse_inter_p16x16_pred_rcn( h, a );
+    if( t )
+        rcn_mb.me += x264_rcn_tsc() - t;
+    rcn_mb.mvp_valid = 1;
+    CP32( rcn_mb.mvp, h->mb.mvp16[0][0] );
+}
+
+static void x264_mb_analyse_inter_p16x16_pred_rcn( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t *m = &a->l0.me16x16;
     int i_mvc;
@@ -2071,7 +2398,16 @@ static void x264_mb_analyse_inter_direct( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+static void x264_mb_analyse_inter_b16x16_rcn( x264_t *h, x264_mb_analysis_t *a );
 static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
+{
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    x264_mb_analyse_inter_b16x16_rcn( h, a );
+    if( t )
+        rcn_mb.me += x264_rcn_tsc() - t;
+}
+
+static void x264_mb_analyse_inter_b16x16_rcn( x264_t *h, x264_mb_analysis_t *a )
 {
     ALIGNED_ARRAY_N( pixel, pix0,[16*16] );
     ALIGNED_ARRAY_N( pixel, pix1,[16*16] );
@@ -2987,7 +3323,16 @@ static void x264_refine_bidir( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+static inline void x264_mb_analyse_transform_rcn( x264_t *h );
 static inline void x264_mb_analyse_transform( x264_t *h )
+{
+    uint64_t t = rcn_mb.redo ? x264_rcn_tsc() : 0;
+    x264_mb_analyse_transform_rcn( h );
+    if( t )
+        rcn_mb.trans += x264_rcn_tsc() - t;
+}
+
+static inline void x264_mb_analyse_transform_rcn( x264_t *h )
 {
     if( x264_mb_transform_8x8_allowed( h ) && h->param.analyse.b_transform_8x8 && !h->mb.b_lossless )
     {
@@ -3436,7 +3781,7 @@ intra_analysis:
                          h->mb.i_mb_type_topleft == P_SKIP ||
                          h->mb.i_mb_type_topright == P_SKIP )
                 {
-                    b_skip = x264_macroblock_probe_pskip( h );
+                    b_skip = rcn_probe_pskip( h );
                     if( b_skip && x264_mb_pskip_mispredicted( h ) )
                         b_skip = h->mb.b_skip_mc = 0;
                 }

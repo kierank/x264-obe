@@ -3060,7 +3060,8 @@ static intptr_t x264_slice_write( x264_t *h )
 #define BS_BAK_SLICE_MIN_MBS  2
 #define BS_BAK_ROW_VBV        3
     x264_bs_bak_t bs_bak[4];
-    b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv
+    uint64_t rcn_slice_t0 = x264_rcn_tsc();
+    b_deblock &=b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv
                || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
     bs_realign( &h->out.bs );
 
@@ -3152,7 +3153,10 @@ static intptr_t x264_slice_write( x264_t *h )
         else
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
+        x264_rcn_mb_begin( h );
+        uint64_t rcn_t0 = x264_rcn_tsc();
         x264_macroblock_analyse( h );
+        uint64_t rcn_t1 = x264_rcn_tsc();
 
         /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 reencode:
@@ -3264,9 +3268,11 @@ cont:
 
         /* save cache */
         x264_macroblock_cache_save( h );
+        x264_rcn_mb_end( h, rcn_t0, rcn_t1, x264_rcn_tsc() );
 
         if( x264_ratecontrol_mb( h, mb_size ) < 0 )
         {
+            x264_rcn_restart( h, i_mb_y );
             x264_bitstream_restore( h, &bs_bak[BS_BAK_ROW_VBV], &i_skip, 1 );
             h->mb.b_reencode_mb = 1;
             i_mb_x = 0;
@@ -3366,6 +3372,7 @@ cont:
             i_mb_x = 0;
         }
     }
+    x264_rcn_slice_end( h, x264_rcn_tsc() - rcn_slice_t0 );
     if( h->sh.i_last_mb < h->sh.i_first_mb )
         return 0;
 
@@ -4387,6 +4394,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
         pic_out->img.plane[i] = (uint8_t*)h->fdec->plane[i];
     }
 
+    x264_rcn_frame_fold( h );
     x264_frame_push_unused( thread_current, h->fenc );
 
     /* ---------------------- Update encoder state ------------------------- */
@@ -4614,6 +4622,7 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+    x264_rcn_print( h );
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );

@@ -61,4 +61,34 @@ void x264_lookahead_get_frames( x264_t *h );
 #define x264_lookahead_delete x264_template(lookahead_delete)
 void x264_lookahead_delete( x264_t *h );
 
+/* vbv-reuse counters (test only). Per thread, summed into fdec->rcn per slice. */
+enum
+{
+    RCN_EV, RCN_EV_EMERG, RCN_EV_ROOM, RCN_EV_JUMP, RCN_EV_LAST, RCN_EV_LASTEMERG, RCN_DQP100,
+    RCN_MB, RCN_MB_REDO, RCN_MB_REDO_EMERG, RCN_MB_REDO_INTRA, RCN_MB_REDO_SKIP, RCN_MB_REDO_CMP,
+    RCN_TSC_AN, RCN_TSC_ENC, RCN_TSC_REDO_AN, RCN_TSC_REDO_ENC,
+    RCN_TSC_REDO_ME, RCN_TSC_REDO_INTRA, RCN_TSC_REDO_I16C, RCN_TSC_REDO_I16C_SAME, RCN_TSC_REDO_PSKIP, RCN_TSC_REDO_TRANS,
+    RCN_SAME_TYPE, RCN_SAME_MODE, RCN_INTER_BOTH, RCN_SAME_MV, RCN_MVP_BOTH, RCN_SAME_MVP,
+    RCN_EDGE_X0, RCN_EDGE_CHK, RCN_EDGE_SAME, RCN_COL_SAME,
+    RCN_N
+};
+enum { RCN_SRC_EMERG, RCN_SRC_ROOM, RCN_SRC_JUMP, RCN_SRC_LAST, RCN_SRC_LASTEMERG };
+#define x264_rcn x264_template(rcn)
+extern __thread uint64_t x264_rcn[RCN_N];
+#define x264_rcn_src x264_template(rcn_src)
+extern __thread int x264_rcn_src;
+#define x264_rcn_mb_begin x264_template(rcn_mb_begin)
+void x264_rcn_mb_begin( x264_t *h );
+#define x264_rcn_mb_end x264_template(rcn_mb_end)
+void x264_rcn_mb_end( x264_t *h, uint64_t t0, uint64_t t1, uint64_t t2 );
+#define x264_rcn_restart x264_template(rcn_restart)
+void x264_rcn_restart( x264_t *h, int y );
+#define x264_rcn_slice_end x264_template(rcn_slice_end)
+void x264_rcn_slice_end( x264_t *h, uint64_t tsc );
+#define x264_rcn_frame_fold x264_template(rcn_frame_fold)
+void x264_rcn_frame_fold( x264_t *h );
+#define x264_rcn_print x264_template(rcn_print)
+void x264_rcn_print( x264_t *h );
+static inline uint64_t x264_rcn_tsc( void ) { return __builtin_ia32_rdtsc(); }
+
 #endif
