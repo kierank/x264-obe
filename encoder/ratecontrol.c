@@ -1972,6 +1972,12 @@ static ALWAYS_INLINE void row_bits_flush( x264_t *h, x264_ratecontrol_t *rc, int
     }
 }
 
+/* The bits of an MB whose x264_ratecontrol_mb was given 0, before the next MB's. */
+void x264_ratecontrol_mb_bits( x264_t *h, int y, int bits )
+{
+    h->rc->row_bits[y&1] += bits;
+}
+
 /* TODO:
  *  eliminate all use of qp in row ratecontrol: make it entirely qscale-based.
  *  make this function stop being needlessly O(N^2)

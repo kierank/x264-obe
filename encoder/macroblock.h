@@ -66,6 +66,24 @@ void x264_mb_encode_chroma( x264_t *h, int b_inter, int i_qp );
 #define x264_cabac_mb_skip x264_template(cabac_mb_skip)
 void x264_cabac_mb_skip( x264_t *h, int b_skip );
 
+/* bin tape, encoder/cabac_tape.c */
+#define x264_macroblock_write_cabac_tape x264_template(macroblock_write_cabac_tape)
+void x264_macroblock_write_cabac_tape( x264_t *h, x264_cabac_t *cb );
+#define x264_cabac_mb_skip_tape x264_template(cabac_mb_skip_tape)
+void x264_cabac_mb_skip_tape( x264_t *h, int b_skip );
+#define x264_cabac_tape_start x264_template(cabac_tape_start)
+void x264_cabac_tape_start( x264_t *h, int b_terminal );
+#define x264_cabac_tape_chunk x264_template(cabac_tape_chunk)
+void x264_cabac_tape_chunk( x264_t *h );
+#define x264_cabac_tape_finish x264_template(cabac_tape_finish)
+int x264_cabac_tape_finish( x264_t *h, int b_rc );
+/* codes some of the last MB's bins, interleaved with the analysis of the next */
+static ALWAYS_INLINE void x264_cabac_tape_step( x264_t *h )
+{
+    if( h->tape.b_pending )
+        x264_cabac_tape_chunk( h );
+}
+
 #define x264_quant_luma_dc_trellis x264_template(quant_luma_dc_trellis)
 int x264_quant_luma_dc_trellis( x264_t *h, dctcoef *dct, int i_quant_cat, int i_qp,
                                 int ctx_block_cat, int b_intra, int idx );

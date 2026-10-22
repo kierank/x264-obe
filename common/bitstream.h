@@ -68,6 +68,12 @@ typedef struct
                                                   intptr_t ctx_block_cat, x264_cabac_t *cb );
     void (*cabac_block_residual_422_dc_rd_internal)( dctcoef *l, int b_interlaced,
                                                      intptr_t ctx_block_cat, x264_cabac_t *cb );
+    /* bin tape versions; NULL: the C versions in encoder/cabac_tape.c */
+    void (*cabac_block_residual_tape_internal)( dctcoef *l, int b_interlaced,
+                                                intptr_t ctx_block_cat, x264_cabac_t *cb );
+    void (*cabac_block_residual_422_dc_tape_internal)( dctcoef *l, int b_interlaced,
+                                                       intptr_t ctx_block_cat, x264_cabac_t *cb );
+    void (*cabac_tape_drain)( x264_cabac_t *cb, uint32_t *tape, uint32_t *end );
 } x264_bitstream_function_t;
 
 #define x264_bitstream_init x264_template(bitstream_init)

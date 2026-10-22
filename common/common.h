@@ -768,6 +768,19 @@ struct x264_t
     /* Buffers that are allocated per-thread even in sliced threads. */
     void *scratch_buffer; /* for any temporary storage that doesn't want repeated malloc */
     void *scratch_buffer2; /* if the first one's already in use */
+
+    /* the bins of the last MB, coded under the next MB's analysis (encoder/cabac_tape.c) */
+    struct
+    {
+        uint32_t *buf;
+        uint32_t *rd;           /* next entry to code; the end is cabac.p_tape */
+        uint32_t *mark[2];      /* starts of the MB header and of the residual */
+        int      i_mark;        /* marks passed */
+        int      pos[3];        /* x264_cabac_pos at the start and at the marks */
+        int      i_mb_y;
+        int      b_pending;
+    } tape;
+
     void *scratch_hpel; /* x264_frame_filter: the sliced filter pass of thread[0] runs beside the lookahead */
     pixel *intra_border_backup[5][3]; /* bottom pixels of the previous mb row, used for intra prediction after the framebuffer has been deblocked */
     /* Deblock strength values are stored for each 4x4 partition. In MBAFF

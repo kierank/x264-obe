@@ -954,6 +954,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
 void x264_macroblock_encode( x264_t *h )
 {
+    x264_cabac_tape_step( h );
     if( CHROMA444 )
         x264_macroblock_encode_internal( h, 3, 0 );
     else

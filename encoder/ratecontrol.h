@@ -97,6 +97,8 @@ void x264_ratecontrol_slice_header( x264_t *h, int header_bits );
 int  x264_ratecontrol_nal_epb( uint8_t *p, int size );
 #define x264_ratecontrol_mb x264_template(ratecontrol_mb)
 int  x264_ratecontrol_mb( x264_t *, int bits );
+#define x264_ratecontrol_mb_bits x264_template(ratecontrol_mb_bits)
+void x264_ratecontrol_mb_bits( x264_t *, int y, int bits );
 #define x264_ratecontrol_qp x264_template(ratecontrol_qp)
 int  x264_ratecontrol_qp( x264_t * );
 #define x264_ratecontrol_mb_qp x264_template(ratecontrol_mb_qp)

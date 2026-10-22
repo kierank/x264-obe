@@ -3159,19 +3159,43 @@ static intptr_t x264_slice_write( x264_t *h )
         /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 reencode:
         x264_macroblock_encode( h );
+        int b_tape = 0;
 
         if( h->param.b_cabac )
         {
-            if( mb_xy > h->sh.i_first_mb && !(SLICE_MBAFF && (i_mb_y&1)) )
-                x264_cabac_encode_terminal( &h->cabac );
-
-            if( IS_SKIP( h->mb.i_type ) )
-                x264_cabac_mb_skip( h, 1 );
+            int b_terminal = mb_xy > h->sh.i_first_mb && !(SLICE_MBAFF && (i_mb_y&1));
+            if( h->tape.b_pending )
+                x264_cabac_tape_finish( h, 1 );
+            /* the bins go to a tape, coded under the next MB's analysis */
+            b_tape = !slice_max_size && h->mb.i_type != I_PCM;
+            if( b_tape )
+            {
+                x264_cabac_tape_start( h, b_terminal );
+                if( IS_SKIP( h->mb.i_type ) )
+                    x264_cabac_mb_skip_tape( h, 1 );
+                else
+                {
+                    if( h->sh.i_type != SLICE_TYPE_I )
+                        x264_cabac_mb_skip_tape( h, 0 );
+                    x264_macroblock_write_cabac_tape( h, &h->cabac );
+                }
+                h->tape.i_mb_y = i_mb_y;
+                h->tape.b_pending = 1;
+            }
             else
             {
-                if( h->sh.i_type != SLICE_TYPE_I )
-                    x264_cabac_mb_skip( h, 0 );
-                x264_macroblock_write_cabac( h, &h->cabac );
+                mb_spos = bs_pos(&h->out.bs) + x264_cabac_pos(&h->cabac);
+                if( b_terminal )
+                    x264_cabac_encode_terminal( &h->cabac );
+
+                if( IS_SKIP( h->mb.i_type ) )
+                    x264_cabac_mb_skip( h, 1 );
+                else
+                {
+                    if( h->sh.i_type != SLICE_TYPE_I )
+                        x264_cabac_mb_skip( h, 0 );
+                    x264_macroblock_write_cabac( h, &h->cabac );
+                }
             }
         }
         else
@@ -3201,6 +3225,9 @@ reencode:
 
         int total_bits = bs_pos(&h->out.bs) + x264_cabac_pos(&h->cabac);
         int mb_size = total_bits - mb_spos;
+        /* a row end or the slice end: before ratecontrol reads the row's bits */
+        if( b_tape )
+            mb_size = i_mb_x == h->mb.i_mb_width - 1 || mb_xy == h->sh.i_last_mb ? x264_cabac_tape_finish( h, 0 ) : 0;
 
         if( slice_max_size && (!SLICE_MBAFF || (i_mb_y&1)) )
         {
@@ -3375,6 +3402,8 @@ cont:
 
     if( h->param.b_cabac )
     {
+        if( h->tape.b_pending )
+            x264_cabac_tape_finish( h, 1 );
         x264_cabac_encode_flush( h, &h->cabac );
         h->out.bs.p = h->cabac.p;
     }

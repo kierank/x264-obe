@@ -5850,6 +5850,10 @@ void x264_cabac_block_residual_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_
 #define x264_cabac_block_residual_422_dc_rd_c x264_template(cabac_block_residual_422_dc_rd_c)
 void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 void x264_cabac_block_residual_422_dc_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
+#define x264_cabac_block_residual_tape_c x264_template(cabac_block_residual_tape_c)
+#define x264_cabac_block_residual_422_dc_tape_c x264_template(cabac_block_residual_422_dc_tape_c)
+void x264_cabac_block_residual_tape_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
+void x264_cabac_block_residual_422_dc_tape_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
@@ -6167,6 +6171,195 @@ name##fail:
         }
     }
 #endif
+
+    /* bin tape: the tape writers, coded by the C drain, against the immediate C writer;
+     * the drain against the C drain */
+    ok = 1; used_asm = 0;
+    for( int dc422 = 0; dc422 < 2; dc422++ )
+    {
+        void (*fa)( dctcoef *, int, intptr_t, x264_cabac_t * ) = dc422 ? bs_a.cabac_block_residual_422_dc_tape_internal : bs_a.cabac_block_residual_tape_internal;
+        void (*fr)( dctcoef *, int, intptr_t, x264_cabac_t * ) = dc422 ? bs_ref.cabac_block_residual_422_dc_tape_internal : bs_ref.cabac_block_residual_tape_internal;
+        if( !fa || fa == fr )
+            continue;
+        used_asm = 1;
+        set_func_name( dc422 ? "cabac_block_residual_422_dc_tape" : "cabac_block_residual_tape" );
+        h.quantf.coeff_last[DCT_CHROMA_DC] = dc422 ? h.quantf.coeff_last8 : h.quantf.coeff_last4;
+        for( int i = 0; i < 2 && ok; i++ )
+            for( intptr_t ctx_block_cat = 0; ctx_block_cat < 14 && ok; ctx_block_cat++ )
+            {
+                if( dc422 ? ctx_block_cat != DCT_CHROMA_DC : ctx_block_cat > DCT_LUMA_8x8 )
+                    continue;
+                static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};
+                int ac = dc422 ? 0 : ctx_ac[ctx_block_cat];
+                int count = dc422 ? 8 : x264_count_cat_m1[ctx_block_cat] + 1;
+                for( int j = 0; j < 512 && ok; j++ )
+                {
+                    static const int lv[12] = { 1, 2, 3, 4, 13, 14, 15, 16, 17, 255, 0x7f00, 0x7fff };
+                    ALIGNED_ARRAY_64( dctcoef, dct, [2],[64] );
+                    uint8_t bitstream[3][1<<14];
+                    uint32_t tape[2][64*18];
+                    x264_cabac_t cb[3];
+                    int nz = 0;
+                    memset( dct, 0, 2*64*sizeof(dctcoef) );
+                    while( !nz )
+                        for( int k = 0; k < count; k++ )
+                        {
+                            int r = rand();
+                            int v = (r & (j&3)) ? 0 : (j&4) ? lv[rand()%12] : 1 + (rand()&3);
+                            nz |= dct[0][ac+k] = dct[1][ac+k] = (r&0x100) ? -v : v;
+                        }
+                    h.mb.b_interlaced = i;
+                    x264_cabac_context_init( &h, &cb[0], (j&32) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>6)%3 );
+                    memcpy( cb[1].state, cb[0].state, 1024 );
+                    memcpy( cb[2].state, cb[0].state, 1024 );
+                    for( int c = 0; c < 3; c++ )
+                        x264_cabac_encode_init( &cb[c], bitstream[c], bitstream[c]+(1<<14)-16 );
+                    memcpy( bitstream[1], bitstream[0], 0x400 );
+                    memcpy( bitstream[2], bitstream[0], 0x400 );
+                    /* start mid-stream, sometimes with bytes outstanding */
+                    for( int k = (rand()&63) | (j&8)*6; k > 0; k-- )
+                    {
+                        int bit = -(rand()&1);
+                        for( int c = 0; c < 3; c++ )
+                            x264_cabac_encode_bypass_c( &cb[c], bit );
+                    }
+                    if( (j&16) && cb[0].p > cb[0].p_start )
+                    {
+                        cb[0].i_low = cb[1].i_low = cb[2].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);
+                        for( int k = 8 + (rand()&31); k > 0; k-- )
+                        {
+                            int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));
+                            for( int c = 0; c < 3; c++ )
+                                x264_cabac_encode_bypass_c( &cb[c], bit );
+                        }
+                    }
+                    /* a decision before the block, as in an MB */
+                    tape[0][0] = tape[1][0] = cb[0].state[0] ^ 1;
+                    x264_cabac_encode_decision_c( &cb[0], 0, 1 );
+                    cb[1].state[0] = cb[2].state[0] = cb[0].state[0];
+                    cb[1].p_tape = tape[0]+1;
+                    cb[2].p_tape = tape[1]+1;
+                    if( dc422 )
+                    {
+                        x264_cabac_block_residual_422_dc_c( &h, &cb[0], DCT_CHROMA_DC, dct[0] );
+                        x264_cabac_block_residual_422_dc_tape_c( &h, &cb[1], DCT_CHROMA_DC, dct[0] );
+                    }
+                    else
+                    {
+                        x264_cabac_block_residual_c( &h, &cb[0], ctx_block_cat, dct[0]+ac );
+                        x264_cabac_block_residual_tape_c( &h, &cb[1], ctx_block_cat, dct[0]+ac );
+                    }
+                    call_a1( fa, dct[1]+ac, i, ctx_block_cat, &cb[2] );
+                    x264_cabac_tape_drain_c( &cb[1], tape[0], cb[1].p_tape );
+                    x264_cabac_tape_drain_c( &cb[2], tape[1], cb[2].p_tape );
+                    /* a carry may be held in another form: compare the position, then
+                     * flush copies once and compare the whole streams */
+                    x264_cabac_t fl[3];
+                    ok = 1;
+                    for( int c = 0; c < 3; c++ )
+                    {
+                        ok &= !memcmp( cb[0].state, cb[c].state, 1024 ) && x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[c] ) &&
+                              cb[0].i_range == cb[c].i_range && cb[0].i_queue == cb[c].i_queue;
+                        memcpy( &fl[c], &cb[c], sizeof(x264_cabac_t) );
+                        x264_cabac_encode_bypass_c( &fl[c], 0 );
+                        x264_cabac_encode_flush( &h, &fl[c] );
+                    }
+                    for( int c = 1; c < 3; c++ )
+                        ok &= fl[0].p - bitstream[0] == fl[c].p - bitstream[c] &&
+                              !memcmp( bitstream[c], bitstream[0], fl[0].p - bitstream[0] );
+                    if( !ok )
+                        fprintf( stderr, "%s :  [FAILED] ctx_block_cat %d field %d j %d\n",
+                                 dc422 ? "cabac_block_residual_422_dc_tape" : "cabac_block_residual_tape", (int)ctx_block_cat, i, j );
+                    else if( (j&127) == 0 )
+                    {
+                        cb[1].p_tape = tape[0]+1;
+                        cb[2].p_tape = tape[1]+1;
+                        if( dc422 )
+                            call_c2( x264_cabac_block_residual_422_dc_tape_c, &h, &cb[1], DCT_CHROMA_DC, dct[0] );
+                        else
+                            call_c2( x264_cabac_block_residual_tape_c, &h, &cb[1], ctx_block_cat, dct[0]+ac );
+                        call_a2( fa, dct[1]+ac, i, ctx_block_cat, &cb[2] );
+                    }
+                }
+            }
+    }
+    h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
+    report( "cabac residual tape:" );
+
+    ok = 1; used_asm = 0;
+    if( bs_a.cabac_tape_drain != bs_ref.cabac_tape_drain )
+    {
+        static uint32_t tape[1024];
+        used_asm = 1;
+        set_func_name( "cabac_tape_drain" );
+        for( int j = 0; j < 4096 && ok; j++ )
+        {
+            uint8_t bitstream[2][1<<14];
+            x264_cabac_t cb[2], fl[2];
+            int n = j < 64 ? j : 1 + rand() % 1024;
+            for( int k = 0; k < n; k++ )
+            {
+                int r = rand();
+                int nb = 1 + (rand() & 15);
+                uint32_t bits = rand() & ((1 << nb) - 1);
+                /* no LPS on state 0: only the terminal bin 0 uses it */
+                uint32_t t = (r & 127) == 1 ? 0 : r & 127;
+                if( j < 16 ) /* MPS bins that don't renormalise: the slice's first bit still pending */
+                    tape[k] = 2;
+                else if( !(r & 0x1f00) )
+                    tape[k] = 0x80 | (nb << 8) | (bits << 16);
+                else if( !(r & 0x300) )
+                    tape[k] = t | (nb << 8) | (bits << 16);
+                else if( !(r & 0xc00) )
+                    tape[k] = t | (1 << 8) | ((bits & 1) << 16);
+                else
+                    tape[k] = t;
+            }
+            /* j < 64: from the start of a slice, queue -9 */
+            x264_cabac_context_init( &h, &cb[0], SLICE_TYPE_P, 26, 0 );
+            x264_cabac_encode_init( &cb[0], bitstream[0]+16, bitstream[0]+(1<<14)-16 );
+            x264_cabac_encode_init( &cb[1], bitstream[1]+16, bitstream[1]+(1<<14)-16 );
+            memcpy( bitstream[1], bitstream[0], 0x400 );
+            for( int k = j < 64 ? 0 : (rand()&63) | (j&2)*12; k > 0; k-- )
+            {
+                int bit = -(rand()&1);
+                x264_cabac_encode_bypass_c( &cb[0], bit );
+                x264_cabac_encode_bypass_c( &cb[1], bit );
+            }
+            if( (j&2) && cb[0].p > cb[0].p_start )
+            {
+                cb[0].i_low = cb[1].i_low = (1 << (cb[0].i_queue+18)) - 1 - (rand()&0x7f);
+                for( int k = (j&1) * (8 + (rand()&31)); k > 0; k-- )
+                {
+                    int bit = -(2*cb[0].i_low + cb[0].i_range < (2 << (cb[0].i_queue+18)));
+                    x264_cabac_encode_bypass_c( &cb[0], bit );
+                    x264_cabac_encode_bypass_c( &cb[1], bit );
+                }
+            }
+            call_c1( x264_cabac_tape_drain_c, &cb[0], tape, tape+n );
+            call_a1( bs_a.cabac_tape_drain, &cb[1], tape, tape+n );
+            ok = x264_cabac_pos( &cb[0] ) == x264_cabac_pos( &cb[1] ) &&
+                 cb[0].i_range == cb[1].i_range && cb[0].i_queue == cb[1].i_queue;
+            memcpy( &fl[0], &cb[0], sizeof(x264_cabac_t) );
+            memcpy( &fl[1], &cb[1], sizeof(x264_cabac_t) );
+            x264_cabac_encode_bypass_c( &fl[0], 0 );
+            x264_cabac_encode_bypass_c( &fl[1], 0 );
+            x264_cabac_encode_flush( &h, &fl[0] );
+            x264_cabac_encode_flush( &h, &fl[1] );
+            ok &= fl[0].p - bitstream[0] == fl[1].p - bitstream[1] &&
+                  !memcmp( bitstream[1], bitstream[0], fl[0].p - bitstream[0] );
+            if( !ok )
+                fprintf( stderr, "cabac_tape_drain :  [FAILED] n %d\n", n );
+            else if( n >= 256 && j >= 64 && (j&255) == 64 )
+            {
+                cb[0].p = cb[0].p_start + 0x400;
+                cb[1].p = cb[1].p_start + 0x400;
+                call_c2( x264_cabac_tape_drain_c, &cb[0], tape, tape+256 );
+                call_a2( bs_a.cabac_tape_drain, &cb[1], tape, tape+256 );
+            }
+        }
+    }
+    report( "cabac tape drain:" );
 
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;

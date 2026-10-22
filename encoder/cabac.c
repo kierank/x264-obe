@@ -31,15 +31,23 @@
 #ifndef RDO_SKIP_BS
 #define RDO_SKIP_BS 0
 #endif
+#ifndef CABAC_TAPE
+#define CABAC_TAPE 0
+#endif
 
 /* Not declared in macroblock.h in this fork; still need unique symbols per
  * BIT_DEPTH object set since these are non-static and cabac.c is also built
  * as its own translation unit (see Makefile SRCS). */
+#if CABAC_TAPE
+#define x264_cabac_block_residual_c x264_template(cabac_block_residual_tape_c)
+#define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_tape_c)
+#else
 #define x264_cabac_block_residual_c x264_template(cabac_block_residual_c)
 #define x264_cabac_block_residual_8x8_rd_c x264_template(cabac_block_residual_8x8_rd_c)
 #define x264_cabac_block_residual_rd_c x264_template(cabac_block_residual_rd_c)
 #define x264_cabac_block_residual_422_dc_c x264_template(cabac_block_residual_422_dc_c)
 #define x264_cabac_block_residual_422_dc_rd_c x264_template(cabac_block_residual_422_dc_rd_c)
+#endif
 
 static inline void x264_cabac_mb_type_intra( x264_t *h, x264_cabac_t *cb, int i_mb_type,
                     int ctx0, int ctx1, int ctx2, int ctx3, int ctx4, int ctx5 )
@@ -48,7 +56,7 @@ static inline void x264_cabac_mb_type_intra( x264_t *h, x264_cabac_t *cb, int i_
     {
         x264_cabac_encode_decision_noup( cb, ctx0, 0 );
     }
-#if !RDO_SKIP_BS
+#if !RDO_SKIP_BS && !CABAC_TAPE
     else if( i_mb_type == I_PCM )
     {
         x264_cabac_encode_decision_noup( cb, ctx0, 1 );
@@ -773,7 +781,12 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
 
 static void ALWAYS_INLINE x264_cabac_block_residual( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
 {
-#if ARCH_X86_64 && HAVE_MMX
+#if CABAC_TAPE
+    if( h->bsf.cabac_block_residual_tape_internal )
+        h->bsf.cabac_block_residual_tape_internal( l, MB_INTERLACED, ctx_block_cat, cb );
+    else
+        x264_cabac_block_residual_c( h, cb, ctx_block_cat, l );
+#elif ARCH_X86_64 && HAVE_MMX
     h->bsf.cabac_block_residual_internal( l, MB_INTERLACED, ctx_block_cat, cb );
 #else
     x264_cabac_block_residual_c( h, cb, ctx_block_cat, l );
@@ -783,7 +796,13 @@ static void x264_cabac_block_residual_422_dc( x264_t *h, x264_cabac_t *cb, int c
 {
     /* Template a version specifically for chroma 4:2:2 DC in order to avoid
      * slowing down everything else due to the added complexity. */
-#if ARCH_X86_64 && HAVE_MMX
+#if CABAC_TAPE
+    if( h->bsf.cabac_block_residual_422_dc_tape_internal )
+    {
+        h->bsf.cabac_block_residual_422_dc_tape_internal( l, MB_INTERLACED, DCT_CHROMA_DC, cb );
+        return;
+    }
+#elif ARCH_X86_64 && HAVE_MMX
     if( h->bsf.cabac_block_residual_422_dc_internal )
     {
         h->bsf.cabac_block_residual_422_dc_internal( l, MB_INTERLACED, DCT_CHROMA_DC, cb );
@@ -955,10 +974,14 @@ static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_
 {
     const int i_mb_type = h->mb.i_type;
 
-#if !RDO_SKIP_BS
+#if CABAC_TAPE
+    h->tape.mark[0] = cb->p_tape;
+    h->tape.i_mark = 0;
+#elif !RDO_SKIP_BS
     const int i_mb_pos_start = x264_cabac_pos( cb );
     int       i_mb_pos_tex;
-
+#endif
+#if !RDO_SKIP_BS
     if( SLICE_MBAFF &&
         (!(h->mb.i_mb_y & 1) || IS_SKIP(h->mb.type[h->mb.i_mb_xy - h->mb.i_mb_stride])) )
     {
@@ -973,7 +996,9 @@ static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_
     else //if( h->sh.i_type == SLICE_TYPE_I )
         x264_cabac_mb_header_i( h, cb, i_mb_type, SLICE_TYPE_I, chroma );
 
-#if !RDO_SKIP_BS
+#if CABAC_TAPE
+    h->tape.mark[1] = cb->p_tape;
+#elif !RDO_SKIP_BS
     i_mb_pos_tex = x264_cabac_pos( cb );
     h->stat.frame.i_mv_bits += i_mb_pos_tex - i_mb_pos_start;
 
@@ -1117,7 +1142,7 @@ if( (h->mb.i_neighbour & MB_TOP) && !h->mb.mb_transform_size[h->mb.i_mb_top_xy] 
         }
     }
 
-#if !RDO_SKIP_BS
+#if !RDO_SKIP_BS && !CABAC_TAPE
     h->stat.frame.i_tex_bits += x264_cabac_pos( cb ) - i_mb_pos_tex;
 #endif
 }

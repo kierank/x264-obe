@@ -396,6 +396,8 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 int rows = 2*(16 >> (i && CHROMA_V_SHIFT)) + 2;
                 CHECKED_MALLOCZERO( h->mb.fenc_bot[i], h->thread[0]->fdec->i_stride[i] * rows * sizeof(pixel) );
             }
+        if( h->param.b_cabac )
+            CHECKED_MALLOC( h->tape.buf, X264_CABAC_TAPE_SIZE * sizeof(uint32_t) );
     }
 
     /* Allocate scratch buffer */
@@ -439,6 +441,7 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
                 x264_free( h->intra_border_backup[i][j] - 16 );
         for( int i = 0; i < 3; i++ )
             x264_free( h->mb.fenc_bot[i] );
+        x264_free( h->tape.buf );
     }
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );

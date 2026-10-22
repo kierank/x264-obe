@@ -747,6 +747,7 @@ static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
 /* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
 static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
+    x264_cabac_tape_step( h );
     const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
     pixel *p_src = h->mb.pic.p_fenc[0];
     pixel *p_dst = h->mb.pic.p_fdec[0];
@@ -1336,6 +1337,7 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
 
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
+    x264_cabac_tape_step( h );
     x264_me_t m;
     int i_mvc;
     ALIGNED_4( int16_t mvc[10][2] );
@@ -2073,6 +2075,7 @@ static void x264_mb_analyse_inter_direct( x264_t *h, x264_mb_analysis_t *a )
 
 static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
 {
+    x264_cabac_tape_step( h );
     ALIGNED_ARRAY_N( pixel, pix0,[16*16] );
     ALIGNED_ARRAY_N( pixel, pix1,[16*16] );
     pixel *src0, *src1;
@@ -3327,6 +3330,7 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
+    x264_cabac_tape_step( h );
 
     /*--------------------------- Do the analysis ---------------------------*/
     if( h->sh.i_type == SLICE_TYPE_I )

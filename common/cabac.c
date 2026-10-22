@@ -170,6 +170,33 @@ void x264_cabac_encode_terminal_c( x264_cabac_t *cb )
     x264_cabac_encode_renorm( cb );
 }
 
+void x264_cabac_tape_drain_c( x264_cabac_t *cb, uint32_t *tape, uint32_t *end )
+{
+    for( ; tape < end; tape++ )
+    {
+        uint32_t e = *tape;
+        if( !(e & 0x80) )
+        {
+            int t = e & 0x7f;
+            int i_range_lps = x264_cabac_range_lps[t>>1][(cb->i_range>>6)-4];
+            cb->i_range -= i_range_lps;
+            if( t & 1 )
+            {
+                cb->i_low += cb->i_range;
+                cb->i_range = i_range_lps;
+            }
+            x264_cabac_encode_renorm( cb );
+        }
+        for( int n = (e >> 8) & 31; n > 0; n-- )
+        {
+            cb->i_low <<= 1;
+            cb->i_low += (e >> (15+n)) & 1 ? cb->i_range : 0;
+            cb->i_queue += 1;
+            x264_cabac_putbyte( cb );
+        }
+    }
+}
+
 void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb )
 {
     cb->i_low += cb->i_range - 2;

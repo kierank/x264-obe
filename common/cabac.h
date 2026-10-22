@@ -41,6 +41,9 @@ typedef struct
     uint8_t *p;
     uint8_t *p_end;
 
+    /* bin tape write pointer, see x264_cabac_tape_drain */
+    uint32_t *p_tape;
+
     /* aligned for memcpy_aligned starting here */
     ALIGNED_64( int f8_bits_encoded ); // only if using x264_cabac_size_decision()
 
@@ -75,6 +78,17 @@ void x264_cabac_encode_terminal_asm( x264_cabac_t *cb );
 void x264_cabac_encode_ue_bypass( x264_cabac_t *cb, int exp_bits, int val );
 #define x264_cabac_encode_flush x264_template(cabac_encode_flush)
 void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb );
+
+/* Bin tape: bins binarised ahead with their contexts already updated, coded later.
+ * An entry: bits 0-6 state^bin of a decision (0: the terminal bin 0), then
+ * bits 8-12 n <= 16 bypass bins with values bits 16+n-1..16, msb first.
+ * Bit 7: no decision, only the bypass bins. */
+#define X264_CABAC_TAPE_BYPASS_MAX 16
+/* entries of an MB: a coef takes at most sig, last, 14 level bins and 2 bypass-only
+ * entries (ue suffix and sign), the header less than 1024 */
+#define X264_CABAC_TAPE_SIZE (768*18+1024)
+#define x264_cabac_tape_drain_c x264_template(cabac_tape_drain_c)
+void x264_cabac_tape_drain_c( x264_cabac_t *cb, uint32_t *tape, uint32_t *end );
 
 #if HAVE_MMX
 #define x264_cabac_encode_decision_bmi2 x264_template(cabac_encode_decision_bmi2)
