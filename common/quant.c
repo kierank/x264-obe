@@ -468,6 +468,37 @@ int x264_quant_4x4_scan_last_field( dctcoef dct[16], dctcoef orig[16], dctcoef l
     return quant_4x4x4_scan_last( (dctcoef (*)[16])dct, (dctcoef (*)[16])orig, (dctcoef (*)[16])level, mf, bias, 1, 1 );
 }
 
+/* orig = dct, quant_8x8 dct, zigzag into level if nonzero. Returns 0, or 1 | last << 4 */
+static ALWAYS_INLINE int quant_8x8_scan_last( dctcoef dct[64], dctcoef orig[64], dctcoef level[64],
+                                              udctcoef mf[64], udctcoef bias[64], int b_field )
+{
+    int nz = 0;
+    for( int i = 0; i < 64; i++ )
+    {
+        orig[i] = dct[i];
+        QUANT_ONE( dct[i], mf[i], bias[i] );
+    }
+    if( !nz )
+        return 0;
+    int last = 0;
+    for( int i = 0; i < 64; i++ )
+    {
+        level[i] = dct[x264_zigzag_scan8[b_field][i]];
+        if( level[i] )
+            last = i;
+    }
+    return 1 | last << 4;
+}
+
+int x264_quant_8x8_scan_last_frame( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] )
+{
+    return quant_8x8_scan_last( dct, orig, level, mf, bias, 0 );
+}
+int x264_quant_8x8_scan_last_field( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] )
+{
+    return quant_8x8_scan_last( dct, orig, level, mf, bias, 1 );
+}
+
 #define last(num)\
 static int x264_coeff_last##num( dctcoef *l )\
 {\

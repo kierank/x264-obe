@@ -381,5 +381,13 @@ int x264_quant_4x4_scan_last_field_avx2( dctcoef dct[16], dctcoef orig[16], dctc
 int x264_quant_4x4_scan_last_frame_avx512icl( dctcoef dct[16], dctcoef orig[16], dctcoef level[16], udctcoef mf[16], udctcoef bias[16] );
 #define x264_quant_4x4_scan_last_field_avx512icl x264_template(quant_4x4_scan_last_field_avx512icl)
 int x264_quant_4x4_scan_last_field_avx512icl( dctcoef dct[16], dctcoef orig[16], dctcoef level[16], udctcoef mf[16], udctcoef bias[16] );
+#define x264_quant_8x8_scan_last_frame_avx2 x264_template(quant_8x8_scan_last_frame_avx2)
+int x264_quant_8x8_scan_last_frame_avx2( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] );
+#define x264_quant_8x8_scan_last_field_avx2 x264_template(quant_8x8_scan_last_field_avx2)
+int x264_quant_8x8_scan_last_field_avx2( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] );
+#define x264_quant_8x8_scan_last_frame_avx512icl x264_template(quant_8x8_scan_last_frame_avx512icl)
+int x264_quant_8x8_scan_last_frame_avx512icl( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] );
+#define x264_quant_8x8_scan_last_field_avx512icl x264_template(quant_8x8_scan_last_field_avx512icl)
+int x264_quant_8x8_scan_last_field_avx512icl( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] );
 
 #endif

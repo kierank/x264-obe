@@ -83,6 +83,9 @@ typedef struct
     /* the same for one block: returns 0, or 1 | last << 4 */
     int  (*quant_4x4_scan_last)( dctcoef dct[16], dctcoef orig[16], dctcoef level[16],
                                  udctcoef mf[16], udctcoef bias[16] );
+    /* orig = dct, quant_8x8, then scan_8x8 into level if nonzero: returns 0, or 1 | last << 4 */
+    int  (*quant_8x8_scan_last)( dctcoef dct[64], dctcoef orig[64], dctcoef level[64],
+                                 udctcoef mf[64], udctcoef bias[64] );
 
 } x264_zigzag_function_t;
 

@@ -1257,10 +1257,17 @@ int x264_quant_8x8_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
 {
     if( h->param.b_cabac )
     {
-        return quant_trellis_cabac( h, dct,
-            h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias0[i_quant_cat][i_qp],
-            h->unquant8_mf[i_quant_cat][i_qp], x264_zigzag_scan8[MB_INTERLACED],
-            ctx_block_cat, h->mb.i_trellis_lambda2[b_chroma][b_intra], 0, b_chroma, 0, 64, idx );
+        ALIGNED_ARRAY_64( dctcoef, orig_coefs,[64] );
+        ALIGNED_ARRAY_64( dctcoef, quant_coefs,[64] );
+        int nzl = h->zigzagf.quant_8x8_scan_last( dct, orig_coefs, quant_coefs, h->quant8_mf[i_quant_cat][i_qp],
+                                                  h->quant8_bias0[i_quant_cat][i_qp] );
+        if( !nzl )
+            return 0;
+        trellis_args_t a;
+        trellis_args_init( h, &a, h->unquant8_mf[i_quant_cat][i_qp], x264_zigzag_scan8[MB_INTERLACED], ctx_block_cat,
+                           h->mb.i_trellis_lambda2[b_chroma][b_intra], b_chroma );
+        /* last = coeff_last64( quant_coefs ) */
+        return trellis_cabac_last( h, &a, dct, orig_coefs, quant_coefs, nzl >> 4, 0, b_chroma, 0, 64, idx );
     }
 
     /* 8x8 CAVLC is split into 4 4x4 blocks */

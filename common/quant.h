@@ -92,5 +92,9 @@ int x264_quant_4x4x4_scan_last_field( dctcoef dct[4][16], dctcoef orig[4][16], d
 int x264_quant_4x4_scan_last_frame( dctcoef dct[16], dctcoef orig[16], dctcoef level[16], udctcoef mf[16], udctcoef bias[16] );
 #define x264_quant_4x4_scan_last_field x264_template(quant_4x4_scan_last_field)
 int x264_quant_4x4_scan_last_field( dctcoef dct[16], dctcoef orig[16], dctcoef level[16], udctcoef mf[16], udctcoef bias[16] );
+#define x264_quant_8x8_scan_last_frame x264_template(quant_8x8_scan_last_frame)
+int x264_quant_8x8_scan_last_frame( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] );
+#define x264_quant_8x8_scan_last_field x264_template(quant_8x8_scan_last_field)
+int x264_quant_8x8_scan_last_field( dctcoef dct[64], dctcoef orig[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64] );
 
 #endif
