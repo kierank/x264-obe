@@ -418,6 +418,65 @@ static uint64_t fpel_search_model( int hex, int i_pixel, pixel *p_fenc, pixel *p
 }
 #endif
 
+/* reference of the asm only weightp_satd8_search: x264_weights_analyse's luma pass */
+static void wp_weight8x8( pixel *dst, pixel *src, intptr_t i_src, int scale, int denom, int offset )
+{
+    int round = (1 << denom) >> 1;
+    for( int y = 0; y < 8; y++ )
+        for( int x = 0; x < 8; x++ )
+            dst[x+8*y] = x264_clip_pixel( ((src[x+y*i_src] * scale + round) >> denom) + offset );
+}
+
+/* An offset changes every weighted pixel by the same amount while nothing clips (per
+ * block, from the min and max of r, as the weighting is monotonic), so only the DC of
+ * each 4x4 Hadamard, the sum D of the 4x4 differences, changes: by 16 * the offset
+ * difference. satd_8x8 is half the sum of |coefficients| of its 4 4x4 transforms (each
+ * even: all of a transform's coefficients have the parity of D), so it changes by the
+ * sum of ( |D + 16*d| - |D| ) / 2, exactly. */
+static void weightp_satd8_search_ref( x264_pixel_function_t *pf, uint32_t (*cost)[4], pixel *r, pixel *f,
+                                      intptr_t i_stride, int n, uint16_t *icost, const int16_t (*wp)[4], int nk )
+{
+    ALIGNED_ARRAY_16( pixel, buf,[8*8] );
+    for( int i = 0; i < n; i++, r += 8, f += 8 )
+    {
+        int ic = icost[i] << (BIT_DEPTH-8);
+        int mn = PIXEL_MAX, mx = 0;
+        for( int y = 0; y < 8; y++ )
+            for( int x = 0; x < 8; x++ )
+            {
+                mn = X264_MIN( mn, r[x+y*i_stride] );
+                mx = X264_MAX( mx, r[x+y*i_stride] );
+            }
+        for( int k = 0; k < nk; k++ )
+        {
+            int scale = wp[k][0], denom = wp[k][1], o0 = wp[k][2];
+            int round = (1 << denom) >> 1;
+            int lo = ((mn * scale + round) >> denom) + o0;
+            int hi = ((mx * scale + round) >> denom) + o0;
+            int32_t dc[4];
+            wp_weight8x8( buf, r, i_stride, scale, denom, o0 );
+            int base = pf->satd[PIXEL_8x8]( buf, 8, f, i_stride );
+            cost[k][0] += X264_MIN( base, ic );
+            if( wp[k][3] > 1 && lo >= 0 )
+                pf->weightp_dc8x8( dc, buf, 8, f, i_stride );
+            for( int j = 1; j < wp[k][3]; j++ )
+            {
+                int d = j << (BIT_DEPTH-8);
+                int cj;
+                if( lo >= 0 && hi + d <= PIXEL_MAX )
+                    cj = base + ( abs( dc[0] + 16*d ) - abs( dc[0] ) + abs( dc[1] + 16*d ) - abs( dc[1] )
+                                + abs( dc[2] + 16*d ) - abs( dc[2] ) + abs( dc[3] + 16*d ) - abs( dc[3] ) ) / 2;
+                else
+                {
+                    wp_weight8x8( buf, r, i_stride, scale, denom, o0 + d );
+                    cj = pf->satd[PIXEL_8x8]( buf, 8, f, i_stride );
+                }
+                cost[k][j] += X264_MIN( cj, ic );
+            }
+        }
+    }
+}
+
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -1864,6 +1923,123 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 }
     }
     report( "weightp dc :" );
+
+    ok = 1; used_asm = 0;
+    {
+        /* random, near 0 and PIXEL_MAX (clipping at either end), flat; the identity, scale 0,
+         * scale 127 at denom 0, extreme offsets; each output checked against the definition */
+        intptr_t stride = 8*40 + 64;
+        pixel *wref = x264_malloc( 8*stride*sizeof(pixel) );
+        pixel *wfenc = x264_malloc( 8*stride*sizeof(pixel) );
+        uint16_t *icost = x264_malloc( 40*sizeof(uint16_t) );
+        ok = wref && wfenc && icost;
+        for( int wt = 0; wt < 24 && ok; wt++ )
+        {
+            int kind = wt & 3;
+            for( int i = 0; i < 8*stride; i++ )
+            {
+                int v = rand() & PIXEL_MAX;
+                wref[i] = kind == 0 ? v : kind == 1 ? v >> (BIT_DEPTH-2) : kind == 2 ? PIXEL_MAX - (v >> (BIT_DEPTH-2)) : (wt*37) & PIXEL_MAX;
+                wfenc[i] = kind == 3 ? (pixel)(rand() & PIXEL_MAX) : wt & 4 ? (pixel)(PIXEL_MAX - wref[i]) : (pixel)(rand() & PIXEL_MAX);
+            }
+            for( int i = 0; i < 40; i++ )
+                icost[i] = wt & 8 ? rand() & 0x3fff : rand() & 0x1ff;
+            int16_t wp[10][4];
+            int nk = 1 + (wt % 10);
+            for( int k = 0; k < nk; k++ )
+            {
+                int c = (wt + k) % 7;
+                int denom = c == 0 || c == 1 ? 0 : c == 2 ? 1 : c == 3 ? 7 : rand() & 7;
+                int scale = c == 0 ? 1 : c == 1 ? 127 : c == 2 ? 64 + (rand() & 63) : c == 3 ? 127 : c == 4 ? 0
+                          : (1 << denom) + (rand() & 15) - 8;
+                int offset = c == 0 ? 0 : c == 5 ? -128 : c == 6 ? 124 : (rand() & 255) - 128;
+                wp[k][0] = x264_clip3( scale, 0, 127 );
+                wp[k][1] = denom;
+                wp[k][2] = offset << (BIT_DEPTH-8);
+                wp[k][3] = c == 0 ? 1 : 1 + (rand() & 3);
+            }
+            int n = wt < 12 ? 1 + 3*wt : 38 + (wt&1);
+            ALIGNED_16( uint32_t cost_c[10][4] );
+            ALIGNED_16( uint32_t cost_a[10][4] );
+            if( pixel_asm.weightp_satd8_search && pixel_asm.weightp_satd8_search != pixel_ref.weightp_satd8_search )
+            {
+                set_func_name( "weightp_satd8_search" );
+                used_asm = 1;
+                for( int k = 0; k < 10; k++ )
+                    for( int j = 0; j < 4; j++ )
+                        cost_c[k][j] = cost_a[k][j] = k*j;
+                call_c1( weightp_satd8_search_ref, &pixel_c, cost_c, wref, wfenc, stride, n, icost, (const int16_t (*)[4])wp, nk );
+                call_a1( pixel_asm.weightp_satd8_search, cost_a, wref, wfenc, stride, n, icost, (const int16_t (*)[4])wp, nk );
+                for( int k = 0; k < nk; k++ )
+                    for( int j = 0; j < wp[k][3]; j++ )
+                        if( cost_c[k][j] != cost_a[k][j] )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "weightp_satd8_search FAILED: wt %d n %d k %d j %d { %d %d %d %d }: %u != %u\n",
+                                     wt, n, k, j, wp[k][0], wp[k][1], wp[k][2], wp[k][3], cost_c[k][j], cost_a[k][j] );
+                            k = nk;
+                            break;
+                        }
+            }
+            else
+            {
+                for( int k = 0; k < 10; k++ )
+                    for( int j = 0; j < 4; j++ )
+                        cost_c[k][j] = k*j;
+                weightp_satd8_search_ref( &pixel_c, cost_c, wref, wfenc, stride, n, icost, (const int16_t (*)[4])wp, nk );
+            }
+            /* the definition, per block and weight */
+            for( int k = 0; k < nk && ok; k++ )
+                for( int j = 0; j < wp[k][3] && ok; j++ )
+                {
+                    uint32_t sum = k*j;
+                    int round = (1 << wp[k][1]) >> 1;
+                    for( int i = 0; i < n; i++ )
+                    {
+                        ALIGNED_16( pixel w[64] );
+                        for( int y = 0; y < 8; y++ )
+                            for( int x = 0; x < 8; x++ )
+                                w[x+8*y] = x264_clip3( ((wref[8*i+x+y*stride] * wp[k][0] + round) >> wp[k][1])
+                                                       + wp[k][2] + (j << (BIT_DEPTH-8)), 0, PIXEL_MAX );
+                        int satd = pixel_c.satd[PIXEL_8x8]( w, 8, wfenc + 8*i, stride );
+                        sum += X264_MIN( satd, icost[i] << (BIT_DEPTH-8) );
+                    }
+                    if( sum != cost_c[k][j] )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "weightp_satd8_search C FAILED: wt %d n %d k %d j %d: %u != %u\n",
+                                 wt, n, k, j, cost_c[k][j], sum );
+                    }
+                }
+        }
+        /* bench: a row of 40 blocks, no clipping, from a private generator: the unweighted
+         * ref and one scale of 3 offsets (lowlat, subme 2), and of three scales of 3 (subme 7) */
+        for( int bk = 0; bk < 2 && ok && do_bench && pixel_asm.weightp_satd8_search && pixel_asm.weightp_satd8_search != pixel_ref.weightp_satd8_search; bk++ )
+        {
+            static const int16_t bench_wp[4][4] = { { 1, 0, 0, 1 }, { 110, 7, 3, 3 }, { 111, 7, 3, 3 }, { 112, 7, 2, 3 } };
+            int16_t wp[4][4];
+            ALIGNED_64( uint32_t cost[4][4] );
+            bench_srand( 700 );
+            for( int i = 0; i < 8*stride; i++ )
+            {
+                wref[i] = (PIXEL_MAX/4) + (bench_rand() & (PIXEL_MAX/4));
+                wfenc[i] = (PIXEL_MAX/4) + (bench_rand() & (PIXEL_MAX/4));
+            }
+            for( int i = 0; i < 40; i++ )
+                icost[i] = 0x3fff;
+            for( int k = 0; k < 4; k++ )
+                for( int j = 0; j < 4; j++ )
+                    wp[k][j] = j == 2 ? bench_wp[k][j] << (BIT_DEPTH-8) : bench_wp[k][j];
+            memset( cost, 0, sizeof(cost) );
+            set_func_name( "weightp_satd8_search_k%d", bk ? 4 : 2 );
+            call_c2( weightp_satd8_search_ref, &pixel_c, cost, wref, wfenc, stride, 40, icost, (const int16_t (*)[4])wp, bk ? 4 : 2 );
+            call_a2( pixel_asm.weightp_satd8_search, cost, wref, wfenc, stride, 40, icost, (const int16_t (*)[4])wp, bk ? 4 : 2 );
+        }
+        x264_free( wref );
+        x264_free( wfenc );
+        x264_free( icost );
+    }
+    report( "weightp satd8 search :" );
 
 #define TEST_INTRA_X3( name, i8x8, ... ) \
     if( pixel_asm.name && pixel_asm.name != pixel_ref.name ) \

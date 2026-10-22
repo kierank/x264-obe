@@ -146,8 +146,40 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
     intptr_t i_stride = s->stride_luma;
     int n = s->mb_width;
     int b_dc = 0;
+    int b_search8 = h->pixf.weightp_satd8_search && h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8]
+                 && s->intra_cost_shift == BIT_DEPTH-8;
     for( int k = 0; k < t->i_scales; k++ )
+    {
         b_dc |= t->i_offsets[k] > 1;
+        b_search8 &= t->i_offsets[k] <= 4;
+    }
+    if( b_search8 )
+    {
+        /* the unweighted cost as the weight 1, 0, 0 */
+        int16_t wp[1+X264_WEIGHT_SCALES_MAX][4] = {{ 1, 0, 0, 1 }};
+        uint32_t wcost[1+X264_WEIGHT_SCALES_MAX][4] = {{ 0 }};
+        for( int k = 0; k < t->i_scales; k++ )
+        {
+            wp[1+k][0] = t->w[k][0].i_scale;
+            wp[1+k][1] = t->w[k][0].i_denom;
+            wp[1+k][2] = t->w[k][0].i_offset << (BIT_DEPTH-8);
+            wp[1+k][3] = t->i_offsets[k];
+        }
+        for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
+        {
+            if( s->mvs )
+                x264_weight_luma_mc_rows( h, s, mb_y, mb_y+1 );
+            int y = 8*mb_y;
+            h->pixf.weightp_satd8_search( wcost, src + y*i_stride, fenc_plane + y*i_stride, i_stride, n,
+                                          s->intra_cost + mb_y*n, (const int16_t (*)[4])wp, 1 + t->i_scales );
+        }
+        cost[0] += wcost[0][0];
+        for( int k = 0; k < t->i_scales; k++ )
+            for( int j = 0; j < t->i_offsets[k]; j++ )
+                cost[1 + k*X264_WEIGHT_OFFSETS_MAX + j] += wcost[1+k][j];
+        x264_emms();
+        return;
+    }
     b_dc &= h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8] && s->lminmax;
     ALIGNED_ARRAY_16( pixel, buf,[8*8] );
 
