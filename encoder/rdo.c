@@ -71,6 +71,7 @@ static uint16_t cabac_size_5ones[128];
 #define COPY_CABAC h->mc.memcpy_aligned( &cabac_tmp.f8_bits_encoded, &h->cabac.f8_bits_encoded, \
         sizeof(int) + (CHROMA444 ? 1024+12 : 460) )
 #define COPY_CABAC_PART( pos, size ) memcpy( &cb->state[pos], &h->cabac.state[pos], size )
+#define SW_RD_COUNT( skip ) ( h->sweep.c.rd[h->sweep.rd_site][0]++, h->sweep.c.rd[h->sweep.rd_site][1] += !!(skip) )
 
 static ALWAYS_INLINE uint64_t cached_hadamard( x264_t *h, int size, int x, int y )
 {
@@ -181,6 +182,7 @@ static int x264_rd_cost_mb_bound( x264_t *h, int i_lambda2, uint64_t bound )
     }
     else if( h->param.b_cabac )
     {
+        SW_RD_COUNT( i_ssd >= 0 && (uint64_t)i_ssd >= bound );
         if( i_ssd >= 0 && (uint64_t)i_ssd >= bound )
         {
             i_ssd = COST_MAX;
@@ -229,6 +231,7 @@ static uint64_t x264_rd_cost_subpart( x264_t *h, int i_lambda2, int i4, int i_pi
 
     if( h->param.b_cabac )
     {
+        SW_RD_COUNT( (i_ssd<<8) >= bound );
         if( (i_ssd<<8) >= bound )
             return COST_MAX64;
         x264_cabac_t cabac_tmp;
@@ -279,6 +282,7 @@ uint64_t x264_rd_cost_part_bound( x264_t *h, int i_lambda2, int i4, int i_pixel,
 
     if( h->param.b_cabac )
     {
+        SW_RD_COUNT( (i_ssd<<8) >= bound );
         if( (i_ssd<<8) >= bound )
             return COST_MAX64;
         x264_cabac_t cabac_tmp;
@@ -317,6 +321,7 @@ static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode,
 
     if( h->param.b_cabac )
     {
+        SW_RD_COUNT( (i_ssd<<8) >= bound );
         if( (i_ssd<<8) >= bound )
             return COST_MAX64;
         x264_cabac_t cabac_tmp;
@@ -353,6 +358,7 @@ static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode,
 
     if( h->param.b_cabac )
     {
+        SW_RD_COUNT( (i_ssd<<8) >= bound );
         if( (i_ssd<<8) >= bound )
             return COST_MAX64;
         x264_cabac_t cabac_tmp;
@@ -381,6 +387,7 @@ static uint64_t x264_rd_cost_chroma( x264_t *h, int i_lambda2, int i_mode, int b
 
     if( h->param.b_cabac )
     {
+        SW_RD_COUNT( (i_ssd<<8) >= bound );
         if( (i_ssd<<8) >= bound )
             return COST_MAX64;
         x264_cabac_t cabac_tmp;

@@ -4742,6 +4742,9 @@ static void x264_sweep_print( x264_t *h )
              " f2f=%"PRIu64" strength_mbaff=%"PRIu64"\n", frames,
              c->c3[SW_C3_CL_INTERLACED], c->c3[SW_C3_CL_PROGRESSIVE], c->c3[SW_C3_FIELD_MBS],
              c->c3[SW_C3_F2F], c->c3[SW_C3_STRENGTH_MBAFF] );
+    static const char *rd_name[SW_RD_N] = { "none", "qpel", "i16", "ichroma", "i4", "i8", "trd", "intra", "prd" };
+    for( int i = 0; i < SW_RD_N; i++ )
+        fprintf( stderr, "sweep RD %s reached=%"PRIu64" skipped=%"PRIu64"\n", rd_name[i], c->rd[i][0], c->rd[i][1] );
     fprintf( stderr, "sweep end\n" );
 }
 

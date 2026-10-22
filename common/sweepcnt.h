@@ -110,8 +110,24 @@ enum
     SW_C3_N
 };
 
+/* hipreset-rd: CABAC RD bit counts by caller, [site][0: reached, 1: skipped by the bound] */
+enum
+{
+    SW_RD_NONE,         /* unbounded callers */
+    SW_RD_QPEL,         /* x264_me_refine_qpel_rd */
+    SW_RD_I16,          /* intra RD refine */
+    SW_RD_ICHROMA,
+    SW_RD_I4,
+    SW_RD_I8,
+    SW_RD_TRD,          /* transform_rd */
+    SW_RD_INTRA,        /* intra_rd */
+    SW_RD_PRD,          /* P partition RD */
+    SW_RD_N
+};
+
 typedef struct
 {
+    uint64_t rd[SW_RD_N][2];
     uint64_t a1[2][7][SW_A1_N];
     uint64_t a3[2][SW_STEP_N][7][SW_A3_N];
     uint64_t a6[SW_A6_N];
@@ -126,6 +142,7 @@ typedef struct
     x264_sweep_cnt_t c;
     uint64_t wp_us_max[2];
     int la; /* 1 while this context runs the lowres analysis */
+    int rd_site; /* SW_RD_* of the RD cost being called */
 } x264_sweep_t;
 
 static inline void x264_sweep_add( x264_sweep_t *dst, const x264_sweep_t *src )

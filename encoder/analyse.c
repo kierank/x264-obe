@@ -1071,7 +1071,9 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh, 
     {
         h->mb.i_type = I_16x16;
         x264_analyse_update_cache( h, a );
+        h->sweep.rd_site = SW_RD_INTRA;
         a->i_satd_i16x16 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        h->sweep.rd_site = SW_RD_NONE;
         bound = X264_MIN( bound, (uint64_t)a->i_satd_i16x16 );
     }
     else
@@ -1081,7 +1083,9 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh, 
     {
         h->mb.i_type = I_4x4;
         x264_analyse_update_cache( h, a );
+        h->sweep.rd_site = SW_RD_INTRA;
         a->i_satd_i4x4 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        h->sweep.rd_site = SW_RD_NONE;
         /* a tie goes to the type compared first */
         bound = X264_MIN( bound, (uint64_t)a->i_satd_i4x4 + b_i8x8_first );
     }
@@ -1092,7 +1096,9 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh, 
     {
         h->mb.i_type = I_8x8;
         x264_analyse_update_cache( h, a );
+        h->sweep.rd_site = SW_RD_INTRA;
         a->i_satd_i8x8 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        h->sweep.rd_site = SW_RD_NONE;
         a->i_cbp_i8x8_luma = h->mb.i_cbp_luma;
     }
     else
@@ -1117,7 +1123,9 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
             if( i_mode == old_pred_mode || a->i_satd_i16x16_dir[i_mode] > i_thresh )
                 continue;
             h->mb.i_intra16x16_pred_mode = i_mode;
+            h->sweep.rd_site = SW_RD_I16;
             i_satd = x264_rd_cost_mb_bound( h, a->i_lambda2, i_best );
+            h->sweep.rd_site = SW_RD_NONE;
             COPY2_IF_LT( i_best, i_satd, a->i_predict16x16, i_mode );
         }
     }
@@ -1160,7 +1168,9 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                     /* if we've already found a mode that needs no residual, then
                      * probably any mode with a residual will be worse.
                      * so avoid dct on the remaining modes to improve speed. */
+                    h->sweep.rd_site = SW_RD_ICHROMA;
                     i_satd = x264_rd_cost_chroma( h, i_chroma_lambda, i_mode, h->mb.i_cbp_chroma != 0x00, i_best );
+                    h->sweep.rd_site = SW_RD_NONE;
                     COPY3_IF_LT( i_best, i_satd, a->i_predict8x8chroma, i_mode, i_cbp_chroma_best, h->mb.i_cbp_chroma );
                 }
                 h->mb.i_chroma_pred_mode = a->i_predict8x8chroma;
@@ -1190,7 +1200,9 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
             for( ; *predict_mode >= 0; predict_mode++ )
             {
                 int i_mode = *predict_mode;
+                h->sweep.rd_site = SW_RD_I4;
                 i_satd = x264_rd_cost_i4x4( h, a->i_lambda2, idx, i_mode, i_best );
+                h->sweep.rd_site = SW_RD_NONE;
 
                 if( i_best > i_satd )
                 {
@@ -1249,7 +1261,9 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                     continue;
 
                 h->mb.i_cbp_luma = a->i_cbp_i8x8_luma;
+                h->sweep.rd_site = SW_RD_I8;
                 i_satd = x264_rd_cost_i8x8( h, a->i_lambda2, idx, i_mode, edge, i_best );
+                h->sweep.rd_site = SW_RD_NONE;
 
                 if( i_best > i_satd )
                 {
@@ -2827,7 +2841,9 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_16x8;
         x264_analyse_update_cache( h, a );
+        h->sweep.rd_site = SW_RD_PRD;
         a->l0.i_cost16x8 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        h->sweep.rd_site = SW_RD_NONE;
         bound = X264_MIN( bound, (uint64_t)a->l0.i_cost16x8 );
     }
     else
@@ -2837,7 +2853,9 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_8x16;
         x264_analyse_update_cache( h, a );
+        h->sweep.rd_site = SW_RD_PRD;
         a->l0.i_cost8x16 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        h->sweep.rd_site = SW_RD_NONE;
         bound = X264_MIN( bound, (uint64_t)a->l0.i_cost8x16 );
     }
     else
@@ -2882,7 +2900,9 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
         }
         else
             x264_analyse_update_cache( h, a );
+        h->sweep.rd_site = SW_RD_PRD;
         a->l0.i_cost8x8 = x264_rd_cost_mb_bound( h, a->i_lambda2, bound );
+        h->sweep.rd_site = SW_RD_NONE;
     }
     else
         a->l0.i_cost8x8 = COST_MAX;
@@ -3054,7 +3074,9 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
         h->mb.b_transform_8x8 ^= 1;
         /* FIXME only luma is needed for 4:2:0, but the score for comparison already includes chroma */
         /* a tie goes to i_rd8, so only a distortion above *i_rd can't win */
+        h->sweep.rd_site = SW_RD_TRD;
         int i_rd8 = x264_rd_cost_mb_bound( h, a->i_lambda2, *i_rd < COST_MAX ? (uint64_t)*i_rd + 1 : RD_NO_BOUND );
+        h->sweep.rd_site = SW_RD_NONE;
 
         if( *i_rd >= i_rd8 )
         {
