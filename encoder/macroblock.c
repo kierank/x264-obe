@@ -970,6 +970,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
     ALIGNED_ARRAY_64( dctcoef, dctscan,[4],[16] );
     ALIGNED_4( int16_t mvp[2] );
     int i_qp = h->mb.i_qp;
+    int b_luma_eq = 0;
 
     for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
     {
@@ -988,7 +989,10 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
 
         /* prediction == fenc: no coefficients, decimate score 0 */
         if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+        {
+            b_luma_eq |= !p;
             continue;
+        }
 
         for( int i8x8 = 0, i_decimate_mb = 0; i8x8 < 4; i8x8++ )
         {
@@ -1098,7 +1102,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
     }
 
     h->mb.b_skip_mc = 1;
-    return 1;
+    return 1 + (b_luma_eq && !b_bidir);
 }
 
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir )
