@@ -36,7 +36,7 @@
 
 /* layout pair test/x264-i4x4-mb / -twin: hidden weak x264_N_i4x4mb_gate, defined here (no bytes) unless
  * I4MB_TWIN; the twin links it as 0, I4MB_OFF is 1 and every MB takes the per-block loop */
-#define I4MB_TWIN 0
+#define I4MB_TWIN 1
 #define I4MB_STR2( x ) #x
 #define I4MB_STR( x ) I4MB_STR2( x )
 #define x264_i4x4mb_gate x264_template(i4x4mb_gate)
