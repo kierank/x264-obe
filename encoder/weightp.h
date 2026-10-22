@@ -62,6 +62,7 @@ typedef struct
     int wscale[2*X264_WEIGHT_WSLOTS];
     int wdenom[2*X264_WEIGHT_WSLOTS];
     int wnext[2];           /* slot to replace */
+    int cnt_bl;             /* counters: b_lookahead */
 } x264_weight_src_t;
 
 /* The luma weights of a search: per scale its offsets, ascending and contiguous, cached

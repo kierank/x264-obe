@@ -34,6 +34,9 @@
 #include "me.h"
 #include "lookahead8.h"
 
+#define x264_weightp_cnt_print x264_template(weightp_cnt_print)
+void x264_weightp_cnt_print( void );
+
 //#define DEBUG_MB_TYPE
 
 #define bs_write_ue bs_write_ue_big
@@ -4616,6 +4619,7 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+    x264_weightp_cnt_print();
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );
