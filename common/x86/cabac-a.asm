@@ -569,6 +569,7 @@ endstruc
 %endmacro
 
 %macro CABAC 1
+; decision, bypass, terminal and putbyte of one cpu level
 ; t3 must be ecx, since it's used for shift.
 %if WIN64
     DECLARE_REG_TMP 3,1,2,0,5,6,4,4
