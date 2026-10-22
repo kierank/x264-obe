@@ -3061,6 +3061,38 @@ static inline void x264_mb_analyse_transform( x264_t *h )
     }
 }
 
+/* transform_rd pre-screen on the luma 4x4 blocks the picked candidate's 4x4 RD
+ * coded: at most X264_TRD_KEEP4 keeps 4x4 without the 8x8 RD (-1: never), at
+ * least X264_TRD_TAKE8 takes 8x8 without it (17: never) */
+#ifndef X264_TRD_KEEP4
+#define X264_TRD_KEEP4 0
+#endif
+#ifndef X264_TRD_TAKE8
+#define X264_TRD_TAKE8 17
+#endif
+
+/* the log entry of the picked candidate, or -1 */
+static int x264_rd_nz_find( x264_t *h, x264_mb_analysis_t *a, int cost )
+{
+    for( int i = a->i_rd_nz - 1; i >= 0; i-- )
+        if( a->rd_nz[i].cost == cost && a->rd_nz[i].type == h->mb.i_type &&
+            (h->mb.i_type == B_DIRECT || a->rd_nz[i].partition == h->mb.i_partition) )
+            return i;
+    return -1;
+}
+
+/* -1: run the 8x8 RD, 0: keep 4x4, 1: take 8x8 */
+static ALWAYS_INLINE int x264_trd_prescreen( x264_t *h, x264_mb_analysis_t *a, int i_rd, int keep4, int take8 )
+{
+    if( h->mb.b_transform_8x8 )
+        return -1;
+    int i = x264_rd_nz_find( h, a, i_rd );
+    if( i < 0 || a->rd_nz[i].transform_8x8 )
+        return -1;
+    int nz = a->rd_nz[i].nz;
+    return nz <= keep4 ? 0 : nz >= take8 ? 1 : -1;
+}
+
 static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *a, int *i_satd, int *i_rd )
 {
     if( h->param.analyse.b_transform_8x8 && h->pps->b_transform_8x8_mode )
@@ -3073,6 +3105,23 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
             return;
 
         x264_analyse_update_cache( h, a );
+
+        /* same prediction both ways */
+        if( !h->mb.b_lossless && (h->mb.i_type != P_8x8 || subpart_bak == D_L0_8x8*0x01010101) )
+        {
+            int pre = x264_trd_prescreen( h, a, *i_rd, X264_TRD_KEEP4, X264_TRD_TAKE8 );
+            if( pre == 0 )
+            {
+                M32( h->mb.i_sub_partition ) = subpart_bak;
+                return;
+            }
+            if( pre == 1 )
+            {
+                h->mb.b_transform_8x8 = 1;
+                return;
+            }
+        }
+
         h->mb.b_transform_8x8 ^= 1;
         /* FIXME only luma is needed for 4:2:0, but the score for comparison already includes chroma */
         int i_rd8 = x264_rd_cost_mb( h, a->i_lambda2 );
