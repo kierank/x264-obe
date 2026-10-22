@@ -389,6 +389,7 @@ typedef struct x264_param_t
         int          i_qpel_skip; /* no qpel when the subpel start is fullpel and costs <= K*lambda*area/256 */
         int          i_ref0_exit; /* P 16x16: no other refs or partitions after ref 0 within 1 qpel of the skip mv with distortion < K*lambda */
         int          i_hex_cap;   /* one dia step, or one hexagon and the square, when >= N mv candidates all collapse onto the mvp or 0 */
+        int          i_skip_static; /* P: skip probe before ME where pskip mv is 0 and the lowres mb is inter, mv 0, cost <= N */
 
         int          b_mb_info;            /* Use input mb_info data in x264_picture_t */
         int          b_mb_info_update; /* Update the values in mb_info according to the results of encoding. */

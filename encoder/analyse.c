@@ -3293,6 +3293,23 @@ static int x264_mb_pskip_lowres_mv( x264_t *h, int *mvx, int *mvy )
     return (*mvx | *mvy) && (*mvx != h->mb.cache.pskip_mv[0] || *mvy != h->mb.cache.pskip_mv[1]);
 }
 
+/* --skip-static: the lookahead coded this frame mb inter from the previous frame
+ * with mv 0 at a lowres cost <= i_skip_static */
+static int x264_mb_lowres_static( x264_t *h )
+{
+    x264_frame_t *f = h->fenc;
+    int d = f->i_bframes + 1;
+    if( MB_INTERLACED || !h->frames.b_have_lowres || d > h->param.i_bframe + 1 ||
+        f->i_cost_est[d][0] < 0 || f->lowres_mvs[0][d-1][0][0] == 0x7FFF )
+        return 0;
+    if( !h->param.rc.b_mb_tree && !h->param.rc.i_vbv_buffer_size &&
+        (!h->mb.i_mb_x || !h->mb.i_mb_y || h->mb.i_mb_x == h->mb.i_mb_width-1 || h->mb.i_mb_y == h->mb.i_mb_height-1) )
+        return 0;
+    int cost = f->lowres_costs[d][0][h->mb.i_mb_xy];
+    return (cost >> LOWRES_COST_SHIFT) == 1 && (cost & LOWRES_COST_MASK) <= h->param.analyse.i_skip_static &&
+           !M32( f->lowres_mvs[0][d-1][h->mb.i_mb_xy] );
+}
+
 static int x264_mb_pskip_mispredicted( x264_t *h )
 {
     /* Zero mv: a static mb whose skip mv came from moving neighbours */
@@ -3446,6 +3463,14 @@ intra_analysis:
                 if( skip_invalid )
                     // FIXME don't need to check this if the reference frame is done
                     {}
+                /* experimental: lowres-static with skip mv 0, probe before ME */
+                else if( h->param.analyse.i_skip_static && !M32( h->mb.cache.pskip_mv ) && x264_mb_lowres_static( h ) )
+                {
+                    b_skip = x264_macroblock_probe_pskip( h );
+                    if( b_skip == 1 && x264_mb_pskip_mispredicted( h ) )
+                        b_skip = h->mb.b_skip_mc = 0;
+                    analysis.b_try_skip = !b_skip && h->param.analyse.i_subpel_refine >= 3;
+                }
                 else if( h->param.analyse.i_subpel_refine >= 3 )
                     analysis.b_try_skip = 1;
                 else if( h->mb.i_mb_type_left[0] == P_SKIP ||
