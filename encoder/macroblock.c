@@ -31,7 +31,7 @@
 
 /* layout pair test/x264-i16x16-fuse / -twin: hidden weak x264_N_i16fuse_gate, defined (no bytes) unless
  * I16FUSE_TWIN; the twin links it as 0 and i16x16 keeps the separate calls */
-#define I16FUSE_TWIN 0
+#define I16FUSE_TWIN 1
 #define I16FUSE_STR2( x ) #x
 #define I16FUSE_STR( x ) I16FUSE_STR2( x )
 #define x264_i16fuse_gate x264_template(i16fuse_gate)
