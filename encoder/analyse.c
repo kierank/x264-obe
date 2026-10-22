@@ -36,7 +36,7 @@
 
 /* layout pair test/x264-i8x8-fuse / -twin: hidden weak x264_N_i8x8f_gate, defined here (no bytes) unless
  * I8X8F_TWIN; the twin links it as 0 and i8x8 analysis keeps the filter, the separate x9 and x264_mb_encode_i8x8 */
-#define I8X8F_TWIN 0
+#define I8X8F_TWIN 1
 #define I8X8F_STR2( x ) #x
 #define I8X8F_STR( x ) I8X8F_STR2( x )
 #define x264_i8x8f_gate x264_template(i8x8f_gate)
