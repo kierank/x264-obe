@@ -436,6 +436,7 @@ lowres_intra_mb:
 
             i_icost += intra_penalty + lowres_penalty;
         }
+        __atomic_fetch_add( &x264_lri_cnt[1][p0 == p1][iprev ? 1 + b_intra_reuse : 0], 1, __ATOMIC_RELAXED );
         fenc->i_intra_cost[i_mb_xy] = i_icost;
         int i_icost_aq = i_icost;
         if( h->param.rc.i_aq_mode )

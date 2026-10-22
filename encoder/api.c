@@ -31,6 +31,9 @@
  ****************************************************************************/
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
+uint64_t x264_lri_cnt[2][2][3];
+uint64_t x264_lri_frames[3];
+
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
 void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );

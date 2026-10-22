@@ -1465,6 +1465,7 @@ lowres_intra_mb:
 
             i_icost = ((i_icost + intra_penalty) >> (BIT_DEPTH - 8)) + lowres_penalty;
         }
+        __atomic_fetch_add( &x264_lri_cnt[0][p0 == p1][iprev ? 1 + b_intra_reuse : 0], 1, __ATOMIC_RELAXED );
         fenc->i_intra_cost[i_mb_xy] = i_icost;
         int i_icost_aq = i_icost;
         if( h->param.rc.i_aq_mode )
@@ -1653,6 +1654,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                 for( int i = 0; i < 2 && !iprev; i++ )
                     if( cand[i] && cand[i]->b_intra_calculated && cand[i]->i_intra_tag == intra_tag )
                         iprev = cand[i];
+                __atomic_fetch_add( &x264_lri_frames[!iprev ? 0 : iprev == cand[0] ? 1 : 2], 1, __ATOMIC_RELAXED );
             }
 
             if( h->param.i_lookahead_threads > 1 )

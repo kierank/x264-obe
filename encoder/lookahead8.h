@@ -33,6 +33,11 @@
  * LOWRES8_COST_SHIFT maps high bit depth thresholds to 8-bit. */
 #define LOWRES8_COST_SHIFT 2
 
+/* counters: lowres intra blocks [generic, lowres8][inter pass, intra-only pass]
+ * [no iprev, not reused, reused]; frames costed [no iprev, iprev b-1, iprev p0] */
+extern uint64_t x264_lri_cnt[2][2][3];
+extern uint64_t x264_lri_frames[3];
+
 /* One per x264_t that runs lowres analysis. stride/lines are the lowres plane
  * geometry (i_stride_lowres, i_lines_lowres), for the weighted plane buffer. */
 void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height, int stride, int lines );

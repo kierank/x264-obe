@@ -4617,6 +4617,19 @@ void    x264_encoder_close  ( x264_t *h )
 
     x264_lookahead_delete( h );
 
+    for( int p = 0; p < 2; p++ )
+        for( int q = 0; q < 2; q++ )
+        {
+            uint64_t *c = x264_lri_cnt[p][q];
+            uint64_t n = c[0] + c[1] + c[2];
+            if( n )
+                fprintf( stderr, "lri %s %s: blocks %"PRIu64" no-iprev %"PRIu64" not-reused %"PRIu64" reused %"PRIu64" (%.2f%% of all, %.2f%% with iprev)\n",
+                         p ? "lowres8" : "generic", q ? "intra-only" : "inter", n, c[0], c[1], c[2],
+                         100.0 * c[2] / n, c[1] + c[2] ? 100.0 * c[2] / (c[1] + c[2]) : 0.0 );
+        }
+    fprintf( stderr, "lri frames: no-iprev %"PRIu64" iprev-b-1 %"PRIu64" iprev-p0 %"PRIu64"\n",
+             x264_lri_frames[0], x264_lri_frames[1], x264_lri_frames[2] );
+
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );
     x264_opencl_function_t *ocl = h->opencl.ocl;
