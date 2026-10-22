@@ -320,6 +320,9 @@ void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y );
 void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_deblock_strength x264_template(macroblock_deblock_strength)
 void x264_macroblock_deblock_strength( x264_t *h );
+/* Unused bS byte: set when every edge x264_frame_deblock_row reads has bS 0
+ * and no intra side, so the row skips the mb. */
+#define DEBLOCK_BS_ZERO( bs ) (bs)[1][7][0]
 #define x264_macroblock_cache_save x264_template(macroblock_cache_save)
 void x264_macroblock_cache_save( x264_t *h );
 

@@ -1480,9 +1480,66 @@ static void x264_macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][
     }
 }
 
+/* Sufficient for bS 0 on every edge of an inter mb that x264_frame_deblock_row
+ * filters, from the deblock_strength inputs before the munging below.
+ * Inside: D_16x16 has one ref and mv per list, and no luma nnz. Left and top,
+ * when the row filters them (the same neighbours as i_neighbour here): inter,
+ * same field, no nnz, and per list the same ref and mv closer than 4 and
+ * mvy_limit to the mb's. Weightp duplicates are a map of the ref: equal stays
+ * equal. The CAVLC 8x8dct nnz munging takes the normal path. */
+static ALWAYS_INLINE int macroblock_deblock_bs_zero( x264_t *h )
+{
+    if( h->mb.i_partition != D_16x16 || (!h->param.b_cabac && h->pps->b_transform_8x8_mode) )
+        return 0;
+    const int s8 = x264_scan8[0];
+    uint8_t *nnz = h->mb.cache.non_zero_count;
+    if( M32( &nnz[s8+0*8] ) | M32( &nnz[s8+1*8] ) | M32( &nnz[s8+2*8] ) | M32( &nnz[s8+3*8] ) )
+        return 0;
+    int lists = 1 + (h->sh.i_type == SLICE_TYPE_B);
+    int mvy_limit = 4 >> MB_INTERLACED;
+    if( h->mb.i_neighbour & MB_LEFT )
+    {
+        int left = h->mb.i_mb_xy - 1;
+        if( IS_INTRA( h->mb.type[left] ) || (SLICE_MBAFF && h->mb.field[left] != MB_INTERLACED) )
+            return 0;
+        if( nnz[s8-1+0*8] | nnz[s8-1+1*8] | nnz[s8-1+2*8] | nnz[s8-1+3*8] )
+            return 0;
+        for( int l = 0; l < lists; l++ )
+        {
+            int8_t *ref = h->mb.cache.ref[l];
+            int16_t (*mv)[2] = h->mb.cache.mv[l];
+            for( int i = 0, loc = s8-1; i < 4; i++, loc += 8 )
+                if( ref[loc] != ref[s8] ||
+                    abs( mv[loc][0] - mv[s8][0] ) >= 4 ||
+                    abs( mv[loc][1] - mv[s8][1] ) >= mvy_limit )
+                    return 0;
+        }
+    }
+    if( h->mb.i_neighbour & MB_TOP )
+    {
+        int top = h->mb.i_mb_top_xy;
+        if( IS_INTRA( h->mb.type[top] ) || (SLICE_MBAFF && h->mb.field[top] != MB_INTERLACED) )
+            return 0;
+        if( M32( &nnz[s8-8] ) )
+            return 0;
+        for( int l = 0; l < lists; l++ )
+        {
+            int8_t *ref = h->mb.cache.ref[l];
+            int16_t (*mv)[2] = h->mb.cache.mv[l];
+            for( int i = 0, loc = s8-8; i < 4; i++, loc++ )
+                if( ref[loc] != ref[s8] ||
+                    abs( mv[loc][0] - mv[s8][0] ) >= 4 ||
+                    abs( mv[loc][1] - mv[s8][1] ) >= mvy_limit )
+                    return 0;
+        }
+    }
+    return 1;
+}
+
 void x264_macroblock_deblock_strength( x264_t *h )
 {
     uint8_t (*bs)[8][4] = h->mb.cache.deblock_strength;
+    DEBLOCK_BS_ZERO( bs ) = 0;
     if( IS_INTRA( h->mb.i_type ) )
     {
         memset( bs[0][1], 3, 3*4*sizeof(uint8_t) );
@@ -1509,6 +1566,14 @@ void x264_macroblock_deblock_strength( x264_t *h )
     {
         neighbour_changed = h->mb.i_neighbour_frame&~h->mb.i_neighbour;
         h->mb.i_neighbour = h->mb.i_neighbour_frame;
+    }
+
+    if( !neighbour_changed && macroblock_deblock_bs_zero( h ) )
+    {
+        M128( bs[0][0] ) = M128_ZERO;
+        M128( bs[1][0] ) = M128_ZERO;
+        DEBLOCK_BS_ZERO( bs ) = 1;
+        return;
     }
 
     /* MBAFF deblock uses different left neighbors from encoding */
