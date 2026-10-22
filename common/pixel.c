@@ -1871,14 +1871,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
-        pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_pde_16x16_avx512;
-        pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_pde_8x8_avx512;
+        /* sad_*_min_pde: rack01 counters, all candidates beaten after half the rows: hex 16x16 16 %,
+         * 8x8 42 %, sq 16x16 0.4-1 %, 8x8 7-14 %. The early exit at 8x8 only, and not for sq;
+         * the other _pde kernels stay assembled */
         INIT7( sad_dia_min, _avx512 );
-        INIT4_NAME( sad_dia_min, sad_dia_min_pde, _avx512 );
+        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_pde_8x8_avx512;
         INIT7( sad_hex_min, _avx512 );
         INIT7( sad_hexhalf_min, _avx512 );
-        INIT4_NAME( sad_hex_min, sad_hex_min_pde, _avx512 );
-        INIT4_NAME( sad_hexhalf_min, sad_hexhalf_min_pde, _avx512 );
+        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_pde_8x8_avx512;
+        pixf->sad_hexhalf_min[PIXEL_8x8] = x264_pixel_sad_hexhalf_min_pde_8x8_avx512;
         INIT7( sad_oct_min, _avx512 );
         INIT7( sad_ring_min, _avx512 );
         INIT7( sad_corner_min, _avx512 );
