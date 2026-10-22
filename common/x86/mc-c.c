@@ -917,6 +917,9 @@ static void x264_weight_cache_avx512icl( x264_t *h, x264_weight_t *w )
     x264_weight_cache_avx2( h, w );
     if( w->i_scale == 1<<w->i_denom )
         w->weightavgfn = w->i_offset < 0 ? x264_mc_offsetsub_avg_wtab_avx512icl : x264_mc_offsetadd_avg_wtab_avx512icl;
+#if !HIGH_BIT_DEPTH
+    x264_weight_lut( w );
+#endif
 }
 
 #define x264_mc_weight_plane_avx512icl x264_template(mc_weight_plane_avx512icl)

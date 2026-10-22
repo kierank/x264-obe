@@ -27,6 +27,9 @@
 #include "analyse.h"
 #include "lookahead8.h"
 
+/* the weights given are the high bit depth x264_weight_t: this one without the lut */
+#define X264_WEIGHT_HBD_SIZE ((offsetof( x264_weight_t, lut ) + 15) & ~15)
+
 #if BIT_DEPTH == 8
 
 typedef struct
@@ -129,7 +132,7 @@ void x264_lowres8_weight_plane( void *ctx, void *fenc_, void *ref_, const void *
     x264_frame_t *fenc = fenc_;
     x264_frame_t *ref = ref_;
     x264_weight_t w;
-    memcpy( &w, weight, sizeof(w) );
+    memcpy( &w, weight, X264_WEIGHT_HBD_SIZE );
     h->mc.weight_cache( h, &w );
     int width = ref->i_width_lowres + PADH*2;
     int height = ref->i_lines_lowres + PADV*2;
@@ -470,7 +473,8 @@ void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
     lowres8_t *c = ctx;
     x264_t *h = &c->h;
     x264_weight_t w[3];
-    memcpy( w, weights, sizeof(w) );
+    for( int i = 0; i < 3; i++ )
+        memcpy( &w[i], (const uint8_t*)weights + i*X264_WEIGHT_HBD_SIZE, X264_WEIGHT_HBD_SIZE );
     w[1].weightfn = w[2].weightfn = NULL;
     if( w[0].weightfn )
         h->mc.weight_cache( h, &w[0] );

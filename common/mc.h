@@ -50,7 +50,24 @@ typedef struct x264_weight_t
     /* set by weight_cache, read only with weightfn: weightfn of the qpel average
      * (src1+src2+1)>>1, the w x h of pixel_avg2 then weightfn in place, or NULL */
     weight_avg_fn_t *weightavgfn;
+#if !HIGH_BIT_DEPTH
+    /* set by weight_cache where pixel sad_avg2_w and satd_avg2_pre_w may read it: the
+     * weight of every value */
+    uint8_t lut[256];
+#endif
 } ALIGNED_16( x264_weight_t );
+
+#if !HIGH_BIT_DEPTH
+static ALWAYS_INLINE void x264_weight_lut( x264_weight_t *w )
+{
+    int round = (1 << w->i_denom) >> 1;
+    for( int x = 0; x < 256; x++ )
+    {
+        int v = ((x * w->i_scale + round) >> w->i_denom) + w->i_offset;
+        w->lut[x] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+}
+#endif
 
 #define x264_weight_none x264_template(weight_none)
 extern const x264_weight_t x264_weight_none[3];
