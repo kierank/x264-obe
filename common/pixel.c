@@ -1042,6 +1042,19 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twin of wip/x264-sweep-mepred-s2d-pde: with MEPRED_TWIN_DBP the plain 8x8
+ * dbpsad dia/hex kernels are dispatched in place of the _pde ones. Nothing else differs. */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define MEPRED_TWIN_DBP 1
+#if MEPRED_TWIN_DBP
+#undef x264_pixel_sad_dia_min_pde_8x8_avx512
+#define x264_pixel_sad_dia_min_pde_8x8_avx512 x264_pixel_sad_dia_min_8x8_avx512
+#undef x264_pixel_sad_hex_min_pde_8x8_avx512
+#define x264_pixel_sad_hex_min_pde_8x8_avx512 x264_pixel_sad_hex_min_8x8_avx512
+#endif
+#endif
+
+
 
 /****************************************************************************
  * x264_pixel_init:
