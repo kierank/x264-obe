@@ -323,6 +323,18 @@ void x264_macroblock_deblock_strength( x264_t *h );
 /* Unused bS byte: set when every edge x264_frame_deblock_row reads has bS 0
  * and no intra side, so the row skips the mb. */
 #define DEBLOCK_BS_ZERO( bs ) (bs)[1][7][0]
+
+/* bs0 layout pair: x264_bs0_gate gates the bS 0 pre-test. Arm: x264_bs0_arm,
+ * defined in api.c. Twin (BS0_TWIN 1): the never defined x264_bs0_twin, which
+ * links as 0. The code is the same in both. */
+#define BS0_TWIN 0
+extern const char x264_bs0_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_bs0_twin __attribute__((weak, visibility("hidden")));
+#if BS0_TWIN
+#define x264_bs0_gate (&x264_bs0_twin != NULL)
+#else
+#define x264_bs0_gate (&x264_bs0_arm != NULL)
+#endif
 #define x264_macroblock_cache_save x264_template(macroblock_cache_save)
 void x264_macroblock_cache_save( x264_t *h );
 

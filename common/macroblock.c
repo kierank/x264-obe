@@ -1568,7 +1568,7 @@ void x264_macroblock_deblock_strength( x264_t *h )
         h->mb.i_neighbour = h->mb.i_neighbour_frame;
     }
 
-    if( !neighbour_changed && macroblock_deblock_bs_zero( h ) )
+    if( x264_bs0_gate && !neighbour_changed && macroblock_deblock_bs_zero( h ) )
     {
         M128( bs[0][0] ) = M128_ZERO;
         M128( bs[1][0] ) = M128_ZERO;
