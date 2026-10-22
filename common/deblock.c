@@ -417,8 +417,12 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         int transform_8x8 = h->mb.mb_transform_size[mb_xy];
         int intra_cur = IS_INTRA( h->mb.type[mb_xy] );
         uint8_t (*bs)[8][4] = h->deblock_strength[mb_y&1][h->param.b_sliced_threads?mb_xy:mb_x];
+        BS0_INC( h->sh.i_type == SLICE_TYPE_B, BS0_ROW );
         if( DEBLOCK_BS_ZERO( bs ) )
+        {
+            BS0_INC( h->sh.i_type == SLICE_TYPE_B, BS0_ROWSKIP );
             continue;
+        }
 
         pixel *pixy = h->fdec->plane[0] + 16*mb_y*stridey  + 16*mb_x;
         pixel *pixuv = h->fdec->plane[1] + chroma_height*mb_y*strideuv + 16*mb_x;

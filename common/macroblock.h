@@ -323,6 +323,16 @@ void x264_macroblock_deblock_strength( x264_t *h );
 /* Unused bS byte: set when every edge x264_frame_deblock_row reads has bS 0
  * and no intra side, so the row skips the mb. */
 #define DEBLOCK_BS_ZERO( bs ) (bs)[1][7][0]
+
+/* counters (test branch only) */
+enum { BS0_CALLS, BS0_INTRA, BS0_FULL8, BS0_TRY, BS0_TAKEN, BS0_FAIL = BS0_TAKEN,
+       BS0_FRAME_TRY = BS0_FAIL+10, BS0_FRAME_TAKEN, BS0_FIELD_TRY, BS0_FIELD_TAKEN, BS0_BAD,
+       BS0_ROW, BS0_ROWSKIP, BS0_N };
+#define x264_bs0_cnt x264_template(bs0_cnt)
+extern uint64_t x264_bs0_cnt[2][BS0_N];
+#define x264_bs0_print x264_template(bs0_print)
+void x264_bs0_print( void );
+#define BS0_INC( st, i ) __atomic_fetch_add( &x264_bs0_cnt[st][i], 1, __ATOMIC_RELAXED )
 #define x264_macroblock_cache_save x264_template(macroblock_cache_save)
 void x264_macroblock_cache_save( x264_t *h );
 

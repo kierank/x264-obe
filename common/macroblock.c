@@ -1490,20 +1490,20 @@ static void x264_macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][
 static ALWAYS_INLINE int macroblock_deblock_bs_zero( x264_t *h )
 {
     if( h->mb.i_partition != D_16x16 || (!h->param.b_cabac && h->pps->b_transform_8x8_mode) )
-        return 0;
+        return 1;
     const int s8 = x264_scan8[0];
     uint8_t *nnz = h->mb.cache.non_zero_count;
     if( M32( &nnz[s8+0*8] ) | M32( &nnz[s8+1*8] ) | M32( &nnz[s8+2*8] ) | M32( &nnz[s8+3*8] ) )
-        return 0;
+        return 2;
     int lists = 1 + (h->sh.i_type == SLICE_TYPE_B);
     int mvy_limit = 4 >> MB_INTERLACED;
     if( h->mb.i_neighbour & MB_LEFT )
     {
         int left = h->mb.i_mb_xy - 1;
         if( IS_INTRA( h->mb.type[left] ) || (SLICE_MBAFF && h->mb.field[left] != MB_INTERLACED) )
-            return 0;
+            return 3;
         if( nnz[s8-1+0*8] | nnz[s8-1+1*8] | nnz[s8-1+2*8] | nnz[s8-1+3*8] )
-            return 0;
+            return 4;
         for( int l = 0; l < lists; l++ )
         {
             int8_t *ref = h->mb.cache.ref[l];
@@ -1512,16 +1512,16 @@ static ALWAYS_INLINE int macroblock_deblock_bs_zero( x264_t *h )
                 if( ref[loc] != ref[s8] ||
                     abs( mv[loc][0] - mv[s8][0] ) >= 4 ||
                     abs( mv[loc][1] - mv[s8][1] ) >= mvy_limit )
-                    return 0;
+                    return 5;
         }
     }
     if( h->mb.i_neighbour & MB_TOP )
     {
         int top = h->mb.i_mb_top_xy;
         if( IS_INTRA( h->mb.type[top] ) || (SLICE_MBAFF && h->mb.field[top] != MB_INTERLACED) )
-            return 0;
+            return 6;
         if( M32( &nnz[s8-8] ) )
-            return 0;
+            return 7;
         for( int l = 0; l < lists; l++ )
         {
             int8_t *ref = h->mb.cache.ref[l];
@@ -1530,18 +1530,20 @@ static ALWAYS_INLINE int macroblock_deblock_bs_zero( x264_t *h )
                 if( ref[loc] != ref[s8] ||
                     abs( mv[loc][0] - mv[s8][0] ) >= 4 ||
                     abs( mv[loc][1] - mv[s8][1] ) >= mvy_limit )
-                    return 0;
+                    return 8;
         }
     }
-    return 1;
+    return 0;
 }
 
 void x264_macroblock_deblock_strength( x264_t *h )
 {
     uint8_t (*bs)[8][4] = h->mb.cache.deblock_strength;
     DEBLOCK_BS_ZERO( bs ) = 0;
+    BS0_INC( h->sh.i_type == SLICE_TYPE_B, BS0_CALLS );
     if( IS_INTRA( h->mb.i_type ) )
     {
+        BS0_INC( h->sh.i_type == SLICE_TYPE_B, BS0_INTRA );
         memset( bs[0][1], 3, 3*4*sizeof(uint8_t) );
         memset( bs[1][1], 3, 3*4*sizeof(uint8_t) );
         return;
@@ -1553,6 +1555,7 @@ void x264_macroblock_deblock_strength( x264_t *h )
         int cbp_mask = 0xf >> CHROMA_V_SHIFT;
         if( (h->mb.i_cbp_luma&cbp_mask) == cbp_mask )
         {
+            BS0_INC( h->sh.i_type == SLICE_TYPE_B, BS0_FULL8 );
             M32( bs[0][0] ) = 0x02020202;
             M32( bs[0][2] ) = 0x02020202;
             M32( bs[0][4] ) = 0x02020202;
@@ -1568,13 +1571,13 @@ void x264_macroblock_deblock_strength( x264_t *h )
         h->mb.i_neighbour = h->mb.i_neighbour_frame;
     }
 
-    if( !neighbour_changed && macroblock_deblock_bs_zero( h ) )
-    {
-        M128( bs[0][0] ) = M128_ZERO;
-        M128( bs[1][0] ) = M128_ZERO;
-        DEBLOCK_BS_ZERO( bs ) = 1;
-        return;
-    }
+    int st = h->sh.i_type == SLICE_TYPE_B;
+    int why = neighbour_changed ? 9 : macroblock_deblock_bs_zero( h );
+    BS0_INC( st, BS0_TRY );
+    BS0_INC( st, why ? BS0_FAIL+why : BS0_TAKEN );
+    BS0_INC( st, MB_INTERLACED ? BS0_FIELD_TRY : BS0_FRAME_TRY );
+    if( !why )
+        BS0_INC( st, MB_INTERLACED ? BS0_FIELD_TAKEN : BS0_FRAME_TAKEN );
 
     /* MBAFF deblock uses different left neighbors from encoding */
     if( SLICE_MBAFF && (h->mb.i_neighbour & MB_LEFT) && (h->mb.field[h->mb.i_mb_xy - 1] != MB_INTERLACED) )
@@ -1725,6 +1728,47 @@ void x264_macroblock_deblock_strength( x264_t *h )
 
     if( SLICE_MBAFF )
         x264_macroblock_deblock_strength_mbaff( h, bs );
+
+    /* self-check: the full path gave bS 0 on every edge the row reads */
+    if( !why )
+    {
+        int bad = 0;
+        for( int e = 1; e < 4; e++ )
+            bad |= M32( bs[0][e] ) | M32( bs[1][e] );
+        if( h->mb.i_neighbour & MB_LEFT )
+            bad |= M32( bs[0][0] );
+        if( h->mb.i_neighbour & MB_TOP )
+            bad |= M32( bs[1][0] );
+        if( bad )
+            BS0_INC( st, BS0_BAD );
+        M128( bs[0][0] ) = M128_ZERO;
+        M128( bs[1][0] ) = M128_ZERO;
+        DEBLOCK_BS_ZERO( bs ) = 1;
+    }
+}
+
+uint64_t x264_bs0_cnt[2][BS0_N];
+
+void x264_bs0_print( void )
+{
+    static const char *name[BS0_N] = { "calls", "intra", "full8x8", "tried", "TAKEN",
+        "fail_part/cavlc8x8", "fail_nnz_cur", "fail_left_intra/field", "fail_left_nnz", "fail_left_mvref",
+        "fail_top_intra/field", "fail_top_nnz", "fail_top_mvref", "fail_nbr_changed",
+        "frame_tried", "frame_taken", "field_tried", "field_taken", "SELFCHECK_BAD", "row_mbs", "row_skipped" };
+    for( int st = 0; st < 2; st++ )
+    {
+        uint64_t *c = x264_bs0_cnt[st];
+        if( !c[BS0_CALLS] && !c[BS0_ROW] )
+            continue;
+        fprintf( stderr, "bs0 %d-bit %s:", BIT_DEPTH, st ? "B" : "P/I" );
+        for( int i = 0; i < BS0_N; i++ )
+            fprintf( stderr, " %s=%"PRIu64, name[i], c[i] );
+        fprintf( stderr, "\nbs0 %d-bit %s: taken/inter-tried %.2f%% taken/all-strength %.2f%% row skipped %.2f%%\n",
+                 BIT_DEPTH, st ? "B" : "P/I",
+                 100.0 * c[BS0_TAKEN] / (c[BS0_TRY] ? c[BS0_TRY] : 1),
+                 100.0 * c[BS0_TAKEN] / (c[BS0_CALLS] ? c[BS0_CALLS] : 1),
+                 100.0 * c[BS0_ROWSKIP] / (c[BS0_ROW] ? c[BS0_ROW] : 1) );
+    }
 }
 
 static void ALWAYS_INLINE x264_macroblock_store_pic( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )
