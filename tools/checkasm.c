@@ -4677,6 +4677,81 @@ static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf
     return 1 | X264_MIN( score, 9 ) << 4;
 }
 
+static x264_dct_function_t *i16_dctf;
+static x264_quant_function_t *i16_qf;
+static x264_zigzag_function_t *i16_zz;
+/* the calls encode_i16x16 replaces (x264_mb_encode_i16x16 without trellis or denoise), the DC put back
+ * into the blocks whenever it is nonzero */
+static int encode_i16x16_split( dctcoef dct[17][16], pixel *fenc, pixel *fdec, dctcoef level[16][16], dctcoef dc_level[16],
+                                udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
+{
+    int nz = 0, score = 0;
+    i16_dctf->sub16x16_dct( dct, fenc, fdec );
+    for( int i = 0; i < 16; i++ )
+    {
+        dct[16][block_idx_xy_1d[i]] = dct[i][0];
+        dct[i][0] = 0;
+    }
+    for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+    {
+        int r = i16_zz->quant_4x4x4_scan_ac( &dct[i8x8*4], &level[i8x8*4], mf, bias, dequant_mf, i_qp );
+        score += r >> 4;
+        for( int i = 0; i < 4; i++ )
+            nz |= (r >> i & 1) << block_idx_xy_1d[i8x8*4+i];
+    }
+    i16_dctf->dct4x4dc( dct[16] );
+    int nz_dc = i16_qf->quant_4x4_dc( dct[16], mf[0]>>1, bias[0]<<1 );
+    i16_zz->scan_4x4( dc_level, dct[16] );
+    if( nz_dc )
+    {
+        i16_dctf->idct4x4dc( dct[16] );
+        i16_qf->dequant_4x4_dc( dct[16], dequant_mf, i_qp );
+        for( int i = 0; i < 16; i++ )
+            dct[i][0] = dct[16][block_idx_xy_1d[i]];
+    }
+    return nz | X264_MIN( score, 9 ) << 16 | nz_dc << 20;
+}
+
+/* encode_i16x16 test residuals, kind j%6: full range, +-amp, constant per 4x4 block, sparse, +-PIXEL_MAX per
+ * block (one sign when (j/6)&1), small block DCs with sparse +-1 */
+static void encode_i16x16_fill( pixel *fenc, pixel *fdec, int j )
+{
+    int kind = j%6, amp = 1 << ((j/6)&3), blk[16];
+    for( int i = 0; i < 16; i++ )
+        blk[i] = kind == 2 ? rand()%(2*PIXEL_MAX/2+1) - PIXEL_MAX/2
+               : kind == 4 ? ((j/6)&1 || rand()&1 ? PIXEL_MAX : -PIXEL_MAX)
+               : rand()%(2*amp+1) - amp;
+    for( int y = 0; y < 16; y++ )
+        for( int x = 0; x < 16; x++ )
+        {
+            int b = blk[(y>>2)*4+(x>>2)];
+            int pred = rand()%(PIXEL_MAX+1), res;
+            if( kind == 0 )
+                res = rand()%(PIXEL_MAX+1) - pred;
+            else if( kind == 1 )
+                res = rand()%(2*amp+1) - amp;
+            else if( kind == 2 )
+            {
+                pred = (PIXEL_MAX+1)/2;
+                res = b;
+            }
+            else if( kind == 3 )
+                res = rand()%24 ? 0 : rand()%(2*PIXEL_MAX+1) - PIXEL_MAX;
+            else if( kind == 4 )
+            {
+                pred = b > 0 ? 0 : PIXEL_MAX;
+                res = b;
+            }
+            else
+            {
+                pred = (PIXEL_MAX+1)/2;
+                res = b + (rand()&7 ? 0 : rand()%3 - 1);
+            }
+            fdec[y*FDEC_STRIDE+x] = pred;
+            fenc[y*FENC_STRIDE+x] = x264_clip3( pred + res, 0, PIXEL_MAX );
+        }
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4693,8 +4768,16 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, dct5,[64] );
     ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
+    x264_dct_function_t dctf_c, dctf_a;
+    ALIGNED_ARRAY_64( dctcoef, i16dct,[3],[17][16] );
+    ALIGNED_ARRAY_64( dctcoef, i16lvl,[3],[16][16] );
+    ALIGNED_ARRAY_64( dctcoef, i16dc,[3],[16] );
+    ALIGNED_ARRAY_64( pixel, i16enc,[16*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( pixel, i16dec,[16*FDEC_STRIDE] );
     int ret = 0, ok, used_asm;
-    int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
+    int oks[5] = {1,1,1,1,1}, used_asms[5] = {0,0,0,0,0};
+    x264_dct_init( 0, &dctf_c );
+    x264_dct_init( cpu_new, &dctf_a );
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -5065,6 +5148,68 @@ static int check_quant( int cpu_ref, int cpu_new )
             } \
         }
 
+        /* checked against the C calls it replaces and the dispatched ones; outputs prefilled */
+        for( int fld = 0; fld < 2; fld++ )
+            if( zz_a[fld].encode_i16x16 != zz_ref[fld].encode_i16x16 )
+            {
+                used_asms[4] = 1;
+                set_func_name( "encode_i16x16_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                for( int cat = 0; cat < 2 && oks[4]; cat++ )
+                    for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min && oks[4]; qp-- )
+                    {
+                        int block = cat ? CQM_4IC : CQM_4IY;
+                        udctcoef *mf = h->quant4_mf[block][qp], *bias = h->quant4_bias[block][qp];
+                        int (*dmf)[16] = h->dequant4_mf[block];
+                        for( int j = 0; j < 48; j++ )
+                        {
+                            int res[3];
+                            encode_i16x16_fill( i16enc, i16dec, j );
+                            for( int k = 0; k < 17*16; k++ )
+                                i16dct[0][0][k] = i16dct[1][0][k] = i16dct[2][0][k] = 0x3c3c + k;
+                            for( int k = 0; k < 16*16; k++ )
+                                i16lvl[0][0][k] = i16lvl[1][0][k] = i16lvl[2][0][k] = 0x5a5a + k;
+                            for( int k = 0; k < 16; k++ )
+                                i16dc[0][k] = i16dc[1][k] = i16dc[2][k] = 0x6b6b + k;
+                            i16_dctf = &dctf_c; i16_qf = &qf_c; i16_zz = &zz_c[fld];
+                            res[0] = encode_i16x16_split( i16dct[0], i16enc, i16dec, i16lvl[0], i16dc[0], mf, bias, dmf, qp );
+                            i16_dctf = &dctf_a; i16_qf = &qf_a; i16_zz = &zz_a[fld];
+                            res[1] = encode_i16x16_split( i16dct[1], i16enc, i16dec, i16lvl[1], i16dc[1], mf, bias, dmf, qp );
+                            res[2] = call_a1( zz_a[fld].encode_i16x16, i16dct[2], i16enc, i16dec, i16lvl[2], i16dc[2], mf, bias, dmf, qp );
+                            for( int k = 0; k < 2; k++ )
+                                if( res[k] != res[2] || memcmp( i16dct[k], i16dct[2], sizeof(i16dct[0]) ) ||
+                                    memcmp( i16lvl[k], i16lvl[2], sizeof(i16lvl[0]) ) || memcmp( i16dc[k], i16dc[2], sizeof(i16dc[0]) ) )
+                                {
+                                    oks[4] = 0;
+                                    fprintf( stderr, "encode_i16x16_%s vs %s (qp=%d, cqm=%d, block=%s, j=%d, res=%x, res_asm=%x): [FAILED]\n",
+                                             fld?"field":"frame", k?"split":"c", qp, i_cqm, cat?"CQM_4IC":"CQM_4IY", j, res[k], res[2] );
+                                    break;
+                                }
+                            if( !oks[4] )
+                                break;
+                        }
+                    }
+            }
+
+        /* bench, flat and jvt cqm: qp 22-34, kinds +-1..8, block DCs, sparse. _split times the dispatched calls. */
+        if( do_bench && i_cqm < 2 )
+            for( int fld = 0; fld < 2; fld++ )
+                if( zz_a[fld].encode_i16x16 != zz_ref[fld].encode_i16x16 )
+                {
+                    i16_dctf = &dctf_a; i16_qf = &qf_a; i16_zz = &zz_a[fld];
+                    for( int i = 0; i < 8; i++ )
+                    {
+                        static const int js[8] = { 1, 7, 13, 19, 2, 5, 3, 9 };
+                        int qp = 22 + 4*(i&3);
+                        udctcoef *mf = h->quant4_mf[CQM_4IY][qp], *bias = h->quant4_bias[CQM_4IY][qp];
+                        int (*dmf)[16] = h->dequant4_mf[CQM_4IY];
+                        encode_i16x16_fill( i16enc, i16dec, js[i] );
+                        set_func_name( "encode_i16x16_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        call_a2( zz_a[fld].encode_i16x16, i16dct[2], i16enc, i16dec, i16lvl[2], i16dc[2], mf, bias, dmf, qp );
+                        set_func_name( "encode_i16x16_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        call_bench( encode_i16x16_split, cpu_new, i16dct[1], i16enc, i16dec, i16lvl[1], i16dc[1], mf, bias, dmf, qp );
+                    }
+                }
+
         TEST_DEQUANT_DC( quant_4x4_dc, dequant_4x4_dc, CQM_4IY, 4 );
 
         if( qf_a.idct_dequant_2x4_dc != qf_ref.idct_dequant_2x4_dc )
@@ -5210,6 +5355,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[3]; used_asm = used_asms[3];
     report( "quant scan :" );
+
+    ok = oks[4]; used_asm = used_asms[4];
+    report( "encode i16x16 :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

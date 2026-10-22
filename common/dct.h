@@ -76,6 +76,12 @@ typedef struct
      * Returns 0, or 1 | min(score, 9) << 4. */
     int  (*quant_8x8_scan)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                             int dequant_mf[6][64], int i_qp );
+    /* i16x16 without trellis or denoise: sub16x16_dct, quant_4x4x4_scan_ac of the AC, dct4x4dc, quant_4x4_dc and
+     * scan_4x4 of the DC into dc_level, then idct4x4dc and dequant_4x4_dc of a nonzero DC into dct[16] (raster) and
+     * each block's coef 0, else dct[16] zeroed. Returns the nonzero AC blocks (bit y*4+x) | min(AC score, 9) << 16
+     * | nonzero DC << 20. asm only: NULL keeps the separate calls. */
+    int  (*encode_i16x16)( dctcoef dct[17][16], pixel *fenc, pixel *fdec, dctcoef level[16][16], dctcoef dc_level[16],
+                           udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp );
 
 } x264_zigzag_function_t;
 

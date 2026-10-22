@@ -923,6 +923,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     /* asm only: NULL keeps the separate quant_8x8, scan_8x8, decimate_score64 and dequant_8x8 calls */
     pf_interlaced->quant_8x8_scan       = NULL;
     pf_progressive->quant_8x8_scan      = NULL;
+    pf_interlaced->encode_i16x16        = NULL;
+    pf_progressive->encode_i16x16       = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1050,6 +1052,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan    = x264_quant_4x4x4_scan_frame_avx2;
         pf_interlaced->quant_4x4x4_scan_ac  = x264_quant_4x4x4_scan_field_ac_avx2;
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
+#if !HIGH_BIT_DEPTH
+        pf_interlaced->encode_i16x16        = x264_encode_i16x16_field_avx2;
+        pf_progressive->encode_i16x16       = x264_encode_i16x16_frame_avx2;
+#endif
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

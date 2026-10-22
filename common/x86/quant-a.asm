@@ -106,6 +106,22 @@ qscan4_field:   SHUFFLE_MASK_W 0, 1, 4, 2, 3, 5, 6, 7
 %endif
 qscan4_acmask:  db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
                 db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+%if HIGH_BIT_DEPTH==0
+; encode_i16x16: DC gather, butterfly shuffles and signs, dct4x4dc/idct4x4dc output orders (a: same lane, b: other)
+i16_dc_gather:  db 0, 1, 8, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+                db 0, 1, 8, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+i16_swapw:      times 2 db 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13
+i16_sign_w:     times 8 dw 1, -1
+i16_sign_d:     times 4 dw 1, 1, -1, -1
+i16_sign_q:     times 2 dw 1, 1, 1, 1, -1, -1, -1, -1
+i16_sign_l:     times 8 dw 1
+                times 8 dw -1
+i16_dc_a:       db 0, 1, 8, 9,12,13, 4, 5,-1,-1,-1,-1,-1,-1,-1,-1, 2, 3,10,11,14,15, 6, 7,-1,-1,-1,-1,-1,-1,-1,-1
+i16_dc_b:       db -1,-1,-1,-1,-1,-1,-1,-1, 0, 1, 8, 9,12,13, 4, 5,-1,-1,-1,-1,-1,-1,-1,-1, 2, 3,10,11,14,15, 6, 7
+i16_idc_a:      db 0, 1,-1,-1,-1,-1, 8, 9, 4, 5,-1,-1,-1,-1,12,13,-1,-1, 6, 7,14,15,-1,-1,-1,-1, 2, 3,10,11,-1,-1
+i16_idc_b:      db -1,-1, 0, 1, 8, 9,-1,-1,-1,-1, 4, 5,12,13,-1,-1, 6, 7,-1,-1,-1,-1,14,15, 2, 3,-1,-1,-1,-1,10,11
+i16_score_bias: dq 0x0003000300030003, 0x000f000f000f000f, 0x007f007f007f007f
+%endif
 
 %if HIGH_BIT_DEPTH==0
 dct_coef_shuffle:
@@ -175,6 +191,7 @@ cextern pw_m2
 cextern pd_1
 cextern pb_01
 cextern pd_1024
+cextern pw_8000
 cextern deinterleave_shufd
 cextern popcnt_table
 
@@ -3775,6 +3792,353 @@ QUANT_4x4x4_SCAN_AVX512 frame,    0, 0
 QUANT_4x4x4_SCAN_AVX512 field,    1, 0
 QUANT_4x4x4_SCAN_AVX512 frame_ac, 0, 1
 QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
+
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; int encode_i16x16( dctcoef dct[17][16], pixel *fenc, pixel *fdec, dctcoef level[16][16], dctcoef dc_level[16],
+;                    udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
+;-----------------------------------------------------------------------------
+; sub16x16_dct; the AC as quant_4x4x4_scan_ac; the DCs by dct4x4dc, quant_4x4_dc and scan_4x4 into
+; dc_level, then if nonzero idct4x4dc and dequant_4x4_dc into dct[16] (raster) and each block's coef 0,
+; else dct[16] zeroed. Returns the nonzero AC blocks (bit y*4+x) | min(AC score,9) << 16 | nonzero DC << 20.
+
+; bit, src, offset
+%macro I16_LEVEL_STORE 3
+    bt        r13d, %1
+    sbb       r14, r14
+    and       r14, r3
+    mova [r9+r14+%3], %2
+%endmacro
+
+; dst, 2x tmp; m13: dmf, m4: rounding, xm9: shift
+%macro I16_DEQUANT_RSHIFT 3
+    pmullw    %2, %1, m13
+    pmulhw    %3, %1, m13
+    punpcklwd %1, %2, %3
+    punpckhwd %2, %3
+    paddd     %1, m4
+    paddd     %2, m4
+    psrad     %1, xm9
+    psrad     %2, xm9
+    packssdw  %1, %2
+%endmacro
+
+; x, tmp, partner shuffle into tmp, sign: x = x*sign + partner
+%macro I16_WALSH 4
+    %3
+    psignw    %1, %4
+    paddw     %1, %2
+%endmacro
+
+%macro ENCODE_I16x16 2 ; name, field
+cglobal encode_i16x16_%1, 9,15,16
+    mova      m15, [r5]
+    mova      m14, [r6]
+    movzx     r9d, word [r5]
+    movzx    r10d, word [r6]
+    shr       r9d, 1
+    shl      r10d, 17
+    or        r9d, r10d         ; dc mf | dc bias << 16
+    imul     r10d, r8d, 0x2b
+    shr      r10d, 8            ; i_qp / 6
+    lea      r11d, [r10*3]
+    add      r11d, r11d
+    sub       r8d, r11d         ; i_qp % 6
+    shl       r8d, 6
+    add       r7, r8
+    mov       r5d, [r7]
+    shl       r5, 32
+    or        r5, r9            ; | dc dmf << 32
+    mova      m13, [r7]
+    packssdw  m13, [r7+32]
+    vpermq    m13, m13, q3120   ; dmf as words
+    mov       r8d, r10d
+    sub      r10d, 4
+    jl .dq_rshift
+    movd     xm0, r10d
+    psllw     m13, xm0
+    jmp .dq_done
+.dq_rshift:
+    neg      r10d
+    movd     xm0, r10d
+    mov      r11d, 16
+    sub      r11d, r10d
+    movd     xm1, r11d
+    pcmpeqw   m2, m2
+    psrlw     m2, xm1
+    ptest     m13, m2
+    jz .dq_flat
+    or        r8d, 0x100        ; rounding dequant
+    jmp .dq_done
+.dq_flat:
+    psrlw     m13, xm0          ; dmf divisible by 1<<shift: the shift is exact
+.dq_done:
+    sub       r3, r0
+    add       r1, 12*FENC_STRIDE
+    add       r2, 16*FDEC_STRIDE
+    pxor      m10, m10
+    pxor      m11, m11          ; |levels| ored
+    pxor      m12, m12          ; DCs
+    xor      r11d, r11d         ; nz
+    xor      r12d, r12d         ; score
+    mov      r10d, 3            ; row of 4x4 blocks, bottom up
+.row:
+    LOAD_DIFF16x2_AVX2 0, 1, 4, 5, 0, 1
+    LOAD_DIFF16x2_AVX2 2, 3, 4, 5, 2, 3
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    DCT4_1D 0, 1, 2, 3, 4
+    pshufb    m4, m0, [i16_dc_gather]
+    pslldq    m12, 4
+    por       m12, m4           ; lane l, word 2*y+k: DC of block x=2*l+k
+    pblendw   m0, m0, m10, 0x11
+    vperm2i128 m4, m0, m2, 0x20 ; A0 B0 A2 B2
+    vperm2i128 m5, m1, m3, 0x20 ; A1 B1 A3 B3
+    vperm2i128 m0, m0, m2, 0x31 ; C0 D0 C2 D2
+    vperm2i128 m1, m1, m3, 0x31 ; C1 D1 C3 D3
+    punpcklqdq m2, m4, m5       ; A
+    punpckhqdq m4, m5           ; B
+    punpcklqdq m3, m0, m1       ; C
+    punpckhqdq m0, m1           ; D
+    pabsw     m5, m2
+    pabsw     m6, m4
+    pabsw     m7, m3
+    pabsw     m8, m0
+    paddusw   m5, m14
+    paddusw   m6, m14
+    paddusw   m7, m14
+    paddusw   m8, m14
+    pmulhuw   m5, m15
+    pmulhuw   m6, m15
+    pmulhuw   m7, m15
+    pmulhuw   m8, m15
+    psignw    m5, m2
+    psignw    m6, m4
+    psignw    m7, m3
+    psignw    m8, m0
+    packssdw  m0, m5, m6
+    packssdw  m1, m7, m8
+    packssdw  m0, m1
+    pcmpeqd   m0, m10
+    movmskps r13d, m0
+    mov      r14d, r13d
+    shr      r13d, 4
+    and      r13d, r14d
+    xor      r13d, 0xf
+    shl      r11d, 4
+    or       r11d, r13d
+    mov       r9d, r10d
+    and       r9d, 1
+    shl       r9d, 6
+    mov      r14d, r10d
+    and      r14d, 2
+    shl      r14d, 7
+    add       r9, r14
+    add       r9, r0            ; dct + 64*(y&1) + 256*(y>>1): blocks at +0, +32, +128, +160
+    test     r13d, r13d
+    jz .row_zero
+%if %2
+    pshufb    m0, m5, [qscan4_field]
+    pshufb    m1, m6, [qscan4_field]
+    pshufb    m2, m7, [qscan4_field]
+    pshufb    m3, m8, [qscan4_field]
+%else
+    vperm2i128 m0, m5, m5, 0x01
+    vperm2i128 m1, m6, m6, 0x01
+    vperm2i128 m2, m7, m7, 0x01
+    vperm2i128 m3, m8, m8, 0x01
+    pshufb    m0, [qscan4_frame_b]
+    pshufb    m1, [qscan4_frame_b]
+    pshufb    m2, [qscan4_frame_b]
+    pshufb    m3, [qscan4_frame_b]
+    pshufb    m4, m5, [qscan4_frame_a]
+    pshufb    m9, m6, [qscan4_frame_a]
+    por       m0, m4
+    por       m1, m9
+    pshufb    m4, m7, [qscan4_frame_a]
+    pshufb    m9, m8, [qscan4_frame_a]
+    por       m2, m4
+    por       m3, m9
+%endif
+    I16_LEVEL_STORE 0, m0, 0
+    I16_LEVEL_STORE 1, m1, 32
+    I16_LEVEL_STORE 2, m2, 128
+    I16_LEVEL_STORE 3, m3, 160
+    packsswb  m0, m1
+    packsswb  m2, m3
+    vpermq    m0, m0, q3120
+    vpermq    m2, m2, q3120
+    test      r8d, 0x100
+    jnz .dq_round
+    pmullw    m5, m13
+    pmullw    m6, m13
+    pmullw    m7, m13
+    pmullw    m8, m13
+.dq_store:
+    mova [r9+  0], m5
+    mova [r9+ 32], m6
+    mova [r9+128], m7
+    mova [r9+160], m8
+    pabsb     m1, m0
+    pabsb     m3, m2
+    por       m11, m1
+    por       m11, m3
+    pcmpeqb   m0, m10
+    pcmpeqb   m2, m10
+    pmovmskb r13d, m0
+    pmovmskb r14d, m2
+    shl       r14, 32
+    or        r13, r14
+    not       r13
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below
+    lea       r6, [r13+r13]
+    lea       r7, [r13*4]
+    lea       r14, [r13*8]
+    or        r7, r6
+    or        r7, r14
+    lea       r14, [r7*8]
+    or        r14, r7
+    or        r6, [i16_score_bias]
+    or        r7, [i16_score_bias+8]
+    or        r14, [i16_score_bias+16]
+    and       r6, r13
+    and       r7, r13
+    and       r14, r13
+    popcnt    r6, r6
+    popcnt    r7, r7
+    popcnt    r14, r14
+    add      r12d, r6d
+    add      r12d, r7d
+    add      r12d, r14d
+.row_next:
+    sub       r1, 4*FENC_STRIDE
+    sub       r2, 4*FDEC_STRIDE
+    dec      r10d
+    jge .row
+
+    ; dct4x4dc: rows, then columns with the last stage at 17 bits by pavgw
+    I16_WALSH m12, m0, {pshufb m0, m12, [i16_swapw]}, [i16_sign_w]
+    I16_WALSH m12, m0, {vperm2i128 m0, m12, m12, 0x01}, [i16_sign_l]
+    I16_WALSH m12, m0, {pshufd m0, m12, q2301}, [i16_sign_d]
+    pshufd    m0, m12, q1032
+    psignw    m12, [i16_sign_q]
+    vpbroadcastd m1, [pw_8000]
+    pxor      m0, m1
+    pxor      m12, m1
+    pavgw     m12, m0
+    pxor      m12, m1
+    vperm2i128 m0, m12, m12, 0x01
+    pshufb    m12, [i16_dc_a]
+    pshufb    m0, [i16_dc_b]
+    por       m12, m0
+    movd     xm0, r5d
+    vpbroadcastw m1, xm0
+    psrld    xm0, 16
+    vpbroadcastw m2, xm0
+    pabsw     m3, m12
+    paddusw   m3, m2
+    pmulhuw   m3, m1
+    psignw    m3, m12
+%if %2
+    pshufb    m0, m3, [qscan4_field]
+%else
+    vperm2i128 m0, m3, m3, 0x01
+    pshufb    m1, m3, [qscan4_frame_a]
+    pshufb    m0, [qscan4_frame_b]
+    por       m0, m1
+%endif
+    mova    [r4], m0
+    xor      eax, eax
+    ptest     m3, m3
+    jz .dc_store
+    I16_WALSH m3, m0, {pshufb m0, m3, [i16_swapw]}, [i16_sign_w]
+    I16_WALSH m3, m0, {pshufd m0, m3, q2301}, [i16_sign_d]
+    I16_WALSH m3, m0, {pshufd m0, m3, q1032}, [i16_sign_q]
+    I16_WALSH m3, m0, {vperm2i128 m0, m3, m3, 0x01}, [i16_sign_l]
+    vperm2i128 m0, m3, m3, 0x01
+    pshufb    m3, [i16_idc_a]
+    pshufb    m0, [i16_idc_b]
+    por       m3, m0            ; idct4x4dc, raster
+    shr       r5, 32
+    movd     xm1, r5d
+    vpbroadcastw m1, xm1        ; dc dmf
+    movzx     r7d, r8b
+    sub       r7d, 6
+    jl .dc_rshift
+    movd     xm2, r7d
+    psllw     m1, xm2
+    pmullw    m3, m1
+    jmp .dc_scatter
+.dc_rshift:
+    neg       r7d
+    movd     xm2, r7d
+    vpbroadcastd m5, [pw_1]
+    pslld     m4, m5, xm2
+    psrld     m4, 1
+    punpcklwd m1, m4            ; dmf, f
+    punpckhwd m0, m3, m5
+    punpcklwd m3, m5
+    pmaddwd   m3, m1
+    pmaddwd   m0, m1
+    psrad     m3, xm2
+    psrad     m0, xm2
+    packssdw  m3, m0
+.dc_scatter:
+    vextracti128 xm0, m3, 1
+    pextrw [r0+ 0*32], xm3, 0
+    pextrw [r0+ 1*32], xm3, 1
+    pextrw [r0+ 4*32], xm3, 2
+    pextrw [r0+ 5*32], xm3, 3
+    pextrw [r0+ 2*32], xm3, 4
+    pextrw [r0+ 3*32], xm3, 5
+    pextrw [r0+ 6*32], xm3, 6
+    pextrw [r0+ 7*32], xm3, 7
+    pextrw [r0+ 8*32], xm0, 0
+    pextrw [r0+ 9*32], xm0, 1
+    pextrw [r0+12*32], xm0, 2
+    pextrw [r0+13*32], xm0, 3
+    pextrw [r0+10*32], xm0, 4
+    pextrw [r0+11*32], xm0, 5
+    pextrw [r0+14*32], xm0, 6
+    pextrw [r0+15*32], xm0, 7
+    mov      eax, 1<<20
+.dc_store:
+    mova [r0+512], m3
+    psubusb   m11, [pb_1]
+    mov       r7d, 9
+    cmp      r12d, r7d
+    cmova    r12d, r7d
+    ptest     m11, m11
+    cmovnz   r12d, r7d
+    shl      r12d, 16
+    or       eax, r12d
+    or       eax, r11d
+    RET
+.row_zero:
+    mova [r9+  0], m5
+    mova [r9+ 32], m6
+    mova [r9+128], m7
+    mova [r9+160], m8
+    jmp .row_next
+.dq_round:
+    movzx    r14d, r8b
+    neg      r14d
+    add      r14d, 4
+    movd     xm9, r14d
+    vpbroadcastd m4, [pd_1]
+    pslld     m4, xm9
+    psrld     m4, 1
+    I16_DEQUANT_RSHIFT m5, m1, m3
+    I16_DEQUANT_RSHIFT m6, m1, m3
+    I16_DEQUANT_RSHIFT m7, m1, m3
+    I16_DEQUANT_RSHIFT m8, m1, m3
+    jmp .dq_store
+%endmacro
+
+INIT_YMM avx2
+ENCODE_I16x16 frame, 0
+ENCODE_I16x16 field, 1
+%endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],

@@ -128,7 +128,7 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
     pixel *p_src = h->mb.pic.p_fenc[p];
     pixel *p_dst = h->mb.pic.p_fdec[p];
 
-    ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dct4x4,[17],[16] );
     ALIGNED_ARRAY_64( dctcoef, dct_dc4x4,[16] );
 
     int nz, block_cbp = 0;
@@ -154,6 +154,32 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
         h->mb.i_cbp_luma |= block_cbp * 0xf;
         h->mb.cache.non_zero_count[x264_scan8[LUMA_DC+p]] = array_non_zero( dct_dc4x4, 16 );
         h->zigzagf.scan_4x4( h->dct.luma16x16_dc[p], dct_dc4x4 );
+        return;
+    }
+
+    if( h->zigzagf.encode_i16x16 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
+    {
+        int ret = h->zigzagf.encode_i16x16( dct4x4, p_src, p_dst, &h->dct.luma4x4[16*p], h->dct.luma16x16_dc[p],
+                                            h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias[i_quant_cat][i_qp],
+                                            h->dequant4_mf[i_quant_cat], i_qp );
+        nz = ret >> 20;
+        h->mb.cache.non_zero_count[x264_scan8[LUMA_DC+p]] = nz;
+        /* decimation as below */
+        if( (ret & 0xffff) && (!h->mb.b_dct_decimate || ((ret >> 16) & 15) >= 6) )
+        {
+            /* a row's 4 nz bits to 4 bytes (asm only, little endian) */
+            uint8_t *nnz = &h->mb.cache.non_zero_count[x264_scan8[16*p]];
+            for( int y = 0; y < 4; y++ )
+                M32( &nnz[y*8] ) = ((ret >> 4*y) & 15) * 0x204081 & 0x01010101;
+            h->mb.i_cbp_luma |= 0xf;
+            h->dctf.add16x16_idct( p_dst, dct4x4 );
+        }
+        else
+        {
+            CLEAR_16x16_NNZ( p );
+            if( nz )
+                h->dctf.add16x16_idct_dc( p_dst, dct4x4[16] );
+        }
         return;
     }
 
