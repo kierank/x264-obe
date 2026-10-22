@@ -1808,7 +1808,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     x264_quant_init( h, h->param.cpu, &h->quantf );
     x264_deblock_init( h->param.cpu, &h->loopf, PARAM_INTERLACED );
     x264_bitstream_init( h->param.cpu, &h->bsf );
-    h->b_cabac_hdr_bins = 1;
+    h->b_cabac_hdr_bins = 0;
     if( h->param.b_cabac )
         x264_cabac_init( h );
     else
