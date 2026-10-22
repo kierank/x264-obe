@@ -9674,6 +9674,8 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 ; <= limit the winner is then coded as by sub8x8_dct8, quant_8x8 and, if nonzero, scan_8x8
 ; into level, dequant_8x8 (C-exact: low 16 bits) and add8x8_idct8, with the 16-bit
 ; transforms of the asm. fdec is stored once. Returns cost | mode<<16 | nz<<24.
+; dequant_8x8 avx2 saturates only below qp 36, where no dequantised coefficient
+; of an 8-bit intra 8x8 exceeds 27376 (any cqm and deadzone); above, it also wraps.
 
 ; predict_8x8_filter with all neighbours, the topright if r7: edge[i] = F2(U[i-1], U[i], U[i+1]),
 ; U = l7 l7 l6..l0 lt t0..t15 t15 t14, t8..t15 = t7 without the topright. Leaves the rows of
