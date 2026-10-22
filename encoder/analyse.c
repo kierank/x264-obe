@@ -122,6 +122,8 @@ typedef struct
     int b_direct_available;
     int b_early_terminate;
 
+    int i_maxref16[2]; /* highest ref the 16x16 search covered, per list */
+
 } x264_mb_analysis_t;
 
 static const uint8_t i_mb_b_cost_table[X264_MBTYPE_MAX] =
@@ -378,6 +380,8 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     a->i_satd_i8x8   =
     a->i_satd_i4x4   =
     a->i_satd_chroma = COST_MAX;
+    a->i_maxref16[0] = h->mb.pic.i_fref[0] - 1;
+    a->i_maxref16[1] = h->mb.pic.i_fref[1] - 1;
 
     /* non-RD PCM decision is inaccurate (as is psy-rd), so don't do it.
      * PCM cost can overflow with high lambda2, so cap it at COST_MAX. */
@@ -1334,6 +1338,51 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
     return i_ref == dupe ? 0 : -1;
 }
 
+/* Field ref limit, from FIELDREF_MIN_FRAMES frame refs (0 = off): a field MB's
+ * 16x16 search of list l covers both fields of the FIELDREF_KEEP/2 nearest
+ * frames, and older frames only up to the oldest ref used by the left, top or
+ * top-right MB (the cache, in field units), the top MB of the pair (bottom MB)
+ * or, list 0, the collocated MB of fref[0][0] (a frame MB's ref r as frame r),
+ * both fields of it. P blind dupes of refs within it are still searched. The
+ * 8x8 searches stay within the limit. */
+#ifndef FIELDREF_MIN_FRAMES
+#define FIELDREF_MIN_FRAMES 3
+#endif
+#ifndef FIELDREF_KEEP
+#define FIELDREF_KEEP 4
+#endif
+
+static int x264_mb_fieldref_max( x264_t *h, int l )
+{
+    int i_maxref = h->mb.pic.i_fref[l] - 1;
+    if( !FIELDREF_MIN_FRAMES || !MB_INTERLACED || h->param.i_frame_reference < FIELDREF_MIN_FRAMES ||
+        i_maxref < FIELDREF_KEEP )
+        return i_maxref;
+    const int8_t *ref = h->mb.cache.ref[l];
+    int s8 = h->mb.i_b8_stride;
+    int r = FIELDREF_KEEP - 1;
+    r = X264_MAX( r, ref[X264_SCAN8_0 - 1] );
+    r = X264_MAX( r, ref[X264_SCAN8_0 - 1 + 2*8] );
+    r = X264_MAX( r, ref[X264_SCAN8_0 - 8] );
+    r = X264_MAX( r, ref[X264_SCAN8_0 - 8 + 2] );
+    r = X264_MAX( r, ref[X264_SCAN8_0 - 8 + 4] );
+    if( h->mb.i_mb_y & 1 )
+    {
+        const int8_t *pref = &h->mb.ref[l][h->mb.i_b8_xy - 2*s8];
+        r = X264_MAX( r, X264_MAX( X264_MAX( pref[0], pref[1] ), X264_MAX( pref[s8], pref[s8+1] ) ) );
+    }
+    if( !l && h->fref[0][0]->i_ref[0] > 0 )
+    {
+        x264_frame_t *col = h->fref[0][0];
+        const int8_t *cref = &col->ref[0][h->mb.i_b8_xy];
+        int c = X264_MAX( X264_MAX( cref[0], cref[1] ), X264_MAX( cref[s8], cref[s8+1] ) );
+        if( c > 0 && !col->field[h->mb.i_mb_xy] )
+            c <<= 1;
+        r = X264_MAX( r, c );
+    }
+    return X264_MIN( i_maxref, r | 1 );
+}
+
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
@@ -1341,6 +1390,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     ALIGNED_4( int16_t mvc[10][2] );
     int i_halfpel_thresh = INT_MAX;
     int *p_halfpel_thresh = (a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
+    int i_maxref16 = a->i_maxref16[0] = x264_mb_fieldref_max( h, 0 );
 
     /* 16x16 Search on all ref frame */
     m.i_pixel = PIXEL_16x16;
@@ -1349,6 +1399,15 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     a->l0.me16x16.cost = INT_MAX;
     for( int i_ref = 0; i_ref < h->mb.pic.i_fref[0]; i_ref++ )
     {
+        /* refs past the field ref limit, blind dupes of refs within it aside:
+         * not searched, the zero MV for the neighbours' predictors, as after a skip */
+        if( i_ref > i_maxref16 && x264_mb_blind_dupe_src( h, i_ref ) < 0 )
+        {
+            M32( h->mb.mvr[0][i_ref][h->mb.i_mb_xy] ) = 0;
+            M32( a->l0.mvc[i_ref][0] ) = 0;
+            continue;
+        }
+
         m.i_ref_cost = REF_COST( 0, i_ref );
         i_halfpel_thresh -= m.i_ref_cost;
 
@@ -1491,7 +1550,7 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 {
     x264_me_t m;
     pixel **p_fenc = h->mb.pic.p_fenc;
-    int i_maxref = h->mb.pic.i_fref[0]-1;
+    int i_maxref = a->i_maxref16[0];
     int b_field = MB_INTERLACED;
 
     h->mb.i_partition = D_8x8;
@@ -2090,6 +2149,19 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
 
     LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
 
+    /* the field ref limit, as in x264_mb_analyse_inter_p16x16 */
+    int i_nref[2];
+    for( int l = 0; l < 2; l++ )
+    {
+        x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
+        i_nref[l] = (a->i_maxref16[l] = x264_mb_fieldref_max( h, l )) + 1;
+        for( int i = i_nref[l]; i < h->mb.pic.i_fref[l]; i++ )
+        {
+            M32( h->mb.mvr[l][i][h->mb.i_mb_xy] ) = 0;
+            M32( lX->mvc[i][0] ) = 0;
+        }
+    }
+
     /* 16x16 Search on list 0 and list 1 */
     a->l0.me16x16.cost = INT_MAX;
     a->l1.me16x16.cost = INT_MAX;
@@ -2105,7 +2177,7 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
          * 4.  Search the rest of list0.
          * 5.  Go back and finish list1.
          */
-        for( i_ref = (list1_skipped && l == 1) ? 1 : 0; i_ref < h->mb.pic.i_fref[l]; i_ref++ )
+        for( i_ref = (list1_skipped && l == 1) ? 1 : 0; i_ref < i_nref[l]; i_ref++ )
         {
             if( try_skip && l == 1 && i_ref > 0 )
             {
@@ -2150,7 +2222,7 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
                 }
             }
         }
-        if( list1_skipped && l == 1 && i_ref == h->mb.pic.i_fref[1] )
+        if( list1_skipped && l == 1 && i_ref == i_nref[1] )
             break;
         if( list1_skipped && l == 0 )
             l = 1;
@@ -2395,7 +2467,7 @@ static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fen
 static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t *a )
 {
     ALIGNED_ARRAY_16( pixel, pix,[2],[8*8] );
-    int i_maxref[2] = {h->mb.pic.i_fref[0]-1, h->mb.pic.i_fref[1]-1};
+    int i_maxref[2] = {a->i_maxref16[0], a->i_maxref16[1]};
 
     /* early termination: if 16x16 chose ref 0, then evalute no refs older
      * than those used by the neighbors */
