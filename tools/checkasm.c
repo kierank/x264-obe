@@ -1019,7 +1019,9 @@ static int check_pixel( int cpu_ref, int cpu_new )
     report( "pixel sad_sq_min :" );
 
     /* dia, oct, ring (s 4), hex (s 6). j>>7: 0 random costs, 1 equal costs (ties go by idx),
-     * 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning */
+     * 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning, 4 best
+     * around slot j%n's key over the first half of the rows, 5 the same with that slot's second
+     * half maximal, 6 that slot's second half equal to fenc's and best just above its key */
     ok = 1; used_asm = 0;
     for( int kind = 0; kind < 4; kind++ )
         for( int i = 0; i < 7; i++ )
@@ -1047,26 +1049,30 @@ static int check_pixel( int cpu_ref, int cpu_new )
             int wins[9] = {0};
             set_func_name( "sad_%s_min_%s", kind_names[kind], pixel_names[i] );
             used_asm = 1;
-            for( int j = 0; j < 512 && ok; j++ )
+            for( int j = 0; j < 896 && ok; j++ )
             {
-                int mode = j>>7;
-                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
-                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
-                pixel *pix = mode == 3 ? refm + 4*48 + 8 : pbuf2 + (j&31) + 2*stride + 4;
+                int mode = j>>7, ownref = mode == 3 || mode >= 5;
+                pixel *fenc = mode == 3 || mode == 5 ? pbuf3 : pbuf1;
+                intptr_t stride = ownref ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pix = ownref ? refm + 4*48 + 8 : pbuf2 + (j&31) + 2*stride + 4;
                 ALIGNED_16( int32_t bias[8] );
-                int sad[8], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
-                if( mode == 3 )
+                int sad[8], half[8], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                if( ownref )
                 {
                     int k = j%n;
                     for( int l = 0; l < 24*48; l++ )
                         refm[l] = rand() & PIXEL_MAX;
-                    for( int y = 0; y < bh; y++ )
-                        memcpy( pix + pt[k][0] + (pt[k][1] + y)*stride, pbuf4 + 16*y, bw*sizeof(pixel) );
+                    for( int y = mode == 3 ? 0 : bh/2; y < bh; y++ )
+                        memcpy( pix + pt[k][0] + (pt[k][1] + y)*stride, mode == 6 ? fenc + y*FENC_STRIDE : pbuf4 + 16*y, bw*sizeof(pixel) );
                 }
                 for( int k = 0; k < n; k++ )
                 {
                     sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix + pt[k][0] + pt[k][1]*stride, stride );
                     tmax = X264_MAX( tmax, sad[k] );
+                    half[k] = 0;
+                    for( int y = 0; y < bh/2; y++ )
+                        for( int x = 0; x < bw; x++ )
+                            half[k] += abs( fenc[y*FENC_STRIDE+x] - pix[pt[k][0] + (pt[k][1] + y)*stride + x] );
                 }
                 for( int k = 0; k < n; k++ )
                 {
@@ -1086,6 +1092,10 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
                 else if( mode == 3 )
                     best = INT_MAX;
+                else if( mode == 6 )
+                    best = (sad[j%n] << s) + bias[j%n] + 1;
+                else if( mode >= 4 )
+                    best = (half[j%n] << s) + bias[j%n] + (j&8 ? (rand()%3) - 1 : (rand()%512) - 256);
                 else
                     best = tmin + ((rand()&255) - 128) * (1<<s) + (rand()&((1<<s)-1));
                 res_c = best;

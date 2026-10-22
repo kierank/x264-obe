@@ -1816,8 +1816,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
         /* point sets: 8x8 only, the size that wins on rack01 Zen 4 */
-        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_8x8_avx512;
-        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_8x8_avx512;
+        /* dia and hex with the early exit (all candidates beaten after half the rows in 42 %
+         * of the 8x8 hex calls on rack01); the plain kernels stay assembled */
+        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_pde_8x8_avx512;
+        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_pde_8x8_avx512;
         pixf->sad_oct_min[PIXEL_8x8] = x264_pixel_sad_oct_min_8x8_avx512;
         pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx512;
 #endif
