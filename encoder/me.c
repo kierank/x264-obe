@@ -423,7 +423,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             {
                 /* the loop below in one call */
                 uint64_t res = dia_search( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy, pack16to32_mask( bmx, bmy ),
-                                           bcost, i_me_range, mv_min | (uint64_t)mv_max << 32 );
+                                           bcost | MVCOST_KGATE, i_me_range, mv_min | (uint64_t)mv_max << 32 );
                 bcost = (uint32_t)res;
                 bmx = (int16_t)(res >> 32);
                 bmy = (int16_t)(res >> 48);
@@ -468,7 +468,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             {
                 /* the hexagon, half hexagons and square refine below in one call */
                 uint64_t res = h->pixf.fpelcmp_hex_search[i_pixel]( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
-                                                                    pack16to32_mask( bmx, bmy ), bcost, i_me_range,
+                                                                    pack16to32_mask( bmx, bmy ), bcost | MVCOST_KGATE, i_me_range,
                                                                     mv_min | (uint64_t)mv_max << 32 );
                 bcost = (uint32_t)res;
                 bmx = (int16_t)(res >> 32);

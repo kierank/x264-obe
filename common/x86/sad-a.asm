@@ -3036,6 +3036,11 @@ cglobal pixel_sad_hex_search_%1x%2, 9,15,16
     mova            m7, [sad_sq_idx8]
 %endif
     FSH_START
+    ; layout pair gate: bit 31 of bcost set, k5 all ones, no mv-cost exits
+    mov           r12d, r6d
+    sar           r12d, 31
+    kmovw           k5, r12d
+    and            r6d, 0x7fffffff
     sar            r7d, 1
     lea            r13, [fsh_hex_rank+6*32]
     mov           r12d, r6d
@@ -3057,6 +3062,7 @@ cglobal pixel_sad_hex_search_%1x%2, 9,15,16
     paddd           m8, [r13]
     ; mv costs alone: no key below bcost << 6 ends the hexagons
     vpcmpud         k6, m8, m12, 1
+    korw            k6, k6, k5
     kortestw        k6, k6
     jz .square
     xor         dbp_o, dbp_o
@@ -3122,6 +3128,7 @@ cglobal pixel_sad_hex_search_%1x%2, 9,15,16
     ; mv costs alone: no key below bcost << 6 skips the square
     vpcmpud         k6, m8, m12, 1
     vpcmpud         k7, xm13, xm12, 1
+    korw            k6, k6, k5
     kortestw        k6, k7
     jz .end
     FSH_SQ_SAD %1
@@ -3186,6 +3193,11 @@ cglobal pixel_sad_dia_search_%1x%2, 9,15,16
     mova            m7, [sad_sq_idx8]
 %endif
     FSH_START
+    ; layout pair gate: bit 31 of bcost set, k5 all ones, no mv-cost exits
+    mov           r12d, r6d
+    sar           r12d, 31
+    kmovw           k5, r12d
+    and            r6d, 0x7fffffff
     mov           r12d, r6d
     shl           r12d, 4
     vpbroadcastd  xm12, r12d
@@ -3204,6 +3216,7 @@ cglobal pixel_sad_dia_search_%1x%2, 9,15,16
     paddd          xm8, [fsh_dia_rank]
     ; mv costs alone: no key below bcost << 4 ends the search
     vpcmpud         k6, xm8, xm12, 1
+    korw            k6, k6, k5
     kortestw        k6, k6
     jz .end
     xor         dbp_o, dbp_o
