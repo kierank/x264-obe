@@ -3697,7 +3697,7 @@ skip_analysis:
             {
                 /* intra done against the 16x16 */
             }
-            else if( i_cost <= 4 * analysis.i_lambda && !analysis.i_mbrd && !h->mb.b_chroma_me &&
+            else if( x264_pirsm_gate && i_cost <= 4 * analysis.i_lambda && !analysis.i_mbrd && !h->mb.b_chroma_me &&
                      !h->mb.b_noise_reduction )
             {
                 /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
@@ -3742,7 +3742,7 @@ skip_analysis:
                 /* A prediction equal to the fenc leaves no residual: the recon is the
                  * fenc and the masking changes nothing. */
                 int b_static = 0;
-                int b_mc = h->mb.i_type == P_L0 && h->mb.i_partition == D_16x16 &&
+                int b_mc = x264_pirsm_gate && h->mb.i_type == P_L0 && h->mb.i_partition == D_16x16 &&
                            analysis.l0.me16x16.cost <= analysis.l0.me16x16.cost_mv + analysis.l0.me16x16.i_ref_cost &&
                            !h->mb.b_skip_mc && !h->mb.b_lossless && !h->mb.b_trellis && !h->mb.b_noise_reduction;
                 if( b_mc )
