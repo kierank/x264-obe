@@ -4387,7 +4387,7 @@ static int check_quant( int cpu_ref, int cpu_new )
 /* j: bit 0-3 block nonzero, 4-5 kind (dense, sparse, extreme, one coef), 6 bias0, 7 dc 0 */
 #define TEST_QUANT_SCAN_LAST( name, block, nblk ) \
         for( int fld = 0; fld < 2; fld++ ) \
-            if( zz_a[fld].name != zz_ref[fld].name ) \
+            if( zz_a[fld].name && zz_a[fld].name != zz_ref[fld].name ) \
             { \
                 set_func_name( "%s_%s_%s", #name, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
                 used_asms[3] = 1; \
@@ -4445,7 +4445,7 @@ static int check_quant( int cpu_ref, int cpu_new )
 /* j: bit 0 nonzero, 4-5 kind (dense, sparse, extreme, one coef), 6 bias0 */
 #define TEST_QUANT8_SCAN_LAST( name, block ) \
         for( int fld = 0; fld < 2; fld++ ) \
-            if( zz_a[fld].name != zz_ref[fld].name ) \
+            if( zz_a[fld].name && zz_a[fld].name != zz_ref[fld].name ) \
             { \
                 set_func_name( "%s_%s_%s", #name, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
                 used_asms[3] = 1; \
