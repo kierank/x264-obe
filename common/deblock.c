@@ -556,7 +556,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                 /* Any MB that was coded, or that analysis decided to skip, has quality commensurate with its QP.
                  * But if deblocking affects neighboring MBs that were force-skipped, blur might accumulate there.
                  * So reset their effective QP to max, to indicate that lack of guarantee. */
-                if( h->fdec->mb_info && M32( bs[0][0] ) )
+                if( HAS_MBINFO && h->fdec->mb_info && M32( bs[0][0] ) )
                 {
 #define RESET_EFFECTIVE_QP(xy) h->fdec->effective_qp[xy] |= 0xff * !!(h->fdec->mb_info[xy] & X264_MBINFO_CONSTANT);
                     RESET_EFFECTIVE_QP(mb_xy);
@@ -615,7 +615,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                 int intra_deblock = intra_cur || intra_top;
 
                 /* This edge has been modified, reset effective qp to max. */
-                if( h->fdec->mb_info && M32( bs[1][0] ) )
+                if( HAS_MBINFO && h->fdec->mb_info && M32( bs[1][0] ) )
                 {
                     RESET_EFFECTIVE_QP(mb_xy);
                     RESET_EFFECTIVE_QP(h->mb.i_mb_top_xy);
