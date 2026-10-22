@@ -904,6 +904,63 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
     }
 }
 
+/* references for probe_skip_luma / probe_skip_chroma: macroblock_probe_skip's checks without noise reduction */
+int x264_probe_skip_luma_c( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int b_field )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct4x4,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dctscan,[4],[16] );
+    int eq = 1;
+    for( int y = 0; y < 16; y++ )
+        for( int x = 0; x < 16; x++ )
+            eq &= fenc[x+y*FENC_STRIDE] == fdec[x+y*FDEC_STRIDE];
+    if( eq )
+        return 2;
+    for( int i8x8 = 0, i_decimate_mb = 0; i8x8 < 4; i8x8++ )
+    {
+        sub8x8_dct( dct4x4, fenc + (i8x8&1)*8 + (i8x8>>1)*8*FENC_STRIDE, fdec + (i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE );
+        i_decimate_mb += (b_field ? x264_quant_4x4x4_scan_field : x264_quant_4x4x4_scan_frame)( dct4x4, dctscan, mf, bias, NULL, 0 ) >> 4;
+        if( i_decimate_mb >= 6 )
+            return 0;
+    }
+    return 1;
+}
+
+int x264_probe_skip_chroma_c( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh,
+                              int dc_mf, int dc_bias, int chroma422, int b_field )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct4x4,[8],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dctscan,[4],[16] );
+    ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+    int ssd = 0;
+    for( int y = 0; y < (8<<chroma422); y++ )
+        for( int x = 0; x < 8; x++ )
+        {
+            int d = fenc[x+y*FENC_STRIDE] - fdec[x+y*FDEC_STRIDE];
+            ssd += d*d;
+        }
+    if( ssd < thresh )
+        return 1;
+    if( chroma422 )
+        sub8x16_dct_dc( dct_dc, fenc, fdec );
+    else
+        sub8x8_dct_dc( dct_dc, fenc, fdec );
+    for( int i = 0; i < (4<<chroma422); i++ )
+        if( (dc_bias + abs( dct_dc[i] )) * dc_mf >> 16 )
+            return 0;
+    if( ssd < thresh*4 )
+        return 1;
+    for( int i8x8 = 0, i_decimate_mb = 0; i8x8 <= chroma422; i8x8++ )
+    {
+        sub8x8_dct( &dct4x4[4*i8x8], fenc + 8*i8x8*FENC_STRIDE, fdec + 8*i8x8*FDEC_STRIDE );
+        for( int i4x4 = 0; i4x4 < 4; i4x4++ )
+            dct4x4[4*i8x8+i4x4][0] = 0;
+        i_decimate_mb += (b_field ? x264_quant_4x4x4_scan_field_ac : x264_quant_4x4x4_scan_frame_ac)( &dct4x4[4*i8x8], dctscan, mf, bias, NULL, 0 ) >> 4;
+        if( i_decimate_mb >= 7 )
+            return 0;
+    }
+    return 1;
+}
+
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {
     pf_interlaced->scan_8x8   = zigzag_scan_8x8_field;
@@ -925,6 +982,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_8x8_scan      = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
+    pf_interlaced->probe_skip_luma      = NULL;
+    pf_progressive->probe_skip_luma     = NULL;
+    for( int i = 0; i < 2; i++ )
+        pf_interlaced->probe_skip_chroma[i] = pf_progressive->probe_skip_chroma[i] = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1054,6 +1115,12 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
+        pf_interlaced->probe_skip_luma       = x264_probe_skip_luma_field_avx2;
+        pf_progressive->probe_skip_luma      = x264_probe_skip_luma_frame_avx2;
+        pf_interlaced->probe_skip_chroma[0]  = x264_probe_skip_chroma_420_field_avx2;
+        pf_progressive->probe_skip_chroma[0] = x264_probe_skip_chroma_420_frame_avx2;
+        pf_interlaced->probe_skip_chroma[1]  = x264_probe_skip_chroma_422_field_avx2;
+        pf_progressive->probe_skip_chroma[1] = x264_probe_skip_chroma_422_frame_avx2;
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

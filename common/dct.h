@@ -91,6 +91,15 @@ typedef struct
      * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24. */
     int  (*intra_satd_x9_4x4_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
                                      x264_quant4_recon_t *q, int limit );
+    /* probe_skip, asm only (NULL otherwise). Luma, references x264_probe_skip_luma_c: 2 if fenc == fdec over
+     * 16x16, else 0 if sub8x8_dct + quant_4x4x4_scan over the four 8x8s sum to a score >= 6, else 1.
+     * thr: zscreen_thr of mf/bias. */
+    int  (*probe_skip_luma)( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[2] );
+    /* chroma plane, 8x8 [0] or 8x16 [1], references x264_probe_skip_chroma_c: 1 if ssd < thresh, 0 if
+     * quant_2x2_dc( dc_mf, dc_bias ) of the DC transform is nonzero, 1 if ssd < 4*thresh, else 0 if
+     * quant_4x4x4_scan_ac over the 8x8s (DCs zeroed) sums to a score >= 7, else 1. */
+    int  (*probe_skip_chroma[2])( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh,
+                                  int dc_mf, int dc_bias );
 
 } x264_zigzag_function_t;
 
@@ -99,5 +108,10 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf );
 void x264_dct_init_weights( void );
 #define x264_zigzag_init x264_template(zigzag_init)
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced );
+#define x264_probe_skip_luma_c x264_template(probe_skip_luma_c)
+int x264_probe_skip_luma_c( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int b_field );
+#define x264_probe_skip_chroma_c x264_template(probe_skip_chroma_c)
+int x264_probe_skip_chroma_c( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh,
+                              int dc_mf, int dc_bias, int chroma422, int b_field );
 
 #endif
