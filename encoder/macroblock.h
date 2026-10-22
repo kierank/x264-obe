@@ -159,6 +159,25 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* inter_resid counters: [slice type][in rd_cost_mb][8x8 transform][stat] */
+enum { IRC_CALLS, IRC_CODED8, IRC_FALLBACK, IRC_ZERO8, IRC_ZEROPLANE, IRC_EQ, IRC_STATS };
+#define x264_ir_cnt x264_template(ir_cnt)
+extern uint64_t x264_ir_cnt[3][2][2][IRC_STATS];
+#define x264_ir_rd x264_template(ir_rd)
+extern __thread int x264_ir_rd;
+#define x264_ir_cnt_print x264_template(ir_cnt_print)
+void x264_ir_cnt_print( x264_t *h );
+#define IRC_ADD( t8, stat, v ) __atomic_fetch_add( &x264_ir_cnt[h->sh.i_type][x264_ir_rd][t8][stat], (v), __ATOMIC_RELAXED )
+/* 8x8s of plane p without residual */
+static inline int x264_ir_zero8( x264_t *h, int p )
+{
+    int n = 0;
+    for( int i = 0; i < 4; i++ )
+        n += x264_pixel_fenc_eq_c( PIXEL_8x8, h->mb.pic.p_fenc[p] + (i&1)*8 + (i>>1)*8*FENC_STRIDE,
+                                   h->mb.pic.p_fdec[p] + (i&1)*8 + (i>>1)*8*FDEC_STRIDE );
+    return n;
+}
+
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )

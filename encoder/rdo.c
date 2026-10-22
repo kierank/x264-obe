@@ -179,7 +179,9 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     int i_bits;
     int type_bak = h->mb.i_type;
 
+    x264_ir_rd = 1;
     x264_macroblock_encode( h );
+    x264_ir_rd = 0;
 
     if( h->mb.b_deblock_rdo )
         x264_macroblock_deblock( h );

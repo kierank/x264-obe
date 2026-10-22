@@ -787,6 +787,9 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             {
                 if( h->zigzagf.inter_resid_8x8 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
+                    int z8 = x264_ir_zero8( h, p );
+                    IRC_ADD( 1, IRC_ZERO8, z8 );
+                    IRC_ADD( 1, IRC_ZEROPLANE, z8 == 4 );
                     int i_quant_cat = p?CQM_8PC:CQM_8PY;
                     int ret = h->zigzagf.inter_resid_8x8( &h->dct.luma8x8[p*4], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
@@ -794,12 +797,16 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                                                           h->dequant8_mf[i_quant_cat], i_qp, b_decimate ? i_decimate_mb : -1 );
                     h->mb.i_cbp_luma |= ret & 15;
                     i_decimate_mb = ret >> 4;
+                    IRC_ADD( 1, IRC_CALLS, 1 );
+                    IRC_ADD( 1, IRC_CODED8, (ret&1) + (ret>>1&1) + (ret>>2&1) + (ret>>3&1) );
                     continue;
                 }
+                IRC_ADD( 1, IRC_FALLBACK, 1 );
                 CLEAR_16x16_NNZ( p );
                 if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
+                    IRC_ADD( 1, IRC_EQ, 1 );
                     h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
                     continue;
                 }
@@ -860,18 +867,25 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             {
                 if( h->zigzagf.inter_resid_4x4 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
+                    int z8 = x264_ir_zero8( h, p );
+                    IRC_ADD( 0, IRC_ZERO8, z8 );
+                    IRC_ADD( 0, IRC_ZEROPLANE, z8 == 4 );
                     int ret = h->zigzagf.inter_resid_4x4( &h->dct.luma4x4[p*16], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
                                                           h->quant4_mf[CQM_4PY][i_qp], h->quant4_bias[CQM_4PY][i_qp],
                                                           h->dequant4_mf[p?CQM_4PC:CQM_4PY], i_qp, b_decimate ? i_decimate_mb : -1 );
+                    IRC_ADD( 0, IRC_CALLS, 1 );
+                    IRC_ADD( 0, IRC_CODED8, (ret&1) + (ret>>1&1) + (ret>>2&1) + (ret>>3&1) );
                     h->mb.i_cbp_luma |= ret & 15;
                     i_decimate_mb = ret >> 4;
                     continue;
                 }
+                IRC_ADD( 0, IRC_FALLBACK, 1 );
                 CLEAR_16x16_NNZ( p );
                 if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
+                    IRC_ADD( 0, IRC_EQ, 1 );
                     h->nr_count[0+!!p*2] += h->mb.b_noise_reduction * 16;
                     continue;
                 }
@@ -1447,4 +1461,27 @@ void x264_macroblock_encode_p4x4( x264_t *h, int i8 )
         x264_macroblock_encode_p4x4_internal( h, i8, 3 );
     else
         x264_macroblock_encode_p4x4_internal( h, i8, 1 );
+}
+
+uint64_t x264_ir_cnt[3][2][2][IRC_STATS];
+__thread int x264_ir_rd;
+
+void x264_ir_cnt_print( x264_t *h )
+{
+    static const char sname[3] = { 'P', 'B', 'I' };
+    for( int s = 0; s < 3; s++ )
+        for( int r = 0; r < 2; r++ )
+            for( int t = 0; t < 2; t++ )
+            {
+                uint64_t *c = x264_ir_cnt[s][r][t];
+                int frames = X264_MAX( h->stat.i_frame_count[s], 1 );
+                if( !c[IRC_CALLS] && !c[IRC_FALLBACK] )
+                    continue;
+                x264_log( h, X264_LOG_INFO, "inter_resid %d-bit %c %s %s: kernel %8"PRIu64" (%7.1f/frame, coded 8x8 %4.2f/call, "
+                          "no-residual 8x8 %4.2f/call, plane %5.1f%%) calls %8"PRIu64" (%7.1f/frame, fenc_eq %5.1f%%)\n",
+                          BIT_DEPTH, sname[s], r ? "rd   " : "other", t ? "8x8" : "4x4",
+                          c[IRC_CALLS], (double)c[IRC_CALLS] / frames, c[IRC_CALLS] ? (double)c[IRC_CODED8] / c[IRC_CALLS] : 0.0,
+                          c[IRC_CALLS] ? (double)c[IRC_ZERO8] / c[IRC_CALLS] : 0.0, c[IRC_CALLS] ? 100.0 * c[IRC_ZEROPLANE] / c[IRC_CALLS] : 0.0,
+                          c[IRC_FALLBACK], (double)c[IRC_FALLBACK] / frames, c[IRC_FALLBACK] ? 100.0 * c[IRC_EQ] / c[IRC_FALLBACK] : 0.0 );
+            }
 }
