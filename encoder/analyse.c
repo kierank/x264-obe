@@ -3188,8 +3188,17 @@ static int x264_mb_analyse_nb_sub16x16( x264_t *h )
     return b_sub;
 }
 
-/* Sub-16x16 partition skip threshold in lambda, interlaced (MBAFF) encodes only */
+/* Sub-16x16 partition skip threshold in lambda, interlaced (MBAFF) encodes */
 #define PARTGATE_THRESH 512
+/* The same in progressive encodes, under mbrd only (0 = off) */
+#ifndef PARTGATE_PROG_THRESH
+#define PARTGATE_PROG_THRESH 128
+#endif
+
+static ALWAYS_INLINE int x264_mb_partgate_thresh( x264_t *h, x264_mb_analysis_t *a )
+{
+    return PARAM_INTERLACED ? PARTGATE_THRESH : a->i_mbrd ? PARTGATE_PROG_THRESH : 0;
+}
 
 /* Intra first in P: sub-16x16 partitions are skipped when the best intra satd
  * is below the 16x16 cost * INTRA_FIRST_THRESH/8 */
@@ -3487,11 +3496,12 @@ skip_analysis:
                 return;
             }
 
-            /* Interlaced: no 8x8, 16x8 or 8x16 when the 16x16 residual is cheap and
-             * no neighbour used a sub-16x16 partition. l0.i_cost8x8 stays COST_MAX. */
+            /* No 8x8, 16x8 or 8x16 when the 16x16 residual is cheap and no
+             * neighbour used a sub-16x16 partition. l0.i_cost8x8 stays COST_MAX. */
             int b_partgate = 0;
-            if( PARAM_INTERLACED && analysis.b_early_terminate && (flags & X264_ANALYSE_PSUB16x16) )
-                b_partgate = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv < PARTGATE_THRESH * analysis.i_lambda &&
+            int i_partgate = x264_mb_partgate_thresh( h, &analysis );
+            if( i_partgate && analysis.b_early_terminate && (flags & X264_ANALYSE_PSUB16x16) )
+                b_partgate = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv < i_partgate * analysis.i_lambda &&
                              !x264_mb_analyse_nb_sub16x16( h );
 
             /* Where the lowres coded the mb intra, analyse intra against the 16x16 first */
@@ -3873,13 +3883,14 @@ skip_analysis:
             /* As in P, on the best 16x16 mode's cost less its MV costs; the b8x8,
              * 16x8 and 8x16 costs stay COST_MAX. */
             int b_partgate = 0;
-            if( PARAM_INTERLACED && analysis.b_early_terminate && (flags & X264_ANALYSE_BSUB16x16) )
+            int i_partgate = x264_mb_partgate_thresh( h, &analysis );
+            if( i_partgate && analysis.b_early_terminate && (flags & X264_ANALYSE_BSUB16x16) )
             {
                 int i_res = i_type == B_L0_L0 ? analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv :
                             i_type == B_L1_L1 ? analysis.l1.me16x16.cost - analysis.l1.me16x16.cost_mv :
                             i_type == B_BI_BI ? analysis.i_cost16x16bi - analysis.l0.bi16x16.cost_mv - analysis.l1.bi16x16.cost_mv :
                                                 analysis.i_cost16x16direct;
-                b_partgate = i_res < PARTGATE_THRESH * analysis.i_lambda && !x264_mb_analyse_nb_sub16x16( h );
+                b_partgate = i_res < i_partgate * analysis.i_lambda && !x264_mb_analyse_nb_sub16x16( h );
             }
 
             if( (flags & X264_ANALYSE_BSUB16x16) && !b_partgate )
