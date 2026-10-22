@@ -1087,6 +1087,7 @@ if [ "$ARCH" != "X86_64" ]; then
     exit 1
 fi
 
+# no HAS_* feature macros on this base
 if [ "$chroma_format" != "all" ]; then
     define CHROMA_FORMAT CHROMA_$chroma_format
 fi
