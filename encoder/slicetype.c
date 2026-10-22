@@ -146,7 +146,8 @@ void x264_weight_luma_search_rows( x264_t *h, x264_weight_src_t *s, void *src_, 
     intptr_t i_stride = s->stride_luma;
     int n = s->mb_width;
     int b_dc = 0;
-    int b_search8 = h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8] && s->intra_cost_shift == BIT_DEPTH-8;
+    int b_search8 = h->pixf.weightp_satd8_search && h->pixf.mbcmp[PIXEL_8x8] == h->pixf.satd[PIXEL_8x8]
+                 && s->intra_cost_shift == BIT_DEPTH-8;
     for( int k = 0; k < t->i_scales; k++ )
     {
         b_dc |= t->i_offsets[k] > 1;
@@ -292,6 +293,35 @@ void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, in
     intptr_t i_stride = s->stride_chroma;
     int height = 16 >> s->v_shift;
     int n = s->mb_width;
+    if( !h->pixf.weightp_chroma_ref_row )
+    {
+        pixel *dst[2] = { s->dst[0], s->dst[1] };
+        pixel *ref = s->ref_chroma;
+        for( int mb_y = mb_y0; mb_y < mb_y1; mb_y++ )
+        {
+            int pel_offset_y = mb_y*height*i_stride;
+            if( s->mvs )
+                for( int x = 0, mb_xy = mb_y*n, pel_offset_x = 0; x < n; x++, mb_xy++, pel_offset_x += 8 )
+                {
+                    pixel *src1 = ref + pel_offset_y + pel_offset_x*2; /* NV12/NV16 */
+                    int mvx = s->mvs[mb_xy][0];
+                    int mvy = s->mvs[mb_xy][1];
+                    h->mc.mc_chroma( dst[0] + pel_offset_y + pel_offset_x, dst[1] + pel_offset_y + pel_offset_x, i_stride,
+                                     src1, i_stride, mvx, 2*mvy>>s->v_shift, 8, height );
+                }
+            else
+                h->mc.plane_copy_deinterleave( dst[0] + pel_offset_y, i_stride, dst[1] + pel_offset_y, i_stride,
+                                               ref + pel_offset_y, i_stride, 8*n, height );
+            for( int p = 0; p < 2; p++ )
+                h->pixf.weightp_stats8( s->rsum[p] + mb_y*s->n16, s->minmax[p] + mb_y*s->n16,
+                                        dst[p] + pel_offset_y, i_stride, n, height );
+        }
+        for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
+            if( s->wscale[q] >= 0 )
+                x264_weight_chroma_wsum_rows( h, s, q, mb_y0, mb_y1 );
+        x264_emms();
+        return;
+    }
     int16_t ws[2*X264_WEIGHT_WSLOTS][2];
     for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
     {

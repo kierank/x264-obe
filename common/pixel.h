@@ -172,15 +172,16 @@ typedef struct
      * wp[k] = { scale, denom, offset << (BIT_DEPTH-8), offsets (1 to 4) }, and j < offsets,
      * cost[k][j] += min( satd_8x8( w - f ), icost[i] << (BIT_DEPTH-8) ), w = x264_clip_pixel(
      * ((r * scale + ((1 << denom) >> 1)) >> denom) + offset + (j << (BIT_DEPTH-8)) ); the other
-     * cost[k][j] are undefined. asm may read 24 pixels past the row. */
+     * cost[k][j] are undefined. Reads up to 24 pixels past the row. asm only, NULL otherwise
+     * (x264_weight_luma_search_rows). */
     void (*weightp_satd8_search)( uint32_t (*cost)[4], pixel *r, pixel *f, intptr_t i_stride, int n,
                                   uint16_t *icost, const int16_t (*wp)[4], int nk );
     /* x264_weights_analyse chroma 4:2:0/4:2:2, a row of n blocks of 8 x height (8 or 16) of the
      * interleaved ref: block i motion compensated as mc_chroma by mvs[i] (mvy as 2*mvy >> v_shift;
      * mvs NULL: none) into dst[0] (u) and dst[1] (v) + 8*i, with sum[p][i] and minmax[p][i] as
      * weightp_stats8 and, for slots q < 6 with ws[q][0] >= 0, of plane q/3, wsum[q][i] as
-     * weightp_sum8 at scale ws[q][0], denom ws[q][1]. asm may read 64 bytes a row from each
-     * block's position and the row below. */
+     * weightp_sum8 at scale ws[q][0], denom ws[q][1]. Reads up to 64 bytes a row from each
+     * block's position and the row below. asm only, NULL otherwise (x264_weight_chroma_ref_rows). */
     void (*weightp_chroma_ref_row)( pixel *dst[2], intptr_t i_stride, pixel *ref, int16_t (*mvs)[2], int n,
                                     int height, int32_t *sum[2], uint32_t *minmax[2], const int16_t (*ws)[2],
                                     int32_t *wsum[6] );
