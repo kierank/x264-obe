@@ -122,7 +122,42 @@ typedef struct
     int b_direct_available;
     int b_early_terminate;
 
+    /* inter RD candidates: the luma 4x4 blocks each one coded, for the transform_rd pre-screen */
+    int i_rd_nz;
+    struct
+    {
+        int cost;
+        uint8_t type;
+        uint8_t partition;
+        uint8_t transform_8x8;
+        uint8_t nz;
+        uint8_t cbp;
+    } rd_nz[8];
+
 } x264_mb_analysis_t;
+
+/* x264_rd_cost_mb of an inter candidate, logging the luma 4x4 blocks it coded */
+static int x264_rd_cost_inter( x264_t *h, x264_mb_analysis_t *a )
+{
+    int cost = x264_rd_cost_mb( h, a->i_lambda2 );
+    if( a->i_rd_nz < 8 )
+    {
+        uint8_t *nnz = h->mb.cache.non_zero_count;
+        /* nnz bytes to 0/1, then summed */
+        uint32_t nz = (((M32( &nnz[x264_scan8[ 0]] ) + 0x7f7f7f7fU) & 0x80808080U) >> 7)
+                    + (((M32( &nnz[x264_scan8[ 2]] ) + 0x7f7f7f7fU) & 0x80808080U) >> 7)
+                    + (((M32( &nnz[x264_scan8[ 8]] ) + 0x7f7f7f7fU) & 0x80808080U) >> 7)
+                    + (((M32( &nnz[x264_scan8[10]] ) + 0x7f7f7f7fU) & 0x80808080U) >> 7);
+        a->rd_nz[a->i_rd_nz].cost = cost;
+        a->rd_nz[a->i_rd_nz].type = h->mb.i_type;
+        a->rd_nz[a->i_rd_nz].partition = h->mb.i_partition;
+        a->rd_nz[a->i_rd_nz].transform_8x8 = h->mb.b_transform_8x8;
+        a->rd_nz[a->i_rd_nz].nz = (nz * 0x01010101U) >> 24;
+        a->rd_nz[a->i_rd_nz].cbp = h->mb.i_cbp_luma;
+        a->i_rd_nz++;
+    }
+    return cost;
+}
 
 static const uint8_t i_mb_b_cost_table[X264_MBTYPE_MAX] =
 {
@@ -372,6 +407,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     x264_mb_analyse_init_qp( h, a, qp );
 
     h->mb.b_transform_8x8 = 0;
+    a->i_rd_nz = 0;
 
     /* I: Intra part */
     a->i_satd_i16x16 =
@@ -1409,7 +1445,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         {
             h->mb.i_partition = D_16x16;
             x264_macroblock_cache_mv_ptr( h, 0, 0, 4, 4, 0, a->l0.me16x16.mv );
-            a->l0.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+            a->l0.i_rd16x16 = x264_rd_cost_inter( h, a );
             if( !(h->mb.i_cbp_luma|h->mb.i_cbp_chroma) )
                 h->mb.i_type = P_SKIP;
         }
@@ -2808,14 +2844,14 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_16x16;
         x264_analyse_update_cache( h, a );
-        a->l0.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_rd16x16 = x264_rd_cost_inter( h, a );
     }
 
     if( a->l0.i_cost16x8 < thresh )
     {
         h->mb.i_partition = D_16x8;
         x264_analyse_update_cache( h, a );
-        a->l0.i_cost16x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_cost16x8 = x264_rd_cost_inter( h, a );
     }
     else
         a->l0.i_cost16x8 = COST_MAX;
@@ -2824,7 +2860,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_8x16;
         x264_analyse_update_cache( h, a );
-        a->l0.i_cost8x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_cost8x16 = x264_rd_cost_inter( h, a );
     }
     else
         a->l0.i_cost8x16 = COST_MAX;
@@ -2868,7 +2904,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
         }
         else
             x264_analyse_update_cache( h, a );
-        a->l0.i_cost8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_cost8x8 = x264_rd_cost_inter( h, a );
     }
     else
         a->l0.i_cost8x8 = COST_MAX;
@@ -2885,7 +2921,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
         /* Requires b-rdo to be done before intra analysis */
         h->mb.b_skip_mc = 1;
         x264_analyse_update_cache( h, a );
-        a->i_rd16x16direct = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_rd16x16direct = x264_rd_cost_inter( h, a );
         h->mb.b_skip_mc = 0;
     }
 
@@ -2896,7 +2932,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
     {
         h->mb.i_type = B_L0_L0;
         x264_analyse_update_cache( h, a );
-        a->l0.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l0.i_rd16x16 = x264_rd_cost_inter( h, a );
     }
 
     /* L1 */
@@ -2904,7 +2940,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
     {
         h->mb.i_type = B_L1_L1;
         x264_analyse_update_cache( h, a );
-        a->l1.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->l1.i_rd16x16 = x264_rd_cost_inter( h, a );
     }
 
     /* BI */
@@ -2912,7 +2948,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
     {
         h->mb.i_type = B_BI_BI;
         x264_analyse_update_cache( h, a );
-        a->i_rd16x16bi = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_rd16x16bi = x264_rd_cost_inter( h, a );
     }
 
     /* 8x8 */
@@ -2921,7 +2957,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
         h->mb.i_type = B_8x8;
         h->mb.i_partition = D_8x8;
         x264_analyse_update_cache( h, a );
-        a->i_rd8x8bi = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_rd8x8bi = x264_rd_cost_inter( h, a );
         x264_macroblock_cache_skip( h, 0, 0, 4, 4, 0 );
     }
 
@@ -2931,7 +2967,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
         h->mb.i_type = a->i_mb_type16x8;
         h->mb.i_partition = D_16x8;
         x264_analyse_update_cache( h, a );
-        a->i_rd16x8bi = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_rd16x8bi = x264_rd_cost_inter( h, a );
     }
 
     /* 8x16 */
@@ -2940,7 +2976,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
         h->mb.i_type = a->i_mb_type8x16;
         h->mb.i_partition = D_8x16;
         x264_analyse_update_cache( h, a );
-        a->i_rd8x16bi = x264_rd_cost_mb( h, a->i_lambda2 );
+        a->i_rd8x16bi = x264_rd_cost_inter( h, a );
     }
 }
 
