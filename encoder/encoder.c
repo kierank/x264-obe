@@ -38,7 +38,7 @@
 
 /* layout pair test/x264-deblock-chroma-mb / -twin: hidden weak x264_N_deblock_chroma_mb_gate, defined here (no bytes)
  * unless DBCMB_TWIN; the twin links it as 0 and chroma deblocks per edge */
-#define DBCMB_TWIN 0
+#define DBCMB_TWIN 1
 #define DBCMB_STR2( x ) #x
 #define DBCMB_STR( x ) DBCMB_STR2( x )
 #define x264_deblock_chroma_mb_gate x264_template(deblock_chroma_mb_gate)
