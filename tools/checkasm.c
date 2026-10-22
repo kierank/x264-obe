@@ -4887,6 +4887,167 @@ static int x9r_chain( x264_t *h, x264_pixel_function_t *pf, x264_predict_t *pred
     return res | nz << 24;
 }
 
+/* inter_resid: the calls it replaces in x264_macroblock_encode, with the dispatched functions */
+static x264_dct_function_t *ir_dctf;
+static x264_quant_function_t *ir_qf;
+static x264_zigzag_function_t *ir_zz;
+
+static void ir_add_dconly( pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
+{
+    ALIGNED_ARRAY_32( dctcoef, dc,[16] );
+    if( cbp == 0xf )
+    {
+        for( int i = 0; i < 16; i++ )
+            dc[block_idx_xy_1d[i]] = b_8x8 ? dct[(i>>2)*64] : dct[i*16];
+        ir_dctf->add16x16_idct_dc( p_dst, dc );
+    }
+    else
+        for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+            if( cbp >> i8x8 & 1 )
+            {
+                for( int i = 0; i < 4; i++ )
+                    dc[i] = b_8x8 ? dct[i8x8*64] : dct[(i8x8*4+i)*16];
+                ir_dctf->add8x8_idct_dc( &p_dst[(i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE], dc );
+            }
+}
+
+static int inter_resid_4x4_split( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                                  udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
+    int b_decimate = i_decimate_mb >= 0;
+    i_decimate_mb = X264_MAX( i_decimate_mb, 0 );
+    for( int i = 0; i < 4; i++ )
+        M32( &nnz[i*8] ) = 0;
+    ir_dctf->sub16x16_dct( dct4x4, p_src, p_dst );
+    int plane_cbp = 0, plane_ac = 0;
+    for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+    {
+        int i_decimate_8x8 = b_decimate ? 0 : 6;
+        int nz = ir_zz->quant_4x4x4_scan( &dct4x4[i8x8*4], &level[i8x8*4], mf, bias, dequant_mf, i_qp );
+        if( nz )
+        {
+            uint8_t *nnz4 = &nnz[(i8x8&1)*2 + (i8x8>>1)*16];
+            i_decimate_8x8 += (nz >> 4) & 15;
+            plane_ac |= !!(nz >> 8) << i8x8;
+            nnz4[0] = nz&1;
+            nnz4[1] = (nz>>1)&1;
+            nnz4[8] = (nz>>2)&1;
+            nnz4[9] = (nz>>3)&1;
+            i_decimate_mb += i_decimate_8x8;
+            if( i_decimate_8x8 < 4 )
+                M16( &nnz4[0] ) = M16( &nnz4[8] ) = 0;
+            else
+                plane_cbp |= 1<<i8x8;
+        }
+    }
+    if( i_decimate_mb < 6 )
+    {
+        plane_cbp = 0;
+        for( int i = 0; i < 4; i++ )
+            M32( &nnz[i*8] ) = 0;
+    }
+    else if( plane_ac & plane_cbp )
+    {
+        for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+            if( plane_cbp >> i8x8 & 1 )
+                ir_dctf->add8x8_idct( &p_dst[(i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE], &dct4x4[i8x8*4] );
+    }
+    else
+        ir_add_dconly( p_dst, dct4x4[0], plane_cbp, 0 );
+    return plane_cbp | (b_decimate ? i_decimate_mb : 0) << 4;
+}
+
+static int inter_resid_8x8_split( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                                  udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct8x8,[4],[64] );
+    int b_decimate = i_decimate_mb >= 0;
+    int b_q8s = !!ir_zz->quant_8x8_scan;
+    i_decimate_mb = X264_MAX( i_decimate_mb, 0 );
+    for( int i = 0; i < 4; i++ )
+        M32( &nnz[i*8] ) = 0;
+    ir_dctf->sub16x16_dct8( dct8x8, p_src, p_dst );
+    int plane_cbp = 0, plane_ac = b_q8s ? 0 : 0xf;
+    for( int idx = 0; idx < 4; idx++ )
+    {
+        int nz = b_q8s ? ir_zz->quant_8x8_scan( dct8x8[idx], level[idx], mf, bias, dequant_mf, i_qp )
+                       : ir_qf->quant_8x8( dct8x8[idx], mf, bias );
+        if( nz )
+        {
+            if( !b_q8s )
+                ir_zz->scan_8x8( level[idx], dct8x8[idx] );
+            else
+                plane_ac |= (nz >> 8) << idx;
+            if( b_decimate )
+            {
+                int i_decimate_8x8 = b_q8s ? (nz >> 4) & 15 : ir_qf->decimate_score64( level[idx] );
+                i_decimate_mb += i_decimate_8x8;
+                if( i_decimate_8x8 >= 4 )
+                    plane_cbp |= 1<<idx;
+            }
+            else
+                plane_cbp |= 1<<idx;
+        }
+    }
+    if( i_decimate_mb >= 6 || !b_decimate )
+    {
+        if( plane_ac & plane_cbp )
+        {
+            for( int idx = 0; idx < 4; idx++ )
+                if( plane_cbp >> idx & 1 )
+                {
+                    if( !b_q8s )
+                        ir_qf->dequant_8x8( dct8x8[idx], dequant_mf, i_qp );
+                    ir_dctf->add8x8_idct8( &p_dst[8*(idx&1) + 8*(idx>>1)*FDEC_STRIDE], dct8x8[idx] );
+                }
+        }
+        else
+            ir_add_dconly( p_dst, dct8x8[0], plane_cbp, 1 );
+        for( int idx = 0; idx < 4; idx++ )
+            if( plane_cbp >> idx & 1 )
+                M16( &nnz[(idx&1)*2 + (idx>>1)*16] ) = M16( &nnz[(idx&1)*2 + (idx>>1)*16 + 8] ) = 0x0101;
+    }
+    else
+        plane_cbp = 0;
+    return plane_cbp | (b_decimate ? i_decimate_mb : 0) << 4;
+}
+
+/* j: bits 0-1 residual (any, +-3, +-20, flat per 4x4 or, with bit 4, per 8x8), bits 2-5 8x8s without residual */
+static void ir_gen( pixel *src, pixel *pred, int j, int (*rnd)( void ) )
+{
+    for( int y = 0; y < 16; y++ )
+        for( int x = 0; x < 16; x++ )
+        {
+            int p = (j&3) == 3 ? (PIXEL_MAX+1)/4 + rnd() % ((PIXEL_MAX+1)/2) : rnd() & PIXEL_MAX; /* flat: no clipping */
+            int r = (j&3) == 0 ? (rnd() & PIXEL_MAX) - p
+                  : (j&3) == 1 ? rnd()%7 - 3
+                  : (j&3) == 2 ? rnd()%41 - 20
+                  : (((x>>(2+(j>>4&1)))*5 + (y>>(2+(j>>4&1)))*3 + j) % 61 - 30) * (PIXEL_MAX+1) / 256;
+            pred[y*FDEC_STRIDE+x] = p;
+            src[y*FENC_STRIDE+x] = (j >> (2 + (x>>3) + (y>>3)*2)) & 1 ? p : x264_clip_pixel( p + r );
+        }
+}
+
+/* bench: the prediction is restored before each call */
+static pixel *ir_bench_pred;
+static int (*ir_bench4)( dctcoef[16][16], pixel*, pixel*, uint8_t*, udctcoef*, udctcoef*, int[6][16], int, int );
+static int (*ir_bench8)( dctcoef[4][64], pixel*, pixel*, uint8_t*, udctcoef*, udctcoef*, int[6][64], int, int );
+static int ir_bench_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                         udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+{
+    for( int y = 0; y < 16; y++ )
+        memcpy( p_dst+y*FDEC_STRIDE, ir_bench_pred+y*FDEC_STRIDE, 16*sizeof(pixel) );
+    return ir_bench4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb );
+}
+static int ir_bench_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                         udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+{
+    for( int y = 0; y < 16; y++ )
+        memcpy( p_dst+y*FDEC_STRIDE, ir_bench_pred+y*FDEC_STRIDE, 16*sizeof(pixel) );
+    return ir_bench8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb );
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4902,6 +5063,14 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, dct0,[64] );
     ALIGNED_ARRAY_64( dctcoef, dct5,[64] );
     ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
+#define IRD (2*FDEC_STRIDE)
+    ALIGNED_ARRAY_64( pixel, irsrc,[24*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( pixel, irdst,[4],[20*FDEC_STRIDE] );
+    ALIGNED_ARRAY_64( dctcoef, irlvl,[3],[256] );
+    ALIGNED_ARRAY_16( uint8_t, irnnz,[3],[48] );
+    x264_dct_function_t dct_a, dct_full;
+    x264_quant_function_t qf_full;
+    x264_zigzag_function_t zz_full[2];
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     x264_pixel_function_t x9r_pf_c, x9r_pf_a;
     x264_dct_function_t x9r_df_c, x9r_df_a;
@@ -4911,7 +5080,13 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, x9r_lvl,[3],[16] );
     ALIGNED_ARRAY_64( uint16_t, x9r_bitcosts,[17] );
     int ret = 0, ok, used_asm;
-    int oks[5] = {1,1,1,1,1}, used_asms[5] = {0,0,0,0,0};
+    int oks[6] = {1,1,1,1,1,1}, used_asms[6] = {0,0,0,0,0,0};
+    x264_dct_init( cpu_new, &dct_a );
+    x264_dct_init( x264_cpu_detect(), &dct_full );
+    for( int i = 0; i < 24*FENC_STRIDE; i++ )
+        irsrc[i] = rand() & PIXEL_MAX;
+    for( int i = 0; i < 20*FDEC_STRIDE; i++ )
+        irdst[0][i] = irdst[3][i] = rand() & PIXEL_MAX;
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -5000,6 +5175,8 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_zigzag_init( 0, &zz_c[0], &zz_c[1] );
         x264_zigzag_init( cpu_ref, &zz_ref[0], &zz_ref[1] );
         x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1] );
+        x264_quant_init( h, x264_cpu_detect(), &qf_full );
+        x264_zigzag_init( x264_cpu_detect(), &zz_full[0], &zz_full[1] );
 
 #define INIT_QUANT8(j,max) \
         { \
@@ -5217,6 +5394,83 @@ static int check_quant( int cpu_ref, int cpu_new )
 
         TEST_QUANT8_SCAN( CQM_8IY );
         TEST_QUANT8_SCAN( CQM_8PY );
+
+        /* inter_resid: against the C reference and the dispatched calls it replaces; level, nnz and dst
+         * buffers start as a pattern and are compared whole. j as ir_gen, decimation off, from 0 or from 4.
+         * The score is compared up to 6: past the threshold only the sum of the split's decimate_score64
+         * is uncapped. */
+#define TEST_INTER_RESID( size, w, cat ) \
+        for( int fld = 0; fld < 2; fld++ ) \
+            if( zz_a[fld].inter_resid_##size ) \
+            { \
+                used_asms[5] = 1; \
+                set_func_name( "inter_resid_%s_%s_%s", #size, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                ir_dctf = &dct_a; \
+                ir_qf = &qf_a; \
+                ir_zz = &zz_a[fld]; \
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- ) \
+                { \
+                    udctcoef *mf = h->quant##w##_mf[cat][qp], *bias = h->quant##w##_bias[cat][qp]; \
+                    for( int j = 0; j < 64; j++ ) \
+                    { \
+                        int dec = j%3 == 0 ? -1 : j%3 == 1 ? 0 : 4; \
+                        ir_gen( irsrc, irdst[0]+IRD, j, rand ); \
+                        for( int k = 1; k < 3; k++ ) \
+                            memcpy( irdst[k], irdst[0], sizeof(irdst[0]) ); \
+                        for( int k = 0; k < 256; k++ ) \
+                            irlvl[0][k] = irlvl[1][k] = irlvl[2][k] = 0x5a5a + k; \
+                        memset( irnnz, 0x5a, sizeof(irnnz) ); \
+                        int res_c = (fld ? x264_inter_resid_##size##_field : x264_inter_resid_##size##_frame)( \
+                                        (void*)irlvl[0], irsrc, irdst[0]+IRD, irnnz[0]+12, mf, bias, h->dequant##w##_mf[cat], qp, dec ); \
+                        int res_s = inter_resid_##size##_split( (void*)irlvl[1], irsrc, irdst[1]+IRD, irnnz[1]+12, mf, bias, \
+                                                                h->dequant##w##_mf[cat], qp, dec ); \
+                        int res_a = call_a1( zz_a[fld].inter_resid_##size, (void*)irlvl[2], irsrc, irdst[2]+IRD, irnnz[2]+12, \
+                                             mf, bias, h->dequant##w##_mf[cat], qp, dec ); \
+                        int res_s6 = (res_s & 15) | X264_MIN( res_s >> 4, 6 ) << 4; \
+                        int res_a6 = (res_a & 15) | X264_MIN( res_a >> 4, 6 ) << 4; \
+                        if( res_c != res_a || res_s6 != res_a6 || \
+                            memcmp( irlvl[0], irlvl[2], sizeof(irlvl[0]) ) || memcmp( irlvl[1], irlvl[2], sizeof(irlvl[0]) ) || \
+                            memcmp( irnnz[0], irnnz[2], sizeof(irnnz[0]) ) || memcmp( irnnz[1], irnnz[2], sizeof(irnnz[0]) ) || \
+                            memcmp( irdst[0], irdst[2], sizeof(irdst[0]) ) || memcmp( irdst[1], irdst[2], sizeof(irdst[0]) ) ) \
+                        { \
+                            oks[5] = 0; \
+                            fprintf( stderr, "inter_resid_%s_%s (qp=%d, cqm=%d, j=%d, dec=%d, res_c=%x, res_asm=%x, res_split=%x): [FAILED]" \
+                                     " lvl %d %d nnz %d %d dst %d %d\n", #size, fld?"field":"frame", qp, i_cqm, j, dec, res_c, res_a, res_s, \
+                                     !!memcmp( irlvl[0], irlvl[2], sizeof(irlvl[0]) ), !!memcmp( irlvl[1], irlvl[2], sizeof(irlvl[0]) ), \
+                                     !!memcmp( irnnz[0], irnnz[2], sizeof(irnnz[0]) ), !!memcmp( irnnz[1], irnnz[2], sizeof(irnnz[0]) ), \
+                                     !!memcmp( irdst[0], irdst[2], sizeof(irdst[0]) ), !!memcmp( irdst[1], irdst[2], sizeof(irdst[0]) ) ); \
+                            break; \
+                        } \
+                    } \
+                } \
+                /* bench, flat and jvt cqm: qp 22-34, residual +-3, +-20, flat, any, decimation on. _split times the \
+                 * calls it replaces with this machine's whole dispatch (e.g. avx512icl quant_8x8_scan), as encoding. */ \
+                if( do_bench && i_cqm < 2 ) \
+                { \
+                    bench_srand( 900 + fld ); \
+                    ir_bench_pred = irdst[3]+IRD; \
+                    ir_dctf = &dct_full; \
+                    ir_qf = &qf_full; \
+                    ir_zz = &zz_full[fld]; \
+                    for( int i = 0; i < 16; i++ ) \
+                    { \
+                        int qp = 22 + 4*(i>>2), j = 1 + (i&3); \
+                        udctcoef *mf = h->quant##w##_mf[cat][qp], *bias = h->quant##w##_bias[cat][qp]; \
+                        ir_gen( irsrc, irdst[3]+IRD, j&3, bench_rand ); \
+                        ir_bench##w = zz_a[fld].inter_resid_##size; \
+                        set_func_name( "inter_resid_%s_%s_%s", #size, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                        call_bench( ir_bench_##size, cpu_new, (void*)irlvl[2], irsrc, irdst[2]+IRD, irnnz[2]+12, mf, bias, \
+                                    h->dequant##w##_mf[cat], qp, 0 ); \
+                        ir_bench##w = inter_resid_##size##_split; \
+                        set_func_name( "inter_resid_%s_split_%s_%s", #size, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                        call_bench( ir_bench_##size, cpu_new, (void*)irlvl[1], irsrc, irdst[1]+IRD, irnnz[1]+12, mf, bias, \
+                                    h->dequant##w##_mf[cat], qp, 0 ); \
+                    } \
+                } \
+            }
+
+        TEST_INTER_RESID( 4x4, 4, CQM_4PY );
+        TEST_INTER_RESID( 8x8, 8, CQM_8PY );
 
         /* bench, flat and jvt cqm: 16 fixed inter blocks, the check's 4 level sizes at its 4 nonzero rates,
          * qp 24-36, with dequant. _split times the dispatched calls it replaces on the same blocks. */
@@ -5504,6 +5758,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[4]; used_asm = used_asms[4];
     report( "intra x9 recon :" );
+
+    ok = oks[5]; used_asm = used_asms[5];
+    report( "inter resid :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

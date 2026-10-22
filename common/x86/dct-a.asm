@@ -135,7 +135,7 @@ align 32
 pb_scan4field_avx2: db 0,1,2,3,8,9,4,5,6,7,10,11,12,13,14,15
                     db 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 ; zigzag_scan_8x8_frame avx2: one pshufb mask per source ymm, 4 outputs
-pb_scan8frame_avx2:    db 0,1,-1,-1,2,3,4,5,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1,-1,6,7,-1,-1,-1,-1,-1,-1,-1,-1
+const pb_scan8frame_avx2, db 0,1,-1,-1,2,3,4,5,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1,-1,6,7,-1,-1,-1,-1,-1,-1,-1,-1
                        db -1,-1,0,1,-1,-1,-1,-1,2,3,-1,-1,-1,-1,-1,-1,-1,-1,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,1,-1,-1,2,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,3,-1,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1,-1,-1,-1
@@ -179,6 +179,10 @@ zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
 zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
                db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
+ALIGN 32
+; inter_resid_4x4: the block of each nnz byte, rows 0-1 | rows 2-3
+ir_nnz_bits:    dw 1<<0, 1<<1, 1<<4, 1<<5, 1<<2, 1<<3, 1<<6, 1<<7
+                dw 1<<8, 1<<9, 1<<12, 1<<13, 1<<10, 1<<11, 1<<14, 1<<15
 %if HIGH_BIT_DEPTH
 ALIGN 32
 ; add16x16_idct_dc avx2: dc0 x4 dc1 x4 | dc2 x4 dc3 x4 from packssdw'd dc0-3 in both lanes
@@ -230,6 +234,16 @@ cextern pw_pmpmpmpm
 cextern deinterleave_shufd
 cextern pb_unpackbd1
 cextern pb_unpackbd2
+%if HIGH_BIT_DEPTH
+cextern qscan4_frame_i
+cextern qscan4_frame_j
+cextern qscan4_field
+cextern qscan4_bytes
+%else
+cextern qscan4_frame_a
+cextern qscan4_frame_b
+cextern qscan4_field
+%endif
 
 %macro WALSH4_1D 6
     SUMSUB_BADC %1, %5, %4, %3, %2, %6
@@ -929,6 +943,368 @@ cglobal add16x16_idct, 2,2,10
     ret
 %endif ; ARCH_X86_64
 
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+;                      udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+;-----------------------------------------------------------------------------
+; sub8x8_dct, quant_4x4x4_scan and dequant per 8x8, then the decimation, nnz and the idct of the coded 8x8s
+; (dc-only 8x8s by add8x8_idct_dc). Returns the coded 8x8s | the summed score << 4 (0 without decimation).
+%define IRH_DQ    0         ; dequantised coefs, 256 bytes per 8x8
+%define IRH_T     1024      ; dct of an 8x8, then the levels of its zero blocks
+%define IRH_DMF   1280      ; dmf[i_qp%6]
+%define IRH_RND   1344      ; rounding if i_qp/6 < 4
+%define IRH_SHF   1376      ; shift
+%define IRH_MODE  1392
+%define IRH_OFF   1396      ; 4 without decimation
+%define IRH_NNZ   1400
+%define IRH_SIZE  1408
+
+; dst, offset: quant the coefs at r0+offset
+%macro IRH_QUANT 2
+    pabsd     m8, [r0+%2]
+    paddd     m8, [r5+(%2&32)]
+    pmulld    m8, [r4+(%2&32)]
+    psrad     m8, 16
+    psignd    %1, m8, [r0+%2]
+%endmacro
+
+; block, 2x src: to level if the block is nonzero (r10), else to the dct buffer
+%macro IRH_STORE_LEVEL 3
+    bt        r10d, %1
+    sbb       r11, r11
+    and       r11, r9
+    mova [r0+r11+64*%1   ], %2
+    mova [r0+r11+64*%1+32], %3
+%endmacro
+
+; field, block, A, B, packed dst (as QUANT_SCAN_BLOCK)
+%macro IRH_SCAN_BLOCK 5
+%if %1
+    vpermd    m8, m10, %3
+    IRH_STORE_LEVEL %2, m8, %4
+    packssdw  %5, m8, %4
+%else
+    vpermd    m8, m10, %3
+    vpermd    m9, m11, %4
+    vpblendd  m8, m8, m9, 0xe0
+    vpermd    m9, m11, %3
+    vpermd    m12, m10, %4
+    vpblendd  m9, m9, m12, 0xf8
+    IRH_STORE_LEVEL %2, m8, m9
+    packssdw  %5, m8, m9
+%endif
+%endmacro
+
+%macro INTER_RESID_4x4_HBD 2 ; name, field
+cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
+    mov [rsp+IRH_NNZ], r3
+    imul      r9d, r7d, 0x2b
+    shr       r9d, 8            ; i_qp / 6
+    lea       r10d, [r9*3]
+    add       r10d, r10d
+    sub       r7d, r10d         ; i_qp % 6
+    shl       r7d, 6
+    add       r6, r7
+    mova      m0, [r6]
+    mova      m1, [r6+32]
+    mova [rsp+IRH_DMF   ], m0
+    mova [rsp+IRH_DMF+32], m1
+    xor       r7d, r7d
+    sub       r9d, 4
+    jge .shl
+    neg       r9d
+    inc       r7d
+    vpbroadcastd m1, [pd_1]
+    movd      xm0, r9d
+    pslld     m1, xm0
+    psrld     m1, 1
+    mova [rsp+IRH_RND], m1
+    jmp .init
+.shl:
+    movd      xm0, r9d
+.init:
+    mova [rsp+IRH_SHF], xm0
+    mov [rsp+IRH_MODE], r7d
+    ; r8: score, IRH_OFF: 4 without decimation (every nonzero 8x8 coded, no MB threshold)
+    xor       r10d, r10d
+    mov       r7d, 6
+    test      r8d, r8d
+    sets      r10b
+    cmovs     r8d, r7d
+    shl       r10d, 2
+    mov [rsp+IRH_OFF], r10d
+    mov       r9, r0
+    lea       r0, [rsp+IRH_T]
+    sub       r9, r0            ; level - dct buffer
+    xor       r12d, r12d        ; nz of the coded 8x8s
+    xor       r13d, r13d        ; 256 * 8x8
+    xor       r14d, r14d        ; coded 8x8s | ac << 8
+.loop:
+    SUB8x8_DCT_HBD
+    IRH_QUANT m0,   0
+    IRH_QUANT m1,  32
+    IRH_QUANT m2,  64
+    IRH_QUANT m3,  96
+    IRH_QUANT m4, 128
+    IRH_QUANT m5, 160
+    IRH_QUANT m6, 192
+    IRH_QUANT m7, 224
+    por       m8, m0, m1
+    por       m9, m2, m3
+    packssdw  m8, m9
+    por       m9, m4, m5
+    por       m10, m6, m7
+    packssdw  m9, m10
+    packssdw  m8, m9
+    pxor      m15, m15
+    pcmpeqd   m8, m15
+    movmskps  r10d, m8
+    mov       r11d, r10d
+    shr       r10d, 4
+    and       r10d, r11d
+    xor       r10d, 0xf         ; nonzero blocks
+    jz .zero
+%if %2
+    mova      m10, [qscan4_field]
+%else
+    mova      m10, [qscan4_frame_i]
+    mova      m11, [qscan4_frame_j]
+%endif
+    IRH_SCAN_BLOCK %2, 0, m0, m1, m13
+    IRH_SCAN_BLOCK %2, 1, m2, m3, m14
+    packsswb  m13, m14
+    IRH_SCAN_BLOCK %2, 2, m4, m5, m14
+    IRH_SCAN_BLOCK %2, 3, m6, m7, m8
+    packsswb  m14, m8
+    mova      m8, [qscan4_bytes]
+    vpermd    m13, m8, m13
+    vpermd    m14, m8, m14
+    ; score = sum over nonzero levels of [run<1] + [run<3] + [run<6], run = zeros below; 9 if a |level| > 1
+    pabsb     m10, m13
+    pabsb     m11, m14
+    por       m10, m11
+    psubusb   m10, [pb_1]
+    pcmpeqb   m13, m15
+    pcmpeqb   m14, m15
+    pmovmskb  r3d, m13
+    pmovmskb  r6d, m14
+    shl       r6, 32
+    or        r3, r6
+    not       r3                ; nonzero levels in scan order, 16 bits per block
+    lea       r6, [r3+r3]
+    lea       r7, [r3*4]
+    lea       r11, [r3*8]
+    or        r7, r6
+    or        r7, r11
+    lea       r11, [r7*8]
+    or        r11, r7
+    mov       r10, 0x0001000100010001
+    or        r6, r10
+    mov       r10, 0x0007000700070007
+    or        r7, r10
+    mov       r10, 0x003f003f003f003f
+    or        r11, r10
+    and       r6, r3
+    and       r7, r3
+    and       r11, r3
+    popcnt    r6, r6
+    popcnt    r7, r7
+    popcnt    r11, r11
+    add       r6d, r7d
+    add       r6d, r11d
+    mov       r7d, 9
+    cmp       r6d, r7d
+    cmova     r6d, r7d
+    ptest     m10, m10
+    cmovnz    r6d, r7d          ; score
+    mov       r10, 0xfffefffefffefffe
+    xor       r7d, r7d
+    test      r3, r10
+    setnz     r7b               ; a nonzero ac level
+    ; dequant
+    pmaddwd   m0, [rsp+IRH_DMF   ]
+    pmaddwd   m1, [rsp+IRH_DMF+32]
+    pmaddwd   m2, [rsp+IRH_DMF   ]
+    pmaddwd   m3, [rsp+IRH_DMF+32]
+    pmaddwd   m4, [rsp+IRH_DMF   ]
+    pmaddwd   m5, [rsp+IRH_DMF+32]
+    pmaddwd   m6, [rsp+IRH_DMF   ]
+    pmaddwd   m7, [rsp+IRH_DMF+32]
+    cmp dword [rsp+IRH_MODE], 0
+    jz .dq_shl
+    mova      m8, [rsp+IRH_RND]
+    paddd     m0, m8
+    paddd     m1, m8
+    paddd     m2, m8
+    paddd     m3, m8
+    paddd     m4, m8
+    paddd     m5, m8
+    paddd     m6, m8
+    paddd     m7, m8
+    mova      xm8, [rsp+IRH_SHF]
+    psrad     m0, xm8
+    psrad     m1, xm8
+    psrad     m2, xm8
+    psrad     m3, xm8
+    psrad     m4, xm8
+    psrad     m5, xm8
+    psrad     m6, xm8
+    psrad     m7, xm8
+    jmp .dq_store
+.dq_shl:
+    mova      xm8, [rsp+IRH_SHF]
+    pslld     m0, xm8
+    pslld     m1, xm8
+    pslld     m2, xm8
+    pslld     m3, xm8
+    pslld     m4, xm8
+    pslld     m5, xm8
+    pslld     m6, xm8
+    pslld     m7, xm8
+.dq_store:
+    mova [rsp+r13+IRH_DQ+  0], m0
+    mova [rsp+r13+IRH_DQ+ 32], m1
+    mova [rsp+r13+IRH_DQ+ 64], m2
+    mova [rsp+r13+IRH_DQ+ 96], m3
+    mova [rsp+r13+IRH_DQ+128], m4
+    mova [rsp+r13+IRH_DQ+160], m5
+    mova [rsp+r13+IRH_DQ+192], m6
+    mova [rsp+r13+IRH_DQ+224], m7
+    ; nonzero blocks again, from the 16 bits per block
+    mov       r10, 0x7fff7fff7fff7fff
+    mov       r11, r3
+    and       r11, r10
+    add       r11, r10
+    or        r11, r3
+    mov       r10, 0x8000800080008000
+    and       r11, r10
+    mov       r10, 0x0000200040008001
+    imul      r11, r10
+    shr       r11, 60
+    mov       r10d, r11d
+    add       r8d, r6d
+    add       r6d, [rsp+IRH_OFF]
+    xor       r3d, r3d
+    xor       r11d, r11d
+    cmp       r6d, 4
+    cmovae    r3d, r10d         ; nz of a coded 8x8
+    setae     r11b
+    shl       r7d, 11
+    shl       r11d, 3
+    or        r7d, r11d
+    shl       r3d, 12
+    shr       r12d, 4
+    shr       r14d, 1
+    or        r12d, r3d
+    or        r14d, r7d
+    jmp .next
+.zero:
+    shr       r12d, 4
+    shr       r14d, 1
+.next:
+    add       r1, 8*SIZEOF_PIXEL
+    add       r2, 8*SIZEOF_PIXEL
+    add       r9, 256
+    add       r13d, 256
+    cmp       r13d, 512
+    jne .next2
+    add       r1, 8*FENC_STRIDEB-16*SIZEOF_PIXEL
+    add       r2, 8*FDEC_STRIDEB-16*SIZEOF_PIXEL
+.next2:
+    cmp       r13d, 1024
+    jl .loop
+
+    ; MB decimation
+    xor       r4d, r4d
+    cmp       r8d, 6
+    cmovl     r12d, r4d
+    cmovl     r14d, r4d
+    cmp dword [rsp+IRH_OFF], 0
+    cmovnz    r8d, r4d
+    shl       r8d, 4
+    mov       r4d, r14d
+    and       r4d, 0xf
+    or        r8d, r4d          ; return value
+    mov       r3, [rsp+IRH_NNZ]
+    movd      xm0, r12d
+    vpbroadcastw m0, xm0
+    mova      m1, [ir_nnz_bits]
+    pand      m0, m1
+    pcmpeqw   m0, m1
+    psrlw     m0, 15
+    packuswb  m0, m0
+    vextracti128 xm1, m0, 1
+    movd [r3+0*8], xm0
+    pextrd [r3+1*8], xm0, 1
+    movd [r3+2*8], xm1
+    pextrd [r3+3*8], xm1, 1
+    test      r4d, r4d
+    jz .end
+    sub       r2, 8*FDEC_STRIDEB+16*SIZEOF_PIXEL ; p_dst
+    mov       r9, r2
+.recon:
+    tzcnt     r5d, r4d
+    mov       r6d, r5d
+    and       r6d, 1
+    mov       r7d, r5d
+    shr       r7d, 1
+    imul      r7d, 8*FDEC_STRIDEB
+    lea       r0, [r9+r7]
+    shl       r6d, 4
+    add       r0, r6            ; dst of the 8x8
+    mov       r6d, r5d
+    shl       r6d, 8
+    lea       r1, [rsp+r6+IRH_DQ]
+    lea       r6d, [r5+8]
+    bt        r14d, r6d
+    jnc .dc
+    ADD8x8_IDCT_HBD
+    jmp .recon_next
+.dc:
+    movd      xm0, [r1+  0]
+    pinsrd    xm0, [r1+ 64], 1
+    pinsrd    xm0, [r1+128], 2
+    pinsrd    xm0, [r1+192], 3
+    paddd     xm0, [pd_32]
+    psrad     xm0, 6            ; (dc+32)>>6
+    packssdw  xm0, xm0
+    punpcklwd xm0, xm0
+    pshufd    xm1, xm0, q1100   ; rows 0-3
+    pshufd    xm0, xm0, q3322   ; rows 4-7
+    vinserti128 m1, m1, xm1, 1
+    vinserti128 m0, m0, xm0, 1
+    pxor      m5, m5
+    mova      m7, [pw_pixel_max]
+%assign irh_i 0
+%rep 4
+    movu         xm2, [r0+irh_i*FDEC_STRIDEB]
+    vinserti128   m2, m2, [r0+(irh_i+1)*FDEC_STRIDEB], 1
+%if irh_i < 4
+    paddsw        m2, m1
+%else
+    paddsw        m2, m0
+%endif
+    CLIPW         m2, m5, m7
+    movu [r0+irh_i*FDEC_STRIDEB], xm2
+    vextracti128 [r0+(irh_i+1)*FDEC_STRIDEB], m2, 1
+%assign irh_i irh_i+2
+%endrep
+.recon_next:
+    blsr      r4d, r4d
+    jnz .recon
+.end:
+    mov       eax, r8d
+    RET
+%endmacro
+
+INIT_YMM avx2
+INTER_RESID_4x4_HBD frame, 0
+INTER_RESID_4x4_HBD field, 1
+%undef irh_i
+%endif ; ARCH_X86_64
+
 %else ; !HIGH_BIT_DEPTH
 
 INIT_MMX mmx
@@ -1414,6 +1790,401 @@ cglobal add16x16_idct, 2,3,15
 .add8x8:
     ADD8x8_IDCT_ZMM
     ret
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+;                      udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+;-----------------------------------------------------------------------------
+; sub8x8_dct, quant_4x4x4_scan and dequant per 8x8, then the decimation, nnz and the idct of the coded 8x8s
+; (dc-only 8x8s by add8x8_idct_dc). Returns the coded 8x8s | the summed score << 4 (0 without decimation).
+%define IR_DQ   0          ; dequantised coefs, 128 bytes per 8x8
+%define IR_DUMP  512        ; levels of zero blocks
+%define IR_RND   640        ; dequant rounding and shift if not exact
+%define IR_SHF   672
+%define IR_MODE  688
+%define IR_SIZE  704
+
+; dst1, dst2, row a, row b: fenc - fdec of rows a, b | a+4, b+4; m4, m5 tmp
+%macro IR_LOAD_DIFF8x2 4
+    movq        xm%1, [r1+%3*FENC_STRIDE]
+    movq        xm%2, [r1+%4*FENC_STRIDE]
+    vinserti128  m%1, m%1, [r1+(%3+4)*FENC_STRIDE], 1
+    vinserti128  m%2, m%2, [r1+(%4+4)*FENC_STRIDE], 1
+    movq         xm4, [r2+%3*FDEC_STRIDE]
+    movq         xm5, [r2+%4*FDEC_STRIDE]
+    vinserti128   m4, m4, [r2+(%3+4)*FDEC_STRIDE], 1
+    vinserti128   m5, m5, [r2+(%4+4)*FDEC_STRIDE], 1
+    punpcklbw    m%1, m4
+    punpcklbw    m%2, m5
+    pmaddubsw    m%1, [hsub_mul]
+    pmaddubsw    m%2, [hsub_mul]
+%endmacro
+
+; block, src: to level if the block is nonzero (r9), else to the dump
+%macro IR_STORE_LEVEL 2
+    bt        r9d, %1
+    sbb       r4, r4
+    and       r4, r0
+    mova [rsp+r4+IR_DUMP+32*%1], %2
+%endmacro
+
+; as STOREx2_AVX2, dst r7
+%macro IR_STOREx2 8 ; 2x src, 2x tmp, 4x row
+    movq        xm%3, [r7+%5*FDEC_STRIDE]
+    vinserti128  m%3, m%3, [r7+%6*FDEC_STRIDE], 1
+    movq        xm%4, [r7+%7*FDEC_STRIDE]
+    vinserti128  m%4, m%4, [r7+%8*FDEC_STRIDE], 1
+    punpcklbw    m%3, m12
+    punpcklbw    m%4, m12
+    psraw        m%1, 6
+    psraw        m%2, 6
+    paddsw       m%1, m%3
+    paddsw       m%2, m%4
+    packuswb     m%1, m%2
+    vextracti128 xm%2, m%1, 1
+    movq   [r7+%5*FDEC_STRIDE], xm%1
+    movq   [r7+%6*FDEC_STRIDE], xm%2
+    movhps [r7+%7*FDEC_STRIDE], xm%1
+    movhps [r7+%8*FDEC_STRIDE], xm%2
+%endmacro
+
+; dst, tmp; m13: dmf, m10: rounding, xm11: shift
+%macro IR_DEQUANT_ROUND 2
+    pmullw    %2, %1, m13
+    pmulhw    %1, m13
+    punpckhwd m9, %2, %1
+    punpcklwd %1, %2, %1
+    paddd     %1, m10
+    paddd     m9, m10
+    psrad     %1, xm11
+    psrad     m9, xm11
+    packssdw  %1, m9
+%endmacro
+
+%macro INTER_RESID_4x4 2 ; name, field
+cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
+    mova      m15, [r4]
+    mova      m14, [r5]
+    imul      r4d, r7d, 0x2b
+    shr       r4d, 8            ; i_qp / 6
+    lea       r5d, [r4*3]
+    add       r5d, r5d
+    sub       r7d, r5d          ; i_qp % 6
+    shl       r7d, 6
+    add       r6, r7
+    mova      m13, [r6]
+    packssdw  m13, [r6+32]
+    vpermq    m13, m13, q3120   ; dmf as words
+    xor       r7d, r7d
+    sub       r4d, 4
+    jl .rshift
+    movd      xm0, r4d
+    psllw     m13, xm0
+    jmp .init
+.rshift:
+    ; exact if dmf is divisible by 1<<shift (flat): multiply by dmf>>shift like dequant_4x4_flat16
+    neg       r4d
+    movd      xm0, r4d
+    pcmpeqw   m1, m1
+    mov       r5d, 16
+    sub       r5d, r4d
+    movd      xm2, r5d
+    psrlw     m1, xm2
+    ptest     m13, m1
+    jnz .rshift_round
+    psrlw     m13, xm0
+    jmp .init
+.rshift_round:
+    inc       r7d
+    mova [rsp+IR_SHF], xm0
+    mova      m1, [pd_1]
+    pslld     m1, xm0
+    psrld     m1, 1
+    mova [rsp+IR_RND], m1
+.init:
+    mov  [rsp+IR_MODE], r7d
+    pxor      m12, m12
+    ; r8: score, r10: 4 without decimation (every nonzero 8x8 coded, no MB threshold)
+    xor       r10d, r10d
+    mov       r4d, 6
+    test      r8d, r8d
+    sets      r10b
+    cmovs     r8d, r4d
+    shl       r10d, 2
+    lea       r4, [rsp+IR_DUMP]
+    sub       r0, r4            ; level - dump
+    xor       r12d, r12d        ; nz of the coded 8x8s
+    xor       r13d, r13d        ; 128 * 8x8
+    xor       r14d, r14d        ; coded 8x8s | ac << 8
+.loop:
+    IR_LOAD_DIFF8x2 0, 1, 0, 1
+    IR_LOAD_DIFF8x2 2, 3, 2, 3
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    DCT4_1D 0, 1, 2, 3, 4
+    vperm2i128 m4, m0, m2, 0x20 ; A0 B0 A2 B2
+    vperm2i128 m5, m1, m3, 0x20 ; A1 B1 A3 B3
+    vperm2i128 m6, m0, m2, 0x31 ; C0 D0 C2 D2
+    vperm2i128 m7, m1, m3, 0x31 ; C1 D1 C3 D3
+    punpcklqdq m0, m4, m5
+    punpckhqdq m1, m4, m5
+    punpcklqdq m2, m6, m7
+    punpckhqdq m3, m6, m7
+    pabsw     m4, m0
+    pabsw     m5, m1
+    pabsw     m6, m2
+    pabsw     m7, m3
+    paddusw   m4, m14
+    paddusw   m5, m14
+    paddusw   m6, m14
+    paddusw   m7, m14
+    pmulhuw   m4, m15
+    pmulhuw   m5, m15
+    pmulhuw   m6, m15
+    pmulhuw   m7, m15
+    psignw    m0, m4, m0
+    psignw    m1, m5, m1
+    psignw    m2, m6, m2
+    psignw    m3, m7, m3
+    packssdw  m4, m0, m1
+    packssdw  m5, m2, m3
+    packssdw  m4, m5
+    pcmpeqd   m4, m12
+    movmskps  r9d, m4
+    mov       r4d, r9d
+    shr       r9d, 4
+    and       r9d, r4d
+    xor       r9d, 0xf          ; nonzero blocks
+    jz .zero
+%if %2
+    mova      m8, [qscan4_field]
+    pshufb    m4, m0, m8
+    pshufb    m5, m1, m8
+    pshufb    m6, m2, m8
+    pshufb    m7, m3, m8
+%else
+    mova      m10, [qscan4_frame_a]
+    mova      m11, [qscan4_frame_b]
+    vperm2i128 m8, m0, m0, 0x01
+    vperm2i128 m9, m1, m1, 0x01
+    pshufb    m4, m0, m10
+    pshufb    m5, m1, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m4, m8
+    por       m5, m9
+    vperm2i128 m8, m2, m2, 0x01
+    vperm2i128 m9, m3, m3, 0x01
+    pshufb    m6, m2, m10
+    pshufb    m7, m3, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m6, m8
+    por       m7, m9
+%endif
+    IR_STORE_LEVEL 0, m4
+    IR_STORE_LEVEL 1, m5
+    IR_STORE_LEVEL 2, m6
+    IR_STORE_LEVEL 3, m7
+    ; score = sum over nonzero levels of [run<1] + [run<3] + [run<6], run = zeros below; 9 if a |level| > 1
+    packsswb  m8, m4, m5
+    packsswb  m9, m6, m7
+    vpermq    m8, m8, q3120
+    vpermq    m9, m9, q3120
+    pabsb     m10, m8
+    pabsb     m11, m9
+    por       m10, m11
+    psubusb   m10, [pb_1]
+    pcmpeqb   m8, m12
+    pcmpeqb   m9, m12
+    pmovmskb  r4d, m8
+    pmovmskb  r5d, m9
+    shl       r5, 32
+    or        r4, r5
+    not       r4                ; nonzero levels in scan order, 16 bits per block
+    lea       r5, [r4+r4]
+    lea       r6, [r4*4]
+    lea       r7, [r4*8]
+    or        r6, r5
+    or        r6, r7
+    lea       r7, [r6*8]
+    or        r7, r6
+    mov       r11, 0x0001000100010001
+    or        r5, r11
+    mov       r11, 0x0007000700070007
+    or        r6, r11
+    mov       r11, 0x003f003f003f003f
+    or        r7, r11
+    and       r5, r4
+    and       r6, r4
+    and       r7, r4
+    popcnt    r5, r5
+    popcnt    r6, r6
+    popcnt    r7, r7
+    add       r5d, r6d
+    add       r5d, r7d
+    mov       r6d, 9
+    cmp       r5d, r6d
+    cmova     r5d, r6d
+    ptest     m10, m10
+    cmovnz    r5d, r6d
+    mov       r11, 0xfffefffefffefffe
+    xor       r6d, r6d
+    test      r4, r11
+    setnz     r6b               ; a nonzero ac level
+    ; dequant
+    cmp dword [rsp+IR_MODE], 0
+    jz .dq_flat
+    mova      m10, [rsp+IR_RND]
+    mova     xm11, [rsp+IR_SHF]
+    IR_DEQUANT_ROUND m0, m4
+    IR_DEQUANT_ROUND m1, m4
+    IR_DEQUANT_ROUND m2, m4
+    IR_DEQUANT_ROUND m3, m4
+    jmp .dq_store
+.dq_flat:
+    pmullw    m0, m13
+    pmullw    m1, m13
+    pmullw    m2, m13
+    pmullw    m3, m13
+.dq_store:
+    mova [rsp+r13+IR_DQ+ 0], m0
+    mova [rsp+r13+IR_DQ+32], m1
+    mova [rsp+r13+IR_DQ+64], m2
+    mova [rsp+r13+IR_DQ+96], m3
+    add       r8d, r5d
+    add       r5d, r10d
+    xor       r4d, r4d
+    xor       r7d, r7d
+    cmp       r5d, 4
+    cmovae    r4d, r9d          ; nz of a coded 8x8
+    setae     r7b
+    shl       r6d, 11
+    shl       r7d, 3
+    or        r6d, r7d
+    shl       r4d, 12
+    shr       r12d, 4
+    shr       r14d, 1
+    or        r12d, r4d
+    or        r14d, r6d
+    jmp .next
+.zero:
+    shr       r12d, 4
+    shr       r14d, 1
+.next:
+    add       r1, 8
+    add       r2, 8
+    sub       r0, -128
+    add       r13d, 128
+    cmp       r13d, 256
+    jne .next2
+    add       r1, 8*FENC_STRIDE-16
+    add       r2, 8*FDEC_STRIDE-16
+.next2:
+    cmp       r13d, 512
+    jl .loop
+
+    ; MB decimation
+    xor       r4d, r4d
+    cmp       r8d, 6
+    cmovl     r12d, r4d
+    cmovl     r14d, r4d
+    test      r10d, r10d
+    cmovnz    r8d, r4d
+    shl       r8d, 4
+    mov       r4d, r14d
+    and       r4d, 0xf
+    or        r8d, r4d          ; return value
+    movd      xm0, r12d
+    vpbroadcastw m0, xm0
+    mova      m1, [ir_nnz_bits]
+    pand      m0, m1
+    pcmpeqw   m0, m1
+    psrlw     m0, 15
+    packuswb  m0, m0
+    vextracti128 xm1, m0, 1
+    movd [r3+0*8], xm0
+    pextrd [r3+1*8], xm0, 1
+    movd [r3+2*8], xm1
+    pextrd [r3+3*8], xm1, 1
+    test      r4d, r4d
+    jz .end
+    sub       r2, 4*FDEC_STRIDE+16 ; p_dst + 4*FDEC_STRIDE
+.recon:
+    tzcnt     r5d, r4d
+    mov       r6d, r5d
+    and       r6d, 1
+    mov       r7d, r5d
+    shr       r7d, 1
+    imul      r7d, 8*FDEC_STRIDE
+    add       r7, r2
+    lea       r7, [r7+r6*8]     ; dst of the 8x8 + 4*FDEC_STRIDE
+    mov       r6d, r5d
+    shl       r6d, 7
+    lea       r6, [rsp+r6+IR_DQ]
+    lea       r9d, [r5+8]
+    bt        r14d, r9d
+    jnc .dc
+    mova      xm0, [r6+ 0]
+    mova      xm1, [r6+32]
+    mova      xm2, [r6+16]
+    mova      xm3, [r6+48]
+    vinserti128 m0, m0, [r6+ 64], 1
+    vinserti128 m1, m1, [r6+ 96], 1
+    vinserti128 m2, m2, [r6+ 80], 1
+    vinserti128 m3, m3, [r6+112], 1
+    SBUTTERFLY qdq, 0, 1, 4
+    SBUTTERFLY qdq, 2, 3, 4
+    IDCT4_1D w,0,1,2,3,4,5
+    TRANSPOSE2x4x4W 0,1,2,3,4
+    paddw     m0, [pw_32]
+    IDCT4_1D w,0,1,2,3,4,5
+    IR_STOREx2 0, 1, 4, 5, -4, 0, -3, 1
+    IR_STOREx2 2, 3, 4, 5, -2, 2, -1, 3
+    jmp .recon_next
+.dc:
+    movd      xm0, [r6+ 0]
+    pinsrw    xm0, [r6+32], 1
+    pinsrw    xm0, [r6+64], 2
+    pinsrw    xm0, [r6+96], 3
+    pmulhrsw  xm0, [pw_512]     ; (dc+32)>>6
+    psubw     xm1, xm12, xm0
+    packuswb  xm0, xm0
+    packuswb  xm1, xm1
+    pshufb    xm0, [pb_unpackbd1]
+    pshufb    xm1, [pb_unpackbd1]
+    punpcklqdq xm2, xm0, xm0
+    punpckhqdq xm0, xm0
+    punpcklqdq xm3, xm1, xm1
+    punpckhqdq xm1, xm1
+%assign ir_i -4
+%rep 4
+    movq      xm4, [r7+(ir_i+0)*FDEC_STRIDE]
+    movhps    xm4, [r7+(ir_i+1)*FDEC_STRIDE]
+%if ir_i < 0
+    paddusb   xm4, xm2
+    psubusb   xm4, xm3
+%else
+    paddusb   xm4, xm0
+    psubusb   xm4, xm1
+%endif
+    movq   [r7+(ir_i+0)*FDEC_STRIDE], xm4
+    movhps [r7+(ir_i+1)*FDEC_STRIDE], xm4
+%assign ir_i ir_i+2
+%endrep
+.recon_next:
+    blsr      r4d, r4d
+    jnz .recon
+.end:
+    mov       eax, r8d
+    RET
+%endmacro
+
+INIT_YMM avx2
+INTER_RESID_4x4 frame, 0
+INTER_RESID_4x4 field, 1
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 

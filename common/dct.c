@@ -904,6 +904,82 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
     }
 }
 
+/* nz: per 8x8, the quant_4x4x4_scan or quant_8x8_scan result. Applies the decimation and writes nnz;
+ * returns the coded 8x8s | score << 4. */
+static int inter_resid_decimate( int nz[4], uint8_t *nnz, int i_decimate_mb, int b_8x8 )
+{
+    int cbp = 0;
+    for( int i = 0; i < 4; i++ )
+        if( nz[i] & 15 )
+        {
+            int score = (nz[i] >> 4) & 15;
+            if( i_decimate_mb < 0 || score >= 4 )
+                cbp |= 1 << i;
+            if( i_decimate_mb >= 0 )
+                i_decimate_mb += score;
+        }
+    if( i_decimate_mb >= 0 && i_decimate_mb < 6 )
+        cbp = 0;
+    for( int i = 0; i < 16; i++ )
+        nnz[(i&1) + (i>>1&1)*8 + (i>>2&1)*2 + (i>>3)*16] = cbp >> (i>>2) & (b_8x8 ? 1 : nz[i>>2] >> (i&3)) & 1;
+    return cbp | X264_MAX( i_decimate_mb, 0 ) << 4;
+}
+
+static ALWAYS_INLINE int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz,
+                                          udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp,
+                                          int i_decimate_mb, int b_field )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct,[16],[16] );
+    int nz[4];
+    sub16x16_dct( dct, p_src, p_dst );
+    for( int i = 0; i < 4; i++ )
+        nz[i] = (b_field ? x264_quant_4x4x4_scan_field : x264_quant_4x4x4_scan_frame)( &dct[i*4], &level[i*4], mf, bias,
+                                                                                       dequant_mf, i_qp );
+    int ret = inter_resid_decimate( nz, nnz, i_decimate_mb, 0 );
+    for( int i = 0; i < 4; i++ )
+        if( ret >> i & 1 )
+            add8x8_idct( &p_dst[(i&1)*8 + (i>>1)*8*FDEC_STRIDE], &dct[i*4] );
+    return ret;
+}
+
+static ALWAYS_INLINE int inter_resid_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz,
+                                          udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp,
+                                          int i_decimate_mb, int b_field )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct,[4],[64] );
+    int nz[4];
+    sub16x16_dct8( dct, p_src, p_dst );
+    for( int i = 0; i < 4; i++ )
+        nz[i] = (b_field ? x264_quant_8x8_scan_field : x264_quant_8x8_scan_frame)( dct[i], level[i], mf, bias,
+                                                                                   dequant_mf, i_qp );
+    int ret = inter_resid_decimate( nz, nnz, i_decimate_mb, 1 );
+    for( int i = 0; i < 4; i++ )
+        if( ret >> i & 1 )
+            add8x8_idct8( &p_dst[(i&1)*8 + (i>>1)*8*FDEC_STRIDE], dct[i] );
+    return ret;
+}
+
+int x264_inter_resid_4x4_frame( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+{
+    return inter_resid_4x4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 0 );
+}
+int x264_inter_resid_4x4_field( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
+                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+{
+    return inter_resid_4x4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 1 );
+}
+int x264_inter_resid_8x8_frame( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+{
+    return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 0 );
+}
+int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
+                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+{
+    return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 1 );
+}
+
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {
     pf_interlaced->scan_8x8   = zigzag_scan_8x8_field;
@@ -925,6 +1001,11 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_8x8_scan      = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
+    /* asm only: NULL keeps the separate calls in x264_macroblock_encode */
+    pf_interlaced->inter_resid_4x4      = NULL;
+    pf_progressive->inter_resid_4x4     = NULL;
+    pf_interlaced->inter_resid_8x8      = NULL;
+    pf_progressive->inter_resid_8x8     = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1054,6 +1135,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
+        pf_interlaced->inter_resid_4x4      = x264_inter_resid_4x4_field_avx2;
+        pf_progressive->inter_resid_4x4     = x264_inter_resid_4x4_frame_avx2;
+        pf_interlaced->inter_resid_8x8      = x264_inter_resid_8x8_field_avx2;
+        pf_progressive->inter_resid_8x8     = x264_inter_resid_8x8_frame_avx2;
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
