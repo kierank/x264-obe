@@ -448,73 +448,147 @@ rd4_above:          dd 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 rd4_ctxc:           dd 1, 3, 5, 9
 rd4_ctx8:           dd 8
 coeff_abs_levelgt1_ctx_chroma_dc: db 5, 5, 5, 5, 6, 7, 8, 8
-; per state: range_lps[state>>1][(range>>6)&3] in bytes 0-3, transition[state][bin] in bytes 4-5
-align 8
-cabac_lps_trans:
-    db 2,2,2,2,0,0,0,0, 2,2,2,2,1,1,0,0
-    db 6,7,8,9,2,50,0,0, 6,7,8,9,51,3,0,0
-    db 6,7,9,10,2,50,0,0, 6,7,9,10,51,3,0,0
-    db 6,8,9,11,4,52,0,0, 6,8,9,11,53,5,0,0
-    db 7,8,10,11,6,52,0,0, 7,8,10,11,53,7,0,0
-    db 7,9,10,12,8,52,0,0, 7,9,10,12,53,9,0,0
-    db 7,9,11,12,10,54,0,0, 7,9,11,12,55,11,0,0
-    db 8,9,11,13,12,54,0,0, 8,9,11,13,55,13,0,0
-    db 8,10,12,14,14,54,0,0, 8,10,12,14,55,15,0,0
-    db 9,11,12,14,16,56,0,0, 9,11,12,14,57,17,0,0
-    db 9,11,13,15,18,56,0,0, 9,11,13,15,57,19,0,0
-    db 10,12,14,16,20,56,0,0, 10,12,14,16,57,21,0,0
-    db 10,12,15,17,22,58,0,0, 10,12,15,17,59,23,0,0
-    db 11,13,15,18,24,58,0,0, 11,13,15,18,59,25,0,0
-    db 11,14,16,19,26,60,0,0, 11,14,16,19,61,27,0,0
-    db 12,14,17,20,28,60,0,0, 12,14,17,20,61,29,0,0
-    db 12,15,18,21,30,60,0,0, 12,15,18,21,61,31,0,0
-    db 13,16,19,22,32,62,0,0, 13,16,19,22,63,33,0,0
-    db 14,17,20,23,34,62,0,0, 14,17,20,23,63,35,0,0
-    db 14,18,21,24,36,64,0,0, 14,18,21,24,65,37,0,0
-    db 15,19,22,25,38,66,0,0, 15,19,22,25,67,39,0,0
-    db 16,20,23,27,40,66,0,0, 16,20,23,27,67,41,0,0
-    db 17,21,25,28,42,66,0,0, 17,21,25,28,67,43,0,0
-    db 18,22,26,30,44,68,0,0, 18,22,26,30,69,45,0,0
-    db 19,23,27,31,46,68,0,0, 19,23,27,31,69,47,0,0
-    db 20,24,29,33,48,70,0,0, 20,24,29,33,71,49,0,0
-    db 21,26,30,35,50,72,0,0, 21,26,30,35,73,51,0,0
-    db 22,27,32,37,52,72,0,0, 22,27,32,37,73,53,0,0
-    db 23,28,33,39,54,74,0,0, 23,28,33,39,75,55,0,0
-    db 24,30,35,41,56,74,0,0, 24,30,35,41,75,57,0,0
-    db 26,31,37,43,58,76,0,0, 26,31,37,43,77,59,0,0
-    db 27,33,39,45,60,78,0,0, 27,33,39,45,79,61,0,0
-    db 29,35,41,48,62,78,0,0, 29,35,41,48,79,63,0,0
-    db 30,37,43,50,64,80,0,0, 30,37,43,50,81,65,0,0
-    db 32,39,46,53,66,82,0,0, 32,39,46,53,83,67,0,0
-    db 33,41,48,56,68,82,0,0, 33,41,48,56,83,69,0,0
-    db 35,43,51,59,70,84,0,0, 35,43,51,59,85,71,0,0
-    db 37,45,54,62,72,84,0,0, 37,45,54,62,85,73,0,0
-    db 39,48,56,65,74,88,0,0, 39,48,56,65,89,75,0,0
-    db 41,50,59,69,76,88,0,0, 41,50,59,69,89,77,0,0
-    db 43,53,63,72,78,90,0,0, 43,53,63,72,91,79,0,0
-    db 46,56,66,76,80,90,0,0, 46,56,66,76,91,81,0,0
-    db 48,59,69,80,82,94,0,0, 48,59,69,80,95,83,0,0
-    db 51,62,73,85,84,94,0,0, 51,62,73,85,95,85,0,0
-    db 53,65,77,89,86,96,0,0, 53,65,77,89,97,87,0,0
-    db 56,69,81,94,88,96,0,0, 56,69,81,94,97,89,0,0
-    db 59,72,86,99,90,100,0,0, 59,72,86,99,101,91,0,0
-    db 62,76,90,104,92,100,0,0, 62,76,90,104,101,93,0,0
-    db 66,80,95,110,94,102,0,0, 66,80,95,110,103,95,0,0
-    db 69,85,100,116,96,104,0,0, 69,85,100,116,105,97,0,0
-    db 73,89,105,122,98,104,0,0, 73,89,105,122,105,99,0,0
-    db 77,94,111,128,100,108,0,0, 77,94,111,128,109,101,0,0
-    db 81,99,117,135,102,108,0,0, 81,99,117,135,109,103,0,0
-    db 85,104,123,142,104,110,0,0, 85,104,123,142,111,105,0,0
-    db 90,110,130,150,106,112,0,0, 90,110,130,150,113,107,0,0
-    db 95,116,137,158,108,114,0,0, 95,116,137,158,115,109,0,0
-    db 100,122,144,166,110,116,0,0, 100,122,144,166,117,111,0,0
-    db 105,128,152,175,112,118,0,0, 105,128,152,175,119,113,0,0
-    db 111,135,160,185,114,118,0,0, 111,135,160,185,119,115,0,0
-    db 116,142,169,195,116,122,0,0, 116,142,169,195,123,117,0,0
-    db 123,150,178,205,118,122,0,0, 123,150,178,205,123,119,0,0
-    db 128,158,187,216,120,124,0,0, 128,158,187,216,125,121,0,0
-    db 128,167,197,227,122,126,0,0, 128,167,197,227,127,123,0,0
-    db 128,176,208,240,124,127,0,0, 128,176,208,240,126,125,0,0
+%if ARCH_X86_64
+; cabac_chain: CABAC_BIN and the BMI2 decision, range kept as u = range-256.
+; Three tables of [bin][state] qwords: F1 and F2 hold a 16-bit field per
+; q = (range>>6)&3, X holds the shift field of q in byte 2q, the MPS mask in
+; byte 1 and transition[state][bin] in byte 3.
+; MPS: F1 = rLPS, F2 = 256-2*rLPS, mask 0xff, shift 0
+; LPS: F1 = rLPS-256, F2 = (rLPS<<s)-256, mask 0, shift s-1
+%define CHAIN_F1 0
+%define CHAIN_F2 2048
+%define CHAIN_X  4096
+
+%macro CHAIN_Q 1 ; range_lps
+    %assign %%s 0
+    %rep 8
+        %if (%1 << %%s) < 256
+            %assign %%s %%s+1
+        %endif
+    %endrep
+    %if chain_tab == 0 && chain_lps
+        %assign chain_v (%1-256) & 0xffff
+    %elif chain_tab == 0
+        %assign chain_v %1
+    %elif chain_lps
+        %assign chain_v (%1 << %%s) - 256
+    %else
+        %assign chain_v (256-2*%1) & 0xffff
+    %endif
+    %assign chain_sx chain_lps * (%%s-1)
+%endmacro
+
+%macro CHAIN_ENTRY 6 ; state&1, range_lps[0..3], next state
+    %assign chain_lps chain_b ^ %1
+    CHAIN_Q %2
+    %assign %%v0 chain_v
+    %assign %%s0 chain_sx
+    CHAIN_Q %3
+    %assign %%v1 chain_v
+    %assign %%s1 chain_sx
+    CHAIN_Q %4
+    %assign %%v2 chain_v
+    %assign %%s2 chain_sx
+    CHAIN_Q %5
+    %assign %%v3 chain_v
+    %assign %%s3 chain_sx
+    %if chain_tab == 2
+        db %%s0, (1-chain_lps)*0xff, %%s1, %6, %%s2, 0, %%s3, 0
+    %else
+        dw %%v0, %%v1, %%v2, %%v3
+    %endif
+%endmacro
+
+; range_lps[k][0..3], transition[2k][0..1], transition[2k+1][0..1]
+%macro CHAIN_ROW 8
+    %if chain_b
+        CHAIN_ENTRY 0, %1, %2, %3, %4, %6
+        CHAIN_ENTRY 1, %1, %2, %3, %4, %8
+    %else
+        CHAIN_ENTRY 0, %1, %2, %3, %4, %5
+        CHAIN_ENTRY 1, %1, %2, %3, %4, %7
+    %endif
+%endmacro
+
+%macro CHAIN_ROWS 0
+    CHAIN_ROW   2,  2,  2,  2,   0,  0,   1,  1
+    CHAIN_ROW   6,  7,  8,  9,   2, 50,  51,  3
+    CHAIN_ROW   6,  7,  9, 10,   2, 50,  51,  3
+    CHAIN_ROW   6,  8,  9, 11,   4, 52,  53,  5
+    CHAIN_ROW   7,  8, 10, 11,   6, 52,  53,  7
+    CHAIN_ROW   7,  9, 10, 12,   8, 52,  53,  9
+    CHAIN_ROW   7,  9, 11, 12,  10, 54,  55, 11
+    CHAIN_ROW   8,  9, 11, 13,  12, 54,  55, 13
+    CHAIN_ROW   8, 10, 12, 14,  14, 54,  55, 15
+    CHAIN_ROW   9, 11, 12, 14,  16, 56,  57, 17
+    CHAIN_ROW   9, 11, 13, 15,  18, 56,  57, 19
+    CHAIN_ROW  10, 12, 14, 16,  20, 56,  57, 21
+    CHAIN_ROW  10, 12, 15, 17,  22, 58,  59, 23
+    CHAIN_ROW  11, 13, 15, 18,  24, 58,  59, 25
+    CHAIN_ROW  11, 14, 16, 19,  26, 60,  61, 27
+    CHAIN_ROW  12, 14, 17, 20,  28, 60,  61, 29
+    CHAIN_ROW  12, 15, 18, 21,  30, 60,  61, 31
+    CHAIN_ROW  13, 16, 19, 22,  32, 62,  63, 33
+    CHAIN_ROW  14, 17, 20, 23,  34, 62,  63, 35
+    CHAIN_ROW  14, 18, 21, 24,  36, 64,  65, 37
+    CHAIN_ROW  15, 19, 22, 25,  38, 66,  67, 39
+    CHAIN_ROW  16, 20, 23, 27,  40, 66,  67, 41
+    CHAIN_ROW  17, 21, 25, 28,  42, 66,  67, 43
+    CHAIN_ROW  18, 22, 26, 30,  44, 68,  69, 45
+    CHAIN_ROW  19, 23, 27, 31,  46, 68,  69, 47
+    CHAIN_ROW  20, 24, 29, 33,  48, 70,  71, 49
+    CHAIN_ROW  21, 26, 30, 35,  50, 72,  73, 51
+    CHAIN_ROW  22, 27, 32, 37,  52, 72,  73, 53
+    CHAIN_ROW  23, 28, 33, 39,  54, 74,  75, 55
+    CHAIN_ROW  24, 30, 35, 41,  56, 74,  75, 57
+    CHAIN_ROW  26, 31, 37, 43,  58, 76,  77, 59
+    CHAIN_ROW  27, 33, 39, 45,  60, 78,  79, 61
+    CHAIN_ROW  29, 35, 41, 48,  62, 78,  79, 63
+    CHAIN_ROW  30, 37, 43, 50,  64, 80,  81, 65
+    CHAIN_ROW  32, 39, 46, 53,  66, 82,  83, 67
+    CHAIN_ROW  33, 41, 48, 56,  68, 82,  83, 69
+    CHAIN_ROW  35, 43, 51, 59,  70, 84,  85, 71
+    CHAIN_ROW  37, 45, 54, 62,  72, 84,  85, 73
+    CHAIN_ROW  39, 48, 56, 65,  74, 88,  89, 75
+    CHAIN_ROW  41, 50, 59, 69,  76, 88,  89, 77
+    CHAIN_ROW  43, 53, 63, 72,  78, 90,  91, 79
+    CHAIN_ROW  46, 56, 66, 76,  80, 90,  91, 81
+    CHAIN_ROW  48, 59, 69, 80,  82, 94,  95, 83
+    CHAIN_ROW  51, 62, 73, 85,  84, 94,  95, 85
+    CHAIN_ROW  53, 65, 77, 89,  86, 96,  97, 87
+    CHAIN_ROW  56, 69, 81, 94,  88, 96,  97, 89
+    CHAIN_ROW  59, 72, 86, 99,  90,100, 101, 91
+    CHAIN_ROW  62, 76, 90,104,  92,100, 101, 93
+    CHAIN_ROW  66, 80, 95,110,  94,102, 103, 95
+    CHAIN_ROW  69, 85,100,116,  96,104, 105, 97
+    CHAIN_ROW  73, 89,105,122,  98,104, 105, 99
+    CHAIN_ROW  77, 94,111,128, 100,108, 109,101
+    CHAIN_ROW  81, 99,117,135, 102,108, 109,103
+    CHAIN_ROW  85,104,123,142, 104,110, 111,105
+    CHAIN_ROW  90,110,130,150, 106,112, 113,107
+    CHAIN_ROW  95,116,137,158, 108,114, 115,109
+    CHAIN_ROW 100,122,144,166, 110,116, 117,111
+    CHAIN_ROW 105,128,152,175, 112,118, 119,113
+    CHAIN_ROW 111,135,160,185, 114,118, 119,115
+    CHAIN_ROW 116,142,169,195, 116,122, 123,117
+    CHAIN_ROW 123,150,178,205, 118,122, 123,119
+    CHAIN_ROW 128,158,187,216, 120,124, 125,121
+    CHAIN_ROW 128,167,197,227, 122,126, 127,123
+    CHAIN_ROW 128,176,208,240, 124,127, 126,125
+%endmacro
+
+align 64
+cabac_chain:
+%assign chain_tab 0
+%rep 3
+    %assign chain_b 0
+    %rep 2
+        CHAIN_ROWS
+        %assign chain_b chain_b+1
+    %endrep
+    %assign chain_tab chain_tab+1
+%endrep
+%endif ; ARCH_X86_64
 
 SECTION .text
 
@@ -580,27 +654,46 @@ endstruc
 
 cglobal cabac_encode_decision_%1, 1,7
     movifnidn t1d, r1m
+%assign chain_dec 0
+%ifidn %1, bmi2
+    %assign chain_dec ARCH_X86_64
+%endif
+%if chain_dec
+    movzx t6d, byte [r0+cb.state+t1]
+    movzx t5d, byte [r0+cb.range]       ; u = range-256
+    movifnidn t0,  r0 ; WIN64
+    movifnidn t2d, r2m
+    shl   t2d, 10
+    lea    t3, [cabac_chain]
+    add    t2, t3
+    lea    t2, [t2+t6*8]
+    movzx t6d, byte [t2+CHAIN_X+3]
+    mov   [t0+cb.state+t1], t6b
+    rorx  t4d, t5d, 2
+    mov   t3d, t5d
+    and   t4d, 0x30                     ; 16*q
+    and   t3b, [t2+CHAIN_X+1]           ; u on an MPS, 0 on an LPS
+    shrx   t1, [t2+CHAIN_F1], t4
+    shrx   t6, [t2+CHAIN_F2], t4
+    shrx   t4, [t2+CHAIN_X], t4
+    lea   t3w, [t6+t3*2]                ; renormalised MPS range or the LPS range
+    movsx t6d, byte [t2+CHAIN_X+1]
+    movzx t4d, t4b
+    sub   t5w, t1w                      ; MPS range; CF: renorm or LPS
+    mov   t1d, t5d
+    cmovc t5d, t3d
+    adc   t4d, 0                        ; shift
+    andn  t6d, t6d, t1d                 ; LPS: range - range_lps
+    add   t6d, [t0+cb.low]
+    add   t5d, 256
+    shlx  t6d, t6d, t4d
+    mov   [t0+cb.range], t5d
+    add   t4d, [t0+cb.queue]
+    mov   t3d, t4d
+%else
     mov   t5d, [r0+cb.range]
     movzx t6d, byte [r0+cb.state+t1]
     movifnidn t0,  r0 ; WIN64
-%ifidn %1, bmi2
-    mov   t3d, t5d
-    and   t5d, 0xc0
-    shr   t5d, 3
-    movifnidn t2d, r2m
-%if WIN64
-    PUSH r7
-%endif
-%ifdef PIC
-    lea    r7, [$$]
-    mov    t4, [r7+t6*8+cabac_lps_trans-$$]
-%else
-    mov    t4, [cabac_lps_trans+t6*8]
-%endif
-    shrx  t5d, t4d, t5d
-    movzx t5d, t5b
-    LOAD_GLOBAL t4d, cabac_lps_trans+4, t2, t6*8, t4
-%else
     mov   t4d, ~1
     mov   t3d, t5d
     and   t4d, t6d
@@ -614,7 +707,6 @@ cglobal cabac_encode_decision_%1, 1,7
 %endif
     LOAD_GLOBAL t5d, cabac_range_lps-4, t5, t4*2, t4
     LOAD_GLOBAL t4d, cabac_transition, t2, t6*2, t4
-%endif
     and   t6d, 1
     sub   t3d, t5d
     cmp   t6d, t2d
@@ -641,6 +733,7 @@ cglobal cabac_encode_decision_%1, 1,7
 %endif
     mov   [t0+cb.range], t4d
     add   t3d, [t0+cb.queue]
+%endif
     jge cabac_putbyte_%1
 .update_queue_low:
     mov   [t0+cb.low], t6d
@@ -1776,6 +1869,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 ; BMI2: low/range/queue stay in r8-r10 for the whole block; decision,
 ; bypass and putbyte are inlined. low is 64-bit and queue is biased by -24,
 ; so bytes are emitted 4 at a time and the rest at the end of the block.
+; range is held as range-256.
 ;-----------------------------------------------------------------------------
 
 ; in: flags from the queue update; clobbers r1, r4-r6
@@ -1817,37 +1911,36 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %endmacro
 
 ; %1 = bin, %2 = state address (else the state is in r2d)
-; in: r2d = state if no %2; out: r2d = next state
-; clobbers r1, r4-r6
+; in: r2d = state if no %2; out: r2d = next state if no %2
+; range is u = range-256; clobbers r1, r4-r6
 %macro CABAC_BIN 1-2
+%define chain_x cabac_chain+CHAIN_X+%1*1024+r2*8
 %if %0 > 1
     movzx   r2d, byte [%2]
+    movzx   r5d, byte [chain_x+3 GLOBAL]
+    mov    [%2], r5b
 %endif
-    mov      r5, [cabac_lps_trans+r2*8 GLOBAL] ; off the range chain
-    mov     r4d, ranged
-    and     r4d, 0xc0
-    shr     r4d, 3
-    shrx    r4d, r5d, r4d
-    movzx   r4d, r4b                ; range_lps
-    sub  ranged, r4d
-    lea      r6, [lowq+rangeq]
-    test    r2b, 1
-%if %1
-    cmovz  ranged, r4d
-    cmovz    lowq, r6
-%else
-    cmovnz ranged, r4d
-    cmovnz   lowq, r6
+    rorx    r4d, ranged, 2
+    mov     r6d, ranged
+    and     r4d, 0x30               ; 16*q
+    and     r6b, [chain_x+1 GLOBAL] ; u on an MPS, 0 on an LPS
+    shrx     r5, [cabac_chain+CHAIN_F1+%1*1024+r2*8 GLOBAL], r4
+    shrx     r1, [cabac_chain+CHAIN_F2+%1*1024+r2*8 GLOBAL], r4
+    shrx     r4, [chain_x GLOBAL], r4
+    lea     r6w, [r1+r6*2]          ; renormalised MPS range or the LPS range
+    movsx   r1d, byte [chain_x+1 GLOBAL]
+    movzx   r4d, r4b
+    sub  rangew, r5w                ; MPS range; CF: renorm or LPS
+    mov     r5d, ranged
+    cmovc ranged, r6d
+    adc     r4d, 0                  ; shift
+    andn    r1d, r1d, r5d           ; LPS: range - range_lps
+%if %0 == 1
+    movzx   r2d, byte [chain_x+3 GLOBAL]
 %endif
-    movzx   r2d, byte [cabac_lps_trans+4+%1+r2*8 GLOBAL]
-%if %0 > 1
-    mov    [%2], r2b
-%endif
-    lzcnt   r5d, ranged
-    sub     r5d, 23
-    shlx ranged, ranged, r5d
-    shlx   lowq, lowq, r5
-    add  queued, r5d
+    add     lowq, r1
+    shlx    lowq, lowq, r4
+    add  queued, r4d
     PUTBYTE
 %endmacro
 
@@ -1943,6 +2036,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     %define lowq   r8
     %define ranged r9d
     %define rangeq r9
+    %define rangew r9w
     %define queued r10d
     %define queueq r10
     %assign pb_count 0
@@ -2046,7 +2140,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %endif
     mov      r6, cbm
     mov    lowd, [r6+cb.low]
-    mov  ranged, [r6+cb.range]
+    movzx ranged, byte [r6+cb.range] ; u = range-256
     mov  queued, [r6+cb.queue]
     sub  queued, 24
 %if %2
@@ -2134,7 +2228,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     sub    r14d, r11d
     shrx    r1d, r2d, r14d
     movzx   r1d, r1b
-    imul    r1d, ranged
+    lea     r4d, [rangeq+256]
+    imul    r1d, r4d
     shlx   lowq, lowq, r11
     add    lowq, r1
     add  queued, r11d
@@ -2148,7 +2243,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 ; x264_cabac_encode_bypass( cb, coeff_sign )
     LOAD_COEFFS r1d
     sar     r1d, 31
-    and     r1d, ranged
+    lea     r4d, [rangeq+256]
+    and     r1d, r4d
     lea     lowq, [lowq*2+r1]
     inc  queued
     PUTBYTE
@@ -2182,6 +2278,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
 .flush_end:
     add  queued, 24
     mov [r6+cb.low], lowd
+    add  ranged, 256
     mov [r6+cb.range], ranged
     mov [r6+cb.queue], queued
     RET

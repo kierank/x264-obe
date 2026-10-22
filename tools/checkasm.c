@@ -5608,9 +5608,64 @@ static void run_cabac_decision_states_c( x264_t *h, uint8_t *dst, const uint8_t 
 {
     run_cabac_decision_states( h, dst, src, st, cabac_decision_c );
 }
+#define cabac_decision_bmi2_tested x264_cabac_encode_decision_bmi2
 static void run_cabac_decision_states_bmi2( x264_t *h, uint8_t *dst, const uint8_t *src, const uint8_t *st )
 {
-    run_cabac_decision_states( h, dst, src, st, x264_cabac_encode_decision_bmi2 );
+    run_cabac_decision_states( h, dst, src, st, cabac_decision_bmi2_tested );
+}
+
+/* coder states for the decision tests: from a fresh coder, some decisions and
+ * bypasses (C); half of them with low just below a byte boundary, steered
+ * bypasses keeping it there, so 0xff bytes are outstanding */
+typedef struct
+{
+    int low, queue, outstanding, len;
+    uint8_t buf[64];
+} cabac_snap_t;
+
+static void cabac_make_snap( x264_t *h, cabac_snap_t *s, int k )
+{
+    x264_cabac_t cb;
+    uint8_t buf[80] = {0};
+    x264_cabac_context_init( h, &cb, SLICE_TYPE_P, 26, 0 );
+    x264_cabac_encode_init( &cb, buf+8, buf+72 );
+    for( int n = rand()%40; n > 0; n-- )
+    {
+        if( rand()&1 )
+            x264_cabac_encode_decision_c( &cb, rand()&63, rand()&1 );
+        else
+            x264_cabac_encode_bypass_c( &cb, -(rand()&1) );
+    }
+    if( k&1 )
+    {
+        cb.i_low = (1 << (cb.i_queue+18)) - 1 - (rand()&0x7f);
+        for( int n = 4 + (rand()&15); n > 0; n-- )
+            x264_cabac_encode_bypass_c( &cb, -(2*cb.i_low + cb.i_range < (2 << (cb.i_queue+18))) );
+    }
+    s->low = cb.i_low;
+    s->queue = cb.i_queue;
+    s->outstanding = cb.i_bytes_outstanding;
+    s->len = cb.p - (buf+8);
+    memcpy( s->buf, buf, 64 );
+}
+
+static void cabac_load_snap( x264_cabac_t *cb, uint8_t *buf, const cabac_snap_t *s )
+{
+    memcpy( buf, s->buf, 64 );
+    memset( buf+64, 0, 16 );
+    cb->i_low = s->low;
+    cb->i_queue = s->queue;
+    cb->i_bytes_outstanding = s->outstanding;
+    cb->p_start = buf+8;
+    cb->p = buf+8+s->len;
+    cb->p_end = buf+72;
+}
+
+static int cabac_state_eq( x264_cabac_t *a, x264_cabac_t *b, uint8_t *bufa, uint8_t *bufb, int ctx, int n )
+{
+    return a->i_low == b->i_low && a->i_range == b->i_range && a->i_queue == b->i_queue &&
+           a->i_bytes_outstanding == b->i_bytes_outstanding && a->p - bufa == b->p - bufb &&
+           a->state[ctx] == b->state[ctx] && !memcmp( bufa, bufb, n );
 }
 #else
 #define run_cabac_decision_asm run_cabac_decision_c
@@ -5716,6 +5771,10 @@ static int check_cabac( int cpu_ref, int cpu_new )
                     h.mb.b_interlaced = i;\
                     x264_cabac_t cb[2];\
                     x264_cabac_context_init( &h, &cb[0], (j&32) ? SLICE_TYPE_I : SLICE_TYPE_P, (j*13)%52, (j>>6)%3 );\
+                    /* j&16: any state 2-127 in every context */\
+                    if( j&16 )\
+                        for( int k = 0; k < 1024; k++ )\
+                            cb[0].state[k] = 2 + rand()%126;\
                     memcpy( cb[1].state, cb[0].state, 1024 );\
                     x264_cabac_encode_init( &cb[0], bitstream[0], bitstream[0]+0xfff0 );\
                     x264_cabac_encode_init( &cb[1], bitstream[1], bitstream[1]+0xfff0 );\
@@ -5932,6 +5991,81 @@ name##fail:
         call_c1( run_cabac_decision_states_c, &h, buf3, buf1, buf2 );
         call_a1( run_cabac_decision_states_bmi2, &h, buf4, buf1, buf2 );
         ok = !memcmp( buf3, buf4, 0x1000 );
+
+        /* every state 2-127, range 256-510 and bin, from coder states that
+         * cover putbyte, carries and outstanding bytes */
+        ALIGNED_16( static x264_cabac_t cbd[2] );
+        cabac_snap_t snaps[64];
+        uint8_t dbuf[2][80];
+        for( int i = 0; i < 64; i++ )
+            cabac_make_snap( &h, &snaps[i], i );
+        x264_cabac_context_init( &h, &cbd[0], SLICE_TYPE_P, 26, 0 );
+        memcpy( &cbd[1], &cbd[0], sizeof(x264_cabac_t) );
+        for( int i = 0, s = 2; s < 128 && ok; s++ )
+            for( int range = 256; range < 511 && ok; range++ )
+                for( int b = 0; b < 2 && ok; b++, i++ )
+                {
+                    int ctx = (i*37) & 1023;
+                    for( int k = 0; k < 2; k++ )
+                    {
+                        cabac_load_snap( &cbd[k], dbuf[k], &snaps[i&63] );
+                        cbd[k].i_range = range;
+                        cbd[k].state[ctx] = s;
+                    }
+                    x264_cabac_encode_decision_c( &cbd[0], ctx, b );
+                    call_a1( cabac_decision_bmi2_tested, &cbd[1], (intptr_t)ctx, (intptr_t)b );
+                    if( !cabac_state_eq( &cbd[0], &cbd[1], dbuf[0], dbuf[1], ctx, 80 ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "cabac_encode_decision_bmi2: [FAILED] state %d range %d bin %d\n", s, range, b );
+                    }
+                }
+        /* long bin sequences, compared after every bin: few contexts, bins
+         * mostly the MPS at several skews, so states reach both ends */
+        for( int run = 0; run < 16 && ok; run++ )
+        {
+            uint8_t *sbuf = x264_malloc( 2*0x10000 );
+            if( !sbuf )
+                break;
+            x264_cabac_context_init( &h, &cbd[0], run&1 ? SLICE_TYPE_I : SLICE_TYPE_P, (run*7)%52, (run>>1)%3 );
+            memcpy( &cbd[1], &cbd[0], sizeof(x264_cabac_t) );
+            memset( sbuf, 0, 2*0x10000 );
+            x264_cabac_encode_init( &cbd[0], sbuf+8, sbuf+0xfff0 );
+            x264_cabac_encode_init( &cbd[1], sbuf+0x10008, sbuf+0x1fff0 );
+            int skew = (run>>2) == 0 ? 2 : (run>>2) == 1 ? 8 : (run>>2) == 2 ? 32 : 256;
+            for( int i = 0; i < 0x3000 && ok; i++ )
+            {
+                int ctx = (run*64 + (rand()%(1 + (run&3)*7))) & 1023;
+                int b = cbd[0].state[ctx]&1;
+                if( !(rand()%skew) || (i&0x7ff) < 8 )
+                    b ^= 1;
+                if( !(rand()&31) )
+                {
+                    int bit = -(rand()&1);
+                    x264_cabac_encode_bypass_c( &cbd[0], bit );
+                    x264_cabac_encode_bypass_c( &cbd[1], bit );
+                }
+                x264_cabac_encode_decision_c( &cbd[0], ctx, b );
+                call_a1( cabac_decision_bmi2_tested, &cbd[1], (intptr_t)ctx, (intptr_t)b );
+                if( cbd[0].i_low != cbd[1].i_low || cbd[0].i_range != cbd[1].i_range ||
+                    cbd[0].i_queue != cbd[1].i_queue || cbd[0].i_bytes_outstanding != cbd[1].i_bytes_outstanding ||
+                    cbd[0].p - sbuf != cbd[1].p - (sbuf+0x10000) || cbd[0].state[ctx] != cbd[1].state[ctx] ||
+                    memcmp( sbuf, sbuf+0x10000, cbd[0].p - sbuf ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "cabac_encode_decision_bmi2: [FAILED] sequence %d bin %d\n", run, i );
+                }
+            }
+            if( ok )
+            {
+                x264_cabac_encode_flush( &h, &cbd[0] );
+                x264_cabac_encode_flush( &h, &cbd[1] );
+                ok = cbd[0].p - sbuf == cbd[1].p - (sbuf+0x10000) &&
+                     !memcmp( sbuf, sbuf+0x10000, cbd[0].p - sbuf ) &&
+                     !memcmp( cbd[0].state, cbd[1].state, 1024 );
+            }
+            x264_free( sbuf );
+        }
         report( "cabac decision bmi2:" );
         /* bench: fixed contexts, bins and states from the private generator, private buffers */
         uint8_t *cbuf = do_bench ? x264_malloc( 4*0x1000 ) : NULL;
