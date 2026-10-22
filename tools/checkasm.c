@@ -1018,6 +1018,107 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel sad_sq_min :" );
 
+    /* dia, oct, ring (s 4), hex (s 6). j>>7: 0 random costs, 1 equal costs (ties go by idx),
+     * 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning */
+    ok = 1; used_asm = 0;
+    for( int kind = 0; kind < 4; kind++ )
+        for( int i = 0; i < 7; i++ )
+        {
+            static const int8_t dia_pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+            static const int8_t hex_pt[6][2] = {{-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}};
+            static const int8_t oct_pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+            static const int8_t ring_pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+            static const char *kind_names[4] = { "dia", "hex", "oct", "ring" };
+            static int (* const pt_c[4])( int, pixel *, pixel *, intptr_t, const int32_t *, int ) =
+            {
+                x264_pixel_sad_dia_min_c, x264_pixel_sad_hex_min_c, x264_pixel_sad_oct_min_c, x264_pixel_sad_ring_min_c
+            };
+            x264_pixel_cmp_pt_min_t pt_asm = (kind == 0 ? pixel_asm.sad_dia_min : kind == 1 ? pixel_asm.sad_hex_min
+                                            : kind == 2 ? pixel_asm.sad_oct_min : pixel_asm.sad_ring_min)[i];
+            x264_pixel_cmp_pt_min_t pt_ref = (kind == 0 ? pixel_ref.sad_dia_min : kind == 1 ? pixel_ref.sad_hex_min
+                                            : kind == 2 ? pixel_ref.sad_oct_min : pixel_ref.sad_ring_min)[i];
+            const int8_t (*pt)[2] = kind == 0 ? dia_pt : kind == 1 ? hex_pt : kind == 2 ? oct_pt : ring_pt;
+            int n = kind == 0 ? 4 : kind == 1 ? 6 : 8;
+            int s = kind == 1 ? 6 : 4;
+            if( !pt_asm || pt_asm == pt_ref )
+                continue;
+            int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+            ALIGNED_16( pixel refm[24*48] );
+            int wins[9] = {0};
+            set_func_name( "sad_%s_min_%s", kind_names[kind], pixel_names[i] );
+            used_asm = 1;
+            for( int j = 0; j < 512 && ok; j++ )
+            {
+                int mode = j>>7;
+                pixel *fenc = mode == 3 ? pbuf3 : pbuf1;
+                intptr_t stride = mode == 3 ? 48 : (j&1) ? 64 : 40 + (j&15);
+                pixel *pix = mode == 3 ? refm + 4*48 + 8 : pbuf2 + (j&31) + 2*stride + 4;
+                ALIGNED_16( int32_t bias[8] );
+                int sad[8], best, tmin = INT_MAX, tmax = 0, res_c, res_a, win = 0;
+                if( mode == 3 )
+                {
+                    int k = j%n;
+                    for( int l = 0; l < 24*48; l++ )
+                        refm[l] = rand() & PIXEL_MAX;
+                    for( int y = 0; y < bh; y++ )
+                        memcpy( pix + pt[k][0] + (pt[k][1] + y)*stride, pbuf4 + 16*y, bw*sizeof(pixel) );
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    sad[k] = pixel_c.sad[i]( fenc, FENC_STRIDE, pix + pt[k][0] + pt[k][1]*stride, stride );
+                    tmax = X264_MAX( tmax, sad[k] );
+                }
+                for( int k = 0; k < n; k++ )
+                {
+                    if( mode == 1 )
+                        bias[k] = ((tmax - sad[k]) << s) + 1 + (k + j) % n;
+                    else if( mode == 2 )
+                        bias[k] = ((((j>>(k%5))&1) * 131070) << s) + ((j>>(k%4))&1) * ((1<<s)-1);
+                    else if( mode == 3 )
+                        bias[k] = k == j%n ? rand()&((1<<s)-1) : 1 << 24;
+                    else
+                        bias[k] = ((rand()%4096) << s) + (rand()&((1<<s)-1));
+                    tmin = X264_MIN( tmin, (sad[k] << s) + bias[k] );
+                }
+                if( mode == 1 )
+                    best = (tmax << s) + (rand()%3 ? (int)(rand()&((1<<s)-1)) : 0);
+                else if( mode == 2 )
+                    best = (j&3) == 0 ? 0 : (j&3) == 1 ? INT_MAX : tmin;
+                else if( mode == 3 )
+                    best = INT_MAX;
+                else
+                    best = tmin + ((rand()&255) - 128) * (1<<s) + (rand()&((1<<s)-1));
+                res_c = best;
+                for( int k = 0; k < n; k++ )
+                    if( (sad[k] << s) + bias[k] < res_c )
+                    {
+                        res_c = (sad[k] << s) + bias[k];
+                        win = k+1;
+                    }
+                wins[win]++;
+                int res_r = pt_c[kind]( i, fenc, pix, stride, bias, best );
+                if( res_r != res_c )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_min[%d]: C reference mismatch [FAILED]\n", kind_names[kind], i );
+                }
+                res_a = call_a( pt_asm, fenc, pix, stride, bias, best );
+                if( res_c != res_a )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_min[%d]: mode %d %d != %d [FAILED]\n", kind_names[kind], i, mode, res_c, res_a );
+                }
+            }
+            /* every slot, and best, must have been the result */
+            for( int k = 0; k <= n && ok; k++ )
+                if( !wins[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "sad_%s_min[%d]: %s %d never selected [FAILED]\n", kind_names[kind], i, k ? "slot" : "best", k-1 );
+                }
+        }
+    report( "pixel sad_pt_min :" );
+
     ALIGNED_16( pixel var_max[256] );
     ALIGNED_16( pixel var_zero[256] );
 #define TEST_PIXEL_VAR( i ) \

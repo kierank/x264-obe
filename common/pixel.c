@@ -90,6 +90,48 @@ int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_st
     return best;
 }
 
+static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
+                       int shift, const int32_t *bias, int best )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    for( int i = 0; i < n; i++ )
+    {
+        int cost = (sad[i_pixel]( fenc, FENC_STRIDE, pix + pt[i][0] + pt[i][1]*i_stride, i_stride ) << shift) + bias[i];
+        best = X264_MIN( best, cost );
+    }
+    return best;
+}
+
+/* references for sad_dia_min, sad_hex_min, and umh's sad_oct_min and sad_ring_min */
+int x264_pixel_sad_dia_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[4], int best )
+{
+    static const int8_t pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 4, 4, bias, best );
+}
+
+/* me.c's hex2[1..6] */
+int x264_pixel_sad_hex_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[6], int best )
+{
+    static const int8_t pt[6][2] = {{-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 6, 6, bias, best );
+}
+
+int x264_pixel_sad_oct_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best )
+{
+    static const int8_t pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 8, 4, bias, best );
+}
+
+int x264_pixel_sad_ring_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int32_t bias[8], int best )
+{
+    static const int8_t pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
+    return sad_pt_min( i_pixel, fenc, pix, i_stride, pt, 8, 4, bias, best );
+}
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
