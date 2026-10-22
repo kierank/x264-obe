@@ -953,6 +953,11 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         if( h->sh.i_type == SLICE_TYPE_B )
             i_cost += lambda * i_mb_b_cost_table[I_4x4];
 
+        /* x264_mb_encode_i4x4 in the x9 call, as x264_quant_4x4 without noise reduction or trellis */
+        int (*x9_recon)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
+            h->pixf.intra_mbcmp_x9_4x4 == h->pixf.intra_satd_x9_4x4 && !h->mb.b_noise_reduction && !h->mb.b_trellis
+            ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
+
         for( idx = 0;; idx++ )
         {
             pixel *p_src_by = p_src + block_idx_xy_fenc[idx];
@@ -966,7 +971,24 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 /* emulate missing topright samples */
                 MPIXEL_X4( &p_dst_by[4 - FDEC_STRIDE] ) = PIXEL_SPLAT_X4( p_dst_by[3 - FDEC_STRIDE] );
 
-            if( h->pixf.intra_mbcmp_x9_4x4 && predict_mode[8] >= 0 )
+            if( x9_recon && predict_mode[8] >= 0 )
+            {
+                /* the block is coded if its cost keeps i_cost <= i_satd_thresh and it is not the last */
+                int limit = idx == 15 ? -1 : i_satd_thresh - i_cost;
+                i_best = x9_recon( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode, h->dct.luma4x4[idx],
+                                   &h->quant4_recon[a->i_qp], limit );
+                i_cost += i_best & 0xffff;
+                int nz = i_best >> 24;
+                i_best = (i_best >> 16) & 0xff;
+                a->i_predict4x4[idx] = i_best;
+                if( i_cost > i_satd_thresh || idx == 15 )
+                    break;
+                h->mb.cache.intra4x4_pred_mode[x264_scan8[idx]] = i_best;
+                h->mb.cache.non_zero_count[x264_scan8[idx]] = nz;
+                h->mb.i_cbp_luma |= nz<<(idx>>2);
+                continue;
+            }
+            else if( h->pixf.intra_mbcmp_x9_4x4 && predict_mode[8] >= 0 )
             {
                 /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
                 i_best = h->pixf.intra_mbcmp_x9_4x4( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode );
