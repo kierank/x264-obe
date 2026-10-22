@@ -55,7 +55,7 @@ void x264_cabac_context_init( x264_t *h, x264_cabac_t *cb, int i_slice_type, int
 }
 
 #if HAVE_MMX
-void (*x264_cabac_encode_decision_ptr)( x264_cabac_t *cb, int i_ctx, int b ) = x264_cabac_encode_decision_asm;
+void (*x264_cabac_encode_decision_ptr)( x264_cabac_t *cb, intptr_t i_ctx, intptr_t b ) = x264_cabac_encode_decision_asm;
 #endif
 
 void x264_cabac_encode_init_core( x264_cabac_t *cb )
