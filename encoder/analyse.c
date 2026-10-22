@@ -34,6 +34,35 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* test/x264-i4x4-fuse-cnt: 0 MBs into i4x4 analysis, 1 of them finished, 2 fused calls, 3 coded by them,
+ * 4 nonzero, 5 in field MBs, 6 separate x9 calls, 7 other blocks; per frame (i_frame & 4095) fused calls,
+ * i4x4 blocks, type */
+static uint64_t i4x4f_cnt[8];
+static uint32_t i4x4f_frame[4096][3];
+#define I4X4F_ADD( p, v ) __atomic_fetch_add( p, v, __ATOMIC_RELAXED )
+
+void x264_i4x4f_print( x264_t *h )
+{
+    uint64_t c[8], blocks = 0;
+    int frames = 0, n = 0;
+    for( int i = 0; i < 8; i++ )
+        c[i] = __atomic_load_n( &i4x4f_cnt[i], __ATOMIC_RELAXED );
+    for( int i = 0; i < 4096; i++ )
+        if( i4x4f_frame[i][1] )
+        {
+            frames++;
+            blocks += i4x4f_frame[i][1];
+        }
+    fprintf( stderr, "i4x4f: mbs %"PRIu64" done %"PRIu64" fused %"PRIu64" coded %"PRIu64" nz %"PRIu64" field %"PRIu64
+             " sep_x9 %"PRIu64" other %"PRIu64" | frames %d blocks/frame %.0f (mb %d)\n", c[0], c[1], c[2], c[3], c[4],
+             c[5], c[6], c[7], frames, frames ? (double)blocks / frames : 0, h->mb.i_mb_count );
+    fprintf( stderr, "i4x4f: frames over 4x the mean (frame type fused blocks):" );
+    for( int i = 0; i < 4096 && frames; i++ )
+        if( i4x4f_frame[i][1] > 4 * blocks / frames && n++ < 24 )
+            fprintf( stderr, " %d%c %u %u", i, "?PBIK"[X264_MIN( i4x4f_frame[i][2], 4 )], i4x4f_frame[i][0], i4x4f_frame[i][1] );
+    fprintf( stderr, "\n" );
+}
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -957,9 +986,14 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         int (*x9_recon)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
             h->pixf.intra_mbcmp_x9_4x4 == h->pixf.intra_satd_x9_4x4 && !h->mb.b_noise_reduction && !h->mb.b_trellis
             ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
+        uint32_t *i4x4f_fr = i4x4f_frame[h->fenc->i_frame & 4095];
+        I4X4F_ADD( &i4x4f_cnt[0], 1 );
+        __atomic_store_n( &i4x4f_fr[2], h->sh.i_type == SLICE_TYPE_P ? 1 : h->sh.i_type == SLICE_TYPE_B ? 2
+                          : h->fenc->b_keyframe ? 4 : 3, __ATOMIC_RELAXED );
 
         for( idx = 0;; idx++ )
         {
+            I4X4F_ADD( &i4x4f_fr[1], 1 );
             pixel *p_src_by = p_src + block_idx_xy_fenc[idx];
             pixel *p_dst_by = p_dst + block_idx_xy_fdec[idx];
             int i_best = COST_MAX;
@@ -979,6 +1013,11 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                                    &h->quant4_recon[a->i_qp], limit );
                 i_cost += i_best & 0xffff;
                 int nz = i_best >> 24;
+                I4X4F_ADD( &i4x4f_cnt[2], 1 );
+                I4X4F_ADD( &i4x4f_fr[0], 1 );
+                I4X4F_ADD( &i4x4f_cnt[3], (i_best & 0xffff) <= limit );
+                I4X4F_ADD( &i4x4f_cnt[4], nz );
+                I4X4F_ADD( &i4x4f_cnt[5], MB_INTERLACED );
                 i_best = (i_best >> 16) & 0xff;
                 a->i_predict4x4[idx] = i_best;
                 if( i_cost > i_satd_thresh || idx == 15 )
@@ -991,6 +1030,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             else if( h->pixf.intra_mbcmp_x9_4x4 && predict_mode[8] >= 0 )
             {
                 /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
+                I4X4F_ADD( &i4x4f_cnt[6], 1 );
                 i_best = h->pixf.intra_mbcmp_x9_4x4( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode );
                 i_cost += i_best & 0xffff;
                 i_best >>= 16;
@@ -1001,6 +1041,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             }
             else
             {
+                I4X4F_ADD( &i4x4f_cnt[7], 1 );
                 if( !h->mb.b_lossless && predict_mode[5] >= 0 )
                 {
                     ALIGNED_ARRAY_16( int32_t, satd,[9] );
@@ -1059,6 +1100,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             /* we need to encode this block now (for next ones) */
             x264_mb_encode_i4x4( h, 0, idx, a->i_qp, a->i_predict4x4[idx], 0 );
         }
+        I4X4F_ADD( &i4x4f_cnt[1], idx == 15 );
         if( idx == 15 )
         {
             a->i_satd_i4x4 = i_cost;
