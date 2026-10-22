@@ -1042,6 +1042,55 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twins of wip/x264-stage2d: every build declares the hidden weak x264_<depth>_twin_*;
+ * an item set to 1 dispatches its twins, which link as 0, so its slots stay NULL.
+ * V: sad_{dia,hex,oct,ring}_min_8x8, F: fenc_eq_16x16, H: sad_hpel_min (P: x86/mc-c.c) */
+#if HAVE_MMX && ARCH_X86_64
+#define S2D_TWIN_V 1
+#define S2D_TWIN_F 0
+#define S2D_TWIN_H 1
+#define S2D_STR2( x ) #x
+#define S2D_STR( x ) S2D_STR2( x )
+#define S2D_TWIN( fn, name ) \
+    extern __typeof__( fn ) x264_template(twin_##name) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak x264_" S2D_STR( BIT_DEPTH ) "_twin_" #name "\n.hidden x264_" S2D_STR( BIT_DEPTH ) "_twin_" #name );
+S2D_TWIN( x264_pixel_fenc_eq_16x16_avx2, fenc_eq_16x16 )
+#if !HIGH_BIT_DEPTH
+S2D_TWIN( x264_pixel_sad_dia_min_8x8_avx512, sad_dia_min_8x8 )
+S2D_TWIN( x264_pixel_sad_hex_min_8x8_avx512, sad_hex_min_8x8 )
+S2D_TWIN( x264_pixel_sad_oct_min_8x8_avx512, sad_oct_min_8x8 )
+S2D_TWIN( x264_pixel_sad_ring_min_8x8_avx512, sad_ring_min_8x8 )
+S2D_TWIN( x264_pixel_sad_hpel_min_16x16_avx2, sad_hpel_min_16x16 )
+S2D_TWIN( x264_pixel_sad_hpel_min_16x8_avx2, sad_hpel_min_16x8 )
+S2D_TWIN( x264_pixel_sad_hpel_min_8x16_avx2, sad_hpel_min_8x16 )
+S2D_TWIN( x264_pixel_sad_hpel_min_8x8_avx2, sad_hpel_min_8x8 )
+#endif
+#if S2D_TWIN_F
+#undef x264_pixel_fenc_eq_16x16_avx2
+#define x264_pixel_fenc_eq_16x16_avx2 x264_template(twin_fenc_eq_16x16)
+#endif
+#if S2D_TWIN_V
+#undef x264_pixel_sad_dia_min_8x8_avx512
+#define x264_pixel_sad_dia_min_8x8_avx512 x264_template(twin_sad_dia_min_8x8)
+#undef x264_pixel_sad_hex_min_8x8_avx512
+#define x264_pixel_sad_hex_min_8x8_avx512 x264_template(twin_sad_hex_min_8x8)
+#undef x264_pixel_sad_oct_min_8x8_avx512
+#define x264_pixel_sad_oct_min_8x8_avx512 x264_template(twin_sad_oct_min_8x8)
+#undef x264_pixel_sad_ring_min_8x8_avx512
+#define x264_pixel_sad_ring_min_8x8_avx512 x264_template(twin_sad_ring_min_8x8)
+#endif
+#if S2D_TWIN_H
+#undef x264_pixel_sad_hpel_min_16x16_avx2
+#define x264_pixel_sad_hpel_min_16x16_avx2 x264_template(twin_sad_hpel_min_16x16)
+#undef x264_pixel_sad_hpel_min_16x8_avx2
+#define x264_pixel_sad_hpel_min_16x8_avx2 x264_template(twin_sad_hpel_min_16x8)
+#undef x264_pixel_sad_hpel_min_8x16_avx2
+#define x264_pixel_sad_hpel_min_8x16_avx2 x264_template(twin_sad_hpel_min_8x16)
+#undef x264_pixel_sad_hpel_min_8x8_avx2
+#define x264_pixel_sad_hpel_min_8x8_avx2 x264_template(twin_sad_hpel_min_8x8)
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
