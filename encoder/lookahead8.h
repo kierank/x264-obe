@@ -40,10 +40,11 @@ void  x264_lowres8_free( void *ctx );
 
 /* The MB loop of slicetype_slice_cost over rows [slice_start, slice_end). weights
  * is the high bit depth x264_weight_t[3] of frames[b] (or x264_weight_none);
- * it is re-cached for the 8-bit weight functions. */
+ * it is re-cached for the 8-bit weight functions. iprev (or NULL): a frame whose
+ * i_intra_cost stands in for those of frames[b]'s lowres8-static MBs. */
 void  x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
                                int dist_scale_factor, int do_search[2], const void *weights,
-                               int *output_inter, int *output_intra,
+                               int *output_inter, int *output_intra, void *iprev,
                                int slice_start, int slice_end );
 
 /* Weight ref's 8-bit lowres plane (padding included) into the context's buffer

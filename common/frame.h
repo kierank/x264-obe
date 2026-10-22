@@ -136,6 +136,7 @@ typedef struct x264_frame
     float   *f_qp_offset;
     float   *f_qp_offset_aq;
     int     b_intra_calculated;
+    int     i_intra_tag; /* with b_intra_calculated: what i_intra_cost depends on besides lowres, see slicetype.c */
     int     b_unweighted_cut; /* P: the unweighted lowres cost of the final weightp analysis is near intra */
     uint16_t *i_intra_cost;
     uint16_t *i_propagate_cost;
@@ -356,5 +357,25 @@ void          x264_sync_frame_list_delete( x264_sync_frame_list_t *slist );
 void          x264_sync_frame_list_push( x264_sync_frame_list_t *slist, x264_frame_t *frame );
 #define x264_sync_frame_list_pop x264_template(sync_frame_list_pop)
 x264_frame_t *x264_sync_frame_list_pop( x264_sync_frame_list_t *slist );
+
+static ALWAYS_INLINE uint64_t x264_lowres_row_diff( pixel *a, pixel *b, int n )
+{
+    uint64_t d = 0;
+    for( int x = 0; x < n * (int)sizeof(pixel); x += 8 )
+        d |= M64( (uint8_t*)a + x ) ^ M64( (uint8_t*)b + x );
+    return d;
+}
+
+/* Whether all the lowres pixels the intra cost of the 8x8 at a reads equal those at b:
+ * the block, its left column and the row above from x-1 to x+15. */
+static ALWAYS_INLINE int x264_lowres_intra_eq( pixel *a, pixel *b, intptr_t stride )
+{
+    if( x264_lowres_row_diff( a, b, 8 ) )
+        return 0;
+    uint64_t d = x264_lowres_row_diff( a - stride, b - stride, 16 ) | (a[-stride-1] ^ b[-stride-1]) | (a[-1] ^ b[-1]);
+    for( int y = 1; y < 8; y++ )
+        d |= x264_lowres_row_diff( a + y*stride, b + y*stride, 8 ) | (a[y*stride-1] ^ b[y*stride-1]);
+    return !d;
+}
 
 #endif
