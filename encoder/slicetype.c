@@ -1746,7 +1746,7 @@ static void x264_slicetype_wave( x264_t *h, x264_slicetype_slice_t *s, int bands
 static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int bands, int *const *outs,
                                        x264_frame_t **frames, int p0, int p1, int b )
 {
-    static int64_t checked_frames, checked_mbs;
+    static int64_t checked_frames, checked_mbs, checked_dep;
     x264_frame_t *fenc = frames[b];
     int n = h->mb.i_mb_count;
     int obuf = h->mb.i_mb_height + (NUM_INTS + PAD_SIZE) * bands;
@@ -1809,6 +1809,7 @@ static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int
         }
     checked_frames++;
     checked_mbs += n;
+    checked_dep += s[0].do_search[0] || s[0].do_search[1];
     if( bad )
     {
         fprintf( stderr, "wave check: MISMATCH %d frame %d p0 %d p1 %d b %d\n", bad, fenc->i_frame, p0, p1, b );
@@ -1821,7 +1822,7 @@ static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int
                                  (k ? s[i].output_intra : s[i].output_inter)[j] );
         abort();
     }
-    if( !(checked_frames & 15) )
+    if( !(checked_frames & 7) )
         fprintf( stderr, "wave check: %"PRId64" cost calls equal (dep %d)\n", checked_frames, s[0].do_search[0] || s[0].do_search[1] );
     free( out_w ); free( cost_w ); free( icost_w ); free( mv_w ); free( mvc_w );
 }
