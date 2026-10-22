@@ -158,6 +158,16 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* i16x16 counters: [slice type][in rd_cost_mb][stat] */
+enum { I16C_CALLS, I16C_FUSED, I16C_TRELLIS, I16C_NR, I16C_LOSSLESS, I16C_AC, I16C_DC, I16C_ZERO, I16C_STATS };
+#define x264_i16cnt x264_template(i16cnt)
+extern uint64_t x264_i16cnt[3][2][I16C_STATS];
+#define x264_i16cnt_rd x264_template(i16cnt_rd)
+extern __thread int x264_i16cnt_rd;
+#define x264_i16cnt_print x264_template(i16cnt_print)
+void x264_i16cnt_print( x264_t *h );
+#define I16C_ADD( stat, v ) __atomic_fetch_add( &x264_i16cnt[h->sh.i_type][x264_i16cnt_rd][stat], (v), __ATOMIC_RELAXED )
+
 static ALWAYS_INLINE void x264_mb_encode_i4x4( x264_t *h, int p, int idx, int i_qp, int i_mode, int b_predict )
 {
     int nz;

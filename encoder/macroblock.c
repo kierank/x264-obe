@@ -141,8 +141,10 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
     else
         h->predict_16x16[i_mode]( h->mb.pic.p_fdec[p] );
 
+    I16C_ADD( I16C_CALLS, 1 );
     if( h->mb.b_lossless )
     {
+        I16C_ADD( I16C_LOSSLESS, 1 );
         for( int i = 0; i < 16; i++ )
         {
             int oe = block_idx_xy_fenc[i];
@@ -173,15 +175,19 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
                 M32( &nnz[y*8] ) = ((ret >> 4*y) & 15) * 0x204081 & 0x01010101;
             h->mb.i_cbp_luma |= 0xf;
             h->dctf.add16x16_idct( p_dst, dct4x4 );
+            I16C_ADD( I16C_AC, 1 );
         }
         else
         {
             CLEAR_16x16_NNZ( p );
             if( nz )
                 h->dctf.add16x16_idct_dc( p_dst, dct4x4[16] );
+            I16C_ADD( nz ? I16C_DC : I16C_ZERO, 1 );
         }
+        I16C_ADD( I16C_FUSED, 1 );
         return;
     }
+    I16C_ADD( h->mb.b_trellis ? I16C_TRELLIS : I16C_NR, h->mb.b_trellis || h->mb.b_noise_reduction );
 
     CLEAR_16x16_NNZ( p );
 
@@ -265,6 +271,28 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
         h->dctf.add16x16_idct( p_dst, dct4x4 );
     else if( nz )
         h->dctf.add16x16_idct_dc( p_dst, dct_dc4x4 );
+    I16C_ADD( block_cbp ? I16C_AC : nz ? I16C_DC : I16C_ZERO, 1 );
+}
+
+uint64_t x264_i16cnt[3][2][I16C_STATS];
+__thread int x264_i16cnt_rd;
+
+void x264_i16cnt_print( x264_t *h )
+{
+    static const char * const st[3] = { "P", "B", "I" };
+    int frames = h->stat.i_frame_count[0] + h->stat.i_frame_count[1] + h->stat.i_frame_count[2];
+    for( int t = 0; t < 3; t++ )
+        for( int rd = 0; rd < 2; rd++ )
+        {
+            uint64_t *c = x264_i16cnt[t][rd];
+            double n = c[I16C_CALLS] ? 100.0 / c[I16C_CALLS] : 0;
+            if( !c[I16C_CALLS] )
+                continue;
+            fprintf( stderr, "i16cnt %d-bit %s %-5s: calls %"PRIu64" (%.1f/frame of %d) fused %.1f%% trellis %.1f%% nr %.1f%% "
+                     "lossless %.1f%% | ac %.1f%% dc-only %.1f%% zero %.1f%%\n", BIT_DEPTH, st[t], rd ? "rd" : "final",
+                     c[I16C_CALLS], frames ? (double)c[I16C_CALLS] / frames : 0, frames, c[I16C_FUSED]*n, c[I16C_TRELLIS]*n,
+                     c[I16C_NR]*n, c[I16C_LOSSLESS]*n, c[I16C_AC]*n, c[I16C_DC]*n, c[I16C_ZERO]*n );
+        }
 }
 
 /* Round down coefficients losslessly in DC-only chroma blocks.
