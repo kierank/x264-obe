@@ -1400,6 +1400,12 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
             && m.cost-m.cost_mv < h->param.analyse.i_ref0_exit*a->i_lambda
             &&  abs(m.mv[0]-h->mb.cache.pskip_mv[0])
               + abs(m.mv[1]-h->mb.cache.pskip_mv[1]) <= 1;
+        if( i_ref == 0 && h->param.analyse.i_ref0_exit && a->b_early_terminate )
+        {
+            ME_LEVER_CNT( 10 );
+            if( b_ref0_exit )
+                ME_LEVER_CNT( 11 );
+        }
 
         m.cost += m.i_ref_cost;
         i_halfpel_thresh += m.i_ref_cost;

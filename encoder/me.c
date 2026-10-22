@@ -267,6 +267,30 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* [0..3] seed exit 16x16-class checks, exits, 8x8-and-below checks, exits
+ * [4..6] qpel skip in the search: checks, fullpel kept, skips; [7..9] the same in refine_qpel
+ * [10,11] ref0 exit checks, exits; [12,13] dia/hex searches with --hex-cap, capped */
+uint64_t x264_me_lever_cnt[16];
+
+void x264_me_lever_print( void )
+{
+    uint64_t c[16];
+    for( int i = 0; i < 16; i++ )
+        c[i] = __atomic_load_n( &x264_me_lever_cnt[i], __ATOMIC_RELAXED );
+#define PCT( a, b ) ((b) ? 100.0*(a)/(b) : 0.0)
+    if( c[0] || c[2] )
+        fprintf( stderr, "melev %d-bit seed-exit: 16x16 %"PRIu64"/%"PRIu64" (%.2f%%) small %"PRIu64"/%"PRIu64" (%.2f%%)\n", BIT_DEPTH,
+                 c[1], c[0], PCT( c[1], c[0] ), c[3], c[2], PCT( c[3], c[2] ) );
+    if( c[4] || c[7] )
+        fprintf( stderr, "melev %d-bit qpel-skip: search %"PRIu64"/%"PRIu64" (%.2f%%, fpel %.2f%%) refine %"PRIu64"/%"PRIu64" (%.2f%%, fpel %.2f%%)\n", BIT_DEPTH,
+                 c[6], c[4], PCT( c[6], c[4] ), PCT( c[5], c[4] ), c[9], c[7], PCT( c[9], c[7] ), PCT( c[8], c[7] ) );
+    if( c[10] )
+        fprintf( stderr, "melev %d-bit ref0-exit: %"PRIu64"/%"PRIu64" (%.2f%%)\n", BIT_DEPTH, c[11], c[10], PCT( c[11], c[10] ) );
+    if( c[12] )
+        fprintf( stderr, "melev %d-bit hex-cap: %"PRIu64"/%"PRIu64" (%.2f%%)\n", BIT_DEPTH, c[13], c[12], PCT( c[13], c[12] ) );
+#undef PCT
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -451,8 +475,19 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
     /* experimental: the best seed is cheap enough, no fullpel pattern */
     int seed_exit = h->mb.i_me_seed_exit[i_pixel >= PIXEL_8x8];
+    if( seed_exit )
+        ME_LEVER_CNT( 2*(i_pixel >= PIXEL_8x8) );
     if( seed_exit && X264_MIN( bcost, bpred_cost ) <= seed_exit * bw * bh )
+    {
+        ME_LEVER_CNT( 2*(i_pixel >= PIXEL_8x8)+1 );
         goto fpel_done;
+    }
+    if( h->mb.i_hex_cap && h->mb.i_me_method <= X264_ME_HEX )
+    {
+        ME_LEVER_CNT( 12 );
+        if( me_agree )
+            ME_LEVER_CNT( 13 );
+    }
 
     /* experimental: the pattern starts at the best of the seed's 4 axis neighbours
      * and the rounded vertex of a parabola per axis through them */
@@ -1354,6 +1389,14 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     /* experimental: no qpel from a cheap fullpel start that hpel kept */
     int b_qpel_skip = h->mb.i_qpel_skip && !((bmx|bmy)&3) && bmx == m->mv[0] && bmy == m->mv[1]
                    && (int64_t)bcost * 256 <= (int64_t)h->mb.i_qpel_skip * x264_lambda_tab[h->mb.i_qp] * bw * bh;
+    if( h->mb.i_qpel_skip && qpel_iters )
+    {
+        ME_LEVER_CNT( 4 + 3*b_refine_qpel );
+        if( !((bmx|bmy)&3) && bmx == m->mv[0] && bmy == m->mv[1] )
+            ME_LEVER_CNT( 5 + 3*b_refine_qpel );
+        if( b_qpel_skip )
+            ME_LEVER_CNT( 6 + 3*b_refine_qpel );
+    }
 
     /* quarterpel diamond search */
     if( b_qpel_skip )

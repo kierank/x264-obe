@@ -62,6 +62,13 @@ typedef struct
     int16_t mv[2];
 } mvsad_t;
 
+/* test: ME lever counters, printed at encoder close */
+#define x264_me_lever_cnt x264_template(me_lever_cnt)
+extern uint64_t x264_me_lever_cnt[16];
+#define ME_LEVER_CNT( i ) __atomic_fetch_add( &x264_me_lever_cnt[i], 1, __ATOMIC_RELAXED )
+#define x264_me_lever_print x264_template(me_lever_print)
+void x264_me_lever_print( void );
+
 #define x264_me_search_ref x264_template(me_search_ref)
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
 #define x264_me_search( h, m, mvc, i_mvc )\
