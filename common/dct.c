@@ -1004,6 +1004,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->inter_resid_4x4     = NULL;
     pf_interlaced->inter_resid_8x8      = NULL;
     pf_progressive->inter_resid_8x8     = NULL;
+    pf_interlaced->chroma_encode[0]     = NULL;
+    pf_progressive->chroma_encode[0]    = NULL;
+    pf_interlaced->chroma_encode[1]     = NULL;
+    pf_progressive->chroma_encode[1]    = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1135,6 +1139,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->inter_resid_4x4     = x264_inter_resid_4x4_frame_avx2;
         pf_interlaced->inter_resid_8x8      = x264_inter_resid_8x8_field_avx2;
         pf_progressive->inter_resid_8x8     = x264_inter_resid_8x8_frame_avx2;
+        pf_interlaced->chroma_encode[0]     = x264_chroma_encode_420_field_avx2;
+        pf_progressive->chroma_encode[0]    = x264_chroma_encode_420_frame_avx2;
+        pf_interlaced->chroma_encode[1]     = x264_chroma_encode_422_field_avx2;
+        pf_progressive->chroma_encode[1]    = x264_chroma_encode_422_frame_avx2;
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

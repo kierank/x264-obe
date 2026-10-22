@@ -58,6 +58,21 @@ typedef struct
 
 } x264_dct_function_t;
 
+/* Arguments of zigzagf.chroma_encode, laid out for the asm */
+typedef struct
+{
+    udctcoef *mf;           /* quant4_mf[cat][i_qp] */
+    udctcoef *bias;         /* quant4_bias[cat][i_qp] */
+    int (*dequant_mf)[16];  /* dequant4_mf[cat] */
+    int i_qp;
+    int dc_mf;              /* quant4_mf[cat][dc_qp][0] >> 1 */
+    int dc_bias;            /* quant4_bias[cat][dc_qp][0] << 1 */
+    int dc_qp;              /* i_qp, +3 at 4:2:2 */
+    int dc_dmf;             /* dequant_mf[dc_qp%6][0] << dc_qp/6 */
+    int thresh;             /* var2 early termination threshold, -1 for none */
+    int b_decimate;
+} x264_chroma_encode_t;
+
 typedef struct
 {
     void (*scan_8x8)( dctcoef level[64], dctcoef dct[64] );
@@ -85,6 +100,11 @@ typedef struct
                              udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
     int  (*inter_resid_8x8)( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
                              udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
+    /* Both chroma planes of x264_mb_encode_chroma (4:2:0, 4:2:2) without trellis, noise reduction or lossless:
+     * levels (level = luma4x4[16]), dc (chroma_dc), nnz (non_zero_count), the reconstruction in fdec.
+     * Returns i_cbp_chroma. */
+    int  (*chroma_encode[2])( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8],
+                              x264_chroma_encode_t *a );
 
 } x264_zigzag_function_t;
 

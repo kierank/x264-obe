@@ -373,5 +373,13 @@ int x264_inter_resid_4x4_field_avx2( dctcoef level[16][16], pixel *p_src, pixel 
 int x264_inter_resid_8x8_frame_avx2( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
 #define x264_inter_resid_8x8_field_avx2 x264_template(inter_resid_8x8_field_avx2)
 int x264_inter_resid_8x8_field_avx2( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
+#define x264_chroma_encode_420_frame_avx2 x264_template(chroma_encode_420_frame_avx2)
+int x264_chroma_encode_420_frame_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+#define x264_chroma_encode_420_field_avx2 x264_template(chroma_encode_420_field_avx2)
+int x264_chroma_encode_420_field_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+#define x264_chroma_encode_422_frame_avx2 x264_template(chroma_encode_422_frame_avx2)
+int x264_chroma_encode_422_frame_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+#define x264_chroma_encode_422_field_avx2 x264_template(chroma_encode_422_field_avx2)
+int x264_chroma_encode_422_field_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
 
 #endif
