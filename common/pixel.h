@@ -174,6 +174,10 @@ typedef struct
     int (*var2[4])( pixel *pix1, intptr_t stride1,
                     pixel *pix2, intptr_t stride2, int *ssd );
     uint64_t (*hadamard_ac[4])( pixel *pix, intptr_t stride );
+    /* asm only, NULL otherwise. rd ssd_mb with psy, MB cache layout: res = { ssd 16x16,
+     * ssd u + ssd v, hadamard_ac[PIXEL_16x16]( fdec ) low, high }. u is 8 wide at fenc_uv /
+     * fdec_uv, v at +8 / +16; [0] 4:2:0 (8 rows), [1] 4:2:2 (16 rows) */
+    void (*ssd_psy_mb[2])( int res[4], pixel *fenc, pixel *fdec, pixel *fenc_uv, pixel *fdec_uv );
 
     void (*ssd_nv12_core)( pixel *pixuv1, intptr_t stride1,
                            pixel *pixuv2, intptr_t stride2, int width, int height,

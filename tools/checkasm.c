@@ -1115,6 +1115,58 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     report( "pixel hadamard_ac :" );
 
+    ok = 1; used_asm = 0;
+    for( int c = 0; c < 2; c++ )
+        if( pixel_asm.ssd_psy_mb[c] && pixel_asm.ssd_psy_mb[c] != pixel_ref.ssd_psy_mb[c] )
+        {
+            /* reference: the C ssd and hadamard_ac of rdo.c's old path */
+            int csize = c ? PIXEL_8x16 : PIXEL_8x8;
+            /* the MB cache: fenc luma then u|v; fdec luma at row 2, u|v at row 20 */
+            ALIGNED_ARRAY_64( pixel, fenc,[48*FENC_STRIDE] );
+            ALIGNED_ARRAY_64( pixel, fdec,[54*FDEC_STRIDE] );
+            pixel *fenc_uv = fenc + 16*FENC_STRIDE, *fdec_y = fdec + 2*FDEC_STRIDE, *fdec_uv = fdec + 20*FDEC_STRIDE;
+            set_func_name( "ssd_psy_mb_%s", c ? "422" : "420" );
+            used_asm = 1;
+            /* k&3 = 0: random; 1: maxed differences; 2: fdec the maxed hadamard patterns of pbuf3,
+             * fenc its complement; 3: fdec PIXEL_MAX, fenc 0 */
+            for( int k = 0; k < 64 && ok; k++ )
+            {
+                for( int i = 0; i < 54*FDEC_STRIDE; i++ )
+                {
+                    int x = i%FDEC_STRIDE, y = i/FDEC_STRIDE;
+                    fdec[i] = (k&3) == 0 ? pbuf2[(i+131*k)%0xf00]
+                            : (k&3) == 1 ? -(pbuf2[(i+131*k)%0xf00]&1) & PIXEL_MAX
+                            : (k&3) == 2 ? pbuf3[((x&15)+16*y+256*(k>>2))&0xfff]
+                            : PIXEL_MAX;
+                }
+                for( int i = 0; i < 48*FENC_STRIDE; i++ )
+                {
+                    int x = i%FENC_STRIDE, y = i/FENC_STRIDE;
+                    pixel *d = y < 16 ? fdec_y + y*FDEC_STRIDE + x : fdec_uv + (y-16)*FDEC_STRIDE + x + (x&8);
+                    fenc[i] = (k&3) == 0 ? pbuf1[(i+67*k)%0x1e00]
+                            : (k&3) == 3 ? 0
+                            : ~*d & PIXEL_MAX;
+                }
+                int res_c[4], res_a[4];
+                uint64_t ac = pixel_c.hadamard_ac[PIXEL_16x16]( fdec_y, FDEC_STRIDE );
+                res_c[0] = pixel_c.ssd[PIXEL_16x16]( fenc, FENC_STRIDE, fdec_y, FDEC_STRIDE );
+                res_c[1] = pixel_c.ssd[csize]( fenc_uv, FENC_STRIDE, fdec_uv, FDEC_STRIDE )
+                         + pixel_c.ssd[csize]( fenc_uv+8, FENC_STRIDE, fdec_uv+16, FDEC_STRIDE );
+                res_c[2] = (uint32_t)ac;
+                res_c[3] = ac >> 32;
+                call_a1( pixel_asm.ssd_psy_mb[c], res_a, fenc, fdec_y, fenc_uv, fdec_uv );
+                if( memcmp( res_c, res_a, sizeof(res_c) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "ssd_psy_mb[%d] k %d: %d %d %d %d != %d %d %d %d\n", c, k, res_c[0], res_c[1],
+                             res_c[2], res_c[3], res_a[0], res_a[1], res_a[2], res_a[3] );
+                }
+            }
+            int res[4];
+            call_a2( pixel_asm.ssd_psy_mb[c], res, fenc, fdec_y, fenc_uv, fdec_uv );
+        }
+    report( "pixel ssd_psy_mb :" );
+
     // maximize sum
     for( int i = 0; i < 32; i++ )
         for( int j = 0; j < 16; j++ )
@@ -3953,6 +4005,24 @@ static int trellis_ref( const int *unquant_mf, const uint8_t *zigzag, int lambda
 }
 #endif
 
+static x264_quant_function_t *q8s_qf;
+static x264_zigzag_function_t *q8s_zz;
+/* asm only in zigzagf (NULL in C), so the C reference is called directly */
+static int (* const q8s_c[2])( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp ) =
+    { x264_quant_8x8_scan_frame, x264_quant_8x8_scan_field };
+/* the calls quant_8x8_scan replaces */
+static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
+                                 int dequant_mf[6][64], int i_qp )
+{
+    if( !q8s_qf->quant_8x8( dct, mf, bias ) )
+        return 0;
+    q8s_zz->scan_8x8( level, dct );
+    int score = q8s_qf->decimate_score64( level );
+    if( dequant_mf )
+        q8s_qf->dequant_8x8( dct, dequant_mf, i_qp );
+    return 1 | X264_MIN( score, 9 ) << 4;
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -3965,6 +4035,9 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_32( uint8_t, cqm_buf,[64] );
     ALIGNED_ARRAY_32( dctcoef, lvl1,[4],[16] );
     ALIGNED_ARRAY_32( dctcoef, lvl2,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dct0,[64] );
+    ALIGNED_ARRAY_64( dctcoef, dct5,[64] );
+    ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     int ret = 0, ok, used_asm;
     int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
@@ -4216,6 +4289,94 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_QUANT_SCAN( quant_4x4x4_scan, CQM_4PC, 0 );
         TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IY, 1 );
         TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IC, 1 );
+
+        /* j: bits 0-1 level size (full range, about +-1, about +-3, extremes), bits 2-3 nonzero rate 1, 1/4, 1/16,
+         * 1/64, bit 4 no dequant, bit 5 all zero. Checked against C and the C calls it replaces. */
+#define TEST_QUANT8_SCAN( block ) \
+        for( int fld = 0; fld < 2; fld++ ) \
+            if( zz_a[fld].quant_8x8_scan != zz_ref[fld].quant_8x8_scan ) \
+            { \
+                used_asms[3] = 1; \
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- ) \
+                { \
+                    udctcoef *mf = h->quant8_mf[block][qp], *bias = h->quant8_bias[block][qp]; \
+                    dctcoef *l1 = (dctcoef*)lvl1, *l2 = (dctcoef*)lvl2; \
+                    for( int j = 0; j < 64; j++ ) \
+                    { \
+                        static const int scale1d[8] = {32,31,24,31,32,31,24,31}; \
+                        int (*dmf)[64] = j&16 ? NULL : h->dequant8_mf[block]; \
+                        int size = j&3, rate = 2*((j>>2)&3); \
+                        set_func_name( "quant_8x8_scan_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                        for( int k = 0; k < 64; k++ ) \
+                        { \
+                            int big = PIXEL_MAX*scale1d[k>>3]*scale1d[k&7]/16; \
+                            int small = X264_MIN( big, size == 1 ? (3<<15)/mf[k] : (3<<16)/mf[k] ); \
+                            int x = size == 0 ? rand30()%(2*big+1) - big \
+                                  : size == 3 ? (rand()&1 ? big : -big) \
+                                  : rand()%(2*small+1) - small; \
+                            dct0[k] = (rand() & ((1<<rate)-1)) || (j&32) ? 0 : x; \
+                        } \
+                        memcpy( dct1, dct0, 64*sizeof(dctcoef) ); \
+                        memcpy( dct2, dct0, 64*sizeof(dctcoef) ); \
+                        memcpy( dct5, dct0, 64*sizeof(dctcoef) ); \
+                        for( int k = 0; k < 64; k++ ) \
+                            l1[k] = l2[k] = lvl3[k] = 0x5a5a + k; \
+                        q8s_qf = &qf_c; \
+                        q8s_zz = &zz_c[fld]; \
+                        int res_s = quant_8x8_scan_split( dct5, lvl3, mf, bias, dmf, qp ); \
+                        int res_c = call_c1( q8s_c[fld], dct1, l1, mf, bias, dmf, qp ); \
+                        int res_a = call_a1( zz_a[fld].quant_8x8_scan, dct2, l2, mf, bias, dmf, qp ); \
+                        if( res_c != res_a || res_c != res_s || memcmp( dct1, dct2, 64*sizeof(dctcoef) ) || \
+                            memcmp( dct1, dct5, 64*sizeof(dctcoef) ) || memcmp( l1, l2, 64*sizeof(dctcoef) ) || \
+                            memcmp( l1, lvl3, 64*sizeof(dctcoef) ) ) \
+                        { \
+                            oks[3] = 0; \
+                            fprintf( stderr, "quant_8x8_scan_%s (qp=%d, cqm=%d, block="#block", j=%d, res_c=%x, res_asm=%x, res_split=%x): [FAILED]\n", \
+                                     fld?"field":"frame", qp, i_cqm, j, res_c, res_a, res_s ); \
+                            break; \
+                        } \
+                    } \
+                } \
+            }
+
+        TEST_QUANT8_SCAN( CQM_8IY );
+        TEST_QUANT8_SCAN( CQM_8PY );
+
+        /* bench, flat and jvt cqm: 16 fixed inter blocks, the check's 4 level sizes at its 4 nonzero rates,
+         * qp 24-36, with dequant. _split times the dispatched calls it replaces on the same blocks. */
+        if( do_bench && i_cqm < 2 )
+            for( int fld = 0; fld < 2; fld++ )
+                if( zz_a[fld].quant_8x8_scan != zz_ref[fld].quant_8x8_scan )
+                {
+                    q8s_qf = &qf_a;
+                    q8s_zz = &zz_a[fld];
+                    bench_srand( 800 + fld );
+                    for( int i = 0; i < 16; i++ )
+                    {
+                        static const int scale1d[8] = {32,31,24,31,32,31,24,31};
+                        int qp = 24 + 4*(i>>2), size = i&3, rate = 2*(i>>2);
+                        udctcoef *mf = h->quant8_mf[CQM_8PY][qp], *bias = h->quant8_bias[CQM_8PY][qp];
+                        int (*dmf)[64] = h->dequant8_mf[CQM_8PY];
+                        for( int k = 0; k < 64; k++ )
+                        {
+                            int big = PIXEL_MAX*scale1d[k>>3]*scale1d[k&7]/16;
+                            int small = X264_MIN( big, size == 1 ? (3<<15)/mf[k] : (3<<16)/mf[k] );
+                            int x = size == 0 ? bench_rand()%(2*big+1) - big
+                                  : size == 3 ? (bench_rand()&1 ? big : -big)
+                                  : bench_rand()%(2*small+1) - small;
+                            dct0[k] = bench_rand() & ((1<<rate)-1) ? 0 : x;
+                        }
+                        dctcoef *l1 = (dctcoef*)lvl1, *l2 = (dctcoef*)lvl2;
+                        set_func_name( "quant_8x8_scan_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        memcpy( dct1, dct0, 64*sizeof(dctcoef) );
+                        memcpy( dct2, dct0, 64*sizeof(dctcoef) );
+                        call_c2( q8s_c[fld], dct1, l1, mf, bias, dmf, qp );
+                        call_a2( zz_a[fld].quant_8x8_scan, dct2, l2, mf, bias, dmf, qp );
+                        set_func_name( "quant_8x8_scan_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        memcpy( dct5, dct0, 64*sizeof(dctcoef) );
+                        call_bench( quant_8x8_scan_split, cpu_new, dct5, lvl3, mf, bias, dmf, qp );
+                    }
+                }
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \

@@ -1251,6 +1251,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x3_8x16c = x264_intra_satd_x3_8x16c_avx2;
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
+        pixf->ssd_psy_mb[0] = x264_pixel_ssd_psy_mb_420_avx2;
+        pixf->ssd_psy_mb[1] = x264_pixel_ssd_psy_mb_422_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
@@ -1304,6 +1306,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
+        pixf->ssd[PIXEL_4x16] = x264_pixel_ssd_4x16_avx512icl;
+        pixf->ssd[PIXEL_4x8]  = x264_pixel_ssd_4x8_avx512icl;
+        /* zen4: icl ssd_psy_mb slower in situ; kept assembled, the avx2 one stays */
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
@@ -1627,6 +1632,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
+        pixf->ssd_psy_mb[0] = x264_pixel_ssd_psy_mb_420_avx2;
+        pixf->ssd_psy_mb[1] = x264_pixel_ssd_psy_mb_422_avx2;
         pixf->satd_avg2[PIXEL_16x16] = x264_pixel_satd_avg2_16x16_avx2;
         pixf->satd_avg2[PIXEL_16x8]  = x264_pixel_satd_avg2_16x8_avx2;
         pixf->satd_avg2[PIXEL_8x16]  = x264_pixel_satd_avg2_8x16_avx2;
@@ -1713,7 +1720,12 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* var[8x8] 1.089x, var2[8x16] 1.034x, ssd[16x16] zmm 1.085x, weightp_stats8 icl 1.076x (vs the avx2 rewrite) */
         /* zen4 prune, neutral (>= 1.000): ssd[16x8] zmm */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
-        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl; /* 8x8: the avx one is as fast */
+        pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx512icl;
+        pixf->ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avx512icl;
+        pixf->ssd[PIXEL_4x16] = x264_pixel_ssd_4x16_avx512icl;
+        pixf->ssd[PIXEL_4x8]  = x264_pixel_ssd_4x8_avx512icl;
+        pixf->ssd[PIXEL_4x4]  = x264_pixel_ssd_4x4_avx512icl;
+        /* zen4: icl ssd_psy_mb slower in situ; kept assembled, the avx2 one stays */
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx512icl;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;

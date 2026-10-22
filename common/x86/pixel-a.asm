@@ -366,6 +366,8 @@ dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
 %endif
 ; ssim_end4 avx512icl: vpermi2d of blocks 0 1 | 2 3 to s1 | s2 and ss | s12
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
+; ssd_psy_mb: ssd, ssd, hadamard_ac >> 1, >> 2
+ssd_psy_shift: dd 0, 0, 1, 2
 
 SECTION .text
 
@@ -1099,6 +1101,66 @@ SSD_ICL 16, 16
 SSD_ICL 16,  8
 SSD_ICL  8, 16
 SSD_ICL  8,  8
+
+; 4 wide: 4 rows a register, rows 1-3 by merge-masked broadcasts (k1-k3 = element 1-3);
+; 8-bit: dwords of an xmm widened to words. vpdpwssd of the differences into m0 m3.
+%macro SSD_ICL_LOAD4 4 ; dst, src, stride, 3*stride
+%if HIGH_BIT_DEPTH
+    movq          xm%1, [%2]
+    vpbroadcastq   m%1 {k1}, [%2+%3]
+    vpbroadcastq   m%1 {k2}, [%2+%3*2]
+    vpbroadcastq   m%1 {k3}, [%2+%4]
+%else
+    movd          xm%1, [%2]
+    vpbroadcastd  xm%1 {k1}, [%2+%3]
+    vpbroadcastd  xm%1 {k2}, [%2+%3*2]
+    vpbroadcastd  xm%1 {k3}, [%2+%4]
+    pmovzxbw       m%1, xm%1
+%endif
+%endmacro
+
+%macro SSD_ICL_W4 1 ; height
+cglobal pixel_ssd_4x%1, 4,7,4
+    FIX_STRIDES r1, r3
+    lea         r5, [r1*3]
+    lea         r6, [r3*3]
+    mov        r4d, 2
+    kmovb       k1, r4d
+    kaddb       k2, k1, k1
+    kaddb       k3, k2, k2
+    pxor        m0, m0
+%if %1 > 4
+    pxor        m3, m3
+%endif
+%assign %%i 0
+%rep %1/4
+    SSD_ICL_LOAD4 1, r0, r1, r5
+    SSD_ICL_LOAD4 2, r2, r3, r6
+    psubw       m1, m2
+%if %%i & 1
+    vpdpwssd    m3, m1, m1
+%else
+    vpdpwssd    m0, m1, m1
+%endif
+%assign %%i %%i+1
+%if %%i < %1/4
+    lea         r0, [r0+r1*4]
+    lea         r2, [r2+r3*4]
+%endif
+%endrep
+%if %1 > 4
+    paddd       m0, m3
+%endif
+    HADDD       m0, m1
+    movd       eax, xm0
+    RET
+%endmacro
+
+%if HIGH_BIT_DEPTH == 0 ; 10-bit ssd_4x4 lost on Zen 4
+SSD_ICL_W4  4
+%endif
+SSD_ICL_W4  8
+SSD_ICL_W4 16
 ; zmm: assembled, not dispatched (for full width zmm)
 INIT_ZMM avx512icl
 SSD_ICL 16, 16, _zmm
@@ -11544,4 +11606,137 @@ cglobal weightp_sum8_nv, 6,8,13
     jg .loopx
     RET
 %endif
+%endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; void pixel_ssd_psy_mb_420( int res[4], pixel *fenc, pixel *fdec, pixel *fenc_uv, pixel *fdec_uv )
+; res = { ssd 16x16, ssd u + v, hadamard_ac_16x16( fdec ) }. Each fdec row is loaded once as 16
+; words (lane 0 the left 8x8, lane 1 the right) for both the ssd and the hadamard_ac_8x8 vertical
+; (high bit depth) algorithm; dword sums at both depths.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+%macro PSY_MADD 3 ; acc, src (clobbered), mul
+%if cpuflag(avx512icl)
+    vpdpwssd    m%1, m%2, m%3
+%else
+    pmaddwd     m%2, m%3
+    paddd       m%1, m%2
+%endif
+%endmacro
+
+; m%1 = fdec row %2, its ssd into m%3; clobbers m8
+%macro PSY_ROW 3 ; dst, row, ssd
+%if HIGH_BIT_DEPTH
+    movu        m%1, [r2+(%2)*FDEC_STRIDEB]
+    psubw        m8, m%1, [r1+(%2)*FENC_STRIDEB]
+%else
+    pmovzxbw    m%1, [r2+(%2)*FDEC_STRIDEB]
+    pmovzxbw     m8, [r1+(%2)*FENC_STRIDEB]
+    psubw        m8, m%1
+%endif
+    PSY_MADD    %3, 8, 8
+%endmacro
+
+; rows %1 to %1+7: ssd into m14 m15, 4x4 ac into m11, 8x8 ac into m12 + 2 * m13; m10 = pw_1
+%macro PSY_HALF 1
+    PSY_ROW      0, %1+0, 14
+    PSY_ROW      1, %1+1, 15
+    PSY_ROW      2, %1+2, 14
+    PSY_ROW      3, %1+3, 15
+    PSY_ROW      4, %1+4, 14
+    PSY_ROW      5, %1+5, 15
+    PSY_ROW      6, %1+6, 14
+    PSY_ROW      7, %1+7, 15
+    HADAMARD4_2D_SSE 0, 1, 2, 3, 8
+    HADAMARD4_2D_SSE 4, 5, 6, 7, 8
+    ; dc at words 0 and 4 of m0 m4; 4 ac terms a word, each <= 8 * pixel_max
+    pabsw        m8, m0
+    pabsw        m9, m4
+    paddw        m8, m9
+    pand         m8, [mask_ac4]
+    pabsw        m9, m1
+    paddw        m8, m9
+    pabsw        m9, m5
+    paddw        m8, m9
+    PSY_MADD     11, 8, 10
+    pabsw        m8, m2
+    pabsw        m9, m6
+    paddw        m8, m9
+    pabsw        m9, m3
+    paddw        m8, m9
+    pabsw        m9, m7
+    paddw        m8, m9
+    PSY_MADD     11, 8, 10
+    ; 8x8: the maxima of rows 1-3 count twice, row 0 exact for the dc
+    SUMSUB_BA     w, 0, 4, 8
+    SUMSUB_BA     w, 1, 5, 8
+    SUMSUB_BA     w, 2, 6, 8
+    SUMSUB_BA     w, 3, 7, 8
+    HADAMARD      4, amax, 1, 5, 8, 9
+    HADAMARD      4, amax, 2, 6, 8, 9
+    HADAMARD      4, amax, 3, 7, 8, 9
+    HADAMARD      4, sumsub, 0, 4, 8
+    pand         m0, [mask_ac8]
+    pabsw        m0, m0
+    pabsw        m4, m4
+    paddw        m1, m2            ; maxima <= 16 * pixel_max
+    PSY_MADD     13, 1, 10
+    PSY_MADD     13, 3, 10
+    PSY_MADD     12, 0, 10
+    PSY_MADD     12, 4, 10
+%endmacro
+
+; u|v row %1 as 16 words, its ssd into m%2; clobbers m%3 m%4
+%macro PSY_ROW_UV 4 ; row, ssd, tmp, tmp
+%if HIGH_BIT_DEPTH
+    movu       xm%3, [r4+%1*FDEC_STRIDEB]
+    vinserti128 m%3, m%3, [r4+%1*FDEC_STRIDEB+32], 1
+    psubw       m%3, [r3+%1*FENC_STRIDEB]
+%else
+    vpermq      m%3, [r4+%1*FDEC_STRIDEB], q3120
+    pmovzxbw    m%3, xm%3
+    pmovzxbw    m%4, [r3+%1*FENC_STRIDEB]
+    psubw       m%3, m%4
+%endif
+    PSY_MADD    %2, %3, %3
+%endmacro
+
+%macro SSD_PSY_MB 2 ; name, chroma height
+cglobal pixel_ssd_psy_mb_%1, 5,5,16
+    vpbroadcastd m10, [pw_1]
+    pxor        m11, m11
+    pxor        m12, m12
+    pxor        m13, m13
+    pxor        m14, m14
+    pxor        m15, m15
+    PSY_HALF     0
+    PSY_HALF     8
+    pxor         m0, m0
+    pxor         m1, m1
+%assign %%y 0
+%rep %2
+%assign %%a %%y&1
+%assign %%t 2+%%a*2
+%assign %%u 3+%%a*2
+    PSY_ROW_UV %%y, %%a, %%t, %%u
+%assign %%y %%y+1
+%endrep
+    paddd       m14, m15
+    paddd        m0, m1
+    paddd       m13, m13
+    paddd       m12, m13
+    HADD4D      m14, m0, m11, m12, m8, m9
+    vextracti128 xm8, m14, 1
+    paddd      xm14, xm8
+    vpsrlvd    xm14, xm14, [ssd_psy_shift]
+    movu       [r0], xm14
+    RET
+%endmacro
+
+INIT_YMM avx2
+SSD_PSY_MB 420,  8
+SSD_PSY_MB 422, 16
+INIT_YMM avx512icl
+SSD_PSY_MB 420,  8
+SSD_PSY_MB 422, 16
 %endif ; ARCH_X86_64

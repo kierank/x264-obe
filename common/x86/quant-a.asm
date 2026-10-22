@@ -143,6 +143,27 @@ optchroma_m64:    dd -64
 optchroma_col2x2: dd 1, 1, 1, 1,  1, 1,-1,-1,  1,-1, 1,-1,  1,-1,-1, 1
 optchroma_32:     dd 32
 %endif
+%if ARCH_X86_64
+ALIGN 64
+; quant_8x8_scan avx512icl zigzag indices
+%if HIGH_BIT_DEPTH
+; 5 bits each, levels A-D = 0-15 .. 48-63
+; frame: o0 = (A,B) + C, M = the C,D levels of o1 and o2, o1 = (A,B) + M, o2 = (A,B) + M, o3 = (C,D) + B
+qscan8_frame_avx512: dd 0x39000400, 0x2a1d0828, 0x1c29a441, 0x0e364062, 0x1e42e089, 0x2c5344b0, 0x3a66a8d8, 0x007a0cf1
+                     dd 0x008d910a, 0x01102d23, 0x01204944, 0x0130656b, 0x01406992, 0x01504db9, 0x01603200, 0x3d701700
+                     dd 0x00005c00, 0x00007c01, 0x000008c2, 0x00000da3, 0x00001284, 0x00001765, 0x00001b86, 0x00001eb8
+                     dd 0x000021d9, 0x000024fa, 0x000029fb, 0x00002edc, 0x000033bd, 0x000037de, 0x00003aff, 0x00003fef
+; field: o0 = (A,B), o1 = (A,B) + C, o2 = (C,D) + B, o3 = (C,D)
+qscan8_field_avx512: dd 0x1bc00240, 0x1dd005a1, 0x1fe009c2, 0x27f00de8, 0x30419269, 0x32549723, 0x28684004, 0x2a751f4a
+                     dd 0x2c822290, 0x2e92a6ab, 0x34a32ac5, 0x36b3aee6, 0x38c5b367, 0x3ad8c40c, 0x3ce96011, 0x3ef64818
+%else
+; bits 0-5: levels 0-31, bits 6-11: levels 32-63
+qscan8_frame_avx512: dw 0x700, 0x548, 0x381, 0x1c2, 0x3c9, 0x590, 0x758, 0x911, 0xaca, 0xc83, 0xe44, 0xe8b, 0xcd2, 0xb19, 0x960, 0x7a8
+                     dw 0x5e1, 0x7da, 0x993, 0xb4c, 0xd05, 0xec6, 0xf0d, 0xd54, 0xb9b, 0x9e2, 0xbe9, 0xdb0, 0xf78, 0xfb1, 0xdea, 0xfe3
+qscan8_field_avx512: dw 0x700, 0x741, 0x782, 0x7c8, 0x8c9, 0xa43, 0xc04, 0xa8a, 0x910, 0x94b, 0x985, 0x9c6, 0xac7, 0xc4c, 0xc91, 0xb18
+                     dw 0xb52, 0xb8d, 0xbce, 0xccf, 0xe13, 0xe59, 0xd20, 0xd5a, 0xd94, 0xdd5, 0xe96, 0xed7, 0xf1b, 0xf61, 0xfa8, 0xfe2
+%endif
+%endif
 
 SECTION .text
 
@@ -3754,4 +3775,297 @@ QUANT_4x4x4_SCAN_AVX512 frame,    0, 0
 QUANT_4x4x4_SCAN_AVX512 field,    1, 0
 QUANT_4x4x4_SCAN_AVX512 frame_ac, 0, 1
 QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
+
+;-----------------------------------------------------------------------------
+; int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
+;                     int dequant_mf[6][64], int i_qp )
+;-----------------------------------------------------------------------------
+; quant_8x8, then if nonzero: zigzag into level, decimate_score64, dequant dct in place unless dequant_mf
+; is NULL. Returns 0, or 1 | min(score,9) << 4.
+
+; k1: nonzero levels in scan order, k4: a level is > 1; kortest width
+; eax = 1 | min(score,9) << 4
+%macro QUANT8_SCAN_SCORE 1
+    kmovq     r1, k1
+    ; score = sum over nonzero coefs of [run<4] + [run<12] + [run<24], run = zeros below
+    lea       r2, [r1+r1]
+    lea       r3, [r1*4]
+    lea       r6, [r1*8]
+    mov       r7, r1
+    shl       r7, 4
+    or        r2, r3
+    or        r6, r7
+    or        r2, r6        ; shifts 1-4
+    mov       r3, r2
+    mov       r6, r2
+    shl       r3, 4
+    shl       r6, 8
+    or        r3, r6
+    or        r3, r2        ; shifts 1-12
+    mov       r6, r3
+    shl       r6, 12
+    or        r6, r3        ; shifts 1-24
+    or        r2, 0xf
+    or        r3, 0xfff
+    or        r6, 0xffffff
+    and       r2, r1
+    and       r3, r1
+    and       r6, r1
+    popcnt    r2, r2
+    popcnt    r3, r3
+    popcnt    r6, r6
+    add       r6d, r2d
+    add       r6d, r3d
+    mov       r2d, 9
+    cmp       r6d, r2d
+    cmova     r6d, r2d
+    kortest%1 k4, k4
+    cmovnz    r6d, r2d
+    shl       r6d, 4
+    inc       r6d
+%endmacro
+
+; r7d = i_qp / 6, r4 = dequant_mf[i_qp % 6]
+%macro QUANT8_SCAN_DEQUANT_START 0
+    imul      r7d, r5d, 0x2b
+    shr       r7d, 8          ; i_qp / 6
+    lea       r8d, [r7*3]
+    add       r8d, r8d
+    sub       r5d, r8d        ; i_qp % 6
+    shl       r5d, 8
+    add       r4, r5
+%endmacro
+
+%if HIGH_BIT_DEPTH
+%macro QUANT_8x8_SCAN_AVX512 1 ; frame/field
+cglobal quant_8x8_scan_%1, 6,9,12
+    movu      m4, [r0+0*64]
+    movu      m5, [r0+1*64]
+    movu      m6, [r0+2*64]
+    movu      m7, [r0+3*64]
+    pabsd     m0, m4
+    pabsd     m1, m5
+    pabsd     m2, m6
+    pabsd     m3, m7
+    paddd     m0, [r3+0*64]
+    paddd     m1, [r3+1*64]
+    paddd     m2, [r3+2*64]
+    paddd     m3, [r3+3*64]
+    pmulld    m0, [r2+0*64]
+    pmulld    m1, [r2+1*64]
+    pmulld    m2, [r2+2*64]
+    pmulld    m3, [r2+3*64]
+    psrld     m0, 16
+    psrld     m1, 16
+    psrld     m2, 16
+    psrld     m3, 16
+    vpmovd2m  k1, m4
+    vpmovd2m  k2, m5
+    vpmovd2m  k3, m6
+    vpmovd2m  k5, m7
+    pxor     xm8, xm8
+    vpsubd    m0{k1}, m8, m0
+    vpsubd    m1{k2}, m8, m1
+    vpsubd    m2{k3}, m8, m2
+    vpsubd    m3{k5}, m8, m3
+    pabsd     m4, m0
+    pabsd     m5, m1
+    pabsd     m6, m2
+    pabsd     m7, m3
+    por       m4, m5
+    vpternlogd m4, m6, m7, 0xfe ; |level| of all coefs
+    vpcmpud   k4, m4, [pd_1] {1to16}, 6
+    vptestmd  k1, m4, m4
+    kortestw  k1, k1
+    jz .zero
+%ifidn %1, frame
+    mova      m4, [qscan8_frame_avx512]
+    mova     m10, [qscan8_frame_avx512+64]
+    psrld     m9, m4, 5
+    psrld     m8, m4, 10
+    psrld     m5, m4, 15
+    psrld    m11, m4, 20
+    psrld     m6, m4, 25
+    psrld     m7, m10, 5
+    vpermi2d  m4, m0, m1        ; o0: A B
+    vpermi2d  m8, m2, m3        ; M
+    vpermt2d  m4, m9, m2        ; o0: C
+    vpermi2d  m5, m0, m1        ; o1: A B
+    vpermi2d  m6, m0, m1        ; o2: A B
+    vpermi2d  m7, m2, m3        ; o3: C D
+    vpermt2d  m5, m11, m8       ; o1: M
+    vpermt2d  m6, m10, m8       ; o2: M
+    psrld    m10, 10
+    vpermt2d  m7, m10, m1       ; o3: B
+%else
+    mova      m4, [qscan8_field_avx512]
+    psrld     m5, m4, 5
+    psrld     m6, m4, 15
+    psrld     m8, m4, 10
+    vpermi2d  m4, m0, m1        ; o0: A B
+    vpermi2d  m5, m0, m1        ; o1: A B
+    vpermt2d  m5, m8, m2        ; o1: C
+    psrld     m8, m6, 5
+    psrld     m7, m6, 10
+    vpermi2d  m6, m2, m3        ; o2: C D
+    vpermt2d  m6, m8, m1        ; o2: B
+    vpermi2d  m7, m2, m3        ; o3: C D
+%endif
+    vptestmd  k1, m4, m4
+    vptestmd  k2, m5, m5
+    vptestmd  k3, m6, m6
+    vptestmd  k5, m7, m7
+    movu [r1+0*64], m4
+    movu [r1+1*64], m5
+    movu [r1+2*64], m6
+    movu [r1+3*64], m7
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k5, k3
+    kunpckdq  k1, k3, k1
+    QUANT8_SCAN_SCORE w
+    test      r4, r4
+    jz .store
+    QUANT8_SCAN_DEQUANT_START
+    movu      m4, [r4+0*64]
+    movu      m5, [r4+1*64]
+    movu      m6, [r4+2*64]
+    movu      m7, [r4+3*64]
+    sub       r7d, 6
+    jl .rshift
+    movd     xm8, r7d
+    pslld     m4, xm8
+    pslld     m5, xm8
+    pslld     m6, xm8
+    pslld     m7, xm8
+    pmulld    m0, m4
+    pmulld    m1, m5
+    pmulld    m2, m6
+    pmulld    m3, m7
+.store:
+    movu [r0+0*64], m0
+    movu [r0+1*64], m1
+    movu [r0+2*64], m2
+    movu [r0+3*64], m3
+    RET
+.rshift:
+    mov       r8d, 1<<31
+    shrx      r8d, r8d, r7d ; 1 << (-i_qbits-1)
+    neg       r7d
+    movd     xm8, r7d
+    vpbroadcastd m9, r8d
+    pmulld    m0, m4
+    pmulld    m1, m5
+    pmulld    m2, m6
+    pmulld    m3, m7
+    paddd     m0, m9
+    paddd     m1, m9
+    paddd     m2, m9
+    paddd     m3, m9
+    psrad     m0, xm8
+    psrad     m1, xm8
+    psrad     m2, xm8
+    psrad     m3, xm8
+    jmp .store
+.zero:
+    movu [r0+0*64], m0
+    movu [r0+1*64], m1
+    movu [r0+2*64], m2
+    movu [r0+3*64], m3
+    xor      eax, eax
+    RET
+%endmacro
+
+%else ; !HIGH_BIT_DEPTH
+%macro QUANT_8x8_SCAN_AVX512 1 ; frame/field
+cglobal quant_8x8_scan_%1, 6,9,10
+    movu      m2, [r0+ 0]
+    movu      m3, [r0+64]
+    pabsw     m0, m2
+    pabsw     m1, m3
+    paddusw   m0, [r3+ 0]
+    paddusw   m1, [r3+64]
+    pmulhuw   m0, [r2+ 0]
+    pmulhuw   m1, [r2+64]
+    vpmovw2m  k1, m2
+    vpmovw2m  k2, m3
+    pxor     xm7, xm7
+    vpsubw    m0{k1}, m7, m0
+    vpsubw    m1{k2}, m7, m1
+    pabsw     m4, m0
+    pabsw     m5, m1
+    por       m4, m5        ; |level|, wrapped like the stored levels
+    vpbroadcastd m6, [pw_m2]
+    vptestmw  k4, m4, m6
+    vptestmw  k1, m4, m4
+    kortestd  k1, k1
+    jz .zero
+    mova      m2, [qscan8_%1_avx512]
+    psrlw     m3, m2, 6
+    vpermi2w  m2, m0, m1
+    vpermi2w  m3, m0, m1
+    vptestmw  k1, m2, m2
+    vptestmw  k2, m3, m3
+    movu [r1+ 0], m2
+    movu [r1+64], m3
+    kunpckdq  k1, k2, k1
+    QUANT8_SCAN_SCORE d
+    test      r4, r4
+    jz .store
+    QUANT8_SCAN_DEQUANT_START
+    movu      m2, [r4+0*64]
+    movu      m3, [r4+1*64]
+    movu      m4, [r4+2*64]
+    movu      m5, [r4+3*64]
+    mova      m6, [dequant_shuf_avx512]
+    vpermt2w  m2, m6, m3    ; dmf 0-31 as words
+    vpermt2w  m4, m6, m5    ; dmf 32-63
+    sub       r7d, 6
+    jl .rshift
+    movd     xm6, r7d
+    psllw     m2, xm6
+    psllw     m4, xm6
+    pmullw    m0, m2
+    pmullw    m1, m4
+.store:
+    movu [r0+ 0], m0
+    movu [r0+64], m1
+    RET
+.rshift:
+    ; low 16 bits of (level*dmf + (1 << (s-1))) >> s: the product shifted by s, plus its bit s-1
+    mov       r8d, 1<<31
+    shrx      r8d, r8d, r7d ; 1 << (s-1)
+    lea       r2d, [r7+16]
+    neg       r7d
+    movd     xm6, r7d       ; s
+    movd     xm8, r2d       ; 16-s
+    vpbroadcastw m7, r8d
+    vpternlogd m9, m9, m9, 0xff
+    pmullw    m3, m0, m2
+    pmulhw    m0, m2
+    pmullw    m5, m1, m4
+    pmulhw    m1, m4
+    vptestmw  k1, m3, m7
+    vptestmw  k2, m5, m7
+    psrlw     m3, xm6
+    psrlw     m5, xm6
+    psllw     m0, xm8
+    psllw     m1, xm8
+    por       m3, m0
+    por       m5, m1
+    vpsubw    m3{k1}, m3, m9
+    vpsubw    m5{k2}, m5, m9
+    movu [r0+ 0], m3
+    movu [r0+64], m5
+    RET
+.zero:
+    movu [r0+ 0], m0
+    movu [r0+64], m1
+    xor      eax, eax
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+INIT_ZMM avx512icl
+QUANT_8x8_SCAN_AVX512 frame
+QUANT_8x8_SCAN_AVX512 field
 %endif ; ARCH_X86_64

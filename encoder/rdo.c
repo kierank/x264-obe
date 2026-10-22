@@ -151,6 +151,21 @@ static inline int ssd_plane( x264_t *h, int size, int p, int x, int y )
 
 static inline int ssd_mb( x264_t *h )
 {
+    if( h->mb.i_psy_rd && (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422)
+        && h->pixf.ssd_psy_mb[CHROMA_FORMAT == CHROMA_422] )
+    {
+        /* ssd_plane of the three planes in one call */
+        ALIGNED_16( int res[4] );
+        h->pixf.ssd_psy_mb[CHROMA_FORMAT == CHROMA_422]( res, h->mb.pic.p_fenc[0], h->mb.pic.p_fdec[0],
+                                                         h->mb.pic.p_fenc[1], h->mb.pic.p_fdec[1] );
+        uint64_t fenc_acs = cached_hadamard( h, PIXEL_16x16, 0, 0 );
+        int satd = abs(res[2] - (int32_t)fenc_acs) + abs(res[3] - (int32_t)(fenc_acs>>32));
+        satd >>= 1;
+        int64_t tmp = ((int64_t)satd * h->mb.i_psy_rd * h->mb.i_psy_rd_lambda + 128) >> 8;
+        satd = X264_MIN( tmp, COST_MAX );
+        int chroma_ssd = ((uint64_t)res[1] * h->mb.i_chroma_lambda2_offset + 128) >> 8;
+        return res[0] + satd + chroma_ssd;
+    }
     int chroma_size = h->luma2chroma_pixel[PIXEL_16x16];
     int chroma_ssd = ssd_plane(h, chroma_size, 1, 0, 0) + ssd_plane(h, chroma_size, 2, 0, 0);
     chroma_ssd = ((uint64_t)chroma_ssd * h->mb.i_chroma_lambda2_offset + 128) >> 8;
