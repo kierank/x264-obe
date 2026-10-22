@@ -988,7 +988,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         }
 
         /* the fenc_eq check, the screen and the 8x8 loop below in one call (fenc_eq is set with it) */
-        if( h->zigzagf.probe_skip_luma && !h->mb.b_noise_reduction )
+        if( h->zigzagf.probe_skip_luma && !h->mb.b_noise_reduction && x264_probefuse_gate )
         {
             int ret = h->zigzagf.probe_skip_luma( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->quant4_mf[quant_cat][i_qp],
                                                   h->quant4_bias[quant_cat][i_qp], h->zscreen_thr[!!p][i_qp] );
@@ -1077,7 +1077,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                                                       &h->sh.weight[0][1+ch], chroma422?16:8 );
 
             /* the checks below in one call */
-            if( h->zigzagf.probe_skip_chroma[chroma422] && !h->mb.b_noise_reduction )
+            if( h->zigzagf.probe_skip_chroma[chroma422] && !h->mb.b_noise_reduction && x264_probefuse_gate )
             {
                 if( !h->zigzagf.probe_skip_chroma[chroma422]( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
                                                                h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,

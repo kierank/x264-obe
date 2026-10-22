@@ -36,6 +36,18 @@ void x264_rdo_init( void );
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
 
+/* probe_fuse layout pair: x264_probefuse_gate gates the probe_skip kernels. Arm: x264_probefuse_arm,
+ * defined in api.c. Twin (PROBEFUSE_TWIN 1): the never defined x264_probefuse_twin, which links as 0,
+ * and the probe takes the C path of cs-screen + zsad-exit. The code is the same in both. */
+#define PROBEFUSE_TWIN 0
+extern const char x264_probefuse_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_probefuse_twin __attribute__((weak, visibility("hidden")));
+#if PROBEFUSE_TWIN
+#define x264_probefuse_gate (&x264_probefuse_twin != NULL)
+#else
+#define x264_probefuse_gate (&x264_probefuse_arm != NULL)
+#endif
+
 #define x264_macroblock_probe_pskip( h )\
     x264_macroblock_probe_skip( h, 0 )
 #define x264_macroblock_probe_bskip( h )\
