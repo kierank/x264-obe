@@ -3039,7 +3039,8 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
         x264_analyse_update_cache( h, a );
         h->mb.b_transform_8x8 ^= 1;
         /* FIXME only luma is needed for 4:2:0, but the score for comparison already includes chroma */
-        int i_rd8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        /* a tie goes to i_rd8, so only a distortion above *i_rd can't win */
+        int i_rd8 = x264_rd_cost_mb_bound( h, a->i_lambda2, *i_rd < COST_MAX ? (uint64_t)*i_rd + 1 : RD_NO_BOUND );
 
         if( *i_rd >= i_rd8 )
         {
