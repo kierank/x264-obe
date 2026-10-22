@@ -3055,6 +3055,10 @@ cglobal pixel_sad_hex_search_%1x%2, 9,15,16
     paddd           m8, m9
     pslld           m8, 6
     paddd           m8, [r13]
+    ; mv costs alone: no key below bcost << 6 ends the hexagons
+    vpcmpud         k6, m8, m12, 1
+    kortestw        k6, k6
+    jz .square
     xor         dbp_o, dbp_o
 %if %1 < 16
     mov        dbp_o1, r2
@@ -3115,6 +3119,11 @@ cglobal pixel_sad_hex_search_%1x%2, 9,15,16
     pslld         xm13, 6
     paddd           m8, [fsh_sq_rank]
     paddd         xm13, [fsh_sq_rank0]
+    ; mv costs alone: no key below bcost << 6 skips the square
+    vpcmpud         k6, m8, m12, 1
+    vpcmpud         k7, xm13, xm12, 1
+    kortestw        k6, k7
+    jz .end
     FSH_SQ_SAD %1
     pmovzxwd        m0, xm0
     pmovzxwd       xm1, xm1
@@ -3193,6 +3202,10 @@ cglobal pixel_sad_dia_search_%1x%2, 9,15,16
     paddd          xm8, xm9
     pslld          xm8, 4
     paddd          xm8, [fsh_dia_rank]
+    ; mv costs alone: no key below bcost << 4 ends the search
+    vpcmpud         k6, xm8, xm12, 1
+    kortestw        k6, k6
+    jz .end
     xor         dbp_o, dbp_o
 %if %1 < 16
     mov        dbp_o1, r2
