@@ -71,7 +71,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * bit 31 of bcost (MVCOST_KGATE, set: no exits).
  * Arm: x264_mvcost_arm, defined in api.c. Twin (MVCOST_TWIN 1): the never
  * defined x264_mvcost_twin, which links as 0. The code is the same in both. */
-#define MVCOST_TWIN 0
+#define MVCOST_TWIN 1
 extern const char x264_mvcost_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_mvcost_twin __attribute__((weak, visibility("hidden")));
 #if MVCOST_TWIN
