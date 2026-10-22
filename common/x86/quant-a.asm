@@ -120,8 +120,8 @@ i16_dc_a:       db 0, 1, 8, 9,12,13, 4, 5,-1,-1,-1,-1,-1,-1,-1,-1, 2, 3,10,11,14
 i16_dc_b:       db -1,-1,-1,-1,-1,-1,-1,-1, 0, 1, 8, 9,12,13, 4, 5,-1,-1,-1,-1,-1,-1,-1,-1, 2, 3,10,11,14,15, 6, 7
 i16_idc_a:      db 0, 1,-1,-1,-1,-1, 8, 9, 4, 5,-1,-1,-1,-1,12,13,-1,-1, 6, 7,14,15,-1,-1,-1,-1, 2, 3,10,11,-1,-1
 i16_idc_b:      db -1,-1, 0, 1, 8, 9,-1,-1,-1,-1, 4, 5,12,13,-1,-1, 6, 7,-1,-1,-1,-1,14,15, 2, 3,-1,-1,-1,-1,10,11
-i16_score_bias: dq 0x0003000300030003, 0x000f000f000f000f, 0x007f007f007f007f
 %endif
+i16_score_bias: dq 0x0003000300030003, 0x000f000f000f000f, 0x007f007f007f007f
 
 %if HIGH_BIT_DEPTH==0
 dct_coef_shuffle:
@@ -3793,7 +3793,6 @@ QUANT_4x4x4_SCAN_AVX512 field,    1, 0
 QUANT_4x4x4_SCAN_AVX512 frame_ac, 0, 1
 QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
 
-%if HIGH_BIT_DEPTH == 0
 ;-----------------------------------------------------------------------------
 ; int encode_i16x16( dctcoef dct[17][16], pixel *fenc, pixel *fdec, dctcoef level[16][16], dctcoef dc_level[16],
 ;                    udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp )
@@ -3801,6 +3800,419 @@ QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
 ; sub16x16_dct; the AC as quant_4x4x4_scan_ac; the DCs by dct4x4dc, quant_4x4_dc and scan_4x4 into
 ; dc_level, then if nonzero idct4x4dc and dequant_4x4_dc into dct[16] (raster) and each block's coef 0,
 ; else dct[16] zeroed. Returns the nonzero AC blocks (bit y*4+x) | min(AC score,9) << 16 | nonzero DC << 20.
+
+%if HIGH_BIT_DEPTH
+; The 8x8s in turn, as sub8x8_dct then quant_4x4x4_scan_ac, with block j of the 8x8 (0 top left, 1 top
+; right, 2 bottom left, 3 bottom right) in m(8+2*j) (coefs 0-7) and m(9+2*j) (coefs 8-15). The DCs go to
+; dct[16] (raster) for the dct4x4dc rows. mf and bias are memory operands.
+
+%macro I16_WALSH4_1D 6
+    SUMSUB_BADC %1, %5, %4, %3, %2, %6
+    SUMSUB_BADC %1, %5, %3, %4, %2, %6
+    SWAP %2, %5, %4
+%endmacro
+
+; punpck suffix, the blocks' coefs 0-7 and 8-15 from lane 0, from lane 1
+%macro I16_HBD_DCT_HALF 5
+    punpck%1wd    m4, m2, m2    ; s03 + s12
+    punpck%1wd    m5, m0, m0    ; d03
+    punpck%1wd    m6, m1, m1    ; d12
+    psrad         m4, 16
+    psrad         m5, 16
+    psrad         m6, 16
+    SUMSUB2_AB    d, 5, 6, 7    ; 2*d03 + d12, d03 - 2*d12
+    vperm2i128    %2, m4, m5, 0x20
+    vperm2i128    %4, m4, m5, 0x31
+    punpck%1wd    m4, m3, m3    ; s03 - s12
+    psrad         m4, 16
+    vperm2i128    %3, m4, m7, 0x20
+    vperm2i128    %5, m4, m7, 0x31
+%endmacro
+
+; coefs, tmp, mf/bias offset
+%macro I16_HBD_QUANT 3
+    pabsd         %2, %1
+    paddd         %2, [r6+%3]
+    pmulld        %2, [r5+%3]
+    psrad         %2, 16
+    psignd        %1, %2, %1
+%endmacro
+
+; field, coefs 0-7, coefs 8-15, scanned 0-7 (m2) and 8-15 (m3 if frame, else the coefs 8-15); m0, m1: scan
+%macro I16_HBD_SCAN 3
+%if %1
+    vpermd        m2, m0, %2
+%else
+    vpermd        m2, m0, %2
+    vpermd        m3, m1, %3
+    vpblendd      m2, m2, m3, 0xe0
+    vpermd        m3, m1, %2
+    vpermd        m4, m0, %3
+    vpblendd      m3, m3, m4, 0xf8
+%endif
+%endmacro
+
+; field, block, coefs 0-7, coefs 8-15, packed dst: levels to level if the block is nonzero, else to dct
+%macro I16_HBD_LEVEL 5
+    I16_HBD_SCAN  %1, %3, %4
+    bt           r13d, %2
+    sbb           r14, r14
+    and           r14, r3
+%if %1
+    mova [r0+r14+64*%2   ], m2
+    mova [r0+r14+64*%2+32], %4
+    packssdw      %5, m2, %4
+%else
+    mova [r0+r14+64*%2   ], m2
+    mova [r0+r14+64*%2+32], m3
+    packssdw      %5, m2, m3
+%endif
+%endmacro
+
+; dc offset from the 8x8's dct, nz shift
+%macro I16_HBD_GROUP 2
+    lea           r10, [r0+%1]
+    call .group
+    mov          r14d, r13d
+    and          r14d, 0xc
+    and          r13d, 3
+    lea          r13d, [r13+r14*4]
+%if %2
+    shl          r13d, %2
+%endif
+    or           r11d, r13d
+%endmacro
+
+%macro I16_HBD_STORE_BLOCKS 0
+    mova    [r0+  0], m8
+    mova    [r0+ 32], m9
+    mova    [r0+ 64], m10
+    mova    [r0+ 96], m11
+    mova    [r0+128], m12
+    mova    [r0+160], m13
+    mova    [r0+192], m14
+    mova    [r0+224], m15
+%endmacro
+
+; rows m0-m3 (low lanes) into dct[16] at r0 and coef 0 of the blocks at r0-1024
+%macro I16_HBD_DC_SCATTER 0
+%assign %%y 0
+%rep 4
+    mova  [r0+16*%%y], xm %+ %%y
+%assign %%x 0
+%rep 4
+%assign %%idx (%%y>>1)*8 + (%%x>>1)*4 + (%%y&1)*2 + (%%x&1)
+%if %%x
+    vpextrd [r0-1024+64*%%idx], xm %+ %%y, %%x
+%else
+    movd    [r0-1024+64*%%idx], xm %+ %%y
+%endif
+%assign %%x %%x+1
+%endrep
+%assign %%y %%y+1
+%endrep
+%endmacro
+
+%macro ENCODE_I16x16 2 ; name, field
+cglobal encode_i16x16_%1, 9,15,16
+    imul          r9d, r8d, 0x2b
+    shr           r9d, 8            ; i_qp / 6
+    lea          r10d, [r9*3]
+    add          r10d, r10d
+    sub           r8d, r10d         ; i_qp % 6
+    shl           r8d, 6
+    add            r7, r8           ; dequant_mf[i_qp%6]
+    mov           r8d, r9d
+    sub            r3, r0
+    xor          r11d, r11d         ; nz
+    xor          r12d, r12d         ; score
+    I16_HBD_GROUP 1024, 0
+    add            r0, 256
+    add            r1, 8*SIZEOF_PIXEL
+    add            r2, 8*SIZEOF_PIXEL
+    I16_HBD_GROUP 776, 2
+    add            r0, 256
+    add            r1, 8*FENC_STRIDEB-8*SIZEOF_PIXEL
+    add            r2, 8*FDEC_STRIDEB-8*SIZEOF_PIXEL
+    I16_HBD_GROUP 544, 8
+    add            r0, 256
+    add            r1, 8*SIZEOF_PIXEL
+    add            r2, 8*SIZEOF_PIXEL
+    I16_HBD_GROUP 296, 10
+    add            r0, 256          ; dct[16]
+
+    ; dct4x4dc
+    mova          xm0, [r0+ 0]
+    mova          xm1, [r0+16]
+    mova          xm2, [r0+32]
+    mova          xm3, [r0+48]
+    I16_WALSH4_1D  d, 0,1,2,3,4
+    TRANSPOSE4x4D  0,1,2,3,4
+    paddd          m0, [pd_1]
+    I16_WALSH4_1D  d, 0,1,2,3,4
+    psrad          m0, 1
+    psrad          m1, 1
+    psrad          m2, 1
+    psrad          m3, 1
+    vinserti128    m8, m0, xm1, 1
+    vinserti128    m9, m2, xm3, 1
+    ; quant_4x4_dc
+    mov           r9d, [r5]
+    shr           r9d, 1
+    movd          xm5, r9d
+    vpbroadcastd   m5, xm5
+    mov           r9d, [r6]
+    add           r9d, r9d
+    movd          xm6, r9d
+    vpbroadcastd   m6, xm6
+    pabsd          m2, m8
+    pabsd          m3, m9
+    paddd          m2, m6
+    paddd          m3, m6
+    pmulld         m2, m5
+    pmulld         m3, m5
+    psrld          m2, 16
+    psrld          m3, 16
+    psignd         m8, m2, m8
+    psignd         m9, m3, m9
+%if %2
+    mova           m0, [qscan4_field]
+%else
+    mova           m0, [qscan4_frame_i]
+    mova           m1, [qscan4_frame_j]
+%endif
+    I16_HBD_SCAN  %2, m8, m9
+    mova         [r4], m2
+%if %2
+    mova      [r4+32], m9
+%else
+    mova      [r4+32], m3
+%endif
+    xor           eax, eax
+    por            m2, m8, m9
+    ptest          m2, m2
+    jz .dc_zero
+    ; idct4x4dc
+    mova          xm0, xm8
+    vextracti128  xm1, m8, 1
+    mova          xm2, xm9
+    vextracti128  xm3, m9, 1
+    I16_WALSH4_1D  d, 0,1,2,3,4
+    TRANSPOSE4x4D  0,1,2,3,4
+    I16_WALSH4_1D  d, 0,1,2,3,4
+    ; dequant_4x4_dc
+    movd          xm5, [r7]
+    vpbroadcastd   m5, xm5
+    movzx         r9d, r8b
+    sub           r9d, 6
+    jl .dc_rshift
+    movd          xm6, r9d
+    pmaddwd        m0, m5
+    pmaddwd        m1, m5
+    pmaddwd        m2, m5
+    pmaddwd        m3, m5
+    pslld          m0, xm6
+    pslld          m1, xm6
+    pslld          m2, xm6
+    pslld          m3, xm6
+    jmp .dc_scatter
+.dc_rshift:
+    neg           r9d
+    movd          xm6, r9d
+    vpbroadcastd   m7, [pd_1]
+    pslld          m7, xm6
+    psrld          m7, 1
+    pmaddwd        m0, m5
+    pmaddwd        m1, m5
+    pmaddwd        m2, m5
+    pmaddwd        m3, m5
+    paddd          m0, m7
+    paddd          m1, m7
+    paddd          m2, m7
+    paddd          m3, m7
+    psrad          m0, xm6
+    psrad          m1, xm6
+    psrad          m2, xm6
+    psrad          m3, xm6
+.dc_scatter:
+    I16_HBD_DC_SCATTER
+    mov           eax, 1<<20
+    jmp .end
+.dc_zero:
+    mova      [r0+ 0], m8
+    mova      [r0+32], m9
+.end:
+    mov           r9d, 9
+    cmp          r12d, r9d
+    cmova        r12d, r9d
+    shl          r12d, 16
+    or            eax, r12d
+    or            eax, r11d
+    RET
+
+; one 8x8 at r0 (dct), r1 (fenc), r2 (fdec); its DCs to r10, r10+4, r10+16, r10+20.
+; Returns the nonzero blocks in r13d, adds the score to r12d.
+.group:
+%assign %%i 0
+%rep 4
+    movu         xm %+ %%i, [r1+%%i*FENC_STRIDEB]
+    vinserti128   m %+ %%i, m %+ %%i, [r1+(%%i+4)*FENC_STRIDEB], 1
+    movu         xm4, [r2+%%i*FDEC_STRIDEB]
+    vinserti128   m4, m4, [r2+(%%i+4)*FDEC_STRIDEB], 1
+    psubw         m %+ %%i, m4
+%assign %%i %%i+1
+%endrep
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    SUMSUB_BADC w, 3, 0, 2, 1   ; s03, d03, s12, d12
+    SUMSUB_BA   w, 2, 3, 4      ; s03 + s12, s03 - s12
+    I16_HBD_DCT_HALF l, m8, m9, m12, m13
+    I16_HBD_DCT_HALF h, m10, m11, m14, m15
+    movd     [r10   ], xm8
+    movd     [r10+ 4], xm10
+    movd     [r10+16], xm12
+    movd     [r10+20], xm14
+    pxor          xm0, xm0
+    vpblendd       m8, m8, m0, 0x01
+    vpblendd      m10, m10, m0, 0x01
+    vpblendd      m12, m12, m0, 0x01
+    vpblendd      m14, m14, m0, 0x01
+    I16_HBD_QUANT  m8, m0,  0
+    I16_HBD_QUANT  m9, m1, 32
+    I16_HBD_QUANT m10, m2,  0
+    I16_HBD_QUANT m11, m3, 32
+    I16_HBD_QUANT m12, m4,  0
+    I16_HBD_QUANT m13, m5, 32
+    I16_HBD_QUANT m14, m6,  0
+    I16_HBD_QUANT m15, m7, 32
+    por            m0, m8, m9
+    por            m1, m10, m11
+    packssdw       m0, m1
+    por            m1, m12, m13
+    por            m2, m14, m15
+    packssdw       m1, m2
+    packssdw       m0, m1
+    pxor           m1, m1
+    pcmpeqd        m0, m1
+    movmskps     r13d, m0
+    mov          r14d, r13d
+    shr          r13d, 4
+    and          r13d, r14d
+    xor          r13d, 0xf
+    jz .group_zero
+%if %2
+    mova           m0, [qscan4_field]
+%else
+    mova           m0, [qscan4_frame_i]
+    mova           m1, [qscan4_frame_j]
+%endif
+    I16_HBD_LEVEL %2, 0,  m8,  m9, m5
+    I16_HBD_LEVEL %2, 1, m10, m11, m6
+    packsswb       m5, m6
+    I16_HBD_LEVEL %2, 2, m12, m13, m6
+    I16_HBD_LEVEL %2, 3, m14, m15, m7
+    packsswb       m6, m7
+    mova           m7, [qscan4_bytes]
+    vpermd         m5, m7, m5
+    vpermd         m6, m7, m6
+    movzx        r14d, r8b
+    sub          r14d, 4
+    jl .group_rshift
+    movd          xm0, r14d
+    pmaddwd        m8, [r7]
+    pmaddwd        m9, [r7+32]
+    pmaddwd       m10, [r7]
+    pmaddwd       m11, [r7+32]
+    pmaddwd       m12, [r7]
+    pmaddwd       m13, [r7+32]
+    pmaddwd       m14, [r7]
+    pmaddwd       m15, [r7+32]
+    pslld          m8, xm0
+    pslld          m9, xm0
+    pslld         m10, xm0
+    pslld         m11, xm0
+    pslld         m12, xm0
+    pslld         m13, xm0
+    pslld         m14, xm0
+    pslld         m15, xm0
+.group_store:
+    I16_HBD_STORE_BLOCKS
+    pabsb          m0, m5
+    pabsb          m1, m6
+    por            m0, m1
+    psubusb        m0, [pb_1]
+    ptest          m0, m0
+    setnz         r14b
+    movzx        r14d, r14b
+    lea          r14d, [r14+r14*8]
+    add          r12d, r14d         ; a level > 1: score 9
+    pxor           m0, m0
+    pcmpeqb        m5, m0
+    pcmpeqb        m6, m0
+    pmovmskb     r10d, m5
+    pmovmskb     r14d, m6
+    shl           r14, 32
+    or            r10, r14
+    not           r10
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below
+    lea           r14, [r10+r10]
+    or            r14, [i16_score_bias]
+    and           r14, r10
+    popcnt        r14, r14
+    add          r12d, r14d
+    lea            r9, [r10+r10]
+    lea           r14, [r10*4]
+    or             r9, r14
+    lea           r14, [r10*8]
+    or             r9, r14          ; shifts 1-3
+    lea           r14, [r9*8]
+    or            r14, r9           ; shifts 1-6
+    or             r9, [i16_score_bias+8]
+    and            r9, r10
+    popcnt         r9, r9
+    add          r12d, r9d
+    or            r14, [i16_score_bias+16]
+    and           r14, r10
+    popcnt        r14, r14
+    add          r12d, r14d
+    ret
+.group_rshift:
+    neg          r14d
+    movd          xm0, r14d
+    vpbroadcastd   m1, [pd_1]
+    pslld          m1, xm0
+    psrld          m1, 1
+    pmaddwd        m8, [r7]
+    pmaddwd        m9, [r7+32]
+    pmaddwd       m10, [r7]
+    pmaddwd       m11, [r7+32]
+    pmaddwd       m12, [r7]
+    pmaddwd       m13, [r7+32]
+    pmaddwd       m14, [r7]
+    pmaddwd       m15, [r7+32]
+    paddd          m8, m1
+    paddd          m9, m1
+    paddd         m10, m1
+    paddd         m11, m1
+    paddd         m12, m1
+    paddd         m13, m1
+    paddd         m14, m1
+    paddd         m15, m1
+    psrad          m8, xm0
+    psrad          m9, xm0
+    psrad         m10, xm0
+    psrad         m11, xm0
+    psrad         m12, xm0
+    psrad         m13, xm0
+    psrad         m14, xm0
+    psrad         m15, xm0
+    jmp .group_store
+.group_zero:
+    I16_HBD_STORE_BLOCKS
+    ret
+%endmacro
+
+%else ; !HIGH_BIT_DEPTH
 
 ; bit, src, offset
 %macro I16_LEVEL_STORE 3
@@ -4135,10 +4547,11 @@ cglobal encode_i16x16_%1, 9,15,16
     jmp .dq_store
 %endmacro
 
+%endif ; HIGH_BIT_DEPTH
+
 INIT_YMM avx2
 ENCODE_I16x16 frame, 0
 ENCODE_I16x16 field, 1
-%endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
