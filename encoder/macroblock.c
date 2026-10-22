@@ -29,7 +29,7 @@
 #include "common/common.h"
 #include "macroblock.h"
 
-#define INTER_RESID_TWIN 0
+#define INTER_RESID_TWIN 1
 #define INTER_RESID_STR2( x ) #x
 #define INTER_RESID_STR( x ) INTER_RESID_STR2( x )
 #if !INTER_RESID_TWIN
