@@ -1760,6 +1760,9 @@ static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int
     int *o = out_w;
     for( int i = 0; i < bands; i++ )
     {
+        /* the wave left its own rows in the contexts' bounds */
+        s[i].h->i_threadslice_start = (h->mb.i_mb_height *  i    + bands/2) / bands;
+        s[i].h->i_threadslice_end   = (h->mb.i_mb_height * (i+1) + bands/2) / bands;
         sizes[i] = s[i].h->i_threadslice_end - s[i].h->i_threadslice_start + NUM_INTS;
         memcpy( o, s[i].output_inter, sizes[i] * sizeof(int) ); o += sizes[i];
         memcpy( o, s[i].output_intra, sizes[i] * sizeof(int) ); o += sizes[i];
