@@ -1219,6 +1219,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->rc.i_vbv_buffer_size = atoi(value);
     OPT("vbv-init")
         p->rc.f_vbv_buffer_init = atof(value);
+    OPT("vbv-row-plan")
+        p->rc.i_vbv_row_plan = atoi(value);
     OPT2("ipratio", "ip-factor")
         p->rc.f_ip_factor = atof(value);
     OPT2("pbratio", "pb-factor")
@@ -1417,6 +1419,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
                           p->rc.i_vbv_max_bitrate, p->rc.i_vbv_buffer_size );
             if( p->rc.i_rc_method == X264_RC_CRF )
                 s += sprintf( s, " crf_max=%.1f", p->rc.f_rf_constant_max );
+            if( p->rc.i_vbv_row_plan )
+                s += sprintf( s, " vbv_row_plan=%d", p->rc.i_vbv_row_plan );
         }
     }
     else if( p->rc.i_rc_method == X264_RC_CQP )

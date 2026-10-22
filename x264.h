@@ -411,6 +411,7 @@ typedef struct x264_param_t
         int         i_vbv_max_bitrate;
         int         i_vbv_buffer_size;
         float       f_vbv_buffer_init; /* <=1: fraction of buffer_size. >1: kbit */
+        int         i_vbv_row_plan; /* one-frame VBV row QP plan: 1 plan and reserve, 2 also a row re-encode only 2 QP past qp_step (changes output) */
         float       f_ip_factor;
         float       f_pb_factor;
 

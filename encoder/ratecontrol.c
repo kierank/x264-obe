@@ -178,6 +178,10 @@ struct x264_ratecontrol_t
     double slice_size_planned;
     int b_floor_off;            /* no thread slice QP floor this frame */
     predictor_t *row_pred;
+    /* --vbv-row-plan: the next row's (pair's) predicted bits at its qpm, and this
+     * thread's decayed mean log2 overshoot of rows over that prediction */
+    float plan_pred;
+    float plan_over;
     predictor_t row_preds[3][2];
     predictor_t row_pred_last[3]; /* the last row of this thread's slice */
     /* MB bits not yet added to fdec->i_row_bits[row_bits_y[k]], k = row&1
@@ -1715,6 +1719,32 @@ static float predict_row( x264_t *h, int i, float qscale )
     return pred;
 }
 
+/* --vbv-row-plan: QP past qp_step a row's re-encode needs; the reserve for the next row
+ * over its prediction, 2^(K*overshoot)-1 of it; the overshoot's decay a row. */
+#define ROW_PLAN_JUMP  2.0f
+#define ROW_PLAN_K     1.0f
+#define ROW_PLAN_DECAY 0.8f
+
+/* row (pair) y0 as predict_row_size_to_end counts it */
+static float predict_next( x264_t *h, int y0, float qp )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    float qscale = qp2qscale( qp );
+    float pred = predict_row( h, y0, qscale ) + (SLICE_MBAFF ? predict_row( h, y0 + 1, qscale ) : 0);
+    return pred * rc->epb_scale * (rc->emerg_step ? rc->emerg_scale : rc->row_err_scale);
+}
+
+/* The rest of the slice after row y with the next row (pair) at qp over its prediction
+ * by the reserve, and the rows after it a qp_step up to take that back. */
+static float predict_rest_reserved( x264_t *h, int y, float qp )
+{
+    x264_ratecontrol_t *rc = h->rc;
+    int y0 = y + 1;
+    float next = predict_next( h, y0, qp );
+    float after = predict_row_size_to_end( h, y0 + SLICE_MBAFF, qp + h->param.rc.i_qp_step );
+    return next * exp2f( ROW_PLAN_K * rc->plan_over ) + after;
+}
+
 /* Near QP_MAX_SPEC the chroma QP hardly moves with qpm, and above it only the emergency
  * deadzone does, so rows shrink less than 1/qscale. Row (pair) y0 at qp, to compare. */
 static void row_err_expect( x264_t *h, x264_ratecontrol_t *rc, int y0, float qp )
@@ -1811,6 +1841,33 @@ static int epb_scan( x264_t *h, int *nal, int *pos, int *bytes, int b_end )
     return left + (h->param.b_cabac ? h->cabac.i_bytes_outstanding + 4 : 8);
 }
 
+/* One-frame VBV, before the slice's first row: the lowest QP from the frame's at which
+ * the row predictors fit the slice, with the other slices at their plans, under the
+ * size the row QP raises to past qp_step by re-encoding. Taken only past qp_step:
+ * nearer, the rows' steps meet it. */
+static void row_plan( x264_t *h, x264_ratecontrol_t *rc )
+{
+    if( !h->param.rc.i_vbv_row_plan || !rc->b_vbv || !rc->single_frame_vbv || !rc->b_abr
+        || h->sh.i_type == SLICE_TYPE_B || rc->row_pred[0].count <= 1.f )
+        return;
+    float qp_hard_max = h->param.rc.i_qp_max;
+    if( rc->rate_factor_max_increment )
+        qp_hard_max = X264_MIN( qp_hard_max, rc->qp_novbv + rc->rate_factor_max_increment );
+    float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
+    float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
+    max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
+    float others = h->param.b_sliced_threads ? rc->frame_size_planned - rc->slice_size_planned : 0;
+    float qp = rc->qpm;
+    while( qp < qp_hard_max && predict_row_size_to_end( h, h->i_threadslice_start - 1, qp ) + others > max_frame_size )
+        qp += 0.5f;
+    if( qp > rc->qpm + h->param.rc.i_qp_step )
+    {
+        rc->qpm = X264_MIN( qp, qp_hard_max );
+        __atomic_store_n( &rc->slice_qp8, (int)(rc->qpm * 256 + 0.5f), __ATOMIC_RELEASE );
+    }
+    rc->plan_pred = predict_next( h, h->i_threadslice_start, rc->qpm );
+}
+
 /* Each thread, before its slices of a frame. */
 void x264_ratecontrol_slices_start( x264_t *h )
 {
@@ -1829,6 +1886,8 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->b_slice_done = 0;
     rc->last_row_reencodes = 0;
     rc->room_reencodes = 0;
+    rc->plan_pred = 0;
+    row_plan( h, rc );
 }
 
 #define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
@@ -1872,6 +1931,8 @@ static int reencode_row( x264_t *h, x264_ratecontrol_t *rc, int y )
     rc->qpa_aq = rc->qpa_aq_prev;
     h->fdec->i_row_bits[y] = 0;
     h->fdec->i_row_bits[y-SLICE_MBAFF] = 0;
+    if( h->param.rc.i_vbv_row_plan && rc->single_frame_vbv )
+        rc->plan_pred = predict_next( h, y - SLICE_MBAFF, rc->qpm );
     row_err_expect( h, rc, y - SLICE_MBAFF, rc->qpm );
     h->mb.i_vbv_emerg = rc->emerg_step;
     return -1;
@@ -2068,6 +2129,15 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         rc->emerg_next = 0;
         rc->emerg_scale = x264_clip3f( rc->emerg_bits / rc->emerg_pred, 1.f/64, 64.f );
     }
+    /* --vbv-row-plan: this row (pair) over the prediction it was coded on */
+    int b_plan = h->param.rc.i_vbv_row_plan && rc->single_frame_vbv;
+    if( b_plan && rc->plan_pred > 0 )
+    {
+        float row_bits = h->fdec->i_row_bits[y] + (SLICE_MBAFF ? h->fdec->i_row_bits[y-1] : 0);
+        float over = log2f( X264_MAX( row_bits, 1.f ) / rc->plan_pred );
+        rc->plan_over = rc->plan_over * ROW_PLAN_DECAY + X264_MAX( over, 0.f ) * (1.f - ROW_PLAN_DECAY);
+        rc->plan_pred = 0;
+    }
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
     max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
@@ -2145,7 +2215,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         while( rc->qpm < qp_max
                && ((b1 > rc->frame_size_planned + rc_tol) ||
                    (b1 > rc->frame_size_planned && rc->qpm < rc->qp_novbv) ||
-                   (b1 > rc->buffer_fill - buffer_left_planned * 0.5f)) )
+                   (b1 > rc->buffer_fill - buffer_left_planned * 0.5f) ||
+                   (b_plan && bits_so_far + predict_rest_reserved( h, y, rc->qpm ) + size_of_other_slices > max_frame_size)) )
         {
             rc->qpm += step_size;
             b1 = bits_so_far + predict_row_size_to_end( h, y, rc->qpm ) + size_of_other_slices;
@@ -2162,7 +2233,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         while( rc->qpm > qp_min && rc->qpm < prev_row_qp
                && (rc->single_frame_vbv || rc->qpm > RC_LOADF( &h->fdec->f_row_qp[0] ))
                && (b2 < max_frame_size)
-               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max)) )
+               && ((b2 < rc->frame_size_planned * 0.8f) || (b2 < b_max))
+               && (!b_plan || bits_so_far + predict_rest_reserved( h, y, rc->qpm ) + size_of_other_slices < max_frame_size) )
         {
             b1 = b2;
             rc->qpm -= step_size;
@@ -2252,7 +2324,7 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         }
 
         /* If the current row was large enough to cause a large QP jump, try re-encoding it. */
-        if( rc->qpm > qp_max && prev_row_qp < qp_max && can_reencode_row )
+        if( rc->qpm > qp_max + (b_plan && h->param.rc.i_vbv_row_plan >= 2 ? ROW_PLAN_JUMP : 0) && prev_row_qp < qp_max && can_reencode_row )
         {
             /* Bump QP to halfway in between... close enough. */
             rc->qpm = x264_clip3f( (prev_row_qp + rc->qpm)*0.5f, prev_row_qp + 1.0f, qp_max );
@@ -2298,6 +2370,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
     else
         row_err_expect( h, rc, y + 1, rc->qpm );
     h->mb.i_vbv_emerg = rc->emerg_step;
+    if( b_plan && !b_last_row )
+        rc->plan_pred = predict_next( h, y + 1, rc->qpm );
 
     rc->qpa_rc_prev = rc->qpa_rc;
     rc->qpa_aq_prev = rc->qpa_aq;
