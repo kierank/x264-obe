@@ -157,7 +157,11 @@ static inline int ssd_mb( x264_t *h )
     return ssd_plane(h, PIXEL_16x16, 0, 0, 0) + chroma_ssd;
 }
 
-static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
+/* _bound: with CABAC, the bit count is skipped when the distortion alone reaches
+ * bound, and COST_MAX (COST_MAX64 for partitions) is returned. The encode and its
+ * state are unchanged. Only for callers that discard any result >= bound. */
+#define x264_rd_cost_mb( h, i_lambda2 ) x264_rd_cost_mb_bound( h, i_lambda2, RD_NO_BOUND )
+static int x264_rd_cost_mb_bound( x264_t *h, int i_lambda2, uint64_t bound )
 {
     int b_transform_bak = h->mb.b_transform_8x8;
     int i_ssd;
@@ -177,10 +181,18 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     }
     else if( h->param.b_cabac )
     {
-        x264_cabac_t cabac_tmp;
-        COPY_CABAC;
-        x264_macroblock_size_cabac( h, &cabac_tmp );
-        i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 32768 ) >> 16;
+        if( i_ssd >= 0 && (uint64_t)i_ssd >= bound )
+        {
+            i_ssd = COST_MAX;
+            i_bits = 0;
+        }
+        else
+        {
+            x264_cabac_t cabac_tmp;
+            COPY_CABAC;
+            x264_macroblock_size_cabac( h, &cabac_tmp );
+            i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 32768 ) >> 16;
+        }
     }
     else
     {
@@ -196,7 +208,7 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
 
 /* partition RD functions use 8 bits more precision to avoid large rounding errors at low QPs */
 
-static uint64_t x264_rd_cost_subpart( x264_t *h, int i_lambda2, int i4, int i_pixel )
+static uint64_t x264_rd_cost_subpart( x264_t *h, int i_lambda2, int i4, int i_pixel, uint64_t bound )
 {
     uint64_t i_ssd, i_bits;
 
@@ -217,6 +229,8 @@ static uint64_t x264_rd_cost_subpart( x264_t *h, int i_lambda2, int i4, int i_pi
 
     if( h->param.b_cabac )
     {
+        if( (i_ssd<<8) >= bound )
+            return COST_MAX64;
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
         x264_subpartition_size_cabac( h, &cabac_tmp, i4, i_pixel );
@@ -230,17 +244,22 @@ static uint64_t x264_rd_cost_subpart( x264_t *h, int i_lambda2, int i4, int i_pi
 
 uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i4, int i_pixel )
 {
+    return x264_rd_cost_part_bound( h, i_lambda2, i4, i_pixel, RD_NO_BOUND );
+}
+
+uint64_t x264_rd_cost_part_bound( x264_t *h, int i_lambda2, int i4, int i_pixel, uint64_t bound )
+{
     uint64_t i_ssd, i_bits;
     int i8 = i4 >> 2;
 
     if( i_pixel == PIXEL_16x16 )
     {
-        int i_cost = x264_rd_cost_mb( h, i_lambda2 );
+        int i_cost = x264_rd_cost_mb_bound( h, i_lambda2, bound );
         return i_cost;
     }
 
     if( i_pixel > PIXEL_8x8 )
-        return x264_rd_cost_subpart( h, i_lambda2, i4, i_pixel );
+        return x264_rd_cost_subpart( h, i_lambda2, i4, i_pixel, bound );
 
     h->mb.i_cbp_luma = 0;
 
@@ -260,6 +279,8 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i4, int i_pixel )
 
     if( h->param.b_cabac )
     {
+        if( (i_ssd<<8) >= bound )
+            return COST_MAX64;
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
         x264_partition_size_cabac( h, &cabac_tmp, i8, i_pixel );
