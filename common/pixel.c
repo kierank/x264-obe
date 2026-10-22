@@ -1038,6 +1038,54 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twins of wip/x264-hipreset-me: every build declares the hidden weak
+ * x264_8_twin_* below; a set at 1 dispatches its twins, which link as 0, so its
+ * slots stay NULL and me.c takes the speed-next path */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define HPM_TWIN_HEX   0 /* sad_hex_min, sad_hexhalf_min 8x8 */
+#define HPM_TWIN_UMH   1 /* sad_dia_min, sad_oct_min, sad_ring_min, sad_corner_min, sad_row 8x8 */
+#define HPM_TWIN_ROW16 1 /* sad_row 16x16, 16x8, 8x16 */
+#define HPM_TWIN1( k ) \
+    extern __typeof__( x264_pixel_##k##_avx512 ) x264_8_twin_##k __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak x264_8_twin_" #k "\n.hidden x264_8_twin_" #k );
+HPM_TWIN1( sad_hex_min_8x8 )
+HPM_TWIN1( sad_hexhalf_min_8x8 )
+HPM_TWIN1( sad_dia_min_8x8 )
+HPM_TWIN1( sad_oct_min_8x8 )
+HPM_TWIN1( sad_ring_min_8x8 )
+HPM_TWIN1( sad_corner_min_8x8 )
+HPM_TWIN1( sad_row_8x8 )
+HPM_TWIN1( sad_row_16x16 )
+HPM_TWIN1( sad_row_16x8 )
+HPM_TWIN1( sad_row_8x16 )
+#if HPM_TWIN_HEX
+#undef x264_pixel_sad_hex_min_8x8_avx512
+#define x264_pixel_sad_hex_min_8x8_avx512 x264_8_twin_sad_hex_min_8x8
+#undef x264_pixel_sad_hexhalf_min_8x8_avx512
+#define x264_pixel_sad_hexhalf_min_8x8_avx512 x264_8_twin_sad_hexhalf_min_8x8
+#endif
+#if HPM_TWIN_UMH
+#undef x264_pixel_sad_dia_min_8x8_avx512
+#define x264_pixel_sad_dia_min_8x8_avx512 x264_8_twin_sad_dia_min_8x8
+#undef x264_pixel_sad_oct_min_8x8_avx512
+#define x264_pixel_sad_oct_min_8x8_avx512 x264_8_twin_sad_oct_min_8x8
+#undef x264_pixel_sad_ring_min_8x8_avx512
+#define x264_pixel_sad_ring_min_8x8_avx512 x264_8_twin_sad_ring_min_8x8
+#undef x264_pixel_sad_corner_min_8x8_avx512
+#define x264_pixel_sad_corner_min_8x8_avx512 x264_8_twin_sad_corner_min_8x8
+#undef x264_pixel_sad_row_8x8_avx512
+#define x264_pixel_sad_row_8x8_avx512 x264_8_twin_sad_row_8x8
+#endif
+#if HPM_TWIN_ROW16
+#undef x264_pixel_sad_row_16x16_avx512
+#define x264_pixel_sad_row_16x16_avx512 x264_8_twin_sad_row_16x16
+#undef x264_pixel_sad_row_16x8_avx512
+#define x264_pixel_sad_row_16x8_avx512 x264_8_twin_sad_row_16x8
+#undef x264_pixel_sad_row_8x16_avx512
+#define x264_pixel_sad_row_8x16_avx512 x264_8_twin_sad_row_8x16
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
