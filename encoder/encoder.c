@@ -36,6 +36,17 @@
 
 //#define DEBUG_MB_TYPE
 
+/* layout pair test/x264-deblock-chroma-mb / -twin: hidden weak x264_N_deblock_chroma_mb_gate, defined here (no bytes)
+ * unless DBCMB_TWIN; the twin links it as 0 and chroma deblocks per edge */
+#define DBCMB_TWIN 0
+#define DBCMB_STR2( x ) #x
+#define DBCMB_STR( x ) DBCMB_STR2( x )
+#define x264_deblock_chroma_mb_gate x264_template(deblock_chroma_mb_gate)
+extern void x264_deblock_chroma_mb_gate( void ) __attribute__((weak, visibility("hidden")));
+#if !DBCMB_TWIN
+__asm__( ".set " DBCMB_STR( x264_deblock_chroma_mb_gate ) ", " DBCMB_STR( x264_encoder_encode ) );
+#endif
+
 #define bs_write_ue bs_write_ue_big
 
 // forward declaration needed for template usage
@@ -1617,7 +1628,7 @@ static void chroma_dsp_init( x264_t *h )
             h->loopf.deblock_chroma_intra[0] = h->loopf.deblock_h_chroma_420_intra;
             h->loopf.deblock_chroma_mbaff = h->loopf.deblock_chroma_420_mbaff;
             h->loopf.deblock_chroma_intra_mbaff = h->loopf.deblock_chroma_420_intra_mbaff;
-            h->loopf.deblock_chroma_mb = h->loopf.deblock_chroma_420_mb;
+            h->loopf.deblock_chroma_mb = x264_deblock_chroma_mb_gate ? h->loopf.deblock_chroma_420_mb : NULL;
             h->pixf.intra_mbcmp_x3_chroma = h->pixf.intra_mbcmp_x3_8x8c;
             h->quantf.coeff_last[DCT_CHROMA_DC] = h->quantf.coeff_last4;
             h->quantf.coeff_level_run[DCT_CHROMA_DC] = h->quantf.coeff_level_run4;
@@ -1629,7 +1640,7 @@ static void chroma_dsp_init( x264_t *h )
             h->loopf.deblock_chroma_intra[0] = h->loopf.deblock_h_chroma_422_intra;
             h->loopf.deblock_chroma_mbaff = h->loopf.deblock_chroma_422_mbaff;
             h->loopf.deblock_chroma_intra_mbaff = h->loopf.deblock_chroma_422_intra_mbaff;
-            h->loopf.deblock_chroma_mb = h->loopf.deblock_chroma_422_mb;
+            h->loopf.deblock_chroma_mb = x264_deblock_chroma_mb_gate ? h->loopf.deblock_chroma_422_mb : NULL;
             h->pixf.intra_mbcmp_x3_chroma = h->pixf.intra_mbcmp_x3_8x16c;
             h->quantf.coeff_last[DCT_CHROMA_DC] = h->quantf.coeff_last8;
             h->quantf.coeff_level_run[DCT_CHROMA_DC] = h->quantf.coeff_level_run8;
