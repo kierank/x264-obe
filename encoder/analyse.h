@@ -45,7 +45,7 @@ void x264_macroblock_analyse( x264_t *h );
 /* sub16 layout pair: x264_s16_gate gates the sub-16x16 intra skip. Arm:
  * x264_s16_arm, defined in api.c. Twin (S16_TWIN 1): the never defined
  * x264_s16_twin, which links as 0. The code is the same in both. */
-#define S16_TWIN 0
+#define S16_TWIN 1
 extern const char x264_s16_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_s16_twin __attribute__((weak, visibility("hidden")));
 #if S16_TWIN
