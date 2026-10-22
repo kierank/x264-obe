@@ -1103,7 +1103,7 @@ static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, 
 }
 
 #define COST_MV_SATD( mx, my, dir ) \
-if( b_refine_qpel || (dir^1) != odir ) \
+if( b_refine_qpel || ((dir^1) != odir && (dir^1) != podir) ) \
 { \
     intptr_t stride; \
     pixel *src; \
@@ -1155,7 +1155,7 @@ if( b_refine_qpel || (dir^1) != odir ) \
 /* Luma-only COST_MV_SATD: the cost does not depend on bcost, so candidates
  * fold into bkey = min( (cost<<4) + dir+1 ) with the incumbent at 0. */
 #define COST_MV_SATD_KEY( mx, my, dir ) \
-if( b_refine_qpel || (dir^1) != odir ) \
+if( b_refine_qpel || ((dir^1) != odir && (dir^1) != podir) ) \
 { \
     int cost = subpel_luma_cost( h, m, pix, i_pixel, bw, bh, mx, my, fenc_pre ) \
              + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; \
@@ -1246,7 +1246,10 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int bmx = m->mv[0];
     int bmy = m->mv[1];
     int bcost = m->cost;
-    int odir = -1, bdir;
+    /* odir, podir: the last two qpel steps. A candidate back along either was a
+     * centre or a candidate of an earlier step, so it costs at least the cost
+     * that step moved to, more than bcost, and can't win: skip it. */
+    int odir = -1, podir = -1, bdir;
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
 
     /* halfpel diamond search */
@@ -1340,6 +1343,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             {
                 if( bmy <= h->mb.mv_min_spel[1] || bmy >= h->mb.mv_max_spel[1] || bmx <= h->mb.mv_min_spel[0] || bmx >= h->mb.mv_max_spel[0] )
                     break;
+                podir = odir;
                 odir = bdir;
                 int omx = bmx, omy = bmy;
                 uint64_t bkey = (uint64_t)bcost << 4;
@@ -1362,6 +1366,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             {
                 if( bmy <= h->mb.mv_min_spel[1] || bmy >= h->mb.mv_max_spel[1] || bmx <= h->mb.mv_min_spel[0] || bmx >= h->mb.mv_max_spel[0] )
                     break;
+                podir = odir;
                 odir = bdir;
                 int omx = bmx, omy = bmy;
                 COST_MV_SATD( omx, omy - 1, 0 );
