@@ -1809,6 +1809,13 @@ static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int
     if( bad )
     {
         fprintf( stderr, "wave check: MISMATCH %d frame %d p0 %d p1 %d b %d\n", bad, fenc->i_frame, p0, p1, b );
+        o = out_w;
+        for( int i = 0; i < bands; i++ )
+            for( int k = 0; k < 2; k++, o += sizes[i] )
+                for( int j = 0; j < sizes[i]; j++ )
+                    if( o[j] != (k ? s[i].output_intra : s[i].output_inter)[j] )
+                        fprintf( stderr, "band %d %s idx %d wave %d serial %d\n", i, k ? "intra" : "inter", j, o[j],
+                                 (k ? s[i].output_intra : s[i].output_inter)[j] );
         abort();
     }
     if( !(checked_frames & 15) )
