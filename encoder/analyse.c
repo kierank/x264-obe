@@ -3471,12 +3471,14 @@ intra_analysis:
                     // FIXME don't need to check this if the reference frame is done
                     {}
                 /* experimental: lowres-static with skip mv 0, probe before ME */
-                else if( h->param.analyse.i_skip_static && !M32( h->mb.cache.pskip_mv ) && x264_mb_lowres_static( h ) )
+                else if( h->param.analyse.i_skip_static && (ME_LEVER_CNT( 14 ), 1) && !M32( h->mb.cache.pskip_mv ) && x264_mb_lowres_static( h ) && (ME_LEVER_CNT( 15 ), 1) )
                 {
                     b_skip = x264_macroblock_probe_pskip( h );
                     if( b_skip == 1 && x264_mb_pskip_mispredicted( h ) )
                         b_skip = h->mb.b_skip_mc = 0;
                     analysis.b_try_skip = !b_skip && h->param.analyse.i_subpel_refine >= 3;
+                    if( b_skip )
+                        ME_LEVER_CNT( 16 );
                 }
                 else if( h->param.analyse.i_subpel_refine >= 3 )
                     analysis.b_try_skip = 1;
@@ -3513,6 +3515,12 @@ skip_analysis:
             int i_satd_inter, i_satd_intra;
 
             h->mb.b_me_pred_only = h->param.analyse.b_me_pred_intra && x264_mb_lowres_intra( h );
+            if( h->param.analyse.b_me_pred_intra )
+            {
+                ME_LEVER_CNT( 17 );
+                if( h->mb.b_me_pred_only )
+                    ME_LEVER_CNT( 18 );
+            }
             x264_mb_analyse_load_costs( h, &analysis );
 
             /* Intra heavy: intra first against the 16x16 predictors, and the 16x16

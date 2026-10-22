@@ -64,7 +64,7 @@ typedef struct
 
 /* test: ME lever counters, printed at encoder close */
 #define x264_me_lever_cnt x264_template(me_lever_cnt)
-extern uint64_t x264_me_lever_cnt[16];
+extern uint64_t x264_me_lever_cnt[24];
 #define ME_LEVER_CNT( i ) __atomic_fetch_add( &x264_me_lever_cnt[i], 1, __ATOMIC_RELAXED )
 #define x264_me_lever_print x264_template(me_lever_print)
 void x264_me_lever_print( void );

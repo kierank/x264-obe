@@ -270,12 +270,12 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 /* [0..3] seed exit 16x16-class checks, exits, 8x8-and-below checks, exits
  * [4..6] qpel skip in the search: checks, fullpel kept, skips; [7..9] the same in refine_qpel
  * [10,11] ref0 exit checks, exits; [12,13] dia/hex searches with --hex-cap, capped */
-uint64_t x264_me_lever_cnt[16];
+uint64_t x264_me_lever_cnt[24];
 
 void x264_me_lever_print( void )
 {
-    uint64_t c[16];
-    for( int i = 0; i < 16; i++ )
+    uint64_t c[24];
+    for( int i = 0; i < 24; i++ )
         c[i] = __atomic_load_n( &x264_me_lever_cnt[i], __ATOMIC_RELAXED );
 #define PCT( a, b ) ((b) ? 100.0*(a)/(b) : 0.0)
     if( c[0] || c[2] )
@@ -288,6 +288,15 @@ void x264_me_lever_print( void )
         fprintf( stderr, "melev %d-bit ref0-exit: %"PRIu64"/%"PRIu64" (%.2f%%)\n", BIT_DEPTH, c[11], c[10], PCT( c[11], c[10] ) );
     if( c[12] )
         fprintf( stderr, "melev %d-bit hex-cap: %"PRIu64"/%"PRIu64" (%.2f%%)\n", BIT_DEPTH, c[13], c[12], PCT( c[13], c[12] ) );
+    if( c[14] )
+        fprintf( stderr, "melev %d-bit skip-static: P mbs %"PRIu64" gated %"PRIu64" (%.2f%%) skipped %"PRIu64" (%.2f%% of gated)\n", BIT_DEPTH,
+                 c[14], c[15], PCT( c[15], c[14] ), c[16], PCT( c[16], c[15] ) );
+    if( c[17] )
+        fprintf( stderr, "melev %d-bit me-pred-intra: P mbs %"PRIu64" lowres-intra %"PRIu64" (%.2f%%) searches cut %"PRIu64"\n", BIT_DEPTH,
+                 c[17], c[18], PCT( c[18], c[17] ), c[19] );
+    if( c[20] )
+        fprintf( stderr, "melev %d-bit subpel-fit: %"PRIu64"/%"PRIu64" (%.2f%%) fullpel start %"PRIu64" (%.2f%% of fits)\n", BIT_DEPTH,
+                 c[21], c[20], PCT( c[21], c[20] ), c[22], PCT( c[22], c[21] ) );
 #undef PCT
 }
 
@@ -471,7 +480,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
     /* experimental: a lowres-intra mb, predictors only */
     if( h->mb.b_me_pred_only )
+    {
+        ME_LEVER_CNT( 19 );
         goto fpel_done;
+    }
 
     /* experimental: the best seed is cheap enough, no fullpel pattern */
     int seed_exit = h->mb.i_me_seed_exit[i_pixel >= PIXEL_8x8];
@@ -1052,6 +1064,8 @@ fpel_done:;
     /* experimental: subpel start at the vertex of a parabola per axis through the
      * fullpel winner and its 4 neighbours, where it is a strict minimum */
     int b_fit = 0;
+    if( h->mb.i_subpel_fit && h->mb.i_subpel_refine >= 2 )
+        ME_LEVER_CNT( 20 );
     if( h->mb.i_subpel_fit && h->mb.i_subpel_refine >= 2 && M32( m->mv ) == bmv_spel &&
         bmx > mv_x_min && bmx < mv_x_max && bmy > mv_y_min && bmy < mv_y_max &&
         m->cost > p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2] )
@@ -1074,6 +1088,9 @@ fpel_done:;
                 m->mv[i] += (num + (num < 0 ? -den : den)/2) / den;
             }
             b_fit = 1;
+            ME_LEVER_CNT( 21 );
+            if( M32( m->mv ) == bmv_spel )
+                ME_LEVER_CNT( 22 );
         }
     }
 
