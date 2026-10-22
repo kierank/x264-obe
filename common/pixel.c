@@ -1724,6 +1724,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx512icl;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx512icl;
         pixf->weightp_chroma_ref_row = x264_weightp_chroma_ref_row_avx512icl;
+        /* weighted qpel compares: zmm, the weight table in 4 registers */
+        pixf->sad_avg2_w[PIXEL_16x16] = x264_pixel_sad_avg2_w_16x16_avx512icl;
+        pixf->sad_avg2_w[PIXEL_16x8]  = x264_pixel_sad_avg2_w_16x8_avx512icl;
+        pixf->sad_avg2_w[PIXEL_8x16]  = x264_pixel_sad_avg2_w_8x16_avx512icl;
+        pixf->sad_avg2_w[PIXEL_8x8]   = x264_pixel_sad_avg2_w_8x8_avx512icl;
+        pixf->satd_avg2_pre_w[PIXEL_16x16] = x264_pixel_satd_avg2_pre_w_16x16_avx512icl;
+        pixf->satd_avg2_pre_w[PIXEL_16x8]  = x264_pixel_satd_avg2_pre_w_16x8_avx512icl;
+        pixf->satd_avg2_pre_w[PIXEL_8x16]  = x264_pixel_satd_avg2_pre_w_8x16_avx512icl;
+        pixf->satd_avg2_pre_w[PIXEL_8x8]   = x264_pixel_satd_avg2_pre_w_8x8_avx512icl;
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;

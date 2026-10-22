@@ -1129,6 +1129,22 @@ void x264_weightp_satd8_search_avx2( uint32_t (*cost)[4], pixel *r, pixel *f, in
 #define x264_weightp_satd8_search_avx512icl x264_template(weightp_satd8_search_avx512icl)
 void x264_weightp_satd8_search_avx512icl( uint32_t (*cost)[4], pixel *r, pixel *f, intptr_t i_stride, int n,
                                           uint16_t *icost, const int16_t (*wp)[4], int nk );
+#define x264_pixel_sad_avg2_w_16x16_avx512icl x264_template(pixel_sad_avg2_w_16x16_avx512icl)
+#define x264_pixel_sad_avg2_w_16x8_avx512icl x264_template(pixel_sad_avg2_w_16x8_avx512icl)
+#define x264_pixel_sad_avg2_w_8x16_avx512icl x264_template(pixel_sad_avg2_w_8x16_avx512icl)
+#define x264_pixel_sad_avg2_w_8x8_avx512icl x264_template(pixel_sad_avg2_w_8x8_avx512icl)
+#define x264_pixel_satd_avg2_pre_w_16x16_avx512icl x264_template(pixel_satd_avg2_pre_w_16x16_avx512icl)
+#define x264_pixel_satd_avg2_pre_w_16x8_avx512icl x264_template(pixel_satd_avg2_pre_w_16x8_avx512icl)
+#define x264_pixel_satd_avg2_pre_w_8x16_avx512icl x264_template(pixel_satd_avg2_pre_w_8x16_avx512icl)
+#define x264_pixel_satd_avg2_pre_w_8x8_avx512icl x264_template(pixel_satd_avg2_pre_w_8x8_avx512icl)
+#define DECL_AVG2W( size )\
+int x264_pixel_sad_avg2_w_##size##_avx512icl( pixel *, pixel *, pixel *, intptr_t, const uint8_t * );\
+int x264_pixel_satd_avg2_pre_w_##size##_avx512icl( int16_t *, pixel *, pixel *, intptr_t, const uint8_t * );
+DECL_AVG2W( 16x16 )
+DECL_AVG2W( 16x8 )
+DECL_AVG2W( 8x16 )
+DECL_AVG2W( 8x8 )
+#undef DECL_AVG2W
 #define x264_weightp_chroma_ref_row_avx2 x264_template(weightp_chroma_ref_row_avx2)
 void x264_weightp_chroma_ref_row_avx2( pixel *dst[2], intptr_t i_stride, pixel *ref, int16_t (*mvs)[2], int n,
                                        int height, int32_t *sum[2], uint32_t *minmax[2], const int16_t (*ws)[2],

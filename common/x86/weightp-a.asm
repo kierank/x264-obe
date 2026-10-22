@@ -83,6 +83,19 @@ wcr_wdeint:  times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
 wcr_dperm:   dd 0,4,1,5,2,6,3,7
 wcr_b08:     db 0,8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
 
+%if HIGH_BIT_DEPTH == 0
+; pixel_sad_avg2_w, pixel_satd_avg2_pre_w (8-bit)
+align 64
+; vpermq: rows k, k, k+4, k+4 of 8 rows of 8, k = 0-3
+wav_q8:      dq 0,0,4,4,0,0,0,0, 1,1,5,5,0,0,0,0, 2,2,6,6,0,0,0,0, 3,3,7,7,0,0,0,0
+; vpermt2q: qword 0 of each 16 byte row of 2 zmm
+wav_qeven:   dq 0,2,4,6,8,10,12,14
+wav_hmul16:  times 16 db 1
+             times 8 db 1, -1
+wav_hmul8:   times 2 db 1,1,1,1,1,1,1,1,1,-1,1,-1,1,-1,1,-1
+wav_pw1:     times 8 dw 1
+%endif
+
 SECTION .text
 
 %if ARCH_X86_64
@@ -1190,4 +1203,230 @@ cglobal weightp_chroma_ref_row, 10,15,16, -416
     dec          r4d
     jg .block
     RET
+
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; int pixel_sad_avg2_w_WxH( uint8_t *fenc, uint8_t *src1, uint8_t *src2, intptr_t stride, const uint8_t *lut )
+; int pixel_satd_avg2_pre_w_WxH( int16_t *fenc_pre, uint8_t *src1, uint8_t *src2, intptr_t stride,
+;                                const uint8_t *lut )
+; sad / satd_avg2_pre of lut[ pavgb( src1, src2 ) ]: the weight as a 256-byte table in 4 zmm,
+; two vpermi2b of the 7 low bits, the halves picked by bit 7 (vpmovb2m). 4 rows of 16 or
+; 8 rows of 8 a zmm; satd as satd_avg2_pre avx512icl (fenc_pre's rows, opmask transform).
+;-----------------------------------------------------------------------------
+; m%1 = lut[ m%1 ] (m%2 clobbered), tables in m12-m15
+%macro WAV_LUT 2
+    vpmovb2m     k3, m%1
+    mova         m%2, m%1
+    vpermi2b     m%1, m12, m13
+    vpermi2b     m%2, m14, m15
+    vmovdqu8     m%1 {k3}, m%2
+%endmacro
+
+%macro WAV_LUTLOAD 0
+    movu         m12, [r4]
+    movu         m13, [r4+64]
+    movu         m14, [r4+128]
+    movu         m15, [r4+192]
+%endmacro
+
+; m%1 = 4 rows of 16 from %2 (r5 = 3*stride), m%3 clobbered
+%macro WAV_LOAD16 3
+    movu         xm%1, [%2]
+    vinserti32x4 ym%1, ym%1, [%2+r3], 1
+    movu         xm%3, [%2+2*r3]
+    vinserti32x4 ym%3, ym%3, [%2+r5], 1
+    vinserti64x4 m%1, m%1, ym%3, 1
+%endmacro
+
+; m%1 = 8 rows of 8 from %2 and %3 = %2 + 4*stride, m%4, m%5 clobbered
+%macro WAV_LOAD8 5
+    movq         xm%1, [%2]
+    movhps       xm%1, [%2+r3]
+    movq         xm%4, [%2+2*r3]
+    movhps       xm%4, [%2+r5]
+    vinserti32x4 ym%1, ym%1, xm%4, 1
+    movq         xm%4, [%3]
+    movhps       xm%4, [%3+r3]
+    movq         xm%5, [%3+2*r3]
+    movhps       xm%5, [%3+r5]
+    vinserti32x4 ym%4, ym%4, xm%5, 1
+    vinserti64x4 m%1, m%1, ym%4, 1
+%endmacro
+
+; m0 = the weighted averages of the 16 wide rows at r1, r2, which move down 4 rows
+%macro WAV_AVG16 0
+    WAV_LOAD16 0, r1, 1
+    WAV_LOAD16 2, r2, 3
+    pavgb        m0, m2
+    WAV_LUT 0, 1
+    lea          r1, [r1+4*r3]
+    lea          r2, [r2+4*r3]
+%endmacro
+
+; m0 = the weighted averages of the 8 wide rows at r1, r2 (r6, r7: 4 rows down), which
+; move down 8 rows
+%macro WAV_AVG8 0
+    WAV_LOAD8 0, r1, r6, 1, 2
+    WAV_LOAD8 3, r2, r7, 1, 2
+    pavgb        m0, m3
+    WAV_LUT 0, 1
+    lea          r1, [r1+8*r3]
+    lea          r2, [r2+8*r3]
+    lea          r6, [r6+8*r3]
+    lea          r7, [r7+8*r3]
+%endmacro
+
+%macro WAV_SAD 2 ; w, h
+cglobal pixel_sad_avg2_w_%1x%2, 5,8,16
+    WAV_LUTLOAD
+    lea          r5, [3*r3]
+%if %1 == 8
+    lea          r6, [r1+4*r3]
+    lea          r7, [r2+4*r3]
+    mova         m5, [wav_qeven]
+%endif
+    pxor         xm6, xm6
+%assign wav_i 0
+%rep %1*%2/64
+%if %1 == 16
+    WAV_AVG16
+    psadbw       m0, [r0+64*wav_i]
+%else
+    WAV_AVG8
+    movu         m1, [r0+128*wav_i]
+    vpermt2q     m1, m5, [r0+128*wav_i+64]
+    psadbw       m0, m1
+%endif
+    paddq        m6, m0
+%assign wav_i wav_i+1
+%endrep
+    vextracti64x4 ym0, m6, 1
+    paddq        ym6, ym0
+    vextracti32x4 xm0, ym6, 1
+    paddq        xm6, xm0
+    punpckhqdq   xm0, xm6, xm6
+    paddq        xm6, xm0
+    movd         eax, xm6
+    RET
+%endmacro
+
+; satd_avg2_pre_avx512icl's 8x4 (SATD_ICL_8x4) on ym0-ym3, k1 = 0x5555, into ym6
+%macro WAV_HMAX 3 ; a, b, tmp
+    vpblendmw    ym%3 {k1}, ym%1, ym%2
+    vpshldd      ym%2, ym%1, ym%2, 16
+    pmaxsw       ym%1, ym%3, ym%2
+%endmacro
+
+%macro WAV_8x4 1 ; first
+    paddw        ym0, ym1
+    paddw        ym2, ym3
+    paddw        ym1, ym1
+    paddw        ym3, ym3
+    psubw        ym1, ym0
+    psubw        ym3, ym2
+    paddw        ym0, ym2
+    paddw        ym1, ym3
+    paddw        ym2, ym2
+    paddw        ym3, ym3
+    psubw        ym2, ym0
+    psubw        ym3, ym1
+    pabsw        ym0, ym0
+    pabsw        ym2, ym2
+    pabsw        ym1, ym1
+    pabsw        ym3, ym3
+    WAV_HMAX 0, 2, 4
+    WAV_HMAX 1, 3, 5
+%if %1
+    paddw        ym6, ym0, ym1
+%else
+    paddw        ym0, ym1
+    paddw        ym6, ym0
+%endif
+%endmacro
+
+; 16 wide: 4 rows of m0 less fenc_pre rows %1-%1+3, satd into ym6
+%macro WAV_PRE16 2 ; fenc_pre row, first
+    vextracti64x4 ym8, m0, 1
+    vshufi32x4   ym1, ym0, ym0, 3
+    vshufi32x4   ym0, ym0, ym0, 0
+    vshufi32x4   ym3, ym8, ym8, 3
+    vshufi32x4   ym2, ym8, ym8, 0
+    pmaddubsw    ym0, ym7
+    pmaddubsw    ym1, ym7
+    pmaddubsw    ym2, ym7
+    pmaddubsw    ym3, ym7
+    psubw        ym0, [r0+(%1+0)*32]
+    psubw        ym1, [r0+(%1+1)*32]
+    psubw        ym2, [r0+(%1+2)*32]
+    psubw        ym3, [r0+(%1+3)*32]
+    WAV_8x4 %2
+%endmacro
+
+; 8 wide: rows k, k+4 of the 8 rows of m0 a register, less fenc_pre's (offset %1)
+%macro WAV_PRE8 2 ; fenc_pre offset, first
+    vpermq       m1, m9, m0
+    vpermq       m2, m10, m0
+    vpermq       m3, m11, m0
+    vpermq       m0, m8, m0
+    pmaddubsw    ym0, ym7
+    pmaddubsw    ym1, ym7
+    pmaddubsw    ym2, ym7
+    pmaddubsw    ym3, ym7
+    psubw        ym0, [r0+%1]
+    psubw        ym1, [r0+%1+32]
+    psubw        ym2, [r0+%1+64]
+    psubw        ym3, [r0+%1+96]
+    WAV_8x4 %2
+%endmacro
+
+%macro WAV_SATD 2 ; w, h
+cglobal pixel_satd_avg2_pre_w_%1x%2, 5,8,16
+    WAV_LUTLOAD
+    lea          r5, [3*r3]
+    mov          r6d, 0x5555
+    kmovd        k1, r6d
+%if %1 == 8
+    lea          r6, [r1+4*r3]
+    lea          r7, [r2+4*r3]
+    mova         ym7, [wav_hmul8]
+    mova         m8, [wav_q8]
+    mova         m9, [wav_q8+64]
+    mova         m10, [wav_q8+128]
+    mova         m11, [wav_q8+192]
+%assign wav_i 0
+%rep %2/8
+    WAV_AVG8
+    WAV_PRE8 128*wav_i, wav_i == 0
+%assign wav_i wav_i+1
+%endrep
+%else
+    mova         ym7, [wav_hmul16]
+%assign wav_i 0
+%rep %2/4
+    WAV_AVG16
+    WAV_PRE16 4*wav_i, wav_i == 0
+%assign wav_i wav_i+1
+%endrep
+%endif
+    vextracti32x4 xm0, ym6, 1
+    paddw        xm0, xm6
+    pmaddwd      xm0, [wav_pw1]
+    pshufd       xm1, xm0, q1032
+    paddd        xm0, xm1
+    pshufd       xm1, xm0, q2301
+    paddd        xm0, xm1
+    movd         eax, xm0
+    RET
+%endmacro
+
+INIT_ZMM avx512icl
+WAV_SAD 16, 16
+WAV_SAD 16, 8
+WAV_SAD 8, 16
+WAV_SAD 8, 8
+WAV_SATD 16, 16
+WAV_SATD 16, 8
+WAV_SATD 8, 16
+WAV_SATD 8, 8
+%endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
