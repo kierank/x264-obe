@@ -163,7 +163,7 @@ do\
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
 {
-    ALIGNED_ARRAY_16( dctcoef, dc,[16] );
+    ALIGNED_ARRAY_32( dctcoef, dc,[16] );
     if( cbp == 0xf )
     {
         for( int i = 0; i < 16; i++ )
