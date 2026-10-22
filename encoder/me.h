@@ -67,6 +67,20 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
 
+/* mvcost exit layout pair: x264_mvcost_gate gates the me.c mv-cost exits; the
+ * fused search kernels get it as bit 31 of bcost (MVCOST_KGATE, set: no exits).
+ * Arm: x264_mvcost_arm, defined in api.c. Twin (MVCOST_TWIN 1): the never
+ * defined x264_mvcost_twin, which links as 0. The code is the same in both. */
+#define MVCOST_TWIN 0
+extern const char x264_mvcost_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_mvcost_twin __attribute__((weak, visibility("hidden")));
+#if MVCOST_TWIN
+#define x264_mvcost_gate (&x264_mvcost_twin != NULL)
+#else
+#define x264_mvcost_gate (&x264_mvcost_arm != NULL)
+#endif
+#define MVCOST_KGATE ((int)((uint32_t)!x264_mvcost_gate << 31))
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)

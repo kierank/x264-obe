@@ -363,7 +363,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                     int mx = mvc_temp[i+1][0];
                     int my = mvc_temp[i+1][1];
                     /* its mv cost alone: the key is above bpred_cost, whose idx is lower */
-                    if( p_cost_mvx[mx] + p_cost_mvy[my] >= bpred_cost >> 4 )
+                    if( x264_mvcost_gate && p_cost_mvx[mx] + p_cost_mvy[my] >= bpred_cost >> 4 )
                         continue;
                     COST_MV_HPEL( mx, my, cost );
                     COPY1_IF_LT( bpred_cost, (cost << 4) + i );
@@ -376,7 +376,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         /* every fullpel mv costs more than the predictor in mv cost alone: the fullpel
          * search ends above bpred_cost, which then wins */
-        if( p_cost_mvx[FPEL(m->mvp[0])<<2] + p_cost_mvy[FPEL(m->mvp[1])<<2] > bpred_cost )
+        if( x264_mvcost_gate && p_cost_mvx[FPEL(m->mvp[0])<<2] + p_cost_mvy[FPEL(m->mvp[1])<<2] > bpred_cost )
         {
             bpred_mv = pack16to32_mask( bpred_mx, bpred_my );
             bmx = FPEL( bpred_mx );
@@ -397,7 +397,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         /* Test the zero vector if it hasn't been tested yet. */
         if( pmv )
         {
-            if( (bmx|bmy) && p_cost_mvx[0] + p_cost_mvy[0] < bcost ) COST_MV( 0, 0 );
+            if( (bmx|bmy) && (!x264_mvcost_gate || p_cost_mvx[0] + p_cost_mvy[0] < bcost) ) COST_MV( 0, 0 );
         }
         /* If a subpel mv candidate was better than the zero vector, the previous
          * fullpel check won't have gotten it even if the pmv was zero. So handle
@@ -441,7 +441,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 {
                     int mx = mvc_temp[i+1][0];
                     int my = mvc_temp[i+1][1];
-                    if( BITS_MVD( mx, my ) >= bcost >> 4 )
+                    if( x264_mvcost_gate && BITS_MVD( mx, my ) >= bcost >> 4 )
                         continue;
                     cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my );
                     COPY1_IF_LT( bcost, (cost << 4) + i );
@@ -453,7 +453,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         }
 
         /* Same as above, except the condition is simpler. */
-        if( pmv && p_cost_mvx[0] + p_cost_mvy[0] < bcost )
+        if( pmv && (!x264_mvcost_gate || p_cost_mvx[0] + p_cost_mvy[0] < bcost) )
             COST_MV( 0, 0 );
     }
 
@@ -466,7 +466,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         /* cost_mv grows with |mvd|: the least off bmx is at fx, else at bmx +- 1 */
         int cx1 = fx != bmx ? cx : X264_MIN( p_cost_mvx[(bmx-1)<<2], p_cost_mvx[(bmx+1)<<2] );
         int cy1 = fy != bmy ? cy : X264_MIN( p_cost_mvy[(bmy-1)<<2], p_cost_mvy[(bmy+1)<<2] );
-        if( X264_MIN( cx1 + cy, cx + cy1 ) >= X264_MIN( bcost, bpred_cost + 1 ) )
+        if( x264_mvcost_gate && X264_MIN( cx1 + cy, cx + cy1 ) >= X264_MIN( bcost, bpred_cost + 1 ) )
             goto fpel_done;
     }
 
@@ -480,7 +480,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             {
                 /* the loop below in one call */
                 uint64_t res = dia_search( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy, pack16to32_mask( bmx, bmy ),
-                                           bcost, i_me_range, mv_min | (uint64_t)mv_max << 32 );
+                                           bcost | MVCOST_KGATE, i_me_range, mv_min | (uint64_t)mv_max << 32 );
                 bcost = (uint32_t)res;
                 bmx = (int16_t)(res >> 32);
                 bmy = (int16_t)(res >> 48);
@@ -491,7 +491,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             do
             {
                 /* no point can win on its mv cost: the step wouldn't move */
-                if( X264_MIN( p_cost_mvx[bmx<<2] + X264_MIN( p_cost_mvy[(bmy-1)<<2], p_cost_mvy[(bmy+1)<<2] ),
+                if( x264_mvcost_gate && X264_MIN( p_cost_mvx[bmx<<2] + X264_MIN( p_cost_mvy[(bmy-1)<<2], p_cost_mvy[(bmy+1)<<2] ),
                               p_cost_mvy[bmy<<2] + X264_MIN( p_cost_mvx[(bmx-1)<<2], p_cost_mvx[(bmx+1)<<2] ) ) >= bcost >> 4 )
                     break;
                 if( cmp_dia_min )
@@ -529,7 +529,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             {
                 /* the hexagon, half hexagons and square refine below in one call */
                 uint64_t res = h->pixf.fpelcmp_hex_search[i_pixel]( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
-                                                                    pack16to32_mask( bmx, bmy ), bcost, i_me_range,
+                                                                    pack16to32_mask( bmx, bmy ), bcost | MVCOST_KGATE, i_me_range,
                                                                     mv_min | (uint64_t)mv_max << 32 );
                 bcost = (uint32_t)res;
                 bmx = (int16_t)(res >> 32);
@@ -559,7 +559,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             /* skipped if no point can win on its mv cost */
             if( X264_MIN( X264_MIN( p_cost_mvx[(bmx-2)<<2], p_cost_mvx[(bmx+2)<<2] ) + p_cost_mvy[bmy<<2],
                           X264_MIN( p_cost_mvx[(bmx-1)<<2], p_cost_mvx[(bmx+1)<<2] )
-                        + X264_MIN( p_cost_mvy[(bmy-2)<<2], p_cost_mvy[(bmy+2)<<2] ) ) < bcost >> 6 )
+                        + X264_MIN( p_cost_mvy[(bmy-2)<<2], p_cost_mvy[(bmy+2)<<2] ) ) < bcost >> 6 || !x264_mvcost_gate )
             {
                 if( cmp_hex_min )
                 {
@@ -585,7 +585,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 for( int i = (i_me_range>>1) - 1; i > 0 && CHECK_MVRANGE(bmx, bmy); i-- )
                 {
                     bcost &= ~63;
-                    if( X264_MIN3( BITS_MVD( bmx+hex2[dir+0][0], bmy+hex2[dir+0][1] ),
+                    if( x264_mvcost_gate && X264_MIN3( BITS_MVD( bmx+hex2[dir+0][0], bmy+hex2[dir+0][1] ),
                                    BITS_MVD( bmx+hex2[dir+1][0], bmy+hex2[dir+1][1] ),
                                    BITS_MVD( bmx+hex2[dir+2][0], bmy+hex2[dir+2][1] ) ) >= bcost >> 6 )
                         break;
@@ -605,7 +605,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             /* square refine, skipped if no point can win on its mv cost */
             int cx0 = p_cost_mvx[(bmx-1)<<2], cx1 = p_cost_mvx[bmx<<2], cx2 = p_cost_mvx[(bmx+1)<<2];
             int cy0 = p_cost_mvy[(bmy-1)<<2], cy1 = p_cost_mvy[bmy<<2], cy2 = p_cost_mvy[(bmy+1)<<2];
-            if( X264_MIN( X264_MIN( cx0, cx2 ) + X264_MIN3( cy0, cy1, cy2 ), cx1 + X264_MIN( cy0, cy2 ) ) >= bcost )
+            if( x264_mvcost_gate && X264_MIN( X264_MIN( cx0, cx2 ) + X264_MIN3( cy0, cy1, cy2 ), cx1 + X264_MIN( cy0, cy2 ) ) >= bcost )
                 break;
             bcost <<= 6;
             if( cmp_sq_min )
@@ -1244,7 +1244,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         {
             int mx = x264_clip3( m->mvp[0], h->mb.mv_min_spel[0]+2, h->mb.mv_max_spel[0]-2 );
             int my = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1]+2, h->mb.mv_max_spel[1]-2 );
-            if( ((mx-bmx)|(my-bmy)) && p_cost_mvx[mx] + p_cost_mvy[my] < bcost )
+            if( ((mx-bmx)|(my-bmy)) && (!x264_mvcost_gate || p_cost_mvx[mx] + p_cost_mvy[my] < bcost) )
                 COST_MV_SAD( mx, my );
         }
 
@@ -1257,7 +1257,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             int b2 = ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16;
             int b3 = ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48;
             /* no point can win on its mv cost: the step wouldn't move */
-            if( X264_MIN( X264_MIN( b0, b1 ), X264_MIN( b2, b3 ) ) > bcost )
+            if( x264_mvcost_gate && X264_MIN( X264_MIN( b0, b1 ), X264_MIN( b2, b3 ) ) > bcost )
                 break;
             intptr_t stride = 64; // candidates are either all hpel or all qpel, so one stride is enough
             pixel *src0, *src1, *src2, *src3;
@@ -1337,7 +1337,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                     break;
                 odir = bdir;
                 int omx = bmx, omy = bmy;
-                if( qpel_mvcost_min( p_cost_mvx, p_cost_mvy, omx, omy, odir, b_refine_qpel ) >= bcost )
+                if( x264_mvcost_gate && qpel_mvcost_min( p_cost_mvx, p_cost_mvy, omx, omy, odir, b_refine_qpel ) >= bcost )
                     break;
                 uint64_t bkey = (uint64_t)bcost << 4;
                 COST_MV_SATD_KEY( omx, omy - 1, 0 );
@@ -1361,7 +1361,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                     break;
                 odir = bdir;
                 int omx = bmx, omy = bmy;
-                if( qpel_mvcost_min( p_cost_mvx, p_cost_mvy, omx, omy, odir, b_refine_qpel ) >= bcost )
+                if( x264_mvcost_gate && qpel_mvcost_min( p_cost_mvx, p_cost_mvy, omx, omy, odir, b_refine_qpel ) >= bcost )
                     break;
                 COST_MV_SATD( omx, omy - 1, 0 );
                 COST_MV_SATD( omx, omy + 1, 1 );
@@ -1374,7 +1374,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     }
     /* Special simplified case for subme=1 */
     else if( bmy > h->mb.mv_min_spel[1] && bmy < h->mb.mv_max_spel[1] && bmx > h->mb.mv_min_spel[0] && bmx < h->mb.mv_max_spel[0]
-             && qpel_mvcost_min( p_cost_mvx, p_cost_mvy, bmx, bmy, -1, 1 ) < bcost )
+             && (!x264_mvcost_gate || qpel_mvcost_min( p_cost_mvx, p_cost_mvy, bmx, bmy, -1, 1 ) < bcost) )
     {
         int omx = bmx, omy = bmy;
         /* We have to use mc_luma because all strides must be the same to use fpelcmp_x4 */
