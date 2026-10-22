@@ -41,6 +41,19 @@ int x264_analyse_weight_height( x264_t *h );
 void x264_analyse_weight_rows( x264_t *h, int y0, int y1 );
 #define x264_macroblock_analyse x264_template(macroblock_analyse)
 void x264_macroblock_analyse( x264_t *h );
+
+/* sub16 layout pair: x264_s16_gate gates the sub-16x16 intra skip. Arm:
+ * x264_s16_arm, defined in api.c. Twin (S16_TWIN 1): the never defined
+ * x264_s16_twin, which links as 0. The code is the same in both. */
+#define S16_TWIN 0
+extern const char x264_s16_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_s16_twin __attribute__((weak, visibility("hidden")));
+#if S16_TWIN
+#define x264_s16_gate (&x264_s16_twin != NULL)
+#else
+#define x264_s16_gate (&x264_s16_arm != NULL)
+#endif
+
 #define x264_slicetype_decide x264_template(slicetype_decide)
 void x264_slicetype_decide( x264_t *h );
 

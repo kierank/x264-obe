@@ -3665,7 +3665,7 @@ skip_analysis:
             {
                 /* intra done against the 16x16 */
             }
-            else if( i_cost <= 4 * analysis.i_lambda && !analysis.i_mbrd && !h->mb.b_chroma_me &&
+            else if( x264_s16_gate && i_cost <= 4 * analysis.i_lambda && !analysis.i_mbrd && !h->mb.b_chroma_me &&
                      !h->mb.b_noise_reduction )
             {
                 /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
