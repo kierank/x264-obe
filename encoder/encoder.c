@@ -1552,6 +1552,12 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     BOOLIFY( rc.b_filler );
 #undef BOOLIFY
 
+    if( !HAS_MBINFO && h->param.analyse.b_mb_info )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with mb_info support (configure --enable-mbinfo)\n" );
+        return -1;
+    }
+
     return 0;
 }
 
@@ -3426,7 +3432,7 @@ cont:
         }
 
         /* Free mb info after the last thread's done using it */
-        if( h->fdec->mb_info_free && (!h->param.b_sliced_threads || h->i_thread_idx == (h->param.i_threads-1)) )
+        if( HAS_MBINFO && h->fdec->mb_info_free && (!h->param.b_sliced_threads || h->i_thread_idx == (h->param.i_threads-1)) )
         {
             h->fdec->mb_info_free( h->fdec->mb_info );
             h->fdec->mb_info = NULL;
