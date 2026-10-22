@@ -116,26 +116,30 @@ pb_scan8field7 : SHUFFLE_MASK_W    5,   6,   7,  11,0x80,0x80,  12,  13
 %if HIGH_BIT_DEPTH == 0
 ; zigzag_scan_8x8_field rows 1-6 then row 0; ymm loads take rows r and r+1
 align 32
-pb_scan8field_u: SHUFFLE_MASK_W 0x80,   6,   0,   1,   2,   7,0x80,0x80
+const pb_scan8field_u
+                 SHUFFLE_MASK_W 0x80,   6,   0,   1,   2,   7,0x80,0x80
                  SHUFFLE_MASK_W    5,   0,   1,   2,   6,0x80,0x80,0x80
                  SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
                  SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
                  SHUFFLE_MASK_W    0,   1,   2,   3,   7,0x80,0x80,0x80
                  SHUFFLE_MASK_W    1,   2,   3,   7,0x80,0x80,0x80,0x80
-pb_scan8field_v: SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,0x80,   0,   7
+const pb_scan8field_v
+                 SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,0x80,   0,   7
                  SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
                  SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
                  SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   0,   7,   1
                  SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,0x80,   5,   6,   0
                  SHUFFLE_MASK_W 0x80,0x80,0x80,0x80,   4,   5,   0,   1
 pb_scan8field_u0: SHUFFLE_MASK_W    0,   1,   2,0x80,0x80,0x80,0x80,0x80
-pb_scan8field_v0: SHUFFLE_MASK_W 0x80,0x80,0x80,   5,   6,   0,   1,   7
+const pb_scan8field_v0
+                  SHUFFLE_MASK_W 0x80,0x80,0x80,   5,   6,   0,   1,   7
 align 32
 ; zigzag_scan_4x4_field avx2: words 2-5 of lane 0 permuted, lane 1 copied
 pb_scan4field_avx2: db 0,1,2,3,8,9,4,5,6,7,10,11,12,13,14,15
                     db 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 ; zigzag_scan_8x8_frame avx2: one pshufb mask per source ymm, 4 outputs
-pb_scan8frame_avx2:    db 0,1,-1,-1,2,3,4,5,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1,-1,6,7,-1,-1,-1,-1,-1,-1,-1,-1
+const pb_scan8frame_avx2
+                       db 0,1,-1,-1,2,3,4,5,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1,-1,6,7,-1,-1,-1,-1,-1,-1,-1,-1
                        db -1,-1,0,1,-1,-1,-1,-1,2,3,-1,-1,-1,-1,-1,-1,-1,-1,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,1,-1,-1,2,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,3,-1,-1,-1,-1
                        db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,4,5,-1,-1,-1,-1,-1,-1

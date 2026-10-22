@@ -197,6 +197,12 @@ x9r_scan_field:   dd 0, 1, 4, 2, 3, 5, 6, 7
 x9r_tr_idx:       dd 0, 4, 5, 1, 2, 6, 7, 3
 x9r_shift01:      dd 0, 0, 0, 0, 1, 1, 1, 1
 x9r_pd_32_0:      dd 32, 32, 32, 32, 0, 0, 0, 0
+; intra_sa8d_x9_8x8_recon: edge of predict_8x8_filter from fdec
+x9h_lane0:        dd -1, -1, -1, -1, 0, 0, 0, 0
+x9h_uhi:          db 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+                  db 0, 1, 2, 3, 4, 5, 4, 5, 2, 3, 10, 11, 12, 13, 14, 15
+x9h_ulo_l:        db 12, 13, 14, 15, 14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5
+x9h_ulo_m:        db 2, 3, 0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 %endif
 
 %if HIGH_BIT_DEPTH == 0
@@ -276,6 +282,11 @@ x9r_scan_frame_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
 x9r_scan_field:   SHUFFLE_MASK_W 0, 1, 4, 2, 3, 5, 6, 7
                   SHUFFLE_MASK_W 0, 1, 2, 3, 4, 5, 6, 7
 x9r_pred_idx:     dd 0, 2, 4, 6, 0, 2, 4, 6
+; intra_sa8d_x9_8x8_recon: edge of predict_8x8_filter from fdec
+x9r8_ulo_l:       db 14, 15, 15, 14, 13, 12, 11, 10, 9, 8, -1, -1, -1, -1, -1, -1
+x9r8_ulo_t:       db -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 8, 9, 10, 11, 12
+x9r8_uhi:         db 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15, 14, -1, -1, -1
+x9r8_lo8:         dd -1, -1, 0, 0
 %endif
 %if ARCH_X86_64
 ALIGN 16
@@ -408,8 +419,15 @@ cextern pw_pmmpzzzz
 cextern pw_512
 cextern pw_pixel_max
 cextern pd_1
+cextern pd_32
 cextern pd_ffff
 cextern hsub_mul
+%if HIGH_BIT_DEPTH == 0
+cextern pb_scan8frame_avx2
+cextern pb_scan8field_u
+cextern pb_scan8field_v
+cextern pb_scan8field_v0
+%endif
 cextern popcnt_table
 
 ;=============================================================================
@@ -6539,6 +6557,106 @@ INTRA_SATD_X3_16x16_HBD
     punpckhwd   %2, %3, %2
 %endmacro
 
+; intra_sa8d_x9_8x8_recon: DCT8_1D and IDCT8_1D of dct-64.asm
+; in: size, m0..m7, temp, temp
+; out: m0..m7
+%macro X9R_DCT8_1D 11
+    SUMSUB_BA %1, %6, %5, %11 ; %6=s34, %5=d34
+    SUMSUB_BA %1, %7, %4, %11 ; %7=s25, %4=d25
+    SUMSUB_BA %1, %8, %3, %11 ; %8=s16, %3=d16
+    SUMSUB_BA %1, %9, %2, %11 ; %9=s07, %2=d07
+
+    SUMSUB_BA %1, %7, %8, %11 ; %7=a1, %8=a3
+    SUMSUB_BA %1, %6, %9, %11 ; %6=a0, %9=a2
+
+    psra%1   m%10, m%2, 1
+    padd%1   m%10, m%2
+    padd%1   m%10, m%3
+    padd%1   m%10, m%4 ; %10=a4
+
+    psra%1   m%11, m%5, 1
+    padd%1   m%11, m%5
+    padd%1   m%11, m%3
+    psub%1   m%11, m%4 ; %11=a7
+
+    SUMSUB_BA %1, %5, %2
+    psub%1   m%2, m%4
+    psub%1   m%5, m%3
+    psra%1   m%4, 1
+    psra%1   m%3, 1
+    psub%1   m%2, m%4 ; %2=a5
+    psub%1   m%5, m%3 ; %5=a6
+
+    psra%1   m%3, m%11, 2
+    padd%1   m%3, m%10 ; %3=b1
+    psra%1   m%10, 2
+    psub%1   m%10, m%11 ; %10=b7
+
+    SUMSUB_BA %1, %7, %6, %11 ; %7=b0, %6=b4
+
+    psra%1   m%4, m%8, 1
+    padd%1   m%4, m%9 ; %4=b2
+    psra%1   m%9, 1
+    psub%1   m%9, m%8 ; %9=b6
+
+    psra%1   m%8, m%5, 2
+    padd%1   m%8, m%2 ; %8=b3
+    psra%1   m%2, 2
+    psub%1   m%5, m%2 ; %5=b5
+
+    SWAP %2, %7, %5, %8, %9, %10
+%endmacro
+
+%macro X9R_IDCT8_1D 11
+    SUMSUB_BA %1, %6, %2, %10 ; %5=a0, %1=a2
+
+    psra%1   m%10, m%3, 1
+    padd%1   m%10, m%3
+    padd%1   m%10, m%5
+    padd%1   m%10, m%7  ; %9=a7
+
+    psra%1   m%11, m%4, 1
+    psub%1   m%11, m%8 ; %10=a4
+    psra%1   m%8, 1
+    padd%1   m%8, m%4  ; %7=a6
+
+    psra%1   m%4, m%7, 1
+    padd%1   m%4, m%7
+    padd%1   m%4, m%9
+    psub%1   m%4, m%3  ; %3=a5
+
+    psub%1   m%3, m%5
+    psub%1   m%7, m%5
+    padd%1   m%3, m%9
+    psub%1   m%7, m%9
+    psra%1   m%5, 1
+    psra%1   m%9, 1
+    psub%1   m%3, m%5  ; %2=a3
+    psub%1   m%7, m%9  ; %6=a1
+
+    psra%1   m%5, m%10, 2
+    padd%1   m%5, m%7  ; %4=b1
+    psra%1   m%7, 2
+    psub%1   m%10, m%7  ; %9=b7
+
+    SUMSUB_BA %1, %8, %6, %7  ;  %7=b0, %5=b6
+    SUMSUB_BA %1, %11, %2, %7 ; %10=b2, %1=b4
+
+    psra%1   m%9, m%4, 2
+    padd%1   m%9, m%3 ; %8=b3
+    psra%1   m%3, 2
+    psub%1   m%3, m%4 ; %2=b5
+
+    SUMSUB_BA %1, %10, %8, %7  ; %9=c0,  %7=c7
+    SUMSUB_BA %1, %3, %11, %7 ; %2=c1, %10=c6
+    SUMSUB_BA %1, %9, %2, %7  ; %8=c2,  %1=c5
+    SUMSUB_BA %1, %5, %6, %7  ; %4=c3,  %5=c4
+
+    SWAP %11, %4
+    SWAP  %2, %10, %7
+    SWAP  %4, %9, %8
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; int intra_satd_lowres( int16_t *fenc_pre, uint8_t *src, intptr_t stride )
 ; int intra_satd_lowres( uint16_t *fenc, uint16_t *src, intptr_t stride )
@@ -6868,7 +6986,10 @@ X9H_4x4_RECON field, 1
 ; Modes go through .sa8d in pairs, mode 2k in lane 0 and 2k+1 in lane 1.
 ; Rows of the directional modes are loads from filtered-edge tables:
 ; F(i) = F2(e[i-1],e[i],e[i+1]), G(i) = F1(e[i],e[i+1]), e = edge.
-cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
+; X9H_8x8_SCORE: up to the choice: eax = cost | mode<<16, satds stored, the chosen
+; prediction at pred_buf+r2. %1: 0 loads the edge from r2, else a macro that leaves
+; the rows of the first six loads in m0-m2, m4-m6 and the edge at r2
+%macro X9H_8x8_SCORE 1
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
     %define f_buf    rsp+0x600 ; F7..F31
@@ -6886,18 +7007,24 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
 %assign x9i x9i+1
 %endrep
 
+%ifidn %1, 0
     movu         m0, [r2+12]
     movu         m1, [r2+14]
     movu         m2, [r2+16]
+%else
+    %1
+%endif
     pavgw        m3, m1, m2           ; G7..G22
     paddw        m0, m2
     paddw        m1, m15
     paddw        m0, m1
     paddw        m0, m1
     psrlw        m0, 2                ; F7..F22
+%ifidn %1, 0
     movu         m4, [r2+30]
     movu         m5, [r2+32]
     movu         m6, [r2+34]
+%endif
     pavgw        m7, m5, m6           ; G16..G31
     paddw        m4, m6
     paddw        m5, m15
@@ -7037,16 +7164,13 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
     shl         r2d, 7
     shl         r3d, 4
     add         r2d, r3d
-%assign x9i 0
-%rep 8
-    movu        xm0, [pred_buf+r2+32*x9i]
-    movu [r1+x9i*FDEC_STRIDEB], xm0
-%assign x9i x9i+1
-%endrep
-    RET
+%endmacro
 
+%macro X9H_8x8_SUB 1 ; ALIGN 16
 RESET_MM_PERMUTATION
+%if %1
 ALIGN 16
+%endif
 .sa8d: ; m0-m7 pred rows (stored to r5), r6 fenc rows -> m0 = 4 dword sums per lane
     %xdefine mret m0
 %assign x9i 0
@@ -7064,6 +7188,362 @@ ALIGN 16
     paddd        m2, m3
     paddd      mret, m0, m2
     ret
+%endmacro
+
+cglobal intra_sa8d_x9_8x8, 5,7,16, 0x700
+    X9H_8x8_SCORE 0
+%assign x9i 0
+%rep 8
+    movu        xm0, [pred_buf+r2+32*x9i]
+    movu [r1+x9i*FDEC_STRIDEB], xm0
+%assign x9i x9i+1
+%endrep
+    RET
+    X9H_8x8_SUB 1
+
+;-----------------------------------------------------------------------------
+; int intra_sa8d_x9_8x8_recon( uint16_t *fenc, uint16_t *fdec, uint16_t *bitcosts, uint16_t *satds,
+;                              int32_t level[64], x264_quant8_recon_t *q, int limit, int b_tr )
+;-----------------------------------------------------------------------------
+; As the 8-bit version. The transforms are those of sub8x8_dct8 and add8x8_idct8:
+; the first forward pass in words, the rest in dwords as the C.
+
+; predict_8x8_filter with all neighbours, the topright if r7: edge[i] = F2(U[i-1], U[i], U[i+1]),
+; U = l7 l7 l6..l0 lt t0..t15 t15 t14, t8..t15 = t7 without the topright. Stores edge[6..37]
+; at r2 and leaves the rows of X9H_8x8_SCORE's first six loads in m0-m2, m4-m6
+%macro X9H_EDGE 0
+    movq        xm0, [r1+0*FDEC_STRIDEB-8]
+    movq        xm1, [r1+1*FDEC_STRIDEB-8]
+    movq        xm2, [r1+2*FDEC_STRIDEB-8]
+    movq        xm3, [r1+3*FDEC_STRIDEB-8]
+    movq        xm4, [r1+4*FDEC_STRIDEB-8]
+    movq        xm5, [r1+5*FDEC_STRIDEB-8]
+    movq        xm6, [r1+6*FDEC_STRIDEB-8]
+    movq        xm7, [r1+7*FDEC_STRIDEB-8]
+    punpcklwd   xm0, xm1
+    punpcklwd   xm2, xm3
+    punpcklwd   xm4, xm5
+    punpcklwd   xm6, xm7
+    punpckhdq   xm0, xm2
+    punpckhdq   xm4, xm6
+    punpckhqdq  xm3, xm0, xm4         ; l0..l7
+    neg         r7d
+    movd        xm7, r7d
+    vpbroadcastd m7, xm7
+    por          m7, [x9h_lane0]
+    movu        xm4, [r1-FDEC_STRIDEB]
+    vinserti128  m4, m4, [r1-FDEC_STRIDEB+16], 1
+    movu        xm6, [r1-FDEC_STRIDEB-16]
+    vpbroadcastw m5, [r1-FDEC_STRIDEB+14]
+    palignr     xm6, xm4, xm6, 10     ; x x lt t0..t4
+    vpblendvb    m4, m5, m4, m7       ; t0..t15
+    pshufb      xm5, xm3, [x9h_ulo_l] ; l6 l7 l7 l6 l5 l4 l3 l2
+    pshufb      xm1, xm3, [x9h_ulo_m]
+    pblendw     xm6, xm6, xm1, 0x03   ; l1 l0 lt t0..t4
+    vinserti128  m5, m5, xm6, 1       ; U[5..20]
+    vpermq       m6, m4, q3321
+    vpermq       m4, m4, q3333
+    vpalignr     m4, m4, m6, 2
+    pshufb       m4, [x9h_uhi]        ; U[21..36]
+    vperm2i128   m6, m5, m4, 0x21
+    vpalignr     m7, m6, m5, 2        ; U[6..21]
+    vpalignr     m6, m6, m5, 4        ; U[7..22]
+    paddw        m0, m5, m6
+    psrlw        m0, 1
+    pavgw        m0, m7               ; edge[6..21]
+    vperm2i128   m6, m4, m4, 0x81
+    vpalignr     m7, m6, m4, 2        ; U[22..37]
+    vpalignr     m6, m6, m4, 4        ; U[23..38]
+    paddw        m3, m4, m6
+    psrlw        m3, 1
+    pavgw        m3, m7               ; edge[22..37]
+    mova    [r2+12], m0
+    mova    [r2+44], m3
+    vperm2i128   m7, m0, m3, 0x21
+    vpalignr     m1, m7, m0, 2        ; edge[7..22]
+    vpalignr     m2, m7, m0, 4
+    vpalignr     m4, m3, m7, 2        ; edge[15..30]
+    vpalignr     m5, m3, m7, 4
+    vpalignr     m6, m3, m7, 6
+    movu    [r2+32], xm5              ; for the 16-byte loads of edge[16..23]
+%endmacro
+
+; zigzag_scan_8x8_frame (sse2/avx), level at %1, dct at %2
+%macro X9H_SCAN8_FRAME 2
+    mova        xm0, [%2]
+    mova        xm1, [%2+ 8*4]
+    movu        xm2, [%2+14*4]
+    movu        xm3, [%2+21*4]
+    mova        xm4, [%2+28*4]
+    punpckldq   xm5, xm0, xm1
+    psrldq      xm0, 4
+    punpckhdq   xm6, xm1, xm0
+    punpcklqdq  xm5, xm0
+    punpcklqdq  xm1, xm1
+    punpckhdq   xm1, xm3
+    mova        xm7, [%2+52*4]
+    mova        xm0, [%2+60*4]
+    punpckhdq   xm1, xm2
+    punpckldq   xm2, xm4
+    punpckhdq   xm4, xm3
+    punpcklqdq  xm3, xm3
+    punpckhdq   xm3, xm2
+    mova      [%1], xm5
+    mova  [%1+ 4*4], xm1
+    mova  [%1+ 8*4], xm6
+    punpckldq   xm6, xm0
+    punpckldq   xm6, xm7
+    mova        xm1, [%2+32*4]
+    movu        xm5, [%2+39*4]
+    movu        xm2, [%2+46*4]
+    movu [%1+35*4], xm3
+    movu [%1+47*4], xm4
+    punpckhdq   xm7, xm0
+    pslldq      xm0, 4
+    punpckhqdq  xm3, xm5, xm5
+    punpckldq   xm5, xm1
+    punpckhdq   xm1, xm2
+    mova [%1+52*4], xm6
+    movu [%1+13*4], xm5
+    movu        xm4, [%2+11*4]
+    movu        xm6, [%2+25*4]
+    punpckldq   xm5, xm7
+    punpckldq   xm1, xm3
+    punpckhqdq  xm0, xm7
+    mova        xm3, [%2+ 4*4]
+    movu        xm7, [%2+18*4]
+    punpckldq   xm2, xm5
+    movu [%1+25*4], xm1
+    mova        xm1, xm4
+    mova        xm5, xm6
+    punpckldq   xm4, xm3
+    punpckldq   xm6, xm7
+    punpckhdq   xm1, xm3
+    punpckhdq   xm5, xm7
+    punpckhqdq  xm3, xm6, xm4
+    punpckhqdq  xm7, xm5, xm1
+    punpcklqdq  xm6, xm4
+    punpcklqdq  xm5, xm1
+    movu        xm4, [%2+35*4]
+    movu        xm1, [%2+49*4]
+    pshufd      xm6, xm6, q0123
+    pshufd      xm5, xm5, q0123
+    mova [%1+60*4], xm0
+    mova [%1+56*4], xm2
+    movu        xm0, [%2+42*4]
+    mova        xm2, [%2+56*4]
+    movu [%1+17*4], xm3
+    mova [%1+32*4], xm7
+    movu [%1+10*4], xm6
+    movu [%1+21*4], xm5
+    punpckhdq   xm3, xm0, xm4
+    punpckhdq   xm7, xm2, xm1
+    punpckldq   xm0, xm4
+    punpckldq   xm2, xm1
+    punpcklqdq  xm4, xm2, xm0
+    punpcklqdq  xm1, xm7, xm3
+    punpckhqdq  xm2, xm0
+    punpckhqdq  xm7, xm3
+    pshufd      xm2, xm2, q0123
+    pshufd      xm7, xm7, q0123
+    mova [%1+28*4], xm4
+    movu [%1+43*4], xm1
+    movu [%1+39*4], xm2
+    movu [%1+50*4], xm7
+%endmacro
+
+; zigzag_scan_8x8_field (sse4/avx), level at %1, dct at %2, %3: gpr tmp
+%macro X9H_SCAN8_FIELD 3
+    mova       xm0, [%2+ 0*4]
+    mova       xm1, [%2+ 4*4]
+    mova       xm2, [%2+ 8*4]
+    pshufd     xm3, xm0, q3333
+    movd      %3d, xm2
+    pshufd     xm2, xm2, q0321
+    punpckldq  xm3, xm1
+    pinsrd     xm0, %3d, 3
+    punpckldq  xm4, xm2, xm3
+    pshufd     xm4, xm4, q2310
+    mova  [%1+ 0*4], xm0
+    mova  [%1+ 4*4], xm4
+    mova       xm3, [%2+12*4]
+    mova       xm5, [%2+16*4]
+    punpcklqdq xm6, xm5
+    psrldq     xm1, 4
+    punpckhdq  xm6, xm2
+    punpcklqdq xm6, xm1
+    mova  [%1+ 8*4], xm6
+    psrldq     xm1, 4
+    punpckldq  xm1, xm5
+    mova       xm0, [%2+20*4]
+    mova       xm2, [%2+24*4]
+    punpckhqdq xm1, xm1
+    punpckldq  xm6, xm3, xm2
+    pextrd     %3d, xm5, 2
+    mova [%1+24*4], xm0
+    punpckldq  xm1, xm6
+    mova [%1+12*4], xm1
+    pinsrd     xm3, %3d, 0
+    mova [%1+16*4], xm3
+    mova       xm7, [%2+28*4]
+    mova       xm0, [%2+32*4]
+    psrldq     xm5, 4*3
+    pshufd     xm1, xm2, q3321
+    punpckldq  xm5, xm0
+    psrldq     xm2, 4*3
+    punpckldq  xm5, xm1
+    mova [%1+32*4], xm7
+    mova [%1+20*4], xm5
+    mova       xm7, [%2+36*4]
+    mova       xm1, [%2+40*4]
+    pshufd     xm3, xm0, q3321
+    punpckldq  xm2, xm1
+    mova [%1+40*4], xm7
+    punpckldq  xm2, xm3
+    mova [%1+28*4], xm2
+    mova       xm7, [%2+44*4]
+    mova       xm2, [%2+48*4]
+    psrldq     xm0, 4*3
+    punpckldq  xm0, xm2
+    pshufd     xm3, xm1, q3321
+    punpckldq  xm0, xm3
+    mova [%1+36*4], xm0
+    pextrd     %3d, xm2, 3
+    psrldq     xm1, 4*3
+    punpckldq  xm1, xm7
+    psrldq     xm2, 4
+    punpckldq  xm1, xm2
+    pshufd     xm1, xm1, q2310
+    mova [%1+44*4], xm1
+    psrldq     xm7, 4
+    pinsrd     xm7, %3d, 3
+    mova [%1+48*4], xm7
+    mova       xm0, [%2+56*4]
+    mova       xm1, [%2+52*4]
+    mova       xm7, [%2+60*4]
+    punpcklqdq xm2, xm0, xm1
+    punpckhqdq xm1, xm0
+    mova [%1+52*4], xm2
+    mova [%1+56*4], xm1
+    mova [%1+60*4], xm7
+%endmacro
+
+%macro X9H_8x8_RECON 2 ; name, field
+cglobal intra_sa8d_x9_8x8_recon_%1, 8,11,16, 0x840
+    %define coef_buf rsp+0x740
+    mov          r8, r4               ; level
+    mov          r4, r3               ; satds
+    mov          r3, r2               ; bitcosts
+    mov         r9d, r6d              ; limit
+    mov         r10, r5               ; q
+    lea          r2, [rsp+0x700-12]   ; edge
+    X9H_8x8_SCORE X9H_EDGE
+    lea          r5, [pred_buf+r2]
+    movzx       r3d, ax
+    cmp         r3d, r9d
+    jg .pred
+%assign x9i 0
+%rep 8
+    movu        xm %+ x9i, [r0+x9i*FENC_STRIDEB]
+    psubw       xm %+ x9i, [r5+x9i*32]
+%assign x9i x9i+1
+%endrep
+    X9R_DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
+%assign x9i 0
+%rep 8
+    pmovsxwd    m %+ x9i, xm %+ x9i
+%assign x9i x9i+1
+%endrep
+    X9R_DCT8_1D d, 0,1,2,3,4,5,6,7, 8,9
+    pabsd        m9, m0
+    paddd        m9, [r10+256]
+    pmulld       m9, [r10]
+    psrld        m9, 16
+    psignd       m0, m9, m0
+%assign x9i 1
+%rep 7
+    pabsd        m8, m %+ x9i
+    paddd        m8, [r10+256+32*x9i]
+    pmulld       m8, [r10+32*x9i]
+    psrld        m8, 16
+    psignd       m %+ x9i, m8, m %+ x9i
+    por          m9, m8
+%assign x9i x9i+1
+%endrep
+    ptest        m9, m9
+    jz .pred
+    or          eax, 1<<24
+%assign x9i 0
+%rep 8
+    mova [coef_buf+x9i*32], m %+ x9i
+    pmulld       m %+ x9i, [r10+512+32*x9i]
+%assign x9i x9i+1
+%endrep
+    mov         r3d, [r10+768]
+    test        r3d, r3d
+    jz .idct
+    vpbroadcastd m9, [r10+772]
+    movd        xm8, r3d
+%assign x9i 0
+%rep 8
+    paddd        m %+ x9i, m9
+    psrad        m %+ x9i, xm8
+%assign x9i x9i+1
+%endrep
+.idct:
+    X9R_IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE4x4D 0,1,2,3,8
+    TRANSPOSE4x4D 4,5,6,7,8
+%assign x9i 0
+%rep 4
+    %assign x9j x9i+4
+    vperm2i128   m8, m %+ x9i, m %+ x9j, 0x20
+    vperm2i128   m %+ x9j, m %+ x9i, m %+ x9j, 0x31
+    SWAP x9i, 8
+%assign x9i x9i+1
+%endrep
+    vpbroadcastd m8, [pd_32]
+    paddd        m0, m8
+    X9R_IDCT8_1D d,0,1,2,3,4,5,6,7,8,9
+    pxor         m8, m8
+    mova         m9, [pw_pixel_max]
+%assign x9i 0
+%rep 4
+    %assign x9j x9i+1
+    psrad        m %+ x9i, 6
+    psrad        m %+ x9j, 6
+    packssdw     m %+ x9i, m %+ x9j
+    vpermq       m %+ x9i, m %+ x9i, q3120
+    mova        xm10, [r5+x9i*32]
+    vinserti128 m10, m10, [r5+x9j*32], 1
+    paddw        m %+ x9i, m10
+    CLIPW        m %+ x9i, m8, m9
+    movu [r1+x9i*FDEC_STRIDEB], xm %+ x9i
+    vextracti128 [r1+x9j*FDEC_STRIDEB], m %+ x9i, 1
+%assign x9i x9i+2
+%endrep
+    lea          r3, [coef_buf]
+%if %2
+    X9H_SCAN8_FIELD r8, r3, r2
+%else
+    X9H_SCAN8_FRAME r8, r3
+%endif
+    RET
+.pred:
+%assign x9i 0
+%rep 8
+    movu        xm0, [r5+32*x9i]
+    movu [r1+x9i*FDEC_STRIDEB], xm0
+%assign x9i x9i+1
+%endrep
+    RET
+    X9H_8x8_SUB 0
+%endmacro
+
+
+X9H_8x8_RECON frame, 0
+X9H_8x8_RECON field, 1
 
 ;-----------------------------------------------------------------------------
 ; int intra_satd_lowres( uint16_t *fenc, uint16_t *src, intptr_t stride )
@@ -8971,9 +9451,11 @@ X9B_4x4_RECON field, 1
 %endmacro
 
 ; avx2, and avx512icl with EVEX forms of the VEX-only phaddw, vpblendd, vpblendw,
-; vperm2i128 and phminposuw
-%macro SA8D_X9_8BIT 0
-cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
+; vperm2i128 and phminposuw.
+; intra_sa8d_x9_8x8 up to the choice: eax = cost | mode<<16, satds stored, the
+; chosen prediction at pred_buf+r2. %1: 0 loads the edge from r2, else a macro
+; that leaves the rows of those loads in m0-m2
+%macro SA8D_X9_8BIT_SCORE 1
 %if cpuflag(avx512icl)
     mov         r5d, 0x80805555
     kmovd        k1, r5d              ; words 0x5555
@@ -8994,12 +9476,18 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %assign x9i x9i+1
 %endrep
 
+%ifidn %1, 0
     movu        xm0, [r2+6]
     vinserti128  m0, m0, [r2+15], 1
     movu        xm1, [r2+7]
     vinserti128  m1, m1, [r2+16], 1
     movu        xm2, [r2+8]
     vinserti128  m2, m2, [r2+17], 1
+    %define x9b8_e7 [r2+7]
+%else
+    %1
+    %define x9b8_e7 xm1
+%endif
     pavgb        m8, m1, m2           ; GL | GT
     PRED4x4_LOWPASS m9, m0, m2, m1, m5 ; FL | FT
     pxor        xm0, xm0
@@ -9016,7 +9504,7 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     vpblendmd    m2 {k5}, m9, m8
     vinserti128 m11, m9, xm2, 1       ; ddr | vr even rows
     punpcklbw   m14, m8, m9
-    vpbroadcastb m0, [r2+7]
+    vpbroadcastb m0, x9b8_e7
     vpblendmw   m14 {k2}, m14, m0     ; hu
 %else
     vpblendd    m13, m9, m5, 0x0f     ; dc | ddl
@@ -9024,7 +9512,7 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     vpblendd     m2, m9, m8, 0xcc
     vperm2i128  m11, m9, m2, 0x20     ; ddr | vr even rows
     punpcklbw   m14, m8, m9
-    vpbroadcastb m0, [r2+7]
+    vpbroadcastb m0, x9b8_e7
     vpblendw    m14, m14, m0, 0x80    ; hu
 %endif
     psrldq       m0, m9, 1
@@ -9142,16 +9630,13 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     shl         r2d, 7
     shl         r3d, 4
     add         r2d, r3d
-%assign x9i 0
-%rep 8
-    movq        xm0, [pred_buf+r2+32*x9i]
-    movq [r1+x9i*FDEC_STRIDE], xm0
-%assign x9i x9i+1
-%endrep
-    RET
+%endmacro
 
+%macro SA8D_X9_8BIT_SUB 1 ; ALIGN 16
 RESET_MM_PERMUTATION
+%if %1
 ALIGN 16
+%endif
 .sa8d: ; m0-m7 pred rows (stored to r5), r6 fenc rows -> m0 = 8 word sums of the maxes per lane
     %xdefine mret m0
 %assign x9i 0
@@ -9168,7 +9653,296 @@ ALIGN 16
     ret
 %endmacro
 
+%macro SA8D_X9_8BIT 0
+cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
+    SA8D_X9_8BIT_SCORE 0
+%assign x9i 0
+%rep 8
+    movq        xm0, [pred_buf+r2+32*x9i]
+    movq [r1+x9i*FDEC_STRIDE], xm0
+%assign x9i x9i+1
+%endrep
+    RET
+    SA8D_X9_8BIT_SUB 1
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int intra_sa8d_x9_8x8_recon( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts, uint16_t *satds,
+;                              int16_t level[64], x264_quant8_recon_t *q, int limit, int b_tr )
+;-----------------------------------------------------------------------------
+; predict_8x8_filter (all neighbours, the topright if b_tr) and intra_sa8d_x9_8x8; for a cost
+; <= limit the winner is then coded as by sub8x8_dct8, quant_8x8 and, if nonzero, scan_8x8
+; into level, dequant_8x8 (C-exact: low 16 bits) and add8x8_idct8, with the 16-bit
+; transforms of the asm. fdec is stored once. Returns cost | mode<<16 | nz<<24.
+
+; predict_8x8_filter with all neighbours, the topright if r7: edge[i] = F2(U[i-1], U[i], U[i+1]),
+; U = l7 l7 l6..l0 lt t0..t15 t15 t14, t8..t15 = t7 without the topright. Leaves the rows of
+; SA8D_X9_8BIT_SCORE's edge loads in m0-m2
+%macro X9R8_EDGE 0
+    movq        xm0, [r1+0*FDEC_STRIDE-8]
+    movq        xm1, [r1+1*FDEC_STRIDE-8]
+    movq        xm2, [r1+2*FDEC_STRIDE-8]
+    movq        xm3, [r1+3*FDEC_STRIDE-8]
+    movq        xm4, [r1+4*FDEC_STRIDE-8]
+    movq        xm5, [r1+5*FDEC_STRIDE-8]
+    movq        xm6, [r1+6*FDEC_STRIDE-8]
+    movq        xm7, [r1+7*FDEC_STRIDE-8]
+    punpcklbw   xm0, xm1
+    punpcklbw   xm2, xm3
+    punpcklbw   xm4, xm5
+    punpcklbw   xm6, xm7
+    punpckhwd   xm0, xm2
+    punpckhwd   xm4, xm6
+    punpckhdq   xm3, xm0, xm4         ; l0..l7 in bytes 8-15
+    neg         r7d
+    movd        xm7, r7d
+    vpbroadcastd xm7, xm7
+    por         xm7, [x9r8_lo8]
+    movq        xm4, [r1-FDEC_STRIDE]
+    movhps      xm4, [r1-FDEC_STRIDE+8]
+    movq        xm6, [r1-FDEC_STRIDE-8]
+    vpbroadcastb xm5, [r1-FDEC_STRIDE+7]
+    punpcklqdq  xm6, xm4              ; lt t0..t7 in bytes 7-15
+    vpblendvb   xm4, xm5, xm4, xm7    ; t0..t15
+    pshufb      xm5, xm3, [x9r8_ulo_l]
+    pshufb      xm6, [x9r8_ulo_t]
+    por         xm5, xm6              ; U[5..20]
+    pshufb      xm4, [x9r8_uhi]       ; U[21..36]
+    vinserti128  m5, m5, xm4, 1
+    vperm2i128   m4, m5, m5, 0x81
+    vpalignr     m6, m4, m5, 1        ; U[6..21] | U[22..37]
+    vpalignr     m4, m4, m5, 2        ; U[7..22] | U[23..38]
+    PRED4x4_LOWPASS m3, m5, m4, m6, m7 ; edge[6..21] | edge[22..37]
+    vperm2i128   m4, m3, m3, 0x81
+    vpalignr     m4, m4, m3, 9        ; edge[15..30] | edge[31..]
+    vperm2i128   m0, m3, m4, 0x20     ; edge[6..21] | edge[15..30]
+    vperm2i128   m3, m3, m4, 0x31
+    vpalignr     m1, m3, m0, 1
+    vpalignr     m2, m3, m0, 2
+%endmacro
+
+; zigzag_scan_8x8_frame avx2, level at %1, dct at %2, %3: gpr tmp
+%macro X9R8_SCAN8_FRAME 3
+    lea          %3, [pb_scan8frame_avx2]
+    mova         m0, [%2+ 0]
+    mova         m1, [%2+32]
+    mova         m2, [%2+64]
+    mova         m3, [%2+96]
+    vperm2i128   m4, m0, m0, 0x01
+    vperm2i128   m5, m1, m1, 0x01
+    vperm2i128   m6, m2, m2, 0x01
+    vperm2i128   m7, m3, m3, 0x01
+    pshufb       m8, m0, [%3+ 0*32]
+    pshufb       m9, m4, [%3+ 1*32]
+    pshufb      m10, m1, [%3+ 2*32]
+    pshufb      m11, m5, [%3+ 3*32]
+    pshufb      m12, m2, [%3+ 4*32]
+    pshufb      m13, m6, [%3+ 5*32]
+    por          m8, m9
+    por         m10, m11
+    por         m12, m13
+    por          m8, m10
+    por          m8, m12
+    movu    [%1+ 0], m8
+    pshufb       m8, m1, [%3+16*32]
+    pshufb       m9, m5, [%3+17*32]
+    pshufb      m10, m2, [%3+18*32]
+    pshufb      m11, m6, [%3+19*32]
+    pshufb      m12, m3, [%3+20*32]
+    pshufb      m13, m7, [%3+21*32]
+    por          m8, m9
+    por         m10, m11
+    por         m12, m13
+    por          m8, m10
+    por          m8, m12
+    movu    [%1+96], m8
+    vpblendd     m4, m0, m1, 0xf0
+    vperm2i128   m5, m0, m2, 0x21
+    vpblendd     m6, m1, m2, 0xf0
+    vperm2i128   m7, m1, m3, 0x21
+    vpblendd     m0, m2, m3, 0xf0
+    pshufb       m8, m4, [%3+ 6*32]
+    pshufb       m9, m5, [%3+ 7*32]
+    pshufb      m10, m6, [%3+ 8*32]
+    pshufb      m11, m7, [%3+ 9*32]
+    pshufb      m12, m0, [%3+10*32]
+    por          m8, m9
+    por         m10, m11
+    por          m8, m12
+    por          m8, m10
+    movu    [%1+32], m8
+    pshufb       m4, [%3+11*32]
+    pshufb       m5, [%3+12*32]
+    pshufb       m6, [%3+13*32]
+    pshufb       m7, [%3+14*32]
+    pshufb       m0, [%3+15*32]
+    por          m4, m5
+    por          m6, m7
+    por          m4, m0
+    por          m4, m6
+    movu    [%1+64], m4
+%endmacro
+
+; zigzag_scan_8x8_field avx2, level at %1, dct at %2, %3: gpr tmp
+%macro X9R8_SCAN8_FIELD_ROWS 5 ; level, dct, first row, u, v
+    movu         m0, [%2+(%4)*2]
+    movu         m1, [%2+(%5)*2]
+    pshufb       m0, [pb_scan8field_u+(%3-1)*16]
+    pshufb       m1, [pb_scan8field_v+(%3-1)*16]
+    por          m0, m1
+    movu [%1+(%3)*16], m0
+%endmacro
+
+%macro X9R8_SCAN8_FIELD 3
+    mova        xm0, [%2+  0]
+    movu        xm1, [%2+  6]
+    pshufb      xm1, [pb_scan8field_v0]
+    pblendw     xm0, xm1, 0xf8
+    mova   [%1+  0], xm0
+    X9R8_SCAN8_FIELD_ROWS %1, %2, 1,  5, 17
+    X9R8_SCAN8_FIELD_ROWS %1, %2, 3, 20, 33
+    X9R8_SCAN8_FIELD_ROWS %1, %2, 5, 36, 44
+    movzx      %3d, word [%2+32]
+    mov    [%1+ 16], %3w
+    mova        xm0, [%2+112]
+    mov        %3d, [%2+108]
+    mova   [%1+112], xm0
+    mov    [%1+112], %3d
+%endmacro
+
+%macro X9R8_8x8_RECON 2 ; name, field
+cglobal intra_sa8d_x9_8x8_recon_%1, 8,11,16, 0x680
+    %define coef_buf rsp+0x600
+    mov          r8, r4               ; level
+    mov          r4, r3               ; satds
+    mov          r3, r2               ; bitcosts
+    mov         r9d, r6d              ; limit
+    mov         r10, r5               ; q
+    SA8D_X9_8BIT_SCORE X9R8_EDGE
+    lea          r5, [pred_buf+r2]
+    movzx       r3d, ax
+    cmp         r3d, r9d
+    jg .pred
+    mova       xm10, [hsub_mul]
+%assign x9i 0
+%rep 8
+    movq        xm %+ x9i, [r0+x9i*FENC_STRIDE]
+    punpcklbw   xm %+ x9i, [r5+x9i*32]
+    pmaddubsw   xm %+ x9i, xm10
+%assign x9i x9i+1
+%endrep
+    X9R_DCT8_1D w, 0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    X9R_DCT8_1D w, 0,1,2,3,4,5,6,7,8,9
+    vinserti128  m0, m0, xm1, 1
+    vinserti128  m2, m2, xm3, 1
+    vinserti128  m4, m4, xm5, 1
+    vinserti128  m6, m6, xm7, 1
+    pabsw        m1, m0
+    pabsw        m3, m2
+    pabsw        m5, m4
+    pabsw        m7, m6
+    paddusw      m1, [r10+128]
+    paddusw      m3, [r10+160]
+    paddusw      m5, [r10+192]
+    paddusw      m7, [r10+224]
+    pmulhuw      m1, [r10+ 0]
+    pmulhuw      m3, [r10+32]
+    pmulhuw      m5, [r10+64]
+    pmulhuw      m7, [r10+96]
+    psignw       m0, m1, m0
+    psignw       m2, m3, m2
+    psignw       m4, m5, m4
+    psignw       m6, m7, m6
+    por          m1, m3
+    por          m5, m7
+    por          m1, m5
+    ptest        m1, m1
+    jz .pred
+    or          eax, 1<<24
+    mova [coef_buf+ 0], m0
+    mova [coef_buf+32], m2
+    mova [coef_buf+64], m4
+    mova [coef_buf+96], m6
+    mov         r3d, [r10+384]
+    test        r3d, r3d
+    jz .dq_flat
+    vpbroadcastd m9, [r10+388]
+    movd       xm10, r3d
+    pxor        m11, m11
+%assign x9i 0
+%rep 4
+    %assign x9j x9i*2
+    mova         m8, [r10+256+32*x9i]
+    pmullw       m1, m %+ x9j, m8
+    pmulhw       m %+ x9j, m8
+    punpcklwd    m8, m1, m %+ x9j
+    punpckhwd    m1, m %+ x9j
+    paddd        m8, m9
+    paddd        m1, m9
+    psrad        m8, xm10
+    psrad        m1, xm10
+    pblendw      m8, m8, m11, 0xaa
+    pblendw      m1, m1, m11, 0xaa
+    packusdw     m %+ x9j, m8, m1
+%assign x9i x9i+1
+%endrep
+    jmp .idct
+.dq_flat:
+    pmullw       m0, [r10+256]
+    pmullw       m2, [r10+288]
+    pmullw       m4, [r10+320]
+    pmullw       m6, [r10+352]
+.idct:
+    vextracti128 xm1, m0, 1
+    vextracti128 xm3, m2, 1
+    vextracti128 xm5, m4, 1
+    vextracti128 xm7, m6, 1
+    X9R_IDCT8_1D w,0,1,2,3,4,5,6,7,8,10
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    paddw       xm0, [pw_32]
+    X9R_IDCT8_1D w,0,1,2,3,4,5,6,7,8,10
+%assign x9i 0
+%rep 8
+    psraw       xm %+ x9i, 6
+    pmovzxbw    xm8, [r5+x9i*32]
+    paddsw      xm %+ x9i, xm8
+%assign x9i x9i+1
+%endrep
+    packuswb    xm0, xm1
+    packuswb    xm2, xm3
+    packuswb    xm4, xm5
+    packuswb    xm6, xm7
+    movq   [r1+0*FDEC_STRIDE], xm0
+    movhps [r1+1*FDEC_STRIDE], xm0
+    movq   [r1+2*FDEC_STRIDE], xm2
+    movhps [r1+3*FDEC_STRIDE], xm2
+    movq   [r1+4*FDEC_STRIDE], xm4
+    movhps [r1+5*FDEC_STRIDE], xm4
+    movq   [r1+6*FDEC_STRIDE], xm6
+    movhps [r1+7*FDEC_STRIDE], xm6
+    lea          r3, [coef_buf]
+%if %2
+    X9R8_SCAN8_FIELD r8, r3, r2
+%else
+    X9R8_SCAN8_FRAME r8, r3, r2
+%endif
+    RET
+.pred:
+%assign x9i 0
+%rep 8
+    movq        xm0, [r5+32*x9i]
+    movq [r1+x9i*FDEC_STRIDE], xm0
+%assign x9i x9i+1
+%endrep
+    RET
+    SA8D_X9_8BIT_SUB 0
+%endmacro
+
+
 SA8D_X9_8BIT
+X9R8_8x8_RECON frame, 0
+X9R8_8x8_RECON field, 1
 
 ;-----------------------------------------------------------------------------
 ; avx512icl 8-bit satd family, the avx2 layouts with:

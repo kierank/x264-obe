@@ -69,6 +69,17 @@ typedef struct
     int      dq_round;
 } x264_quant4_recon_t;
 
+/* quant_8x8 and dequant_8x8 of one list at one qp, for intra_sa8d_x9_8x8_recon.
+ * dequant: dct * dq, or (dct * dq + dq_round) >> dq_shift if dq_shift; low 16 bits at 8-bit */
+typedef struct
+{
+    ALIGNED_64( udctcoef mf[64] );
+    udctcoef bias[64];
+    dctcoef  dq[64];
+    int      dq_shift;
+    int      dq_round;
+} x264_quant8_recon_t;
+
 typedef struct
 {
     void (*scan_8x8)( dctcoef level[64], dctcoef dct[64] );
@@ -91,6 +102,11 @@ typedef struct
      * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24. */
     int  (*intra_satd_x9_4x4_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
                                      x264_quant4_recon_t *q, int limit );
+    /* predict_8x8_filter (all neighbours, topright if b_tr) and intra_sa8d_x9_8x8; if the cost is <= limit,
+     * the chosen mode is then coded: sub8x8_dct8, quant_8x8, and if nonzero scan_8x8 into level,
+     * dequant_8x8 and add8x8_idct8. Returns cost | mode << 16 | nz << 24. */
+    int  (*intra_sa8d_x9_8x8_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, uint16_t *satds,
+                                     dctcoef level[64], x264_quant8_recon_t *q, int limit, int b_tr );
 
 } x264_zigzag_function_t;
 

@@ -349,6 +349,10 @@ int x264_trellis_cabac_chroma_422_dc_avx512icl( TRELLIS_PARAMS );
 int x264_intra_satd_x9_4x4_recon_frame_avx2( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16], x264_quant4_recon_t *q, int limit );
 #define x264_intra_satd_x9_4x4_recon_field_avx2 x264_template(intra_satd_x9_4x4_recon_field_avx2)
 int x264_intra_satd_x9_4x4_recon_field_avx2( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16], x264_quant4_recon_t *q, int limit );
+#define x264_intra_sa8d_x9_8x8_recon_frame_avx2 x264_template(intra_sa8d_x9_8x8_recon_frame_avx2)
+int x264_intra_sa8d_x9_8x8_recon_frame_avx2( pixel *fenc, pixel *fdec, uint16_t *bitcosts, uint16_t *satds, dctcoef level[64], x264_quant8_recon_t *q, int limit, int b_tr );
+#define x264_intra_sa8d_x9_8x8_recon_field_avx2 x264_template(intra_sa8d_x9_8x8_recon_field_avx2)
+int x264_intra_sa8d_x9_8x8_recon_field_avx2( pixel *fenc, pixel *fdec, uint16_t *bitcosts, uint16_t *satds, dctcoef level[64], x264_quant8_recon_t *q, int limit, int b_tr );
 #define x264_quant_4x4x4_scan_frame_avx2 x264_template(quant_4x4x4_scan_frame_avx2)
 int x264_quant_4x4x4_scan_frame_avx2( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp );
 #define x264_quant_4x4x4_scan_field_avx2 x264_template(quant_4x4x4_scan_field_avx2)

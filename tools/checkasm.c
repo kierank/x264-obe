@@ -4711,6 +4711,44 @@ static int x9r_chain( x264_t *h, x264_pixel_function_t *pf, x264_predict_t *pred
     return res | nz << 24;
 }
 
+/* the calls intra_sa8d_x9_8x8_recon replaces: predict_8x8_filter, x9 (C: 9 predictions and sa8ds, else
+ * intra_sa8d_x9_8x8), then for a cost <= limit sub8x8_dct8, quant_8x8 and if nonzero scan_8x8, dequant_8x8,
+ * add8x8_idct8 */
+static int x9r8_chain( x264_t *h, x264_pixel_function_t *pf, x264_predict8x8_t *pred8, x264_predict_8x8_filter_t filter,
+                       x264_dct_function_t *df, x264_quant_function_t *qf, x264_zigzag_function_t *zz, int b_c,
+                       pixel *fenc, pixel *fdec, uint16_t *bitcosts, uint16_t *satds, dctcoef *level, int qp,
+                       int limit, int b_tr )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct,[64] );
+    ALIGNED_ARRAY_32( pixel, edge,[36] );
+    int res = INT_MAX;
+    filter( fdec, edge, MB_LEFT|MB_TOP|MB_TOPLEFT|(b_tr ? MB_TOPRIGHT : 0), ALL_NEIGHBORS );
+    if( b_c )
+    {
+        for( int j = 0; j < 9; j++ )
+        {
+            pred8[j]( fdec, edge );
+            satds[j] = X264_MIN( pf->sa8d[PIXEL_8x8]( fenc, FENC_STRIDE, fdec, FDEC_STRIDE ) + bitcosts[j], 0xffff );
+            if( satds[j] < (uint16_t)res )
+                res = satds[j] + (j<<16);
+        }
+        pred8[res>>16]( fdec, edge );
+    }
+    else
+        res = pf->intra_sa8d_x9_8x8( fenc, fdec, edge, bitcosts, satds );
+    if( (res & 0xffff) > limit )
+        return res;
+    df->sub8x8_dct8( dct, fenc, fdec );
+    int nz = qf->quant_8x8( dct, h->quant8_mf[CQM_8IY][qp], h->quant8_bias[CQM_8IY][qp] );
+    if( nz )
+    {
+        zz->scan_8x8( level, dct );
+        qf->dequant_8x8( dct, h->dequant8_mf[CQM_8IY], qp );
+        df->add8x8_idct8( fdec, dct );
+    }
+    return res | nz << 24;
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4734,8 +4772,14 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( pixel, x9r_dec,[4],[6*FDEC_STRIDE] );
     ALIGNED_ARRAY_64( dctcoef, x9r_lvl,[3],[16] );
     ALIGNED_ARRAY_64( uint16_t, x9r_bitcosts,[17] );
+    x264_predict8x8_t x9r8_pred_c[12], x9r8_pred_a[12];
+    x264_predict_8x8_filter_t x9r8_filter_c, x9r8_filter_a;
+    ALIGNED_ARRAY_64( pixel, x9r8_enc,[16*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( pixel, x9r8_dec,[4],[11*FDEC_STRIDE] );
+    ALIGNED_ARRAY_64( dctcoef, x9r8_lvl,[3],[64] );
+    ALIGNED_ARRAY_16( uint16_t, x9r8_satds,[3],[16] );
     int ret = 0, ok, used_asm;
-    int oks[5] = {1,1,1,1,1}, used_asms[5] = {0,0,0,0,0};
+    int oks[6] = {1,1,1,1,1,1}, used_asms[6] = {0,0,0,0,0,0};
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -4744,6 +4788,8 @@ static int check_quant( int cpu_ref, int cpu_new )
     x264_dct_init( 0, &x9r_df_c );
     x264_dct_init( cpu_new, &x9r_df_a );
     x264_predict_4x4_init( 0, x9r_pred4 );
+    x264_predict_8x8_init( 0, x9r8_pred_c, &x9r8_filter_c );
+    x264_predict_8x8_init( cpu_new, x9r8_pred_a, &x9r8_filter_a );
     h->sps->i_chroma_format_idc = 1;
     x264_param_default( &h->param );
     h->chroma_qp_table = i_chroma_qp_table + 12;
@@ -5311,6 +5357,82 @@ static int check_quant( int cpu_ref, int cpu_new )
                     }
             }
 
+        /* intra_sa8d_x9_8x8_recon against x9r8_chain with the C functions and with the cpu_new ones.
+         * j: bits 0-1 source (noise, near the neighbours, 0/max, smooth), bits 2-3 limit (big, the cost,
+         * the cost - 1, -1), bit 4 topright, bits 5-6 block position; random bitcosts and predicted mode */
+        for( int fld = 0; fld < 2; fld++ )
+            if( zz_a[fld].intra_sa8d_x9_8x8_recon && zz_a[fld].intra_sa8d_x9_8x8_recon != zz_ref[fld].intra_sa8d_x9_8x8_recon )
+            {
+                used_asms[5] = 1;
+                set_func_name( "intra_sa8d_x9_8x8_recon_%s", fld?"field":"frame" );
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min && oks[5]; qp-- )
+                    for( int j = 0; j < 128; j++ )
+                    {
+                        int src = j&3, lim = (j>>2)&3, b_tr = (j>>4)&1;
+                        int xoff = 8 + 8*((j>>5)&1), eoff = 8*((j>>6)&1);
+                        int v = rand() % (PIXEL_MAX+1);
+                        for( int y = 0; y < 11; y++ )
+                            for( int x = 0; x < FDEC_STRIDE; x++ )
+                            {
+                                int p = src == 0 ? rand() % (PIXEL_MAX+1)
+                                      : src == 1 ? v + (rand()&15) - 8
+                                      : src == 2 ? (rand()&1) * PIXEL_MAX
+                                      : v + (x+2*y)*(PIXEL_MAX+1)/256;
+                                x9r8_dec[0][y*FDEC_STRIDE+x] = x264_clip3( p, 0, PIXEL_MAX );
+                            }
+                        for( int y = 0; y < 16; y++ )
+                            for( int x = 0; x < FENC_STRIDE; x++ )
+                            {
+                                int p = src == 0 ? rand() % (PIXEL_MAX+1)
+                                      : src == 1 ? v + (rand()&15) - 8
+                                      : src == 2 ? (rand()&1) * PIXEL_MAX
+                                      : v + (x+xoff-eoff+2*y+2)*(PIXEL_MAX+1)/256 + (rand()%3) - 1;
+                                x9r8_enc[y*FENC_STRIDE+x] = x264_clip3( p, 0, PIXEL_MAX );
+                            }
+                        for( int i = 0; i < 17; i++ )
+                            x9r_bitcosts[i] = rand() & (src == 1 ? 7 : 511);
+                        uint16_t *bitcosts = x9r_bitcosts + 8 - rand()%9;
+                        pixel *fenc = x9r8_enc + eoff;
+                        int off = FDEC_STRIDE + xoff;
+                        memcpy( x9r8_dec[1], x9r8_dec[0], sizeof(x9r8_dec[0]) );
+                        int cost = x9r8_chain( h, &x9r_pf_c, x9r8_pred_c, x9r8_filter_c, &x9r_df_c, &qf_c, &zz_c[fld], 1, fenc,
+                                               x9r8_dec[1]+off, bitcosts, x9r8_satds[0], x9r8_lvl[0], qp, -1, b_tr ) & 0xffff;
+                        int limit = lim == 0 ? 1<<20 : lim == 1 ? cost : lim == 2 ? cost-1 : -1;
+                        for( int k = 1; k < 4; k++ )
+                            memcpy( x9r8_dec[k], x9r8_dec[0], sizeof(x9r8_dec[0]) );
+                        for( int k = 0; k < 3; k++ )
+                            for( int i = 0; i < 64; i++ )
+                                x9r8_lvl[k][i] = 0x5a5a + i;
+                        for( int k = 0; k < 3; k++ )
+                            for( int i = 0; i < 16; i++ )
+                                x9r8_satds[k][i] = 0xa5a5 + i;
+                        int res_c = x9r8_chain( h, &x9r_pf_c, x9r8_pred_c, x9r8_filter_c, &x9r_df_c, &qf_c, &zz_c[fld], 1, fenc,
+                                                x9r8_dec[1]+off, bitcosts, x9r8_satds[0], x9r8_lvl[0], qp, limit, b_tr );
+                        int res_s = x9r8_chain( h, &x9r_pf_a, x9r8_pred_a, x9r8_filter_a, &x9r_df_a, &qf_a, &zz_a[fld], 0, fenc,
+                                                x9r8_dec[2]+off, bitcosts, x9r8_satds[1], x9r8_lvl[1], qp, limit, b_tr );
+                        ok = 1;
+                        int res_a = call_a1( zz_a[fld].intra_sa8d_x9_8x8_recon, fenc, x9r8_dec[3]+off, bitcosts, x9r8_satds[2],
+                                             x9r8_lvl[2], &h->quant8_recon[qp], limit, b_tr );
+                        oks[5] &= ok;
+                        int bad_c = res_c != res_a || memcmp( x9r8_dec[1], x9r8_dec[3], sizeof(x9r8_dec[0]) )
+                                 || memcmp( x9r8_lvl[0], x9r8_lvl[2], sizeof(x9r8_lvl[0]) )
+                                 || memcmp( x9r8_satds[0], x9r8_satds[2], sizeof(x9r8_satds[0]) );
+                        int bad_s = res_s != res_a || memcmp( x9r8_dec[2], x9r8_dec[3], sizeof(x9r8_dec[0]) )
+                                 || memcmp( x9r8_lvl[1], x9r8_lvl[2], sizeof(x9r8_lvl[0]) )
+                                 || memcmp( x9r8_satds[1], x9r8_satds[2], sizeof(x9r8_satds[0]) );
+                        if( bad_c || bad_s )
+                        {
+                            oks[5] = 0;
+                            fprintf( stderr, "intra_sa8d_x9_8x8_recon_%s (qp=%d, cqm=%d, j=%d, limit=%d, c=%x, chain=%x, asm=%x, vs c %d, vs chain %d): [FAILED]\n",
+                                     fld?"field":"frame", qp, i_cqm, j, limit, res_c, res_s, res_a, bad_c, bad_s );
+                            break;
+                        }
+                        if( !i_cqm && !j && qp == 26 )
+                            call_a2( zz_a[fld].intra_sa8d_x9_8x8_recon, fenc, x9r8_dec[3]+off, bitcosts, x9r8_satds[2],
+                                     x9r8_lvl[2], &h->quant8_recon[qp], 1<<20, 1 );
+                    }
+            }
+
         x264_cqm_delete( h );
     }
 
@@ -5328,6 +5450,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[4]; used_asm = used_asms[4];
     report( "intra x9 recon :" );
+
+    ok = oks[5]; used_asm = used_asms[5];
+    report( "intra x9 8x8 recon :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

@@ -836,6 +836,11 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         if( h->sh.i_type == SLICE_TYPE_B )
             i_cost += lambda * i_mb_b_cost_table[I_8x8];
 
+        /* predict_8x8_filter and x264_mb_encode_i8x8 in the x9 call, as x264_quant_8x8 without noise reduction or trellis */
+        int (*x9_recon)( pixel *, pixel *, uint16_t *, uint16_t *, dctcoef *, x264_quant8_recon_t *, int, int ) =
+            h->pixf.intra_mbcmp_x9_8x8 == h->pixf.intra_sa8d_x9_8x8 && !h->mb.b_noise_reduction && !h->mb.b_trellis
+            ? h->zigzagf.intra_sa8d_x9_8x8_recon : NULL;
+
         for( idx = 0;; idx++ )
         {
             int x = idx&1;
@@ -846,6 +851,24 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             int i_pred_mode = x264_mb_predict_intra4x4_mode( h, 4*idx );
 
             const int8_t *predict_mode = predict_8x8_mode_available( a->b_avoid_topright, h->mb.i_neighbour8[idx], idx );
+            if( x9_recon && predict_mode[8] >= 0 )
+            {
+                /* the block is coded if its cost keeps i_cost <= i_satd_thresh and it is not the last */
+                int limit = idx == 3 ? -1 : i_satd_thresh - i_cost;
+                i_best = x9_recon( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx],
+                                   h->dct.luma8x8[idx], &h->quant8_recon[a->i_qp], limit,
+                                   !!(h->mb.i_neighbour8[idx] & MB_TOPRIGHT) );
+                i_cost += i_best & 0xffff;
+                int nz = i_best >> 24;
+                i_best = (i_best >> 16) & 0xff;
+                a->i_predict8x8[idx] = i_best;
+                if( idx == 3 || i_cost > i_satd_thresh )
+                    break;
+                x264_macroblock_cache_intra8x8_pred( h, 2*x, 2*y, i_best );
+                STORE_8x8_NNZ( 0, idx, nz );
+                h->mb.i_cbp_luma |= nz<<idx;
+                continue;
+            }
             h->predict_8x8_filter( p_dst_by, edge, h->mb.i_neighbour8[idx], ALL_NEIGHBORS );
 
             if( h->pixf.intra_mbcmp_x9_8x8 && predict_mode[8] >= 0 )
