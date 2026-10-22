@@ -3065,7 +3065,7 @@ static inline void x264_mb_analyse_transform( x264_t *h )
  * coded: at most X264_TRD_KEEP4 keeps 4x4 without the 8x8 RD (-1: never), at
  * least X264_TRD_TAKE8 takes 8x8 without it (17: never) */
 #ifndef X264_TRD_KEEP4
-#define X264_TRD_KEEP4 0
+#define X264_TRD_KEEP4 4
 #endif
 #ifndef X264_TRD_TAKE8
 #define X264_TRD_TAKE8 17
