@@ -36,7 +36,7 @@
 
 /* layout pair test/x264-i4x4-fuse / -twin: hidden weak x264_N_i4x4f_gate, defined here (no bytes) unless
  * I4X4F_TWIN; the twin links it as 0 and i4x4 analysis keeps the separate x9 and x264_mb_encode_i4x4 */
-#define I4X4F_TWIN 0
+#define I4X4F_TWIN 1
 #define I4X4F_STR2( x ) #x
 #define I4X4F_STR( x ) I4X4F_STR2( x )
 #define x264_i4x4f_gate x264_template(i4x4f_gate)
