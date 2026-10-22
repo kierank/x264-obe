@@ -129,6 +129,7 @@
 #include "dct.h"
 #include "quant.h"
 #include "threadpool.h"
+#include "trdcnt.h"
 
 /****************************************************************************
  * General functions
@@ -802,6 +803,9 @@ struct x264_t
 #if HAVE_OPENCL
     x264_opencl_t opencl;
 #endif
+
+    /* test counters (common/trdcnt.h); last, so no context copy range reaches them */
+    x264_trdcnt_t trdcnt;
 };
 
 // included at the end because it needs x264_t

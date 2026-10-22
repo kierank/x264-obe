@@ -4599,6 +4599,65 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
 /****************************************************************************
  * x264_encoder_close:
  ****************************************************************************/
+/* test counters of the encoding threads, summed, to stderr */
+static void x264_trdcnt_print( x264_t *h )
+{
+    static const char *s_name[2] = { "P", "B" };
+    static const char *cls_name[TRD_CLASS] = { "16x16", "16x8", "8x8" };
+    static const char *qp_name[TRD_QP] = { "qp<20", "qp<26", "qp<32", "qp>=32" };
+    static const char *gap_name[TRD_GAP] = { "<5", "<10", "<20", "<40", "<80", ">=80" };
+    static const int8_t arm_keep4[TRD_ARMS] = { 0, 2, 4 };
+    x264_trdcnt_t c;
+    memset( &c, 0, sizeof(c) );
+    for( int i = 0; i < h->param.i_threads; i++ )
+        x264_trdcnt_add( &c, &h->thread[i]->trdcnt );
+
+    fprintf( stderr, "trd begin depth=%d interlaced=%d subme=%d trellis=%d psy_rd=%.2f frames_p=%d frames_b=%d threads=%d\n",
+             BIT_DEPTH, PARAM_INTERLACED, h->param.analyse.i_subpel_refine, h->param.analyse.i_trellis,
+             h->param.analyse.f_psy_rd, h->stat.i_frame_count[SLICE_TYPE_P], h->stat.i_frame_count[SLICE_TYPE_B],
+             h->param.i_threads );
+    for( int s = 0; s < 2; s++ )
+    {
+        uint64_t elig = c.allowed[s] - c.subpart[s] - c.cur8[s] - c.miss[s];
+        fprintf( stderr, "trd %s rd_cost_mb=%"PRIu64" entry=%"PRIu64" allowed=%"PRIu64" subpart=%"PRIu64" cur8=%"PRIu64
+                 " miss=%"PRIu64" eligible=%"PRIu64" rdbest=%"PRIu64"\n", s_name[s], c.rd_mb[s], c.entry[s],
+                 c.allowed[s], c.subpart[s], c.cur8[s], c.miss[s], elig, c.rdbest[s] );
+        for( int k = 0; k < TRD_ARMS; k++ )
+        {
+            uint64_t *o = c.arm[k][s];
+            fprintf( stderr, "trd arm T%d %s keep4<=%d skip=%"PRIu64" keep=%"PRIu64" flip=%"PRIu64" tieflip=%"PRIu64
+                     " loss=%"PRIu64" skip%%=%.2f flip%%=%.2f loss%%=%.4f\n", k+1, s_name[s], arm_keep4[k],
+                     o[TRD_ARM_SKIP], o[TRD_ARM_KEEP], o[TRD_ARM_FLIP], o[TRD_ARM_TIEFLIP], o[TRD_ARM_LOSS],
+                     elig ? 100.0 * o[TRD_ARM_SKIP] / elig : 0, o[TRD_ARM_SKIP] ? 100.0 * o[TRD_ARM_FLIP] / o[TRD_ARM_SKIP] : 0,
+                     c.rdbest[s] ? 100.0 * o[TRD_ARM_LOSS] / c.rdbest[s] : 0 );
+        }
+    }
+    for( int s = 0; s < 2; s++ )
+        for( int cls = 0; cls < TRD_CLASS; cls++ )
+            for( int q = 0; q < TRD_QP; q++ )
+                for( int n = 0; n < TRD_NZ; n++ )
+                {
+                    uint64_t *o = c.nz[s][cls][q][n];
+                    if( !o[TRD_CALLS] )
+                        continue;
+                    fprintf( stderr, "trd nz %s %s %s nz=%d calls=%"PRIu64" win8=%"PRIu64" tie=%"PRIu64" win4=%"PRIu64
+                             " rdbest=%"PRIu64" loss4=%"PRIu64" loss8=%"PRIu64"\n", s_name[s], cls_name[cls], qp_name[q], n,
+                             o[TRD_CALLS], o[TRD_WIN8], o[TRD_TIE], o[TRD_WIN4], o[TRD_RDBEST], o[TRD_LOSS4], o[TRD_LOSS8] );
+                }
+    for( int s = 0; s < 2; s++ )
+        for( int f = 0; f < 2; f++ )
+            for( int g = 0; g < TRD_GAP; g++ )
+            {
+                uint64_t *o = c.gap[s][f][g];
+                if( !o[TRD_CALLS] )
+                    continue;
+                fprintf( stderr, "trd gap %s %s margin%s%% calls=%"PRIu64" win8=%"PRIu64" tie=%"PRIu64" win4=%"PRIu64
+                         " rdbest=%"PRIu64" loss4=%"PRIu64" loss8=%"PRIu64"\n", s_name[s], f ? "sa8d<satd" : "sa8d>=satd",
+                         gap_name[g], o[TRD_CALLS], o[TRD_WIN8], o[TRD_TIE], o[TRD_WIN4], o[TRD_RDBEST], o[TRD_LOSS4], o[TRD_LOSS8] );
+            }
+    fprintf( stderr, "trd end\n" );
+}
+
 void    x264_encoder_close  ( x264_t *h )
 {
     int64_t i_yuv_size = FRAME_SIZE( h->param.i_width * h->param.i_height );
@@ -4625,6 +4684,7 @@ void    x264_encoder_close  ( x264_t *h )
         x264_threadpool_delete( h->threadpool );
     if( h->param.i_lookahead_threads > 1 )
         x264_threadpool_delete( h->lookaheadpool );
+    x264_trdcnt_print( h );
     if( h->i_thread_frames > 1 )
     {
         for( int i = 0; i < h->i_thread_frames; i++ )

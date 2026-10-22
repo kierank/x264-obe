@@ -3065,7 +3065,7 @@ static inline void x264_mb_analyse_transform( x264_t *h )
  * coded: at most X264_TRD_KEEP4 keeps 4x4 without the 8x8 RD (-1: never), at
  * least X264_TRD_TAKE8 takes 8x8 without it (17: never) */
 #ifndef X264_TRD_KEEP4
-#define X264_TRD_KEEP4 0
+#define X264_TRD_KEEP4 -1 /* counter build: never, output as base */
 #endif
 #ifndef X264_TRD_TAKE8
 #define X264_TRD_TAKE8 17
@@ -3093,18 +3093,140 @@ static ALWAYS_INLINE int x264_trd_prescreen( x264_t *h, x264_mb_analysis_t *a, i
     return nz <= keep4 ? 0 : nz >= take8 ? 1 : -1;
 }
 
+/* test counters: the arms of exp/x264-trd-prescreen-T1..T3 */
+static const int8_t trd_arm_keep4[TRD_ARMS] = { 0, 2, 4 };
+static const int8_t trd_arm_take8[TRD_ARMS] = { 17, 17, 17 };
+
+typedef struct
+{
+    int s;          /* 0 P, 1 B */
+    int b_same;     /* both sizes share the prediction */
+    int cur8;       /* current or logged size 8x8 */
+    int idx;        /* log entry, or -1 */
+    int nz;         /* its coded luma 4x4 blocks */
+    int c8, c4;     /* luma sa8d and satd of the prediction, or -1 */
+    int pre[TRD_ARMS];
+} x264_trd_probe_t;
+
+static NOINLINE void x264_trd_probe( x264_t *h, x264_mb_analysis_t *a, x264_trd_probe_t *p, int i_rd )
+{
+    p->c8 = p->c4 = -1;
+    p->idx = x264_rd_nz_find( h, a, i_rd );
+    p->cur8 = h->mb.b_transform_8x8 || (p->idx >= 0 && a->rd_nz[p->idx].transform_8x8);
+    p->nz = p->idx >= 0 ? a->rd_nz[p->idx].nz : 0;
+    for( int k = 0; k < TRD_ARMS; k++ )
+        p->pre[k] = p->b_same ? x264_trd_prescreen( h, a, i_rd, trd_arm_keep4[k], trd_arm_take8[k] ) : -1;
+    /* the RD's encode redoes this MC (b_skip_mc 0) */
+    if( p->b_same && !h->mb.b_skip_mc )
+    {
+        x264_mb_mc( h );
+        if( h->pixf.sa8d_satd[PIXEL_16x16] )
+        {
+            uint64_t cost = h->pixf.sa8d_satd[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE,
+                                                            h->mb.pic.p_fdec[0], FDEC_STRIDE );
+            p->c8 = (uint32_t)cost;
+            p->c4 = (uint32_t)(cost >> 32);
+        }
+        else
+        {
+            p->c8 = h->pixf.sa8d[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, h->mb.pic.p_fdec[0], FDEC_STRIDE );
+            p->c4 = h->pixf.satd[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, h->mb.pic.p_fdec[0], FDEC_STRIDE );
+        }
+    }
+}
+
+static void x264_trd_outcome( uint64_t *o, int64_t rd4, int64_t rd8 )
+{
+    o[TRD_CALLS]++;
+    o[rd8 < rd4 ? TRD_WIN8 : rd8 == rd4 ? TRD_TIE : TRD_WIN4]++;
+    o[TRD_RDBEST] += X264_MIN( rd4, rd8 );
+    if( rd8 < rd4 )
+        o[TRD_LOSS4] += rd4 - rd8;
+    else
+        o[TRD_LOSS8] += rd8 - rd4;
+}
+
+static NOINLINE void x264_trd_count( x264_t *h, x264_trd_probe_t *p, int64_t rd4, int64_t rd8 )
+{
+    x264_trdcnt_t *c = &h->trdcnt;
+    int s = p->s;
+    if( !p->b_same )
+    {
+        c->subpart[s]++;
+        return;
+    }
+    if( p->cur8 )
+    {
+        c->cur8[s]++;
+        return;
+    }
+    if( p->idx < 0 )
+    {
+        c->miss[s]++;
+        return;
+    }
+    c->rdbest[s] += X264_MIN( rd4, rd8 );
+
+    int cls = h->mb.i_type == B_DIRECT || h->mb.i_partition == D_16x16 ? 0 :
+              h->mb.i_partition == D_8x8 ? 2 : 1;
+    int q = h->mb.i_qp - QP_BD_OFFSET;
+    int qb = q < 20 ? 0 : q < 26 ? 1 : q < 32 ? 2 : 3;
+    x264_trd_outcome( c->nz[s][cls][qb][p->nz], rd4, rd8 );
+
+    if( p->c8 >= 0 )
+    {
+        int fav8 = p->c8 < p->c4;
+        int64_t lo = X264_MIN( p->c8, p->c4 );
+        int64_t d = 100 * (int64_t)abs( p->c8 - p->c4 );
+        int gb = d < lo * 5 ? 0 : d < lo * 10 ? 1 : d < lo * 20 ? 2 : d < lo * 40 ? 3 : d < lo * 80 ? 4 : 5;
+        x264_trd_outcome( c->gap[s][fav8][gb], rd4, rd8 );
+    }
+
+    for( int k = 0; k < TRD_ARMS; k++ )
+    {
+        uint64_t *o = c->arm[k][s];
+        if( p->pre[k] < 0 )
+            continue;
+        o[TRD_ARM_SKIP]++;
+        if( p->pre[k] == 0 )
+        {
+            o[TRD_ARM_KEEP]++;
+            if( rd8 < rd4 )
+            {
+                o[TRD_ARM_FLIP]++;
+                o[TRD_ARM_LOSS] += rd4 - rd8;
+            }
+            else if( rd8 == rd4 )
+                o[TRD_ARM_TIEFLIP]++;
+        }
+        else if( rd8 > rd4 )
+        {
+            o[TRD_ARM_FLIP]++;
+            o[TRD_ARM_LOSS] += rd8 - rd4;
+        }
+    }
+}
+
 static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *a, int *i_satd, int *i_rd )
 {
     if( h->param.analyse.b_transform_8x8 && h->pps->b_transform_8x8_mode )
     {
+        x264_trd_probe_t probe;
+        probe.s = h->sh.i_type == SLICE_TYPE_B;
+        h->trdcnt.entry[probe.s]++;
         uint32_t subpart_bak = M32( h->mb.i_sub_partition );
         /* Try switching the subpartitions to 8x8 so that we can use 8x8 transform mode */
         if( h->mb.i_type == P_8x8 )
             M32( h->mb.i_sub_partition ) = D_L0_8x8*0x01010101;
         else if( !x264_transform_allowed[h->mb.i_type] )
             return;
+        h->trdcnt.allowed[probe.s]++;
 
         x264_analyse_update_cache( h, a );
+
+        probe.b_same = !h->mb.b_lossless && (h->mb.i_type != P_8x8 || subpart_bak == D_L0_8x8*0x01010101);
+        x264_trd_probe( h, a, &probe, *i_rd );
+        int i_rd4 = *i_rd;
 
         /* same prediction both ways */
         if( !h->mb.b_lossless && (h->mb.i_type != P_8x8 || subpart_bak == D_L0_8x8*0x01010101) )
@@ -3137,6 +3259,7 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
             h->mb.b_transform_8x8 ^= 1;
             M32( h->mb.i_sub_partition ) = subpart_bak;
         }
+        x264_trd_count( h, &probe, i_rd4, i_rd8 );
     }
 }
 

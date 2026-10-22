@@ -164,6 +164,9 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     int i_bits;
     int type_bak = h->mb.i_type;
 
+    if( h->sh.i_type != SLICE_TYPE_I )
+        h->trdcnt.rd_mb[h->sh.i_type == SLICE_TYPE_B]++;
+
     x264_macroblock_encode( h );
 
     if( h->mb.b_deblock_rdo )
