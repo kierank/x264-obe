@@ -77,6 +77,17 @@ void x264_cabac_tape_start( x264_t *h, int b_terminal );
 void x264_cabac_tape_chunk( x264_t *h );
 #define x264_cabac_tape_finish x264_template(cabac_tape_finish)
 int x264_cabac_tape_finish( x264_t *h, int b_rc );
+/* cabac-tape layout pair: x264_cabac_tape_gate gates the tape in slice_write.
+ * Arm: x264_cabac_tape_arm, defined in api.c. Twin (CABAC_TAPE_TWIN 1): the never
+ * defined x264_cabac_tape_twin, which links as 0. The code is the same in both. */
+#define CABAC_TAPE_TWIN 0
+extern const char x264_cabac_tape_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_cabac_tape_twin __attribute__((weak, visibility("hidden")));
+#if CABAC_TAPE_TWIN
+#define x264_cabac_tape_gate (&x264_cabac_tape_twin != NULL)
+#else
+#define x264_cabac_tape_gate (&x264_cabac_tape_arm != NULL)
+#endif
 /* codes some of the last MB's bins, interleaved with the analysis of the next */
 static ALWAYS_INLINE void x264_cabac_tape_step( x264_t *h )
 {

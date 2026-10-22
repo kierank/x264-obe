@@ -3167,7 +3167,7 @@ reencode:
             if( h->tape.b_pending )
                 x264_cabac_tape_finish( h, 1 );
             /* the bins go to a tape, coded under the next MB's analysis */
-            b_tape = !slice_max_size && h->mb.i_type != I_PCM;
+            b_tape = x264_cabac_tape_gate && !slice_max_size && h->mb.i_type != I_PCM;
             if( b_tape )
             {
                 x264_cabac_tape_start( h, b_terminal );
