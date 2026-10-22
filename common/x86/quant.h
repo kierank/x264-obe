@@ -365,5 +365,13 @@ int x264_quant_4x4x4_scan_field_ac_avx512icl( dctcoef dct[4][16], dctcoef level[
 int x264_quant_8x8_scan_frame_avx512icl( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
 #define x264_quant_8x8_scan_field_avx512icl x264_template(quant_8x8_scan_field_avx512icl)
 int x264_quant_8x8_scan_field_avx512icl( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_inter_resid_4x4_frame_avx2 x264_template(inter_resid_4x4_frame_avx2)
+int x264_inter_resid_4x4_frame_avx2( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
+#define x264_inter_resid_4x4_field_avx2 x264_template(inter_resid_4x4_field_avx2)
+int x264_inter_resid_4x4_field_avx2( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
+#define x264_inter_resid_8x8_frame_avx2 x264_template(inter_resid_8x8_frame_avx2)
+int x264_inter_resid_8x8_frame_avx2( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
+#define x264_inter_resid_8x8_field_avx2 x264_template(inter_resid_8x8_field_avx2)
+int x264_inter_resid_8x8_field_avx2( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
 
 #endif
