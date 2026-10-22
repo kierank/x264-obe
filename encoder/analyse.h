@@ -44,7 +44,7 @@ void x264_macroblock_analyse( x264_t *h );
 /* pirsm layout pair: x264_pirsm_gate gates the PIR masking shortcuts. Arm:
  * x264_pirsm_arm, defined in api.c. Twin (PIRSM_TWIN 1): the never defined
  * x264_pirsm_twin, which links as 0. The code is the same in both. */
-#define PIRSM_TWIN 0
+#define PIRSM_TWIN 1
 extern const char x264_pirsm_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_pirsm_twin __attribute__((weak, visibility("hidden")));
 #if PIRSM_TWIN
