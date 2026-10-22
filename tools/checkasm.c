@@ -4850,7 +4850,7 @@ static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf
     int score = q8s_qf->decimate_score64( level );
     if( dequant_mf )
         q8s_qf->dequant_8x8( dct, dequant_mf, i_qp );
-    return 1 | X264_MIN( score, 9 ) << 4;
+    return 1 | X264_MIN( score, 9 ) << 4 | (q8s_qf->coeff_last[DCT_LUMA_8x8]( level ) > 0) << 8;
 }
 
 /* the calls intra_satd_x9_4x4_recon replaces: x9 (C: 9 predictions and satds, else intra_satd_x9_4x4),

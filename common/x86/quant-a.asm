@@ -3131,7 +3131,8 @@ COEFF_LEVELRUN_AVX512 16, w
 ;                       int dequant_mf[6][16], int i_qp )
 ;-----------------------------------------------------------------------------
 ; quant_4x4x4, zigzag the nonzero blocks into level, dequant dct in place unless dequant_mf is NULL,
-; sum decimate_score16 (15 for ac) over the nonzero blocks. Returns nz | min(score,9) << 4.
+; sum decimate_score16 (15 for ac) over the nonzero blocks. Returns nz | min(score,9) << 4,
+; not ac: | blocks with a nonzero ac level << 8.
 %if ARCH_X86_64
 
 ; block, src[, src2]: store to level if the block is nonzero, else to dct (rewritten later)
@@ -3145,6 +3146,26 @@ COEFF_LEVELRUN_AVX512 16, w
 %else
     mova [r0+r7+32*%1   ], %2
 %endif
+%endmacro
+
+; r7: nonzero coefs, 16 bits per block; eax |= blocks with a nonzero ac << 8
+%macro QUANT_SCAN_HASAC 0
+    mov       r1, 0x7ffe7ffe7ffe7ffe
+    mov       r2, r1
+    and       r2, r7
+    add       r2, r1
+    or        r2, r7
+    mov       r1, 0x8000800080008000
+    and       r2, r1          ; bit 15 of each block: a nonzero ac
+%if cpuflag(avx512)
+    pext      r2, r2, r1
+%else
+    mov       r1, 0x0000200040008001
+    imul      r2, r1          ; bits 15, 31, 47, 63 -> 60-63
+    shr       r2, 60
+%endif
+    shl       r2d, 8
+    or        eax, r2d
 %endmacro
 
 ; levels as bytes in scan order, blocks 0-1, blocks 2-3, zero, ac
@@ -3199,6 +3220,9 @@ COEFF_LEVELRUN_AVX512 16, w
     cmovnz    r1d, r2d
     shl       r1d, 4
     or        eax, r1d
+%if %4 == 0
+    QUANT_SCAN_HASAC
+%endif
     RET
 %endmacro
 
@@ -3253,6 +3277,9 @@ COEFF_LEVELRUN_AVX512 16, w
     cmovnz    r1d, r2d
     shl       r1d, 4
     or        r6d, r1d
+%if %1 == 0
+    QUANT_SCAN_HASAC
+%endif
     RET
 %endmacro
 
@@ -3781,10 +3808,10 @@ QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
 ;                     int dequant_mf[6][64], int i_qp )
 ;-----------------------------------------------------------------------------
 ; quant_8x8, then if nonzero: zigzag into level, decimate_score64, dequant dct in place unless dequant_mf
-; is NULL. Returns 0, or 1 | min(score,9) << 4.
+; is NULL. Returns 0, or 1 | min(score,9) << 4 | a nonzero ac level << 8.
 
 ; k1: nonzero levels in scan order, k4: a level is > 1; kortest width
-; eax = 1 | min(score,9) << 4
+; eax = 1 | min(score,9) << 4 | a nonzero ac << 8
 %macro QUANT8_SCAN_SCORE 1
     kmovq     r1, k1
     ; score = sum over nonzero coefs of [run<4] + [run<12] + [run<24], run = zeros below
@@ -3823,6 +3850,9 @@ QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
     cmovnz    r6d, r2d
     shl       r6d, 4
     inc       r6d
+    lea       r2d, [r6+0x100]
+    shr       r1, 1
+    cmovnz    r6d, r2d
 %endmacro
 
 ; r7d = i_qp / 6, r4 = dequant_mf[i_qp % 6]
