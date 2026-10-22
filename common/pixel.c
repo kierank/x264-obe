@@ -1042,6 +1042,22 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
     return nmv;
 }
 
+/* layout twin of the fenc_eq confirm pair: both declare the hidden weak x264_<depth>_twin_fenc_eq_16x16;
+ * with FENCEQ_TWIN 1 the 16x16 slot dispatches it, which links as 0, so it stays NULL */
+#if HAVE_MMX && ARCH_X86_64
+#define FENCEQ_TWIN 0
+#define FENCEQ_STR2( d ) #d
+#define FENCEQ_STR( d ) FENCEQ_STR2( d )
+#define FENCEQ_SYM "x264_" FENCEQ_STR( BIT_DEPTH ) "_twin_fenc_eq_16x16"
+#define x264_twin_fenc_eq_16x16 x264_template(twin_fenc_eq_16x16)
+extern __typeof__( x264_pixel_fenc_eq_16x16_avx2 ) x264_twin_fenc_eq_16x16 __attribute__((weak, visibility("hidden")));
+__asm__( ".weak " FENCEQ_SYM "\n.hidden " FENCEQ_SYM );
+#if FENCEQ_TWIN
+#undef x264_pixel_fenc_eq_16x16_avx2
+#define x264_pixel_fenc_eq_16x16_avx2 x264_twin_fenc_eq_16x16
+#endif
+#endif
+
 
 /****************************************************************************
  * x264_pixel_init:
