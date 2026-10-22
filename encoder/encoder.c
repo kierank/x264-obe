@@ -4608,6 +4608,7 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
  ****************************************************************************/
 void    x264_encoder_close  ( x264_t *h )
 {
+    x264_i8x8f_print( h );
     int64_t i_yuv_size = FRAME_SIZE( h->param.i_width * h->param.i_height );
     int64_t i_mb_count_size[2][7] = {{0}};
     char buf[200];

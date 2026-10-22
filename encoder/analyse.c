@@ -34,6 +34,36 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* test/x264-i8x8-fuse-cnt: 0 MBs into i8x8 analysis, 1 of them finished, 2 fused calls, 3 coded by them,
+ * 4 nonzero, 5 in field MBs, 6 without the topright, 7 separate x9 calls, 8 other blocks, 9 nonzero with
+ * no AC level (the DC-only reconstruction); per frame (i_frame & 4095) fused calls, i8x8 blocks, type */
+static uint64_t i8x8f_cnt[10];
+static uint32_t i8x8f_frame[4096][3];
+#define I8X8F_ADD( p, v ) __atomic_fetch_add( p, v, __ATOMIC_RELAXED )
+
+void x264_i8x8f_print( x264_t *h )
+{
+    uint64_t c[10], blocks = 0;
+    int frames = 0, n = 0;
+    for( int i = 0; i < 10; i++ )
+        c[i] = __atomic_load_n( &i8x8f_cnt[i], __ATOMIC_RELAXED );
+    for( int i = 0; i < 4096; i++ )
+        if( i8x8f_frame[i][1] )
+        {
+            frames++;
+            blocks += i8x8f_frame[i][1];
+        }
+    fprintf( stderr, "i8x8f: mbs %"PRIu64" done %"PRIu64" fused %"PRIu64" coded %"PRIu64" nz %"PRIu64" field %"PRIu64
+             " no_tr %"PRIu64" sep_x9 %"PRIu64" other %"PRIu64" dc_only %"PRIu64" (%.1f%% of nz) | frames %d blocks/frame %.0f"
+             " (mb %d)\n", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[4] ? 100.0 * c[9] / c[4] : 0,
+             frames, frames ? (double)blocks / frames : 0, h->mb.i_mb_count );
+    fprintf( stderr, "i8x8f: frames over 4x the mean (frame type fused blocks):" );
+    for( int i = 0; i < 4096 && frames; i++ )
+        if( i8x8f_frame[i][1] > 4 * blocks / frames && n++ < 24 )
+            fprintf( stderr, " %d%c %u %u", i, "?PBIK"[X264_MIN( i8x8f_frame[i][2], 4 )], i8x8f_frame[i][0], i8x8f_frame[i][1] );
+    fprintf( stderr, "\n" );
+}
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -840,9 +870,14 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         int (*x9_recon)( pixel *, pixel *, uint16_t *, uint16_t *, dctcoef *, x264_quant8_recon_t *, int, int ) =
             h->pixf.intra_mbcmp_x9_8x8 == h->pixf.intra_sa8d_x9_8x8 && !h->mb.b_noise_reduction && !h->mb.b_trellis
             ? h->zigzagf.intra_sa8d_x9_8x8_recon : NULL;
+        uint32_t *i8x8f_fr = i8x8f_frame[h->fenc->i_frame & 4095];
+        I8X8F_ADD( &i8x8f_cnt[0], 1 );
+        __atomic_store_n( &i8x8f_fr[2], h->sh.i_type == SLICE_TYPE_P ? 1 : h->sh.i_type == SLICE_TYPE_B ? 2
+                          : h->fenc->b_keyframe ? 4 : 3, __ATOMIC_RELAXED );
 
         for( idx = 0;; idx++ )
         {
+            I8X8F_ADD( &i8x8f_fr[1], 1 );
             int x = idx&1;
             int y = idx>>1;
             pixel *p_src_by = p_src + 8*x + 8*y*FENC_STRIDE;
@@ -858,6 +893,19 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
                 i_best = x9_recon( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx],
                                    h->dct.luma8x8[idx], &h->quant8_recon[a->i_qp], limit,
                                    !!(h->mb.i_neighbour8[idx] & MB_TOPRIGHT) );
+                I8X8F_ADD( &i8x8f_cnt[2], 1 );
+                I8X8F_ADD( &i8x8f_fr[0], 1 );
+                I8X8F_ADD( &i8x8f_cnt[3], (i_best & 0xffff) <= limit );
+                I8X8F_ADD( &i8x8f_cnt[4], i_best >> 24 );
+                I8X8F_ADD( &i8x8f_cnt[5], MB_INTERLACED );
+                I8X8F_ADD( &i8x8f_cnt[6], !(h->mb.i_neighbour8[idx] & MB_TOPRIGHT) );
+                if( i_best >> 24 )
+                {
+                    int ac = 0;
+                    for( int i = 1; i < 64; i++ )
+                        ac |= h->dct.luma8x8[idx][i];
+                    I8X8F_ADD( &i8x8f_cnt[9], !ac );
+                }
                 i_cost += i_best & 0xffff;
                 int nz = i_best >> 24;
                 i_best = (i_best >> 16) & 0xff;
@@ -874,6 +922,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             if( h->pixf.intra_mbcmp_x9_8x8 && predict_mode[8] >= 0 )
             {
                 /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
+                I8X8F_ADD( &i8x8f_cnt[7], 1 );
                 i_best = h->pixf.intra_mbcmp_x9_8x8( p_src_by, p_dst_by, edge, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx] );
                 i_cost += i_best & 0xffff;
                 i_best >>= 16;
@@ -884,6 +933,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             }
             else
             {
+                I8X8F_ADD( &i8x8f_cnt[8], 1 );
                 if( !h->mb.b_lossless && predict_mode[5] >= 0 )
                 {
                     ALIGNED_ARRAY_16( int32_t, satd,[9] );
@@ -936,6 +986,7 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             x264_mb_encode_i8x8( h, 0, idx, a->i_qp, a->i_predict8x8[idx], edge, 0 );
         }
 
+        I8X8F_ADD( &i8x8f_cnt[1], idx == 3 );
         if( idx == 3 )
         {
             a->i_satd_i8x8 = i_cost;
