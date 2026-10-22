@@ -1557,6 +1557,11 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         x264_log( h, X264_LOG_ERROR, "not compiled with mb_info support (configure --enable-mbinfo)\n" );
         return -1;
     }
+    if( !HAS_SLICE_MAX_SIZE && h->param.i_slice_max_size )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with slice-max-size support (configure --enable-slice-max-size)\n" );
+        return -1;
+    }
 
     return 0;
 }
@@ -3071,7 +3076,7 @@ static intptr_t x264_slice_write( x264_t *h )
      * Then add an extra 5 bytes just in case, to account for random NAL escapes and
      * other inaccuracies. */
     int overhead_guess = (NALU_OVERHEAD - (h->param.b_annexb && h->out.i_nal)) + 1 + h->param.b_cabac + 5;
-    int slice_max_size = h->param.i_slice_max_size > 0 ? (h->param.i_slice_max_size-overhead_guess)*8 : 0;
+    int slice_max_size = HAS_SLICE_MAX_SIZE && h->param.i_slice_max_size > 0 ? (h->param.i_slice_max_size-overhead_guess)*8 : 0;
     int back_up_bitstream_cavlc = !h->param.b_cabac && h->sps->i_profile_idc < PROFILE_HIGH;
     int back_up_bitstream = slice_max_size || back_up_bitstream_cavlc;
     int starting_bits = bs_pos(&h->out.bs);
@@ -3145,7 +3150,7 @@ static intptr_t x264_slice_write( x264_t *h )
         {
             if( back_up_bitstream_cavlc )
                 x264_bitstream_backup( h, &bs_bak[BS_BAK_CAVLC_OVERFLOW], i_skip, 0 );
-            if( slice_max_size && !(i_mb_y & SLICE_MBAFF) )
+            if( HAS_SLICE_MAX_SIZE && slice_max_size && !(i_mb_y & SLICE_MBAFF) )
             {
                 x264_bitstream_backup( h, &bs_bak[BS_BAK_SLICE_MAX_SIZE], i_skip, 0 );
                 if( (thread_last_mb+1-mb_xy) == h->param.i_slice_min_mbs )
@@ -3225,7 +3230,7 @@ reencode:
         int total_bits = bs_pos(&h->out.bs) + x264_cabac_pos(&h->cabac);
         int mb_size = total_bits - mb_spos;
 
-        if( slice_max_size && (!SLICE_MBAFF || (i_mb_y&1)) )
+        if( HAS_SLICE_MAX_SIZE && slice_max_size && (!SLICE_MBAFF || (i_mb_y&1)) )
         {
             /* Count the skip run, just in case. */
             if( !h->param.b_cabac )

@@ -34,6 +34,7 @@ Configuration options:
   --chroma-format=FORMAT   output chroma format (420, 422, 444, all) [all]
   --enable-444             enable 4:4:4 and RGB encoding
   --enable-mbinfo          enable mb_info input
+  --enable-slice-max-size  enable slice-max-size
 
 Advanced options:
   --disable-asm            disable platform-specific assembly optimizations
@@ -281,6 +282,7 @@ bit_depth="8"
 chroma_format="all"
 has_444="no"
 has_mbinfo="no"
+has_slice_max_size="no"
 compiler="GNU"
 opencl="yes"
 
@@ -341,6 +343,9 @@ for opt do
             ;;
         --enable-mbinfo)
             has_mbinfo="yes"
+            ;;
+        --enable-slice-max-size)
+            has_slice_max_size="yes"
             ;;
         --disable-avs)
             avs="no"
@@ -1107,6 +1112,7 @@ if [ "$chroma_format" = "444" -a $has_444 = no ]; then
 fi
 [ $has_444 = yes ] && define HAS_444 1 || define HAS_444 0
 [ $has_mbinfo = yes ] && define HAS_MBINFO 1 || define HAS_MBINFO 0
+[ $has_slice_max_size = yes ] && define HAS_SLICE_MAX_SIZE 1 || define HAS_SLICE_MAX_SIZE 0
 
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
@@ -1367,6 +1373,7 @@ bit depth:     $bit_depth
 chroma format: $chroma_format
 444:           $has_444
 mb_info:       $has_mbinfo
+slice-max-size: $has_slice_max_size
 EOF
 
 echo >> config.log
