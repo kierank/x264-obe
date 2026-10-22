@@ -67,6 +67,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
 
+/* mvcost bound counters (test only), shared by both bit depths */
+extern __thread int x264_mvx_lowres;
+void x264_mvx_print( void );
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)

@@ -359,7 +359,9 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
                 }
             }
 
+            x264_mvx_lowres = 1;
             x264_me_search( h, &m[l], mvc, i_mvc );
+            x264_mvx_lowres = 0;
             m[l].cost -= c->p_cost_mv[0]; // remove mvcost from skip mbs
             if( M32( m[l].mv ) )
                 m[l].cost += 5 * c->lambda;
