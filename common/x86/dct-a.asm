@@ -245,6 +245,44 @@ cextern qscan4_frame_b
 cextern qscan4_field
 %endif
 
+; inter_resid zero screen. m0-m3: rows 0|4, 1|5, 2|6, 3|7 of an 8x8 residual (words). %2 = 0x33 if every
+; 4x4 has 16*sum(r^2) - sum(r)^2 <= [rsp+%1] (unsigned) and |sum(r)| < [rsp+%1+32]; m4-m6 clobbered
+%macro IR_ZSCREEN4 2 ; thresholds (broadcast), gpr
+    pmaddwd   m4, m0, m0
+    pmaddwd   m5, m1, m1
+    paddd     m4, m5
+    pmaddwd   m5, m2, m2
+    paddd     m4, m5
+    pmaddwd   m5, m3, m3
+    paddd     m4, m5
+    paddw     m5, m0, m1
+    paddw     m6, m2, m3
+    paddw     m5, m6
+    pmaddwd   m5, [pw_1]
+    phaddd    m4, m5            ; E of 4x4 0, 1, S of 0, 1 | of 2, 3
+    pshufd    m5, m4, q1032
+    pabsd     m5, m5
+    pmaddwd   m6, m5, m5        ; S^2, |S| < 2^15
+    pslld     m4, 4
+    psubd     m4, m6
+    pminud    m6, m4, [rsp+%1]
+    pcmpeqd   m4, m6
+    mova      m6, [rsp+%1+32]
+    pcmpgtd   m6, m5
+    pand      m4, m6
+    movmskps  %2, m4
+    and       %2, 0x33
+%endmacro
+
+; zthr (r9m) to the broadcast thresholds at rsp+%1, before r9 and rstk are used
+%macro IR_ZSCREEN_INIT 1
+    mov       r9, r9m
+    vpbroadcastd m0, [r9]
+    vpbroadcastd m1, [r9+4]
+    mova [rsp+%1], m0
+    mova [rsp+%1+32], m1
+%endmacro
+
 %macro WALSH4_1D 6
     SUMSUB_BADC %1, %5, %4, %3, %2, %6
     SUMSUB_BADC %1, %5, %3, %4, %2, %6
@@ -952,7 +990,8 @@ cglobal add16x16_idct, 2,2,10
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
 ; int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
-;                      udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+;                      udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb,
+;                      const uint32_t zthr[4] )
 ;-----------------------------------------------------------------------------
 ; sub8x8_dct, quant_4x4x4_scan and dequant per 8x8, then the decimation, nnz and the idct of the coded 8x8s
 ; (dc-only 8x8s by add8x8_idct_dc). Returns the coded 8x8s | the summed score << 4 (0 without decimation).
@@ -964,7 +1003,8 @@ cglobal add16x16_idct, 2,2,10
 %define IRH_MODE  1392
 %define IRH_OFF   1396      ; 4 without decimation
 %define IRH_NNZ   1400
-%define IRH_SIZE  1408
+%define IRH_ZT    1408      ; zero screen thresholds, broadcast
+%define IRH_SIZE  1472
 
 ; dst, offset: quant the coefs at r0+offset
 %macro IRH_QUANT 2
@@ -1004,6 +1044,7 @@ cglobal add16x16_idct, 2,2,10
 
 %macro INTER_RESID_4x4_HBD 2 ; name, field
 cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
+    IR_ZSCREEN_INIT IRH_ZT
     mov [rsp+IRH_NNZ], r3
     imul      r9d, r7d, 0x2b
     shr       r9d, 8            ; i_qp / 6
@@ -1048,11 +1089,9 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IRH_SIZE
     xor       r14d, r14d        ; coded 8x8s | ac << 8
 .loop:
     SUB8x8_DCT_HBD_LOAD
-    por       m5, m0, m1
-    por       m6, m2, m3
-    por       m5, m6
-    ptest     m5, m5            ; no residual
-    jz .zero
+    IR_ZSCREEN4 IRH_ZT, r10d
+    cmp       r10d, 0x33
+    je .zero
     SUB8x8_DCT_HBD_TX
     IRH_QUANT m0,   0
     IRH_QUANT m1,  32
@@ -1806,7 +1845,8 @@ cglobal add16x16_idct, 2,3,15
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
 ; int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
-;                      udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+;                      udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb,
+;                      const uint32_t zthr[4] )
 ;-----------------------------------------------------------------------------
 ; sub8x8_dct, quant_4x4x4_scan and dequant per 8x8, then the decimation, nnz and the idct of the coded 8x8s
 ; (dc-only 8x8s by add8x8_idct_dc). Returns the coded 8x8s | the summed score << 4 (0 without decimation).
@@ -1815,7 +1855,8 @@ cglobal add16x16_idct, 2,3,15
 %define IR_RND   640        ; dequant rounding and shift if not exact
 %define IR_SHF   672
 %define IR_MODE  688
-%define IR_SIZE  704
+%define IR_ZT    704        ; zero screen thresholds, broadcast
+%define IR_SIZE  768
 
 ; dst1, dst2, row a, row b: fenc - fdec of rows a, b | a+4, b+4; m4, m5 tmp
 %macro IR_LOAD_DIFF8x2 4
@@ -1876,6 +1917,7 @@ cglobal add16x16_idct, 2,3,15
 
 %macro INTER_RESID_4x4 2 ; name, field
 cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
+    IR_ZSCREEN_INIT IR_ZT
     mova      m15, [r4]
     mova      m14, [r5]
     imul      r4d, r7d, 0x2b
@@ -1932,11 +1974,9 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
 .loop:
     IR_LOAD_DIFF8x2 0, 1, 0, 1
     IR_LOAD_DIFF8x2 2, 3, 2, 3
-    por       m4, m0, m1
-    por       m5, m2, m3
-    por       m4, m5
-    ptest     m4, m4            ; no residual
-    jz .zero
+    IR_ZSCREEN4 IR_ZT, r4d
+    cmp       r4d, 0x33
+    je .zero
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4

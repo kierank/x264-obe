@@ -131,11 +131,21 @@ cextern pw_m2
 cextern pw_32
 cextern hsub_mul
 cextern pb_1
+cextern pw_1
 %if HIGH_BIT_DEPTH == 0
 cextern pb_scan8frame_avx2
 %else
 cextern qscan4_bytes
 %endif
+
+; zthr (r9m) to the broadcast thresholds at rsp+%1, before r9 and rstk are used
+%macro IR8_ZSCREEN_INIT 1
+    mov       r9, r9m
+    vpbroadcastd m0, [r9]
+    vpbroadcastd m1, [r9+4]
+    mova [rsp+%1], m0
+    mova [rsp+%1+32], m1
+%endmacro
 
 ; in: size, m0..m7, temp, temp
 ; out: m0..m7
@@ -537,7 +547,8 @@ cglobal add16x16_idct8, 2,3,18
 
 ;-----------------------------------------------------------------------------
 ; int inter_resid_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
-;                      udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+;                      udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb,
+;                      const uint32_t zthr[4] )
 ;-----------------------------------------------------------------------------
 ; sub8x8_dct8, then quant_8x8_scan per 8x8, the decimation, nnz, and dequant + add8x8_idct8 of the coded
 ; 8x8s (dc-only ones by their dc). Returns the coded 8x8s | the summed score << 4 (0 without decimation).
@@ -552,10 +563,12 @@ cglobal add16x16_idct8, 2,3,18
 %define IR8H_SR    1344
 %define IR8H_OFF   1348     ; 4 without decimation
 %define IR8H_NNZ   1352
-%define IR8H_SIZE  1376
+%define IR8H_ZT    1376     ; zero screen thresholds, broadcast
+%define IR8H_SIZE  1440
 
 %macro INTER_RESID_8x8_HBD 2 ; name, field
 cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
+    IR8_ZSCREEN_INIT IR8H_ZT
     mov [rsp+IR8H_NNZ], r3
     imul      r9d, r7d, 0x2b
     shr       r9d, 8            ; i_qp / 6
@@ -619,15 +632,45 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8H_SIZE
     psubw     xm %+ ir8h_i, [r2+ir8h_i*FDEC_STRIDEB]
 %assign ir8h_i ir8h_i+1
 %endrep
-    por       xm8, xm0, xm1
-    por       xm9, xm2, xm3
-    por       xm8, xm9
-    por       xm9, xm4, xm5
-    por       xm8, xm9
-    por       xm9, xm6, xm7
-    por       xm8, xm9
-    ptest     xm8, xm8          ; no residual
-    jz .zero
+    ; zero screen: 64*sum(r^2) - sum(r)^2 <= D_max (unsigned), |sum(r)| < t0
+    pmaddwd   xm8, xm0, xm0
+    pmaddwd   xm9, xm1, xm1
+    paddd     xm8, xm9
+    pmaddwd   xm9, xm2, xm2
+    paddd     xm8, xm9
+    pmaddwd   xm9, xm3, xm3
+    paddd     xm8, xm9
+    pmaddwd   xm9, xm4, xm4
+    paddd     xm8, xm9
+    pmaddwd   xm9, xm5, xm5
+    paddd     xm8, xm9
+    pmaddwd   xm9, xm6, xm6
+    paddd     xm8, xm9
+    pmaddwd   xm9, xm7, xm7
+    paddd     xm8, xm9
+    paddw     xm9, xm0, xm1
+    paddw     xm10, xm2, xm3
+    paddw     xm9, xm10
+    paddw     xm10, xm4, xm5
+    paddw     xm9, xm10
+    paddw     xm10, xm6, xm7
+    paddw     xm9, xm10
+    pmaddwd   xm9, [pw_1]
+    phaddd    xm8, xm9
+    phaddd    xm8, xm8          ; E, S, E, S
+    pshufd    xm9, xm8, q2301
+    pabsd     xm9, xm9
+    pmulld    xm10, xm9, xm9    ; S^2 < 2^32
+    pslld     xm8, 6            ; 64*E < 2^32
+    psubd     xm8, xm10
+    pminud    xm10, xm8, [rsp+IR8H_ZT]
+    pcmpeqd   xm8, xm10
+    mova      xm10, [rsp+IR8H_ZT+32]
+    pcmpgtd   xm10, xm9
+    pand      xm8, xm10
+    movd      r6d, xm8
+    test      r6d, r6d
+    jnz .zero
     DCT8_1D w, 0,1,2,3,4,5,6,7, 8,9
     TRANSPOSE8x8W 0,1,2,3,4,5,6,7, 8
 %assign ir8h_i 0
@@ -1361,7 +1404,8 @@ cglobal add16x16_idct8, 2,2,12
 
 ;-----------------------------------------------------------------------------
 ; int inter_resid_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
-;                      udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+;                      udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb,
+;                      const uint32_t zthr[4] )
 ;-----------------------------------------------------------------------------
 ; sub16x8 dct8 per 8x8 row, then quant_8x8_scan per 8x8, the decimation, nnz, and dequant + add8x8_idct8
 ; of the coded 8x8s (dc-only ones by their dc). Returns the coded 8x8s | the summed score << 4 (0 without
@@ -1377,8 +1421,9 @@ cglobal add16x16_idct8, 2,2,12
 %define IR8_SL    968
 %define IR8_F     972
 %define IR8_SR    976
-%define IR8_ZM    980       ; 8x8s of the current 8x8 row without residual
-%define IR8_SIZE  992
+%define IR8_ZM    980       ; 8x8s of the current 8x8 row proven zero
+%define IR8_ZT    992       ; zero screen thresholds, broadcast
+%define IR8_SIZE  1056
 
 ; rows a, b (b = a+1) to dst r7 (+4*FDEC_STRIDE); m9: 0
 %macro IR8_ADD2 3
@@ -1411,6 +1456,7 @@ cglobal add16x16_idct8, 2,2,12
 
 %macro INTER_RESID_8x8 2 ; name, field
 cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
+    IR8_ZSCREEN_INIT IR8_ZT
     imul      r9d, r7d, 0x2b
     shr       r9d, 8            ; i_qp / 6
     lea       r11d, [r9*3]
@@ -1484,21 +1530,48 @@ cglobal inter_resid_8x8_%1, 9,15,16,-IR8_SIZE
     LOAD_DIFF16x2_AVX2 2, 3, 4, 5, 2, 3
     LOAD_DIFF16x2_AVX2 4, 5, 6, 7, 4, 5
     LOAD_DIFF16x2_AVX2 6, 7, 8, 9, 6, 7
-    por       m8, m0, m1
-    por       m9, m2, m3
-    por       m8, m9
-    por       m9, m4, m5
-    por       m8, m9
-    por       m9, m6, m7
-    por       m8, m9
-    vextracti128 xm9, m8, 1
-    xor       r6d, r6d
-    xor       r7d, r7d
-    ptest     xm8, xm8
-    setz      r6b
-    ptest     xm9, xm9
-    setz      r7b
-    lea       r6d, [r6+r7*2]    ; no residual: left, right
+    ; zero screen of the left, right 8x8: 64*sum(r^2) - sum(r)^2 <= D_max (unsigned), |sum(r)| < t0
+    pmaddwd   m8, m0, m0
+    pmaddwd   m9, m1, m1
+    paddd     m8, m9
+    pmaddwd   m9, m2, m2
+    paddd     m8, m9
+    pmaddwd   m9, m3, m3
+    paddd     m8, m9
+    pmaddwd   m9, m4, m4
+    paddd     m8, m9
+    pmaddwd   m9, m5, m5
+    paddd     m8, m9
+    pmaddwd   m9, m6, m6
+    paddd     m8, m9
+    pmaddwd   m9, m7, m7
+    paddd     m8, m9
+    paddw     m9, m0, m1
+    paddw     m10, m2, m3
+    paddw     m9, m10
+    paddw     m10, m4, m5
+    paddw     m9, m10
+    paddw     m10, m6, m7
+    paddw     m9, m10
+    pmaddwd   m9, [pw_1]
+    phaddd    m8, m9
+    phaddd    m8, m8            ; E, S, E, S | of the right 8x8
+    pshufd    m9, m8, q2301
+    pabsd     m9, m9
+    pmaddwd   m10, m9, m9       ; S^2, |S| < 2^15
+    pslld     m8, 6
+    psubd     m8, m10
+    pminud    m10, m8, [rsp+IR8_ZT]
+    pcmpeqd   m8, m10
+    mova      m10, [rsp+IR8_ZT+32]
+    pcmpgtd   m10, m9
+    pand      m8, m10
+    movmskps  r6d, m8
+    and       r6d, 0x11
+    mov       r7d, r6d
+    shr       r7d, 3
+    or        r6d, r7d
+    and       r6d, 3            ; proven zero: left, right
     mov [rsp+IR8_ZM], r6d
     cmp       r6d, 3
     je .no_dct

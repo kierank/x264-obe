@@ -925,15 +925,44 @@ static int inter_resid_decimate( int nz[4], uint8_t *nnz, int i_decimate_mb, int
     return cbp | X264_MAX( i_decimate_mb, 0 ) << 4;
 }
 
+/* bit i8x8 set if 8x8 i8x8 of r = p_src - p_dst passes the inter_resid zero screen: every 4x4 (b_8x8: the 8x8)
+ * has N*sum(r^2) - sum(r)^2 <= zthr[0] and |sum(r)| < zthr[1], N = 16 (64) */
+int x264_inter_resid_zscreen( pixel *p_src, pixel *p_dst, int b_8x8, const uint32_t zthr[4] )
+{
+    int mask = 0;
+    int w = b_8x8 ? 8 : 4;
+    for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+    {
+        int ok = 1;
+        for( int i = 0; i < (b_8x8 ? 1 : 4); i++ )
+        {
+            int x0 = (i8x8&1)*8 + (i&1)*4, y0 = (i8x8>>1)*8 + (i>>1)*4;
+            int64_t e = 0, s = 0;
+            for( int y = y0; y < y0+w; y++ )
+                for( int x = x0; x < x0+w; x++ )
+                {
+                    int r = p_src[x+y*FENC_STRIDE] - p_dst[x+y*FDEC_STRIDE];
+                    e += r*r;
+                    s += r;
+                }
+            ok &= (uint64_t)(w*w*e - s*s) <= zthr[0] && llabs( s ) < (int32_t)zthr[1];
+        }
+        mask |= ok << i8x8;
+    }
+    return mask;
+}
+
 static ALWAYS_INLINE int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz,
                                           udctcoef mf[16], udctcoef bias[16], int dequant_mf[6][16], int i_qp,
-                                          int i_decimate_mb, int b_field )
+                                          int i_decimate_mb, const uint32_t zthr[4], int b_field )
 {
     ALIGNED_ARRAY_64( dctcoef, dct,[16],[16] );
     int nz[4];
+    int zmask = zthr ? x264_inter_resid_zscreen( p_src, p_dst, 0, zthr ) : 0;
     sub16x16_dct( dct, p_src, p_dst );
     for( int i = 0; i < 4; i++ )
-        nz[i] = (b_field ? x264_quant_4x4x4_scan_field : x264_quant_4x4x4_scan_frame)( &dct[i*4], &level[i*4], mf, bias,
+        nz[i] = zmask >> i & 1 ? 0
+              : (b_field ? x264_quant_4x4x4_scan_field : x264_quant_4x4x4_scan_frame)( &dct[i*4], &level[i*4], mf, bias,
                                                                                        dequant_mf, i_qp );
     int ret = inter_resid_decimate( nz, nnz, i_decimate_mb, 0 );
     for( int i = 0; i < 4; i++ )
@@ -944,13 +973,15 @@ static ALWAYS_INLINE int inter_resid_4x4( dctcoef level[16][16], pixel *p_src, p
 
 static ALWAYS_INLINE int inter_resid_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz,
                                           udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp,
-                                          int i_decimate_mb, int b_field )
+                                          int i_decimate_mb, const uint32_t zthr[4], int b_field )
 {
     ALIGNED_ARRAY_64( dctcoef, dct,[4],[64] );
     int nz[4];
+    int zmask = zthr ? x264_inter_resid_zscreen( p_src, p_dst, 1, zthr ) : 0;
     sub16x16_dct8( dct, p_src, p_dst );
     for( int i = 0; i < 4; i++ )
-        nz[i] = (b_field ? x264_quant_8x8_scan_field : x264_quant_8x8_scan_frame)( dct[i], level[i], mf, bias,
+        nz[i] = zmask >> i & 1 ? 0
+              : (b_field ? x264_quant_8x8_scan_field : x264_quant_8x8_scan_frame)( dct[i], level[i], mf, bias,
                                                                                    dequant_mf, i_qp );
     int ret = inter_resid_decimate( nz, nnz, i_decimate_mb, 1 );
     for( int i = 0; i < 4; i++ )
@@ -960,24 +991,24 @@ static ALWAYS_INLINE int inter_resid_8x8( dctcoef level[4][64], pixel *p_src, pi
 }
 
 int x264_inter_resid_4x4_frame( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
-                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb, const uint32_t zthr[4] )
 {
-    return inter_resid_4x4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 0 );
+    return inter_resid_4x4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr, 0 );
 }
 int x264_inter_resid_4x4_field( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
-                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+                                udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb, const uint32_t zthr[4] )
 {
-    return inter_resid_4x4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 1 );
+    return inter_resid_4x4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr, 1 );
 }
 int x264_inter_resid_8x8_frame( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
-                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb, const uint32_t zthr[4] )
 {
-    return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 0 );
+    return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr, 0 );
 }
 int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
-                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+                                udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb, const uint32_t zthr[4] )
 {
-    return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 1 );
+    return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr, 1 );
 }
 
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )

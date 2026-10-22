@@ -250,6 +250,60 @@ int x264_cqm_init( x264_t *h )
             }
         }
 
+    /* inter_resid zero screen. A coefficient quantises to 0 iff |c| < t = ceil(2^16 / mf) - bias. With
+     * S = sum(r), E = sum(r^2) over the N = 16 or 64 residuals and D = N*E - S^2: the DC is S, exactly; an AC
+     * basis B sums to 0, so |<B,r>| <= |B| * sqrt(D/N). 4x4: c = <B,r>, |B|^2 = n = 16, 40, 100, every AC is 0
+     * if n*D < 16*t^2. 8x8: the dct8 1D rows have norm^2 (in 32nds) n32 and L1 norm (in eighths) l1; its >>1
+     * and >>2 put each 1D output k within [lo_k, hi_k] eighths of the linear map (exact: the error is periodic
+     * mod 8 in each input). Coefficient k of pass 1, l of pass 2 (dct[l*8+k]) is <B,r> + err, |err| <= eps =
+     * 8*max|lo_k|,|hi_k| for l = 0, else l1_l*(hi_k - lo_k)/2 + max|lo_l|,|hi_l| (b_l sums to 0); every AC
+     * is 0 if n32_k*n32_l*D < 4*(128*t - 128*eps)^2. D = 0 is a constant residual, every AC exactly 0. */
+    for( int c = 0; c < 3; c++ )
+    {
+        static const int n32[8] = { 256, 289, 160, 289, 256, 289, 160, 289 };
+        static const int l1[8]  = { 64, 62, 48, 62, 64, 62, 48, 62 };
+        static const int lo[8]  = { 0, -11, -4, -6, 0, -1, -4, -7 };
+        static const int hi[8]  = { 0, 0, 0, 5, 0, 10, 0, 4 };
+        int i_list = c == 0 ? CQM_4PY : c == 1 ? CQM_8PY : CQM_8PC;
+        int b_8x8 = c > 0;
+        for( int q = 0; q <= QP_MAX_SPEC; q++ )
+        {
+            uint32_t *thr = h->zscreen_resid_thr[c][q];
+            thr[0] = thr[1] = thr[2] = thr[3] = 0;
+            if( b_8x8 && i_list >= num_8x8_lists )
+                continue;
+            udctcoef *mf = b_8x8 ? h->quant8_mf[i_list][q] : h->quant4_mf[i_list][q];
+            udctcoef *bias = b_8x8 ? h->quant8_bias[i_list][q] : h->quant4_bias[i_list][q];
+            int64_t dmax = UINT32_MAX, tdc = INT32_MAX;
+            for( int i = 0; i < (b_8x8 ? 64 : 16); i++ )
+            {
+                int64_t m = mf[i];
+                if( !m )
+                    continue;
+                int64_t t = ((1 << 16) + m - 1) / m - bias[i];
+                if( !i )
+                {
+                    tdc = X264_MIN( t, INT32_MAX );
+                    continue;
+                }
+                int64_t d;
+                if( !b_8x8 )
+                    d = (16*t*t - 1) / ((i&1 ? 10 : 4) * (i&4 ? 10 : 4));
+                else
+                {
+                    int k = i&7, l = i>>3;
+                    int64_t eps = l ? l1[l] * (hi[k] - lo[k]) + 16 * X264_MAX( -lo[l], hi[l] )
+                                    : 128 * X264_MAX( -lo[k], hi[k] );
+                    int64_t u = 128*t - eps;
+                    d = u > 0 ? (4*u*u - 1) / (n32[k] * n32[l]) : 0;
+                }
+                dmax = X264_MIN( dmax, d );
+            }
+            thr[0] = dmax;
+            thr[1] = tdc;
+        }
+    }
+
     if( !h->mb.b_lossless )
     {
         while( h->chroma_qp_table[SPEC_QP(h->param.rc.i_qp_min)] <= max_chroma_qp_err )

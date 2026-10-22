@@ -4481,7 +4481,8 @@ static void ir_add_dconly( pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
 }
 
 static int inter_resid_4x4_split( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
-                                  udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+                                  udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb,
+                                  const uint32_t *zthr )
 {
     ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
     int b_decimate = i_decimate_mb >= 0;
@@ -4528,7 +4529,8 @@ static int inter_resid_4x4_split( dctcoef level[16][16], pixel *p_src, pixel *p_
 }
 
 static int inter_resid_8x8_split( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
-                                  udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+                                  udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb,
+                                  const uint32_t *zthr )
 {
     ALIGNED_ARRAY_64( dctcoef, dct8x8,[4],[64] );
     int b_decimate = i_decimate_mb >= 0;
@@ -4600,21 +4602,420 @@ static void ir_gen( pixel *src, pixel *pred, int j, int (*rnd)( void ) )
 
 /* bench: the prediction is restored before each call */
 static pixel *ir_bench_pred;
-static int (*ir_bench4)( dctcoef[16][16], pixel*, pixel*, uint8_t*, udctcoef*, udctcoef*, int[6][16], int, int );
-static int (*ir_bench8)( dctcoef[4][64], pixel*, pixel*, uint8_t*, udctcoef*, udctcoef*, int[6][64], int, int );
+static int (*ir_bench4)( dctcoef[16][16], pixel*, pixel*, uint8_t*, udctcoef*, udctcoef*, int[6][16], int, int, const uint32_t* );
+static int (*ir_bench8)( dctcoef[4][64], pixel*, pixel*, uint8_t*, udctcoef*, udctcoef*, int[6][64], int, int, const uint32_t* );
 static int ir_bench_4x4( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
-                         udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb )
+                         udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb, const uint32_t zthr[4] )
 {
     for( int y = 0; y < 16; y++ )
         memcpy( p_dst+y*FDEC_STRIDE, ir_bench_pred+y*FDEC_STRIDE, 16*sizeof(pixel) );
-    return ir_bench4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb );
+    return ir_bench4( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr );
 }
 static int ir_bench_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
-                         udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb )
+                         udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb, const uint32_t zthr[4] )
 {
     for( int y = 0; y < 16; y++ )
         memcpy( p_dst+y*FDEC_STRIDE, ir_bench_pred+y*FDEC_STRIDE, 16*sizeof(pixel) );
-    return ir_bench8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb );
+    return ir_bench8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, zthr );
+}
+
+/* inter_resid zero screen. dct8 1D rows in eighths, and its rounding bound in 128ths by pass-1 index k and
+ * pass-2 index l (coefficient l*8+k), as derived in x264_cqm_init: here as a table, checked on residuals */
+static const int8_t zsr_b8[8][8] =
+{
+    {  8,  8,  8,  8,  8,  8,  8,  8 },
+    { 12, 10,  6,  3, -3, -6,-10,-12 },
+    {  8,  4, -4, -8, -8, -4,  4,  8 },
+    { 10, -3,-12, -6,  6, 12,  3,-10 },
+    {  8, -8, -8,  8,  8, -8, -8,  8 },
+    {  6,-12,  3, 10,-10, -3, 12, -6 },
+    {  4, -8,  8, -4, -4,  8, -8,  4 },
+    {  3, -6, 10,-12, 12,-10,  6, -3 },
+};
+static const int16_t zsr_eps8[8][8] =
+{
+    {    0,  176,   64,   96,    0,  160,   64,  112 },
+    { 1408,  858,  592,  778,  704,  842,  592,  794 },
+    {  512,  424,  256,  344,  256,  408,  256,  360 },
+    {  768,  858,  592,  778,  704,  842,  592,  794 },
+    {    0,  176,   64,   96,    0,  160,   64,  112 },
+    { 1280,  858,  592,  778,  704,  842,  592,  794 },
+    {  512,  424,  256,  344,  256,  408,  256,  360 },
+    {  896,  858,  592,  778,  704,  842,  592,  794 },
+};
+
+/* q as a sum of n squares of at most PIXEL_MAX: greedy, stepping the first one down on a miss */
+static int zsr_sumsq( int64_t q, int n, int *x )
+{
+    int64_t a0 = X264_MIN( (int64_t)sqrt( q ), PIXEL_MAX );
+    while( a0*a0 > q )
+        a0--;
+    for( int64_t a = a0; a >= 0 && a > a0 - 64; a-- )
+    {
+        int64_t rem = q - a*a;
+        x[0] = a;
+        for( int k = 1; k < n; k++ )
+        {
+            int64_t b = X264_MIN( (int64_t)sqrt( rem ), PIXEL_MAX );
+            while( b*b > rem )
+                b--;
+            while( b < PIXEL_MAX && (b+1)*(b+1) <= rem )
+                b++;
+            x[k] = b;
+            rem -= b*b;
+        }
+        if( !rem )
+            return 1;
+    }
+    return 0;
+}
+
+/* a random 16x16 src / dst with r = src - dst = 0 except the w x w block at x0, y0: res */
+static void zsr_put( pixel *src, pixel *dst, int x0, int y0, int w, const int *res )
+{
+    for( int y = 0; y < 16; y++ )
+        for( int x = 0; x < 16; x++ )
+            src[x+y*FENC_STRIDE] = dst[x+y*FDEC_STRIDE] = rand() & PIXEL_MAX;
+    for( int y = 0; y < w; y++ )
+        for( int x = 0; x < w; x++ )
+        {
+            int r = res[y*w+x];
+            int a = r > 0 ? r + rand() % (PIXEL_MAX - r + 1) : rand() % (PIXEL_MAX + r + 1);
+            src[x0+x+(y0+y)*FENC_STRIDE] = a;
+            dst[x0+x+(y0+y)*FDEC_STRIDE] = a - r;
+        }
+}
+
+/* the largest N*E - S^2 and |S| over the 4x4s (b_8x8: the 8x8) of 8x8 i8x8 */
+static void zsr_stats( pixel *src, pixel *dst, int b_8x8, int i8x8, int64_t *dmax, int64_t *smax )
+{
+    int w = b_8x8 ? 8 : 4;
+    *dmax = *smax = 0;
+    for( int i = 0; i < (b_8x8 ? 1 : 4); i++ )
+    {
+        int x0 = (i8x8&1)*8 + (i&1)*4, y0 = (i8x8>>1)*8 + (i>>1)*4;
+        int64_t e = 0, s = 0;
+        for( int y = y0; y < y0+w; y++ )
+            for( int x = x0; x < x0+w; x++ )
+            {
+                int r = src[x+y*FENC_STRIDE] - dst[x+y*FDEC_STRIDE];
+                e += r*r;
+                s += r;
+            }
+        *dmax = X264_MAX( *dmax, w*w*e - s*s );
+        *smax = X264_MAX( *smax, llabs( s ) );
+    }
+}
+
+typedef int (*zsr_fn)( void *, pixel *, pixel *, uint8_t *, udctcoef *, udctcoef *, void *, int, int, const uint32_t * );
+static pixel *zsr_dst[3]; /* 20 rows, the block at row 2 */
+static dctcoef *zsr_lvl[3];
+static uint8_t *zsr_nnz[3];
+/* the C reference with zthr, the asm with zthr, and the C reference without the screen on src / dst. Returns 0 if
+ * the asm differs from the C reference, else 1 | 2 if the screen changed the result */
+static int zsr_run( zsr_fn ref, zsr_fn fa, int b_8x8, pixel *src, pixel *dst, udctcoef *mf, udctcoef *bias,
+                    void *dmf, int qp, int dec, const uint32_t *zthr )
+{
+    int ok = 1;
+    int res[3];
+    for( int k = 0; k < 3; k++ )
+    {
+        for( int i = 0; i < 20*FDEC_STRIDE; i++ )
+            zsr_dst[k][i] = 0x55;
+        for( int y = 0; y < 16; y++ )
+            memcpy( zsr_dst[k]+(y+2)*FDEC_STRIDE, dst+y*FDEC_STRIDE, 16*sizeof(pixel) );
+        for( int i = 0; i < 256; i++ )
+            zsr_lvl[k][i] = 0x5a5a + i;
+        memset( zsr_nnz[k], 0x5a, 48 );
+    }
+    res[0] = ref( zsr_lvl[0], src, zsr_dst[0]+2*FDEC_STRIDE, zsr_nnz[0]+12, mf, bias, dmf, qp, dec, zthr );
+    res[1] = call_a1( fa, zsr_lvl[1], src, zsr_dst[1]+2*FDEC_STRIDE, zsr_nnz[1]+12, mf, bias, dmf, qp, dec, zthr );
+    res[2] = ref( zsr_lvl[2], src, zsr_dst[2]+2*FDEC_STRIDE, zsr_nnz[2]+12, mf, bias, dmf, qp, dec, NULL );
+#define ZSR_DIFF( a, b ) ( res[a] != res[b] || memcmp( zsr_lvl[a], zsr_lvl[b], 256*sizeof(dctcoef) ) || \
+                           memcmp( zsr_nnz[a], zsr_nnz[b], 48 ) || memcmp( zsr_dst[a], zsr_dst[b], 20*FDEC_STRIDE*sizeof(pixel) ) )
+    if( !ok || ZSR_DIFF( 0, 1 ) )
+        return 0;
+    return 1 | ZSR_DIFF( 0, 2 ) << 1;
+#undef ZSR_DIFF
+}
+
+/* per cqm: the threshold table, the dct8 rounding bound, the screen at its boundaries, and the asm kernels
+ * decisions at thresholds set to a block's exact N*E - S^2 and |S| */
+static int zsr_check( x264_t *h, int i_cqm, x264_quant_function_t *qf_c, x264_zigzag_function_t zz_a[2] )
+{
+    x264_dct_function_t dctf;
+    ALIGNED_ARRAY_64( pixel, src,[16*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( pixel, dst,[16*FDEC_STRIDE] );
+    ALIGNED_ARRAY_64( dctcoef, dct,[64] );
+    int ok = 1, proven = 0, unproven = 0, edge[2] = {0}, dcedge[2] = {0}, seen[2] = {0};
+    x264_dct_init( 0, &dctf );
+
+    /* the dct8 rounding: |128*c - 128*<B,r>| <= eps on noise, small, mod-8 and large residuals */
+    if( !i_cqm )
+        for( int n = 0; n < 4000 && ok; n++ )
+        {
+            int res[64];
+            for( int i = 0; i < 64; i++ )
+                res[i] = (n&3) == 0 ? rand() % (2*PIXEL_MAX+1) - PIXEL_MAX
+                       : (n&3) == 1 ? rand() % 15 - 7
+                       : (n&3) == 2 ? x264_clip3( rand() % 8 - 4 + 8*(rand() % 31 - 15), -PIXEL_MAX, PIXEL_MAX )
+                       : (rand()&1 ? 1 : -1) * (PIXEL_MAX - (rand()&3));
+            zsr_put( src, dst, 0, 0, 8, res );
+            dctf.sub8x8_dct8( dct, src, dst );
+            for( int k = 0; k < 8; k++ )
+                for( int l = 0; l < 8; l++ )
+                {
+                    int64_t lin = 0;
+                    for( int y = 0; y < 8; y++ )
+                        for( int x = 0; x < 8; x++ )
+                            lin += zsr_b8[k][y] * zsr_b8[l][x] * res[y*8+x];
+                    if( llabs( 128*(int64_t)dct[l*8+k] - 2*lin ) > zsr_eps8[k][l] )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "zscreen_resid: dct8 coef %d off its linear part by %"PRId64"/128 > %d [FAILED]\n",
+                                 l*8+k, (int64_t)llabs( 128*(int64_t)dct[l*8+k] - 2*lin ), zsr_eps8[k][l] );
+                    }
+                }
+        }
+
+    for( int c = 0; c < 2; c++ )
+        for( int qp = h->param.rc.i_qp_min; qp <= h->param.rc.i_qp_max; qp++ )
+        {
+            int b_8x8 = c, w = b_8x8 ? 8 : 4, nn = w*w;
+            int i_list = b_8x8 ? CQM_8PY : CQM_4PY;
+            udctcoef *mf = b_8x8 ? h->quant8_mf[i_list][qp] : h->quant4_mf[i_list][qp];
+            udctcoef *bias = b_8x8 ? h->quant8_bias[i_list][qp] : h->quant4_bias[i_list][qp];
+            uint32_t *thr = h->zscreen_resid_thr[c][qp];
+
+            /* the thresholds again: t by search on the quant, D_max as the largest D proven at every AC */
+            int64_t dref = UINT32_MAX, tref = INT32_MAX;
+            for( int i = 0; i < nn; i++ )
+            {
+                if( !mf[i] )
+                    continue;
+                int64_t lo = 0, hi = 1 << 17; /* lo quantises to 0, hi does not */
+                while( hi - lo > 1 )
+                {
+                    int64_t mid = (lo + hi) >> 1;
+                    if( ((mid + bias[i]) * (int64_t)mf[i]) >> 16 )
+                        hi = mid;
+                    else
+                        lo = mid;
+                }
+                if( !i )
+                {
+                    tref = X264_MIN( hi, INT32_MAX );
+                    continue;
+                }
+                int64_t d;
+                if( !b_8x8 )
+                {
+                    int64_t n = (i&1 ? 10 : 4) * (i&4 ? 10 : 4);
+                    d = (16*hi*hi + n - 1) / n - 1;
+                }
+                else
+                {
+                    /* n: 4096 * the basis norm^2; n * D / 4096 / 64 < (u / 128)^2 */
+                    int k = i&7, l = i>>3;
+                    int64_t n = 0, u = 128*hi - zsr_eps8[k][l];
+                    for( int x = 0; x < 8; x++ )
+                        for( int y = 0; y < 8; y++ )
+                            n += zsr_b8[k][x]*zsr_b8[k][x] * zsr_b8[l][y]*zsr_b8[l][y];
+                    d = u > 0 ? (16*u*u + n - 1) / n - 1 : 0;
+                }
+                dref = X264_MIN( dref, d );
+            }
+            if( thr[0] != dref || thr[1] != tref )
+            {
+                ok = 0;
+                fprintf( stderr, "zscreen_resid: cqm %d list %d qp %d thresholds %u %u != %"PRId64" %"PRId64" [FAILED]\n",
+                         i_cqm, i_list, qp, thr[0], thr[1], dref, tref );
+            }
+
+            /* blocks at every reachable N*E - S^2 in dref -128..+128 (4x4: -32..+32): one pixel s, pairs x_k / -x_k,
+             * N*E - S^2 = (N-1)*s^2 + 2N*sum(x_k^2), in a random permutation and sign. Before those, |S| at
+             * tref -2..+1: k pixels v+1, N-k pixels v, S = N*v + k, N*E - S^2 = k*(N-k). Proven iff
+             * N*E - S^2 <= dref and |S| < tref; proven blocks quantise to 0 */
+            int span = b_8x8 ? 128 : 32;
+            int64_t d0 = X264_MAX( dref - span, 0 );
+            for( int64_t dt = d0 - 4; dt <= dref + span; dt++ )
+            {
+                int x[31], res[64], pos[64], blk[64], s, sg = (rand()&1) ? 1 : -1;
+                int64_t sv, dv;
+                if( dt < d0 )
+                {
+                    sv = tref - 2 + (dt - d0 + 4);
+                    if( sv < 0 || sv >= (int64_t)nn * PIXEL_MAX )
+                        continue;
+                    int64_t v = sv / nn, k = sv - v*nn;
+                    dv = k * (nn - k);
+                    for( int i = 0; i < nn; i++ )
+                        res[i] = sg * (v + (i < k));
+                }
+                else
+                {
+                    for( s = 0; s < 16; s++ )
+                        if( dt >= (nn-1)*s*s && !((dt - (nn-1)*s*s) % (2*nn)) )
+                            break;
+                    if( s == 16 || !zsr_sumsq( (dt - (nn-1)*s*s) / (2*nn), nn/2 - 1, x ) )
+                        continue;
+                    sv = s;
+                    dv = dt;
+                    for( int i = 0; i < nn; i++ )
+                        res[i] = sg * (!i ? s : i <= nn/2-1 ? x[i-1] : i < nn-1 ? -x[i-nn/2] : 0);
+                }
+                for( int i = 0; i < nn; i++ )
+                {
+                    int j = rand() % (i+1);
+                    pos[i] = pos[j];
+                    pos[j] = i;
+                }
+                for( int i = 0; i < nn; i++ )
+                    blk[pos[i]] = res[i];
+                int b = rand()&15;
+                int bx = b_8x8 ? (b&1)*8 : (b&3)*4, by = b_8x8 ? (b>>1&1)*8 : (b>>2)*4;
+                zsr_put( src, dst, bx, by, w, blk );
+                int i8x8 = (bx>>3) + (by>>3)*2;
+                int expect = (uint64_t)dv <= thr[0] && sv < tref;
+                int got = x264_inter_resid_zscreen( src, dst, b_8x8, thr ) >> i8x8 & 1;
+                if( got != expect )
+                {
+                    ok = 0;
+                    fprintf( stderr, "zscreen_resid: cqm %d list %d qp %d D %"PRId64" (max %"PRId64") S %"PRId64" (t0 %"PRId64"): %d [FAILED]\n",
+                             i_cqm, i_list, qp, dv, dref, sg*sv, tref, got );
+                }
+                if( expect )
+                {
+                    int nz;
+                    if( b_8x8 )
+                    {
+                        dctf.sub8x8_dct8( dct, src + bx + by*FENC_STRIDE, dst + bx + by*FDEC_STRIDE );
+                        nz = qf_c->quant_8x8( dct, mf, bias );
+                    }
+                    else
+                    {
+                        dctf.sub4x4_dct( dct, src + bx + by*FENC_STRIDE, dst + bx + by*FDEC_STRIDE );
+                        nz = qf_c->quant_4x4( dct, mf, bias );
+                    }
+                    if( nz )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "zscreen_resid: cqm %d list %d qp %d D %"PRId64" S %"PRId64" proven but coded [FAILED]\n",
+                                 i_cqm, i_list, qp, dv, sg*sv );
+                    }
+                }
+                if( dt < d0 )
+                    dcedge[expect]++;
+                else
+                    edge[expect]++;
+
+                /* the asm kernels on this block with its own N*E - S^2 and |S| as thresholds (D - 1, |S|: not
+                 * proven), and the mf of the lowest qp; then with the real thresholds */
+                if( dt & 7 )
+                    continue;
+                for( int fld = 0; fld < 2; fld++ )
+                {
+                    zsr_fn fa = (zsr_fn)(b_8x8 ? (void*)zz_a[fld].inter_resid_8x8 : (void*)zz_a[fld].inter_resid_4x4);
+                    if( !fa )
+                        continue;
+                    zsr_fn ref = (zsr_fn)(b_8x8 ? (fld ? (void*)x264_inter_resid_8x8_field : (void*)x264_inter_resid_8x8_frame)
+                                                : (fld ? (void*)x264_inter_resid_4x4_field : (void*)x264_inter_resid_4x4_frame));
+                    int qp0 = h->param.rc.i_qp_min;
+                    void *dmf = b_8x8 ? (void*)h->dequant8_mf[i_list] : (void*)h->dequant4_mf[i_list];
+                    int64_t zd, zs;
+                    zsr_stats( src, dst, b_8x8, i8x8, &zd, &zs );
+                    for( int v = 0; v < 4; v++ )
+                    {
+                        int q = v == 3 ? qp : qp0;
+                        udctcoef *mfq = b_8x8 ? h->quant8_mf[i_list][q] : h->quant4_mf[i_list][q];
+                        udctcoef *biasq = b_8x8 ? h->quant8_bias[i_list][q] : h->quant4_bias[i_list][q];
+                        uint32_t fthr[4] = { zd - (v == 1), zs + (v != 2), 0, 0 };
+                        if( v == 3 )
+                            memcpy( fthr, thr, sizeof(fthr) );
+                        if( v == 1 && !zd )
+                            continue;
+                        int r = zsr_run( ref, fa, b_8x8, src, dst, mfq, biasq, dmf, q, (rand()%3) - 1 + (rand()&1)*5, fthr );
+                        if( !r || (v == 3 && (r & 2)) )
+                        {
+                            ok = 0;
+                            fprintf( stderr, "zscreen_resid: inter_resid_%s_%s cqm %d qp %d thresholds %u %u (block %"PRId64" %"PRId64"): %s [FAILED]\n",
+                                     b_8x8 ? "8x8" : "4x4", fld ? "field" : "frame", i_cqm, q, fthr[0], fthr[1], zd, zs,
+                                     r ? "the screen changed the result" : "asm != c" );
+                        }
+                        seen[b_8x8] += !v && (r & 2);
+                    }
+                }
+            }
+
+            /* noise, checkerboard and transform basis residuals (where the bound is tight) around the thresholds */
+            for( int n = 0; n < 32; n++ )
+            {
+                static const int8_t basis4[4][4] = { {1,1,1,1}, {2,1,-1,-2}, {1,-1,-1,1}, {1,-2,2,-1} };
+                double sigma = sqrt( X264_MIN( thr[0], 1u<<30 ) / (double)(nn*nn) ) * (0.25 + (rand()&255) / 64.);
+                double mean = X264_MIN( thr[1], 1<<20 ) / (double)nn * ((rand()&255) / 128. - 1.);
+                int bu = rand()&(w-1), bv = (rand()&(w-1)) | !bu;
+                int res[256];
+                for( int y = 0; y < 16; y++ )
+                    for( int x = 0; x < 16; x++ )
+                    {
+                        double wt = (n&3) == 0 ? (rand()&1023) / 512. - 1.
+                                  : (n&3) == 1 ? ((x^y)&1 ? 1. : -1.)
+                                  : b_8x8 ? zsr_b8[bu][y&7] * zsr_b8[bv][x&7] / 64.
+                                  : basis4[bu][x&3] * basis4[bv][y&3] / 2.;
+                        res[y*16+x] = x264_clip3( mean + sigma * wt, -PIXEL_MAX, PIXEL_MAX );
+                    }
+                zsr_put( src, dst, 0, 0, 16, res );
+                for( int i = 0; i < (b_8x8 ? 4 : 16); i++ )
+                {
+                    int x0 = b_8x8 ? (i&1)*8 : (i&3)*4, y0 = b_8x8 ? (i>>1)*8 : (i>>2)*4;
+                    int pass;
+                    if( b_8x8 )
+                        pass = x264_inter_resid_zscreen( src, dst, 1, thr ) >> i & 1;
+                    else
+                    {
+                        int64_t e = 0, s = 0;
+                        for( int y = y0; y < y0+4; y++ )
+                            for( int x = x0; x < x0+4; x++ )
+                            {
+                                int r = src[x+y*FENC_STRIDE] - dst[x+y*FDEC_STRIDE];
+                                e += r*r;
+                                s += r;
+                            }
+                        pass = (uint64_t)(16*e - s*s) <= thr[0] && llabs( s ) < (int32_t)thr[1];
+                    }
+                    if( !pass )
+                    {
+                        unproven++;
+                        continue;
+                    }
+                    proven++;
+                    int nz;
+                    if( b_8x8 )
+                    {
+                        dctf.sub8x8_dct8( dct, src + x0 + y0*FENC_STRIDE, dst + x0 + y0*FDEC_STRIDE );
+                        nz = qf_c->quant_8x8( dct, mf, bias );
+                    }
+                    else
+                    {
+                        dctf.sub4x4_dct( dct, src + x0 + y0*FENC_STRIDE, dst + x0 + y0*FDEC_STRIDE );
+                        nz = qf_c->quant_4x4( dct, mf, bias );
+                    }
+                    if( nz )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "zscreen_resid: cqm %d list %d qp %d block %d proven but coded [FAILED]\n", i_cqm, i_list, qp, i );
+                    }
+                }
+            }
+        }
+    if( !proven || !unproven || !edge[0] || !edge[1] || !dcedge[0] || !dcedge[1] ||
+        (zz_a[0].inter_resid_4x4 && !seen[0]) || (zz_a[0].inter_resid_8x8 && !seen[1]) )
+    {
+        ok = 0;
+        fprintf( stderr, "zscreen_resid: cqm %d proven %d unproven %d, at D_max %d %d, at t0 %d %d, asm decisions seen %d %d [FAILED]\n",
+                 i_cqm, proven, unproven, edge[1], edge[0], dcedge[1], dcedge[0], seen[0], seen[1] );
+    }
+    return ok;
 }
 
 static int check_quant( int cpu_ref, int cpu_new )
@@ -4977,22 +5378,45 @@ static int check_quant( int cpu_ref, int cpu_new )
                         for( int k = 0; k < 256; k++ ) \
                             irlvl[0][k] = irlvl[1][k] = irlvl[2][k] = 0x5a5a + k; \
                         memset( irnnz, 0x5a, sizeof(irnnz) ); \
+                        /* zero screen thresholds: the encoder's (the split must match), a random 8x8's N*E - S^2 and |S| \
+                         * (proven), one less (not proven), everything, nothing but a zero residual */ \
+                        int zv = rand() % 5; \
+                        uint32_t zthr[4] = {0}; \
+                        memcpy( zthr, h->zscreen_resid_thr[w == 8][qp], sizeof(zthr) ); \
+                        if( zv == 1 || zv == 2 ) \
+                        { \
+                            int64_t zd, zs; \
+                            zsr_stats( irsrc, irdst[0]+IRD, w == 8, rand()&3, &zd, &zs ); \
+                            zthr[0] = zd - (zv == 2 && zd && rand()&1); \
+                            zthr[1] = zs + (zv == 1 || (zthr[0] < zd)); \
+                        } \
+                        else if( zv == 3 ) \
+                        { \
+                            zthr[0] = UINT32_MAX; \
+                            zthr[1] = INT32_MAX; \
+                        } \
+                        else if( zv == 4 ) \
+                        { \
+                            zthr[0] = 0; \
+                            zthr[1] = 1; \
+                        } \
                         int res_c = (fld ? x264_inter_resid_##size##_field : x264_inter_resid_##size##_frame)( \
-                                        (void*)irlvl[0], irsrc, irdst[0]+IRD, irnnz[0]+12, mf, bias, h->dequant##w##_mf[cat], qp, dec ); \
+                                        (void*)irlvl[0], irsrc, irdst[0]+IRD, irnnz[0]+12, mf, bias, h->dequant##w##_mf[cat], qp, dec, zthr ); \
                         int res_s = inter_resid_##size##_split( (void*)irlvl[1], irsrc, irdst[1]+IRD, irnnz[1]+12, mf, bias, \
-                                                                h->dequant##w##_mf[cat], qp, dec ); \
+                                                                h->dequant##w##_mf[cat], qp, dec, NULL ); \
                         int res_a = call_a1( zz_a[fld].inter_resid_##size, (void*)irlvl[2], irsrc, irdst[2]+IRD, irnnz[2]+12, \
-                                             mf, bias, h->dequant##w##_mf[cat], qp, dec ); \
+                                             mf, bias, h->dequant##w##_mf[cat], qp, dec, zthr ); \
                         int res_s6 = (res_s & 15) | X264_MIN( res_s >> 4, 6 ) << 4; \
                         int res_a6 = (res_a & 15) | X264_MIN( res_a >> 4, 6 ) << 4; \
-                        if( res_c != res_a || res_s6 != res_a6 || \
-                            memcmp( irlvl[0], irlvl[2], sizeof(irlvl[0]) ) || memcmp( irlvl[1], irlvl[2], sizeof(irlvl[0]) ) || \
-                            memcmp( irnnz[0], irnnz[2], sizeof(irnnz[0]) ) || memcmp( irnnz[1], irnnz[2], sizeof(irnnz[0]) ) || \
-                            memcmp( irdst[0], irdst[2], sizeof(irdst[0]) ) || memcmp( irdst[1], irdst[2], sizeof(irdst[0]) ) ) \
+                        int b_split = !zv || zv == 4; \
+                        if( res_c != res_a || (b_split && res_s6 != res_a6) || \
+                            memcmp( irlvl[0], irlvl[2], sizeof(irlvl[0]) ) || (b_split && memcmp( irlvl[1], irlvl[2], sizeof(irlvl[0]) )) || \
+                            memcmp( irnnz[0], irnnz[2], sizeof(irnnz[0]) ) || (b_split && memcmp( irnnz[1], irnnz[2], sizeof(irnnz[0]) )) || \
+                            memcmp( irdst[0], irdst[2], sizeof(irdst[0]) ) || (b_split && memcmp( irdst[1], irdst[2], sizeof(irdst[0]) )) ) \
                         { \
                             oks[4] = 0; \
-                            fprintf( stderr, "inter_resid_%s_%s (qp=%d, cqm=%d, j=%d, dec=%d, res_c=%x, res_asm=%x, res_split=%x): [FAILED]" \
-                                     " lvl %d %d nnz %d %d dst %d %d\n", #size, fld?"field":"frame", qp, i_cqm, j, dec, res_c, res_a, res_s, \
+                            fprintf( stderr, "inter_resid_%s_%s (qp=%d, cqm=%d, j=%d, dec=%d, zthr=%u %u, res_c=%x, res_asm=%x, res_split=%x): [FAILED]" \
+                                     " lvl %d %d nnz %d %d dst %d %d\n", #size, fld?"field":"frame", qp, i_cqm, j, dec, zthr[0], zthr[1], res_c, res_a, res_s, \
                                      !!memcmp( irlvl[0], irlvl[2], sizeof(irlvl[0]) ), !!memcmp( irlvl[1], irlvl[2], sizeof(irlvl[0]) ), \
                                      !!memcmp( irnnz[0], irnnz[2], sizeof(irnnz[0]) ), !!memcmp( irnnz[1], irnnz[2], sizeof(irnnz[0]) ), \
                                      !!memcmp( irdst[0], irdst[2], sizeof(irdst[0]) ), !!memcmp( irdst[1], irdst[2], sizeof(irdst[0]) ) ); \
@@ -5017,14 +5441,28 @@ static int check_quant( int cpu_ref, int cpu_new )
                         ir_bench##w = zz_a[fld].inter_resid_##size; \
                         set_func_name( "inter_resid_%s_%s_%s", #size, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
                         call_bench( ir_bench_##size, cpu_new, (void*)irlvl[2], irsrc, irdst[2]+IRD, irnnz[2]+12, mf, bias, \
-                                    h->dequant##w##_mf[cat], qp, 0 ); \
+                                    h->dequant##w##_mf[cat], qp, 0, h->zscreen_resid_thr[w == 8][qp] ); \
                         ir_bench##w = inter_resid_##size##_split; \
                         set_func_name( "inter_resid_%s_split_%s_%s", #size, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
                         call_bench( ir_bench_##size, cpu_new, (void*)irlvl[1], irsrc, irdst[1]+IRD, irnnz[1]+12, mf, bias, \
-                                    h->dequant##w##_mf[cat], qp, 0 ); \
+                                    h->dequant##w##_mf[cat], qp, 0, h->zscreen_resid_thr[w == 8][qp] ); \
                     } \
                 } \
             }
+
+        if( zz_a[0].inter_resid_4x4 || zz_a[0].inter_resid_8x8 )
+        {
+            used_asms[4] = 1;
+            for( int k = 0; k < 3; k++ )
+            {
+                zsr_dst[k] = irdst[k];
+                zsr_lvl[k] = irlvl[k];
+                zsr_nnz[k] = irnnz[k];
+            }
+            set_func_name( "inter_resid_zscreen" );
+            if( !zsr_check( h, i_cqm, &qf_c, zz_a ) )
+                oks[4] = 0;
+        }
 
         TEST_INTER_RESID( 4x4, 4, CQM_4PY );
         TEST_INTER_RESID( 8x8, 8, CQM_8PY );

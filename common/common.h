@@ -348,6 +348,8 @@ struct x264_t
     /* quantization matrix for trellis, [cqm][qp][coef] */
     int             (*unquant4_mf[4])[16];   /* [4][QP_MAX_SPEC+1][16] */
     int             (*unquant8_mf[4])[64];   /* [4][QP_MAX_SPEC+1][64] */
+    /* inter_resid zero screen, [CQM_4PY, CQM_8PY, CQM_8PC][qp]: D_max (unsigned), t0 */
+    uint32_t        zscreen_resid_thr[3][QP_MAX_SPEC+1][4];
     /* quantization matrix for deadzone */
     udctcoef        (*quant4_mf[4])[16];     /* [4][QP_MAX_SPEC+1][16] */
     udctcoef        (*quant8_mf[4])[64];     /* [4][QP_MAX_SPEC+1][64] */

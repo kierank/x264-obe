@@ -791,7 +791,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     int ret = h->zigzagf.inter_resid_8x8( &h->dct.luma8x8[p*4], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
                                                           h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp],
-                                                          h->dequant8_mf[i_quant_cat], i_qp, b_decimate ? i_decimate_mb : -1 );
+                                                          h->dequant8_mf[i_quant_cat], i_qp, b_decimate ? i_decimate_mb : -1,
+                                                          h->zscreen_resid_thr[1+!!p][i_qp] );
                     h->mb.i_cbp_luma |= ret & 15;
                     i_decimate_mb = ret >> 4;
                     continue;
@@ -863,7 +864,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     int ret = h->zigzagf.inter_resid_4x4( &h->dct.luma4x4[p*16], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
                                                           h->quant4_mf[CQM_4PY][i_qp], h->quant4_bias[CQM_4PY][i_qp],
-                                                          h->dequant4_mf[p?CQM_4PC:CQM_4PY], i_qp, b_decimate ? i_decimate_mb : -1 );
+                                                          h->dequant4_mf[p?CQM_4PC:CQM_4PY], i_qp, b_decimate ? i_decimate_mb : -1,
+                                                          h->zscreen_resid_thr[0][i_qp] );
                     h->mb.i_cbp_luma |= ret & 15;
                     i_decimate_mb = ret >> 4;
                     continue;
