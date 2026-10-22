@@ -32,6 +32,18 @@
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
+/* cs-screen layout pair: x264_cs_screen_gate gates the probe_skip zscreen. Arm: x264_cs_screen_arm,
+ * defined in api.c. Twin (CS_SCREEN_TWIN 1): the never defined x264_cs_screen_twin, which links as 0.
+ * The code is the same in both. */
+#define CS_SCREEN_TWIN 0
+extern const char x264_cs_screen_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_cs_screen_twin __attribute__((weak, visibility("hidden")));
+#if CS_SCREEN_TWIN
+#define x264_cs_screen_gate (&x264_cs_screen_twin != NULL)
+#else
+#define x264_cs_screen_gate (&x264_cs_screen_arm != NULL)
+#endif
+
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
 

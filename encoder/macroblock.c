@@ -995,7 +995,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
          * Not with nr: denoise_dct accumulates the residual. */
         int i8x8_order[4] = { 0, 1, 2, 3 };
         int i8x8_count = 4;
-        if( h->pixf.zscreen_16x16 && !h->mb.b_noise_reduction )
+        if( h->pixf.zscreen_16x16 && !h->mb.b_noise_reduction && x264_cs_screen_gate )
         {
             ALIGNED_ARRAY_16( int32_t, e8,[4] );
             int zmask = h->pixf.zscreen_16x16( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->zscreen_thr[!!p][i_qp], e8 );
