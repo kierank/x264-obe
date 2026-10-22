@@ -960,6 +960,93 @@ void x264_macroblock_encode( x264_t *h )
         x264_macroblock_encode_internal( h, 1, 1 );
 }
 
+/* zscreen counters, [P, B][luma, 4:4:4 chroma]: planes probed, fenc_eq, screen off (nr), screened,
+ * all proven, 4x4s proven, 8x8s proven, 8x8s tested, 8x8s tested in raster order, rejects,
+ * 8x8s tested in rejects, the same in raster order. Self-check: every proven 4x4 quantises to 0
+ * and the verdict equals the raster order one, else abort. */
+static uint64_t zscreen_cnt[2][2][13];
+/* 4:2:0 / 4:2:2 chroma check, [P, B]: planes, ssd < thresh, AC stage reached */
+static uint64_t zscreen_ccnt[2][3];
+#define ZC_CNT( i ) __atomic_fetch_add( &zscreen_ccnt[b_bidir][i], 1, __ATOMIC_RELAXED )
+#define ZS_CNT( i, n ) __atomic_fetch_add( &zscreen_cnt[b_bidir][!!p][i], n, __ATOMIC_RELAXED )
+
+void x264_zscreen_print( void )
+{
+    for( int b = 0; b < 2; b++ )
+    {
+        uint64_t *c = zscreen_ccnt[b];
+        if( c[0] )
+            fprintf( stderr, "zscreen %d-bit %s 4:2:x chroma: planes %"PRIu64" ssd<thresh %.2f%% AC stage %.2f%%\n",
+                     BIT_DEPTH, b ? "B" : "P", c[0], 100.0*c[1]/c[0], 100.0*c[2]/c[0] );
+    }
+    for( int b = 0; b < 2; b++ )
+        for( int c = 0; c < 2; c++ )
+        {
+            uint64_t n[13];
+            for( int i = 0; i < 13; i++ )
+                n[i] = __atomic_load_n( &zscreen_cnt[b][c][i], __ATOMIC_RELAXED );
+            if( !n[0] )
+                continue;
+            fprintf( stderr, "zscreen %d-bit %s %s: planes %"PRIu64" fenc_eq %"PRIu64" (%.2f%%) nr-off %"PRIu64" screened %"PRIu64
+                     " all-proven %"PRIu64" (%.2f%% of screened) 4x4 proven %.2f%% 8x8 proven %"PRIu64" (%.2f%%)"
+                     " 8x8 tested %"PRIu64" vs raster %"PRIu64" (%.2f%%) rejects %"PRIu64" 8x8/reject %.3f vs raster %.3f vs screen+raster %.3f\n",
+                     BIT_DEPTH, b ? "B" : "P", c ? "chroma" : "luma", n[0], n[1], 100.0*n[1]/n[0], n[2], n[3],
+                     n[4], n[3] ? 100.0*n[4]/n[3] : 0, n[3] ? 100.0*n[5]/(16*n[3]) : 0, n[6], n[3] ? 100.0*n[6]/(4*n[3]) : 0,
+                     n[7], n[8], n[8] ? 100.0*n[7]/n[8] : 0, n[9], n[9] ? (double)n[10]/n[9] : 0, n[9] ? (double)n[11]/n[9] : 0, n[9] ? (double)n[12]/n[9] : 0 );
+        }
+}
+
+/* raster order probe of one plane without early exit: verdict and 8x8s it tests */
+static NOINLINE void zscreen_ref( x264_t *h, int p, int quant_cat, int i_qp, int zmask, int *reject, int *tested )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct4x4,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, dctscan,[4],[16] );
+    int score = 0, unproven = 0;
+    *reject = 0;
+    *tested = 4;
+    for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+    {
+        int fenc_offset = (i8x8&1) * 8 + (i8x8>>1) * FENC_STRIDE * 8;
+        int fdec_offset = (i8x8&1) * 8 + (i8x8>>1) * FDEC_STRIDE * 8;
+        h->dctf.sub8x8_dct( dct4x4, h->mb.pic.p_fenc[p] + fenc_offset, h->mb.pic.p_fdec[p] + fdec_offset );
+        int r = h->zigzagf.quant_4x4x4_scan( dct4x4, dctscan, h->quant4_mf[quant_cat][i_qp],
+                                             h->quant4_bias[quant_cat][i_qp], NULL, 0 );
+        if( r & 15 & (zmask >> 4*i8x8) )
+        {
+            fprintf( stderr, "zscreen: proven 4x4 coded: mb %d,%d plane %d qp %d 8x8 %d nz %x zmask %04x\n",
+                     h->mb.i_mb_x, h->mb.i_mb_y, p, i_qp, i8x8, r & 15, zmask );
+            abort();
+        }
+        unproven += (zmask >> 4*i8x8 & 15) != 15;
+        score += r >> 4;
+        if( score >= 6 && !*reject )
+        {
+            *reject = 1;
+            *tested = i8x8 + 1 + (unproven << 4);
+        }
+    }
+    if( !*reject )
+        *tested += unproven << 4;
+}
+
+static NOINLINE void zscreen_end( x264_t *h, int b_bidir, int p, int reject, int tested, int ref_reject, int ref_tested )
+{
+    if( reject != ref_reject )
+    {
+        fprintf( stderr, "zscreen: verdict %d != raster order %d: mb %d,%d plane %d\n", reject, ref_reject, h->mb.i_mb_x, h->mb.i_mb_y, p );
+        abort();
+    }
+    ZS_CNT( 7, tested );
+    ZS_CNT( 8, ref_tested & 15 );
+    if( reject )
+    {
+        ZS_CNT( 9, 1 );
+        ZS_CNT( 10, tested );
+        ZS_CNT( 11, ref_tested & 15 );
+        ZS_CNT( 12, ref_tested >> 4 );
+    }
+}
+
 /*****************************************************************************
  * x264_macroblock_probe_skip:
  *  Check if the current MB could be encoded as a [PB]_SKIP
@@ -986,24 +1073,39 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                            mvp[0], mvp[1], 16, 16, &h->sh.weight[0][p] );
         }
 
+        ZS_CNT( 0, 1 );
         /* prediction == fenc: no coefficients, decimate score 0 */
         if( h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+        {
+            ZS_CNT( 1, 1 );
             continue;
+        }
 
         /* 8x8s whose 4x4s all quantise to 0 score 0 and are not tested; the rest are tested
          * largest sum(r^2) first: the score is a sum, so the verdict does not depend on the order.
          * Not with nr: denoise_dct accumulates the residual. */
         int i8x8_order[4] = { 0, 1, 2, 3 };
         int i8x8_count = 4;
+        int zs_on = 0, zs_ref_reject = 0, zs_ref_tested = 4;
+        if( h->pixf.zscreen_16x16 && h->mb.b_noise_reduction )
+            ZS_CNT( 2, 1 );
         if( h->pixf.zscreen_16x16 && !h->mb.b_noise_reduction )
         {
             ALIGNED_ARRAY_16( int32_t, e8,[4] );
             int zmask = h->pixf.zscreen_16x16( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->zscreen_thr[!!p][i_qp], e8 );
+            zs_on = 1;
+            ZS_CNT( 3, 1 );
+            ZS_CNT( 4, zmask == 0xffff );
+            ZS_CNT( 5, __builtin_popcount( zmask ) );
+            zscreen_ref( h, p, quant_cat, i_qp, zmask, &zs_ref_reject, &zs_ref_tested );
             i8x8_count = 0;
             for( int i8x8 = 0; i8x8 < 4; i8x8++ )
             {
                 if( (zmask >> 4*i8x8 & 15) == 15 )
+                {
+                    ZS_CNT( 6, 1 );
                     continue;
+                }
                 int j = i8x8_count++;
                 for( ; j && e8[i8x8_order[j-1]] < e8[i8x8]; j-- )
                     i8x8_order[j] = i8x8_order[j-1];
@@ -1027,8 +1129,14 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             i_decimate_mb += h->zigzagf.quant_4x4x4_scan( dct4x4, dctscan, h->quant4_mf[quant_cat][i_qp],
                                                           h->quant4_bias[quant_cat][i_qp], NULL, 0 ) >> 4;
             if( i_decimate_mb >= 6 )
+            {
+                if( zs_on )
+                    zscreen_end( h, b_bidir, p, 1, k+1, zs_ref_reject, zs_ref_tested );
                 return 0;
+            }
         }
+        if( zs_on )
+            zscreen_end( h, b_bidir, p, 0, i8x8_count, zs_ref_reject, zs_ref_tested );
     }
 
     if( chroma == CHROMA_420 || chroma == CHROMA_422 )
@@ -1064,8 +1172,12 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             /* there is almost never a termination during chroma, but we can't avoid the check entirely */
             /* so instead we check SSD and skip the actual check if the score is low enough. */
             ssd = h->pixf.ssd[chroma422?PIXEL_8x16:PIXEL_8x8]( p_dst, FDEC_STRIDE, p_src, FENC_STRIDE );
+            ZC_CNT( 0 );
             if( ssd < thresh )
+            {
+                ZC_CNT( 1 );
                 continue;
+            }
 
             /* The vast majority of chroma checks will terminate during the DC check or the higher
              * threshold check, so we can save time by doing a DC-only DCT. */
@@ -1097,6 +1209,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             /* If there wasn't a termination in DC, we can check against a much higher threshold. */
             if( ssd < thresh*4 )
                 continue;
+            ZC_CNT( 2 );
 
             if( !h->mb.b_noise_reduction )
                 for( int i = 0; i <= chroma422; i++ )

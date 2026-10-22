@@ -34,6 +34,8 @@ void x264_rdo_init( void );
 
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
+#define x264_zscreen_print x264_template(zscreen_print)
+void x264_zscreen_print( void );
 
 #define x264_macroblock_probe_pskip( h )\
     x264_macroblock_probe_skip( h, 0 )
