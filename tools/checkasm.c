@@ -4842,6 +4842,36 @@ static int probe_max_level( x264_dct_function_t *dctf, pixel *fenc, pixel *fdec,
     return max;
 }
 
+/* the AC position of mf/bias with the smallest range bound (zscreen_thr[2] - 1) */
+static int probe_range_argmin( udctcoef *mf, udctcoef *bias )
+{
+    int best = 1, bmax = INT_MAX;
+    for( int i = 1; i < 16; i++ )
+    {
+        int t = ((1<<16) + mf[i] - 1) / mf[i] - bias[i];
+        int half = (i&1 ? 6 : 4) * (i&4 ? 6 : 4) / 2;
+        int b = t > 0 ? (t - 1) / half : -1;
+        if( b < bmax )
+            bmax = b, best = i;
+    }
+    return best;
+}
+
+/* residual of range R on a 4x4 at fenc / fdec: ceil(R/2) where the weight of AC position pos is > 0,
+ * -floor(R/2) where it is < 0, else 0, so |coefficient pos| = (|basis|_1 / 2) * R, the range bound */
+static void probe_range_block( pixel *fenc, pixel *fdec, int pos, int R )
+{
+    static const int8_t basis[4][4] = { {1,1,1,1}, {2,1,-1,-2}, {1,-1,-1,1}, {1,-2,2,-1} };
+    for( int y = 0; y < 4; y++ )
+        for( int x = 0; x < 4; x++ )
+        {
+            int w = basis[pos&3][y] * basis[pos>>2][x];
+            int r = w > 0 ? (R+1)/2 : w < 0 ? -(R/2) : 0;
+            fenc[x+y*FENC_STRIDE] = r > 0 ? r : 0;
+            fdec[x+y*FDEC_STRIDE] = r < 0 ? -r : 0;
+        }
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4864,6 +4894,7 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_64( pixel pfenc[16*FENC_STRIDE] );
     ALIGNED_64( pixel pfdec[16*FDEC_STRIDE] );
     int probe_luma_exits[6] = {0}, probe_chroma_exits[2][6] = {{0}};
+    int probe_range_flips[3] = {0};
     x264_t h_buf;
     x264_t *h = &h_buf;
     x264_dct_init( 0, &dctf_c );
@@ -5341,7 +5372,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                                        : (j&3) == 1 ? ssd/4 + rand()%3 - 1
                                        : (j&3) == 2 ? 0 : rand() % (2*ssd + 1);
                             int res_c = x264_probe_skip_chroma_c( pfenc, pfdec, mf, bias, thresh, dc_mf, dc_bias, chroma422, fld );
-                            int res_a = call_a1( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, mf, bias, thresh, dc_mf, dc_bias );
+                            int res_a = call_a1( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, mf, bias, thresh, dc_mf, dc_bias, h->zscreen_thr[1][qp] );
                             if( res_c != res_a )
                             {
                                 oks[4] = 0;
@@ -5363,9 +5394,79 @@ static int check_quant( int cpu_ref, int cpu_new )
                     }
                     int dc_mf = h->quant4_mf[CQM_4PC][26+3*chroma422][0] >> 1, dc_bias = h->quant4_bias[CQM_4PC][26+3*chroma422][0] << 1;
                     call_c2( x264_probe_skip_chroma_c, pfenc, pfdec, h->quant4_mf[CQM_4PC][26], h->quant4_bias[CQM_4PC][26], 0, dc_mf, dc_bias, chroma422, fld );
-                    call_a2( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, h->quant4_mf[CQM_4PC][26], h->quant4_bias[CQM_4PC][26], 0, dc_mf, dc_bias );
+                    call_a2( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, h->quant4_mf[CQM_4PC][26], h->quant4_bias[CQM_4PC][26], 0, dc_mf, dc_bias, h->zscreen_thr[1][26] );
                 }
         }
+
+        /* range bound (zscreen_thr[2]): at range thr[2] - 1 every AC of every position's tight pattern
+         * quantises to 0, at thr[2] the position setting the bound does not. Then whole planes of tight
+         * patterns at those two ranges through the kernels, against C; verdicts that differ between the
+         * two ranges are counted and must occur (else a bound off by one is not seen). */
+        for( int c = 0; c < 2 && zz_a[0].probe_skip_luma && zz_a[0].probe_skip_luma != zz_ref[0].probe_skip_luma; c++ )
+            for( int qp = h->param.rc.i_qp_min; qp <= h->param.rc.i_qp_max; qp++ )
+            {
+                int i_list = c ? CQM_4PC : CQM_4PY;
+                udctcoef *mf = h->quant4_mf[i_list][qp], *bias = h->quant4_bias[i_list][qp];
+                int R0 = h->zscreen_thr[c][qp][2] - 1, pmin = probe_range_argmin( mf, bias );
+                if( R0 < 0 || (R0+2)/2 > PIXEL_MAX )
+                    continue;
+                used_asms[4] = 1;
+                for( int pos = 1; pos < 16; pos++ )
+                    for( int R = R0; R <= R0 + (pos == pmin); R++ )
+                    {
+                        probe_range_block( pfenc, pfdec, pos, R );
+                        int max = probe_max_level( &dctf_c, pfenc, pfdec, 4, 4, mf, bias, 1 );
+                        if( (R == R0) != !max )
+                        {
+                            oks[4] = 0;
+                            fprintf( stderr, "probe range bound: cqm %d list %d qp %d pos %d range %d (bound %d): level %d [FAILED]\n",
+                                     i_cqm, i_list, qp, pos, R, R0, max );
+                        }
+                    }
+                for( int fld = 0; fld < 2; fld++ )
+                    for( int j = 0; j < 8 && oks[4]; j++ )
+                    {
+                        int pos[16], res[2][3];
+                        for( int b = 0; b < 16; b++ )
+                            pos[b] = rand()&3 ? pmin : 1 + rand()%15;
+                        for( int d = 0; d < 2; d++ )
+                        {
+                            for( int b = 0; b < 16; b++ )
+                                probe_range_block( pfenc + (b&3)*4 + (b>>2)*4*FENC_STRIDE, pfdec + (b&3)*4 + (b>>2)*4*FDEC_STRIDE,
+                                                   pos[b], R0 + d );
+                            if( zz_a[fld].probe_skip_luma )
+                            {
+                                res[d][0] = x264_probe_skip_luma_c( pfenc, pfdec, mf, bias, fld );
+                                int res_a = call_a1( zz_a[fld].probe_skip_luma, pfenc, pfdec, mf, bias, h->zscreen_thr[c][qp] );
+                                if( res[d][0] != res_a )
+                                {
+                                    oks[4] = 0;
+                                    fprintf( stderr, "probe_skip_luma_%s range bound (cqm=%d, list=%d, qp=%d, range=%d): %d != %d [FAILED]\n",
+                                             fld?"field":"frame", i_cqm, i_list, qp, R0 + d, res[d][0], res_a );
+                                }
+                            }
+                            for( int chroma422 = 0; chroma422 < 2 && c && qp + 3*chroma422 <= QP_MAX_SPEC; chroma422++ )
+                                if( zz_a[fld].probe_skip_chroma[chroma422] )
+                                {
+                                    int dc_mf = h->quant4_mf[CQM_4PC][qp+3*chroma422][0] >> 1;
+                                    int dc_bias = h->quant4_bias[CQM_4PC][qp+3*chroma422][0] << 1;
+                                    res[d][1+chroma422] = x264_probe_skip_chroma_c( pfenc, pfdec, mf, bias, 0, dc_mf, dc_bias, chroma422, fld );
+                                    int res_a = call_a1( zz_a[fld].probe_skip_chroma[chroma422], pfenc, pfdec, mf, bias, 0, dc_mf, dc_bias, h->zscreen_thr[1][qp] );
+                                    if( res[d][1+chroma422] != res_a )
+                                    {
+                                        oks[4] = 0;
+                                        fprintf( stderr, "probe_skip_chroma_%s_%s range bound (cqm=%d, qp=%d, range=%d): %d != %d [FAILED]\n",
+                                                 chroma422?"422":"420", fld?"field":"frame", i_cqm, qp, R0 + d, res[d][1+chroma422], res_a );
+                                    }
+                                }
+                        }
+                        if( zz_a[fld].probe_skip_luma )
+                            probe_range_flips[0] += res[0][0] != res[1][0];
+                        for( int chroma422 = 0; chroma422 < 2 && c && qp + 3*chroma422 <= QP_MAX_SPEC; chroma422++ )
+                            if( zz_a[fld].probe_skip_chroma[chroma422] )
+                                probe_range_flips[1+chroma422] += res[0][1+chroma422] != res[1][1+chroma422];
+                    }
+            }
 
         /* j: bits 0-1 level size (full range, about +-1, about +-3, extremes), bits 2-3 nonzero rate 1, 1/4, 1/16,
          * 1/64, bit 4 no dequant, bit 5 all zero. Checked against C and the C calls it replaces. */
@@ -5641,6 +5742,12 @@ static int check_quant( int cpu_ref, int cpu_new )
             fprintf( stderr, "probe_skip: exit %d hit luma %d, chroma 420 %d, 422 %d times [FAILED]\n",
                      i, probe_luma_exits[i], probe_chroma_exits[0][i], probe_chroma_exits[1][i] );
         }
+    if( used_asms[4] && (!probe_range_flips[0] || !probe_range_flips[1] || !probe_range_flips[2]) )
+    {
+        oks[4] = 0;
+        fprintf( stderr, "probe_skip: range bound verdict flips luma %d, chroma 420 %d, 422 %d [FAILED]\n",
+                 probe_range_flips[0], probe_range_flips[1], probe_range_flips[2] );
+    }
     ok = oks[4]; used_asm = used_asms[4];
     report( "probe skip :" );
 

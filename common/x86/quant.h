@@ -366,16 +366,16 @@ int x264_quant_8x8_scan_frame_avx512icl( dctcoef dct[64], dctcoef level[64], udc
 #define x264_quant_8x8_scan_field_avx512icl x264_template(quant_8x8_scan_field_avx512icl)
 int x264_quant_8x8_scan_field_avx512icl( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
 #define x264_probe_skip_luma_frame_avx2 x264_template(probe_skip_luma_frame_avx2)
-int x264_probe_skip_luma_frame_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[2] );
+int x264_probe_skip_luma_frame_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[4] );
 #define x264_probe_skip_luma_field_avx2 x264_template(probe_skip_luma_field_avx2)
-int x264_probe_skip_luma_field_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[2] );
+int x264_probe_skip_luma_field_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], const int32_t thr[4] );
 #define x264_probe_skip_chroma_420_frame_avx2 x264_template(probe_skip_chroma_420_frame_avx2)
-int x264_probe_skip_chroma_420_frame_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias );
+int x264_probe_skip_chroma_420_frame_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias, const int32_t thr[4] );
 #define x264_probe_skip_chroma_420_field_avx2 x264_template(probe_skip_chroma_420_field_avx2)
-int x264_probe_skip_chroma_420_field_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias );
+int x264_probe_skip_chroma_420_field_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias, const int32_t thr[4] );
 #define x264_probe_skip_chroma_422_frame_avx2 x264_template(probe_skip_chroma_422_frame_avx2)
-int x264_probe_skip_chroma_422_frame_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias );
+int x264_probe_skip_chroma_422_frame_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias, const int32_t thr[4] );
 #define x264_probe_skip_chroma_422_field_avx2 x264_template(probe_skip_chroma_422_field_avx2)
-int x264_probe_skip_chroma_422_field_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias );
+int x264_probe_skip_chroma_422_field_avx2( pixel *fenc, pixel *fdec, udctcoef mf[16], udctcoef bias[16], int thresh, int dc_mf, int dc_bias, const int32_t thr[4] );
 
 #endif
