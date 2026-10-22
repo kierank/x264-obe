@@ -4346,6 +4346,78 @@ static int check_deblock( int cpu_ref, int cpu_new )
         }
     }
 
+    for( int c422 = 0; c422 < 2; c422++ )
+    {
+        x264_deblock_mb_t mb_c   = c422 ? db_c.deblock_chroma_422_mb   : db_c.deblock_chroma_420_mb;
+        x264_deblock_mb_t mb_ref = c422 ? db_ref.deblock_chroma_422_mb : db_ref.deblock_chroma_420_mb;
+        x264_deblock_mb_t mb_a   = c422 ? db_a.deblock_chroma_422_mb   : db_a.deblock_chroma_420_mb;
+        x264_deblock_inter_t h_chroma = c422 ? db_c.deblock_h_chroma_422 : db_c.deblock_h_chroma_420;
+        if( !mb_a || mb_a == mb_ref )
+            continue;
+        ALIGNED_ARRAY_16( uint8_t, bs, [2],[8][4] );
+        x264_deblock_edge_t e[3];
+        set_func_name( "deblock_chroma_%s_mb", c422 ? "422" : "420" );
+        used_asm = 1;
+        for( int i = 0; i < 1000; i++ )
+        {
+            /* frame and field (2x) strides; the block has 4 rows above and 8 pixels left */
+            intptr_t stride = 32 << (i&1);
+            intptr_t off = 4*stride + 16;
+            int edges = rand() & (c422 ? 0xf5 : 0x55);
+            /* full range, near 0, and (i&8) near PIXEL_MAX */
+            for( int j = 0; j < 1280; j++ )
+                pbuf3[j] = i&8 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&2 ? 0xf : PIXEL_MAX);
+            memcpy( pbuf4, pbuf3, 1280 * sizeof(pixel) );
+            memcpy( pbuf2, pbuf3, 1280 * sizeof(pixel) );
+            /* bS 0-2 inter, 3 for an MBAFF top edge next to intra */
+            for( int j = 0; j < 2*8*4; j++ )
+                ((uint8_t*)bs)[j] = (rand()&3) ? rand()&3 : 0;
+            if( i&4 )
+                for( int j = 0; j < 2*8; j++ )
+                    if( !(rand()&3) )
+                        M32( (uint8_t*)bs + 4*j ) = 0;
+            /* random qp and slice alpha/beta offsets, as frame_deblock_row: left and top use the averaged qp */
+            int a = 2*(rand()%13 - 6) - QP_BD_OFFSET;
+            int b = 2*(rand()%13 - 6) - QP_BD_OFFSET;
+            for( int k = 0; k < 3; k++ )
+                if( !x264_deblock_edge_init( &e[k], rand() % (QP_MAX_SPEC+1), a, b, 1 ) )
+                    edges &= k == 2 ? 0x11 : ~(k ? 0x10 : 0x01);
+            /* the per-edge sequence of frame_deblock_row */
+            for( int dir = 0; dir < 2; dir++ )
+                for( int edge = 0; edge < 4; edge++ )
+                    if( (edges & (1 << (dir*4+edge))) && M32( bs[dir][edge] ) )
+                    {
+                        x264_deblock_edge_t *p = &e[edge ? 2 : dir];
+                        int8_t tc[4];
+                        for( int j = 0; j < 4; j++ )
+                            tc[j] = p->tc0[bs[dir][edge][j]];
+                        if( dir )
+                            db_c.deblock_chroma[1]( pbuf2+off + edge*(2<<c422)*stride, stride, p->alpha, p->beta, tc );
+                        else
+                            h_chroma( pbuf2+off + 4*edge, stride, p->alpha, p->beta, tc );
+                    }
+            call_c1( mb_c, pbuf3+off, stride, bs, e, edges );
+            call_a1( mb_a, pbuf4+off, stride, bs, e, edges );
+            if( memcmp( pbuf2, pbuf3, 1280 * sizeof(pixel) ) || memcmp( pbuf2, pbuf4, 1280 * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "deblock_chroma_%s_mb (stride=%d, edges=%#x): [FAILED]\n", c422 ? "422" : "420", (int)stride, edges );
+                break;
+            }
+        }
+        /* bench: every edge, bS 1-2, mid qp, smooth pixels */
+        ALIGNED_ARRAY_64( pixel, mb_pix,[2][64*24] );
+        for( int k = 0; k < 3; k++ )
+            x264_deblock_edge_init( &e[k], 30 + QP_BD_OFFSET, -QP_BD_OFFSET, -QP_BD_OFFSET, 1 );
+        bench_srand( 200 + c422 );
+        for( int j = 0; j < 64*24; j++ )
+            mb_pix[0][j] = mb_pix[1][j] = PIXEL_MAX/4 + ((bench_rand()&15) << (BIT_DEPTH-8));
+        for( int j = 0; j < 2*8*4; j++ )
+            ((uint8_t*)bs)[j] = 1 + (bench_rand()&1);
+        call_c2( mb_c, mb_pix[0]+4*64+16, (intptr_t)64, bs, e, c422 ? 0xf5 : 0x55 );
+        call_a2( mb_a, mb_pix[1]+4*64+16, (intptr_t)64, bs, e, c422 ? 0xf5 : 0x55 );
+    }
+
     if( db_a.deblock_strength != db_ref.deblock_strength )
     {
         used_asm = 1;

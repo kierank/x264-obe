@@ -97,6 +97,41 @@ transpose_shuf: db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 gf_par1: dq 0x0600000000000000
 gf_par2: dq 0x0c00000000000000
 mbaff_tc_shuf: times 2 db 0,0,1,1,2,2,3,3
+; deblock_chroma_mb: tc0 offset of the edge class (e[0] 0, e[1] 4, e[2] 8) for bs[0][0-3] | bs[1][0-3]
+chroma_mb_class: times 4 db 0
+                 times 12 db 8
+                 times 4 db 4
+                 times 12 db 8
+chroma_mb_edge_bit: dd 1, 2, 4, 8, 16, 32, 64, 128
+; tc byte 4*edge+i of [vertical | vertical] or [horizontal | horizontal] tc
+%if HIGH_BIT_DEPTH
+%macro CHROMA_MB_TCW 1-* ; byte index per 4 words
+%rep %0
+    times 4 db %1, 0x80
+%rotate 1
+%endrep
+%endmacro
+; vertical, 4 rows a group: edge 0 | edge 2
+chroma_mb_v420_tc: CHROMA_MB_TCW 0, 1, 8, 9, 2, 3, 10, 11
+chroma_mb_v422_tc: CHROMA_MB_TCW 0, 0, 8, 8, 1, 1, 9, 9, 2, 2, 10, 10, 3, 3, 11, 11
+; horizontal, by edge
+chroma_mb_h_tc: CHROMA_MB_TCW 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+chroma_mb_row_perm: db 2, 3, 4, 5, 6, 7, 6, 7
+%else
+%macro CHROMA_MB_TCB 1-* ; byte index per 4 bytes
+%rep %0
+    times 4 db %1
+%rotate 1
+%endrep
+%endmacro
+; vertical, 8 rows a group: 4 rows edge 0, edge 2 | next 4 rows edge 0, edge 2
+chroma_mb_v420_tc8: CHROMA_MB_TCB 0, 1, 8, 9, 2, 3, 10, 11
+chroma_mb_v422_tc8: CHROMA_MB_TCB 0, 0, 8, 8, 1, 1, 9, 9, 2, 2, 10, 10, 3, 3, 11, 11
+; horizontal, two edges: lane 0 | lane 1
+chroma_mb_h420_tc8: CHROMA_MB_TCB 0, 1, 2, 3, 8, 9, 10, 11
+chroma_mb_h422_tc8: CHROMA_MB_TCB 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+chroma_mb_row_perm8: db 1, 2, 3, 4, 5, 6, 7, 0
+%endif
 
 SECTION .text
 
@@ -135,6 +170,36 @@ cextern pb_unpackbd1
     [b4], [b4+s], [b4+s*2], [b4+s3], \
     [b8], [b8+s], [b8+s*2], [b8+s3], \
     [b12], [b12+s], [b12+s*2], [b12+s3]
+
+; deblock_chroma_mb prologue, r2 = bs, r3 = e, r4d = edges; to .end if no edge is left
+; out: r4d = edges with nonzero bS; m13, m14 = vertical, horizontal tc in both lanes,
+;      byte 4*edge+i = tc0 of bs[dir][edge][i], >= 0, 0 for the edges not in r4d
+; clobbers: m0-m3, r6
+%macro CHROMA_MB_INIT 0
+    movu        xm0, [r2]
+    vinserti128  m0, m0, [r2+32], 1  ; bs[0][0-3] | bs[1][0-3]
+    pxor         m2, m2
+    pcmpeqd      m1, m0, m2
+    vmovmskps   r6d, m1
+    not         r6d
+    and         r4d, r6d          ; drop edges with bS 0
+    jz .end
+    movd        xm1, [r3]
+    pinsrd      xm1, [r3+8], 1
+    pinsrd      xm1, [r3+16], 2   ; tc0 of e[0], e[1], e[2]
+    vpermq       m1, m1, q1010
+    paddb        m0, [chroma_mb_class]
+    pshufb       m0, m1, m0
+    pmaxsb       m0, m2
+    movd        xm1, r4d
+    vpbroadcastd m1, xm1
+    movu         m3, [chroma_mb_edge_bit]
+    pand         m1, m3
+    pcmpeqd      m1, m3
+    pand         m0, m1
+    vpermq      m13, m0, q1010
+    vpermq      m14, m0, q3232
+%endmacro
 
 %if HIGH_BIT_DEPTH
 ; out: %4 = |%1-%2|-%3
@@ -3798,6 +3863,118 @@ cglobal deblock_h_chroma_422_intra, 4,6,10
     dec          r2d
     jg .loop
     RET
+
+;-----------------------------------------------------------------------------
+; void deblock_chroma_420_mb( uint16_t *pix, intptr_t stride, uint8_t bs[2][8][4],
+;                             x264_deblock_edge_t e[3], int edges )
+; void deblock_chroma_422_mb( ... )
+; All chroma edges of one macroblock, e[] and edges as deblock_luma_mb with the
+; chroma tc0. The vertical edges run together on 4 rows at a time, transposed
+; with edge 0 in lane 0 and edge 2 in lane 1; each row is stored back whole, so
+; the horizontal edges' row loads forward from those stores.
+;-----------------------------------------------------------------------------
+; %1: row address, m%2: the row's samples -2..5; m15 = chroma_mb_row_perm
+%macro CHROMA_MB_STORE_ROW 2
+    movq       [%1-8], xm%2         ; samples -2, -1
+    vpermd       m%2, m15, m%2
+    vpblendd     m%2, m%2, [%1], 0xc0 ; samples 6, 7
+    movu         [%1], m%2
+%endmacro
+
+; %1: 420|422, %2: groups of 4 rows, %3: chroma_mb_h_tc step per horizontal edge
+%macro DEBLOCK_CHROMA_MB 3
+cglobal deblock_chroma_%1_mb, 5,9,16
+    CHROMA_MB_INIT
+    add          r1, r1
+    lea          r5, [r1*3]
+    test        r4d, 0x05
+    jz .horizontal
+    vpbroadcastw m8, [r3+20]        ; e[2] alpha, beta
+    vpbroadcastw m9, [r3+22]
+    vpbroadcastw xm10, [r3+4]       ; e[0]
+    vpbroadcastw xm11, [r3+6]
+    vpblendd    m10, m8, m10, 0x0f  ; edge 0 | edge 2
+    vpblendd    m11, m9, m11, 0x0f
+    pmovzxbd    m15, [chroma_mb_row_perm]
+    lea          r7, [chroma_mb_v%1_tc]
+    mov          r6, r0
+    mov         r8d, %2
+.vloop:
+    movu         m0, [r6-8]
+    movu         m1, [r6+r1-8]
+    movu         m2, [r6+r1*2-8]
+    movu         m3, [r6+r5-8]
+    punpckldq    m4, m0, m1
+    punpckhdq    m0, m1
+    punpckldq    m5, m2, m3
+    punpckhdq    m2, m3
+    punpckhqdq   m3, m0, m2         ; q1
+    punpcklqdq   m2, m0, m2         ; q0
+    punpcklqdq   m0, m4, m5         ; p1
+    punpckhqdq   m1, m4, m5         ; p0
+    LOAD_MASK    m0, m1, m2, m3, m10, m11, m7, m6, m4
+    pshufb       m6, m13, [r7]
+    pand         m7, m6
+    mova        m12, m0
+    DEBLOCK_P0_Q0 m1, m2, m0, m3, m7, m5, m6
+    punpckldq    m4, m12, m1
+    punpckhdq   m12, m1
+    punpckldq    m5, m2, m3
+    punpckhdq    m2, m3
+    punpcklqdq   m0, m4, m5         ; row 0
+    punpckhqdq   m1, m4, m5         ; row 1
+    punpcklqdq   m4, m12, m2        ; row 2
+    punpckhqdq   m5, m12, m2        ; row 3
+    CHROMA_MB_STORE_ROW r6, 0
+    CHROMA_MB_STORE_ROW r6+r1, 1
+    CHROMA_MB_STORE_ROW r6+r1*2, 4
+    CHROMA_MB_STORE_ROW r6+r5, 5
+    lea          r6, [r6+r1*4]
+    add          r7, 32
+    dec         r8d
+    jg .vloop
+
+.horizontal:
+    mov         r6d, r4d
+    shr         r6d, 4
+%ifidn %1, 420
+    mov         r7d, r6d            ; edges 0, 2 at rows 0, 4
+    shr         r7d, 1
+    or          r6d, r7d
+    and         r6d, 3
+%endif
+    jz .end
+    lea          r7, [chroma_mb_h_tc]
+    mov         r8d, 8              ; e[1], then e[2]
+    sub          r0, r1
+    sub          r0, r1             ; row -2
+.hloop:
+    test        r6d, 1
+    jz .hnext
+    vpbroadcastw m4, [r3+r8+4]
+    vpbroadcastw m5, [r3+r8+6]
+    movu         m0, [r0]
+    movu         m1, [r0+r1]
+    movu         m2, [r0+r1*2]
+    movu         m3, [r0+r5]
+    LOAD_MASK    m0, m1, m2, m3, m4, m5, m7, m6, m4
+    pshufb       m6, m14, [r7]
+    pand         m7, m6
+    DEBLOCK_P0_Q0 m1, m2, m0, m3, m7, m5, m6
+    movu    [r0+r1], m1
+    movu  [r0+r1*2], m2
+.hnext:
+    mov         r8d, 16
+    add          r7, %3
+    lea          r0, [r0+r1*4]
+    shr         r6d, 1
+    jnz .hloop
+.end:
+    RET
+%endmacro
+
+DEBLOCK_CHROMA_MB 420, 2, 64
+DEBLOCK_CHROMA_MB 422, 4, 32
 %endif ; ARCH_X86_64
 
 %if ARCH_X86_64
@@ -4304,6 +4481,182 @@ cglobal deblock_v_chroma_intra, 4,5,9
     mova   [r4+r1], xm1
     mova      [r0], xm2
     RET
+
+;-----------------------------------------------------------------------------
+; void deblock_chroma_420_mb( uint8_t *pix, intptr_t stride, uint8_t bs[2][8][4],
+;                             x264_deblock_edge_t e[3], int edges )
+; void deblock_chroma_422_mb( ... )
+; All chroma edges of one macroblock, e[] and edges as deblock_luma_mb with the
+; chroma tc0. The vertical edges run together on 8 rows at a time, 4 rows a
+; lane, transposed with edge 0 in qword 0 and edge 2 in qword 1; each row is
+; stored back whole, then the horizontal edges run two at a time, one a lane.
+;-----------------------------------------------------------------------------
+; in: m0-m2, m%1 = words of 4 rows | 4 rows; out: m0-m3 = columns 0|4, 1|5, 2|6, 3|7
+; of 4 rows | 4 rows (or the reverse); clobbers m4, m5
+%macro CHROMA_MB_T4x8W 1
+    punpcklwd    m4, m0, m1
+    punpckhwd    m0, m1
+    punpcklwd    m5, m2, m%1
+    punpckhwd    m2, m%1
+    punpckldq    m1, m4, m5
+    punpckhdq    m4, m5
+    punpckldq    m5, m0, m2
+    punpckhdq    m3, m0, m2
+    punpcklqdq   m0, m1, m5
+    punpckhqdq   m1, m5
+    punpcklqdq   m2, m4, m3
+    punpckhqdq   m3, m4, m3
+%endmacro
+
+; in: m0-m3 = p1 p0 q0 q1, %1 = alpha-1, %2 = beta-1, %3 = tc; out: m7 = tc & mask
+; clobbers: m4, m6
+%macro CHROMA_MB_MASK8 3
+    DIFF_GT      m1, m2, %1, m7, m6 ; |p0-q0| > alpha-1
+    DIFF_GT      m0, m1, %2, m4, m6 ; |p1-p0| > beta-1
+    por          m7, m4
+    DIFF_GT      m3, m2, %2, m4, m6 ; |q1-q0| > beta-1
+    por          m7, m4
+    pxor         m6, m6
+    pcmpeqb      m7, m6
+    pand         m7, %3
+%endmacro
+
+; DEBLOCK_P0_Q0 with broadcast constants
+; in: m0=p1 m1=p0 m2=q0 m3=q1 m7=(tc&mask); out: m1=p0' m2=q0'; clobbers m3-m6
+%macro CHROMA_MB_P0_Q0_8 0
+    pxor         m5, m1, m2         ; p0^q0
+    pand         m5, [pb_1]         ; (p0^q0)&1
+    pcmpeqb      m4, m4
+    pxor         m3, m4
+    pavgb        m3, m0             ; (p1 - q1 + 256)>>1
+    vpbroadcastd m6, [pb_3]
+    pavgb        m3, m6             ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    pxor         m4, m1
+    pavgb        m4, m2             ; (q0 - p0 + 256)>>1
+    pavgb        m3, m5
+    paddusb      m3, m4             ; d+128+33
+    vpbroadcastd m5, [pb_a1]
+    psubusb      m6, m5, m3
+    psubusb      m3, m5
+    pminub       m6, m7
+    pminub       m3, m7
+    psubusb      m1, m6
+    psubusb      m2, m3
+    paddusb      m1, m3
+    paddusb      m2, m6
+%endmacro
+
+; %1, %2: row addresses, m%3: their samples -2..5 (lane 0 | lane 1); m15 = chroma_mb_row_perm8
+%macro CHROMA_MB_STORE_ROWS8 3
+    vpblendd     m6, m%3, [%1-4], 0xf0  ; samples 6..13 in lane 1
+    vperm2i128  m%3, m%3, [%2-4], 0x31
+    movd      [%1-4], xm6             ; samples -2, -1
+    movd      [%2-4], xm%3
+    vpermd       m6, m15, m6
+    vpermd      m%3, m15, m%3
+    movu        [%1], xm6
+    movu        [%2], xm%3
+%endmacro
+
+; %1, %2: row -2 of the lane 0, lane 1 edge, %3 = alpha-1, %4 = beta-1, %5 = tc shuffle
+%macro CHROMA_MB_H8 5
+    movu        xm0, [%1]
+    vinserti128  m0, m0, [%2], 1
+    movu        xm1, [%1+r1]
+    vinserti128  m1, m1, [%2+r1], 1
+    movu        xm2, [%1+r1*2]
+    vinserti128  m2, m2, [%2+r1*2], 1
+    movu        xm3, [%1+r5]
+    vinserti128  m3, m3, [%2+r5], 1
+    pshufb      m12, m14, %5
+    CHROMA_MB_MASK8 %3, %4, m12
+    CHROMA_MB_P0_Q0_8
+    vextracti128 [%2+r1], m1, 1
+    movu [%1+r1*2], xm2
+    vextracti128 [%2+r1*2], m2, 1
+%endmacro
+
+; %1: 420|422, %2: groups of 8 rows, %3: edges of the first horizontal pair
+%macro DEBLOCK_CHROMA_MB 3
+cglobal deblock_chroma_%1_mb, 5,10,16
+    CHROMA_MB_INIT
+    vpbroadcastb m8, [r3+20]        ; e[2] alpha-1, beta-1
+    vpbroadcastb m9, [r3+22]
+    psubusb      m8, [pb_1]
+    psubusb      m9, [pb_1]
+    lea          r5, [r1*3]
+    test        r4d, 0x05
+    jz .horizontal
+    vpbroadcastb m10, [r3+4]        ; e[0]
+    vpbroadcastb m11, [r3+6]
+    psubusb     m10, [pb_1]
+    psubusb     m11, [pb_1]
+    vpblendd    m10, m10, m8, 0xcc  ; edge 0, edge 2
+    vpblendd    m11, m11, m9, 0xcc
+    pmovzxbd    m15, [chroma_mb_row_perm8]
+    lea          r8, [chroma_mb_v%1_tc8]
+    mov          r6, r0
+    lea          r7, [r0+r1*4]
+    mov         r9d, %2
+.vloop:
+    movu        xm0, [r6-4]
+    vinserti128  m0, m0, [r7-4], 1
+    movu        xm1, [r6+r1-4]
+    vinserti128  m1, m1, [r7+r1-4], 1
+    movu        xm2, [r6+r1*2-4]
+    vinserti128  m2, m2, [r7+r1*2-4], 1
+    movu        xm3, [r6+r5-4]
+    vinserti128  m3, m3, [r7+r5-4], 1
+    CHROMA_MB_T4x8W 3
+    pshufb      m12, m13, [r8]
+    CHROMA_MB_MASK8 m10, m11, m12
+    mova        m12, m3
+    CHROMA_MB_P0_Q0_8
+    CHROMA_MB_T4x8W 12
+    CHROMA_MB_STORE_ROWS8 r6, r7, 0
+    CHROMA_MB_STORE_ROWS8 r6+r1, r7+r1, 1
+    CHROMA_MB_STORE_ROWS8 r6+r1*2, r7+r1*2, 2
+    CHROMA_MB_STORE_ROWS8 r6+r5, r7+r5, 3
+    lea          r6, [r6+r1*8]
+    lea          r7, [r7+r1*8]
+    add          r8, 32
+    dec         r9d
+    jg .vloop
+
+.horizontal:
+    test        r4d, %3
+    jz .hpair2
+    vpbroadcastb xm10, [r3+12]      ; e[1] | e[2]
+    vpbroadcastb xm11, [r3+14]
+    psubusb     xm10, [pb_1]
+    psubusb     xm11, [pb_1]
+    vpblendd    m10, m8, m10, 0x0f
+    vpblendd    m11, m9, m11, 0x0f
+    mov          r6, r0
+    sub          r6, r1
+    sub          r6, r1             ; row -2
+    lea          r7, [r0+r1*2]      ; row 2
+    CHROMA_MB_H8 r6, r7, m10, m11, [chroma_mb_h%1_tc8]
+    test        r4d, 0x10           ; row -1 is the top MB's: only with the top edge
+    jz .hpair2
+    movu    [r6+r1], xm1
+.hpair2:
+%ifidn %1, 422
+    test        r4d, 0xc0
+    jz .end
+    lea          r6, [r0+r1*2]
+    lea          r6, [r6+r1*4]      ; row 6
+    lea          r7, [r6+r1*4]      ; row 10
+    CHROMA_MB_H8 r6, r7, m8, m9, [chroma_mb_h422_tc8+32]
+    movu    [r6+r1], xm1
+%endif
+.end:
+    RET
+%endmacro
+
+INIT_YMM avx2
+DEBLOCK_CHROMA_MB 420, 1, 0x50
+DEBLOCK_CHROMA_MB 422, 2, 0x30
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
