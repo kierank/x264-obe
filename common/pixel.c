@@ -976,6 +976,67 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
+/* layout arms/twin of wip/x264-sweep-weightp: every build declares the hidden weak
+ * x264_<depth>_twin_<kernel>; a kernel set to 1 below dispatches its twins, which link as 0, so
+ * its slots stay NULL and the old paths run (slicetype's per block passes, me's get_ref); the
+ * anchor keeps weightp-a.o linked in every arm */
+#if HAVE_MMX && ARCH_X86_64
+#define WPT_LUMA   0
+#define WPT_CHROMA 0
+#define WPT_CMP    0
+#define WPT_STR2(x) #x
+#define WPT_STR(x) WPT_STR2(x)
+#define WPT_TWIN( f ) \
+    extern __typeof__( x264_##f ) x264_template(twin_##f) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak " WPT_STR(x264_template(twin_##f)) "\n.hidden " WPT_STR(x264_template(twin_##f)) );
+WPT_TWIN( weightp_satd8_search_avx2 )
+WPT_TWIN( weightp_satd8_search_avx512icl )
+WPT_TWIN( weightp_chroma_ref_row_avx2 )
+WPT_TWIN( weightp_chroma_ref_row_avx512icl )
+#if !HIGH_BIT_DEPTH
+WPT_TWIN( pixel_sad_avg2_w_16x16_avx512icl )
+WPT_TWIN( pixel_sad_avg2_w_16x8_avx512icl )
+WPT_TWIN( pixel_sad_avg2_w_8x16_avx512icl )
+WPT_TWIN( pixel_sad_avg2_w_8x8_avx512icl )
+WPT_TWIN( pixel_satd_avg2_pre_w_16x16_avx512icl )
+WPT_TWIN( pixel_satd_avg2_pre_w_16x8_avx512icl )
+WPT_TWIN( pixel_satd_avg2_pre_w_8x16_avx512icl )
+WPT_TWIN( pixel_satd_avg2_pre_w_8x8_avx512icl )
+#endif
+void *const x264_template(twin_weightp_anchor) __attribute__((visibility("hidden"))) =
+    (void*)x264_template(weightp_satd8_search_avx2);
+#if WPT_LUMA
+#undef x264_weightp_satd8_search_avx2
+#define x264_weightp_satd8_search_avx2 x264_template(twin_weightp_satd8_search_avx2)
+#undef x264_weightp_satd8_search_avx512icl
+#define x264_weightp_satd8_search_avx512icl x264_template(twin_weightp_satd8_search_avx512icl)
+#endif
+#if WPT_CHROMA
+#undef x264_weightp_chroma_ref_row_avx2
+#define x264_weightp_chroma_ref_row_avx2 x264_template(twin_weightp_chroma_ref_row_avx2)
+#undef x264_weightp_chroma_ref_row_avx512icl
+#define x264_weightp_chroma_ref_row_avx512icl x264_template(twin_weightp_chroma_ref_row_avx512icl)
+#endif
+#if WPT_CMP && !HIGH_BIT_DEPTH
+#undef x264_pixel_sad_avg2_w_16x16_avx512icl
+#define x264_pixel_sad_avg2_w_16x16_avx512icl x264_template(twin_pixel_sad_avg2_w_16x16_avx512icl)
+#undef x264_pixel_sad_avg2_w_16x8_avx512icl
+#define x264_pixel_sad_avg2_w_16x8_avx512icl x264_template(twin_pixel_sad_avg2_w_16x8_avx512icl)
+#undef x264_pixel_sad_avg2_w_8x16_avx512icl
+#define x264_pixel_sad_avg2_w_8x16_avx512icl x264_template(twin_pixel_sad_avg2_w_8x16_avx512icl)
+#undef x264_pixel_sad_avg2_w_8x8_avx512icl
+#define x264_pixel_sad_avg2_w_8x8_avx512icl x264_template(twin_pixel_sad_avg2_w_8x8_avx512icl)
+#undef x264_pixel_satd_avg2_pre_w_16x16_avx512icl
+#define x264_pixel_satd_avg2_pre_w_16x16_avx512icl x264_template(twin_pixel_satd_avg2_pre_w_16x16_avx512icl)
+#undef x264_pixel_satd_avg2_pre_w_16x8_avx512icl
+#define x264_pixel_satd_avg2_pre_w_16x8_avx512icl x264_template(twin_pixel_satd_avg2_pre_w_16x8_avx512icl)
+#undef x264_pixel_satd_avg2_pre_w_8x16_avx512icl
+#define x264_pixel_satd_avg2_pre_w_8x16_avx512icl x264_template(twin_pixel_satd_avg2_pre_w_8x16_avx512icl)
+#undef x264_pixel_satd_avg2_pre_w_8x8_avx512icl
+#define x264_pixel_satd_avg2_pre_w_8x8_avx512icl x264_template(twin_pixel_satd_avg2_pre_w_8x8_avx512icl)
+#endif
+#endif
+
 void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 {
     memset( pixf, 0, sizeof(*pixf) );
