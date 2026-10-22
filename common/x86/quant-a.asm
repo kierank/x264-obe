@@ -4069,3 +4069,275 @@ INIT_ZMM avx512icl
 QUANT_8x8_SCAN_AVX512 frame
 QUANT_8x8_SCAN_AVX512 field
 %endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
+; int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+;                            udctcoef mf[16], udctcoef bias[16] )
+;-----------------------------------------------------------------------------
+; orig = dct, quant_4x4x4 dct, zigzag all 4 blocks into level.
+; Returns nz | last << (4+4*j) per nonzero block j, last = its last nonzero coef in scan order.
+%if ARCH_X86_64
+
+; r5: nonzero coefs in scan order, 16 bits per block -> eax; clobbers r3, r4, r7
+%macro QUANT_SCAN_LAST4 0
+    mov       r3, 0x7fff7fff7fff7fff
+    mov       r4, r5
+    and       r4, r3
+    add       r4, r3
+    or        r4, r5          ; bit 15 of each block: block is nonzero
+    shr       r4, 15
+    mov       r3, 0x0001000100010001
+    and       r4, r3
+    mov       r3, 0x0001000200040008
+    imul      r4, r3          ; bit 16*j -> bit 48+j
+    shr       r4, 48
+    mov      eax, r4d
+%assign %%j 0
+%rep 4
+    movzx    r7d, r5w
+%if %%j < 3
+    shr       r5, 16
+%endif
+    or       r7d, 1
+    bsr      r7d, r7d
+    shl      r7d, 4+4*%%j
+    or       eax, r7d
+%assign %%j %%j+1
+%endrep
+%endmacro
+
+%if HIGH_BIT_DEPTH
+; coef (in place), tmp, mf, bias
+%macro QUANT_SCAN_LAST_ONE 4
+    pabsd     %2, %1
+    paddd     %2, %4
+    pmulld    %2, %3
+    psrld     %2, 16
+    psignd    %1, %2, %1
+%endmacro
+
+; field, coefs 0-7, coefs 8-15, level offset, packed dst: m8, m9 scanned
+%macro QUANT_SCAN_LAST_BLOCK 5
+%if %1
+    vpermd    m8, m12, %2
+    mova [r2+%4   ], m8
+    mova [r2+%4+32], %3
+    packssdw  %5, m8, %3
+%else
+    vpermd    m8, m12, %2
+    vpermd    m9, m13, %3
+    vpblendd  m8, m8, m9, 0xe0
+    vpermd    m9, m13, %2
+    vpermd   m10, m12, %3
+    vpblendd  m9, m9, m10, 0xf8
+    mova [r2+%4   ], m8
+    mova [r2+%4+32], m9
+    packssdw  %5, m8, m9
+%endif
+%endmacro
+
+%macro QUANT_4x4x4_SCAN_LAST 2 ; name, field
+cglobal quant_4x4x4_scan_last_%1, 5,8,16
+    mova      m12, [r3]
+    mova      m13, [r3+32]
+    mova      m14, [r4]
+    mova      m15, [r4+32]
+%assign %%i 0
+%rep 8
+    mova      m %+ %%i, [r0+32*%%i]
+    mova [r1+32*%%i], m %+ %%i
+%assign %%i %%i+1
+%endrep
+    QUANT_SCAN_LAST_ONE m0, m8,  m12, m14
+    QUANT_SCAN_LAST_ONE m1, m9,  m13, m15
+    QUANT_SCAN_LAST_ONE m2, m10, m12, m14
+    QUANT_SCAN_LAST_ONE m3, m11, m13, m15
+    QUANT_SCAN_LAST_ONE m4, m8,  m12, m14
+    QUANT_SCAN_LAST_ONE m5, m9,  m13, m15
+    QUANT_SCAN_LAST_ONE m6, m10, m12, m14
+    QUANT_SCAN_LAST_ONE m7, m11, m13, m15
+%assign %%i 0
+%rep 8
+    mova [r0+32*%%i], m %+ %%i
+%assign %%i %%i+1
+%endrep
+%if %2
+    mova      m12, [qscan4_field]
+%else
+    mova      m12, [qscan4_frame_i]
+    mova      m13, [qscan4_frame_j]
+%endif
+    QUANT_SCAN_LAST_BLOCK %2, m0, m1,   0, m14
+    QUANT_SCAN_LAST_BLOCK %2, m2, m3,  64, m15
+    packsswb  m14, m15
+    QUANT_SCAN_LAST_BLOCK %2, m4, m5, 128, m15
+    QUANT_SCAN_LAST_BLOCK %2, m6, m7, 192, m0
+    packsswb  m15, m0
+    mova      m8, [qscan4_bytes]
+    vpermd    m14, m8, m14
+    vpermd    m15, m8, m15
+    pxor      m8, m8
+    pcmpeqb   m14, m8
+    pcmpeqb   m15, m8
+    pmovmskb  r5d, m14
+    pmovmskb  r6d, m15
+    shl       r6, 32
+    or        r5, r6
+    not       r5
+    QUANT_SCAN_LAST4
+    RET
+%endmacro
+
+%macro QUANT_4x4x4_SCAN_LAST_AVX512 2 ; name, field
+cglobal quant_4x4x4_scan_last_%1, 5,8,8
+    movu      m4, [r3]
+    movu      m5, [r4]
+    movu      m6, [qscan4_%1_avx512]
+    pxor     xm7, xm7
+%assign %%i 0
+%rep 4
+    movu      m0, [r0+64*%%i]
+    movu [r1+64*%%i], m0
+    pabsd     m1, m0
+    paddd     m1, m5
+    pmulld    m1, m4
+    psrld     m1, 16
+    vpmovd2m  k1, m0
+    vpsubd    m1{k1}, m7, m1
+    movu [r0+64*%%i], m1
+    vpermd    m1, m6, m1
+    movu [r2+64*%%i], m1
+%assign %%k %%i+2
+    vptestmd  k %+ %%k, m1, m1
+%assign %%i %%i+1
+%endrep
+    kunpckwd  k2, k3, k2
+    kunpckwd  k4, k5, k4
+    kunpckdq  k2, k4, k2
+    kmovq     r5, k2
+    QUANT_SCAN_LAST4
+    RET
+%endmacro
+
+%else ; !HIGH_BIT_DEPTH
+%macro QUANT_4x4x4_SCAN_LAST 2 ; name, field
+cglobal quant_4x4x4_scan_last_%1, 5,8,14
+    mova      m12, [r3]
+    mova      m13, [r4]
+    mova      m0, [r0+ 0]
+    mova      m1, [r0+32]
+    mova      m2, [r0+64]
+    mova      m3, [r0+96]
+    mova [r1+ 0], m0
+    mova [r1+32], m1
+    mova [r1+64], m2
+    mova [r1+96], m3
+    pabsw     m4, m0
+    pabsw     m5, m1
+    pabsw     m6, m2
+    pabsw     m7, m3
+    paddusw   m4, m13
+    paddusw   m5, m13
+    paddusw   m6, m13
+    paddusw   m7, m13
+    pmulhuw   m4, m12
+    pmulhuw   m5, m12
+    pmulhuw   m6, m12
+    pmulhuw   m7, m12
+    psignw    m0, m4, m0
+    psignw    m1, m5, m1
+    psignw    m2, m6, m2
+    psignw    m3, m7, m3
+    mova [r0+ 0], m0
+    mova [r0+32], m1
+    mova [r0+64], m2
+    mova [r0+96], m3
+%if %2
+    mova      m8, [qscan4_field]
+    pshufb    m4, m0, m8
+    pshufb    m5, m1, m8
+    pshufb    m6, m2, m8
+    pshufb    m7, m3, m8
+%else
+    mova      m10, [qscan4_frame_a]
+    mova      m11, [qscan4_frame_b]
+    vperm2i128 m8, m0, m0, 0x01
+    vperm2i128 m9, m1, m1, 0x01
+    pshufb    m4, m0, m10
+    pshufb    m5, m1, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m4, m8
+    por       m5, m9
+    vperm2i128 m8, m2, m2, 0x01
+    vperm2i128 m9, m3, m3, 0x01
+    pshufb    m6, m2, m10
+    pshufb    m7, m3, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m6, m8
+    por       m7, m9
+%endif
+    mova [r2+ 0], m4
+    mova [r2+32], m5
+    mova [r2+64], m6
+    mova [r2+96], m7
+    packsswb  m4, m5
+    packsswb  m6, m7
+    vpermq    m4, m4, q3120
+    vpermq    m6, m6, q3120
+    pxor      m8, m8
+    pcmpeqb   m4, m8
+    pcmpeqb   m6, m8
+    pmovmskb  r5d, m4
+    pmovmskb  r6d, m6
+    shl       r6, 32
+    or        r5, r6
+    not       r5
+    QUANT_SCAN_LAST4
+    RET
+%endmacro
+
+%macro QUANT_4x4x4_SCAN_LAST_AVX512 2 ; name, field
+cglobal quant_4x4x4_scan_last_%1, 5,8,7
+    vbroadcasti32x8 m4, [r3]
+    vbroadcasti32x8 m5, [r4]
+    movu      m6, [qscan4_%1_avx512]
+    movu      m0, [r0+ 0]
+    movu      m1, [r0+64]
+    movu [r1+ 0], m0
+    movu [r1+64], m1
+    pabsw     m2, m0
+    pabsw     m3, m1
+    paddusw   m2, m5
+    paddusw   m3, m5
+    pmulhuw   m2, m4
+    pmulhuw   m3, m4
+    vpmovw2m  k1, m0
+    vpmovw2m  k2, m1
+    pxor     xm5, xm5
+    vpsubw    m2{k1}, m5, m2
+    vpsubw    m3{k2}, m5, m3
+    movu [r0+ 0], m2
+    movu [r0+64], m3
+    vpermw    m0, m6, m2
+    vpermw    m1, m6, m3
+    movu [r2+ 0], m0
+    movu [r2+64], m1
+    vptestmw  k1, m0, m0
+    vptestmw  k2, m1, m1
+    kunpckdq  k1, k2, k1
+    kmovq     r5, k1
+    QUANT_SCAN_LAST4
+    RET
+%endmacro
+%endif ; HIGH_BIT_DEPTH
+
+INIT_YMM avx2
+QUANT_4x4x4_SCAN_LAST frame, 0
+QUANT_4x4x4_SCAN_LAST field, 1
+
+INIT_ZMM avx512icl
+QUANT_4x4x4_SCAN_LAST_AVX512 frame, 0
+QUANT_4x4x4_SCAN_LAST_AVX512 field, 1
+%endif ; ARCH_X86_64

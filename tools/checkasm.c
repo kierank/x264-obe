@@ -4038,6 +4038,12 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, dct0,[64] );
     ALIGNED_ARRAY_64( dctcoef, dct5,[64] );
     ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
+    ALIGNED_ARRAY_64( dctcoef, sqd1,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, sqd2,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, sqo1,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, sqo2,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, sql1,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, sql2,[4],[16] );
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     int ret = 0, ok, used_asm;
     int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
@@ -4377,6 +4383,62 @@ static int check_quant( int cpu_ref, int cpu_new )
                         call_bench( quant_8x8_scan_split, cpu_new, dct5, lvl3, mf, bias, dmf, qp );
                     }
                 }
+
+/* j: bit 0-3 block nonzero, 4-5 kind (dense, sparse, extreme, one coef), 6 bias0, 7 dc 0 */
+#define TEST_QUANT_SCAN_LAST( name, block, nblk ) \
+        for( int fld = 0; fld < 2; fld++ ) \
+            if( zz_a[fld].name != zz_ref[fld].name ) \
+            { \
+                set_func_name( "%s_%s_%s", #name, fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                used_asms[3] = 1; \
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- ) \
+                { \
+                    for( int j = 0; j < 256; j++ ) \
+                    { \
+                        udctcoef *mf = h->quant4_mf[block][qp]; \
+                        udctcoef *bias = j&64 ? h->quant4_bias0[block][qp] : h->quant4_bias[block][qp]; \
+                        static const int scale1d[4] = {4,6,4,6}; \
+                        int kind = (j>>4)&3, one = rand()%(16*nblk); \
+                        for( int k = 0; k < 16*nblk; k++ ) \
+                        { \
+                            int big = PIXEL_MAX*scale1d[(k>>2)&3]*scale1d[k&3]; \
+                            int small = X264_MIN( big, (3<<16)/mf[k&15] ); \
+                            int x = kind == 0 ? rand()%(2*big+1) - big \
+                                  : kind == 1 ? (rand()&3 ? 0 : rand()%(2*small+1) - small) \
+                                  : kind == 2 ? (rand()&3 ? 0 : rand()&1 ? big : -big) \
+                                  : k == one ? (rand()&1 ? big : -big) >> (rand()%12) : 0; \
+                            sqd1[k>>4][k&15] = sqd2[k>>4][k&15] = (j>>((k>>4)&3))&1 ? x : 0; \
+                        } \
+                        if( j&128 ) \
+                            for( int k = 0; k < nblk; k++ ) \
+                                sqd1[k][0] = sqd2[k][0] = 0; \
+                        for( int k = 0; k < 16*nblk; k++ ) \
+                        { \
+                            sql1[k>>4][k&15] = sql2[k>>4][k&15] = 0x5a5a + k; \
+                            sqo1[k>>4][k&15] = sqo2[k>>4][k&15] = 0x3c3c + k; \
+                        } \
+                        int res_c = call_c1( zz_c[fld].name, (void*)sqd1, (void*)sqo1, (void*)sql1, mf, bias ); \
+                        int res_a = call_a1( zz_a[fld].name, (void*)sqd2, (void*)sqo2, (void*)sql2, mf, bias ); \
+                        int bad = res_c != res_a || memcmp( sqd1, sqd2, 16*nblk*sizeof(dctcoef) ) \
+                                  || memcmp( sqo1, sqo2, 16*nblk*sizeof(dctcoef) ); \
+                        for( int k = 0; k < nblk; k++ ) \
+                            if( (res_c >> k)&1 ) \
+                                bad |= !!memcmp( sql1[k], sql2[k], 16*sizeof(dctcoef) ); \
+                        if( bad ) \
+                        { \
+                            oks[3] = 0; \
+                            fprintf( stderr, #name "_%s (qp=%d, cqm=%d, block="#block", j=%d, res_c=%x, res_asm=%x): [FAILED]\n", \
+                                     fld?"field":"frame", qp, i_cqm, j, res_c, res_a ); \
+                            break; \
+                        } \
+                        call_c2( zz_c[fld].name, (void*)sqd1, (void*)sqo1, (void*)sql1, mf, bias ); \
+                        call_a2( zz_a[fld].name, (void*)sqd2, (void*)sqo2, (void*)sql2, mf, bias ); \
+                    } \
+                } \
+            }
+
+        TEST_QUANT_SCAN_LAST( quant_4x4x4_scan_last, CQM_4PY, 4 );
+        TEST_QUANT_SCAN_LAST( quant_4x4x4_scan_last, CQM_4IC, 4 );
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \

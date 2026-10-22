@@ -421,6 +421,43 @@ int x264_quant_8x8_scan_field( dctcoef dct[64], dctcoef level[64], udctcoef mf[6
     return quant_8x8_scan( dct, level, mf, bias, dequant_mf, i_qp, 1 );
 }
 
+/* orig = dct, quant_4x4x4 dct, zigzag the nonzero blocks into level (other blocks unspecified).
+ * Returns nz | last << (4+4*j) per nonzero block j: its last nonzero coef in scan order */
+static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+                                                udctcoef mf[16], udctcoef bias[16], int b_field )
+{
+    int ret = 0;
+    for( int j = 0; j < 4; j++ )
+    {
+        int nz = 0;
+        for( int i = 0; i < 16; i++ )
+        {
+            orig[j][i] = dct[j][i];
+            QUANT_ONE( dct[j][i], mf[i], bias[i] );
+        }
+        if( !nz )
+            continue;
+        int last = 0;
+        for( int i = 0; i < 16; i++ )
+        {
+            level[j][i] = dct[j][x264_zigzag_scan4[b_field][i]];
+            if( level[j][i] )
+                last = i;
+        }
+        ret |= 1 << j | last << (4+4*j);
+    }
+    return ret;
+}
+
+int x264_quant_4x4x4_scan_last_frame( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
+{
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 0 );
+}
+int x264_quant_4x4x4_scan_last_field( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
+{
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 1 );
+}
+
 #define last(num)\
 static int x264_coeff_last##num( dctcoef *l )\
 {\

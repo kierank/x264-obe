@@ -1224,18 +1224,22 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
                               int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx )
 {
     ALIGNED_ARRAY_64( dctcoef, orig_coefs,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, quant_coefs,[4],[16] );
     int b_ac = trellis_ctx_ac[ctx_block_cat];
-    h->mc.memcpy_aligned( orig_coefs, dct, sizeof(dctcoef)*4*16 );
-    int nz = h->quantf.quant_4x4x4( dct, h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias0[i_quant_cat][i_qp] );
+    int nzl = h->zigzagf.quant_4x4x4_scan_last( dct, orig_coefs, quant_coefs, h->quant4_mf[i_quant_cat][i_qp],
+                                                h->quant4_bias0[i_quant_cat][i_qp] );
+    int nz = nzl & 15;
     if( !nz )
         return 0;
     trellis_args_t a;
     trellis_args_init( h, &a, h->unquant4_mf[i_quant_cat][i_qp], x264_zigzag_scan4[MB_INTERLACED], ctx_block_cat,
                        h->mb.i_trellis_lambda2[b_chroma][b_intra], b_chroma );
     int nza = 0;
-    for( int i = 0; i < 4; i++ )
-        if( nz & (1 << i) )
-            nza |= trellis_cabac_quantised( h, &a, dct[i], orig_coefs[i], ctx_block_cat, b_ac, b_chroma, 0, 16, idx+i ) << i;
+    /* the last of a nonzero block is its coeff_last[ctx_block_cat]( quant_coefs+b_ac )+b_ac:
+     * both are 0 when only coef 0 is nonzero */
+    FOREACH_BIT( i, 0, nz )
+        nza |= trellis_cabac_last( h, &a, dct[i], orig_coefs[i], quant_coefs[i], (nzl >> (4+4*i)) & 15,
+                                   b_ac, b_chroma, 0, 16, idx+i ) << i;
     return nza;
 }
 

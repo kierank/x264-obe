@@ -76,6 +76,10 @@ typedef struct
      * Returns 0, or 1 | min(score, 9) << 4. */
     int  (*quant_8x8_scan)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                             int dequant_mf[6][64], int i_qp );
+    /* orig = dct, quant_4x4x4, then scan_4x4 of the nonzero blocks into level (others unspecified).
+     * Returns nz | last << (4+4*j) for each nonzero block j, last = its last nonzero coef in scan order. */
+    int  (*quant_4x4x4_scan_last)( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+                                   udctcoef mf[16], udctcoef bias[16] );
 
 } x264_zigzag_function_t;
 
