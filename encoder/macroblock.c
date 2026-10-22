@@ -594,6 +594,86 @@ void x264_predict_lossless_16x16( x264_t *h, int p, int i_mode )
 /*****************************************************************************
  * x264_macroblock_encode:
  *****************************************************************************/
+uint64_t x264_zsc_cnt[2][2][ZSC_STATS];
+__thread int x264_zsc_rd;
+
+#define ZSC_ADD( k, stat, v ) __atomic_fetch_add( &x264_zsc_cnt[k][x264_zsc_rd][stat], (v), __ATOMIC_RELAXED )
+
+/* per inter_resid call: 8x8s with a zero residual (A6), proven by the screen, quantising to all zero;
+ * 8x8 rows (the 8-bit 8x8 kernel's dct unit) zero / proven; 4x4s proven alone / quantising to zero */
+static void zsc_count( x264_t *h, int b_8x8, int p, const uint32_t *zthr, udctcoef *mf, udctcoef *bias )
+{
+    pixel *fenc = h->mb.pic.p_fenc[p], *fdec = h->mb.pic.p_fdec[p];
+    int zm = x264_inter_resid_zscreen( fenc, fdec, b_8x8, zthr );
+    int zero = 0, qz = 0, p4 = 0, q4 = 0;
+    for( int i8 = 0; i8 < 4; i8++ )
+    {
+        pixel *e = fenc + (i8&1)*8 + (i8>>1)*8*FENC_STRIDE, *d = fdec + (i8&1)*8 + (i8>>1)*8*FDEC_STRIDE;
+        int z = 1;
+        for( int y = 0; y < 8; y++ )
+            for( int x = 0; x < 8; x++ )
+                z &= e[x+y*FENC_STRIDE] == d[x+y*FDEC_STRIDE];
+        zero |= z << i8;
+        if( b_8x8 )
+        {
+            ALIGNED_ARRAY_64( dctcoef, dct,[64] );
+            h->dctf.sub8x8_dct8( dct, e, d );
+            qz |= !h->quantf.quant_8x8( dct, mf, bias ) << i8;
+        }
+        else
+        {
+            ALIGNED_ARRAY_64( dctcoef, dct,[4],[16] );
+            h->dctf.sub8x8_dct( dct, e, d );
+            int nz = h->quantf.quant_4x4x4( dct, mf, bias );
+            q4 += 4 - __builtin_popcount( nz & 15 );
+            qz |= !(nz & 15) << i8;
+            for( int i = 0; i < 4; i++ )
+            {
+                int64_t ee = 0, s = 0;
+                for( int y = (i>>1)*4; y < (i>>1)*4+4; y++ )
+                    for( int x = (i&1)*4; x < (i&1)*4+4; x++ )
+                    {
+                        int r = e[x+y*FENC_STRIDE] - d[x+y*FDEC_STRIDE];
+                        ee += r*r;
+                        s += r;
+                    }
+                p4 += (uint64_t)(16*ee - s*s) <= zthr[0] && llabs( s ) < (int32_t)zthr[1];
+            }
+        }
+    }
+    ZSC_ADD( b_8x8, ZSC_CALLS, 1 );
+    ZSC_ADD( b_8x8, ZSC_8X8, 4 );
+    ZSC_ADD( b_8x8, ZSC_ZERO, __builtin_popcount( zero ) );
+    ZSC_ADD( b_8x8, ZSC_PROVEN, __builtin_popcount( zm ) );
+    ZSC_ADD( b_8x8, ZSC_QZERO, __builtin_popcount( qz ) );
+    ZSC_ADD( b_8x8, ZSC_ROWS_ZERO, ((zero&3) == 3) + ((zero>>2) == 3) );
+    ZSC_ADD( b_8x8, ZSC_ROWS_PROVEN, ((zm&3) == 3) + ((zm>>2) == 3) );
+    ZSC_ADD( b_8x8, ZSC_4X4_PROVEN, p4 );
+    ZSC_ADD( b_8x8, ZSC_4X4_QZERO, q4 );
+}
+
+void x264_zsc_cnt_print( x264_t *h )
+{
+    int frames = 0;
+    for( int i = 0; i < 3; i++ )
+        frames += h->stat.i_frame_count[i];
+    for( int k = 0; k < 2; k++ )
+        for( int r = 0; r < 2; r++ )
+        {
+            uint64_t *c = x264_zsc_cnt[k][r];
+            if( !c[ZSC_CALLS] )
+                continue;
+            double n8 = c[ZSC_8X8];
+            x264_log( h, X264_LOG_INFO, "zscreen %d-bit inter_resid_%s %s: calls %"PRIu64" (%.0f/frame), 8x8s skipped: A6 %.1f%%"
+                      " screen %.1f%% (%.2f/call), all-zero quant %.1f%% | 8x8 rows (8-bit 8x8 dct): A6 %.1f%% screen %.1f%%"
+                      " | 4x4s proven alone %.1f%%, all-zero quant %.1f%%\n",
+                      BIT_DEPTH, k ? "8x8" : "4x4", r ? "rd   " : "other", c[ZSC_CALLS], frames ? (double)c[ZSC_CALLS] / frames : 0.,
+                      100. * c[ZSC_ZERO] / n8, 100. * c[ZSC_PROVEN] / n8, (double)c[ZSC_PROVEN] / c[ZSC_CALLS],
+                      100. * c[ZSC_QZERO] / n8, 50. * c[ZSC_ROWS_ZERO] / c[ZSC_CALLS], 50. * c[ZSC_ROWS_PROVEN] / c[ZSC_CALLS],
+                      k ? 0. : 25. * c[ZSC_4X4_PROVEN] / n8, k ? 0. : 25. * c[ZSC_4X4_QZERO] / n8 );
+        }
+}
+
 static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_count, int chroma )
 {
     int i_qp = h->mb.i_qp;
@@ -788,6 +868,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 if( h->zigzagf.inter_resid_8x8 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
                     int i_quant_cat = p?CQM_8PC:CQM_8PY;
+                    zsc_count( h, 1, p, h->zscreen_resid_thr[1+!!p][i_qp], h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp] );
                     int ret = h->zigzagf.inter_resid_8x8( &h->dct.luma8x8[p*4], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
                                                           h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp],
@@ -861,6 +942,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             {
                 if( h->zigzagf.inter_resid_4x4 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
+                    zsc_count( h, 0, p, h->zscreen_resid_thr[0][i_qp], h->quant4_mf[CQM_4PY][i_qp], h->quant4_bias[CQM_4PY][i_qp] );
                     int ret = h->zigzagf.inter_resid_4x4( &h->dct.luma4x4[p*16], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
                                                           h->quant4_mf[CQM_4PY][i_qp], h->quant4_bias[CQM_4PY][i_qp],

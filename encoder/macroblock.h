@@ -159,6 +159,15 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* zscreen counters: [inter_resid 4x4, 8x8][in rdo][stat] */
+enum { ZSC_CALLS, ZSC_8X8, ZSC_ZERO, ZSC_PROVEN, ZSC_QZERO, ZSC_ROWS_ZERO, ZSC_ROWS_PROVEN, ZSC_4X4_PROVEN, ZSC_4X4_QZERO, ZSC_STATS };
+#define x264_zsc_cnt x264_template(zsc_cnt)
+extern uint64_t x264_zsc_cnt[2][2][ZSC_STATS];
+#define x264_zsc_rd x264_template(zsc_rd)
+extern __thread int x264_zsc_rd;
+#define x264_zsc_cnt_print x264_template(zsc_cnt_print)
+void x264_zsc_cnt_print( x264_t *h );
+
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
