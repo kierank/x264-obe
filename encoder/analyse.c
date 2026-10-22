@@ -1109,7 +1109,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
             if( i_mode == old_pred_mode || a->i_satd_i16x16_dir[i_mode] > i_thresh )
                 continue;
             h->mb.i_intra16x16_pred_mode = i_mode;
-            i_satd = x264_rd_cost_mb( h, a->i_lambda2 );
+            i_satd = x264_rd_cost_mb_bound( h, a->i_lambda2, i_best );
             COPY2_IF_LT( i_best, i_satd, a->i_predict16x16, i_mode );
         }
     }
@@ -1138,7 +1138,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                 /* the previous thing encoded was x264_intra_rd(), so the pixels and
                  * coefs for the current chroma mode are still around, so we only
                  * have to recount the bits. */
-                i_best = x264_rd_cost_chroma( h, i_chroma_lambda, a->i_predict8x8chroma, 0 );
+                i_best = x264_rd_cost_chroma( h, i_chroma_lambda, a->i_predict8x8chroma, 0, RD_NO_BOUND );
                 for( int i = 0; i < i_max; i++ )
                 {
                     int i_mode = predict_mode_sorted[i];
@@ -1152,7 +1152,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                     /* if we've already found a mode that needs no residual, then
                      * probably any mode with a residual will be worse.
                      * so avoid dct on the remaining modes to improve speed. */
-                    i_satd = x264_rd_cost_chroma( h, i_chroma_lambda, i_mode, h->mb.i_cbp_chroma != 0x00 );
+                    i_satd = x264_rd_cost_chroma( h, i_chroma_lambda, i_mode, h->mb.i_cbp_chroma != 0x00, i_best );
                     COPY3_IF_LT( i_best, i_satd, a->i_predict8x8chroma, i_mode, i_cbp_chroma_best, h->mb.i_cbp_chroma );
                 }
                 h->mb.i_chroma_pred_mode = a->i_predict8x8chroma;
@@ -1182,7 +1182,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
             for( ; *predict_mode >= 0; predict_mode++ )
             {
                 int i_mode = *predict_mode;
-                i_satd = x264_rd_cost_i4x4( h, a->i_lambda2, idx, i_mode );
+                i_satd = x264_rd_cost_i4x4( h, a->i_lambda2, idx, i_mode, i_best );
 
                 if( i_best > i_satd )
                 {
@@ -1241,7 +1241,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                     continue;
 
                 h->mb.i_cbp_luma = a->i_cbp_i8x8_luma;
-                i_satd = x264_rd_cost_i8x8( h, a->i_lambda2, idx, i_mode, edge );
+                i_satd = x264_rd_cost_i8x8( h, a->i_lambda2, idx, i_mode, edge, i_best );
 
                 if( i_best > i_satd )
                 {

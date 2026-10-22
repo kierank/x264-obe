@@ -292,7 +292,7 @@ uint64_t x264_rd_cost_part_bound( x264_t *h, int i_lambda2, int i4, int i_pixel,
     return (i_ssd<<8) + i_bits;
 }
 
-static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode, pixel edge[4][32] )
+static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode, pixel edge[4][32], uint64_t bound )
 {
     uint64_t i_ssd, i_bits;
     int plane_count = CHROMA444 ? 3 : 1;
@@ -317,6 +317,8 @@ static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode,
 
     if( h->param.b_cabac )
     {
+        if( (i_ssd<<8) >= bound )
+            return COST_MAX64;
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
         x264_partition_i8x8_size_cabac( h, &cabac_tmp, i8, i_mode );
@@ -328,7 +330,7 @@ static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode,
     return (i_ssd<<8) + i_bits;
 }
 
-static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode )
+static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode, uint64_t bound )
 {
     uint64_t i_ssd, i_bits;
     int plane_count = CHROMA444 ? 3 : 1;
@@ -351,6 +353,8 @@ static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode 
 
     if( h->param.b_cabac )
     {
+        if( (i_ssd<<8) >= bound )
+            return COST_MAX64;
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
         x264_partition_i4x4_size_cabac( h, &cabac_tmp, i4, i_mode );
@@ -362,7 +366,7 @@ static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode 
     return (i_ssd<<8) + i_bits;
 }
 
-static uint64_t x264_rd_cost_chroma( x264_t *h, int i_lambda2, int i_mode, int b_dct )
+static uint64_t x264_rd_cost_chroma( x264_t *h, int i_lambda2, int i_mode, int b_dct, uint64_t bound )
 {
     uint64_t i_ssd, i_bits;
 
@@ -377,6 +381,8 @@ static uint64_t x264_rd_cost_chroma( x264_t *h, int i_lambda2, int i_mode, int b
 
     if( h->param.b_cabac )
     {
+        if( (i_ssd<<8) >= bound )
+            return COST_MAX64;
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
         x264_chroma_size_cabac( h, &cabac_tmp );
