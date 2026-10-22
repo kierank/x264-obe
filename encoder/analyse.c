@@ -34,6 +34,11 @@
 #include "analyse.h"
 #include "rdo.c"
 
+/* pirsm counters: P mbs, forced intra P mbs, masked, S1 sub16x16 skipped (all / forced),
+ * S2 mc tried / static, S3 i16x16 reused */
+static uint64_t pirsm_cnt[8];
+#define PIRSM_CNT(i) __atomic_fetch_add( &pirsm_cnt[i], 1, __ATOMIC_RELAXED )
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -767,6 +772,7 @@ static int x264_mb_analyse_intra16x16( x264_t *h, x264_mb_analysis_t *a, int i_s
         if( a->b_i16x16_reuse )
         {
             /* same fenc and edges: only the mode costs move with lambda */
+            PIRSM_CNT(7);
             int i_dlambda = lambda - a->i_lambda_i16x16;
             a->b_i16x16_reuse = 0;
             for( ; *predict_mode >= 0; predict_mode++ )
@@ -3272,6 +3278,20 @@ static void x264_mb_analyse_intra_p( x264_t *h, x264_mb_analysis_t *a, int i_cos
         x264_mb_analyse_intra( h, a, i_cost );
 }
 
+void x264_pirsm_print( void )
+{
+    static const char *name[8] = { "p_mbs", "forced", "masked", "s1_sub16_skip", "s1_forced", "s2_try", "s2_static", "s3_reuse" };
+    uint64_t c[8];
+    for( int i = 0; i < 8; i++ )
+        c[i] = __atomic_load_n( &pirsm_cnt[i], __ATOMIC_RELAXED );
+    if( !c[0] )
+        return;
+    fprintf( stderr, "pirsm%d:", BIT_DEPTH );
+    for( int i = 0; i < 8; i++ )
+        fprintf( stderr, " %s %"PRIu64, name[i], c[i] );
+    fprintf( stderr, "\n" );
+}
+
 /* Whether the prediction in p_fdec is the fenc in every plane */
 static int x264_mb_pred_is_fenc( x264_t *h )
 {
@@ -3403,6 +3423,9 @@ intra_analysis:
     else if( h->sh.i_type == SLICE_TYPE_P )
     {
         int b_skip = 0;
+        PIRSM_CNT(0);
+        if( analysis.b_force_intra )
+            PIRSM_CNT(1);
 
         h->mc.prefetch_ref( h->mb.pic.p_fref[0][0][h->mb.i_mb_x&3], h->mb.pic.i_stride[0], 0 );
 
@@ -3701,6 +3724,9 @@ skip_analysis:
                      !h->mb.b_noise_reduction )
             {
                 /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
+                PIRSM_CNT(3);
+                if( analysis.b_force_intra )
+                    PIRSM_CNT(4);
                 x264_mb_analyse_intra16x16( h, &analysis, i_cost );
             }
             else
@@ -3745,11 +3771,15 @@ skip_analysis:
                 int b_mc = h->mb.i_type == P_L0 && h->mb.i_partition == D_16x16 &&
                            analysis.l0.me16x16.cost <= analysis.l0.me16x16.cost_mv + analysis.l0.me16x16.i_ref_cost &&
                            !h->mb.b_skip_mc && !h->mb.b_lossless && !h->mb.b_trellis && !h->mb.b_noise_reduction;
+                PIRSM_CNT(2);
                 if( b_mc )
                 {
                     x264_mb_mc( h );
                     b_static = x264_mb_pred_is_fenc( h );
                     h->mb.b_skip_mc = 1;
+                    PIRSM_CNT(5);
+                    if( b_static )
+                        PIRSM_CNT(6);
                 }
                 if( !b_static )
                 {

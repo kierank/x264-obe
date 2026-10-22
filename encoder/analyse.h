@@ -41,6 +41,8 @@ int x264_analyse_weight_height( x264_t *h );
 void x264_analyse_weight_rows( x264_t *h, int y0, int y1 );
 #define x264_macroblock_analyse x264_template(macroblock_analyse)
 void x264_macroblock_analyse( x264_t *h );
+#define x264_pirsm_print x264_template(pirsm_print)
+void x264_pirsm_print( void );
 #define x264_slicetype_decide x264_template(slicetype_decide)
 void x264_slicetype_decide( x264_t *h );
 
