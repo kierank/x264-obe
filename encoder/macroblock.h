@@ -159,6 +159,12 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* layout pair test/x264-dconly / -twin: hidden weak x264_N_dconly_gate, defined in macroblock.c (no bytes) unless
+ * DCONLY_TWIN; the twin links it as 0, DCONLY_OFF is 1 and every dc-only path falls back to the full idct */
+#define x264_dconly_gate x264_template(dconly_gate)
+extern void x264_dconly_gate( void ) __attribute__((weak, visibility("hidden")));
+#define DCONLY_OFF (!x264_dconly_gate)
+
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
@@ -262,7 +268,7 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
             h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8 );
             h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[p?CQM_8IC:CQM_8IY], i_qp );
         }
-        if( b_q8s && !(nz >> 8) )
+        if( b_q8s && !(nz >> 8) && !DCONLY_OFF )
             x264_mb_add_dconly( h, p_dst, dct8x8, 1, 1 );
         else
             h->dctf.add8x8_idct8( p_dst, dct8x8 );

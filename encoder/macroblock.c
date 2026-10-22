@@ -29,6 +29,13 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#define DCONLY_TWIN 0
+#define DCONLY_STR2( x ) #x
+#define DCONLY_STR( x ) DCONLY_STR2( x )
+#if !DCONLY_TWIN
+__asm__( ".set " DCONLY_STR( x264_dconly_gate ) ", " DCONLY_STR( x264_macroblock_encode ) );
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -789,7 +796,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 h->dctf.sub16x16_dct8( dct8x8, h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] );
                 h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
 
-                int plane_cbp = 0, plane_ac = b_q8s ? 0 : 0xf;
+                int plane_cbp = 0, plane_ac = b_q8s && !DCONLY_OFF ? 0 : 0xf;
                 for( int idx = 0; idx < 4; idx++ )
                 {
                     if( b_q8s )
@@ -851,7 +858,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                         h->quantf.denoise_dct( dct4x4[idx], h->nr_residual_sum[0+!!p*2], h->nr_offset[0+!!p*2], 16 );
                 }
 
-                int plane_cbp = 0, plane_ac = h->mb.b_trellis ? 0xf : 0;
+                int plane_cbp = 0, plane_ac = h->mb.b_trellis || DCONLY_OFF ? 0xf : 0;
                 for( int i8x8 = 0; i8x8 < 4; i8x8++ )
                 {
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
@@ -1237,7 +1244,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                                    : x264_quant_8x8( h, dct8x8, i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 0, p, i8 );
                 if( nnz8x8 )
                 {
-                    int b_ac = !b_q8s || nnz8x8 >> 8;
+                    int b_ac = !b_q8s || nnz8x8 >> 8 || DCONLY_OFF;
                     if( !b_q8s )
                         h->zigzagf.scan_8x8( h->dct.luma8x8[4*p+i8], dct8x8 );
 
@@ -1303,7 +1310,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                     if( nz )
                     {
                         i_decimate_8x8 += (nz >> 4) & 15;
-                        b_ac = nz >> 8;
+                        b_ac = (nz >> 8) | DCONLY_OFF;
                         STORE_4x4x4_NNZ( p*16+i8*4, nz );
                     }
                 }
