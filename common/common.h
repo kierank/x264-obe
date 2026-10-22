@@ -241,6 +241,14 @@ typedef struct x264_left_table_t
     uint8_t ref[4];
 } x264_left_table_t;
 
+/* Progressive 4:2:0/4:2:2 cache_load/cache_save helpers, see x264_cacheprog_init;
+ * NULL: the C in macroblock.c */
+typedef struct
+{
+    /* nnz[0..15], [16..23] and [32..39] (4:2:2: [0..47]) from the cache */
+    void (*save_nnz)( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE] );
+} x264_cacheprog_function_t;
+
 /* Current frame stats */
 typedef struct
 {
@@ -784,6 +792,7 @@ struct x264_t
     x264_predict_8x8_filter_t predict_8x8_filter;
 
     x264_pixel_function_t pixf;
+    x264_cacheprog_function_t cachef;
     x264_mc_functions_t   mc;
     x264_dct_function_t   dctf;
     x264_zigzag_function_t zigzagf;

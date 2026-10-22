@@ -912,6 +912,57 @@ static const struct { unsigned int n8[4], n4[16]; } neighbour_rows[16] =
 #undef NB_B
 #undef NB_A
 
+static ALWAYS_INLINE void cacheprog_save_nnz( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE], int cf )
+{
+    CP32( &nnz[ 0+0*4], &nnz_cache[x264_scan8[ 0]] );
+    CP32( &nnz[ 0+1*4], &nnz_cache[x264_scan8[ 2]] );
+    CP32( &nnz[ 0+2*4], &nnz_cache[x264_scan8[ 8]] );
+    CP32( &nnz[ 0+3*4], &nnz_cache[x264_scan8[10]] );
+    CP32( &nnz[16+0*4], &nnz_cache[x264_scan8[16+0]] );
+    CP32( &nnz[16+1*4], &nnz_cache[x264_scan8[16+2]] );
+    CP32( &nnz[32+0*4], &nnz_cache[x264_scan8[32+0]] );
+    CP32( &nnz[32+1*4], &nnz_cache[x264_scan8[32+2]] );
+    if( cf == CHROMA_422 )
+    {
+        CP32( &nnz[16+2*4], &nnz_cache[x264_scan8[16+ 8]] );
+        CP32( &nnz[16+3*4], &nnz_cache[x264_scan8[16+10]] );
+        CP32( &nnz[32+2*4], &nnz_cache[x264_scan8[32+ 8]] );
+        CP32( &nnz[32+3*4], &nnz_cache[x264_scan8[32+10]] );
+    }
+}
+
+void x264_cacheprog_save_nnz_420_c( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE] )
+{
+    cacheprog_save_nnz( nnz, nnz_cache, CHROMA_420 );
+}
+
+void x264_cacheprog_save_nnz_422_c( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE] )
+{
+    cacheprog_save_nnz( nnz, nnz_cache, CHROMA_422 );
+}
+
+#if HAVE_MMX
+#include "x86/cacheprog.h"
+#endif
+
+void x264_cacheprog_init( int cpu, x264_cacheprog_function_t *pf, int chroma_format )
+{
+    memset( pf, 0, sizeof(*pf) );
+    if( chroma_format != CHROMA_420 && chroma_format != CHROMA_422 )
+        return;
+#if HAVE_MMX
+    int b_422 = chroma_format == CHROMA_422;
+    if( cpu&X264_CPU_AVX2 )
+    {
+        pf->save_nnz = b_422 ? x264_cacheprog_save_nnz_422_avx2 : x264_cacheprog_save_nnz_420_avx2;
+    }
+    if( cpu&X264_CPU_AVX512 )
+    {
+        pf->save_nnz = b_422 ? x264_cacheprog_save_nnz_422_avx512 : x264_cacheprog_save_nnz_420_avx512;
+    }
+#endif
+}
+
 /* Reencode: the left column from the frame, progressive 4:2:0 or 4:2:2 */
 static NOINLINE void x264_macroblock_load_left_reencode( x264_t *h, int off_y, int off_c, int height_c )
 {
@@ -2302,21 +2353,10 @@ static ALWAYS_INLINE void x264_macroblock_cache_save_prog( x264_t *h, int cf )
     }
 
     /* save non zero count */
-    CP32( &nnz[ 0+0*4], &h->mb.cache.non_zero_count[x264_scan8[ 0]] );
-    CP32( &nnz[ 0+1*4], &h->mb.cache.non_zero_count[x264_scan8[ 2]] );
-    CP32( &nnz[ 0+2*4], &h->mb.cache.non_zero_count[x264_scan8[ 8]] );
-    CP32( &nnz[ 0+3*4], &h->mb.cache.non_zero_count[x264_scan8[10]] );
-    CP32( &nnz[16+0*4], &h->mb.cache.non_zero_count[x264_scan8[16+0]] );
-    CP32( &nnz[16+1*4], &h->mb.cache.non_zero_count[x264_scan8[16+2]] );
-    CP32( &nnz[32+0*4], &h->mb.cache.non_zero_count[x264_scan8[32+0]] );
-    CP32( &nnz[32+1*4], &h->mb.cache.non_zero_count[x264_scan8[32+2]] );
-    if( cf == CHROMA_422 )
-    {
-        CP32( &nnz[16+2*4], &h->mb.cache.non_zero_count[x264_scan8[16+ 8]] );
-        CP32( &nnz[16+3*4], &h->mb.cache.non_zero_count[x264_scan8[16+10]] );
-        CP32( &nnz[32+2*4], &h->mb.cache.non_zero_count[x264_scan8[32+ 8]] );
-        CP32( &nnz[32+3*4], &h->mb.cache.non_zero_count[x264_scan8[32+10]] );
-    }
+    if( h->cachef.save_nnz )
+        h->cachef.save_nnz( nnz, h->mb.cache.non_zero_count );
+    else
+        cacheprog_save_nnz( nnz, h->mb.cache.non_zero_count, cf );
 
     if( h->mb.i_cbp_luma == 0 && h->mb.i_type != I_8x8 )
         h->mb.b_transform_8x8 = 0;

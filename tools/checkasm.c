@@ -1813,6 +1813,55 @@ static int check_pixel( int cpu_ref, int cpu_new )
     return ret;
 }
 
+/* nnz-like bytes: random, 0/1, or 0 with one 1..255 */
+static void cacheprog_fill( uint8_t *buf, int size, int dist )
+{
+    for( int j = 0; j < size; j++ )
+        buf[j] = dist == 0 ? rand() : dist == 1 ? rand()&1 : 0;
+    if( dist == 2 )
+        buf[rand()%size] = 1 + rand()%255;
+}
+
+static int check_cacheprog( int cpu_ref, int cpu_new )
+{
+    static const int fmts[2] = { CHROMA_420, CHROMA_422 };
+    static const char *fmt_names[2] = { "420", "422" };
+    int ret = 0, ok = 1, used_asm = 0;
+
+    for( int f = 0; f < 2; f++ )
+    {
+        x264_cacheprog_function_t cp_ref, cp_a;
+        x264_cacheprog_init( cpu_ref, &cp_ref, fmts[f] );
+        x264_cacheprog_init( cpu_new, &cp_a, fmts[f] );
+
+        if( cp_a.save_nnz && cp_a.save_nnz != cp_ref.save_nnz )
+        {
+            void (*save_nnz_c)( uint8_t *, uint8_t * ) = f ? x264_cacheprog_save_nnz_422_c : x264_cacheprog_save_nnz_420_c;
+            used_asm = 1;
+            set_func_name( "cacheprog_save_nnz_%s", fmt_names[f] );
+            for( int i = 0; i < 300 && ok; i++ )
+            {
+                ALIGNED_ARRAY_16( uint8_t, cache, [X264_SCAN8_SIZE] );
+                ALIGNED_ARRAY_16( uint8_t, nnz, [2],[48] );
+                int dist = i%3;
+                cacheprog_fill( cache, X264_SCAN8_SIZE, dist );
+                memset( nnz, i&1 ? 0xcd : 0, sizeof(nnz) );
+                call_c( save_nnz_c, nnz[0], cache );
+                call_a( cp_a.save_nnz, nnz[1], cache );
+                if( memcmp( nnz[0], nnz[1], 48 ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "cacheprog_save_nnz_%s (dist=%d): [FAILED]\n", fmt_names[f], dist );
+                }
+            }
+        }
+    }
+
+    report( "cacheprog :" );
+
+    return ret;
+}
+
 static int check_dct( int cpu_ref, int cpu_new )
 {
     x264_dct_function_t dct_c;
@@ -5502,6 +5551,7 @@ static int check_bitstream( int cpu_ref, int cpu_new )
 static int check_all_funcs( int cpu_ref, int cpu_new )
 {
     return check_pixel( cpu_ref, cpu_new )
+         + check_cacheprog( cpu_ref, cpu_new )
          + check_dct( cpu_ref, cpu_new )
          + check_mc( cpu_ref, cpu_new )
          + check_intra( cpu_ref, cpu_new )

@@ -332,6 +332,13 @@ void x264_prefetch_fenc( x264_t *h, x264_frame_t *fenc, int i_mb_x, int i_mb_y )
 #define x264_copy_column8 x264_template(copy_column8)
 void x264_copy_column8( pixel *dst, pixel *src );
 
+#define x264_cacheprog_init x264_template(cacheprog_init)
+void x264_cacheprog_init( int cpu, x264_cacheprog_function_t *pf, int chroma_format );
+#define x264_cacheprog_save_nnz_420_c x264_template(cacheprog_save_nnz_420_c)
+void x264_cacheprog_save_nnz_420_c( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE] );
+#define x264_cacheprog_save_nnz_422_c x264_template(cacheprog_save_nnz_422_c)
+void x264_cacheprog_save_nnz_422_c( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE] );
+
 /* x264_mb_predict_mv_16x16:
  *      set mvp with predicted mv for D_16x16 block
  *      h->mb. need only valid values from other blocks */
