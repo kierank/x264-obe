@@ -1672,6 +1672,9 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
         const int maxref = X264_MAX( a->l0.me8x8[2*i].i_ref, a->l0.me8x8[2*i+1].i_ref );
         const int ref8[2] = { minref, maxref };
         const int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
+        /* halfpel early termination across the two refs, as in x264_mb_analyse_inter_p16x16 */
+        int i_halfpel_thresh = INT_MAX;
+        int *p_halfpel_thresh = a->b_early_terminate && i_ref8s > 1 ? &i_halfpel_thresh : NULL;
 
         m.i_pixel = PIXEL_16x8;
 
@@ -1681,6 +1684,7 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
         {
             const int i_ref = ref8[j];
             m.i_ref_cost = REF_COST( 0, i_ref );
+            i_halfpel_thresh -= m.i_ref_cost;
 
             /* if we skipped the 16x16 predictor, we wouldn't have to copy anything... */
             CP32( mvc[0], a->l0.mvc[i_ref][0] );
@@ -1696,12 +1700,13 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
             if( x264_mb_blind_dupe_src( h, i_ref ) == ref8[0] && i_ref != ref8[0] )
             {
                 /* We can just leave the MV from the previous ref search. */
-                x264_me_refine_qpel_refdupe( h, &m, NULL );
+                x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
             }
             else
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search_ref( h, &m, mvc, 3, p_halfpel_thresh );
 
             m.cost += m.i_ref_cost;
+            i_halfpel_thresh += m.i_ref_cost;
 
             if( m.cost < l0m->cost )
                 h->mc.memcpy_aligned( l0m, &m, sizeof(x264_me_t) );
@@ -1738,6 +1743,9 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
         const int maxref = X264_MAX( a->l0.me8x8[i].i_ref, a->l0.me8x8[i+2].i_ref );
         const int ref8[2] = { minref, maxref };
         const int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
+        /* halfpel early termination across the two refs, as in x264_mb_analyse_inter_p16x16 */
+        int i_halfpel_thresh = INT_MAX;
+        int *p_halfpel_thresh = a->b_early_terminate && i_ref8s > 1 ? &i_halfpel_thresh : NULL;
 
         m.i_pixel = PIXEL_8x16;
 
@@ -1747,6 +1755,7 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
         {
             const int i_ref = ref8[j];
             m.i_ref_cost = REF_COST( 0, i_ref );
+            i_halfpel_thresh -= m.i_ref_cost;
 
             CP32( mvc[0], a->l0.mvc[i_ref][0] );
             CP32( mvc[1], a->l0.mvc[i_ref][i+1] );
@@ -1761,12 +1770,13 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
             if( x264_mb_blind_dupe_src( h, i_ref ) == ref8[0] && i_ref != ref8[0] )
             {
                 /* We can just leave the MV from the previous ref search. */
-                x264_me_refine_qpel_refdupe( h, &m, NULL );
+                x264_me_refine_qpel_refdupe( h, &m, p_halfpel_thresh );
             }
             else
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search_ref( h, &m, mvc, 3, p_halfpel_thresh );
 
             m.cost += m.i_ref_cost;
+            i_halfpel_thresh += m.i_ref_cost;
 
             if( m.cost < l0m->cost )
                 h->mc.memcpy_aligned( l0m, &m, sizeof(x264_me_t) );
@@ -2625,11 +2635,15 @@ static void x264_mb_analyse_inter_b16x8( x264_t *h, x264_mb_analysis_t *a, int i
             x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
             int ref8[2] = { lX->me8x8[2*i].i_ref, lX->me8x8[2*i+1].i_ref };
             int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
+            /* halfpel early termination across the two refs */
+            int i_halfpel_thresh = INT_MAX;
+            int *p_halfpel_thresh = a->b_early_terminate && i_ref8s > 1 ? &i_halfpel_thresh : NULL;
             lX->me16x8[i].cost = INT_MAX;
             for( int j = 0; j < i_ref8s; j++ )
             {
                 int i_ref = ref8[j];
                 m.i_ref_cost = REF_COST( l, i_ref );
+                i_halfpel_thresh -= m.i_ref_cost;
 
                 LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 0, 8*i );
 
@@ -2639,8 +2653,9 @@ static void x264_mb_analyse_inter_b16x8( x264_t *h, x264_mb_analysis_t *a, int i
 
                 x264_macroblock_cache_ref( h, 0, 2*i, 4, 2, l, i_ref );
                 x264_mb_predict_mv( h, l, 8*i, 4, m.mvp );
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search_ref( h, &m, mvc, 3, p_halfpel_thresh );
                 m.cost += m.i_ref_cost;
+                i_halfpel_thresh += m.i_ref_cost;
 
                 if( m.cost < lX->me16x8[i].cost )
                     h->mc.memcpy_aligned( &lX->me16x8[i], &m, sizeof(x264_me_t) );
@@ -2724,11 +2739,15 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
             x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;
             int ref8[2] = { lX->me8x8[i].i_ref, lX->me8x8[i+2].i_ref };
             int i_ref8s = ( ref8[0] == ref8[1] ) ? 1 : 2;
+            /* halfpel early termination across the two refs */
+            int i_halfpel_thresh = INT_MAX;
+            int *p_halfpel_thresh = a->b_early_terminate && i_ref8s > 1 ? &i_halfpel_thresh : NULL;
             lX->me8x16[i].cost = INT_MAX;
             for( int j = 0; j < i_ref8s; j++ )
             {
                 int i_ref = ref8[j];
                 m.i_ref_cost = REF_COST( l, i_ref );
+                i_halfpel_thresh -= m.i_ref_cost;
 
                 LOAD_HPELS( &m, h->mb.pic.p_fref[l][i_ref], l, i_ref, 8*i, 0 );
 
@@ -2738,8 +2757,9 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
 
                 x264_macroblock_cache_ref( h, 2*i, 0, 2, 4, l, i_ref );
                 x264_mb_predict_mv( h, l, 4*i, 2, m.mvp );
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search_ref( h, &m, mvc, 3, p_halfpel_thresh );
                 m.cost += m.i_ref_cost;
+                i_halfpel_thresh += m.i_ref_cost;
 
                 if( m.cost < lX->me8x16[i].cost )
                     h->mc.memcpy_aligned( &lX->me8x16[i], &m, sizeof(x264_me_t) );
