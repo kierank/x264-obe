@@ -55,6 +55,9 @@ typedef void (*x264_pixel_satd_mcc_t) ( x264_mcc_fenc_t *fenc, int res[2], pixel
 /* satd against fenc_pre, fenc's first transform stage from satd_fenc_pre */
 typedef int  (*x264_pixel_cmp_pre_t) ( int16_t *fenc_pre, pixel *, intptr_t );
 typedef int  (*x264_pixel_cmp_avg2_pre_t) ( int16_t *fenc_pre, pixel *, pixel *, intptr_t );
+/* 8-bit: the same of lut[ avg( src1, src2 ) ], a weighted qpel prediction (x264_weight_t lut) */
+typedef int  (*x264_pixel_cmp_avg2_w_t) ( pixel *, pixel *, pixel *, intptr_t, const uint8_t *lut );
+typedef int  (*x264_pixel_cmp_avg2_pre_w_t) ( int16_t *fenc_pre, pixel *, pixel *, intptr_t, const uint8_t *lut );
 /* bipred cost: satd of mc.avg( src0, src1, weight ) without storing it, against the
  * partition's fenc_pre (8-bit) or fenc (high bit depth, FENC_STRIDE); bi4 averages
  * src0 = pavg( src0a, src0b ) and src1 = pavg( src1a, src1b ), get_ref's unweighted
@@ -130,6 +133,8 @@ typedef struct
     void (*satd_fenc_pre[2])( int16_t *fenc_pre, pixel *fenc );
     x264_pixel_cmp_pre_t satd_pre[4];
     x264_pixel_cmp_avg2_pre_t satd_avg2_pre[4];
+    x264_pixel_cmp_avg2_w_t sad_avg2_w[4];         /* 8-bit, asm only, NULL otherwise */
+    x264_pixel_cmp_avg2_pre_w_t satd_avg2_pre_w[4];
     x264_pixel_satd_bi_t  satd_bi[4];  /* asm only, NULL otherwise */
     x264_pixel_satd_bi4_t satd_bi4[4];
     x264_pixel_cmp_t ssim[7];
@@ -140,10 +145,12 @@ typedef struct
     x264_pixel_satd_mcc_t mbcmp_mcc;     /* satd_mcc where mbcmp is satd, else NULL */
     x264_pixel_cmp_pre_t mbcmp_pre[4];   /* satd_pre where mbcmp is satd, else NULL */
     x264_pixel_cmp_avg2_pre_t mbcmp_avg2_pre[4];
+    x264_pixel_cmp_avg2_pre_w_t mbcmp_avg2_pre_w[4]; /* satd_avg2_pre_w where mbcmp is satd */
     x264_pixel_satd_bi_t  mbcmp_bi[4];  /* satd_bi where mbcmp is satd, else NULL */
     x264_pixel_satd_bi4_t mbcmp_bi4[4];
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
+    x264_pixel_cmp_avg2_w_t fpelcmp_avg2_w[4];   /* sad_avg2_w where fpelcmp is sad */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
     x264_pixel_cmp_x4_t fpelcmp_x4[7];
     x264_pixel_cmp_x3_min_t sad_x3_min[7]; /* asm only, NULL otherwise */

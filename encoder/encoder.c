@@ -1564,6 +1564,7 @@ static void mbcmp_init( x264_t *h )
     {
         memcpy( h->pixf.mbcmp_pre, h->pixf.satd_pre, sizeof(h->pixf.mbcmp_pre) );
         memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
+        memcpy( h->pixf.mbcmp_avg2_pre_w, h->pixf.satd_avg2_pre_w, sizeof(h->pixf.mbcmp_avg2_pre_w) );
         memcpy( h->pixf.mbcmp_bi, h->pixf.satd_bi, sizeof(h->pixf.mbcmp_bi) );
         memcpy( h->pixf.mbcmp_bi4, h->pixf.satd_bi4, sizeof(h->pixf.mbcmp_bi4) );
     }
@@ -1571,6 +1572,7 @@ static void mbcmp_init( x264_t *h )
     {
         memset( h->pixf.mbcmp_pre, 0, sizeof(h->pixf.mbcmp_pre) );
         memset( h->pixf.mbcmp_avg2_pre, 0, sizeof(h->pixf.mbcmp_avg2_pre) );
+        memset( h->pixf.mbcmp_avg2_pre_w, 0, sizeof(h->pixf.mbcmp_avg2_pre_w) );
         memset( h->pixf.mbcmp_bi, 0, sizeof(h->pixf.mbcmp_bi) );
         memset( h->pixf.mbcmp_bi4, 0, sizeof(h->pixf.mbcmp_bi4) );
     }
@@ -1595,6 +1597,10 @@ static void mbcmp_init( x264_t *h )
         h->pixf.fpelcmp_sq_min[i] = satd ? NULL : h->pixf.sad_sq_min[i];
     }
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
+    if( satd )
+        memset( h->pixf.fpelcmp_avg2_w, 0, sizeof(h->pixf.fpelcmp_avg2_w) );
+    else
+        memcpy( h->pixf.fpelcmp_avg2_w, h->pixf.sad_avg2_w, sizeof(h->pixf.fpelcmp_avg2_w) );
 }
 
 static void chroma_dsp_init( x264_t *h )

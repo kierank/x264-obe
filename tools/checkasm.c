@@ -653,6 +653,104 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel satd_pre :" );
 
+#if !HIGH_BIT_DEPTH
+    ok = 1, used_asm = 0;
+    if( pixel_asm.sad_avg2_w[PIXEL_16x16] || pixel_asm.satd_avg2_pre_w[PIXEL_16x16] )
+    {
+        /* the definition: sad / satd of lut[ (src1 + src2 + 1) >> 1 ]; luts random, of weights
+         * (extreme scales and offsets: clipping at both ends) and the identity */
+        static const uint8_t pre_parts[9][3] = { {PIXEL_16x16, 0, 0}, {PIXEL_16x8, 0, 0}, {PIXEL_16x8, 0, 8},
+                                                 {PIXEL_8x16, 0, 0}, {PIXEL_8x16, 8, 0}, {PIXEL_8x8, 0, 0},
+                                                 {PIXEL_8x8, 8, 0}, {PIXEL_8x8, 0, 8}, {PIXEL_8x8, 8, 8} };
+        static const int16_t lut_w[6][3] = { { 64, 6, 0 }, { 127, 0, -128 }, { 0, 3, 127 }, { 77, 6, -20 },
+                                              { 127, 7, 127 }, { 1, 0, 0 } };
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[512] );
+        ALIGNED_16( pixel wavg[16*16] );
+        x264_weight_t wt;
+        used_asm = 1;
+        for( int l = 0; l < 8 && ok; l++ )
+        {
+            if( l < 6 )
+            {
+                wt.i_scale = lut_w[l][0];
+                wt.i_denom = lut_w[l][1];
+                wt.i_offset = lut_w[l][2];
+                x264_weight_lut( &wt );
+            }
+            else
+                for( int i = 0; i < 256; i++ )
+                    wt.lut[i] = rand();
+            /* k = 0: random, k = 1: maxed differences (pbuf3 = ~pbuf4) */
+            for( int k = 0; k < 2 && ok; k++ )
+                for( int j = 0; j < (k ? 0x1000 : 16) && ok; j += k ? 512 : 1 )
+                {
+                    pixel *fenc = k ? pbuf3+j : pbuf1;
+                    pixel *src1 = k ? pbuf4+j : pbuf2+j;
+                    pixel *src2 = k ? pbuf4+j : pbuf2+1280+(j^5);
+                    intptr_t stride = k ? 16 : 64;
+                    if( pixel_asm.satd_fenc_pre[0] )
+                    {
+                        pixel_asm.satd_fenc_pre[0]( fenc_pre, fenc );
+                        for( int b = 0; b < 4; b++ )
+                            pixel_asm.satd_fenc_pre[1]( fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+                    }
+                    for( int p = 0; p < 9 && ok; p++ )
+                    {
+                        int i = pre_parts[p][0], x = pre_parts[p][1], y = pre_parts[p][2];
+                        int w = x264_pixel_size[i].w, hgt = x264_pixel_size[i].h;
+                        int16_t *pre = i <= PIXEL_16x8 ? fenc_pre+16*y : fenc_pre+256+64*(2*(x>>3)+(y>>3));
+                        pixel *f = fenc + x + y*FENC_STRIDE;
+                        pixel *s1 = src1 + x + y*stride, *s2 = (l&1 ? src1 : src2) + x + y*stride;
+                        for( int yy = 0; yy < hgt; yy++ )
+                            for( int xx = 0; xx < w; xx++ )
+                                wavg[yy*16+xx] = wt.lut[(s1[yy*stride+xx] + s2[yy*stride+xx] + 1) >> 1];
+                        if( pixel_asm.sad_avg2_w[i] )
+                        {
+                            set_func_name( "sad_avg2_w_%s", pixel_names[i] );
+                            int res_c = pixel_c.sad[i]( f, FENC_STRIDE, wavg, 16 );
+                            int res_asm = call_a1( pixel_asm.sad_avg2_w[i], f, s1, s2, stride, wt.lut );
+                            if( res_c != res_asm )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "sad_avg2_w[%d] %d,%d lut %d %s: %d != %d [FAILED]\n", i, x, y, l,
+                                         k ? "overflow" : "random", res_c, res_asm );
+                            }
+                        }
+                        if( pixel_asm.satd_avg2_pre_w[i] && pixel_asm.satd_fenc_pre[0] )
+                        {
+                            set_func_name( "satd_avg2_pre_w_%s", pixel_names[i] );
+                            int res_c = pixel_c.satd[i]( f, FENC_STRIDE, wavg, 16 );
+                            int res_asm = call_a1( pixel_asm.satd_avg2_pre_w[i], pre, s1, s2, stride, wt.lut );
+                            if( res_c != res_asm )
+                            {
+                                ok = 0;
+                                fprintf( stderr, "satd_avg2_pre_w[%d] %d,%d lut %d %s: %d != %d [FAILED]\n", i, x, y, l,
+                                         k ? "overflow" : "random", res_c, res_asm );
+                            }
+                        }
+                    }
+                }
+        }
+        /* bench: what they replace is get_ref with weightavgfn, then sad / satd_pre */
+        if( ok && do_bench )
+        {
+            wt.i_scale = 77; wt.i_denom = 6; wt.i_offset = -20;
+            x264_weight_lut( &wt );
+            pixel_asm.satd_fenc_pre[0]( fenc_pre, pbuf1 );
+            for( int b = 0; b < 4; b++ )
+                pixel_asm.satd_fenc_pre[1]( fenc_pre+256+64*b, pbuf1+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+            for( int i = 0; i < 4; i++ )
+            {
+                int16_t *pre = i <= PIXEL_16x8 ? fenc_pre : fenc_pre+256;
+                set_func_name( "sad_avg2_w_%s", pixel_names[i] );
+                call_a2( pixel_asm.sad_avg2_w[i], pbuf1, pbuf2+64, pbuf2+1280+65, (intptr_t)64, wt.lut );
+                set_func_name( "satd_avg2_pre_w_%s", pixel_names[i] );
+                call_a2( pixel_asm.satd_avg2_pre_w[i], pre, pbuf2+64, pbuf2+1280+65, (intptr_t)64, wt.lut );
+            }
+        }
+    }
+    report( "pixel weighted avg2 :" );
+#endif
 
     ok = 1, used_asm = 0;
     if( pixel_asm.satd_bi[PIXEL_16x16] && pixel_asm.satd_bi[PIXEL_16x16] != pixel_ref.satd_bi[PIXEL_16x16] )
