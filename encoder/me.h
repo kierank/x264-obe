@@ -30,6 +30,10 @@
 #define COST_MAX (1<<28)
 #define COST_MAX64 (1ULL<<60)
 #define RD_NO_BOUND UINT64_MAX
+/* layout twin: every bound is lifted to x264_rd_twin_inf (UINT64_MAX) at run time */
+#define x264_rd_twin_inf x264_template(rd_twin_inf)
+extern uint64_t x264_rd_twin_inf;
+#define RD_TWIN( b ) X264_MAX( (uint64_t)(b), x264_rd_twin_inf )
 
 typedef struct
 {

@@ -160,6 +160,7 @@ static inline int ssd_mb( x264_t *h )
 /* _bound: with CABAC, the bit count is skipped when the distortion alone reaches
  * bound, and COST_MAX (COST_MAX64 for partitions) is returned. The encode and its
  * state are unchanged. Only for callers that discard any result >= bound. */
+uint64_t x264_rd_twin_inf = UINT64_MAX;
 #define x264_rd_cost_mb( h, i_lambda2 ) x264_rd_cost_mb_bound( h, i_lambda2, RD_NO_BOUND )
 static int x264_rd_cost_mb_bound( x264_t *h, int i_lambda2, uint64_t bound )
 {

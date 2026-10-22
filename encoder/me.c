@@ -1475,7 +1475,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
             if( m->weight[2].weightfn ) \
                 m->weight[2].weightfn[bw>>3]( pixv, FDEC_STRIDE, pixv, FDEC_STRIDE, &m->weight[2], bh>>chroma_v_shift ); \
         } \
-        cost = x264_rd_cost_part_bound( h, i_lambda2, i4, m->i_pixel, bound ); \
+        cost = x264_rd_cost_part_bound( h, i_lambda2, i4, m->i_pixel, RD_TWIN( bound ) ); \
         COPY4_IF_LT( bcost, cost, bmx, mx, bmy, my, dir, do_dir?mdir:dir ); \
     } \
 }
