@@ -32,6 +32,7 @@ Configuration options:
   --disable-interlaced     disable interlaced encoding support
   --bit-depth=BIT_DEPTH    set output bit depth: 8, 10, or all (both, X86_64 only) [8]
   --chroma-format=FORMAT   output chroma format (420, 422, 444, all) [all]
+  --enable-444             enable 4:4:4 and RGB encoding
 
 Advanced options:
   --disable-asm            disable platform-specific assembly optimizations
@@ -277,6 +278,7 @@ strip="no"
 pic="no"
 bit_depth="8"
 chroma_format="all"
+has_444="no"
 compiler="GNU"
 opencl="yes"
 
@@ -331,6 +333,9 @@ for opt do
             ;;
         --disable-interlaced)
             interlaced="no"
+            ;;
+        --enable-444)
+            has_444="yes"
             ;;
         --disable-avs)
             avs="no"
@@ -1091,6 +1096,12 @@ if [ "$chroma_format" != "all" ]; then
     define CHROMA_FORMAT CHROMA_$chroma_format
 fi
 
+if [ "$chroma_format" = "444" -a $has_444 = no ]; then
+    echo "--chroma-format=444 requires --enable-444."
+    exit 1
+fi
+[ $has_444 = yes ] && define HAS_444 1 || define HAS_444 0
+
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
 [ $interlaced = yes ] && define HAVE_INTERLACED && x264_interlaced=1 || x264_interlaced=0
@@ -1348,6 +1359,7 @@ strip:         $strip
 PIC:           $pic
 bit depth:     $bit_depth
 chroma format: $chroma_format
+444:           $has_444
 EOF
 
 echo >> config.log

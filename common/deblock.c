@@ -470,7 +470,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                     deblock_edge##intra( h, pixy + 4*edge*(dir?stride2y:1),\
                                          stride2y, bs[dir][edge], qp, a, b, 0,\
                                          h->loopf.deblock_luma##intra[dir] );\
-                if( CHROMA_FORMAT == CHROMA_444 )\
+                if( CHROMA444 )\
                 {\
                     deblock_edge##intra( h, pixuv          + 4*edge*(dir?stride2uv:1),\
                                          stride2uv, bs[dir][edge], chroma_qp, a, b, 0,\
