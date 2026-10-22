@@ -941,6 +941,57 @@ void x264_cacheprog_save_nnz_422_c( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN
     cacheprog_save_nnz( nnz, nnz_cache, CHROMA_422 );
 }
 
+/* the rows load_nnz reads for an unavailable neighbour */
+static const ALIGNED_64( uint8_t cacheprog_nnz_unavail[64] ) =
+{
+    0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,
+    0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,
+    0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,
+    0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,
+};
+static const ALIGNED_8( int8_t cacheprog_i4x4_unavail[8] ) = { -1, -1, -1, -1, -1, -1, -1, -1 };
+
+static ALWAYS_INLINE void cacheprog_load_nnz( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
+                                              uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left, int cf )
+{
+    const int v_shift = cf == CHROMA_420;
+    CP32( &i4x4_cache[x264_scan8[0] - 8], &i4x4_top[0] );
+    CP32( &nnz_cache[x264_scan8[ 0] - 8], &nnz_top[12] );
+    CP32( &nnz_cache[x264_scan8[16] - 8], &nnz_top[16-4 + (16>>v_shift)] );
+    CP32( &nnz_cache[x264_scan8[32] - 8], &nnz_top[32-4 + (16>>v_shift)] );
+    i4x4_cache[x264_scan8[ 0] - 1] = i4x4_left[4];
+    i4x4_cache[x264_scan8[ 2] - 1] = i4x4_left[5];
+    i4x4_cache[x264_scan8[ 8] - 1] = i4x4_left[6];
+    i4x4_cache[x264_scan8[10] - 1] = i4x4_left[3];
+    nnz_cache[x264_scan8[ 0] - 1] = nnz_left[ 3];
+    nnz_cache[x264_scan8[ 2] - 1] = nnz_left[ 7];
+    nnz_cache[x264_scan8[ 8] - 1] = nnz_left[11];
+    nnz_cache[x264_scan8[10] - 1] = nnz_left[15];
+    nnz_cache[x264_scan8[16+ 0] - 1] = nnz_left[16+1];
+    nnz_cache[x264_scan8[16+ 2] - 1] = nnz_left[16+5];
+    nnz_cache[x264_scan8[32+ 0] - 1] = nnz_left[32+1];
+    nnz_cache[x264_scan8[32+ 2] - 1] = nnz_left[32+5];
+    if( cf == CHROMA_422 )
+    {
+        nnz_cache[x264_scan8[16+ 8] - 1] = nnz_left[16+ 9];
+        nnz_cache[x264_scan8[16+10] - 1] = nnz_left[16+13];
+        nnz_cache[x264_scan8[32+ 8] - 1] = nnz_left[32+ 9];
+        nnz_cache[x264_scan8[32+10] - 1] = nnz_left[32+13];
+    }
+}
+
+void x264_cacheprog_load_nnz_420_c( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
+                                    uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left )
+{
+    cacheprog_load_nnz( nnz_cache, i4x4_cache, nnz_top, nnz_left, i4x4_top, i4x4_left, CHROMA_420 );
+}
+
+void x264_cacheprog_load_nnz_422_c( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
+                                    uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left )
+{
+    cacheprog_load_nnz( nnz_cache, i4x4_cache, nnz_top, nnz_left, i4x4_top, i4x4_left, CHROMA_422 );
+}
+
 #if HAVE_MMX
 #include "x86/cacheprog.h"
 #endif
@@ -959,6 +1010,10 @@ void x264_cacheprog_init( int cpu, x264_cacheprog_function_t *pf, int chroma_for
     if( cpu&X264_CPU_AVX512 )
     {
         pf->save_nnz = b_422 ? x264_cacheprog_save_nnz_422_avx512 : x264_cacheprog_save_nnz_420_avx512;
+    }
+    if( cpu&X264_CPU_AVX512ICL )
+    {
+        pf->load_nnz = b_422 ? x264_cacheprog_load_nnz_422_avx512icl : x264_cacheprog_load_nnz_420_avx512icl;
     }
 #endif
 }
@@ -1219,7 +1274,14 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_prog( x264_t *h, int mb_x, 
     h->mb.cache.i_cbp_left = (neighbour & MB_LEFT) ? cbp[left] : -1;
 
     /* load intra4x4 and non_zero_count */
-    x264_macroblock_load_nnz_prog( h, neighbour, top, left, cf );
+    if( h->cachef.load_nnz )
+        h->cachef.load_nnz( h->mb.cache.non_zero_count, h->mb.cache.intra4x4_pred_mode,
+                            (neighbour & MB_TOP) ? nnz[top] : (uint8_t*)cacheprog_nnz_unavail,
+                            (neighbour & MB_LEFT) ? nnz[left] : (uint8_t*)cacheprog_nnz_unavail,
+                            (neighbour & MB_TOP) ? i4x4[top] : (int8_t*)cacheprog_i4x4_unavail,
+                            (neighbour & MB_LEFT) ? i4x4[left] : (int8_t*)cacheprog_i4x4_unavail );
+    else
+        x264_macroblock_load_nnz_prog( h, neighbour, top, left, cf );
 
     if( h->pps->b_transform_8x8_mode )
     {

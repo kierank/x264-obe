@@ -32,4 +32,12 @@ DECL_SAVE_NNZ( 422, avx2 )
 DECL_SAVE_NNZ( 420, avx512 )
 DECL_SAVE_NNZ( 422, avx512 )
 
+#define DECL_LOAD_NNZ( fmt, cpu )\
+void x264_cacheprog_load_nnz_##fmt##_##cpu( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],\
+                                            uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left );
+#define x264_cacheprog_load_nnz_420_avx512icl x264_template(cacheprog_load_nnz_420_avx512icl)
+#define x264_cacheprog_load_nnz_422_avx512icl x264_template(cacheprog_load_nnz_422_avx512icl)
+DECL_LOAD_NNZ( 420, avx512icl )
+DECL_LOAD_NNZ( 422, avx512icl )
+
 #endif

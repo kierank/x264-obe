@@ -247,6 +247,10 @@ typedef struct
 {
     /* nnz[0..15], [16..23] and [32..39] (4:2:2: [0..47]) from the cache */
     void (*save_nnz)( uint8_t nnz[48], uint8_t nnz_cache[X264_SCAN8_SIZE] );
+    /* the top and left nnz and intra4x4 modes into the cache, from the neighbours' rows or the
+     * unavailable rows; reads 64 bytes at nnz_top/nnz_left and 8 at i4x4_top/i4x4_left */
+    void (*load_nnz)( uint8_t nnz_cache[X264_SCAN8_SIZE], int8_t i4x4_cache[X264_SCAN8_LUMA_SIZE],
+                      uint8_t *nnz_top, uint8_t *nnz_left, int8_t *i4x4_top, int8_t *i4x4_left );
 } x264_cacheprog_function_t;
 
 /* Current frame stats */

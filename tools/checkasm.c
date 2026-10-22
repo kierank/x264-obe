@@ -1855,6 +1855,36 @@ static int check_cacheprog( int cpu_ref, int cpu_new )
                 }
             }
         }
+
+        if( cp_a.load_nnz && cp_a.load_nnz != cp_ref.load_nnz )
+        {
+            void (*load_nnz_c)( uint8_t *, int8_t *, uint8_t *, uint8_t *, int8_t *, int8_t * ) =
+                f ? x264_cacheprog_load_nnz_422_c : x264_cacheprog_load_nnz_420_c;
+            used_asm = 1;
+            set_func_name( "cacheprog_load_nnz_%s", fmt_names[f] );
+            for( int i = 0; i < 300 && ok; i++ )
+            {
+                ALIGNED_ARRAY_64( uint8_t, nnz_src, [2],[64] );
+                ALIGNED_ARRAY_16( int8_t, i4x4_src, [2],[8] );
+                ALIGNED_ARRAY_16( uint8_t, nnz_cache, [2],[X264_SCAN8_SIZE] );
+                ALIGNED_ARRAY_16( int8_t, i4x4_cache, [2],[X264_SCAN8_LUMA_SIZE] );
+                int dist = i%3;
+                cacheprog_fill( nnz_src[0], 128, dist );
+                cacheprog_fill( (uint8_t*)i4x4_src[0], 16, dist );
+                for( int j = 0; j < X264_SCAN8_SIZE; j++ )
+                    nnz_cache[0][j] = nnz_cache[1][j] = rand();
+                for( int j = 0; j < X264_SCAN8_LUMA_SIZE; j++ )
+                    i4x4_cache[0][j] = i4x4_cache[1][j] = rand();
+                call_c( load_nnz_c, nnz_cache[0], i4x4_cache[0], nnz_src[0], nnz_src[1], i4x4_src[0], i4x4_src[1] );
+                call_a( cp_a.load_nnz, nnz_cache[1], i4x4_cache[1], nnz_src[0], nnz_src[1], i4x4_src[0], i4x4_src[1] );
+                if( memcmp( nnz_cache[0], nnz_cache[1], X264_SCAN8_SIZE ) ||
+                    memcmp( i4x4_cache[0], i4x4_cache[1], X264_SCAN8_LUMA_SIZE ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "cacheprog_load_nnz_%s (dist=%d): [FAILED]\n", fmt_names[f], dist );
+                }
+            }
+        }
     }
 
     report( "cacheprog :" );
