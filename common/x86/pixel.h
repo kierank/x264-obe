@@ -1129,6 +1129,10 @@ void x264_weightp_satd8_search_avx2( uint32_t (*cost)[4], pixel *r, pixel *f, in
 #define x264_weightp_satd8_search_avx512icl x264_template(weightp_satd8_search_avx512icl)
 void x264_weightp_satd8_search_avx512icl( uint32_t (*cost)[4], pixel *r, pixel *f, intptr_t i_stride, int n,
                                           uint16_t *icost, const int16_t (*wp)[4], int nk );
+#define x264_weightp_chroma_ref_row_avx512icl x264_template(weightp_chroma_ref_row_avx512icl)
+void x264_weightp_chroma_ref_row_avx512icl( pixel *dst[2], intptr_t i_stride, pixel *ref, int16_t (*mvs)[2], int n,
+                                            int height, int32_t *sum[2], uint32_t *minmax[2], const int16_t (*ws)[2],
+                                            int32_t *wsum[6] );
 uint64_t x264_pixel_sa8d_satd_16x16_sse2      ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
 uint64_t x264_pixel_sa8d_satd_16x16_ssse3     ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );
 uint64_t x264_pixel_sa8d_satd_16x16_ssse3_atom( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2 );

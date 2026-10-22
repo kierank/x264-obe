@@ -46,6 +46,38 @@ wsrch_rnd32: dd 0, 32, 64, 128, 256, 512, 1024, 2048
 wsrch_pow5:  dd 32, 64, 128, 256, 512, 1024, 2048, 4096
 wsrch_tail:  db 0, 1, 3, 7
 
+; weightp_chroma_ref_row
+align 64
+; 8-bit vpermt2b: per output dword (u 0-7, v 8-15) bytes A, B of the row, C, D of the row below
+wcr_idx8:
+%assign wcr_o 0
+%rep 16
+    db 2*(wcr_o&7)+(wcr_o>>3), 2*(wcr_o&7)+(wcr_o>>3)+2, 64+2*(wcr_o&7)+(wcr_o>>3), 66+2*(wcr_o&7)+(wcr_o>>3)
+%assign wcr_o wcr_o+1
+%endrep
+; high bit depth vpermw: per output dword words A, B of a row
+wcr_idx16:
+%assign wcr_o 0
+%rep 16
+    dw 2*(wcr_o&7)+(wcr_o>>3), 2*(wcr_o&7)+(wcr_o>>3)+2
+%assign wcr_o wcr_o+1
+%endrep
+; per (d8y << 3) + d8x: 8-bit bytes cA, cB, cC, cD; high bit depth words
+wcr_tap:
+%assign wcr_o 0
+%rep 64
+%if HIGH_BIT_DEPTH
+    dw (8-(wcr_o&7))*(8-(wcr_o>>3)), (wcr_o&7)*(8-(wcr_o>>3)), (8-(wcr_o&7))*(wcr_o>>3), (wcr_o&7)*(wcr_o>>3)
+%else
+    db (8-(wcr_o&7))*(8-(wcr_o>>3)), (wcr_o&7)*(8-(wcr_o>>3)), (8-(wcr_o&7))*(wcr_o>>3), (wcr_o&7)*(wcr_o>>3)
+%endif
+%assign wcr_o wcr_o+1
+%endrep
+wcr_pd32:  times 16 dd 32
+wcr_pw512: times 16 dw 512
+wcr_pdmax: times 4 dd 0xffff0000
+wcr_pwmax: times 2 dw 0, 0, 0xff, 0xff
+
 SECTION .text
 
 %if ARCH_X86_64
@@ -519,4 +551,331 @@ INIT_YMM avx2
 WEIGHTP_SATD8_SEARCH
 INIT_ZMM avx512icl
 WEIGHTP_SATD8_SEARCH
+
+;-----------------------------------------------------------------------------
+; void weightp_chroma_ref_row( pixel *dst[2], intptr_t stride, pixel *ref, int16_t (*mvs)[2], int n,
+;                              int height, int32_t *sum[2], uint32_t *minmax[2], const int16_t (*ws)[2],
+;                              int32_t *wsum[6] )
+; A block row of u and v a register: 8-bit, vpermt2b of the row and the row below to the
+; 4 taps of each output dword and vpdpbusd by the 4 bilinear weights; high bit depth,
+; vpermw of each row to tap pairs, two vpdpwssd. Slot pairs u q, v q+3 in the halves.
+;-----------------------------------------------------------------------------
+; stack: sum, minmax, wsum pointers, slots set (bits), mv step, mvy multiplier, zero mv
+%define WCR_SUM   0
+%define WCR_MM    16
+%define WCR_WSUM  32
+%define WCR_VALID 80
+%define WCR_MVST  88
+%define WCR_MVMUL 96
+%define WCR_ZMV   104
+
+; one output row from the taps in m%1 (8-bit) or the tap pairs of the row in m%1 and the
+; row below in m%2 (high bit depth), stored at row offset %3
+%macro WCR_ROW 3
+%if HIGH_BIT_DEPTH
+    mova         m2, m12
+    vpdpwssd     m2, m%1, m10
+    vpdpwssd     m2, m%2, m11
+    psrld        m2, 6
+    vpmovdw      ym3, m2
+    movu         [r12+%3], xm3
+    vextracti32x4 [r13+%3], ym3, 1
+    vpdpwssd     ym6, ym3, ym13
+    pminuw       ym7, ym3
+    pmaxuw       ym8, ym3
+%assign wcr_i 0
+%rep 3
+%assign wcr_s 19+wcr_i
+%assign wcr_r 22+wcr_i
+%assign wcr_d 25+wcr_i
+%assign wcr_a 16+wcr_i
+    cmp          r14d, wcr_i
+    jle %%done
+    pmaddwd      m29, m2, m %+ wcr_s
+    paddd        m29, m %+ wcr_r
+    vpsrlvd      m29, m29, m %+ wcr_d
+    paddd        m %+ wcr_a, m29
+%assign wcr_i wcr_i+1
+%endrep
+%else
+    pxor         xm2, xm2
+    vpdpbusd     m2, m%1, m10
+    vpmovdw      ym3, m2
+    pmulhrsw     ym3, ym12
+    vpmovwb      xm4, ym3
+    movq         [r12+%3], xm4
+    movhps       [r13+%3], xm4
+    psadbw       xm5, xm4, xm14
+    paddq        xm6, xm5
+    pminub       xm7, xm4
+    pmaxub       xm8, xm4
+    psllw        ym28, ym3, 7
+%assign wcr_i 0
+%rep 3
+%assign wcr_s 19+wcr_i
+%assign wcr_a 16+wcr_i
+    cmp          r14d, wcr_i
+    jle %%done
+    pmulhrsw     ym29, ym28, ym %+ wcr_s
+    vpdpwssd     ym %+ wcr_a, ym29, ym13
+%assign wcr_i wcr_i+1
+%endrep
+%endif
+%%done:
+%endmacro
+
+; the sums of the halves of slot pair %1's accumulator (8-bit: ymm) stored to wsum q %1 and %1+3 if set
+%macro WCR_SLOTEND 1
+%assign wcr_a 16+%1
+%if HIGH_BIT_DEPTH
+    vshufi32x4   m29, m %+ wcr_a, m %+ wcr_a, q2301
+    paddd        m %+ wcr_a, m29
+%endif
+    pshufd       m29, m %+ wcr_a, q1032
+    paddd        m %+ wcr_a, m29
+    pshufd       m29, m %+ wcr_a, q2301
+    paddd        m %+ wcr_a, m29
+    test         byte [rsp+WCR_VALID], 1<<%1
+    jz %%v
+    mov          r11, [rsp+WCR_WSUM+8*%1]
+    movd         [r11+r6], xm %+ wcr_a
+%%v:
+    test         byte [rsp+WCR_VALID], 8<<%1
+    jz %%done
+    mov          r11, [rsp+WCR_WSUM+8*%1+24]
+%if HIGH_BIT_DEPTH
+    vextracti32x4 xm29, m %+ wcr_a, 2
+%else
+    vextracti32x4 xm29, ym %+ wcr_a, 1
+%endif
+    movd         [r11+r6], xm29
+%%done:
+%endmacro
+
+; pointers to the stack, mvs, the mvy multiplier; no slots yet
+%macro WCR_START 0
+    FIX_STRIDES  r1
+    mov          r10, [r0+8]
+    mov          r0, [r0]
+    mov          r11, [r6]
+    mov          [rsp+WCR_SUM], r11
+    mov          r11, [r6+8]
+    mov          [rsp+WCR_SUM+8], r11
+    mov          r11, [r7]
+    mov          [rsp+WCR_MM], r11
+    mov          r11, [r7+8]
+    mov          [rsp+WCR_MM+8], r11
+%assign wcr_q 0
+%rep 6
+    mov          r11, [r9+8*wcr_q]
+    mov          [rsp+WCR_WSUM+8*wcr_q], r11
+%assign wcr_q wcr_q+1
+%endrep
+    ; mvs: none, a zero one, step 0
+    mov          qword [rsp+WCR_MVST], 4
+    mov          dword [rsp+WCR_ZMV], 0
+    lea          r11, [rsp+WCR_ZMV]
+    test         r3, r3
+    jnz .mvs
+    mov          r3, r11
+    mov          qword [rsp+WCR_MVST], 0
+.mvs:
+    ; 2*mvy >> v_shift
+    mov          dword [rsp+WCR_MVMUL], 2
+    cmp          r5d, 16
+    je .mvmul
+    mov          dword [rsp+WCR_MVMUL], 1
+.mvmul:
+    ; slots: set bits, pairs to do (r14), per pair u | v constants
+    xor          r14d, r14d
+    mov          dword [rsp+WCR_VALID], 0
+%endmacro
+
+; r8 = the source of the block at r3's mv, r9 = its taps index, r11 = wcr_tap
+%macro WCR_BLOCKSRC 0
+    movsx        r7d, word [r3]             ; mvx
+    movsx        r8d, word [r3+2]
+    imul         r8d, [rsp+WCR_MVMUL]       ; mvy
+    mov          r9d, r8d
+    and          r9d, 7
+    mov          r11d, r7d
+    and          r11d, 7
+    lea          r9d, [r11+8*r9]
+    sar          r7d, 3
+    sar          r8d, 3
+    movsxd       r7, r7d
+    movsxd       r8, r8d
+    imul         r8, r1
+    lea          r8, [r8+r7*2*SIZEOF_PIXEL]
+    add          r8, r2
+    lea          r11, [wcr_tap]
+%endmacro
+
+; slot %1 of plane %2: the constants of half %2 of pair %1; set bit, pairs to do (r14)
+%macro WCR_SLOTPARAM 2
+%assign wcr_q %1+3*%2
+%assign wcr_s 19+%1
+%assign wcr_r 22+%1
+%assign wcr_d 25+%1
+    movsx        r11d, word [r8+4*wcr_q]    ; scale
+    movsx        r9d, word [r8+4*wcr_q+2]   ; denom
+    test         r11d, r11d
+    jge %%set
+    xor          r11d, r11d
+    xor          r9d, r9d
+    jmp %%unset
+%%set:
+    or           dword [rsp+WCR_VALID], 1<<wcr_q
+    mov          r14d, %1+1
+%%unset:
+%if HIGH_BIT_DEPTH
+    vpbroadcastd ym29, r11d
+    vinserti32x8 m %+ wcr_s, m %+ wcr_s, ym29, %2
+    lea          r11, [wsrch_rnd32]
+    mov          r11d, [r11+4*r9]
+    shr          r11d, 5
+    vpbroadcastd ym29, r11d
+    vinserti32x8 m %+ wcr_r, m %+ wcr_r, ym29, %2
+    vpbroadcastd ym29, r9d
+    vinserti32x8 m %+ wcr_d, m %+ wcr_d, ym29, %2
+%else
+    imul         r11d, [r7+4*r9]
+    vpbroadcastw xm29, r11d
+    vinserti32x4 ym %+ wcr_s, ym %+ wcr_s, xm29, %2
+%endif
+%endmacro
+
+INIT_ZMM avx512icl
+cglobal weightp_chroma_ref_row, 10,15,30, -112
+    WCR_START
+    lea          r7, [wsrch_pow]
+    WCR_SLOTPARAM 0, 0
+    WCR_SLOTPARAM 0, 1
+    WCR_SLOTPARAM 1, 0
+    WCR_SLOTPARAM 1, 1
+    WCR_SLOTPARAM 2, 0
+    WCR_SLOTPARAM 2, 1
+%if HIGH_BIT_DEPTH
+    movu         m9, [wcr_idx16]
+%else
+    movu         m9, [wcr_idx8]
+%endif
+%if HIGH_BIT_DEPTH
+    mova         m12, [wcr_pd32]
+%else
+    mova         ym12, [wcr_pw512]
+%endif
+    mova         ym13, [wsrch_pw1]
+    pxor         xm14, xm14
+    xor          r6d, r6d
+.block:
+    WCR_BLOCKSRC
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m10, [r11+8*r9]
+    vpbroadcastd m11, [r11+8*r9+4]
+%else
+    vpbroadcastd m10, [r11+4*r9]
+%endif
+    pxor         xm6, xm6
+    vpternlogd   ym7, ym7, ym7, 0xff
+    pxor         xm8, xm8
+    pxor         xm16, xm16
+    pxor         xm17, xm17
+    pxor         xm18, xm18
+    mov          r12, r0
+    mov          r13, r10
+    mov          r9d, r5d
+%if HIGH_BIT_DEPTH
+    movu         m15, [r8]
+    vpermw       m15, m9, m15
+.rows:
+    movu         m1, [r8+r1]
+    vpermw       m1, m9, m1
+    WCR_ROW 15, 1, 0
+    lea          r8, [r8+2*r1]
+    movu         m15, [r8]
+    vpermw       m15, m9, m15
+    WCR_ROW 1, 15, r1
+%else
+    movu         ym0, [r8]
+.rows:
+    movu         ym1, [r8+r1]
+    vpermt2b     m0, m9, m1
+    WCR_ROW 0, 1, 0
+    lea          r8, [r8+2*r1]
+    movu         ym0, [r8]
+    vpermt2b     m1, m9, m0
+    WCR_ROW 1, 0, r1
+%endif
+    lea          r12, [r12+2*r1]
+    lea          r13, [r13+2*r1]
+    sub          r9d, 2
+    jg .rows
+    ; sums, min | max << 16
+%if HIGH_BIT_DEPTH
+    pshufd       ym29, ym6, q1032
+    paddd        ym6, ym29
+    pshufd       ym29, ym6, q2301
+    paddd        ym6, ym29
+    mov          r11, [rsp+WCR_SUM]
+    movd         [r11+r6], xm6
+    vextracti32x4 xm6, ym6, 1
+    mov          r11, [rsp+WCR_SUM+8]
+    movd         [r11+r6], xm6
+    vpternlogd   ym8, ym8, ym8, 0x55
+    vinserti32x8 m7, m7, ym8, 1
+    pshufd       m29, m7, q1032
+    pminuw       m7, m29
+    pshufd       m29, m7, q2301
+    pminuw       m7, m29
+    psrld        m29, m7, 16
+    pminuw       m7, m29
+    vpmovdw      ym7, m7
+    vextracti32x4 xm8, ym7, 1
+    punpcklwd    xm29, xm7, xm8
+    punpckhwd    xm7, xm8
+    punpckldq    xm7, xm29, xm7
+    pxor         xm7, [wcr_pdmax]
+%else
+    mov          r11, [rsp+WCR_SUM]
+    movd         [r11+r6], xm6
+    mov          r11, [rsp+WCR_SUM+8]
+    vpextrd      [r11+r6], xm6, 2
+    vpternlogd   xm8, xm8, xm8, 0x55
+    vinserti32x4 ym7, ym7, xm8, 1
+    psrlq        ym29, ym7, 32
+    pminub       ym7, ym29
+    psrlq        ym29, ym7, 16
+    pminub       ym7, ym29
+    psrlq        ym29, ym7, 8
+    pminub       ym7, ym29
+    vpmovqb      xm7, ym7
+    pmovzxbw     xm7, xm7
+    pxor         xm7, [wcr_pwmax]
+    pshuflw      xm7, xm7, q3120
+%endif
+    mov          r11, [rsp+WCR_MM]
+    movd         [r11+r6], xm7
+    mov          r11, [rsp+WCR_MM+8]
+    vpextrd      [r11+r6], xm7, 1
+    ; the slots
+    cmp          r14d, 0
+    jle .slotend
+    WCR_SLOTEND 0
+    cmp          r14d, 1
+    jle .slotend
+    WCR_SLOTEND 1
+    cmp          r14d, 2
+    jle .slotend
+    WCR_SLOTEND 2
+.slotend:
+    add          r0, 8*SIZEOF_PIXEL
+    add          r10, 8*SIZEOF_PIXEL
+    add          r2, 16*SIZEOF_PIXEL
+    add          r3, [rsp+WCR_MVST]
+    add          r6, 4
+    dec          r4d
+    jg .block
+    RET
+
 %endif ; ARCH_X86_64
