@@ -1013,7 +1013,7 @@ int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst
 
 /* layout pair test/x264-zscreen-encode / -twin: hidden weak x264_N_zscreen_gate, defined here (no bytes) unless
  * ZSCREEN_TWIN; the twin links it as 0 and dispatches the A6 kernels (zero residual only) */
-#define ZSCREEN_TWIN 0
+#define ZSCREEN_TWIN 1
 #define ZSCREEN_STR2( x ) #x
 #define ZSCREEN_STR( x ) ZSCREEN_STR2( x )
 #define x264_zscreen_gate x264_template(zscreen_gate)
