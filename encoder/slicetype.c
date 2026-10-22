@@ -60,7 +60,7 @@ static void x264_lowres_context_init( x264_t *h, x264_mb_analysis_t *a )
         h->mb.i_me_method = X264_ME_DIA;
         h->mb.i_subpel_refine = 2;
     }
-    h->mb.i_me_seed_exit[0] = h->mb.i_me_seed_exit[1] = h->mb.i_qpel_skip = h->mb.i_hex_cap = h->mb.b_me_pred_only = h->mb.i_subpel_fit = 0;
+    h->mb.i_me_seed_exit[0] = h->mb.i_me_seed_exit[1] = h->mb.i_qpel_skip = h->mb.i_hex_cap = h->mb.b_me_pred_only = h->mb.i_subpel_fit = h->mb.i_fpel_fit = 0;
     h->mb.b_chroma_me = 0;
 }
 

@@ -1317,6 +1317,7 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     h->param.analyse.i_skip_static = x264_clip3( h->param.analyse.i_skip_static, 0, LOWRES_COST_MASK );
     h->param.analyse.b_me_pred_intra = !!h->param.analyse.b_me_pred_intra;
     h->param.analyse.i_subpel_fit = x264_clip3( h->param.analyse.i_subpel_fit, 0, 2 );
+    h->param.analyse.i_fpel_fit = x264_clip3( h->param.analyse.i_fpel_fit, 0, 2 );
     h->param.analyse.b_mixed_references = h->param.analyse.b_mixed_references && h->param.i_frame_reference > 1;
     h->param.analyse.inter &= X264_ANALYSE_PSUB16x16|X264_ANALYSE_PSUB8x8|X264_ANALYSE_BSUB16x16|
                               X264_ANALYSE_I4x4|X264_ANALYSE_I8x8;

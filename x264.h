@@ -392,6 +392,7 @@ typedef struct x264_param_t
         int          i_skip_static; /* P: skip probe before ME where pskip mv is 0 and the lowres mb is inter, mv 0, cost <= N */
         int          b_me_pred_intra; /* P: ME tests only the predictors on mbs the lookahead coded intra */
         int          i_subpel_fit; /* subpel start from a parabola through the fullpel winner's 4 neighbours: 1 no hpel iterations, 2 one fewer */
+        int          i_fpel_fit; /* 1: fullpel pattern starts at the parabola vertex of the best seed's 4 neighbours; 2: also one qpel step toward the hpel vertex */
 
         int          b_mb_info;            /* Use input mb_info data in x264_picture_t */
         int          b_mb_info_update; /* Update the values in mb_info according to the results of encoding. */

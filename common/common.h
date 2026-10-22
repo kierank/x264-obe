@@ -473,6 +473,7 @@ struct x264_t
         int     i_hex_cap;
         int     b_me_pred_only;
         int     i_subpel_fit;
+        int     i_fpel_fit;
         int     b_chroma_me;
         int     b_trellis;
         int     b_noise_reduction;

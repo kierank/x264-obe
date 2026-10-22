@@ -855,6 +855,11 @@ static void help( x264_param_t *defaults, int longhelp )
     H2( "      --subpel-fit <integer>  Experimental: subpel search starts at a parabola\n"
         "                              fit through the fullpel winner's neighbours\n"
         "                                  - 1: no hpel iterations, 2: one fewer\n" );
+    H2( "      --fpel-fit <integer>    Experimental: parabola fits through 4 axis costs\n"
+        "                                  - 1: fullpel pattern starts at the vertex\n"
+        "                                       around the best seed\n"
+        "                                  - 2: 1, and one qpel step toward the hpel\n"
+        "                                       vertex instead of the qpel diamond\n" );
     H1( "      --nr <integer>          Noise reduction [%d]\n", defaults->analyse.i_noise_reduction );
     H2( "\n" );
     H2( "      --deadzone-inter <int>  Set the size of the inter luma quantization deadzone [%d]\n", defaults->analyse.i_luma_deadzone[0] );
@@ -1110,6 +1115,7 @@ static struct option long_options[] =
     { "skip-static", required_argument, NULL, 0 },
     { "me-pred-intra",     no_argument, NULL, 0 },
     { "subpel-fit",  required_argument, NULL, 0 },
+    { "fpel-fit",    required_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },

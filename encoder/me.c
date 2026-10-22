@@ -454,6 +454,35 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     if( seed_exit && X264_MIN( bcost, bpred_cost ) <= seed_exit * bw * bh )
         goto fpel_done;
 
+    /* experimental: the pattern starts at the best of the seed's 4 axis neighbours
+     * and the rounded vertex of a parabola per axis through them */
+    if( h->mb.i_fpel_fit && bmx > mv_x_min && bmx < mv_x_max && bmy > mv_y_min && bmy < mv_y_max )
+    {
+        int cx = bmx, cy = bmy, c0 = bcost, o[2];
+        pixel *p = p_fref_w + cx + cy*stride;
+        h->pixf.fpelcmp_x4[i_pixel]( p_fenc, p-1, p+1, p-stride, p+stride, stride, costs );
+        costs[0] += BITS_MVD( cx-1, cy );
+        costs[1] += BITS_MVD( cx+1, cy );
+        costs[2] += BITS_MVD( cx, cy-1 );
+        costs[3] += BITS_MVD( cx, cy+1 );
+        for( int i = 0; i < 2; i++ )
+        {
+            /* vertex (l-r)/(2(l+r-2c)) pel, rounded, within +-4 */
+            int l = costs[2*i], r = costs[2*i+1];
+            int den = 2*(l + r - 2*c0);
+            int num = l - r;
+            o[i] = den > 0 ? x264_clip3( (2*num + (num < 0 ? -den : den)) / (2*den), -4, 4 ) : 0;
+        }
+        COPY3_IF_LT( bcost, costs[0], bmx, cx-1, bmy, cy );
+        COPY3_IF_LT( bcost, costs[1], bmx, cx+1, bmy, cy );
+        COPY3_IF_LT( bcost, costs[2], bmx, cx, bmy, cy-1 );
+        COPY3_IF_LT( bcost, costs[3], bmx, cx, bmy, cy+1 );
+        int vx = cx + o[0], vy = cy + o[1];
+        if( abs( o[0] ) + abs( o[1] ) > 1 &&
+            vx >= mv_x_min && vx <= mv_x_max && vy >= mv_y_min && vy <= mv_y_max )
+            COST_MV( vx, vy );
+    }
+
     switch( h->mb.i_me_method )
     {
         case X264_ME_DIA:
@@ -1222,6 +1251,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int odir = -1, bdir;
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
 
+    /* --fpel-fit 2: the last hpel step's 4 costs (sad + mv) where it kept the centre */
+    int hfit = 0, hc[5] = { 0 };
     /* halfpel diamond search */
     if( hpel_iters )
     {
@@ -1257,7 +1288,20 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             int b1 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6;
             int b2 = ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16;
             int b3 = ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48;
-            if( cmp_hpel_min )
+            if( h->mb.i_fpel_fit == 2 )
+            {
+                h->pixf.fpelcmp_x4[i_pixel]( p_fenc, src0, src0 + stride, src2, src2 + 1, stride, costs );
+                hc[0] = costs[0] + (b0 >> 6);
+                hc[1] = costs[1] + (b1 >> 6);
+                hc[2] = costs[2] + (b2 >> 6);
+                hc[3] = costs[3] + (b3 >> 6);
+                hc[4] = bcost >> 6;
+                COPY1_IF_LT( bcost, (costs[0]<<6) + b0 );
+                COPY1_IF_LT( bcost, (costs[1]<<6) + b1 );
+                COPY1_IF_LT( bcost, (costs[2]<<6) + b2 );
+                COPY1_IF_LT( bcost, (costs[3]<<6) + b3 );
+            }
+            else if( cmp_hpel_min )
                 bcost = cmp_hpel_min( p_fenc, src0, src2, stride, PACK2( b0, b1 ), PACK2( b2, b3 ), bcost );
             else
             {
@@ -1265,6 +1309,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 src3 = src2 + 1;
                 COST_MIN_X4( bcost, src0, src1, src2, src3, b0, b1, b2, b3 );
             }
+            hfit = !(bcost&63);
             if( !(bcost&63) )
                 break;
             bmx -= (bcost<<26)>>29;
@@ -1317,7 +1362,31 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     else if( h->mb.i_subpel_refine != 1 )
     {
         bdir = -1;
-        if( !b_chroma_me )
+        if( !b_chroma_me && h->mb.i_fpel_fit == 2 && hfit && qpel_iters &&
+            hc[0] > hc[4] && hc[1] > hc[4] && hc[2] > hc[4] && hc[3] > hc[4] &&
+            bmy > h->mb.mv_min_spel[1] && bmy < h->mb.mv_max_spel[1] && bmx > h->mb.mv_min_spel[0] && bmx < h->mb.mv_max_spel[0] )
+        {
+            /* experimental: the hpel centre is a strict minimum; one qpel step, only
+             * toward the parabola vertex on each axis (the cheaper hpel side) */
+            int omx = bmx, omy = bmy;
+            uint64_t bkey = (uint64_t)bcost << 4;
+            if( hc[0] < hc[1] )
+                COST_MV_SATD_KEY( omx, omy - 1, 0 );
+            if( hc[1] < hc[0] )
+                COST_MV_SATD_KEY( omx, omy + 1, 1 );
+            if( hc[2] < hc[3] )
+                COST_MV_SATD_KEY( omx - 1, omy, 2 );
+            if( hc[3] < hc[2] )
+                COST_MV_SATD_KEY( omx + 1, omy, 3 );
+            int bidx = bkey & 15;
+            if( bidx )
+            {
+                bcost = bkey >> 4;
+                bmx = omx + qpel_dir_dx[bidx];
+                bmy = omy + qpel_dir_dy[bidx];
+            }
+        }
+        else if( !b_chroma_me )
         {
             /* Argmin instead of a compare-and-branch per candidate. Same choice as
              * the strict-< sequence: the incumbent wins ties, then the lower dir. */
