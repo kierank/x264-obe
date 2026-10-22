@@ -66,6 +66,7 @@ isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4
 ALIGN 32
 sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
+dbp_hex_bperm: dd 5, 0, 4, 6, 1, 3, 2, 6
 
 SECTION .text
 
@@ -2564,6 +2565,54 @@ cglobal pixel_sad_dia_min_8x8, 5,10,10
     pslld          xm0, 4
     paddd          xm0, xm8
     pminsd         xm0, xm9
+    DBP_MIN4
+    RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_hex_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                            const int32_t bias[6], int best )
+; candidates me.c hex2[1..6]: (-2,0) (-1,2) (1,2) (2,0) (1,-2) (-1,-2), s = 6.
+; Group 1: dy -2 bx -1 words 0, 2 and dy 0 bx -3 word 1: (-1,-2) (-2,0) (1,-2);
+; group 2: dy 2 bx -1 words 0, 2 and dy 0 bx 1 word 1: (-1,2) (2,0) (1,2).
+; Word 3 is 0 in both, its bias best.
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_hex_min_8x8, 5,11,11
+    %define dbp_o  r5
+    %define dbp_o1 r6
+    %define dbp_p0 r7
+    %define dbp_p1 r8
+    %define dbp_p2 r9
+    %define dbp_p3 r10
+    mov            r5d, 0x5555
+    kmovw           k1, r5d
+    kmovw           k3, r5d
+    mov            r5d, 0x2222
+    kmovw           k2, r5d
+    kmovw           k4, r5d
+    mov            r5d, 0x3f
+    kmovw           k5, r5d
+    mov            r5d, 0xc0
+    kmovw           k6, r5d
+    lea         dbp_p2, [r2*2+1]
+    mov         dbp_p0, r1
+    sub         dbp_p0, dbp_p2
+    lea         dbp_p1, [r1-3]
+    lea         dbp_p2, [r1+r2*2-1]
+    lea         dbp_p3, [r1+1]
+    DBP_INIT
+    mova           m10, [dbp_hex_bperm]
+    vmovdqu32       m8 {k5}{z}, [r3]
+    vpbroadcastd    m8 {k6}, r4d
+    vpermd          m8, m10, m8
+    DBP_ROWS 8, 4
+    paddw           m0, m1
+    paddw           m2, m3
+    DBP_FOLD2
+    pmovzxwd        m0, xm0
+    pslld           m0, 6
+    paddd           m0, m8
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
     DBP_MIN4
     RET
 
