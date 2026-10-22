@@ -744,25 +744,11 @@ static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
     h->mb.i_chroma_pred_mode = a->i_predict8x8chroma;
 }
 
-/* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
-static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+/* i16x16 analysis; 0 where it ends the intra analysis */
+static int x264_mb_analyse_intra16x16( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
-    const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
     pixel *p_src = h->mb.pic.p_fenc[0];
     pixel *p_dst = h->mb.pic.p_fdec[0];
-    static const int8_t intra_analysis_shortcut[2][2][2][5] =
-    {
-        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
-          {I_PRED_4x4_DDL, I_PRED_4x4_VL, -1, -1, -1}},
-         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
-          {I_PRED_4x4_DDL, I_PRED_4x4_DDR, I_PRED_4x4_VR, I_PRED_4x4_VL, -1}}},
-        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
-          {-1, -1, -1, -1, -1}},
-         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
-          {I_PRED_4x4_DDR, I_PRED_4x4_VR, -1, -1, -1}}},
-    };
-
-    int idx;
     int lambda = a->i_lambda;
 
     /*---------------- Try all mode and calculate their score ---------------*/
@@ -818,8 +804,30 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             a->i_satd_i16x16 += lambda * i_mb_b_cost_table[I_16x16];
 
         if( a->i_satd_i16x16 > i16x16_thresh )
-            return;
+            return 0;
     }
+    return 1;
+}
+
+static void x264_mb_analyse_intra_sub16x16( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+{
+    const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
+    pixel *p_src = h->mb.pic.p_fenc[0];
+    pixel *p_dst = h->mb.pic.p_fdec[0];
+    static const int8_t intra_analysis_shortcut[2][2][2][5] =
+    {
+        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
+          {I_PRED_4x4_DDL, I_PRED_4x4_VL, -1, -1, -1}},
+         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
+          {I_PRED_4x4_DDL, I_PRED_4x4_DDR, I_PRED_4x4_VR, I_PRED_4x4_VL, -1}}},
+        {{{I_PRED_4x4_HU, -1, -1, -1, -1},
+          {-1, -1, -1, -1, -1}},
+         {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
+          {I_PRED_4x4_DDR, I_PRED_4x4_VR, -1, -1, -1}}},
+    };
+
+    int idx;
+    int lambda = a->i_lambda;
 
     uint16_t *cost_i4x4_mode = (uint16_t*)ALIGN((intptr_t)x264_cost_i4x4_mode,64) + a->i_qp_cost*32 + 8;
     /* 8x8 prediction selection */
@@ -1055,6 +1063,13 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         else
             a->i_satd_i4x4 = COST_MAX;
     }
+}
+
+/* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
+static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
+{
+    if( x264_mb_analyse_intra16x16( h, a, i_satd_inter ) )
+        x264_mb_analyse_intra_sub16x16( h, a, i_satd_inter );
 }
 
 static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
@@ -3646,7 +3661,17 @@ skip_analysis:
                 }
             }
 
-            if( !b_intra_first )
+            if( b_intra_first )
+            {
+                /* intra done against the 16x16 */
+            }
+            else if( i_cost <= 4 * analysis.i_lambda && !analysis.i_mbrd && !h->mb.b_chroma_me &&
+                     !h->mb.b_noise_reduction )
+            {
+                /* i8x8 costs at least 4 lambda, i4x4 40: neither beats the inter cost */
+                x264_mb_analyse_intra16x16( h, &analysis, i_cost );
+            }
+            else
                 x264_mb_analyse_intra_p( h, &analysis, i_cost );
 
             i_satd_inter = i_cost;
