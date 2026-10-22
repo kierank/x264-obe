@@ -66,6 +66,38 @@ isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4
 ALIGN 32
 sad_sq_idx16:  dd 0, 0, 1, 1, 2, 2, 3, 3
 sad_sq_idx8:   dd 0, 0, 1, 1, 4, 4, 5, 5
+ALIGN 32
+; sad_hex_search: vpermi2w word indices (dwords: the high words are zeroed) into the cost
+; windows cost_mv[4*b-8..4*b+7], cost_mv[4*b-7..4*b+8]: d -2 0, -1 4, 0 8, 1 12, 2 31
+fsh_hex_xidx:  dd 4, 0, 12, 8, 4, 31, 12, 8
+fsh_hex_yidx:  dd 0, 8, 0, 8, 31, 8, 31, 8
+; keys ((sad + mv cost) << 6) + rank*8 + dir of the hexagon by dword (-1,-2) (-2,0) (1,-2) -
+; (-1,2) (2,0) (1,2) -, dir a for me.c hex2[a+1]. Rows: the half hexagon of dir 0-5 (rank 1-3
+; for hex2[dir..dir+2], 1<<30 for the 3 points of the previous one), the whole hexagon
+fsh_hex_rank:  dd    13,    16, 1<<30, 1<<30,    25, 1<<30, 1<<30, 1<<30
+               dd 1<<30,     8, 1<<30, 1<<30,    17, 1<<30,    26, 1<<30
+               dd 1<<30, 1<<30, 1<<30, 1<<30,     9,    27,    18, 1<<30
+               dd 1<<30, 1<<30,    28, 1<<30, 1<<30,    19,    10, 1<<30
+               dd    29, 1<<30,    20, 1<<30, 1<<30,    11, 1<<30, 1<<30
+               dd    21,    24,    12, 1<<30, 1<<30, 1<<30, 1<<30, 1<<30
+               dd    53,     8,    44, 1<<30,    17,    35,    26, 1<<30
+; square, windows cost_mv[4*b-4..4*b+3], cost_mv[4*b-3..4*b+4] (d -1 0, 0 4, 1 15, ymm 23),
+; keys by dword dy -1 | dy 1 (dx -1..2), dy 0: me.c's square1 idx, dx 2 and the centre 1<<30
+fsh_sq_xidx:   dd 0, 4, 23, 4, 0, 4, 23, 4
+fsh_sq_yidx:   dd 0, 0, 0, 0, 23, 23, 23, 23
+fsh_sq_rank:   dd 5, 1, 7, 1<<30, 6, 2, 8, 1<<30
+fsh_sq_xidx0:  dd 0, 4, 15, 4
+fsh_sq_rank0:  dd 3, 1<<30, 4, 1<<30
+; hexagon dir 0-5: dx, dy (me.c hex2[dir+1])
+fsh_hex_mv:    db -2,-1, 1, 2, 1,-1, 0, 0
+               db  0, 2, 2, 0,-2,-2, 0, 0
+; square idx 0-8: dx, dy (me.c square1)
+fsh_sq_mv:     db  0, 0, 0,-1, 1,-1,-1, 1, 1, 0, 0, 0, 0, 0, 0, 0
+               db  0,-1, 1, 0, 0,-1, 1,-1, 1, 0, 0, 0, 0, 0, 0, 0
+; sad_dia_search: keys by dword (0,-1) (-1,0) (0,1) (1,0), windows as the square's
+fsh_dia_xidx:  dd 4, 0, 4, 15
+fsh_dia_yidx:  dd 0, 4, 15, 4
+fsh_dia_rank:  dd 1, 4, 3, 12
 
 SECTION .text
 
@@ -2417,6 +2449,475 @@ cglobal pixel_sad_sq_min_8x8, 5,5,10
 %undef sq_j
 %undef sq_y
 %undef sq_f
+;-----------------------------------------------------------------------------
+; vdbpsadbw window sads of a few candidates around pix
+;
+; A window is vdbpsadbw of the fenc dwords, each duplicated in its qword, against
+; the ref row at pix + dy*i_stride + bx: words 0-3 of the qword are the dword's
+; sads at dx bx..bx+3. Its zero-mask keeps the candidates' words, so the windows
+; of a group add up to the candidates of the group by word, summed over the
+; qwords at the end. 16 wide: a row per ymm, lane l fenc dwords 2l, 2l+1, ref
+; from x+bx+8l; 8 wide: a row pair, a row per lane; 4 wide: a row pair, a row
+; per qword (xmm). The word sums reach at most 16*16*255.
+;-----------------------------------------------------------------------------
+; window w: ref dbp_p<w> (+dbp_o: row r, +dbp_o1: row r+1), mask k<w+1>, sum m<w>
+; (m<w+4> from the fifth)
+; m4: fenc, m5: ref, m6: sad, m7: fenc dword permutation
+%macro DBP_SAD 4 ; width, sum, mask, first
+%if %1 == 4
+    %if %4
+    vdbpsadbw     xm%2 {k%3}{z}, xm4, xm5, 0xe4
+    %else
+    vdbpsadbw     xm6 {k%3}{z}, xm4, xm5, 0xe4
+    paddw         xm%2, xm6
+    %endif
+%else
+    %if %4
+    vdbpsadbw      m%2 {k%3}{z}, m4, m5, 0x94
+    %else
+    vdbpsadbw      m6 {k%3}{z}, m4, m5, 0x94
+    paddw          m%2, m6
+    %endif
+%endif
+%endmacro
+
+%macro DBP_ROWS 3 ; width, height, windows
+%if %1 == 16
+    %assign %%step 1
+%else
+    %assign %%step 2
+%endif
+%assign %%r 0
+%rep %2 / %%step
+    %if %1 == 16 && %%r == %2-1
+    vbroadcasti128  m4, [r0+%%r*FENC_STRIDE]
+    vpermd          m4, m7, m4
+    %else
+    vpermd          m4, m7, [r0+%%r*FENC_STRIDE]
+    %endif
+    %assign %%w 0
+    %rep %3
+        %assign %%k %%w+1
+        %if %%w < 4
+            %assign %%a %%w
+        %else
+            %assign %%a %%w+4
+        %endif
+        %if %1 == 16
+    movu           xm5, [dbp_p%[%%w]+dbp_o]
+    vinserti128     m5, m5, [dbp_p%[%%w]+dbp_o+8], 1
+        %elif %1 == 8
+    movu           xm5, [dbp_p%[%%w]+dbp_o]
+    vinserti128     m5, m5, [dbp_p%[%%w]+dbp_o1], 1
+        %else
+    movq           xm5, [dbp_p%[%%w]+dbp_o]
+    movhps         xm5, [dbp_p%[%%w]+dbp_o1]
+        %endif
+    DBP_SAD %1, %[%%a], %[%%k], %%r == 0
+        %assign %%w %%w+1
+    %endrep
+    %assign %%r %%r+%%step
+    %if %%r < %2
+        %if %%step == 1
+    add          dbp_o, r2
+        %else
+    lea          dbp_o, [dbp_o+r2*2]
+    lea         dbp_o1, [dbp_o1+r2*2]
+        %endif
+    %endif
+%endrep
+%endmacro
+
+; m0 -> xm0: words 0-3 summed over the qwords
+%macro DBP_FOLD1 1 ; width
+%if %1 > 4
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+%endif
+    punpckhqdq     xm1, xm0, xm0
+    paddw          xm0, xm1
+%endmacro
+
+; m0, m2 -> xm0: words 0-3 of m0, 4-7 of m2, summed over the qwords
+%macro DBP_FOLD2 1 ; width
+%if %1 > 4
+    punpcklqdq      m1, m0, m2
+    punpckhqdq      m0, m0, m2
+    paddw           m0, m1
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+%else
+    punpcklqdq     xm1, xm0, xm2
+    punpckhqdq     xm0, xm0, xm2
+    paddw          xm0, xm1
+%endif
+%endmacro
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_hex_search_WxH( uint8_t *fenc, uint8_t *ref, intptr_t i_stride,
+;                                    const uint16_t *cost_mvx, const uint16_t *cost_mvy,
+;                                    uint32_t bmv, int bcost, int iters, uint64_t range )
+; me.c's hexagon, half hexagons and square refine from bmv = (bmx, bmy) at bcost:
+; returns bcost | (bmx, bmy) << 32. ref is mv 0, cost_mvx/y me.c's p_cost_mvx/y,
+; iters i_me_range, range me.c's mv_min | mv_max << 32.
+;
+; A step is sad_hex_min's 4 windows around the centre, the mv costs of its points by
+; vpermi2w from two 16-word loads per axis, cost_mv[4*b-8..4*b+8]; any key below
+; bcost << 6 (kortest) moves the centre to the min. A half hexagon is the whole one
+; with the previous hexagon's 3 points out (1<<30): those were tested at no less than
+; bcost, and the rank row of its dir keeps me.c's idx order. The square is
+; sad_sq_min's 12 windows, the costs from 8-word loads, cost_mv[4*b-4..4*b+4].
+; Reads what the per-step kernels read at the same centres: the hexagon steps at
+; centres inside the mv range, the square at most 2 outside.
+;-----------------------------------------------------------------------------
+; me.c's CHECK_MVRANGE( r5, r9 ), range r8: ZF set inside; r10, r12, r14
+%macro FSH_MVRANGE 0
+    mov           r10d, r5d
+    shl           r10d, 16
+    mov           r12d, r9d
+    and           r12d, 0x7fff
+    or            r10d, r12d
+    lea           r12d, [r10+r8]
+    mov            r14, r8
+    shr            r14, 32
+    sub           r14d, r10d
+    or            r12d, r14d
+    test          r12d, 0x80004000
+%endmacro
+
+; bmv in r5 -> bmx r5, bmy r9; r1 += bmx + bmy*i_stride
+%macro FSH_START 0
+    mov            r9d, r5d
+    sar            r9d, 16
+    movsxd          r9, r9d
+    movsx           r5, r5w
+    mov            r10, r9
+    imul           r10, r2
+    add             r1, r5
+    add             r1, r10
+%endmacro
+
+; rax = r6d | (r5, r9) << 32
+%macro FSH_RET 0
+    movzx         r10d, r5w
+    shl            r9d, 16
+    or            r10d, r9d
+    shl            r10, 32
+    mov            r6d, r6d
+    or              r6, r10
+    RET
+%endmacro
+
+%macro FSH_SQ_ACC 5 ; acc, fenc, ref, temp, first
+%if %5
+    vdbpsadbw      m%1, m%2, m%3, 0x94
+%else
+    vdbpsadbw      m%4, m%2, m%3, 0x94
+    paddw          m%1, m%4
+%endif
+%endmacro
+
+; sad_sq_min's sums around r1: m0/m1/m2 dy -1/0/1; m7 the fenc permutation, r12
+%macro FSH_SQ_SAD 1 ; width
+    lea            r12, [r1-1]
+    sub            r12, r2
+%if %1 == 16
+%assign sq_j -1
+%rep 18
+    %assign sq_y sq_j+1
+    %assign sq_f 3+(sq_y % 3)
+    %if sq_y < 15
+    vpermd         m%[sq_f], m7, [r0+sq_y*FENC_STRIDE]
+    %elif sq_y == 15
+    vbroadcasti128 m%[sq_f], [r0+15*FENC_STRIDE]
+    vpermd         m%[sq_f], m7, m%[sq_f]
+    %endif
+    movu          xm6, [r12]
+    vinserti128    m6, m6, [r12+8], 1
+    %if sq_j < 16
+    add           r12, r2
+    %endif
+    %if sq_j < 15
+    FSH_SQ_ACC 0, %[sq_f], 6, 14, sq_j == -1
+    %endif
+    %if sq_j >= 0 && sq_j < 16
+        %assign sq_f 3+(sq_j % 3)
+    FSH_SQ_ACC 1, %[sq_f], 6, 14, sq_j == 0
+    %endif
+    %if sq_j >= 1
+        %assign sq_f 3+((sq_j-1) % 3)
+    FSH_SQ_ACC 2, %[sq_f], 6, 14, sq_j == 1
+    %endif
+    %assign sq_j sq_j+1
+%endrep
+%else
+    vpermd          m3, m7, [r0+0*FENC_STRIDE]
+    vpermd          m4, m7, [r0+2*FENC_STRIDE]
+    vpermd          m5, m7, [r0+4*FENC_STRIDE]
+    vpermd          m6, m7, [r0+6*FENC_STRIDE]
+%assign sq_j -1
+%rep 9
+    movu          xm14, [r12]
+    vinserti128    m14, m14, [r12+r2], 1
+    %if sq_j < 7
+    add           r12, r2
+    %endif
+    %if sq_j & 1
+        %if sq_j < 7
+            %assign sq_f 3+(sq_j+1)/2
+    FSH_SQ_ACC 0, %[sq_f], 14, 15, sq_j == -1
+        %endif
+        %if sq_j > 0
+            %assign sq_f 3+(sq_j-1)/2
+    FSH_SQ_ACC 2, %[sq_f], 14, 15, sq_j == 1
+        %endif
+    %else
+        %assign sq_f 3+sq_j/2
+    FSH_SQ_ACC 1, %[sq_f], 14, 15, sq_j == 0
+    %endif
+    %assign sq_j sq_j+1
+%endrep
+%endif
+%undef sq_j
+%undef sq_y
+%undef sq_f
+    ; m0: dy -1 | dy 1, xm1: dy 0, words dx -1..2
+    vshufi64x2     m14, m0, m2, 0x3
+    vinserti128     m0, m0, xm2, 1
+    paddw           m0, m14
+    vpermq          m0, m0, q3120
+    vextracti128  xm14, m1, 1
+    paddw          xm1, xm14
+    vextracti128   xm2, m0, 1
+    paddw          xm0, xm2
+    punpckhqdq    xm14, xm1, xm1
+    paddw          xm1, xm14
+%endmacro
+
+%macro FSH_HEX_SEARCH 2 ; width, height
+cglobal pixel_sad_hex_search_%1x%2, 9,15,16
+    %define dbp_o  r12
+    %define dbp_o1 r14
+    %define dbp_p0 r10-1
+    %define dbp_p1 r1-3
+    %define dbp_p2 r11-1
+    %define dbp_p3 r1+1
+    ; k1 also zeroes the high words of the vpermi2w costs
+    mov           r12d, 0x5555
+    kmovw           k1, r12d
+    kmovw           k3, r12d
+    mov           r12d, 0x2222
+    kmovw           k2, r12d
+    kmovw           k4, r12d
+%if %1 == 16
+    mova            m7, [sad_sq_idx16]
+%else
+    mova            m7, [sad_sq_idx8]
+%endif
+    FSH_START
+    sar            r7d, 1
+    lea            r13, [fsh_hex_rank+6*32]
+    mov           r12d, r6d
+    shl           r12d, 6
+    vpbroadcastd   m12, r12d
+.step:
+    lea            r11, [r1+r2*2]
+    mov            r10, r1
+    sub            r10, r2
+    sub            r10, r2
+    movu           m10, [r3+r5*8-16]
+    mova            m8, [fsh_hex_xidx]
+    vpermi2w        m8 {k1}{z}, m10, [r3+r5*8-14]
+    movu           m11, [r4+r9*8-16]
+    mova            m9, [fsh_hex_yidx]
+    vpermi2w        m9 {k1}{z}, m11, [r4+r9*8-14]
+    paddd           m8, m9
+    pslld           m8, 6
+    paddd           m8, [r13]
+    xor         dbp_o, dbp_o
+%if %1 < 16
+    mov        dbp_o1, r2
+%endif
+    DBP_ROWS %1, %2, 4
+    paddw           m0, m1
+    paddw           m2, m3
+    DBP_FOLD2 %1
+    pmovzxwd        m0, xm0
+    pslld           m0, 6
+    paddd           m0, m8
+    vpcmpud         k6, m0, m12, 1
+    kortestw        k6, k6
+    jz .square
+    vextracti128   xm1, m0, 1
+    pminud         xm0, xm1
+    pshufd         xm1, xm0, q1032
+    pminud         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminud         xm0, xm1
+    movd          r12d, xm0
+    mov            r6d, r12d
+    shr            r6d, 6
+    and           r12d, 7
+    lea            r13, [fsh_hex_mv]
+    movsx          r14, byte [r13+r12]
+    movsx          r10, byte [r13+r12+8]
+    add             r5, r14
+    add             r9, r10
+    imul           r10, r2
+    add             r1, r14
+    add             r1, r10
+    shl           r12d, 5
+    lea            r13, [r13+r12+fsh_hex_rank-fsh_hex_mv]
+    mov           r12d, r6d
+    shl           r12d, 6
+    vpbroadcastd   m12, r12d
+    ; me.c: i = (i_me_range>>1) - 1 after the hexagon, i-- after each half
+    dec            r7d
+    jle .square
+    FSH_MVRANGE
+    jz .step
+.square:
+    movu          xm10, [r3+r5*8-8]
+    movu          xm11, [r3+r5*8-6]
+    mova            m8, [fsh_sq_xidx]
+    vpermi2w        m8 {k1}{z}, m10, m11
+    mova          xm13, [fsh_sq_xidx0]
+    vpermi2w      xm13 {k1}{z}, xm10, xm11
+    movu          xm10, [r4+r9*8-8]
+    movu          xm11, [r4+r9*8-6]
+    mova            m9, [fsh_sq_yidx]
+    vpermi2w        m9 {k1}{z}, m10, m11
+    vpbroadcastw  xm11 {k1}{z}, [r4+r9*8]
+    paddd           m8, m9
+    paddd         xm13, xm11
+    pslld           m8, 6
+    pslld         xm13, 6
+    paddd           m8, [fsh_sq_rank]
+    paddd         xm13, [fsh_sq_rank0]
+    FSH_SQ_SAD %1
+    pmovzxwd        m0, xm0
+    pmovzxwd       xm1, xm1
+    pslld           m0, 6
+    pslld          xm1, 6
+    paddd           m0, m8
+    paddd          xm1, xm13
+    vpcmpud         k6, m0, m12, 1
+    vpcmpud         k7, xm1, xm12, 1
+    kortestw        k6, k7
+    jz .end
+    vextracti128   xm2, m0, 1
+    pminud         xm1, xm0
+    pminud         xm1, xm2
+    pshufd         xm0, xm1, q1032
+    pminud         xm1, xm0
+    pshufd         xm0, xm1, q2301
+    pminud         xm1, xm0
+    movd          r12d, xm1
+    mov            r6d, r12d
+    shr            r6d, 6
+    and           r12d, 63
+    lea            r13, [fsh_sq_mv]
+    movsx          r14, byte [r13+r12]
+    movsx          r10, byte [r13+r12+16]
+    add             r5, r14
+    add             r9, r10
+.end:
+    FSH_RET
+%endmacro
+
+FSH_HEX_SEARCH 8, 8
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_dia_search_WxH( uint8_t *fenc, uint8_t *ref, intptr_t i_stride,
+;                                    const uint16_t *cost_mvx, const uint16_t *cost_mvy,
+;                                    uint32_t bmv, int bcost, int iters, uint64_t range )
+; me.c's diamond search, as sad_hex_search: a step is sad_dia_min's 3 windows, the mv
+; costs by vpermi2w from two 8-word loads per axis, cost_mv[4*b-4..4*b+4], the keys
+; me.c's (cost << 4) + idx. Reads only around centres inside the mv range.
+;-----------------------------------------------------------------------------
+%macro FSH_DIA_SEARCH 2 ; width, height
+cglobal pixel_sad_dia_search_%1x%2, 9,15,16
+    %define dbp_o  r12
+    %define dbp_o1 r14
+    %define dbp_p0 r1-2
+    %define dbp_p1 r10
+    %define dbp_p2 r11-2
+    mov           r12d, 0xaaaa
+    kmovw           k1, r12d
+    mov           r12d, 0x1111
+    kmovw           k2, r12d
+    mov           r12d, 0x4444
+    kmovw           k3, r12d
+    mov           r12d, 0x5555
+    kmovw           k4, r12d
+%if %1 == 16
+    mova            m7, [sad_sq_idx16]
+%else
+    mova            m7, [sad_sq_idx8]
+%endif
+    FSH_START
+    mov           r12d, r6d
+    shl           r12d, 4
+    vpbroadcastd  xm12, r12d
+.step:
+    mov            r10, r1
+    sub            r10, r2
+    lea            r11, [r1+r2]
+    movu          xm10, [r3+r5*8-8]
+    mova           xm8, [fsh_dia_xidx]
+    vpermi2w       xm8 {k4}{z}, xm10, [r3+r5*8-6]
+    movu          xm11, [r4+r9*8-8]
+    mova           xm9, [fsh_dia_yidx]
+    vpermi2w       xm9 {k4}{z}, xm11, [r4+r9*8-6]
+    paddd          xm8, xm9
+    pslld          xm8, 4
+    paddd          xm8, [fsh_dia_rank]
+    xor         dbp_o, dbp_o
+%if %1 < 16
+    mov        dbp_o1, r2
+%endif
+    DBP_ROWS %1, %2, 3
+    paddw           m0, m1
+    paddw           m0, m2
+    DBP_FOLD1 %1
+    pmovzxwd       xm0, xm0
+    pslld          xm0, 4
+    paddd          xm0, xm8
+    vpcmpud         k6, xm0, xm12, 1
+    kortestw        k6, k6
+    jz .end
+    pshufd         xm1, xm0, q1032
+    pminud         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminud         xm0, xm1
+    movd          r12d, xm0
+    mov            r6d, r12d
+    shr            r6d, 4
+    ; me.c: bmx -= (bcost<<28)>>30, bmy -= (bcost<<30)>>30
+    mov           r14d, r12d
+    shl           r14d, 28
+    sar           r14d, 30
+    movsxd         r14, r14d
+    shl           r12d, 30
+    sar           r12d, 30
+    movsxd         r12, r12d
+    sub             r5, r14
+    sub             r9, r12
+    sub             r1, r14
+    imul           r12, r2
+    sub             r1, r12
+    mov           r12d, r6d
+    shl           r12d, 4
+    vpbroadcastd  xm12, r12d
+    dec            r7d
+    jz .end
+    FSH_MVRANGE
+    jz .step
+.end:
+    FSH_RET
+%endmacro
+
+FSH_DIA_SEARCH 8, 8
 
 INIT_YMM avx2
 %endif ; ARCH_X86_64

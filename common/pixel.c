@@ -90,6 +90,93 @@ int x264_pixel_sad_sq_min_c( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_st
     return best;
 }
 
+/* me.c's CHECK_MVRANGE */
+static inline int search_mvrange( int mx, int my, uint32_t mv_min, uint32_t mv_max )
+{
+    uint32_t p = ((uint32_t)mx << 16) | (my & 0x7FFF);
+    return !(((p + mv_min) | (mv_max - p)) & 0x80004000);
+}
+
+#define SEARCH_MIN( key ) { int key_ = key; bcost = X264_MIN( bcost, key_ ); }
+#define SEARCH_COST( dx, dy ) \
+    (sad[i_pixel]( fenc, FENC_STRIDE, ref + (bmx+(dx)) + (bmy+(dy))*i_stride, i_stride ) \
+     + cost_mvx[(bmx+(dx))*4] + cost_mvy[(bmy+(dy))*4])
+
+/* references for sad_dia_search and sad_hex_search: me.c's loops without the *_min kernels */
+uint64_t x264_pixel_sad_dia_search_c( int i_pixel, pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
+                                      const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    uint32_t mv_min = range, mv_max = range >> 32;
+    int bmx = (int16_t)bmv, bmy = (int16_t)(bmv >> 16);
+    int i = iters;
+    bcost <<= 4;
+    do
+    {
+        SEARCH_MIN( (SEARCH_COST( 0,-1 )<<4)+1 );
+        SEARCH_MIN( (SEARCH_COST( 0, 1 )<<4)+3 );
+        SEARCH_MIN( (SEARCH_COST(-1, 0 )<<4)+4 );
+        SEARCH_MIN( (SEARCH_COST( 1, 0 )<<4)+12 );
+        if( !(bcost&15) )
+            break;
+        bmx -= (bcost<<28)>>30;
+        bmy -= (bcost<<30)>>30;
+        bcost &= ~15;
+    } while( --i && search_mvrange( bmx, bmy, mv_min, mv_max ) );
+    bcost >>= 4;
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+
+uint64_t x264_pixel_sad_hex_search_c( int i_pixel, pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
+                                      const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
+{
+    static const x264_pixel_cmp_t sad[7] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8,
+        x264_pixel_sad_8x4, x264_pixel_sad_4x8, x264_pixel_sad_4x4
+    };
+    /* me.c's mod6m1, square1, hex2 */
+    static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
+    static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+    static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
+    uint32_t mv_min = range, mv_max = range >> 32;
+    int bmx = (int16_t)bmv, bmy = (int16_t)(bmv >> 16);
+    bcost <<= 6;
+    for( int j = 0; j < 6; j++ )
+        SEARCH_MIN( (SEARCH_COST( hex2[j+1][0], hex2[j+1][1] )<<6)+j+2 );
+    if( bcost&63 )
+    {
+        int dir = (bcost&63)-2;
+        bmx += hex2[dir+1][0];
+        bmy += hex2[dir+1][1];
+        for( int i = (iters>>1) - 1; i > 0 && search_mvrange( bmx, bmy, mv_min, mv_max ); i-- )
+        {
+            bcost &= ~63;
+            for( int j = 0; j < 3; j++ )
+                SEARCH_MIN( (SEARCH_COST( hex2[dir+j][0], hex2[dir+j][1] )<<6)+j+1 );
+            if( !(bcost&63) )
+                break;
+            dir += (bcost&63)-2;
+            dir = mod6m1[dir+1];
+            bmx += hex2[dir+1][0];
+            bmy += hex2[dir+1][1];
+        }
+    }
+    bcost &= ~63;
+    for( int j = 1; j < 9; j++ )
+        SEARCH_MIN( (SEARCH_COST( square1[j][0], square1[j][1] )<<6)+j );
+    bmx += square1[bcost&63][0];
+    bmy += square1[bcost&63][1];
+    bcost >>= 6;
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+#undef SEARCH_COST
+#undef SEARCH_MIN
+
 /****************************************************************************
  * pixel_ssd_WxH
  ****************************************************************************/
@@ -1742,6 +1829,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
+        pixf->sad_hex_search[PIXEL_8x8] = x264_pixel_sad_hex_search_8x8_avx512;
+        pixf->sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512;
 #endif
     }
 #endif //HAVE_MMX
