@@ -74,6 +74,7 @@ typedef struct
     int b_avoid_topright; /* For Periodic Intra Refresh: don't predict from top-right pixels. */
     int b_pir_skip_invalid; /* For Periodic Intra Refresh: the P_SKIP mv reaches right of the reference's bar. */
     int b_try_skip;
+    int b_ref0_exit; /* --ref0-exit fired: no partitions */
 
     /* Luma part */
     int i_satd_i16x16;
@@ -385,6 +386,7 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     a->i_satd_pcm = !h->param.i_avcintra_class && !h->mb.i_psy_rd && a->i_mbrd && pcm_cost < COST_MAX ? pcm_cost : COST_MAX;
 
     a->b_fast_intra = 0;
+    a->b_ref0_exit = 0;
     a->b_avoid_topright = 0;
     h->mb.i_skip_intra =
         h->mb.b_lossless ? 0 :
@@ -1391,11 +1393,26 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
             return;
         }
 
+        /* experimental: ref 0 near the skip mv and cheap, no other refs or partitions */
+        int b_ref0_exit = i_ref == 0
+            && h->param.analyse.i_ref0_exit && a->b_early_terminate
+            && m.cost-m.cost_mv < h->param.analyse.i_ref0_exit*a->i_lambda
+            &&  abs(m.mv[0]-h->mb.cache.pskip_mv[0])
+              + abs(m.mv[1]-h->mb.cache.pskip_mv[1]) <= 1;
+
         m.cost += m.i_ref_cost;
         i_halfpel_thresh += m.i_ref_cost;
 
         if( m.cost < a->l0.me16x16.cost )
             h->mc.memcpy_aligned( &a->l0.me16x16, &m, sizeof(x264_me_t) );
+
+        if( b_ref0_exit )
+        {
+            a->b_ref0_exit = 1;
+            for( int i = 1; i < h->mb.pic.i_fref[0]; i++ )
+                M32( h->mb.mvr[0][i][h->mb.i_mb_xy] ) = 0;
+            break;
+        }
     }
 
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, a->l0.me16x16.i_ref );
@@ -3494,6 +3511,7 @@ skip_analysis:
             if( PARAM_INTERLACED && analysis.b_early_terminate && (flags & X264_ANALYSE_PSUB16x16) )
                 b_partgate = analysis.l0.me16x16.cost - analysis.l0.me16x16.cost_mv < PARTGATE_THRESH * analysis.i_lambda &&
                              !x264_mb_analyse_nb_sub16x16( h );
+            b_partgate |= analysis.b_ref0_exit;
 
             /* Where the lowres coded the mb intra, analyse intra against the 16x16 first */
             if( !b_intra_first && x264_mb_lowres_intra( h ) )

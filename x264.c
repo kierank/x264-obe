@@ -841,6 +841,9 @@ static void help( x264_param_t *defaults, int longhelp )
     H2( "      --qpel-skip <integer>   Experimental: no qpel refinement when the subpel\n"
         "                              search starts and stays on a fullpel mv costing\n"
         "                              <= k*lambda*area/256 [0 (off)]\n" );
+    H2( "      --ref0-exit <integer>   Experimental: P 16x16 searches no other refs and\n"
+        "                              no partitions when ref 0 is within 1 qpel of the\n"
+        "                              skip mv with distortion < k*lambda [0 (off)]\n" );
     H1( "      --nr <integer>          Noise reduction [%d]\n", defaults->analyse.i_noise_reduction );
     H2( "\n" );
     H2( "      --deadzone-inter <int>  Set the size of the inter luma quantization deadzone [%d]\n", defaults->analyse.i_luma_deadzone[0] );
@@ -1091,6 +1094,7 @@ static struct option long_options[] =
     { "no-dct-decimate",   no_argument, NULL, 0 },
     { "me-seed-exit", required_argument, NULL, 0 },
     { "qpel-skip",   required_argument, NULL, 0 },
+    { "ref0-exit",   required_argument, NULL, 0 },
     { "aq-strength", required_argument, NULL, 0 },
     { "aq-mode",     required_argument, NULL, 0 },
     { "deadzone-inter", required_argument, NULL, 0 },
