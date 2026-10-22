@@ -95,6 +95,7 @@ static ALWAYS_INLINE int x264_quant_4x4( x264_t *h, dctcoef dct[16], int i_qp, i
         return h->quantf.quant_4x4( dct, h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias[i_quant_cat][i_qp] );
 }
 
+/* returns nz; with trellis | may have a nonzero ac level << 8 */
 static ALWAYS_INLINE int x264_quant_8x8( x264_t *h, dctcoef dct[64], int i_qp, int ctx_block_cat, int b_intra, int p, int idx )
 {
     int i_quant_cat = b_intra ? (p?CQM_8IC:CQM_8IY) : (p?CQM_8PC:CQM_8PY);
@@ -106,21 +107,37 @@ static ALWAYS_INLINE int x264_quant_8x8( x264_t *h, dctcoef dct[64], int i_qp, i
         return h->quantf.quant_8x8( dct, h->quant8_mf[i_quant_cat][i_qp], h->quant8_bias[i_quant_cat][i_qp] );
 }
 
+/* trellis: clear bit 8 (may have ac) of nz when the zigzagged levels are dc-only */
+static ALWAYS_INLINE int x264_trellis_8x8_ac( x264_t *h, int nz, dctcoef level[64] )
+{
+    if( (nz & 0x100) && !h->quantf.coeff_last[DCT_LUMA_8x8]( level ) )
+        nz &= ~0x100;
+    return nz;
+}
+
+/* trellis: 1 if the 4x4 may have ac (bit 0 of may_ac) and its zigzagged levels are not dc-only */
+static ALWAYS_INLINE int x264_trellis_4x4_ac( x264_t *h, int may_ac, dctcoef level[16] )
+{
+    return (may_ac & 1) && h->quantf.coeff_last[DCT_LUMA_4x4]( level );
+}
+
 /* x264_quant_8x8, then if nonzero: zigzag into level and dequant in place; needs zigzagf.quant_8x8_scan.
  * Returns 0, or 1 | min(decimate score, 9) << 4 | a nonzero ac level << 8; with trellis the score is 9
- * unless b_decimate, and bit 8 is always set. */
+ * unless b_decimate. */
 static ALWAYS_INLINE int x264_quant_8x8_scan( x264_t *h, dctcoef dct[64], dctcoef level[64], int i_qp, int ctx_block_cat,
                                               int b_intra, int p, int idx, int b_decimate )
 {
     int i_quant_cat = b_intra ? (p?CQM_8IC:CQM_8IY) : (p?CQM_8PC:CQM_8PY);
     if( h->mb.b_trellis )
     {
-        if( !x264_quant_8x8( h, dct, i_qp, ctx_block_cat, b_intra, p, idx ) )
+        int nz = x264_quant_8x8( h, dct, i_qp, ctx_block_cat, b_intra, p, idx );
+        if( !nz )
             return 0;
         h->zigzagf.scan_8x8( level, dct );
+        nz = x264_trellis_8x8_ac( h, nz, level );
         int score = b_decimate ? h->quantf.decimate_score64( level ) : 9;
         h->quantf.dequant_8x8( dct, h->dequant8_mf[i_quant_cat], i_qp );
-        return 1 | X264_MIN( score, 9 ) << 4 | 1 << 8;
+        return 1 | X264_MIN( score, 9 ) << 4 | (nz & 0x100);
     }
     if( h->mb.b_noise_reduction )
         h->quantf.denoise_dct( dct, h->nr_residual_sum[1+!!p*2], h->nr_offset[1+!!p*2], 64 );
@@ -260,9 +277,10 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
         if( !b_q8s )
         {
             h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8 );
+            nz = x264_trellis_8x8_ac( h, nz, h->dct.luma8x8[p*4+idx] );
             h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[p?CQM_8IC:CQM_8IY], i_qp );
         }
-        if( b_q8s && !(nz >> 8) )
+        if( (b_q8s || h->mb.b_trellis) && !(nz >> 8) )
             x264_mb_add_dconly( h, p_dst, dct8x8, 1, 1 );
         else
             h->dctf.add8x8_idct8( p_dst, dct8x8 );
