@@ -623,7 +623,16 @@ cglobal cabac_encode_decision_%1, 1,7
     cmovne t3d, t5d
     cmovne t6d, t2d
     mov   [t0+cb.state+t1], t4b
-;cabac_encode_renorm
+; range >= 256: no renorm, queue unchanged
+    test  t3d, 0x100
+    jz .renorm
+%if WIN64
+    POP r7
+%endif
+    mov   [t0+cb.range], t3d
+    mov   [t0+cb.low], t6d
+    RET
+.renorm:
     mov   t4d, t3d
 %ifidn %1, bmi2
     lzcnt t3d, t3d
@@ -1788,9 +1797,20 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 
 ; one stub per site: 4 bytes pending. last byte not 0xff and nothing
 ; outstanding: store all 4 inline, else .putbytes_slow
+; a CABAC_BIN site: the renorm (range < 256) in front of its flush stub
 %macro PUTBYTE_STUBS 0
 %assign pb_i 0
 %rep pb_count
+%ifdef cb_renorm%[pb_i]
+.cbr %+ pb_i:
+    lzcnt   r5d, ranged
+    sub     r5d, 23
+    shlx ranged, ranged, r5d
+    shlx   lowq, lowq, r5
+    add  queued, r5d
+    jl .pbr %+ pb_i
+    %undef cb_renorm%[pb_i]
+%endif
 .pb %+ pb_i:
     mov      r6, cbm
     lea     r4d, [queueq+10]
@@ -1843,12 +1863,12 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %if %0 > 1
     mov    [%2], r2b
 %endif
-    lzcnt   r5d, ranged
-    sub     r5d, 23
-    shlx ranged, ranged, r5d
-    shlx   lowq, lowq, r5
-    add  queued, r5d
-    PUTBYTE
+; range >= 256: no renorm, queue unchanged; else the stub, back to .pbr
+    test ranged, 0x100
+    jz .cbr %+ pb_count
+.pbr %+ pb_count:
+    %assign cb_renorm%[pb_count] 1
+    %assign pb_count pb_count+1
 %endmacro
 
 ; %1 = 8x8 mode, %2 = count_m1
