@@ -3693,6 +3693,11 @@ skip_analysis:
                     h->mc.copy[PIXEL_8x8]  ( h->mb.pic.p_fenc[2], FENC_STRIDE, h->mb.pic.p_fdec[2], FDEC_STRIDE, height );
                 }
                 x264_mb_analyse_init_qp( h, &analysis, X264_MAX( h->mb.i_qp - h->mb.ip_offset, h->param.rc.i_qp_min ) );
+                /* the inter pass's intra costs are of the old fenc */
+                analysis.i_satd_i16x16 =
+                analysis.i_satd_i8x8   =
+                analysis.i_satd_i4x4   =
+                analysis.i_satd_chroma = COST_MAX;
                 goto intra_analysis;
             }
 
