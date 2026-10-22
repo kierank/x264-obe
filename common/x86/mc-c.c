@@ -1325,6 +1325,54 @@ PROPAGATE_LIST(avx512)
 #undef CLIP_ADD2
 
 
+/* layout twins of wip/x264-sweep-intrabi: every build declares the hidden weak
+ * twins of the avg_bi4 / mc_chroma_bi kernels; a group set to 1 dispatches its twins, which link
+ * as 0, so SWIB_SET keeps the slot's previous value (NULL: the old path, or the
+ * avx2 kernel under an avx512icl twin) */
+#if HAVE_MMX && ARCH_X86_64
+#define SWIB_TWIN_BI4_AVX2  0
+#define SWIB_TWIN_CBI_AVX2  0
+#define SWIB_TWIN_CBI_ICL   0
+#define SWIB_STR2( x ) #x
+#define SWIB_STR( x ) SWIB_STR2( x )
+#define SWIB_TWIN1( f ) \
+    extern __typeof__( f ) x264_template(twin_##f) __attribute__((weak, visibility("hidden"))); \
+    __asm__( ".weak " SWIB_STR( x264_template(twin_##f) ) "\n.hidden " SWIB_STR( x264_template(twin_##f) ) );
+SWIB_TWIN1( x264_pixel_avg_bi4_16x16_avx2 )
+SWIB_TWIN1( x264_pixel_avg_bi4_16x8_avx2 )
+SWIB_TWIN1( x264_pixel_avg_bi4_8x16_avx2 )
+SWIB_TWIN1( x264_pixel_avg_bi4_8x8_avx2 )
+SWIB_TWIN1( x264_mc_chroma_bi_w8_avx2 )
+SWIB_TWIN1( x264_mc_chroma_bi_w4_avx2 )
+SWIB_TWIN1( x264_mc_chroma_bi_w8_avx512icl )
+SWIB_TWIN1( x264_mc_chroma_bi_w4_avx512icl )
+#if SWIB_TWIN_BI4_AVX2
+#undef x264_pixel_avg_bi4_16x16_avx2
+#define x264_pixel_avg_bi4_16x16_avx2 x264_template(twin_x264_pixel_avg_bi4_16x16_avx2)
+#undef x264_pixel_avg_bi4_16x8_avx2
+#define x264_pixel_avg_bi4_16x8_avx2 x264_template(twin_x264_pixel_avg_bi4_16x8_avx2)
+#undef x264_pixel_avg_bi4_8x16_avx2
+#define x264_pixel_avg_bi4_8x16_avx2 x264_template(twin_x264_pixel_avg_bi4_8x16_avx2)
+#undef x264_pixel_avg_bi4_8x8_avx2
+#define x264_pixel_avg_bi4_8x8_avx2 x264_template(twin_x264_pixel_avg_bi4_8x8_avx2)
+#endif
+#if SWIB_TWIN_CBI_AVX2
+#undef x264_mc_chroma_bi_w8_avx2
+#define x264_mc_chroma_bi_w8_avx2 x264_template(twin_x264_mc_chroma_bi_w8_avx2)
+#undef x264_mc_chroma_bi_w4_avx2
+#define x264_mc_chroma_bi_w4_avx2 x264_template(twin_x264_mc_chroma_bi_w4_avx2)
+#endif
+#if SWIB_TWIN_CBI_ICL
+#undef x264_mc_chroma_bi_w8_avx512icl
+#define x264_mc_chroma_bi_w8_avx512icl x264_template(twin_x264_mc_chroma_bi_w8_avx512icl)
+#undef x264_mc_chroma_bi_w4_avx512icl
+#define x264_mc_chroma_bi_w4_avx512icl x264_template(twin_x264_mc_chroma_bi_w4_avx512icl)
+#endif
+#endif
+/* the empty asm hides whether f is a twin, so every arm compiles the same test */
+#define SWIB_SET( slot, f ) do { intptr_t swib_p = (intptr_t)(f); __asm__( "" : "+r"(swib_p) ); \
+                                 if( swib_p ) slot = (__typeof__(slot))swib_p; } while( 0 )
+
 void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 {
     if( !(cpu&X264_CPU_MMX) )
@@ -1488,12 +1536,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->offsetsub = x264_mc_offsetsub_wtab_avx2;
 #if ARCH_X86_64
         pf->weight_plane = weight_plane_avx2;
-        pf->avg_bi4[PIXEL_16x16] = x264_pixel_avg_bi4_16x16_avx2;
-        pf->avg_bi4[PIXEL_16x8]  = x264_pixel_avg_bi4_16x8_avx2;
-        pf->avg_bi4[PIXEL_8x16]  = x264_pixel_avg_bi4_8x16_avx2;
-        pf->avg_bi4[PIXEL_8x8]   = x264_pixel_avg_bi4_8x8_avx2;
-        pf->mc_chroma_bi[0] = x264_mc_chroma_bi_w8_avx2;
-        pf->mc_chroma_bi[1] = x264_mc_chroma_bi_w4_avx2;
+        SWIB_SET( pf->avg_bi4[PIXEL_16x16], x264_pixel_avg_bi4_16x16_avx2 );
+        SWIB_SET( pf->avg_bi4[PIXEL_16x8], x264_pixel_avg_bi4_16x8_avx2 );
+        SWIB_SET( pf->avg_bi4[PIXEL_8x16], x264_pixel_avg_bi4_8x16_avx2 );
+        SWIB_SET( pf->avg_bi4[PIXEL_8x8], x264_pixel_avg_bi4_8x8_avx2 );
+        SWIB_SET( pf->mc_chroma_bi[0], x264_mc_chroma_bi_w8_avx2 );
+        SWIB_SET( pf->mc_chroma_bi[1], x264_mc_chroma_bi_w4_avx2 );
 #endif
     }
 
@@ -1685,12 +1733,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init4h = x264_integral_init4h_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
 #if ARCH_X86_64
-        pf->avg_bi4[PIXEL_16x16] = x264_pixel_avg_bi4_16x16_avx2;
-        pf->avg_bi4[PIXEL_16x8]  = x264_pixel_avg_bi4_16x8_avx2;
-        pf->avg_bi4[PIXEL_8x16]  = x264_pixel_avg_bi4_8x16_avx2;
-        pf->avg_bi4[PIXEL_8x8]   = x264_pixel_avg_bi4_8x8_avx2;
-        pf->mc_chroma_bi[0] = x264_mc_chroma_bi_w8_avx2;
-        pf->mc_chroma_bi[1] = x264_mc_chroma_bi_w4_avx2;
+        SWIB_SET( pf->avg_bi4[PIXEL_16x16], x264_pixel_avg_bi4_16x16_avx2 );
+        SWIB_SET( pf->avg_bi4[PIXEL_16x8], x264_pixel_avg_bi4_16x8_avx2 );
+        SWIB_SET( pf->avg_bi4[PIXEL_8x16], x264_pixel_avg_bi4_8x16_avx2 );
+        SWIB_SET( pf->avg_bi4[PIXEL_8x8], x264_pixel_avg_bi4_8x8_avx2 );
+        SWIB_SET( pf->mc_chroma_bi[0], x264_mc_chroma_bi_w8_avx2 );
+        SWIB_SET( pf->mc_chroma_bi[1], x264_mc_chroma_bi_w4_avx2 );
 #endif
     }
 
@@ -1710,8 +1758,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
-        pf->mc_chroma_bi[0] = x264_mc_chroma_bi_w8_avx512icl;
-        pf->mc_chroma_bi[1] = x264_mc_chroma_bi_w4_avx512icl;
+        SWIB_SET( pf->mc_chroma_bi[0], x264_mc_chroma_bi_w8_avx512icl );
+        SWIB_SET( pf->mc_chroma_bi[1], x264_mc_chroma_bi_w4_avx512icl );
         pf->integral_init4h = x264_integral_init4h_avx512icl;
         pf->integral_init8h = x264_integral_init8h_avx512icl;
         pf->plane_copy_deinterleave_rgb = x264_plane_copy_deinterleave_rgb_avx512icl;
