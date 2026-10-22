@@ -960,6 +960,254 @@ void x264_macroblock_encode( x264_t *h )
         x264_macroblock_encode_internal( h, 1, 1 );
 }
 
+/* probe_fuse counters, [P, B]: luma kernel calls [luma, 4:4:4 chroma][verdict 0, 1, 2], chroma kernel
+ * calls [verdict 0, 1], probes with nr (C path). Self-check: every verdict equals the C reference's, else abort. */
+static uint64_t probefuse_cnt[2][2][3];
+static uint64_t probefuse_ccnt[2][2];
+static uint64_t probefuse_nr[2];
+
+static void probefuse_screen_print( void );
+
+void x264_probefuse_print( void )
+{
+    probefuse_screen_print();
+    for( int b = 0; b < 2; b++ )
+    {
+        for( int c = 0; c < 2; c++ )
+        {
+            uint64_t n[3];
+            for( int i = 0; i < 3; i++ )
+                n[i] = __atomic_load_n( &probefuse_cnt[b][c][i], __ATOMIC_RELAXED );
+            uint64_t t = n[0] + n[1] + n[2];
+            if( t )
+                fprintf( stderr, "probefuse %d-bit %s %s: calls %"PRIu64" reject %.2f%% pass %.2f%% eq %.2f%%\n", BIT_DEPTH,
+                         b ? "B" : "P", c ? "chroma444" : "luma", t, 100.0*n[0]/t, 100.0*n[1]/t, 100.0*n[2]/t );
+        }
+        uint64_t c0 = __atomic_load_n( &probefuse_ccnt[b][0], __ATOMIC_RELAXED );
+        uint64_t c1 = __atomic_load_n( &probefuse_ccnt[b][1], __ATOMIC_RELAXED );
+        uint64_t nr = __atomic_load_n( &probefuse_nr[b], __ATOMIC_RELAXED );
+        if( c0 + c1 )
+            fprintf( stderr, "probefuse %d-bit %s chroma: calls %"PRIu64" reject %.2f%%\n", BIT_DEPTH, b ? "B" : "P",
+                     c0 + c1, 100.0*c0/(c0 + c1) );
+        if( nr )
+            fprintf( stderr, "probefuse %d-bit %s: probes with nr (C path) %"PRIu64"\n", BIT_DEPTH, b ? "B" : "P", nr );
+    }
+}
+
+/* screen counters. Luma (all planes): 4x4 rows, rows proven by the union, by 16*E - S^2 alone, by the
+ * range alone; 4x4s, proven by 16*E - S^2 only, by the range only, by both; 4x4s with every level 0.
+ * Chroma 4:2:0 / 4:2:2 [P, B]: planes past ssd < thresh, DC 0, DC proven by sum |S_b| < tdc; 8x8s at
+ * the AC stage, AC proven by the union, by 16*E - S^2 alone, by the range alone, AC all 0.
+ * Self-check: a proven 4x4 / 8x8 AC / DC quantises to 0, else abort. */
+static uint64_t pf_lscr[9];
+static uint64_t pf_cscr[2][8];
+#define PF_ADD( a, n ) __atomic_fetch_add( &(a), n, __ATOMIC_RELAXED )
+
+static void probefuse_screen_print( void )
+{
+    uint64_t l[9];
+    for( int i = 0; i < 9; i++ )
+        l[i] = __atomic_load_n( &pf_lscr[i], __ATOMIC_RELAXED );
+    if( l[0] )
+        fprintf( stderr, "probefuse %d-bit luma screen: 4x4 rows %"PRIu64" proven %.2f%% (16E-S^2 alone %.2f%%, range alone %.2f%%);"
+                 " 4x4s %"PRIu64" 16E-S^2 only %.2f%% range only %.2f%% both %.2f%% all levels 0 %.2f%%\n", BIT_DEPTH,
+                 l[0], 100.0*l[1]/l[0], 100.0*l[2]/l[0], 100.0*l[3]/l[0], l[4], 100.0*l[5]/l[4], 100.0*l[6]/l[4],
+                 100.0*l[7]/l[4], 100.0*l[8]/l[4] );
+    for( int b = 0; b < 2; b++ )
+    {
+        uint64_t c[8];
+        for( int i = 0; i < 8; i++ )
+            c[i] = __atomic_load_n( &pf_cscr[b][i], __ATOMIC_RELAXED );
+        if( c[0] )
+            fprintf( stderr, "probefuse %d-bit %s chroma screen: planes past ssd<thresh %"PRIu64" DC 0 %.2f%% DC proven by sum|S| %.2f%%;"
+                     " AC-stage 8x8s %"PRIu64" proven %.2f%% (16E-S^2 alone %.2f%%, range alone %.2f%%) AC all 0 %.2f%%\n",
+                     BIT_DEPTH, b ? "B" : "P", c[0], 100.0*c[1]/c[0], 100.0*c[2]/c[0], c[3],
+                     c[3] ? 100.0*c[4]/c[3] : 0, c[3] ? 100.0*c[5]/c[3] : 0, c[3] ? 100.0*c[6]/c[3] : 0, c[3] ? 100.0*c[7]/c[3] : 0 );
+    }
+}
+
+/* 1 + the largest residual range proving every AC of a 4x4 0 (removed from the kernels): an AC basis sums
+ * to 0 and its positive weights to half of |basis|_1, so |c| <= half * range */
+static int pf_rthr( x264_t *h, int i_list, int i_qp )
+{
+    int rmax = 32767;
+    for( int i = 1; i < 16; i++ )
+    {
+        int64_t mf = h->quant4_mf[i_list][i_qp][i];
+        int64_t t = ((1 << 16) + mf - 1) / mf - h->quant4_bias[i_list][i_qp][i];
+        int half = (i&1 ? 6 : 4) * (i&4 ? 6 : 4) / 2;
+        rmax = X264_MIN( rmax, t > 0 ? (t - 1) / half : -1 );
+    }
+    return rmax + 1;
+}
+
+/* E, S, range of the 4x4 at fenc / fdec */
+static void pf_block( pixel *fenc, pixel *fdec, int *e, int *s, int *rg )
+{
+    int mx = INT_MIN, mn = INT_MAX;
+    *e = *s = 0;
+    for( int y = 0; y < 4; y++ )
+        for( int x = 0; x < 4; x++ )
+        {
+            int r = fenc[x+y*FENC_STRIDE] - fdec[x+y*FDEC_STRIDE];
+            *e += r*r;
+            *s += r;
+            mx = X264_MAX( mx, r );
+            mn = X264_MIN( mn, r );
+        }
+    *rg = mx - mn;
+}
+
+/* nonzero levels of the 4x4 at fenc / fdec, DC excluded if ac */
+static int pf_nz( x264_t *h, pixel *fenc, pixel *fdec, udctcoef *mf, udctcoef *bias, int ac )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct,[16] );
+    h->dctf.sub4x4_dct( dct, fenc, fdec );
+    if( ac )
+        dct[0] = 0;
+    return h->quantf.quant_4x4( dct, mf, bias );
+}
+
+static NOINLINE void probefuse_luma_screen( x264_t *h, int p, int quant_cat, int i_qp )
+{
+    const int32_t *thr = h->zscreen_thr[!!p][i_qp];
+    int rthr = pf_rthr( h, quant_cat, i_qp );
+    udctcoef *mf = h->quant4_mf[quant_cat][i_qp], *bias = h->quant4_bias[quant_cat][i_qp];
+    for( int by = 0; by < 16; by += 4 )
+    {
+        int all_u = 1, all_cs = 1, all_rg = 1;
+        for( int bx = 0; bx < 16; bx += 4 )
+        {
+            pixel *fenc = h->mb.pic.p_fenc[p] + bx + by*FENC_STRIDE, *fdec = h->mb.pic.p_fdec[p] + bx + by*FDEC_STRIDE;
+            int e, s, rg;
+            pf_block( fenc, fdec, &e, &s, &rg );
+            int dc = abs( s ) < thr[1], cs = dc && 16*e - s*s <= thr[0], rr = dc && rg < rthr;
+            int nz = pf_nz( h, fenc, fdec, mf, bias, 0 );
+            if( (cs || rr) && nz )
+            {
+                fprintf( stderr, "probefuse: proven luma 4x4 coded: mb %d,%d plane %d qp %d\n", h->mb.i_mb_x, h->mb.i_mb_y, p, i_qp );
+                abort();
+            }
+            all_u &= cs || rr;
+            all_cs &= cs;
+            all_rg &= rr;
+            PF_ADD( pf_lscr[4], 1 );
+            if( cs && !rr )
+                PF_ADD( pf_lscr[5], 1 );
+            if( rr && !cs )
+                PF_ADD( pf_lscr[6], 1 );
+            if( rr && cs )
+                PF_ADD( pf_lscr[7], 1 );
+            if( !nz )
+                PF_ADD( pf_lscr[8], 1 );
+        }
+        PF_ADD( pf_lscr[0], 1 );
+        PF_ADD( pf_lscr[1], all_u );
+        PF_ADD( pf_lscr[2], all_cs );
+        PF_ADD( pf_lscr[3], all_rg );
+    }
+}
+
+static NOINLINE void probefuse_chroma_screen( x264_t *h, int b_bidir, pixel *p_src, pixel *p_dst, int i_qp, int thresh, int chroma422 )
+{
+    const int32_t *thr = h->zscreen_thr[1][i_qp];
+    int rthr = pf_rthr( h, CQM_4PC, i_qp );
+    udctcoef *mf = h->quant4_mf[CQM_4PC][i_qp], *bias = h->quant4_bias[CQM_4PC][i_qp];
+    int dc_mf = h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1, dc_bias = h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1;
+    int ssd = 0, sabs = 0, dc_nz = 0;
+    for( int y = 0; y < (8<<chroma422); y++ )
+        for( int x = 0; x < 8; x++ )
+        {
+            int d = p_src[x+y*FENC_STRIDE] - p_dst[x+y*FDEC_STRIDE];
+            ssd += d*d;
+        }
+    if( ssd < thresh )
+        return;
+    ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+    if( chroma422 )
+        h->dctf.sub8x16_dct_dc( dct_dc, p_src, p_dst );
+    else
+        h->dctf.sub8x8_dct_dc( dct_dc, p_src, p_dst );
+    for( int i = 0; i < (4<<chroma422); i++ )
+        dc_nz |= (dc_bias + abs( dct_dc[i] )) * dc_mf >> 16;
+    for( int b = 0; b < (4<<chroma422); b++ )
+    {
+        int e, s, rg;
+        pf_block( p_src + (b&1)*4 + (b>>1)*4*FENC_STRIDE, p_dst + (b&1)*4 + (b>>1)*4*FDEC_STRIDE, &e, &s, &rg );
+        sabs += abs( s );
+    }
+    /* every DC output is a +-1 sum of the 4x4 sums */
+    int tdc = ((1 << 16) + dc_mf - 1) / dc_mf - dc_bias;
+    if( sabs < tdc && dc_nz )
+    {
+        fprintf( stderr, "probefuse: proven chroma DC coded: mb %d,%d qp %d\n", h->mb.i_mb_x, h->mb.i_mb_y, i_qp );
+        abort();
+    }
+    PF_ADD( pf_cscr[b_bidir][0], 1 );
+    PF_ADD( pf_cscr[b_bidir][1], !dc_nz );
+    PF_ADD( pf_cscr[b_bidir][2], sabs < tdc );
+    if( dc_nz || ssd < thresh*4 )
+        return;
+    for( int i8 = 0; i8 <= chroma422; i8++ )
+    {
+        int all_u = 1, all_cs = 1, all_rg = 1, nz = 0;
+        for( int b = 0; b < 4; b++ )
+        {
+            pixel *fenc = p_src + (b&1)*4 + (b>>1)*4*FENC_STRIDE + 8*i8*FENC_STRIDE;
+            pixel *fdec = p_dst + (b&1)*4 + (b>>1)*4*FDEC_STRIDE + 8*i8*FDEC_STRIDE;
+            int e, s, rg;
+            pf_block( fenc, fdec, &e, &s, &rg );
+            int cs = 16*e - s*s <= thr[0], rr = rg < rthr;
+            all_u &= cs || rr;
+            all_cs &= cs;
+            all_rg &= rr;
+            nz |= pf_nz( h, fenc, fdec, mf, bias, 1 );
+        }
+        if( all_u && nz )
+        {
+            fprintf( stderr, "probefuse: proven chroma AC coded: mb %d,%d qp %d\n", h->mb.i_mb_x, h->mb.i_mb_y, i_qp );
+            abort();
+        }
+        PF_ADD( pf_cscr[b_bidir][3], 1 );
+        PF_ADD( pf_cscr[b_bidir][4], all_u );
+        PF_ADD( pf_cscr[b_bidir][5], all_cs );
+        PF_ADD( pf_cscr[b_bidir][6], all_rg );
+        PF_ADD( pf_cscr[b_bidir][7], !nz );
+    }
+}
+
+static NOINLINE void probefuse_luma( x264_t *h, int b_bidir, int p, int quant_cat, int i_qp, int ret )
+{
+    probefuse_luma_screen( h, p, quant_cat, i_qp );
+    int b_field = h->zigzagf.probe_skip_luma == h->zigzagf_interlaced.probe_skip_luma;
+    int ref = x264_probe_skip_luma_c( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->quant4_mf[quant_cat][i_qp],
+                                      h->quant4_bias[quant_cat][i_qp], b_field );
+    if( ref != ret )
+    {
+        fprintf( stderr, "probefuse: luma verdict %d != C %d: mb %d,%d plane %d qp %d field %d\n",
+                 ret, ref, h->mb.i_mb_x, h->mb.i_mb_y, p, i_qp, b_field );
+        abort();
+    }
+    __atomic_fetch_add( &probefuse_cnt[b_bidir][!!p][ret], 1, __ATOMIC_RELAXED );
+}
+
+static NOINLINE void probefuse_chroma( x264_t *h, int b_bidir, pixel *p_src, pixel *p_dst, int i_qp, int thresh,
+                                       int chroma422, int ret )
+{
+    probefuse_chroma_screen( h, b_bidir, p_src, p_dst, i_qp, thresh, chroma422 );
+    int b_field = h->zigzagf.probe_skip_luma == h->zigzagf_interlaced.probe_skip_luma;
+    int ref = x264_probe_skip_chroma_c( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
+                                        h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
+                                        h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1, chroma422, b_field );
+    if( ref != ret )
+    {
+        fprintf( stderr, "probefuse: chroma verdict %d != C %d: mb %d,%d qp %d field %d\n",
+                 ret, ref, h->mb.i_mb_x, h->mb.i_mb_y, i_qp, b_field );
+        abort();
+    }
+    __atomic_fetch_add( &probefuse_ccnt[b_bidir][ret], 1, __ATOMIC_RELAXED );
+}
+
 /*****************************************************************************
  * x264_macroblock_probe_skip:
  *  Check if the current MB could be encoded as a [PB]_SKIP
@@ -971,6 +1219,8 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
     ALIGNED_4( int16_t mvp[2] );
     int i_qp = h->mb.i_qp;
     int b_luma_eq = 0;
+    if( h->zigzagf.probe_skip_luma && h->mb.b_noise_reduction )
+        __atomic_fetch_add( &probefuse_nr[b_bidir], 1, __ATOMIC_RELAXED );
 
     for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
     {
@@ -992,6 +1242,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         {
             int ret = h->zigzagf.probe_skip_luma( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->quant4_mf[quant_cat][i_qp],
                                                   h->quant4_bias[quant_cat][i_qp], h->zscreen_thr[!!p][i_qp] );
+            probefuse_luma( h, b_bidir, p, quant_cat, i_qp, ret );
             if( !ret )
                 return 0;
             b_luma_eq |= !p && ret == 2;
@@ -1079,9 +1330,11 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             /* the checks below in one call */
             if( h->zigzagf.probe_skip_chroma[chroma422] && !h->mb.b_noise_reduction )
             {
-                if( !h->zigzagf.probe_skip_chroma[chroma422]( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
-                                                               h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
-                                                               h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1, h->zscreen_thr[1][i_qp] ) )
+                int ret = h->zigzagf.probe_skip_chroma[chroma422]( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
+                                                                    h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
+                                                                    h->quant4_bias[CQM_4PC][i_qp+3*chroma422][0] << 1, h->zscreen_thr[1][i_qp] );
+                probefuse_chroma( h, b_bidir, p_src, p_dst, i_qp, thresh, chroma422, ret );
+                if( !ret )
                     return 0;
                 continue;
             }
