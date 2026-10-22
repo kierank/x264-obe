@@ -1823,7 +1823,7 @@ static void x264_slicetype_wave_check( x264_t *h, x264_slicetype_slice_t *s, int
         abort();
     }
     if( !(checked_frames & 7) )
-        fprintf( stderr, "wave check: %"PRId64" cost calls equal (dep %d)\n", checked_frames, s[0].do_search[0] || s[0].do_search[1] );
+        fprintf( stderr, "wave check: %"PRId64" cost calls equal, %"PRId64" with MV candidates\n", checked_frames, checked_dep );
     free( out_w ); free( cost_w ); free( icost_w ); free( mv_w ); free( mvc_w );
 }
 
