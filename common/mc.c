@@ -653,6 +653,15 @@ static void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *i
     }
 }
 
+/* layout twins of wip/x264-stage2d: hidden aliases of the C references in every build, one per
+ * dispatched slot so no two slot stores look alike; x86/mc-c.c dispatches them when S2D_TWIN_P is 1 */
+#if HAVE_MMX
+extern __typeof__( mbtree_cost_scale ) x264_template(twin_mbtree_cost_scale_avx2) __attribute__((alias("mbtree_cost_scale"), visibility("hidden")));
+extern __typeof__( mbtree_cost_scale ) x264_template(twin_mbtree_cost_scale_icl) __attribute__((alias("mbtree_cost_scale"), visibility("hidden")));
+extern __typeof__( mbtree_finish ) x264_template(twin_mbtree_finish) __attribute__((alias("mbtree_finish"), visibility("hidden")));
+extern __typeof__( aq_variance_tail ) x264_template(twin_aq_variance_tail) __attribute__((alias("aq_variance_tail"), visibility("hidden")));
+#endif
+
 static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list )

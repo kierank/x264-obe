@@ -566,6 +566,34 @@ void x264_mbtree_finish_avx512( float *qp_offset, float *qp_offset_aq, uint16_t 
 void x264_aq_variance_tail_avx512icl( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
                                       float *quant_offsets, float *params, int len );
 
+/* layout twins of wip/x264-stage2d: with S2D_TWIN_P 1 the prologue slots dispatch the twins
+ * (common/mc.c: aliases of the C references), so they run the C. Every build names both the
+ * kernels and the twins as undefined globals, so ratecontrol-a is linked in every arm */
+#define S2D_TWIN_P 1
+extern __typeof__( x264_mbtree_cost_scale_avx2 ) x264_template(twin_mbtree_cost_scale_avx2);
+extern __typeof__( x264_mbtree_cost_scale_avx512icl ) x264_template(twin_mbtree_cost_scale_icl);
+extern __typeof__( x264_mbtree_finish_avx512 ) x264_template(twin_mbtree_finish);
+extern __typeof__( x264_aq_variance_tail_avx512icl ) x264_template(twin_aq_variance_tail);
+#if ARCH_X86_64
+#define S2D_STR2( x ) #x
+#define S2D_STR( x ) S2D_STR2( x )
+#define S2D_GLOBL( name ) ".globl x264_" S2D_STR( BIT_DEPTH ) "_" #name "\n"
+__asm__( S2D_GLOBL( mbtree_cost_scale_avx2 ) S2D_GLOBL( mbtree_cost_scale_avx512icl )
+         S2D_GLOBL( mbtree_finish_avx512 ) S2D_GLOBL( aq_variance_tail_avx512icl )
+         S2D_GLOBL( twin_mbtree_cost_scale_avx2 ) S2D_GLOBL( twin_mbtree_cost_scale_icl )
+         S2D_GLOBL( twin_mbtree_finish ) S2D_GLOBL( twin_aq_variance_tail ) );
+#endif
+#if S2D_TWIN_P
+#undef x264_mbtree_cost_scale_avx2
+#define x264_mbtree_cost_scale_avx2 x264_template(twin_mbtree_cost_scale_avx2)
+#undef x264_mbtree_cost_scale_avx512icl
+#define x264_mbtree_cost_scale_avx512icl x264_template(twin_mbtree_cost_scale_icl)
+#undef x264_mbtree_finish_avx512
+#define x264_mbtree_finish_avx512 x264_template(twin_mbtree_finish)
+#undef x264_aq_variance_tail_avx512icl
+#define x264_aq_variance_tail_avx512icl x264_template(twin_aq_variance_tail)
+#endif
+
 #define MC_CHROMA(cpu)\
 void x264_mc_chroma_##cpu( pixel *dstu, pixel *dstv, intptr_t i_dst, pixel *src, intptr_t i_src,\
                            int dx, int dy, int i_width, int i_height );
