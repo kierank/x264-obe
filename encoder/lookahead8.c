@@ -80,16 +80,7 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
 
     /* x264_lowres_context_init() */
-    if( param->analyse.i_subpel_refine > 1 )
-    {
-        h->mb.i_me_method = X264_MIN( X264_ME_HEX, param->analyse.i_me_method );
-        h->mb.i_subpel_refine = 4;
-    }
-    else
-    {
-        h->mb.i_me_method = X264_ME_DIA;
-        h->mb.i_subpel_refine = 2;
-    }
+    x264_me_lowres_method( param, &h->mb.i_me_method, &h->mb.i_subpel_refine );
     h->mb.b_chroma_me = 0;
 
     float *logs = x264_analyse_prepare_costs( h );

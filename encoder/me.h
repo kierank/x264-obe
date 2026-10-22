@@ -82,6 +82,21 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
+/* me method and subme of the lowres (lookahead) analysis */
+static inline void x264_me_lowres_method( const x264_param_t *param, int *me_method, int *subme )
+{
+    if( param->analyse.i_subpel_refine > 1 )
+    {
+        *me_method = X264_MIN( X264_ME_HEX, param->analyse.i_me_method );
+        *subme = 4;
+    }
+    else
+    {
+        *me_method = X264_ME_DIA;
+        *subme = 2;
+    }
+}
+
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
  * mbcmp_pre and mbcmp_avg2_pre, filled on first use in the mb; NULL without them */
 static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )
