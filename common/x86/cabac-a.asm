@@ -617,22 +617,22 @@ cglobal cabac_encode_decision_%1, 1,7
 %endif
     and   t6d, 1
     sub   t3d, t5d
-    cmp   t6d, t2d
-    mov   t6d, [t0+cb.low]
-    lea    t2, [t6+t3]
-    cmovne t3d, t5d
-    cmovne t6d, t2d
     mov   [t0+cb.state+t1], t4b
-; range >= 256: no renorm, queue unchanged
+    cmp   t6d, t2d
+    jne .lps
+; MPS, range >= 256: no renorm, low and queue unchanged
     test  t3d, 0x100
     jz .renorm
 %if WIN64
     POP r7
 %endif
     mov   [t0+cb.range], t3d
-    mov   [t0+cb.low], t6d
     RET
+.lps:
+    add   [t0+cb.low], t3d
+    mov   t3d, t5d
 .renorm:
+    mov   t6d, [t0+cb.low]
     mov   t4d, t3d
 %ifidn %1, bmi2
     lzcnt t3d, t3d
@@ -1797,11 +1797,21 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 
 ; one stub per site: 4 bytes pending. last byte not 0xff and nothing
 ; outstanding: store all 4 inline, else .putbytes_slow
-; a CABAC_BIN site: the renorm (range < 256) in front of its flush stub
+; a CABAC_BIN site: the LPS (in: r2d = state, r4d = rLPS) and the
+; renorm (range < 256) in front of its flush stub
 %macro PUTBYTE_STUBS 0
 %assign pb_i 0
 %rep pb_count
-%ifdef cb_renorm%[pb_i]
+%ifdef cb_bin%[pb_i]
+.cbl %+ pb_i:
+    sub  ranged, r4d
+    add    lowq, rangeq
+    mov  ranged, r4d
+    movzx   r2d, byte [cabac_lps_trans+4+cb_bin%[pb_i]+r2*8 GLOBAL]
+%ifdef cb_ctx%[pb_i]
+    mov    [cb_ctx%[pb_i]], r2b
+    %undef cb_ctx%[pb_i]
+%endif
 .cbr %+ pb_i:
     lzcnt   r5d, ranged
     sub     r5d, 23
@@ -1809,7 +1819,7 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     shlx   lowq, lowq, r5
     add  queued, r5d
     jl .pbr %+ pb_i
-    %undef cb_renorm%[pb_i]
+    %undef cb_bin%[pb_i]
 %endif
 .pb %+ pb_i:
     mov      r6, cbm
@@ -1849,16 +1859,13 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     shr     r4d, 3
     shrx    r4d, r5d, r4d
     movzx   r4d, r4b                ; range_lps
-    sub  ranged, r4d
-    lea      r6, [lowq+rangeq]
     test    r2b, 1
 %if %1
-    cmovz  ranged, r4d
-    cmovz    lowq, r6
+    jz .cbl %+ pb_count             ; LPS: the stub
 %else
-    cmovnz ranged, r4d
-    cmovnz   lowq, r6
+    jnz .cbl %+ pb_count
 %endif
+    sub  ranged, r4d
     movzx   r2d, byte [cabac_lps_trans+4+%1+r2*8 GLOBAL]
 %if %0 > 1
     mov    [%2], r2b
@@ -1867,7 +1874,10 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
     test ranged, 0x100
     jz .cbr %+ pb_count
 .pbr %+ pb_count:
-    %assign cb_renorm%[pb_count] 1
+    %assign cb_bin%[pb_count] %1
+%if %0 > 1
+    %xdefine cb_ctx%[pb_count] %2
+%endif
     %assign pb_count pb_count+1
 %endmacro
 
