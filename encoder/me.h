@@ -63,6 +63,18 @@ typedef struct
     int16_t mv[2];
 } mvsad_t;
 
+/* MSEA counters (test only), shared by both bit depths, [P (and I references), B]: frames,
+ * references decided (hex), built, of which probes (the gate off), frames measured (enough
+ * calls), of which on; 16x16 hex searches, with box8, box8_mask calls, hexagons that move,
+ * hexagon halves skipped, whole hexagons, squares, whole searches, sads saved; zero mv and
+ * fullpel mvc predictors a scalar bound could skip. BC_SQ1 is unused. */
+enum { BC_FRAMES, BC_REFS, BC_BUILT, BC_PROBES, BC_MEASURED, BC_ON, BC_SEARCH, BC_BOX, BC_CALL0,
+       BC_CALL1, BC_HEXHALF, BC_HEX, BC_SQ0, BC_SQ1, BC_WHOLE, BC_SAVED, BC_ZERO, BC_ZERO_SKIP,
+       BC_MVC, BC_MVC_SKIP, BC_N };
+extern uint64_t x264_box8_cnt[2][BC_N];
+void x264_box8_cnt_print( void );
+#define BOX8_CNT( type, k, v ) __atomic_fetch_add( &x264_box8_cnt[(type) == SLICE_TYPE_B][k], (v), __ATOMIC_RELAXED )
+
 #define x264_me_search_ref x264_template(me_search_ref)
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
 #define x264_me_search( h, m, mvc, i_mvc )\

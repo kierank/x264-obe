@@ -2839,8 +2839,11 @@ static int x264_box8_gate( x264_t *h )
     x264_t *t0 = h->thread[0];
     if( !h->fdec->b_kept_as_ref || h->param.analyse.i_me_method != X264_ME_HEX )
         return 0;
+    BOX8_CNT( h->sh.i_type, BC_REFS, 1 );
     if( !t0->box8_gate.b_on && ++t0->box8_gate.i_probe < BOX8_PROBE )
         return 0;
+    BOX8_CNT( h->sh.i_type, BC_BUILT, 1 );
+    BOX8_CNT( h->sh.i_type, BC_PROBES, !t0->box8_gate.b_on );
     t0->box8_gate.i_probe = 0;
     return !x264_frame_box8_alloc( h, h->fdec );
 }
@@ -2849,8 +2852,14 @@ static int x264_box8_gate( x264_t *h )
 static void x264_box8_gate_update( x264_t *h )
 {
     int calls = h->stat.frame.i_box8_calls;
+    if( h->sh.i_type != SLICE_TYPE_I )
+        BOX8_CNT( h->sh.i_type, BC_FRAMES, 1 );
     if( calls >= X264_MAX( h->mb.i_mb_count >> 6, 16 ) )
+    {
+        BOX8_CNT( h->sh.i_type, BC_MEASURED, 1 );
+        BOX8_CNT( h->sh.i_type, BC_ON, h->stat.frame.i_box8_saved >= 5 * calls );
         h->thread[0]->box8_gate.b_on = h->stat.frame.i_box8_saved >= 5 * calls;
+    }
 }
 
 static inline int x264_reference_update( x264_t *h )
@@ -4649,6 +4658,7 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+    x264_box8_cnt_print();
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );

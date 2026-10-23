@@ -296,8 +296,51 @@ static uint64_t box8_win( x264_t *h, x264_me_t *m, int mx, int my,
                                     p_cost_mvx + ((mx-2)<<2), p_cost_mvy + ((my-2)<<2), bcost );
 }
 
+#if BIT_DEPTH == 8
+uint64_t x264_box8_cnt[2][BC_N];
+void x264_box8_cnt_print( void )
+{
+    for( int t = 0; t < 2; t++ )
+    {
+        uint64_t *n = x264_box8_cnt[t];
+        if( !n[BC_FRAMES] )
+            continue;
+        fprintf( stderr, "box8 %s: frames %"PRIu64" refs %"PRIu64" built %"PRIu64" (probes %"PRIu64", %.2f planes/frame)"
+                 " measured %"PRIu64" on %"PRIu64" | 16x16 hex %"PRIu64" with box8 %"PRIu64" (%.1f%%)"
+                 " | calls %"PRIu64", hexagon moves %"PRIu64" | hexagon halves skipped %"PRIu64" hexagons %"PRIu64
+                 " squares %"PRIu64" | whole searches %"PRIu64" (%.1f%% of box8)"
+                 " | sads saved %"PRIu64" (%.2f per call)"
+                 " | zero mv %"PRIu64" skippable %.1f%% | mvc %"PRIu64" skippable %.1f%%\n",
+                 t ? "B" : "P", n[BC_FRAMES], n[BC_REFS], n[BC_BUILT], n[BC_PROBES], (double)n[BC_BUILT]/n[BC_FRAMES],
+                 n[BC_MEASURED], n[BC_ON], n[BC_SEARCH], n[BC_BOX], 100.0*n[BC_BOX]/X264_MAX(n[BC_SEARCH],1),
+                 n[BC_CALL0], n[BC_CALL1], n[BC_HEXHALF], n[BC_HEX], n[BC_SQ0],
+                 n[BC_WHOLE], 100.0*n[BC_WHOLE]/X264_MAX(n[BC_BOX],1),
+                 n[BC_SAVED], (double)n[BC_SAVED]/X264_MAX(n[BC_CALL0],1),
+                 n[BC_ZERO], 100.0*n[BC_ZERO_SKIP]/X264_MAX(n[BC_ZERO],1),
+                 n[BC_MVC], 100.0*n[BC_MVC_SKIP]/X264_MAX(n[BC_MVC],1) );
+    }
+}
+#endif
+
+/* counters only: mv cost + the quadrant bound at one mv */
+static int box8_bound( x264_t *h, x264_me_t *m, int mx, int my, const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy )
+{
+    int *f = h->mb.box8_fsum;
+    if( h->mb.i_box8_fsum_mb != h->mb.i_mb_xy )
+    {
+        pixel *fenc = m->p_fenc[0];
+        h->pixf.sad_x4[PIXEL_8x8]( box8_zero, fenc, fenc+8, fenc+8*FENC_STRIDE, fenc+8+8*FENC_STRIDE, FENC_STRIDE, f );
+        h->mb.i_box8_fsum_mb = h->mb.i_mb_xy;
+    }
+    intptr_t s = m->i_stride[0];
+    uint16_t *b = m->box8 + my*s + mx;
+    return abs( f[0] - b[0] ) + abs( f[1] - b[8] ) + abs( f[2] - b[8*s] ) + abs( f[3] - b[8*s+8] )
+         + p_cost_mvx[mx<<2] + p_cost_mvy[my<<2];
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
+    const int b_box8_cnt = m->i_pixel == PIXEL_16x16 && m->box8 && m->p_fref_w == m->p_fref[0];
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
     const int i_pixel = m->i_pixel;
@@ -388,7 +431,15 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         /* Test the zero vector if it hasn't been tested yet. */
         if( pmv )
         {
-            if( bmx|bmy ) COST_MV( 0, 0 );
+            if( bmx|bmy )
+            {
+                if( b_box8_cnt )
+                {
+                    BOX8_CNT( h->sh.i_type, BC_ZERO, 1 );
+                    BOX8_CNT( h->sh.i_type, BC_ZERO_SKIP, box8_bound( h, m, 0, 0, p_cost_mvx, p_cost_mvy ) >= bcost );
+                }
+                COST_MV( 0, 0 );
+            }
         }
         /* If a subpel mv candidate was better than the zero vector, the previous
          * fullpel check won't have gotten it even if the pmv was zero. So handle
@@ -428,6 +479,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 {
                     int mx = mvc_temp[i+1][0];
                     int my = mvc_temp[i+1][1];
+                    if( b_box8_cnt )
+                    {
+                        BOX8_CNT( h->sh.i_type, BC_MVC, 1 );
+                        BOX8_CNT( h->sh.i_type, BC_MVC_SKIP, box8_bound( h, m, mx, my, p_cost_mvx, p_cost_mvy ) >= (bcost>>4) );
+                    }
                     cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my );
                     COPY1_IF_LT( bcost, (cost << 4) + i );
                 } while( ++i <= valid_mvcs );
@@ -439,7 +495,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         /* Same as above, except the condition is simpler. */
         if( pmv )
+        {
+            if( b_box8_cnt )
+            {
+                BOX8_CNT( h->sh.i_type, BC_ZERO, 1 );
+                BOX8_CNT( h->sh.i_type, BC_ZERO_SKIP, box8_bound( h, m, 0, 0, p_cost_mvx, p_cost_mvy ) >= bcost );
+            }
             COST_MV( 0, 0 );
+        }
     }
 
     switch( h->mb.i_me_method )
@@ -527,6 +590,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
              * that doesn't move leaves bcost as it was for the square. */
             int b_box = i_pixel == PIXEL_16x16 && m->box8 && p_fref_w == m->p_fref[0];
             uint64_t box_win = b_box ? box8_win( h, m, bmx, bmy, p_cost_mvx, p_cost_mvy, bcost ) : ~0ULL;
+            int box8_saved0 = h->stat.frame.i_box8_saved;
+            int box8_mx = bmx, box8_my = bmy;
+            int box8_hexskip = b_box && !(box_win & (BOX8_HEX0|BOX8_HEX1));
+            BOX8_CNT( h->sh.i_type, BC_SEARCH, i_pixel == PIXEL_16x16 );
+            BOX8_CNT( h->sh.i_type, BC_BOX, b_box );
+            BOX8_CNT( h->sh.i_type, BC_CALL0, b_box );
+            BOX8_CNT( h->sh.i_type, BC_HEX, box8_hexskip );
+            BOX8_CNT( h->sh.i_type, BC_HEXHALF, b_box ? !(box_win & BOX8_HEX0) + !(box_win & BOX8_HEX1) : 0 );
 
             /* hexagon */
             bcost <<= 6;
@@ -580,6 +651,13 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             bcost >>= 6;
     #endif
             /* square refine */
+            {
+                int moved = b_box && (bmx != box8_mx || bmy != box8_my);
+                int sqskip = b_box && !(box_win & (BOX8_SQ0|BOX8_SQ1));
+                BOX8_CNT( h->sh.i_type, BC_CALL1, moved );
+                BOX8_CNT( h->sh.i_type, BC_SQ0, sqskip );
+                BOX8_CNT( h->sh.i_type, BC_WHOLE, sqskip && box8_hexskip );
+            }
             bcost <<= 6;
             if( !(box_win & (BOX8_SQ0|BOX8_SQ1)) )
                 h->stat.frame.i_box8_saved += 8;
@@ -617,6 +695,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             bmx += square1[bcost&63][0];
             bmy += square1[bcost&63][1];
             bcost >>= 6;
+            BOX8_CNT( h->sh.i_type, BC_SAVED, h->stat.frame.i_box8_saved - box8_saved0 );
             break;
         }
 
