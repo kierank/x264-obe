@@ -994,8 +994,32 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             continue;
         }
 
-        for( int i8x8 = 0, i_decimate_mb = 0; i8x8 < 4; i8x8++ )
+        /* 8x8s whose 4x4s all quantise to 0 score 0 and are not tested; the rest are tested
+         * largest sum(r^2) first: the score is a sum, so the verdict does not depend on the order.
+         * Not with nr: denoise_dct accumulates the residual. Not for the P probe before ME
+         * (subme < 3), where few MBs are skips and the screen rarely proves. */
+        int i8x8_order[4] = { 0, 1, 2, 3 };
+        int i8x8_count = 4;
+        if( h->pixf.zscreen_16x16 && !h->mb.b_noise_reduction &&
+            (b_bidir || h->param.analyse.i_subpel_refine >= 3) )
         {
+            ALIGNED_ARRAY_16( int32_t, e8,[4] );
+            int zmask = h->pixf.zscreen_16x16( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->zscreen_thr[!!p][i_qp], e8 );
+            i8x8_count = 0;
+            for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+            {
+                if( (zmask >> 4*i8x8 & 15) == 15 )
+                    continue;
+                int j = i8x8_count++;
+                for( ; j && e8[i8x8_order[j-1]] < e8[i8x8]; j-- )
+                    i8x8_order[j] = i8x8_order[j-1];
+                i8x8_order[j] = i8x8;
+            }
+        }
+
+        for( int k = 0, i_decimate_mb = 0; k < i8x8_count; k++ )
+        {
+            int i8x8 = i8x8_order[k];
             int fenc_offset = (i8x8&1) * 8 + (i8x8>>1) * FENC_STRIDE * 8;
             int fdec_offset = (i8x8&1) * 8 + (i8x8>>1) * FDEC_STRIDE * 8;
 

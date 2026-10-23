@@ -1244,6 +1244,79 @@ INIT_YMM avx2
 FENC_EQ_AVX2 16, 16
 
 ;=============================================================================
+; zscreen
+;=============================================================================
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int pixel_zscreen_16x16( pixel *fenc, pixel *fdec, const int32_t thr[2], int32_t e8[4] )
+; r = fenc - fdec; bit 4*i8x8+i4x4 set if 16*sum(r^2) - sum(r)^2 <= thr[0] and
+; |sum(r)| < thr[1] over that 4x4; e8: sum(r^2) of each 8x8
+;-----------------------------------------------------------------------------
+; m%1: r^2 pair sums, m%2: r pair sums, of the 4 rows from %3
+%macro ZSCREEN_ROWS 3
+%assign %%y %3
+%rep 4
+%if HIGH_BIT_DEPTH
+    movu           m6, [r0+%%y*FENC_STRIDEB]
+    psubw          m6, [r1+%%y*FDEC_STRIDEB]
+%else
+    pmovzxbw       m6, [r0+%%y*FENC_STRIDEB]
+    pmovzxbw       m7, [r1+%%y*FDEC_STRIDEB]
+    psubw          m6, m7
+%endif
+%if %%y == %3
+    pmaddwd       m%1, m6, m6
+    mova          m%2, m6
+%else
+    pmaddwd        m7, m6, m6
+    paddd         m%1, m7
+    paddw         m%2, m6
+%endif
+%assign %%y %%y+1
+%endrep
+    pmaddwd       m%2, m8
+%endmacro
+
+; m%1: E, m%2: S of 8x8 pair -> m%1: proven mask
+%macro ZSCREEN_TEST 2
+    pslld         m%1, 4
+    pmulld         m4, m%2, m%2
+    psubd         m%1, m4
+    pcmpgtd       m%1, m6
+    pabsd         m%2, m%2
+    pcmpgtd       m%2, m7, m%2
+    pandn         m%1, m%2
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_zscreen_16x16, 4,4,9
+    vpbroadcastd   m8, [pw_1]
+    ZSCREEN_ROWS    0, 1, 0
+    ZSCREEN_ROWS    2, 3, 4
+    phaddd         m0, m2       ; 4x4 E, 8x8 0 | 8x8 1
+    phaddd         m1, m3
+    ZSCREEN_ROWS    2, 3, 8
+    ZSCREEN_ROWS    4, 5, 12
+    phaddd         m2, m4       ; 8x8 2 | 8x8 3
+    phaddd         m3, m5
+    phaddd         m4, m0, m2
+    phaddd         m4, m4       ; 8x8 0 2 0 2 | 1 3 1 3
+    vextracti128  xm5, m4, 1
+    punpckldq     xm4, xm5
+    movu         [r3], xm4
+    vpbroadcastd   m6, [r2]
+    vpbroadcastd   m7, [r2+4]
+    ZSCREEN_TEST    0, 1
+    ZSCREEN_TEST    2, 3
+    movmskps      eax, m0
+    movmskps      r2d, m2
+    shl           r2d, 8
+    or            eax, r2d
+    RET
+%endif ; ARCH_X86_64
+
+;=============================================================================
 ; variance
 ;=============================================================================
 

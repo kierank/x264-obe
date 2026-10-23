@@ -118,6 +118,31 @@ int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec )
     return 1;
 }
 
+/* reference for zscreen_16x16 */
+int x264_pixel_zscreen_c( pixel *fenc, pixel *fdec, const int32_t thr[2], int32_t e8[4] )
+{
+    int mask = 0;
+    for( int i = 0; i < 4; i++ )
+        e8[i] = 0;
+    for( int i = 0; i < 16; i++ )
+    {
+        int x = (i&1)*4 + (i&4)*2;
+        int y = (i&2)*2 + (i&8);
+        int e = 0, s = 0;
+        for( int yy = y; yy < y+4; yy++ )
+            for( int xx = x; xx < x+4; xx++ )
+            {
+                int r = fenc[xx+yy*FENC_STRIDE] - fdec[xx+yy*FDEC_STRIDE];
+                e += r*r;
+                s += r;
+            }
+        e8[i>>2] += e;
+        if( 16*e - s*s <= thr[0] && abs( s ) < thr[1] )
+            mask |= 1 << i;
+    }
+    return mask;
+}
+
 static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
                        int shift, const int32_t *bias, int best )
 {
@@ -1434,6 +1459,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x3_min, _avx2 );
         INIT4( sad_x4_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
+        pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1827,6 +1853,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x4_min, _avx2 );
         INIT4( sad_hpel_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
+        pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
