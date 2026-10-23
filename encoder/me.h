@@ -45,6 +45,7 @@ typedef struct
     pixel *p_fref_w;
     pixel *p_fenc[3];
     uint16_t *integral;
+    uint16_t *box8;      /* the reference's box8 at the block, or NULL */
     int      i_stride[3];
     int      i_fld_uv_y; /* NV12: field row of p_fref[4], see x264_mb_fref_uv */
 

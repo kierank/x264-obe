@@ -2770,6 +2770,14 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
             x264_frame_filter( h, h->fdec, min_y, end );
             x264_frame_expand_border_filtered( h, h->fdec, min_y, end );
         }
+        /* sliced threads: a slice's first rows start a chain, those between slices
+         * (pass 2) are built apart */
+        if( h->fdec->b_box8 )
+        {
+            int b_chain = !h->param.b_sliced_threads || !h->i_threadslice_start
+                       || min_y > h->i_threadslice_start + (1 << SLICE_MBAFF);
+            x264_frame_filter_box8( h, h->fdec, min_y, end, b_chain, pass == 2 ? h->box8_scratch : NULL );
+        }
     }
 
     if( SLICE_MBAFF && pass == 0 )
@@ -2820,6 +2828,29 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
             h->stat.frame.i_ssim_cnt += ssim_cnt;
         }
     }
+}
+
+/* MSEA bound (me.c): build box8 for this reference? While the bound saved enough on the
+ * last frame that measured it, else every BOX8_PROBE-th reference, to measure it again.
+ * Only the speed depends on it. API thread only. */
+#define BOX8_PROBE 8
+static int x264_box8_gate( x264_t *h )
+{
+    x264_t *t0 = h->thread[0];
+    if( !h->fdec->b_kept_as_ref || h->param.analyse.i_me_method != X264_ME_HEX )
+        return 0;
+    if( !t0->box8_gate.b_on && ++t0->box8_gate.i_probe < BOX8_PROBE )
+        return 0;
+    t0->box8_gate.i_probe = 0;
+    return !x264_frame_box8_alloc( h, h->fdec );
+}
+
+/* a box8_mask call costs about as much as 5 of the sads it can save */
+static void x264_box8_gate_update( x264_t *h )
+{
+    int calls = h->stat.frame.i_box8_calls;
+    if( calls >= X264_MAX( h->mb.i_mb_count >> 6, 16 ) )
+        h->thread[0]->box8_gate.b_on = h->stat.frame.i_box8_saved >= 5 * calls;
 }
 
 static inline int x264_reference_update( x264_t *h )
@@ -4006,6 +4037,7 @@ int     x264_encoder_encode( x264_t *h,
     h->fdec->i_frame = h->fenc->i_frame;
     h->fenc->b_kept_as_ref =
     h->fdec->b_kept_as_ref = i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE && h->param.i_keyint_max > 1;
+    h->fdec->b_box8 = x264_box8_gate( h );
 
     h->fdec->mb_info = h->fenc->mb_info;
     h->fdec->mb_info_free = h->fenc->mb_info_free;
@@ -4341,6 +4373,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     }
 
     x264_emms();
+    x264_box8_gate_update( h );
 
     /* generate buffering period sei and insert it into place */
     if( h->i_thread_frames > 1 && h->fenc->b_keyframe && h->param.i_nal_hrd )

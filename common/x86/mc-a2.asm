@@ -2510,7 +2510,31 @@ INIT_ZMM avx512icl
 INTEGRAL_ICL 4
 INTEGRAL_ICL 8
 %endif ; ARCH_X86_64
-%endif ; !HIGH_BIT_DEPTH
+%else ; HIGH_BIT_DEPTH
+;-----------------------------------------------------------------------------
+; void integral_init8h( uint16_t *sum, uint16_t *pix, intptr_t stride )
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal integral_init8h, 3,4
+    lea     r3, [r0+r2*2]
+    lea     r1, [r1+r2*2]
+    neg     r2
+.loop:
+    movu    m0, [r1+r2*2]
+    movu    m1, [r1+r2*2+2]
+    paddw   m0, [r1+r2*2+4]
+    paddw   m1, [r1+r2*2+6]
+    paddw   m0, [r1+r2*2+8]
+    paddw   m1, [r1+r2*2+10]
+    paddw   m0, [r1+r2*2+12]
+    paddw   m1, [r1+r2*2+14]
+    paddw   m0, [r0+r2*2]
+    paddw   m0, m1
+    mova    [r3+r2*2], m0
+    add     r2, mmsize/2
+    jl .loop
+    RET
+%endif ; HIGH_BIT_DEPTH
 
 %macro INTEGRAL_INIT_8V 0
 ;-----------------------------------------------------------------------------

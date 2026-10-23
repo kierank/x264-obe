@@ -404,6 +404,8 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
     {
         int buf_hpel = (h->thread[0]->fdec->i_width[0]+48+32) * sizeof(int16_t);
         CHECKED_MALLOC( h->scratch_hpel, buf_hpel );
+        if( h->param.b_sliced_threads )
+            CHECKED_MALLOC( h->box8_scratch, h->thread[0]->fdec->i_stride[0] * 40 * sizeof(uint16_t) );
         int buf_ssim = h->param.analyse.b_ssim * 8 * (h->param.i_width/4+3) * sizeof(int);
         int me_range = X264_MIN(h->param.analyse.i_me_range, h->param.analyse.i_mv_range);
         int buf_tesa = (h->param.analyse.i_me_method >= X264_ME_ESA) *
@@ -443,6 +445,7 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );
     x264_free( h->scratch_hpel );
+    x264_free( h->box8_scratch );
 }
 
 void x264_macroblock_slice_init( x264_t *h )
@@ -526,6 +529,14 @@ void x264_macroblock_slice_init( x264_t *h )
     h->mb.i_neighbour4[13] =
     h->mb.i_neighbour4[15] =
     h->mb.i_neighbour8[3] = MB_LEFT|MB_TOP|MB_TOPLEFT;
+
+    h->mb.b_box8 = 0;
+    h->mb.i_box8_fsum_mb = -1;
+    for( int l = 0; l < 2; l++ )
+        for( int i = 0; i < h->i_ref[l]; i++ )
+            h->mb.b_box8 |= h->fref[l][i]->b_box8;
+    if( !h->mb.b_box8 )
+        memset( h->mb.pic.p_box8, 0, sizeof(h->mb.pic.p_box8) );
 }
 
 void x264_macroblock_thread_init( x264_t *h )
@@ -1084,6 +1095,14 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         for( int list = 0; list < 2; list++ )
             for( int i = 0; i < h->mb.pic.i_fref[list]; i++ )
                 h->mb.pic.p_integral[list][i] = &h->fref[list][i]->integral[offset];
+    }
+
+    if( h->mb.b_box8 )
+    {
+        int offset = 16 * (mb_x + mb_y * h->fdec->i_stride[0]);
+        for( int list = 0; list < 2; list++ )
+            for( int i = 0; i < h->mb.pic.i_fref[list]; i++ )
+                h->mb.pic.p_box8[list][i] = !MB_INTERLACED && h->fref[list][i]->b_box8 ? &h->fref[list][i]->box8[offset] : NULL;
     }
 
     x264_prefetch_fenc( h, h->fenc, mb_x, mb_y );

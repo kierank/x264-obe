@@ -85,6 +85,11 @@ typedef struct x264_frame
     uint8_t *lowres8[4]; /* 8-bit copies of lowres for rc.b_lookahead_8bit, same layout */
     int     b_lowres_pending; /* rc.b_lookahead_8bit: lowres[] not computed yet, see x264_weights_analyse */
     uint16_t *integral;
+    /* fdec: luma 8x8 sums with their top-left at each point (integral's upper plane), for
+     * the MSEA bound of the 16x16 motion search; built while b_box8, allocated on first use */
+    uint16_t *box8;
+    uint16_t *buffer_box8;
+    int     b_box8;
 
     /* for unrestricted mv we allocate more data than needed
      * allocated data are stored in buffer */
@@ -278,6 +283,13 @@ void          x264_macroblock_deblock( x264_t *h );
 
 #define x264_frame_filter x264_template(frame_filter)
 void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
+#define x264_frame_box8_alloc x264_template(frame_box8_alloc)
+int           x264_frame_box8_alloc( x264_t *h, x264_frame_t *frame );
+/* the rows of box8 x264_frame_filter's call for mb_y would make of integral. b_chain:
+ * the rows follow the previous call's, which left the integral of the next 8 in place;
+ * else they start their own chain, in scratch (40 rows of i_stride[0]) if not NULL. */
+#define x264_frame_filter_box8 x264_template(frame_filter_box8)
+void          x264_frame_filter_box8( x264_t *h, x264_frame_t *frame, int mb_y, int b_end, int b_chain, uint16_t *scratch );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

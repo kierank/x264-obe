@@ -118,6 +118,22 @@ int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec )
     return 1;
 }
 
+static uint64_t pixel_box8_mask_16x16( uint16_t *box, intptr_t stride, int *fsum, const uint16_t *cost_mvx,
+                                       const uint16_t *cost_mvy, int thresh )
+{
+    uint64_t mask = 0;
+    for( int y = 0; y < 5; y++ )
+        for( int x = 0; x < 5; x++ )
+        {
+            uint16_t *b = box + y*stride + x;
+            int cost = abs( fsum[0] - b[0] ) + abs( fsum[1] - b[8] ) + abs( fsum[2] - b[8*stride] )
+                     + abs( fsum[3] - b[8*stride+8] ) + cost_mvx[4*x] + cost_mvy[4*y];
+            if( cost < thresh )
+                mask |= 1ULL << (8*y + x);
+        }
+    return mask;
+}
+
 static int sad_pt_min( int i_pixel, pixel *fenc, pixel *pix, intptr_t i_stride, const int8_t (*pt)[2], int n,
                        int shift, const int32_t *bias, int best )
 {
@@ -1191,6 +1207,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->ssim_4x4x2_core = ssim_4x4x2_core;
     pixf->ssim_end4 = ssim_end4;
     pixf->vsad = pixel_vsad;
+    pixf->box8_mask_16x16 = pixel_box8_mask_16x16;
     pixf->asd8 = pixel_asd8;
     pixf->weightp_stats8 = pixel_weightp_stats8;
     pixf->weightp_sum8 = pixel_weightp_sum8;
@@ -1379,6 +1396,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx2;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx2;
+        pixf->box8_mask_16x16 = x264_pixel_box8_mask_16x16_avx2;
 #endif
         INIT2( ssd, _avx2 );
         pixf->ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avx2;
@@ -1769,6 +1787,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx2;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx2;
+        pixf->box8_mask_16x16 = x264_pixel_box8_mask_16x16_avx2;
 #endif
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );

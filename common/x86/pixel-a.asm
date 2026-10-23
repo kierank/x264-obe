@@ -368,6 +368,14 @@ dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 ; ssd_psy_mb: ssd, ssd, hadamard_ac >> 1, >> 2
 ssd_psy_shift: dd 0, 0, 1, 2
+; box8_mask: words 0 and 4 to dword 0; x costs of lanes 5-7; thresholds of rows 0 | 2, 1 | 3, 4
+box8_w04: db 0, 1, 8, 9, -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+box8_pad: dw 0, 0, 0, 0, 0,-1,-1,-1
+box8_t02: times 8 db 0, 1
+          times 8 db 4, 5
+box8_t13: times 8 db 2, 3
+          times 8 db 6, 7
+box8_t4:  times 8 db 8, 9
 
 SECTION .text
 
@@ -11793,4 +11801,95 @@ SSD_PSY_MB 422, 16
 INIT_YMM avx512icl
 SSD_PSY_MB 420,  8
 SSD_PSY_MB 422, 16
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; uint64_t pixel_box8_mask_16x16( uint16_t *box, intptr_t stride, int *fsum, const uint16_t *cost_mvx,
+;                                 const uint16_t *cost_mvy, int thresh )
+;-----------------------------------------------------------------------------
+%macro BOX8_ABSD 3 ; x, ref, tmp: x = |x - ref|
+%if HIGH_BIT_DEPTH
+    psubusw   %3, %2, %1
+    psubusw   %1, %2
+    por       %1, %3
+%else
+    psubw     %1, %2
+    pabsw     %1, %1
+%endif
+%endmacro
+
+; %1: the quadrant terms of box row offset %2, dx -2..5 of the left quadrants | of the right
+%macro BOX8_ROW 2
+    movu      %1, [r0+%2]
+    movu      m7, [r2+%2]
+    BOX8_ABSD %1, m0, m8
+    BOX8_ABSD m7, m1, m8
+    paddusw   %1, m7
+%endmacro
+
+; xm%1: words 0, 4, 8, 12, 16 of r%2
+%macro BOX8_COSTS 2
+    movu      xm%1, [r%2]
+    movu      xm9, [r%2+16]
+    pshufb    xm%1, [box8_w04]
+    pshufb    xm9, [box8_w04]
+    punpckldq xm%1, xm9
+    pinsrw    xm%1, [r%2+32], 4
+%endmacro
+
+INIT_YMM avx2
+cglobal pixel_box8_mask_16x16, 6,6,10
+    vpbroadcastw xm0, [r2+0]
+    vpbroadcastw xm7, [r2+4]
+    vinserti128  m0, m0, xm7, 1     ; fsum 0 | 1
+    vpbroadcastw xm1, [r2+8]
+    vpbroadcastw xm7, [r2+12]
+    vinserti128  m1, m1, xm7, 1     ; fsum 2 | 3
+    BOX8_COSTS 4, 3
+    por          xm4, [box8_pad]    ; lanes 5-7 never pass
+    vinserti128  m4, m4, xm4, 1
+    BOX8_COSTS 6, 4
+    movd         xm7, r5d
+    vpbroadcastw xm7, xm7
+    psubusw      xm6, xm7, xm6      ; thresh - cost_mvy of each row, saturated
+    vpermq       m6, m6, q1010
+    add          r1, r1
+    lea          r2, [r0+r1*8]
+    lea          r3, [r1+r1*2]
+    BOX8_ROW     m2, 0
+    BOX8_ROW     m3, r1*2
+    vperm2i128   m5, m2, m3, 0x20
+    vperm2i128   m2, m2, m3, 0x31
+    paddusw      m2, m5             ; rows 0 | 2
+    BOX8_ROW     m3, r1
+    BOX8_ROW     m5, r3
+    vperm2i128   m9, m3, m5, 0x20
+    vperm2i128   m3, m3, m5, 0x31
+    paddusw      m3, m9             ; rows 1 | 3
+    BOX8_ROW     m5, r1*4
+    vextracti128 xm9, m5, 1
+    paddusw      xm5, xm9           ; row 4
+    paddusw      m2, m4
+    paddusw      m3, m4
+    paddusw      xm5, xm4
+    pshufb       m9, m6, [box8_t02]
+    pmaxuw       m9, m2
+    pcmpeqw      m2, m9             ; can't win: >= thresh - cost_mvy
+    pshufb       m9, m6, [box8_t13]
+    pmaxuw       m9, m3
+    pcmpeqw      m3, m9
+    pshufb       xm9, xm6, [box8_t4]
+    pmaxuw       xm9, xm5
+    pcmpeqw      xm5, xm9
+    packsswb     m2, m3
+    packsswb     xm5, xm5
+    pmovmskb     eax, m2
+    pmovmskb     r2d, xm5
+    not          eax
+    not          r2d
+    movzx        r2d, r2b
+    shl          r2, 32
+    or           rax, r2
+    RET
 %endif ; ARCH_X86_64

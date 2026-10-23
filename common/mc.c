@@ -919,3 +919,52 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         }
     }
 }
+
+void x264_frame_filter_box8( x264_t *h, x264_frame_t *frame, int mb_y, int b_end, int b_chain, uint16_t *scratch )
+{
+    const int b_interlaced = PARAM_INTERLACED;
+    int stride = frame->i_stride[0];
+    int start = mb_y*16 - 8;
+    int height = (b_end ? frame->i_lines[0] + 16*PARAM_INTERLACED : (mb_y+b_interlaced)*16) + 8;
+
+    if( mb_y & b_interlaced )
+        return;
+    if( b_end )
+        height += PADV-9;
+    if( start < 0 )
+    {
+        memset( frame->box8 - PADV * stride - PADH, 0, stride * sizeof(uint16_t) );
+        start = -PADV;
+        b_chain = 1;
+    }
+
+    /* integral row y+1 = row y + the 8-wide sums of pixel row y, box8 row y-7 = integral
+     * row y+1 - row y-7. A chain's base row can hold anything: the differences cancel it. */
+    if( !b_chain && scratch )
+    {
+        /* box8 rows start-7 .. height-8, 32 at a time, the integral in scratch */
+        for( int r0 = start-7; r0 < height-7; r0 += 32 )
+        {
+            int r1 = X264_MIN( r0+32, height-7 );
+            for( int y = r0; y < r1+7; y++ )
+                h->mc.integral_init8h( scratch + (y-r0+1)*stride, frame->plane[0] + y*stride - PADH, stride );
+            for( int r = r0; r < r1; r++ )
+            {
+                h->mc.integral_init8v( scratch + (r-r0)*stride, stride );
+                memcpy( frame->box8 + r*stride - PADH, scratch + (r-r0)*stride, (stride-8) * sizeof(uint16_t) );
+            }
+        }
+        return;
+    }
+    /* a new chain in place starts 8 rows early, converting only this call's rows */
+    int conv = b_chain ? 8-PADV : start;
+    if( !b_chain )
+        start -= 8;
+    for( int y = start; y < height; y++ )
+    {
+        uint16_t *sum8 = frame->box8 + (y+1) * stride - PADH;
+        h->mc.integral_init8h( sum8, frame->plane[0] + y * stride - PADH, stride );
+        if( y >= conv )
+            h->mc.integral_init8v( sum8-8*stride, stride );
+    }
+}

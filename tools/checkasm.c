@@ -1471,6 +1471,72 @@ static int check_pixel( int cpu_ref, int cpu_new )
     }
     report( "pixel fenc_eq :" );
 
+    /* box8_mask. j>>7: 0 random; 1 box near fsum, small costs, thresh near the bounds, so
+     * every point both passes and fails; 2 extremes: 0 or the maximal sums, costs and thresh */
+    ok = 1; used_asm = 0;
+    if( pixel_asm.box8_mask_16x16 != pixel_ref.box8_mask_16x16 )
+    {
+        ALIGNED_ARRAY_64( uint16_t, box,[13*64] );
+        ALIGNED_16( uint16_t costx[24] );
+        ALIGNED_16( uint16_t costy[24] );
+        int fsum[4], pass[25] = {0}, fail[25] = {0};
+        const int maxsum = 64*PIXEL_MAX;
+        set_func_name( "box8_mask_16x16" );
+        used_asm = 1;
+        for( int j = 0; j < 384 && ok; j++ )
+        {
+            int mode = j>>7;
+            intptr_t stride = (j&3) == 0 ? 16 : (j&3) == 1 ? 24 : (j&3) == 2 ? 40 : 64;
+            int r = mode == 1 ? 1 + (rand() % 64) : 0;
+            int thresh;
+            for( int k = 0; k < 4; k++ )
+                fsum[k] = mode == 2 ? (rand()&1) * maxsum : rand() % (maxsum+1);
+            for( int k = 0; k < 13*64; k++ )
+            {
+                int q = ((k%stride) >= 8) + 2*((k/stride) >= 8);
+                if( mode == 0 )
+                    box[k] = rand() % (maxsum+1);
+                else if( mode == 1 )
+                    box[k] = x264_clip3( fsum[q] + rand() % (2*r+1) - r, 0, maxsum );
+                else
+                    box[k] = (rand()&1) * maxsum;
+            }
+            for( int k = 0; k < 24; k++ )
+            {
+                costx[k] = mode == 0 ? rand() >> (rand()&15) : mode == 1 ? rand() % (r+1) : (rand()&1) * 0xffff;
+                costy[k] = mode == 0 ? rand() >> (rand()&15) : mode == 1 ? rand() % (r+1) : (rand()&1) * 0xffff;
+            }
+            if( mode == 0 )
+                thresh = rand() & 0xffff;
+            else if( mode == 1 )
+                thresh = rand() % (6*r+1);
+            else
+                thresh = (j&4) ? rand() & 0xffff : (j&8) ? 0xffff : 0;
+            uint64_t res_c = call_c1( pixel_c.box8_mask_16x16, box, stride, fsum, costx, costy, thresh );
+            uint64_t res_a = call_a1( pixel_asm.box8_mask_16x16, box, stride, fsum, costx, costy, thresh );
+            if( res_c != res_a )
+            {
+                ok = 0;
+                fprintf( stderr, "box8_mask: mode %d stride %d %"PRIx64" != %"PRIx64" [FAILED]\n",
+                         mode, (int)stride, res_c, res_a );
+            }
+            for( int k = 0; k < 25; k++ )
+            {
+                pass[k] += (res_c >> (8*(k/5) + k%5)) & 1;
+                fail[k] += !((res_c >> (8*(k/5) + k%5)) & 1);
+            }
+            call_c2( pixel_c.box8_mask_16x16, box, stride, fsum, costx, costy, thresh );
+            call_a2( pixel_asm.box8_mask_16x16, box, stride, fsum, costx, costy, thresh );
+        }
+        for( int k = 0; k < 25 && ok; k++ )
+            if( !pass[k] || !fail[k] )
+            {
+                ok = 0;
+                fprintf( stderr, "box8_mask: point %d never %s [FAILED]\n", k, pass[k] ? "fails" : "passes" );
+            }
+    }
+    report( "pixel box8_mask :" );
+
 #if !HIGH_BIT_DEPTH
     /* sad_dia_search, sad_hex_search: whole searches from a random start inside random mv limits
      * (0-40 each side), i_me_range 1-40, against the C reference and me.c's per-step path.

@@ -533,7 +533,7 @@ void x264_integral_init4h_sse4( uint16_t *sum, uint8_t *pix, intptr_t stride );
 void x264_integral_init4h_avx2( uint16_t *sum, uint8_t *pix, intptr_t stride );
 void x264_integral_init8h_sse4( uint16_t *sum, uint8_t *pix, intptr_t stride );
 void x264_integral_init8h_avx ( uint16_t *sum, uint8_t *pix, intptr_t stride );
-void x264_integral_init8h_avx2( uint16_t *sum, uint8_t *pix, intptr_t stride );
+void x264_integral_init8h_avx2( uint16_t *sum, pixel *pix, intptr_t stride );
 void x264_integral_init4v_mmx  ( uint16_t *sum8, uint16_t *sum4, intptr_t stride );
 void x264_integral_init4v_sse2 ( uint16_t *sum8, uint16_t *sum4, intptr_t stride );
 void x264_integral_init4v_ssse3( uint16_t *sum8, uint16_t *sum4, intptr_t stride );
@@ -1459,6 +1459,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->hpel_filter = x264_hpel_filter_avx2;
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
+        pf->integral_init8h = x264_integral_init8h_avx2;
+        pf->integral_init8v = x264_integral_init8v_avx2;
 #if ARCH_X86_64
         pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx2;
 #endif

@@ -325,6 +325,18 @@ fail:
     return NULL;
 }
 
+int x264_frame_box8_alloc( x264_t *h, x264_frame_t *frame )
+{
+    if( frame->buffer_box8 )
+        return 0;
+    int i_padv = PADV << PARAM_INTERLACED;
+    frame->buffer_box8 = x264_malloc( frame->i_stride[0] * (frame->i_lines[0] + 2*i_padv) * sizeof(uint16_t) );
+    if( !frame->buffer_box8 )
+        return -1;
+    frame->box8 = frame->buffer_box8 + frame->i_stride[0] * i_padv + PADH;
+    return 0;
+}
+
 void x264_frame_delete( x264_frame_t *frame )
 {
     /* Duplicate frames are blank copies of real frames (including pointers),
@@ -332,6 +344,7 @@ void x264_frame_delete( x264_frame_t *frame )
     if( !frame->b_duplicate )
     {
         x264_free( frame->base );
+        x264_free( frame->buffer_box8 );
 
         if( frame->param && frame->param->param_free )
             frame->param->param_free( frame->param );

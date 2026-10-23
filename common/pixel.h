@@ -51,6 +51,12 @@ typedef int  (*x264_pixel_fenc_eq_t) ( pixel *fenc, pixel *fdec );
  * mv_min | mv_max << 32. Returns bcost | pack16to32_mask( bmx, bmy ) << 32 */
 typedef uint64_t (*x264_pixel_fpel_search_t) ( pixel *fenc, pixel *ref, intptr_t, const uint16_t *cost_mvx,
                                                const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );
+/* MSEA bound of a 16x16 at the 5x5 mvs around a centre: bit 8*y + x set where
+ * |fsum[0] - b[0]| + |fsum[1] - b[8]| + |fsum[2] - b[8*stride]| + |fsum[3] - b[8*stride+8]|
+ * + cost_mvx[4*x] + cost_mvy[4*y] < thresh, b = box + y*stride + x, x, y 0..4.
+ * fsum and box are 8x8 sums (<= 64*PIXEL_MAX), costs and thresh < 65536. */
+typedef uint64_t (*x264_pixel_box8_mask_t) ( uint16_t *box, intptr_t stride, int *fsum, const uint16_t *cost_mvx,
+                                             const uint16_t *cost_mvy, int thresh );
 /* cmp( fenc (FENC_STRIDE), avg( src1, src2 ) (stride) ) without storing the average */
 typedef int  (*x264_pixel_cmp_avg2_t) ( pixel *, pixel *, pixel *, intptr_t );
 /* chroma ME: satd of the u and v mc_chroma( src, stride, dx, dy, width, height )
@@ -183,6 +189,7 @@ typedef struct
     x264_pixel_fpel_search_t sad_hex_search[7];
     x264_pixel_fpel_search_t fpelcmp_dia_search[7]; /* sad_*_search where fpelcmp is sad, else NULL */
     x264_pixel_fpel_search_t fpelcmp_hex_search[7];
+    x264_pixel_box8_mask_t box8_mask_16x16;
     x264_pixel_cmp_t sad_aligned[8]; /* Aligned SAD for mbcmp */
     int (*vsad)( pixel *, intptr_t, int );
     int (*asd8)( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );

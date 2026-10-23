@@ -263,6 +263,9 @@ typedef struct
     int i_mb_field[3];
     /* Adaptive direct mv pred */
     int i_direct_score[2];
+    /* MSEA bound: box8_mask calls, fullpel sads they saved */
+    int i_box8_calls;
+    int i_box8_saved;
     /* Metrics */
     int64_t i_ssd[3];
     double f_ssim;
@@ -476,6 +479,9 @@ struct x264_t
 
         int     b_interlaced;
         int     b_adaptive_mbaff; /* MBAFF+subme 0 requires non-adaptive MBAFF i.e. all field mbs */
+        int     b_box8; /* a reference of the slice has box8 */
+        int     i_box8_fsum_mb; /* the mb box8_fsum is of, -1 for none */
+        ALIGNED_16( int box8_fsum[4] ); /* sums of the mb's fenc 8x8s, for the MSEA bound */
 
         /* Allowed qpel MV range to stay within the picture + emulated edge pixels */
         int     mv_min[2];
@@ -630,6 +636,7 @@ struct x264_t
             pixel *p_fref[2][X264_REF_MAX*2][12];
             pixel *p_fref_w[X264_REF_MAX*2];  /* weighted fullpel luma */
             uint16_t *p_integral[2][X264_REF_MAX];
+            uint16_t *p_box8[2][X264_REF_MAX*2]; /* fref box8 at the mb, NULL without one or in field mbs */
             /* NV12: field row of the mb's chroma and chroma rows of a field, for field mbs */
             int i_fld_uv_y;
             int i_fld_uv_lines;
@@ -798,6 +805,16 @@ struct x264_t
     /* 8-bit lowres analysis context (encoder/lookahead8.h), created by
      * x264_encoder_open for every x264_t that can run the lookahead */
     void *lowres8;
+
+    /* MSEA bound: x264_frame_filter_box8's scratch (sliced threads), and thread[0]'s gate,
+     * which only the API thread touches: the bound saved enough on the last frame that
+     * measured it, reference frames since the last box8 */
+    uint16_t *box8_scratch;
+    struct
+    {
+        int b_on;
+        int i_probe;
+    } box8_gate;
 
 #if HAVE_OPENCL
     x264_opencl_t opencl;

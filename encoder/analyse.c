@@ -1313,6 +1313,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
         (m)->i_fld_uv_y = h->mb.pic.i_fld_uv_y + ((yoff)>>CHROMA_V_SHIFT); \
     } \
     (m)->integral = &h->mb.pic.p_integral[list][ref][(xoff)+(yoff)*(m)->i_stride[0]]; \
+    (m)->box8 = h->mb.pic.p_box8[list][ref] ? &h->mb.pic.p_box8[list][ref][(xoff)+(yoff)*(m)->i_stride[0]] : NULL; \
     (m)->weight = x264_weight_none; \
     (m)->i_ref = ref; \
 }

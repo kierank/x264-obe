@@ -267,6 +267,35 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/* MSEA: a 16x16's sad is at least the sum over its 8x8 quadrants of |sum(fenc) - sum(ref)|,
+ * so a fullpel candidate whose mv cost plus that is >= bcost can't win. box8_win: the
+ * candidates around (mx,my) that can, bit 8*(dy+2) + dx+2 for |dx|, |dy| <= 2. */
+#define BOX8_PT( dx, dy ) (1ULL << (8*((dy)+2) + (dx)+2))
+#define BOX8_HEX0 (BOX8_PT(-2,0) | BOX8_PT(-1,2) | BOX8_PT(1,2))
+#define BOX8_HEX1 (BOX8_PT(2,0) | BOX8_PT(1,-2) | BOX8_PT(-1,-2))
+#define BOX8_SQ0  (BOX8_PT(0,-1) | BOX8_PT(0,1) | BOX8_PT(-1,0) | BOX8_PT(1,0))
+#define BOX8_SQ1  (BOX8_PT(-1,-1) | BOX8_PT(-1,1) | BOX8_PT(1,-1) | BOX8_PT(1,1))
+ALIGNED_16( static pixel box8_zero[8*FENC_STRIDE] );
+
+static uint64_t box8_win( x264_t *h, x264_me_t *m, int mx, int my,
+                          const uint16_t *p_cost_mvx, const uint16_t *p_cost_mvy, int bcost )
+{
+    if( bcost > 0xffff )
+        return ~0ULL;
+    int *fsum = h->mb.box8_fsum;
+    if( h->mb.i_box8_fsum_mb != h->mb.i_mb_xy )
+    {
+        /* the 16x16's quadrant sums, for every reference */
+        pixel *fenc = m->p_fenc[0];
+        h->pixf.sad_x4[PIXEL_8x8]( box8_zero, fenc, fenc+8, fenc+8*FENC_STRIDE, fenc+8+8*FENC_STRIDE, FENC_STRIDE, fsum );
+        h->mb.i_box8_fsum_mb = h->mb.i_mb_xy;
+    }
+    h->stat.frame.i_box8_calls++;
+    intptr_t stride = m->i_stride[0];
+    return h->pixf.box8_mask_16x16( m->box8 + (my-2)*stride + mx-2, stride, fsum,
+                                    p_cost_mvx + ((mx-2)<<2), p_cost_mvy + ((my-2)<<2), bcost );
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -493,23 +522,42 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     #else
             /* equivalent to the above, but eliminates duplicate candidates */
 
+            /* the MSEA bound on the luma plane. bcost only falls, so a candidate that can't
+             * win against it at the start of a step can't later in the step either. A hexagon
+             * that doesn't move leaves bcost as it was for the square. */
+            int b_box = i_pixel == PIXEL_16x16 && m->box8 && p_fref_w == m->p_fref[0];
+            uint64_t box_win = b_box ? box8_win( h, m, bmx, bmy, p_cost_mvx, p_cost_mvy, bcost ) : ~0ULL;
+
             /* hexagon */
             bcost <<= 6;
             if( cmp_hex_min )
             {
-                /* hex2[1..6], idx 2..7, as below */
-                for( int j = 0; j < 6; j++ )
-                    pt_bias[j] = (BITS_MVD( bmx+hex2[j+1][0], bmy+hex2[j+1][1] ) << 6) + j+2;
-                bcost = cmp_hex_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+                if( box_win & (BOX8_HEX0|BOX8_HEX1) )
+                {
+                    /* hex2[1..6], idx 2..7, as below */
+                    for( int j = 0; j < 6; j++ )
+                        pt_bias[j] = (BITS_MVD( bmx+hex2[j+1][0], bmy+hex2[j+1][1] ) << 6) + j+2;
+                    bcost = cmp_hex_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+                }
+                else
+                    h->stat.frame.i_box8_saved += 6;
             }
             else
             {
-                COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 );
-                COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 );
+                if( box_win & BOX8_HEX0 )
+                    COST_MV_X3_DIR_MIN( -2,0, -1, 2,  1, 2, 2 )
+                else
+                    h->stat.frame.i_box8_saved += 3;
+                if( box_win & BOX8_HEX1 )
+                    COST_MV_X3_DIR_MIN(  2,0,  1,-2, -1,-2, 5 )
+                else
+                    h->stat.frame.i_box8_saved += 3;
             }
 
             if( bcost&63 )
             {
+                /* the mask is of the hexagon's centre */
+                box_win = ~0ULL;
                 int dir = (bcost&63)-2;
                 bmx += hex2[dir+1][0];
                 bmy += hex2[dir+1][1];
@@ -533,7 +581,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     #endif
             /* square refine */
             bcost <<= 6;
-            if( cmp_sq_min )
+            if( !(box_win & (BOX8_SQ0|BOX8_SQ1)) )
+                h->stat.frame.i_box8_saved += 8;
+            else if( cmp_sq_min )
             {
                 /* the same candidates and idx as below; dx 2 and the centre can't win */
                 ALIGNED_16( int32_t sq_bias[12] );
@@ -555,8 +605,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             }
             else
             {
-                COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 );
-                COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 );
+                if( box_win & BOX8_SQ0 )
+                    COST_MV_X4_DIR_MIN(  0,-1,  0,1, -1,0, 1,0, 1 )
+                else
+                    h->stat.frame.i_box8_saved += 4;
+                if( box_win & BOX8_SQ1 )
+                    COST_MV_X4_DIR_MIN( -1,-1, -1,1, 1,-1, 1,1, 5 )
+                else
+                    h->stat.frame.i_box8_saved += 4;
             }
             bmx += square1[bcost&63][0];
             bmy += square1[bcost&63][1];
