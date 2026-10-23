@@ -67,6 +67,34 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
 
+/* mepred-clip2 layout set. CLIP2_MODE: 0 twin (inline MMX clip everywhere, speed-next's
+ * behaviour), 1 pixf.predictor_clip/roundclip on every list, 2 on lists of 5 or more,
+ * 3 on lists of 5 or more in the subme >= 3 path only. Each gate is the address of its
+ * x264_clip2_*_on (defined in api.c) or of its never defined weak x264_clip2_*_off, which
+ * links as 0: three symbols referenced in every mode, the same code in all. */
+#define CLIP2_MODE 0
+#define CLIP2_GATE( name ) extern const char x264_clip2_##name##_on __attribute__((weak, visibility("hidden")));\
+                           extern const char x264_clip2_##name##_off __attribute__((weak, visibility("hidden")));
+CLIP2_GATE( gate )
+CLIP2_GATE( all )
+CLIP2_GATE( round )
+#undef CLIP2_GATE
+#if CLIP2_MODE >= 1
+#define x264_clip2_gate (&x264_clip2_gate_on != NULL)
+#else
+#define x264_clip2_gate (&x264_clip2_gate_off != NULL)
+#endif
+#if CLIP2_MODE == 1
+#define x264_clip2_all (&x264_clip2_all_on != NULL)
+#else
+#define x264_clip2_all (&x264_clip2_all_off != NULL)
+#endif
+#if CLIP2_MODE == 1 || CLIP2_MODE == 2
+#define x264_clip2_round (&x264_clip2_round_on != NULL)
+#else
+#define x264_clip2_round (&x264_clip2_round_off != NULL)
+#endif
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)

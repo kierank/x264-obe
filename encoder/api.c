@@ -31,6 +31,11 @@
  ****************************************************************************/
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
+/* mepred-clip2 layout set: the gate of the arms, see encoder/me.h */
+__attribute__((visibility("hidden"))) const char x264_clip2_gate_on = 1;
+__attribute__((visibility("hidden"))) const char x264_clip2_all_on = 1;
+__attribute__((visibility("hidden"))) const char x264_clip2_round_on = 1;
+
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
 void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
