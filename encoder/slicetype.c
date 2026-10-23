@@ -1330,6 +1330,7 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
     m[0].p_fenc[0] = h->mb.pic.p_fenc[0];
     m[0].weight = w;
     m[0].i_ref = 0;
+    m[0].hpel_ref = NULL;
     LOAD_HPELS_LUMA( m[0].p_fref, fref0->lowres );
     m[0].p_fref_w = m[0].p_fref[0];
     if( w[0].weightfn )
@@ -1344,6 +1345,7 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
         m[1].i_stride[0] = i_stride;
         m[1].p_fenc[0] = h->mb.pic.p_fenc[0];
         m[1].i_ref = 0;
+        m[1].hpel_ref = NULL;
         m[1].weight = x264_weight_none;
         LOAD_HPELS_LUMA( m[1].p_fref, fref1->lowres );
         m[1].p_fref_w = m[1].p_fref[0];

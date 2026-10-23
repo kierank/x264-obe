@@ -57,6 +57,17 @@ static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 
+void x264_me_hpel_build( x264_t *h, x264_me_t *m, int y0, int y1 )
+{
+    int shift = 4 + (PARAM_INTERLACED && !MB_INTERLACED);
+    int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
+    int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
+    int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
+    x264_frame_hpel_ensure( h, m->hpel_ref, MB_INTERLACED, y0, y1 );
+    m->hpel_ok[0] = u0 ? (u0 << shift) - 8 : -(1 << 30);
+    m->hpel_ok[1] = u1 < last ? ((u1 + 1) << shift) - 9 : 1 << 30;
+}
+
 #define BITS_MVD( mx, my )\
     (p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
 
@@ -74,6 +85,7 @@ do\
 static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw, int bh, int mx, int my,
                                      x264_pixel_cmp_avg2_t cmp_avg2, x264_pixel_cmp_t cmp )
 {
+    x264_me_hpel_ensure( h, m, mx, my, bh );
     if( cmp_avg2 && !m->weight[0].weightfn )
     {
         int qpel_idx = ((my&3)<<2) + (mx&3);
@@ -1011,6 +1023,7 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
 static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my,
                                             int16_t *fenc_pre )
 {
+    x264_me_hpel_ensure( h, m, mx, my, bh );
     if( fenc_pre )
     {
         /* subpel_cmp against fenc_pre */
@@ -1106,6 +1119,7 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     pixel *src; \
     if( CHROMA444 ) \
     { \
+        x264_me_hpel_ensure( h, m, mx, my, bh ); \
         stride = 16; \
         src = h->mc.get_ref( pix, &stride, &m->p_fref[4], m->i_stride[1], mx, my, bw, bh, &m->weight[1] ); \
         cost += h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[1], FENC_STRIDE, src, stride ); \
@@ -1200,6 +1214,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             int omx = bmx, omy = bmy;
             intptr_t stride = 64; // candidates are either all hpel or all qpel, so one stride is enough
             pixel *src0, *src1, *src2, *src3;
+            x264_me_hpel_ensure_rows( h, m, omy - 2, bh + 2 );
             if( !((omx|omy)&1) && !m->weight[0].weightfn )
             {
                 /* hpel candidates without weighting: get_ref would only pick a
@@ -1316,6 +1331,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     {
         int omx = bmx, omy = bmy;
         /* We have to use mc_luma because all strides must be the same to use fpelcmp_x4 */
+        x264_me_hpel_ensure_rows( h, m, omy - 1, bh + 2 );
         h->mc.mc_luma( pix   , 64, m->p_fref, m->i_stride[0], omx, omy-1, bw, bh, &m->weight[0] );
         h->mc.mc_luma( pix+16, 64, m->p_fref, m->i_stride[0], omx, omy+1, bw, bh, &m->weight[0] );
         h->mc.mc_luma( pix+32, 64, m->p_fref, m->i_stride[0], omx-1, omy, bw, bh, &m->weight[0] );
@@ -1350,6 +1366,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int i = 4 + 3*dx + dy;\
     int mvx = bm##list##x+dx;\
     int mvy = bm##list##y+dy;\
+    x264_me_hpel_ensure( h, m, mvx, mvy, bh );\
     stride[0][list][i] = bw;\
     src[0][list][i] = h->mc.get_ref( pixy_buf[list][i], &stride[0][list][i], &m->p_fref[0],\
                                      m->i_stride[0], mvx, mvy, bw, bh, x264_weight_none );\
@@ -1563,6 +1580,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
 { \
     if( !avoid_mvp || !(mx == pmx && my == pmy) ) \
     { \
+        x264_me_hpel_ensure( h, m, mx, my, bh ); \
         h->mc.mc_luma( pix, FDEC_STRIDE, m->p_fref, m->i_stride[0], mx, my, bw, bh, &m->weight[0] ); \
         dst = h->pixf.mbcmp[i_pixel]( m->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE ) \
             + p_cost_mvx[mx] + p_cost_mvy[my]; \
@@ -1580,6 +1598,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
         M32( cache_mv ) = pack16to32_mask(mx,my); \
         if( CHROMA444 ) \
         { \
+            x264_me_hpel_ensure( h, m, mx, my, bh ); \
             h->mc.mc_luma( pixu, FDEC_STRIDE, &m->p_fref[4], m->i_stride[1], mx, my, bw, bh, &m->weight[1] ); \
             h->mc.mc_luma( pixv, FDEC_STRIDE, &m->p_fref[8], m->i_stride[2], mx, my, bw, bh, &m->weight[2] ); \
         } \
