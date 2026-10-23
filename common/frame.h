@@ -332,6 +332,19 @@ void          x264_frame_unshift( x264_frame_t **list, x264_frame_t *frame );
 x264_frame_t *x264_frame_shift( x264_frame_t **list );
 #define x264_frame_push_unused x264_template(frame_push_unused)
 void          x264_frame_push_unused( x264_t *h, x264_frame_t *frame );
+/* prealloc layout pair: x264_prealloc_gate gates the open-time pools and
+ * page touching. Arm: x264_prealloc_arm, defined in api.c. Twin
+ * (PREALLOC_TWIN 1): the never defined x264_prealloc_twin, which links as 0,
+ * and frames are allocated on first use as before. The code is the same in both. */
+#define PREALLOC_TWIN 0
+extern const char x264_prealloc_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_prealloc_twin __attribute__((weak, visibility("hidden")));
+#if PREALLOC_TWIN
+#define x264_prealloc_gate (&x264_prealloc_twin != NULL)
+#else
+#define x264_prealloc_gate (&x264_prealloc_arm != NULL)
+#endif
+
 #define x264_frame_prealloc_unused x264_template(frame_prealloc_unused)
 int           x264_frame_prealloc_unused( x264_t *h, int b_fdec, int i_frames );
 #define x264_frame_push_blank_unused x264_template(frame_push_blank_unused)

@@ -389,7 +389,7 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 {
                     CHECKED_MALLOC( h->deblock_strength[0], sizeof(**h->deblock_strength) * h->mb.i_mb_count );
                     /* every deblocked frame writes all of it: fault it in now */
-                    if( h->param.b_deblocking_filter )
+                    if( x264_prealloc_gate && h->param.b_deblocking_filter )
                         memset( h->deblock_strength[0], 0, sizeof(**h->deblock_strength) * h->mb.i_mb_count );
                 }
                 else

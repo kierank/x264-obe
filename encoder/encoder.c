@@ -1932,8 +1932,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
     /* Allocate the frames the encode reaches in steady state now, before any
      * frame is due: the lookahead's fencs and one fdec per frame thread plus
      * the references. The frame parameters are final here. */
-    if( x264_frame_prealloc_unused( h, 0, h->frames.i_delay + 2 ) ||
-        x264_frame_prealloc_unused( h, 1, h->i_thread_frames + h->sps->i_num_ref_frames ) )
+    if( x264_prealloc_gate &&
+        ( x264_frame_prealloc_unused( h, 0, h->frames.i_delay + 2 ) ||
+          x264_frame_prealloc_unused( h, 1, h->i_thread_frames + h->sps->i_num_ref_frames ) ) )
         goto fail;
 
     for( int i = 0; i < h->param.i_threads; i++ )
@@ -1962,14 +1963,17 @@ x264_t *x264_encoder_open( x264_param_t *param )
         CHECKED_MALLOC( h->thread[i]->out.nal, init_nal_count*sizeof(x264_nal_t) );
         h->thread[i]->out.i_nals_allocated = init_nal_count;
 
-        if( allocate_threadlocal_data && x264_macroblock_cache_allocate( h->thread[i], 1 ) < 0 )
+        if( allocate_threadlocal_data && x264_macroblock_cache_allocate( h->thread[i], x264_prealloc_gate ) < 0 )
             goto fail;
     }
 
     /* every frame writes the start of the output buffers: fault it in now */
-    h->nal_buffer[0] = 0;
-    for( int i = 0; i < h->param.i_threads; i++ )
-        h->thread[i]->out.p_bitstream[0] = 0;
+    if( x264_prealloc_gate )
+    {
+        h->nal_buffer[0] = 0;
+        for( int i = 0; i < h->param.i_threads; i++ )
+            h->thread[i]->out.p_bitstream[0] = 0;
+    }
 
 #if HAVE_OPENCL
     if( h->param.b_opencl && x264_opencl_lookahead_init( h ) < 0 )
