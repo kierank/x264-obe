@@ -647,7 +647,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
         pf->decimate_score64 = x264_decimate_score64_avx512;
 #if ARCH_X86_64
         pf->coeff_nz16 = x264_coeff_nz16_avx512;
-        pf->coeff_nz64 = x264_coeff_nz64_avx512;
+        /* coeff_nz64 avx512 2.0x avx2 on rack01 Zen 4 */
 #endif
         pf->coeff_last4 = x264_coeff_last4_avx512;
         pf->coeff_last8 = x264_coeff_last8_avx512;
