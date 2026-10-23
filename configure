@@ -32,6 +32,7 @@ Configuration options:
   --disable-interlaced     disable interlaced encoding support
   --bit-depth=BIT_DEPTH    set output bit depth: 8, 10, or all (both, X86_64 only) [8]
   --chroma-format=FORMAT   output chroma format (420, 422, 444, all) [all]
+  --enable-cavlc           enable CAVLC entropy coding
 
 Advanced options:
   --disable-asm            disable platform-specific assembly optimizations
@@ -277,6 +278,7 @@ strip="no"
 pic="no"
 bit_depth="8"
 chroma_format="all"
+has_cavlc="no"
 compiler="GNU"
 opencl="yes"
 
@@ -331,6 +333,9 @@ for opt do
             ;;
         --disable-interlaced)
             interlaced="no"
+            ;;
+        --enable-cavlc)
+            has_cavlc="yes"
             ;;
         --disable-avs)
             avs="no"
@@ -1091,6 +1096,9 @@ if [ "$chroma_format" != "all" ]; then
     define CHROMA_FORMAT CHROMA_$chroma_format
 fi
 
+[ $has_cavlc = yes ] && define HAS_CAVLC 1 || define HAS_CAVLC 0
+[ $has_cavlc = yes ] && ASFLAGS="$ASFLAGS -DHAS_CAVLC=1" || ASFLAGS="$ASFLAGS -DHAS_CAVLC=0"
+
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
 [ $interlaced = yes ] && define HAVE_INTERLACED && x264_interlaced=1 || x264_interlaced=0
@@ -1348,6 +1356,7 @@ strip:         $strip
 PIC:           $pic
 bit depth:     $bit_depth
 chroma format: $chroma_format
+CAVLC:         $has_cavlc
 EOF
 
 echo >> config.log

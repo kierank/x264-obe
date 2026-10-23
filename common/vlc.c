@@ -27,6 +27,8 @@
 
 #include "common.h"
 
+#if HAS_CAVLC
+
 vlc_large_t x264_level_token[7][LEVEL_TABLE_SIZE];
 uint32_t x264_run_before[1<<16];
 
@@ -96,3 +98,4 @@ void x264_cavlc_init( x264_t *h )
         x264_run_before[i] = (bits << 5) + size;
     }
 }
+#endif

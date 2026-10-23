@@ -1801,14 +1801,14 @@ static int epb_scan( x264_t *h, int *nal, int *pos, int *bytes, int b_end )
         *bytes += epb_count( h->out.nal[*nal].p_payload, pos, h->out.nal[*nal].i_payload );
     uint8_t *p = h->out.nal[*nal].p_payload;
     /* CABAC carries into p[-1] */
-    int end = h->param.b_cabac ? h->cabac.p - 1 - p : h->out.bs.p - p;
+    int end = PARAM_CABAC ? h->cabac.p - 1 - p : h->out.bs.p - p;
     *bytes += epb_count( p, pos, end );
     int left = end - *pos;
     if( !b_end )
         return left;
     /* CABAC: p[-1], bytes outstanding and the flush. CAVLC: cached bits,
      * the last skip run and rbsp_slice_trailing_bits. */
-    return left + (h->param.b_cabac ? h->cabac.i_bytes_outstanding + 4 : 8);
+    return left + (PARAM_CABAC ? h->cabac.i_bytes_outstanding + 4 : 8);
 }
 
 /* Each thread, before its slices of a frame. */
@@ -1959,7 +1959,7 @@ void x264_ratecontrol_slice_header( x264_t *h, int header_bits )
     /* CABAC: the flush ends at most 16 bits past the MB bits, which count from
      * x264_cabac_pos -9. CAVLC: the last skip run and rbsp_slice_trailing_bits. */
     int mbs = h->i_threadslice_end * h->mb.i_mb_width - h->sh.i_first_mb;
-    int tail = h->param.b_cabac ? 16 : bs_size_ue_big( mbs ) + 8;
+    int tail = PARAM_CABAC ? 16 : bs_size_ue_big( mbs ) + 8;
     rc->slice_bits += header_bits + (NALU_OVERHEAD - b_short) * 8 + tail;
 }
 

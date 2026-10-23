@@ -280,6 +280,7 @@ int  x264_zigzag_sub_4x4ac_field_avx512icl( dctcoef level[16], const pixel *src,
 int  x264_zigzag_sub_8x8_frame_avx512icl  ( dctcoef level[64], const pixel *src, pixel *dst );
 #define x264_zigzag_sub_8x8_field_avx512icl x264_template(zigzag_sub_8x8_field_avx512icl)
 int  x264_zigzag_sub_8x8_field_avx512icl  ( dctcoef level[64], const pixel *src, pixel *dst );
+#if HAS_CAVLC
 #define x264_zigzag_interleave_8x8_cavlc_mmx x264_template(zigzag_interleave_8x8_cavlc_mmx)
 void x264_zigzag_interleave_8x8_cavlc_mmx ( int16_t *dst, int16_t *src, uint8_t *nnz );
 #define x264_zigzag_interleave_8x8_cavlc_sse2 x264_template(zigzag_interleave_8x8_cavlc_sse2)
@@ -290,5 +291,6 @@ void x264_zigzag_interleave_8x8_cavlc_avx ( dctcoef *dst, dctcoef *src, uint8_t 
 void x264_zigzag_interleave_8x8_cavlc_avx2( int16_t *dst, int16_t *src, uint8_t *nnz );
 #define x264_zigzag_interleave_8x8_cavlc_avx512 x264_template(zigzag_interleave_8x8_cavlc_avx512)
 void x264_zigzag_interleave_8x8_cavlc_avx512( dctcoef *dst, dctcoef *src, uint8_t *nnz );
+#endif
 
 #endif
