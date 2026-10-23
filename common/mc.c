@@ -1025,6 +1025,45 @@ static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y,
  * is waited for. With frame threads, a unit is built once the frame has the
  * rows x264_fdec_filter_row would have broadcast after filtering it. */
 static int hpel_chk_reverse = -1;
+
+/* X264_HPEL_CHECK_EARLIEST: the producer builds each unit as soon as the frame
+ * has the rows a builder waits for, from a plane_fld poisoned at the frame's
+ * start, so a unit that needs more than its wait guarantees differs. */
+static int hpel_chk_earliest = -1;
+int x264_hpel_check_earliest( void )
+{
+    if( __atomic_load_n( &hpel_chk_earliest, __ATOMIC_RELAXED ) < 0 )
+    {
+        char *e = getenv( "X264_HPEL_CHECK_EARLIEST" );
+        __atomic_store_n( &hpel_chk_earliest, e ? atoi( e ) : 0, __ATOMIC_RELAXED );
+    }
+    return __atomic_load_n( &hpel_chk_earliest, __ATOMIC_RELAXED );
+}
+
+void x264_hpel_build_earliest( x264_t *h, x264_frame_t *frame, int lines )
+{
+    int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
+    for( int set = 0; set <= PARAM_INTERLACED; set++ )
+        for( int u = 0; u <= last; u++ )
+        {
+            int mb_y = u << PARAM_INTERLACED;
+            int wait = u == last ? h->mb.i_mb_height*16 + 10000
+                                 : (mb_y + (1 << PARAM_INTERLACED))*16 - (X264_THREAD_HEIGHT << PARAM_INTERLACED);
+            if( wait <= lines && __atomic_load_n( &frame->hpel_unit[set][u], __ATOMIC_ACQUIRE ) != HPEL_UNIT_BUILT )
+                x264_frame_hpel_build( h, frame, set, u, u );
+        }
+}
+
+void x264_hpel_poison_fld( x264_t *h, x264_frame_t *frame )
+{
+    int padv = PADV << PARAM_INTERLACED;
+    for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+    {
+        intptr_t stride = frame->i_stride[p];
+        memset( frame->plane_fld[p] - padv*stride - PADH, 0x5a, stride * (frame->i_lines[p] + 2*padv) * sizeof(pixel) );
+    }
+}
+
 void x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 )
 {
     int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;

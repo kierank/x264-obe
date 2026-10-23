@@ -428,6 +428,7 @@ static ALWAYS_INLINE void x264_frame_hpel_ensure( x264_t *h, x264_frame_t *frame
     int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
     int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
     int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
+    x264_hpel_strict_mark( frame, set, u0, u1 );
     for( int u = u0; u <= u1; u++ )
         if( __atomic_load_n( &frame->hpel_unit[set][u], __ATOMIC_ACQUIRE ) != HPEL_UNIT_BUILT )
         {

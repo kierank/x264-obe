@@ -203,6 +203,7 @@ typedef struct x264_frame
     int     hpel_cnt_built;    /* bit 0 frame hpel filtered, bit 1 field hpel */
     int     hpel_cnt_used;     /* in a ref list since it was filtered */
     int     hpel_chk_rev;      /* X264_HPEL_CHECK_REVERSE: all units built, last first */
+    int     hpel_chk_gen;      /* encodes started on this frame */
     int     hpel_cnt_planes;
     int     hpel_cnt_padx;
 } x264_frame_t;
@@ -308,11 +309,23 @@ void          x264_frame_filter_fld_copy( x264_t *h, x264_frame_t *frame, int mb
 void          x264_frame_expand_border_filtered_set( x264_t *h, x264_frame_t *frame, int set, int mb_y, int b_end );
 #define x264_frame_hpel_build x264_template(frame_hpel_build)
 void          x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 );
+#define x264_hpel_check_earliest x264_template(hpel_check_earliest)
+int           x264_hpel_check_earliest( void );
+#define x264_hpel_build_earliest x264_template(hpel_build_earliest)
+void          x264_hpel_build_earliest( x264_t *h, x264_frame_t *frame, int lines );
+#define x264_hpel_poison_fld x264_template(hpel_poison_fld)
+void          x264_hpel_poison_fld( x264_t *h, x264_frame_t *frame );
 #define x264_hpel_cnt_mark x264_template(hpel_cnt_mark)
 void          x264_hpel_cnt_mark( pixel *src, int w, int h );
 #define x264_hpel_cnt_print x264_template(hpel_cnt_print)
 void          x264_hpel_cnt_print( void );
 #define HPEL_CNT( src, w, h ) x264_hpel_cnt_mark( src, w, h )
+#define x264_hpel_strict_mark x264_template(hpel_strict_mark)
+void          x264_hpel_strict_mark( x264_frame_t *f, int set, int u0, int u1 );
+#define x264_hpel_strict_reset x264_template(hpel_strict_reset)
+void          x264_hpel_strict_reset( x264_t *h );
+#define x264_hpel_strict_slice x264_template(hpel_strict_slice)
+void          x264_hpel_strict_slice( x264_t *h );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

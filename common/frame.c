@@ -26,6 +26,7 @@
  *****************************************************************************/
 
 #include "common.h"
+#include <execinfo.h>
 
 static int align_stride( int x, int align, int disalign )
 {
@@ -187,8 +188,92 @@ void x264_hpel_cnt_print( void )
     memset( hpel_cnt_units, 0, sizeof(hpel_cnt_units) );
 }
 
+/* X264_HPEL_CHECK_STRICT: a read must be of a unit this thread ensured in
+ * its current macroblock, whoever built it */
+#define HPEL_STRICT_FRAMES 64
+static int hpel_strict = -1;
+static __thread x264_frame_t *hpel_strict_f[HPEL_STRICT_FRAMES];
+static __thread uint8_t hpel_strict_u[HPEL_STRICT_FRAMES][2][256];
+static __thread int hpel_strict_n;
+static __thread x264_t *hpel_strict_h;
+
+void x264_hpel_strict_reset( x264_t *h )
+{
+    hpel_strict_n = 0;
+    hpel_strict_h = h;
+}
+
+/* the slice's refs and their generations, to catch a ref recycled under a reader */
+static __thread x264_frame_t *hpel_snap_f[2*X264_REF_MAX+2];
+static __thread int hpel_snap_gen[2*X264_REF_MAX+2];
+static __thread int hpel_snap_n;
+
+void x264_hpel_strict_slice( x264_t *h )
+{
+    x264_hpel_strict_reset( h );
+    hpel_snap_n = 0;
+    for( int l = 0; l < 2; l++ )
+        for( int i = 0; i < h->i_ref[l]; i++ )
+            if( h->fref[l][i] )
+            {
+                hpel_snap_f[hpel_snap_n] = h->fref[l][i]->orig;
+                hpel_snap_gen[hpel_snap_n++] = __atomic_load_n( &h->fref[l][i]->orig->hpel_chk_gen, __ATOMIC_RELAXED );
+            }
+}
+
+/* the reader and the frame read, at an abort */
+static void hpel_check_diag( x264_frame_t *f, int fld )
+{
+    x264_t *h = hpel_strict_h;
+    if( h )
+    {
+        int in_list = 0;
+        for( int l = 0; l < 2; l++ )
+            for( int i = 0; i < h->i_ref[l]; i++ )
+                if( h->fref[l][i] && h->fref[l][i]->orig == f )
+                    in_list |= 1 << l;
+        fprintf( stderr, "hpel_check diag: reader frame %d type %d mb %d,%d field %d; read frame in list0/1 %d/%d\n",
+                 h->fenc ? h->fenc->i_frame : -1, h->sh.i_type, h->mb.i_mb_x, h->mb.i_mb_y, h->mb.b_interlaced,
+                 in_list & 1, in_list >> 1 );
+    }
+    int il = !!f->hpel_cnt_tile[1];
+    int n = f->i_lines[0] >> (4 + il);
+    fprintf( stderr, "hpel_check diag: read frame %d refcount %d lines_completed %d lazy %d units set %d: ",
+             f->i_frame, f->i_reference_count, f->i_lines_completed, f->b_hpel_lazy, fld );
+    for( int u = 0; u < n; u++ )
+        fputc( '0' + __atomic_load_n( &f->hpel_unit[fld][u], __ATOMIC_ACQUIRE ), stderr );
+    fputc( '\n', stderr );
+    void *bt[32];
+    int nbt = backtrace( bt, 32 );
+    backtrace_symbols_fd( bt, nbt, 2 );
+}
+
+static int hpel_strict_slot( x264_frame_t *f )
+{
+    for( int i = 0; i < hpel_strict_n; i++ )
+        if( hpel_strict_f[i] == f )
+            return i;
+    if( hpel_strict_n == HPEL_STRICT_FRAMES )
+        abort();
+    memset( hpel_strict_u[hpel_strict_n], 0, sizeof(hpel_strict_u[0]) );
+    hpel_strict_f[hpel_strict_n] = f;
+    return hpel_strict_n++;
+}
+
+void x264_hpel_strict_mark( x264_frame_t *f, int set, int u0, int u1 )
+{
+    int s = hpel_strict_slot( f );
+    for( int u = u0; u <= u1; u++ )
+        hpel_strict_u[s][set][u] = 1;
+}
+
 static void hpel_cnt_region( x264_frame_t *f, int fld, intptr_t row, intptr_t x, int w, int hh )
 {
+    if( __atomic_load_n( &hpel_strict, __ATOMIC_RELAXED ) < 0 )
+    {
+        char *e = getenv( "X264_HPEL_CHECK_STRICT" );
+        __atomic_store_n( &hpel_strict, e && atoi( e ), __ATOMIC_RELAXED );
+    }
     int mbw = f->i_width[0] >> 4;
     int mbh = f->i_lines[0] >> 4;
     int lines = f->i_lines[0];
@@ -212,11 +297,44 @@ static void hpel_cnt_region( x264_frame_t *f, int fld, intptr_t row, intptr_t x,
         int last = (f->i_lines[0] >> (4 + il)) - 1;
         int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
         int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
+        if( __atomic_load_n( &hpel_strict, __ATOMIC_RELAXED ) )
+        {
+            x264_t *h = hpel_strict_h;
+            int in_list = !h;
+            for( int l = 0; h && l < 2; l++ )
+                for( int i = 0; i < h->i_ref[l]; i++ )
+                    in_list |= h->fref[l][i] && h->fref[l][i]->orig == f;
+            if( !in_list )
+            {
+                fprintf( stderr, "hpel_check strict: frame %d set %d (rows %d..%d) read but not in the reader's lists\n",
+                         f->i_frame, fld, (int)y0, (int)y1 );
+                hpel_check_diag( f, fld );
+                abort();
+            }
+            for( int i = 0; i < hpel_snap_n; i++ )
+                if( hpel_snap_f[i] == f && hpel_snap_gen[i] != __atomic_load_n( &f->hpel_chk_gen, __ATOMIC_RELAXED ) )
+                {
+                    fprintf( stderr, "hpel_check strict: frame %d set %d (rows %d..%d) recycled under its reader (gen %d, was %d)\n",
+                             f->i_frame, fld, (int)y0, (int)y1, f->hpel_chk_gen, hpel_snap_gen[i] );
+                    hpel_check_diag( f, fld );
+                    abort();
+                }
+            int s = hpel_strict_slot( f );
+            for( int u = u0; u <= u1; u++ )
+                if( !hpel_strict_u[s][fld][u] )
+                {
+                    fprintf( stderr, "hpel_check strict: frame %d set %d unit %d (rows %d..%d) read without an ensure in this mb\n",
+                             f->i_frame, fld, u, (int)y0, (int)y1 );
+                    hpel_check_diag( f, fld );
+                    abort();
+                }
+        }
         for( int u = u0; u <= u1; u++ )
             if( __atomic_load_n( &f->hpel_unit[fld][u], __ATOMIC_ACQUIRE ) != HPEL_UNIT_BUILT )
             {
                 fprintf( stderr, "hpel_check: frame %d set %d unit %d (rows %d..%d) read before it is built\n",
                          f->i_frame, fld, u, (int)y0, (int)y1 );
+                hpel_check_diag( f, fld );
                 abort();
             }
     }
