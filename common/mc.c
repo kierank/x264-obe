@@ -728,6 +728,34 @@ static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs
 #undef CLIP_ADD
 }
 
+static void (*mc_luma_inner)( pixel *dst, intptr_t i_dst, pixel **src, intptr_t i_src,
+                              int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+static pixel *(*get_ref_inner)( pixel *dst, intptr_t *i_dst, pixel **src, intptr_t i_src,
+                                int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+
+static void hpel_cnt_mv( pixel **src, intptr_t i_src_stride, int mvx, int mvy, int i_width, int i_height )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    intptr_t offset = (mvy>>2)*i_src_stride + (mvx>>2);
+    HPEL_CNT( src[x264_hpel_ref0[qpel_idx]] + offset + ((mvy&3) == 3) * i_src_stride, i_width, i_height );
+    if( qpel_idx & 5 )
+        HPEL_CNT( src[x264_hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3), i_width, i_height );
+}
+
+static void mc_luma_cnt( pixel *dst, intptr_t i_dst, pixel **src, intptr_t i_src,
+                         int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    hpel_cnt_mv( src, i_src, mvx, mvy, i_width, i_height );
+    mc_luma_inner( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
+
+static pixel *get_ref_cnt( pixel *dst, intptr_t *i_dst, pixel **src, intptr_t i_src,
+                           int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    hpel_cnt_mv( src, i_src, mvx, mvy, i_width, i_height );
+    return get_ref_inner( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
+
 void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 {
     pf->mc_luma   = mc_luma;
@@ -811,6 +839,14 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
         pf->mbtree_finish = mbtree_finish;
         pf->aq_variance_tail = aq_variance_tail;
     }
+
+    if( pf->mc_luma != mc_luma_cnt )
+    {
+        mc_luma_inner = pf->mc_luma;
+        get_ref_inner = pf->get_ref;
+        pf->mc_luma = mc_luma_cnt;
+        pf->get_ref = get_ref_cnt;
+    }
 }
 
 /* Field hpel of field rows [y0, y1) of parity i. With b_copy, read the frame
@@ -846,6 +882,8 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 
     if( mb_y & b_interlaced )
         return;
+
+    __atomic_or_fetch( &frame->hpel_cnt_built, (!b_interlaced || h->mb.b_adaptive_mbaff) | (b_interlaced << 1), __ATOMIC_RELAXED );
 
     for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
     {

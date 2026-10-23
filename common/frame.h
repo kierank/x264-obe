@@ -190,6 +190,14 @@ typedef struct x264_frame
 #if HAVE_OPENCL
     x264_frame_opencl_t opencl;
 #endif
+
+    /* hpel read counters: [0] frame hpel, [1] field hpel (parity-major) */
+    uint8_t *hpel_cnt_tile[2]; /* 16x16 tiles */
+    uint8_t *hpel_cnt_row[2];  /* pixel rows */
+    int     hpel_cnt_built;    /* bit 0 frame hpel filtered, bit 1 field hpel */
+    int     hpel_cnt_used;     /* in a ref list since it was filtered */
+    int     hpel_cnt_planes;
+    int     hpel_cnt_padx;
 } x264_frame_t;
 
 /* synchronized frame list */
@@ -278,6 +286,12 @@ void          x264_macroblock_deblock( x264_t *h );
 
 #define x264_frame_filter x264_template(frame_filter)
 void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
+
+#define x264_hpel_cnt_mark x264_template(hpel_cnt_mark)
+void          x264_hpel_cnt_mark( pixel *src, int w, int h );
+#define x264_hpel_cnt_print x264_template(hpel_cnt_print)
+void          x264_hpel_cnt_print( void );
+#define HPEL_CNT( src, w, h ) x264_hpel_cnt_mark( src, w, h )
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

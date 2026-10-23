@@ -66,6 +66,173 @@ static int x264_frame_internal_csp( int external_csp )
     }
 }
 
+/* hpel read counters */
+#define HPEL_CNT_SLOTS 1024
+#define HPEL_CNT_FRAMES 65536
+#define HPEL_CNT_GRAN 8
+static x264_frame_t *hpel_cnt_reg[HPEL_CNT_SLOTS];
+static int hpel_cnt_nreg;
+/* [set][granularity]: built units, read units; granularities: 16-row bands x 16/32/64/128/256 px,
+ * 16-row bands, pixel rows, 1x16 row spans */
+static uint64_t hpel_cnt_frames[2];
+static uint64_t hpel_cnt_units[2][HPEL_CNT_GRAN][2];
+static float hpel_cnt_share[2][HPEL_CNT_GRAN][HPEL_CNT_FRAMES];
+
+static void hpel_cnt_flush( x264_frame_t *f )
+{
+    int mbw = f->i_width[0] >> 4;
+    int mbh = f->i_lines[0] >> 4;
+    int lines = f->i_lines[0];
+    for( int i = 0; i < 2; i++ )
+    {
+        if( !f->hpel_cnt_tile[i] )
+            continue;
+        if( (f->hpel_cnt_built & (1<<i)) && f->hpel_cnt_used )
+        {
+            int tot[HPEL_CNT_GRAN] = {0}, rd[HPEL_CNT_GRAN] = {0};
+            /* field sets: bands of 16 field rows, parity-major */
+            for( int b = 0; b < mbh; b++ )
+            {
+                uint8_t *t = f->hpel_cnt_tile[i] + b*mbw;
+                for( int j = 0; j < 5; j++ )
+                    for( int x = 0; x < mbw; x += 1<<j )
+                    {
+                        int any = 0;
+                        for( int k = x; k < X264_MIN( x + (1<<j), mbw ); k++ )
+                            any |= t[k];
+                        tot[j]++;
+                        rd[j] += any;
+                    }
+                int any = 0;
+                for( int x = 0; x < mbw; x++ )
+                    any |= t[x];
+                tot[5]++;
+                rd[5] += any;
+            }
+            for( int y = 0; y < lines; y++ )
+            {
+                uint8_t *r = f->hpel_cnt_row[i] + y*mbw;
+                int any = 0;
+                for( int x = 0; x < mbw; x++ )
+                    any |= r[x], rd[7] += r[x];
+                tot[6]++;
+                rd[6] += any;
+                tot[7] += mbw;
+            }
+            for( int g = 0; g < HPEL_CNT_GRAN; g++ )
+            {
+                if( hpel_cnt_frames[i] < HPEL_CNT_FRAMES )
+                    hpel_cnt_share[i][g][hpel_cnt_frames[i]] = (float)rd[g] / tot[g];
+                hpel_cnt_units[i][g][0] += tot[g];
+                hpel_cnt_units[i][g][1] += rd[g];
+            }
+            hpel_cnt_frames[i]++;
+        }
+        memset( f->hpel_cnt_tile[i], 0, mbw*mbh );
+        memset( f->hpel_cnt_row[i], 0, mbw*lines );
+    }
+    f->hpel_cnt_built = 0;
+    f->hpel_cnt_used = 0;
+}
+
+static int hpel_cnt_cmp( const void *a, const void *b )
+{
+    float x = *(const float*)a, y = *(const float*)b;
+    return (x > y) - (x < y);
+}
+
+void x264_hpel_cnt_print( void )
+{
+    static const char *set_name[2] = { "frame", "field" };
+    static const char *gran_name[HPEL_CNT_GRAN] = { "16x16", "16x32", "16x64", "16x128", "16x256", "band", "row", "row-span16" };
+    for( int i = 0; i < 2; i++ )
+    {
+        if( !hpel_cnt_frames[i] )
+            continue;
+        int n = X264_MIN( hpel_cnt_frames[i], HPEL_CNT_FRAMES );
+        fprintf( stderr, "hpel_cnt %d-bit %s hpel, %d referenced frames: read share total, per frame min/p10/p50/p90/max\n",
+                 BIT_DEPTH, set_name[i], n );
+        for( int g = 0; g < HPEL_CNT_GRAN; g++ )
+        {
+            float *v = hpel_cnt_share[i][g];
+            qsort( v, n, sizeof(float), hpel_cnt_cmp );
+            fprintf( stderr, "hpel_cnt %d-bit %s %-10s %6.2f%%   %5.1f %5.1f %5.1f %5.1f %5.1f\n",
+                     BIT_DEPTH, set_name[i], gran_name[g], 100. * hpel_cnt_units[i][g][1] / hpel_cnt_units[i][g][0],
+                     100*v[0], 100*v[n/10], 100*v[n/2], 100*v[n*9/10], 100*v[n-1] );
+        }
+    }
+    if( hpel_cnt_frames[0] && hpel_cnt_frames[1] )
+        for( int g = 0; g < HPEL_CNT_GRAN; g++ )
+            fprintf( stderr, "hpel_cnt %d-bit both sets %-10s %6.2f%%\n", BIT_DEPTH, gran_name[g],
+                     100. * (hpel_cnt_units[0][g][1] + hpel_cnt_units[1][g][1]) / (hpel_cnt_units[0][g][0] + hpel_cnt_units[1][g][0]) );
+    memset( hpel_cnt_frames, 0, sizeof(hpel_cnt_frames) );
+    memset( hpel_cnt_units, 0, sizeof(hpel_cnt_units) );
+}
+
+static void hpel_cnt_region( x264_frame_t *f, int fld, intptr_t row, intptr_t x, int w, int hh )
+{
+    int mbw = f->i_width[0] >> 4;
+    int mbh = f->i_lines[0] >> 4;
+    int lines = f->i_lines[0];
+    uint8_t *tile = f->hpel_cnt_tile[fld];
+    uint8_t *rows = f->hpel_cnt_row[fld];
+    intptr_t y0 = row, y1 = row + hh - 1;
+    if( fld )
+    {
+        int parity = row & 1;
+        y0 = row >> 1;
+        y1 = y0 + hh - 1;
+        lines >>= 1;
+        mbh >>= 1;
+        tile += parity * mbh * mbw;
+        rows += parity * lines * mbw;
+    }
+    y0 = x264_clip3( y0, 0, lines-1 );
+    y1 = x264_clip3( y1, 0, lines-1 );
+    int x0 = x264_clip3( x, 0, mbw*16-1 ) >> 4;
+    int x1 = x264_clip3( x + w - 1, 0, mbw*16-1 ) >> 4;
+    for( intptr_t y = y0; y <= y1; y++ )
+        for( int bx = x0; bx <= x1; bx++ )
+        {
+            if( !__atomic_load_n( &rows[y*mbw+bx], __ATOMIC_RELAXED ) )
+                __atomic_store_n( &rows[y*mbw+bx], 1, __ATOMIC_RELAXED );
+            if( !__atomic_load_n( &tile[(y>>4)*mbw+bx], __ATOMIC_RELAXED ) )
+                __atomic_store_n( &tile[(y>>4)*mbw+bx], 1, __ATOMIC_RELAXED );
+        }
+}
+
+void x264_hpel_cnt_mark( pixel *src, int w, int hh )
+{
+    int n = __atomic_load_n( &hpel_cnt_nreg, __ATOMIC_ACQUIRE );
+    for( int r = 0; r < n; r++ )
+    {
+        x264_frame_t *f = hpel_cnt_reg[r];
+        if( !f )
+            continue;
+        int padv = (PADV << !!f->hpel_cnt_tile[1]);
+        for( int p = 0; p < f->hpel_cnt_planes; p++ )
+        {
+            intptr_t stride = f->i_stride[p];
+            int lines = f->i_lines[p];
+            for( int fld = 0; fld < 2; fld++ )
+            {
+                if( !f->hpel_cnt_tile[fld] )
+                    continue;
+                for( int k = 1; k < 4; k++ )
+                {
+                    pixel *base = fld ? f->filtered_fld[p][k] : f->filtered[p][k];
+                    intptr_t off = ((intptr_t)src - (intptr_t)base) / (intptr_t)sizeof(pixel) + f->hpel_cnt_padx;
+                    intptr_t row = off >= 0 ? off / stride : -((-off + stride - 1) / stride);
+                    if( row < -padv || row >= lines + padv )
+                        continue;
+                    hpel_cnt_region( f, fld, row, off - row*stride - f->hpel_cnt_padx, w, hh );
+                    return;
+                }
+            }
+        }
+    }
+}
+
 static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
 {
     x264_frame_t *frame;
@@ -330,6 +497,23 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
         }
     }
 
+    if( b_fdec && h->param.analyse.i_subpel_refine )
+    {
+        for( int i = 0; i < 1 + PARAM_INTERLACED; i++ )
+        {
+            CHECKED_MALLOCZERO( frame->hpel_cnt_tile[i], i_mb_count );
+            CHECKED_MALLOCZERO( frame->hpel_cnt_row[i], frame->i_lines[0] * h->mb.i_mb_width );
+        }
+        frame->hpel_cnt_planes = luma_plane_count;
+        frame->hpel_cnt_padx = PADH + padh_align;
+        int slot = __atomic_load_n( &hpel_cnt_nreg, __ATOMIC_RELAXED );
+        if( slot < HPEL_CNT_SLOTS )
+        {
+            hpel_cnt_reg[slot] = frame;
+            __atomic_store_n( &hpel_cnt_nreg, slot+1, __ATOMIC_RELEASE );
+        }
+    }
+
     if( x264_pthread_mutex_init( &frame->mutex, NULL ) )
         goto fail;
     if( x264_pthread_cond_init( &frame->cv, NULL ) )
@@ -352,6 +536,18 @@ void x264_frame_delete( x264_frame_t *frame )
      * so freeing those pointers would cause a double free later. */
     if( !frame->b_duplicate )
     {
+        if( frame->hpel_cnt_tile[0] )
+        {
+            hpel_cnt_flush( frame );
+            for( int r = 0; r < hpel_cnt_nreg; r++ )
+                if( hpel_cnt_reg[r] == frame )
+                    hpel_cnt_reg[r] = NULL;
+            for( int i = 0; i < 2; i++ )
+            {
+                x264_free( frame->hpel_cnt_tile[i] );
+                x264_free( frame->hpel_cnt_row[i] );
+            }
+        }
         x264_free( frame->base );
 
         if( frame->param && frame->param->param_free )
@@ -921,7 +1117,11 @@ x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )
 {
     x264_frame_t *frame;
     if( h->frames.unused[b_fdec][0] )
+    {
         frame = x264_frame_pop( h->frames.unused[b_fdec] );
+        if( frame->hpel_cnt_tile[0] )
+            hpel_cnt_flush( frame );
+    }
     else
         frame = x264_frame_new( h, b_fdec, 0 );
     if( !frame )

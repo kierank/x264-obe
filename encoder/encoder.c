@@ -4041,6 +4041,9 @@ int     x264_encoder_encode( x264_t *h,
     /* ------------------- Init                ----------------------------- */
     /* build ref list 0/1 */
     x264_reference_build_list( h, h->fdec->i_poc );
+    for( int l = 0; l < 2; l++ )
+        for( int i = 0; i < h->i_ref[l]; i++ )
+            h->fref[l][i]->orig->hpel_cnt_used = 1;
 
     /* ---------------------- Write the bitstream -------------------------- */
     /* Init bitstream context */
@@ -4998,6 +5001,7 @@ void    x264_encoder_close  ( x264_t *h )
 #endif
         x264_free( h->thread[i] );
     }
+    x264_hpel_cnt_print();
 #if HAVE_OPENCL
     x264_opencl_close_library( ocl );
 #endif
