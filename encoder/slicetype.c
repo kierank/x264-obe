@@ -1418,7 +1418,9 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
                 }
             }
 
+            x264_me_cnt_lowres = 1;
             x264_me_search( h, &m[l], mvc, i_mvc );
+            x264_me_cnt_lowres = 0;
             m[l].cost -= a->p_cost_mv[0]; // remove mvcost from skip mbs
             if( M32( m[l].mv ) )
                 m[l].cost += 5 * a->i_lambda;

@@ -29,6 +29,61 @@
 #include "macroblock.h"
 #include "me.h"
 
+__thread int x264_me_cnt_lowres;
+/* path: 0 clip, 1 clip lowres, 2 roundclip, 3 roundclip lowres, 4 roundclip p16x16_pred,
+ * 5 clip below 16x16, 6 roundclip below 16x16 */
+static uint64_t cnt_calls[7], cnt_mvc[7], cnt_old[7], cnt_new[7], cnt_dup[7], cnt_hist[7][16], cnt_hnew[7][17];
+static uint64_t cnt_entry[7];
+
+void x264_me_cnt_clip( int path, int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv )
+{
+    ALIGNED_ARRAY_16( int16_t, tmp,[16],[2] );
+    int n_old, n_new;
+    if( path < 0 )
+    {
+        __atomic_fetch_add( &cnt_entry[-path-1], 1, __ATOMIC_RELAXED );
+        return;
+    }
+    if( path == 0 || path == 1 )
+    {
+        n_old = x264_predictor_clip( tmp, mvc, i_mvc, mv_limit, pmv );
+        n_new = x264_predictor_clip_c( tmp, mvc, i_mvc, mv_limit, pmv );
+    }
+    else
+    {
+        n_old = x264_predictor_roundclip( tmp, mvc, i_mvc, mv_limit, pmv );
+        n_new = x264_predictor_roundclip_c( tmp, mvc, i_mvc, mv_limit, pmv );
+    }
+    __atomic_fetch_add( &cnt_calls[path], 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &cnt_mvc[path], i_mvc, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &cnt_old[path], n_old, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &cnt_new[path], n_new, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &cnt_dup[path], n_old != n_new, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &cnt_hist[path][X264_MIN( i_mvc, 15 )], 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &cnt_hnew[path][n_new], 1, __ATOMIC_RELAXED );
+}
+
+void x264_me_cnt_print( void )
+{
+    static const char *name[7] = { "clip-16x16", "clip-lowres", "roundclip-16x16", "roundclip-lowres", "roundclip-p16pred", "clip-sub16x16", "roundclip-sub16x16" };
+    for( int p = 0; p < 7; p++ )
+    {
+        if( !cnt_calls[p] && !cnt_entry[p] )
+            continue;
+        uint64_t c = X264_MAX( cnt_calls[p], 1 );
+        fprintf( stderr, "pcnt %d-bit %-17s entries %"PRIu64" calls %"PRIu64" mvc/call %.3f kept-old/call %.3f kept-new/call %.3f removed/call %.4f calls-with-dup %.4f\n",
+                 BIT_DEPTH, name[p], cnt_entry[p], cnt_calls[p], (double)cnt_mvc[p]/c, (double)cnt_old[p]/c, (double)cnt_new[p]/c,
+                 (double)(cnt_old[p]-cnt_new[p])/c, (double)cnt_dup[p]/c );
+        fprintf( stderr, "pcnt %d-bit %-17s i_mvc hist", BIT_DEPTH, name[p] );
+        for( int i = 0; i < 16; i++ )
+            fprintf( stderr, " %"PRIu64, cnt_hist[p][i] );
+        fprintf( stderr, "\npcnt %d-bit %-17s kept-new hist", BIT_DEPTH, name[p] );
+        for( int i = 0; i < 17; i++ )
+            fprintf( stderr, " %"PRIu64, cnt_hnew[p][i] );
+        fprintf( stderr, "\n" );
+    }
+}
+
 /* presets selected from good points on the speed-vs-quality curve of several test videos
  * subpel_iters[i_subpel_refine] = { refine_hpel, refine_qpel, me_hpel, me_qpel }
  * where me_* are the number of EPZS iterations run on all candidate block types,
@@ -312,6 +367,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     if( h->mb.i_subpel_refine >= 3 )
     {
         /* Calculate and check the MVP first */
+        x264_me_cnt_clip( x264_me_cnt_lowres ? -2 : i_pixel == PIXEL_16x16 ? -1 : -6, NULL, 0, NULL, 0 );
         int bpred_mx = x264_clip3( m->mvp[0], SPEL(mv_x_min), SPEL(mv_x_max) );
         int bpred_my = x264_clip3( m->mvp[1], SPEL(mv_y_min), SPEL(mv_y_max) );
         pmv = pack16to32_mask( bpred_mx, bpred_my );
@@ -349,6 +405,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( i_mvc > 0 )
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
+            x264_me_cnt_clip( x264_me_cnt_lowres ? 1 : i_pixel == PIXEL_16x16 ? 0 : 5, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
             int valid_mvcs = h->pixf.predictor_clip
                            ? h->pixf.predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
                            : x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
@@ -399,6 +456,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     else
     {
         /* Calculate and check the fullpel MVP first */
+        x264_me_cnt_clip( x264_me_cnt_lowres ? -4 : i_pixel == PIXEL_16x16 ? -3 : -7, NULL, 0, NULL, 0 );
         bmx = pmx = x264_clip3( FPEL(m->mvp[0]), mv_x_min, mv_x_max );
         bmy = pmy = x264_clip3( FPEL(m->mvp[1]), mv_y_min, mv_y_max );
         pmv = pack16to32_mask( bmx, bmy );
@@ -420,6 +478,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( i_mvc > 0 )
         {
             /* Like in subme>=3, except we also round the candidates to fullpel. */
+            x264_me_cnt_clip( x264_me_cnt_lowres ? 3 : i_pixel == PIXEL_16x16 ? 2 : 6, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
             int valid_mvcs = h->pixf.predictor_roundclip
                            ? h->pixf.predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
                            : x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );

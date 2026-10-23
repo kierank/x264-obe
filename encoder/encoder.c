@@ -4627,6 +4627,11 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_P][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
+    x264_me_cnt_print();
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    void x264_8_me_cnt_print( void );
+    x264_8_me_cnt_print();
+#endif
     x264_lookahead_delete( h );
 
 #if HAVE_OPENCL
