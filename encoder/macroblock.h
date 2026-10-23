@@ -36,8 +36,8 @@ void x264_rdo_init( void );
  * (E4R_A6_TWIN in common/x86/dct-a.asm gates the zero-residual 8x8 skip of the 8-bit inter_resid_4x4).
  * Arm: x264_e4r_arm / x264_e4r_a6_arm, defined in api.c. Twin (E4R_TWIN / E4R_A6_TWIN 1): the never
  * defined x264_e4r_twin / x264_e4r_a6_twin, which link as 0. The code is the same in both. */
-#define E4R_TWIN 0
-#define E4R_A6_TWIN 0
+#define E4R_TWIN 1
+#define E4R_A6_TWIN 1
 extern const char x264_e4r_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_e4r_twin __attribute__((weak, visibility("hidden")));
 extern const char x264_e4r_a6_arm __attribute__((weak, visibility("hidden")));
