@@ -332,6 +332,8 @@ void          x264_frame_unshift( x264_frame_t **list, x264_frame_t *frame );
 x264_frame_t *x264_frame_shift( x264_frame_t **list );
 #define x264_frame_push_unused x264_template(frame_push_unused)
 void          x264_frame_push_unused( x264_t *h, x264_frame_t *frame );
+#define x264_frame_prealloc_unused x264_template(frame_prealloc_unused)
+int           x264_frame_prealloc_unused( x264_t *h, int b_fdec, int i_frames );
 #define x264_frame_push_blank_unused x264_template(frame_push_blank_unused)
 void          x264_frame_push_blank_unused( x264_t *h, x264_frame_t *frame );
 #define x264_frame_pop_blank_unused x264_template(frame_pop_blank_unused)

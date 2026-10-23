@@ -300,7 +300,7 @@ static const uint8_t ctx_cat_plane[6][3] =
 
 /* Per-frame allocation: is allocated per-thread only in frame-threads mode. */
 #define x264_macroblock_cache_allocate x264_template(macroblock_cache_allocate)
-int  x264_macroblock_cache_allocate( x264_t *h );
+int  x264_macroblock_cache_allocate( x264_t *h, int b_touch );
 #define x264_macroblock_cache_free x264_template(macroblock_cache_free)
 void x264_macroblock_cache_free( x264_t *h );
 

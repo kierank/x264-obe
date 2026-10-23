@@ -255,7 +255,7 @@ void x264_mb_mc( x264_t *h )
     }
 }
 
-int x264_macroblock_cache_allocate( x264_t *h )
+int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
 {
     int i_mb_count = h->mb.i_mb_count;
 
@@ -298,6 +298,9 @@ int x264_macroblock_cache_allocate( x264_t *h )
             PREALLOC( h->mb.mvr[i][j], 2 * (i_mb_count + 1) * sizeof(int16_t) );
     }
 
+    /* the per-mb data, which every frame uses; not the weightp buffers */
+    size_t touch_size = prealloc_size;
+
     if( h->param.analyse.i_weighted_pred )
     {
         int i_padv = PADV << PARAM_INTERLACED;
@@ -338,6 +341,8 @@ int x264_macroblock_cache_allocate( x264_t *h )
     }
 
     PREALLOC_END( h->mb.base );
+    if( b_touch )
+        memset( h->mb.base, 0, touch_size );
 
     memset( h->mb.slice_table, -1, i_mb_count * sizeof(uint16_t) );
 
@@ -381,7 +386,12 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 /* Only allocate the first one, and allocate it for the whole frame, because we
                  * won't be deblocking until after the frame is fully encoded. */
                 if( h == h->thread[0] && !i )
+                {
                     CHECKED_MALLOC( h->deblock_strength[0], sizeof(**h->deblock_strength) * h->mb.i_mb_count );
+                    /* every deblocked frame writes all of it: fault it in now */
+                    if( h->param.b_deblocking_filter )
+                        memset( h->deblock_strength[0], 0, sizeof(**h->deblock_strength) * h->mb.i_mb_count );
+                }
                 else
                     h->deblock_strength[i] = h->thread[0]->deblock_strength[0];
             }

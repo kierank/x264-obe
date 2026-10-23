@@ -66,7 +66,7 @@ static int x264_frame_internal_csp( int external_csp )
     }
 }
 
-static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
+static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
 {
     x264_frame_t *frame;
     int i_csp = x264_frame_internal_csp( h->param.i_csp );
@@ -274,6 +274,27 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec )
         {
             frame->filtered[p][0] = frame->plane[p] = frame->buffer[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
             frame->filtered_fld[p][0] = frame->plane_fld[p] = frame->buffer_fld[p] + frame->i_stride[p] * i_padv + PADH + padh_align;
+        }
+    }
+
+    /* Fault the pages in now, not in the first frames that use them: all of an
+     * fdec; of an fenc, the picture rows and the lowres planes, as its borders,
+     * field planes and per-mb lowres data may never be used. */
+    if( b_touch )
+    {
+        if( b_fdec )
+            memset( frame->base, 0, prealloc_size );
+        else
+        {
+            for( int p = 0; p < frame->i_plane; p++ )
+                memset( frame->plane[p] - PADH, 0, frame->i_stride[p] * frame->i_lines[p] * sizeof(pixel) );
+            if( h->frames.b_have_lowres )
+            {
+                int luma_plane_size = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
+                memset( frame->buffer_lowres[0], 0, 4 * luma_plane_size * sizeof(pixel) );
+                if( h->param.rc.b_lookahead_8bit )
+                    memset( frame->buffer_lowres8, 0, 4 * luma_plane_size );
+            }
         }
     }
 
@@ -902,7 +923,7 @@ x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )
     if( h->frames.unused[b_fdec][0] )
         frame = x264_frame_pop( h->frames.unused[b_fdec] );
     else
-        frame = x264_frame_new( h, b_fdec );
+        frame = x264_frame_new( h, b_fdec, 0 );
     if( !frame )
         return NULL;
     frame->b_last_minigop_bframe = 0;
@@ -920,6 +941,20 @@ x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )
     memset( frame->f_offset_weight_ratio, 0, sizeof(frame->f_offset_weight_ratio) );
 
     return frame;
+}
+
+/* Fill the unused pool with i_frames frames, their pages faulted in, so that
+ * x264_frame_pop_unused takes them instead of allocating on first use. */
+int x264_frame_prealloc_unused( x264_t *h, int b_fdec, int i_frames )
+{
+    for( int i = 0; i < i_frames; i++ )
+    {
+        x264_frame_t *frame = x264_frame_new( h, b_fdec, 1 );
+        if( !frame )
+            return -1;
+        x264_frame_push( h->frames.unused[b_fdec], frame );
+    }
+    return 0;
 }
 
 void x264_frame_push_blank_unused( x264_t *h, x264_frame_t *frame )
