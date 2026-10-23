@@ -1135,10 +1135,12 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
+#if !HIGH_BIT_DEPTH
         pf_interlaced->inter_resid_4x4      = x264_inter_resid_4x4_field_avx2;
         pf_progressive->inter_resid_4x4     = x264_inter_resid_4x4_frame_avx2;
-        pf_interlaced->inter_resid_8x8      = x264_inter_resid_8x8_field_avx2;
-        pf_progressive->inter_resid_8x8     = x264_inter_resid_8x8_frame_avx2;
+#endif
+        /* zen4: inter_resid_8x8 (both depths) and 10-bit inter_resid_4x4 slower than the separate calls
+         * on rack01 Zen 4 (checkasm --bench, in situ); kept assembled, checkasm tests them directly */
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

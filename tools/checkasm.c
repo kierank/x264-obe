@@ -27,6 +27,9 @@
 
 #include <ctype.h>
 #include "common/common.h"
+#if HAVE_MMX
+#include "common/x86/quant.h"
+#endif
 #if SYS_LINUX
 #include <sys/mman.h>
 #include <unistd.h>
@@ -5268,6 +5271,18 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1] );
         x264_quant_init( h, x264_cpu_detect(), &qf_full );
         x264_zigzag_init( x264_cpu_detect(), &zz_full[0], &zz_full[1] );
+#if HAVE_MMX && ARCH_X86_64
+        /* the inter_resid kernels zigzag_init leaves undispatched */
+        if( cpu_new&X264_CPU_AVX2 )
+        {
+            zz_a[0].inter_resid_8x8 = x264_inter_resid_8x8_frame_avx2;
+            zz_a[1].inter_resid_8x8 = x264_inter_resid_8x8_field_avx2;
+#if HIGH_BIT_DEPTH
+            zz_a[0].inter_resid_4x4 = x264_inter_resid_4x4_frame_avx2;
+            zz_a[1].inter_resid_4x4 = x264_inter_resid_4x4_field_avx2;
+#endif
+        }
+#endif
 
         /* zscreen thresholds, once per cqm: t - 1 quantises to 0 and t does not, and every 4x4
          * the C screen proves quantises to 0 */
