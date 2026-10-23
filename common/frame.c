@@ -505,7 +505,8 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
             CHECKED_MALLOCZERO( frame->hpel_cnt_row[i], frame->i_lines[0] * h->mb.i_mb_width );
         }
         frame->hpel_cnt_planes = luma_plane_count;
-        frame->hpel_cnt_padx = PADH + padh_align;
+        /* a row's pixels start PADH before column 0: padh_align only aligns the buffer */
+        frame->hpel_cnt_padx = PADH;
         int slot = __atomic_load_n( &hpel_cnt_nreg, __ATOMIC_RELAXED );
         if( slot < HPEL_CNT_SLOTS )
         {
