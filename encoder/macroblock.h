@@ -39,7 +39,7 @@ int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
 /* probe_fuse layout pair: x264_probefuse_gate gates the probe_skip kernels. Arm: x264_probefuse_arm,
  * defined in api.c. Twin (PROBEFUSE_TWIN 1): the never defined x264_probefuse_twin, which links as 0,
  * and the probe takes the C path of speed-next 3efd5369 (gated cs-screen). The code is the same in both. */
-#define PROBEFUSE_TWIN 0
+#define PROBEFUSE_TWIN 1
 extern const char x264_probefuse_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_probefuse_twin __attribute__((weak, visibility("hidden")));
 #if PROBEFUSE_TWIN
