@@ -72,7 +72,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * 3 on lists of 5 or more in the subme >= 3 path only. Each gate is the address of its
  * x264_clip2_*_on (defined in api.c) or of its never defined weak x264_clip2_*_off, which
  * links as 0: three symbols referenced in every mode, the same code in all. */
-#define CLIP2_MODE 0
+#define CLIP2_MODE 2
 #define CLIP2_GATE( name ) extern const char x264_clip2_##name##_on __attribute__((weak, visibility("hidden")));\
                            extern const char x264_clip2_##name##_off __attribute__((weak, visibility("hidden")));
 CLIP2_GATE( gate )
