@@ -34,7 +34,7 @@
                    &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
                    mvx, mvy, 4*width, 4*height, w );
 
-static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
+static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height, int b_chroma )
 {
     int i8    = x264_scan8[0]+x+8*y;
     int i_ref = h->mb.cache.ref[0][i8];
@@ -44,6 +44,8 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
 
     MC_LUMA( 0, 0, &weight[0] );
+    if( !b_chroma )
+        return;
 
     if( CHROMA444 )
     {
@@ -76,7 +78,7 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
                                           &weight[2], height );
     }
 }
-static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int height )
+static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int height, int b_chroma )
 {
     int i8    = x264_scan8[0]+x+8*y;
     int i_ref = h->mb.cache.ref[1][i8];
@@ -84,6 +86,8 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     int mvy   = x264_clip3( h->mb.cache.mv[1][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
 
     MC_LUMA( 1, 0, x264_weight_none );
+    if( !b_chroma )
+        return;
 
     if( CHROMA444 )
     {
@@ -165,7 +169,7 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
 #undef MC_LUMA
 #undef MC_LUMA_BI
 
-void x264_mb_mc_8x8( x264_t *h, int i8 )
+static ALWAYS_INLINE void x264_mb_mc_8x8_internal( x264_t *h, int i8, int b_chroma )
 {
     int x = 2*(i8&1);
     int y = 2*(i8>>1);
@@ -175,21 +179,21 @@ void x264_mb_mc_8x8( x264_t *h, int i8 )
         switch( h->mb.i_sub_partition[i8] )
         {
             case D_L0_8x8:
-                x264_mb_mc_0xywh( h, x, y, 2, 2 );
+                x264_mb_mc_0xywh( h, x, y, 2, 2, b_chroma );
                 break;
             case D_L0_8x4:
-                x264_mb_mc_0xywh( h, x, y+0, 2, 1 );
-                x264_mb_mc_0xywh( h, x, y+1, 2, 1 );
+                x264_mb_mc_0xywh( h, x, y+0, 2, 1, b_chroma );
+                x264_mb_mc_0xywh( h, x, y+1, 2, 1, b_chroma );
                 break;
             case D_L0_4x8:
-                x264_mb_mc_0xywh( h, x+0, y, 1, 2 );
-                x264_mb_mc_0xywh( h, x+1, y, 1, 2 );
+                x264_mb_mc_0xywh( h, x+0, y, 1, 2, b_chroma );
+                x264_mb_mc_0xywh( h, x+1, y, 1, 2, b_chroma );
                 break;
             case D_L0_4x4:
-                x264_mb_mc_0xywh( h, x+0, y+0, 1, 1 );
-                x264_mb_mc_0xywh( h, x+1, y+0, 1, 1 );
-                x264_mb_mc_0xywh( h, x+0, y+1, 1, 1 );
-                x264_mb_mc_0xywh( h, x+1, y+1, 1, 1 );
+                x264_mb_mc_0xywh( h, x+0, y+0, 1, 1, b_chroma );
+                x264_mb_mc_0xywh( h, x+1, y+0, 1, 1, b_chroma );
+                x264_mb_mc_0xywh( h, x+0, y+1, 1, 1, b_chroma );
+                x264_mb_mc_0xywh( h, x+1, y+1, 1, 1, b_chroma );
                 break;
         }
     }
@@ -201,18 +205,18 @@ void x264_mb_mc_8x8( x264_t *h, int i8 )
             if( h->mb.cache.ref[1][scan8] >= 0 )
                 x264_mb_mc_01xywh( h, x, y, 2, 2 );
             else
-                x264_mb_mc_0xywh( h, x, y, 2, 2 );
+                x264_mb_mc_0xywh( h, x, y, 2, 2, b_chroma );
         else
-            x264_mb_mc_1xywh( h, x, y, 2, 2 );
+            x264_mb_mc_1xywh( h, x, y, 2, 2, b_chroma );
     }
 }
 
-void x264_mb_mc( x264_t *h )
+static void x264_mb_mc_internal( x264_t *h, int b_chroma )
 {
     if( h->mb.i_partition == D_8x8 )
     {
         for( int i = 0; i < 4; i++ )
-            x264_mb_mc_8x8( h, i );
+            x264_mb_mc_8x8_internal( h, i, b_chroma );
     }
     else
     {
@@ -225,34 +229,157 @@ void x264_mb_mc( x264_t *h )
         {
             if( ref0a >= 0 )
                 if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 4, 4 );
-                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 4 );
-            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 4 );
+                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 4, b_chroma );
+            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 4, b_chroma );
         }
         else if( h->mb.i_partition == D_16x8 )
         {
             if( ref0a >= 0 )
                 if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 4, 2 );
-                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 2 );
-            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 2 );
+                else             x264_mb_mc_0xywh ( h, 0, 0, 4, 2, b_chroma );
+            else                 x264_mb_mc_1xywh ( h, 0, 0, 4, 2, b_chroma );
 
             if( ref0b >= 0 )
                 if( ref1b >= 0 ) x264_mb_mc_01xywh( h, 0, 2, 4, 2 );
-                else             x264_mb_mc_0xywh ( h, 0, 2, 4, 2 );
-            else                 x264_mb_mc_1xywh ( h, 0, 2, 4, 2 );
+                else             x264_mb_mc_0xywh ( h, 0, 2, 4, 2, b_chroma );
+            else                 x264_mb_mc_1xywh ( h, 0, 2, 4, 2, b_chroma );
         }
         else if( h->mb.i_partition == D_8x16 )
         {
             if( ref0a >= 0 )
                 if( ref1a >= 0 ) x264_mb_mc_01xywh( h, 0, 0, 2, 4 );
-                else             x264_mb_mc_0xywh ( h, 0, 0, 2, 4 );
-            else                 x264_mb_mc_1xywh ( h, 0, 0, 2, 4 );
+                else             x264_mb_mc_0xywh ( h, 0, 0, 2, 4, b_chroma );
+            else                 x264_mb_mc_1xywh ( h, 0, 0, 2, 4, b_chroma );
 
             if( ref0b >= 0 )
                 if( ref1b >= 0 ) x264_mb_mc_01xywh( h, 2, 0, 2, 4 );
-                else             x264_mb_mc_0xywh ( h, 2, 0, 2, 4 );
-            else                 x264_mb_mc_1xywh ( h, 2, 0, 2, 4 );
+                else             x264_mb_mc_0xywh ( h, 2, 0, 2, 4, b_chroma );
+            else                 x264_mb_mc_1xywh ( h, 2, 0, 2, 4, b_chroma );
         }
     }
+}
+
+void x264_mb_mc_8x8( x264_t *h, int i8 )
+{
+    x264_mb_mc_8x8_internal( h, i8, 1 );
+}
+
+/* MB-local cache of the x264_mb_mc prediction. The key holds every ref and mv
+ * x264_mb_mc reads for the partition (16x16, 16x8, 8x16, or B 8x8); the rest of
+ * its input (refs, weights, field, mv clip) is fixed for the mb, and the cache is
+ * emptied when the mb's analysis starts. Chroma is cached always, luma only with
+ * bipred or weighted luma, where its MC is more than one copy.
+ * Returns the cacheability: -1 not cacheable, else whether luma is cached. */
+static ALWAYS_INLINE int x264_mb_mc_cache_key( x264_t *h, uint64_t key[6] )
+{
+    int nq;
+    if( h->mb.i_partition == D_16x16 )
+        nq = 1;
+    else if( h->mb.i_partition != D_8x8 || h->sh.i_type == SLICE_TYPE_B )
+        nq = 4;
+    else
+        return -1;
+    ALIGNED_8( int8_t ref[2][4] ) = {{0}};
+    ALIGNED_8( uint32_t mv[2][4] ) = {{0}};
+    int b_luma = 0;
+    for( int q = 0; q < nq; q++ )
+    {
+        int s8 = x264_scan8[4*q];
+        int ref0 = ref[0][q] = h->mb.cache.ref[0][s8];
+        int ref1 = ref[1][q] = h->mb.cache.ref[1][s8];
+        if( ref0 >= 0 )
+        {
+            mv[0][q] = M32( h->mb.cache.mv[0][s8] );
+            b_luma |= ref1 >= 0 || h->sh.weight[ref0 >> MB_INTERLACED][0].weightfn;
+        }
+        if( ref1 >= 0 )
+            mv[1][q] = M32( h->mb.cache.mv[1][s8] );
+    }
+    key[0] = M64( ref );
+    memcpy( &key[1], mv, sizeof(mv) );
+    key[5] = h->mb.i_partition;
+    return b_luma;
+}
+
+static ALWAYS_INLINE int x264_mb_mc_cache_find( x264_t *h, uint64_t key[6] )
+{
+    for( int i = 0; i < h->mb.i_mc_cache_count; i++ )
+    {
+        uint64_t *k = h->mb.mc_cache[i].key;
+        if( !((k[0]^key[0]) | (k[1]^key[1]) | (k[2]^key[2]) | (k[3]^key[3]) | (k[4]^key[4]) | (k[5]^key[5])) )
+            return i;
+    }
+    return -1;
+}
+
+static ALWAYS_INLINE void x264_mb_mc_cache_copy( x264_t *h, int i, int b_luma, int b_store )
+{
+    pixel *luma = h->mb.mc_cache[i].luma;
+    pixel *chroma = h->mb.mc_cache[i].chroma;
+    int height = 16 >> CHROMA_V_SHIFT;
+    if( b_store )
+    {
+        if( b_luma )
+            for( int y = 0; y < 16; y++ )
+                memcpy( luma + 16*y, h->mb.pic.p_fdec[0] + y*FDEC_STRIDE, 16*sizeof(pixel) );
+        for( int y = 0; y < height; y++ )
+        {
+            memcpy( chroma + 16*y,     h->mb.pic.p_fdec[1] + y*FDEC_STRIDE, 8*sizeof(pixel) );
+            memcpy( chroma + 16*y + 8, h->mb.pic.p_fdec[2] + y*FDEC_STRIDE, 8*sizeof(pixel) );
+        }
+    }
+    else
+    {
+        if( b_luma )
+            for( int y = 0; y < 16; y++ )
+                memcpy( h->mb.pic.p_fdec[0] + y*FDEC_STRIDE, luma + 16*y, 16*sizeof(pixel) );
+        for( int y = 0; y < height; y++ )
+        {
+            memcpy( h->mb.pic.p_fdec[1] + y*FDEC_STRIDE, chroma + 16*y,     8*sizeof(pixel) );
+            memcpy( h->mb.pic.p_fdec[2] + y*FDEC_STRIDE, chroma + 16*y + 8, 8*sizeof(pixel) );
+        }
+    }
+}
+
+void x264_mb_mc( x264_t *h )
+{
+    if( !h->mb.b_mc_cache )
+    {
+        x264_mb_mc_internal( h, 1 );
+        return;
+    }
+    uint64_t key[6];
+    int b_luma = x264_mb_mc_cache_key( h, key );
+    if( b_luma < 0 )
+    {
+        x264_mb_mc_internal( h, 1 );
+        return;
+    }
+    int i = x264_mb_mc_cache_find( h, key );
+    if( i >= 0 )
+    {
+        if( !b_luma )
+            x264_mb_mc_internal( h, 0 );
+        x264_mb_mc_cache_copy( h, i, b_luma, 0 );
+        return;
+    }
+    x264_mb_mc_internal( h, 1 );
+    i = h->mb.i_mc_cache_next;
+    h->mb.i_mc_cache_next = (i + 1) & 3;
+    h->mb.i_mc_cache_count = X264_MIN( h->mb.i_mc_cache_count + 1, 4 );
+    memcpy( h->mb.mc_cache[i].key, key, sizeof(key) );
+    x264_mb_mc_cache_copy( h, i, b_luma, 1 );
+}
+
+int x264_mb_mc_cache_load( x264_t *h )
+{
+    uint64_t key[6];
+    int b_luma = x264_mb_mc_cache_key( h, key );
+    int i = b_luma < 0 ? -1 : x264_mb_mc_cache_find( h, key );
+    if( i < 0 )
+        return -1;
+    x264_mb_mc_cache_copy( h, i, b_luma, 0 );
+    return b_luma;
 }
 
 int x264_macroblock_cache_allocate( x264_t *h, int b_touch )

@@ -581,6 +581,17 @@ struct x264_t
         int b_overflow; /* If CAVLC had a level code overflow during bitstream writing. */
         int i_vbv_emerg; /* one-frame VBV emergency step of this row, enum vbv_emerg_e */
 
+        /* x264_mb_mc predictions of the current mb, see x264_mb_mc */
+        int b_mc_cache;
+        int i_mc_cache_count;
+        int i_mc_cache_next;
+        struct
+        {
+            ALIGNED_64( pixel luma[16*16] );
+            ALIGNED_64( pixel chroma[16*16] ); /* row r: u at 16*r, v at 16*r+8 */
+            uint64_t key[6];
+        } mc_cache[4];
+
         struct
         {
             /* space for p_fenc and p_fdec */

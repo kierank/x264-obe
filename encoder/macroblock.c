@@ -639,13 +639,17 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                                   h->mb.mv_min[0], h->mb.mv_max[0] );
             int mvy = x264_clip3( h->mb.cache.mv[0][x264_scan8[0]][1],
                                   h->mb.mv_min[1], h->mb.mv_max[1] );
+            /* the same prediction as x264_mb_mc of a ref 0 16x16 */
+            int cached = h->mb.b_mc_cache && h->mb.i_partition == D_16x16 && !h->mb.cache.ref[0][x264_scan8[0]]
+                       ? x264_mb_mc_cache_load( h ) : -1;
 
-            for( int p = 0; p < plane_count; p++ )
-                h->mc.mc_luma( h->mb.pic.p_fdec[p], FDEC_STRIDE,
-                               &h->mb.pic.p_fref[0][0][p*4], h->mb.pic.i_stride[p],
-                               mvx, mvy, 16, 16, &h->sh.weight[0][p] );
+            if( cached <= 0 )
+                for( int p = 0; p < plane_count; p++ )
+                    h->mc.mc_luma( h->mb.pic.p_fdec[p], FDEC_STRIDE,
+                                   &h->mb.pic.p_fref[0][0][p*4], h->mb.pic.i_stride[p],
+                                   mvx, mvy, 16, 16, &h->sh.weight[0][p] );
 
-            if( chroma )
+            if( chroma && cached < 0 )
             {
                 int v_shift = CHROMA_V_SHIFT;
                 int height = 16 >> v_shift;

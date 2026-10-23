@@ -367,6 +367,9 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
 void x264_mb_mc( x264_t *h );
 #define x264_mb_mc_8x8 x264_template(mb_mc_8x8)
 void x264_mb_mc_8x8( x264_t *h, int i8 );
+/* restores the cached x264_mb_mc prediction of the current motion: -1 if none, else 1 with luma, 0 chroma only */
+#define x264_mb_mc_cache_load x264_template(mb_mc_cache_load)
+int x264_mb_mc_cache_load( x264_t *h );
 
 static ALWAYS_INLINE uint32_t pack16to32( uint32_t a, uint32_t b )
 {

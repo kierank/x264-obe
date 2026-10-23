@@ -368,6 +368,12 @@ static void x264_mb_analyse_init( x264_t *h, x264_mb_analysis_t *a, int qp )
     a->i_mbrd = (subme>=6) + (subme>=8) + (h->param.analyse.i_subpel_refine>=10);
     h->mb.b_deblock_rdo = h->param.analyse.i_subpel_refine >= 9 && h->sh.i_disable_deblocking_filter_idc != 1;
     a->b_early_terminate = h->param.analyse.i_subpel_refine < 11;
+    /* x264_mb_mc repeats: the RD encodes and the final encode of P, and the B direct MC.
+     * None in P without mbrd. */
+    h->mb.b_mc_cache = (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) &&
+                       (a->i_mbrd || h->sh.i_type == SLICE_TYPE_B);
+    h->mb.i_mc_cache_count = 0;
+    h->mb.i_mc_cache_next = 0;
 
     x264_mb_analyse_init_qp( h, a, qp );
 
