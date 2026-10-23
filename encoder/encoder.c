@@ -34,6 +34,19 @@
 #include "me.h"
 #include "lookahead8.h"
 
+/* layout pair test/x264-msea-adaptive / -twin: hidden weak x264_N_msea_gate, defined here as an
+ * alias of x264_N_encoder_encode (no bytes) unless MSEA_TWIN; the twin links it as 0 and never
+ * builds box8, so no reference has it and the bound is never used */
+#define MSEA_TWIN 0
+#define x264_msea_gate x264_template(msea_gate)
+extern void x264_msea_gate( void ) __attribute__((weak, visibility("hidden")));
+#define MSEA_OFF (!x264_msea_gate)
+#define MSEA_STR2( x ) #x
+#define MSEA_STR( x ) MSEA_STR2( x )
+#if !MSEA_TWIN
+__asm__( ".set " MSEA_STR( x264_msea_gate ) ", " MSEA_STR( x264_encoder_encode ) );
+#endif
+
 //#define DEBUG_MB_TYPE
 
 #define bs_write_ue bs_write_ue_big
@@ -2837,7 +2850,7 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 static int x264_box8_gate( x264_t *h )
 {
     x264_t *t0 = h->thread[0];
-    if( !h->fdec->b_kept_as_ref || h->param.analyse.i_me_method != X264_ME_HEX )
+    if( MSEA_OFF || !h->fdec->b_kept_as_ref || h->param.analyse.i_me_method != X264_ME_HEX )
         return 0;
     if( !t0->box8_gate.b_on && ++t0->box8_gate.i_probe < BOX8_PROBE )
         return 0;
