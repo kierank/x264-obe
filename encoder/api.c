@@ -31,6 +31,10 @@
  ****************************************************************************/
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
+/* e4r layout pairs: the gates of the arm, see encoder/macroblock.h */
+__attribute__((visibility("hidden"))) const char x264_e4r_arm = 1;
+__attribute__((visibility("hidden"))) const char x264_e4r_a6_arm = 1;
+
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
 void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
