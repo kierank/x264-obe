@@ -80,6 +80,12 @@
 #   define PARAM_INTERLACED 0
 #endif
 
+#if HAS_CAVLC
+#   define PARAM_CABAC h->param.b_cabac
+#else
+#   define PARAM_CABAC 1
+#endif
+
 #ifdef CHROMA_FORMAT
 #    define CHROMA_H_SHIFT (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422)
 #    define CHROMA_V_SHIFT (CHROMA_FORMAT == CHROMA_420)

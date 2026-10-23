@@ -36,6 +36,7 @@ Configuration options:
   --enable-mbinfo          enable mb_info input
   --enable-slice-max-size  enable slice-max-size
   --enable-constrained-intra enable constrained intra prediction
+  --enable-cavlc           enable CAVLC entropy coding
 
 Advanced options:
   --disable-asm            disable platform-specific assembly optimizations
@@ -285,6 +286,7 @@ has_444="no"
 has_mbinfo="no"
 has_slice_max_size="no"
 has_constrained_intra="no"
+has_cavlc="no"
 compiler="GNU"
 opencl="yes"
 
@@ -351,6 +353,9 @@ for opt do
             ;;
         --enable-constrained-intra)
             has_constrained_intra="yes"
+            ;;
+        --enable-cavlc)
+            has_cavlc="yes"
             ;;
         --disable-avs)
             avs="no"
@@ -1119,6 +1124,8 @@ fi
 [ $has_mbinfo = yes ] && define HAS_MBINFO 1 || define HAS_MBINFO 0
 [ $has_slice_max_size = yes ] && define HAS_SLICE_MAX_SIZE 1 || define HAS_SLICE_MAX_SIZE 0
 [ $has_constrained_intra = yes ] && define HAS_CONSTRAINED_INTRA 1 || define HAS_CONSTRAINED_INTRA 0
+[ $has_cavlc = yes ] && define HAS_CAVLC 1 || define HAS_CAVLC 0
+[ $has_cavlc = yes ] && ASFLAGS="$ASFLAGS -DHAS_CAVLC=1" || ASFLAGS="$ASFLAGS -DHAS_CAVLC=0"
 
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
@@ -1381,6 +1388,7 @@ chroma format: $chroma_format
 mb_info:       $has_mbinfo
 slice-max-size: $has_slice_max_size
 constr. intra: $has_constrained_intra
+CAVLC:         $has_cavlc
 EOF
 
 echo >> config.log

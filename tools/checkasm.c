@@ -2953,9 +2953,11 @@ static int check_dct( int cpu_ref, int cpu_new )
     x264_zigzag_init( cpu_ref, &zigzag_ref[0], &zigzag_ref[1] );
     x264_zigzag_init( cpu_new, &zigzag_asm[0], &zigzag_asm[1] );
 
+#if HAS_CAVLC
     ok = 1; used_asm = 0;
     TEST_INTERLEAVE( interleave_8x8_cavlc, level1, level2, dct8[0], 64 );
     report( "zigzag_interleave :" );
+#endif
 
     for( interlace = 0; interlace <= 1; interlace++ )
     {

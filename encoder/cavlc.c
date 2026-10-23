@@ -28,6 +28,8 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#if HAS_CAVLC
+
 #ifndef RDO_SKIP_BS
 #define RDO_SKIP_BS 0
 #endif
@@ -715,4 +717,5 @@ static int x264_chroma_size_cavlc( x264_t *h )
     }
     return h->out.bs.i_bits_encoded;
 }
+#endif
 #endif
