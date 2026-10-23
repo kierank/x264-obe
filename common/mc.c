@@ -813,9 +813,12 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     }
 }
 
-/* Field hpel of field rows [y0, y1) of parity i. With b_copy, read the frame
- * plane and copy it to plane_fld as we go. */
-static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int y0, int y1, int b_copy )
+#define FLD_SRC_FLD   0 /* plane_fld */
+#define FLD_SRC_FRAME 1 /* the frame plane */
+#define FLD_SRC_COPY  2 /* the frame plane, copied to plane_fld as we go */
+
+/* Field hpel of field rows [y0, y1) of parity i, from src (FLD_SRC_*). */
+static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int y0, int y1, int src )
 {
     intptr_t stride = frame->i_stride[p] << 1;
     int width = frame->i_width[p] + 16;
@@ -825,16 +828,17 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     pixel *dstc = frame->filtered_fld[p][3] + offs;
     if( y1 <= y0 )
         return;
-    if( !b_copy )
+    if( src == FLD_SRC_FLD )
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
-    else if( h->mc.hpel_filter_copy )
+    else if( src == FLD_SRC_COPY && h->mc.hpel_filter_copy )
         h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_hpel,
                                 frame->plane_fld[p] + offs );
     else
     {
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
-        for( int y = 0; y < y1 - y0; y++ )
-            memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
+        if( src == FLD_SRC_COPY )
+            for( int y = 0; y < y1 - y0; y++ )
+                memcpy( frame->plane_fld[p] + offs + y*stride, frame->plane[p] + offs + y*stride, width * sizeof(pixel) );
     }
 }
 
@@ -875,9 +879,9 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
             int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
             for( int i = 0; i < 2; i++ )
             {
-                frame_filter_fld( h, frame, p, i, start, y0, 0 );
-                frame_filter_fld( h, frame, p, i, y0, y1, 1 );
-                frame_filter_fld( h, frame, p, i, y1, height_fld, 0 );
+                frame_filter_fld( h, frame, p, i, start, y0, FLD_SRC_FLD );
+                frame_filter_fld( h, frame, p, i, y0, y1, FLD_SRC_COPY );
+                frame_filter_fld( h, frame, p, i, y1, height_fld, FLD_SRC_FLD );
             }
         }
     }
@@ -945,7 +949,10 @@ void x264_frame_filter_fld_copy( x264_t *h, x264_frame_t *frame, int mb_y, int b
 }
 
 /* The hpel of set (0 frame, 1 field) that x264_frame_filter( h, frame, mb_y, b_end )
- * writes, from plane_fld for fields (x264_frame_filter_fld_copy has filled it). */
+ * writes, from the planes it reads: the frame plane where the 6-tap window is
+ * inside the picture, so the unit needs only the rows it would have needed
+ * eagerly; plane_fld at the top and bottom edges, which the encoder has copied
+ * by the time it would have filtered the unit. */
 static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y, int b_end )
 {
     const int b_interlaced = PARAM_INTERLACED;
@@ -964,8 +971,14 @@ static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y,
         {
             int start = (mb_y*16 >> 1) - 8;
             int height_fld = ((b_end ? frame->i_lines[p] : mb_y*16) >> 1) + 8;
+            int y0 = x264_clip3( 2, start, height_fld );
+            int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
             for( int i = 0; i < 2; i++ )
-                frame_filter_fld( h, frame, p, i, start, height_fld, 0 );
+            {
+                frame_filter_fld( h, frame, p, i, start, y0, FLD_SRC_FLD );
+                frame_filter_fld( h, frame, p, i, y0, y1, FLD_SRC_FRAME );
+                frame_filter_fld( h, frame, p, i, y1, height_fld, FLD_SRC_FLD );
+            }
         }
     }
 }
