@@ -273,6 +273,11 @@ void x264_log_internal( int i_level, const char *psz_fmt, ... );
  * you have to use x264_free for buffers allocated with x264_malloc */
 void *x264_malloc( int );
 void  x264_free( void * );
+void  x264_pcnt_frame_new( int b_fdec );
+void  x264_pcnt_open_done( void );
+void  x264_pcnt_encode_begin( void );
+void  x264_pcnt_encode_done( void );
+void  x264_pcnt_print( void );
 
 /* x264_slurp_file: malloc space for the whole file and read it */
 char *x264_slurp_file( const char *filename );

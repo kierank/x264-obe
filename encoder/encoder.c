@@ -2056,6 +2056,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
         x264_log( h, X264_LOG_INFO, "profile %s, level %s, %s %d-bit\n",
             profile, level, subsampling[CHROMA_FORMAT], BIT_DEPTH );
     }
+    fprintf( stderr, "pcnt pool: i_delay %d thread_frames %d num_ref_frames %d sync_lookahead %d\n",
+             h->frames.i_delay, h->i_thread_frames, h->sps->i_num_ref_frames, h->param.i_sync_lookahead );
 
     return h;
 fail:

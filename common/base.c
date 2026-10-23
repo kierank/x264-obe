@@ -96,12 +96,173 @@ void x264_log_internal( int i_level, const char *psz_fmt, ... )
     va_end( arg );
 }
 
+/* prealloc counters: state 0 = up to the end of encoder_open,
+ * 1 = the first PCNT_CALLS encoder_encode calls, 2 = after */
+#include <sys/resource.h>
+#define PCNT_CALLS 10
+#define PCNT_LOG 96
+static int pcnt_state, pcnt_call;
+static int64_t pcnt_calls[3], pcnt_bytes[3], pcnt_frames[2][3];
+static int64_t pcnt_c_calls[PCNT_CALLS], pcnt_c_bytes[PCNT_CALLS], pcnt_c_flt[PCNT_CALLS+1];
+static void *pcnt_ra[PCNT_LOG];
+static int pcnt_sz[PCNT_LOG], pcnt_at[PCNT_LOG], pcnt_n;
+static long pcnt_rss[3];
+static int64_t pcnt_in_flt[PCNT_CALLS], pcnt_t0;
+
+static int64_t pcnt_minflt( void )
+{
+    struct rusage ru;
+    getrusage( RUSAGE_SELF, &ru );
+    return ru.ru_minflt;
+}
+
+static long pcnt_status( const char *key )
+{
+    char line[256];
+    long v = -1;
+    FILE *f = fopen( "/proc/self/status", "r" );
+    if( !f )
+        return -1;
+    while( fgets( line, sizeof(line), f ) )
+        if( !strncmp( line, key, strlen( key ) ) )
+            v = strtol( line + strlen( key ), NULL, 10 );
+    fclose( f );
+    return v;
+}
+
+static ALWAYS_INLINE void pcnt_count( int i_size )
+{
+    int st = __atomic_load_n( &pcnt_state, __ATOMIC_RELAXED );
+    int c = __atomic_load_n( &pcnt_call, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &pcnt_calls[st], 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &pcnt_bytes[st], i_size, __ATOMIC_RELAXED );
+    if( st == 1 )
+    {
+        __atomic_fetch_add( &pcnt_c_calls[c], 1, __ATOMIC_RELAXED );
+        __atomic_fetch_add( &pcnt_c_bytes[c], i_size, __ATOMIC_RELAXED );
+    }
+    if( st || i_size >= 2*1024*1024*7/8 )
+    {
+        int n = __atomic_fetch_add( &pcnt_n, 1, __ATOMIC_RELAXED );
+        if( n < PCNT_LOG )
+        {
+            pcnt_ra[n] = __builtin_return_address( 0 );
+            pcnt_sz[n] = i_size;
+            pcnt_at[n] = st == 1 ? c : st ? 100 : -1;
+        }
+    }
+}
+
+/* per thread minor faults: snapshot (b_print 0) or print the delta since it */
+#include <dirent.h>
+static int pcnt_tid[64], pcnt_ntid;
+static long pcnt_tflt[64];
+static void pcnt_tasks( int b_print, int c )
+{
+    DIR *d = opendir( "/proc/self/task" );
+    struct dirent *e;
+    if( !d )
+        return;
+    if( b_print )
+        fprintf( stderr, "pcnt call %d thread minflt:", c );
+    while( (e = readdir( d )) )
+    {
+        char path[64], buf[512];
+        int tid = atoi( e->d_name );
+        if( tid <= 0 )
+            continue;
+        snprintf( path, sizeof(path), "/proc/self/task/%d/stat", tid );
+        FILE *f = fopen( path, "r" );
+        if( !f )
+            continue;
+        if( !fgets( buf, sizeof(buf), f ) )
+            buf[0] = 0;
+        fclose( f );
+        char *p = strrchr( buf, ')' );
+        long flt = 0;
+        if( p )
+            sscanf( p + 2, "%*c %*d %*d %*d %*d %*d %*u %ld", &flt );
+        int i;
+        for( i = 0; i < pcnt_ntid && pcnt_tid[i] != tid; i++ );
+        if( i == pcnt_ntid && pcnt_ntid < 64 )
+        {
+            pcnt_tid[pcnt_ntid++] = tid;
+            pcnt_tflt[i] = 0;
+        }
+        if( b_print && i < 64 )
+            fprintf( stderr, " %d:%ld", tid, flt - pcnt_tflt[i] );
+        if( i < 64 )
+            pcnt_tflt[i] = flt;
+    }
+    closedir( d );
+    if( b_print )
+        fprintf( stderr, "\n" );
+}
+
+void x264_pcnt_frame_new( int b_fdec )
+{
+    __atomic_fetch_add( &pcnt_frames[b_fdec][__atomic_load_n( &pcnt_state, __ATOMIC_RELAXED )], 1, __ATOMIC_RELAXED );
+}
+
+void x264_pcnt_open_done( void )
+{
+    pcnt_rss[0] = pcnt_status( "VmRSS:" );
+    pcnt_c_flt[0] = pcnt_minflt();
+    pcnt_tasks( 0, 0 );
+    __atomic_store_n( &pcnt_state, 1, __ATOMIC_RELAXED );
+}
+
+void x264_pcnt_encode_begin( void )
+{
+    if( __atomic_load_n( &pcnt_state, __ATOMIC_RELAXED ) == 1 )
+        pcnt_t0 = pcnt_minflt();
+}
+
+void x264_pcnt_encode_done( void )
+{
+    if( __atomic_load_n( &pcnt_state, __ATOMIC_RELAXED ) != 1 )
+        return;
+    int c = pcnt_call + 1;
+    pcnt_c_flt[c] = pcnt_minflt();
+    pcnt_in_flt[c-1] = pcnt_c_flt[c] - pcnt_t0;
+    if( c <= 3 )
+        pcnt_tasks( 1, c-1 );
+    if( c == PCNT_CALLS )
+    {
+        pcnt_rss[1] = pcnt_status( "VmRSS:" );
+        __atomic_store_n( &pcnt_state, 2, __ATOMIC_RELAXED );
+    }
+    else
+        __atomic_store_n( &pcnt_call, c, __ATOMIC_RELAXED );
+}
+
+void x264_pcnt_print( void )
+{
+    pcnt_rss[2] = pcnt_status( "VmHWM:" );
+    fprintf( stderr, "pcnt open: malloc %"PRId64" calls %"PRId64" B; frames fenc %"PRId64" fdec %"PRId64"; minflt %"PRId64"; VmRSS %ld kB\n",
+             pcnt_calls[0], pcnt_bytes[0], pcnt_frames[0][0], pcnt_frames[1][0], pcnt_c_flt[0], pcnt_rss[0] );
+    fprintf( stderr, "pcnt first%d: malloc %"PRId64" calls %"PRId64" B; frames fenc %"PRId64" fdec %"PRId64"; minflt %"PRId64"; VmRSS %ld kB\n",
+             PCNT_CALLS, pcnt_calls[1], pcnt_bytes[1], pcnt_frames[0][1], pcnt_frames[1][1],
+             pcnt_state == 2 ? pcnt_c_flt[PCNT_CALLS] - pcnt_c_flt[0] : -1, pcnt_rss[1] );
+    fprintf( stderr, "pcnt after: malloc %"PRId64" calls %"PRId64" B; frames fenc %"PRId64" fdec %"PRId64"; minflt to close %"PRId64"; VmHWM %ld kB\n",
+             pcnt_calls[2], pcnt_bytes[2], pcnt_frames[0][2], pcnt_frames[1][2],
+             pcnt_minflt() - pcnt_c_flt[pcnt_state == 2 ? PCNT_CALLS : 0], pcnt_rss[2] );
+    fprintf( stderr, "pcnt per call (malloc calls/bytes/minflt between returns/minflt inside the call):" );
+    for( int i = 0; i < PCNT_CALLS && (pcnt_state == 2 || i < pcnt_call); i++ )
+        fprintf( stderr, " %d:%"PRId64"/%"PRId64"/%"PRId64"/%"PRId64, i, pcnt_c_calls[i], pcnt_c_bytes[i], pcnt_c_flt[i+1] - pcnt_c_flt[i], pcnt_in_flt[i] );
+    fprintf( stderr, "\n" );
+    for( int i = 0; i < X264_MIN( pcnt_n, PCNT_LOG ); i++ )
+        if( pcnt_at[i] < PCNT_CALLS )
+            fprintf( stderr, "pcnt log %d call %d size %d ra %p\n", i, pcnt_at[i], pcnt_sz[i], pcnt_ra[i] );
+}
+
 /****************************************************************************
  * x264_malloc:
  ****************************************************************************/
 void *x264_malloc( int i_size )
 {
     uint8_t *align_buf = NULL;
+    pcnt_count( i_size );
 #if HAVE_MALLOC_H
 #if HAVE_THP
 #define HUGE_PAGE_SIZE 2*1024*1024

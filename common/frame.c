@@ -91,6 +91,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
 
     CHECKED_MALLOCZERO( frame, sizeof(x264_frame_t) );
     PREALLOC_INIT
+    x264_pcnt_frame_new( b_fdec );
 
     /* allocate frame data (+64 for extra data for me) */
     i_width  = h->mb.i_mb_width*16;

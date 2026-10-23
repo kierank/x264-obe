@@ -135,6 +135,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
         return NULL;
     }
 
+    x264_pcnt_open_done();
+
     /* x264_t is opaque */
     return (x264_t *)api;
 }
@@ -144,6 +146,7 @@ void x264_encoder_close( x264_t *h )
     x264_api_t *api = (x264_api_t *)h;
 
     api->encoder_close( api->x264 );
+    x264_pcnt_print();
     free( api );
 }
 
@@ -179,7 +182,10 @@ int x264_encoder_encode( x264_t *h, x264_nal_t **pp_nal, int *pi_nal, x264_pictu
 {
     x264_api_t *api = (x264_api_t *)h;
 
-    return api->encoder_encode( api->x264, pp_nal, pi_nal, pic_in, pic_out );
+    x264_pcnt_encode_begin();
+    int ret = api->encoder_encode( api->x264, pp_nal, pi_nal, pic_in, pic_out );
+    x264_pcnt_encode_done();
+    return ret;
 }
 
 int x264_encoder_delayed_frames( x264_t *h )
