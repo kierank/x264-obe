@@ -37,7 +37,7 @@
 /* layout pair test/x264-msea-adaptive / -twin: hidden weak x264_N_msea_gate, defined here as an
  * alias of x264_N_encoder_encode (no bytes) unless MSEA_TWIN; the twin links it as 0 and never
  * builds box8, so no reference has it and the bound is never used */
-#define MSEA_TWIN 0
+#define MSEA_TWIN 1
 #define x264_msea_gate x264_template(msea_gate)
 extern void x264_msea_gate( void ) __attribute__((weak, visibility("hidden")));
 #define MSEA_OFF (!x264_msea_gate)
