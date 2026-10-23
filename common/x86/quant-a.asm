@@ -2854,6 +2854,80 @@ COEFF_LAST64_AVX512 w
 %endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
+; int coeff_nz16( dctcoef *dct ), uint64_t coeff_nz64( dctcoef *dct ): bit i = dct[i] != 0
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+INIT_XMM sse2
+cglobal coeff_nz16, 1,1
+    pxor m2, m2
+    LAST_MASK 16, eax, r0
+    xor eax, 0xffff
+    RET
+
+cglobal coeff_nz64, 1,3
+    pxor m2, m2
+    LAST_MASK 16, r1d, r0+SIZEOF_DCTCOEF* 0
+    LAST_MASK 16, r2d, r0+SIZEOF_DCTCOEF*16
+    shl r2d, 16
+    or  r1d, r2d
+    LAST_MASK 16, r2d, r0+SIZEOF_DCTCOEF*32
+    LAST_MASK 16, r0d, r0+SIZEOF_DCTCOEF*48
+    shl r0d, 16
+    or  r2d, r0d
+    shl  r2, 32
+    or   r1, r2
+    not  r1
+    mov rax, r1
+    RET
+
+INIT_YMM avx2
+cglobal coeff_nz64, 1,3
+    pxor m2, m2
+    LAST_MASK_AVX2 r1d, r0+SIZEOF_DCTCOEF* 0
+    LAST_MASK_AVX2 r2d, r0+SIZEOF_DCTCOEF*32
+    shl  r2, 32
+    or   r1, r2
+    not  r1
+    mov rax, r1
+    RET
+
+%macro COEFF_NZ16_AVX512 1 ; w/d
+cglobal coeff_nz16, 1,1
+    mova         m0, [r0]
+    vptestm%1    k0, m0, m0
+    kmovw       eax, k0
+    RET
+%endmacro
+
+%macro COEFF_NZ64_AVX512 1 ; w/d
+cglobal coeff_nz64, 1,1
+    pxor        xm0, xm0
+    vpcmp%1      k0, m0, [r0+0*64], 4
+    vpcmp%1      k1, m0, [r0+1*64], 4
+%if HIGH_BIT_DEPTH
+    vpcmp%1      k2, m0, [r0+2*64], 4
+    vpcmp%1      k3, m0, [r0+3*64], 4
+    kunpckwd     k0, k1, k0
+    kunpckwd     k1, k3, k2
+%endif
+    kunpckdq     k0, k1, k0
+    kmovq       rax, k0
+    RET
+%endmacro
+
+%if HIGH_BIT_DEPTH
+INIT_ZMM avx512
+COEFF_NZ16_AVX512 d
+COEFF_NZ64_AVX512 d
+%else
+INIT_YMM avx512
+COEFF_NZ16_AVX512 w
+INIT_ZMM avx512
+COEFF_NZ64_AVX512 w
+%endif
+%endif ; ARCH_X86_64
+
+;-----------------------------------------------------------------------------
 ; int coeff_level_run( dctcoef *dct, run_level_t *runlevel )
 ;-----------------------------------------------------------------------------
 

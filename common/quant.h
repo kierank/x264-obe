@@ -53,6 +53,8 @@ typedef struct
     int (*coeff_last[14])( dctcoef *dct );
     int (*coeff_last4)( dctcoef *dct );
     int (*coeff_last8)( dctcoef *dct );
+    int (*coeff_nz16)( dctcoef *dct );
+    uint64_t (*coeff_nz64)( dctcoef *dct );
     int (*coeff_level_run[13])( dctcoef *dct, x264_run_level_t *runlevel );
     int (*coeff_level_run4)( dctcoef *dct, x264_run_level_t *runlevel );
     int (*coeff_level_run8)( dctcoef *dct, x264_run_level_t *runlevel );

@@ -245,6 +245,16 @@ int x264_coeff_last15_avx512( dctcoef *dct );
 int x264_coeff_last16_avx512( dctcoef *dct );
 #define x264_coeff_last64_avx512 x264_template(coeff_last64_avx512)
 int x264_coeff_last64_avx512( dctcoef *dct );
+#define x264_coeff_nz16_sse2 x264_template(coeff_nz16_sse2)
+int x264_coeff_nz16_sse2( dctcoef *dct );
+#define x264_coeff_nz64_sse2 x264_template(coeff_nz64_sse2)
+uint64_t x264_coeff_nz64_sse2( dctcoef *dct );
+#define x264_coeff_nz64_avx2 x264_template(coeff_nz64_avx2)
+uint64_t x264_coeff_nz64_avx2( dctcoef *dct );
+#define x264_coeff_nz16_avx512 x264_template(coeff_nz16_avx512)
+int x264_coeff_nz16_avx512( dctcoef *dct );
+#define x264_coeff_nz64_avx512 x264_template(coeff_nz64_avx512)
+uint64_t x264_coeff_nz64_avx512( dctcoef *dct );
 #define x264_coeff_level_run16_mmx2 x264_template(coeff_level_run16_mmx2)
 int x264_coeff_level_run16_mmx2( dctcoef *dct, x264_run_level_t *runlevel );
 #define x264_coeff_level_run16_sse2 x264_template(coeff_level_run16_sse2)

@@ -351,6 +351,21 @@ static int ALWAYS_INLINE x264_ctz( uint32_t x )
 }
 #endif
 
+#if defined(__GNUC__) && (__GNUC__ > 3 || __GNUC__ == 3 && __GNUC_MINOR__ > 3)
+#define x264_clz64(x) __builtin_clzll(x)
+#define x264_ctz64(x) __builtin_ctzll(x)
+#else
+static int ALWAYS_INLINE x264_clz64( uint64_t x )
+{
+    return x >> 32 ? x264_clz( x >> 32 ) : 32 + x264_clz( x );
+}
+
+static int ALWAYS_INLINE x264_ctz64( uint64_t x )
+{
+    return (uint32_t)x ? x264_ctz( x ) : 32 + x264_ctz( x >> 32 );
+}
+#endif
+
 #if HAVE_X86_INLINE_ASM && HAVE_MMX
 /* Don't use __builtin_prefetch; even as recent as 4.3.4, GCC seems incapable of
  * using complex address modes properly unless we use inline asm. */

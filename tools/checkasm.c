@@ -5164,6 +5164,34 @@ static int check_quant( int cpu_ref, int cpu_new )
     TEST_LAST( coeff_last[ DCT_LUMA_8x8], coeff_last64, 64, 0 );
     report( "coeff_last :" );
 
+#define TEST_NZ( nzf, size, type ) \
+    if( qf_a.nzf != qf_ref.nzf ) \
+    { \
+        set_func_name( #nzf ); \
+        used_asm = 1; \
+        for( int i = 0; i < 200; i++ ) \
+        { \
+            /* sparse to dense, with negative and high-half-only coefs */ \
+            memset( dct1, 0, size*sizeof(dctcoef) ); \
+            for( int idx = 0; idx < size; idx++ ) \
+                if( !(rand() % (1 + (i&15))) ) \
+                    dct1[idx] = rand()&1 ? TEST_LAST_COEF( i ) : (rand()&1 ? -(1 << (4*sizeof(dctcoef))) : 1 << (4*sizeof(dctcoef))); \
+            type result_c = call_c( qf_c.nzf, dct1 ); \
+            type result_a = call_a( qf_a.nzf, dct1 ); \
+            if( result_c != result_a ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, #nzf ": [FAILED]\n" ); \
+                break; \
+            } \
+        } \
+    }
+
+    ok = 1; used_asm = 0;
+    TEST_NZ( coeff_nz16, 16, int );
+    TEST_NZ( coeff_nz64, 64, uint64_t );
+    report( "coeff_nz :" );
+
 #define TEST_LEVELRUN( lastname, name, size, ac ) \
     if( qf_a.lastname != qf_ref.lastname ) \
     { \
