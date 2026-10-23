@@ -4625,7 +4625,7 @@ void    x264_encoder_close  ( x264_t *h )
     {
         static const char *names[MEPR_N] = { "ref16", "ref16_w", "moves", "stay", "win_plane", "win_avg2", "win_w", "win_nofuse",
             "fin16", "fin_plane", "fin_avg2", "fin_w", "fin_match", "fin_match_w", "mc16_all", "mb_p", "mb_p16", "mb_skip",
-            "mb_ppart", "mb_intra", "ref16_q", "ref16_s", "fin_analyse", "fin_match_mat" };
+            "mb_ppart", "mb_intra", "ref16_q", "ref16_s", "fin_analyse", "fin_match_mat", "mc16_p", "mc16_dup" };
         for( int i = 0; i < MEPR_N; i++ )
             fprintf( stderr, "mepr %-14s %" PRIu64 "\n", names[i], x264_cnt_mepr[i] );
     }

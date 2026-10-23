@@ -50,6 +50,22 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     if( width == 4 && height == 4 )
     {
         MEPR_CNT( MEPR_MC16_ALL );
+        if( h->sh.i_type == SLICE_TYPE_P )
+        {
+            static __thread int dup_mb = -1, dup_n;
+            static __thread uint64_t dup_key[16];
+            uint64_t key = ((uint64_t)(i_ref*2 + MB_INTERLACED) << 32) | M32( h->mb.cache.mv[0][i8] );
+            if( dup_mb != h->mb.i_mb_xy )
+                dup_mb = h->mb.i_mb_xy, dup_n = 0;
+            int dup = 0;
+            for( int i = 0; i < dup_n; i++ )
+                dup |= dup_key[i] == key;
+            MEPR_CNT( MEPR_MC16_P );
+            if( dup )
+                MEPR_CNT( MEPR_MC16_DUP );
+            else if( dup_n < 16 )
+                dup_key[dup_n++] = key;
+        }
         if( x264_cnt_final && h->sh.i_type == SLICE_TYPE_P )
         {
             int qpel_idx = ((mvy&3)<<2) + (mvx&3);
