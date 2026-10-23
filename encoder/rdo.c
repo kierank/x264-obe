@@ -461,7 +461,7 @@ typedef struct
 
 /* layout pair test/x264-trellis-1c / -twin: hidden weak x264_N_trellis_1c_gate, defined here (no bytes) unless
  * TRELLIS_1C_TWIN; the twin links it as 0 and every block takes the full trellis */
-#define TRELLIS_1C_TWIN 0
+#define TRELLIS_1C_TWIN 1
 #define TRELLIS_1C_STR2( x ) #x
 #define TRELLIS_1C_STR( x ) TRELLIS_1C_STR2( x )
 #define x264_trellis_1c_gate x264_template(trellis_1c_gate)
