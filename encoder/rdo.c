@@ -761,9 +761,9 @@ int trellis_cabac_fc( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *u
 
 /* dct: nonzero after round-to-nearest quant; orig_coefs: dct before quant */
 static ALWAYS_INLINE
-int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *unquant_mf,
-                             const uint8_t *zigzag, int ctx_block_cat, int lambda2, int b_ac,
-                             int b_chroma, int dc, int num_coefs, int idx )
+int trellis_cabac_quantised_body( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *unquant_mf,
+                                  const uint8_t *zigzag, int ctx_block_cat, int lambda2, int b_ac,
+                                  int b_chroma, int dc, int num_coefs, int idx )
 {
     ALIGNED_ARRAY_64( dctcoef, quant_coefs, [64] );
     const uint32_t *coef_weight1 = num_coefs == 64 ? x264_dct8_weight_tab : x264_dct4_weight_tab;
@@ -999,6 +999,92 @@ int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const
     }
 
     return 1;
+}
+
+/* trellis-1c counters: [block type][rounded nonzero bucket][calls, cycles, nonzero out] */
+enum { T1C_L4, T1C_LAC, T1C_L8, T1C_CAC, T1C_LDC, T1C_CDC, T1C_TYPES };
+enum { T1C_DCONLY, T1C_N1Q1, T1C_N1QN, T1C_N2Q1, T1C_N2QN, T1C_N3, T1C_N4, T1C_N5_8, T1C_N9_16, T1C_N17, T1C_BUCKETS };
+uint64_t x264_trellis_1c_cnt[2][T1C_TYPES][T1C_BUCKETS][4];
+
+static ALWAYS_INLINE
+int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *unquant_mf,
+                             const uint8_t *zigzag, int ctx_block_cat, int lambda2, int b_ac,
+                             int b_chroma, int dc, int num_coefs, int idx )
+{
+    int n = 0, qmax = 0, last = -1;
+    for( int i = b_ac; i < num_coefs; i++ )
+    {
+        int q = abs( dct[zigzag[i]] );
+        if( q )
+        {
+            n++;
+            last = i;
+            qmax = X264_MAX( qmax, q );
+        }
+    }
+    int type = dc ? (b_chroma ? T1C_CDC : T1C_LDC) : b_chroma ? T1C_CAC : num_coefs == 64 ? T1C_L8 : b_ac ? T1C_LAC : T1C_L4;
+    int bucket = n <= 1 ? (last == 0 && !dc ? T1C_DCONLY : qmax == 1 ? T1C_N1Q1 : T1C_N1QN)
+               : n == 2 ? (qmax == 1 ? T1C_N2Q1 : T1C_N2QN)
+               : n == 3 ? T1C_N3 : n == 4 ? T1C_N4 : n <= 8 ? T1C_N5_8 : n <= 16 ? T1C_N9_16 : T1C_N17;
+    uint64_t t0 = __builtin_ia32_rdtsc();
+    int ret = trellis_cabac_quantised_body( h, dct, orig_coefs, unquant_mf, zigzag, ctx_block_cat,
+                                            lambda2, b_ac, b_chroma, dc, num_coefs, idx );
+    uint64_t t1 = __builtin_ia32_rdtsc();
+    uint64_t *c = x264_trellis_1c_cnt[!!h->mb.i_psy_trellis][type][bucket];
+    __atomic_fetch_add( &c[0], 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &c[1], t1 - t0, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &c[2], !!ret, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &c[3], n, __ATOMIC_RELAXED );
+    return ret;
+}
+
+void x264_trellis_1c_cnt_print( x264_t *h )
+{
+    static const char *tname[T1C_TYPES] = { "luma4x4", "lumaAC ", "luma8x8", "chromaAC", "lumaDC ", "chromaDC" };
+    static const char *bname[T1C_BUCKETS] = { "1 dc-only", "1 q=1", "1 q>=2", "2 q=1", "2 q>=2", "3", "4", "5-8", "9-16", "17+" };
+    for( int p = 0; p < 2; p++ )
+    {
+        uint64_t all[2] = {0};
+        for( int t = 0; t < T1C_TYPES; t++ )
+            for( int b = 0; b < T1C_BUCKETS; b++ )
+                for( int k = 0; k < 2; k++ )
+                    all[k] += x264_trellis_1c_cnt[p][t][b][k];
+        if( !all[0] )
+            continue;
+        for( int t = 0; t < T1C_TYPES; t++ )
+        {
+            uint64_t tot[2] = {0};
+            for( int b = 0; b < T1C_BUCKETS; b++ )
+                for( int k = 0; k < 2; k++ )
+                    tot[k] += x264_trellis_1c_cnt[p][t][b][k];
+            if( !tot[0] )
+                continue;
+            x264_log( h, X264_LOG_INFO, "trellis-1c %d-bit psy%d %-8s calls %10"PRIu64" (%5.1f%% of all) cycles %12"PRIu64" (%5.1f%% of all) %6.0f/call\n",
+                      BIT_DEPTH, p, tname[t], tot[0], 100.0 * tot[0] / all[0], tot[1], 100.0 * tot[1] / all[1], (double)tot[1] / tot[0] );
+            for( int b = 0; b < T1C_BUCKETS; b++ )
+            {
+                uint64_t *c = x264_trellis_1c_cnt[p][t][b];
+                if( !c[0] )
+                    continue;
+                x264_log( h, X264_LOG_INFO, "trellis-1c %d-bit psy%d %-8s nz %-9s calls %10"PRIu64" %5.1f%% cycles %5.1f%% (%5.1f%% of all) %6.0f/call kept %5.1f%%\n",
+                          BIT_DEPTH, p, tname[t], bname[b], c[0], 100.0 * c[0] / tot[0], 100.0 * c[1] / tot[1],
+                          100.0 * c[1] / all[1], (double)c[1] / c[0], 100.0 * c[2] / c[0] );
+            }
+        }
+        x264_log( h, X264_LOG_INFO, "trellis-1c %d-bit psy%d all      calls %10"PRIu64" cycles %12"PRIu64" %6.0f/call\n",
+                  BIT_DEPTH, p, all[0], all[1], (double)all[1] / all[0] );
+        /* exact path taken: 1c = one +-1 (not dc-only), 2c = two of +-1 */
+        uint64_t fc[2][2] = {{0}};
+        for( int t = 0; t < T1C_TYPES; t++ )
+            for( int k = 0; k < 2; k++ )
+            {
+                fc[0][k] += x264_trellis_1c_cnt[p][t][T1C_N1Q1][k];
+                fc[1][k] += x264_trellis_1c_cnt[p][t][T1C_N2Q1][k];
+            }
+        x264_log( h, X264_LOG_INFO, "trellis-1c %d-bit psy%d taken    1c calls %5.1f%% cycles %5.1f%% | 2c calls %5.1f%% cycles %5.1f%% | both calls %5.1f%% cycles %5.1f%%\n",
+                  BIT_DEPTH, p, 100.0 * fc[0][0] / all[0], 100.0 * fc[0][1] / all[1], 100.0 * fc[1][0] / all[0], 100.0 * fc[1][1] / all[1],
+                  100.0 * (fc[0][0] + fc[1][0]) / all[0], 100.0 * (fc[0][1] + fc[1][1]) / all[1] );
+    }
 }
 
 static ALWAYS_INLINE

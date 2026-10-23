@@ -31,6 +31,9 @@
 
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
+#define x264_trellis_1c_cnt x264_template(trellis_1c_cnt)
+#define x264_trellis_1c_cnt_print x264_template(trellis_1c_cnt_print)
+void x264_trellis_1c_cnt_print( x264_t *h );
 
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
