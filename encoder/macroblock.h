@@ -32,6 +32,27 @@
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
+/* e4r layout pairs: x264_e4r_gate gates the inter_resid_4x4 call, x264_e4r_a6_gate the fenc_eq plane skip
+ * (E4R_A6_TWIN in common/x86/dct-a.asm gates the zero-residual 8x8 skip of the 8-bit inter_resid_4x4).
+ * Arm: x264_e4r_arm / x264_e4r_a6_arm, defined in api.c. Twin (E4R_TWIN / E4R_A6_TWIN 1): the never
+ * defined x264_e4r_twin / x264_e4r_a6_twin, which link as 0. The code is the same in both. */
+#define E4R_TWIN 0
+#define E4R_A6_TWIN 0
+extern const char x264_e4r_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_e4r_twin __attribute__((weak, visibility("hidden")));
+extern const char x264_e4r_a6_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_e4r_a6_twin __attribute__((weak, visibility("hidden")));
+#if E4R_TWIN
+#define x264_e4r_gate (&x264_e4r_twin != NULL)
+#else
+#define x264_e4r_gate (&x264_e4r_arm != NULL)
+#endif
+#if E4R_A6_TWIN
+#define x264_e4r_a6_gate (&x264_e4r_a6_twin != NULL)
+#else
+#define x264_e4r_a6_gate (&x264_e4r_a6_arm != NULL)
+#endif
+
 /* 0: no skip, 1: skip, 2: P skip with the luma prediction equal to fenc */
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
