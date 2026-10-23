@@ -152,7 +152,7 @@ int x264_lookahead_init( x264_t *h, int i_slicetype_length )
 
     x264_t *look_h = h->thread[h->param.i_threads];
     *look_h = *h;
-    if( x264_macroblock_cache_allocate( look_h ) )
+    if( x264_macroblock_cache_allocate( look_h, 0 ) )
         goto fail;
 
     if( x264_macroblock_thread_allocate( look_h, 1 ) < 0 )
