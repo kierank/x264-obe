@@ -1104,7 +1104,7 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
 }
 
 #define MEPR_END()\
-if( i_pixel == PIXEL_16x16 )\
+if( i_pixel == PIXEL_16x16 && h->sh.i_type == SLICE_TYPE_P )\
 {\
     int moved = (bmx != mepr_smx) | (bmy != mepr_smy);\
     int qidx = ((bmy&3)<<2) + (bmx&3);\
