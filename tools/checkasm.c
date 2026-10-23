@@ -4853,6 +4853,40 @@ static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf
     return 1 | X264_MIN( score, 9 ) << 4;
 }
 
+/* the calls intra_satd_x9_4x4_recon replaces: x9 (C: 9 predictions and satds, else intra_satd_x9_4x4),
+ * then for a cost <= limit sub4x4_dct, quant_4x4 and if nonzero scan_4x4, dequant_4x4, add4x4_idct */
+static int x9r_chain( x264_t *h, x264_pixel_function_t *pf, x264_predict_t *pred4, x264_dct_function_t *df,
+                      x264_quant_function_t *qf, x264_zigzag_function_t *zz, int b_c, pixel *fenc, pixel *fdec,
+                      uint16_t *bitcosts, dctcoef *level, int qp, int limit )
+{
+    ALIGNED_ARRAY_64( dctcoef, dct,[16] );
+    int res = INT_MAX;
+    if( b_c )
+    {
+        for( int j = 0; j < 9; j++ )
+        {
+            pred4[j]( fdec );
+            int cost = pf->satd[PIXEL_4x4]( fenc, FENC_STRIDE, fdec, FDEC_STRIDE ) + bitcosts[j];
+            if( cost < (uint16_t)res )
+                res = cost + (j<<16);
+        }
+        pred4[res>>16]( fdec );
+    }
+    else
+        res = pf->intra_satd_x9_4x4( fenc, fdec, bitcosts );
+    if( (res & 0xffff) > limit )
+        return res;
+    df->sub4x4_dct( dct, fenc, fdec );
+    int nz = qf->quant_4x4( dct, h->quant4_mf[CQM_4IY][qp], h->quant4_bias[CQM_4IY][qp] );
+    if( nz )
+    {
+        zz->scan_4x4( level, dct );
+        qf->dequant_4x4( dct, h->dequant4_mf[CQM_4IY], qp );
+        df->add4x4_idct( fdec, dct );
+    }
+    return res | nz << 24;
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -4869,11 +4903,23 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, dct5,[64] );
     ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
+    x264_pixel_function_t x9r_pf_c, x9r_pf_a;
+    x264_dct_function_t x9r_df_c, x9r_df_a;
+    x264_predict_t x9r_pred4[12];
+    ALIGNED_ARRAY_64( pixel, x9r_enc,[4*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( pixel, x9r_dec,[4],[6*FDEC_STRIDE] );
+    ALIGNED_ARRAY_64( dctcoef, x9r_lvl,[3],[16] );
+    ALIGNED_ARRAY_64( uint16_t, x9r_bitcosts,[17] );
     int ret = 0, ok, used_asm;
-    int oks[4] = {1,1,1,1}, used_asms[4] = {0,0,0,0};
+    int oks[5] = {1,1,1,1,1}, used_asms[5] = {0,0,0,0,0};
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
+    x264_pixel_init( 0, &x9r_pf_c );
+    x264_pixel_init( cpu_new, &x9r_pf_a );
+    x264_dct_init( 0, &x9r_df_c );
+    x264_dct_init( cpu_new, &x9r_df_a );
+    x264_predict_4x4_init( 0, x9r_pred4 );
     h->sps->i_chroma_format_idc = 1;
     x264_param_default( &h->param );
     h->chroma_qp_table = i_chroma_qp_table + 12;
@@ -5372,6 +5418,75 @@ static int check_quant( int cpu_ref, int cpu_new )
         BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x2_dc, 4 );
         BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
 
+        /* intra_satd_x9_4x4_recon against x9r_chain with the C functions and with the cpu_new ones.
+         * j: bits 0-1 source (noise, near the neighbours, 0/max, smooth), bits 2-3 limit (big, the cost,
+         * the cost - 1, -1); random bitcosts, predicted mode and block position */
+        for( int fld = 0; fld < 2; fld++ )
+            if( zz_a[fld].intra_satd_x9_4x4_recon && zz_a[fld].intra_satd_x9_4x4_recon != zz_ref[fld].intra_satd_x9_4x4_recon )
+            {
+                used_asms[4] = 1;
+                set_func_name( "intra_satd_x9_4x4_recon_%s", fld?"field":"frame" );
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min && oks[4]; qp-- )
+                    for( int j = 0; j < 64; j++ )
+                    {
+                        int src = j&3, lim = (j>>2)&3, xoff = 8 + 4*(rand()&3);
+                        int v = rand() % (PIXEL_MAX+1);
+                        for( int y = 0; y < 6; y++ )
+                            for( int x = 0; x < FDEC_STRIDE; x++ )
+                            {
+                                int p = src == 0 ? rand() % (PIXEL_MAX+1)
+                                      : src == 1 ? v + (rand()&15) - 8
+                                      : src == 2 ? (rand()&1) * PIXEL_MAX
+                                      : v + (x+2*y)*(PIXEL_MAX+1)/256;
+                                x9r_dec[0][y*FDEC_STRIDE+x] = x264_clip3( p, 0, PIXEL_MAX );
+                            }
+                        for( int y = 0; y < 4; y++ )
+                            for( int x = 0; x < FENC_STRIDE; x++ )
+                            {
+                                int p = src == 0 ? rand() % (PIXEL_MAX+1)
+                                      : src == 1 ? v + (rand()&15) - 8
+                                      : src == 2 ? (rand()&1) * PIXEL_MAX
+                                      : v + (x+xoff-8+2*y+2)*(PIXEL_MAX+1)/256 + (rand()%3) - 1;
+                                x9r_enc[y*FENC_STRIDE+x] = x264_clip3( p, 0, PIXEL_MAX );
+                            }
+                        for( int i = 0; i < 17; i++ )
+                            x9r_bitcosts[i] = rand() & (src == 1 ? 7 : 511);
+                        uint16_t *bitcosts = x9r_bitcosts + 8 - rand()%9;
+                        int off = FDEC_STRIDE + xoff;
+                        memcpy( x9r_dec[1], x9r_dec[0], sizeof(x9r_dec[0]) );
+                        int cost = x9r_chain( h, &x9r_pf_c, x9r_pred4, &x9r_df_c, &qf_c, &zz_c[fld], 1, x9r_enc, x9r_dec[1]+off,
+                                              bitcosts, x9r_lvl[0], qp, -1 ) & 0xffff;
+                        int limit = lim == 0 ? 1<<20 : lim == 1 ? cost : lim == 2 ? cost-1 : -1;
+                        for( int k = 1; k < 4; k++ )
+                            memcpy( x9r_dec[k], x9r_dec[0], sizeof(x9r_dec[0]) );
+                        for( int k = 0; k < 3; k++ )
+                            for( int i = 0; i < 16; i++ )
+                                x9r_lvl[k][i] = 0x5a5a + i;
+                        int res_c = x9r_chain( h, &x9r_pf_c, x9r_pred4, &x9r_df_c, &qf_c, &zz_c[fld], 1, x9r_enc, x9r_dec[1]+off,
+                                               bitcosts, x9r_lvl[0], qp, limit );
+                        int res_s = x9r_chain( h, &x9r_pf_a, x9r_pred4, &x9r_df_a, &qf_a, &zz_a[fld], 0, x9r_enc, x9r_dec[2]+off,
+                                               bitcosts, x9r_lvl[1], qp, limit );
+                        ok = 1;
+                        int res_a = call_a1( zz_a[fld].intra_satd_x9_4x4_recon, x9r_enc, x9r_dec[3]+off, bitcosts, x9r_lvl[2],
+                                             &h->quant4_recon[qp], limit );
+                        oks[4] &= ok;
+                        int bad_c = res_c != res_a || memcmp( x9r_dec[1], x9r_dec[3], sizeof(x9r_dec[0]) )
+                                 || memcmp( x9r_lvl[0], x9r_lvl[2], sizeof(x9r_lvl[0]) );
+                        int bad_s = res_s != res_a || memcmp( x9r_dec[2], x9r_dec[3], sizeof(x9r_dec[0]) )
+                                 || memcmp( x9r_lvl[1], x9r_lvl[2], sizeof(x9r_lvl[0]) );
+                        if( bad_c || bad_s )
+                        {
+                            oks[4] = 0;
+                            fprintf( stderr, "intra_satd_x9_4x4_recon_%s (qp=%d, cqm=%d, j=%d, limit=%d, c=%x, chain=%x, asm=%x, vs c %d, vs chain %d): [FAILED]\n",
+                                     fld?"field":"frame", qp, i_cqm, j, limit, res_c, res_s, res_a, bad_c, bad_s );
+                            break;
+                        }
+                        if( !i_cqm && !j && qp == 26 )
+                            call_a2( zz_a[fld].intra_satd_x9_4x4_recon, x9r_enc, x9r_dec[3]+off, bitcosts, x9r_lvl[2],
+                                     &h->quant4_recon[qp], 1<<20 );
+                    }
+            }
+
         x264_cqm_delete( h );
     }
 
@@ -5386,6 +5501,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[3]; used_asm = used_asms[3];
     report( "quant scan :" );
+
+    ok = oks[4]; used_asm = used_asms[4];
+    report( "intra x9 recon :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

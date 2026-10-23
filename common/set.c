@@ -205,6 +205,34 @@ int x264_cqm_init( x264_t *h )
                 }
     }
 
+    CHECKED_MALLOC( h->quant4_recon, (QP_MAX_SPEC+1)*sizeof(x264_quant4_recon_t) );
+    for( int q = 0; q <= QP_MAX_SPEC; q++ )
+    {
+        x264_quant4_recon_t *r = &h->quant4_recon[q];
+        int *dmf = h->dequant4_mf[CQM_4IY][q%6];
+        int qbits = q/6 - 4;
+        int flat = 1;
+        memcpy( r->mf, h->quant4_mf[CQM_4IY][q], sizeof(r->mf) );
+        memcpy( r->bias, h->quant4_bias[CQM_4IY][q], sizeof(r->bias) );
+        r->dq_shift = r->dq_round = 0;
+        if( qbits >= 0 )
+            for( int i = 0; i < 16; i++ )
+                r->dq[i] = dmf[i] << qbits;
+        else
+        {
+            /* a dequant_mf divisible by 1 << -qbits makes the shift exact */
+            for( int i = 0; i < 16; i++ )
+                flat &= !(dmf[i] & ((1 << -qbits) - 1));
+            for( int i = 0; i < 16; i++ )
+                r->dq[i] = flat ? dmf[i] >> -qbits : dmf[i];
+            if( !flat )
+            {
+                r->dq_shift = -qbits;
+                r->dq_round = 1 << (-qbits - 1);
+            }
+        }
+    }
+
     /* Emergency mode denoising. */
     x264_emms();
     CHECKED_MALLOC( h->nr_offset_emergency, sizeof(*h->nr_offset_emergency)*(QP_MAX-QP_MAX_SPEC) );
@@ -302,6 +330,8 @@ void x264_cqm_delete( x264_t *h )
     CQM_DELETE( 4, 4 );
     CQM_DELETE( 8, CHROMA444 ? 4 : 2 );
     x264_free( h->nr_offset_emergency );
+    x264_free( h->quant4_recon );
+    h->quant4_recon = NULL;
 }
 
 static int x264_cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
