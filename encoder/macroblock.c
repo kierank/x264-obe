@@ -971,6 +971,10 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
     ALIGNED_4( int16_t mvp[2] );
     int i_qp = h->mb.i_qp;
     int b_luma_eq = 0;
+    /* the zero screens (zscreen_16x16, probe_skip_luma, probe_skip_chroma's AC screen): not with nr, where
+     * denoise_dct accumulates the residual, nor for the P probe before ME (subme < 3), where few MBs are
+     * skips and the screen rarely proves */
+    int b_screen = !h->mb.b_noise_reduction && (b_bidir || h->param.analyse.i_subpel_refine >= 3);
 
     for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
     {
@@ -988,7 +992,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         }
 
         /* the fenc_eq check, the screen and the 8x8 loop below in one call (fenc_eq is set with it) */
-        if( h->zigzagf.probe_skip_luma && !h->mb.b_noise_reduction )
+        if( h->zigzagf.probe_skip_luma && b_screen )
         {
             int ret = h->zigzagf.probe_skip_luma( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->quant4_mf[quant_cat][i_qp],
                                                   h->quant4_bias[quant_cat][i_qp], h->zscreen_thr[!!p][i_qp] );
@@ -1006,13 +1010,10 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         }
 
         /* 8x8s whose 4x4s all quantise to 0 score 0 and are not tested; the rest are tested
-         * largest sum(r^2) first: the score is a sum, so the verdict does not depend on the order.
-         * Not with nr: denoise_dct accumulates the residual. Not for the P probe before ME
-         * (subme < 3), where few MBs are skips and the screen rarely proves. */
+         * largest sum(r^2) first: the score is a sum, so the verdict does not depend on the order. */
         int i8x8_order[4] = { 0, 1, 2, 3 };
         int i8x8_count = 4;
-        if( h->pixf.zscreen_16x16 && !h->mb.b_noise_reduction &&
-            (b_bidir || h->param.analyse.i_subpel_refine >= 3) )
+        if( h->pixf.zscreen_16x16 && b_screen )
         {
             ALIGNED_ARRAY_16( int32_t, e8,[4] );
             int zmask = h->pixf.zscreen_16x16( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p], h->zscreen_thr[!!p][i_qp], e8 );
@@ -1079,7 +1080,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                                                       &h->sh.weight[0][1+ch], chroma422?16:8 );
 
             /* the checks below in one call */
-            if( h->zigzagf.probe_skip_chroma[chroma422] && !h->mb.b_noise_reduction )
+            if( h->zigzagf.probe_skip_chroma[chroma422] && b_screen )
             {
                 if( !h->zigzagf.probe_skip_chroma[chroma422]( p_src, p_dst, h->quant4_mf[CQM_4PC][i_qp], h->quant4_bias[CQM_4PC][i_qp], thresh,
                                                                h->quant4_mf[CQM_4PC][i_qp+3*chroma422][0] >> 1,
