@@ -67,6 +67,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
 
+/* pixf.predictor_clip/roundclip from this many mvc; shorter lists (8x8 partitions, lowres)
+ * rarely hold a duplicate and take the inline x264_predictor_clip/roundclip */
+#define PREDICTOR_DEDUPE_MIN 5
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)

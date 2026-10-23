@@ -349,7 +349,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( i_mvc > 0 )
         {
             /* Clip MV candidates and eliminate those equal to zero and pmv. */
-            int valid_mvcs = h->pixf.predictor_clip
+            int valid_mvcs = h->pixf.predictor_clip && i_mvc >= PREDICTOR_DEDUPE_MIN
                            ? h->pixf.predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
                            : x264_predictor_clip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
             if( valid_mvcs > 0 )
@@ -420,7 +420,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         if( i_mvc > 0 )
         {
             /* Like in subme>=3, except we also round the candidates to fullpel. */
-            int valid_mvcs = h->pixf.predictor_roundclip
+            int valid_mvcs = h->pixf.predictor_roundclip && i_mvc >= PREDICTOR_DEDUPE_MIN
                            ? h->pixf.predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
                            : x264_predictor_roundclip( mvc_temp+2, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
             if( valid_mvcs > 0 )

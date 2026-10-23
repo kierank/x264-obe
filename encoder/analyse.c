@@ -1464,7 +1464,7 @@ static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a 
     int bmx = x264_clip3( (m->mvp[0] + 2) >> 2, h->mb.mv_limit_fpel[0][0], h->mb.mv_limit_fpel[1][0] );
     int bmy = x264_clip3( (m->mvp[1] + 2) >> 2, h->mb.mv_limit_fpel[0][1], h->mb.mv_limit_fpel[1][1] );
     uint32_t pmv = pack16to32_mask( bmx, bmy );
-    int i_fpel = h->pixf.predictor_roundclip
+    int i_fpel = h->pixf.predictor_roundclip && i_mvc >= PREDICTOR_DEDUPE_MIN
                ? h->pixf.predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv )
                : x264_predictor_roundclip( mvc_fpel, mvc, i_mvc, h->mb.mv_limit_fpel, pmv );
     if( pmv )
