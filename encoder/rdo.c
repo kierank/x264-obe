@@ -710,7 +710,7 @@ int trellis_cabac_fc( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const int *u
     uint64_t score1 = bias + (ssd1 - base) + TRELLIS_FC_BITS( cost_coded + x264_cabac_entropy[cabac_state[1]] + (1 << CABAC_SIZE_BITS) );
 
     /* p1 (== p2 if one level: its terms are then unused) */
-    sigindex = TRELLIS_FC_SIGINDEX( p1 );
+    sigindex = TRELLIS_FC_SIGINDEX( X264_MIN( p1, num_coefs-2 ) );
     lastindex = TRELLIS_FC_LASTINDEX( X264_MIN( p1, num_coefs-2 ) );
     unsigned cost_sig1 = x264_cabac_size_decision_noup2( &cabac_state_sig[sigindex], 1 );
     unsigned cost_last = x264_cabac_size_decision_noup2( &cabac_state_last[lastindex], 1 ) + cost_sig1;
