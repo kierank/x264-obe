@@ -459,6 +459,17 @@ typedef struct
 
 #define SIGN(x,y) ((x^(y >> 31))-(y >> 31))
 
+/* layout pair test/x264-trellis-1c / -twin: hidden weak x264_N_trellis_1c_gate, defined here (no bytes) unless
+ * TRELLIS_1C_TWIN; the twin links it as 0 and every block takes the full trellis */
+#define TRELLIS_1C_TWIN 0
+#define TRELLIS_1C_STR2( x ) #x
+#define TRELLIS_1C_STR( x ) TRELLIS_1C_STR2( x )
+#define x264_trellis_1c_gate x264_template(trellis_1c_gate)
+extern void x264_trellis_1c_gate( void ) __attribute__((weak, visibility("hidden")));
+#if !TRELLIS_1C_TWIN
+__asm__( ".set " TRELLIS_1C_STR( x264_trellis_1c_gate ) ", " TRELLIS_1C_STR( x264_rdo_init ) );
+#endif
+
 #define SET_LEVEL(ndst, nsrc, l) {\
     if( sizeof(trellis_level_t) == sizeof(uint32_t) )\
         M32( &level_tree[levels_used] ) = pack16to32( nsrc.level_idx, l );\
@@ -808,7 +819,7 @@ int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const
 
     /* one or two nonzero levels, all +-1 */
     uint64_t nz2 = nz & (nz-1);
-    if( !(nz2 & (nz2-1)) )
+    if( x264_trellis_1c_gate && !(nz2 & (nz2-1)) )
     {
         int first_nnz = x264_ctz64( nz );
         if( ((unsigned)(quant_coefs[first_nnz]+1) <= 2) & ((unsigned)(quant_coefs[last_nnz]+1) <= 2) )
