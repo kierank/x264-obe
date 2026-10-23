@@ -336,7 +336,7 @@ void          x264_frame_push_unused( x264_t *h, x264_frame_t *frame );
  * page touching. Arm: x264_prealloc_arm, defined in api.c. Twin
  * (PREALLOC_TWIN 1): the never defined x264_prealloc_twin, which links as 0,
  * and frames are allocated on first use as before. The code is the same in both. */
-#define PREALLOC_TWIN 0
+#define PREALLOC_TWIN 1
 extern const char x264_prealloc_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_prealloc_twin __attribute__((weak, visibility("hidden")));
 #if PREALLOC_TWIN
