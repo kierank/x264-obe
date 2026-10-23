@@ -274,6 +274,14 @@ static void hpel_cnt_region( x264_frame_t *f, int fld, intptr_t row, intptr_t x,
         char *e = getenv( "X264_HPEL_CHECK_STRICT" );
         __atomic_store_n( &hpel_strict, e && atoi( e ), __ATOMIC_RELAXED );
     }
+    /* reads stay inside the PADH columns each side of a row */
+    if( __atomic_load_n( &hpel_strict, __ATOMIC_RELAXED ) && (x < -PADH || x + w > f->i_width[0] + PADH) )
+    {
+        fprintf( stderr, "hpel_check strict: frame %d set %d row %d read of columns %d..%d outside the padding\n",
+                 f->i_frame, fld, (int)row, (int)x, (int)x + w - 1 );
+        hpel_check_diag( f, fld );
+        abort();
+    }
     int mbw = f->i_width[0] >> 4;
     int mbh = f->i_lines[0] >> 4;
     int lines = f->i_lines[0];
@@ -659,7 +667,8 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
             CHECKED_MALLOCZERO( frame->hpel_cnt_row[i], frame->i_lines[0] * h->mb.i_mb_width );
         }
         frame->hpel_cnt_planes = luma_plane_count;
-        frame->hpel_cnt_padx = PADH + padh_align;
+        /* a row's pixels start PADH before column 0: padh_align only aligns the buffer */
+        frame->hpel_cnt_padx = PADH;
         int slot = __atomic_load_n( &hpel_cnt_nreg, __ATOMIC_RELAXED );
         if( slot < HPEL_CNT_SLOTS )
         {
