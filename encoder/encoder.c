@@ -3158,7 +3158,21 @@ static intptr_t x264_slice_write( x264_t *h )
 
         /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 reencode:
+        x264_cnt_final = 1;
         x264_macroblock_encode( h );
+        x264_cnt_final = 0;
+        if( h->sh.i_type == SLICE_TYPE_P )
+        {
+            MEPR_CNT( MEPR_MB_ALL );
+            if( IS_INTRA( h->mb.i_type ) )
+                MEPR_CNT( MEPR_MB_INTRA );
+            else if( h->mb.i_type == P_SKIP )
+                MEPR_CNT( MEPR_MB_SKIP );
+            else if( h->mb.i_type == P_L0 && h->mb.i_partition == D_16x16 )
+                MEPR_CNT( MEPR_MB_P16 );
+            else
+                MEPR_CNT( MEPR_MB_PPART );
+        }
 
         if( h->param.b_cabac )
         {
@@ -4608,6 +4622,13 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
  ****************************************************************************/
 void    x264_encoder_close  ( x264_t *h )
 {
+    {
+        static const char *names[MEPR_N] = { "ref16", "ref16_w", "moves", "stay", "win_plane", "win_avg2", "win_w", "win_nofuse",
+            "fin16", "fin_plane", "fin_avg2", "fin_w", "fin_match", "fin_match_w", "mc16_all", "mb_p", "mb_p16", "mb_skip",
+            "mb_ppart", "mb_intra", "ref16_q", "ref16_s", "fin_analyse", "fin_match_mat" };
+        for( int i = 0; i < MEPR_N; i++ )
+            fprintf( stderr, "mepr %-14s %" PRIu64 "\n", names[i], x264_cnt_mepr[i] );
+    }
     int64_t i_yuv_size = FRAME_SIZE( h->param.i_width * h->param.i_height );
     int64_t i_mb_count_size[2][7] = {{0}};
     char buf[200];

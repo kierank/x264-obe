@@ -363,6 +363,24 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed );
 #define x264_mb_predict_mv_ref16x16 x264_template(mb_predict_mv_ref16x16)
 void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc );
 
+/* me-pred-reuse counters */
+enum
+{
+    MEPR_REF16, MEPR_REF16_W, MEPR_MOVES, MEPR_STAY,
+    MEPR_WIN_PLANE, MEPR_WIN_AVG2, MEPR_WIN_W, MEPR_WIN_NOFUSE,
+    MEPR_FIN, MEPR_FIN_PLANE, MEPR_FIN_AVG2, MEPR_FIN_W, MEPR_FIN_MATCH, MEPR_FIN_MATCH_W,
+    MEPR_MC16_ALL, MEPR_MB_ALL, MEPR_MB_P16, MEPR_MB_SKIP, MEPR_MB_PPART, MEPR_MB_INTRA,
+    MEPR_REF16_Q, MEPR_REF16_S, MEPR_FIN_ANALYSE, MEPR_FIN_MATCH_MAT, MEPR_N
+};
+#define x264_cnt_mepr x264_template(cnt_mepr)
+extern uint64_t x264_cnt_mepr[MEPR_N];
+#define x264_cnt_final x264_template(cnt_final)
+extern __thread int x264_cnt_final;
+#define x264_cnt_last x264_template(cnt_last)
+extern __thread int x264_cnt_last[5];
+#define MEPR_CNT(i) __atomic_fetch_add( &x264_cnt_mepr[i], 1, __ATOMIC_RELAXED )
+#define MEPR_ADD(i,n) __atomic_fetch_add( &x264_cnt_mepr[i], (n), __ATOMIC_RELAXED )
+
 #define x264_mb_mc x264_template(mb_mc)
 void x264_mb_mc( x264_t *h );
 #define x264_mb_mc_8x8 x264_template(mb_mc_8x8)

@@ -2992,7 +2992,9 @@ static inline void x264_mb_analyse_transform( x264_t *h )
     if( x264_mb_transform_8x8_allowed( h ) && h->param.analyse.b_transform_8x8 && !h->mb.b_lossless )
     {
         /* Only luma MC is really needed for 4:2:0, but the full MC is re-used in macroblock_encode. */
+        x264_cnt_final = 2;
         x264_mb_mc( h );
+        x264_cnt_final = 0;
 
         int plane_count = CHROMA444 && h->mb.b_chroma_me ? 3 : 1;
         int i_cost8 = 0, i_cost4 = 0;

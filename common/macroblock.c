@@ -34,6 +34,10 @@
                    &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
                    mvx, mvy, 4*width, 4*height, w );
 
+uint64_t x264_cnt_mepr[MEPR_N];
+__thread int x264_cnt_final;
+__thread int x264_cnt_last[5];
+
 static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
 {
     int i8    = x264_scan8[0]+x+8*y;
@@ -42,6 +46,28 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     int mvy   = x264_clip3( h->mb.cache.mv[0][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
     /* H.264 8.4.3: a field mb's explicit weights are those of refIdxL0 >> 1 */
     x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
+
+    if( width == 4 && height == 4 )
+    {
+        MEPR_CNT( MEPR_MC16_ALL );
+        if( x264_cnt_final )
+        {
+            int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+            MEPR_CNT( MEPR_FIN );
+            if( x264_cnt_final == 2 )
+                MEPR_CNT( MEPR_FIN_ANALYSE );
+            MEPR_CNT( weight[0].weightfn ? MEPR_FIN_W : (qpel_idx & 5) ? MEPR_FIN_AVG2 : MEPR_FIN_PLANE );
+            if( x264_cnt_last[3] && x264_cnt_last[0] == h->mb.i_mb_xy && x264_cnt_last[1] == i_ref &&
+                x264_cnt_last[2] == (int)M32( h->mb.cache.mv[0][i8] ) )
+            {
+                MEPR_CNT( MEPR_FIN_MATCH );
+                if( weight[0].weightfn )
+                    MEPR_CNT( MEPR_FIN_MATCH_W );
+                if( x264_cnt_last[4] )
+                    MEPR_CNT( MEPR_FIN_MATCH_MAT );
+            }
+        }
+    }
 
     MC_LUMA( 0, 0, &weight[0] );
 

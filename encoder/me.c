@@ -1103,6 +1103,27 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     } \
 }
 
+#define MEPR_END()\
+if( i_pixel == PIXEL_16x16 )\
+{\
+    int moved = (bmx != mepr_smx) | (bmy != mepr_smy);\
+    int qidx = ((bmy&3)<<2) + (bmx&3);\
+    int w = !!m->weight[0].weightfn;\
+    int nofuse = !w && (qidx & 5) && !fenc_pre && !h->pixf.mbcmp_avg2[i_pixel];\
+    MEPR_CNT( MEPR_REF16 );\
+    MEPR_CNT( b_refine_qpel ? MEPR_REF16_Q : MEPR_REF16_S );\
+    if( w ) MEPR_CNT( MEPR_REF16_W );\
+    MEPR_ADD( MEPR_MOVES, mepr_moves );\
+    if( !moved ) MEPR_CNT( MEPR_STAY );\
+    MEPR_CNT( w ? MEPR_WIN_W : (qidx & 5) ? MEPR_WIN_AVG2 : MEPR_WIN_PLANE );\
+    if( nofuse ) MEPR_CNT( MEPR_WIN_NOFUSE );\
+    x264_cnt_last[0] = h->mb.i_mb_xy;\
+    x264_cnt_last[1] = m->i_ref;\
+    x264_cnt_last[2] = (int)pack16to32_mask( bmx, bmy );\
+    x264_cnt_last[3] = 1;\
+    x264_cnt_last[4] = (w || nofuse) && (moved || mepr_rescored);\
+}\
+
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -1149,6 +1170,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int bcost = m->cost;
     int odir = -1, bdir;
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
+    int mepr_smx = bmx, mepr_smy = bmy, mepr_moves = 0, mepr_rescored = 0;
 
     /* halfpel diamond search */
     if( hpel_iters )
@@ -1195,6 +1217,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             }
             if( !(bcost&63) )
                 break;
+            mepr_moves++;
             bmx -= (bcost<<26)>>29;
             bmy -= (bcost<<29)>>29;
             bcost &= ~63;
@@ -1206,6 +1229,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     {
         bcost = COST_MAX;
         COST_MV_SATD( bmx, bmy, -1 );
+        mepr_rescored = 1;
     }
 
     /* early termination when examining multiple reference frames */
@@ -1221,6 +1245,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             m->mv[0] = bmx;
             m->mv[1] = bmy;
             // don't need cost_mv
+            MEPR_END();
             return;
         }
         else if( bcost < *p_halfpel_thresh )
@@ -1256,6 +1281,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 int bidx = bkey & 15;
                 if( !bidx )
                     break;
+                mepr_moves++;
                 bcost = bkey >> 4;
                 bdir = bidx - 1;
                 bmx = omx + qpel_dir_dx[bidx];
@@ -1276,6 +1302,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 COST_MV_SATD( omx + 1, omy, 3 );
                 if( (bmx == omx) & (bmy == omy) )
                     break;
+                mepr_moves++;
             }
         }
     }
@@ -1301,6 +1328,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         bmx -= (bcost<<28)>>30;
         bmy -= (bcost<<30)>>30;
         bcost >>= 4;
+        mepr_moves += (bmx != omx) | (bmy != omy);
     }
 
     if( b_chroma_late )
@@ -1310,7 +1338,9 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     m->mv[0] = bmx;
     m->mv[1] = bmy;
     m->cost_mv = p_cost_mvx[bmx] + p_cost_mvy[bmy];
+    MEPR_END();
 }
+#undef MEPR_END
 
 #define BIME_CACHE( dx, dy, list )\
 {\
