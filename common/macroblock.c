@@ -50,7 +50,7 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     if( width == 4 && height == 4 )
     {
         MEPR_CNT( MEPR_MC16_ALL );
-        if( x264_cnt_final )
+        if( x264_cnt_final && h->sh.i_type == SLICE_TYPE_P )
         {
             int qpel_idx = ((mvy&3)<<2) + (mvx&3);
             MEPR_CNT( MEPR_FIN );
