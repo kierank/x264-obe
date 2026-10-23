@@ -298,8 +298,8 @@ int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
             PREALLOC( h->mb.mvr[i][j], 2 * (i_mb_count + 1) * sizeof(int16_t) );
     }
 
-    /* the per-mb data, which every frame uses; not the weightp buffers */
-    size_t touch_size = prealloc_size;
+    /* the lookahead thread uses only the weightp buffers */
+    size_t touch_start = h == h->thread[h->param.i_threads] ? prealloc_size : 0;
 
     if( h->param.analyse.i_weighted_pred )
     {
@@ -342,7 +342,7 @@ int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
 
     PREALLOC_END( h->mb.base );
     if( b_touch )
-        memset( h->mb.base, 0, touch_size );
+        memset( h->mb.base + touch_start, 0, prealloc_size - touch_start );
 
     memset( h->mb.slice_table, -1, i_mb_count * sizeof(uint16_t) );
 
