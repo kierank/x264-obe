@@ -46,6 +46,9 @@ typedef int  (*x264_pixel_cmp_pt_min_t) ( pixel *fenc, pixel *pix, intptr_t, con
 typedef int  (*x264_pixel_cmp_hpel_min_t) ( pixel *fenc, pixel *pixv, pixel *pixh, intptr_t, uint64_t bias01, uint64_t bias23, int best );
 /* 1 if the block at fenc (FENC_STRIDE) equals that at fdec (FDEC_STRIDE), else 0 */
 typedef int  (*x264_pixel_fenc_eq_t) ( pixel *fenc, pixel *fdec );
+/* r = fenc (FENC_STRIDE) - fdec (FDEC_STRIDE) over 16x16: bit 4*i8x8+i4x4 set if every coefficient of that
+ * 4x4 quantises to 0 by 16*sum(r^2) - sum(r)^2 <= thr[0] and |sum(r)| < thr[1]; e8: sum(r^2) of each 8x8 */
+typedef int  (*x264_pixel_zscreen_t) ( pixel *fenc, pixel *fdec, const int32_t thr[2], int32_t e8[4] );
 /* me.c's whole dia search (hex: hexagon, half hexagons, square refine) from bmv = pack16to32_mask( bmx, bmy )
  * at bcost; ref at mv 0, costs cost_mvx[mx<<2] + cost_mvy[my<<2], iters i_me_range, range me.c's
  * mv_min | mv_max << 32. Returns bcost | pack16to32_mask( bmx, bmy ) << 32 */
@@ -178,6 +181,7 @@ typedef struct
     x264_pixel_cmp_hpel_min_t sad_hpel_min[7]; /* asm only, NULL otherwise; reference x264_pixel_sad_hpel_min_c */
     x264_pixel_cmp_hpel_min_t fpelcmp_hpel_min[7]; /* sad_hpel_min where fpelcmp is sad, else NULL */
     x264_pixel_fenc_eq_t fenc_eq[7]; /* 16x16, 8x16, 8x8; asm only, NULL otherwise; reference x264_pixel_fenc_eq_c */
+    x264_pixel_zscreen_t zscreen_16x16; /* asm only, NULL otherwise; reference x264_pixel_zscreen_c */
     /* asm only, NULL otherwise; references x264_pixel_sad_{dia,hex}_search_c */
     x264_pixel_fpel_search_t sad_dia_search[7];
     x264_pixel_fpel_search_t sad_hex_search[7];
@@ -288,6 +292,8 @@ int x264_pixel_sad_hpel_min_c( int i_pixel, pixel *fenc, pixel *pixv, pixel *pix
                                uint64_t bias01, uint64_t bias23, int best );
 #define x264_pixel_fenc_eq_c x264_template(pixel_fenc_eq_c)
 int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec );
+#define x264_pixel_zscreen_c x264_template(pixel_zscreen_c)
+int x264_pixel_zscreen_c( pixel *fenc, pixel *fdec, const int32_t thr[2], int32_t e8[4] );
 #define x264_pixel_sad_dia_search_c x264_template(pixel_sad_dia_search_c)
 uint64_t x264_pixel_sad_dia_search_c( int i_pixel, pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
                                       const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );

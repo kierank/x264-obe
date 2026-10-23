@@ -1026,6 +1026,8 @@ int x264_pixel_sad_hpel_min_8x16_avx2( pixel *, pixel *, pixel *, intptr_t, uint
 int x264_pixel_sad_hpel_min_8x8_avx2( pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t, int );
 #define x264_pixel_fenc_eq_16x16_avx2 x264_template(pixel_fenc_eq_16x16_avx2)
 int x264_pixel_fenc_eq_16x16_avx2( pixel *, pixel * );
+#define x264_pixel_zscreen_16x16_avx2 x264_template(pixel_zscreen_16x16_avx2)
+int x264_pixel_zscreen_16x16_avx2( pixel *, pixel *, const int32_t *, int32_t * );
 #define x264_pixel_sad_sq_min_16x16_avx512 x264_template(pixel_sad_sq_min_16x16_avx512)
 int x264_pixel_sad_sq_min_16x16_avx512( pixel *, pixel *, intptr_t, const int32_t *, int );
 #define x264_pixel_sad_sq_min_8x8_avx512 x264_template(pixel_sad_sq_min_8x8_avx512)
