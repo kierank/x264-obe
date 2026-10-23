@@ -1494,6 +1494,9 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
                         bcost = X264_MIN( cost, bcost );
                         M32( cache0_mv ) = pack16to32_mask(m0x,m0y);
                         M32( cache1_mv ) = pack16to32_mask(m1x,m1y);
+                        x264_mccnt_mc( h, 2, 2*x, 2*y, bw>>2, bh>>2, ref0,
+                                       x264_clip3( m0x, h->mb.mv_min[0], h->mb.mv_max[0] ), x264_clip3( m0y, h->mb.mv_min[1], h->mb.mv_max[1] ), ref1,
+                                       x264_clip3( m1x, h->mb.mv_min[0], h->mb.mv_max[0] ), x264_clip3( m1y, h->mb.mv_min[1], h->mb.mv_max[1] ), 0, 2 );
                         if( CHROMA444 )
                         {
                             h->mc.avg[i_pixel]( pixu, FDEC_STRIDE, src[1][0][i0], stride[1][0][i0], src[1][1][i1], stride[1][1][i1], i_weight );
@@ -1551,9 +1554,12 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
 {
     /* Motion compensation is done as part of bidir_rd; don't repeat
      * it in encoding. */
+    int site_bak = h->mb.i_mccnt_site;
+    h->mb.i_mccnt_site = MCC_BIDIR_RD;
     h->mb.b_skip_mc = 1;
     x264_me_refine_bidir( h, m0, m1, i_weight, i8, i_lambda2, 1 );
     h->mb.b_skip_mc = 0;
+    h->mb.i_mccnt_site = site_bak;
 }
 
 #undef COST_MV_SATD
@@ -1576,6 +1582,9 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
     { \
         uint64_t cost; \
         M32( cache_mv ) = pack16to32_mask(mx,my); \
+        x264_mccnt_mc( h, i_list, block_idx_x[i4], block_idx_y[i4], bw>>2, bh>>2, m->i_ref, \
+                       x264_clip3( mx, h->mb.mv_min[0], h->mb.mv_max[0] ), x264_clip3( my, h->mb.mv_min[1], h->mb.mv_max[1] ), \
+                       0, 0, 0, 1, 1 ); \
         if( CHROMA444 ) \
         { \
             h->mc.mc_luma( pixu, FDEC_STRIDE, &m->p_fref[4], m->i_stride[1], mx, my, bw, bh, &m->weight[1] ); \
@@ -1628,6 +1637,8 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
         pixv = &h->mb.pic.p_fdec[2][(i8>>1)*(8*FDEC_STRIDE>>chroma_v_shift)+(i8&1)*4];
     }
 
+    int site_bak = h->mb.i_mccnt_site;
+    h->mb.i_mccnt_site = MCC_QPEL_RD;
     h->mb.b_skip_mc = 1;
 
     if( m->i_pixel != PIXEL_16x16 && i4 != 0 )
@@ -1662,6 +1673,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
         bmx < h->mb.mv_min_spel[0] + 3 || bmx > h->mb.mv_max_spel[0] - 3 )
     {
         h->mb.b_skip_mc = 0;
+        h->mb.i_mccnt_site = site_bak;
         return;
     }
 
@@ -1713,4 +1725,5 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     amvd = pack8to16( X264_MIN(abs(bmx - m->mvp[0]),66), X264_MIN(abs(bmy - m->mvp[1]),66) );
     x264_macroblock_cache_mvd( h, block_idx_x[i4], block_idx_y[i4], bw>>2, bh>>2, i_list, amvd );
     h->mb.b_skip_mc = 0;
+    h->mb.i_mccnt_site = site_bak;
 }

@@ -639,6 +639,11 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                                   h->mb.mv_min[0], h->mb.mv_max[0] );
             int mvy = x264_clip3( h->mb.cache.mv[0][x264_scan8[0]][1],
                                   h->mb.mv_min[1], h->mb.mv_max[1] );
+            int site_bak = h->mb.i_mccnt_site;
+            h->mb.i_mccnt_site = MCC_FINAL_PSKIP;
+            x264_mccnt_mc( h, 0, 0, 0, 4, 4, 0, mvx, mvy, 0, 0, 0, plane_count, chroma ? 1 : 0 );
+            x264_mccnt_mb( h, 1 );
+            h->mb.i_mccnt_site = site_bak;
 
             for( int p = 0; p < plane_count; p++ )
                 h->mc.mc_luma( h->mb.pic.p_fdec[p], FDEC_STRIDE,
@@ -1047,6 +1052,10 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
 
         if( !b_bidir )
         {
+            int site_bak = h->mb.i_mccnt_site;
+            h->mb.i_mccnt_site = MCC_PROBE;
+            x264_mccnt_mc( h, 0, 0, 0, 4, 4, 0, mvp[0], mvp[1], 0, 0, 0, 0, 1 );
+            h->mb.i_mccnt_site = site_bak;
             /* Special case for mv0, which is (of course) very common in P-skip mode. */
             if( M32( mvp ) )
                 h->mc.mc_chroma( h->mb.pic.p_fdec[1], h->mb.pic.p_fdec[2], FDEC_STRIDE,

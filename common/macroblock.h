@@ -363,6 +363,25 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed );
 #define x264_mb_predict_mv_ref16x16 x264_template(mb_predict_mv_ref16x16)
 void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc );
 
+/* mccnt call sites */
+enum
+{
+    MCC_OTHER, MCC_PROBE, MCC_P_RD16, MCC_P_RDPART, MCC_B_RD, MCC_TRANSFORM_RD, MCC_QP_RD,
+    MCC_QPEL_RD, MCC_BIDIR_RD, MCC_ANALYSE_TRANSFORM, MCC_FORCE_INTRA, MCC_FINAL, MCC_FINAL_PSKIP,
+    MCC_B_DIRECT,
+    MCC_NSITES
+};
+#define x264_mccnt_reset x264_template(mccnt_reset)
+void x264_mccnt_reset( x264_t *h );
+/* kind 0 L0, 1 L1, 2 BI; x,y,w,hh in 4x4 units; mvs clipped, without the partition offset */
+#define x264_mccnt_mc x264_template(mccnt_mc)
+void x264_mccnt_mc( x264_t *h, int kind, int x, int y, int w, int hh, int ref0, int mvx0, int mvy0,
+                    int ref1, int mvx1, int mvy1, int n_luma, int n_chroma );
+#define x264_mccnt_mb x264_template(mccnt_mb)
+void x264_mccnt_mb( x264_t *h, int b_lookup_only );
+#define x264_mccnt_print x264_template(mccnt_print)
+void x264_mccnt_print( x264_t *h );
+
 #define x264_mb_mc x264_template(mb_mc)
 void x264_mb_mc( x264_t *h );
 #define x264_mb_mc_8x8 x264_template(mb_mc_8x8)

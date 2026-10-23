@@ -581,6 +581,18 @@ struct x264_t
         int b_overflow; /* If CAVLC had a level code overflow during bitstream writing. */
         int i_vbv_emerg; /* one-frame VBV emergency step of this row, enum vbv_emerg_e */
 
+        /* mccnt */
+        int i_mccnt_site;
+        int i_mccnt_n;
+        struct
+        {
+            uint8_t site, kind, pos, valid;
+            int8_t ref0, ref1;
+            uint32_t mv0, mv1;
+        } mccnt_log[128], mccnt_slot[2][3];
+        uint64_t mccnt_wkey[4][6];
+        int i_mccnt_wn;
+
         struct
         {
             /* space for p_fenc and p_fdec */

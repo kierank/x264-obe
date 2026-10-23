@@ -2824,6 +2824,7 @@ static void x264_mb_analyse_inter_b8x16( x264_t *h, x264_mb_analysis_t *a, int i
 static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
 {
     int thresh = a->b_early_terminate ? i_satd * 5/4 + 1 : COST_MAX;
+    h->mb.i_mccnt_site = MCC_P_RD16;
 
     h->mb.i_type = P_L0;
     if( a->l0.i_rd16x16 == COST_MAX && (!a->b_early_terminate || a->l0.me16x16.cost <= i_satd * 3/2) )
@@ -2832,6 +2833,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
         x264_analyse_update_cache( h, a );
         a->l0.i_rd16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
+    h->mb.i_mccnt_site = MCC_P_RDPART;
 
     if( a->l0.i_cost16x8 < thresh )
     {
@@ -2894,11 +2896,13 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     }
     else
         a->l0.i_cost8x8 = COST_MAX;
+    h->mb.i_mccnt_site = MCC_OTHER;
 }
 
 static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
     int thresh = a->b_early_terminate ? i_satd_inter * (17 + (!!h->mb.i_psy_rd))/16 + 1 : COST_MAX;
+    h->mb.i_mccnt_site = MCC_B_RD;
 
     if( a->b_direct_available && a->i_rd16x16direct == COST_MAX )
     {
@@ -2964,6 +2968,7 @@ static void x264_mb_analyse_b_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_i
         x264_analyse_update_cache( h, a );
         a->i_rd8x16bi = x264_rd_cost_mb( h, a->i_lambda2 );
     }
+    h->mb.i_mccnt_site = MCC_OTHER;
 }
 
 static void x264_refine_bidir( x264_t *h, x264_mb_analysis_t *a )
@@ -3013,8 +3018,10 @@ static inline void x264_mb_analyse_transform( x264_t *h )
 {
     if( x264_mb_transform_8x8_allowed( h ) && h->param.analyse.b_transform_8x8 && !h->mb.b_lossless )
     {
+        h->mb.i_mccnt_site = MCC_ANALYSE_TRANSFORM;
         /* Only luma MC is really needed for 4:2:0, but the full MC is re-used in macroblock_encode. */
         x264_mb_mc( h );
+        h->mb.i_mccnt_site = MCC_OTHER;
 
         int plane_count = CHROMA444 && h->mb.b_chroma_me ? 3 : 1;
         int i_cost8 = 0, i_cost4 = 0;
@@ -3061,7 +3068,10 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
         x264_analyse_update_cache( h, a );
         h->mb.b_transform_8x8 ^= 1;
         /* FIXME only luma is needed for 4:2:0, but the score for comparison already includes chroma */
+        int site_bak = h->mb.i_mccnt_site;
+        h->mb.i_mccnt_site = MCC_TRANSFORM_RD;
         int i_rd8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        h->mb.i_mccnt_site = site_bak;
 
         if( *i_rd >= i_rd8 )
         {
@@ -3089,6 +3099,7 @@ static inline void x264_mb_analyse_qp_rd( x264_t *h, x264_mb_analysis_t *a )
     int bcost, cost, failures, prevcost, origcost;
     int orig_qp = h->mb.i_qp, bqp = h->mb.i_qp;
     int last_qp_tried = 0;
+    h->mb.i_mccnt_site = MCC_QP_RD;
     origcost = bcost = x264_rd_cost_mb( h, a->i_lambda2 );
     int origcbp = h->mb.cbp[h->mb.i_mb_xy];
 
@@ -3349,6 +3360,7 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
+    x264_mccnt_reset( h );
 
     /*--------------------------- Do the analysis ---------------------------*/
     if( h->sh.i_type == SLICE_TYPE_I )
@@ -3704,8 +3716,10 @@ skip_analysis:
             {
                 /* Intra masking: copy fdec to fenc and re-encode the block as intra in order to make it appear as if
                  * it was an inter block. */
+                h->mb.i_mccnt_site = MCC_FORCE_INTRA;
                 x264_analyse_update_cache( h, &analysis );
                 x264_macroblock_encode( h );
+                h->mb.i_mccnt_site = MCC_OTHER;
                 for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
                     h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[p], FENC_STRIDE, h->mb.pic.p_fdec[p], FDEC_STRIDE, 16 );
                 h->mb.pic.i_fenc_pre = 0;
@@ -3801,7 +3815,9 @@ skip_analysis:
                 {
                     if( b_changed )
                     {
+                        h->mb.i_mccnt_site = MCC_B_DIRECT;
                         x264_mb_mc( h );
+                        h->mb.i_mccnt_site = MCC_OTHER;
                         b_skip = x264_macroblock_probe_bskip( h );
                     }
                     h->stat.frame.i_direct_score[ h->sh.b_direct_spatial_mv_pred ] += b_skip;
@@ -3817,7 +3833,11 @@ skip_analysis:
         if( analysis.b_direct_available )
         {
             if( !h->mb.b_direct_auto_write )
+            {
+                h->mb.i_mccnt_site = MCC_B_DIRECT;
                 x264_mb_mc( h );
+                h->mb.i_mccnt_site = MCC_OTHER;
+            }
             /* If the current macroblock is off the frame, just skip it. */
             if( HAVE_INTERLACED && !MB_INTERLACED && h->mb.i_mb_y * 16 >= h->param.i_height )
                 b_skip = 1;
@@ -3869,6 +3889,7 @@ skip_analysis:
                     M32( h->mb.mvr[0][i][h->mb.i_mb_xy] ) = 0;
                 for( int i = 1; i < h->mb.pic.i_fref[1]; i++ )
                     M32( h->mb.mvr[1][i][h->mb.i_mb_xy] ) = 0;
+                h->mb.i_mccnt_site = MCC_FINAL;
                 return;
             }
 
@@ -3889,6 +3910,7 @@ skip_analysis:
                 {
                     h->mb.i_type = B_SKIP;
                     x264_analyse_update_cache( h, &analysis );
+                    h->mb.i_mccnt_site = MCC_FINAL;
                     return;
                 }
             }
@@ -4211,6 +4233,8 @@ analysis_done:
 
     if( analysis.i_mbrd == 3 && !IS_SKIP(h->mb.i_type) && h->mb.i_vbv_emerg < VBV_EMERG_ZERO )
         x264_mb_analyse_qp_rd( h, &analysis );
+
+    h->mb.i_mccnt_site = MCC_FINAL;
 
     h->mb.b_trellis = h->param.analyse.i_trellis;
     h->mb.b_noise_reduction = h->mb.b_noise_reduction || (!!h->param.analyse.i_noise_reduction && !IS_INTRA( h->mb.i_type ));

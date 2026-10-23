@@ -42,6 +42,7 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     int mvy   = x264_clip3( h->mb.cache.mv[0][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
     /* H.264 8.4.3: a field mb's explicit weights are those of refIdxL0 >> 1 */
     x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
+    x264_mccnt_mc( h, 0, x, y, width, height, i_ref, mvx-16*x, mvy-16*y, 0, 0, 0, CHROMA444 ? 3 : 1, CHROMA444 ? 0 : 1 );
 
     MC_LUMA( 0, 0, &weight[0] );
 
@@ -82,6 +83,7 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     int i_ref = h->mb.cache.ref[1][i8];
     int mvx   = x264_clip3( h->mb.cache.mv[1][i8][0], h->mb.mv_min[0], h->mb.mv_max[0] ) + 4*4*x;
     int mvy   = x264_clip3( h->mb.cache.mv[1][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
+    x264_mccnt_mc( h, 1, x, y, width, height, i_ref, mvx-16*x, mvy-16*y, 0, 0, 0, CHROMA444 ? 3 : 1, CHROMA444 ? 0 : 1 );
 
     MC_LUMA( 1, 0, x264_weight_none );
 
@@ -129,6 +131,7 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
     ALIGNED_ARRAY_N( pixel, tmp0,[16*16] );
     ALIGNED_ARRAY_N( pixel, tmp1,[16*16] );
     pixel *src0, *src1;
+    x264_mccnt_mc( h, 2, x, y, width, height, i_ref0, mvx0-16*x, mvy0-16*y, i_ref1, mvx1-16*x, mvy1-16*y, CHROMA444 ? 6 : 2, CHROMA444 ? 0 : 2 );
 
     MC_LUMA_BI( 0 );
 
@@ -209,6 +212,7 @@ void x264_mb_mc_8x8( x264_t *h, int i8 )
 
 void x264_mb_mc( x264_t *h )
 {
+    x264_mccnt_mb( h, 0 );
     if( h->mb.i_partition == D_8x8 )
     {
         for( int i = 0; i < 4; i++ )
@@ -253,6 +257,173 @@ void x264_mb_mc( x264_t *h )
             else                 x264_mb_mc_1xywh ( h, 2, 0, 2, 4 );
         }
     }
+}
+
+/* [B][site][kind][16x16][calls, rep_any, rep_slotA, rep_slotB, luma, chroma] */
+static uint64_t mccnt[2][MCC_NSITES][3][2][6];
+static uint64_t mccnt_mbs[2];
+static const char * const mccnt_site_name[MCC_NSITES] =
+{
+    "other", "probe", "p_rd16", "p_rdpart", "b_rd", "transform_rd", "qp_rd",
+    "qpel_rd", "bidir_rd", "analyse_tr", "force_intra", "final", "final_pskip", "b_direct"
+};
+
+#define MCCNT_ADD( var, v ) __atomic_fetch_add( &(var), (v), __ATOMIC_RELAXED )
+
+void x264_mccnt_reset( x264_t *h )
+{
+    h->mb.i_mccnt_site = MCC_OTHER;
+    h->mb.i_mccnt_n = 0;
+    h->mb.i_mccnt_wn = 0;
+    for( int s = 0; s < 2; s++ )
+        for( int k = 0; k < 3; k++ )
+            h->mb.mccnt_slot[s][k].valid = 0;
+    if( h->sh.i_type != SLICE_TYPE_I )
+        MCCNT_ADD( mccnt_mbs[h->sh.i_type == SLICE_TYPE_B], 1 );
+}
+
+void x264_mccnt_mc( x264_t *h, int kind, int x, int y, int w, int hh, int ref0, int mvx0, int mvy0,
+                    int ref1, int mvx1, int mvy1, int n_luma, int n_chroma )
+{
+    if( h->sh.i_type == SLICE_TYPE_I )
+        return;
+    int site = h->mb.i_mccnt_site;
+    int is16 = w == 4 && hh == 4;
+    int b = h->sh.i_type == SLICE_TYPE_B;
+    uint8_t pos = x + 4*y + 16*(w-1) + 64*(hh-1);
+    uint32_t mv0 = pack16to32_mask( mvx0, mvy0 );
+    uint32_t mv1 = pack16to32_mask( mvx1, mvy1 );
+    uint64_t *c = mccnt[b][site][kind][is16];
+    MCCNT_ADD( c[0], 1 );
+    MCCNT_ADD( c[4], n_luma );
+    MCCNT_ADD( c[5], n_chroma );
+#define MCCNT_EQ(e) ((e).kind == kind && (e).pos == pos && (e).ref0 == ref0 && (e).mv0 == mv0 && (e).ref1 == ref1 && (e).mv1 == mv1)
+    for( int i = 0; i < h->mb.i_mccnt_n; i++ )
+        if( MCCNT_EQ( h->mb.mccnt_log[i] ) )
+        {
+            MCCNT_ADD( c[1], 1 );
+            break;
+        }
+    if( is16 )
+    {
+        for( int s = 0; s < 2; s++ )
+            if( h->mb.mccnt_slot[s][kind].valid && MCCNT_EQ( h->mb.mccnt_slot[s][kind] ) )
+                MCCNT_ADD( c[2+s], 1 );
+    }
+#undef MCCNT_EQ
+    int me = site == MCC_QPEL_RD || site == MCC_BIDIR_RD;
+    if( h->mb.i_mccnt_n < 128 )
+    {
+        int i = h->mb.i_mccnt_n++;
+        h->mb.mccnt_log[i].site = site;
+        h->mb.mccnt_log[i].kind = kind;
+        h->mb.mccnt_log[i].pos = pos;
+        h->mb.mccnt_log[i].valid = 1;
+        h->mb.mccnt_log[i].ref0 = ref0;
+        h->mb.mccnt_log[i].ref1 = ref1;
+        h->mb.mccnt_log[i].mv0 = mv0;
+        h->mb.mccnt_log[i].mv1 = mv1;
+        if( is16 && site != MCC_PROBE )
+            for( int s = me; s < 2; s++ )
+                h->mb.mccnt_slot[s][kind] = h->mb.mccnt_log[i];
+    }
+}
+
+/* whole-mb policy: [B][site][cacheable, hit1, hit2, hit4, uncacheable] */
+static uint64_t mccnt_w[2][MCC_NSITES][5];
+
+/* whole-mb key: D_16x16, or D_8x8 in B; 0 if not cacheable */
+static int mccnt_wkey( x264_t *h, uint64_t k[6] )
+{
+    int b = h->sh.i_type == SLICE_TYPE_B;
+    int nq;
+    if( h->mb.i_partition == D_16x16 )
+        nq = 1;
+    else if( h->mb.i_partition == D_8x8 && b )
+        nq = 4;
+    else
+        return 0;
+    int8_t ref[2][4] = {{0}};
+    uint32_t mv[2][4] = {{0}};
+    for( int q = 0; q < nq; q++ )
+    {
+        int s8 = x264_scan8[4*q];
+        for( int l = 0; l <= b; l++ )
+        {
+            ref[l][q] = h->mb.cache.ref[l][s8];
+            mv[l][q] = ref[l][q] >= 0 ? M32( h->mb.cache.mv[l][s8] ) : 0;
+        }
+    }
+    memcpy( &k[0], ref, 8 );
+    memcpy( &k[1], mv, 32 );
+    k[5] = h->mb.i_partition;
+    return 1;
+}
+
+void x264_mccnt_mb( x264_t *h, int b_lookup_only )
+{
+    if( h->sh.i_type == SLICE_TYPE_I )
+        return;
+    int b = h->sh.i_type == SLICE_TYPE_B;
+    uint64_t *c = mccnt_w[b][h->mb.i_mccnt_site];
+    uint64_t k[6];
+    if( !mccnt_wkey( h, k ) )
+    {
+        MCCNT_ADD( c[4], 1 );
+        return;
+    }
+    MCCNT_ADD( c[0], 1 );
+    int found = -1;
+    for( int i = 0; i < h->mb.i_mccnt_wn; i++ )
+        if( !memcmp( h->mb.mccnt_wkey[i], k, sizeof(k) ) )
+        {
+            found = i;
+            break;
+        }
+    if( found >= 0 )
+    {
+        if( found < 1 ) MCCNT_ADD( c[1], 1 );
+        if( found < 2 ) MCCNT_ADD( c[2], 1 );
+        MCCNT_ADD( c[3], 1 );
+    }
+    if( b_lookup_only )
+        return;
+    int n = found >= 0 ? found : X264_MIN( h->mb.i_mccnt_wn, 3 );
+    if( found < 0 && h->mb.i_mccnt_wn < 4 )
+        h->mb.i_mccnt_wn++;
+    for( int i = n; i > 0; i-- )
+        memcpy( h->mb.mccnt_wkey[i], h->mb.mccnt_wkey[i-1], sizeof(k) );
+    memcpy( h->mb.mccnt_wkey[0], k, sizeof(k) );
+}
+
+void x264_mccnt_print( x264_t *h )
+{
+    static const char * const kind_name[3] = { "L0", "L1", "BI" };
+    if( !mccnt_mbs[0] && !mccnt_mbs[1] )
+        return;
+    fprintf( stderr, "mccnt%d: P mbs %"PRIu64" B mbs %"PRIu64"\n", BIT_DEPTH, mccnt_mbs[0], mccnt_mbs[1] );
+    fprintf( stderr, "mccnt%d: slice site kind part calls rep_any rep_slotA rep_slotB luma chroma\n", BIT_DEPTH );
+    for( int b = 0; b < 2; b++ )
+        for( int s = 0; s < MCC_NSITES; s++ )
+            for( int k = 0; k < 3; k++ )
+                for( int p = 1; p >= 0; p-- )
+                {
+                    uint64_t *c = mccnt[b][s][k][p];
+                    if( !c[0] )
+                        continue;
+                    fprintf( stderr, "mccnt%d: %c %s %s %s %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64"\n",
+                             BIT_DEPTH, b ? 'B' : 'P', mccnt_site_name[s], kind_name[k], p ? "16x16" : "sub",
+                             c[0], c[1], c[2], c[3], c[4], c[5] );
+                }
+    fprintf( stderr, "mccnt%d: whole-mb slice site cacheable hit1 hit2 hit4 uncacheable\n", BIT_DEPTH );
+    for( int b = 0; b < 2; b++ )
+        for( int s = 0; s < MCC_NSITES; s++ )
+        {
+            uint64_t *c = mccnt_w[b][s];
+            if( c[0] || c[4] )
+                fprintf( stderr, "mccnt%d: W %c %s %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64"\n",
+                         BIT_DEPTH, b ? 'B' : 'P', mccnt_site_name[s], c[0], c[1], c[2], c[3], c[4] );
+        }
 }
 
 int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
