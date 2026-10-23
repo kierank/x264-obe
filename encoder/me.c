@@ -92,9 +92,11 @@ static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw
         intptr_t stride = m->i_stride[0];
         intptr_t offset = (my>>2)*stride + (mx>>2);
         pixel *src1 = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+        HPEL_CNT( src1, bw, bh );
         if( qpel_idx & 5 )
         {
             pixel *src2 = m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
+            HPEL_CNT( src2, bw, bh );
             return cmp_avg2( m->p_fenc[0], src1, src2, stride );
         }
         return cmp( m->p_fenc[0], FENC_STRIDE, src1, stride );
@@ -1032,8 +1034,12 @@ static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, 
             int qpel_idx = ((my&3)<<2) + (mx&3);
             intptr_t offset = (my>>2)*stride + (mx>>2);
             src = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+            HPEL_CNT( src, bw, bh );
             if( qpel_idx & 5 )
+            {
+                HPEL_CNT( m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3), bw, bh );
                 return h->pixf.mbcmp_avg2_pre[i_pixel]( fenc_pre, src, m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3), stride );
+            }
         }
         else
         {
@@ -1220,6 +1226,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 stride = m->i_stride[0];
                 src0 = m->p_fref[x264_hpel_ref0[(((omy-2)&3)<<2) + (omx&3)]] + ((omy-2)>>2)*stride + (omx>>2);
                 src2 = m->p_fref[x264_hpel_ref0[((omy&3)<<2) + ((omx-2)&3)]] + (omy>>2)*stride + ((omx-2)>>2);
+                HPEL_CNT( src0, bw, bh+1 );
+                HPEL_CNT( src2, bw+1, bh );
             }
             else
             {

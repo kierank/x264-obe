@@ -728,6 +728,34 @@ static void mbtree_propagate_list( x264_t *h, uint16_t *ref_costs, int16_t (*mvs
 #undef CLIP_ADD
 }
 
+static void (*mc_luma_inner)( pixel *dst, intptr_t i_dst, pixel **src, intptr_t i_src,
+                              int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+static pixel *(*get_ref_inner)( pixel *dst, intptr_t *i_dst, pixel **src, intptr_t i_src,
+                                int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+
+static void hpel_cnt_mv( pixel **src, intptr_t i_src_stride, int mvx, int mvy, int i_width, int i_height )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    intptr_t offset = (mvy>>2)*i_src_stride + (mvx>>2);
+    HPEL_CNT( src[x264_hpel_ref0[qpel_idx]] + offset + ((mvy&3) == 3) * i_src_stride, i_width, i_height );
+    if( qpel_idx & 5 )
+        HPEL_CNT( src[x264_hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3), i_width, i_height );
+}
+
+static void mc_luma_cnt( pixel *dst, intptr_t i_dst, pixel **src, intptr_t i_src,
+                         int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    hpel_cnt_mv( src, i_src, mvx, mvy, i_width, i_height );
+    mc_luma_inner( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
+
+static pixel *get_ref_cnt( pixel *dst, intptr_t *i_dst, pixel **src, intptr_t i_src,
+                           int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    hpel_cnt_mv( src, i_src, mvx, mvy, i_width, i_height );
+    return get_ref_inner( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
+
 void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 {
     pf->mc_luma   = mc_luma;
@@ -811,6 +839,14 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
         pf->mbtree_finish = mbtree_finish;
         pf->aq_variance_tail = aq_variance_tail;
     }
+
+    if( pf->mc_luma != mc_luma_cnt )
+    {
+        mc_luma_inner = pf->mc_luma;
+        get_ref_inner = pf->get_ref;
+        pf->mc_luma = mc_luma_cnt;
+        pf->get_ref = get_ref_cnt;
+    }
 }
 
 #define FLD_SRC_FLD   0 /* plane_fld */
@@ -850,6 +886,8 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 
     if( mb_y & b_interlaced )
         return;
+
+    __atomic_or_fetch( &frame->hpel_cnt_built, (!b_interlaced || h->mb.b_adaptive_mbaff) | (b_interlaced << 1), __ATOMIC_RELAXED );
 
     for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
     {
@@ -986,9 +1024,25 @@ static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y,
 /* Build the units [u, u1] of set that aren't built. Another thread building one
  * is waited for. With frame threads, a unit is built once the frame has the
  * rows x264_fdec_filter_row would have broadcast after filtering it. */
+static int hpel_chk_reverse = -1;
 void x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 )
 {
     int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
+    if( __atomic_load_n( &hpel_chk_reverse, __ATOMIC_RELAXED ) < 0 )
+    {
+        char *e = getenv( "X264_HPEL_CHECK_REVERSE" );
+        __atomic_store_n( &hpel_chk_reverse, e && atoi( e ), __ATOMIC_RELAXED );
+    }
+    if( __atomic_load_n( &hpel_chk_reverse, __ATOMIC_RELAXED ) && !__atomic_exchange_n( &frame->hpel_chk_rev, 1, __ATOMIC_ACQ_REL ) )
+    {
+        /* every unit, last first */
+        for( int s = PARAM_INTERLACED; s >= 0; s-- )
+            for( int v = last; v >= 0; v-- )
+            {
+                __atomic_store_n( &hpel_chk_reverse, 2, __ATOMIC_RELAXED );
+                x264_frame_hpel_build( h, frame, s, v, v );
+            }
+    }
     for( ; u <= u1; u++ )
     {
         uint8_t *state = &frame->hpel_unit[set][u];
