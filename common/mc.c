@@ -919,3 +919,88 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         }
     }
 }
+
+/* Lazy hpel, in place of x264_frame_filter: the plane_fld rows its field pass
+ * would have copied with hpel_filter_copy. */
+void x264_frame_filter_fld_copy( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
+{
+    if( mb_y & 1 )
+        return;
+
+    for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+    {
+        intptr_t stride = frame->i_stride[p] << 1;
+        int width = frame->i_width[p] + 16;
+        int start = (mb_y*16 >> 1) - 8;
+        int height_fld = ((b_end ? frame->i_lines[p] : mb_y*16) >> 1) + 8;
+        int y0 = x264_clip3( 2, start, height_fld );
+        int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
+        for( int i = 0; i < 2; i++ )
+            for( int y = y0; y < y1; y++ )
+            {
+                int offs = y*stride + i*frame->i_stride[p] - 8;
+                memcpy( frame->plane_fld[p] + offs, frame->plane[p] + offs, width * sizeof(pixel) );
+            }
+    }
+}
+
+/* The hpel of set (0 frame, 1 field) that x264_frame_filter( h, frame, mb_y, b_end )
+ * writes, from plane_fld for fields (x264_frame_filter_fld_copy has filled it). */
+static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y, int b_end )
+{
+    const int b_interlaced = PARAM_INTERLACED;
+    for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+    {
+        if( !set )
+        {
+            int stride = frame->i_stride[p];
+            int start = mb_y*16 - 8;
+            int height = (b_end ? frame->i_lines[0] + 16*b_interlaced : (mb_y+b_interlaced)*16) + 8;
+            int offs = start*stride - 8;
+            h->mc.hpel_filter( frame->filtered[p][1] + offs, frame->filtered[p][2] + offs, frame->filtered[p][3] + offs,
+                               frame->plane[p] + offs, stride, frame->i_width[p] + 16, height - start, h->scratch_hpel );
+        }
+        else
+        {
+            int start = (mb_y*16 >> 1) - 8;
+            int height_fld = ((b_end ? frame->i_lines[p] : mb_y*16) >> 1) + 8;
+            for( int i = 0; i < 2; i++ )
+                frame_filter_fld( h, frame, p, i, start, height_fld, 0 );
+        }
+    }
+}
+
+/* Build the units [u, u1] of set that aren't built. Another thread building one
+ * is waited for. With frame threads, a unit is built once the frame has the
+ * rows x264_fdec_filter_row would have broadcast after filtering it. */
+void x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 )
+{
+    int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
+    for( ; u <= u1; u++ )
+    {
+        uint8_t *state = &frame->hpel_unit[set][u];
+        if( __atomic_load_n( state, __ATOMIC_ACQUIRE ) == HPEL_UNIT_BUILT )
+            continue;
+        int mb_y = u << PARAM_INTERLACED;
+        int b_end = u == last;
+        if( h->i_thread_frames > 1 )
+            x264_frame_cond_wait( frame, b_end ? h->mb.i_mb_height*16 + 10000
+                                                : (mb_y + (1 << PARAM_INTERLACED))*16 - (X264_THREAD_HEIGHT << PARAM_INTERLACED) );
+        x264_pthread_mutex_lock( &frame->mutex );
+        while( __atomic_load_n( state, __ATOMIC_RELAXED ) == HPEL_UNIT_BUILDING )
+            x264_pthread_cond_wait( &frame->cv, &frame->mutex );
+        int b_build = __atomic_load_n( state, __ATOMIC_RELAXED ) == HPEL_UNIT_NONE;
+        if( b_build )
+            __atomic_store_n( state, HPEL_UNIT_BUILDING, __ATOMIC_RELAXED );
+        x264_pthread_mutex_unlock( &frame->mutex );
+        if( b_build )
+        {
+            frame_filter_set( h, frame, set, mb_y, b_end );
+            x264_frame_expand_border_filtered_set( h, frame, set, mb_y, b_end );
+            x264_pthread_mutex_lock( &frame->mutex );
+            __atomic_store_n( state, HPEL_UNIT_BUILT, __ATOMIC_RELEASE );
+            x264_pthread_cond_broadcast( &frame->cv );
+            x264_pthread_mutex_unlock( &frame->mutex );
+        }
+    }
+}

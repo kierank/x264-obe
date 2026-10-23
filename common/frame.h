@@ -168,6 +168,12 @@ typedef struct x264_frame
     x264_pthread_cond_t  cv;
     int     i_slice_count; /* Atomically written to/read from with slice threads */
 
+    /* hpel built on first use (x264_frame_hpel_ensure): the state of each unit
+     * of the frame and field hpel planes, HPEL_UNIT_*; mutex and cv guard the
+     * building ones */
+    int     b_hpel_lazy;
+    uint8_t *hpel_unit[2];
+
     /* periodic intra refresh */
     float   f_pir_position;
     int     i_pir_start_col;
@@ -278,6 +284,21 @@ void          x264_macroblock_deblock( x264_t *h );
 
 #define x264_frame_filter x264_template(frame_filter)
 void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
+
+/* Lazy hpel. Unit u of a set is what x264_frame_filter( mb_y = u << PARAM_INTERLACED )
+ * and x264_frame_expand_border_filtered write on that set: rows
+ * [(u << shift) - 8, ((u+1) << shift) - 8) of its planes, shift 5 for the
+ * frame planes of an interlaced frame, else 4 (16 frame rows, or 16 field rows
+ * of both parities); the first unit also the rows above, the last those below. */
+#define HPEL_UNIT_NONE     0
+#define HPEL_UNIT_BUILDING 1
+#define HPEL_UNIT_BUILT    2
+#define x264_frame_filter_fld_copy x264_template(frame_filter_fld_copy)
+void          x264_frame_filter_fld_copy( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
+#define x264_frame_expand_border_filtered_set x264_template(frame_expand_border_filtered_set)
+void          x264_frame_expand_border_filtered_set( x264_t *h, x264_frame_t *frame, int set, int mb_y, int b_end );
+#define x264_frame_hpel_build x264_template(frame_hpel_build)
+void          x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

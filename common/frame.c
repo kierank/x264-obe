@@ -208,6 +208,9 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
             PREALLOC( frame->field, i_mb_count * sizeof(uint8_t) );
         if( h->param.analyse.b_mb_info )
             PREALLOC( frame->effective_qp, i_mb_count * sizeof(uint8_t) );
+        if( h->param.analyse.i_subpel_refine )
+            for( int i = 0; i <= PARAM_INTERLACED; i++ )
+                PREALLOC( frame->hpel_unit[i], h->mb.i_mb_height >> PARAM_INTERLACED );
     }
     else /* fenc frame */
     {
@@ -694,6 +697,33 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
             plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+        }
+}
+
+/* The part of x264_frame_expand_border_filtered on set (0 frame, 1 field) */
+void x264_frame_expand_border_filtered_set( x264_t *h, x264_frame_t *frame, int set, int mb_y, int b_end )
+{
+    int b_start = !mb_y;
+    int width = 16*h->mb.i_mb_width + 8;
+    int height = b_end ? (16*(h->mb.i_mb_height - mb_y) >> PARAM_INTERLACED) + 16 : 16;
+    int padh = PADH - 4;
+    int padv = PADV - 8;
+    for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+        for( int i = 1; i < 4; i++ )
+        {
+            int stride = frame->i_stride[p];
+            pixel *pix;
+            if( set )
+            {
+                pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
+                plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+            }
+            else
+            {
+                pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
+                plane_expand_border( pix, stride, width, height << PARAM_INTERLACED, padh, padv, b_start, b_end, 0 );
+            }
         }
 }
 

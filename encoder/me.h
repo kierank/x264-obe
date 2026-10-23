@@ -47,6 +47,11 @@ typedef struct
     uint16_t *integral;
     int      i_stride[3];
     int      i_fld_uv_y; /* NV12: field row of p_fref[4], see x264_mb_fref_uv */
+    /* lazy hpel (x264_me_hpel_ensure): the ref, NULL if its hpel is built, the
+     * row of p_fref[0] in its planes, and rows [hpel_ok[0], hpel_ok[1]] known built */
+    x264_frame_t *hpel_ref;
+    int      hpel_y;
+    int      hpel_ok[2];
 
     ALIGNED_4( int16_t mvp[2] );
 
@@ -81,6 +86,38 @@ void x264_me_refine_bidir_satd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_w
 uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
+
+/* lazy hpel of m's ref, for the mb's block at row yoff */
+static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, int i_ref, int yoff )
+{
+    x264_frame_t *frame = h->fref[list][i_ref >> MB_INTERLACED]->orig;
+    m->hpel_ref = frame->b_hpel_lazy ? frame : NULL;
+    m->hpel_y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + yoff;
+    m->hpel_ok[0] = 1;
+    m->hpel_ok[1] = 0;
+}
+
+#define x264_me_hpel_build x264_template(me_hpel_build)
+void x264_me_hpel_build( x264_t *h, x264_me_t *m, int y0, int y1 );
+
+/* lazy hpel: the hpel rows of m's ref that mc_luma/get_ref read for m's block
+ * at qpel mvy, plus height rows (the block's, and any more candidates') */
+static ALWAYS_INLINE void x264_me_hpel_ensure_rows( x264_t *h, x264_me_t *m, int mvy, int height )
+{
+    if( m->hpel_ref )
+    {
+        int y = m->hpel_y + (mvy >> 2);
+        if( y < m->hpel_ok[0] || y + height > m->hpel_ok[1] )
+            x264_me_hpel_build( h, m, y, y + height );
+    }
+}
+
+/* the same for one block at a qpel mv; a fullpel mv reads no hpel */
+static ALWAYS_INLINE void x264_me_hpel_ensure( x264_t *h, x264_me_t *m, int mvx, int mvy, int height )
+{
+    if( (mvx|mvy)&3 )
+        x264_me_hpel_ensure_rows( h, m, mvy, height );
+}
 
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
  * mbcmp_pre and mbcmp_avg2_pre, filled on first use in the mb; NULL without them */
