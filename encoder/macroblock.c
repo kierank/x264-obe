@@ -640,6 +640,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             int mvy = x264_clip3( h->mb.cache.mv[0][x264_scan8[0]][1],
                                   h->mb.mv_min[1], h->mb.mv_max[1] );
 
+            HPEL_CNT( HC_S_MB );
             x264_mb_hpel_ensure( h, 0, 0, mvx, mvy, 16 );
             for( int p = 0; p < plane_count; p++ )
                 h->mc.mc_luma( h->mb.pic.p_fdec[p], FDEC_STRIDE,
@@ -983,6 +984,7 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             mvp[1] = x264_clip3( h->mb.cache.pskip_mv[1], h->mb.mv_min[1], h->mb.mv_max[1] );
 
             /* Motion compensation */
+            HPEL_CNT( HC_S_MB );
             x264_mb_hpel_ensure( h, 0, 0, mvp[0], mvp[1], 16 );
             h->mc.mc_luma( h->mb.pic.p_fdec[p],    FDEC_STRIDE,
                            &h->mb.pic.p_fref[0][0][p*4], h->mb.pic.i_stride[p],

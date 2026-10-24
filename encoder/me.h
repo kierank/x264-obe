@@ -144,6 +144,8 @@ static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, 
         int j = i_ref >> MB_INTERLACED;
         if( h->mb.hpel_lazy[MB_INTERLACED][list][j] )
             m->hpel_win = h->mb.hpel_win[MB_INTERLACED][list][j];
+        if( m->hpel_win )
+            HPEL_CNT( HC_ME_INIT );
     }
 }
 
@@ -173,7 +175,11 @@ static ALWAYS_INLINE void x264_me_hpel_ensure( x264_t *h, x264_me_t *m, int mvx,
  * no read of a search inside it needs an ensure */
 static ALWAYS_INLINE int x264_me_hpel_all( x264_t *h, x264_me_t *m )
 {
-    return !HPEL_LAZY || !m->hpel_win || (m->hpel_win[0] <= h->mb.mv_min_spel[1] && m->hpel_win[1] >= h->mb.mv_max_spel[1]);
+    if( !HPEL_LAZY || !m->hpel_win )
+        return 1;
+    int b_all = m->hpel_win[0] <= h->mb.mv_min_spel[1] && m->hpel_win[1] >= h->mb.mv_max_spel[1];
+    HPEL_CNT( b_all ? HC_FUSED : HC_UNFUSED );
+    return b_all;
 }
 
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
