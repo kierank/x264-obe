@@ -796,9 +796,11 @@ void x264_fenc_bot_copy( x264_t *h )
         int stride = h->fenc->i_stride[i];
         int y0 = height*(h->mb.i_mb_height-2) - 2;
         for( int y = 0; y < 2*height+2; y++ )
+        {
             x264_ccnt( CC_FENC_BOT, 16*h->mb.i_mb_width*sizeof(pixel) );
             memcpy( h->mb.fenc_bot[i] + PADH + y*stride, h->fenc->plane[i] + (y0+y)*stride,
                     16*h->mb.i_mb_width*sizeof(pixel) );
+        }
     }
     h->mb.b_fenc_bot = 1;
 }
@@ -815,8 +817,10 @@ void x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y )
         if( h->mb.b_fenc_bot )
             fenc = h->mb.fenc_bot[i] + PADH + 16*mb_x + (height - ((16 >> v_shift)*(h->mb.i_mb_height-2) - 2))*stride;
         for( int y = 0; y < pady; y++ )
+        {
             x264_ccnt( CC_FENC_BOT, 16*sizeof(pixel) );
             memcpy( fenc + y*stride, fenc - stride, 16*sizeof(pixel) );
+        }
     }
 }
 

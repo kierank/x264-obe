@@ -285,9 +285,11 @@ void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, in
                                  src1, i_stride, mvx, 2*mvy>>v_shift, 8, height );
             }
         else
+        {
             x264_ccnt( CC_LA_WP, 2*8*n*height*sizeof(pixel) );
             h->mc.plane_copy_deinterleave( dst[0] + pel_offset_y, i_stride, dst[1] + pel_offset_y, i_stride,
                                            ref + pel_offset_y, i_stride, 8*n, height );
+        }
         for( int p = 0; p < 2; p++ )
             h->pixf.weightp_stats8( s->rsum[p] + mb_y*s->n16, s->minmax[p] + mb_y*s->n16,
                                     dst[p] + pel_offset_y, i_stride, n, height );
