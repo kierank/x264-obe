@@ -333,8 +333,10 @@ cglobal weightp_satd8_search, 8,13,16, 10*64+26*mmsize
 %else
     %xdefine %%o r8
 %endif
-    psllw        m0, [r1+%%o], 15-BIT_DEPTH
-    psllw        m1, [r6+%%o], 15-BIT_DEPTH
+    movu         m0, [r1+%%o]
+    movu         m1, [r6+%%o]
+    psllw        m0, 15-BIT_DEPTH
+    psllw        m1, 15-BIT_DEPTH
     mova         [rsp+WS_XS+%%i*mmsize], m0
     mova         [rsp+WS_XS+(%%i+4)*mmsize], m1
 %assign %%i %%i+1
