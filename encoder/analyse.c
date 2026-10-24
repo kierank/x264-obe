@@ -1357,7 +1357,7 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
     return i_ref == dupe ? 0 : -1;
 }
 
-static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
+static ALWAYS_INLINE void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     x264_me_t m;
     int i_mvc;

@@ -2805,9 +2805,9 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
     {
         int end = mb_y == h->mb.i_mb_height;
         /* Can't do hpel until the previous slice is done encoding. */
-        if( h->fdec->b_hpel_lazy )
+        if( HPEL_LAZY && h->fdec->b_hpel_lazy )
         {
-            /* hpel is built where it is read (x264_frame_hpel_ensure) */
+            /* hpel is built where it is read (x264_hpel_ensure) */
             if( PARAM_INTERLACED )
                 x264_frame_filter_fld_copy( h, h->fdec, min_y, end );
         }
@@ -4057,7 +4057,7 @@ int     x264_encoder_encode( x264_t *h,
     h->fenc->b_kept_as_ref =
     h->fdec->b_kept_as_ref = i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE && h->param.i_keyint_max > 1;
     /* hpel on first read; the integral image (esa, tesa) is built with it */
-    h->fdec->b_hpel_lazy = h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
+    h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
     if( h->fdec->b_hpel_lazy )
         for( int i = 0; i <= PARAM_INTERLACED; i++ )
             memset( h->fdec->hpel_unit[i], HPEL_UNIT_NONE, h->mb.i_mb_height >> PARAM_INTERLACED );

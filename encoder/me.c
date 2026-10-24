@@ -57,17 +57,6 @@ static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 
-void x264_me_hpel_build( x264_t *h, x264_me_t *m, int y0, int y1 )
-{
-    int shift = 4 + (PARAM_INTERLACED && !MB_INTERLACED);
-    int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
-    int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
-    int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
-    x264_frame_hpel_ensure( h, m->hpel_ref, MB_INTERLACED, y0, y1 );
-    m->hpel_ok[0] = u0 ? (u0 << shift) - 8 : -(1 << 30);
-    m->hpel_ok[1] = u1 < last ? ((u1 + 1) << shift) - 9 : 1 << 30;
-}
-
 #define BITS_MVD( mx, my )\
     (p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
 
@@ -85,7 +74,6 @@ do\
 static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw, int bh, int mx, int my,
                                      x264_pixel_cmp_avg2_t cmp_avg2, x264_pixel_cmp_t cmp )
 {
-    x264_me_hpel_ensure( h, m, mx, my, bh );
     if( cmp_avg2 && !m->weight[0].weightfn )
     {
         int qpel_idx = ((my&3)<<2) + (mx&3);
@@ -279,7 +267,7 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
-void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
@@ -997,6 +985,34 @@ fpel_done:;
 }
 #undef COST_MV
 
+/* lazy hpel: the subme >= 3 predictors, the mvp and mvc clipped as
+ * me_search_ref clips them to the fullpel range; a superset of the ones it
+ * checks, since a fullpel mv clips to a fullpel one and the clip is monotonic */
+static NOINLINE void hpel_ensure_pred( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc )
+{
+    int lo = (M32( m->mvp )&0x00030003) ? m->mvp[1] : INT_MAX;
+    int hi = (M32( m->mvp )&0x00030003) ? m->mvp[1] : INT_MIN;
+    for( int i = 0; i < i_mvc; i++ )
+        if( M32( mvc[i] )&0x00030003 )
+        {
+            lo = X264_MIN( lo, mvc[i][1] );
+            hi = X264_MAX( hi, mvc[i][1] );
+        }
+    if( lo <= hi )
+    {
+        int y0 = SPEL( h->mb.mv_limit_fpel[0][1] ), y1 = SPEL( h->mb.mv_limit_fpel[1][1] );
+        x264_me_hpel_ensure_span( h, m, x264_clip3( lo, y0, y1 ), x264_clip3( hi, y0, y1 ),
+                                  x264_pixel_size[m->i_pixel].h );
+    }
+}
+
+void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+{
+    if( HPEL_LAZY && m->hpel_ok && h->mb.i_subpel_refine >= 3 )
+        hpel_ensure_pred( h, m, mvc, i_mvc );
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
+}
+
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
 {
     int hpel = subpel_iterations[h->mb.i_subpel_refine][0];
@@ -1023,7 +1039,6 @@ void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh
 static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, int i_pixel, int bw, int bh, int mx, int my,
                                             int16_t *fenc_pre )
 {
-    x264_me_hpel_ensure( h, m, mx, my, bh );
     if( fenc_pre )
     {
         /* subpel_cmp against fenc_pre */
@@ -1119,7 +1134,6 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     pixel *src; \
     if( CHROMA444 ) \
     { \
-        x264_me_hpel_ensure( h, m, mx, my, bh ); \
         stride = 16; \
         src = h->mc.get_ref( pix, &stride, &m->p_fref[4], m->i_stride[1], mx, my, bw, bh, &m->weight[1] ); \
         cost += h->pixf.mbcmp_unaligned[i_pixel]( m->p_fenc[1], FENC_STRIDE, src, stride ); \
@@ -1195,6 +1209,22 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int bcost = m->cost;
     int odir = -1, bdir;
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
+    /* lazy hpel: the candidates below are within 2*hpel_iters + qpel_iters
+     * (1 at subme 1) qpel of the start, or at subme < 3 of the predicted mv,
+     * which can become the start, and within the spel range */
+    if( HPEL_LAZY && m->hpel_ok )
+    {
+        int reach = 2*hpel_iters + X264_MAX( qpel_iters, 1 );
+        int y0 = bmy, y1 = bmy;
+        if( hpel_iters && h->mb.i_subpel_refine < 3 )
+        {
+            int pmy = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1]+2, h->mb.mv_max_spel[1]-2 );
+            y0 = X264_MIN( y0, pmy );
+            y1 = X264_MAX( y1, pmy );
+        }
+        x264_me_hpel_ensure_span( h, m, X264_MAX( y0 - reach, h->mb.mv_min_spel[1] ),
+                                  X264_MIN( y1 + reach, h->mb.mv_max_spel[1] ), bh );
+    }
 
     /* halfpel diamond search */
     if( hpel_iters )
@@ -1214,7 +1244,6 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             int omx = bmx, omy = bmy;
             intptr_t stride = 64; // candidates are either all hpel or all qpel, so one stride is enough
             pixel *src0, *src1, *src2, *src3;
-            x264_me_hpel_ensure_rows( h, m, omy - 2, bh + 2 );
             if( !((omx|omy)&1) && !m->weight[0].weightfn )
             {
                 /* hpel candidates without weighting: get_ref would only pick a
@@ -1331,7 +1360,6 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     {
         int omx = bmx, omy = bmy;
         /* We have to use mc_luma because all strides must be the same to use fpelcmp_x4 */
-        x264_me_hpel_ensure_rows( h, m, omy - 1, bh + 2 );
         h->mc.mc_luma( pix   , 64, m->p_fref, m->i_stride[0], omx, omy-1, bw, bh, &m->weight[0] );
         h->mc.mc_luma( pix+16, 64, m->p_fref, m->i_stride[0], omx, omy+1, bw, bh, &m->weight[0] );
         h->mc.mc_luma( pix+32, 64, m->p_fref, m->i_stride[0], omx-1, omy, bw, bh, &m->weight[0] );
@@ -1366,7 +1394,6 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int i = 4 + 3*dx + dy;\
     int mvx = bm##list##x+dx;\
     int mvy = bm##list##y+dy;\
-    x264_me_hpel_ensure( h, m, mvx, mvy, bh );\
     stride[0][list][i] = bw;\
     src[0][list][i] = h->mc.get_ref( pixy_buf[list][i], &stride[0][list][i], &m->p_fref[0],\
                                      m->i_stride[0], mvx, mvy, bw, bh, x264_weight_none );\
@@ -1465,6 +1492,9 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
     const uint16_t *p_cost_m1x = m1->p_cost_mv - m1->mvp[0];
     const uint16_t *p_cost_m1y = m1->p_cost_mv - m1->mvp[1];
 
+    /* lazy hpel: the candidates are within 8 qpel of the start */
+    x264_me_hpel_ensure_span( h, m0, bm0y - 8, bm0y + 8, bh );
+    x264_me_hpel_ensure_span( h, m1, bm1y - 8, bm1y + 8, bh );
     h->mc.memzero_aligned( visited, sizeof(uint8_t[8][8][8]) );
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m0->p_fenc[0] );
     /* satd only: the candidates' average isn't stored (rd needs it in fdec) */

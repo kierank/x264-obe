@@ -983,10 +983,12 @@ static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y,
     }
 }
 
-/* Build the units [u, u1] of set that aren't built. Another thread building one
- * is waited for. With frame threads, a unit is built once the frame has the
- * rows x264_fdec_filter_row would have broadcast after filtering it. */
-void x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 )
+/* Build the units [u, u1] of set that aren't built. A unit is claimed with a
+ * compare-and-swap; a thread wanting a unit another is building marks it waited
+ * and waits on the cv, which the builder then broadcasts. With frame threads, a
+ * unit is built once the frame has the rows x264_fdec_filter_row would have
+ * broadcast after filtering it. */
+static void frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int u1 )
 {
     int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
     for( ; u <= u1; u++ )
@@ -999,21 +1001,51 @@ void x264_frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, int 
         if( h->i_thread_frames > 1 )
             x264_frame_cond_wait( frame, b_end ? h->mb.i_mb_height*16 + 10000
                                                 : (mb_y + (1 << PARAM_INTERLACED))*16 - (X264_THREAD_HEIGHT << PARAM_INTERLACED) );
-        x264_pthread_mutex_lock( &frame->mutex );
-        while( __atomic_load_n( state, __ATOMIC_RELAXED ) == HPEL_UNIT_BUILDING )
-            x264_pthread_cond_wait( &frame->cv, &frame->mutex );
-        int b_build = __atomic_load_n( state, __ATOMIC_RELAXED ) == HPEL_UNIT_NONE;
-        if( b_build )
-            __atomic_store_n( state, HPEL_UNIT_BUILDING, __ATOMIC_RELAXED );
-        x264_pthread_mutex_unlock( &frame->mutex );
-        if( b_build )
+        uint8_t s = HPEL_UNIT_NONE;
+        if( __atomic_compare_exchange_n( state, &s, HPEL_UNIT_BUILDING, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE ) )
         {
             frame_filter_set( h, frame, set, mb_y, b_end );
             x264_frame_expand_border_filtered_set( h, frame, set, mb_y, b_end );
+            if( __atomic_exchange_n( state, HPEL_UNIT_BUILT, __ATOMIC_RELEASE ) == HPEL_UNIT_WAITED )
+            {
+                x264_pthread_mutex_lock( &frame->mutex );
+                x264_pthread_cond_broadcast( &frame->cv );
+                x264_pthread_mutex_unlock( &frame->mutex );
+            }
+        }
+        else if( s != HPEL_UNIT_BUILT )
+        {
             x264_pthread_mutex_lock( &frame->mutex );
-            __atomic_store_n( state, HPEL_UNIT_BUILT, __ATOMIC_RELEASE );
-            x264_pthread_cond_broadcast( &frame->cv );
+            while( s != HPEL_UNIT_BUILT )
+            {
+                if( s == HPEL_UNIT_WAITED ||
+                    __atomic_compare_exchange_n( state, &s, HPEL_UNIT_WAITED, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE ) )
+                    x264_pthread_cond_wait( &frame->cv, &frame->mutex );
+                s = __atomic_load_n( state, __ATOMIC_ACQUIRE );
+            }
             x264_pthread_mutex_unlock( &frame->mutex );
         }
     }
+}
+
+void x264_hpel_build( x264_t *h, int *ok, int y0, int y1 )
+{
+    int i = (ok - h->mb.hpel_ok[0][0][0]) >> 1;
+    int set = i / (2*X264_REF_MAX);
+    int list = (i / X264_REF_MAX) & 1;
+    x264_frame_t *frame = h->fref[list][i % X264_REF_MAX]->orig;
+    int shift = 4 + (PARAM_INTERLACED && !set);
+    int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
+    int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
+    int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
+    uint8_t *state = frame->hpel_unit[set];
+    frame_hpel_build( h, frame, set, u0, u1 );
+    while( u0 > 0 && __atomic_load_n( &state[u0-1], __ATOMIC_ACQUIRE ) == HPEL_UNIT_BUILT )
+        u0--;
+    while( u1 < last && __atomic_load_n( &state[u1+1], __ATOMIC_ACQUIRE ) == HPEL_UNIT_BUILT )
+        u1++;
+    ok[0] = u0 ? (u0 << shift) - 8 : INT_MIN;
+    ok[1] = u1 < last ? ((u1 + 1) << shift) - 9 : INT_MAX;
+    if( !u0 && u1 == last )
+        h->mb.hpel_lazy[set][list][i % X264_REF_MAX] = 0;
 }

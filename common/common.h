@@ -532,6 +532,12 @@ struct x264_t
 
         /* mb table */
         uint8_t *base;                      /* base pointer for all malloced data in this mb */
+        /* lazy hpel: by set (0 frame, 1 field), list and ref frame, whether the
+         * ref is lazy with rows not known built, and the hpel rows [0], [1]
+         * known built (x264_hpel_ensure); reset by x264_macroblock_slice_init.
+         * Slice threads copy them from the frame's context, so no pointers. */
+        uint8_t hpel_lazy[2][2][X264_REF_MAX];
+        int     hpel_ok[2][2][X264_REF_MAX][2];
         int8_t  *type;                      /* mb type */
         uint8_t *partition;                 /* mb partition */
         int8_t  *qp;                        /* mb qp */
