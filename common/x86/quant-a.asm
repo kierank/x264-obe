@@ -92,10 +92,10 @@ chroma_dc_dmf_mask:     dw 1, 1,-1,-1, 1,-1,-1, 1
 
 ALIGN 32
 %if HIGH_BIT_DEPTH
-const qscan4_frame_i, dd 0, 4, 1, 2, 5, 6, 3, 7
-const qscan4_frame_j, dd 6, 3, 7, 0, 0, 0, 4, 1
-const qscan4_field, dd 0, 1, 4, 2, 3, 5, 6, 7
-const qscan4_bytes, dd 0, 4, 1, 5, 2, 6, 3, 7
+qscan4_frame_i: dd 0, 4, 1, 2, 5, 6, 3, 7
+qscan4_frame_j: dd 6, 3, 7, 0, 0, 0, 4, 1
+qscan4_field:   dd 0, 1, 4, 2, 3, 5, 6, 7
+qscan4_bytes:   dd 0, 4, 1, 5, 2, 6, 3, 7
 %else
 const qscan4_frame_a, SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
                 SHUFFLE_MASK_W 0x80, 0x80, 0x80, 2, 5, 6, 3, 7

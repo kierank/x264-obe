@@ -5065,23 +5065,13 @@ static int zscreen_sum7sq( int64_t q, int x[7] )
     return 0;
 }
 
+#if !HIGH_BIT_DEPTH
 /* chroma_encode: x264_mb_encode_chroma_internal without trellis, noise reduction or lossless, with the given
  * functions; with the C functions this is the C reference */
 static x264_dct_function_t *ce_dctf;
 static x264_quant_function_t *ce_qf;
 static x264_zigzag_function_t *ce_zz;
 static x264_pixel_function_t *ce_pixf;
-
-#if HAVE_MMX && ARCH_X86_64 && HIGH_BIT_DEPTH
-#define x264_chroma_encode_420_frame_avx2 x264_template(chroma_encode_420_frame_avx2)
-#define x264_chroma_encode_420_field_avx2 x264_template(chroma_encode_420_field_avx2)
-#define x264_chroma_encode_422_frame_avx2 x264_template(chroma_encode_422_frame_avx2)
-#define x264_chroma_encode_422_field_avx2 x264_template(chroma_encode_422_field_avx2)
-int x264_chroma_encode_420_frame_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
-int x264_chroma_encode_420_field_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
-int x264_chroma_encode_422_frame_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
-int x264_chroma_encode_422_field_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
-#endif
 
 static void ce_zigzag_2x2_dc( dctcoef level[4], dctcoef dct[4] )
 {
@@ -5339,6 +5329,7 @@ static void ce_args( x264_t *h, x264_chroma_encode_t *a, int i_qp, int b_inter, 
     a->thresh = b_decimate ? thresh : -1;
     a->b_decimate = b_decimate;
 }
+#endif
 
 static int check_quant( int cpu_ref, int cpu_new )
 {
@@ -5355,6 +5346,7 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, dct0,[64] );
     ALIGNED_ARRAY_64( dctcoef, dct5,[64] );
     ALIGNED_ARRAY_64( dctcoef, lvl3,[64] );
+#if !HIGH_BIT_DEPTH
     ALIGNED_ARRAY_64( pixel, cesrc,[16*FENC_STRIDE] );
     ALIGNED_ARRAY_64( pixel, cedst,[4],[16*FDEC_STRIDE] );
     ALIGNED_ARRAY_64( dctcoef, celvl,[3],[32*16] );
@@ -5365,6 +5357,7 @@ static int check_quant( int cpu_ref, int cpu_new )
     x264_dct_function_t dct_a, dct_full;
     x264_quant_function_t qf_full;
     x264_zigzag_function_t zz_full[2];
+#endif
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     x264_pixel_function_t x9r_pf_c, x9r_pf_a;
     x264_dct_function_t x9r_df_c, x9r_df_a;
@@ -5375,6 +5368,7 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( uint16_t, x9r_bitcosts,[17] );
     int ret = 0, ok, used_asm;
     int oks[6] = {1,1,1,1,1,1}, used_asms[6] = {0,0,0,0,0,0};
+#if !HIGH_BIT_DEPTH
     x264_dct_init( 0, &dct_c );
     x264_pixel_init( 0, &pixf_c );
     x264_pixel_init( cpu_new, &pixf_a );
@@ -5383,6 +5377,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         cedst[3][i] = rand() & PIXEL_MAX;
     x264_dct_init( cpu_new, &dct_a );
     x264_dct_init( x264_cpu_detect(), &dct_full );
+#endif
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -5471,17 +5466,9 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_zigzag_init( 0, &zz_c[0], &zz_c[1] );
         x264_zigzag_init( cpu_ref, &zz_ref[0], &zz_ref[1] );
         x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1] );
+#if !HIGH_BIT_DEPTH
         x264_quant_init( h, x264_cpu_detect(), &qf_full );
         x264_zigzag_init( x264_cpu_detect(), &zz_full[0], &zz_full[1] );
-#if HAVE_MMX && ARCH_X86_64 && HIGH_BIT_DEPTH
-        /* chroma_encode is assembled but not dispatched at high bit depth: checked from avx2 */
-        if( (cpu_new & X264_CPU_AVX2) && !zz_a[0].chroma_encode[0] )
-        {
-            zz_a[0].chroma_encode[0] = x264_chroma_encode_420_frame_avx2;
-            zz_a[1].chroma_encode[0] = x264_chroma_encode_420_field_avx2;
-            zz_a[0].chroma_encode[1] = x264_chroma_encode_422_frame_avx2;
-            zz_a[1].chroma_encode[1] = x264_chroma_encode_422_field_avx2;
-        }
 #endif
 
         /* zscreen thresholds, once per cqm: t - 1 quantises to 0 and t does not, and every 4x4
@@ -5868,6 +5855,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_QUANT8_SCAN( CQM_8IY );
         TEST_QUANT8_SCAN( CQM_8PY );
 
+#if !HIGH_BIT_DEPTH
         /* chroma_encode: against the C reference and the dispatched calls it replaces; level, dc, nnz and fdec
          * start as a pattern and are compared whole. Every qp (4:2:2: to QP_MAX_SPEC-3, the dc qp), intra
          * and inter with decimation off and on, the var2 early termination off or at a random threshold;
@@ -5957,6 +5945,7 @@ static int check_quant( int cpu_ref, int cpu_new )
                     }
                 }
             }
+#endif
 
         /* bench, flat and jvt cqm: 16 fixed inter blocks, the check's 4 level sizes at its 4 nonzero rates,
          * qp 24-36, with dequant. _split times the dispatched calls it replaces on the same blocks. */
@@ -6245,8 +6234,10 @@ static int check_quant( int cpu_ref, int cpu_new )
     ok = oks[4]; used_asm = used_asms[4];
     report( "intra x9 recon :" );
 
+#if !HIGH_BIT_DEPTH
     ok = oks[5]; used_asm = used_asms[5];
     report( "chroma encode :" );
+#endif
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

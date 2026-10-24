@@ -265,6 +265,7 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
     int b_decimate = b_inter && h->mb.b_dct_decimate;
     int (*dequant_mf)[16] = h->dequant4_mf[CQM_4IC + b_inter];
     ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+#if !HIGH_BIT_DEPTH
 
     if( h->zigzagf.chroma_encode[chroma422] && !h->mb.b_trellis && !h->mb.b_noise_reduction && !h->mb.b_lossless )
     {
@@ -285,6 +286,7 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
                                                                    h->mb.cache.non_zero_count, h->dct.chroma_dc, &a );
         return;
     }
+#endif
     h->mb.i_cbp_chroma = 0;
     h->nr_count[2] += h->mb.b_noise_reduction * 4;
 

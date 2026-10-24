@@ -927,11 +927,13 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_8x8_scan      = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
+#if !HIGH_BIT_DEPTH
     /* asm only: NULL keeps the separate calls in x264_mb_encode_chroma */
     pf_interlaced->chroma_encode[0]     = NULL;
     pf_progressive->chroma_encode[0]    = NULL;
     pf_interlaced->chroma_encode[1]     = NULL;
     pf_progressive->chroma_encode[1]    = NULL;
+#endif
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1061,9 +1063,7 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
-#if HIGH_BIT_DEPTH
-        /* zen4: 10-bit neutral in situ; chroma_encode kept assembled */
-#else
+#if !HIGH_BIT_DEPTH
         pf_interlaced->chroma_encode[0]     = x264_chroma_encode_420_field_avx2;
         pf_progressive->chroma_encode[0]    = x264_chroma_encode_420_frame_avx2;
         pf_interlaced->chroma_encode[1]     = x264_chroma_encode_422_field_avx2;
