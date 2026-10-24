@@ -424,6 +424,7 @@ static ALWAYS_INLINE pixel *x264_mb_fref_uv( x264_t *h, pixel **p_fref, int y, i
  * h->mb.hpel_ok: build their units if they aren't known built. */
 static ALWAYS_INLINE void x264_hpel_ensure( x264_t *h, int *ok, int y0, int y1 )
 {
+    x264_hpel_strict_mark_rows( h, ok, y0, y1 );
     if( HPEL_LAZY && (y0 < ok[0] || y1 > ok[1]) )
         x264_hpel_build( h, ok, y0, y1 );
 }
@@ -466,11 +467,11 @@ static ALWAYS_INLINE void x264_mb_hpel_ensure( x264_t *h, int list, int i_ref, i
     if( HPEL_LAZY && h->mb.b_hpel_lazy && ((mvx|mvy)&3) && h->mb.hpel_lazy[MB_INTERLACED][list][j] )
     {
         int *win = h->mb.hpel_win[MB_INTERLACED][list][j];
+        int y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + (mvy >> 2);
         if( mvy < win[0] || mvy > win[1] )
-        {
-            int y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + (mvy >> 2);
             x264_hpel_ensure_win( h, win, y, y + height );
-        }
+        else
+            x264_hpel_strict_win_pass( h, win, y, y + height );
     }
 }
 

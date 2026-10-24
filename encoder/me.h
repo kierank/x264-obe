@@ -76,6 +76,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * partitions, lowres), so the call costs more than the duplicates it drops. */
 #define PREDICTOR_DEDUPE_MIN 5
 
+/* hpel checker: wrap the asm entries that read hpel planes (encoder/me.c) */
+#define x264_hpel_check_wrap x264_template(hpel_check_wrap)
+void x264_hpel_check_wrap( x264_pixel_function_t *pf );
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)
@@ -157,10 +161,13 @@ static ALWAYS_INLINE int x264_me_hpel_y( x264_t *h, x264_me_t *m )
  * of height rows at every qpel mv with vertical component in [mvy0, mvy1] */
 static ALWAYS_INLINE void x264_me_hpel_ensure_span( x264_t *h, x264_me_t *m, int mvy0, int mvy1, int height )
 {
-    if( HPEL_LAZY && m->hpel_win && (mvy0 < m->hpel_win[0] || mvy1 > m->hpel_win[1]) )
+    if( HPEL_LAZY && m->hpel_win )
     {
         int y = x264_me_hpel_y( h, m );
-        x264_hpel_ensure_win( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
+        if( mvy0 < m->hpel_win[0] || mvy1 > m->hpel_win[1] )
+            x264_hpel_ensure_win( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
+        else
+            x264_hpel_strict_win_pass( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
     }
 }
 /* the same at one qpel mv; a fullpel mv reads no hpel */
@@ -173,7 +180,19 @@ static ALWAYS_INLINE void x264_me_hpel_ensure( x264_t *h, x264_me_t *m, int mvx,
  * no read of a search inside it needs an ensure */
 static ALWAYS_INLINE int x264_me_hpel_all( x264_t *h, x264_me_t *m )
 {
-    return !HPEL_LAZY || !m->hpel_win || (m->hpel_win[0] <= h->mb.mv_min_spel[1] && m->hpel_win[1] >= h->mb.mv_max_spel[1]);
+    if( !HPEL_LAZY || !m->hpel_win )
+        return 1;
+    if( x264_hpel_check_mut() == 3 )
+        return 1;
+    if( m->hpel_win[0] <= h->mb.mv_min_spel[1] && m->hpel_win[1] >= h->mb.mv_max_spel[1] )
+    {
+        /* checker: every row of the range is known built, and ensured by this mb */
+        int y = x264_me_hpel_y( h, m );
+        x264_hpel_strict_win_pass( h, m->hpel_win, y + (h->mb.mv_min_spel[1] >> 2),
+                                   y + (h->mb.mv_max_spel[1] >> 2) + x264_pixel_size[m->i_pixel].h );
+        return 1;
+    }
+    return 0;
 }
 
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for

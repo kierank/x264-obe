@@ -80,9 +80,11 @@ static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw
         intptr_t stride = m->i_stride[0];
         intptr_t offset = (my>>2)*stride + (mx>>2);
         pixel *src1 = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+        HPEL_CNT( src1, bw, bh );
         if( qpel_idx & 5 )
         {
             pixel *src2 = m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
+            HPEL_CNT( src2, bw, bh );
             return cmp_avg2( m->p_fenc[0], src1, src2, stride );
         }
         return cmp( m->p_fenc[0], FENC_STRIDE, src1, stride );
@@ -1025,7 +1027,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     int i_pixel = m->i_pixel;
     int subme = h->mb.i_subpel_refine;
     /* lazy hpel: the subpel predictors of me_search_ref and me_search_fpel */
-    if( HPEL_LAZY && m->hpel_win && subme >= 3 )
+    if( HPEL_LAZY && m->hpel_win && subme >= 3 && x264_hpel_check_mut() != 2 )
         hpel_ensure_pred( h, m, mvc, i_mvc );
     if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
         && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
@@ -1100,8 +1102,12 @@ static ALWAYS_INLINE int subpel_luma_cost( x264_t *h, x264_me_t *m, pixel *pix, 
             int qpel_idx = ((my&3)<<2) + (mx&3);
             intptr_t offset = (my>>2)*stride + (mx>>2);
             src = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+            HPEL_CNT( src, bw, bh );
             if( qpel_idx & 5 )
+            {
+                HPEL_CNT( m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3), bw, bh );
                 return h->pixf.mbcmp_avg2_pre[i_pixel]( fenc_pre, src, m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3), stride );
+            }
         }
         else
         {
@@ -1217,7 +1223,7 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
 /* lazy hpel: refine_subpel's candidates past m's window: within reach qpel of
  * the start or of the subme < 3 predicted mv, clipped as refine_subpel clips
  * it, and within the spel range, which every candidate is in */
-static NOINLINE void hpel_ensure_refine( x264_t *h, x264_me_t *m, int hpel_iters, int reach )
+static NOINLINE void hpel_ensure_refine( x264_t *h, x264_me_t *m, int hpel_iters, int reach, int b_pass )
 {
     int y0 = m->mv[1], y1 = m->mv[1];
     if( hpel_iters && h->mb.i_subpel_refine < 3 )
@@ -1229,7 +1235,7 @@ static NOINLINE void hpel_ensure_refine( x264_t *h, x264_me_t *m, int hpel_iters
     y0 = X264_MAX( y0 - reach, h->mb.mv_min_spel[1] );
     y1 = X264_MIN( y1 + reach, h->mb.mv_max_spel[1] );
     int y = x264_me_hpel_y( h, m );
-    x264_hpel_ensure_win( h, m->hpel_win, y + (y0 >> 2), y + (y1 >> 2) + x264_pixel_size[m->i_pixel].h );
+    ( b_pass ? x264_hpel_strict_win_pass : x264_hpel_ensure_win )( h, m->hpel_win, y + (y0 >> 2), y + (y1 >> 2) + x264_pixel_size[m->i_pixel].h );
 }
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
@@ -1247,8 +1253,13 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             y0 = X264_MIN( y0, m->mvp[1] );
             y1 = X264_MAX( y1, m->mvp[1] );
         }
+        if( x264_hpel_check_mut() == 1 )
+            ;
+        else
         if( y0 - reach < m->hpel_win[0] || y1 + reach > m->hpel_win[1] )
-            hpel_ensure_refine( h, m, hpel_iters, reach );
+            hpel_ensure_refine( h, m, hpel_iters, reach, 0 );
+        else
+            hpel_ensure_refine( h, m, hpel_iters, reach, 1 );
     }
 
     /* luma only: the whole search in one subpel_search call */
@@ -1358,6 +1369,8 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                 stride = m->i_stride[0];
                 src0 = m->p_fref[x264_hpel_ref0[(((omy-2)&3)<<2) + (omx&3)]] + ((omy-2)>>2)*stride + (omx>>2);
                 src2 = m->p_fref[x264_hpel_ref0[((omy&3)<<2) + ((omx-2)&3)]] + (omy>>2)*stride + ((omx-2)>>2);
+                HPEL_CNT( src0, bw, bh+1 );
+                HPEL_CNT( src2, bw+1, bh );
             }
             else
             {
@@ -2188,3 +2201,94 @@ store:
     }
 }
 #endif
+
+/* hpel checker: the asm entries that read the hpel planes, wrapped so their reads
+ * reach x264_hpel_cnt_mark (HPEL_CNT): me_search_fpel's sad / sad_avg2 kernels per
+ * read; satd_subpel_search by a replay of its C reference, whose subpel_pred marks
+ * each candidate it reads (and whose result must equal the asm's); satd_qpel_search,
+ * which gets no plain fenc for a replay, by its whole reach: iters >> 8 steps of 1
+ * qpel from bmv, inside range. */
+static x264_pixel_cmp_t hpel_chk_sad[4];
+static x264_pixel_cmp_avg2_t hpel_chk_sad_avg2[4];
+static x264_pixel_subpel_search_t hpel_chk_subpel[4];
+static x264_pixel_qpel_search_t hpel_chk_qpel[4];
+
+static void hpel_chk_mismatch( const char *what, int i, uint64_t c, uint64_t a )
+{
+    fprintf( stderr, "hpel_check %s %d: C reference %016"PRIx64" != asm %016"PRIx64"\n", what, i, c, a );
+    abort();
+}
+
+#define HPEL_CHK_FNS( i, bw, bh ) \
+static int hpel_chk_sad_##i( pixel *fenc, intptr_t fs, pixel *src, intptr_t stride ) \
+{ \
+    HPEL_CNT( src, bw, bh ); \
+    return hpel_chk_sad[i]( fenc, fs, src, stride ); \
+} \
+static int hpel_chk_sad_avg2_##i( pixel *fenc, pixel *src1, pixel *src2, intptr_t stride ) \
+{ \
+    HPEL_CNT( src1, bw, bh ); \
+    HPEL_CNT( src2, bw, bh ); \
+    return hpel_chk_sad_avg2[i]( fenc, src1, src2, stride ); \
+} \
+static uint64_t hpel_chk_qpel_##i( x264_bi_fenc_t *fenc, pixel **fref, intptr_t stride, const uint16_t *cost_mvx, \
+                                   const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range ) \
+{ \
+    int n = (iters >> 8) & 255; \
+    int bmx = (int16_t)bmv, bmy = (int16_t)(bmv >> 16); \
+    int x0 = x264_clip3( bmx - n, (int16_t)range, (int16_t)(range >> 32) ); \
+    int x1 = x264_clip3( bmx + n, (int16_t)range, (int16_t)(range >> 32) ); \
+    int y0 = x264_clip3( bmy - n, (int16_t)(range >> 16), (int16_t)(range >> 48) ); \
+    int y1 = x264_clip3( bmy + n, (int16_t)(range >> 16), (int16_t)(range >> 48) ); \
+    if( n ) \
+        HPEL_CNT( fref[1] + (y0 >> 2) * stride + (x0 >> 2), (x1 >> 2) - (x0 >> 2) + bw + 1, (y1 >> 2) - (y0 >> 2) + bh + 1 ); \
+    uint64_t a = hpel_chk_qpel[i]( fenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range ); \
+    int mx = (int16_t)(a >> 32), my = (int16_t)(a >> 48); \
+    if( mx < bmx - n || mx > bmx + n || my < bmy - n || my > bmy + n ) \
+        hpel_chk_mismatch( "qpel reach", i, bmv, a ); \
+    return a; \
+} \
+static uint64_t hpel_chk_subpel_##i( pixel *fenc, pixel **fref, intptr_t stride, const uint16_t *cost_mvx, \
+                                     const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range, \
+                                     x264_bi_fenc_t *qfenc, x264_pixel_qpel_search_t qpel, \
+                                     int *halfpel_thresh, uint32_t mvp ) \
+{ \
+    int thresh = halfpel_thresh ? *halfpel_thresh : 0; \
+    uint64_t c = x264_pixel_satd_subpel_search_c( i, fenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range, \
+                                                  halfpel_thresh ? &thresh : NULL, mvp ); \
+    uint64_t a = hpel_chk_subpel[i]( fenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range, \
+                                     qfenc, qpel, halfpel_thresh, mvp ); \
+    if( c != a || (halfpel_thresh && thresh != *halfpel_thresh) ) \
+        hpel_chk_mismatch( "subpel", i, c, a ); \
+    return a; \
+}
+HPEL_CHK_FNS( 0, 16, 16 )
+HPEL_CHK_FNS( 1, 16, 8 )
+HPEL_CHK_FNS( 2, 8, 16 )
+HPEL_CHK_FNS( 3, 8, 8 )
+#undef HPEL_CHK_FNS
+
+void x264_hpel_check_wrap( x264_pixel_function_t *pf )
+{
+    static const x264_pixel_cmp_t sad_w[4] = { hpel_chk_sad_0, hpel_chk_sad_1, hpel_chk_sad_2, hpel_chk_sad_3 };
+    static const x264_pixel_cmp_avg2_t avg2_w[4] = { hpel_chk_sad_avg2_0, hpel_chk_sad_avg2_1, hpel_chk_sad_avg2_2, hpel_chk_sad_avg2_3 };
+    static const x264_pixel_subpel_search_t subpel_w[4] = { hpel_chk_subpel_0, hpel_chk_subpel_1, hpel_chk_subpel_2, hpel_chk_subpel_3 };
+    static const x264_pixel_qpel_search_t qpel_w[4] = { hpel_chk_qpel_0, hpel_chk_qpel_1, hpel_chk_qpel_2, hpel_chk_qpel_3 };
+    for( int i = 0; i < 4; i++ )
+    {
+        x264_me_fpel_fn_t *f = &pf->me_fpel_fn[i];
+#define WRAP( dst, tab, w ) \
+        if( dst && dst != w[i] ) \
+        { \
+            tab[i] = dst; \
+            dst = w[i]; \
+        }
+        WRAP( f->sad, hpel_chk_sad, sad_w )
+        WRAP( f->sad_avg2, hpel_chk_sad_avg2, avg2_w )
+        WRAP( pf->mbcmp_subpel_search[i], hpel_chk_subpel, subpel_w )
+        WRAP( pf->mbcmp_qpel_search[i], hpel_chk_qpel, qpel_w )
+#undef WRAP
+        f->subpel = pf->mbcmp_subpel_search[i];
+        f->qpel = pf->mbcmp_qpel_search[i];
+    }
+}

@@ -1433,6 +1433,8 @@ static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_a
     c->mbaff = SLICE_MBAFF;
     c->interlaced = MB_INTERLACED;
     c->hpel_win = HPEL_LAZY && h->mb.b_hpel_lazy ? h->mb.hpel_win[MB_INTERLACED][0][0] : NULL;
+    if( x264_hpel_check_mut() == 4 )
+        c->hpel_win = NULL;
     c->hpel_lazy = h->mb.hpel_lazy[MB_INTERLACED][0];
     return c;
 }
@@ -2288,6 +2290,8 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
                            a->l0.bi16x16.mv[0], a->l0.bi16x16.mv[1] );
         x264_mc_hpel_pair( src1p, h->mb.pic.p_fref[1][a->l1.bi16x16.i_ref], h->mb.pic.i_stride[0],
                            a->l1.bi16x16.mv[0], a->l1.bi16x16.mv[1] );
+        HPEL_CNT( src0p[0], 16, 16 ); HPEL_CNT( src0p[1], 16, 16 );
+        HPEL_CNT( src1p[0], 16, 16 ); HPEL_CNT( src1p[1], 16, 16 );
         i_satd_bi = h->pixf.mbcmp_bi4[PIXEL_16x16]( bi_fenc, src0p[0], src0p[1], src1p[0], src1p[1], h->mb.pic.i_stride[0],
                                                     h->mb.bipred_weight[a->l0.bi16x16.i_ref][a->l1.bi16x16.i_ref] );
     }
@@ -2507,6 +2511,9 @@ static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fen
     x264_me_hpel_ensure( h, m1, m1->mv[0], m1->mv[1], x264_pixel_size[i_pixel].h );
     x264_mc_hpel_pair( src0, m0->p_fref, m0->i_stride[0], m0->mv[0], m0->mv[1] );
     x264_mc_hpel_pair( src1, m1->p_fref, m1->i_stride[0], m1->mv[0], m1->mv[1] );
+    int bw = x264_pixel_size[i_pixel].w, bh = x264_pixel_size[i_pixel].h;
+    HPEL_CNT( src0[0], bw, bh ); HPEL_CNT( src0[1], bw, bh );
+    HPEL_CNT( src1[0], bw, bh ); HPEL_CNT( src1[1], bw, bh );
     return h->pixf.mbcmp_bi4[i_pixel]( bi_fenc, src0[0], src0[1], src1[0], src1[1], m0->i_stride[0],
                                        h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
 }

@@ -573,6 +573,10 @@ static void subpel_pred( pixel *pix, pixel **fref, intptr_t stride, int bw, int 
     intptr_t offset = (my>>2)*stride + (mx>>2);
     pixel *src1 = fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
     pixel *src2 = qpel_idx & 5 ? fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3) : src1;
+    /* hpel checker */
+    HPEL_CNT( src1, bw, bh );
+    if( src2 != src1 )
+        HPEL_CNT( src2, bw, bh );
     for( int y = 0; y < bh; y++ )
         for( int x = 0; x < bw; x++ )
             pix[16*y+x] = (src1[y*stride+x] + src2[y*stride+x] + 1) >> 1;
