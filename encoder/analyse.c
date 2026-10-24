@@ -1445,7 +1445,7 @@ static void x264_mb_analyse_inter_p16x16_pred( x264_t *h, x264_mb_analysis_t *a 
     x264_me_t *m = &a->l0.me16x16;
     int i_mvc;
     ALIGNED_4( int16_t mvc[10][2] );
-    ALIGNED_4( int16_t mvc_fpel[11][2] );
+    ALIGNED_4( int16_t mvc_fpel[16][2] );
 
     m->i_pixel = PIXEL_16x16;
     LOAD_FENC( m, h->mb.pic.p_fenc, 0, 0 );
