@@ -84,6 +84,10 @@ void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )
     x264_emms();
 }
 
+/* test: arm/twin layout, the twin dispatches this (it links as 0) */
+#define x264_twin_cabac_mb_residual x264_template(twin_cabac_mb_residual)
+void x264_twin_cabac_mb_residual( dctcoef *dct, uint8_t *nnz, intptr_t flags, x264_cabac_t *cb ) __attribute__((weak, visibility("hidden")));
+
 void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
 {
     memset( pf, 0, sizeof(*pf) );
