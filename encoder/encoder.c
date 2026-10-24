@@ -2827,6 +2827,8 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 
     if( h->i_thread_frames > 1 && h->fdec->b_kept_as_ref )
         x264_frame_cond_broadcast( h->fdec, mb_y*16 + (b_end ? 10000 : -(X264_THREAD_HEIGHT << SLICE_MBAFF)) );
+    if( h->fdec->b_hpel_lazy && x264_hpel_check_earliest() == 1 )
+        x264_hpel_build_earliest( h, h->fdec, mb_y*16 + (b_end ? 10000 : -(X264_THREAD_HEIGHT << SLICE_MBAFF)) );
 
     if( b_measure_quality )
     {
@@ -3087,6 +3089,7 @@ static void x264_threadslice_filter( x264_t *h )
 
 static intptr_t x264_slice_write( x264_t *h )
 {
+    x264_hpel_strict_slice( h );
     int i_skip;
     int mb_xy, i_mb_x, i_mb_y;
     /* NALUs other than the first use a 3-byte startcode.
@@ -3194,6 +3197,7 @@ static intptr_t x264_slice_write( x264_t *h )
             h->mb.field[mb_xy] = MB_INTERLACED;
         }
 
+        x264_hpel_strict_reset( h );
         /* load cache */
         if( SLICE_MBAFF )
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
@@ -4057,10 +4061,18 @@ int     x264_encoder_encode( x264_t *h,
     h->fenc->b_kept_as_ref =
     h->fdec->b_kept_as_ref = i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE && h->param.i_keyint_max > 1;
     /* hpel on first read; the integral image (esa, tesa) is built with it */
-    h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
+    __atomic_add_fetch( &h->fdec->hpel_chk_gen, 1, __ATOMIC_RELAXED );
+    h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral && x264_hpel_check_earliest() < 3;
+    if( h->fdec->b_kept_as_ref && PARAM_INTERLACED && x264_hpel_check_earliest() >= 1 && x264_hpel_check_earliest() <= 3 )
+        x264_hpel_poison_fld( h, h->fdec );
     if( h->fdec->b_hpel_lazy )
         for( int i = 0; i <= PARAM_INTERLACED; i++ )
             memset( h->fdec->hpel_unit[i], HPEL_UNIT_NONE, h->mb.i_mb_height >> PARAM_INTERLACED );
+    if( h->fdec->b_hpel_lazy )
+    {
+        h->fdec->hpel_cnt_built = PARAM_INTERLACED ? 3 : 1;
+        h->fdec->hpel_chk_rev = 0;
+    }
 
     h->fdec->mb_info = h->fenc->mb_info;
     h->fdec->mb_info_free = h->fenc->mb_info_free;
@@ -4084,6 +4096,9 @@ int     x264_encoder_encode( x264_t *h,
     /* ------------------- Init                ----------------------------- */
     /* build ref list 0/1 */
     x264_reference_build_list( h, h->fdec->i_poc );
+    for( int l = 0; l < 2; l++ )
+        for( int i = 0; i < h->i_ref[l]; i++ )
+            h->fref[l][i]->orig->hpel_cnt_used = 1;
 
     /* ---------------------- Write the bitstream -------------------------- */
     /* Init bitstream context */
@@ -5041,6 +5056,7 @@ void    x264_encoder_close  ( x264_t *h )
 #endif
         x264_free( h->thread[i] );
     }
+    x264_hpel_cnt_print();
 #if HAVE_OPENCL
     x264_opencl_close_library( ocl );
 #endif

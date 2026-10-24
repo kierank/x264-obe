@@ -425,6 +425,8 @@ static ALWAYS_INLINE pixel *x264_mb_fref_uv( x264_t *h, pixel **p_fref, int y, i
  * known built. */
 static ALWAYS_INLINE void x264_hpel_ensure( x264_t *h, int *ok, int y0, int y1 )
 {
+    if( HPEL_LAZY && ok )
+        x264_hpel_strict_mark_rows( h, ok, y0, y1 );
     if( HPEL_LAZY && ok && (y0 < ok[0] || y1 > ok[1]) )
         x264_hpel_build( h, ok, y0, y1 );
 }
