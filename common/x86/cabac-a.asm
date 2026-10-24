@@ -516,7 +516,8 @@ cabac_lps_trans:
     db 128,167,197,227,122,126,0,0, 128,167,197,227,127,123,0,0
     db 128,176,208,240,124,127,0,0, 128,176,208,240,126,125,0,0
 ; cabac_mb_residual slots: 0 luma dc, 1-16 luma ac, 17-32 luma 4x4, 33-36 luma 8x8,
-; 37-38 chroma dc 4:2:0, 39-40 chroma dc 4:2:2, 41-48 u ac, 49-56 v ac.
+; 37-38 chroma dc 4:2:0, 39-40 chroma dc 4:2:2, 41-48 u ac, 49-56 v ac
+; (luma4x4 16-19 24-27, 32-35 40-43: 4:2:2 rows 2-3 are blocks 8-11 of the plane).
 ; cbf context (0: none), coefficient offset from h->dct (luma16x16_dc, chroma_dc,
 ; luma8x8, luma4x4 at 0, 48, 64, 832 coefs), ctx_block_cat (0x80: 4:2:2 dc)
 mbr_slot_cbf:       dw 85
@@ -544,7 +545,7 @@ mbr_slot_off:       dw 0
                     dw 48*SIZEOF_DCTCOEF, 56*SIZEOF_DCTCOEF, 48*SIZEOF_DCTCOEF, 56*SIZEOF_DCTCOEF
 %assign mbr_i 0
 %rep 16
-                    dw (832+16*(16+mbr_i+(mbr_i&8))+1)*SIZEOF_DCTCOEF
+                    dw (832+16*(16+mbr_i+(mbr_i&4)+(mbr_i&8))+1)*SIZEOF_DCTCOEF
 %assign mbr_i mbr_i+1
 %endrep
 mbr_slot_cat:       db 0
