@@ -2650,7 +2650,17 @@ cglobal add16x16_idct, 2,3,15
 %define IR_RND   640        ; dequant rounding and shift if not exact
 %define IR_SHF   672
 %define IR_MODE  688
+%define IR_A6    692        ; e4r layout pairs: zero-residual skip gate
 %define IR_SIZE  704
+
+; e4r layout pairs: the arm gates the skip with x264_e4r_a6_arm (encoder/api.c), the twin with 0
+%define E4R_A6_TWIN 0
+%if E4R_A6_TWIN
+%define E4R_A6_GATE 0
+%else
+cextern_naked x264_e4r_a6_arm
+%define E4R_A6_GATE x264_e4r_a6_arm
+%endif
 
 ; dst1, dst2, row a, row b: fenc - fdec of rows a, b | a+4, b+4; m4, m5 tmp
 %macro IR_LOAD_DIFF8x2 4
@@ -2751,6 +2761,7 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
     mova [rsp+IR_RND], m1
 .init:
     mov  [rsp+IR_MODE], r7d
+    mov dword [rsp+IR_A6], E4R_A6_GATE
     pxor      m12, m12
     ; r8: score, r10: 4 without decimation (every nonzero 8x8 coded, no MB threshold)
     xor       r10d, r10d
@@ -2767,11 +2778,14 @@ cglobal inter_resid_4x4_%1, 9,15,16,-IR_SIZE
 .loop:
     IR_LOAD_DIFF8x2 0, 1, 0, 1
     IR_LOAD_DIFF8x2 2, 3, 2, 3
+    cmp dword [rsp+IR_A6], 0
+    je .dct
     por       m4, m0, m1
     por       m5, m2, m3
     por       m4, m5
     ptest     m4, m4            ; no residual
     jz .zero
+.dct:
     DCT4_1D 0, 1, 2, 3, 4
     TRANSPOSE2x4x4W 0, 1, 2, 3, 4
     DCT4_1D 0, 1, 2, 3, 4

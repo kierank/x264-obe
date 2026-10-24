@@ -32,6 +32,27 @@
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
+/* e4r layout pairs: x264_e4r_gate gates the inter_resid_4x4 call, x264_e4r_a6_gate the fenc_eq plane skip
+ * (E4R_A6_TWIN in common/x86/dct-a.asm gates the zero-residual 8x8 skip of the 8-bit inter_resid_4x4).
+ * Arm: x264_e4r_arm / x264_e4r_a6_arm, defined in api.c. Twin (E4R_TWIN / E4R_A6_TWIN 1): the never
+ * defined x264_e4r_twin / x264_e4r_a6_twin, which link as 0. The code is the same in both. */
+#define E4R_TWIN 0
+#define E4R_A6_TWIN 0
+extern const char x264_e4r_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_e4r_twin __attribute__((weak, visibility("hidden")));
+extern const char x264_e4r_a6_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_e4r_a6_twin __attribute__((weak, visibility("hidden")));
+#if E4R_TWIN
+#define x264_e4r_gate (&x264_e4r_twin != NULL)
+#else
+#define x264_e4r_gate (&x264_e4r_arm != NULL)
+#endif
+#if E4R_A6_TWIN
+#define x264_e4r_a6_gate (&x264_e4r_a6_twin != NULL)
+#else
+#define x264_e4r_a6_gate (&x264_e4r_a6_arm != NULL)
+#endif
+
 /* 0: no skip, 1: skip, 2: P skip with the luma prediction equal to fenc */
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
@@ -160,6 +181,18 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* layout pair test/x264-chroma-fuse-sn / -twin: hidden weak x264_N_chroma_fuse_gate, defined in macroblock.c (no bytes)
+ * unless CF_TWIN; the twin links it as 0, CF_OFF is 1 and the chroma takes the separate calls */
+#define x264_chroma_fuse_gate x264_template(chroma_fuse_gate)
+extern void x264_chroma_fuse_gate( void ) __attribute__((weak, visibility("hidden")));
+#define CF_OFF (!x264_chroma_fuse_gate)
+/* layout pairs test/x264-e4e7-*: hidden weak x264_N_dconly_gate (the dc-only reconstruction of the E4r arm), defined
+ * in macroblock.c (no bytes) unless E4R_TWIN; otherwise it links as 0, DCONLY_OFF is 1 and every dc-only path takes
+ * the full idct */
+#define x264_dconly_gate x264_template(dconly_gate)
+extern void x264_dconly_gate( void ) __attribute__((weak, visibility("hidden")));
+#define DCONLY_OFF (!x264_dconly_gate)
+
 /* add the 8x8s in cbp of a 16x16 whose dequantised ac is all zero: an idct of a dc-only block is (dc+32)>>6.
  * dc of 4x4 block i is dct[i*16], or of 8x8 block i>>2 dct[(i>>2)*64] if b_8x8. */
 static ALWAYS_INLINE void x264_mb_add_dconly( x264_t *h, pixel *p_dst, dctcoef *dct, int cbp, int b_8x8 )
@@ -263,7 +296,7 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
             h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8 );
             h->quantf.dequant_8x8( dct8x8, h->dequant8_mf[p?CQM_8IC:CQM_8IY], i_qp );
         }
-        if( b_q8s && !(nz >> 8) )
+        if( b_q8s && !(nz >> 8) && !DCONLY_OFF )
             x264_mb_add_dconly( h, p_dst, dct8x8, 1, 1 );
         else
             h->dctf.add8x8_idct8( p_dst, dct8x8 );
