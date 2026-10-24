@@ -34,6 +34,19 @@
 #include "me.h"
 #include "lookahead8.h"
 
+/* hpel-ondemand layout pair: x264_hpel_lazy_gate gates b_hpel_lazy. Arm:
+ * x264_hpel_lazy_arm, defined in api.c. Twin (HPEL_LAZY_TWIN 1): the never
+ * defined x264_hpel_lazy_twin, which links as 0, so every hpel is built
+ * eagerly. The code is the same in both. */
+#define HPEL_LAZY_TWIN 0
+extern const char x264_hpel_lazy_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_hpel_lazy_twin __attribute__((weak, visibility("hidden")));
+#if HPEL_LAZY_TWIN
+#define x264_hpel_lazy_gate (&x264_hpel_lazy_twin != NULL)
+#else
+#define x264_hpel_lazy_gate (&x264_hpel_lazy_arm != NULL)
+#endif
+
 //#define DEBUG_MB_TYPE
 
 #define bs_write_ue bs_write_ue_big
@@ -4057,7 +4070,7 @@ int     x264_encoder_encode( x264_t *h,
     h->fenc->b_kept_as_ref =
     h->fdec->b_kept_as_ref = i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE && h->param.i_keyint_max > 1;
     /* hpel on first read; the integral image (esa, tesa) is built with it */
-    h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
+    h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral && x264_hpel_lazy_gate;
     if( h->fdec->b_hpel_lazy )
         for( int i = 0; i <= PARAM_INTERLACED; i++ )
             memset( h->fdec->hpel_unit[i], HPEL_UNIT_NONE, h->mb.i_mb_height >> PARAM_INTERLACED );
