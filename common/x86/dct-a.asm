@@ -42,10 +42,12 @@ scan_field_avx512: dd 0x0006b240, 0x000735a1, 0x0007b9c2, 0x0009bde8 ; bits 0-4:
                    dd 0x000c4e69, 0x000ce723, 0x000a0004, 0x000aeb4a ; bits 5-9:   8x8_field2
                    dd 0x000b5290, 0x000bd6ab, 0x000d5ac5, 0x000ddee6 ; bits 10-14: 8x8_field3
                    dd 0x000e6f67, 0x000e842c, 0x000f0911, 0x000ff058 ; bits 15-19: 8x8_field4
+%if HAS_CAVLC
 cavlc_shuf_avx512: dd 0x00018820, 0x000398a4, 0x0005a928, 0x0007b9ac ; bits 0-4:   interleave1
                    dd 0x0009ca30, 0x000bdab4, 0x000deb38, 0x000ffbbc ; bits 5-9:   interleave2
                    dd 0x00010c01, 0x00031c85, 0x00052d09, 0x00073d8d ; bits 10-14: interleave3
                    dd 0x00094e11, 0x000b5e95, 0x000d6f19, 0x000f7f9d ; bits 15-19: interleave4
+%endif
 sub4x4_hbd_shift:  dd 0, 0, 0, 0, 1, 1, 1, 1
 ; zigzag_scan_4x4_frame avx2: out0 = I(in0-7) | J(in8-15), out1 = J(in0-7) | I(in8-15)
 scan4x4_frame_avx2: dd 0, 4, 1, 2, 5, 6, 3, 7 ; I
@@ -63,10 +65,12 @@ scan_field_avx512: dw 0x0700, 0x0741, 0x0782, 0x07c8, 0x08c9, 0x0a43, 0x0c04, 0x
                    dw 0x0910, 0x094b, 0x0985, 0x09c6, 0x0ac7, 0x0c4c, 0x0c91, 0x0b18 ; bits 6-11:  8x8_field2
                    dw 0x0b52, 0x0b8d, 0x0bce, 0x0ccf, 0x0e13, 0x0e59, 0x0d20, 0x0d5a
                    dw 0x0d94, 0x0dd5, 0x0e96, 0x0ed7, 0x0f1b, 0x0f61, 0x0fa8, 0x0fe2
+%if HAS_CAVLC
 cavlc_shuf_avx512: dw 0x0080, 0x0184, 0x0288, 0x038c, 0x0490, 0x0594, 0x0698, 0x079c ; bits 0-5:   interleave1
                    dw 0x08a0, 0x09a4, 0x0aa8, 0x0bac, 0x0cb0, 0x0db4, 0x0eb8, 0x0fbc ; bits 6-11:  interleave2
                    dw 0x00c1, 0x01c5, 0x02c9, 0x03cd, 0x04d1, 0x05d5, 0x06d9, 0x07dd
                    dw 0x08e1, 0x09e5, 0x0ae9, 0x0bed, 0x0cf1, 0x0df5, 0x0ef9, 0x0ffd
+%endif
 %endif
 
 pw_ppmmmmpp:    dw 1,1,-1,-1,-1,-1,1,1
@@ -2997,6 +3001,7 @@ cglobal zigzag_scan_8x8_frame, 2,3,8
     RET
 %endif
 
+%if HAS_CAVLC
 ;-----------------------------------------------------------------------------
 ; void zigzag_interleave_8x8_cavlc( int16_t *dst, int16_t *src, uint8_t *nnz )
 ;-----------------------------------------------------------------------------
@@ -3132,6 +3137,7 @@ cglobal zigzag_interleave_8x8_cavlc, 3,3,6
     mov  [r2+8], r0w
     RET
 %endif ; !HIGH_BIT_DEPTH
+%endif
 
 %if HIGH_BIT_DEPTH
 INIT_ZMM avx512
@@ -3210,6 +3216,7 @@ cglobal zigzag_scan_8x8_field, 2,2
     mova [r0+3*64], m3
     RET
 
+%if HAS_CAVLC
 cglobal zigzag_interleave_8x8_cavlc, 3,3
     mova        m0, [cavlc_shuf_avx512]
     mova        m1, [r1+0*64]
@@ -3245,6 +3252,7 @@ cglobal zigzag_interleave_8x8_cavlc, 3,3
     test       r1d, 0x8888
     setnz   [r2+9]
     RET
+%endif
 
 %else ; !HIGH_BIT_DEPTH
 INIT_YMM avx512
@@ -3285,6 +3293,7 @@ cglobal zigzag_scan_8x8_field, 2,2
     mova        m0, [scan_field_avx512]
     jmp scan8_avx512
 
+%if HAS_CAVLC
 cglobal zigzag_interleave_8x8_cavlc, 3,3
     mova       m0, [cavlc_shuf_avx512]
     mova       m1, [r1]
@@ -3304,4 +3313,5 @@ cglobal zigzag_interleave_8x8_cavlc, 3,3
     setnz  [r2+8]
     setnc  [r2+9]
     RET
+%endif
 %endif ; !HIGH_BIT_DEPTH

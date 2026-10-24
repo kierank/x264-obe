@@ -278,7 +278,7 @@ int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
     /* all coeffs */
     PREALLOC( h->mb.non_zero_count, i_mb_count * 48 * sizeof(uint8_t) );
 
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         PREALLOC( h->mb.skipbp, i_mb_count * sizeof(int8_t) );
         PREALLOC( h->mb.chroma_pred_mode, i_mb_count * sizeof(int8_t) );
@@ -833,7 +833,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             h->mb.i_neighbour |= MB_LEFT;
 
             // FIXME: We don't currently support constrained intra + mbaff.
-            if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_left[0] ) )
+            if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_left[0] ) )
                 h->mb.i_neighbour_intra |= MB_LEFT;
         }
     }
@@ -851,7 +851,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             {
                 h->mb.i_neighbour |= MB_TOP;
 
-                if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_top ) )
+                if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_top ) )
                     h->mb.i_neighbour_intra |= MB_TOP;
 
                 /* We only need to prefetch the top blocks because the left was just written
@@ -876,7 +876,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             {
                 h->mb.i_neighbour |= MB_TOPLEFT;
 
-                if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topleft ) )
+                if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topleft ) )
                     h->mb.i_neighbour_intra |= MB_TOPLEFT;
             }
         }
@@ -891,7 +891,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_neighbours( x264_t *h, int 
             {
                 h->mb.i_neighbour |= MB_TOPRIGHT;
 
-                if( !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topright ) )
+                if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA( h->mb.i_mb_type_topright ) )
                     h->mb.i_neighbour_intra |= MB_TOPRIGHT;
             }
         }
@@ -1223,7 +1223,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             }
         }
 
-        if( h->param.b_cabac )
+        if( PARAM_CABAC )
         {
             uint8_t (*mvd)[8][2] = h->mb.mvd[l];
             if( h->mb.i_neighbour & MB_TOP )
@@ -1330,7 +1330,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
             h->mb.b_allow_skip = 0;
     }
 
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         if( b_mbaff )
         {
@@ -1366,7 +1366,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
     {
         h->mb.bipred_weight = h->mb.bipred_weight_buf[MB_INTERLACED][MB_INTERLACED&(mb_y&1)];
         h->mb.dist_scale_factor = h->mb.dist_scale_factor_buf[MB_INTERLACED][MB_INTERLACED&(mb_y&1)];
-        if( h->param.b_cabac )
+        if( PARAM_CABAC )
         {
             uint8_t skipbp;
             x264_macroblock_cache_skip( h, 0, 0, 4, 4, 0 );
@@ -1436,7 +1436,7 @@ static void x264_macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][
             int left = h->mb.i_mb_left_xy[MB_INTERLACED ? i>>2 : i&1];
             int nnz_this = h->mb.cache.non_zero_count[x264_scan8[0]+8*(i>>1)];
             int nnz_left = nnz[left][3 + 4*off[i]];
-            if( !h->param.b_cabac && h->pps->b_transform_8x8_mode )
+            if( !PARAM_CABAC && h->pps->b_transform_8x8_mode )
             {
                 int j = off[i]&~1;
                 if( h->mb.mb_transform_size[left] )
@@ -1474,7 +1474,7 @@ static void x264_macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][
                 ALIGNED_4( uint8_t nnz_top[4] );
                 CP32( nnz_top, &nnz[mbn_xy][3*4] );
 
-                if( !h->param.b_cabac && h->pps->b_transform_8x8_mode && h->mb.mb_transform_size[mbn_xy] )
+                if( !PARAM_CABAC && h->pps->b_transform_8x8_mode && h->mb.mb_transform_size[mbn_xy] )
                 {
                     nnz_top[0] = nnz_top[1] = M16( &nnz[mbn_xy][ 8] ) || M16( &nnz[mbn_xy][12] );
                     nnz_top[2] = nnz_top[3] = M16( &nnz[mbn_xy][10] ) || M16( &nnz[mbn_xy][14] );
@@ -1617,7 +1617,7 @@ void x264_macroblock_deblock_strength( x264_t *h )
     }
 
     /* Munge NNZ for cavlc + 8x8dct */
-    if( !h->param.b_cabac && h->pps->b_transform_8x8_mode )
+    if( !PARAM_CABAC && h->pps->b_transform_8x8_mode )
     {
         uint8_t (*nnz)[48] = h->mb.non_zero_count;
         int top = h->mb.i_mb_top_xy;
@@ -1782,7 +1782,7 @@ void x264_macroblock_cache_save( x264_t *h )
                                      h->mb.cache.intra4x4_pred_mode[x264_scan8[7] ],
                                      h->mb.cache.intra4x4_pred_mode[x264_scan8[13] ], 0);
     }
-    else if( !h->param.b_constrained_intra || IS_INTRA(i_mb_type) )
+    else if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra || IS_INTRA(i_mb_type) )
         M64( i4x4 ) = I_PRED_4x4_DC * 0x0101010101010101ULL;
     else
         M64( i4x4 ) = (uint8_t)(-1) * 0x0101010101010101ULL;
@@ -1797,7 +1797,7 @@ void x264_macroblock_cache_save( x264_t *h )
         h->mb.cbp[i_mb_xy] = (h->mb.i_cbp_chroma << 4) | h->mb.i_cbp_luma | 0x700;
         h->mb.b_transform_8x8 = 0;
         for( int i = 0; i < 48; i++ )
-            h->mb.cache.non_zero_count[x264_scan8[i]] = h->param.b_cabac ? 1 : 16;
+            h->mb.cache.non_zero_count[x264_scan8[i]] = PARAM_CABAC ? 1 : 16;
     }
     else
     {
@@ -1877,7 +1877,7 @@ void x264_macroblock_cache_save( x264_t *h )
         }
     }
 
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         uint8_t (*mvd0)[2] = h->mb.mvd[0][i_mb_xy];
         uint8_t (*mvd1)[2] = h->mb.mvd[1][i_mb_xy];

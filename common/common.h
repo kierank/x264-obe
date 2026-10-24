@@ -80,18 +80,24 @@
 #   define PARAM_INTERLACED 0
 #endif
 
+#if HAS_CAVLC
+#   define PARAM_CABAC h->param.b_cabac
+#else
+#   define PARAM_CABAC 1
+#endif
+
 #ifdef CHROMA_FORMAT
 #    define CHROMA_H_SHIFT (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422)
 #    define CHROMA_V_SHIFT (CHROMA_FORMAT == CHROMA_420)
 #else
 #    define CHROMA_FORMAT h->sps->i_chroma_format_idc
-#    define CHROMA_H_SHIFT h->mb.chroma_h_shift
+#    define CHROMA_H_SHIFT (HAS_444 ? h->mb.chroma_h_shift : 1)
 #    define CHROMA_V_SHIFT h->mb.chroma_v_shift
 #endif
 
 #define CHROMA_SIZE(s) ((s)>>(CHROMA_H_SHIFT+CHROMA_V_SHIFT))
 #define FRAME_SIZE(s) ((s)+2*CHROMA_SIZE(s))
-#define CHROMA444 (CHROMA_FORMAT == CHROMA_444)
+#define CHROMA444 (HAS_444 && CHROMA_FORMAT == CHROMA_444)
 
 #if HIGH_BIT_DEPTH
     typedef uint16_t pixel;

@@ -890,6 +890,7 @@ static int zigzag_sub_8x8_field( dctcoef level[64], const pixel *p_src, pixel *p
 #undef ZIG
 #undef COPY4x4
 
+#if HAS_CAVLC
 static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nnz )
 {
     for( int i = 0; i < 4; i++ )
@@ -903,6 +904,7 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
         nnz[(i&1) + (i>>1)*8] = !!nz;
     }
 }
+#endif
 
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {
@@ -1072,6 +1074,7 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     }
 #endif
 
+#if HAS_CAVLC
     pf_interlaced->interleave_8x8_cavlc =
     pf_progressive->interleave_8x8_cavlc = zigzag_interleave_8x8_cavlc;
 #if HAVE_MMX
@@ -1120,5 +1123,6 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->interleave_8x8_cavlc = x264_zigzag_interleave_8x8_cavlc_avx512;
     }
 #endif // HIGH_BIT_DEPTH
+#endif
 #endif
 }

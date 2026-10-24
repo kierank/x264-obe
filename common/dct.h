@@ -76,7 +76,9 @@ typedef struct
     int  (*sub_8x8)  ( dctcoef level[64], const pixel *p_src, pixel *p_dst );
     int  (*sub_4x4)  ( dctcoef level[16], const pixel *p_src, pixel *p_dst );
     int  (*sub_4x4ac)( dctcoef level[16], const pixel *p_src, pixel *p_dst, dctcoef *dc );
+#if HAS_CAVLC
     void (*interleave_8x8_cavlc)( dctcoef *dst, dctcoef *src, uint8_t *nnz );
+#endif
     /* quant_4x4x4, then scan_4x4, dequant_4x4 (skipped if dequant_mf is NULL) and decimate_score16
      * (15 for _ac) of the nonzero blocks. Returns nz | min(summed score, 9) << 4. */
     int  (*quant_4x4x4_scan)   ( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],

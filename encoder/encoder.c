@@ -601,7 +601,7 @@ static void x264_slice_header_write( bs_t *s, x264_slice_header_t *sh, int i_nal
         }
     }
 
-    if( sh->pps->b_cabac && sh->i_type != SLICE_TYPE_I )
+    if( (!HAS_CAVLC || sh->pps->b_cabac) && sh->i_type != SLICE_TYPE_I )
         bs_write_ue( s, sh->i_cabac_init_idc );
 
     bs_write_se( s, sh->i_qp_delta );      /* slice qp delta */
@@ -655,7 +655,7 @@ static int x264_bitstream_check_buffer_internal( x264_t *h, int size, int b_caba
 static int x264_bitstream_check_buffer( x264_t *h )
 {
     int max_row_size = (2500 << SLICE_MBAFF) * h->mb.i_mb_width;
-    return x264_bitstream_check_buffer_internal( h, max_row_size, h->param.b_cabac, h->out.i_nal );
+    return x264_bitstream_check_buffer_internal( h, max_row_size, PARAM_CABAC, h->out.i_nal );
 }
 
 static int x264_bitstream_check_buffer_filler( x264_t *h, int filler )
@@ -743,6 +743,11 @@ static int x264_validate_parameters( x264_t *h, int b_open )
         return -1;
     }
 #endif
+    if( !HAS_444 && i_csp >= X264_CSP_I444 && i_csp <= X264_CSP_RGB )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with 4:4:4 support (configure --enable-444)\n" );
+        return -1;
+    }
     if( i_csp <= X264_CSP_NONE || i_csp >= X264_CSP_MAX )
     {
         x264_log( h, X264_LOG_ERROR, "invalid CSP (only I420/YV12/NV12/I422/YV16/NV16/I444/YV24/BGR/BGRA/RGB supported)\n" );
@@ -1547,6 +1552,27 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     BOOLIFY( rc.b_filler );
 #undef BOOLIFY
 
+    if( !HAS_MBINFO && h->param.analyse.b_mb_info )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with mb_info support (configure --enable-mbinfo)\n" );
+        return -1;
+    }
+    if( !HAS_SLICE_MAX_SIZE && h->param.i_slice_max_size )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with slice-max-size support (configure --enable-slice-max-size)\n" );
+        return -1;
+    }
+    if( !HAS_CONSTRAINED_INTRA && h->param.b_constrained_intra )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with constrained intra support (configure --enable-constrained-intra)\n" );
+        return -1;
+    }
+    if( !HAS_CAVLC && !h->param.b_cabac )
+    {
+        x264_log( h, X264_LOG_ERROR, "not compiled with CAVLC support (configure --enable-cavlc)\n" );
+        return -1;
+    }
+
     return 0;
 }
 
@@ -1815,10 +1841,12 @@ x264_t *x264_encoder_open( x264_param_t *param )
     x264_quant_init( h, h->param.cpu, &h->quantf );
     x264_deblock_init( h->param.cpu, &h->loopf, PARAM_INTERLACED );
     x264_bitstream_init( h->param.cpu, &h->bsf );
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
         x264_cabac_init( h );
+#if HAS_CAVLC
     else
         x264_stack_align( x264_cavlc_init, h );
+#endif
 #if HAVE_MMX
     x264_cabac_encode_decision_ptr = (h->param.cpu & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT)
                                    ? x264_cabac_encode_decision_bmi2 : x264_cabac_encode_decision_asm;
@@ -2990,7 +3018,7 @@ static ALWAYS_INLINE void x264_bitstream_backup( x264_t *h, x264_bs_bak_t *bak, 
     /* In the per-MB backup, we don't need the contexts because flushing the CABAC
      * encoder has no context dependency and in this case, a slice is ended (and
      * thus the content of all contexts are thrown away). */
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         if( full )
             memcpy( &bak->cabac, &h->cabac, sizeof(x264_cabac_t) );
@@ -3021,7 +3049,7 @@ static ALWAYS_INLINE void x264_bitstream_restore( x264_t *h, x264_bs_bak_t *bak,
         h->stat.frame.i_mv_bits = bak->stat.i_mv_bits;
         h->stat.frame.i_tex_bits = bak->stat.i_tex_bits;
     }
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         if( full )
             memcpy( &h->cabac, &bak->cabac, sizeof(x264_cabac_t) );
@@ -3059,9 +3087,9 @@ static intptr_t x264_slice_write( x264_t *h )
      * Add one extra byte for the rbsp, and one more for the final CABAC putbyte.
      * Then add an extra 5 bytes just in case, to account for random NAL escapes and
      * other inaccuracies. */
-    int overhead_guess = (NALU_OVERHEAD - (h->param.b_annexb && h->out.i_nal)) + 1 + h->param.b_cabac + 5;
-    int slice_max_size = h->param.i_slice_max_size > 0 ? (h->param.i_slice_max_size-overhead_guess)*8 : 0;
-    int back_up_bitstream_cavlc = !h->param.b_cabac && h->sps->i_profile_idc < PROFILE_HIGH;
+    int overhead_guess = (NALU_OVERHEAD - (h->param.b_annexb && h->out.i_nal)) + 1 + PARAM_CABAC + 5;
+    int slice_max_size = HAS_SLICE_MAX_SIZE && h->param.i_slice_max_size > 0 ? (h->param.i_slice_max_size-overhead_guess)*8 : 0;
+    int back_up_bitstream_cavlc = !PARAM_CABAC && h->sps->i_profile_idc < PROFILE_HIGH;
     int back_up_bitstream = slice_max_size || back_up_bitstream_cavlc;
     int starting_bits = bs_pos(&h->out.bs);
     int b_deblock = h->sh.i_disable_deblocking_filter_idc != 1;
@@ -3092,7 +3120,7 @@ static intptr_t x264_slice_write( x264_t *h )
     h->sh.i_qp_delta = h->sh.i_qp - h->pps->i_pic_init_qp;
 
     x264_slice_header_write( &h->out.bs, &h->sh, h->i_nal_ref_idc );
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         /* alignment needed */
         bs_align_1( &h->out.bs );
@@ -3134,7 +3162,7 @@ static intptr_t x264_slice_write( x264_t *h )
         {
             if( back_up_bitstream_cavlc )
                 x264_bitstream_backup( h, &bs_bak[BS_BAK_CAVLC_OVERFLOW], i_skip, 0 );
-            if( slice_max_size && !(i_mb_y & SLICE_MBAFF) )
+            if( HAS_SLICE_MAX_SIZE && slice_max_size && !(i_mb_y & SLICE_MBAFF) )
             {
                 x264_bitstream_backup( h, &bs_bak[BS_BAK_SLICE_MAX_SIZE], i_skip, 0 );
                 if( (thread_last_mb+1-mb_xy) == h->param.i_slice_min_mbs )
@@ -3169,10 +3197,12 @@ static intptr_t x264_slice_write( x264_t *h )
         x264_macroblock_analyse( h );
 
         /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
+#if HAS_CAVLC
 reencode:
+#endif
         x264_macroblock_encode( h );
 
-        if( h->param.b_cabac )
+        if( PARAM_CABAC )
         {
             if( mb_xy > h->sh.i_first_mb && !(SLICE_MBAFF && (i_mb_y&1)) )
                 x264_cabac_encode_terminal( &h->cabac );
@@ -3186,6 +3216,7 @@ reencode:
                 x264_macroblock_write_cabac( h, &h->cabac );
             }
         }
+#if HAS_CAVLC
         else
         {
             if( IS_SKIP( h->mb.i_type ) )
@@ -3210,17 +3241,18 @@ reencode:
                 }
             }
         }
+#endif
 
         int total_bits = bs_pos(&h->out.bs) + x264_cabac_pos(&h->cabac);
         int mb_size = total_bits - mb_spos;
 
-        if( slice_max_size && (!SLICE_MBAFF || (i_mb_y&1)) )
+        if( HAS_SLICE_MAX_SIZE && slice_max_size && (!SLICE_MBAFF || (i_mb_y&1)) )
         {
             /* Count the skip run, just in case. */
-            if( !h->param.b_cabac )
+            if( !PARAM_CABAC )
                 total_bits += bs_size_ue_big( i_skip );
             /* Check for escape bytes. */
-            uint8_t *end = h->param.b_cabac ? h->cabac.p : h->out.bs.p;
+            uint8_t *end = PARAM_CABAC ? h->cabac.p : h->out.bs.p;
             for( ; last_emu_check < end - 2; last_emu_check++ )
                 if( last_emu_check[0] == 0 && last_emu_check[1] == 0 && last_emu_check[2] <= 3 )
                 {
@@ -3385,7 +3417,7 @@ cont:
 
     h->out.nal[h->out.i_nal].i_last_mb = h->sh.i_last_mb;
 
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
     {
         x264_cabac_encode_flush( h, &h->cabac );
         h->out.bs.p = h->cabac.p;
@@ -3421,7 +3453,7 @@ cont:
         }
 
         /* Free mb info after the last thread's done using it */
-        if( h->fdec->mb_info_free && (!h->param.b_sliced_threads || h->i_thread_idx == (h->param.i_threads-1)) )
+        if( HAS_MBINFO && h->fdec->mb_info_free && (!h->param.b_sliced_threads || h->i_thread_idx == (h->param.i_threads-1)) )
         {
             h->fdec->mb_info_free( h->fdec->mb_info );
             h->fdec->mb_info = NULL;

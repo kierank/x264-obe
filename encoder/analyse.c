@@ -1607,14 +1607,14 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
 
         /* If CABAC is on and we're not doing sub-8x8 analysis, the costs
            are effectively zero. */
-        if( !h->param.b_cabac || (h->param.analyse.inter & X264_ANALYSE_PSUB8x8) )
+        if( !PARAM_CABAC || (h->param.analyse.inter & X264_ANALYSE_PSUB8x8) )
             l0m->cost += a->i_lambda * i_sub_mb_p_cost_table[D_L0_8x8];
     }
 
     a->l0.i_cost8x8 = a->l0.me8x8[0].cost + a->l0.me8x8[1].cost +
                       a->l0.me8x8[2].cost + a->l0.me8x8[3].cost;
     /* P_8x8 ref0 has no ref cost */
-    if( !h->param.b_cabac && !(a->l0.me8x8[0].i_ref | a->l0.me8x8[1].i_ref |
+    if( !PARAM_CABAC && !(a->l0.me8x8[0].i_ref | a->l0.me8x8[1].i_ref |
                                a->l0.me8x8[2].i_ref | a->l0.me8x8[3].i_ref) )
         a->l0.i_cost8x8 -= REF_COST( 0, 0 ) * 4;
     h->mb.i_sub_partition[0] = h->mb.i_sub_partition[1] =
@@ -1628,7 +1628,7 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
      * don't bother analysing the dupes. */
     const int i_ref16_src = x264_mb_blind_dupe_src( h, a->l0.me16x16.i_ref );
     const int i_ref = i_ref16_src >= 0 ? i_ref16_src : a->l0.me16x16.i_ref;
-    const int i_ref_cost = h->param.b_cabac || i_ref ? REF_COST( 0, i_ref ) : 0;
+    const int i_ref_cost = PARAM_CABAC || i_ref ? REF_COST( 0, i_ref ) : 0;
     pixel **p_fenc = h->mb.pic.p_fenc;
     int i_mvc;
     int16_t (*mvc)[2] = a->l0.mvc[i_ref];
@@ -1664,7 +1664,7 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
 
         /* mb type cost */
         m->cost += i_ref_cost;
-        if( !h->param.b_cabac || (h->param.analyse.inter & X264_ANALYSE_PSUB8x8) )
+        if( !PARAM_CABAC || (h->param.analyse.inter & X264_ANALYSE_PSUB8x8) )
             m->cost += a->i_lambda * i_sub_mb_p_cost_table[D_L0_8x8];
     }
 
@@ -1672,7 +1672,7 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
                       a->l0.me8x8[2].cost + a->l0.me8x8[3].cost;
     /* theoretically this should include 4*ref_cost,
      * but 3 seems a better approximation of cabac. */
-    if( h->param.b_cabac )
+    if( PARAM_CABAC )
         a->l0.i_cost8x8 -= i_ref_cost;
     h->mb.i_sub_partition[0] = h->mb.i_sub_partition[1] =
     h->mb.i_sub_partition[2] = h->mb.i_sub_partition[3] = D_L0_8x8;
@@ -1878,7 +1878,7 @@ static ALWAYS_INLINE int x264_mb_analyse_inter_p4x4_chroma_internal( x264_t *h, 
 
 static int x264_mb_analyse_inter_p4x4_chroma( x264_t *h, x264_mb_analysis_t *a, pixel **p_fref, int i8x8, int size )
 {
-    if( CHROMA_FORMAT == CHROMA_444 )
+    if( CHROMA444 )
         return x264_mb_analyse_inter_p4x4_chroma_internal( h, a, p_fref, i8x8, size, CHROMA_444 );
     else if( CHROMA_FORMAT == CHROMA_422 )
         return x264_mb_analyse_inter_p4x4_chroma_internal( h, a, p_fref, i8x8, size, CHROMA_422 );
@@ -3346,7 +3346,7 @@ void x264_macroblock_analyse( x264_t *h )
     if( h->param.rc.i_aq_mode && h->param.analyse.i_subpel_refine < 10 )
         h->mb.i_qp = abs(h->mb.i_qp - h->mb.i_last_qp) == 1 ? h->mb.i_last_qp : h->mb.i_qp;
 
-    if( h->param.analyse.b_mb_info )
+    if( HAS_MBINFO && h->param.analyse.b_mb_info )
         h->fdec->effective_qp[h->mb.i_mb_xy] = h->mb.i_qp; /* Store the real analysis QP. */
     x264_mb_analyse_init( h, &analysis, h->mb.i_qp );
 
@@ -3395,7 +3395,7 @@ intra_analysis:
         else
         {
             /* Special fast-skip logic using information from mb_info. */
-            if( h->fdec->mb_info && (h->fdec->mb_info[h->mb.i_mb_xy]&X264_MBINFO_CONSTANT) )
+            if( HAS_MBINFO && h->fdec->mb_info && (h->fdec->mb_info[h->mb.i_mb_xy]&X264_MBINFO_CONSTANT) )
             {
                 if( !SLICE_MBAFF && (h->fdec->i_frame - h->fref[0][0]->i_frame) == 1 && !h->sh.b_weighted_pred &&
                     h->fref[0][0]->effective_qp[h->mb.i_mb_xy] <= h->mb.i_qp )

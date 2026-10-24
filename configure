@@ -32,6 +32,11 @@ Configuration options:
   --disable-interlaced     disable interlaced encoding support
   --bit-depth=BIT_DEPTH    set output bit depth: 8, 10, or all (both, X86_64 only) [8]
   --chroma-format=FORMAT   output chroma format (420, 422, 444, all) [all]
+  --enable-444             enable 4:4:4 and RGB encoding
+  --enable-mbinfo          enable mb_info input
+  --enable-slice-max-size  enable slice-max-size
+  --enable-constrained-intra enable constrained intra prediction
+  --enable-cavlc           enable CAVLC entropy coding
 
 Advanced options:
   --disable-asm            disable platform-specific assembly optimizations
@@ -277,6 +282,11 @@ strip="no"
 pic="no"
 bit_depth="8"
 chroma_format="all"
+has_444="no"
+has_mbinfo="no"
+has_slice_max_size="no"
+has_constrained_intra="no"
+has_cavlc="no"
 compiler="GNU"
 opencl="yes"
 
@@ -331,6 +341,21 @@ for opt do
             ;;
         --disable-interlaced)
             interlaced="no"
+            ;;
+        --enable-444)
+            has_444="yes"
+            ;;
+        --enable-mbinfo)
+            has_mbinfo="yes"
+            ;;
+        --enable-slice-max-size)
+            has_slice_max_size="yes"
+            ;;
+        --enable-constrained-intra)
+            has_constrained_intra="yes"
+            ;;
+        --enable-cavlc)
+            has_cavlc="yes"
             ;;
         --disable-avs)
             avs="no"
@@ -1091,6 +1116,17 @@ if [ "$chroma_format" != "all" ]; then
     define CHROMA_FORMAT CHROMA_$chroma_format
 fi
 
+if [ "$chroma_format" = "444" -a $has_444 = no ]; then
+    echo "--chroma-format=444 requires --enable-444."
+    exit 1
+fi
+[ $has_444 = yes ] && define HAS_444 1 || define HAS_444 0
+[ $has_mbinfo = yes ] && define HAS_MBINFO 1 || define HAS_MBINFO 0
+[ $has_slice_max_size = yes ] && define HAS_SLICE_MAX_SIZE 1 || define HAS_SLICE_MAX_SIZE 0
+[ $has_constrained_intra = yes ] && define HAS_CONSTRAINED_INTRA 1 || define HAS_CONSTRAINED_INTRA 0
+[ $has_cavlc = yes ] && define HAS_CAVLC 1 || define HAS_CAVLC 0
+[ $has_cavlc = yes ] && ASFLAGS="$ASFLAGS -DHAS_CAVLC=1" || ASFLAGS="$ASFLAGS -DHAS_CAVLC=0"
+
 [ $gpl = yes ] && define HAVE_GPL && x264_gpl=1 || x264_gpl=0
 
 [ $interlaced = yes ] && define HAVE_INTERLACED && x264_interlaced=1 || x264_interlaced=0
@@ -1348,6 +1384,11 @@ strip:         $strip
 PIC:           $pic
 bit depth:     $bit_depth
 chroma format: $chroma_format
+444:           $has_444
+mb_info:       $has_mbinfo
+slice-max-size: $has_slice_max_size
+constr. intra: $has_constrained_intra
+CAVLC:         $has_cavlc
 EOF
 
 echo >> config.log
