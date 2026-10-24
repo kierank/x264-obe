@@ -29,7 +29,7 @@
 #include "common/common.h"
 #include "macroblock.h"
 
-#define CF_TWIN 0
+#define CF_TWIN 1
 #define CF_STR2( x ) #x
 #define CF_STR( x ) CF_STR2( x )
 #if !CF_TWIN
