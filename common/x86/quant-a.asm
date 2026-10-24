@@ -92,10 +92,10 @@ chroma_dc_dmf_mask:     dw 1, 1,-1,-1, 1,-1,-1, 1
 
 ALIGN 32
 %if HIGH_BIT_DEPTH
-const qscan4_frame_i, dd 0, 4, 1, 2, 5, 6, 3, 7
-const qscan4_frame_j, dd 6, 3, 7, 0, 0, 0, 4, 1
-const qscan4_field, dd 0, 1, 4, 2, 3, 5, 6, 7
-const qscan4_bytes, dd 0, 4, 1, 5, 2, 6, 3, 7
+qscan4_frame_i: dd 0, 4, 1, 2, 5, 6, 3, 7
+qscan4_frame_j: dd 6, 3, 7, 0, 0, 0, 4, 1
+qscan4_field:   dd 0, 1, 4, 2, 3, 5, 6, 7
+qscan4_bytes:   dd 0, 4, 1, 5, 2, 6, 3, 7
 %else
 const qscan4_frame_a, SHUFFLE_MASK_W 0, 4, 1, 2, 5, 0x80, 0x80, 0x80
                 SHUFFLE_MASK_W 0x80, 0x80, 0x80, 2, 5, 6, 3, 7
@@ -3132,7 +3132,7 @@ COEFF_LEVELRUN_AVX512 16, w
 ;-----------------------------------------------------------------------------
 ; quant_4x4x4, zigzag the nonzero blocks into level, dequant dct in place unless dequant_mf is NULL,
 ; sum decimate_score16 (15 for ac) over the nonzero blocks. Returns nz | min(score,9) << 4,
-; not ac: | blocks with a nonzero ac level << 8.
+; 8-bit not ac: | blocks with a nonzero ac level << 8.
 %if ARCH_X86_64
 
 ; block, src[, src2]: store to level if the block is nonzero, else to dct (rewritten later)
@@ -3220,7 +3220,7 @@ COEFF_LEVELRUN_AVX512 16, w
     cmovnz    r1d, r2d
     shl       r1d, 4
     or        eax, r1d
-%if %4 == 0
+%if %4 == 0 && HIGH_BIT_DEPTH == 0
     QUANT_SCAN_HASAC
 %endif
     RET
@@ -3277,7 +3277,7 @@ COEFF_LEVELRUN_AVX512 16, w
     cmovnz    r1d, r2d
     shl       r1d, 4
     or        r6d, r1d
-%if %1 == 0
+%if %1 == 0 && HIGH_BIT_DEPTH == 0
     QUANT_SCAN_HASAC
 %endif
     RET
@@ -3808,10 +3808,10 @@ QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
 ;                     int dequant_mf[6][64], int i_qp )
 ;-----------------------------------------------------------------------------
 ; quant_8x8, then if nonzero: zigzag into level, decimate_score64, dequant dct in place unless dequant_mf
-; is NULL. Returns 0, or 1 | min(score,9) << 4 | a nonzero ac level << 8.
+; is NULL. Returns 0, or 1 | min(score,9) << 4, 8-bit: | a nonzero ac level << 8.
 
 ; k1: nonzero levels in scan order, k4: a level is > 1; kortest width
-; eax = 1 | min(score,9) << 4 | a nonzero ac << 8
+; eax = 1 | min(score,9) << 4, 8-bit: | a nonzero ac << 8
 %macro QUANT8_SCAN_SCORE 1
     kmovq     r1, k1
     ; score = sum over nonzero coefs of [run<4] + [run<12] + [run<24], run = zeros below
@@ -3850,9 +3850,11 @@ QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
     cmovnz    r6d, r2d
     shl       r6d, 4
     inc       r6d
+%if HIGH_BIT_DEPTH == 0
     lea       r2d, [r6+0x100]
     shr       r1, 1
     cmovnz    r6d, r2d
+%endif
 %endmacro
 
 ; r7d = i_qp / 6, r4 = dequant_mf[i_qp % 6]

@@ -906,6 +906,7 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
 }
 #endif
 
+#if !HIGH_BIT_DEPTH
 /* nz: per 8x8, the quant_4x4x4_scan or quant_8x8_scan result. Applies the decimation and writes nnz;
  * returns the coded 8x8s | score << 4. */
 static int inter_resid_decimate( int nz[4], uint8_t *nnz, int i_decimate_mb, int b_8x8 )
@@ -981,6 +982,7 @@ int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst
 {
     return inter_resid_8x8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb, 1 );
 }
+#endif
 
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
 {
@@ -1003,6 +1005,7 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_8x8_scan      = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
+#if !HIGH_BIT_DEPTH
     /* asm only: NULL keeps the separate calls in x264_macroblock_encode */
     pf_interlaced->inter_resid_4x4      = NULL;
     pf_progressive->inter_resid_4x4     = NULL;
@@ -1013,6 +1016,7 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->chroma_encode[0]    = NULL;
     pf_interlaced->chroma_encode[1]     = NULL;
     pf_progressive->chroma_encode[1]    = NULL;
+#endif
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1145,12 +1149,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
 #if !HIGH_BIT_DEPTH
         pf_interlaced->inter_resid_4x4      = x264_inter_resid_4x4_field_avx2;
         pf_progressive->inter_resid_4x4     = x264_inter_resid_4x4_frame_avx2;
-#endif
-        /* zen4: inter_resid_8x8 (both depths) and 10-bit inter_resid_4x4 slower than the separate calls
-         * on rack01 Zen 4 (checkasm --bench, in situ); kept assembled, checkasm tests them directly */
-#if HIGH_BIT_DEPTH
-        /* zen4: 10-bit neutral in situ; chroma_encode kept assembled */
-#else
+        /* zen4: inter_resid_8x8 slower than the separate calls on rack01 Zen 4 (checkasm --bench, in situ);
+         * kept assembled, checkasm tests it directly */
         pf_interlaced->chroma_encode[0]     = x264_chroma_encode_420_field_avx2;
         pf_progressive->chroma_encode[0]    = x264_chroma_encode_420_frame_avx2;
         pf_interlaced->chroma_encode[1]     = x264_chroma_encode_422_field_avx2;
