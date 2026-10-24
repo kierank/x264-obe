@@ -618,6 +618,11 @@ struct x264_t
             int i4x4_cbp;
             int i8x8_cbp;
 
+            /* copy counters */
+            int ccnt_i8_pend, ccnt_i4_pend;
+            int ccnt_tag;           /* fdec holds the P16x16 ref0 prediction at ccnt_tag_mv */
+            int16_t ccnt_tag_mv[2];
+
             /* pointer over mb of the frame to be compressed */
             pixel *p_fenc[3]; /* y,u,v */
             /* pointer to the actual source frame, not a block copy */

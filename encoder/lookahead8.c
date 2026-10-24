@@ -185,6 +185,7 @@ static void lowres8_mb_cost( lowres8_t *c, x264_frame_t **frames, int p0, int p1
     int lowres_penalty = 4;
 
     h->mb.pic.p_fenc[0] = h->mb.pic.fenc_buf;
+    x264_ccnt( CC_LA_FENC8, 64 );
     h->mc.copy[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, &fenc->lowres8[0][i_pel_offset], i_stride, 8 );
     h->mb.pic.i_fenc_pre = 0;
     int16_t *fenc_pre = x264_me_fenc_pre( h, PIXEL_8x8, h->mb.pic.p_fenc[0] );
@@ -396,6 +397,7 @@ lowres_intra_mb:
             int pixoff = 4 / sizeof(pixel);
 
             /* Avoid store forwarding stalls by writing larger chunks */
+            x264_ccnt( CC_LA_BORDER, 16 + 36 );
             memcpy( pix-FDEC_STRIDE, src-i_stride, 16 * sizeof(pixel) );
             for( int i = -1; i < 8; i++ )
                 M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*i_stride-pixoff] );

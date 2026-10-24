@@ -269,6 +269,31 @@ void x264_reduce_fraction64( uint64_t *n, uint64_t *d );
 void x264_log_default( void *p_unused, int i_level, const char *psz_fmt, va_list arg );
 void x264_log_internal( int i_level, const char *psz_fmt, ... );
 
+/* copy counters (test/x264-copies-cnt) */
+enum
+{
+    CC_LD_FENC_Y, CC_LD_FENC_C, CC_LD_TOP, CC_LD_LEFT,
+    CC_ST_PIC_Y, CC_ST_PIC_C, CC_BK_INTRA,
+    CC_PROBE_MC, CC_SKIP_MC_FIN, CC_SKIP_MC_RD, CC_MB_MC_FIN, CC_MB_MC_RD, CC_MB_MC_TRANS, CC_MB_MC8_RD,
+    CC_I8_SAVE, CC_I8_REST, CC_I8_DCT_SAVE, CC_I8_DCT_REST,
+    CC_I4_SAVE, CC_I4_REST, CC_I4_DCT_SAVE, CC_I4_DCT_REST,
+    CC_RD_CABAC, CC_RD_CABAC_PART,
+    CC_LA_FENC8, CC_LA_BORDER, CC_LA_WP,
+    CC_FRAME_IN, CC_FLD_ROWS, CC_EXPAND, CC_FENC_BOT,
+    CC_ME_MC, CC_OTHER_MC,
+    CC_N
+};
+extern __thread int x264_ccnt_site;   /* attribution of mc_luma */
+extern __thread int x264_ccnt_in_rd;  /* inside x264_rd_cost_mb */
+extern __thread int x264_ccnt_intra;  /* this MB ran intra prediction */
+void x264_ccnt( int site, int64_t bytes );
+void x264_ccnt_avoid( int site, int64_t bytes );
+void x264_ccnt_mc( int b_copy, int64_t bytes );
+void x264_ccnt_val( int idx, int64_t v );
+void x264_ccnt_mb( int mb_xy, int mb_x, int mb_y, int mb_w, int mb_h, int b_mbaff, int64_t bk_bytes, int64_t ld_bytes );
+void x264_ccnt_frame( void );
+void x264_ccnt_print( void );
+
 /* x264_malloc : will do or emulate a memalign
  * you have to use x264_free for buffers allocated with x264_malloc */
 void *x264_malloc( int );

@@ -91,8 +91,10 @@ void x264_weight_luma_mc_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, int m
         {
             int mvx = s->mvs[i_mb_xy][0];
             int mvy = s->mvs[i_mb_xy][1];
+            x264_ccnt( CC_LA_WP, 64*sizeof(pixel) ); x264_ccnt_site = CC_LA_WP;
             h->mc.mc_luma( p+x, i_stride, ref, i_stride,
                            mvx+(x<<2), mvy+(y<<2), 8, 8, x264_weight_none );
+            x264_ccnt_site = CC_OTHER_MC;
         }
     }
     x264_emms();
@@ -283,6 +285,7 @@ void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, in
                                  src1, i_stride, mvx, 2*mvy>>v_shift, 8, height );
             }
         else
+            x264_ccnt( CC_LA_WP, 2*8*n*height*sizeof(pixel) );
             h->mc.plane_copy_deinterleave( dst[0] + pel_offset_y, i_stride, dst[1] + pel_offset_y, i_stride,
                                            ref + pel_offset_y, i_stride, 8*n, height );
         for( int p = 0; p < 2; p++ )
@@ -751,6 +754,7 @@ static NOINLINE pixel *x264_weight_cost_init_chroma444( x264_t *h, x264_frame_t 
                 int mvy = fenc->lowres_mvs[0][ref0_distance][mb_xy][1] / 2;
                 /* We don't want to calculate hpels for fenc frames, so we round the motion
                  * vectors to fullpel here.  It's not too bad, I guess? */
+                x264_ccnt( CC_LA_WP, 256*sizeof(pixel) );
                 h->mc.copy_16x16_unaligned( pix, i_stride, src+mvx+mvy*i_stride, i_stride, 16 );
             }
         x264_emms();
@@ -1245,6 +1249,7 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
     int lowres_penalty = 4;
 
     h->mb.pic.p_fenc[0] = h->mb.pic.fenc_buf;
+    x264_ccnt( CC_LA_FENC8, 64*sizeof(pixel) );
     h->mc.copy[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, &fenc->lowres[0][i_pel_offset], i_stride, 8 );
     h->mb.pic.i_fenc_pre = 0;
     int16_t *fenc_pre = x264_me_fenc_pre( h, PIXEL_8x8, h->mb.pic.p_fenc[0] );
@@ -1456,6 +1461,7 @@ lowres_intra_mb:
             int pixoff = 4 / sizeof(pixel);
 
             /* Avoid store forwarding stalls by writing larger chunks */
+            x264_ccnt( CC_LA_BORDER, 16*sizeof(pixel) + 36 );
             memcpy( pix-FDEC_STRIDE, src-i_stride, 16 * sizeof(pixel) );
             for( int i = -1; i < 8; i++ )
                 M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*i_stride-pixoff] );

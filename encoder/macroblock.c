@@ -635,6 +635,11 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         /* don't do pskip motion compensation if it was already done in macroblock_analyse */
         if( !h->mb.b_skip_mc )
         {
+            int ccnt_site = x264_ccnt_in_rd ? CC_SKIP_MC_RD : CC_SKIP_MC_FIN;
+            int ccnt_pl = chroma ? 3 : 1;
+            ccnt_snap_t ccnt_s;
+            ccnt_snap( h, &ccnt_s, ccnt_pl );
+            x264_ccnt_site = ccnt_site;
             int mvx = x264_clip3( h->mb.cache.mv[0][x264_scan8[0]][0],
                                   h->mb.mv_min[0], h->mb.mv_max[0] );
             int mvy = x264_clip3( h->mb.cache.mv[0][x264_scan8[0]][1],
@@ -668,6 +673,10 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                                                        h->mb.pic.p_fdec[2], FDEC_STRIDE,
                                                        &h->sh.weight[0][2], height );
             }
+            x264_ccnt_site = CC_OTHER_MC;
+            x264_ccnt( ccnt_site, ccnt_mb_bytes( h, ccnt_pl ) );
+            if( ccnt_same( h, &ccnt_s, ccnt_pl ) )
+                x264_ccnt_avoid( ccnt_site, ccnt_mb_bytes( h, ccnt_pl ) );
         }
 
         x264_macroblock_encode_skip( h );
@@ -677,11 +686,13 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
     {
         /* don't do bskip motion compensation if it was already done in macroblock_analyse */
         if( !h->mb.b_skip_mc )
-            x264_mb_mc( h );
+            CCNT_FDEC_WRITE( x264_ccnt_in_rd ? CC_SKIP_MC_RD : CC_SKIP_MC_FIN, chroma ? 3 : 1, x264_mb_mc( h ) );
         x264_macroblock_encode_skip( h );
         return;
     }
 
+    if( IS_INTRA( h->mb.i_type ) )
+        x264_ccnt_intra = 1;
     if( h->mb.i_type == I_16x16 )
     {
         h->mb.b_transform_8x8 = 0;
@@ -695,7 +706,14 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         /* If we already encoded 3 of the 4 i8x8 blocks, we don't have to do them again. */
         if( h->mb.i_skip_intra )
         {
-            h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fdec[0], FDEC_STRIDE, h->mb.pic.i8x8_fdec_buf, 16, 16 );
+            h->mb.pic.ccnt_i8_pend = 0;
+            CCNT_FDEC_WRITE( CC_I8_REST, 1, h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fdec[0], FDEC_STRIDE, h->mb.pic.i8x8_fdec_buf, 16, 16 ) );
+            if( h->mb.i_skip_intra == 2 )
+            {
+                x264_ccnt( CC_I8_DCT_REST, sizeof(h->mb.pic.i8x8_dct_buf) );
+                if( !memcmp( h->dct.luma8x8, h->mb.pic.i8x8_dct_buf, sizeof(h->mb.pic.i8x8_dct_buf) ) )
+                    x264_ccnt_avoid( CC_I8_DCT_REST, sizeof(h->mb.pic.i8x8_dct_buf) );
+            }
             M32( &h->mb.cache.non_zero_count[x264_scan8[ 0]] ) = h->mb.pic.i8x8_nnz_buf[0];
             M32( &h->mb.cache.non_zero_count[x264_scan8[ 2]] ) = h->mb.pic.i8x8_nnz_buf[1];
             M32( &h->mb.cache.non_zero_count[x264_scan8[ 8]] ) = h->mb.pic.i8x8_nnz_buf[2];
@@ -720,7 +738,14 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         /* If we already encoded 15 of the 16 i4x4 blocks, we don't have to do them again. */
         if( h->mb.i_skip_intra )
         {
-            h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fdec[0], FDEC_STRIDE, h->mb.pic.i4x4_fdec_buf, 16, 16 );
+            h->mb.pic.ccnt_i4_pend = 0;
+            CCNT_FDEC_WRITE( CC_I4_REST, 1, h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fdec[0], FDEC_STRIDE, h->mb.pic.i4x4_fdec_buf, 16, 16 ) );
+            if( h->mb.i_skip_intra == 2 )
+            {
+                x264_ccnt( CC_I4_DCT_REST, sizeof(h->mb.pic.i4x4_dct_buf) );
+                if( !memcmp( h->dct.luma4x4, h->mb.pic.i4x4_dct_buf, sizeof(h->mb.pic.i4x4_dct_buf) ) )
+                    x264_ccnt_avoid( CC_I4_DCT_REST, sizeof(h->mb.pic.i4x4_dct_buf) );
+            }
             M32( &h->mb.cache.non_zero_count[x264_scan8[ 0]] ) = h->mb.pic.i4x4_nnz_buf[0];
             M32( &h->mb.cache.non_zero_count[x264_scan8[ 2]] ) = h->mb.pic.i4x4_nnz_buf[1];
             M32( &h->mb.cache.non_zero_count[x264_scan8[ 8]] ) = h->mb.pic.i4x4_nnz_buf[2];
@@ -751,7 +776,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
         /* Don't repeat motion compensation if it was already done in non-RD transform analysis */
         if( !h->mb.b_skip_mc )
-            x264_mb_mc( h );
+            CCNT_FDEC_WRITE( x264_ccnt_in_rd ? CC_MB_MC_RD : CC_MB_MC_FIN, chroma ? 3 : 1, x264_mb_mc( h ) );
 
         if( h->mb.b_lossless )
         {
@@ -982,9 +1007,10 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
             mvp[1] = x264_clip3( h->mb.cache.pskip_mv[1], h->mb.mv_min[1], h->mb.mv_max[1] );
 
             /* Motion compensation */
+            CCNT_FDEC_WRITE( CC_PROBE_MC, 1,
             h->mc.mc_luma( h->mb.pic.p_fdec[p],    FDEC_STRIDE,
                            &h->mb.pic.p_fref[0][0][p*4], h->mb.pic.i_stride[p],
-                           mvp[0], mvp[1], 16, 16, &h->sh.weight[0][p] );
+                           mvp[0], mvp[1], 16, 16, &h->sh.weight[0][p] ) );
         }
 
         /* prediction == fenc: no coefficients, decimate score 0 */
@@ -1048,13 +1074,16 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
         if( !b_bidir )
         {
             /* Special case for mv0, which is (of course) very common in P-skip mode. */
+            if( !M32( mvp ) )
+                x264_ccnt_val( 7, ccnt_mb_bytes( h, 2 ) );
+            CCNT_FDEC_WRITE( CC_PROBE_MC, 2,
             if( M32( mvp ) )
                 h->mc.mc_chroma( h->mb.pic.p_fdec[1], h->mb.pic.p_fdec[2], FDEC_STRIDE,
                                  x264_mb_fref_uv( h, h->mb.pic.p_fref[0][0], h->mb.pic.i_fld_uv_y, mvp[1]<<chroma422, chroma422?16:8 ),
                                  h->mb.pic.i_stride[1], mvp[0], mvp[1]<<chroma422, 8, chroma422?16:8 );
             else
                 h->mc.load_deinterleave_chroma_fdec( h->mb.pic.p_fdec[1], h->mb.pic.p_fref[0][0][4],
-                                                     h->mb.pic.i_stride[1], chroma422?16:8 );
+                                                     h->mb.pic.i_stride[1], chroma422?16:8 ) );
         }
 
         for( int ch = 0; ch < 2; ch++ )
@@ -1190,7 +1219,13 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
     h->mb.i_cbp_luma &= ~(1 << i8);
 
     if( !h->mb.b_skip_mc )
+    {
+        int ccnt_old = x264_ccnt_site;
+        x264_ccnt_site = CC_MB_MC8_RD;
         x264_mb_mc_8x8( h, i8 );
+        x264_ccnt_site = ccnt_old;
+        x264_ccnt( CC_MB_MC8_RD, ccnt_mb_bytes( h, chroma ? 3 : 1 ) / 4 );
+    }
 
     if( h->mb.b_lossless )
     {

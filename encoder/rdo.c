@@ -68,7 +68,7 @@ static uint16_t cabac_size_5ones[128];
 #define x264_macroblock_write_cabac  static x264_macroblock_size_cabac
 #include "cabac.c"
 
-#define COPY_CABAC h->mc.memcpy_aligned( &cabac_tmp.f8_bits_encoded, &h->cabac.f8_bits_encoded, \
+#define COPY_CABAC x264_ccnt( CC_RD_CABAC, sizeof(int) + (CHROMA444 ? 1024+12 : 460) ); h->mc.memcpy_aligned( &cabac_tmp.f8_bits_encoded, &h->cabac.f8_bits_encoded, \
         sizeof(int) + (CHROMA444 ? 1024+12 : 460) )
 #define COPY_CABAC_PART( pos, size ) memcpy( &cb->state[pos], &h->cabac.state[pos], size )
 
@@ -179,7 +179,9 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     int i_bits;
     int type_bak = h->mb.i_type;
 
+    x264_ccnt_in_rd = 1;
     x264_macroblock_encode( h );
+    x264_ccnt_in_rd = 0;
 
     if( h->mb.b_deblock_rdo )
         x264_macroblock_deblock( h );
@@ -195,6 +197,14 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
         x264_macroblock_size_cabac( h, &cabac_tmp );
+        {
+            /* states the size pass changed: a lower bound on the states it touched */
+            int n = 0, len = CHROMA444 ? 1024+12-4 : 460-4;
+            for( int i = 0; i < len && i < 1024; i++ )
+                n += cabac_tmp.state[i] != h->cabac.state[i];
+            x264_ccnt_val( 0, n );
+            x264_ccnt_val( 1, 1 );
+        }
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 32768 ) >> 16;
     }
     else

@@ -75,6 +75,18 @@ static double x264_ssim( double ssim )
  * thread and worker 0 only runs its post-encode filter passes.
  ****************************************************************************/
 static void *x264_slices_write( x264_t *h );
+
+/* copy counters: classify mc_luma as a plain copy (fullpel or one hpel plane, unweighted) */
+static void (*ccnt_mc_luma_orig)( pixel *dst, intptr_t i_dst, pixel **src, intptr_t i_src,
+                                  int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight );
+static void ccnt_mc_luma( pixel *dst, intptr_t i_dst, pixel **src, intptr_t i_src,
+                          int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+    int b_copy = !(qpel_idx & 5) && !(weight && weight->weightfn);
+    x264_ccnt_mc( b_copy, i_width*i_height*sizeof(pixel) );
+    ccnt_mc_luma_orig( dst, i_dst, src, i_src, mvx, mvy, i_width, i_height, weight );
+}
 static void x264_threadslice_filter( x264_t *h );
 
 #if HAVE_THREAD
@@ -1812,6 +1824,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
     x264_zigzag_init( h->param.cpu, &h->zigzagf_progressive, &h->zigzagf_interlaced );
     memcpy( &h->zigzagf, PARAM_INTERLACED ? &h->zigzagf_interlaced : &h->zigzagf_progressive, sizeof(h->zigzagf) );
     x264_mc_init( h->param.cpu, &h->mc, h->param.b_cpu_independent );
+    ccnt_mc_luma_orig = h->mc.mc_luma;
+    h->mc.mc_luma = ccnt_mc_luma;
     x264_quant_init( h, h->param.cpu, &h->quantf );
     x264_deblock_init( h->param.cpu, &h->loopf, PARAM_INTERLACED );
     x264_bitstream_init( h->param.cpu, &h->bsf );
@@ -2687,6 +2701,8 @@ static inline void x264_reference_build_list( x264_t *h, int i_poc )
 
 static void fdec_copy_fld_rows( x264_t *h, int p, int y0, int y1 )
 {
+    if( y1 > y0 )
+        x264_ccnt( CC_FLD_ROWS, (int64_t)(y1-y0) * h->mb.i_mb_width*16*sizeof(pixel) );
     for( int i = y0; i < y1; i++ )
         memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
                 h->fdec->plane[p]     + i*h->fdec->i_stride[p],
@@ -3170,7 +3186,17 @@ static intptr_t x264_slice_write( x264_t *h )
 
         /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 reencode:
-        x264_macroblock_encode( h );
+        {
+            ccnt_snap_t ccnt_s;
+            ccnt_snap( h, &ccnt_s, 3 );
+            x264_macroblock_encode( h );
+            if( !IS_SKIP( h->mb.i_type ) )
+            {
+                x264_ccnt_val( 8, 1 );
+                if( ccnt_same( h, &ccnt_s, 3 ) )
+                    x264_ccnt_val( 9, 1 );
+            }
+        }
 
         if( h->param.b_cabac )
         {
@@ -4339,6 +4365,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
                                    x264_picture_t *pic_out )
 {
     char psz_message[80];
+    x264_ccnt_frame();
 
     if( !h->param.b_sliced_threads && h->b_thread_active )
     {
@@ -4620,6 +4647,7 @@ static void x264_print_intra( int64_t *i_mb_count, double i_count, int b_print_p
  ****************************************************************************/
 void    x264_encoder_close  ( x264_t *h )
 {
+    x264_ccnt_print();
     int64_t i_yuv_size = FRAME_SIZE( h->param.i_width * h->param.i_height );
     int64_t i_mb_count_size[2][7] = {{0}};
     char buf[200];

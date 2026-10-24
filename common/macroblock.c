@@ -626,6 +626,8 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     if( b_chroma )
     {
         h->mc.load_deinterleave_chroma_fenc( h->mb.pic.p_fenc[1], h->mb.pic.p_fenc_plane[1], i_stride2, height );
+        x264_ccnt( CC_LD_FENC_C, 2*8*height*sizeof(pixel) );
+        x264_ccnt( CC_LD_TOP, 2*9*sizeof(pixel) );
         memcpy( h->mb.pic.p_fdec[1]-FDEC_STRIDE, intra_fdec, 8*sizeof(pixel) );
         memcpy( h->mb.pic.p_fdec[2]-FDEC_STRIDE, intra_fdec+8, 8*sizeof(pixel) );
         h->mb.pic.p_fdec[1][-FDEC_STRIDE-1] = intra_fdec[-1-8];
@@ -636,11 +638,14 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     else
     {
         h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[i], FENC_STRIDE, h->mb.pic.p_fenc_plane[i], i_stride2, 16 );
+        x264_ccnt( CC_LD_FENC_Y, 256*sizeof(pixel) );
+        x264_ccnt( CC_LD_TOP, 25*sizeof(pixel) );
         memcpy( h->mb.pic.p_fdec[i]-FDEC_STRIDE, intra_fdec, 24*sizeof(pixel) );
         h->mb.pic.p_fdec[i][-FDEC_STRIDE-1] = intra_fdec[-1];
     }
     if( b_mbaff || h->mb.b_reencode_mb )
     {
+        x264_ccnt( CC_LD_LEFT, (b_chroma ? 2 : 1)*height*sizeof(pixel) );
         for( int j = 0; j < height; j++ )
             if( b_chroma )
             {
@@ -1052,6 +1057,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
 
     if( !b_mbaff )
     {
+        x264_ccnt( CC_LD_LEFT, (16 + 2*(CHROMA444 ? 16 : 16 >> CHROMA_V_SHIFT))*sizeof(pixel) );
         x264_copy_column8( h->mb.pic.p_fdec[0]-1+ 4*FDEC_STRIDE, h->mb.pic.p_fdec[0]+15+ 4*FDEC_STRIDE );
         x264_copy_column8( h->mb.pic.p_fdec[0]-1+12*FDEC_STRIDE, h->mb.pic.p_fdec[0]+15+12*FDEC_STRIDE );
         x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 0, 0, 0 );
@@ -1684,6 +1690,8 @@ static void ALWAYS_INLINE x264_macroblock_store_pic( x264_t *h, int mb_x, int mb
         h->mc.store_interleave_chroma( &h->fdec->plane[1][i_pix_offset], i_stride2, h->mb.pic.p_fdec[1], h->mb.pic.p_fdec[2], height );
     else
         h->mc.copy[PIXEL_16x16]( &h->fdec->plane[i][i_pix_offset], i_stride2, h->mb.pic.p_fdec[i], FDEC_STRIDE, 16 );
+    int ccnt_b = (b_chroma ? 2*8*height : 256) * sizeof(pixel);
+    x264_ccnt( b_chroma ? CC_ST_PIC_C : CC_ST_PIC_Y, ccnt_b );
 }
 
 static void ALWAYS_INLINE x264_macroblock_backup_intra( x264_t *h, int mb_x, int mb_y, int b_mbaff )
@@ -1693,6 +1701,7 @@ static void ALWAYS_INLINE x264_macroblock_backup_intra( x264_t *h, int mb_x, int
      * bottom row of each field. We also store samples needed for the next
      * mbpair in intra_border_backup[2]. */
     int backup_dst = !b_mbaff ? (mb_y&1) : (mb_y&1) ? 1 : MB_INTERLACED ? 0 : 2;
+    x264_ccnt( CC_BK_INTRA, (16 + (CHROMA444 ? 32 : 16))*sizeof(pixel) * (b_mbaff && (mb_y&1) ? 2 : 1) );
     memcpy( &h->intra_border_backup[backup_dst][0][mb_x*16  ], h->mb.pic.p_fdec[0]+FDEC_STRIDE*15, 16*sizeof(pixel) );
     if( CHROMA444 )
     {
@@ -1766,6 +1775,23 @@ void x264_macroblock_cache_save( x264_t *h )
         else
             x264_macroblock_store_pic( h, h->mb.i_mb_x, h->mb.i_mb_y, 1, 1, 0 );
     }
+    if( IS_SKIP( h->mb.i_type ) )
+        x264_ccnt_val( 2, 1 );
+    if( IS_INTRA( h->mb.i_type ) )
+        x264_ccnt_val( 3, 1 );
+    if( h->mb.pic.ccnt_i8_pend )
+    {
+        x264_ccnt_val( 5, 1 );
+        CCNT_DEAD_SAVE( 8 );
+    }
+    if( h->mb.pic.ccnt_i4_pend )
+    {
+        x264_ccnt_val( 6, 1 );
+        CCNT_DEAD_SAVE( 4 );
+    }
+    h->mb.pic.ccnt_i8_pend = h->mb.pic.ccnt_i4_pend = 0;
+    x264_ccnt_mb( h->mb.i_mb_y*h->mb.i_mb_width + h->mb.i_mb_x, h->mb.i_mb_x, h->mb.i_mb_y, h->mb.i_mb_width, h->mb.i_mb_height,
+                  SLICE_MBAFF, (16 + (CHROMA444 ? 32 : 16))*sizeof(pixel), 0 );
 
     x264_prefetch_fenc( h, h->fdec, h->mb.i_mb_x, h->mb.i_mb_y );
 

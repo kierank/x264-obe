@@ -471,5 +471,60 @@ static ALWAYS_INLINE int x264_mb_transform_8x8_allowed( x264_t *h )
     return M32( h->mb.i_sub_partition ) == D_L0_8x8*0x01010101;
 }
 
+/* copy counters: fdec snapshots (planes: 1 luma, 2 chroma, 3 both) */
+typedef struct { pixel p[3][16*16]; } ccnt_snap_t;
+static inline void ccnt_snap( x264_t *h, ccnt_snap_t *s, int planes )
+{
+    int ch = 16 >> CHROMA_V_SHIFT;
+    for( int y = 0; y < 16; y++ )
+    {
+        if( planes & 1 )
+            memcpy( &s->p[0][y*16], h->mb.pic.p_fdec[0] + y*FDEC_STRIDE, 16*sizeof(pixel) );
+        if( (planes & 2) && y < ch )
+        {
+            memcpy( &s->p[1][y*16], h->mb.pic.p_fdec[1] + y*FDEC_STRIDE, 8*sizeof(pixel) );
+            memcpy( &s->p[2][y*16], h->mb.pic.p_fdec[2] + y*FDEC_STRIDE, 8*sizeof(pixel) );
+        }
+    }
+}
+static inline int ccnt_same( x264_t *h, ccnt_snap_t *s, int planes )
+{
+    int ch = 16 >> CHROMA_V_SHIFT;
+    for( int y = 0; y < 16; y++ )
+    {
+        if( (planes & 1) && memcmp( &s->p[0][y*16], h->mb.pic.p_fdec[0] + y*FDEC_STRIDE, 16*sizeof(pixel) ) )
+            return 0;
+        if( (planes & 2) && y < ch &&
+            (memcmp( &s->p[1][y*16], h->mb.pic.p_fdec[1] + y*FDEC_STRIDE, 8*sizeof(pixel) ) ||
+             memcmp( &s->p[2][y*16], h->mb.pic.p_fdec[2] + y*FDEC_STRIDE, 8*sizeof(pixel) )) )
+            return 0;
+    }
+    return 1;
+}
+static inline int ccnt_mb_bytes( x264_t *h, int planes )
+{
+    return ((planes & 1 ? 256 : 0) + (planes & 2 ? 2*8*(16 >> CHROMA_V_SHIFT) : 0)) * (int)sizeof(pixel);
+}
+/* an i8x8/i4x4 save never restored */
+#define CCNT_DEAD_SAVE( n )\
+do {\
+    x264_ccnt_avoid( CC_I##n##_SAVE, 256*sizeof(pixel) );\
+    if( h->mb.pic.ccnt_i##n##_pend == 2 )\
+        x264_ccnt_avoid( CC_I##n##_DCT_SAVE, sizeof(h->mb.pic.i##n##x##n##_dct_buf) );\
+} while( 0 )
+/* run a write to fdec; count it, and as avoidable if fdec already held the result */
+#define CCNT_FDEC_WRITE( site, planes, ... )\
+do {\
+    ccnt_snap_t ccnt_s_;\
+    int ccnt_old_ = x264_ccnt_site;\
+    ccnt_snap( h, &ccnt_s_, planes );\
+    x264_ccnt_site = site;\
+    __VA_ARGS__;\
+    x264_ccnt_site = ccnt_old_;\
+    x264_ccnt( site, ccnt_mb_bytes( h, planes ) );\
+    if( ccnt_same( h, &ccnt_s_, planes ) )\
+        x264_ccnt_avoid( site, ccnt_mb_bytes( h, planes ) );\
+} while( 0 )
+
 #endif
 

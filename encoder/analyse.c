@@ -665,6 +665,7 @@ static inline void x264_mb_init_fenc_cache( x264_t *h, int b_satd )
 
 static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
 {
+    x264_ccnt_intra = 1;
     if( a->i_satd_chroma < COST_MAX )
         return;
 
@@ -747,6 +748,7 @@ static void x264_mb_analyse_intra_chroma( x264_t *h, x264_mb_analysis_t *a )
 /* FIXME: should we do any sort of merged chroma analysis with 4:4:4? */
 static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter )
 {
+    x264_ccnt_intra = 1;
     const unsigned int flags = h->sh.i_type == SLICE_TYPE_I ? h->param.analyse.intra : h->param.analyse.inter;
     pixel *p_src = h->mb.pic.p_fenc[0];
     pixel *p_dst = h->mb.pic.p_fdec[0];
@@ -919,6 +921,12 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             if( h->mb.i_skip_intra )
             {
                 h->mc.copy[PIXEL_16x16]( h->mb.pic.i8x8_fdec_buf, 16, p_dst, FDEC_STRIDE, 16 );
+                x264_ccnt( CC_I8_SAVE, 256*sizeof(pixel) );
+                if( h->mb.pic.ccnt_i8_pend )
+                    CCNT_DEAD_SAVE( 8 );
+                h->mb.pic.ccnt_i8_pend = h->mb.i_skip_intra;
+                if( h->mb.i_skip_intra == 2 )
+                    x264_ccnt( CC_I8_DCT_SAVE, sizeof(h->mb.pic.i8x8_dct_buf) );
                 h->mb.pic.i8x8_nnz_buf[0] = M32( &h->mb.cache.non_zero_count[x264_scan8[ 0]] );
                 h->mb.pic.i8x8_nnz_buf[1] = M32( &h->mb.cache.non_zero_count[x264_scan8[ 2]] );
                 h->mb.pic.i8x8_nnz_buf[2] = M32( &h->mb.cache.non_zero_count[x264_scan8[ 8]] );
@@ -1065,6 +1073,12 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             if( h->mb.i_skip_intra )
             {
                 h->mc.copy[PIXEL_16x16]( h->mb.pic.i4x4_fdec_buf, 16, p_dst, FDEC_STRIDE, 16 );
+                x264_ccnt( CC_I4_SAVE, 256*sizeof(pixel) );
+                if( h->mb.pic.ccnt_i4_pend )
+                    CCNT_DEAD_SAVE( 4 );
+                h->mb.pic.ccnt_i4_pend = h->mb.i_skip_intra;
+                if( h->mb.i_skip_intra == 2 )
+                    x264_ccnt( CC_I4_DCT_SAVE, sizeof(h->mb.pic.i4x4_dct_buf) );
                 h->mb.pic.i4x4_nnz_buf[0] = M32( &h->mb.cache.non_zero_count[x264_scan8[ 0]] );
                 h->mb.pic.i4x4_nnz_buf[1] = M32( &h->mb.cache.non_zero_count[x264_scan8[ 2]] );
                 h->mb.pic.i4x4_nnz_buf[2] = M32( &h->mb.cache.non_zero_count[x264_scan8[ 8]] );
@@ -1115,6 +1129,7 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
 
 static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 {
+    x264_ccnt_intra = 1;
     uint64_t i_satd, i_best;
     int plane_count = CHROMA444 ? 3 : 1;
     h->mb.i_skip_intra = 0;
@@ -3014,7 +3029,7 @@ static inline void x264_mb_analyse_transform( x264_t *h )
     if( x264_mb_transform_8x8_allowed( h ) && h->param.analyse.b_transform_8x8 && !h->mb.b_lossless )
     {
         /* Only luma MC is really needed for 4:2:0, but the full MC is re-used in macroblock_encode. */
-        x264_mb_mc( h );
+        CCNT_FDEC_WRITE( CC_MB_MC_TRANS, CHROMA_FORMAT ? 3 : 1, x264_mb_mc( h ) );
 
         int plane_count = CHROMA444 && h->mb.b_chroma_me ? 3 : 1;
         int i_cost8 = 0, i_cost4 = 0;
@@ -3322,6 +3337,7 @@ static int x264_mb_pskip_mispredicted( x264_t *h )
  * leaves no residual. */
 static void x264_mb_analyse_intra_emerg( x264_t *h, x264_mb_analysis_t *a )
 {
+    x264_ccnt_intra = 1;
     static const int8_t dc16x16[4] = { I_PRED_16x16_DC_128, I_PRED_16x16_DC_LEFT, I_PRED_16x16_DC_TOP, I_PRED_16x16_DC };
     static const int8_t dc_chroma[4] = { I_PRED_CHROMA_DC_128, I_PRED_CHROMA_DC_LEFT, I_PRED_CHROMA_DC_TOP, I_PRED_CHROMA_DC };
     int nb = h->mb.i_neighbour_intra & (MB_LEFT|MB_TOP);
@@ -3801,7 +3817,7 @@ skip_analysis:
                 {
                     if( b_changed )
                     {
-                        x264_mb_mc( h );
+                        CCNT_FDEC_WRITE( CC_MB_MC_TRANS, CHROMA_FORMAT ? 3 : 1, x264_mb_mc( h ) );
                         b_skip = x264_macroblock_probe_bskip( h );
                     }
                     h->stat.frame.i_direct_score[ h->sh.b_direct_spatial_mv_pred ] += b_skip;
@@ -3817,7 +3833,7 @@ skip_analysis:
         if( analysis.b_direct_available )
         {
             if( !h->mb.b_direct_auto_write )
-                x264_mb_mc( h );
+                CCNT_FDEC_WRITE( CC_MB_MC_TRANS, CHROMA_FORMAT ? 3 : 1, x264_mb_mc( h ) );
             /* If the current macroblock is off the frame, just skip it. */
             if( HAVE_INTERLACED && !MB_INTERLACED && h->mb.i_mb_y * 16 >= h->param.i_height )
                 b_skip = 1;

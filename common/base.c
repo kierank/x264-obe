@@ -96,6 +96,132 @@ void x264_log_internal( int i_level, const char *psz_fmt, ... )
     va_end( arg );
 }
 
+/* copy counters */
+__thread int x264_ccnt_site = CC_OTHER_MC;
+__thread int x264_ccnt_in_rd;
+__thread int x264_ccnt_intra;
+static __thread int64_t ccnt_pend[2];
+static int64_t ccnt_calls[CC_N], ccnt_bytes[CC_N], ccnt_av_calls[CC_N], ccnt_av_bytes[CC_N];
+static int64_t ccnt_mcc[CC_N], ccnt_mco[CC_N], ccnt_vals[16], ccnt_mbs, ccnt_frames;
+static int64_t ccnt_bk_resolved;
+#define CCNT_MAXMB (1<<17)
+static uint8_t ccnt_iflag[CCNT_MAXMB];
+static const char *ccnt_name[CC_N] =
+{
+    "ld_fenc_y", "ld_fenc_c", "ld_top", "ld_left",
+    "st_pic_y", "st_pic_c", "bk_intra",
+    "probe_mc", "skip_mc_fin", "skip_mc_rd", "mb_mc_fin", "mb_mc_rd", "mb_mc_anal", "mb_mc8_rd",
+    "i8_save", "i8_rest", "i8_dct_save", "i8_dct_rest",
+    "i4_save", "i4_rest", "i4_dct_save", "i4_dct_rest",
+    "rd_cabac", "rd_cabac_part",
+    "la_fenc8", "la_border", "la_wp",
+    "frame_in", "fld_rows", "expand", "fenc_bot",
+    "me_mc", "other_mc",
+};
+static const char *ccnt_vname[16] =
+{
+    "rd_cabac touched states", "rd_cabac checked copies", "skip mbs", "intra mbs",
+    "intra-read mbs", "i8 saves pending at mb end", "i4 saves pending at mb end", "probe_mc chroma copy bytes",
+    "final encodes", "final encode recon unchanged", "mb_mc_fin tag-predicted", "mb_mc_fin tag-predicted but differed",
+    "", "", "", ""
+};
+
+void x264_ccnt( int site, int64_t bytes )
+{
+    __atomic_fetch_add( &ccnt_calls[site], 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &ccnt_bytes[site], bytes, __ATOMIC_RELAXED );
+    if( site == CC_LD_TOP )
+        ccnt_pend[0] += bytes;
+    else if( site == CC_LD_LEFT )
+        ccnt_pend[1] += bytes;
+}
+
+void x264_ccnt_avoid( int site, int64_t bytes )
+{
+    __atomic_fetch_add( &ccnt_av_calls[site], 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &ccnt_av_bytes[site], bytes, __ATOMIC_RELAXED );
+}
+
+void x264_ccnt_mc( int b_copy, int64_t bytes )
+{
+    __atomic_fetch_add( b_copy ? &ccnt_mcc[x264_ccnt_site] : &ccnt_mco[x264_ccnt_site], bytes, __ATOMIC_RELAXED );
+}
+
+void x264_ccnt_val( int idx, int64_t v )
+{
+    __atomic_fetch_add( &ccnt_vals[idx], v, __ATOMIC_RELAXED );
+}
+
+/* end of a final MB: borders loaded for it are dead if it ran no intra prediction;
+ * progressive: the intra backup of (x,y-1) is dead if none of (x-1..x+1,y) ran intra */
+void x264_ccnt_mb( int mb_xy, int mb_x, int mb_y, int mb_w, int mb_h, int b_mbaff, int64_t bk_bytes, int64_t ld_bytes )
+{
+    int intra = x264_ccnt_intra;
+    __atomic_fetch_add( &ccnt_mbs, 1, __ATOMIC_RELAXED );
+    if( intra )
+        x264_ccnt_val( 4, 1 );
+    if( !intra )
+    {
+        if( ccnt_pend[0] )
+            x264_ccnt_avoid( CC_LD_TOP, ccnt_pend[0] );
+        if( ccnt_pend[1] )
+            x264_ccnt_avoid( CC_LD_LEFT, ccnt_pend[1] );
+    }
+    ccnt_pend[0] = ccnt_pend[1] = 0;
+    x264_ccnt_intra = 0;
+    if( b_mbaff || mb_xy >= CCNT_MAXMB || mb_w*mb_h > CCNT_MAXMB )
+        return;
+    ccnt_iflag[mb_xy] = intra;
+    if( mb_x != mb_w-1 )
+        return;
+    if( mb_y > 0 )
+        for( int x = 0; x < mb_w; x++ )
+        {
+            uint8_t *f = &ccnt_iflag[mb_y*mb_w];
+            int used = f[x] | (x > 0 && f[x-1]) | (x < mb_w-1 && f[x+1]);
+            if( !used )
+                x264_ccnt_avoid( CC_BK_INTRA, bk_bytes );
+            ccnt_bk_resolved += bk_bytes;
+        }
+    if( mb_y == mb_h-1 )
+        for( int x = 0; x < mb_w; x++ )
+        {
+            x264_ccnt_avoid( CC_BK_INTRA, bk_bytes );
+            ccnt_bk_resolved += bk_bytes;
+        }
+    (void)ld_bytes;
+}
+
+void x264_ccnt_frame( void )
+{
+    __atomic_fetch_add( &ccnt_frames, 1, __ATOMIC_RELAXED );
+}
+
+void x264_ccnt_print( void )
+{
+    int64_t mbs = X264_MAX( ccnt_mbs, 1 ), fr = X264_MAX( ccnt_frames, 1 );
+    int64_t tot = 0, tot_av = 0;
+    fprintf( stderr, "ccnt frames %"PRId64" mbs %"PRId64" mbs/frame %.1f\n", ccnt_frames, ccnt_mbs, (double)ccnt_mbs/fr );
+    fprintf( stderr, "ccnt %-14s %10s %10s %10s %8s %8s %12s %12s %10s %10s\n", "site", "calls", "calls/mb", "B/mb", "av%call", "av%B", "B/frame", "avB/frame", "mccopyB/mb", "mcothB/mb" );
+    for( int i = 0; i < CC_N; i++ )
+    {
+        if( !ccnt_calls[i] && !ccnt_mcc[i] && !ccnt_mco[i] )
+            continue;
+        tot += ccnt_bytes[i];
+        tot_av += ccnt_av_bytes[i];
+        fprintf( stderr, "ccnt %-14s %10"PRId64" %10.4f %10.2f %8.2f %8.2f %12.0f %12.0f %10.2f %10.2f\n", ccnt_name[i], ccnt_calls[i],
+                 (double)ccnt_calls[i]/mbs, (double)ccnt_bytes[i]/mbs,
+                 ccnt_calls[i] ? 100.0*ccnt_av_calls[i]/ccnt_calls[i] : 0.0, ccnt_bytes[i] ? 100.0*ccnt_av_bytes[i]/ccnt_bytes[i] : 0.0,
+                 (double)ccnt_bytes[i]/fr, (double)ccnt_av_bytes[i]/fr,
+                 (double)ccnt_mcc[i]/mbs, (double)ccnt_mco[i]/mbs );
+    }
+    fprintf( stderr, "ccnt total B/mb %.2f avoidable B/mb %.2f (%.2f%%) bk_intra resolved B/mb %.2f\n", (double)tot/mbs, (double)tot_av/mbs,
+             tot ? 100.0*tot_av/tot : 0.0, (double)ccnt_bk_resolved/mbs );
+    for( int i = 0; i < 16; i++ )
+        if( ccnt_vname[i][0] )
+            fprintf( stderr, "ccnt val %-40s %"PRId64" (%.4f/mb)\n", ccnt_vname[i], ccnt_vals[i], (double)ccnt_vals[i]/mbs );
+}
+
 /****************************************************************************
  * x264_malloc:
  ****************************************************************************/

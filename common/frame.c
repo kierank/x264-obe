@@ -504,6 +504,7 @@ void x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t 
         int v_shift = CHROMA_V_SHIFT;
         int c0 = y0 >> v_shift;
         int c_rows = (y1 >> v_shift) - c0;
+        x264_ccnt( CC_FRAME_IN, (int64_t)(h->param.i_width*rows + h->param.i_width*c_rows) * sizeof(pixel) );
         /* parenthesised: the checking macro returns, x264_frame_copy_picture_init checked */
         (get_plane_ptr)( h, src, &pix[0], &stride[0], 0, 0, 0 );
         h->mc.plane_copy( dst->plane[0] + y0 * dst->i_stride[0], dst->i_stride[0], (pixel*)(pix[0] + (intptr_t)y0 * stride[0]),
@@ -609,6 +610,8 @@ static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i
         pixel_memset( PPIXEL(i_width, y), SPIXEL(i_width-1-b_chroma, y), i_padh>>b_chroma, sizeof(pixel)<<b_chroma );
     }
     /* upper band */
+    if( b_pad_top || b_pad_bottom )
+        x264_ccnt( CC_EXPAND, (b_pad_top + b_pad_bottom) * i_padv * (i_width+2*i_padh) * (int)sizeof(pixel) );
     if( b_pad_top )
         for( int y = 0; y < i_padv; y++ )
             memcpy( PPIXEL(-i_padh, -y-1), SPIXEL(-i_padh, 0), (i_width+2*i_padh) * sizeof(pixel) );
@@ -793,6 +796,7 @@ void x264_fenc_bot_copy( x264_t *h )
         int stride = h->fenc->i_stride[i];
         int y0 = height*(h->mb.i_mb_height-2) - 2;
         for( int y = 0; y < 2*height+2; y++ )
+            x264_ccnt( CC_FENC_BOT, 16*h->mb.i_mb_width*sizeof(pixel) );
             memcpy( h->mb.fenc_bot[i] + PADH + y*stride, h->fenc->plane[i] + (y0+y)*stride,
                     16*h->mb.i_mb_width*sizeof(pixel) );
     }
@@ -811,6 +815,7 @@ void x264_expand_border_mbpair( x264_t *h, int mb_x, int mb_y )
         if( h->mb.b_fenc_bot )
             fenc = h->mb.fenc_bot[i] + PADH + 16*mb_x + (height - ((16 >> v_shift)*(h->mb.i_mb_height-2) - 2))*stride;
         for( int y = 0; y < pady; y++ )
+            x264_ccnt( CC_FENC_BOT, 16*sizeof(pixel) );
             memcpy( fenc + y*stride, fenc - stride, 16*sizeof(pixel) );
     }
 }
