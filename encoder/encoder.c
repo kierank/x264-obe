@@ -4660,6 +4660,13 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+    {
+        uint64_t *c = x264_cf_cnt;
+        fprintf( stderr, "cfcnt calls %"PRIu64" intra %"PRIu64" trnrll %"PRIu64" et_try %"PRIu64" et %"PRIu64" et_zero %"PRIu64
+                 " et_dcplane %"PRIu64" et_dccoded %"PRIu64" full %"PRIu64" ac_kept %"PRIu64" ac_dec %"PRIu64" full_zero %"PRIu64
+                 " cbp0 %"PRIu64" cbp1 %"PRIu64" cbp2 %"PRIu64"\n",
+                 c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12], c[13], c[14] );
+    }
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );

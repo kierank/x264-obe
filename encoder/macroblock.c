@@ -29,6 +29,8 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+uint64_t x264_cf_cnt[16];
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -266,7 +268,13 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
     int (*dequant_mf)[16] = h->dequant4_mf[CQM_4IC + b_inter];
     ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
 
-    if( h->zigzagf.chroma_encode[chroma422] && !h->mb.b_trellis && !h->mb.b_noise_reduction && !h->mb.b_lossless )
+    CF_CNT( 0 );
+    if( !b_inter )
+        CF_CNT( 1 );
+    if( h->mb.b_trellis || h->mb.b_noise_reduction || h->mb.b_lossless )
+        CF_CNT( 2 );
+    /* counted on the separate calls, which chroma_encode equals */
+    if( 0 && h->zigzagf.chroma_encode[chroma422] && !h->mb.b_trellis && !h->mb.b_noise_reduction && !h->mb.b_lossless )
     {
         int i_qp_dc = i_qp + 3*chroma422;
         x264_chroma_encode_t a;
@@ -309,11 +317,13 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
         int ssd[2];
         int chromapix = chroma422 ? PIXEL_8x16 : PIXEL_8x8;
 
+        CF_CNT( 3 );
         int score  = h->pixf.var2[chromapix]( h->mb.pic.p_fenc[1], FENC_STRIDE, h->mb.pic.p_fdec[1], FDEC_STRIDE, &ssd[0] );
         if( score < thresh*4 )
             score += h->pixf.var2[chromapix]( h->mb.pic.p_fenc[2], FENC_STRIDE, h->mb.pic.p_fdec[2], FDEC_STRIDE, &ssd[1] );
         if( score < thresh*4 )
         {
+            CF_CNT( 4 );
             h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+0]] = 0;
             h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+1]] = 0;
 
@@ -321,6 +331,7 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             {
                 if( ssd[ch] > thresh )
                 {
+                    CF_CNT( 6 );
                     pixel *p_src = h->mb.pic.p_fenc[1+ch];
                     pixel *p_dst = h->mb.pic.p_fdec[1+ch];
 
@@ -345,6 +356,7 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
                         if( !x264_mb_optimize_chroma_dc( h, dct_dc, dequant_mf, i_qp+3*chroma422, chroma422 ) )
                             continue;
                         h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+ch]] = 1;
+                        CF_CNT( 7 );
                         if( chroma422 )
                         {
                             zigzag_scan_2x4_dc( h->dct.chroma_dc[ch], dct_dc );
@@ -362,10 +374,14 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
                     }
                 }
             }
+            if( !h->mb.i_cbp_chroma )
+                CF_CNT( 5 );
+            CF_CNT( 12 + h->mb.i_cbp_chroma );
             return;
         }
     }
 
+    CF_CNT( 8 );
     for( int ch = 0; ch < 2; ch++ )
     {
         pixel *p_src = h->mb.pic.p_fenc[1+ch];
@@ -450,6 +466,8 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
 
         h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+ch]] = nz_dc;
 
+        if( nz_ac )
+            CF_CNT( i_decimate_score < 7 ? 10 : 9 );
         if( i_decimate_score < 7 || !nz_ac )
         {
             /* Decimate the block */
@@ -509,6 +527,9 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
     /* 0 = none, 1 = DC only, 2 = DC+AC */
     h->mb.i_cbp_chroma += (h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+0]] |
                            h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+1]] | h->mb.i_cbp_chroma);
+    if( !h->mb.i_cbp_chroma )
+        CF_CNT( 11 );
+    CF_CNT( 12 + h->mb.i_cbp_chroma );
 }
 
 void x264_mb_encode_chroma( x264_t *h, int b_inter, int i_qp )

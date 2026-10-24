@@ -159,6 +159,14 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+/* test/x264-chroma-fuse-sn-cnt: x264_mb_encode_chroma, counted on the separate calls.
+ * 0 calls, 1 intra, 2 trellis/nr/lossless, 3 early termination tried, 4 taken, 5 taken and nothing coded,
+ * 6 planes with ssd > thresh, 7 of those dc coded, 8 full path, 9 planes ac kept, 10 planes ac decimated,
+ * 11 full path nothing coded, 12-14 i_cbp_chroma 0-2 */
+#define x264_cf_cnt x264_template(cf_cnt)
+extern uint64_t x264_cf_cnt[16];
+#define CF_CNT( i ) __atomic_fetch_add( &x264_cf_cnt[i], 1, __ATOMIC_RELAXED )
+
 static ALWAYS_INLINE void x264_mb_encode_i4x4( x264_t *h, int p, int idx, int i_qp, int i_mode, int b_predict )
 {
     int nz;
