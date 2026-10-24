@@ -208,7 +208,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
             PREALLOC( frame->field, i_mb_count * sizeof(uint8_t) );
         if( h->param.analyse.b_mb_info )
             PREALLOC( frame->effective_qp, i_mb_count * sizeof(uint8_t) );
-        if( h->param.analyse.i_subpel_refine )
+        if( HPEL_LAZY && h->param.analyse.i_subpel_refine )
             for( int i = 0; i <= PARAM_INTERLACED; i++ )
                 PREALLOC( frame->hpel_unit[i], h->mb.i_mb_height >> PARAM_INTERLACED );
     }

@@ -420,20 +420,13 @@ static ALWAYS_INLINE pixel *x264_mb_fref_uv( x264_t *h, pixel **p_fref, int y, i
     return (unsigned)y < (unsigned)(h->mb.pic.i_fld_uv_lines - i_height) ? p_fref[4] : p_fref[5];
 }
 
-/* Lazy hpel: build the units of frame's hpel planes of set (0 frame, 1 field)
- * holding rows [y0, y1] of that set's planes. */
-static ALWAYS_INLINE void x264_frame_hpel_ensure( x264_t *h, x264_frame_t *frame, int set, int y0, int y1 )
+/* Lazy hpel: rows [y0, y1] of the hpel planes of the ref of ok, an entry of
+ * h->mb.hpel_ok, NULL for a ref built eagerly: build their units if they aren't
+ * known built. */
+static ALWAYS_INLINE void x264_hpel_ensure( x264_t *h, int *ok, int y0, int y1 )
 {
-    int shift = 4 + (PARAM_INTERLACED && !set);
-    int last = (h->mb.i_mb_height >> PARAM_INTERLACED) - 1;
-    int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
-    int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
-    for( int u = u0; u <= u1; u++ )
-        if( __atomic_load_n( &frame->hpel_unit[set][u], __ATOMIC_ACQUIRE ) != HPEL_UNIT_BUILT )
-        {
-            x264_frame_hpel_build( h, frame, set, u, u1 );
-            break;
-        }
+    if( HPEL_LAZY && ok && (y0 < ok[0] || y1 > ok[1]) )
+        x264_hpel_build( h, ok, y0, y1 );
 }
 
 /* Lazy hpel: the hpel rows mc_luma/get_ref read for a block of height rows at
@@ -441,11 +434,11 @@ static ALWAYS_INLINE void x264_frame_hpel_ensure( x264_t *h, x264_frame_t *frame
  * mv reads no hpel. */
 static ALWAYS_INLINE void x264_mb_hpel_ensure( x264_t *h, int list, int i_ref, int mvx, int mvy, int height )
 {
-    x264_frame_t *frame = h->fref[list][i_ref >> MB_INTERLACED]->orig;
-    if( frame->b_hpel_lazy && ((mvx|mvy)&3) )
+    int j = i_ref >> MB_INTERLACED;
+    if( HPEL_LAZY && ((mvx|mvy)&3) && h->mb.hpel_lazy[MB_INTERLACED][list][j] )
     {
         int y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + (mvy >> 2);
-        x264_frame_hpel_ensure( h, frame, MB_INTERLACED, y, y + height );
+        x264_hpel_ensure( h, h->mb.hpel_ok[MB_INTERLACED][list][j], y, y + height );
     }
 }
 

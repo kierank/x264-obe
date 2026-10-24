@@ -472,6 +472,16 @@ void x264_macroblock_slice_init( x264_t *h )
 
     h->fdec->i_ref[0] = h->i_ref[0];
     h->fdec->i_ref[1] = h->i_ref[1];
+    /* lazy hpel: none of a lazy ref's rows are known built */
+    for( int s = 0; HPEL_LAZY && s < 2; s++ )
+        for( int l = 0; l < 2; l++ )
+            for( int j = 0; j < X264_REF_MAX; j++ )
+            {
+                int b_lazy = j < h->i_ref[l] && h->fref[l][j]->orig->b_hpel_lazy;
+                h->mb.hpel_ok[s][l][j][0] = INT_MAX;
+                h->mb.hpel_ok[s][l][j][1] = INT_MIN;
+                h->mb.hpel_lazy[s][l][j] = b_lazy;
+            }
     for( int i = 0; i < h->i_ref[0]; i++ )
         h->fdec->ref_poc[0][i] = h->fref[0][i]->i_poc;
     if( h->sh.i_type == SLICE_TYPE_B )

@@ -47,11 +47,10 @@ typedef struct
     uint16_t *integral;
     int      i_stride[3];
     int      i_fld_uv_y; /* NV12: field row of p_fref[4], see x264_mb_fref_uv */
-    /* lazy hpel (x264_me_hpel_ensure): the ref, NULL if its hpel is built, the
-     * row of p_fref[0] in its planes, and rows [hpel_ok[0], hpel_ok[1]] known built */
-    x264_frame_t *hpel_ref;
+    /* lazy hpel (x264_me_hpel_ensure): the ref's h->mb.hpel_ok, NULL if it isn't
+     * lazy, and the row of p_fref[0] in its hpel planes */
     int      hpel_y;
-    int      hpel_ok[2];
+    int      *hpel_ok;
 
     ALIGNED_4( int16_t mvp[2] );
 
@@ -90,33 +89,26 @@ extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 /* lazy hpel of m's ref, for the mb's block at row yoff */
 static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, int i_ref, int yoff )
 {
-    x264_frame_t *frame = h->fref[list][i_ref >> MB_INTERLACED]->orig;
-    m->hpel_ref = frame->b_hpel_lazy ? frame : NULL;
-    m->hpel_y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + yoff;
-    m->hpel_ok[0] = 1;
-    m->hpel_ok[1] = 0;
-}
-
-#define x264_me_hpel_build x264_template(me_hpel_build)
-void x264_me_hpel_build( x264_t *h, x264_me_t *m, int y0, int y1 );
-
-/* lazy hpel: the hpel rows of m's ref that mc_luma/get_ref read for m's block
- * at qpel mvy, plus height rows (the block's, and any more candidates') */
-static ALWAYS_INLINE void x264_me_hpel_ensure_rows( x264_t *h, x264_me_t *m, int mvy, int height )
-{
-    if( m->hpel_ref )
+    if( HPEL_LAZY )
     {
-        int y = m->hpel_y + (mvy >> 2);
-        if( y < m->hpel_ok[0] || y + height > m->hpel_ok[1] )
-            x264_me_hpel_build( h, m, y, y + height );
+        int j = i_ref >> MB_INTERLACED;
+        m->hpel_ok = h->mb.hpel_lazy[MB_INTERLACED][list][j] ? h->mb.hpel_ok[MB_INTERLACED][list][j] : NULL;
+        m->hpel_y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + yoff;
     }
 }
 
-/* the same for one block at a qpel mv; a fullpel mv reads no hpel */
+/* lazy hpel: the hpel rows of m's ref that mc_luma/get_ref read for m's block
+ * of height rows at every qpel mv with vertical component in [mvy0, mvy1] */
+static ALWAYS_INLINE void x264_me_hpel_ensure_span( x264_t *h, x264_me_t *m, int mvy0, int mvy1, int height )
+{
+    x264_hpel_ensure( h, m->hpel_ok, m->hpel_y + (mvy0 >> 2), m->hpel_y + (mvy1 >> 2) + height );
+}
+
+/* the same at one qpel mv; a fullpel mv reads no hpel */
 static ALWAYS_INLINE void x264_me_hpel_ensure( x264_t *h, x264_me_t *m, int mvx, int mvy, int height )
 {
     if( (mvx|mvy)&3 )
-        x264_me_hpel_ensure_rows( h, m, mvy, height );
+        x264_me_hpel_ensure_span( h, m, mvy, mvy, height );
 }
 
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
