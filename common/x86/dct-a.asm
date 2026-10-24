@@ -183,6 +183,32 @@ zsub4_frame:   db  0, 0, 1, 1,16, 4,32, 8,17, 5, 2, 2, 3, 3,18, 6
 zsub4_field:   db  0, 0,16, 4, 1, 1,32, 8,48,12,17, 5,33, 9,49,13
                db  2, 2,18, 6,34,10,50,14, 3, 3,19, 7,35,11,51,15
 %endif
+ALIGN 32
+; chroma_encode: dc dword selects for the 8x8 idct (blocks 0, 2 | 1, 3 of the upper 8x8, then the lower)
+ce_dcsel:       dd 0,0,0,0,2,2,2,2, 1,1,1,1,3,3,3,3, 4,4,4,4,6,6,6,6, 5,5,5,5,7,7,7,7
+ce_sign1:       times 4 dd 1,-1
+ce_sign2:       times 2 dd 1,1,-1,-1
+ce_zig2x4:      dd 0,2,1,4,6,3,5,7
+ce_m64:         times 8 dd -64
+ce_32:          times 8 dd 32
+ce_2080:        times 8 dd 2080
+; columns of the chroma dc transform
+ce_col2x2:      dd 1, 1, 1, 1, 0, 0, 0, 0
+                dd 1, 1,-1,-1, 0, 0, 0, 0
+                dd 1,-1, 1,-1, 0, 0, 0, 0
+                dd 1,-1,-1, 1, 0, 0, 0, 0
+ce_col2x4:      dd 1, 1, 1, 1, 1, 1, 1, 1
+                dd 1,-1, 1,-1, 1,-1, 1,-1
+                dd 1, 1, 1, 1,-1,-1,-1,-1
+                dd 1,-1, 1,-1,-1, 1,-1, 1
+                dd 1, 1,-1,-1,-1,-1, 1, 1
+                dd 1,-1,-1, 1,-1, 1, 1,-1
+                dd 1, 1,-1,-1, 1, 1,-1,-1
+                dd 1,-1,-1, 1, 1,-1,-1, 1
+%if HIGH_BIT_DEPTH == 0
+ce_acmask:      dw 0
+                times 15 dw -1
+%endif
 %if HIGH_BIT_DEPTH
 ALIGN 32
 ; add16x16_idct_dc avx2: dc0 x4 dc1 x4 | dc2 x4 dc3 x4 from packssdw'd dc0-3 in both lanes
@@ -234,7 +260,295 @@ cextern pw_pmpmpmpm
 cextern deinterleave_shufd
 cextern pb_unpackbd1
 cextern pb_unpackbd2
+%if HIGH_BIT_DEPTH
+cextern qscan4_frame_i
+cextern qscan4_frame_j
+cextern qscan4_field
+cextern qscan4_bytes
+%else
+cextern qscan4_frame_a
+cextern qscan4_frame_b
+cextern qscan4_field
+%endif
 
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; chroma_encode: dc helpers shared by both depths (dwords; 4:2:0 in the low lane, high lane 0)
+;-----------------------------------------------------------------------------
+; x, 2x tmp: the 2x2 (4:2:0) or 2x4 (4:2:2) dc transform, dct2x2dc / dct2x4dc order
+%macro CE_DC_T 4 ; 422, x, tmp, tmp
+    pshufd    m%3, m%2, q2301
+    psignd    m%2, [ce_sign1]
+    paddd     m%2, m%3          ; x0+x1 x0-x1 x2+x3 x2-x3
+    pshufd    m%3, m%2, q1032
+    psignd    m%2, [ce_sign2]
+    paddd     m%2, m%3
+%if %1
+    vextracti128 xm%3, m%2, 1
+    paddd     xm%4, xm%2, xm%3
+    psubd     xm%2, xm%3
+    punpcklqdq xm%3, xm%4, xm%2
+    punpckhqdq xm%2, xm%4
+    vinserti128 m%2, m%3, xm%2, 1
+%else
+    pshufd    m%2, m%2, q3120
+%endif
+%endmacro
+
+; dst, src: the outputs optimize_chroma_dc compares, int16 at 8-bit
+%macro CE_OPT_ROUND 3 ; 422, dst, src
+%if %1
+    psrad     m%2, m%3, 6
+%else
+    psrad     m%2, m%3, 5
+    paddd     m%2, [ce_32]
+%endif
+%if HIGH_BIT_DEPTH == 0
+    pslld     m%2, 16
+    psrad     m%2, 16
+%endif
+%endmacro
+
+; optimize_chroma_2x2_dc / 2x4_dc of the levels at CE_LV: r4d = nz
+%macro CE_OPTIMIZE 1 ; 422
+%if %1
+    %define %%n 8
+    mova      m0, [rsp+CE_LV]
+    lea       r6, [ce_col2x4+7*32]
+%else
+    %define %%n 4
+    mova     xm0, [rsp+CE_LV]
+    lea       r6, [ce_col2x2+3*32]
+%endif
+    CE_DC_T   %1, 0, 1, 2
+    vpbroadcastd m3, [rsp+CE_DMF]
+    pmulld    m0, m3
+%if %1
+    paddd     m0, [ce_2080]
+%endif
+    CE_OPT_ROUND %1, 4, 0       ; reference
+    xor      r4d, r4d
+    ptest     m4, [ce_m64]
+    jz %%done                   ; already rounds to zero
+    mov      r5d, %%n-1
+%%coef:
+    mov      r7d, [rsp+CE_LV+r5*4]
+    test     r7d, r7d
+    jz %%next
+    mov      r9d, r7d
+    sar      r9d, 31
+    or       r9d, 1             ; sign
+    movd     xm5, r9d
+    vpbroadcastd m5, xm5
+    pmulld    m5, [r6]
+    pmulld    m5, m3            ; sign*dmf*T[:,k]
+%%try:
+    psubd     m1, m0, m5
+    CE_OPT_ROUND %1, 2, 1
+    pxor      m2, m4
+    ptest     m2, [ce_m64]
+    jnz %%keep
+    mova      m0, m1
+    sub      r7d, r9d
+    jnz %%try
+    jmp %%store
+%%keep:
+    mov      r4d, 1
+%%store:
+    mov [rsp+CE_LV+r5*4], r7d
+%%next:
+    sub       r6, 32
+    dec      r5d
+    jge %%coef
+%%done:
+%endmacro
+
+; zigzag_scan_2x2_dc / 2x4_dc of the levels at CE_LV to the dc of the plane
+%macro CE_DC_ZIGZAG 1 ; 422
+    mov       r4, [rsp+CE_DCP]
+%if %1
+    mova      m0, [ce_zig2x4]
+    vpermd    m0, m0, [rsp+CE_LV]
+%if HIGH_BIT_DEPTH
+    movu    [r4], m0
+%else
+    vextracti128 xm1, m0, 1
+    packssdw  xm0, xm1
+    movu    [r4], xm0
+%endif
+%else
+    pshufd    xm0, [rsp+CE_LV], q3120
+%if HIGH_BIT_DEPTH
+    movu    [r4], xm0
+%else
+    packssdw  xm0, xm0
+    movq    [r4], xm0
+%endif
+%endif
+%endmacro
+
+; dc dequant of the levels at CE_LV: 4:2:0 idct_dequant_2x2_dc(only) of macroblock.c,
+; 4:2:2 the dispatched idct_dequant_2x4_dc(only) (16-bit first stages, pmaddwd).
+; xm0 = outputs 0-3, xm1 = 4-7 (dwords; 8-bit: int16, wrapped as the dc store, or
+; saturated as the dconly store)
+%macro CE_DC_DEQUANT 2 ; 422, dconly
+%if %1
+%if HIGH_BIT_DEPTH
+    mova      xm0, [rsp+CE_LV]
+    mova      xm1, [rsp+CE_LV+16]
+    paddd     xm2, xm1, xm0
+    psubd     xm0, xm1
+    packssdw  xm2, xm0
+%else
+    mova      xm0, [rsp+CE_LV]
+    packssdw  xm0, [rsp+CE_LV+16]
+    pshufd    xm1, xm0, q3232
+    paddw     xm2, xm1, xm0
+    psubw     xm0, xm1
+    punpcklqdq xm2, xm0         ; a0 a1 a2 a3 a4 a5 a6 a7
+%endif
+    pshufd    xm0, xm2, q2301   ; a2 a3 a0 a1 a6 a7 a4 a5
+    paddw     xm3, xm0, xm2
+    psubw     xm2, xm0
+    pshufd    xm1, xm2, q0022
+    mova      xm2, [rsp+CE_D24M]
+    pmaddwd   xm0, xm3, xm2
+    pmaddwd   xm1, xm2
+    mova      xm2, [rsp+CE_D24R]
+    paddd     xm0, xm2
+    paddd     xm1, xm2
+    mova      xm2, [rsp+CE_D24S]
+    psrad     xm0, xm2
+    psrad     xm1, xm2
+%if HIGH_BIT_DEPTH == 0 && %2 == 0
+    pslld     xm0, 16
+    pslld     xm1, 16
+    psrad     xm0, 16
+    psrad     xm1, 16
+%endif
+%else
+    mova      xm0, [rsp+CE_LV]
+    CE_DC_T   0, 0, 1, 2
+    vpbroadcastd xm1, [rsp+CE_DMF]
+    pmulld    xm0, xm1
+    psrad     xm0, 5
+%if HIGH_BIT_DEPTH == 0
+    pslld     xm0, 16
+    psrad     xm0, 16
+%endif
+%endif
+%endmacro
+
+; the dc quant (quant_2x2_dc) of the transformed dcs in m0 -> levels at CE_LV, ZF = all zero
+%macro CE_DC_QUANT 1 ; 422
+%if HIGH_BIT_DEPTH
+    pabsd     m1, m0
+    paddd     m1, [rsp+CE_DCBIAS]
+    pmulld    m1, [rsp+CE_DCMF]
+    psrld     m1, 16
+    psignd    m1, m0
+%else
+%if %1
+    vextracti128 xm1, m0, 1
+    packssdw  xm0, xm1
+%else
+    packssdw  xm0, xm0
+%endif
+    pabsw     xm1, xm0
+    paddusw   xm1, [rsp+CE_DCBIAS]
+    pmulhuw   xm1, [rsp+CE_DCMF]
+    psignw    xm1, xm0
+%if %1
+    pmovsxwd  m1, xm1
+%else
+    pmovsxwd  xm1, xm1
+%endif
+%endif
+    mova [rsp+CE_LV], m1
+    ptest     m1, m1
+%endmacro
+
+; the dc constants: dc quant, optimize/2x2 dmf, 2x4 dequant as idct_dequant_2x4_dc. r5: args
+%macro CE_DC_INIT 1 ; 422
+%if HIGH_BIT_DEPTH
+    vpbroadcastd m0, [r5+CEA_DCMF]
+    vpbroadcastd m1, [r5+CEA_DCBIAS]
+    mova [rsp+CE_DCMF], m0
+    mova [rsp+CE_DCBIAS], m1
+%else
+    vpbroadcastw xm0, [r5+CEA_DCMF]
+    vpbroadcastw xm1, [r5+CEA_DCBIAS]
+    mova [rsp+CE_DCMF], xm0
+    mova [rsp+CE_DCBIAS], xm1
+%endif
+    mov      r4d, [r5+CEA_DCDMF]
+    mov [rsp+CE_DMF], r4d
+    mov      r4d, [r5+CEA_THRESH]
+    mov [rsp+CE_THR], r4d
+    mov      r4d, [r5+CEA_DECIMATE]
+    mov [rsp+CE_DEC], r4d
+%if %1
+    mov      r7d, [r5+CEA_DCQP]
+    imul     r4d, r7d, 0x2b
+    shr      r4d, 8             ; qp / 6
+    lea      r8d, [r4*5]
+    sub      r7d, r4d
+    sub      r7d, r8d           ; qp % 6
+    shl      r7d, 6
+    mov       r6, [r5+CEA_DEQUANT]
+    imul     r7d, [r6+r7], -0xffff ; (-dmf) << 16 | dmf
+    movd     xm0, r7d
+    pshuflw  xm0, xm0, q1000    ; + + + -
+    punpcklqdq xm0, xm0
+    pxor     xm1, xm1
+    pxor     xm2, xm2
+    sub      r4d, 6
+    jl %%rshift
+    movd     xm3, r4d
+    psllw    xm0, xm3
+    jmp %%store
+%%rshift:
+    neg      r4d
+    movd     xm2, r4d
+    pcmpeqd  xm3, xm3
+    pslld    xm3, xm2
+    psrad    xm3, 1
+    psubd    xm1, xm3           ; 1 << (shift-1)
+%%store:
+    mova [rsp+CE_D24M], xm0
+    mova [rsp+CE_D24R], xm1
+    mova [rsp+CE_D24S], xm2
+%endif
+%endmacro
+
+; nnz of the plane's ac blocks from r10d (4 bits per 8x8), r3: nnz + 40*plane
+%macro CE_STORE_NNZ 1 ; 422
+%assign %%i 0
+%rep 2+2*%1
+    mov      r4d, r10d
+%if %%i
+    shr      r4d, 2*%%i
+%endif
+    and      r4d, 3
+    imul     r4d, 0x81
+    and      r4d, 0x0101
+    mov [r3+52+8*%%i], r4w
+%assign %%i %%i+1
+%endrep
+%endmacro
+%endif ; ARCH_X86_64
+; x264_chroma_encode_t
+%define CEA_MF       0
+%define CEA_BIAS     8
+%define CEA_DEQUANT  16
+%define CEA_QP       24
+%define CEA_DCMF     28
+%define CEA_DCBIAS   32
+%define CEA_DCQP     36
+%define CEA_DCDMF    40
+%define CEA_THRESH   44
+%define CEA_DECIMATE 48
 %macro WALSH4_1D 6
     SUMSUB_BADC %1, %5, %4, %3, %2, %6
     SUMSUB_BADC %1, %5, %3, %4, %2, %6
@@ -933,6 +1247,533 @@ cglobal add16x16_idct, 2,2,10
     ret
 %endif ; ARCH_X86_64
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int chroma_encode( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8],
+;                    x264_chroma_encode_t *a )
+;-----------------------------------------------------------------------------
+; Both planes of x264_mb_encode_chroma without trellis, noise reduction or lossless: the var2 early
+; termination, sub8x8_dct, the dc transform and quant_2x2_dc, quant_4x4x4_scan_ac and its dequant, the
+; decimation, optimize_chroma_dc, the dc zigzag and dequant, add8x8_idct or add8x8_idct_dc of each 8x8,
+; nnz. Returns i_cbp_chroma.
+%define CE_T       0        ; dct of an 8x8, then the levels of its zero blocks
+%define CE_DQ      256      ; dequantised ac, 256 bytes per 8x8
+%define CE_DMFV    768      ; ac dmf[i_qp%6]
+%define CE_MF      832
+%define CE_BIAS    896
+%define CE_RND     960      ; ac dequant rounding
+%define CE_SHF     992
+%define CE_D24M    1008
+%define CE_DCMF    1024
+%define CE_DCBIAS  1056
+%define CE_D24R    1088
+%define CE_D24S    1104
+%define CE_DCV     1120     ; dc of the plane, 32 bytes per 8x8
+%define CE_DCE     1184     ; dc sums of both planes (early termination), 64 bytes per plane
+%define CE_X       1312     ; dequantised dc
+%define CE_LV      1344     ; dc levels
+%define CE_MODE    1376
+%define CE_DMF     1380
+%define CE_THR     1384
+%define CE_DEC     1388
+%define CE_SSD     1392
+%define CE_DCP     1400
+%define CE_LVP     1408     ; level of the plane
+%define CE_FENC    1416
+%define CE_SIZE    1440
+
+; dst, offset: quant the coefs at r0+offset
+%macro CEH_QUANT 2
+    pabsd     m8, [r0+%2]
+    paddd     m8, [rsp+CE_BIAS+(%2&32)]
+    pmulld    m8, [rsp+CE_MF+(%2&32)]
+    psrad     m8, 16
+    psignd    %1, m8, [r0+%2]
+%endmacro
+
+; block, 2x src: to level if the block is nonzero (r5), else to the dct buffer
+%macro CEH_STORE_LEVEL 3
+    bt        r5d, %1
+    sbb       r4, r4
+    and       r4, r8
+    mova [r0+r4+64*%1   ], %2
+    mova [r0+r4+64*%1+32], %3
+%endmacro
+
+; field, block, A, B, packed dst (as QUANT_SCAN_BLOCK)
+%macro CEH_SCAN_BLOCK 5
+%if %1
+    vpermd    m8, m10, %3
+    CEH_STORE_LEVEL %2, m8, %4
+    packssdw  %5, m8, %4
+%else
+    vpermd    m8, m10, %3
+    vpermd    m9, m11, %4
+    vpblendd  m8, m8, m9, 0xe0
+    vpermd    m9, m11, %3
+    vpermd   m12, m10, %4
+    vpblendd  m9, m9, m12, 0xf8
+    CEH_STORE_LEVEL %2, m8, m9
+    packssdw  %5, m8, m9
+%endif
+%endmacro
+
+; as ADD8x8_IDCT_HBD_PASS, the dc of both blocks from m%8 (dwords 0 and 4)
+%macro CEH_IDCT_PASS 8
+    ADD8x8_IDCT_HBD_LOAD %2, %1+ 0
+    vpblendd     m%2, m%2, m%8, 0x11
+    ADD8x8_IDCT_HBD_LOAD %3, %1+16
+    ADD8x8_IDCT_HBD_LOAD %4, %1+32
+    ADD8x8_IDCT_HBD_LOAD %5, %1+48
+    IDCT4_1D d,%2,%3,%4,%5,%6,%7
+    TRANSPOSE4x4D %2,%3,%4,%5,%6
+    vpbroadcastd  m%6, [pd_32]
+    paddd         m%2, m%6
+    IDCT4_1D d,%2,%3,%4,%5,%6,%7
+    psrad         m%2, 6
+    psrad         m%3, 6
+    psrad         m%4, 6
+    psrad         m%5, 6
+    packssdw      m%2, m%3
+    packssdw      m%4, m%5
+%endmacro
+
+; 4 dc dwords in xm%1 -> add8x8_idct_dc at r0
+%macro CEH_ADD_DC 1
+    paddd     xm0, xm%1, [pd_32]
+    psrad     xm0, 6            ; (dc+32)>>6
+    packssdw  xm0, xm0
+    punpcklwd xm0, xm0
+    pshufd    xm1, xm0, q1100   ; rows 0-3
+    pshufd    xm0, xm0, q3322   ; rows 4-7
+    vinserti128 m1, m1, xm1, 1
+    vinserti128 m0, m0, xm0, 1
+    pxor      m5, m5
+    mova      m7, [pw_pixel_max]
+%assign ce_i 0
+%rep 4
+    movu         xm2, [r0+ce_i*FDEC_STRIDEB]
+    vinserti128   m2, m2, [r0+(ce_i+1)*FDEC_STRIDEB], 1
+%if ce_i < 4
+    paddsw        m2, m1
+%else
+    paddsw        m2, m0
+%endif
+    CLIPW         m2, m5, m7
+    movu [r0+ce_i*FDEC_STRIDEB], xm2
+    vextracti128 [r0+(ce_i+1)*FDEC_STRIDEB], m2, 1
+%assign ce_i ce_i+2
+%endrep
+%endmacro
+
+%macro CHROMA_ENCODE_HBD 3 ; name, 422, field
+cglobal chroma_encode_%1, 6,15,16,-CE_SIZE
+    mov [rsp+CE_DCP], r4
+    mov [rsp+CE_LVP], r0
+    mov       r6, [r5+CEA_MF]
+    mova      m0, [r6]
+    mova      m1, [r6+32]
+    mova [rsp+CE_MF], m0
+    mova [rsp+CE_MF+32], m1
+    mov       r6, [r5+CEA_BIAS]
+    mova      m0, [r6]
+    mova      m1, [r6+32]
+    mova [rsp+CE_BIAS], m0
+    mova [rsp+CE_BIAS+32], m1
+    mov       r6, [r5+CEA_DEQUANT]
+    mov      r7d, [r5+CEA_QP]
+    imul     r9d, r7d, 0x2b
+    shr      r9d, 8             ; i_qp / 6
+    lea     r10d, [r9*3]
+    add     r10d, r10d
+    sub      r7d, r10d          ; i_qp % 6
+    shl      r7d, 6
+    add       r6, r7
+    mova      m0, [r6]
+    mova      m1, [r6+32]
+    mova [rsp+CE_DMFV   ], m0
+    mova [rsp+CE_DMFV+32], m1
+    xor      r7d, r7d
+    sub      r9d, 4
+    jge .shl
+    neg      r9d
+    inc      r7d
+    vpbroadcastd m1, [pd_1]
+    movd     xm0, r9d
+    pslld     m1, xm0
+    psrld     m1, 1
+    mova [rsp+CE_RND], m1
+    jmp .init
+.shl:
+    movd     xm0, r9d
+.init:
+    mova [rsp+CE_SHF], xm0
+    mov [rsp+CE_MODE], r7d
+    CE_DC_INIT %2
+    xor     r13d, r13d          ; 1: ac coded, 2: dc coded
+    xor     r14d, r14d          ; 1: v, 2: early termination
+    cmp dword [rsp+CE_THR], 0
+    jl .plane
+    ; var2 of both planes (lane 0 u, lane 1 v) and the dc sums of their 4x4 blocks, 8 rows a loop
+    pxor      m8, m8            ; ssd
+    pxor     m11, m11           ; sum
+    xor      r4d, r4d
+.var:
+%assign ce_y 0
+%rep 8
+    movu      m0, [r1+ce_y*FENC_STRIDEB]
+    movu     xm1, [r2+ce_y*FDEC_STRIDEB]
+    vinserti128 m1, m1, [r2+ce_y*FDEC_STRIDEB+32], 1
+    psubw     m0, m1
+    pmaddwd   m1, m0, m0
+    paddd     m8, m1
+%if ce_y & 3
+    paddw     m2, m0
+%else
+    mova      m2, m0
+%endif
+%if ce_y == 3
+    pmaddwd   m9, m2, [pw_1]
+%endif
+%assign ce_y ce_y+1
+%endrep
+    pmaddwd   m2, [pw_1]
+    phaddd    m9, m2            ; dc 0-3, 4-7
+    paddd    m11, m9
+    mova [rsp+r4+CE_DCE], xm9
+    vextracti128 [rsp+r4+CE_DCE+64], m9, 1
+%if %2
+    add       r1, 8*FENC_STRIDEB
+    add       r2, 8*FDEC_STRIDEB
+    add      r4d, 32
+    cmp      r4d, 2*32
+    jl .var
+    sub       r1, 16*FENC_STRIDEB
+    sub       r2, 16*FDEC_STRIDEB
+%endif
+    phaddd   m11, m11
+    phaddd    m8, m8
+    phaddd   m11, m11           ; sum
+    phaddd    m8, m8            ; ssd
+    vextracti128 xm0, m11, 1
+    vextracti128 xm1, m8, 1
+    movd     r4d, xm11
+    movd     r9d, xm0
+    movd     r7d, xm8
+    movd     r8d, xm1
+    mov [rsp+CE_SSD], r7d
+    mov [rsp+CE_SSD+4], r8d
+    movsxd    r4, r4d
+    movsxd    r9, r9d
+    imul      r4, r4
+    imul      r9, r9
+    shr       r4, 6+%2
+    shr       r9, 6+%2
+    sub      r7d, r4d           ; var u
+    sub      r8d, r9d           ; var v
+    mov      r4d, [rsp+CE_THR]
+    shl      r4d, 2
+    cmp      r7d, r4d
+    jge .plane
+    add      r7d, r8d
+    cmp      r7d, r4d
+    jge .plane
+    or      r14d, 2
+.plane:
+    mov [rsp+CE_FENC], r1
+    test    r14d, 2
+    jnz .early
+    lea       r0, [rsp+CE_T]
+    mov       r8, [rsp+CE_LVP]
+    sub       r8, r0            ; level - dct buffer
+    xor     r10d, r10d          ; nonzero blocks, 4 bits per 8x8
+    xor     r11d, r11d          ; decimate score
+    xor     r12d, r12d          ; 32 * 8x8
+.fwd:
+    SUB8x8_DCT_HBD
+    ; dc of the 4 blocks, then 0 as dct2x2dc / dct2x4dc
+    movd     xm8, [r0+  0]
+    pinsrd   xm8, [r0+ 64], 1
+    pinsrd   xm8, [r0+128], 2
+    pinsrd   xm8, [r0+192], 3
+    mova [rsp+r12+CE_DCV], xm8
+    CEH_QUANT m0,   0
+    CEH_QUANT m1,  32
+    CEH_QUANT m2,  64
+    CEH_QUANT m3,  96
+    CEH_QUANT m4, 128
+    CEH_QUANT m5, 160
+    CEH_QUANT m6, 192
+    CEH_QUANT m7, 224
+    pxor     m15, m15
+    vpblendd  m0, m0, m15, 0x01
+    vpblendd  m2, m2, m15, 0x01
+    vpblendd  m4, m4, m15, 0x01
+    vpblendd  m6, m6, m15, 0x01
+    por       m8, m0, m1
+    por       m9, m2, m3
+    packssdw  m8, m9
+    por       m9, m4, m5
+    por      m10, m6, m7
+    packssdw  m9, m10
+    packssdw  m8, m9
+    pcmpeqd   m8, m15
+    movmskps r5d, m8
+    mov      r4d, r5d
+    shr      r5d, 4
+    and      r5d, r4d
+    xor      r5d, 0xf           ; nonzero blocks
+    jz .fwd_next
+%if %3
+    mova     m10, [qscan4_field]
+%else
+    mova     m10, [qscan4_frame_i]
+    mova     m11, [qscan4_frame_j]
+%endif
+    CEH_SCAN_BLOCK %3, 0, m0, m1, m13
+    CEH_SCAN_BLOCK %3, 1, m2, m3, m14
+    packsswb m13, m14
+    CEH_SCAN_BLOCK %3, 2, m4, m5, m14
+    CEH_SCAN_BLOCK %3, 3, m6, m7, m8
+    packsswb m14, m8
+    mova      m8, [qscan4_bytes]
+    vpermd   m13, m8, m13
+    vpermd   m14, m8, m14
+    ; decimate_score15: the dc position counts as nonzero for the runs, 9 if a |level| > 1
+    pabsb    m10, m13
+    pabsb    m11, m14
+    por      m10, m11
+    psubusb  m10, [pb_1]
+    pcmpeqb  m13, m15
+    pcmpeqb  m14, m15
+    pmovmskb r4d, m13
+    pmovmskb r6d, m14
+    shl       r6, 32
+    or        r4, r6
+    not       r4                ; nonzero levels in scan order, 16 bits per block
+    mov       r9, 0x0001000100010001
+    or        r9, r4
+    lea       r6, [r9+r9]
+    lea       r7, [r9*4]
+    or        r7, r6
+    lea       r9, [r9*8]
+    or        r7, r9
+    lea       r9, [r7*8]
+    or        r9, r7
+    and       r6, r4
+    and       r7, r4
+    and       r9, r4
+    popcnt    r6, r6
+    popcnt    r7, r7
+    popcnt    r9, r9
+    add      r6d, r7d
+    add      r6d, r9d
+    mov      r7d, 9
+    cmp      r6d, r7d
+    cmova    r6d, r7d
+    ptest    m10, m10
+    cmovnz   r6d, r7d
+    add     r11d, r6d
+    ; dequant
+    pmaddwd   m0, [rsp+CE_DMFV   ]
+    pmaddwd   m1, [rsp+CE_DMFV+32]
+    pmaddwd   m2, [rsp+CE_DMFV   ]
+    pmaddwd   m3, [rsp+CE_DMFV+32]
+    pmaddwd   m4, [rsp+CE_DMFV   ]
+    pmaddwd   m5, [rsp+CE_DMFV+32]
+    pmaddwd   m6, [rsp+CE_DMFV   ]
+    pmaddwd   m7, [rsp+CE_DMFV+32]
+    cmp dword [rsp+CE_MODE], 0
+    jz .dq_shl
+    mova      m8, [rsp+CE_RND]
+    paddd     m0, m8
+    paddd     m1, m8
+    paddd     m2, m8
+    paddd     m3, m8
+    paddd     m4, m8
+    paddd     m5, m8
+    paddd     m6, m8
+    paddd     m7, m8
+    mova     xm8, [rsp+CE_SHF]
+    psrad     m0, xm8
+    psrad     m1, xm8
+    psrad     m2, xm8
+    psrad     m3, xm8
+    psrad     m4, xm8
+    psrad     m5, xm8
+    psrad     m6, xm8
+    psrad     m7, xm8
+    jmp .dq_store
+.dq_shl:
+    mova     xm8, [rsp+CE_SHF]
+    pslld     m0, xm8
+    pslld     m1, xm8
+    pslld     m2, xm8
+    pslld     m3, xm8
+    pslld     m4, xm8
+    pslld     m5, xm8
+    pslld     m6, xm8
+    pslld     m7, xm8
+.dq_store:
+    mova [rsp+r12*8+CE_DQ+  0], m0
+    mova [rsp+r12*8+CE_DQ+ 32], m1
+    mova [rsp+r12*8+CE_DQ+ 64], m2
+    mova [rsp+r12*8+CE_DQ+ 96], m3
+    mova [rsp+r12*8+CE_DQ+128], m4
+    mova [rsp+r12*8+CE_DQ+160], m5
+    mova [rsp+r12*8+CE_DQ+192], m6
+    mova [rsp+r12*8+CE_DQ+224], m7
+.fwd_next:
+%if %2
+    shr     r10d, 4
+    shl      r5d, 4
+    or      r10d, r5d
+    add       r1, 8*FENC_STRIDEB
+    add       r2, 8*FDEC_STRIDEB
+    add       r8, 8*64
+    add     r12d, 32
+    cmp     r12d, 64
+    jl .fwd
+    sub       r2, 16*FDEC_STRIDEB
+%else
+    mov     r10d, r5d
+%endif
+    lea       r9, [rsp+CE_DCV]
+.dc_load:
+%if %2
+    mova     xm0, [r9]
+    vinserti128 m0, m0, [r9+32], 1
+%else
+    mova     xm0, [r9]
+%endif
+    CE_DC_T   %2, 0, 1, 2
+    CE_DC_QUANT %2
+    setnz    r6b
+    movzx    r6d, r6b           ; nz_dc
+    test    r14d, 2
+    jnz .early_dc
+    ; decimation: score < 7 (with b_decimate) or no ac level
+    mov      r4d, 7
+    cmp dword [rsp+CE_DEC], 0
+    cmovnz   r4d, r11d
+    xor      r7d, r7d
+    test    r10d, r10d
+    cmovz    r4d, r7d
+    cmp      r4d, 7
+    jge .ac
+    xor     r10d, r10d
+    test     r6d, r6d
+    jz .plane_done
+    jmp .dc
+.early_dc:
+    test     r6d, r6d
+    jz .plane_done
+.dc:
+    ; dc only: optimize_chroma_dc, zigzag, idct_dequant_2xN_dconly, add8x8_idct_dc
+    cmp dword [rsp+CE_DMF], 32*64
+    jg .dc_keep
+    CE_OPTIMIZE %2
+    mov      r6d, r4d
+    test     r4d, r4d
+    jz .plane_done
+.dc_keep:
+    or      r13d, 2
+    CE_DC_ZIGZAG %2
+    CE_DC_DEQUANT %2, 1
+    jmp .recon
+.ac:
+    or      r13d, 1
+    test     r6d, r6d
+    jz .ac_dq
+    or      r13d, 2
+    CE_DC_ZIGZAG %2
+.ac_dq:
+    CE_DC_DEQUANT %2, 0
+.recon:                         ; r10: the 8x8s with ac, 0 if dc only
+    mova [rsp+CE_X], xm0
+%if %2
+    mova [rsp+CE_X+16], xm1
+%endif
+    mov       r0, r2
+    lea       r1, [rsp+CE_DQ]
+    lea       r9, [ce_dcsel]
+    xor     r12d, r12d          ; 16 * 8x8
+    mov     r11d, 0xf
+.ac_recon:
+    test    r10d, r11d
+    jz .ac_dc
+    mova      m8, [r9+r12*4]
+    mova      m9, [r9+r12*4+32]
+    vpermd    m8, m8, [rsp+CE_X]
+    vpermd    m9, m9, [rsp+CE_X]
+    CEH_IDCT_PASS  0, 0, 1, 2, 3, 4, 5, 8 ; blocks 0, 2
+    CEH_IDCT_PASS 64, 4, 5, 6, 7, 1, 3, 9 ; blocks 1, 3
+    punpcklqdq    m1, m0, m4 ; rows 0 | 4
+    punpckhqdq    m0, m4     ; rows 1 | 5
+    punpcklqdq    m3, m2, m6 ; rows 2 | 6
+    punpckhqdq    m2, m6     ; rows 3 | 7
+    pxor          m5, m5
+    mova          m7, [pw_pixel_max]
+    ADD8x8_IDCT_HBD_STORE 1, 4, 0
+    ADD8x8_IDCT_HBD_STORE 0, 6, 1
+    ADD8x8_IDCT_HBD_STORE 3, 4, 2
+    ADD8x8_IDCT_HBD_STORE 2, 6, 3
+    jmp .ac_next
+.ac_dc:
+    mova     xm8, [rsp+r12+CE_X]
+    CEH_ADD_DC 8
+.ac_next:
+%if %2
+    add       r0, 8*FDEC_STRIDEB
+    add       r1, 256
+    shl     r11d, 4
+    add     r12d, 16
+    cmp     r12d, 32
+    jl .ac_recon
+%endif
+    jmp .plane_done
+.early:
+    xor     r10d, r10d
+    xor      r6d, r6d
+    mov      r4d, r14d
+    and      r4d, 1
+    mov      r7d, [rsp+CE_SSD+r4*4]
+    cmp      r7d, [rsp+CE_THR]
+    jle .plane_done
+    shl      r4d, 6
+    lea       r9, [rsp+r4+CE_DCE]
+    jmp .dc_load
+.plane_done:
+    CE_STORE_NNZ %2
+    mov [r3+40], r6b
+    mov       r1, [rsp+CE_FENC]
+    test    r14d, 1
+    jnz .end
+    or      r14d, 1
+    add qword [rsp+CE_LVP], 16*16*SIZEOF_DCTCOEF
+    add       r1, 8*SIZEOF_PIXEL
+    add       r2, 16*SIZEOF_PIXEL
+    add       r3, 40
+    add qword [rsp+CE_DCP], 8*SIZEOF_DCTCOEF
+    jmp .plane
+.end:
+    mov      eax, r13d
+    and      eax, 1
+    shr     r13d, 1
+    or      r13d, eax
+    add      eax, r13d
+    RET
+%endmacro
+
+INIT_YMM avx2
+CHROMA_ENCODE_HBD 420_frame, 0, 0
+CHROMA_ENCODE_HBD 420_field, 0, 1
+CHROMA_ENCODE_HBD 422_frame, 1, 0
+CHROMA_ENCODE_HBD 422_field, 1, 1
+%undef ce_i
+%undef ce_y
+%endif ; ARCH_X86_64
+
 %else ; !HIGH_BIT_DEPTH
 
 INIT_MMX mmx
@@ -1418,6 +2259,547 @@ cglobal add16x16_idct, 2,3,15
 .add8x8:
     ADD8x8_IDCT_ZMM
     ret
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int chroma_encode( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8],
+;                    x264_chroma_encode_t *a )
+;-----------------------------------------------------------------------------
+; Both planes of x264_mb_encode_chroma without trellis, noise reduction or lossless: the var2 early
+; termination, sub8x8_dct, the dc transform and quant_2x2_dc, quant_4x4x4_scan_ac and its dequant, the
+; decimation, optimize_chroma_dc, the dc zigzag and dequant, add8x8_idct or add8x8_idct_dc of each 8x8,
+; nnz. Returns i_cbp_chroma.
+%define CE_DQ      0        ; dequantised ac, 128 bytes per 8x8
+%define CE_DUMP    256      ; levels of zero blocks
+%define CE_RND     384      ; ac dequant rounding
+%define CE_SHF     416
+%define CE_DCMF    432
+%define CE_DCBIAS  448
+%define CE_D24M    464
+%define CE_D24R    480
+%define CE_D24S    496
+%define CE_DCV     512      ; dc of the plane
+%define CE_DCE     544      ; dc sums of both planes (early termination)
+%define CE_X       608      ; dequantised dc
+%define CE_LV      640      ; dc levels
+%define CE_MODE    672
+%define CE_DMF     676
+%define CE_THR     680
+%define CE_DEC     684
+%define CE_SSD     688
+%define CE_DCP     696
+%define CE_SIZE    704
+
+; dst1, dst2, row a, row b: fenc - fdec of rows a, b | a+4, b+4; m4, m5 tmp
+%macro CE_LOAD_DIFF8x2 4
+    movq        xm%1, [r1+%3*FENC_STRIDE]
+    movq        xm%2, [r1+%4*FENC_STRIDE]
+    vinserti128  m%1, m%1, [r1+(%3+4)*FENC_STRIDE], 1
+    vinserti128  m%2, m%2, [r1+(%4+4)*FENC_STRIDE], 1
+    movq         xm4, [r2+%3*FDEC_STRIDE]
+    movq         xm5, [r2+%4*FDEC_STRIDE]
+    vinserti128   m4, m4, [r2+(%3+4)*FDEC_STRIDE], 1
+    vinserti128   m5, m5, [r2+(%4+4)*FDEC_STRIDE], 1
+    punpcklbw    m%1, m4
+    punpcklbw    m%2, m5
+    pmaddubsw    m%1, [hsub_mul]
+    pmaddubsw    m%2, [hsub_mul]
+%endmacro
+
+; block, src: to level if the block is nonzero (r9), else to the dump
+; as STOREx2_AVX2, dst r7
+%macro CE_STOREx2 8 ; 2x src, 2x tmp, 4x row
+    movq        xm%3, [r7+%5*FDEC_STRIDE]
+    vinserti128  m%3, m%3, [r7+%6*FDEC_STRIDE], 1
+    movq        xm%4, [r7+%7*FDEC_STRIDE]
+    vinserti128  m%4, m%4, [r7+%8*FDEC_STRIDE], 1
+    punpcklbw    m%3, m12
+    punpcklbw    m%4, m12
+    psraw        m%1, 6
+    psraw        m%2, 6
+    paddsw       m%1, m%3
+    paddsw       m%2, m%4
+    packuswb     m%1, m%2
+    vextracti128 xm%2, m%1, 1
+    movq   [r7+%5*FDEC_STRIDE], xm%1
+    movq   [r7+%6*FDEC_STRIDE], xm%2
+    movhps [r7+%7*FDEC_STRIDE], xm%1
+    movhps [r7+%8*FDEC_STRIDE], xm%2
+%endmacro
+
+; dst, tmp; m13: dmf, m10: rounding, xm11: shift
+%macro CE_DEQUANT_ROUND 2
+    pmullw    %2, %1, m13
+    pmulhw    %1, m13
+    punpckhwd m9, %2, %1
+    punpcklwd %1, %2, %1
+    paddd     %1, m10
+    paddd     m9, m10
+    psrad     %1, xm11
+    psrad     m9, xm11
+    packssdw  %1, m9
+%endmacro
+
+; dc words in the low qword of xm%1 -> add8x8_idct_dc at r7 - 4*FDEC_STRIDE; m12: 0
+%macro CE_ADD_DC 1
+    pmulhrsw  xm0, xm%1, [pw_512] ; (dc+32)>>6
+    psubw     xm1, xm12, xm0
+    packuswb  xm0, xm0
+    packuswb  xm1, xm1
+    pshufb    xm0, [pb_unpackbd1]
+    pshufb    xm1, [pb_unpackbd1]
+    punpcklqdq xm2, xm0, xm0
+    punpckhqdq xm0, xm0
+    punpcklqdq xm3, xm1, xm1
+    punpckhqdq xm1, xm1
+%assign ce_i -4
+%rep 4
+    movq      xm4, [r7+(ce_i+0)*FDEC_STRIDE]
+    movhps    xm4, [r7+(ce_i+1)*FDEC_STRIDE]
+%if ce_i < 0
+    paddusb   xm4, xm2
+    psubusb   xm4, xm3
+%else
+    paddusb   xm4, xm0
+    psubusb   xm4, xm1
+%endif
+    movq   [r7+(ce_i+0)*FDEC_STRIDE], xm4
+    movhps [r7+(ce_i+1)*FDEC_STRIDE], xm4
+%assign ce_i ce_i+2
+%endrep
+%endmacro
+
+; block, src: to level if the block is nonzero (r5), else to the dump
+%macro CE_STORE_LEVEL 2
+    bt        r5d, %1
+    sbb       r4, r4
+    and       r4, r8
+    mova [rsp+r4+CE_DUMP+32*%1], %2
+%endmacro
+
+%macro CHROMA_ENCODE 3 ; name, 422, field
+cglobal chroma_encode_%1, 6,15,16,-CE_SIZE
+    mov [rsp+CE_DCP], r4
+    mov       r6, [r5+CEA_MF]
+    mova     m15, [r6]
+    mov       r6, [r5+CEA_BIAS]
+    mova     m14, [r6]
+    mov       r6, [r5+CEA_DEQUANT]
+    mov      r7d, [r5+CEA_QP]
+    imul     r4d, r7d, 0x2b
+    shr      r4d, 8             ; i_qp / 6
+    lea      r8d, [r4*3]
+    add      r8d, r8d
+    sub      r7d, r8d           ; i_qp % 6
+    shl      r7d, 6
+    add       r6, r7
+    mova     m13, [r6]
+    packssdw m13, [r6+32]
+    vpermq   m13, m13, q3120    ; dmf as words
+    xor      r7d, r7d
+    sub      r4d, 4
+    jl .rshift
+    movd     xm0, r4d
+    psllw    m13, xm0
+    jmp .init
+.rshift:
+    ; exact if dmf is divisible by 1<<shift (flat): multiply by dmf>>shift like dequant_4x4_flat16
+    neg      r4d
+    movd     xm0, r4d
+    pcmpeqw   m1, m1
+    mov      r8d, 16
+    sub      r8d, r4d
+    movd     xm2, r8d
+    psrlw     m1, xm2
+    ptest    m13, m1
+    jnz .rshift_round
+    psrlw    m13, xm0
+    jmp .init
+.rshift_round:
+    inc      r7d
+    mova [rsp+CE_SHF], xm0
+    mova      m1, [pd_1]
+    pslld     m1, xm0
+    psrld     m1, 1
+    mova [rsp+CE_RND], m1
+.init:
+    mov [rsp+CE_MODE], r7d
+    CE_DC_INIT %2
+    pxor     m12, m12
+    xor     r13d, r13d          ; 1: ac coded, 2: dc coded
+    xor     r14d, r14d          ; 1: v, 2: early termination
+    cmp dword [rsp+CE_THR], 0
+    jl .plane
+    ; var2 of both planes (lane 0 u, lane 1 v) and the dc sums of their 4x4 blocks, 8 rows a loop
+    pxor      m8, m8            ; ssd
+    pxor     m11, m11           ; sum
+    xor      r4d, r4d
+.var:
+%assign ce_y 0
+%rep 8
+    vpmovzxbw m0, [r1+ce_y*FENC_STRIDE]
+    movq     xm1, [r2+ce_y*FDEC_STRIDE]
+    movhps   xm1, [r2+ce_y*FDEC_STRIDE+16]
+    vpmovzxbw m1, xm1
+    psubw     m0, m1
+    pmaddwd   m1, m0, m0
+    paddd     m8, m1
+%if ce_y & 3
+    paddw     m2, m0
+%else
+    mova      m2, m0
+%endif
+%if ce_y == 3
+    pmaddwd   m9, m2, [pw_1]
+%endif
+%assign ce_y ce_y+1
+%endrep
+    pmaddwd   m2, [pw_1]
+    phaddd    m9, m2            ; dc 0-3, 4-7
+    paddd    m11, m9
+    mova [rsp+r4+CE_DCE], xm9
+    vextracti128 [rsp+r4+CE_DCE+32], m9, 1
+%if %2
+    add       r1, 8*FENC_STRIDE
+    add       r2, 8*FDEC_STRIDE
+    add      r4d, 16
+    cmp      r4d, 2*16
+    jl .var
+    sub       r1, 16*FENC_STRIDE
+    sub       r2, 16*FDEC_STRIDE
+%endif
+    phaddd   m11, m11
+    phaddd    m8, m8
+    phaddd   m11, m11           ; sum
+    phaddd    m8, m8            ; ssd
+    vextracti128 xm0, m11, 1
+    vextracti128 xm1, m8, 1
+    movd     r4d, xm11
+    movd     r9d, xm0
+    movd     r7d, xm8
+    movd     r8d, xm1
+    mov [rsp+CE_SSD], r7d
+    mov [rsp+CE_SSD+4], r8d
+    movsxd    r4, r4d
+    movsxd    r9, r9d
+    imul      r4, r4
+    imul      r9, r9
+    shr       r4, 6+%2
+    shr       r9, 6+%2
+    sub      r7d, r4d           ; var u
+    sub      r8d, r9d           ; var v
+    mov      r4d, [rsp+CE_THR]
+    shl      r4d, 2
+    cmp      r7d, r4d
+    jge .plane
+    add      r7d, r8d
+    cmp      r7d, r4d
+    jge .plane
+    or      r14d, 2
+.plane:
+    test    r14d, 2
+    jnz .early
+    lea       r4, [rsp+CE_DUMP]
+    mov       r8, r0
+    sub       r8, r4            ; level - dump
+    xor     r10d, r10d          ; nonzero blocks, 4 bits per 8x8
+    xor     r11d, r11d          ; decimate score
+    xor     r12d, r12d          ; 16 * 8x8
+.fwd:
+    CE_LOAD_DIFF8x2 0, 1, 0, 1
+    CE_LOAD_DIFF8x2 2, 3, 2, 3
+    DCT4_1D 0, 1, 2, 3, 4
+    TRANSPOSE2x4x4W 0, 1, 2, 3, 4
+    DCT4_1D 0, 1, 2, 3, 4
+    vperm2i128 m4, m0, m2, 0x20 ; A0 B0 A2 B2
+    vperm2i128 m5, m1, m3, 0x20 ; A1 B1 A3 B3
+    vperm2i128 m6, m0, m2, 0x31 ; C0 D0 C2 D2
+    vperm2i128 m7, m1, m3, 0x31 ; C1 D1 C3 D3
+    punpcklqdq m0, m4, m5
+    punpckhqdq m1, m4, m5
+    punpcklqdq m2, m6, m7
+    punpckhqdq m3, m6, m7
+    ; dc of the 4 blocks, then 0 as dct2x2dc / dct2x4dc
+    punpcklwd xm4, xm0, xm1
+    punpcklwd xm5, xm2, xm3
+    punpckldq xm4, xm5
+    pmovsxwd  xm4, xm4
+    mova [rsp+r12+CE_DCV], xm4
+    mova      m4, [ce_acmask]
+    pand      m0, m4
+    pand      m1, m4
+    pand      m2, m4
+    pand      m3, m4
+    pabsw     m4, m0
+    pabsw     m5, m1
+    pabsw     m6, m2
+    pabsw     m7, m3
+    paddusw   m4, m14
+    paddusw   m5, m14
+    paddusw   m6, m14
+    paddusw   m7, m14
+    pmulhuw   m4, m15
+    pmulhuw   m5, m15
+    pmulhuw   m6, m15
+    pmulhuw   m7, m15
+    psignw    m0, m4, m0
+    psignw    m1, m5, m1
+    psignw    m2, m6, m2
+    psignw    m3, m7, m3
+    packssdw  m4, m0, m1
+    packssdw  m5, m2, m3
+    packssdw  m4, m5
+    pcmpeqd   m4, m12
+    movmskps r5d, m4
+    mov      r4d, r5d
+    shr      r5d, 4
+    and      r5d, r4d
+    xor      r5d, 0xf           ; nonzero blocks
+    jz .fwd_next
+%if %3
+    mova      m8, [qscan4_field]
+    pshufb    m4, m0, m8
+    pshufb    m5, m1, m8
+    pshufb    m6, m2, m8
+    pshufb    m7, m3, m8
+%else
+    mova     m10, [qscan4_frame_a]
+    mova     m11, [qscan4_frame_b]
+    vperm2i128 m8, m0, m0, 0x01
+    vperm2i128 m9, m1, m1, 0x01
+    pshufb    m4, m0, m10
+    pshufb    m5, m1, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m4, m8
+    por       m5, m9
+    vperm2i128 m8, m2, m2, 0x01
+    vperm2i128 m9, m3, m3, 0x01
+    pshufb    m6, m2, m10
+    pshufb    m7, m3, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m6, m8
+    por       m7, m9
+%endif
+    CE_STORE_LEVEL 0, m4
+    CE_STORE_LEVEL 1, m5
+    CE_STORE_LEVEL 2, m6
+    CE_STORE_LEVEL 3, m7
+    ; decimate_score15: the dc position counts as nonzero for the runs, 9 if a |level| > 1
+    packsswb  m8, m4, m5
+    packsswb  m9, m6, m7
+    vpermq    m8, m8, q3120
+    vpermq    m9, m9, q3120
+    pabsb    m10, m8
+    pabsb    m11, m9
+    por      m10, m11
+    psubusb  m10, [pb_1]
+    pcmpeqb   m8, m12
+    pcmpeqb   m9, m12
+    pmovmskb r4d, m8
+    pmovmskb r6d, m9
+    shl       r6, 32
+    or        r4, r6
+    not       r4                ; nonzero levels in scan order, 16 bits per block
+    mov       r9, 0x0001000100010001
+    or        r9, r4
+    lea       r6, [r9+r9]
+    lea       r7, [r9*4]
+    or        r7, r6
+    lea       r9, [r9*8]
+    or        r7, r9
+    lea       r9, [r7*8]
+    or        r9, r7
+    and       r6, r4
+    and       r7, r4
+    and       r9, r4
+    popcnt    r6, r6
+    popcnt    r7, r7
+    popcnt    r9, r9
+    add      r6d, r7d
+    add      r6d, r9d
+    mov      r7d, 9
+    cmp      r6d, r7d
+    cmova    r6d, r7d
+    ptest    m10, m10
+    cmovnz   r6d, r7d
+    add     r11d, r6d
+    ; dequant
+    cmp dword [rsp+CE_MODE], 0
+    jz .dq_flat
+    mova     m10, [rsp+CE_RND]
+    mova    xm11, [rsp+CE_SHF]
+    CE_DEQUANT_ROUND m0, m4
+    CE_DEQUANT_ROUND m1, m4
+    CE_DEQUANT_ROUND m2, m4
+    CE_DEQUANT_ROUND m3, m4
+    jmp .dq_store
+.dq_flat:
+    pmullw    m0, m13
+    pmullw    m1, m13
+    pmullw    m2, m13
+    pmullw    m3, m13
+.dq_store:
+    mova [rsp+r12*8+CE_DQ+ 0], m0
+    mova [rsp+r12*8+CE_DQ+32], m1
+    mova [rsp+r12*8+CE_DQ+64], m2
+    mova [rsp+r12*8+CE_DQ+96], m3
+.fwd_next:
+%if %2
+    shr     r10d, 4
+    shl      r5d, 4
+    or      r10d, r5d
+    add      r1, 8*FENC_STRIDE
+    add      r2, 8*FDEC_STRIDE
+    add      r8, 8*32
+    add     r12d, 16
+    cmp     r12d, 32
+    jl .fwd
+    sub      r1, 16*FENC_STRIDE
+    sub      r2, 16*FDEC_STRIDE
+%else
+    mov     r10d, r5d
+%endif
+    lea       r9, [rsp+CE_DCV]
+.dc_load:
+%if %2
+    movu      m0, [r9]
+%else
+    mova     xm0, [r9]
+%endif
+    CE_DC_T   %2, 0, 1, 2
+    CE_DC_QUANT %2
+    setnz    r6b
+    movzx    r6d, r6b           ; nz_dc
+    test    r14d, 2
+    jnz .early_dc
+    ; decimation: score < 7 (with b_decimate) or no ac level
+    mov      r4d, 7
+    cmp dword [rsp+CE_DEC], 0
+    cmovnz   r4d, r11d
+    xor      r7d, r7d
+    test    r10d, r10d
+    cmovz    r4d, r7d
+    cmp      r4d, 7
+    jge .ac
+    xor     r10d, r10d
+    test     r6d, r6d
+    jz .plane_done
+    jmp .dc
+.early_dc:
+    test     r6d, r6d
+    jz .plane_done
+.dc:
+    ; dc only: optimize_chroma_dc, zigzag, idct_dequant_2xN_dconly, add8x8_idct_dc
+    cmp dword [rsp+CE_DMF], 32*64
+    jg .dc_keep
+    CE_OPTIMIZE %2
+    mov      r6d, r4d
+    test     r4d, r4d
+    jz .plane_done
+.dc_keep:
+    or      r13d, 2
+    CE_DC_ZIGZAG %2
+    CE_DC_DEQUANT %2, 1
+    jmp .recon
+.ac:
+    or      r13d, 1
+    test     r6d, r6d
+    jz .ac_dq
+    or      r13d, 2
+    CE_DC_ZIGZAG %2
+.ac_dq:
+    CE_DC_DEQUANT %2, 0
+.recon:                         ; r10: the 8x8s with ac, 0 if dc only
+    mova [rsp+CE_X], xm0
+%if %2
+    mova [rsp+CE_X+16], xm1
+%endif
+    lea       r7, [r2+4*FDEC_STRIDE]
+    lea       r9, [ce_dcsel]
+    xor     r12d, r12d          ; 16 * 8x8
+    mov     r11d, 0xf
+.ac_recon:
+    test    r10d, r11d
+    jz .ac_dc
+    lea       r5, [rsp+r12*8+CE_DQ]
+    mova     xm0, [r5+ 0]
+    mova     xm1, [r5+32]
+    mova     xm2, [r5+16]
+    mova     xm3, [r5+48]
+    vinserti128 m0, m0, [r5+ 64], 1
+    vinserti128 m1, m1, [r5+ 96], 1
+    vinserti128 m2, m2, [r5+ 80], 1
+    vinserti128 m3, m3, [r5+112], 1
+    mova      m4, [r9+r12*4]
+    mova      m5, [r9+r12*4+32]
+    vpermd    m4, m4, [rsp+CE_X]
+    vpermd    m5, m5, [rsp+CE_X]
+    vpblendw  m0, m0, m4, 0x01  ; dc of blocks 0, 2
+    vpblendw  m1, m1, m5, 0x01  ; dc of blocks 1, 3
+    SBUTTERFLY qdq, 0, 1, 4
+    SBUTTERFLY qdq, 2, 3, 4
+    IDCT4_1D w,0,1,2,3,4,5
+    TRANSPOSE2x4x4W 0,1,2,3,4
+    paddw     m0, [pw_32]
+    IDCT4_1D w,0,1,2,3,4,5
+    CE_STOREx2 0, 1, 4, 5, -4, 0, -3, 1
+    CE_STOREx2 2, 3, 4, 5, -2, 2, -1, 3
+    jmp .ac_next
+.ac_dc:
+    mova     xm8, [rsp+r12+CE_X]
+    packssdw xm8, xm8
+    CE_ADD_DC 8
+.ac_next:
+%if %2
+    add       r7, 8*FDEC_STRIDE
+    shl     r11d, 4
+    add     r12d, 16
+    cmp     r12d, 32
+    jl .ac_recon
+%endif
+    jmp .plane_done
+.early:
+    xor     r10d, r10d
+    xor      r6d, r6d
+    mov      r4d, r14d
+    and      r4d, 1
+    mov      r7d, [rsp+CE_SSD+r4*4]
+    cmp      r7d, [rsp+CE_THR]
+    jle .plane_done
+    shl      r4d, 5
+    lea       r9, [rsp+r4+CE_DCE]
+    jmp .dc_load
+.plane_done:
+    CE_STORE_NNZ %2
+    mov [r3+40], r6b
+    test    r14d, 1
+    jnz .end
+    or      r14d, 1
+    add       r0, 16*16*SIZEOF_DCTCOEF
+    add       r1, 8*SIZEOF_PIXEL
+    add       r2, 16*SIZEOF_PIXEL
+    add       r3, 40
+    add qword [rsp+CE_DCP], 8*SIZEOF_DCTCOEF
+    jmp .plane
+.end:
+    mov      eax, r13d
+    and      eax, 1
+    shr     r13d, 1
+    or      r13d, eax
+    add      eax, r13d
+    RET
+%endmacro
+
+INIT_YMM avx2
+CHROMA_ENCODE 420_frame, 0, 0
+CHROMA_ENCODE 420_field, 0, 1
+CHROMA_ENCODE 422_frame, 1, 0
+CHROMA_ENCODE 422_field, 1, 1
+%undef ce_i
+%undef ce_y
 %endif ; ARCH_X86_64
 %endif ; HIGH_BIT_DEPTH
 
