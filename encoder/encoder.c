@@ -38,7 +38,7 @@
  * x264_hpel_lazy_arm, defined in api.c. Twin (HPEL_LAZY_TWIN 1): the never
  * defined x264_hpel_lazy_twin, which links as 0, so every hpel is built
  * eagerly. The code is the same in both. */
-#define HPEL_LAZY_TWIN 0
+#define HPEL_LAZY_TWIN 1
 extern const char x264_hpel_lazy_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_hpel_lazy_twin __attribute__((weak, visibility("hidden")));
 #if HPEL_LAZY_TWIN
