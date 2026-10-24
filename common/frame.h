@@ -285,8 +285,9 @@ void          x264_macroblock_deblock( x264_t *h );
 #define x264_frame_filter x264_template(frame_filter)
 void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 
-/* Lazy hpel at this bit depth (frame->b_hpel_lazy, x264_hpel_ensure) */
-#define HPEL_LAZY 1
+/* Lazy hpel at this bit depth (frame->b_hpel_lazy, x264_hpel_ensure): high bit
+ * depth only, where hpel_filter costs most */
+#define HPEL_LAZY HIGH_BIT_DEPTH
 /* Lazy hpel. Unit u of a set is what x264_frame_filter( mb_y = u << PARAM_INTERLACED )
  * and x264_frame_expand_border_filtered write on that set: rows
  * [(u << shift) - 8, ((u+1) << shift) - 8) of its planes, shift 5 for the
