@@ -4056,8 +4056,10 @@ int     x264_encoder_encode( x264_t *h,
     h->fdec->i_frame = h->fenc->i_frame;
     h->fenc->b_kept_as_ref =
     h->fdec->b_kept_as_ref = i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE && h->param.i_keyint_max > 1;
-    /* hpel on first read; the integral image (esa, tesa) is built with it */
-    h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
+    /* hpel on first read at high bit depth or interlaced, where the hpel of a
+     * ref is most costly (or twice, frame and field); the integral image (esa,
+     * tesa) is built with it */
+    h->fdec->b_hpel_lazy = HPEL_LAZY && (HIGH_BIT_DEPTH || PARAM_INTERLACED) && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
     if( h->fdec->b_hpel_lazy )
         for( int i = 0; i <= PARAM_INTERLACED; i++ )
             memset( h->fdec->hpel_unit[i], HPEL_UNIT_NONE, h->mb.i_mb_height >> PARAM_INTERLACED );
