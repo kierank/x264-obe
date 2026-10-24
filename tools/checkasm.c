@@ -5229,6 +5229,281 @@ static int ir_bench_8x8( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8
     return ir_bench8( level, p_src, p_dst, nnz, mf, bias, dequant_mf, i_qp, i_decimate_mb );
 }
 
+/* chroma_encode: x264_mb_encode_chroma_internal without trellis, noise reduction or lossless, with the given
+ * functions; with the C functions this is the C reference */
+static x264_dct_function_t *ce_dctf;
+static x264_quant_function_t *ce_qf;
+static x264_zigzag_function_t *ce_zz;
+static x264_pixel_function_t *ce_pixf;
+
+#if HAVE_MMX && ARCH_X86_64 && HIGH_BIT_DEPTH
+#define x264_chroma_encode_420_frame_avx2 x264_template(chroma_encode_420_frame_avx2)
+#define x264_chroma_encode_420_field_avx2 x264_template(chroma_encode_420_field_avx2)
+#define x264_chroma_encode_422_frame_avx2 x264_template(chroma_encode_422_frame_avx2)
+#define x264_chroma_encode_422_field_avx2 x264_template(chroma_encode_422_field_avx2)
+int x264_chroma_encode_420_frame_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+int x264_chroma_encode_420_field_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+int x264_chroma_encode_422_frame_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+int x264_chroma_encode_422_field_avx2( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef dc[2][8], x264_chroma_encode_t *a );
+#endif
+
+static void ce_zigzag_2x2_dc( dctcoef level[4], dctcoef dct[4] )
+{
+    level[0] = dct[0];
+    level[1] = dct[2];
+    level[2] = dct[1];
+    level[3] = dct[3];
+}
+
+static void ce_zigzag_2x4_dc( dctcoef level[8], dctcoef dct[8] )
+{
+    level[0] = dct[0];
+    level[1] = dct[2];
+    level[2] = dct[1];
+    level[3] = dct[4];
+    level[4] = dct[6];
+    level[5] = dct[3];
+    level[6] = dct[5];
+    level[7] = dct[7];
+}
+
+/* idct_dequant_2x2_dc(only) of macroblock.c: out[i] = dct4x4[i][0] or dct[i] */
+static void ce_idct_dequant_2x2( dctcoef out[4], dctcoef dct[4], int dmf )
+{
+    int d0 = dct[0] + dct[1];
+    int d1 = dct[2] + dct[3];
+    int d2 = dct[0] - dct[1];
+    int d3 = dct[2] - dct[3];
+    out[0] = (d0 + d1) * dmf >> 5;
+    out[1] = (d0 - d1) * dmf >> 5;
+    out[2] = (d2 + d3) * dmf >> 5;
+    out[3] = (d2 - d3) * dmf >> 5;
+}
+
+static void ce_dct2x2dc( dctcoef d[4], dctcoef dct4x4[4][16] )
+{
+    int d0 = dct4x4[0][0] + dct4x4[1][0];
+    int d1 = dct4x4[2][0] + dct4x4[3][0];
+    int d2 = dct4x4[0][0] - dct4x4[1][0];
+    int d3 = dct4x4[2][0] - dct4x4[3][0];
+    d[0] = d0 + d1;
+    d[2] = d2 + d3;
+    d[1] = d0 - d1;
+    d[3] = d2 - d3;
+    dct4x4[0][0] = 0;
+    dct4x4[1][0] = 0;
+    dct4x4[2][0] = 0;
+    dct4x4[3][0] = 0;
+}
+
+static int ce_optimize( dctcoef *dct_dc, int dmf, int chroma422 )
+{
+    if( dmf > 32*64 )
+        return 1;
+    return chroma422 ? ce_qf->optimize_chroma_2x4_dc( dct_dc, dmf ) : ce_qf->optimize_chroma_2x2_dc( dct_dc, dmf );
+}
+
+/* the dc-only reconstruction of a plane */
+static void ce_dc_only( pixel *p_dst, dctcoef *chroma_dc, dctcoef dct_dc[8], x264_chroma_encode_t *a, int chroma422 )
+{
+    if( chroma422 )
+    {
+        ce_zigzag_2x4_dc( chroma_dc, dct_dc );
+        ce_qf->idct_dequant_2x4_dconly( dct_dc, a->dequant_mf, a->dc_qp );
+    }
+    else
+    {
+        ce_zigzag_2x2_dc( chroma_dc, dct_dc );
+        ce_idct_dequant_2x2( dct_dc, dct_dc, a->dc_dmf );
+    }
+    for( int i = 0; i <= chroma422; i++ )
+        ce_dctf->add8x8_idct_dc( p_dst + 8*i*FDEC_STRIDE, &dct_dc[4*i] );
+}
+
+static int chroma_encode_split( int chroma422, dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz,
+                                dctcoef chroma_dc[2][8], x264_chroma_encode_t *a )
+{
+    int cbp = 0, nz_dc;
+    int thresh = a->thresh;
+    ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+
+    for( int ch = 0; ch < 2; ch++ )
+        for( int i = 0; i < 2+2*chroma422; i++ )
+            M16( &nnz[x264_scan8[16+16*ch]+8*i] ) = 0;
+
+    if( thresh >= 0 )
+    {
+        int ssd[2];
+        int chromapix = chroma422 ? PIXEL_8x16 : PIXEL_8x8;
+        int score = ce_pixf->var2[chromapix]( fenc, FENC_STRIDE, fdec, FDEC_STRIDE, &ssd[0] );
+        if( score < thresh*4 )
+            score += ce_pixf->var2[chromapix]( fenc+8, FENC_STRIDE, fdec+16, FDEC_STRIDE, &ssd[1] );
+        if( score < thresh*4 )
+        {
+            nnz[x264_scan8[CHROMA_DC+0]] = 0;
+            nnz[x264_scan8[CHROMA_DC+1]] = 0;
+            for( int ch = 0; ch < 2; ch++ )
+            {
+                if( ssd[ch] > thresh )
+                {
+                    pixel *p_src = fenc + 8*ch;
+                    pixel *p_dst = fdec + 16*ch;
+                    if( chroma422 )
+                        ce_dctf->sub8x16_dct_dc( dct_dc, p_src, p_dst );
+                    else
+                        ce_dctf->sub8x8_dct_dc( dct_dc, p_src, p_dst );
+                    nz_dc = 0;
+                    for( int i = 0; i <= chroma422; i++ )
+                        nz_dc |= ce_qf->quant_2x2_dc( &dct_dc[4*i], a->dc_mf, a->dc_bias );
+                    if( nz_dc )
+                    {
+                        if( !ce_optimize( dct_dc, a->dc_dmf, chroma422 ) )
+                            continue;
+                        nnz[x264_scan8[CHROMA_DC+ch]] = 1;
+                        ce_dc_only( p_dst, chroma_dc[ch], dct_dc, a, chroma422 );
+                        cbp = 1;
+                    }
+                }
+            }
+            return cbp;
+        }
+    }
+
+    for( int ch = 0; ch < 2; ch++ )
+    {
+        pixel *p_src = fenc + 8*ch;
+        pixel *p_dst = fdec + 16*ch;
+        int i_decimate_score = a->b_decimate ? 0 : 7;
+        int nz_ac = 0;
+        ALIGNED_ARRAY_64( dctcoef, dct4x4,[8],[16] );
+
+        for( int i = 0; i <= chroma422; i++ )
+            ce_dctf->sub8x8_dct( &dct4x4[4*i], p_src + 8*i*FENC_STRIDE, p_dst + 8*i*FDEC_STRIDE );
+        if( chroma422 )
+            ce_dctf->dct2x4dc( dct_dc, dct4x4 );
+        else
+            ce_dct2x2dc( dct_dc, dct4x4 );
+        for( int i8x8 = 0; i8x8 <= chroma422; i8x8++ )
+        {
+            int nz = ce_zz->quant_4x4x4_scan_ac( &dct4x4[i8x8*4], &level[ch*16+i8x8*8], a->mf, a->bias, a->dequant_mf, a->i_qp );
+            if( nz )
+            {
+                uint8_t *nnz4 = &nnz[x264_scan8[16+ch*16+i8x8*8]];
+                nz_ac = 1;
+                i_decimate_score += nz >> 4;
+                nnz4[0] = nz&1;
+                nnz4[1] = (nz>>1)&1;
+                nnz4[8] = (nz>>2)&1;
+                nnz4[9] = (nz>>3)&1;
+            }
+        }
+        nz_dc = 0;
+        for( int i = 0; i <= chroma422; i++ )
+            nz_dc |= ce_qf->quant_2x2_dc( &dct_dc[4*i], a->dc_mf, a->dc_bias );
+        nnz[x264_scan8[CHROMA_DC+ch]] = nz_dc;
+
+        if( i_decimate_score < 7 || !nz_ac )
+        {
+            for( int i = 0; i <= chroma422; i++ )
+            {
+                M16( &nnz[x264_scan8[16+16*ch+8*i]] ) = 0;
+                M16( &nnz[x264_scan8[18+16*ch+8*i]] ) = 0;
+            }
+            if( !nz_dc )
+                continue;
+            if( !ce_optimize( dct_dc, a->dc_dmf, chroma422 ) )
+            {
+                nnz[x264_scan8[CHROMA_DC+ch]] = 0;
+                continue;
+            }
+            ce_dc_only( p_dst, chroma_dc[ch], dct_dc, a, chroma422 );
+        }
+        else
+        {
+            cbp = 1;
+            if( nz_dc )
+            {
+                if( chroma422 )
+                {
+                    ce_zigzag_2x4_dc( chroma_dc[ch], dct_dc );
+                    ce_qf->idct_dequant_2x4_dc( dct_dc, dct4x4, a->dequant_mf, a->dc_qp );
+                }
+                else
+                {
+                    dctcoef out[4];
+                    ce_zigzag_2x2_dc( chroma_dc[ch], dct_dc );
+                    ce_idct_dequant_2x2( out, dct_dc, a->dc_dmf );
+                    for( int i = 0; i < 4; i++ )
+                        dct4x4[i][0] = out[i];
+                }
+            }
+            for( int i = 0; i <= chroma422; i++ )
+                ce_dctf->add8x8_idct( p_dst + 8*i*FDEC_STRIDE, &dct4x4[4*i] );
+        }
+    }
+    return cbp + (nnz[x264_scan8[CHROMA_DC+0]] | nnz[x264_scan8[CHROMA_DC+1]] | cbp);
+}
+
+/* fenc, fdec of both planes; j: bits 0-1 the residual of u (any, +-3, +-20, flat per 4x4), bits 2-3 of v,
+ * bit 4 v = u, bit 5 no residual in the lower 8x8s */
+static void ce_gen( pixel *fenc, pixel *fdec, int j, int (*rnd)( void ) )
+{
+    for( int y = 0; y < 16; y++ )
+        for( int x = 0; x < 16; x++ )
+        {
+            int m = x < 8 ? j&3 : (j>>2)&3;
+            int p = m == 3 ? (PIXEL_MAX+1)/4 + rnd() % ((PIXEL_MAX+1)/2) : rnd() & PIXEL_MAX;
+            int r = m == 0 ? (rnd() & PIXEL_MAX) - p
+                  : m == 1 ? rnd()%7 - 3
+                  : m == 2 ? rnd()%41 - 20
+                  : ((((x&7)>>2)*5 + (y>>2)*3 + j) % 61 - 30) * (PIXEL_MAX+1) / 256;
+            if( (j & 32) && y >= 8 )
+                r = 0;
+            fdec[y*FDEC_STRIDE + (x&7) + 16*(x>>3)] = p;
+            fenc[y*FENC_STRIDE + x] = x264_clip_pixel( p + r );
+            if( (j & 16) && x >= 8 )
+            {
+                fdec[y*FDEC_STRIDE + x+8] = fdec[y*FDEC_STRIDE + x-8];
+                fenc[y*FENC_STRIDE + x] = fenc[y*FENC_STRIDE + x-8];
+            }
+        }
+}
+
+/* bench: the prediction is restored before each call */
+static pixel *ce_bench_pred;
+static int ce_bench_422;
+static int (*ce_bench_func)( dctcoef[32][16], pixel*, pixel*, uint8_t*, dctcoef[2][8], x264_chroma_encode_t* );
+static int ce_bench( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef chroma_dc[2][8],
+                     x264_chroma_encode_t *a )
+{
+    for( int y = 0; y < 16; y++ )
+        memcpy( fdec+y*FDEC_STRIDE, ce_bench_pred+y*FDEC_STRIDE, 24*sizeof(pixel) );
+    return ce_bench_func( level, fenc, fdec, nnz, chroma_dc, a );
+}
+static int ce_bench_split( dctcoef level[32][16], pixel *fenc, pixel *fdec, uint8_t *nnz, dctcoef chroma_dc[2][8],
+                           x264_chroma_encode_t *a )
+{
+    for( int y = 0; y < 16; y++ )
+        memcpy( fdec+y*FDEC_STRIDE, ce_bench_pred+y*FDEC_STRIDE, 24*sizeof(pixel) );
+    return chroma_encode_split( ce_bench_422, level, fenc, fdec, nnz, chroma_dc, a );
+}
+
+static void ce_args( x264_t *h, x264_chroma_encode_t *a, int i_qp, int b_inter, int b_decimate, int chroma422, int thresh )
+{
+    int cat = CQM_4IC + b_inter;
+    int i_qp_dc = i_qp + 3*chroma422;
+    a->mf = h->quant4_mf[cat][i_qp];
+    a->bias = h->quant4_bias[cat][i_qp];
+    a->dequant_mf = h->dequant4_mf[cat];
+    a->i_qp = i_qp;
+    a->dc_mf = h->quant4_mf[cat][i_qp_dc][0] >> 1;
+    a->dc_bias = h->quant4_bias[cat][i_qp_dc][0] << 1;
+    a->dc_qp = i_qp_dc;
+    a->dc_dmf = a->dequant_mf[i_qp_dc%6][0] << i_qp_dc/6;
+    a->thresh = b_decimate ? thresh : -1;
+    a->b_decimate = b_decimate;
+}
+
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
@@ -5252,6 +5527,13 @@ static int check_quant( int cpu_ref, int cpu_new )
     x264_dct_function_t dct_a, dct_full;
     x264_quant_function_t qf_full;
     x264_zigzag_function_t zz_full[2];
+    ALIGNED_ARRAY_64( pixel, cesrc,[16*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( pixel, cedst,[4],[16*FDEC_STRIDE] );
+    ALIGNED_ARRAY_64( dctcoef, celvl,[3],[32*16] );
+    ALIGNED_ARRAY_16( dctcoef, cedc,[3],[16] );
+    ALIGNED_ARRAY_16( uint8_t, cennz,[3],[128] );
+    x264_dct_function_t dct_c;
+    x264_pixel_function_t pixf_c, pixf_a, pixf_full;
     x264_zigzag_function_t zz_c[2], zz_ref[2], zz_a[2];
     x264_pixel_function_t x9r_pf_c, x9r_pf_a;
     x264_dct_function_t x9r_df_c, x9r_df_a;
@@ -5261,13 +5543,19 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, x9r_lvl,[3],[16] );
     ALIGNED_ARRAY_64( uint16_t, x9r_bitcosts,[17] );
     int ret = 0, ok, used_asm;
-    int oks[6] = {1,1,1,1,1,1}, used_asms[6] = {0,0,0,0,0,0};
+    int oks[7] = {1,1,1,1,1,1,1}, used_asms[7] = {0,0,0,0,0,0,0};
     x264_dct_init( cpu_new, &dct_a );
     x264_dct_init( x264_cpu_detect(), &dct_full );
     for( int i = 0; i < 24*FENC_STRIDE; i++ )
         irsrc[i] = rand() & PIXEL_MAX;
     for( int i = 0; i < 20*FDEC_STRIDE; i++ )
         irdst[0][i] = irdst[3][i] = rand() & PIXEL_MAX;
+    x264_dct_init( 0, &dct_c );
+    x264_pixel_init( 0, &pixf_c );
+    x264_pixel_init( cpu_new, &pixf_a );
+    x264_pixel_init( x264_cpu_detect(), &pixf_full );
+    for( int i = 0; i < 16*FDEC_STRIDE; i++ )
+        cedst[3][i] = rand() & PIXEL_MAX;
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -5368,6 +5656,16 @@ static int check_quant( int cpu_ref, int cpu_new )
             zz_a[0].inter_resid_4x4 = x264_inter_resid_4x4_frame_avx2;
             zz_a[1].inter_resid_4x4 = x264_inter_resid_4x4_field_avx2;
 #endif
+        }
+#endif
+#if HAVE_MMX && ARCH_X86_64 && HIGH_BIT_DEPTH
+        /* chroma_encode is assembled but not dispatched at high bit depth: checked from avx2 */
+        if( (cpu_new & X264_CPU_AVX2) && !zz_a[0].chroma_encode[0] )
+        {
+            zz_a[0].chroma_encode[0] = x264_chroma_encode_420_frame_avx2;
+            zz_a[1].chroma_encode[0] = x264_chroma_encode_420_field_avx2;
+            zz_a[0].chroma_encode[1] = x264_chroma_encode_422_frame_avx2;
+            zz_a[1].chroma_encode[1] = x264_chroma_encode_422_field_avx2;
         }
 #endif
 
@@ -5832,6 +6130,96 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_INTER_RESID( 4x4, 4, CQM_4PY );
         TEST_INTER_RESID( 8x8, 8, CQM_8PY );
 
+        /* chroma_encode: against the C reference and the dispatched calls it replaces; level, dc, nnz and fdec
+         * start as a pattern and are compared whole. Every qp (4:2:2: to QP_MAX_SPEC-3, the dc qp), intra
+         * and inter with decimation off and on, the var2 early termination off or at a random threshold;
+         * the residuals of ce_gen. */
+        for( int c422 = 0; c422 < 2; c422++ )
+            for( int fld = 0; fld < 2; fld++ )
+            {
+                if( !zz_a[fld].chroma_encode[c422] )
+                    continue;
+                used_asms[6] = 1;
+                set_func_name( "chroma_encode_%s_%s_%s", c422?"422":"420", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                for( int qp = QP_MAX_SPEC - 3*c422; qp >= h->param.rc.i_qp_min && oks[6]; qp-- )
+                    for( int j = 0; j < 96; j++ )
+                    {
+                        x264_chroma_encode_t a;
+                        int b_inter = j%3 != 0;
+                        int thresh = rand()&3 ? rand30() % (1 << (rand()%20)) : -1;
+                        ce_gen( cesrc, cedst[0], j, rand );
+                        if( (j&7) == 4 )
+                        {
+                            /* at the ssd of a plane: early termination with ssd == thresh */
+                            int ssd[2];
+                            pixf_c.var2[c422 ? PIXEL_8x16 : PIXEL_8x8]( cesrc, FENC_STRIDE, cedst[0], FDEC_STRIDE, &ssd[0] );
+                            pixf_c.var2[c422 ? PIXEL_8x16 : PIXEL_8x8]( cesrc+8, FENC_STRIDE, cedst[0]+16, FDEC_STRIDE, &ssd[1] );
+                            thresh = ssd[(j>>3)&1];
+                        }
+                        ce_args( h, &a, qp, b_inter, j%3 == 1, c422, thresh );
+                        for( int k = 1; k < 3; k++ )
+                            memcpy( cedst[k], cedst[0], sizeof(cedst[0]) );
+                        for( int k = 0; k < 32*16; k++ )
+                            celvl[0][k] = celvl[1][k] = celvl[2][k] = 0x5a5a + k;
+                        for( int k = 0; k < 16; k++ )
+                            cedc[0][k] = cedc[1][k] = cedc[2][k] = 0x3c3c + k;
+                        memset( cennz, 0x5a, sizeof(cennz) );
+                        ce_dctf = &dct_c;
+                        ce_qf = &qf_c;
+                        ce_zz = &zz_c[fld];
+                        ce_pixf = &pixf_c;
+                        int res_c = chroma_encode_split( c422, (void*)celvl[0], cesrc, cedst[0], cennz[0], (void*)cedc[0], &a );
+                        ce_dctf = &dct_a;
+                        ce_qf = &qf_a;
+                        ce_zz = &zz_a[fld];
+                        ce_pixf = &pixf_a;
+                        int res_s = chroma_encode_split( c422, (void*)celvl[1], cesrc, cedst[1], cennz[1], (void*)cedc[1], &a );
+                        int res_a = call_a1( zz_a[fld].chroma_encode[c422], (void*)celvl[2], cesrc, cedst[2], cennz[2],
+                                             (void*)cedc[2], &a );
+#define CE_DIFF( buf, k ) !!memcmp( buf[k], buf[2], sizeof(buf[0]) )
+                        if( res_c != res_a || res_s != res_a || CE_DIFF( celvl, 0 ) || CE_DIFF( celvl, 1 ) ||
+                            CE_DIFF( cedc, 0 ) || CE_DIFF( cedc, 1 ) || CE_DIFF( cennz, 0 ) || CE_DIFF( cennz, 1 ) ||
+                            CE_DIFF( cedst, 0 ) || CE_DIFF( cedst, 1 ) )
+                        {
+                            oks[6] = 0;
+                            fprintf( stderr, "chroma_encode_%s_%s (qp=%d, cqm=%d, j=%d, inter=%d, dec=%d, thresh=%d, res_c=%d, "
+                                     "res_split=%d, res_asm=%d): [FAILED] lvl %d %d dc %d %d nnz %d %d dst %d %d\n",
+                                     c422?"422":"420", fld?"field":"frame", qp, i_cqm, j, b_inter, a.b_decimate, a.thresh,
+                                     res_c, res_s, res_a, CE_DIFF( celvl, 0 ), CE_DIFF( celvl, 1 ), CE_DIFF( cedc, 0 ),
+                                     CE_DIFF( cedc, 1 ), CE_DIFF( cennz, 0 ), CE_DIFF( cennz, 1 ), CE_DIFF( cedst, 0 ),
+                                     CE_DIFF( cedst, 1 ) );
+                            break;
+                        }
+#undef CE_DIFF
+                    }
+                /* bench, flat and jvt cqm: inter with decimation and the encoder's early termination threshold,
+                 * qp 24-36 (chroma), residual +-3, +-20, flat, any. _split times the calls it replaces with this
+                 * machine's whole dispatch, as encoding. */
+                if( do_bench && i_cqm < 2 )
+                {
+                    bench_srand( 1000 + 2*c422 + fld );
+                    ce_bench_pred = cedst[3];
+                    ce_bench_422 = c422;
+                    ce_dctf = &dct_full;
+                    ce_qf = &qf_full;
+                    ce_zz = &zz_full[fld];
+                    ce_pixf = &pixf_full;
+                    for( int i = 0; i < 16; i++ )
+                    {
+                        x264_chroma_encode_t a;
+                        int qp = 24 + 4*(i>>2), j = 1 + (i&3);
+                        int thresh = c422 ? (x264_lambda2_tab[qp] + 16) >> 5 : (x264_lambda2_tab[qp] + 32) >> 6;
+                        ce_args( h, &a, qp, 1, 1, c422, thresh );
+                        ce_gen( cesrc, cedst[3], (j&3) * 5, bench_rand );
+                        ce_bench_func = zz_a[fld].chroma_encode[c422];
+                        set_func_name( "chroma_encode_%s_%s_%s", c422?"422":"420", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        call_bench( ce_bench, cpu_new, (void*)celvl[2], cesrc, cedst[2], cennz[2], (void*)cedc[2], &a );
+                        set_func_name( "chroma_encode_split_%s_%s_%s", c422?"422":"420", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        call_bench( ce_bench_split, cpu_new, (void*)celvl[1], cesrc, cedst[1], cennz[1], (void*)cedc[1], &a );
+                    }
+                }
+            }
+
         /* bench, flat and jvt cqm: 16 fixed inter blocks, the check's 4 level sizes at its 4 nonzero rates,
          * qp 24-36, with dequant. _split times the dispatched calls it replaces on the same blocks. */
         if( do_bench && i_cqm < 2 )
@@ -6121,6 +6509,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[5]; used_asm = used_asms[5];
     report( "inter resid :" );
+
+    ok = oks[6]; used_asm = used_asms[6];
+    report( "chroma encode :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

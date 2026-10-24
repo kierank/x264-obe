@@ -265,6 +265,26 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
     int b_decimate = b_inter && h->mb.b_dct_decimate;
     int (*dequant_mf)[16] = h->dequant4_mf[CQM_4IC + b_inter];
     ALIGNED_ARRAY_16( dctcoef, dct_dc,[8] );
+
+    if( h->zigzagf.chroma_encode[chroma422] && !h->mb.b_trellis && !h->mb.b_noise_reduction && !h->mb.b_lossless )
+    {
+        int i_qp_dc = i_qp + 3*chroma422;
+        x264_chroma_encode_t a;
+        a.mf = h->quant4_mf[CQM_4IC+b_inter][i_qp];
+        a.bias = h->quant4_bias[CQM_4IC+b_inter][i_qp];
+        a.dequant_mf = dequant_mf;
+        a.i_qp = i_qp;
+        a.dc_mf = h->quant4_mf[CQM_4IC+b_inter][i_qp_dc][0] >> 1;
+        a.dc_bias = h->quant4_bias[CQM_4IC+b_inter][i_qp_dc][0] << 1;
+        a.dc_qp = i_qp_dc;
+        a.dc_dmf = dequant_mf[i_qp_dc%6][0] << i_qp_dc/6;
+        a.thresh = !b_decimate || i_qp < 18 ? -1 :
+                   chroma422 ? (x264_lambda2_tab[i_qp] + 16) >> 5 : (x264_lambda2_tab[i_qp] + 32) >> 6;
+        a.b_decimate = b_decimate;
+        h->mb.i_cbp_chroma = h->zigzagf.chroma_encode[chroma422]( &h->dct.luma4x4[16], h->mb.pic.p_fenc[1], h->mb.pic.p_fdec[1],
+                                                                   h->mb.cache.non_zero_count, h->dct.chroma_dc, &a );
+        return;
+    }
     h->mb.i_cbp_chroma = 0;
     h->nr_count[2] += h->mb.b_noise_reduction * 4;
 
