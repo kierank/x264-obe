@@ -421,12 +421,40 @@ static ALWAYS_INLINE pixel *x264_mb_fref_uv( x264_t *h, pixel **p_fref, int y, i
 }
 
 /* Lazy hpel: rows [y0, y1] of the hpel planes of the ref of ok, an entry of
- * h->mb.hpel_ok, NULL for a ref built eagerly: build their units if they aren't
- * known built. */
+ * h->mb.hpel_ok: build their units if they aren't known built. */
 static ALWAYS_INLINE void x264_hpel_ensure( x264_t *h, int *ok, int y0, int y1 )
 {
-    if( HPEL_LAZY && ok && (y0 < ok[0] || y1 > ok[1]) )
+    if( HPEL_LAZY && (y0 < ok[0] || y1 > ok[1]) )
         x264_hpel_build( h, ok, y0, y1 );
+}
+
+/* Lazy hpel: win, an entry of h->mb.hpel_win, from its ok, for rows of set
+ * from y: a block in rows y .. y + (16 << b_pair) - 1 (the mb, or the mb pair
+ * of a frame mb of an interlaced frame) at a vertical mv in win[0..1] reads
+ * rows in ok */
+static ALWAYS_INLINE void x264_hpel_win_set( int *win, const int *ok, int y, int b_pair )
+{
+    int b_none = ok[0] > ok[1];
+    win[0] = b_none ? INT_MAX : ok[0] == INT_MIN ? INT_MIN : 4*(ok[0] - y);
+    win[1] = b_none ? INT_MIN : ok[1] == INT_MAX ? INT_MAX : 4*(ok[1] - y - (16 << b_pair)) + 3;
+}
+
+/* Lazy hpel: the windows of the lazy refs for the current mb */
+static ALWAYS_INLINE void x264_mb_hpel_win( x264_t *h )
+{
+    if( !HPEL_LAZY || !h->mb.b_hpel_lazy )
+        return;
+    int s = MB_INTERLACED;
+    int b_pair = PARAM_INTERLACED && !s;
+    int y = b_pair ? 16*(h->mb.i_mb_y & ~1) : 16*(h->mb.i_mb_y >> s);
+    if( y != h->mb.hpel_win_y[s] )
+    {
+        h->mb.hpel_win_y[s] = y;
+        for( int l = 0; l < 2; l++ )
+            for( int j = 0; j < h->i_ref[l]; j++ )
+                if( h->mb.hpel_lazy[s][l][j] )
+                    x264_hpel_win_set( h->mb.hpel_win[s][l][j], h->mb.hpel_ok[s][l][j], y, b_pair );
+    }
 }
 
 /* Lazy hpel: the hpel rows mc_luma/get_ref read for a block of height rows at
@@ -435,10 +463,14 @@ static ALWAYS_INLINE void x264_hpel_ensure( x264_t *h, int *ok, int y0, int y1 )
 static ALWAYS_INLINE void x264_mb_hpel_ensure( x264_t *h, int list, int i_ref, int mvx, int mvy, int height )
 {
     int j = i_ref >> MB_INTERLACED;
-    if( HPEL_LAZY && ((mvx|mvy)&3) && h->mb.hpel_lazy[MB_INTERLACED][list][j] )
+    if( HPEL_LAZY && h->mb.b_hpel_lazy && ((mvx|mvy)&3) && h->mb.hpel_lazy[MB_INTERLACED][list][j] )
     {
-        int y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + (mvy >> 2);
-        x264_hpel_ensure( h, h->mb.hpel_ok[MB_INTERLACED][list][j], y, y + height );
+        int *win = h->mb.hpel_win[MB_INTERLACED][list][j];
+        if( mvy < win[0] || mvy > win[1] )
+        {
+            int y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + (mvy >> 2);
+            x264_hpel_ensure_win( h, win, y, y + height );
+        }
     }
 }
 

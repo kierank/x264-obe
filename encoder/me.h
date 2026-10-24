@@ -47,10 +47,9 @@ typedef struct
     uint16_t *integral;
     int      i_stride[3];
     int      i_fld_uv_y; /* NV12: field row of p_fref[4], see x264_mb_fref_uv */
-    /* lazy hpel (x264_me_hpel_ensure): the ref's h->mb.hpel_ok, NULL if it isn't
-     * lazy, and the row of p_fref[0] in its hpel planes */
-    int      hpel_y;
-    int      *hpel_ok;
+    /* lazy hpel (x264_me_hpel_ensure): the ref's h->mb.hpel_win, NULL if it isn't
+     * lazy */
+    int      *hpel_win;
 
     ALIGNED_4( int16_t mvp[2] );
 
@@ -92,24 +91,34 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
-/* lazy hpel of m's ref, for the mb's block at row yoff */
-static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, int i_ref, int yoff )
+/* lazy hpel of m's ref */
+static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, int i_ref )
 {
-    if( HPEL_LAZY )
+    m->hpel_win = NULL;
+    if( HPEL_LAZY && h->mb.b_hpel_lazy )
     {
         int j = i_ref >> MB_INTERLACED;
-        m->hpel_ok = h->mb.hpel_lazy[MB_INTERLACED][list][j] ? h->mb.hpel_ok[MB_INTERLACED][list][j] : NULL;
-        m->hpel_y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + yoff;
+        if( h->mb.hpel_lazy[MB_INTERLACED][list][j] )
+            m->hpel_win = h->mb.hpel_win[MB_INTERLACED][list][j];
     }
+}
+
+/* lazy hpel: the row of p_fref[0] of m's block in its ref's hpel planes */
+static ALWAYS_INLINE int x264_me_hpel_y( x264_t *h, x264_me_t *m )
+{
+    return 16*(h->mb.i_mb_y >> MB_INTERLACED) + (int)(m->p_fenc[0] - h->mb.pic.p_fenc[0]) / FENC_STRIDE;
 }
 
 /* lazy hpel: the hpel rows of m's ref that mc_luma/get_ref read for m's block
  * of height rows at every qpel mv with vertical component in [mvy0, mvy1] */
 static ALWAYS_INLINE void x264_me_hpel_ensure_span( x264_t *h, x264_me_t *m, int mvy0, int mvy1, int height )
 {
-    x264_hpel_ensure( h, m->hpel_ok, m->hpel_y + (mvy0 >> 2), m->hpel_y + (mvy1 >> 2) + height );
+    if( HPEL_LAZY && m->hpel_win && (mvy0 < m->hpel_win[0] || mvy1 > m->hpel_win[1]) )
+    {
+        int y = x264_me_hpel_y( h, m );
+        x264_hpel_ensure_win( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
+    }
 }
-
 /* the same at one qpel mv; a fullpel mv reads no hpel */
 static ALWAYS_INLINE void x264_me_hpel_ensure( x264_t *h, x264_me_t *m, int mvx, int mvy, int height )
 {

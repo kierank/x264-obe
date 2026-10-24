@@ -1008,7 +1008,7 @@ static NOINLINE void hpel_ensure_pred( x264_t *h, x264_me_t *m, int16_t (*mvc)[2
 
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
-    if( HPEL_LAZY && m->hpel_ok && h->mb.i_subpel_refine >= 3 )
+    if( HPEL_LAZY && m->hpel_win && h->mb.i_subpel_refine >= 3 )
         hpel_ensure_pred( h, m, mvc, i_mvc );
     me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
 }
@@ -1163,6 +1163,24 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     } \
 }
 
+/* lazy hpel: refine_subpel's candidates past m's window: within reach qpel of
+ * the start or of the subme < 3 predicted mv, clipped as refine_subpel clips
+ * it, and within the spel range, which every candidate is in */
+static NOINLINE void hpel_ensure_refine( x264_t *h, x264_me_t *m, int hpel_iters, int reach )
+{
+    int y0 = m->mv[1], y1 = m->mv[1];
+    if( hpel_iters && h->mb.i_subpel_refine < 3 )
+    {
+        int pmy = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1]+2, h->mb.mv_max_spel[1]-2 );
+        y0 = X264_MIN( y0, pmy );
+        y1 = X264_MAX( y1, pmy );
+    }
+    y0 = X264_MAX( y0 - reach, h->mb.mv_min_spel[1] );
+    y1 = X264_MIN( y1 + reach, h->mb.mv_max_spel[1] );
+    int y = x264_me_hpel_y( h, m );
+    x264_hpel_ensure_win( h, m->hpel_win, y + (y0 >> 2), y + (y1 >> 2) + x264_pixel_size[m->i_pixel].h );
+}
+
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -1211,19 +1229,19 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
     /* lazy hpel: the candidates below are within 2*hpel_iters + qpel_iters
      * (1 at subme 1) qpel of the start, or at subme < 3 of the predicted mv,
-     * which can become the start, and within the spel range */
-    if( HPEL_LAZY && m->hpel_ok )
+     * which can become the start; the predicted mv clips between the start and
+     * itself */
+    if( HPEL_LAZY && m->hpel_win )
     {
         int reach = 2*hpel_iters + X264_MAX( qpel_iters, 1 );
         int y0 = bmy, y1 = bmy;
         if( hpel_iters && h->mb.i_subpel_refine < 3 )
         {
-            int pmy = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1]+2, h->mb.mv_max_spel[1]-2 );
-            y0 = X264_MIN( y0, pmy );
-            y1 = X264_MAX( y1, pmy );
+            y0 = X264_MIN( y0, m->mvp[1] );
+            y1 = X264_MAX( y1, m->mvp[1] );
         }
-        x264_me_hpel_ensure_span( h, m, X264_MAX( y0 - reach, h->mb.mv_min_spel[1] ),
-                                  X264_MIN( y1 + reach, h->mb.mv_max_spel[1] ), bh );
+        if( y0 - reach < m->hpel_win[0] || y1 + reach > m->hpel_win[1] )
+            hpel_ensure_refine( h, m, hpel_iters, reach );
     }
 
     /* halfpel diamond search */

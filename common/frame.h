@@ -302,9 +302,13 @@ void          x264_frame_filter_fld_copy( x264_t *h, x264_frame_t *frame, int mb
 void          x264_frame_expand_border_filtered_set( x264_t *h, x264_frame_t *frame, int set, int mb_y, int b_end );
 /* Lazy hpel: build the units holding rows [y0, y1] of the hpel planes of the
  * ref of ok, an entry of h->mb.hpel_ok, and set ok to the rows of the run of
- * built units around them; once that is every row, its h->mb.hpel_lazy is 0. */
+ * built units around them, and its h->mb.hpel_win; once that is every row, its
+ * h->mb.hpel_lazy is 0. */
 #define x264_hpel_build x264_template(hpel_build)
 void          x264_hpel_build( x264_t *h, int *ok, int y0, int y1 );
+/* x264_hpel_ensure of rows [y0, y1] of the ref of win, an entry of h->mb.hpel_win */
+#define x264_hpel_ensure_win x264_template(hpel_ensure_win)
+void          x264_hpel_ensure_win( x264_t *h, int *win, int y0, int y1 );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

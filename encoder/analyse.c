@@ -1337,7 +1337,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
     (m)->integral = &h->mb.pic.p_integral[list][ref][(xoff)+(yoff)*(m)->i_stride[0]]; \
     (m)->weight = x264_weight_none; \
     (m)->i_ref = ref; \
-    x264_me_hpel_init( h, m, list, ref, yoff ); \
+    x264_me_hpel_init( h, m, list, ref ); \
 }
 
 #define LOAD_WPELS(m, src, list, ref, xoff, yoff) \
@@ -3357,6 +3357,7 @@ void x264_macroblock_analyse( x264_t *h )
 {
     x264_mb_analysis_t analysis;
     int i_cost = COST_MAX;
+    x264_mb_hpel_win( h );
 
     h->mb.i_qp = x264_ratecontrol_mb_qp( h );
     /* If the QP of this MB is within 1 of the previous MB, code the same QP as the previous MB,

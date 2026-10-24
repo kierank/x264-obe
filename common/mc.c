@@ -1046,6 +1046,12 @@ void x264_hpel_build( x264_t *h, int *ok, int y0, int y1 )
         u1++;
     ok[0] = u0 ? (u0 << shift) - 8 : INT_MIN;
     ok[1] = u1 < last ? ((u1 + 1) << shift) - 9 : INT_MAX;
+    x264_hpel_win_set( h->mb.hpel_win[0][0][0] + 2*i, ok, h->mb.hpel_win_y[set], PARAM_INTERLACED && !set );
     if( !u0 && u1 == last )
         h->mb.hpel_lazy[set][list][i % X264_REF_MAX] = 0;
+}
+
+void x264_hpel_ensure_win( x264_t *h, int *win, int y0, int y1 )
+{
+    x264_hpel_ensure( h, h->mb.hpel_ok[0][0][0] + (win - h->mb.hpel_win[0][0][0]), y0, y1 );
 }
