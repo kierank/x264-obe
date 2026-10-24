@@ -1061,14 +1061,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
-#if HIGH_BIT_DEPTH
-        /* zen4: 10-bit neutral in situ; chroma_encode kept assembled */
-#else
         pf_interlaced->chroma_encode[0]     = x264_chroma_encode_420_field_avx2;
         pf_progressive->chroma_encode[0]    = x264_chroma_encode_420_frame_avx2;
         pf_interlaced->chroma_encode[1]     = x264_chroma_encode_422_field_avx2;
         pf_progressive->chroma_encode[1]    = x264_chroma_encode_422_frame_avx2;
-#endif
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
