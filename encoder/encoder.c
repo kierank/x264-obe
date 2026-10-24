@@ -4059,6 +4059,11 @@ int     x264_encoder_encode( x264_t *h,
     /* hpel on first read; the integral image (esa, tesa) is built with it */
     h->fdec->b_hpel_lazy = HPEL_LAZY && h->fdec->b_kept_as_ref && h->param.analyse.i_subpel_refine && !h->fdec->integral;
     if( h->fdec->b_hpel_lazy )
+    {
+        HPEL_CNT( HC_FRAMES );
+        HPEL_CNT_ADD( HC_UNITS_TOTAL, (h->mb.i_mb_height >> PARAM_INTERLACED) << PARAM_INTERLACED );
+    }
+    if( h->fdec->b_hpel_lazy )
         for( int i = 0; i <= PARAM_INTERLACED; i++ )
             memset( h->fdec->hpel_unit[i], HPEL_UNIT_NONE, h->mb.i_mb_height >> PARAM_INTERLACED );
 
@@ -4666,6 +4671,7 @@ void    x264_encoder_close  ( x264_t *h )
     int64_t i_yuv_size = FRAME_SIZE( h->param.i_width * h->param.i_height );
     int64_t i_mb_count_size[2][7] = {{0}};
     char buf[200];
+    x264_hpel_cnt_print();
     int b_print_pcm = h->stat.i_mb_count[SLICE_TYPE_I][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_P][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
