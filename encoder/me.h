@@ -93,6 +93,8 @@ static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, 
     {
         int j = i_ref >> MB_INTERLACED;
         m->hpel_ok = h->mb.hpel_lazy[MB_INTERLACED][list][j] ? h->mb.hpel_ok[MB_INTERLACED][list][j] : NULL;
+        if( m->hpel_ok )
+            HPEL_CNT( HC_ME_INIT );
         m->hpel_y = 16*(h->mb.i_mb_y >> MB_INTERLACED) + yoff;
     }
 }

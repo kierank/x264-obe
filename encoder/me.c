@@ -999,6 +999,7 @@ static NOINLINE void hpel_ensure_pred( x264_t *h, x264_me_t *m, int16_t (*mvc)[2
     if( lo <= hi )
     {
         int y0 = SPEL( h->mb.mv_limit_fpel[0][1] ), y1 = SPEL( h->mb.mv_limit_fpel[1][1] );
+        HPEL_CNT( HC_S_PRED );
         x264_me_hpel_ensure_span( h, m, x264_clip3( lo, y0, y1 ), x264_clip3( hi, y0, y1 ),
                                   x264_pixel_size[m->i_pixel].h );
     }
@@ -1007,7 +1008,10 @@ static NOINLINE void hpel_ensure_pred( x264_t *h, x264_me_t *m, int16_t (*mvc)[2
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     if( HPEL_LAZY && m->hpel_ok && h->mb.i_subpel_refine >= 3 )
+    {
+        HPEL_CNT( HC_S_PREDCALL );
         hpel_ensure_pred( h, m, mvc, i_mvc );
+    }
     me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
 }
 
@@ -1220,6 +1224,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             y0 = X264_MIN( y0, pmy );
             y1 = X264_MAX( y1, pmy );
         }
+        HPEL_CNT( HC_S_REFINE );
         x264_me_hpel_ensure_span( h, m, X264_MAX( y0 - reach, h->mb.mv_min_spel[1] ),
                                   X264_MIN( y1 + reach, h->mb.mv_max_spel[1] ), bh );
     }
@@ -1491,7 +1496,9 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
     const uint16_t *p_cost_m1y = m1->p_cost_mv - m1->mvp[1];
 
     /* lazy hpel: the candidates are within 8 qpel of the start */
+    HPEL_CNT( HC_S_BIDIR );
     x264_me_hpel_ensure_span( h, m0, bm0y - 8, bm0y + 8, bh );
+    HPEL_CNT( HC_S_BIDIR );
     x264_me_hpel_ensure_span( h, m1, bm1y - 8, bm1y + 8, bh );
     h->mc.memzero_aligned( visited, sizeof(uint8_t[8][8][8]) );
     int16_t *fenc_pre = x264_me_fenc_pre( h, i_pixel, m0->p_fenc[0] );
@@ -1608,6 +1615,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
 { \
     if( !avoid_mvp || !(mx == pmx && my == pmy) ) \
     { \
+        HPEL_CNT( HC_S_RD ); \
         x264_me_hpel_ensure( h, m, mx, my, bh ); \
         h->mc.mc_luma( pix, FDEC_STRIDE, m->p_fref, m->i_stride[0], mx, my, bw, bh, &m->weight[0] ); \
         dst = h->pixf.mbcmp[i_pixel]( m->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE ) \
@@ -1626,6 +1634,7 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
         M32( cache_mv ) = pack16to32_mask(mx,my); \
         if( CHROMA444 ) \
         { \
+            HPEL_CNT( HC_S_RD ); \
             x264_me_hpel_ensure( h, m, mx, my, bh ); \
             h->mc.mc_luma( pixu, FDEC_STRIDE, &m->p_fref[4], m->i_stride[1], mx, my, bw, bh, &m->weight[1] ); \
             h->mc.mc_luma( pixv, FDEC_STRIDE, &m->p_fref[8], m->i_stride[2], mx, my, bw, bh, &m->weight[2] ); \

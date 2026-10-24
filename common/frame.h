@@ -296,6 +296,15 @@ void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b
 #define HPEL_UNIT_BUILDING 1
 #define HPEL_UNIT_BUILT    2
 #define HPEL_UNIT_WAITED   3 /* building, a thread waits on the cv */
+/* hpel counters */
+enum { HC_MB, HC_ME_INIT, HC_S_PREDCALL, HC_S_PRED, HC_S_REFINE, HC_S_BIDIR, HC_S_RD, HC_S_ANALYSE, HC_S_MB, HC_CHECK,
+       HC_MISS, HC_MISS_UNITS, HC_SCAN, HC_ALL_BUILT, HC_BUILT, HC_BUSY, HC_CV_WAIT, HC_LINES_WAIT, HC_UNITS_TOTAL, HC_FRAMES, HC_N };
+#define x264_hpel_cnt x264_template(hpel_cnt)
+extern uint64_t x264_hpel_cnt[HC_N];
+#define HPEL_CNT_ADD( i, n ) __atomic_fetch_add( &x264_hpel_cnt[i], (n), __ATOMIC_RELAXED )
+#define HPEL_CNT( i ) HPEL_CNT_ADD( i, 1 )
+#define x264_hpel_cnt_print x264_template(hpel_cnt_print)
+void x264_hpel_cnt_print( void );
 #define x264_frame_filter_fld_copy x264_template(frame_filter_fld_copy)
 void          x264_frame_filter_fld_copy( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
 #define x264_frame_expand_border_filtered_set x264_template(frame_expand_border_filtered_set)

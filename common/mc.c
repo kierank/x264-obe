@@ -983,6 +983,20 @@ static void frame_filter_set( x264_t *h, x264_frame_t *frame, int set, int mb_y,
     }
 }
 
+uint64_t x264_hpel_cnt[HC_N];
+
+void x264_hpel_cnt_print( void )
+{
+    static const char *name[HC_N] = { "mb", "me_init_lazy", "site_pred_call", "site_pred_span", "site_refine", "site_bidir",
+                                      "site_rd", "site_analyse", "site_mb", "check_lazy", "miss", "miss_units", "scan",
+                                      "ref_all_built", "built", "busy", "cv_wait", "lines_wait", "units_total", "frames" };
+    uint64_t mb = x264_hpel_cnt[HC_MB] ? x264_hpel_cnt[HC_MB] : 1;
+    for( int i = 0; i < HC_N; i++ )
+        fprintf( stderr, "hpel_cnt %d-bit %-14s %12"PRIu64" %10.4f per mb\n", BIT_DEPTH, name[i], x264_hpel_cnt[i], (double)x264_hpel_cnt[i] / mb );
+    if( x264_hpel_cnt[HC_UNITS_TOTAL] )
+        fprintf( stderr, "hpel_cnt %d-bit built share %.2f%%\n", BIT_DEPTH, 100. * x264_hpel_cnt[HC_BUILT] / x264_hpel_cnt[HC_UNITS_TOTAL] );
+}
+
 /* Build the units [u, u1] of set that aren't built. A unit is claimed with a
  * compare-and-swap; a thread wanting a unit another is building marks it waited
  * and waits on the cv, which the builder then broadcasts. With frame threads, a
@@ -998,12 +1012,13 @@ static void frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, in
             continue;
         int mb_y = u << PARAM_INTERLACED;
         int b_end = u == last;
-        if( h->i_thread_frames > 1 )
+        if( h->i_thread_frames > 1 && HPEL_CNT( HC_LINES_WAIT ) >= 0 )
             x264_frame_cond_wait( frame, b_end ? h->mb.i_mb_height*16 + 10000
                                                 : (mb_y + (1 << PARAM_INTERLACED))*16 - (X264_THREAD_HEIGHT << PARAM_INTERLACED) );
         uint8_t s = HPEL_UNIT_NONE;
         if( __atomic_compare_exchange_n( state, &s, HPEL_UNIT_BUILDING, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE ) )
         {
+            HPEL_CNT( HC_BUILT );
             frame_filter_set( h, frame, set, mb_y, b_end );
             x264_frame_expand_border_filtered_set( h, frame, set, mb_y, b_end );
             if( __atomic_exchange_n( state, HPEL_UNIT_BUILT, __ATOMIC_RELEASE ) == HPEL_UNIT_WAITED )
@@ -1013,14 +1028,17 @@ static void frame_hpel_build( x264_t *h, x264_frame_t *frame, int set, int u, in
                 x264_pthread_mutex_unlock( &frame->mutex );
             }
         }
-        else if( s != HPEL_UNIT_BUILT )
+        else if( s != HPEL_UNIT_BUILT && HPEL_CNT( HC_BUSY ) >= 0 )
         {
             x264_pthread_mutex_lock( &frame->mutex );
             while( s != HPEL_UNIT_BUILT )
             {
                 if( s == HPEL_UNIT_WAITED ||
                     __atomic_compare_exchange_n( state, &s, HPEL_UNIT_WAITED, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE ) )
-                    x264_pthread_cond_wait( &frame->cv, &frame->mutex );
+                {
+                    HPEL_CNT( HC_CV_WAIT );
+                        x264_pthread_cond_wait( &frame->cv, &frame->mutex );
+                }
                 s = __atomic_load_n( state, __ATOMIC_ACQUIRE );
             }
             x264_pthread_mutex_unlock( &frame->mutex );
@@ -1039,13 +1057,18 @@ void x264_hpel_build( x264_t *h, int *ok, int y0, int y1 )
     int u0 = x264_clip3( (y0 + 8) >> shift, 0, last );
     int u1 = x264_clip3( (y1 + 8) >> shift, 0, last );
     uint8_t *state = frame->hpel_unit[set];
+    HPEL_CNT( HC_MISS );
+    HPEL_CNT_ADD( HC_MISS_UNITS, u1 - u0 + 1 );
     frame_hpel_build( h, frame, set, u0, u1 );
     while( u0 > 0 && __atomic_load_n( &state[u0-1], __ATOMIC_ACQUIRE ) == HPEL_UNIT_BUILT )
-        u0--;
+        u0--, HPEL_CNT( HC_SCAN );
     while( u1 < last && __atomic_load_n( &state[u1+1], __ATOMIC_ACQUIRE ) == HPEL_UNIT_BUILT )
-        u1++;
+        u1++, HPEL_CNT( HC_SCAN );
     ok[0] = u0 ? (u0 << shift) - 8 : INT_MIN;
     ok[1] = u1 < last ? ((u1 + 1) << shift) - 9 : INT_MAX;
     if( !u0 && u1 == last )
-        h->mb.hpel_lazy[set][list][i % X264_REF_MAX] = 0;
+    {
+        HPEL_CNT( HC_ALL_BUILT );
+            h->mb.hpel_lazy[set][list][i % X264_REF_MAX] = 0;
+    }
 }
