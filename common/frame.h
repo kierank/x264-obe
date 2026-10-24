@@ -196,6 +196,16 @@ typedef struct x264_frame
 #if HAVE_OPENCL
     x264_frame_opencl_t opencl;
 #endif
+
+    /* hpel read counters: [0] frame hpel, [1] field hpel (parity-major) */
+    uint8_t *hpel_cnt_tile[2]; /* 16x16 tiles */
+    uint8_t *hpel_cnt_row[2];  /* pixel rows */
+    int     hpel_cnt_built;    /* bit 0 frame hpel filtered, bit 1 field hpel */
+    int     hpel_cnt_used;     /* in a ref list since it was filtered */
+    int     hpel_chk_rev;      /* X264_HPEL_CHECK_REVERSE: all units built, last first */
+    int     hpel_chk_gen;      /* encodes started on this frame */
+    int     hpel_cnt_planes;
+    int     hpel_cnt_padx;
 } x264_frame_t;
 
 /* synchronized frame list */
@@ -309,6 +319,29 @@ void          x264_hpel_build( x264_t *h, int *ok, int y0, int y1 );
 /* x264_hpel_ensure of rows [y0, y1] of the ref of win, an entry of h->mb.hpel_win */
 #define x264_hpel_ensure_win x264_template(hpel_ensure_win)
 void          x264_hpel_ensure_win( x264_t *h, int *win, int y0, int y1 );
+#define x264_hpel_check_earliest x264_template(hpel_check_earliest)
+int           x264_hpel_check_earliest( void );
+#define x264_hpel_build_earliest x264_template(hpel_build_earliest)
+void          x264_hpel_build_earliest( x264_t *h, x264_frame_t *frame, int lines );
+#define x264_hpel_poison_fld x264_template(hpel_poison_fld)
+void          x264_hpel_poison_fld( x264_t *h, x264_frame_t *frame );
+#define x264_hpel_cnt_mark x264_template(hpel_cnt_mark)
+void          x264_hpel_cnt_mark( pixel *src, int w, int h );
+#define x264_hpel_cnt_print x264_template(hpel_cnt_print)
+void          x264_hpel_cnt_print( void );
+#define HPEL_CNT( src, w, h ) x264_hpel_cnt_mark( src, w, h )
+#define x264_hpel_strict_mark x264_template(hpel_strict_mark)
+void          x264_hpel_strict_mark( x264_frame_t *f, int set, int u0, int u1 );
+#define x264_hpel_strict_mark_rows x264_template(hpel_strict_mark_rows)
+void          x264_hpel_strict_mark_rows( x264_t *h, int *ok, int y0, int y1 );
+#define x264_hpel_strict_on x264_template(hpel_strict_on)
+int           x264_hpel_strict_on( void );
+#define x264_hpel_strict_reset x264_template(hpel_strict_reset)
+void          x264_hpel_strict_reset( x264_t *h );
+#define x264_hpel_strict_slice x264_template(hpel_strict_slice)
+void          x264_hpel_strict_slice( x264_t *h );
+#define x264_hpel_strict_win_pass x264_template(hpel_strict_win_pass)
+void          x264_hpel_strict_win_pass( x264_t *h, int *win, int y0, int y1 );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

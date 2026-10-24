@@ -113,10 +113,13 @@ static ALWAYS_INLINE int x264_me_hpel_y( x264_t *h, x264_me_t *m )
  * of height rows at every qpel mv with vertical component in [mvy0, mvy1] */
 static ALWAYS_INLINE void x264_me_hpel_ensure_span( x264_t *h, x264_me_t *m, int mvy0, int mvy1, int height )
 {
-    if( HPEL_LAZY && m->hpel_win && (mvy0 < m->hpel_win[0] || mvy1 > m->hpel_win[1]) )
+    if( HPEL_LAZY && m->hpel_win )
     {
         int y = x264_me_hpel_y( h, m );
-        x264_hpel_ensure_win( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
+        if( mvy0 < m->hpel_win[0] || mvy1 > m->hpel_win[1] )
+            x264_hpel_ensure_win( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
+        else
+            x264_hpel_strict_win_pass( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
     }
 }
 /* the same at one qpel mv; a fullpel mv reads no hpel */
