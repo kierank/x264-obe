@@ -2654,7 +2654,7 @@ cglobal add16x16_idct, 2,3,15
 %define IR_SIZE  704
 
 ; e4r layout pairs: the arm gates the skip with x264_e4r_a6_arm (encoder/api.c), the twin with 0
-%define E4R_A6_TWIN 0
+%define E4R_A6_TWIN 1
 %if E4R_A6_TWIN
 %define E4R_A6_GATE 0
 %else
