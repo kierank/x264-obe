@@ -500,6 +500,22 @@ void x264_trellis_wrap_ymm_init( x264_quant_function_t *pf )
 }
 #endif
 
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+/* trellis_wrap avx512 layout triple: TRW512_ARM 0 the zmm arm, 1 the ymm arm, 2 the twin (the
+ * avx2 wrapper of 4ea8b2f3). The gates are the addresses of x264_trw512_on (api.c) and of the
+ * never defined x264_trw512_off0/1, which link as 0. The code is the same in all three. */
+#define TRW512_ARM 0
+extern const char x264_trw512_on __attribute__((weak, visibility("hidden")));
+extern const char x264_trw512_off0 __attribute__((weak, visibility("hidden")));
+extern const char x264_trw512_off1 __attribute__((weak, visibility("hidden")));
+#define TRW512_INIT do {\
+    if( (TRW512_ARM == 0 ? &x264_trw512_on : &x264_trw512_off0) != NULL )\
+        INIT_TRELLIS_WRAP( avx512 );\
+    else if( (TRW512_ARM == 1 ? &x264_trw512_on : &x264_trw512_off1) != NULL )\
+        x264_trellis_wrap_ymm_init( pf );\
+} while( 0 )
+#endif
+
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
 {
     pf->trellis_wrap_4x4x4 = NULL;
@@ -651,7 +667,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     }
     if( cpu&X264_CPU_AVX512 )
     {
-        INIT_TRELLIS_WRAP( avx512 );
+        TRW512_INIT;
         pf->dequant_4x4 = x264_dequant_4x4_avx512;
         pf->dequant_8x8 = x264_dequant_8x8_avx512;
         pf->decimate_score15 = x264_decimate_score15_avx512;
@@ -857,7 +873,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     }
     if( cpu&X264_CPU_AVX512 )
     {
-        INIT_TRELLIS_WRAP( avx512 );
+        TRW512_INIT;
         if( h->param.i_cqm_preset == X264_CQM_FLAT )
             pf->dequant_8x8 = x264_dequant_8x8_flat16_avx512;
         else
