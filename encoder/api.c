@@ -31,6 +31,10 @@
  ****************************************************************************/
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
+/* rdhdr counters, see encoder/macroblock.h: 0-9 classes, 10 mvd, 11 ref_idx, 12 mb_qp_delta, 13 MBs,
+ * 14-17 mvd components |mvd| 0, 1-3, 4-8, >= 9, 18 ref_idx >= 2 */
+uint64_t x264_rdhdr_cnt[19];
+
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
 void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
@@ -142,6 +146,19 @@ void x264_encoder_close( x264_t *h )
 
     api->encoder_close( api->x264 );
     free( api );
+    uint64_t cnt[19];
+    for( int i = 0; i < 19; i++ )
+        cnt[i] = __atomic_load_n( &x264_rdhdr_cnt[i], __ATOMIC_RELAXED );
+    uint64_t mb = cnt[13] ? cnt[13] : 1;
+    static const char *name[10] = { "P16x16", "P16x8", "P8x16", "Bdirect", "B16x16", "B16x8/8x16", "I4x4", "I8x8", "I16x16", "C" };
+    fprintf( stderr, "x264 [rdhdr]: %"PRIu64" MBs; RD syntax calls per MB:", cnt[13] );
+    for( int i = 0; i < 10; i++ )
+        fprintf( stderr, " %s %.3f", name[i], (double)cnt[i] / mb );
+    fprintf( stderr, "; mvd %.3f ref_idx %.3f nonzero mb_qp_delta %.3f\n", (double)cnt[10] / mb,
+             (double)cnt[11] / mb, (double)cnt[12] / mb );
+    uint64_t cpn = cnt[14] + cnt[15] + cnt[16] + cnt[17] ? cnt[14] + cnt[15] + cnt[16] + cnt[17] : 1;
+    fprintf( stderr, "x264 [rdhdr]: mvd components |mvd| 0 %.1f%% 1-3 %.1f%% 4-8 %.1f%% >=9 %.1f%%; ref_idx >= 2 %.3f per MB\n",
+             100.0 * cnt[14] / cpn, 100.0 * cnt[15] / cpn, 100.0 * cnt[16] / cpn, 100.0 * cnt[17] / cpn, (double)cnt[18] / mb );
 }
 
 void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )

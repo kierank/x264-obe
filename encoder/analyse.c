@@ -3340,6 +3340,7 @@ void x264_macroblock_analyse( x264_t *h )
     x264_mb_analysis_t analysis;
     int i_cost = COST_MAX;
 
+    __atomic_fetch_add( &x264_rdhdr_cnt[RDHDR_CNT_MB], 1, __ATOMIC_RELAXED );
     h->mb.i_qp = x264_ratecontrol_mb_qp( h );
     /* If the QP of this MB is within 1 of the previous MB, code the same QP as the previous MB,
      * to lower the bit cost of the qp_delta.  Don't do this if QPRD is enabled. */

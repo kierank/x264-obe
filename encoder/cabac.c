@@ -1125,8 +1125,53 @@ static ALWAYS_INLINE int x264_cabac_mb_syntax_asm( x264_t *h, x264_cabac_t *cb, 
 }
 #endif
 
+static NOINLINE void x264_cabac_mb_syntax_count( x264_t *h, int i_mb_type, int chroma )
+{
+    int i_partition = h->mb.i_partition;
+    int k = i_mb_type == P_L0 ? (i_partition == D_16x16 ? 0 : i_partition == D_16x8 ? 1 : 2)
+          : i_mb_type == B_DIRECT ? 3
+          : i_mb_type >= B_L0_L0 && i_mb_type <= B_BI_BI ? 4 + (i_partition != D_16x16)
+          : i_mb_type == I_4x4 ? 6 : i_mb_type == I_8x8 ? 7 : i_mb_type == I_16x16 ? 8 : 9;
+    __atomic_fetch_add( &x264_rdhdr_cnt[k], 1, __ATOMIC_RELAXED );
+    if( k == 0 || k == 1 || k == 2 || k == 4 || k == 5 )
+    {
+        const uint8_t (*b_list)[2] = x264_mb_type_list_table[i_mb_type];
+        int n2 = i_partition != D_16x16;
+        int mvd = b_list[0][0] + (b_list[0][1] & n2) + b_list[1][0] + (b_list[1][1] & n2);
+        int ref = (h->mb.pic.i_fref[0] > 1) * (b_list[0][0] + (b_list[0][1] & n2))
+                + (h->mb.pic.i_fref[1] > 1) * (b_list[1][0] + (b_list[1][1] & n2));
+        __atomic_fetch_add( &x264_rdhdr_cnt[RDHDR_CNT_MVD], mvd, __ATOMIC_RELAXED );
+        __atomic_fetch_add( &x264_rdhdr_cnt[RDHDR_CNT_REF], ref, __ATOMIC_RELAXED );
+        /* |mvd| of each component: 0, 1-3, 4-8, >= 9 */
+        for( int i_list = 0; i_list < 2; i_list++ )
+            for( int p = 0; p < 1 + n2; p++ )
+            {
+                if( !b_list[i_list][p] )
+                    continue;
+                int b_8x16 = i_partition == D_8x16;
+                int idx = p ? 8 >> b_8x16 : 0;
+                ALIGNED_4( int16_t mvp[2] );
+                int i_ref = h->mb.cache.ref[i_list][x264_scan8[0]];
+                if( i_partition == D_16x16 && i_ref >= 0 && (h->mb.mvp16_valid[i_list] >> i_ref & 1) )
+                    CP32( mvp, h->mb.mvp16[i_list][i_ref] );
+                else
+                    x264_mb_predict_mv( h, i_list, idx, i_partition == D_16x16 ? 4 : 4 >> b_8x16, mvp );
+                for( int c = 0; c < 2; c++ )
+                {
+                    int a = abs( h->mb.cache.mv[i_list][x264_scan8[idx]][c] - mvp[c] );
+                    __atomic_fetch_add( &x264_rdhdr_cnt[14 + (a > 0) + (a > 3) + (a > 8)], 1, __ATOMIC_RELAXED );
+                }
+                if( h->mb.cache.ref[i_list][x264_scan8[idx]] >= 2 )
+                    __atomic_fetch_add( &x264_rdhdr_cnt[18], 1, __ATOMIC_RELAXED );
+            }
+    }
+    if( (h->mb.i_cbp_luma || (chroma && h->mb.i_cbp_chroma) || i_mb_type == I_16x16) && h->mb.i_qp != h->mb.i_last_qp )
+        __atomic_fetch_add( &x264_rdhdr_cnt[RDHDR_CNT_DQP], 1, __ATOMIC_RELAXED );
+}
+
 static ALWAYS_INLINE void x264_cabac_mb_syntax( x264_t *h, x264_cabac_t *cb, int i_mb_type, int chroma )
 {
+    x264_cabac_mb_syntax_count( h, i_mb_type, chroma );
 #if ARCH_X86_64 && HAVE_MMX
     if( chroma && h->bsf.cabac_mb_header_rd && x264_cabac_mb_syntax_asm( h, cb, i_mb_type ) )
         return;

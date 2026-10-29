@@ -32,6 +32,14 @@
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
+/* rdhdr counters (api.c): RD syntax calls by class, then mvd, ref_idx, nonzero mb_qp_delta,
+ * MBs, mvd components |mvd| 0, 1-3, 4-8, >= 9, ref_idx >= 2 */
+#define RDHDR_CNT_MVD 10
+#define RDHDR_CNT_REF 11
+#define RDHDR_CNT_DQP 12
+#define RDHDR_CNT_MB  13
+extern uint64_t x264_rdhdr_cnt[19];
+
 /* 0: no skip, 1: skip, 2: P skip with the luma prediction equal to fenc */
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );
