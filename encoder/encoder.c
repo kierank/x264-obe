@@ -4663,6 +4663,13 @@ void    x264_encoder_close  ( x264_t *h )
 
     x264_lookahead_delete( h );
 
+    /* TEST ONLY: qpel loop counters; a high bit depth encode's lowres ME is 8-bit */
+    x264_me_qpel_cnt_print();
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+    void x264_8_me_qpel_cnt_print( void );
+    x264_8_me_qpel_cnt_print();
+#endif
+
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );
     x264_opencl_function_t *ocl = h->opencl.ocl;

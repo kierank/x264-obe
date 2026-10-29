@@ -1135,8 +1135,37 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     } \
 }
 
+/* TEST ONLY: qpel loop counters, printed at encoder close */
+enum
+{
+    QC_CALLS, QC_ZERO, QC_CHROMA, QC_C, QC_ASM, QC_ASM_END = QC_ASM + 4, QC_REFINE_QPEL,
+    QC_ITER, QC_CAND4, QC_CAND3, QC_EXIT_RANGE, QC_EXIT_NOBETTER, QC_EXIT_ITERS, QC_MISMATCH, QC_N
+};
+static uint64_t qpel_cnt[QC_N];
+#define QCNT( k ) __atomic_fetch_add( &qpel_cnt[k], 1, __ATOMIC_RELAXED )
+
+void x264_me_qpel_cnt_print( void )
+{
+    uint64_t c[QC_N];
+    for( int k = 0; k < QC_N; k++ )
+        c[k] = __atomic_load_n( &qpel_cnt[k], __ATOMIC_RELAXED );
+    if( !c[QC_CALLS] )
+        return;
+    uint64_t asm_calls = c[QC_ASM] + c[QC_ASM+1] + c[QC_ASM+2] + c[QC_ASM+3];
+    fprintf( stderr, "qpel_cnt %d-bit: refine_subpel %"PRIu64": qpel iters 0 %"PRIu64", chroma ME %"PRIu64", C %"PRIu64
+             ", asm %"PRIu64" (16x16 %"PRIu64" 16x8 %"PRIu64" 8x16 %"PRIu64" 8x8 %"PRIu64"), refine_qpel %"PRIu64"\n",
+             BIT_DEPTH, c[QC_CALLS], c[QC_ZERO], c[QC_CHROMA], c[QC_C], asm_calls,
+             c[QC_ASM], c[QC_ASM+1], c[QC_ASM+2], c[QC_ASM+3], c[QC_REFINE_QPEL] );
+    fprintf( stderr, "qpel_cnt %d-bit: asm calls: iterations %"PRIu64" (%.3f a call), satd %"PRIu64" (%.3f a call), "
+             "exits: range %"PRIu64" no better %"PRIu64" iterations %"PRIu64", mismatches %"PRIu64"\n",
+             BIT_DEPTH, c[QC_ITER], asm_calls ? (double)c[QC_ITER] / asm_calls : 0.,
+             4*c[QC_CAND4] + 3*c[QC_CAND3], asm_calls ? (double)(4*c[QC_CAND4] + 3*c[QC_CAND3]) / asm_calls : 0.,
+             c[QC_EXIT_RANGE], c[QC_EXIT_NOBETTER], c[QC_EXIT_ITERS], c[QC_MISMATCH] );
+}
+
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
+    QCNT( QC_CALLS );
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
     const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
@@ -1276,8 +1305,12 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
 #else
         x264_bi_fenc_t *qpel_fenc = fenc_pre;
 #endif
+        QCNT( !qpel_iters ? QC_ZERO : b_chroma_me ? QC_CHROMA : qpel_search && qpel_fenc ? QC_ASM + i_pixel : QC_C );
+        if( qpel_iters && b_refine_qpel )
+            QCNT( QC_REFINE_QPEL );
         if( !b_chroma_me && qpel_iters && qpel_search && qpel_fenc )
         {
+            int cbmx = bmx, cbmy = bmy, cbcost = bcost;
             uint64_t range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
                            | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
             uint64_t res = qpel_search( qpel_fenc, m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
@@ -1285,6 +1318,44 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             bcost = (uint32_t)res;
             bmx = (int16_t)(res >> 32);
             bmy = (int16_t)(res >> 48);
+            /* TEST ONLY: the C loop beside it, counted and compared */
+            int cbdir = -1, i;
+            for( i = qpel_iters; i > 0; i-- )
+            {
+                if( cbmy <= h->mb.mv_min_spel[1] || cbmy >= h->mb.mv_max_spel[1] || cbmx <= h->mb.mv_min_spel[0] || cbmx >= h->mb.mv_max_spel[0] )
+                {
+                    QCNT( QC_EXIT_RANGE );
+                    break;
+                }
+                QCNT( QC_ITER );
+                odir = cbdir;
+                int omx = cbmx, omy = cbmy;
+                uint64_t bkey = (uint64_t)cbcost << 4;
+                QCNT( b_refine_qpel || odir < 0 ? QC_CAND4 : QC_CAND3 );
+                COST_MV_SATD_KEY( omx, omy - 1, 0 );
+                COST_MV_SATD_KEY( omx, omy + 1, 1 );
+                COST_MV_SATD_KEY( omx - 1, omy, 2 );
+                COST_MV_SATD_KEY( omx + 1, omy, 3 );
+                int bidx = bkey & 15;
+                if( !bidx )
+                {
+                    QCNT( QC_EXIT_NOBETTER );
+                    break;
+                }
+                cbcost = bkey >> 4;
+                cbdir = bidx - 1;
+                cbmx = omx + qpel_dir_dx[bidx];
+                cbmy = omy + qpel_dir_dy[bidx];
+            }
+            if( !i )
+                QCNT( QC_EXIT_ITERS );
+            if( cbcost != bcost || cbmx != bmx || cbmy != bmy )
+            {
+                QCNT( QC_MISMATCH );
+                fprintf( stderr, "qpel_search mismatch: i_pixel %d iters %d refine %d: C %d (%d,%d) asm %d (%d,%d)\n",
+                         i_pixel, qpel_iters, b_refine_qpel, cbcost, cbmx, cbmy, bcost, bmx, bmy );
+                abort();
+            }
         }
         else if( !b_chroma_me )
         {
