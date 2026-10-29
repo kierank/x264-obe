@@ -173,6 +173,13 @@ struct x264_ratecontrol_t
      * with release and read first with acquire. */
     float frame_size_ceil;
     int rows_done;
+    /* Frame threads: the frame's place in coded order, stored before vbv_settled is
+     * cleared; vbv_settled is set once its size is in buffer_fill_final. Read settled
+     * first: a race then counts a frame twice, never not at all. */
+    int64_t vbv_seq;
+    int vbv_settled;
+    int64_t vbv_seq_next;       /* thread 0's: main thread only */
+    int vbv_overhead;
     double frame_size_maximum;  /* Maximum frame size due to MinCR */
     double frame_size_planned;
     double slice_size_planned;
@@ -238,7 +245,15 @@ static int parse_zones( x264_t *h );
 static int init_pass2(x264_t *);
 static float rate_estimate_qscale( x264_t *h );
 static int update_vbv( x264_t *h, int bits );
+#define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
+#define RC_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
+#define RC_ADD(p,v) __atomic_fetch_add( (p), (v), __ATOMIC_ACQ_REL )
+/* another thread's row state: stale is fine, torn is not */
+#define RC_LOADF(p) ({ float rc_f_; __atomic_load( (p), &rc_f_, __ATOMIC_RELAXED ); rc_f_; })
+#define RC_STOREF(p,v) do { float rc_f_ = (v); __atomic_store( (p), &rc_f_, __ATOMIC_RELAXED ); } while( 0 )
+
 static void update_vbv_plan( x264_t *h, int overhead );
+static void refresh_vbv_fill( x264_t *h );
 static float predict_size( predictor_t *p, float q, float var );
 static void update_predictor( predictor_t *p, float q, float var, float bits );
 static void update_row_predictor( predictor_t *p, float q, float var, float bits );
@@ -1312,6 +1327,7 @@ parse_error:
             h->thread[i]->mb.b_variable_qp = h->mb.b_variable_qp;
             h->thread[i]->mb.ip_offset = h->mb.ip_offset;
         }
+        rc[i].vbv_settled = 1;
     }
 
     return 0;
@@ -1548,6 +1564,9 @@ void x264_ratecontrol_start( x264_t *h, int i_force_qp, int overhead )
         rc->buffer_rate = h->fenc->i_cpb_duration * rc->vbv_max_rate * h->sps->vui.i_num_units_in_tick / h->sps->vui.i_time_scale;
         rc->rows_done = 0;
         rc->b_vbv_err_sample = 0;
+        RC_STORE( &rc->vbv_seq, h->thread[0]->rc->vbv_seq_next++ );
+        RC_STORE( &rc->vbv_settled, 0 );
+        rc->vbv_overhead = overhead;
         update_vbv_plan( h, overhead );
 
         const x264_level_t *l = x264_levels;
@@ -1831,13 +1850,6 @@ void x264_ratecontrol_slices_start( x264_t *h )
     rc->room_reencodes = 0;
 }
 
-#define RC_LOAD(p) __atomic_load_n( (p), __ATOMIC_ACQUIRE )
-#define RC_STORE(p,v) __atomic_store_n( (p), (v), __ATOMIC_RELEASE )
-#define RC_ADD(p,v) __atomic_fetch_add( (p), (v), __ATOMIC_ACQ_REL )
-/* another thread's row state: stale is fine, torn is not */
-#define RC_LOADF(p) ({ float rc_f_; __atomic_load( (p), &rc_f_, __ATOMIC_RELAXED ); rc_f_; })
-#define RC_STOREF(p,v) do { float rc_f_ = (v); __atomic_store( (p), &rc_f_, __ATOMIC_RELAXED ); } while( 0 )
-
 /* Highest next-row QP of the other thread slices still running. */
 static float other_slices_max_qp( x264_t *h )
 {
@@ -2068,6 +2080,8 @@ int x264_ratecontrol_mb( x264_t *h, int bits )
         rc->emerg_next = 0;
         rc->emerg_scale = x264_clip3f( rc->emerg_bits / rc->emerg_pred, 1.f/64, 64.f );
     }
+    if( h->i_thread_frames > 1 )
+        refresh_vbv_fill( h );
     float max_frame_error = x264_clip3f( 1.0 / h->mb.i_mb_height, 0.05, 0.25 );
     float max_frame_size = rc->frame_size_maximum - rc->frame_size_maximum * max_frame_error;
     max_frame_size = X264_MIN( max_frame_size, rc->buffer_fill - rc->buffer_rate * max_frame_error );
@@ -2512,6 +2526,7 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
     }
 
     *filler = update_vbv( h, bits );
+    RC_STORE( &rc->vbv_settled, 1 );
     rc->filler_bits_sum += *filler * 8;
 
     if( h->param.i_nal_hrd )
@@ -2858,6 +2873,46 @@ static void update_vbv_plan( x264_t *h, int overhead )
     }
     rcc->buffer_fill = X264_MIN( rcc->buffer_fill, rcc->buffer_size );
     rcc->buffer_fill -= overhead;
+}
+
+/* Frame threads: the fill this frame was planned at, again from the older frames
+ * still in flight as they code their rows. A row QP lowered on the planned fill
+ * spends room an older frame's overshoot has taken since: a P frame several times
+ * its plan, in content whose cost the lookahead doesn't see, underflowed the frames
+ * planned while it coded. Only ever lowered, so frames under their plan change nothing. */
+static void refresh_vbv_fill( x264_t *h )
+{
+    x264_ratecontrol_t *rcc = h->rc;
+    x264_t *older[X264_THREAD_MAX];
+    int64_t seqs[X264_THREAD_MAX];
+    int n = 0;
+    for( int i = 0; i < h->i_thread_frames; i++ )
+    {
+        x264_t *t = h->thread[i];
+        if( t == h || RC_LOAD( &t->rc->vbv_settled ) )
+            continue;
+        int64_t seq = RC_LOAD( &t->rc->vbv_seq );
+        if( seq >= rcc->vbv_seq )
+            continue;
+        int k = n++;
+        for( ; k > 0 && seqs[k-1] > seq; k-- )
+        {
+            seqs[k] = seqs[k-1];
+            older[k] = older[k-1];
+        }
+        seqs[k] = seq;
+        older[k] = t;
+    }
+    double fill = (double)RC_LOAD( &h->thread[0]->rc->buffer_fill_final ) / h->sps->vui.i_time_scale;
+    fill = X264_MIN( fill, rcc->buffer_size );
+    for( int i = 0; i < n; i++ )
+    {
+        fill -= inflight_bits( older[i] );
+        fill = X264_MAX( fill, 0 );
+        fill += older[i]->rc->buffer_rate;
+        fill = X264_MIN( fill, rcc->buffer_size );
+    }
+    rcc->buffer_fill = X264_MIN( rcc->buffer_fill, fill - rcc->vbv_overhead );
 }
 
 // clip qscale to between lmin and lmax
