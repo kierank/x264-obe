@@ -40,6 +40,13 @@ uint16_t x264_cabac_size_unary[15][128];
 /* Consist of 5 1s and a bypass sign bit */
 static uint8_t cabac_transition_5ones[128];
 static uint16_t cabac_size_5ones[128];
+/* Rows of one context for cabac_mb_header_rd: 0 nothing coded, 1 a 0, 2 a 1, 3 the mvd
+ * sign only, 4-8 the mvd prefix bins from ctx 6 on and the sign of |mvd| 4-8, 9 the same
+ * of |mvd| >= 9, 10-17 the 3 bins of rem_intra4x4_pred_mode 0-7 */
+#define x264_cabac_rdhdr_trans x264_template(cabac_rdhdr_trans)
+ALIGNED_64( uint8_t x264_cabac_rdhdr_trans[18][128] );
+#define x264_cabac_rdhdr_size x264_template(cabac_rdhdr_size)
+ALIGNED_64( uint16_t x264_cabac_rdhdr_size[18][128] );
 
 /* CAVLC: produces exactly the same bit count as a normal encode */
 /* this probably still leaves some unnecessary computations */
@@ -69,6 +76,20 @@ static uint16_t cabac_size_5ones[128];
 #undef  x264_macroblock_write_cabac
 #define x264_macroblock_write_cabac  static x264_macroblock_size_cabac
 #include "cabac.c"
+
+/* checkasm: the RD bins of an MB before its residual, C and dispatch; cold, off the encoder's code */
+#define x264_cabac_mb_syntax_rd_c x264_template(cabac_mb_syntax_rd_c)
+void x264_cabac_mb_syntax_rd_c( x264_t *h, x264_cabac_t *cb ) __attribute__((cold));
+void x264_cabac_mb_syntax_rd_c( x264_t *h, x264_cabac_t *cb )
+{
+    x264_cabac_mb_syntax_c( h, cb, h->mb.i_type, 1 );
+}
+#define x264_cabac_mb_syntax_rd x264_template(cabac_mb_syntax_rd)
+void x264_cabac_mb_syntax_rd( x264_t *h, x264_cabac_t *cb ) __attribute__((cold));
+void x264_cabac_mb_syntax_rd( x264_t *h, x264_cabac_t *cb )
+{
+    x264_cabac_mb_syntax( h, cb, h->mb.i_type, 1 );
+}
 
 #define COPY_CABAC h->mc.memcpy_aligned( &cabac_tmp.f8_bits_encoded, &h->cabac.f8_bits_encoded, \
         sizeof(int) + (CHROMA444 ? 1024+12 : 460) )
@@ -435,6 +456,36 @@ void x264_rdo_init( void )
 
         cabac_size_5ones[i_ctx] = f8_bits;
         cabac_transition_5ones[i_ctx] = ctx;
+    }
+    for( int i_ctx = 0; i_ctx < 128; i_ctx++ )
+    {
+        uint8_t ctx;
+        x264_cabac_rdhdr_trans[0][i_ctx] = i_ctx;
+        x264_cabac_rdhdr_size[0][i_ctx] = 0;
+        for( int b = 0; b < 2; b++ )
+        {
+            ctx = i_ctx;
+            x264_cabac_rdhdr_size[1+b][i_ctx] = x264_cabac_size_decision2( &ctx, b );
+            x264_cabac_rdhdr_trans[1+b][i_ctx] = ctx;
+        }
+        x264_cabac_rdhdr_trans[3][i_ctx] = i_ctx;
+        x264_cabac_rdhdr_size[3][i_ctx] = 1 << CABAC_SIZE_BITS;
+        for( int i_abs = 4; i_abs < 9; i_abs++ )
+        {
+            x264_cabac_rdhdr_trans[i_abs][i_ctx] = x264_cabac_transition_unary[i_abs-3][i_ctx];
+            x264_cabac_rdhdr_size[i_abs][i_ctx] = x264_cabac_size_unary[i_abs-3][i_ctx];
+        }
+        x264_cabac_rdhdr_trans[9][i_ctx] = cabac_transition_5ones[i_ctx];
+        x264_cabac_rdhdr_size[9][i_ctx] = cabac_size_5ones[i_ctx];
+        for( int rem = 0; rem < 8; rem++ )
+        {
+            int f8_bits = 0;
+            ctx = i_ctx;
+            for( int i = 0; i < 3; i++ )
+                f8_bits += x264_cabac_size_decision2( &ctx, (rem >> i) & 1 );
+            x264_cabac_rdhdr_trans[10+rem][i_ctx] = ctx;
+            x264_cabac_rdhdr_size[10+rem][i_ctx] = f8_bits;
+        }
     }
 }
 
