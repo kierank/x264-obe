@@ -390,6 +390,55 @@ ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 ; ssd_psy_mb: ssd, ssd, hadamard_ac >> 1, >> 2
 ssd_psy_shift: dd 0, 0, 1, 2
 
+; satd_qpel_search avx512, by the incumbent's 4*(bmy&3) + (bmx&3): the TP index
+; and the column (-1 to 1) of src1 of dirs 0-3, then src2 (see QPEL4_SEARCH)
+%macro QPEL4_SRC 16
+    db %1, %2, %3, %4, %5, %6, %7, %8
+    db %9*SIZEOF_PIXEL, %10*SIZEOF_PIXEL, %11*SIZEOF_PIXEL, %12*SIZEOF_PIXEL
+    db %13*SIZEOF_PIXEL, %14*SIZEOF_PIXEL, %15*SIZEOF_PIXEL, %16*SIZEOF_PIXEL
+%endmacro
+qpel4_src:
+    QPEL4_SRC 2, 2, 3, 3, 0, 4, 2, 2,  0, 0,-1, 0, 0, 0, 0, 0
+    QPEL4_SRC 3, 3, 2, 3, 0, 4, 2, 3,  0, 0, 0, 0, 0, 0, 0, 0
+    QPEL4_SRC 3, 3, 3, 3, 1, 5, 2, 2,  0, 0, 0, 0, 0, 0, 0, 1
+    QPEL4_SRC 3, 3, 3, 2, 0, 4, 3, 2,  0, 0, 0, 1, 1, 1, 0, 1
+    QPEL4_SRC 2, 4, 3, 3, 2, 4, 4, 4,  0, 0,-1, 0, 0, 0, 0, 0
+    QPEL4_SRC 3, 5, 2, 3, 2, 4, 4, 5,  0, 0, 0, 0, 0, 0, 0, 0
+    QPEL4_SRC 3, 5, 3, 3, 3, 5, 4, 4,  0, 0, 0, 0, 0, 0, 0, 1
+    QPEL4_SRC 3, 5, 3, 2, 2, 4, 5, 4,  0, 0, 0, 1, 1, 1, 0, 1
+    QPEL4_SRC 2, 6, 5, 5, 4, 4, 4, 4,  0, 0,-1, 0, 0, 0, 0, 0
+    QPEL4_SRC 3, 7, 4, 5, 4, 4, 4, 5,  0, 0, 0, 0, 0, 0, 0, 0
+    QPEL4_SRC 3, 7, 5, 5, 5, 5, 4, 4,  0, 0, 0, 0, 0, 0, 0, 1
+    QPEL4_SRC 3, 7, 5, 4, 4, 4, 5, 4,  0, 0, 0, 1, 1, 1, 0, 1
+    QPEL4_SRC 4, 6, 7, 7, 4, 6, 4, 4,  0, 0,-1, 0, 0, 0, 0, 0
+    QPEL4_SRC 5, 7, 6, 7, 4, 6, 4, 5,  0, 0, 0, 0, 0, 0, 0, 0
+    QPEL4_SRC 5, 7, 7, 7, 5, 7, 4, 4,  0, 0, 0, 0, 0, 0, 0, 1
+    QPEL4_SRC 5, 7, 7, 6, 4, 6, 5, 4,  0, 0, 0, 1, 1, 1, 0, 1
+; bmx, bmy, ~bmx, ~bmy of a step by its code (dirs 0-3: 1, 3, 4, 12)
+qpel4_step: times 4 dw 0
+            dw  0,-1, 0, 1
+            times 4 dw 0
+            dw  0, 1, 0,-1
+            dw -1, 0, 1, 0
+            times 7*4 dw 0
+            dw  1, 0,-1, 0
+            times 3*4 dw 0
+qpel4_code: dd 1, 3, 4, 12
+qpel4_back: db 3, 1, 12, 4
+            times 12 db 0xff
+; mv costs: cost_mvx[bmx-1..bmx+1], cost_mvy[bmy-1..bmy+1] (word 3 is 0) to the dword
+; costs of dirs 0-3
+qpel4_cperm: dw 1, 3, 1, 3, 0, 3, 2, 3
+             dw 0, 3, 2, 3, 1, 3, 1, 3
+; range ^ this: min_x, min_y, ~max_x, ~max_y, then words below any mv
+qpel4_rnot: dq 0xffffffff00000000, 0x8000800080008000
+qpel4_kmask: dq ~15
+; dword 0 of each candidate's slot, 16 or 32 byte slots
+qpel4_sidx: db 0, 4, 8, 12
+            times 12 db 0
+            db 0, 8, 16, 24
+            times 12 db 0
+
 SECTION .text
 
 cextern pb_0
@@ -12450,3 +12499,400 @@ cglobal predictor_clip, 5,6,4
 INIT_ZMM avx512
 PREDICTOR_CLIP 0
 PREDICTOR_CLIP 1
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; uint64_t pixel_satd_qpel_search_WxH( fenc, pixel **fref, intptr_t stride, uint16_t *cost_mvx,
+;                                      uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
+; satd_qpel_search with the 4 candidates of a step at once, a candidate a slot of
+; 16 (8 wide) or 32 bytes (16 wide) holding satd_avg2_pre's (8-bit) or satd_avg2's
+; rows, fenc broadcast to every slot. The 8 sources (src1 of dirs 0-3, then src2)
+; are by the incumbent's fraction q = 4*(bmy&3) + (bmx&3) (pext): qpel4_src[q] has
+; an index into TP = fref[2,3] - stride, fref[0-3], fref[0,1] + stride, the planes
+; and rows get_ref takes around an mv, and a column of -1 to 1, so a source is
+; TP[i] + (bmy>>2)*stride + (bmx>>2) + c (src2 = src1 where get_ref takes one plane).
+; The keys are the scalar's, the way back's lane ~0 unless noskip, the min by
+; vpminuq with the incumbent's; the range is one vpcmpw of bmx, bmy, ~bmx, ~bmy
+; against min_x, min_y, ~max_x, ~max_y (~ keeps the signed order).
+; m31 (and m22 in ymm) TP, xm30 the mv as above, xm29 range, xm28 bkey, m27 hmul,
+; xm26/xm25 cost permutes, m24 the sum gather, xm23 mv costs; k1-k3 the slots,
+; k4 0x5555 (8-bit), k6 7; m0-m15 rows, m16/m17 tmp, m18-m21 sums.
+;-----------------------------------------------------------------------------
+; a = the maxes of the word pairs of a and b (as SATD_ICL_HMAX), k4 = 0x5555
+%macro QPEL4_HMAX 3 ; a, b, tmp
+    vpblendmw  m%3 {k4}, m%1, m%2
+%if cpuflag(avx512icl)
+    vpshldd    m%2, m%1, m%2, 16
+%else
+    vpblendmw  m%2 {k4}, m%2, m%1
+    vprold     m%2, m%2, 16
+%endif
+    pmaxsw     m%1, m%3, m%2
+%endmacro
+
+%macro QPEL4_UNIT 2 ; register set, first
+    %assign %%a 4*%1
+    %assign %%b 4*%1+1
+    %assign %%c 4*%1+2
+    %assign %%d 4*%1+3
+    %assign %%s 18+%1
+%if HIGH_BIT_DEPTH
+%if %2
+    SATD_8x4_SSE 1, %[%%a], %[%%b], %[%%c], %[%%d], 16, 17, %[%%s], swap
+%else
+    SATD_8x4_SSE 1, %[%%a], %[%%b], %[%%c], %[%%d], 16, 17, %[%%s]
+%endif
+%else
+    HADAMARD4_V %[%%a], %[%%b], %[%%c], %[%%d], 16
+    pabsw      m%[%%a], m%[%%a]
+    pabsw      m%[%%b], m%[%%b]
+    pabsw      m%[%%c], m%[%%c]
+    pabsw      m%[%%d], m%[%%d]
+    QPEL4_HMAX %[%%a], %[%%c], 16
+    QPEL4_HMAX %[%%b], %[%%d], 17
+%if %2
+    paddw      m%[%%s], m%[%%a], m%[%%b]
+%else
+    paddw      m%[%%a], m%[%%b]
+    paddw      m%[%%s], m%[%%a]
+%endif
+%endif
+%endmacro
+
+; a slot load of q4_w pixels (8-bit: the dup rows of satd_avg2_pre)
+%macro QPEL4_LD 2
+%if HIGH_BIT_DEPTH
+%if q4_w == 8
+    vbroadcasti32x4 %1, %2
+%elif mmsize == 64
+    vbroadcasti64x4 %1, %2
+%else
+    movu            %1, %2
+%endif
+%else
+%if q4_w == 8
+    vpbroadcastq    %1, %2
+%else
+    vbroadcasti32x4 %1, %2
+%endif
+%endif
+%endmacro
+
+%macro QPEL4_ROW 2 ; register set, row & 3: m17 = the row of fenc
+    %assign %%d 4*(%1)+(%2)
+%assign %%i 0
+%rep q4_cpr
+    %assign %%p 1+q4_cpr*%1+%%i
+%if %%i
+    QPEL4_LD m%[%%d] {k%[%%i]}, [r%[%%p] + r12]
+%else
+    QPEL4_LD m%[%%d], [r%[%%p] + r12]
+%endif
+%assign %%i %%i+1
+%endrep
+%assign %%i 0
+%rep q4_cpr
+    %assign %%p 5+q4_cpr*%1+%%i
+%if %%i
+    QPEL4_LD m16 {k%[%%i]}, [r%[%%p] + r12]
+%else
+    QPEL4_LD m16, [r%[%%p] + r12]
+%endif
+%assign %%i %%i+1
+%endrep
+%if HIGH_BIT_DEPTH
+    pavgw       m%[%%d], m16
+%else
+    pavgb       m%[%%d], m16
+    pmaddubsw   m%[%%d], m27
+%endif
+    psubw       m%[%%d], m17
+%endmacro
+
+%macro QPEL4_FENC 1 ; row
+%if HIGH_BIT_DEPTH
+    QPEL4_LD m17, [r0+%1*FENC_STRIDEB]
+%elif q4_w == 8
+    vbroadcasti32x4 m17, [r0+128*(%1>>3)+32*(%1&3)+16*((%1>>2)&1)]
+%elif mmsize == 64
+    vbroadcasti64x4 m17, [r0+32*%1]
+%else
+    mova        m17, [r0+32*%1]
+%endif
+%endmacro
+
+; xm18 = the satd of the 4 candidates
+%macro QPEL4_SUMS 0
+%assign %%c 0
+%rep q4_nr
+    %assign %%s 18+%%c
+    psrld       m16, m%[%%s], 16
+%if mmsize == 64
+    vpandd      m%[%%s], m%[%%s], [pd_ffff] {1to16}
+%else
+    vpandd      m%[%%s], m%[%%s], [pd_ffff] {1to8}
+%endif
+    paddd       m%[%%s], m16
+%if q4_lb == 32
+%if mmsize == 64
+    vshufi32x4  m16, m%[%%s], m%[%%s], q2301
+%else
+    vshufi32x4  m16, m%[%%s], m%[%%s], 1
+%endif
+    paddd       m%[%%s], m16
+%endif
+    pshufd      m16, m%[%%s], q1032
+    paddd       m%[%%s], m16
+    pshufd      m16, m%[%%s], q2301
+    paddd       m%[%%s], m16
+%assign %%c %%c+1
+%endrep
+%if q4_nr == 1
+    vpermd      m18, m24, m18
+%elif q4_nr == 2
+    vpermt2d    m18, m24, m19
+%else
+    punpckldq   m18, m19
+    punpckldq   m20, m21
+    punpcklqdq  m18, m20
+%endif
+%endmacro
+
+%macro QPEL4_SEARCH 2 ; w, h
+%assign q4_w %1
+%if %1 == 8
+    %assign q4_lb 16
+%else
+    %assign q4_lb 32
+%endif
+%assign q4_cpr mmsize/q4_lb
+%assign q4_nr 4/q4_cpr
+%if HIGH_BIT_DEPTH
+    %define QPEL4_FSTEP 8*FENC_STRIDEB
+%else
+    %define QPEL4_FSTEP 16*%1
+%endif
+%if mmsize == 64
+cglobal pixel_satd_qpel_search_%1x%2, 9,15,32,-64
+%else
+cglobal pixel_satd_qpel_search_%1x%2_ymm, 9,15,32,-64
+%endif
+    ; slot masks, by the elements of a slot load
+%if HIGH_BIT_DEPTH
+    %assign %%e 4
+%elif q4_w == 16
+    %assign %%e 8
+%else
+    %assign %%e 2
+%endif
+%assign %%i 1
+%rep q4_cpr-1
+    mov        r12d, ((1<<%%e)-1) << (%%e*%%i)
+    kmovw      k%[%%i], r12d
+%assign %%i %%i+1
+%endrep
+%if HIGH_BIT_DEPTH == 0
+%if mmsize == 64
+    mov        r12d, 0x55555555
+%else
+    mov        r12d, 0x5555
+%endif
+    kmovd       k4, r12d
+%endif
+    mov        r12d, 7
+    kmovw       k6, r12d
+    mov         r9, r3
+    mov        r10, r4
+    lea        r11, [r2*SIZEOF_PIXEL]
+    mov        r14d, r7d
+    and        r14d, 0xff10
+    vpbroadcastq m16, r11
+%if mmsize == 64
+    vbroadcasti64x4 m31, [r1]
+    vpermq      m31, m31, q1032
+    mov        r12d, 0x03
+    kmovw       k5, r12d
+    vpsubq      m31 {k5}, m31, m16
+    mov        r12d, 0xc0
+    kmovw       k5, r12d
+    vpaddq      m31 {k5}, m31, m16
+%else
+    vpermq      m31, [r1], q1032
+    mova        m22, m31
+    mov        r12d, 0x3
+    kmovw       k5, r12d
+    vpsubq      m31 {k5}, m31, m16
+    mov        r12d, 0xc
+    kmovw       k5, r12d
+    vpaddq      m22 {k5}, m22, m16
+%endif
+    vmovd      xm16, r5d
+    not         r5d
+    vmovd      xm17, r5d
+    punpckldq  xm30, xm16, xm17
+    vmovq      xm29, r8
+    pxor       xm29, [qpel4_rnot]
+    movsxd     r12, r6d
+    shl        r12, 4
+    vmovq      xm28, r12
+%if HIGH_BIT_DEPTH == 0
+%if q4_w == 8
+    vbroadcasti32x4 m27, [hmul_8p]
+%elif mmsize == 64
+    vbroadcasti64x4 m27, [hmul_16p]
+%else
+    mova        m27, [hmul_16p]
+%endif
+%endif
+    movu       xm26, [qpel4_cperm]
+    movu       xm25, [qpel4_cperm+16]
+%if q4_nr < 4
+%if mmsize == 64 && q4_nr == 2
+    vpmovzxbd   m24, [qpel4_sidx+16]
+%else
+    vpmovzxbd   m24, [qpel4_sidx]
+%endif
+%endif
+    test       r14d, 0xff00
+    jz .end
+.loop:
+    vpcmpw      k5, xm30, xm29, 2
+    kortestw    k5, k5
+    jnz .end
+    vmovd      r13d, xm30
+    mov        r12d, 0x30003
+    pext       r12d, r13d, r12d
+    movsx       r1, r13w
+    sar         r1, 2
+    sar        r13d, 18
+    movsxd     r13, r13d
+    imul       r13, r11
+    lea        r13, [r13+r1*SIZEOF_PIXEL]
+    shl        r12d, 4
+    lea         r1, [qpel4_src]
+    add         r1, r12
+    vpbroadcastq m18, r13
+%if mmsize == 64
+    vpmovzxbq   m16, [r1]
+    vpmovsxbq   m17, [r1+8]
+    vpermq      m16, m16, m31
+    paddq       m17, m18
+    paddq       m16, m17
+    mova      [rsp], m16
+%else
+    vpmovzxbq   m16, [r1]
+    vpmovzxbq   m17, [r1+4]
+    vpermi2q    m16, m31, m22
+    vpermi2q    m17, m31, m22
+    vpmovsxbq   m19, [r1+8]
+    vpmovsxbq   m20, [r1+12]
+    paddq       m19, m18
+    paddq       m20, m18
+    paddq       m16, m19
+    paddq       m17, m20
+    mova [rsp],    m16
+    mova [rsp+32], m17
+%endif
+    vmovd      r13d, xm30
+    movsx      r12, r13w
+    sar        r13d, 16
+    movsxd     r13, r13d
+    vmovdqu16  xm16 {k6}{z}, [r9+r12*2-2]
+    vmovdqu16  xm17 {k6}{z}, [r10+r13*2-2]
+    vpermw     xm16, xm26, xm16
+    vpermw     xm17, xm25, xm17
+    paddd      xm23, xm16, xm17
+%assign %%i 1
+%rep 8
+    mov  r%[%%i], [rsp+8*%%i-8]
+%assign %%i %%i+1
+%endrep
+    xor        r12d, r12d
+%if %2 == 16
+%assign %%c 0
+%rep q4_nr
+    %assign %%s 18+%%c
+    pxor        m%[%%s], m%[%%s]
+%assign %%c %%c+1
+%endrep
+.rows: ; 8 rows a pass
+%endif
+%assign %%y 0
+%rep 8
+    QPEL4_FENC %%y
+%assign %%c 0
+%rep q4_nr
+    QPEL4_ROW %%c, %%y&3
+%assign %%c %%c+1
+%endrep
+    add         r12, r11
+%if (%%y&3) == 3
+%assign %%c 0
+%rep q4_nr
+    QPEL4_UNIT %%c, %%y == 3 && %2 == 8
+%assign %%c %%c+1
+%endrep
+%endif
+%assign %%y %%y+1
+%endrep
+%if %2 == 16
+    add          r0, QPEL4_FSTEP
+    lea         r13, [r11*8]
+    cmp         r12, r13
+    je .rows
+    sub          r0, 2*QPEL4_FSTEP
+%endif
+    QPEL4_SUMS
+    paddd      xm18, xm23
+    pslld      xm18, 4
+    por        xm18, [qpel4_code]
+    vpbroadcastb xm17, r14d
+    vpcmpeqb    k5, xm17, [qpel4_back]
+    vpmovzxdq  ym18, xm18
+    vpternlogq ym18 {k5}, ym18, ym18, 0xff
+    vextracti32x4 xm17, ym18, 1
+    vpminuq    xm18, xm18, xm17
+    punpckhqdq xm17, xm18, xm18
+    vpminuq    xm18, xm18, xm17
+    vpminuq    xm28, xm28, xm18
+    vmovq       r12, xm28
+    mov        r13d, r12d
+    and        r13d, 15
+    jz .end
+    vpandq     xm28, xm28, [qpel4_kmask] {1to2}
+    and        r14d, ~15
+    or         r14d, r13d
+    lea         r12, [qpel4_step]
+    vmovq      xm16, [r12+r13*8]
+    paddw      xm30, xm16
+    sub        r14d, 256
+    test       r14d, 0xff00
+    jnz .loop
+.end:
+    vmovq       rax, xm28
+    shr         rax, 4
+    mov         eax, eax
+    vmovd      r12d, xm30
+    shl         r12, 32
+    or          rax, r12
+    RET
+%endmacro
+
+%macro QPEL4_SEARCH_FUNCS 0
+QPEL4_SEARCH 16, 16
+QPEL4_SEARCH 16, 8
+QPEL4_SEARCH 8, 16
+QPEL4_SEARCH 8, 8
+%endmacro
+
+INIT_ZMM avx512
+QPEL4_SEARCH_FUNCS
+INIT_YMM avx512
+QPEL4_SEARCH_FUNCS
+%if HIGH_BIT_DEPTH == 0
+INIT_ZMM avx512icl
+QPEL4_SEARCH_FUNCS
+INIT_YMM avx512icl
+QPEL4_SEARCH_FUNCS
+%endif
+%endif ; ARCH_X86_64

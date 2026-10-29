@@ -27,6 +27,9 @@
 
 #include <ctype.h>
 #include "common/common.h"
+#if HAVE_MMX
+#include "common/x86/pixel.h"
+#endif
 #if SYS_LINUX
 #include <sys/mman.h>
 #include <unistd.h>
@@ -439,9 +442,34 @@ static int qpel_cost_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **fref, in
     return satd( fenc, FENC_STRIDE, src, s ) + cmx[mx] + cmy[my];
 }
 
+/* the ymm satd_qpel_search of the level of cpu, not in the function table */
+static x264_pixel_qpel_search_t qpel_search_ymm( int cpu, int i )
+{
+#if HAVE_MMX && ARCH_X86_64
+#if !HIGH_BIT_DEPTH
+    static const x264_pixel_qpel_search_t icl[4] =
+    {
+        x264_pixel_satd_qpel_search_16x16_ymm_avx512icl, x264_pixel_satd_qpel_search_16x8_ymm_avx512icl,
+        x264_pixel_satd_qpel_search_8x16_ymm_avx512icl, x264_pixel_satd_qpel_search_8x8_ymm_avx512icl
+    };
+    if( cpu&X264_CPU_AVX512ICL )
+        return icl[i];
+#endif
+    static const x264_pixel_qpel_search_t avx512[4] =
+    {
+        x264_pixel_satd_qpel_search_16x16_ymm_avx512, x264_pixel_satd_qpel_search_16x8_ymm_avx512,
+        x264_pixel_satd_qpel_search_8x16_ymm_avx512, x264_pixel_satd_qpel_search_8x8_ymm_avx512
+    };
+    if( cpu&X264_CPU_AVX512 )
+        return avx512[i];
+#endif
+    return NULL;
+}
+
 /* refine_subpel's qpel loop in x264's original form, a compare-and-branch per candidate.
  * st: 0-3 a step in dir k, 4 range stop, 5 no better candidate, 6 out of iterations,
- * 7 a way back skipped */
+ * 7 a way back skipped, 8 a tie with the best so far, 9 a skipped way back that would
+ * have won */
 static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **fref, intptr_t stride, int bw, int bh,
                                    const uint16_t *cmx, const uint16_t *cmy, int bmx, int bmy, int bcost,
                                    int iters, int noskip, const int lim[4], int *st )
@@ -457,16 +485,20 @@ static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **f
         }
         odir = bdir;
         int omx = bmx, omy = bmy;
+        int skip = -1, skip_cost = 0;
         for( int dir = 0; dir < 4; dir++ )
         {
-            if( !noskip && (dir^1) == odir )
-            {
-                st[7]++;
-                continue;
-            }
             int mx = omx + (dir == 3) - (dir == 2);
             int my = omy + (dir == 1) - (dir == 0);
             int cost = qpel_cost_model( satd, fenc, fref, stride, bw, bh, cmx, cmy, mx, my );
+            if( !noskip && (dir^1) == odir )
+            {
+                st[7]++;
+                skip = dir;
+                skip_cost = cost;
+                continue;
+            }
+            st[8] += cost == bcost;
             if( cost < bcost )
             {
                 bcost = cost;
@@ -475,7 +507,10 @@ static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **f
                 bdir = dir;
             }
         }
-        if( bmx == omx && bmy == omy )
+        int moved = bmx != omx || bmy != omy;
+        if( skip >= 0 && (skip_cost < bcost || (skip_cost == bcost && moved && skip < bdir)) )
+            st[9]++;
+        if( !moved )
         {
             st[5]++;
             break;
@@ -1708,12 +1743,17 @@ static int check_pixel( int cpu_ref, int cpu_new )
      * (doubled stride, either parity) refs; random spel limits (0-160 each side, tight, int16
      * extremes), the start up to 2 past them; iters 0-10, the way back skipped or not. j&3: 0 smooth
      * planes, fenc cut near the start (walks), 1 flat (ties), 2 noise, 3 extremes; (j>>2)&3 mv costs:
-     * log2 shape, zero, random, 0/65535. Every step dir and exit must occur */
+     * log2 shape, zero, random, 0/65535. Every step dir, exit, tie and way back skip that would
+     * have won must occur. The dispatched function and, at its level, the ymm version */
     ok = 1; used_asm = 0;
     for( int i = 0; i < 4; i++ )
+    for( int v = 0; v < 2; v++ )
     {
         x264_pixel_qpel_search_t fn_asm = pixel_asm.satd_qpel_search[i];
         if( !fn_asm || fn_asm == pixel_ref.satd_qpel_search[i] )
+            continue;
+        /* v 1: the level's ymm version, not dispatched */
+        if( v && !(fn_asm = qpel_search_ymm( cpu_new, i )) )
             continue;
         static const uint8_t parts[4][4][2] = { {{0,0}}, {{0,0},{0,8}}, {{0,0},{8,0}}, {{0,0},{8,0},{0,8},{8,8}} };
         static const uint8_t nparts[4] = { 1, 2, 2, 4 };
@@ -1723,8 +1763,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
         static uint16_t cost_tab[2][2*8192+1];
         int flat[4] = {0};
         int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
-        int st[8] = {0};
-        set_func_name( "satd_qpel_search_%s", pixel_names[i] );
+        int st[10] = {0};
+        set_func_name( "satd_qpel_search_%s%s", pixel_names[i], v ? "_ymm" : "" );
         used_asm = 1;
         for( int j = 0; j < 4096 && ok; j++ )
         {
@@ -1794,8 +1834,12 @@ static int check_pixel( int cpu_ref, int cpu_new )
             int iters = rand()%11;
             int noskip = rand()&1;
             int bcost = qpel_cost_model( pixel_c.satd[i], f, fref, stride, bw, bh, cmx, cmy, bmx, bmy );
-            if( (j&0xe00) == 0xe00 )
-                bcost = rand()%3 ? rand()%(bcost+1) : rand()&1 ? 0 : 1<<28;
+            /* an incumbent cost not the start's: below, above (the way back can win), 0, COST_MAX */
+            if( (j&0x600) == 0x600 )
+            {
+                int r = rand()%6;
+                bcost = r == 0 ? rand()%(bcost+1) : r == 1 ? 0 : r == 2 ? 1<<28 : bcost + 1 + rand()%(bcost+1);
+            }
             uint32_t bmv = pack16to32_mask( bmx, bmy );
             uint64_t res_m = qpel_search_model( pixel_c.satd[i], f, fref, stride, bw, bh, cmx, cmy, bmx, bmy, bcost,
                                                 iters, noskip, lim, st );
@@ -1814,7 +1858,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                          (int)(uint32_t)res_a, (int16_t)(res_a>>32), (int16_t)(res_a>>48) );
             }
         }
-        for( int k = 0; k < 8 && ok; k++ )
+        for( int k = 0; k < 10 && ok; k++ )
             if( !st[k] )
             {
                 ok = 0;

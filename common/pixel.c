@@ -1604,6 +1604,13 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* zen4 prune: asd8 1.346x (rack01 checkasm --bench); kept assembled */
 #endif
     }
+    /* satd_qpel_search with a step's 4 candidates at once (zmm); _ymm_avx512 kept assembled. Unmeasured */
+    if( (cpu&X264_CPU_AVX512) && (cpu&X264_CPU_BMI2) )
+    {
+#if ARCH_X86_64
+        INIT4( satd_qpel_search, _avx512 );
+#endif
+    }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
     /* hadamard_ac 16x16/16x8/8x16 _avx512icl 1.06-1.10x, sa8d 16x16/8x8 _avx512icl 1.14x/1.05x */
 #endif // HAVE_MMX
@@ -2052,6 +2059,21 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512;
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
+#endif
+    }
+    /* satd_qpel_search with a step's 4 candidates at once (zmm; avx512icl: vpshldd);
+     * the _ymm_ versions kept assembled. Unmeasured */
+    if( (cpu&X264_CPU_AVX512) && (cpu&X264_CPU_BMI2) )
+    {
+#if ARCH_X86_64
+        if( cpu&X264_CPU_AVX512ICL )
+        {
+            INIT4( satd_qpel_search, _avx512icl );
+        }
+        else
+        {
+            INIT4( satd_qpel_search, _avx512 );
+        }
 #endif
     }
 #endif //HAVE_MMX
