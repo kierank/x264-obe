@@ -32,6 +32,18 @@
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
 
+/* rdhdr layout pair: x264_rdhdr_gate gates bsf.cabac_mb_header_rd in the RD size path
+ * (encoder/cabac.c). Arm: x264_rdhdr_arm, defined in api.c. Twin (RDHDR_TWIN 1): the never
+ * defined x264_rdhdr_twin, which links as 0. The code is the same in both. */
+#define RDHDR_TWIN 0
+extern const char x264_rdhdr_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_rdhdr_twin __attribute__((weak, visibility("hidden")));
+#if RDHDR_TWIN
+#define x264_rdhdr_gate (&x264_rdhdr_twin != NULL)
+#else
+#define x264_rdhdr_gate (&x264_rdhdr_arm != NULL)
+#endif
+
 /* 0: no skip, 1: skip, 2: P skip with the luma prediction equal to fenc */
 #define x264_macroblock_probe_skip x264_template(macroblock_probe_skip)
 int x264_macroblock_probe_skip( x264_t *h, int b_bidir );

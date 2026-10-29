@@ -1128,7 +1128,7 @@ static ALWAYS_INLINE int x264_cabac_mb_syntax_asm( x264_t *h, x264_cabac_t *cb, 
 static ALWAYS_INLINE void x264_cabac_mb_syntax( x264_t *h, x264_cabac_t *cb, int i_mb_type, int chroma )
 {
 #if ARCH_X86_64 && HAVE_MMX
-    if( chroma && h->bsf.cabac_mb_header_rd && x264_cabac_mb_syntax_asm( h, cb, i_mb_type ) )
+    if( chroma && x264_rdhdr_gate && h->bsf.cabac_mb_header_rd && x264_cabac_mb_syntax_asm( h, cb, i_mb_type ) )
         return;
 #endif
     x264_cabac_mb_syntax_c( h, cb, i_mb_type, chroma );
