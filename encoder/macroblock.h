@@ -35,7 +35,7 @@ void x264_rdo_init( void );
 /* rdhdr layout pair: x264_rdhdr_gate gates bsf.cabac_mb_header_rd in the RD size path
  * (encoder/cabac.c). Arm: x264_rdhdr_arm, defined in api.c. Twin (RDHDR_TWIN 1): the never
  * defined x264_rdhdr_twin, which links as 0. The code is the same in both. */
-#define RDHDR_TWIN 0
+#define RDHDR_TWIN 1
 extern const char x264_rdhdr_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_rdhdr_twin __attribute__((weak, visibility("hidden")));
 #if RDHDR_TWIN
