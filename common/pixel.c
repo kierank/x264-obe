@@ -1257,7 +1257,7 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
  * api.c, off that of the never defined weak x264_subpel512_<zmm|ymm>_off, which
  * links as 0. SUBPEL512_ARM 1: zmm on (zmm arm), 2: ymm on (ymm arm), 0: both off
  * (twin), the avx2 version stays. The code is the same in all three. */
-#define SUBPEL512_ARM 1
+#define SUBPEL512_ARM 2
 extern const char x264_subpel512_zmm_on __attribute__((weak, visibility("hidden")));
 extern const char x264_subpel512_zmm_off __attribute__((weak, visibility("hidden")));
 extern const char x264_subpel512_ymm_on __attribute__((weak, visibility("hidden")));
