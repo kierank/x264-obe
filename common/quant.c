@@ -504,7 +504,7 @@ void x264_trellis_wrap_ymm_init( x264_quant_function_t *pf )
 /* trellis_wrap avx512 layout triple: TRW512_ARM 0 the zmm arm, 1 the ymm arm, 2 the twin (the
  * avx2 wrapper of 4ea8b2f3). The gates are the addresses of x264_trw512_on (api.c) and of the
  * never defined x264_trw512_off0/1, which link as 0. The code is the same in all three. */
-#define TRW512_ARM 0
+#define TRW512_ARM 2
 extern const char x264_trw512_on __attribute__((weak, visibility("hidden")));
 extern const char x264_trw512_off0 __attribute__((weak, visibility("hidden")));
 extern const char x264_trw512_off1 __attribute__((weak, visibility("hidden")));
