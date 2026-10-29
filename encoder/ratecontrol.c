@@ -2788,32 +2788,34 @@ static int update_vbv( x264_t *h, int bits )
     if( !rcc->b_vbv )
         return filler;
 
-    rct->buffer_fill_final -= (uint64_t)bits * h->sps->vui.i_time_scale;
+    /* computed locally, stored once: frame threads read it in refresh_vbv_fill */
+    int64_t fill = rct->buffer_fill_final - (uint64_t)bits * h->sps->vui.i_time_scale;
 
-    if( rct->buffer_fill_final < 0 )
+    if( fill < 0 )
     {
-        double underflow = (double)rct->buffer_fill_final / h->sps->vui.i_time_scale;
+        double underflow = (double)fill / h->sps->vui.i_time_scale;
         if( rcc->rate_factor_max_increment && rcc->qpm >= rcc->qp_novbv + rcc->rate_factor_max_increment )
             x264_log( h, X264_LOG_DEBUG, "VBV underflow due to CRF-max (frame %d, %.0f bits)\n", h->i_frame, underflow );
         else
             x264_log( h, X264_LOG_WARNING, "VBV underflow (frame %d, %.0f bits)\n", h->i_frame, underflow );
     }
-    rct->buffer_fill_final = X264_MAX( rct->buffer_fill_final, 0 );
+    fill = X264_MAX( fill, 0 );
 
     if( h->param.i_avcintra_class )
-        rct->buffer_fill_final += buffer_size;
+        fill += buffer_size;
     else
-        rct->buffer_fill_final += (uint64_t)bitrate * h->sps->vui.i_num_units_in_tick * h->fenc->i_cpb_duration;
+        fill += (uint64_t)bitrate * h->sps->vui.i_num_units_in_tick * h->fenc->i_cpb_duration;
 
-    if( h->param.rc.b_filler && rct->buffer_fill_final > buffer_size )
+    if( h->param.rc.b_filler && fill > (int64_t)buffer_size )
     {
         int64_t scale = (int64_t)h->sps->vui.i_time_scale * 8;
-        filler = (rct->buffer_fill_final - buffer_size + scale - 1) / scale;
+        filler = (fill - buffer_size + scale - 1) / scale;
         bits = h->param.i_avcintra_class ? filler * 8 : X264_MAX( (FILLER_OVERHEAD - h->param.b_annexb), filler ) * 8;
-        rct->buffer_fill_final -= (uint64_t)bits * h->sps->vui.i_time_scale;
+        fill -= (uint64_t)bits * h->sps->vui.i_time_scale;
     }
     else
-        rct->buffer_fill_final = X264_MIN( rct->buffer_fill_final, buffer_size );
+        fill = X264_MIN( fill, (int64_t)buffer_size );
+    RC_STORE( &rct->buffer_fill_final, fill );
 
     return filler;
 }
