@@ -381,5 +381,25 @@ int x264_trellis_wrap_dc4_avx2( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t
 int x264_trellis_wrap_dc8_avx2( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
 #define x264_trellis_wrap_dc16_avx2 x264_template(trellis_wrap_dc16_avx2)
 int x264_trellis_wrap_dc16_avx2( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_4x4x4_avx512 x264_template(trellis_wrap_4x4x4_avx512)
+int x264_trellis_wrap_4x4x4_avx512( dctcoef dct[4][16], dctcoef orig[4][16], x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_4x4_avx512 x264_template(trellis_wrap_4x4_avx512)
+int x264_trellis_wrap_4x4_avx512( dctcoef dct[16], dctcoef orig[16], x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_8x8_avx512 x264_template(trellis_wrap_8x8_avx512)
+int x264_trellis_wrap_8x8_avx512( dctcoef dct[64], dctcoef orig[64], x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_dc4_avx512 x264_template(trellis_wrap_dc4_avx512)
+int x264_trellis_wrap_dc4_avx512( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_dc8_avx512 x264_template(trellis_wrap_dc8_avx512)
+int x264_trellis_wrap_dc8_avx512( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_dc16_avx512 x264_template(trellis_wrap_dc16_avx512)
+int x264_trellis_wrap_dc16_avx512( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_4x4x4_ymm_avx512 x264_template(trellis_wrap_4x4x4_ymm_avx512)
+int x264_trellis_wrap_4x4x4_ymm_avx512( dctcoef dct[4][16], dctcoef orig[4][16], x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_4x4_ymm_avx512 x264_template(trellis_wrap_4x4_ymm_avx512)
+int x264_trellis_wrap_4x4_ymm_avx512( dctcoef dct[16], dctcoef orig[16], x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_8x8_ymm_avx512 x264_template(trellis_wrap_8x8_ymm_avx512)
+int x264_trellis_wrap_8x8_ymm_avx512( dctcoef dct[64], dctcoef orig[64], x264_trellis_wrap_t *p );
+#define x264_trellis_wrap_dc16_ymm_avx512 x264_template(trellis_wrap_dc16_ymm_avx512)
+int x264_trellis_wrap_dc16_ymm_avx512( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
 
 #endif

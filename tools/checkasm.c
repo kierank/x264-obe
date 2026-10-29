@@ -6331,7 +6331,7 @@ static int check_quant( int cpu_ref, int cpu_new )
 #if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
     ok = 1; used_asm = 0;
     /* again at each level that changes a trellis_cabac_* core */
-    if( qf_a.trellis_wrap_4x4x4 && (qf_a.trellis_wrap_4x4x4 != qf_ref.trellis_wrap_4x4x4 ||
+    if( qf_a.trellis_wrap_4x4x4 && (memcmp( &qf_a.trellis_wrap_4x4x4, &qf_ref.trellis_wrap_4x4x4, 6*sizeof(void*) ) ||
         memcmp( &qf_a.trellis_cabac_4x4, &qf_ref.trellis_cabac_4x4, 6*sizeof(void*) )) )
     {
         static const char *names[6] = { "trellis_wrap_4x4x4", "trellis_wrap_4x4", "trellis_wrap_8x8",
@@ -6342,16 +6342,25 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_zigzag_init( cpu_new, &twzz[0], &twzz[1] );
         x264_rdo_init();
         used_asm = 1;
+        /* and the avx512 ymm set */
+        x264_quant_function_t qf_tw[2] = { qf_a, qf_a };
+        int ntw = 1;
+        if( cpu_new&X264_CPU_AVX512 )
+        {
+            x264_trellis_wrap_ymm_init( &qf_tw[1] );
+            ntw = 2;
+        }
+        for( int s = 0; s < ntw && ok; s++ )
         for( int v = 0; v < 6 && ok; v++ )
         for( int psy = 0; psy < (v <= 2 ? 2 : 1) && ok; psy++ )
         {
-            void *fav = v == 0 ? (void*)qf_a.trellis_wrap_4x4x4 : v == 1 ? (void*)qf_a.trellis_wrap_4x4 :
-                        v == 2 ? (void*)qf_a.trellis_wrap_8x8 : (void*)qf_a.trellis_wrap_dc[v-3];
+            void *fav = v == 0 ? (void*)qf_tw[s].trellis_wrap_4x4x4 : v == 1 ? (void*)qf_tw[s].trellis_wrap_4x4 :
+                        v == 2 ? (void*)qf_tw[s].trellis_wrap_8x8 : (void*)qf_tw[s].trellis_wrap_dc[v-3];
             int (*fa)( dctcoef*, dctcoef*, x264_trellis_wrap_t* ) = fav;
             int n = v == 2 ? 64 : v == 3 ? 4 : v == 4 ? 8 : 16;
             int nblocks = v ? 1 : 4;
             int dc = v >= 3;
-            set_func_name( "%s%s", names[v], psy ? "_psy" : "" );
+            set_func_name( "%s%s%s", names[v], psy ? "_psy" : "", s ? "_ymm" : "" );
             srand( bench_seed * 7919 + 100 + v*2 + psy );
             for( int it = 0; it < 4000; it++ )
             {
@@ -6439,6 +6448,9 @@ static int check_quant( int cpu_ref, int cpu_new )
                         torig[pos] = tdct[0][pos] * X264_MAX( ((tunquant[0]<<1) + 128) >> 8, 1 );
                     }
                 }
+                /* past the block: neither read nor written */
+                for( int i = nblocks*n; i < 64; i++ )
+                    tdct[0][i] = 1 + (rand()&0x7f);
                 x264_trellis_wrap_t p;
                 p.unquant_mf = tunquant;
                 p.zigzag = zigzag;
@@ -6461,8 +6473,8 @@ static int check_quant( int cpu_ref, int cpu_new )
                 if( res_c != res_a || memcmp( tdct[1], tdct[2], sizeof(tdct[0]) ) )
                 {
                     ok = 0;
-                    fprintf( stderr, "%s%s: [FAILED] it %d b_ac %d field %d: %d != %d\n",
-                             names[v], psy ? "_psy" : "", it, b_ac, b_field, res_c, res_a );
+                    fprintf( stderr, "%s%s%s: [FAILED] it %d b_ac %d field %d: %d != %d\n",
+                             names[v], psy ? "_psy" : "", s ? "_ymm" : "", it, b_ac, b_field, res_c, res_a );
                     for( int i = 0; i < nblocks*n && i < 64; i++ )
                         fprintf( stderr, "%d:%d/%d/%d ", i, (int)tdct[0][i], (int)tdct[1][i], (int)tdct[2][i] );
                     fprintf( stderr, "\n" );

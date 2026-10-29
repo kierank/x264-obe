@@ -93,6 +93,11 @@ typedef struct
     int (*trellis_wrap_dc[3])( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
 } x264_quant_function_t;
 
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+/* checkasm and test branches */
+#define x264_trellis_wrap_ymm_init x264_template(trellis_wrap_ymm_init)
+void x264_trellis_wrap_ymm_init( x264_quant_function_t *pf );
+#endif
 #define x264_quant_init x264_template(quant_init)
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf );
 

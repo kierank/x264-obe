@@ -485,6 +485,21 @@ typedef char x264_trellis_wrap_layout[offsetof( x264_trellis_wrap_t, scan ) == 5
 #define INIT_TRELLIS_WRAP(...)
 #endif
 
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+/* the avx512 trellis_wrap in ymm, but the 10-bit 8x8 */
+void x264_trellis_wrap_ymm_init( x264_quant_function_t *pf )
+{
+    INIT_TRELLIS_WRAP( avx512 );
+    pf->trellis_wrap_4x4x4 = x264_trellis_wrap_4x4x4_ymm_avx512;
+#if HIGH_BIT_DEPTH
+    pf->trellis_wrap_4x4 = x264_trellis_wrap_4x4_ymm_avx512;
+    pf->trellis_wrap_dc[2] = x264_trellis_wrap_dc16_ymm_avx512;
+#else
+    pf->trellis_wrap_8x8 = x264_trellis_wrap_8x8_ymm_avx512;
+#endif
+}
+#endif
+
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
 {
     pf->trellis_wrap_4x4x4 = NULL;
@@ -636,6 +651,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     }
     if( cpu&X264_CPU_AVX512 )
     {
+        INIT_TRELLIS_WRAP( avx512 );
         pf->dequant_4x4 = x264_dequant_4x4_avx512;
         pf->dequant_8x8 = x264_dequant_8x8_avx512;
         pf->decimate_score15 = x264_decimate_score15_avx512;
@@ -841,6 +857,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     }
     if( cpu&X264_CPU_AVX512 )
     {
+        INIT_TRELLIS_WRAP( avx512 );
         if( h->param.i_cqm_preset == X264_CQM_FLAT )
             pf->dequant_8x8 = x264_dequant_8x8_flat16_avx512;
         else

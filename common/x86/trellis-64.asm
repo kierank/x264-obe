@@ -184,11 +184,34 @@ tw_nodcw:  dw 0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
 tw_zz2x4w: db 0,1,4,5,2,3,8,9,12,13,6,7,10,11,14,15
 tw_acmask: dq 0xfffefffefffefffe
 
+; trellis_wrap avx512: 4x4 zigzag of 2 blocks for vpermw, frame then field
+ALIGN 64
+tw512_zz4w: dw 0,4,1,2,5,8,12,9,6,3,7,10,13,14,11,15,16,20,17,18,21,24,28,25,22,19,23,26,29,30,27,31
+            dw 0,1,4,2,3,5,6,7,8,9,10,11,12,13,14,15,16,17,20,18,19,21,22,23,24,25,26,27,28,29,30,31
+; 8x8 zigzag, frame then field: vpermi2w (8-bit); vpermi2d of coefs 0-31 and
+; 32-63, merged by the bit 5 masks of tw512_zz8k (10-bit)
+%if HIGH_BIT_DEPTH
+    %define TW_DX dd
+%else
+    %define TW_DX dw
+%endif
+tw512_zz8:  TW_DX  0, 8, 1, 2, 9,16,24,17,10, 3, 4,11,18,25,32,40,33,26,19,12, 5, 6,13,20,27,34,41,48,56,49,42,35
+            TW_DX 28,21,14, 7,15,22,29,36,43,50,57,58,51,44,37,30,23,31,38,45,52,59,60,53,46,39,47,54,61,62,55,63
+            TW_DX  0, 1, 2, 8, 9, 3, 4,10,16,11, 5, 6, 7,12,17,24,18,13,14,15,19,25,32,26,20,21,22,23,27,33,40,34
+            TW_DX 28,29,30,31,35,41,48,42,36,37,38,39,43,49,50,44,45,46,47,51,56,57,52,53,54,55,58,59,60,61,62,63
+; ac positions of a zmm
+tw512_nodc: TW_DX 0
+    times 64/SIZEOF_DCTCOEF-1 TW_DX -1
+%undef TW_DX
+tw512_zz8k: dw 0xc000,0xfe01,0x7f80,0xfffc,0x0000,0xe040,0xfff0,0xffff
+
 cextern_common cabac_entropy
 cextern_common cabac_transition
 cextern cabac_size_unary
 cextern cabac_transition_unary
 cextern deinterleave_shufd
+cextern pw_1
+cextern pw_m2
 cextern_common dct4_weight_tab
 cextern_common dct8_weight_tab
 cextern_common dct4_weight2_tab
@@ -2036,7 +2059,8 @@ INIT_XMM avx2
 
 ; trellis_cabac_*( unquant_mf, zigzag, lambda2, last_nnz = ecx, orig + rax, levels,
 ;     dct + rax, sig, last, level_state0, level_state1, arg, fenc_dct + rax, psy_trellis )
-%macro TW_CALL 0
+; levels + rax with an argument
+%macro TW_CALL 0-1 0
     lea    rdx, [rbp+rax]
     mov    [rsp+ 0], rdx
     mov    rdx, [rbx+TW_FENC]
@@ -2045,6 +2069,9 @@ INIT_XMM avx2
     lea    R8, [R14+rax]
     lea    R9, [rsp+64+63]
     and    R9, ~63
+%if %1
+    add    R9, rax
+%endif
     mov    rdx, [rbx+TW_SIG]
     mov    [rsp+ 8], rdx
     mov    rdx, [rbx+TW_LAST]
@@ -2477,5 +2504,412 @@ cglobal trellis_wrap_dc%1, 3,15,6, TW_STACK
 TW_DCN 4
 TW_DCN 8
 TW_DCN 16
+
+;=============================================================================
+; trellis_wrap avx512: the same wrappers with the zigzags in vpermw / vpermi2w
+; (8-bit) and vpermd / vpermi2d (10-bit) and the nonzero masks from vptestm:
+; the zero tests are kortest of the masks, last_nnz the bsr of the scan-order
+; mask. m0-m5 are regs 16-21, so the trellis_cabac_* calls need no vzeroupper.
+; zmm, and a ymm set (_ymm: 4x4x4, 10-bit 4x4 / dc16, 8-bit 8x8; the others
+; are ymm or narrower already, the 10-bit 8x8 stays zmm).
+;=============================================================================
+%define TW512_STACK TW_STACK+64
+%define TW_S        TW_STACK ; 4x4x4: the scan-order nonzero mask, 16 bits per block
+
+; the stack aligned as ALLOC_STACK aligns it
+%macro TW512_PROLOGUE 0
+    %assign tw_pad TW512_STACK + ((-TW512_STACK-stack_offset-gprsize) & (STACK_ALIGNMENT-1))
+    sub    rsp, tw_pad
+    mov    rbx, rdx
+    mov    rbp, rdi
+    mov    R14, rsi
+%endmacro
+
+%macro TW512_RET 0
+    add    rsp, tw_pad
+    RET
+%endmacro
+
+; 4x4 zigzag of the raster block in m0 (zmm 10-bit), m0-m1 (ymm 10-bit) or
+; ym0 (8-bit) to [rdi]; ecx = last nonzero scan position
+%macro TW512_SCAN4 0
+    mov    eax, [rbx+TW_FIELD]
+    shl    eax, 6
+    TW_LEVELS
+%if HIGH_BIT_DEPTH
+    lea    R8, [tw_zz4]
+%if mmsize == 64
+    movu   m2, [R8+rax]
+    vpermd m2, m2, m0
+    mova   [rdi], m2
+    vptestmd k1, m2, m2
+%else
+    movu   m2, [R8+rax]
+    movu   m3, [R8+rax+32]
+    vpermi2d m2, m0, m1
+    vpermi2d m3, m0, m1
+    mova   [rdi], m2
+    mova   [rdi+32], m3
+    vptestmd k1, m2, m2
+    vptestmd k2, m3, m3
+    kunpckbw k1, k2, k1
+%endif
+%else
+    lea    R8, [tw512_zz4w]
+    movu   ym2, [R8+rax]
+    vpermw ym2, ym2, ym0
+    mova   [rdi], ym2
+    vptestmw k1, ym2, ym2
+%endif
+    kmovd  ecx, k1
+    bsr    ecx, ecx
+%endmacro
+
+; dc-only or all-zero block: trellis_dc_shortcut
+%macro TW512_DCONLY 1 ; coef_weight2 table
+    TW_LOAD   eax, TW_COEF [R14]
+    TW_LOAD   ecx, TW_COEF [rbp]
+    TW_DC     %1, 0
+%if HIGH_BIT_DEPTH
+    mov       [rbp], eax
+%else
+    mov       [rbp], ax
+%endif
+    test      eax, eax
+    setnz     al
+    movzx     eax, al
+    TW512_RET
+    TW_DC_BIG 0
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_4x4x4( dctcoef dct[4][16], dctcoef orig[4][16], x264_trellis_wrap_t *p )
+;-----------------------------------------------------------------------------
+; 10-bit ymm: block %1 in 2 ymm, its 16-bit mask in %2
+%macro TW512Y_BLOCKD 2
+    movu      m0, [rbp+64*%1]
+    movu      m1, [rbp+64*%1+32]
+    movu      m2, [R8]
+    movu      m3, [R8+32]
+    vpermi2d  m2, m0, m1
+    vpermi2d  m3, m0, m1
+    mova      [rdi+64*%1], m2
+    mova      [rdi+64*%1+32], m3
+    vptestmd  k5, m2, m2
+    vptestmd  k6, m3, m3
+    kunpckbw  %2, k6, k5
+%endmacro
+
+%macro TW512_4X4X4 1 ; name
+cglobal %1, 3,15,6
+    TW512_PROLOGUE
+    ; the 4 blocks zigzagged, their 64-bit scan-order nonzero mask
+    mov       eax, [rbx+TW_FIELD]
+    shl       eax, 6
+    TW_LEVELS
+%if HIGH_BIT_DEPTH
+    lea       R8, [tw_zz4]
+%if mmsize == 64
+    movu      m4, [R8+rax]
+    vpermd    m0, m4, [rbp+  0]
+    vpermd    m1, m4, [rbp+ 64]
+    vpermd    m2, m4, [rbp+128]
+    vpermd    m3, m4, [rbp+192]
+    mova      [rdi+  0], m0
+    mova      [rdi+ 64], m1
+    mova      [rdi+128], m2
+    mova      [rdi+192], m3
+    vptestmd  k1, m0, m0
+    vptestmd  k2, m1, m1
+    vptestmd  k3, m2, m2
+    vptestmd  k4, m3, m3
+%else
+    add       R8, rax
+    TW512Y_BLOCKD 0, k1
+    TW512Y_BLOCKD 1, k2
+    TW512Y_BLOCKD 2, k3
+    TW512Y_BLOCKD 3, k4
+%endif
+    kunpckwd  k1, k2, k1
+    kunpckwd  k3, k4, k3
+    kunpckdq  k1, k3, k1
+%else
+    lea       R8, [tw512_zz4w]
+    movu      m4, [R8+rax]
+%if mmsize == 64
+    vpermw    m0, m4, [rbp+ 0]
+    vpermw    m1, m4, [rbp+64]
+    mova      [rdi+ 0], m0
+    mova      [rdi+64], m1
+    vptestmw  k1, m0, m0
+    vptestmw  k2, m1, m1
+%else
+    vpermw    m0, m4, [rbp+ 0]
+    vpermw    m1, m4, [rbp+32]
+    vpermw    m2, m4, [rbp+64]
+    vpermw    m3, m4, [rbp+96]
+    mova      [rdi+ 0], m0
+    mova      [rdi+32], m1
+    mova      [rdi+64], m2
+    mova      [rdi+96], m3
+    vptestmw  k1, m0, m0
+    vptestmw  k2, m1, m1
+    vptestmw  k3, m2, m2
+    vptestmw  k4, m3, m3
+    kunpckwd  k1, k2, k1
+    kunpckwd  k2, k4, k3
+%endif
+    kunpckdq  k1, k2, k1
+%endif
+    ; per block (a word of the mask): an ac level, dc only
+    kmovq     rax, k1
+    mov       [rsp+TW_S], rax
+    vmovq     xm0, rax
+    vptestmw  k2, xm0, [pw_m2]
+    vpcmpeqw  k3, xm0, [pw_1]
+    kmovd     R15d, k2
+    kmovd     eax, k3
+    xor       R12d, R12d
+    test      eax, eax
+    jnz .dc
+.dc_done:
+    test      R15d, R15d
+    jz .end
+.block:
+    bsf       R13d, R15d
+    movzx     ecx, word [rsp+TW_S+R13*2]
+    bsr       ecx, ecx
+    mov       eax, R13d
+    shl       eax, TW_BLKSHIFT
+    TW_CALL   1
+    mov       ecx, R13d
+    shl       eax, cl
+    or        R12d, eax
+    lea       eax, [R15-1]
+    and       R15d, eax
+    jnz .block
+.end:
+    mov       eax, R12d
+    TW512_RET
+
+    ; dc-only blocks: rare
+.dc:
+    mov       R13d, eax
+.dc_loop:
+    bsf       ecx, R13d
+    shl       ecx, TW_BLKSHIFT
+    TW_LOAD   eax, TW_COEF [R14+rcx]
+    TW_LOAD   ecx, TW_COEF [rbp+rcx]
+    TW_DC     dct4_weight2_tab, 0
+    bsf       ecx, R13d
+    mov       edx, ecx
+    shl       edx, TW_BLKSHIFT
+%if HIGH_BIT_DEPTH
+    mov       [rbp+rdx], eax
+%else
+    mov       [rbp+rdx], ax
+%endif
+    test      eax, eax
+    setnz     al
+    movzx     eax, al
+    shl       eax, cl
+    or        R12d, eax
+    lea       eax, [R13-1]
+    and       R13d, eax
+    jnz .dc_loop
+    jmp .dc_done
+    TW_DC_BIG 0
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_4x4( dctcoef dct[16], dctcoef orig[16], x264_trellis_wrap_t *p )
+;-----------------------------------------------------------------------------
+%macro TW512_4X4 1 ; name
+cglobal %1, 3,15,6
+    TW512_PROLOGUE
+%if HIGH_BIT_DEPTH && mmsize == 64
+    movu      m0, [rbp]
+    vptestmd  k1, m0, [tw512_nodc]
+    kortestw  k1, k1
+%elif HIGH_BIT_DEPTH
+    movu      m0, [rbp]
+    movu      m1, [rbp+32]
+    vptestmd  k1, m0, [tw512_nodc]
+    vptestmd  k2, m1, m1
+    kortestb  k1, k2
+%else
+    movu      ym0, [rbp]
+    vptestmw  k1, ym0, [tw512_nodc]
+    kortestw  k1, k1
+%endif
+    jz .dconly
+    TW512_SCAN4
+    xor       eax, eax
+    TW_CALL
+    TW512_RET
+.dconly:
+    TW512_DCONLY dct4_weight2_tab
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_8x8( dctcoef dct[64], dctcoef orig[64], x264_trellis_wrap_t *p )
+;-----------------------------------------------------------------------------
+; 4 registers of coefs (10-bit zmm, 8-bit ymm): output %1 of the zigzag is the
+; 2-register permute of coefs 0-31 or 32-63, bit 5 picks; %2 its nonzero mask
+%macro TW512_ZZ8Q 2
+    movu      m4, [R8+mmsize*%1]
+    movu      m5, [R8+mmsize*%1]
+%if HIGH_BIT_DEPTH
+    vpermi2d  m4, m0, m1
+    vpermi2d  m5, m2, m3
+    kmovw     k1, [R9+2*%1]
+    vmovdqa32 m4 {k1}, m5
+    mova      [rdi+mmsize*%1], m4
+    vptestmd  %2, m4, m4
+%else
+    vpermi2w  m4, m0, m1
+    vpermi2w  m5, m2, m3
+    kmovw     k1, [R9+2*%1]
+    vmovdqu16 m4 {k1}, m5
+    mova      [rdi+mmsize*%1], m4
+    vptestmw  %2, m4, m4
+%endif
+%endmacro
+
+%macro TW512_8X8 1 ; name
+cglobal %1, 3,15,6
+    TW512_PROLOGUE
+    ; an ac level?
+%if mmsize*4 == 64*SIZEOF_DCTCOEF
+    movu      m0, [rbp+mmsize*0]
+    movu      m1, [rbp+mmsize*1]
+    movu      m2, [rbp+mmsize*2]
+    movu      m3, [rbp+mmsize*3]
+%if HIGH_BIT_DEPTH
+    vptestmd  k1, m0, [tw512_nodc]
+%else
+    vptestmw  k1, m0, [tw512_nodc]
+%endif
+    vpord     m4, m1, m2
+    vpord     m4, m4, m3
+%if HIGH_BIT_DEPTH
+    vptestmd  k2, m4, m4
+    kortestw  k1, k2
+%else
+    vptestmw  k2, m4, m4
+    kortestw  k1, k2
+%endif
+%else
+    movu      m0, [rbp+ 0]
+    movu      m1, [rbp+64]
+    vptestmw  k1, m0, [tw512_nodc]
+    vptestmw  k2, m1, m1
+    kortestd  k1, k2
+%endif
+    jz .dconly
+    mov       eax, [rbx+TW_FIELD]
+    TW_LEVELS
+%if mmsize*4 == 64*SIZEOF_DCTCOEF
+    lea       R9, [tw512_zz8k]
+    lea       R9, [R9+rax*8]
+    shl       eax, 5+HIGH_BIT_DEPTH+2
+    lea       R8, [tw512_zz8]
+    add       R8, rax
+    TW512_ZZ8Q 0, k2
+    TW512_ZZ8Q 1, k3
+    TW512_ZZ8Q 2, k4
+    TW512_ZZ8Q 3, k5
+    kunpckwd  k2, k3, k2
+    kunpckwd  k4, k5, k4
+    kunpckdq  k2, k4, k2
+    kmovq     rcx, k2
+%else
+    shl       eax, 7
+    lea       R8, [tw512_zz8]
+    movu      m2, [R8+rax]
+    movu      m3, [R8+rax+64]
+    vpermi2w  m2, m0, m1
+    vpermi2w  m3, m0, m1
+    mova      [rdi+ 0], m2
+    mova      [rdi+64], m3
+    vptestmw  k1, m2, m2
+    vptestmw  k2, m3, m3
+    kunpckdq  k1, k2, k1
+    kmovq     rcx, k1
+%endif
+    bsr       rcx, rcx
+    xor       eax, eax
+    TW_CALL
+    TW512_RET
+.dconly:
+    TW512_DCONLY dct8_weight2_tab
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_dc4/dc8/dc16( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p )
+; at least one nonzero level
+;-----------------------------------------------------------------------------
+%macro TW512_DCN 2 ; name, num_coefs
+cglobal %1, 3,15,6
+    TW512_PROLOGUE
+%if %2 == 16
+%if HIGH_BIT_DEPTH && mmsize == 64
+    movu      m0, [rbp]
+%elif HIGH_BIT_DEPTH
+    movu      m0, [rbp]
+    movu      m1, [rbp+32]
+%else
+    movu      ym0, [rbp]
+%endif
+    TW512_SCAN4
+%else
+    TW_LEVELS
+%if %2 == 8
+%if HIGH_BIT_DEPTH
+    movu      ym1, [tw_zz2x4d]
+    vpermd    ym1, ym1, [rbp]
+    mova      [rdi], ym1
+    vptestmd  k1, ym1, ym1
+%else
+    movu      xm1, [rbp]
+    vpshufb   xm1, xm1, [tw_zz2x4w]
+    mova      [rdi], xm1
+    vptestmw  k1, xm1, xm1
+%endif
+%else
+%if HIGH_BIT_DEPTH
+    movu      xm1, [rbp]
+    mova      [rdi], xm1
+    vptestmd  k1, xm1, xm1
+%else
+    vmovq     xm1, [rbp]
+    vmovq     [rdi], xm1
+    vptestmw  k1, xm1, xm1
+%endif
+%endif
+    kmovd     ecx, k1
+    bsr       ecx, ecx
+%endif
+    xor       eax, eax
+    TW_CALL
+    TW512_RET
+%endmacro
+
+INIT_ZMM avx512
+TW512_4X4X4 trellis_wrap_4x4x4
+TW512_4X4   trellis_wrap_4x4
+TW512_8X8   trellis_wrap_8x8
+TW512_DCN   trellis_wrap_dc4, 4
+TW512_DCN   trellis_wrap_dc8, 8
+TW512_DCN   trellis_wrap_dc16, 16
+
+INIT_YMM avx512
+TW512_4X4X4 trellis_wrap_4x4x4_ymm
+%if HIGH_BIT_DEPTH
+TW512_4X4   trellis_wrap_4x4_ymm
+TW512_DCN   trellis_wrap_dc16_ymm, 16
+%else
+TW512_8X8   trellis_wrap_8x8_ymm
+%endif
 
 %endif ; UNIX64
