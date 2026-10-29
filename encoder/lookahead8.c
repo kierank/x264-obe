@@ -64,7 +64,10 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         memcpy( h->pixf.mbcmp_avg2, h->pixf.satd_avg2, sizeof(h->pixf.mbcmp_avg2) );
         memcpy( h->pixf.mbcmp_pre, h->pixf.satd_pre, sizeof(h->pixf.mbcmp_pre) );
         memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
-        memcpy( h->pixf.mbcmp_qpel_search, h->pixf.satd_qpel_search, sizeof(h->pixf.mbcmp_qpel_search) );
+        if( x264_subpel_gate )
+            memcpy( h->pixf.mbcmp_qpel_search, h->pixf.satd_qpel_search, sizeof(h->pixf.mbcmp_qpel_search) );
+        else
+            memset( h->pixf.mbcmp_qpel_search, 0, sizeof(h->pixf.mbcmp_qpel_search) );
     }
     else
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );

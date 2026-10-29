@@ -1592,7 +1592,10 @@ static void mbcmp_init( x264_t *h )
         memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
         memcpy( h->pixf.mbcmp_bi, h->pixf.satd_bi, sizeof(h->pixf.mbcmp_bi) );
         memcpy( h->pixf.mbcmp_bi4, h->pixf.satd_bi4, sizeof(h->pixf.mbcmp_bi4) );
-        memcpy( h->pixf.mbcmp_qpel_search, h->pixf.satd_qpel_search, sizeof(h->pixf.mbcmp_qpel_search) );
+        if( x264_subpel_gate )
+            memcpy( h->pixf.mbcmp_qpel_search, h->pixf.satd_qpel_search, sizeof(h->pixf.mbcmp_qpel_search) );
+        else
+            memset( h->pixf.mbcmp_qpel_search, 0, sizeof(h->pixf.mbcmp_qpel_search) );
     }
     else
     {
