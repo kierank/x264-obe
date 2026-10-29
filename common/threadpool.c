@@ -34,7 +34,7 @@ typedef struct
 
 struct x264_threadpool_t
 {
-    volatile int   exit;
+    int            exit;       /* set under run.mutex; read unlocked by the outer loop */
     int            threads;
     x264_pthread_t *thread_handle;
     void           (*init_func)(void *);
@@ -52,7 +52,7 @@ static void *x264_threadpool_thread( x264_threadpool_t *pool )
     if( pool->init_func )
         pool->init_func( pool->init_arg );
 
-    while( !pool->exit )
+    while( !__atomic_load_n( &pool->exit, __ATOMIC_ACQUIRE ) )
     {
         x264_threadpool_job_t *job = NULL;
         x264_pthread_mutex_lock( &pool->run.mutex );
@@ -155,7 +155,7 @@ static void x264_threadpool_list_delete( x264_sync_frame_list_t *slist )
 void x264_threadpool_delete( x264_threadpool_t *pool )
 {
     x264_pthread_mutex_lock( &pool->run.mutex );
-    pool->exit = 1;
+    __atomic_store_n( &pool->exit, 1, __ATOMIC_RELEASE );
     x264_pthread_cond_broadcast( &pool->run.cv_fill );
     x264_pthread_mutex_unlock( &pool->run.mutex );
     for( int i = 0; i < pool->threads; i++ )
