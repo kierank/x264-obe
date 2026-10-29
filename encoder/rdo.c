@@ -888,7 +888,16 @@ int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const
 #else
 #define TRELLIS_WRAP 0
 #endif
-#define TRELLIS_WRAP_GATE 1
+/* layout pair: arm x264_trwrap_arm (api.c); the twin (TRWRAP_TWIN 1) gates on the never
+ * defined x264_trwrap_twin, which links as 0, and takes the C. The code is the same in both. */
+#define TRWRAP_TWIN 0
+extern const char x264_trwrap_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_trwrap_twin __attribute__((weak, visibility("hidden")));
+#if TRWRAP_TWIN
+#define TRELLIS_WRAP_GATE (&x264_trwrap_twin != NULL)
+#else
+#define TRELLIS_WRAP_GATE (&x264_trwrap_arm != NULL)
+#endif
 
 static ALWAYS_INLINE
 void trellis_wrap_init( x264_t *h, x264_trellis_wrap_t *p, const int *unquant_mf, const uint8_t *zigzag,
