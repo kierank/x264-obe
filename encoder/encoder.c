@@ -1592,6 +1592,7 @@ static void mbcmp_init( x264_t *h )
         memcpy( h->pixf.mbcmp_avg2_pre, h->pixf.satd_avg2_pre, sizeof(h->pixf.mbcmp_avg2_pre) );
         memcpy( h->pixf.mbcmp_bi, h->pixf.satd_bi, sizeof(h->pixf.mbcmp_bi) );
         memcpy( h->pixf.mbcmp_bi4, h->pixf.satd_bi4, sizeof(h->pixf.mbcmp_bi4) );
+        memcpy( h->pixf.mbcmp_qpel_search, h->pixf.satd_qpel_search, sizeof(h->pixf.mbcmp_qpel_search) );
     }
     else
     {
@@ -1599,6 +1600,7 @@ static void mbcmp_init( x264_t *h )
         memset( h->pixf.mbcmp_avg2_pre, 0, sizeof(h->pixf.mbcmp_avg2_pre) );
         memset( h->pixf.mbcmp_bi, 0, sizeof(h->pixf.mbcmp_bi) );
         memset( h->pixf.mbcmp_bi4, 0, sizeof(h->pixf.mbcmp_bi4) );
+        memset( h->pixf.mbcmp_qpel_search, 0, sizeof(h->pixf.mbcmp_qpel_search) );
     }
     h->pixf.intra_mbcmp_x3_16x16 = satd ? h->pixf.intra_satd_x3_16x16 : h->pixf.intra_sad_x3_16x16;
     h->pixf.intra_mbcmp_x3_8x16c = satd ? h->pixf.intra_satd_x3_8x16c : h->pixf.intra_sad_x3_8x16c;

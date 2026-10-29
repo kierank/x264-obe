@@ -86,6 +86,15 @@ typedef int  (*x264_pixel_satd_bi_t) ( x264_bi_fenc_t *fenc, pixel *src0, intptr
                                        pixel *src1, intptr_t stride1, int weight );
 typedef int  (*x264_pixel_satd_bi4_t) ( x264_bi_fenc_t *fenc, pixel *src0a, pixel *src0b,
                                         pixel *src1a, pixel *src1b, intptr_t stride, int weight );
+/* refine_subpel's luma qpel diamond, satd + cost_mvx[mx] + cost_mvy[my], from bmv =
+ * pack16to32_mask( bmx, bmy ) at bcost over the unweighted hpel planes fref[0..3]:
+ * iters >> 8 steps over (0,-1) (0,1) (-1,0) (1,0), the incumbent winning ties, then the
+ * lower dir; a step skips the way back unless iters & 16; stops at an mv on or past
+ * range = mv_min_spel | mv_max_spel << 32 (x | y << 16 each). fenc as satd_bi's.
+ * Returns bcost | pack16to32_mask( bmx, bmy ) << 32 */
+typedef uint64_t (*x264_pixel_qpel_search_t) ( x264_bi_fenc_t *fenc, pixel **fref, intptr_t stride,
+                                               const uint16_t *cost_mvx, const uint16_t *cost_mvy,
+                                               uint32_t bmv, int bcost, int iters, uint64_t range );
 
 enum
 {
@@ -150,6 +159,7 @@ typedef struct
     x264_pixel_cmp_avg2_pre_t satd_avg2_pre[4];
     x264_pixel_satd_bi_t  satd_bi[4];  /* asm only, NULL otherwise */
     x264_pixel_satd_bi4_t satd_bi4[4];
+    x264_pixel_qpel_search_t satd_qpel_search[4]; /* asm only, NULL otherwise; reference x264_pixel_satd_qpel_search_c */
     x264_pixel_cmp_t ssim[7];
     x264_pixel_cmp_t sa8d[4];
     x264_pixel_cmp_t mbcmp[8]; /* either satd or sad for subpel refine and mode decision */
@@ -160,6 +170,7 @@ typedef struct
     x264_pixel_cmp_avg2_pre_t mbcmp_avg2_pre[4];
     x264_pixel_satd_bi_t  mbcmp_bi[4];  /* satd_bi where mbcmp is satd, else NULL */
     x264_pixel_satd_bi4_t mbcmp_bi4[4];
+    x264_pixel_qpel_search_t mbcmp_qpel_search[4]; /* satd_qpel_search where mbcmp is satd, else NULL */
     x264_pixel_cmp_t fpelcmp[8]; /* either satd or sad for fullpel motion search */
     x264_pixel_cmp_avg2_t fpelcmp_avg2[7]; /* fpelcmp of a qpel average, NULL where get_ref + fpelcmp is used */
     x264_pixel_cmp_x3_t fpelcmp_x3[7];
@@ -306,6 +317,9 @@ uint64_t x264_pixel_sad_dia_search_c( int i_pixel, pixel *fenc, pixel *ref, intp
 #define x264_pixel_sad_hex_search_c x264_template(pixel_sad_hex_search_c)
 uint64_t x264_pixel_sad_hex_search_c( int i_pixel, pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
                                       const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );
+#define x264_pixel_satd_qpel_search_c x264_template(pixel_satd_qpel_search_c)
+uint64_t x264_pixel_satd_qpel_search_c( int i_pixel, pixel *fenc, pixel **fref, intptr_t stride, const uint16_t *cost_mvx,
+                                        const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );
 #define x264_predictor_clip_c x264_template(predictor_clip_c)
 int x264_predictor_clip_c( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
 #define x264_predictor_roundclip_c x264_template(predictor_roundclip_c)

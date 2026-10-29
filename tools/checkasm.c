@@ -418,6 +418,75 @@ static uint64_t fpel_search_model( int hex, int i_pixel, pixel *p_fenc, pixel *p
 }
 #endif
 
+/* satd + mv cost at a qpel mv: subpel_luma_cost unweighted, get_ref's prediction */
+static int qpel_cost_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **fref, intptr_t stride, int bw, int bh,
+                            const uint16_t *cmx, const uint16_t *cmy, int mx, int my )
+{
+    ALIGNED_16( pixel pix[16*16] );
+    int qpel_idx = ((my&3)<<2) + (mx&3);
+    intptr_t offset = (my>>2)*stride + (mx>>2);
+    pixel *src = fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+    intptr_t s = stride;
+    if( qpel_idx & 5 )
+    {
+        pixel *src2 = fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
+        for( int y = 0; y < bh; y++ )
+            for( int x = 0; x < bw; x++ )
+                pix[16*y+x] = (src[y*stride+x] + src2[y*stride+x] + 1) >> 1;
+        src = pix;
+        s = 16;
+    }
+    return satd( fenc, FENC_STRIDE, src, s ) + cmx[mx] + cmy[my];
+}
+
+/* refine_subpel's qpel loop in x264's original form, a compare-and-branch per candidate.
+ * st: 0-3 a step in dir k, 4 range stop, 5 no better candidate, 6 out of iterations,
+ * 7 a way back skipped */
+static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **fref, intptr_t stride, int bw, int bh,
+                                   const uint16_t *cmx, const uint16_t *cmy, int bmx, int bmy, int bcost,
+                                   int iters, int noskip, const int lim[4], int *st )
+{
+    int odir, bdir = -1;
+    int i;
+    for( i = iters; i > 0; i-- )
+    {
+        if( bmy <= lim[1] || bmy >= lim[3] || bmx <= lim[0] || bmx >= lim[2] )
+        {
+            st[4]++;
+            break;
+        }
+        odir = bdir;
+        int omx = bmx, omy = bmy;
+        for( int dir = 0; dir < 4; dir++ )
+        {
+            if( !noskip && (dir^1) == odir )
+            {
+                st[7]++;
+                continue;
+            }
+            int mx = omx + (dir == 3) - (dir == 2);
+            int my = omy + (dir == 1) - (dir == 0);
+            int cost = qpel_cost_model( satd, fenc, fref, stride, bw, bh, cmx, cmy, mx, my );
+            if( cost < bcost )
+            {
+                bcost = cost;
+                bmx = mx;
+                bmy = my;
+                bdir = dir;
+            }
+        }
+        if( bmx == omx && bmy == omy )
+        {
+            st[5]++;
+            break;
+        }
+        st[bdir]++;
+    }
+    if( !i && iters )
+        st[6]++;
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+
 /* reference of the asm only weightp_satd8_search: x264_weights_analyse's luma pass */
 static void wp_weight8x8( pixel *dst, pixel *src, intptr_t i_src, int scale, int denom, int offset )
 {
@@ -1633,6 +1702,126 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     report( "pixel fpel_search :" );
 #endif
+
+    /* satd_qpel_search: refine_subpel's qpel loop over 4 random hpel planes, against the C reference
+     * and the compare-and-branch model. Every partition position of a 16x16 fenc; frame or field
+     * (doubled stride, either parity) refs; random spel limits (0-160 each side, tight, int16
+     * extremes), the start up to 2 past them; iters 0-10, the way back skipped or not. j&3: 0 smooth
+     * planes, fenc cut near the start (walks), 1 flat (ties), 2 noise, 3 extremes; (j>>2)&3 mv costs:
+     * log2 shape, zero, random, 0/65535. Every step dir and exit must occur */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        x264_pixel_qpel_search_t fn_asm = pixel_asm.satd_qpel_search[i];
+        if( !fn_asm || fn_asm == pixel_ref.satd_qpel_search[i] )
+            continue;
+        static const uint8_t parts[4][4][2] = { {{0,0}}, {{0,0},{0,8}}, {{0,0},{8,0}}, {{0,0},{8,0},{0,8},{8,8}} };
+        static const uint8_t nparts[4] = { 1, 2, 2, 4 };
+        ALIGNED_16( static pixel planes[4][4][2*176*256] );
+        ALIGNED_16( pixel fenc[16*FENC_STRIDE] );
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[512] );
+        static uint16_t cost_tab[2][2*8192+1];
+        int flat[4] = {0};
+        int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+        int st[8] = {0};
+        set_func_name( "satd_qpel_search_%s", pixel_names[i] );
+        used_asm = 1;
+        for( int j = 0; j < 4096 && ok; j++ )
+        {
+            int mode = j&3, cmode = (j>>2)&3;
+            int field = (j>>4)&1;
+            intptr_t pstride = 192 + (rand()&63);
+            intptr_t stride = pstride << field;
+            if( !(j&60) )
+            {
+                flat[mode] = rand() & PIXEL_MAX;
+                for( int p = 0; p < 4; p++ )
+                {
+                    pixel *plane = planes[mode][p];
+                    for( int k = 0; k < 2*176*256; k++ )
+                        plane[k] = mode == 1 ? flat[mode] : mode == 3 ? ((rand()&7) ? 0 : PIXEL_MAX) : rand() & PIXEL_MAX;
+                    for( int pass = 0; pass < 3*(mode == 0); pass++ )
+                        for( int k = 0; k < 2*176*256 - 2*256; k++ )
+                            plane[k] = (plane[k] + plane[k+1] + plane[k+256] + plane[k+257] + 2) >> 2;
+                }
+            }
+            int xmin = -(rand()%161), xmax = rand()%161, ymin = -(rand()%161), ymax = rand()%161;
+            if( j&32 )
+                xmin = -(rand()&7), xmax = rand()&7, ymin = -(rand()&7), ymax = rand()&7;
+            int bmx = xmin - 2 + rand()%(xmax-xmin+5), bmy = ymin - 2 + rand()%(ymax-ymin+5);
+            if( (j&0x180) == 0x180 )
+            {
+                /* int16 extremes: the start well inside */
+                xmin = -32768, ymin = -32768, xmax = 32767, ymax = 32767;
+                bmx = rand()%161 - 80, bmy = rand()%161 - 80;
+            }
+            /* mv 0 at (96, 80) (field rows): reads stay inside the plane */
+            pixel *fref[4];
+            for( int p = 0; p < 4; p++ )
+                fref[p] = planes[mode][p] + 96 + 80*stride + (field && (j&64) ? pstride : 0);
+            int px = parts[i][rand()%nparts[i]][0], py = parts[i][rand()%nparts[i]][1];
+            if( mode == 0 )
+            {
+                int tx = (bmx>>2) + rand()%9 - 4 - px, ty = (bmy>>2) + rand()%9 - 4 - py;
+                for( int y = 0; y < 16; y++ )
+                    for( int x = 0; x < 16; x++ )
+                        fenc[y*FENC_STRIDE+x] = x264_clip_pixel( fref[0][tx+x + (ty+y)*stride] + (rand()%5) - 2 );
+            }
+            else
+                for( int k = 0; k < 16*FENC_STRIDE; k++ )
+                    fenc[k] = mode == 1 ? flat[mode] : mode == 2 ? rand() & PIXEL_MAX : (rand()&7) ? PIXEL_MAX : 0;
+            pixel *f = fenc + px + py*FENC_STRIDE;
+#if HIGH_BIT_DEPTH
+            x264_bi_fenc_t *qfenc = f;
+#else
+            pixel_asm.satd_fenc_pre[0]( fenc_pre, fenc );
+            for( int b = 0; b < 4; b++ )
+                pixel_asm.satd_fenc_pre[1]( fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+            x264_bi_fenc_t *qfenc = i <= PIXEL_16x8 ? fenc_pre+16*py : fenc_pre+256+64*(2*(px>>3)+(py>>3));
+#endif
+            int lambda = 1 + rand()%40;
+            for( int t = 0; t < 2; t++ )
+                for( int k = -512; k <= 512; k++ ) /* the part read: |mv - mvp| < 400 */
+                {
+                    int v = cmode == 0 ? (int)(lambda * (2*log2f( abs(k)+1 ) + 1) + .5f)
+                          : cmode == 1 ? 0 : cmode == 2 ? rand()%4096 : (rand()&1) * 65535;
+                    cost_tab[t][k+8192] = X264_MIN( v, 65535 );
+                }
+            int mvpx = rand()%321 - 160, mvpy = rand()%321 - 160;
+            const uint16_t *cmx = cost_tab[0] + 8192 - mvpx, *cmy = cost_tab[1] + 8192 - mvpy;
+            int lim[4] = { xmin, ymin, xmax, ymax };
+            uint64_t range = pack16to32_mask( xmin, ymin ) | (uint64_t)pack16to32_mask( xmax, ymax ) << 32;
+            int iters = rand()%11;
+            int noskip = rand()&1;
+            int bcost = qpel_cost_model( pixel_c.satd[i], f, fref, stride, bw, bh, cmx, cmy, bmx, bmy );
+            if( (j&0xe00) == 0xe00 )
+                bcost = rand()%3 ? rand()%(bcost+1) : rand()&1 ? 0 : 1<<28;
+            uint32_t bmv = pack16to32_mask( bmx, bmy );
+            uint64_t res_m = qpel_search_model( pixel_c.satd[i], f, fref, stride, bw, bh, cmx, cmy, bmx, bmy, bcost,
+                                                iters, noskip, lim, st );
+            uint64_t res_c = x264_pixel_satd_qpel_search_c( i, f, fref, stride, cmx, cmy, bmv, bcost, (iters<<8) | (noskip<<4), range );
+            uint64_t res_a = call_a( fn_asm, qfenc, fref, stride, cmx, cmy, bmv, bcost, (iters<<8) | (noskip<<4), range );
+            if( res_c != res_m )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_qpel_search[%d]: C reference mismatch [FAILED]\n", i );
+            }
+            if( res_c != res_a )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_qpel_search[%d]: mode %d %d: %d (%d,%d) != %d (%d,%d) [FAILED]\n", i, mode, cmode,
+                         (int)(uint32_t)res_c, (int16_t)(res_c>>32), (int16_t)(res_c>>48),
+                         (int)(uint32_t)res_a, (int16_t)(res_a>>32), (int16_t)(res_a>>48) );
+            }
+        }
+        for( int k = 0; k < 8 && ok; k++ )
+            if( !st[k] )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_qpel_search[%d]: case %d never occurred [FAILED]\n", i, k );
+            }
+    }
+    report( "pixel qpel_search :" );
 
     /* predictor_clip/roundclip, i_mvc 0..15. j>>5&3: 0 mvs from a small pool around the
      * limits with 0 and pmv (repeats, clipped-equal), 1 any int16, 2 distinct, 3 one mv

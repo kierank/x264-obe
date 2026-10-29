@@ -1270,7 +1270,23 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     if( h->mb.i_subpel_refine != 1 )
     {
         bdir = -1;
-        if( !b_chroma_me )
+        x264_pixel_qpel_search_t qpel_search = i_pixel <= PIXEL_8x8 && !m->weight[0].weightfn ? h->pixf.mbcmp_qpel_search[i_pixel] : NULL;
+#if HIGH_BIT_DEPTH
+        x264_bi_fenc_t *qpel_fenc = m->p_fenc[0];
+#else
+        x264_bi_fenc_t *qpel_fenc = fenc_pre;
+#endif
+        if( !b_chroma_me && qpel_iters && qpel_search && qpel_fenc )
+        {
+            uint64_t range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
+                           | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
+            uint64_t res = qpel_search( qpel_fenc, m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
+                                        pack16to32_mask( bmx, bmy ), bcost, (qpel_iters << 8) | (b_refine_qpel << 4), range );
+            bcost = (uint32_t)res;
+            bmx = (int16_t)(res >> 32);
+            bmy = (int16_t)(res >> 48);
+        }
+        else if( !b_chroma_me )
         {
             /* Argmin instead of a compare-and-branch per candidate. Same choice as
              * the strict-< sequence: the incumbent wins ties, then the lower dir. */
