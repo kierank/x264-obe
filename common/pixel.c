@@ -1252,6 +1252,27 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
+/* subpel512 layout pair: x264_subpel512_zmm / _ymm gate satd_qpel_search's AVX-512
+ * versions. A gate on is the address of x264_subpel512_<zmm|ymm>_on, defined in
+ * api.c, off that of the never defined weak x264_subpel512_<zmm|ymm>_off, which
+ * links as 0. SUBPEL512_ARM 1: zmm on (zmm arm), 2: ymm on (ymm arm), 0: both off
+ * (twin), the avx2 version stays. The code is the same in all three. */
+#define SUBPEL512_ARM 1
+extern const char x264_subpel512_zmm_on __attribute__((weak, visibility("hidden")));
+extern const char x264_subpel512_zmm_off __attribute__((weak, visibility("hidden")));
+extern const char x264_subpel512_ymm_on __attribute__((weak, visibility("hidden")));
+extern const char x264_subpel512_ymm_off __attribute__((weak, visibility("hidden")));
+#if SUBPEL512_ARM == 1
+#define x264_subpel512_zmm (&x264_subpel512_zmm_on != NULL)
+#else
+#define x264_subpel512_zmm (&x264_subpel512_zmm_off != NULL)
+#endif
+#if SUBPEL512_ARM == 2
+#define x264_subpel512_ymm (&x264_subpel512_ymm_on != NULL)
+#else
+#define x264_subpel512_ymm (&x264_subpel512_ymm_off != NULL)
+#endif
+
 void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 {
     memset( pixf, 0, sizeof(*pixf) );
@@ -1608,7 +1629,14 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( (cpu&X264_CPU_AVX512) && (cpu&X264_CPU_BMI2) )
     {
 #if ARCH_X86_64
-        INIT4( satd_qpel_search, _avx512 );
+        if( x264_subpel512_zmm )
+        {
+            INIT4( satd_qpel_search, _avx512 );
+        }
+        else if( x264_subpel512_ymm )
+        {
+            INIT4_NAME( satd_qpel_search, satd_qpel_search, _ymm_avx512 );
+        }
 #endif
     }
     /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
@@ -2066,13 +2094,21 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( (cpu&X264_CPU_AVX512) && (cpu&X264_CPU_BMI2) )
     {
 #if ARCH_X86_64
-        if( cpu&X264_CPU_AVX512ICL )
+        if( x264_subpel512_zmm && (cpu&X264_CPU_AVX512ICL) )
         {
             INIT4( satd_qpel_search, _avx512icl );
         }
-        else
+        else if( x264_subpel512_zmm )
         {
             INIT4( satd_qpel_search, _avx512 );
+        }
+        else if( x264_subpel512_ymm && (cpu&X264_CPU_AVX512ICL) )
+        {
+            INIT4_NAME( satd_qpel_search, satd_qpel_search, _ymm_avx512icl );
+        }
+        else if( x264_subpel512_ymm )
+        {
+            INIT4_NAME( satd_qpel_search, satd_qpel_search, _ymm_avx512 );
         }
 #endif
     }
