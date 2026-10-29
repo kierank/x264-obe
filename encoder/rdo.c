@@ -882,6 +882,49 @@ int trellis_cabac_quantised( x264_t *h, dctcoef *dct, dctcoef *orig_coefs, const
     return 1;
 }
 
+/* the asm of trellis_cabac_quantised: x86_64 avx2, not win64 */
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+#define TRELLIS_WRAP 1
+#else
+#define TRELLIS_WRAP 0
+#endif
+#define TRELLIS_WRAP_GATE 1
+
+static ALWAYS_INLINE
+void trellis_wrap_init( x264_t *h, x264_trellis_wrap_t *p, const int *unquant_mf, const uint8_t *zigzag,
+                        int ctx_block_cat, int lambda2, int b_ac, int b_chroma, int dc, int num_coefs, int idx )
+{
+    int b_interlaced = MB_INTERLACED;
+    int psy = !b_chroma && h->mb.i_psy_trellis;
+    p->unquant_mf = unquant_mf;
+    p->zigzag = zigzag;
+    p->cabac_state_sig = &h->cabac.state[ x264_significant_coeff_flag_offset[b_interlaced][ctx_block_cat] ];
+    p->cabac_state_last = &h->cabac.state[ x264_last_coeff_flag_offset[b_interlaced][ctx_block_cat] ];
+    p->cabac_state = &h->cabac.state[ x264_coeff_abs_level_m1_offset[ctx_block_cat] ];
+    p->lambda2 = lambda2;
+    p->psy_trellis = h->mb.i_psy_trellis;
+    p->b_interlaced = b_interlaced;
+    if( dc )
+    {
+        p->trellis = num_coefs == 8 ? (void*)h->quantf.trellis_cabac_chroma_422_dc : (void*)h->quantf.trellis_cabac_dc;
+        p->arg = num_coefs-1;
+        p->fenc_dct = NULL;
+    }
+    else if( num_coefs == 64 )
+    {
+        p->trellis = psy ? (void*)h->quantf.trellis_cabac_8x8_psy : (void*)h->quantf.trellis_cabac_8x8;
+        p->fenc_dct = h->mb.pic.fenc_dct8[idx&3];
+        p->scan = h->zigzagf.scan_8x8;
+        p->arg = b_interlaced;
+    }
+    else
+    {
+        p->trellis = psy ? (void*)h->quantf.trellis_cabac_4x4_psy : (void*)h->quantf.trellis_cabac_4x4;
+        p->fenc_dct = h->mb.pic.fenc_dct4[idx&15];
+        p->arg = b_ac;
+    }
+}
+
 static ALWAYS_INLINE
 int quant_trellis_cabac( x264_t *h, dctcoef *dct,
                          udctcoef *quant_mf, udctcoef *quant_bias, const int *unquant_mf,
@@ -889,23 +932,21 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
                          int b_chroma, int dc, int num_coefs, int idx )
 {
     ALIGNED_ARRAY_64( dctcoef, orig_coefs, [64] );
+    int nz;
 
     if( dc )
     {
         if( num_coefs == 16 )
         {
             memcpy( orig_coefs, dct, sizeof(dctcoef)*16 );
-            if( !h->quantf.quant_4x4_dc( dct, quant_mf[0] >> 1, quant_bias[0] << 1 ) )
-                return 0;
+            nz = h->quantf.quant_4x4_dc( dct, quant_mf[0] >> 1, quant_bias[0] << 1 );
         }
         else
         {
             memcpy( orig_coefs, dct, sizeof(dctcoef)*num_coefs );
-            int nz = h->quantf.quant_2x2_dc( &dct[0], quant_mf[0] >> 1, quant_bias[0] << 1 );
+            nz = h->quantf.quant_2x2_dc( &dct[0], quant_mf[0] >> 1, quant_bias[0] << 1 );
             if( num_coefs == 8 )
                 nz |= h->quantf.quant_2x2_dc( &dct[4], quant_mf[0] >> 1, quant_bias[0] << 1 );
-            if( !nz )
-                return 0;
         }
     }
     else
@@ -913,16 +954,31 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
         if( num_coefs == 64 )
         {
             h->mc.memcpy_aligned( orig_coefs, dct, sizeof(dctcoef)*64 );
-            if( !h->quantf.quant_8x8( dct, quant_mf, quant_bias ) )
-                return 0;
+            nz = h->quantf.quant_8x8( dct, quant_mf, quant_bias );
         }
         else //if( num_coefs == 16 )
         {
             memcpy( orig_coefs, dct, sizeof(dctcoef)*16 );
-            if( !h->quantf.quant_4x4( dct, quant_mf, quant_bias ) )
-                return 0;
+            nz = h->quantf.quant_4x4( dct, quant_mf, quant_bias );
         }
     }
+
+#if TRELLIS_WRAP
+    /* not dc: the asm takes all-zero blocks down the dc-only shortcut, one branch */
+    if( TRELLIS_WRAP_GATE && h->quantf.trellis_wrap_4x4 && (nz || !dc) )
+    {
+        x264_trellis_wrap_t p;
+        trellis_wrap_init( h, &p, unquant_mf, zigzag, ctx_block_cat, lambda2, b_ac, b_chroma, dc, num_coefs, idx );
+        if( dc )
+            return h->quantf.trellis_wrap_dc[num_coefs == 4 ? 0 : num_coefs == 8 ? 1 : 2]( dct, orig_coefs, &p );
+        else if( num_coefs == 64 )
+            return h->quantf.trellis_wrap_8x8( dct, orig_coefs, &p );
+        else
+            return h->quantf.trellis_wrap_4x4( dct, orig_coefs, &p );
+    }
+#endif
+    if( !nz )
+        return 0;
 
     return trellis_cabac_quantised( h, dct, orig_coefs, unquant_mf, zigzag, ctx_block_cat,
                                     lambda2, b_ac, b_chroma, dc, num_coefs, idx );
@@ -1205,6 +1261,15 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
     int b_ac = trellis_ctx_ac[ctx_block_cat];
     h->mc.memcpy_aligned( orig_coefs, dct, sizeof(dctcoef)*4*16 );
     int nz = h->quantf.quant_4x4x4( dct, h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias0[i_quant_cat][i_qp] );
+#if TRELLIS_WRAP
+    if( TRELLIS_WRAP_GATE && h->quantf.trellis_wrap_4x4x4 )
+    {
+        x264_trellis_wrap_t p;
+        trellis_wrap_init( h, &p, h->unquant4_mf[i_quant_cat][i_qp], x264_zigzag_scan4[MB_INTERLACED], ctx_block_cat,
+                           h->mb.i_trellis_lambda2[b_chroma][b_intra], b_ac, b_chroma, 0, 16, idx );
+        return h->quantf.trellis_wrap_4x4x4( dct, orig_coefs, &p );
+    }
+#endif
     int nza = 0;
     for( int i = 0; i < 4; i++ )
         if( nz & (1 << i) )

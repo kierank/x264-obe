@@ -4985,6 +4985,81 @@ static int trellis_ref( const int *unquant_mf, const uint8_t *zigzag, int lambda
     }
     return 1;
 }
+
+#if !defined(_WIN32)
+/* rdo.c's trellis_dc_shortcut */
+static int tw_dc_ref( int sign_coef, int quant_coef, int unquant_mf, int coef_weight, int lambda2, uint8_t *cabac_state, int cost_sig )
+{
+    uint64_t bscore = TREF_SCORE_MAX;
+    int ret = 0;
+    int q = abs( quant_coef );
+    for( int abs_level = q-1; abs_level <= q; abs_level++ )
+    {
+        int unquant_abs_level = (unquant_mf * abs_level + 128) >> 8;
+        int d = sign_coef - ((TREF_SIGN(unquant_abs_level, sign_coef) + 8)&~15);
+        uint64_t score = (int64_t)d*d * coef_weight;
+        if( abs_level )
+        {
+            unsigned f8_bits = cost_sig;
+            int prefix = X264_MIN( abs_level - 1, 14 );
+            f8_bits += x264_cabac_size_decision_noup2( cabac_state+1, prefix > 0 );
+            f8_bits += x264_cabac_size_unary[prefix][cabac_state[5]];
+            if( abs_level >= 15 )
+                f8_bits += bs_size_ue_big( abs_level - 15 ) << 8;
+            score += (uint64_t)f8_bits * lambda2 >> 4;
+        }
+        if( score < bscore )
+        {
+            bscore = score;
+            ret = abs_level;
+        }
+    }
+    return TREF_SIGN(ret, sign_coef);
+}
+
+/* rdo.c's quant_trellis_cabac / x264_quant_4x4x4_trellis after the quant, with trellis_ref.
+ * v: 0 4x4x4, 1 4x4, 2 8x8, 3 dc 2x2, 4 dc 2x4, 5 dc 4x4 */
+static int tw_ref( int v, dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p, int psy )
+{
+    int n = v == 2 ? 64 : v == 3 ? 4 : v == 4 ? 8 : 16;
+    int dc = v >= 3;
+    int b_ac = v <= 1 ? p->arg : 0;
+    int ret = 0;
+    for( int b = 0; b < (v ? 1 : 4); b++ )
+    {
+        dctcoef *d = dct + b*16, *o = orig + b*16;
+        ALIGNED_ARRAY_64( dctcoef, q, [64] );
+        int nz = 0;
+        for( int i = 0; i < n; i++ )
+            nz |= d[i];
+        if( !nz )
+            continue;
+        for( int i = 0; i < n; i++ )
+            q[i] = d[p->zigzag[i]];
+        int last = b_ac-1;
+        for( int i = b_ac; i < n; i++ )
+            if( q[i] )
+                last = i;
+        if( last == 0 && !dc )
+        {
+            int cost_sig = x264_cabac_size_decision_noup2( &p->cabac_state_sig[0], 1 )
+                         + x264_cabac_size_decision_noup2( &p->cabac_state_last[0], 1 );
+            d[0] = tw_dc_ref( o[0], q[0], p->unquant_mf[0], (n == 64 ? x264_dct8_weight2_tab : x264_dct4_weight2_tab)[0],
+                              p->lambda2, p->cabac_state, cost_sig );
+            ret |= !!d[0] << b;
+            continue;
+        }
+        uint64_t ls0;
+        uint16_t ls1;
+        memcpy( &ls0, p->cabac_state, 8 );
+        memcpy( &ls1, p->cabac_state+8, 2 );
+        ret |= trellis_ref( p->unquant_mf, p->zigzag, p->lambda2, last, o, q, d, p->cabac_state_sig, p->cabac_state_last,
+                            ls0, ls1, n, dc, b_ac, n == 64 ? p->arg : 0, psy ? p->fenc_dct + b*16 : NULL,
+                            psy ? p->psy_trellis : 0 ) << b;
+    }
+    return ret;
+}
+#endif
 #endif
 
 static x264_quant_function_t *q8s_qf;
@@ -6251,6 +6326,157 @@ static int check_quant( int cpu_ref, int cpu_new )
         }
     }
     report( "trellis :" );
+#endif
+
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+    ok = 1; used_asm = 0;
+    /* again at each level that changes a trellis_cabac_* core */
+    if( qf_a.trellis_wrap_4x4x4 && (qf_a.trellis_wrap_4x4x4 != qf_ref.trellis_wrap_4x4x4 ||
+        memcmp( &qf_a.trellis_cabac_4x4, &qf_ref.trellis_cabac_4x4, 6*sizeof(void*) )) )
+    {
+        static const char *names[6] = { "trellis_wrap_4x4x4", "trellis_wrap_4x4", "trellis_wrap_8x8",
+                                        "trellis_wrap_dc4", "trellis_wrap_dc8", "trellis_wrap_dc16" };
+        static const uint8_t zz2x2[4] = { 0, 1, 2, 3 };
+        static const uint8_t zz2x4[8] = { 0, 2, 1, 4, 6, 3, 5, 7 };
+        x264_zigzag_function_t twzz[2];
+        x264_zigzag_init( cpu_new, &twzz[0], &twzz[1] );
+        x264_rdo_init();
+        used_asm = 1;
+        for( int v = 0; v < 6 && ok; v++ )
+        for( int psy = 0; psy < (v <= 2 ? 2 : 1) && ok; psy++ )
+        {
+            void *fav = v == 0 ? (void*)qf_a.trellis_wrap_4x4x4 : v == 1 ? (void*)qf_a.trellis_wrap_4x4 :
+                        v == 2 ? (void*)qf_a.trellis_wrap_8x8 : (void*)qf_a.trellis_wrap_dc[v-3];
+            int (*fa)( dctcoef*, dctcoef*, x264_trellis_wrap_t* ) = fav;
+            int n = v == 2 ? 64 : v == 3 ? 4 : v == 4 ? 8 : 16;
+            int nblocks = v ? 1 : 4;
+            int dc = v >= 3;
+            set_func_name( "%s%s", names[v], psy ? "_psy" : "" );
+            srand( bench_seed * 7919 + 100 + v*2 + psy );
+            for( int it = 0; it < 4000; it++ )
+            {
+                ALIGNED_ARRAY_64( dctcoef, tdct, [3],[64] );
+                ALIGNED_ARRAY_64( dctcoef, torig, [64] );
+                ALIGNED_ARRAY_64( dctcoef, tfenc, [64] );
+                ALIGNED_ARRAY_64( int, tunquant, [64] );
+                ALIGNED_ARRAY_16( uint8_t, tstate, [48] );
+                int b_field = it&1;
+                int b_ac = v <= 1 ? (it>>1)&1 : 0;
+                const uint8_t *zigzag = n == 64 ? x264_zigzag_scan8[b_field] : n == 16 ? x264_zigzag_scan4[b_field] :
+                                        n == 8 ? zz2x4 : zz2x2;
+                /* ties: lambda2 0-3, unquant_mf a multiple of 256, few distinct cabac states */
+                int ties = (it>>2)%5 == 4;
+                int lambda2 = ties ? rand()&3 : x264_trellis_lambda2_tab[rand()&1][rand()%(QP_MAX+1)];
+                int coef_max = (1 << (BIT_DEPTH+7)) - 1;
+                int unq_base = (16 + rand()%240) << (rand()%13);
+                for( int k = 0; k < 48; k++ )
+                    tstate[k] = ties ? (rand()&1 ? 0 : 62 + (rand()&1)) : rand()&127;
+                for( int k = 0; k < 64; k++ )
+                {
+                    tunquant[k] = ties ? 256 << (rand()%5) : unq_base * (16 + (rand()&15)) >> 4;
+                    tdct[0][k] = 0;
+                    torig[k] = (rand()&0xff) - 0x80;
+                    tfenc[k] = (rand()&0x3fff) - 0x2000;
+                }
+                for( int b = 0; b < nblocks; b++ )
+                {
+                    /* 0: all zero, 1: one coef, 2: dc only, 3: dense, 4: max levels, 5: typical,
+                     * 6: dc only near the dc rounding / candidate ties, 7: levels in the first two */
+                    int mode = nblocks > 1 ? rand()&7 : (it>>3)&7;
+                    int one = rand()%n;
+                    for( int i = 0; i < n; i++ )
+                    {
+                        int pos = zigzag[i];
+                        int unq = dc ? tunquant[0]<<1 : tunquant[pos];
+                        int step = X264_MAX( unq>>8, 1 );
+                        int level;
+                        if( mode == 0 )
+                            level = 0;
+                        else if( mode == 1 )
+                            level = i == one ? 1 + !(rand()&3)*(rand()%20) : 0;
+                        else if( mode == 2 || mode == 6 )
+                            level = !pos ? (mode == 6 ? 1 + (rand()&1) : (rand()&3) ? 1 + (rand()&3) : 1 + rand()%2000) : 0;
+                        else if( mode == 3 )
+                            level = 1 + (rand()&1) + !(rand()&3);
+                        else if( mode == 4 )
+                            level = (rand()&1) ? 15 + rand()%2000 : 1 + rand()%3;
+                        else if( mode == 7 )
+                            level = i < 2 && (rand()&3) ? 1 + (rand()&3) : 0;
+                        else
+                            level = (rand()%(n+4)) < n-i ? 1 + !(rand()&3) + !(rand()&15)*(rand()&7) : 0;
+                        /* the asm keeps unquant*level in 32 bits and the squared error in 32 bits */
+                        while( level > 1 && ((int64_t)unq*level >= (1<<30) || (int64_t)step*level >= coef_max) )
+                            level >>= 1;
+                        int sign = (rand()&1) ? -1 : 1;
+                        int abs_coef;
+                        if( mode == 6 && level )
+                        {
+                            int u = (tunquant[0]*level + 128) >> 8;
+                            abs_coef = (rand()&1) ? (u & ~15) + 8*(rand()%3) - 8 : (rand()&1) ? ((tunquant[0]*(2*level-1) + 256) >> 9) : u;
+                        }
+                        else if( ties && level )
+                            abs_coef = (rand()&1) ? ((unq*(2*level-1) + 256) >> 9) : (unq*(level-(rand()&1)) + 128) >> 8;
+                        else
+                            abs_coef = level ? ((unq*level + 128) >> 8) + rand()%(step+1) - step/2 : rand()%((step>>1)+1);
+                        abs_coef = x264_clip3( abs_coef, 0, coef_max );
+                        if( level && !abs_coef )
+                            abs_coef = 1;
+                        torig[b*16+pos] = sign*abs_coef;
+                        tfenc[b*16+pos] = torig[b*16+pos] + (rand()&0x3ff) - 0x200;
+                        tdct[0][b*16+pos] = sign*level;
+                    }
+                }
+                if( dc )
+                {
+                    /* dc callers only pass nonzero blocks */
+                    int nz = 0;
+                    for( int i = 0; i < n; i++ )
+                        nz |= tdct[0][i];
+                    if( !nz )
+                    {
+                        int pos = zigzag[rand()%n];
+                        tdct[0][pos] = (rand()&1) ? 1 : -1;
+                        torig[pos] = tdct[0][pos] * X264_MAX( ((tunquant[0]<<1) + 128) >> 8, 1 );
+                    }
+                }
+                x264_trellis_wrap_t p;
+                p.unquant_mf = tunquant;
+                p.zigzag = zigzag;
+                p.cabac_state_sig = tstate;
+                p.cabac_state_last = tstate+16;
+                p.cabac_state = tstate+32;
+                p.fenc_dct = tfenc;
+                p.scan = twzz[b_field].scan_8x8;
+                p.lambda2 = lambda2;
+                p.arg = v <= 1 ? b_ac : v == 2 ? b_field : n-1;
+                p.psy_trellis = 1 + rand()%512;
+                p.b_interlaced = b_field;
+                p.trellis = v <= 1 ? (psy ? (void*)qf_a.trellis_cabac_4x4_psy : (void*)qf_a.trellis_cabac_4x4) :
+                            v == 2 ? (psy ? (void*)qf_a.trellis_cabac_8x8_psy : (void*)qf_a.trellis_cabac_8x8) :
+                            v == 4 ? (void*)qf_a.trellis_cabac_chroma_422_dc : (void*)qf_a.trellis_cabac_dc;
+                memcpy( tdct[1], tdct[0], sizeof(tdct[0]) );
+                memcpy( tdct[2], tdct[0], sizeof(tdct[0]) );
+                int res_c = tw_ref( v, tdct[1], torig, &p, psy );
+                int res_a = call_a1( fa, tdct[2], torig, &p );
+                if( res_c != res_a || memcmp( tdct[1], tdct[2], sizeof(tdct[0]) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "%s%s: [FAILED] it %d b_ac %d field %d: %d != %d\n",
+                             names[v], psy ? "_psy" : "", it, b_ac, b_field, res_c, res_a );
+                    for( int i = 0; i < nblocks*n && i < 64; i++ )
+                        fprintf( stderr, "%d:%d/%d/%d ", i, (int)tdct[0][i], (int)tdct[1][i], (int)tdct[2][i] );
+                    fprintf( stderr, "\n" );
+                    break;
+                }
+                if( !(it&63) )
+                {
+                    memcpy( tdct[2], tdct[0], sizeof(tdct[0]) );
+                    call_a2( fa, tdct[2], torig, &p );
+                }
+            }
+        }
+    }
+    report( "trellis_wrap :" );
 #endif
 
     return ret;

@@ -27,6 +27,24 @@
 #ifndef X264_QUANT_H
 #define X264_QUANT_H
 
+/* CABAC trellis of quantised blocks (trellis_wrap_*): what rdo.c passes the trellis_cabac_* below.
+ * The offsets are fixed: common/x86/trellis-64.asm */
+typedef struct
+{
+    const int *unquant_mf;
+    const uint8_t *zigzag;
+    uint8_t *cabac_state_sig;
+    uint8_t *cabac_state_last;
+    uint8_t *cabac_state;       /* coeff_abs_level_m1 */
+    dctcoef *fenc_dct;          /* psy: the first block's */
+    void *trellis;              /* trellis_cabac_* */
+    void (*scan)( dctcoef level[64], dctcoef dct[64] ); /* 8x8 */
+    int lambda2;
+    int arg;                    /* b_ac (4x4), b_interlaced (8x8), num_coefs-1 (dc) */
+    int psy_trellis;
+    int b_interlaced;           /* 4x4 scan */
+} x264_trellis_wrap_t;
+
 typedef struct
 {
     int (*quant_8x8)  ( dctcoef dct[64], udctcoef mf[64], udctcoef bias[64] );
@@ -67,6 +85,12 @@ typedef struct
     int (*trellis_cabac_8x8_psy)( TRELLIS_PARAMS, int b_interlaced, dctcoef *fenc_dct, int psy_trellis );
     int (*trellis_cabac_dc)( TRELLIS_PARAMS, int num_coefs );
     int (*trellis_cabac_chroma_422_dc)( TRELLIS_PARAMS );
+    /* rdo.c's trellis_cabac_quantised after the quant: scan, dc-only shortcut and trellis_cabac_*.
+     * Return the nonzero mask (4x4x4) or nonzero. dc: 4, 8 and 16 coefs, at least one nonzero. */
+    int (*trellis_wrap_4x4x4)( dctcoef dct[4][16], dctcoef orig[4][16], x264_trellis_wrap_t *p );
+    int (*trellis_wrap_4x4)( dctcoef dct[16], dctcoef orig[16], x264_trellis_wrap_t *p );
+    int (*trellis_wrap_8x8)( dctcoef dct[64], dctcoef orig[64], x264_trellis_wrap_t *p );
+    int (*trellis_wrap_dc[3])( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p );
 } x264_quant_function_t;
 
 #define x264_quant_init x264_template(quant_init)

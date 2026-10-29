@@ -469,9 +469,29 @@ level_run(16)
 #else
 #define INIT_TRELLIS(...)
 #endif
+#if ARCH_X86_64 && !defined(_WIN32)
+/* the asm reads x264_trellis_wrap_t at fixed offsets */
+typedef char x264_trellis_wrap_layout[offsetof( x264_trellis_wrap_t, scan ) == 56 && offsetof( x264_trellis_wrap_t, lambda2 ) == 64 &&
+                                      offsetof( x264_trellis_wrap_t, b_interlaced ) == 76 ? 1 : -1];
+#define INIT_TRELLIS_WRAP(cpu) do {\
+    pf->trellis_wrap_4x4x4 = x264_trellis_wrap_4x4x4_##cpu;\
+    pf->trellis_wrap_4x4 = x264_trellis_wrap_4x4_##cpu;\
+    pf->trellis_wrap_8x8 = x264_trellis_wrap_8x8_##cpu;\
+    pf->trellis_wrap_dc[0] = x264_trellis_wrap_dc4_##cpu;\
+    pf->trellis_wrap_dc[1] = x264_trellis_wrap_dc8_##cpu;\
+    pf->trellis_wrap_dc[2] = x264_trellis_wrap_dc16_##cpu;\
+} while( 0 )
+#else
+#define INIT_TRELLIS_WRAP(...)
+#endif
 
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
 {
+    pf->trellis_wrap_4x4x4 = NULL;
+    pf->trellis_wrap_4x4 = NULL;
+    pf->trellis_wrap_8x8 = NULL;
+    for( int i = 0; i < 3; i++ )
+        pf->trellis_wrap_dc[i] = NULL;
     pf->quant_8x8 = quant_8x8;
     pf->quant_4x4 = quant_4x4;
     pf->quant_4x4x4 = quant_4x4x4;
@@ -601,6 +621,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     {
         pf->quant_4x4 = x264_quant_4x4_avx2;
         INIT_TRELLIS( avx2 );
+        INIT_TRELLIS_WRAP( avx2 );
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx2;
         pf->quant_8x8 = x264_quant_8x8_avx2;
         pf->quant_4x4x4 = x264_quant_4x4x4_avx2;
@@ -797,6 +818,7 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     {
         pf->quant_4x4 = x264_quant_4x4_avx2;
         INIT_TRELLIS( avx2 );
+        INIT_TRELLIS_WRAP( avx2 );
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx2;
         pf->quant_8x8 = x264_quant_8x8_avx2;
         pf->quant_4x4x4 = x264_quant_4x4x4_avx2;

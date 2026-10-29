@@ -169,6 +169,21 @@ tr_qidx:
 %endrep
 %undef tr_j
 
+; trellis_wrap: 4x4 zigzag, frame then field. 8-bit: vpshufb of the low / high
+; 8 words of the block, in both lanes. 10-bit: vpermd, bit 3 picks the half.
+ALIGN 32
+tw_scan4:  db 0,1,8,9,2,3,4,5,10,11,-1,-1,-1,-1,-1,-1,12,13,6,7,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+           db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,1,8,9,2,3,-1,-1,-1,-1,-1,-1,4,5,10,11,12,13,6,7,14,15
+           db 0,1,2,3,8,9,4,5,6,7,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+           db -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+tw_zz4:    dd 0,4,1,2,5,8,12,9,6,3,7,10,13,14,11,15
+           dd 0,1,4,2,3,5,6,7,8,9,10,11,12,13,14,15
+tw_zz2x4d: dd 0,2,1,4,6,3,5,7
+tw_nodcd:  dd 0,-1,-1,-1,-1,-1,-1,-1
+tw_nodcw:  dw 0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+tw_zz2x4w: db 0,1,4,5,2,3,8,9,12,13,6,7,10,11,14,15
+tw_acmask: dq 0xfffefffefffefffe
+
 cextern_common cabac_entropy
 cextern_common cabac_transition
 cextern cabac_size_unary
@@ -1937,3 +1952,530 @@ TRELLIS_ICL trellis_cabac_4x4_psy, 16, 0, 1
 TRELLIS_ICL trellis_cabac_8x8_psy, 64, 0, 1
 TRELLIS_ICL trellis_cabac_dc, 16, 1, 0
 TRELLIS_ICL trellis_cabac_chroma_422_dc, 8, 1, 0
+
+
+
+;=============================================================================
+; trellis_wrap: rdo.c's trellis_cabac_quantised after the quant, unix64 avx2.
+; The blocks with an ac level take the trellis_cabac_* of the x264_trellis_wrap_t
+; (zigzag scan here, last_nnz from the nonzero mask); dc-only and all-zero
+; blocks take trellis_dc_shortcut without branches (all-zero: level 0). 4x4x4
+; loops over the mask of such blocks, not over the 4 blocks.
+; rbx: p, rbp: dct, R14: orig, R12-R13, R15: per function. Outgoing stack
+; arguments at rsp+0, the scanned levels 64-aligned from rsp+64.
+;=============================================================================
+%if UNIX64
+
+%define TW_UNQUANT  0
+%define TW_ZIGZAG   8
+%define TW_SIG     16
+%define TW_LAST    24
+%define TW_STATE   32
+%define TW_FENC    40
+%define TW_TRELLIS 48
+%define TW_SCAN    56
+%define TW_LAMBDA2 64
+%define TW_ARG     68
+%define TW_PSY     72
+%define TW_FIELD   76
+%define TW_STACK   384
+%define TW_BLKSHIFT 5+HIGH_BIT_DEPTH ; log2 of a 4x4 block in bytes
+
+INIT_XMM avx2
+
+; rdi: the scanned levels
+%macro TW_LEVELS 0
+    lea    rdi, [rsp+64+63]
+    and    rdi, ~63
+%endmacro
+
+; 4x4 zigzag scan of [rsi] to [rdi]; eax = nonzero levels in scan order
+%macro TW_SCAN4 0
+    mov    eax, [rbx+TW_FIELD]
+    shl    eax, 6
+%if HIGH_BIT_DEPTH
+    lea    R8, [tw_zz4]
+%else
+    lea    R8, [tw_scan4]
+%endif
+    add    R8, rax
+%if HIGH_BIT_DEPTH
+    vmovdqu   ymm0, [rsi]
+    vmovdqu   ymm1, [rsi+32]
+    vmovdqu   ymm2, [R8]
+    vpermd    ymm3, ymm2, ymm0
+    vpermd    ymm4, ymm2, ymm1
+    vpslld    ymm2, ymm2, 28
+    vblendvps ymm3, ymm3, ymm4, ymm2
+    vmovdqu   ymm2, [R8+32]
+    vpermd    ymm4, ymm2, ymm0
+    vpermd    ymm0, ymm2, ymm1
+    vpslld    ymm2, ymm2, 28
+    vblendvps ymm4, ymm4, ymm0, ymm2
+    vmovdqa   [rdi], ymm3
+    vmovdqa   [rdi+32], ymm4
+    vpackssdw ymm0, ymm3, ymm4
+    vpermq    ymm0, ymm0, q3120
+%else
+    vmovdqu   ymm0, [rsi]
+    vpermq    ymm1, ymm0, q1010
+    vpermq    ymm0, ymm0, q3232
+    vpshufb   ymm1, ymm1, [R8]
+    vpshufb   ymm0, ymm0, [R8+32]
+    vpor      ymm0, ymm0, ymm1
+    vmovdqa   [rdi], ymm0
+%endif
+    vextracti128 xmm1, ymm0, 1
+    vpacksswb xmm0, xmm0, xmm1
+    vpxor     xmm1, xmm1, xmm1
+    vpcmpeqb  xmm0, xmm0, xmm1
+    vpmovmskb eax, xmm0
+    xor       eax, 0xffff
+    vzeroupper
+%endmacro
+
+; trellis_cabac_*( unquant_mf, zigzag, lambda2, last_nnz = ecx, orig + rax, levels,
+;     dct + rax, sig, last, level_state0, level_state1, arg, fenc_dct + rax, psy_trellis )
+%macro TW_CALL 0
+    lea    rdx, [rbp+rax]
+    mov    [rsp+ 0], rdx
+    mov    rdx, [rbx+TW_FENC]
+    add    rdx, rax
+    mov    [rsp+48], rdx
+    lea    R8, [R14+rax]
+    lea    R9, [rsp+64+63]
+    and    R9, ~63
+    mov    rdx, [rbx+TW_SIG]
+    mov    [rsp+ 8], rdx
+    mov    rdx, [rbx+TW_LAST]
+    mov    [rsp+16], rdx
+    mov    rax, [rbx+TW_STATE]
+    mov    rdx, [rax]
+    mov    [rsp+24], rdx
+    movzx  edx, word [rax+8]
+    mov    [rsp+32], rdx
+    mov    edx, [rbx+TW_ARG]
+    mov    [rsp+40], rdx
+    mov    edx, [rbx+TW_PSY]
+    mov    [rsp+56], rdx
+    mov    rdi, [rbx+TW_UNQUANT]
+    mov    rsi, [rbx+TW_ZIGZAG]
+    mov    edx, [rbx+TW_LAMBDA2]
+    call   [rbx+TW_TRELLIS]
+%endmacro
+
+; trellis_dc_shortcut( eax = sign_coef, ecx = quant_coef, ... ) -> eax, 0 if
+; quant_coef is 0: both candidates q-1 and q of q = max(|quant_coef|, 1), the
+; lower score (q on a strict <). q >= 15 at .tw_big%2.
+; clobbers rcx, rdx, rsi, rdi, R8-R11, [rsp+0..19]
+%macro TW_DC 2 ; coef_weight2 table, label suffix
+    mov    [rsp+16], ecx
+    mov    edx, ecx
+    neg    ecx
+    cmovs  ecx, edx
+    mov    edx, 1
+    cmp    ecx, edx
+    cmovl  ecx, edx
+    ; ssd: d = sign_coef - ((SIGN( (unquant_mf[0]*level + 128) >> 8, sign_coef ) + 8) & ~15)
+    mov    rdx, [rbx+TW_UNQUANT]
+    mov    edx, [rdx]
+    mov    R9d, edx
+    imul   R9d, ecx
+    mov    R10d, R9d
+    sub    R10d, edx
+    add    R9d, 128
+    add    R10d, 128
+    sar    R9d, 8
+    sar    R10d, 8
+    mov    edx, eax
+    sar    edx, 31
+    xor    R9d, edx
+    xor    R10d, edx
+    sub    R9d, edx
+    sub    R10d, edx
+    add    R9d, 8
+    add    R10d, 8
+    and    R9d, ~15
+    and    R10d, ~15
+    mov    R11d, eax
+    sub    R11d, R9d
+    sub    eax, R10d
+    movsxd R11, R11d
+    cdqe
+    imul   R11, R11
+    imul   rax, rax
+    lea    R9, [%1]
+    mov    R9d, [R9]
+    imul   R11, R9
+    imul   rax, R9
+    mov    [rsp+8], R11
+    mov    [rsp+0], rax
+    ; bits: sig and last of position 0, coeff_abs_level_m1 ctx 1 and 5
+    lea    R10, [cabac_entropy]
+    mov    rsi, [rbx+TW_SIG]
+    movzx  esi, byte [rsi]
+    mov    rdi, [rbx+TW_LAST]
+    movzx  edi, byte [rdi]
+    xor    esi, 1
+    xor    edi, 1
+    movzx  esi, word [R10+rsi*2]
+    movzx  edi, word [R10+rdi*2]
+    add    esi, edi
+    mov    rdi, [rbx+TW_STATE]
+    movzx  eax, byte [rdi+1]
+    movzx  edi, byte [rdi+5]
+    lea    R11, [cabac_size_unary]
+    lea    R11, [R11+rdi*2]
+    xor    R8d, R8d
+    xor    R9d, R9d
+    cmp    ecx, 1
+    seta   R8b
+    cmp    ecx, 2
+    seta   R9b
+    xor    R8d, eax
+    xor    R9d, eax
+    movzx  R8d, word [R10+R8*2]
+    movzx  R9d, word [R10+R9*2]
+    add    R8d, esi
+    add    R9d, esi
+    cmp    ecx, 15
+    jge .tw_big%2
+    lea    eax, [rcx-1]
+    shl    eax, 8
+    movzx  eax, word [R11+rax]
+    add    R8d, eax
+    lea    eax, [rcx-2]
+    xor    esi, esi
+    test   eax, eax
+    cmovs  eax, esi
+    shl    eax, 8
+    movzx  eax, word [R11+rax]
+    add    R9d, eax
+    cmp    ecx, 1
+    cmove  R9d, esi
+.tw_bits%2:
+    mov    eax, [rbx+TW_LAMBDA2]
+    imul   R8, rax
+    imul   R9, rax
+    shr    R8, CABAC_SIZE_BITS - LAMBDA_BITS
+    shr    R9, CABAC_SIZE_BITS - LAMBDA_BITS
+    add    R8, [rsp+8]
+    add    R9, [rsp+0]
+    lea    eax, [rcx-1]
+    cmp    R8, R9
+    cmovb  eax, ecx
+    xor    eax, edx
+    sub    eax, edx
+    xor    ecx, ecx
+    cmp    dword [rsp+16], 0
+    cmove  eax, ecx
+%endmacro
+
+; levels >= 15: prefixes min( level-1, 14 ), suffixes bs_size_ue_big( level-15 )
+%macro TW_DC_BIG 1
+.tw_big%1:
+    movzx  eax, word [R11+14*256]
+    add    R8d, eax
+    lea    eax, [rcx-14]
+    bsr    eax, eax
+    lea    eax, [rax*2+1]
+    shl    eax, CABAC_SIZE_BITS
+    add    R8d, eax
+    lea    eax, [rcx-2]
+    mov    esi, 14
+    cmp    eax, esi
+    cmovg  eax, esi
+    shl    eax, 8
+    movzx  eax, word [R11+rax]
+    add    R9d, eax
+    lea    eax, [rcx-15]
+    test   eax, eax
+    jz .tw_bits%1
+    bsr    eax, eax
+    lea    eax, [rax*2+1]
+    shl    eax, CABAC_SIZE_BITS
+    add    R9d, eax
+    jmp .tw_bits%1
+%endmacro
+
+%if HIGH_BIT_DEPTH
+    %define TW_LOAD mov
+    %define TW_COEF dword
+%else
+    %define TW_LOAD movsx
+    %define TW_COEF word
+%endif
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_4x4x4( dctcoef dct[4][16], dctcoef orig[4][16], x264_trellis_wrap_t *p )
+;-----------------------------------------------------------------------------
+cglobal trellis_wrap_4x4x4, 3,15,6, TW_STACK
+    mov    rbx, rdx
+    mov    rbp, rdi
+    mov    R14, rsi
+    ; nonzero coefs, 16 bits per block in raster order
+%if HIGH_BIT_DEPTH
+    vmovdqu   ymm0, [rbp+  0]
+    vpackssdw ymm0, ymm0, [rbp+ 32]
+    vmovdqu   ymm1, [rbp+ 64]
+    vpackssdw ymm1, ymm1, [rbp+ 96]
+    vmovdqu   ymm2, [rbp+128]
+    vpackssdw ymm2, ymm2, [rbp+160]
+    vmovdqu   ymm3, [rbp+192]
+    vpackssdw ymm3, ymm3, [rbp+224]
+    vpacksswb ymm0, ymm0, ymm1
+    vpacksswb ymm2, ymm2, ymm3
+    vmovdqu   ymm4, [deinterleave_shufd]
+    vpermd    ymm0, ymm4, ymm0
+    vpermd    ymm1, ymm4, ymm2
+%else
+    vmovdqu   ymm0, [rbp+ 0]
+    vpacksswb ymm0, ymm0, [rbp+32]
+    vmovdqu   ymm1, [rbp+64]
+    vpacksswb ymm1, ymm1, [rbp+96]
+    vpermq    ymm0, ymm0, q3120
+    vpermq    ymm1, ymm1, q3120
+%endif
+    vpxor     xmm2, xmm2, xmm2
+    vpcmpeqb  ymm0, ymm0, ymm2
+    vpcmpeqb  ymm1, ymm1, ymm2
+    vpmovmskb eax, ymm0
+    vpmovmskb ecx, ymm1
+    shl       rcx, 32
+    or        rax, rcx
+    not       rax
+    mov       rcx, [tw_acmask]
+    and       rcx, rax
+    ; per block: nonzero (bits 0-3), an ac level (bits 4-7)
+    vmovq     xmm0, rax
+    vpinsrq   xmm0, xmm0, rcx, 1
+    vpcmpeqw  xmm0, xmm0, xmm2
+    vpacksswb xmm0, xmm0, xmm0
+    vpmovmskb eax, xmm0
+    vzeroupper
+    not       eax
+    mov       R15d, eax
+    shr       R15d, 4
+    and       R15d, 15
+    mov       ecx, R15d
+    not       ecx
+    and       eax, ecx
+    and       eax, 15
+    xor       R12d, R12d
+    test      eax, eax
+    jnz .dc
+.dc_done:
+    test      R15d, R15d
+    jz .end
+.block:
+    bsf       R13d, R15d
+    mov       esi, R13d
+    shl       esi, TW_BLKSHIFT
+    add       rsi, rbp
+    TW_LEVELS
+    TW_SCAN4
+    bsr       ecx, eax
+    mov       eax, R13d
+    shl       eax, TW_BLKSHIFT
+    TW_CALL
+    mov       ecx, R13d
+    shl       eax, cl
+    or        R12d, eax
+    lea       eax, [R15-1]
+    and       R15d, eax
+    jnz .block
+.end:
+    mov       eax, R12d
+    RET
+
+    ; dc-only blocks: rare
+.dc:
+    mov       R13d, eax
+.dc_loop:
+    bsf       ecx, R13d
+    shl       ecx, TW_BLKSHIFT
+    TW_LOAD   eax, TW_COEF [R14+rcx]
+    TW_LOAD   ecx, TW_COEF [rbp+rcx]
+    TW_DC     dct4_weight2_tab, 0
+    bsf       ecx, R13d
+    mov       edx, ecx
+    shl       edx, TW_BLKSHIFT
+%if HIGH_BIT_DEPTH
+    mov       [rbp+rdx], eax
+%else
+    mov       [rbp+rdx], ax
+%endif
+    test      eax, eax
+    setnz     al
+    movzx     eax, al
+    shl       eax, cl
+    or        R12d, eax
+    lea       eax, [R13-1]
+    and       R13d, eax
+    jnz .dc_loop
+    jmp .dc_done
+    TW_DC_BIG 0
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_4x4( dctcoef dct[16], dctcoef orig[16], x264_trellis_wrap_t *p )
+; int trellis_wrap_8x8( dctcoef dct[64], dctcoef orig[64], x264_trellis_wrap_t *p )
+;-----------------------------------------------------------------------------
+%macro TW_ONE 1 ; num_coefs
+cglobal trellis_wrap_%1x%1, 3,15,6, TW_STACK
+    mov    rbx, rdx
+    mov    rbp, rdi
+    mov    R14, rsi
+    ; an ac level?
+%if HIGH_BIT_DEPTH
+    vmovdqu   ymm0, [rbp]
+    vpand     ymm0, ymm0, [tw_nodcd]
+    vpor      ymm0, ymm0, [rbp+32]
+%if %1 == 8
+%assign i 64
+%rep 6
+    vpor      ymm0, ymm0, [rbp+i]
+%assign i i+32
+%endrep
+%endif
+%else
+    vmovdqu   ymm0, [rbp]
+    vpand     ymm0, ymm0, [tw_nodcw]
+%if %1 == 8
+    vpor      ymm0, ymm0, [rbp+32]
+    vpor      ymm0, ymm0, [rbp+64]
+    vpor      ymm0, ymm0, [rbp+96]
+%endif
+%endif
+    vptest    ymm0, ymm0
+    vzeroupper
+    jz .dconly
+    TW_LEVELS
+    mov       rsi, rbp
+%if %1 == 4
+    TW_SCAN4
+    bsr       ecx, eax
+%else
+    call      [rbx+TW_SCAN]
+    TW_LEVELS
+%if HIGH_BIT_DEPTH
+    vmovdqa   ymm0, [rdi+  0]
+    vpackssdw ymm0, ymm0, [rdi+ 32]
+    vmovdqa   ymm1, [rdi+ 64]
+    vpackssdw ymm1, ymm1, [rdi+ 96]
+    vmovdqa   ymm2, [rdi+128]
+    vpackssdw ymm2, ymm2, [rdi+160]
+    vmovdqa   ymm3, [rdi+192]
+    vpackssdw ymm3, ymm3, [rdi+224]
+    vpacksswb ymm0, ymm0, ymm1
+    vpacksswb ymm2, ymm2, ymm3
+    vmovdqu   ymm4, [deinterleave_shufd]
+    vpermd    ymm0, ymm4, ymm0
+    vpermd    ymm1, ymm4, ymm2
+%else
+    vmovdqa   ymm0, [rdi+ 0]
+    vpacksswb ymm0, ymm0, [rdi+32]
+    vmovdqa   ymm1, [rdi+64]
+    vpacksswb ymm1, ymm1, [rdi+96]
+    vpermq    ymm0, ymm0, q3120
+    vpermq    ymm1, ymm1, q3120
+%endif
+    vpxor     xmm2, xmm2, xmm2
+    vpcmpeqb  ymm0, ymm0, ymm2
+    vpcmpeqb  ymm1, ymm1, ymm2
+    vpmovmskb eax, ymm0
+    vpmovmskb ecx, ymm1
+    vzeroupper
+    shl       rcx, 32
+    or        rax, rcx
+    not       rax
+    bsr       rcx, rax
+%endif
+    xor       eax, eax
+    TW_CALL
+    RET
+
+.dconly:
+    TW_LOAD   eax, TW_COEF [R14]
+    TW_LOAD   ecx, TW_COEF [rbp]
+%if %1 == 4
+    TW_DC     dct4_weight2_tab, 0
+%else
+    TW_DC     dct8_weight2_tab, 0
+%endif
+%if HIGH_BIT_DEPTH
+    mov       [rbp], eax
+%else
+    mov       [rbp], ax
+%endif
+    test      eax, eax
+    setnz     al
+    movzx     eax, al
+    RET
+    TW_DC_BIG 0
+%endmacro
+
+TW_ONE 4
+TW_ONE 8
+
+;-----------------------------------------------------------------------------
+; int trellis_wrap_dc4/dc8/dc16( dctcoef *dct, dctcoef *orig, x264_trellis_wrap_t *p )
+; at least one nonzero level
+;-----------------------------------------------------------------------------
+%macro TW_DCN 1 ; num_coefs
+cglobal trellis_wrap_dc%1, 3,15,6, TW_STACK
+    mov    rbx, rdx
+    mov    rbp, rdi
+    mov    R14, rsi
+    TW_LEVELS
+%if %1 == 16
+    mov    rsi, rbp
+    TW_SCAN4
+%elif %1 == 8
+%if HIGH_BIT_DEPTH
+    vmovdqu   ymm1, [tw_zz2x4d]
+    vpermd    ymm0, ymm1, [rbp]
+    vmovdqa   [rdi], ymm0
+    vpxor     xmm1, xmm1, xmm1
+    vpcmpeqd  ymm0, ymm0, ymm1
+    vmovmskps eax, ymm0
+%else
+    vmovdqu   xmm0, [rbp]
+    vpshufb   xmm0, xmm0, [tw_zz2x4w]
+    vmovdqa   [rdi], xmm0
+    vpxor     xmm1, xmm1, xmm1
+    vpcmpeqw  xmm0, xmm0, xmm1
+    vpacksswb xmm0, xmm0, xmm0
+    vpmovmskb eax, xmm0
+%endif
+    vzeroupper
+    not       eax
+    and       eax, 0xff
+%else
+%if HIGH_BIT_DEPTH
+    vmovdqu   xmm0, [rbp]
+    vmovdqa   [rdi], xmm0
+    vpxor     xmm1, xmm1, xmm1
+    vpcmpeqd  xmm0, xmm0, xmm1
+    vmovmskps eax, xmm0
+%else
+    vmovq     xmm0, [rbp]
+    vmovq     [rdi], xmm0
+    vpxor     xmm1, xmm1, xmm1
+    vpcmpeqw  xmm0, xmm0, xmm1
+    vpacksswb xmm0, xmm0, xmm0
+    vpmovmskb eax, xmm0
+%endif
+    not       eax
+    and       eax, 15
+%endif
+    bsr       ecx, eax
+    xor       eax, eax
+    TW_CALL
+    RET
+%endmacro
+
+TW_DCN 4
+TW_DCN 8
+TW_DCN 16
+
+%endif ; UNIX64
