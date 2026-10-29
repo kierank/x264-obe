@@ -925,6 +925,55 @@ void trellis_wrap_init( x264_t *h, x264_trellis_wrap_t *p, const int *unquant_mf
     }
 }
 
+/* trellis wrapper counters: per block type { calls, zero, dc-only, ac };
+ * 4x4x4 groups: calls, all zero, then by #ac blocks 0-4, by #dc-only blocks 0-4 */
+static uint64_t trcnt[4][4];
+static uint64_t trcnt_g[12];
+#define TRCNT_ADD(x) __atomic_fetch_add( &(x), 1, __ATOMIC_RELAXED )
+static int trcnt_class( dctcoef *dct, int n )
+{
+    int ac = 0;
+    for( int i = 1; i < n; i++ )
+        ac |= dct[i];
+    return ac ? 3 : dct[0] ? 2 : 1;
+}
+static void trcnt_block( int type, dctcoef *dct, int n )
+{
+    TRCNT_ADD( trcnt[type][0] );
+    TRCNT_ADD( trcnt[type][trcnt_class( dct, n )] );
+}
+static void trcnt_group( dctcoef dct[4][16] )
+{
+    int nac = 0, ndc = 0, nz = 0;
+    TRCNT_ADD( trcnt_g[0] );
+    for( int i = 0; i < 4; i++ )
+    {
+        int c = trcnt_class( dct[i], 16 );
+        trcnt_block( 0, dct[i], 16 );
+        nac += c == 3;
+        ndc += c == 2;
+        nz |= c != 1;
+    }
+    if( !nz )
+        TRCNT_ADD( trcnt_g[1] );
+    TRCNT_ADD( trcnt_g[2+nac] );
+    TRCNT_ADD( trcnt_g[7+ndc] );
+}
+void x264_trellis_cnt_print( void )
+{
+    static const char *names[4] = { "4x4x4 blk", "4x4", "8x8", "dc" };
+    uint64_t c[4][4], g[12];
+    for( int i = 0; i < 16; i++ )
+        c[i>>2][i&3] = __atomic_load_n( &trcnt[i>>2][i&3], __ATOMIC_RELAXED );
+    for( int i = 0; i < 12; i++ )
+        g[i] = __atomic_load_n( &trcnt_g[i], __ATOMIC_RELAXED );
+    for( int t = 0; t < 4; t++ )
+        fprintf( stderr, "trcnt %d %-9s calls %"PRIu64" zero %"PRIu64" dc-only %"PRIu64" ac %"PRIu64"\n", BIT_DEPTH,
+                 names[t], c[t][0], c[t][1], c[t][2], c[t][3] );
+    fprintf( stderr, "trcnt %d 4x4x4 groups %"PRIu64" all-zero %"PRIu64" ac-blocks/group 0-4: %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64
+             " dc-only/group 0-4: %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64"\n", BIT_DEPTH, g[0], g[1],
+             g[2], g[3], g[4], g[5], g[6], g[7], g[8], g[9], g[10], g[11] );
+}
 static ALWAYS_INLINE
 int quant_trellis_cabac( x264_t *h, dctcoef *dct,
                          udctcoef *quant_mf, udctcoef *quant_bias, const int *unquant_mf,
@@ -963,6 +1012,7 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
         }
     }
 
+    trcnt_block( dc ? 3 : num_coefs == 64 ? 2 : 1, dct, num_coefs );
 #if TRELLIS_WRAP
     /* not dc: the asm takes all-zero blocks down the dc-only shortcut, one branch */
     if( TRELLIS_WRAP_GATE && h->quantf.trellis_wrap_4x4 && (nz || !dc) )
@@ -1261,6 +1311,7 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
     int b_ac = trellis_ctx_ac[ctx_block_cat];
     h->mc.memcpy_aligned( orig_coefs, dct, sizeof(dctcoef)*4*16 );
     int nz = h->quantf.quant_4x4x4( dct, h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias0[i_quant_cat][i_qp] );
+    trcnt_group( dct );
 #if TRELLIS_WRAP
     if( TRELLIS_WRAP_GATE && h->quantf.trellis_wrap_4x4x4 )
     {
