@@ -1764,7 +1764,7 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
 }
 
 #if !HIGH_BIT_DEPTH
-/* common/x86/lowres-64.asm reads x264_lowres_p_t at fixed offsets */
+/* common/x86/lowres-64.asm mirrors x264_lowres_p_t as struc lowres_p */
 typedef char x264_lowres_p_layout[offsetof( x264_lowres_p_t, get_ref ) == 64 && offsetof( x264_lowres_p_t, fenc ) == 72 &&
                                   offsetof( x264_lowres_p_t, ref_w ) == 112 && offsetof( x264_lowres_p_t, output_intra ) == 184 &&
                                   offsetof( x264_lowres_p_t, stride ) == 192 && offsetof( x264_lowres_p_t, weighted ) == 252 &&
