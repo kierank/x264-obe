@@ -69,7 +69,7 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
     else
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
     /* subpel_search wants sad fpelcmp */
-    if( satd && param->analyse.i_me_method != X264_ME_TESA )
+    if( satd && param->analyse.i_me_method != X264_ME_TESA && x264_subpelf_gate )
         memcpy( h->pixf.mbcmp_subpel_search, h->pixf.satd_subpel_search, sizeof(h->pixf.mbcmp_subpel_search) );
     else
         memset( h->pixf.mbcmp_subpel_search, 0, sizeof(h->pixf.mbcmp_subpel_search) );

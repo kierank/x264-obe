@@ -1613,7 +1613,7 @@ static void mbcmp_init( x264_t *h )
                                : satd ? h->pixf.intra_sa8d_x9_8x8 : h->pixf.intra_sad_x9_8x8;
     h->pixf.intra_mbcmp_lowres = satd ? h->pixf.intra_satd_lowres : NULL;
     /* subpel_search wants sad fpelcmp */
-    if( satd && h->param.analyse.i_me_method != X264_ME_TESA )
+    if( satd && h->param.analyse.i_me_method != X264_ME_TESA && x264_subpelf_gate )
         memcpy( h->pixf.mbcmp_subpel_search, h->pixf.satd_subpel_search, sizeof(h->pixf.mbcmp_subpel_search) );
     else
         memset( h->pixf.mbcmp_subpel_search, 0, sizeof(h->pixf.mbcmp_subpel_search) );
