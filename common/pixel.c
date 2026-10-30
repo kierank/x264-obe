@@ -1265,6 +1265,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->weightp_sum8_clip = pixel_weightp_sum8_clip;
     pixf->weightp_sum8_nv = pixel_weightp_sum8_nv;
     pixf->weightp_dc8x8 = pixel_weightp_dc8x8;
+    pixf->mvpred_16x16 = x264_mvpred_16x16_c;
+    pixf->mvpred = x264_mvpred_c;
+    pixf->mvpred_pskip = x264_mvpred_pskip_c;
+    pixf->mvpred_ref16x16 = x264_mvpred_ref16x16_c;
 
     pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4;
     pixf->intra_satd_x3_4x4   = x264_intra_satd_x3_4x4;

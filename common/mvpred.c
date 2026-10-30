@@ -25,159 +25,132 @@
  * For more information, contact us at licensing@x264.com.
  *****************************************************************************/
 
+
 #include "common.h"
+
+/* h->mb offsets read by common/x86/mvpred-a.asm. They precede mb.pic, so they are
+ * the same at both bit depths. */
+#define MB_OFFSET(x) (offsetof( x264_t, mb.x ) - offsetof( x264_t, mb ))
+_Static_assert( MB_OFFSET(i_mb_width) == 0 && MB_OFFSET(i_mb_height) == 4 && MB_OFFSET(i_mb_stride) == 20 &&
+                MB_OFFSET(i_mb_x) == 48 && MB_OFFSET(i_mb_y) == 52 && MB_OFFSET(i_mb_xy) == 56 &&
+                MB_OFFSET(b_interlaced) == 100 && MB_OFFSET(i_mb_left_xy) == 340 && MB_OFFSET(i_mb_top_xy) == 348 &&
+                MB_OFFSET(i_mb_topleft_xy) == 352 && MB_OFFSET(i_mb_topright_xy) == 356 &&
+                MB_OFFSET(mvr) == 512 && sizeof(((x264_t*)0)->mb.mvr) == 2*X264_REF_MAX*2*8 && MB_OFFSET(field) == 1048 &&
+                MB_OFFSET(mvref.b_mbaff) == 1056 && MB_OFFSET(mvref.b_tmvp) == 1060 && MB_OFFSET(mvref.b_tconv) == 1064 &&
+                MB_OFFSET(mvref.l0_mv16x16) == 1072 && MB_OFFSET(mvref.l0_field) == 1080 && MB_OFFSET(mvref.tscale) == 1088 &&
+                sizeof(((x264_t*)0)->mb.mvref.tscale) == 2*2*2*X264_REF_MAX*2*4,
+                "h->mb offsets of common/x86/mvpred-a.asm" );
+_Static_assert( X264_SCAN8_0 == 12 && sizeof(((x264_t*)0)->mb.cache.mv[0][0]) == 4 &&
+                sizeof(((x264_t*)0)->mb.cache.ref[0][0]) == 1,
+                "mb cache layout of common/x86/mvpred-a.asm" );
+
+/* The mvp of a partition from its scan8 position in the cache of one list: A at
+ * ref[-1], B at ref[-8], C at ref[i_c], D at ref[-9] in place of C if C is
+ * unavailable, mv_tr in place of either if b_tr. dir 1/2/4: 16x8 and 8x16 take
+ * A/B/C if it has i_ref. */
+static ALWAYS_INLINE void mvpred( int8_t *ref, int16_t (*mv)[2], int i_ref, int16_t mvp[2], int i_c, int dir,
+                                  int b_tr, int i_ref_tr, int16_t *mv_tr )
+{
+    int     i_refa = ref[-1];
+    int16_t *mv_a  = mv[-1];
+    int     i_refb = ref[-8];
+    int16_t *mv_b  = mv[-8];
+    int     i_refc = ref[i_c];
+    int16_t *mv_c  = mv[i_c];
+    if( i_refc == -2 )
+    {
+        i_refc = ref[-9];
+        mv_c   = mv[-9];
+    }
+    if( b_tr )
+    {
+        i_refc = i_ref_tr;
+        mv_c   = mv_tr;
+    }
+
+    if( dir == 1 && i_refa == i_ref )
+    {
+        CP32( mvp, mv_a );
+        return;
+    }
+    if( dir == 2 && i_refb == i_ref )
+    {
+        CP32( mvp, mv_b );
+        return;
+    }
+    if( dir == 4 && i_refc == i_ref )
+    {
+        CP32( mvp, mv_c );
+        return;
+    }
+
+    int i_count = (i_refa == i_ref) + (i_refb == i_ref) + (i_refc == i_ref);
+
+    if( i_count > 1 )
+    {
+median:
+        x264_median_mv( mvp, mv_a, mv_b, mv_c );
+    }
+    else if( i_count == 1 )
+    {
+        if( i_refa == i_ref )
+            CP32( mvp, mv_a );
+        else if( i_refb == i_ref )
+            CP32( mvp, mv_b );
+        else
+            CP32( mvp, mv_c );
+    }
+    else if( i_refb == -2 && i_refc == -2 && i_refa != -2 )
+        CP32( mvp, mv_a );
+    else
+        goto median;
+}
+
+void x264_mvpred_16x16_c( int8_t *ref, int16_t (*mv)[2], intptr_t i_ref, int16_t mvp[2] )
+{
+    mvpred( ref, mv, i_ref, mvp, 4 - 8, 0, 0, 0, NULL );
+}
+
+/* mode: i_c in bits 0-7, dir << 9, b_tr << 12, i_ref_tr in bits 24-31; i_ref is ref[0] */
+void x264_mvpred_c( int8_t *ref, int16_t (*mv)[2], int16_t mvp[2], intptr_t mode, int16_t *mv_tr )
+{
+    mvpred( ref, mv, ref[0], mvp, (int8_t)mode, (mode >> 9) & 7, (mode >> 12) & 1, (int8_t)((uint32_t)mode >> 24), mv_tr );
+}
+
+void x264_mvpred_pskip_c( int8_t *ref, int16_t (*mv)[2], int16_t mvp[2] )
+{
+    int i_refa = ref[-1];
+    int i_refb = ref[-8];
+
+    if( i_refa == -2 || i_refb == -2 ||
+        !( i_refa | M32( mv[-1] ) ) ||
+        !( i_refb | M32( mv[-8] ) ) )
+    {
+        M32( mvp ) = 0;
+    }
+    else
+        mvpred( ref, mv, 0, mvp, 4 - 8, 0, 0, 0, NULL );
+}
 
 void x264_mb_predict_mv( x264_t *h, int i_list, int idx, int i_width, int16_t mvp[2] )
 {
     const int i8 = x264_scan8[idx];
-    const int i_ref= h->mb.cache.ref[i_list][i8];
-    int     i_refa = h->mb.cache.ref[i_list][i8 - 1];
-    int16_t *mv_a  = h->mb.cache.mv[i_list][i8 - 1];
-    int     i_refb = h->mb.cache.ref[i_list][i8 - 8];
-    int16_t *mv_b  = h->mb.cache.mv[i_list][i8 - 8];
-    int     i_refc = h->mb.cache.ref[i_list][i8 - 8 + i_width];
-    int16_t *mv_c  = h->mb.cache.mv[i_list][i8 - 8 + i_width];
-
     // Partitions not yet reached in scan order are unavailable.
-    if( (idx&3) >= 2 + (i_width&1) || i_refc == -2 )
+    int b_forced = (idx&3) >= 2 + (i_width&1);
+    uint32_t mode = ((b_forced ? -8 - 1 : -8 + i_width) & 0xff)
+                  | (h->mb.i_partition == D_16x8 ? (idx ? 1 : 2) : h->mb.i_partition == D_8x16 ? (idx ? 4 : 1) : 0) << 9;
+    int16_t *mv_tr = NULL;
+    /* MBAFF: C of blocks 2, 8 and 10 from the left pair's topright if it is the other type */
+    if( SLICE_MBAFF && (idx == 2 || idx == 8 || idx == 10)
+        && (b_forced || h->mb.cache.ref[i_list][i8 - 8 + i_width] == -2)
+        && h->mb.cache.ref[i_list][x264_scan8[0]-1] != -2
+        && MB_INTERLACED != h->mb.field[h->mb.i_mb_left_xy[0]] )
     {
-        i_refc = h->mb.cache.ref[i_list][i8 - 8 - 1];
-        mv_c   = h->mb.cache.mv[i_list][i8 - 8 - 1];
-
-        if( SLICE_MBAFF
-            && h->mb.cache.ref[i_list][x264_scan8[0]-1] != -2
-            && MB_INTERLACED != h->mb.field[h->mb.i_mb_left_xy[0]] )
-        {
-            if( idx == 2 )
-            {
-                mv_c = h->mb.cache.topright_mv[i_list][0];
-                i_refc = h->mb.cache.topright_ref[i_list][0];
-            }
-            else if( idx == 8 )
-            {
-                mv_c = h->mb.cache.topright_mv[i_list][1];
-                i_refc = h->mb.cache.topright_ref[i_list][1];
-            }
-            else if( idx == 10 )
-            {
-                mv_c = h->mb.cache.topright_mv[i_list][2];
-                i_refc = h->mb.cache.topright_ref[i_list][2];
-            }
-        }
+        int t = idx == 2 ? 0 : idx == 8 ? 1 : 2;
+        mode |= 1 << 12 | (uint32_t)(uint8_t)h->mb.cache.topright_ref[i_list][t] << 24;
+        mv_tr = h->mb.cache.topright_mv[i_list][t];
     }
-    if( h->mb.i_partition == D_16x8 )
-    {
-        if( idx == 0 )
-        {
-            if( i_refb == i_ref )
-            {
-                CP32( mvp, mv_b );
-                return;
-            }
-        }
-        else
-        {
-            if( i_refa == i_ref )
-            {
-                CP32( mvp, mv_a );
-                return;
-            }
-        }
-    }
-    else if( h->mb.i_partition == D_8x16 )
-    {
-        if( idx == 0 )
-        {
-            if( i_refa == i_ref )
-            {
-                CP32( mvp, mv_a );
-                return;
-            }
-        }
-        else
-        {
-            if( i_refc == i_ref )
-            {
-                CP32( mvp, mv_c );
-                return;
-            }
-        }
-    }
-
-    int i_count = (i_refa == i_ref) + (i_refb == i_ref) + (i_refc == i_ref);
-
-    if( i_count > 1 )
-    {
-median:
-        x264_median_mv( mvp, mv_a, mv_b, mv_c );
-    }
-    else if( i_count == 1 )
-    {
-        if( i_refa == i_ref )
-            CP32( mvp, mv_a );
-        else if( i_refb == i_ref )
-            CP32( mvp, mv_b );
-        else
-            CP32( mvp, mv_c );
-    }
-    else if( i_refb == -2 && i_refc == -2 && i_refa != -2 )
-        CP32( mvp, mv_a );
-    else
-        goto median;
-}
-
-void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i_ref, int16_t mvp[2] )
-{
-    int     i_refa = h->mb.cache.ref[i_list][X264_SCAN8_0 - 1];
-    int16_t *mv_a  = h->mb.cache.mv[i_list][X264_SCAN8_0 - 1];
-    int     i_refb = h->mb.cache.ref[i_list][X264_SCAN8_0 - 8];
-    int16_t *mv_b  = h->mb.cache.mv[i_list][X264_SCAN8_0 - 8];
-    int     i_refc = h->mb.cache.ref[i_list][X264_SCAN8_0 - 8 + 4];
-    int16_t *mv_c  = h->mb.cache.mv[i_list][X264_SCAN8_0 - 8 + 4];
-    if( i_refc == -2 )
-    {
-        i_refc = h->mb.cache.ref[i_list][X264_SCAN8_0 - 8 - 1];
-        mv_c   = h->mb.cache.mv[i_list][X264_SCAN8_0 - 8 - 1];
-    }
-
-    int i_count = (i_refa == i_ref) + (i_refb == i_ref) + (i_refc == i_ref);
-
-    if( i_count > 1 )
-    {
-median:
-        x264_median_mv( mvp, mv_a, mv_b, mv_c );
-    }
-    else if( i_count == 1 )
-    {
-        if( i_refa == i_ref )
-            CP32( mvp, mv_a );
-        else if( i_refb == i_ref )
-            CP32( mvp, mv_b );
-        else
-            CP32( mvp, mv_c );
-    }
-    else if( i_refb == -2 && i_refc == -2 && i_refa != -2 )
-        CP32( mvp, mv_a );
-    else
-        goto median;
-}
-
-
-void x264_mb_predict_mv_pskip( x264_t *h, int16_t mv[2] )
-{
-    int     i_refa = h->mb.cache.ref[0][X264_SCAN8_0 - 1];
-    int     i_refb = h->mb.cache.ref[0][X264_SCAN8_0 - 8];
-    int16_t *mv_a  = h->mb.cache.mv[0][X264_SCAN8_0 - 1];
-    int16_t *mv_b  = h->mb.cache.mv[0][X264_SCAN8_0 - 8];
-
-    if( i_refa == -2 || i_refb == -2 ||
-        !( i_refa | M32( mv_a ) ) ||
-        !( i_refb | M32( mv_b ) ) )
-    {
-        M32( mv ) = 0;
-    }
-    else
-        x264_mb_predict_mv_16x16( h, 0, 0, mv );
+    h->pixf.mvpred( &h->mb.cache.ref[i_list][i8], &h->mb.cache.mv[i_list][i8], mvp, mode, mv_tr );
 }
 
 static int x264_mb_predict_mv_direct16x16_temporal( x264_t *h )
@@ -515,10 +488,11 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed )
     return b_available;
 }
 
-/* This just improves encoder performance, it's not part of the spec */
-void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
+/* The spatial and temporal candidates of x264_mb_predict_mv_ref16x16, from h->mb
+ * and the slice's mvref. */
+int x264_mvpred_ref16x16_c( int16_t (*mvc)[2], void *mb, intptr_t i_list, intptr_t i_ref )
 {
-    int16_t (*mvr)[2] = h->mb.mvr[i_list][i_ref];
+    x264_t *h = (x264_t*)((char*)mb - offsetof( x264_t, mb ));
     int i = 0;
 
 #define SET_MVP(mvp) \
@@ -537,11 +511,105 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         i++; \
     }
 
+    /* spatial predictors */
+    if( h->mb.mvref.b_mbaff )
+    {
+        SET_IMVP( h->mb.i_mb_left_xy[0] );
+        SET_IMVP( h->mb.i_mb_top_xy );
+        SET_IMVP( h->mb.i_mb_topleft_xy );
+        SET_IMVP( h->mb.i_mb_topright_xy );
+        /* the top MB of the pair, analysed just before and in the same slice,
+         * is a field MB too, its refs in the same parity-relative units */
+        if( MB_INTERLACED && (h->mb.i_mb_y & 1) )
+            SET_MVP( h->mb.mvr[i_list][i_ref][h->mb.i_mb_xy - h->mb.i_mb_stride] );
+    }
+    else
+    {
+        int16_t (*mvr)[2] = h->mb.mvr[i_list][i_ref];
+        SET_MVP( mvr[h->mb.i_mb_left_xy[0]] );
+        SET_MVP( mvr[h->mb.i_mb_top_xy] );
+        SET_MVP( mvr[h->mb.i_mb_topleft_xy] );
+        SET_MVP( mvr[h->mb.i_mb_topright_xy] );
+    }
+#undef SET_IMVP
+#undef SET_MVP
+
+    /* temporal predictors */
+    if( h->mb.mvref.b_tmvp )
+    {
+        int16_t (*l0mv)[2] = h->mb.mvref.l0_mv16x16;
+        int scale = h->mb.mvref.tscale[i_list][MB_INTERLACED][h->mb.i_mb_y&1][i_ref];
+
+#define SET_TMVP( dx, dy ) \
+        { \
+            int mb_index = h->mb.i_mb_xy + dx + dy*h->mb.i_mb_stride; \
+            if( h->mb.mvref.b_tconv ) \
+            { \
+                int tmvy = l0mv[mb_index][1] * 2 >> (1 + MB_INTERLACED - h->mb.mvref.l0_field[mb_index]); \
+                mvc[i][0] = x264_clip3( (l0mv[mb_index][0]*scale + 128) >> 8, -32768, 32767 ); \
+                mvc[i][1] = x264_clip3( (tmvy*scale + 128) >> 8, -32768, 32767 ); \
+            } \
+            else \
+            { \
+                mvc[i][0] = (l0mv[mb_index][0]*scale + 128) >> 8; \
+                mvc[i][1] = (l0mv[mb_index][1]*scale + 128) >> 8; \
+            } \
+            i++; \
+        }
+
+        SET_TMVP(0,0);
+        if( h->mb.i_mb_x < h->mb.i_mb_width-1 )
+            SET_TMVP(1,0);
+        if( h->mb.i_mb_y < h->mb.i_mb_height-1 )
+            SET_TMVP(0,1);
+#undef SET_TMVP
+    }
+
+    return i;
+}
+
+/* The slice's mvref: what x264_mb_predict_mv_ref16x16's temporal candidates take from
+ * the frames, per list, MB_INTERLACED, mb_y&1 and ref. */
+void x264_mvpred_ref16x16_init( x264_t *h )
+{
+    h->mb.mvref.b_mbaff = SLICE_MBAFF;
+    h->mb.mvref.b_tmvp = h->sh.i_type != SLICE_TYPE_I && h->i_ref[0] > 0 && h->fref[0][0]->i_ref[0] > 0;
+    if( !h->mb.mvref.b_tmvp )
+        return;
+
+    x264_frame_t *l0 = h->fref[0][0];
+    /* In MBAFF a frame MB's i_ref is a frame index and its own parity,
+     * and mv16x16 is in the units of the collocated MB (l0->field) */
+    int b_tconv = SLICE_MBAFF && l0->field;
+    h->mb.mvref.b_tconv = b_tconv;
+    h->mb.mvref.l0_mv16x16 = l0->mv16x16;
+    h->mb.mvref.l0_field = l0->field;
+    for( int i_list = 0; i_list < 1 + (h->sh.i_type == SLICE_TYPE_B); i_list++ )
+        for( int mbi = 0; mbi <= SLICE_MBAFF; mbi++ )
+            for( int field = 0; field < 2; field++ )
+                for( int i_ref = 0; i_ref < h->i_ref[i_list] << mbi; i_ref++ )
+                {
+                    int curpoc = h->fdec->i_poc + h->fdec->i_delta_poc[field];
+                    int refpoc;
+                    if( b_tconv )
+                        refpoc = h->fref[i_list][i_ref>>mbi]->i_poc + l0->i_delta_poc[field^(i_ref&mbi)];
+                    else
+                        refpoc = h->fref[i_list][i_ref>>SLICE_MBAFF]->i_poc + l0->i_delta_poc[field^(i_ref&1)];
+                    h->mb.mvref.tscale[i_list][mbi][field][i_ref] = (curpoc - refpoc) * l0->inv_ref_poc[mbi&field];
+                }
+}
+
+/* This just improves encoder performance, it's not part of the spec */
+void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
+{
+    int i = 0;
+
     /* b_direct */
     if( h->sh.i_type == SLICE_TYPE_B
         && h->mb.cache.ref[i_list][x264_scan8[12]] == i_ref )
     {
-        SET_MVP( h->mb.cache.mv[i_list][x264_scan8[12]] );
+        CP32( mvc[i], h->mb.cache.mv[i_list][x264_scan8[12]] );
+        i++;
     }
 
     if( i_ref == 0 && h->frames.b_have_lowres )
@@ -566,67 +634,5 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         }
     }
 
-    /* spatial predictors */
-    if( SLICE_MBAFF )
-    {
-        SET_IMVP( h->mb.i_mb_left_xy[0] );
-        SET_IMVP( h->mb.i_mb_top_xy );
-        SET_IMVP( h->mb.i_mb_topleft_xy );
-        SET_IMVP( h->mb.i_mb_topright_xy );
-        /* the top MB of the pair, analysed just before and in the same slice,
-         * is a field MB too, its refs in the same parity-relative units */
-        if( MB_INTERLACED && (h->mb.i_mb_y & 1) )
-            SET_MVP( mvr[h->mb.i_mb_xy - h->mb.i_mb_stride] );
-    }
-    else
-    {
-        SET_MVP( mvr[h->mb.i_mb_left_xy[0]] );
-        SET_MVP( mvr[h->mb.i_mb_top_xy] );
-        SET_MVP( mvr[h->mb.i_mb_topleft_xy] );
-        SET_MVP( mvr[h->mb.i_mb_topright_xy] );
-    }
-#undef SET_IMVP
-#undef SET_MVP
-
-    /* temporal predictors */
-    if( h->fref[0][0]->i_ref[0] > 0 )
-    {
-        x264_frame_t *l0 = h->fref[0][0];
-        int field = h->mb.i_mb_y&1;
-        int curpoc = h->fdec->i_poc + h->fdec->i_delta_poc[field];
-        int refpoc = h->fref[i_list][i_ref>>SLICE_MBAFF]->i_poc;
-        refpoc += l0->i_delta_poc[field^(i_ref&1)];
-        /* In MBAFF a frame MB's i_ref is a frame index and its own parity,
-         * and mv16x16 is in the units of the collocated MB (l0->field) */
-        int b_tconv = SLICE_MBAFF && l0->field;
-        if( b_tconv )
-            refpoc = h->fref[i_list][i_ref>>MB_INTERLACED]->i_poc + l0->i_delta_poc[field^(i_ref&MB_INTERLACED)];
-
-#define SET_TMVP( dx, dy ) \
-        { \
-            int mb_index = h->mb.i_mb_xy + dx + dy*h->mb.i_mb_stride; \
-            int scale = (curpoc - refpoc) * l0->inv_ref_poc[MB_INTERLACED&field]; \
-            if( b_tconv ) \
-            { \
-                int tmvy = l0->mv16x16[mb_index][1] * 2 >> (1 + MB_INTERLACED - l0->field[mb_index]); \
-                mvc[i][0] = x264_clip3( (l0->mv16x16[mb_index][0]*scale + 128) >> 8, -32768, 32767 ); \
-                mvc[i][1] = x264_clip3( (tmvy*scale + 128) >> 8, -32768, 32767 ); \
-            } \
-            else \
-            { \
-                mvc[i][0] = (l0->mv16x16[mb_index][0]*scale + 128) >> 8; \
-                mvc[i][1] = (l0->mv16x16[mb_index][1]*scale + 128) >> 8; \
-            } \
-            i++; \
-        }
-
-        SET_TMVP(0,0);
-        if( h->mb.i_mb_x < h->mb.i_mb_width-1 )
-            SET_TMVP(1,0);
-        if( h->mb.i_mb_y < h->mb.i_mb_height-1 )
-            SET_TMVP(0,1);
-#undef SET_TMVP
-    }
-
-    *i_mvc = i;
+    *i_mvc = i + h->pixf.mvpred_ref16x16( mvc + i, &h->mb, i_list, i_ref );
 }

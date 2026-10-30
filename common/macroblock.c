@@ -536,6 +536,8 @@ void x264_macroblock_slice_init( x264_t *h )
     h->mb.i_neighbour4[13] =
     h->mb.i_neighbour4[15] =
     h->mb.i_neighbour8[3] = MB_LEFT|MB_TOP|MB_TOPLEFT;
+
+    x264_mvpred_ref16x16_init( h );
 }
 
 void x264_macroblock_thread_init( x264_t *h )

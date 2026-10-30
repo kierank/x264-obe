@@ -550,6 +550,18 @@ struct x264_t
                                              * NOTE: this will fail on resolutions above 2^16 MBs... */
         uint8_t *field;
 
+        /* x264_mvpred_ref16x16 state of the slice, set by x264_mvpred_ref16x16_init.
+         * mvpred-a.asm reads it and the mb fields above at offsets from h->mb, see mvpred.c */
+        struct
+        {
+            int     b_mbaff;
+            int     b_tmvp;                 /* fref[0][0] has refs: temporal candidates */
+            int     b_tconv;                /* MBAFF: the collocated mv in its mb's field units */
+            int16_t (*l0_mv16x16)[2];       /* fref[0][0] */
+            uint8_t *l0_field;
+            int32_t tscale[2][2][2][X264_REF_MAX*2]; /* [list][MB_INTERLACED][mb_y&1][ref] */
+        } mvref;
+
          /* buffer for weighted versions of the reference frames */
         pixel *p_weight_buf[X264_REF_MAX];
         /* x264_weights_analyse chroma block sums, see x264_weight_chroma_t */

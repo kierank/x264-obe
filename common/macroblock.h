@@ -335,13 +335,17 @@ void x264_copy_column8( pixel *dst, pixel *src );
 /* x264_mb_predict_mv_16x16:
  *      set mvp with predicted mv for D_16x16 block
  *      h->mb. need only valid values from other blocks */
-#define x264_mb_predict_mv_16x16 x264_template(mb_predict_mv_16x16)
-void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i_ref, int16_t mvp[2] );
+static ALWAYS_INLINE void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i_ref, int16_t mvp[2] )
+{
+    h->pixf.mvpred_16x16( &h->mb.cache.ref[i_list][X264_SCAN8_0], &h->mb.cache.mv[i_list][X264_SCAN8_0], i_ref, mvp );
+}
 /* x264_mb_predict_mv_pskip:
  *      set mvp with predicted mv for P_SKIP
  *      h->mb. need only valid values from other blocks */
-#define x264_mb_predict_mv_pskip x264_template(mb_predict_mv_pskip)
-void x264_mb_predict_mv_pskip( x264_t *h, int16_t mv[2] );
+static ALWAYS_INLINE void x264_mb_predict_mv_pskip( x264_t *h, int16_t mv[2] )
+{
+    h->pixf.mvpred_pskip( &h->mb.cache.ref[0][X264_SCAN8_0], &h->mb.cache.mv[0][X264_SCAN8_0], mv );
+}
 /* x264_mb_predict_mv:
  *      set mvp with predicted mv for all blocks except SKIP and DIRECT
  *      h->mb. need valid ref/partition/sub of current block to be valid
@@ -362,6 +366,8 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed );
  *      h->mb. need only valid values from other blocks */
 #define x264_mb_predict_mv_ref16x16 x264_template(mb_predict_mv_ref16x16)
 void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc );
+#define x264_mvpred_ref16x16_init x264_template(mvpred_ref16x16_init)
+void x264_mvpred_ref16x16_init( x264_t *h );
 
 #define x264_mb_mc x264_template(mb_mc)
 void x264_mb_mc( x264_t *h );
