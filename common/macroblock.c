@@ -1046,12 +1046,9 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_pic( x264_t *h, int mb_x, i
     }
 }
 
-/* b_rest: x264_macroblock_cache_load_pskip has loaded the neighbours, list 0's ref/mv
- * and pskip_mv (progressive P); 2: and x264_macroblock_cache_load_pskip_pic the pixels */
-static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int mb_y, int b_mbaff, int b_rest )
+static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int mb_y, int b_mbaff )
 {
-    if( !b_rest )
-        x264_macroblock_cache_load_neighbours( h, mb_x, mb_y, b_mbaff );
+    x264_macroblock_cache_load_neighbours( h, mb_x, mb_y, b_mbaff );
 
     int *left = h->mb.i_mb_left_xy;
     int top  = h->mb.i_mb_top_xy;
@@ -1194,8 +1191,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         h->mb.pic.i_fref[1] = h->i_ref[1] << MB_INTERLACED;
     }
 
-    if( b_rest < 2 )
-        x264_macroblock_cache_load_pic( h, mb_x, mb_y, b_mbaff );
+    x264_macroblock_cache_load_pic( h, mb_x, mb_y, b_mbaff );
 
     if( h->fdec->integral )
     {
@@ -1213,8 +1209,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         int16_t (*mv)[2] = h->mb.mv[l];
         int8_t *ref = h->mb.ref[l];
 
-        if( !b_rest || l )
-            x264_macroblock_cache_load_mvref( h, mb_x, l, b_mbaff );
+        x264_macroblock_cache_load_mvref( h, mb_x, l, b_mbaff );
 
         /* Extra logic for top right mv in mbaff.
          * . . . d  . . a .
@@ -1415,7 +1410,7 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         }
     }
 
-    if( h->sh.i_type == SLICE_TYPE_P && !b_rest )
+    if( h->sh.i_type == SLICE_TYPE_P )
         x264_mb_predict_mv_pskip( h, h->mb.cache.pskip_mv );
 
     h->mb.i_neighbour4[0] =
@@ -1434,24 +1429,12 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
 
 void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y )
 {
-    x264_macroblock_cache_load( h, mb_x, mb_y, 0, 0 );
+    x264_macroblock_cache_load( h, mb_x, mb_y, 0 );
 }
 
 void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y )
 {
-    x264_macroblock_cache_load( h, mb_x, mb_y, 1, 0 );
-}
-
-/* The rest of x264_macroblock_cache_load_progressive after x264_macroblock_cache_load_pskip,
- * and b_pic x264_macroblock_cache_load_pskip_pic */
-void x264_macroblock_cache_load_rest( x264_t *h, int mb_x, int mb_y, int b_pic )
-{
-    x264_macroblock_cache_load( h, mb_x, mb_y, 0, 1 + b_pic );
-}
-
-void x264_macroblock_cache_load_pskip_pic( x264_t *h, int mb_x, int mb_y )
-{
-    x264_macroblock_cache_load_pic( h, mb_x, mb_y, 0 );
+    x264_macroblock_cache_load( h, mb_x, mb_y, 1 );
 }
 
 /* Progressive P slice, mb_x > 0. 0 if no neighbour is a P_SKIP (the fast skip test of
@@ -1480,7 +1463,7 @@ int x264_macroblock_cache_load_pskip( x264_t *h, int mb_x, int mb_y )
 }
 
 /* The cache of a P_SKIP after x264_macroblock_cache_load_pskip, as cache_load, analyse and
- * encode leave it, for the CABAC skip flag and deblock_strength: borders read by neither
+ * encode leave it, for the CABAC skip flag, cache_save and deblock_strength: borders none reads
  * are left unloaded. */
 void x264_macroblock_cache_pskip( x264_t *h )
 {
@@ -2046,66 +2029,6 @@ void x264_macroblock_cache_save( x264_t *h )
                 h->mb.skipbp[i_mb_xy] = 0;
         }
     }
-}
-
-/* x264_macroblock_cache_save of a progressive P_SKIP after x264_macroblock_cache_pskip (CABAC, not 4:4:4) */
-void x264_macroblock_cache_save_pskip( x264_t *h )
-{
-    const int i_mb_xy = h->mb.i_mb_xy;
-    const int s8x8 = h->mb.i_b8_stride;
-    const int s4x4 = h->mb.i_b4_stride;
-    uint8_t *nnz = h->mb.non_zero_count[i_mb_xy];
-    int16_t (*mv0)[2] = &h->mb.mv[0][h->mb.i_b4_xy];
-    int8_t *ref0 = &h->mb.ref[0][h->mb.i_b8_xy];
-
-    x264_macroblock_backup_intra( h, h->mb.i_mb_x, h->mb.i_mb_y, 0 );
-    x264_macroblock_store_pic( h, h->mb.i_mb_x, h->mb.i_mb_y, 0, 0, 0 );
-    x264_macroblock_store_pic( h, h->mb.i_mb_x, h->mb.i_mb_y, 1, 1, 0 );
-
-    x264_prefetch_fenc( h, h->fdec, h->mb.i_mb_x, h->mb.i_mb_y );
-
-    h->mb.type[i_mb_xy] = P_SKIP;
-    h->mb.slice_table[i_mb_xy] = h->sh.i_first_mb;
-    h->mb.partition[i_mb_xy] = D_16x16;
-    h->mb.i_mb_prev_xy = i_mb_xy;
-
-    if( !HAS_CONSTRAINED_INTRA || !h->param.b_constrained_intra )
-        M64( h->mb.intra4x4_pred_mode[i_mb_xy] ) = I_PRED_4x4_DC * 0x0101010101010101ULL;
-    else
-        M64( h->mb.intra4x4_pred_mode[i_mb_xy] ) = (uint8_t)(-1) * 0x0101010101010101ULL;
-
-    h->mb.i_qp = h->mb.i_last_qp;
-    h->mb.qp[i_mb_xy] = h->mb.i_qp;
-    h->mb.i_last_dqp = 0;
-
-    M32( &nnz[ 0] ) = 0;
-    M32( &nnz[ 4] ) = 0;
-    M32( &nnz[ 8] ) = 0;
-    M32( &nnz[12] ) = 0;
-    M32( &nnz[16] ) = 0;
-    M32( &nnz[20] ) = 0;
-    M32( &nnz[32] ) = 0;
-    M32( &nnz[36] ) = 0;
-    if( CHROMA_FORMAT >= CHROMA_422 )
-    {
-        M32( &nnz[24] ) = 0;
-        M32( &nnz[28] ) = 0;
-        M32( &nnz[40] ) = 0;
-        M32( &nnz[44] ) = 0;
-    }
-
-    h->mb.b_transform_8x8 = 0;
-    h->mb.mb_transform_size[i_mb_xy] = 0;
-
-    M16( &ref0[0*s8x8] ) = 0;
-    M16( &ref0[1*s8x8] ) = 0;
-    CP128( &mv0[0*s4x4], h->mb.cache.mv[0][x264_scan8[0]+8*0] );
-    CP128( &mv0[1*s4x4], h->mb.cache.mv[0][x264_scan8[0]+8*1] );
-    CP128( &mv0[2*s4x4], h->mb.cache.mv[0][x264_scan8[0]+8*2] );
-    CP128( &mv0[3*s4x4], h->mb.cache.mv[0][x264_scan8[0]+8*3] );
-
-    M128( h->mb.mvd[0][i_mb_xy][0] ) = M128_ZERO;
-    h->mb.chroma_pred_mode[i_mb_xy] = I_PRED_CHROMA_DC;
 }
 
 

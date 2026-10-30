@@ -3215,12 +3215,7 @@ static intptr_t x264_slice_write( x264_t *h )
         int lean = 0;
         if( SLICE_MBAFF )
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
-        else if( b_lean && (lean = x264_macroblock_lean_pskip( h, i_mb_x, i_mb_y )) )
-        {
-            if( lean < 3 )
-                x264_macroblock_cache_load_rest( h, i_mb_x, i_mb_y, lean == 2 );
-        }
-        else
+        else if( !b_lean || (lean = x264_macroblock_lean_pskip( h, i_mb_x, i_mb_y )) < 2 )
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
         if( lean < 3 )
@@ -3341,10 +3336,7 @@ cont:
         h->mb.b_reencode_mb = 0;
 
         /* save cache */
-        if( lean == 3 )
-            x264_macroblock_cache_save_pskip( h );
-        else
-            x264_macroblock_cache_save( h );
+        x264_macroblock_cache_save( h );
 
         if( x264_ratecontrol_mb( h, mb_size ) < 0 )
         {

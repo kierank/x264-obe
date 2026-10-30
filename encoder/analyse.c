@@ -3510,12 +3510,13 @@ static ALWAYS_INLINE void x264_mb_analyse_p_sub16x16( x264_t *h, x264_mb_analysi
 /*****************************************************************************
  * x264_macroblock_lean_pskip:
  *  the fast P_SKIP of x264_macroblock_analyse (subme < 3, a P_SKIP neighbour)
- *  without the full cache_load, analysis and encode: the cache, analysis and
- *  encode state of a P_SKIP is written directly. Static mbs (pskip_mv 0, ref 0
- *  unweighted, fenc == ref in every plane, where probe_skip returns 2) are
- *  found without loading the pixels; the rest run probe_skip and mispredicted
- *  as the analysis does. The caller checks the slice (progressive P, CABAC,
- *  4:2:0/4:2:2, fenc_eq).
+ *  without the full analysis and encode: the cache, analysis and encode state
+ *  of a P_SKIP is written directly. Static mbs (pskip_mv 0, ref 0 unweighted,
+ *  fenc == ref in every plane, where probe_skip returns 2) are found without
+ *  the full cache_load; the rest load it as the full path does (the code is
+ *  shared, as is cache_save) and run probe_skip and mispredicted as the
+ *  analysis does. The caller checks the slice (progressive P, CABAC, 4:2:0/
+ *  4:2:2, fenc_eq).
  *****************************************************************************/
 static ALWAYS_INLINE void x264_mb_lean_qp( x264_t *h, int qp )
 {
@@ -3563,7 +3564,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
     }
     else
     {
-        x264_macroblock_cache_load_pskip_pic( h, mb_x, mb_y );
+        x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
         x264_mb_lean_qp( h, qp );
         h->mb.b_noise_reduction = 0;
         h->mb.b_skip_mc = 0;

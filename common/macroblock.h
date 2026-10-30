@@ -315,8 +315,8 @@ void x264_macroblock_slice_init( x264_t *h );
 #define x264_macroblock_thread_init x264_template(macroblock_thread_init)
 void x264_macroblock_thread_init( x264_t *h );
 #define x264_macroblock_cache_load_interlaced x264_template(macroblock_cache_load_interlaced)
-void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_cache_load_progressive x264_template(macroblock_cache_load_progressive)
+void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y );
 void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_deblock_strength x264_template(macroblock_deblock_strength)
 void x264_macroblock_deblock_strength( x264_t *h );
@@ -324,14 +324,8 @@ void x264_macroblock_deblock_strength( x264_t *h );
 void x264_macroblock_cache_save( x264_t *h );
 #define x264_macroblock_cache_load_pskip x264_template(macroblock_cache_load_pskip)
 int  x264_macroblock_cache_load_pskip( x264_t *h, int mb_x, int mb_y );
-#define x264_macroblock_cache_load_rest x264_template(macroblock_cache_load_rest)
-void x264_macroblock_cache_load_rest( x264_t *h, int mb_x, int mb_y, int b_pic );
-#define x264_macroblock_cache_load_pskip_pic x264_template(macroblock_cache_load_pskip_pic)
-void x264_macroblock_cache_load_pskip_pic( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_cache_pskip x264_template(macroblock_cache_pskip)
 void x264_macroblock_cache_pskip( x264_t *h );
-#define x264_macroblock_cache_save_pskip x264_template(macroblock_cache_save_pskip)
-void x264_macroblock_cache_save_pskip( x264_t *h );
 
 #define x264_macroblock_bipred_init x264_template(macroblock_bipred_init)
 void x264_macroblock_bipred_init( x264_t *h );
