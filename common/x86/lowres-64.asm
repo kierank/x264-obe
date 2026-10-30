@@ -33,85 +33,94 @@ lp_qpel_dir: db 0,0, 0,-1, 0,1, -1,0, 1,0
 
 SECTION .text
 
-; x264_lowres_p_t (encoder/me.h)
-%define C_FENCPRE    0
-%define C_SATD       8
-%define C_SATD2     16
-%define C_SAD       24
-%define C_SAD2      32
-%define C_HEX       40
-%define C_HPEL      48
-%define C_INTRA     56
-%define C_GETREF    64
-%define C_FENC      72
-%define C_REF       80
-%define C_REFW     112
-%define C_WEIGHT   120
-%define C_COSTMV   128
-%define C_MVS      136
-%define C_MVCOSTS  144
-%define C_COSTS    152
-%define C_ICOST    160
-%define C_INVQ     168
-%define C_OUTI     176
-%define C_OUTA     184
-%define C_STRIDE   192
-%define C_LAMBDA   200
-%define C_SKIP     204
-%define C_MVRANGE  208
-%define C_MERANGE  212
-%define C_W        216
-%define C_H        220
-%define C_SSTART   224
-%define C_SEND     228
-%define C_SX       232
-%define C_EX       236
-%define C_SY       240
-%define C_EY       244
-%define C_DOSEARCH 248
-%define C_WEIGHTED 252
+; x264_lowres_p_t (encoder/me.h); the layout is checked in encoder/me.c
+struc lowres_p
+    .fenc_pre:     resq 1
+    .satd:         resq 1
+    .satd_avg2:    resq 1
+    .sad:          resq 1
+    .sad_avg2:     resq 1
+    .hex_search:   resq 1
+    .hpel_min:     resq 1
+    .intra:        resq 1
+    .get_ref:      resq 1
+    .fenc:         resq 1
+    .ref:          resq 4
+    .ref_w:        resq 1
+    .weight:       resq 1
+    .cost_mv:      resq 1
+    .mvs:          resq 1
+    .mv_costs:     resq 1
+    .costs:        resq 1
+    .intra_cost:   resq 1
+    .inv_qscale:   resq 1
+    .output_inter: resq 1
+    .output_intra: resq 1
+    .stride:       resq 1
+    .lambda:       resd 1
+    .skip_thresh:  resd 1
+    .mv_range:     resd 1
+    .me_range:     resd 1
+    .mb_width:     resd 1
+    .mb_height:    resd 1
+    .slice_start:  resd 1
+    .slice_end:    resd 1
+    .start_x:      resd 1
+    .end_x:        resd 1
+    .start_y:      resd 1
+    .end_y:        resd 1
+    .do_search:    resd 1
+    .weighted:     resd 1
+endstruc
 
-; stack: outgoing arguments at 0, then 64-aligned buffers and the locals
-%define S_FENC     64  ; 8x8 at FENC_STRIDE
-%define S_PRE     192  ; fenc_pre
-%define S_PIX     320  ; get_ref's dst, 64*10
-%define S_FREF    960  ; the 4 planes at the mb
-%define S_REFW    992
-%define S_CMX    1000
-%define S_CMY    1008
-%define S_RANGE  1016
-%define S_HSTR   1024  ; get_ref's stride
-%define S_SRC0   1032
-%define S_KEY    1040
-%define S_ROW    1048
-%define S_MVC    1056  ; 4 mvs
-%define S_MVCT   1072  ; 4 clipped mvs
-%define S_XMIN   1088  ; spel limits
-%define S_XMAX   1092
-%define S_YMIN   1096
-%define S_YMAX   1100
-%define S_XMINF  1104  ; fpel limits
-%define S_XMAXF  1108
-%define S_YMINF  1112
-%define S_YMAXF  1116
-%define S_MVP    1120
-%define S_NMVC   1124
-%define S_PMV    1128
-%define S_PMVC   1132
-%define S_BPC    1136
-%define S_BPX    1140
-%define S_BPY    1144
-%define S_BC     1148
-%define S_BMX    1152
-%define S_BMY    1156
-%define S_TMX    1160
-%define S_TMY    1164
-%define S_I      1168
-%define S_N      1172
-%define S_MV     1176
-%define S_MCOST  1180
-%define S_SCORE  1184
-%define LP_STACK 1216
+; stack: outgoing arguments at 0, then 64-aligned buffers and the locals.
+; Offsets are preprocessor numbers: cglobal's stack size has to be one.
+%assign lp_stack_pos 0
+%macro LP_STACK_FIELD 2 ; name, bytes
+    %xdefine S_%1 lp_stack_pos
+    %assign lp_stack_pos lp_stack_pos+%2
+%endmacro
+LP_STACK_FIELD ARGS,    64  ; outgoing arguments
+LP_STACK_FIELD FENC,   128  ; 8x8 at FENC_STRIDE
+LP_STACK_FIELD PRE,    128  ; fenc_pre
+LP_STACK_FIELD PIX,    640  ; get_ref's dst, 64*10
+LP_STACK_FIELD FREF,    32  ; the 4 planes at the mb
+LP_STACK_FIELD REFW,     8
+LP_STACK_FIELD CMX,      8
+LP_STACK_FIELD CMY,      8
+LP_STACK_FIELD RANGE,    8
+LP_STACK_FIELD HSTR,     8  ; get_ref's stride
+LP_STACK_FIELD SRC0,     8
+LP_STACK_FIELD KEY,      8
+LP_STACK_FIELD ROW,      8
+LP_STACK_FIELD MVC,     16  ; 4 mvs
+LP_STACK_FIELD MVCT,    16  ; 4 clipped mvs
+LP_STACK_FIELD XMIN,     4  ; spel limits
+LP_STACK_FIELD XMAX,     4
+LP_STACK_FIELD YMIN,     4
+LP_STACK_FIELD YMAX,     4
+LP_STACK_FIELD XMINF,    4  ; fpel limits
+LP_STACK_FIELD XMAXF,    4
+LP_STACK_FIELD YMINF,    4
+LP_STACK_FIELD YMAXF,    4
+LP_STACK_FIELD MVP,      4
+LP_STACK_FIELD NMVC,     4
+LP_STACK_FIELD PMV,      4
+LP_STACK_FIELD PMVC,     4
+LP_STACK_FIELD BPC,      4
+LP_STACK_FIELD BPX,      4
+LP_STACK_FIELD BPY,      4
+LP_STACK_FIELD BC,       4
+LP_STACK_FIELD BMX,      4
+LP_STACK_FIELD BMY,      4
+LP_STACK_FIELD TMX,      4
+LP_STACK_FIELD TMY,      4
+LP_STACK_FIELD I,        4
+LP_STACK_FIELD N,        4
+LP_STACK_FIELD MV,       4
+LP_STACK_FIELD MCOST,    4
+LP_STACK_FIELD SCORE,    4
+%assign LP_STACK (lp_stack_pos+63) & ~63
 
 ; x264_clip3( %1, %2, %3 ) into %1; %4 temp
 %macro CLIP3 4
@@ -138,7 +147,7 @@ SECTION .text
 ; eax = cmp of the qpel mv (tmx, tmy): %1 0 sad, as subpel_cmp; 1 satd on fenc_pre,
 ; as subpel_luma_cost
 %macro SUBPEL_COST 1
-    cmp    dword [rbx+C_WEIGHTED], 0
+    cmp    dword [rbx+lowres_p.weighted], 0
     jne %%weighted
     movsxd rdi, dword [rsp+S_TMY]
     movsxd rsi, dword [rsp+S_TMX]
@@ -171,10 +180,10 @@ SECTION .text
     add    rdx, R9                  ; src2
 %if %1
     lea    rdi, [rsp+S_PRE]
-    call   [rbx+C_SATD2]
+    call   [rbx+lowres_p.satd_avg2]
 %else
     lea    rdi, [rsp+S_FENC]
-    call   [rbx+C_SAD2]
+    call   [rbx+lowres_p.sad_avg2]
 %endif
     jmp %%done
 %%weighted:
@@ -187,21 +196,21 @@ SECTION .text
     mov    R9d, [rsp+S_TMY]
     mov    qword [rsp], 8
     mov    qword [rsp+8], 8
-    mov    rax, [rbx+C_WEIGHT]
+    mov    rax, [rbx+lowres_p.weight]
     mov    [rsp+16], rax
-    call   [rbx+C_GETREF]
+    call   [rbx+lowres_p.get_ref]
     mov    rsi, rax
     mov    rcx, [rsp+S_HSTR]
 %%one:
 %if %1
     mov    rdx, rcx
     lea    rdi, [rsp+S_PRE]
-    call   [rbx+C_SATD]
+    call   [rbx+lowres_p.satd]
 %else
     mov    rdx, rsi
     mov    esi, 16
     lea    rdi, [rsp+S_FENC]
-    call   [rbx+C_SAD]
+    call   [rbx+lowres_p.sad]
 %endif
 %%done:
 %endmacro
@@ -213,9 +222,9 @@ INIT_XMM avx2
 ; rbx: c, rbp: stride, R12: mb_x, R13: mb_y, R14: pel offset, R15: mb_xy
 cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    rbx, rdi
-    mov    rbp, [rbx+C_STRIDE]
-    mov    R13d, [rbx+C_SY]
-    cmp    R13d, [rbx+C_EY]
+    mov    rbp, [rbx+lowres_p.stride]
+    mov    R13d, [rbx+lowres_p.start_y]
+    cmp    R13d, [rbx+lowres_p.end_y]
     jl .end
 .row:
     ; y spel limits of slicetype_mb_cost
@@ -223,19 +232,19 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     shl    eax, 5
     neg    eax
     sub    eax, 48
-    mov    ecx, [rbx+C_MVRANGE]
+    mov    ecx, [rbx+lowres_p.mv_range]
     neg    ecx
     cmp    eax, ecx
     cmovl  eax, ecx
     mov    [rsp+S_YMIN], eax
     sar    eax, 2
     mov    [rsp+S_YMINF], eax
-    mov    eax, [rbx+C_H]
+    mov    eax, [rbx+lowres_p.mb_height]
     sub    eax, R13d
     dec    eax
     shl    eax, 5
     add    eax, 48
-    mov    ecx, [rbx+C_MVRANGE]
+    mov    ecx, [rbx+lowres_p.mv_range]
     dec    ecx
     cmp    eax, ecx
     cmovg  eax, ecx
@@ -243,16 +252,16 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     sar    eax, 2
     mov    [rsp+S_YMAXF], eax
     mov    eax, R13d
-    sub    eax, [rbx+C_SSTART]
+    sub    eax, [rbx+lowres_p.slice_start]
     add    eax, 4
     mov    [rsp+S_ROW], rax
-    mov    R12d, [rbx+C_SX]
-    cmp    R12d, [rbx+C_EX]
+    mov    R12d, [rbx+lowres_p.start_x]
+    cmp    R12d, [rbx+lowres_p.end_x]
     jl .rownext
 
 .col:
     mov    eax, R13d
-    imul   eax, [rbx+C_W]
+    imul   eax, [rbx+lowres_p.mb_width]
     add    eax, R12d
     mov    R15d, eax
     mov    eax, R13d
@@ -261,8 +270,8 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     lea    R14, [rax*8]
     ; b_frame_score_mb
     xor    eax, eax
-    mov    ecx, [rbx+C_W]
-    mov    edx, [rbx+C_H]
+    mov    ecx, [rbx+lowres_p.mb_width]
+    mov    edx, [rbx+lowres_p.mb_height]
     cmp    ecx, 2
     jle .score1
     cmp    edx, 2
@@ -283,7 +292,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    [rsp+S_SCORE], eax
 
     ; fenc to FENC_STRIDE, fenc_pre
-    mov    rsi, [rbx+C_FENC]
+    mov    rsi, [rbx+lowres_p.fenc]
     add    rsi, R14
     lea    rdx, [rbp*3]
     mov    rax, [rsi]
@@ -305,18 +314,18 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    [rsp+S_FENC+112], R9
     lea    rdi, [rsp+S_PRE]
     lea    rsi, [rsp+S_FENC]
-    call   [rbx+C_FENCPRE]
+    call   [rbx+lowres_p.fenc_pre]
 
-    cmp    dword [rbx+C_DOSEARCH], 0
+    cmp    dword [rbx+lowres_p.do_search], 0
     je .nosearch
 
     ; reverse-order mv prediction
-    mov    rsi, [rbx+C_MVS]
+    mov    rsi, [rbx+lowres_p.mvs]
     lea    rsi, [rsi+R15*4]
     xor    ecx, ecx
     mov    qword [rsp+S_MVC], 0
     mov    qword [rsp+S_MVC+8], 0
-    mov    R8d, [rbx+C_W]
+    mov    R8d, [rbx+lowres_p.mb_width]
     dec    R8d
     cmp    R12d, R8d
     jge .noright
@@ -324,11 +333,11 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    [rsp+S_MVC+rcx*4], eax
     inc    ecx
 .noright:
-    mov    eax, [rbx+C_SEND]
+    mov    eax, [rbx+lowres_p.slice_end]
     dec    eax
     cmp    R13d, eax
     jge .nobelow
-    mov    eax, [rbx+C_W]
+    mov    eax, [rbx+lowres_p.mb_width]
     lea    rdx, [rsi+rax*4]
     mov    eax, [rdx]
     mov    [rsp+S_MVC+rcx*4], eax
@@ -363,11 +372,11 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     jnz .search
     ; fast skip of near-zero residual at mv 0
     lea    rdi, [rsp+S_PRE]
-    mov    rsi, [rbx+C_REF]
+    mov    rsi, [rbx+lowres_p.ref]
     add    rsi, R14
     mov    rdx, rbp
-    call   [rbx+C_SATD]
-    cmp    eax, [rbx+C_SKIP]
+    call   [rbx+lowres_p.satd]
+    cmp    eax, [rbx+lowres_p.skip_thresh]
     jge .search
     mov    [rsp+S_MCOST], eax
     mov    dword [rsp+S_MV], 0
@@ -379,19 +388,19 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     shl    eax, 5
     neg    eax
     sub    eax, 48
-    mov    ecx, [rbx+C_MVRANGE]
+    mov    ecx, [rbx+lowres_p.mv_range]
     neg    ecx
     cmp    eax, ecx
     cmovl  eax, ecx
     mov    [rsp+S_XMIN], eax
     sar    eax, 2
     mov    [rsp+S_XMINF], eax
-    mov    eax, [rbx+C_W]
+    mov    eax, [rbx+lowres_p.mb_width]
     sub    eax, R12d
     dec    eax
     shl    eax, 5
     add    eax, 48
-    mov    ecx, [rbx+C_MVRANGE]
+    mov    ecx, [rbx+lowres_p.mv_range]
     dec    ecx
     cmp    eax, ecx
     cmovg  eax, ecx
@@ -414,7 +423,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     or     rax, rcx
     mov    [rsp+S_RANGE], rax
     ; mv costs about the mvp
-    mov    rax, [rbx+C_COSTMV]
+    mov    rax, [rbx+lowres_p.cost_mv]
     movsx  rcx, word [rsp+S_MVP]
     movsx  rdx, word [rsp+S_MVP+2]
     add    rcx, rcx
@@ -425,11 +434,11 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     sub    rax, rdx
     mov    [rsp+S_CMY], rax
     ; the planes at the mb
-    mov    rax, [rbx+C_REF]
-    mov    rcx, [rbx+C_REF+8]
-    mov    rdx, [rbx+C_REF+16]
-    mov    rsi, [rbx+C_REF+24]
-    mov    rdi, [rbx+C_REFW]
+    mov    rax, [rbx+lowres_p.ref]
+    mov    rcx, [rbx+lowres_p.ref+8]
+    mov    rdx, [rbx+lowres_p.ref+16]
+    mov    rsi, [rbx+lowres_p.ref+24]
+    mov    rdi, [rbx+lowres_p.ref_w]
     add    rax, R14
     add    rcx, R14
     add    rdx, R14
@@ -466,7 +475,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     MVCOST
     mov    [rsp+S_BPC], eax
     mov    [rsp+S_PMVC], eax
-    mov    rcx, [rbx+C_COSTMV]
+    mov    rcx, [rbx+lowres_p.cost_mv]
     movzx  ecx, word [rcx]
     add    ecx, ecx
     cmp    eax, ecx
@@ -569,7 +578,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     lea    rdi, [rsp+S_FENC]
     mov    esi, 16
     mov    rcx, rbp
-    call   [rbx+C_SAD]
+    call   [rbx+lowres_p.sad]
     mov    ecx, [rsp+S_BMX]
     mov    edx, [rsp+S_BMY]
     shl    ecx, 2
@@ -593,7 +602,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    esi, 16
     mov    rdx, [rsp+S_REFW]
     mov    rcx, rbp
-    call   [rbx+C_SAD]
+    call   [rbx+lowres_p.sad]
     mov    dword [rsp+S_TMX], 0
     mov    dword [rsp+S_TMY], 0
     MVCOST
@@ -619,11 +628,11 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     or     R9d, eax
     mov    eax, [rsp+S_BC]
     mov    [rsp], rax
-    mov    eax, [rbx+C_MERANGE]
+    mov    eax, [rbx+lowres_p.me_range]
     mov    [rsp+8], rax
     mov    rax, [rsp+S_RANGE]
     mov    [rsp+16], rax
-    call   [rbx+C_HEX]
+    call   [rbx+lowres_p.hex_search]
     mov    ecx, eax
     mov    rdx, rax
     shr    rdx, 32
@@ -648,7 +657,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     or     edx, eax
     test   edx, 1
     jnz .hpelref
-    cmp    dword [rbx+C_WEIGHTED], 0
+    cmp    dword [rbx+lowres_p.weighted], 0
     jne .hpelref
     lea    R10, [lp_hpel_ref]
     mov    eax, [rsp+S_BMY]
@@ -696,9 +705,9 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     sub    R9d, 2
     mov    qword [rsp], 8
     mov    qword [rsp+8], 9
-    mov    rax, [rbx+C_WEIGHT]
+    mov    rax, [rbx+lowres_p.weight]
     mov    [rsp+16], rax
-    call   [rbx+C_GETREF]
+    call   [rbx+lowres_p.get_ref]
     mov    [rsp+S_SRC0], rax
     lea    rdi, [rsp+S_PIX+32]
     lea    rsi, [rsp+S_HSTR]
@@ -709,9 +718,9 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    R9d, [rsp+S_BMY]
     mov    qword [rsp], 12
     mov    qword [rsp+8], 8
-    mov    rax, [rbx+C_WEIGHT]
+    mov    rax, [rbx+lowres_p.weight]
     mov    [rsp+16], rax
-    call   [rbx+C_GETREF]
+    call   [rbx+lowres_p.get_ref]
     mov    rdx, rax
     mov    rsi, [rsp+S_SRC0]
 .hpelmin:
@@ -747,7 +756,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    [rsp], rax
     mov    rcx, [rsp+S_HSTR]
     lea    rdi, [rsp+S_FENC]
-    call   [rbx+C_HPEL]
+    call   [rbx+lowres_p.hpel_min]
     test   eax, 63
     jz .center
     mov    ecx, eax
@@ -822,42 +831,42 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    [rsp+S_MCOST], eax
 
 .searched:
-    mov    rcx, [rbx+C_COSTMV]
+    mov    rcx, [rbx+lowres_p.cost_mv]
     movzx  ecx, word [rcx]
     sub    [rsp+S_MCOST], ecx
     cmp    dword [rsp+S_MV], 0
     je .store
-    mov    eax, [rbx+C_LAMBDA]
+    mov    eax, [rbx+lowres_p.lambda]
     lea    eax, [rax+rax*4]
     add    [rsp+S_MCOST], eax
 .store:
-    mov    rcx, [rbx+C_MVS]
+    mov    rcx, [rbx+lowres_p.mvs]
     mov    eax, [rsp+S_MV]
     mov    [rcx+R15*4], eax
-    mov    rcx, [rbx+C_MVCOSTS]
+    mov    rcx, [rbx+lowres_p.mv_costs]
     mov    eax, [rsp+S_MCOST]
     mov    [rcx+R15*4], eax
     jmp .intra
 .nosearch:
-    mov    rcx, [rbx+C_MVCOSTS]
+    mov    rcx, [rbx+lowres_p.mv_costs]
     mov    eax, [rcx+R15*4]
     mov    [rsp+S_MCOST], eax
 
 .intra:
-    cmp    qword [rbx+C_OUTA], 0
+    cmp    qword [rbx+lowres_p.output_intra], 0
     je .inter
     lea    rdi, [rsp+S_PRE]
-    mov    rsi, [rbx+C_FENC]
+    mov    rsi, [rbx+lowres_p.fenc]
     add    rsi, R14
     mov    rdx, rbp
-    call   [rbx+C_INTRA]
-    mov    ecx, [rbx+C_LAMBDA]
+    call   [rbx+lowres_p.intra]
+    mov    ecx, [rbx+lowres_p.lambda]
     lea    ecx, [rcx+rcx*4+4]
     add    eax, ecx
-    mov    rcx, [rbx+C_ICOST]
+    mov    rcx, [rbx+lowres_p.intra_cost]
     mov    [rcx+R15*2], ax
     mov    ecx, eax
-    mov    rdx, [rbx+C_INVQ]
+    mov    rdx, [rbx+lowres_p.inv_qscale]
     test   rdx, rdx
     jz .intranoaq
     movzx  edx, word [rdx+R15*2]
@@ -865,7 +874,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     add    ecx, 128
     sar    ecx, 8
 .intranoaq:
-    mov    rdx, [rbx+C_OUTA]
+    mov    rdx, [rbx+lowres_p.output_intra]
     mov    rsi, [rsp+S_ROW]
     add    [rdx+rsi*4], ecx
     cmp    dword [rsp+S_SCORE], 0
@@ -883,7 +892,7 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    R8d, 1
 .notlist:
     add    ecx, 4
-    mov    rdx, [rbx+C_ICOST]
+    mov    rdx, [rbx+lowres_p.intra_cost]
     movzx  eax, word [rdx+R15*2]
     xor    R9d, R9d
     cmp    eax, ecx
@@ -892,14 +901,14 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     xor    R8d, R8d
     mov    R9d, 1
 .notintra:
-    mov    rdx, [rbx+C_OUTI]
+    mov    rdx, [rbx+lowres_p.output_inter]
     mov    edi, [rsp+S_SCORE]
     test   edi, edi
     jz .noscore
     add    [rdx+8], R9d
 .noscore:
     mov    eax, ecx
-    mov    rsi, [rbx+C_INVQ]
+    mov    rsi, [rbx+lowres_p.inv_qscale]
     test   rsi, rsi
     jz .internoaq
     movzx  esi, word [rsi+R15*2]
@@ -919,15 +928,15 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     cmovl  eax, ecx
     shl    R8d, 14
     add    eax, R8d
-    mov    rdx, [rbx+C_COSTS]
+    mov    rdx, [rbx+lowres_p.costs]
     mov    [rdx+R15*2], ax
 
     dec    R12d
-    cmp    R12d, [rbx+C_EX]
+    cmp    R12d, [rbx+lowres_p.end_x]
     jge .col
 .rownext:
     dec    R13d
-    cmp    R13d, [rbx+C_EY]
+    cmp    R13d, [rbx+lowres_p.end_y]
     jge .row
 .end:
     RET
