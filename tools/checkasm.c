@@ -8105,13 +8105,21 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
     x264_pixel_init( cpu_ref, &pf_ref );
     x264_pixel_init( cpu_new, &pf );
     x264_mc_init( 0, &mc, 0 );
-    if( !pf.me_search_fpel )
+    int (*me_fpel_ref)( x264_me_fpel_t * ) = pf_ref.me_search_fpel, (*me_fpel)( x264_me_fpel_t * ) = pf.me_search_fpel;
+#if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32)
+    /* the undispatched avx2 entry, at the AVX2 levels with BMI2 */
+    if( !me_fpel_ref && (cpu_ref&X264_CPU_AVX2) && (cpu_ref&X264_CPU_BMI2) )
+        me_fpel_ref = x264_me_search_fpel_avx2;
+    if( !me_fpel && (cpu_new&X264_CPU_AVX2) && (cpu_new&X264_CPU_BMI2) )
+        me_fpel = x264_me_search_fpel_avx2;
+#endif
+    if( !me_fpel )
         return 0;
     /* also where only a kernel it calls changed */
-#define ME_FPEL_KERNELS( p ) { (void*)p.me_search_fpel, (void*)p.predictor_clip, (void*)p.sad_hex_search[3], (void*)p.sad_hex_min[3],\
+#define ME_FPEL_KERNELS( p, f ) { (void*)f, (void*)p.predictor_clip, (void*)p.sad_hex_search[3], (void*)p.sad_hex_min[3],\
                                (void*)p.sad_sq_min[0], (void*)p.sad_sq_min[3], (void*)p.satd_subpel_search[0], (void*)p.sad_x3_min[0],\
                                (void*)p.sad_x4_min[0], (void*)p.sad[0], (void*)p.sad_avg2[0], (void*)p.sad_hex_search[0] }
-    void *k_ref[] = ME_FPEL_KERNELS( pf_ref ), *k_new[] = ME_FPEL_KERNELS( pf );
+    void *k_ref[] = ME_FPEL_KERNELS( pf_ref, me_fpel_ref ), *k_new[] = ME_FPEL_KERNELS( pf, me_fpel );
 #undef ME_FPEL_KERNELS
     if( !memcmp( k_ref, k_new, sizeof(k_ref) ) )
         return 0;
@@ -8140,11 +8148,11 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
             planes[2*4*NPL + p*NPL + k] = PIXEL_MAX/2 + (k&1);
     }
     /* the dispatched control, and the other levels' on this level's kernels */
-    int (*fns[3])( x264_me_fpel_t * ) = { pf.me_search_fpel };
-    const char *fn_names[3] = { "dispatched" };
+    int (*fns[3])( x264_me_fpel_t * ) = { me_fpel };
+    const char *fn_names[3] = { pf.me_search_fpel ? "dispatched" : "avx2" };
     int nfns = 1;
 #if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32)
-    if( (cpu_new&X264_CPU_BMI2) && pf.me_search_fpel != x264_me_search_fpel_avx2 )
+    if( (cpu_new&X264_CPU_BMI2) && me_fpel != x264_me_search_fpel_avx2 )
     {
         fn_names[nfns] = "avx2";
         fns[nfns++] = x264_me_search_fpel_avx2;
@@ -8350,7 +8358,7 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         {
             m_a = m_0;
             call_c2( me_fpel_model, &pfc, &mc, &c_m, st );
-            call_a2( pf.me_search_fpel, &c_a );
+            call_a2( me_fpel, &c_a );
         }
     }
     for( int k = 0; k < 24 && ok; k++ )

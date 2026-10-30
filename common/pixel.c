@@ -1707,10 +1707,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x4_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
         pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
-#if !defined(_WIN32)
-        if( cpu&X264_CPU_BMI2 )
-            pixf->me_search_fpel = x264_me_search_fpel_avx2;
-#endif
+        /* me_search_fpel: avx2 entry not dispatched: slower than C on Zen 4 lowlat (rack01 MESV2 MRA); AVX2-only CPUs untested */
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -2141,8 +2138,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
 #if !defined(_WIN32)
         pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
-        if( cpu&X264_CPU_BMI2 )
-            pixf->me_search_fpel = x264_me_search_fpel_avx2;
+        /* me_search_fpel: avx2 entry not dispatched: slower than C on Zen 4 lowlat (rack01 MESV2 MRA); AVX2-only CPUs untested */
 #endif
 #endif
     }
