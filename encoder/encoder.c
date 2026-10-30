@@ -3336,6 +3336,29 @@ static int lean_shadow( x264_t *h, int mb_x, int mb_y, int b_deblock )
     return 3;
 }
 
+/* LEAN_SHADOW 0: counters only, the lean path as wip/x264-lean-skip runs it */
+#ifndef LEAN_SHADOW
+#define LEAN_SHADOW 1
+#endif
+static int lean_plain( x264_t *h, int mb_x, int mb_y, int b_deblock )
+{
+    int lean = x264_macroblock_lean_pskip( h, mb_x, mb_y );
+    if( !lean )
+        x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+    else if( lean < 3 )
+    {
+        x264_macroblock_cache_load_rest( h, mb_x, mb_y, lean == 2 );
+        return 1;
+    }
+    else
+    {
+        x264_macroblock_cache_save_pskip( h );
+        if( b_deblock )
+            x264_macroblock_deblock_strength( h );
+    }
+    return lean;
+}
+
 static void lean_print( void )
 {
     int64_t c[16] = {0};
@@ -3473,7 +3496,7 @@ static intptr_t x264_slice_write( x264_t *h )
         if( SLICE_MBAFF )
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
         else if( b_lean )
-            lean = lean_shadow( h, i_mb_x, i_mb_y, b_deblock );
+            lean = LEAN_SHADOW ? lean_shadow( h, i_mb_x, i_mb_y, b_deblock ) : lean_plain( h, i_mb_x, i_mb_y, b_deblock );
         else
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
