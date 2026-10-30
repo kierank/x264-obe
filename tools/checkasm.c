@@ -27,6 +27,9 @@
 
 #include <ctype.h>
 #include "common/common.h"
+#if HAVE_MMX
+#include "common/x86/pixel.h"
+#endif
 #if SYS_LINUX
 #include <sys/mman.h>
 #include <unistd.h>
@@ -1680,6 +1683,94 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     }
     report( "pixel fenc_eq :" );
+
+    /* frame blocks, luma and chroma strides different: equal, then one pixel changed at
+     * every position (by 1, or to 0/PIXEL_MAX), then pixels outside the blocks changed */
+    ok = 1; used_asm = 0;
+    for( int v = 0; v < 4; v++ )
+    {
+        int c = v&1;
+        x264_pixel_mb_eq_t mb_eq = v < 2 ? pixel_asm.mb_eq[c] : NULL;
+        const char *zmm = "";
+#if HAVE_MMX && ARCH_X86_64
+        /* the zmm arm, assembled */
+        if( v >= 2 && (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) )
+        {
+            mb_eq = c ? x264_pixel_mb_eq_422_zmm_avx512icl : x264_pixel_mb_eq_420_zmm_avx512icl;
+            zmm = "_zmm";
+        }
+#endif
+        if( mb_eq && (v >= 2 || mb_eq != pixel_ref.mb_eq[c]) )
+        {
+            enum { SY = 64+8, SC = 48, H = 18 };
+            ALIGNED_64( pixel fy[2][(H+2)*SY] );
+            ALIGNED_64( pixel fc[2][(H+2)*SC] );
+            int ch = c ? 16 : 8;
+            int n = 16*16 + 16*ch;
+            set_func_name( "mb_eq_%s%s", c ? "422" : "420", zmm );
+            used_asm = 1;
+            for( int o = 0; o < 4 && ok; o++ )
+            {
+                /* block offsets: aligned and not */
+                int oy = SY + (o&1 ? 7 : 16);
+                int oc = SC + (o&2 ? 5 : 16);
+                pixel *ay = fy[0] + oy, *by = fy[1] + oy;
+                pixel *ac = fc[0] + oc, *bc = fc[1] + oc;
+                for( int j = 0; j < 2*n + 64 && ok; j++ )
+                {
+                    for( int l = 0; l < (H+2)*SY; l++ )
+                        fy[0][l] = fy[1][l] = rand() & PIXEL_MAX;
+                    for( int l = 0; l < (H+2)*SC; l++ )
+                        fc[0][l] = fc[1][l] = rand() & PIXEL_MAX;
+                    if( j&1 )
+                        for( int y = 0; y < 16; y++ )
+                            for( int x = 0; x < 16; x++ )
+                                ay[x+y*SY] = by[x+y*SY] = (j&2) ? PIXEL_MAX : 0;
+                    if( j < 2*n )
+                    {
+                        int k = j>>1;
+                        pixel *p = k < 256 ? by + (k&15) + (k>>4)*SY : bc + (k&15) + ((k-256)>>4)*SC;
+                        *p = (j&1) ? PIXEL_MAX - *p : (*p + 1) & PIXEL_MAX;
+                    }
+                    else
+                    {
+                        /* outside the blocks: right, left, above, below */
+                        int k = j - 2*n;
+                        by[16 + (k&3) + (k&15)*SY] ^= 1;
+                        by[-1 + (k&15)*SY] ^= 1;
+                        by[(k&15) - SY] ^= 1;
+                        by[(k&15) + 16*SY] ^= 1;
+                        bc[16 + (k&3) + (k%ch)*SC] ^= 1;
+                        bc[-1 + (k%ch)*SC] ^= 1;
+                        bc[(k&15) - SC] ^= 1;
+                        bc[(k&15) + ch*SC] ^= 1;
+                    }
+                    int res_c = x264_pixel_mb_eq_c( c, ay, by, SY, ac, bc, SC );
+                    if( res_c != (j >= 2*n) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "mb_eq[%d]: C reference %d at %d [FAILED]\n", c, res_c, j );
+                    }
+                    int res_a = call_a1( mb_eq, ay, by, (intptr_t)SY, ac, bc, (intptr_t)SC );
+                    if( res_c != res_a )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "mb_eq[%d]: offset %d case %d %d != %d [FAILED]\n", c, o, j, res_c, res_a );
+                    }
+                }
+                /* bench: equal (every row read), and the first row different */
+                memcpy( fy[1], fy[0], sizeof(fy[0]) );
+                memcpy( fc[1], fc[0], sizeof(fc[0]) );
+                set_func_name( "mb_eq_%s%s_same", c ? "422" : "420", zmm );
+                call_a2( mb_eq, ay, by, (intptr_t)SY, ac, bc, (intptr_t)SC );
+                by[15] ^= 1;
+                set_func_name( "mb_eq_%s%s_diff", c ? "422" : "420", zmm );
+                call_a2( mb_eq, ay, by, (intptr_t)SY, ac, bc, (intptr_t)SC );
+                set_func_name( "mb_eq_%s%s", c ? "422" : "420", zmm );
+            }
+        }
+    }
+    report( "pixel mb_eq :" );
 
     ok = 1; used_asm = 0;
     if( pixel_asm.zscreen_16x16 && pixel_asm.zscreen_16x16 != pixel_ref.zscreen_16x16 )
