@@ -3363,13 +3363,18 @@ static ALWAYS_INLINE void x264_mb_lean_qp( x264_t *h, int qp )
     h->nr_count = h->nr_count_buf[0];
 }
 
+int64_t x264_lean_cnt[X264_THREAD_MAX+1][16];
+
 int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
 {
+    int64_t *cnt = x264_lean_cnt[h->i_thread_idx];
     /* mb_x 0: mb_analyse_init's row mv range */
     if( !mb_x || h->mb.i_vbv_emerg ||
         (h->param.b_intra_refresh && mb_x >= h->fdec->i_pir_start_col && mb_x <= h->fdec->i_pir_end_col) )
         return 0;
     int ret = x264_macroblock_cache_load_pskip( h, mb_x, mb_y );
+    cnt[2] += ret > 0;
+    cnt[3] += ret == 2;
     if( !ret )
         return 0;
     /* skip_invalid */
@@ -3393,6 +3398,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
                                                                &h->fenc->plane[1][offset_uv], ref_uv, stride_uv );
     if( b_static )
     {
+        cnt[4]++;
         /* probe_skip's prediction at mv 0 */
         h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fdec[0], FDEC_STRIDE, ref, stride, 16 );
         h->mc.load_deinterleave_chroma_fdec( h->mb.pic.p_fdec[1], ref_uv, stride_uv, 16 >> CHROMA_V_SHIFT );
@@ -3406,11 +3412,13 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
         int b_skip = x264_macroblock_probe_pskip( h );
         if( b_skip == 1 && x264_mb_pskip_mispredicted( h ) )
             b_skip = h->mb.b_skip_mc = 0;
+        cnt[9]++;
         if( !b_skip )
         {
             h->mb.b_lean_noskip = 1;
             return 2;
         }
+        cnt[10]++;
     }
 
     /* x264_macroblock_analyse */
@@ -3429,6 +3437,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
     h->mb.i_cbp_luma = 0;
     h->mb.i_cbp_chroma = 0;
     h->mb.cbp[h->mb.i_mb_xy] = 0;
+    cnt[5]++;
     x264_macroblock_cache_pskip( h );
     return 3;
 }

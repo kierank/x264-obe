@@ -46,6 +46,9 @@ void x264_macroblock_analyse( x264_t *h );
  * 0 nothing loaded. 1, 2: x264_macroblock_cache_load_rest completes the cache_load. */
 #define x264_macroblock_lean_pskip x264_template(macroblock_lean_pskip)
 int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y );
+/* test branch counters: [thread][i] */
+#define x264_lean_cnt x264_template(lean_cnt)
+extern int64_t x264_lean_cnt[X264_THREAD_MAX+1][16];
 #define x264_slicetype_decide x264_template(slicetype_decide)
 void x264_slicetype_decide( x264_t *h );
 
