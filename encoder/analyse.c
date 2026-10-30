@@ -3370,7 +3370,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
     int64_t *cnt = x264_lean_cnt[h->i_thread_idx];
     /* mb_x 0: mb_analyse_init's row mv range */
     if( !mb_x || h->mb.i_vbv_emerg ||
-        (h->param.b_intra_refresh && mb_x >= h->fdec->i_pir_start_col && mb_x <= h->fdec->i_pir_end_col) )
+        (LEAN_MUT != 4 && h->param.b_intra_refresh && mb_x >= h->fdec->i_pir_start_col && mb_x <= h->fdec->i_pir_end_col) )
         return 0;
     int ret = x264_macroblock_cache_load_pskip( h, mb_x, mb_y );
     cnt[2] += ret > 0;
@@ -3395,7 +3395,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
     int b_static = ret == 2 && !h->sh.weight[0][0].weightfn && !h->sh.weight[0][1].weightfn &&
                    !h->sh.weight[0][2].weightfn &&
                    h->pixf.mb_eq[CHROMA_FORMAT == CHROMA_422]( &h->fenc->plane[0][offset], ref, stride,
-                                                               &h->fenc->plane[1][offset_uv], ref_uv, stride_uv );
+                                                               &h->fenc->plane[1][offset_uv], LEAN_MUT == 5 ? &h->fenc->plane[1][offset_uv] : ref_uv, stride_uv );
     if( b_static )
     {
         cnt[4]++;
@@ -3410,7 +3410,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
         h->mb.b_noise_reduction = 0;
         h->mb.b_skip_mc = 0;
         int b_skip = x264_macroblock_probe_pskip( h );
-        if( b_skip == 1 && x264_mb_pskip_mispredicted( h ) )
+        if( b_skip == 1 && LEAN_MUT != 9 && x264_mb_pskip_mispredicted( h ) )
             b_skip = h->mb.b_skip_mc = 0;
         cnt[9]++;
         if( !b_skip )
@@ -3430,7 +3430,7 @@ int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y )
     h->mb.b_skip_mc = 1;
     h->mb.i_type = P_SKIP;
     h->mb.i_partition = D_16x16;
-    for( int i = 0; i < h->mb.pic.i_fref[0]; i++ )
+    for( int i = 0; i < h->mb.pic.i_fref[0] && LEAN_MUT != 6; i++ )
         M32( h->mb.mvr[0][i][h->mb.i_mb_xy] ) = 0;
 
     /* x264_macroblock_encode */

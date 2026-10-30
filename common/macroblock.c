@@ -1446,7 +1446,7 @@ void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y )
  * and b_pic x264_macroblock_cache_load_pskip_pic */
 void x264_macroblock_cache_load_rest( x264_t *h, int mb_x, int mb_y, int b_pic )
 {
-    x264_macroblock_cache_load( h, mb_x, mb_y, 0, 1 + b_pic );
+    x264_macroblock_cache_load( h, mb_x, mb_y, 0, 1 + (LEAN_MUT == 8 ? 0 : b_pic) );
 }
 
 void x264_macroblock_cache_load_pskip_pic( x264_t *h, int mb_x, int mb_y )
@@ -1463,7 +1463,11 @@ int x264_macroblock_cache_load_pskip( x264_t *h, int mb_x, int mb_y )
     int8_t *type = h->mb.type;
     int mb_xy = mb_y * h->mb.i_mb_stride + mb_x;
     int b_skip = type[mb_xy-1] == P_SKIP;
+#if LEAN_MUT == 7
+    if( mb_y > 0 )
+#else
     if( h->i_threadslice_start != mb_y && mb_y > 0 )
+#endif
     {
         int top = mb_xy - h->mb.i_mb_stride;
         b_skip |= (type[top] == P_SKIP) | (type[top-1] == P_SKIP);
@@ -1503,6 +1507,9 @@ void x264_macroblock_cache_pskip( x264_t *h )
         h->mb.cache.non_zero_count[x264_scan8[ 2] - 1] = nnz[ltop][left_index_table->nnz[1]];
         h->mb.cache.non_zero_count[x264_scan8[ 8] - 1] = nnz[ltop][left_index_table->nnz[2]];
         h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[ltop][left_index_table->nnz[3]];
+#if LEAN_MUT == 2
+        h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[ltop][left_index_table->nnz[0]];
+#endif
     }
     else
     {
@@ -1513,8 +1520,10 @@ void x264_macroblock_cache_pskip( x264_t *h )
     }
 
     h->mb.b_allow_skip = 1;
+#if LEAN_MUT != 1
     h->mb.cache.i_neighbour_skip = ((h->mb.i_neighbour & MB_LEFT) && !IS_SKIP( h->mb.i_mb_type_left[0] ))
                                  + ((h->mb.i_neighbour & MB_TOP)  && !IS_SKIP( h->mb.i_mb_type_top ));
+#endif
 
     /* x264_analyse_update_cache */
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, 0 );
@@ -2086,6 +2095,7 @@ void x264_macroblock_cache_save_pskip( x264_t *h )
     M32( &nnz[20] ) = 0;
     M32( &nnz[32] ) = 0;
     M32( &nnz[36] ) = 0;
+#if LEAN_MUT != 10
     if( CHROMA_FORMAT >= CHROMA_422 )
     {
         M32( &nnz[24] ) = 0;
@@ -2093,6 +2103,7 @@ void x264_macroblock_cache_save_pskip( x264_t *h )
         M32( &nnz[40] ) = 0;
         M32( &nnz[44] ) = 0;
     }
+#endif
 
     h->mb.b_transform_8x8 = 0;
     h->mb.mb_transform_size[i_mb_xy] = 0;
@@ -2104,7 +2115,9 @@ void x264_macroblock_cache_save_pskip( x264_t *h )
     CP128( &mv0[2*s4x4], h->mb.cache.mv[0][x264_scan8[0]+8*2] );
     CP128( &mv0[3*s4x4], h->mb.cache.mv[0][x264_scan8[0]+8*3] );
 
+#if LEAN_MUT != 3
     M128( h->mb.mvd[0][i_mb_xy][0] ) = M128_ZERO;
+#endif
     h->mb.chroma_pred_mode[i_mb_xy] = I_PRED_CHROMA_DC;
 }
 
