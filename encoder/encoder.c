@@ -3133,6 +3133,334 @@ static ALWAYS_INLINE int x264_lean_row_hist( x264_t *h, int mb_y )
     return __atomic_load_n( &h->fref[0][0]->lean_row[mb_y], __ATOMIC_RELAXED );
 }
 
+/* lean-skip test branch: counters and the shadow check of x264_macroblock_lean_pskip.
+ * Every lean candidate also runs the full path from the same state: lean 2 (taken) must
+ * leave the full path's state after load/analyse/encode and after save/deblock_strength,
+ * except the masked bytes of h->mb; lean 1 plus cache_load, and lean 2 (loaded, probed),
+ * then analyse and encode must leave the full path's state;
+ * lean 0 must write nothing. Any difference aborts. */
+typedef struct
+{
+    uint8_t mb[sizeof(((x264_t*)0)->mb)];
+    int8_t type, qp, cpm, ts;
+    uint8_t partition;
+    int16_t cbp;
+    uint16_t slice;
+    int8_t i4x4[8];
+    uint8_t nnz[48];
+    uint8_t mvd[16];
+    int16_t mv[4][4][2];
+    int8_t ref[2][2];
+    int16_t mvr[X264_REF_MAX*2][2];
+    pixel fy[16][16];
+    pixel fc[16][16];
+    pixel bk[2][16];
+    uint8_t bs[2][8][4];
+    void *nr[3];
+    uint32_t nr_sum[2][4][64];
+    uint32_t nr_count[2][4];
+} lean_snap_t;
+
+#define MB_OFF(f) (offsetof(x264_t, mb.f) - offsetof(x264_t, mb))
+static uint8_t lean_mask[2][sizeof(((x264_t*)0)->mb)];
+static int lean_mask_done[2];
+static lean_snap_t *lean_snaps[X264_THREAD_MAX+1][4];
+
+static void lean_mask_init( x264_t *h, uint8_t *m, int chroma422 )
+{
+#define MASK(off, len) memset( m + (off), 1, (len) )
+#define MASKF(f) MASK( MB_OFF(f), sizeof(h->mb.f) )
+    memset( m, 0, sizeof(h->mb) );
+    /* cache_load: borders only intra, the CABAC of a non-skip or nothing reads */
+    MASKF(cache.i_cbp_top);
+    MASKF(cache.i_cbp_left);
+    MASK( MB_OFF(cache.intra4x4_pred_mode) + x264_scan8[0] - 8, 4 );
+    MASK( MB_OFF(cache.non_zero_count) + x264_scan8[16] - 8, 4 );
+    MASK( MB_OFF(cache.non_zero_count) + x264_scan8[32] - 8, 4 );
+    static const int lk[4] = { 0, 2, 8, 10 };
+    for( int k = 0; k < 4; k++ )
+    {
+        MASK( MB_OFF(cache.intra4x4_pred_mode) + x264_scan8[lk[k]] - 1, 1 );
+        if( k < 2 || chroma422 )
+        {
+            MASK( MB_OFF(cache.non_zero_count) + x264_scan8[16+lk[k]] - 1, 1 );
+            MASK( MB_OFF(cache.non_zero_count) + x264_scan8[32+lk[k]] - 1, 1 );
+        }
+        MASK( MB_OFF(cache.mvd[0]) + 2*(x264_scan8[0] - 1 + 8*k), 2 );
+    }
+    MASK( MB_OFF(cache.mvd[0]) + 2*(x264_scan8[0] - 8), 8 );
+    MASKF(cache.i_neighbour_transform_size);
+    MASKF(i_neighbour4);
+    MASKF(i_neighbour8);
+    MASKF(pic.fenc_buf);
+    MASKF(pic.fdec_buf);
+    pixel *fdec = h->mb.pic.fdec_buf;
+    for( int y = 0; y < 16; y++ )
+        memset( m + MB_OFF(pic.fdec_buf) + (h->mb.pic.p_fdec[0] - fdec + y*FDEC_STRIDE) * sizeof(pixel), 0, 16*sizeof(pixel) );
+    for( int y = 0; y < (chroma422 ? 16 : 8); y++ )
+        for( int p = 1; p < 3; p++ )
+            memset( m + MB_OFF(pic.fdec_buf) + (h->mb.pic.p_fdec[p] - fdec + y*FDEC_STRIDE) * sizeof(pixel), 0, 8*sizeof(pixel) );
+    MASKF(pic.i_fenc_pre);
+    MASKF(pic.p_fenc_plane);
+    MASKF(pic.p_fref);
+    MASKF(pic.p_fref_w);
+    MASKF(pic.p_integral);
+    MASKF(pic.i_fld_uv_y);
+    MASKF(pic.i_fld_uv_lines);
+    /* mb_analyse_init: per mb x and qp, set by every analysis before it is read */
+    MASKF(mv_min[0]);
+    MASKF(mv_max[0]);
+    MASKF(mv_min_spel[0]);
+    MASKF(mv_max_spel[0]);
+    MASKF(mv_limit_fpel[0][0]);
+    MASKF(mv_limit_fpel[1][0]);
+    MASKF(i_trellis_lambda2);
+    MASKF(i_psy_rd_lambda);
+    MASKF(i_chroma_lambda2_offset);
+#undef MASK
+#undef MASKF
+}
+
+static void lean_snap( x264_t *h, lean_snap_t *s, int b_mb )
+{
+    int xy = h->mb.i_mb_xy, x = h->mb.i_mb_x, y = h->mb.i_mb_y;
+    int s8 = h->mb.i_b8_stride, s4 = h->mb.i_b4_stride;
+    int ch = 16 >> CHROMA_V_SHIFT;
+    if( b_mb )
+        memcpy( s->mb, &h->mb, sizeof(h->mb) );
+    s->type = h->mb.type[xy]; s->qp = h->mb.qp[xy]; s->cpm = h->mb.chroma_pred_mode[xy];
+    s->ts = h->mb.mb_transform_size[xy]; s->partition = h->mb.partition[xy]; s->cbp = h->mb.cbp[xy];
+    s->slice = h->mb.slice_table[xy];
+    memcpy( s->i4x4, h->mb.intra4x4_pred_mode[xy], 8 );
+    memcpy( s->nnz, h->mb.non_zero_count[xy], 48 );
+    memcpy( s->mvd, h->mb.mvd[0][xy], 16 );
+    for( int i = 0; i < 4; i++ )
+        memcpy( s->mv[i], h->mb.mv[0][h->mb.i_b4_xy + i*s4], 16 );
+    for( int i = 0; i < 2; i++ )
+        memcpy( s->ref[i], &h->mb.ref[0][h->mb.i_b8_xy + i*s8], 2 );
+    for( int i = 0; i < h->mb.pic.i_fref[0]; i++ )
+        memcpy( s->mvr[i], h->mb.mvr[0][i][xy], 4 );
+    for( int i = 0; i < 16; i++ )
+        memcpy( s->fy[i], &h->fdec->plane[0][16*x + (16*y+i)*h->fdec->i_stride[0]], 16*sizeof(pixel) );
+    for( int i = 0; i < ch; i++ )
+        memcpy( s->fc[i], &h->fdec->plane[1][16*x + (ch*y+i)*h->fdec->i_stride[1]], 16*sizeof(pixel) );
+    for( int p = 0; p < 2; p++ )
+        memcpy( s->bk[p], &h->intra_border_backup[y&1][p][16*x], 16*sizeof(pixel) );
+    memcpy( s->bs, h->deblock_strength[y&1][h->param.b_sliced_threads ? xy : x], sizeof(s->bs) );
+    s->nr[0] = h->nr_offset; s->nr[1] = h->nr_residual_sum; s->nr[2] = h->nr_count;
+    memcpy( s->nr_sum, h->nr_residual_sum_buf, sizeof(s->nr_sum) );
+    memcpy( s->nr_count, h->nr_count_buf, sizeof(s->nr_count) );
+}
+
+static void lean_restore( x264_t *h, lean_snap_t *s, int b_mb )
+{
+    if( b_mb )
+        memcpy( &h->mb, s->mb, sizeof(h->mb) );
+    int xy = h->mb.i_mb_xy, x = h->mb.i_mb_x, y = h->mb.i_mb_y;
+    int s8 = h->mb.i_b8_stride, s4 = h->mb.i_b4_stride;
+    int ch = 16 >> CHROMA_V_SHIFT;
+    h->mb.type[xy] = s->type; h->mb.qp[xy] = s->qp; h->mb.chroma_pred_mode[xy] = s->cpm;
+    h->mb.mb_transform_size[xy] = s->ts; h->mb.partition[xy] = s->partition; h->mb.cbp[xy] = s->cbp;
+    h->mb.slice_table[xy] = s->slice;
+    memcpy( h->mb.intra4x4_pred_mode[xy], s->i4x4, 8 );
+    memcpy( h->mb.non_zero_count[xy], s->nnz, 48 );
+    memcpy( h->mb.mvd[0][xy], s->mvd, 16 );
+    for( int i = 0; i < 4; i++ )
+        memcpy( h->mb.mv[0][h->mb.i_b4_xy + i*s4], s->mv[i], 16 );
+    for( int i = 0; i < 2; i++ )
+        memcpy( &h->mb.ref[0][h->mb.i_b8_xy + i*s8], s->ref[i], 2 );
+    for( int i = 0; i < h->mb.pic.i_fref[0]; i++ )
+        memcpy( h->mb.mvr[0][i][xy], s->mvr[i], 4 );
+    for( int i = 0; i < 16; i++ )
+        memcpy( &h->fdec->plane[0][16*x + (16*y+i)*h->fdec->i_stride[0]], s->fy[i], 16*sizeof(pixel) );
+    for( int i = 0; i < ch; i++ )
+        memcpy( &h->fdec->plane[1][16*x + (ch*y+i)*h->fdec->i_stride[1]], s->fc[i], 16*sizeof(pixel) );
+    for( int p = 0; p < 2; p++ )
+        memcpy( &h->intra_border_backup[y&1][p][16*x], s->bk[p], 16*sizeof(pixel) );
+    memcpy( h->deblock_strength[y&1][h->param.b_sliced_threads ? xy : x], s->bs, sizeof(s->bs) );
+    h->nr_offset = s->nr[0]; h->nr_residual_sum = s->nr[1]; h->nr_count = s->nr[2];
+    memcpy( h->nr_residual_sum_buf, s->nr_sum, sizeof(s->nr_sum) );
+    memcpy( h->nr_count_buf, s->nr_count, sizeof(s->nr_count) );
+}
+
+/* the current state against s; mask: bytes of h->mb not compared */
+static void lean_check( x264_t *h, lean_snap_t *s, const uint8_t *mask, const char *what )
+{
+    lean_snap_t *c = lean_snaps[h->i_thread_idx][3];
+    lean_snap( h, c, 1 );
+    int bad = 0;
+    for( size_t i = 0; i < sizeof(h->mb); i++ )
+        if( c->mb[i] != s->mb[i] && !(mask && mask[i]) )
+        {
+            if( bad < 16 )
+                fprintf( stderr, "lean %s: frame %d mb %d,%d: h->mb byte %zu: %d, expected %d\n",
+                         what, h->i_frame, h->mb.i_mb_x, h->mb.i_mb_y, i, c->mb[i], s->mb[i] );
+            bad++;
+        }
+    if( memcmp( (uint8_t*)c + sizeof(c->mb), (uint8_t*)s + sizeof(s->mb), offsetof(lean_snap_t, mvr) - sizeof(c->mb) ) ||
+        memcmp( c->mvr, s->mvr, h->mb.pic.i_fref[0] * 4 ) ||
+        memcmp( c->fy, s->fy, (uint8_t*)&c->nr - (uint8_t*)c->fy ) || memcmp( c->nr, s->nr, sizeof(*c) - offsetof(lean_snap_t, nr) ) )
+    {
+        fprintf( stderr, "lean %s: frame %d mb %d,%d: arrays, planes, bs or nr differ\n",
+                 what, h->i_frame, h->mb.i_mb_x, h->mb.i_mb_y );
+        bad++;
+    }
+    if( bad )
+    {
+        fprintf( stderr, "lean %s: %d differences\n", what, bad );
+        abort();
+    }
+}
+
+/* the row gate's count of a lean 2 or 3 mb, as the arm counts it: in a gated row the lean
+ * path's analysis, else the full path's */
+static int lean_pre[X264_THREAD_MAX+1];
+#define LEAN_PRE( h ) (h->mb.i_type == P_SKIP && !h->mb.i_vbv_emerg && h->nr_offset == h->nr_offset_denoise)
+
+/* 0: the cache is loaded; 1, 2: and analysed and encoded; 3: a lean P_SKIP, saved */
+static int lean_shadow( x264_t *h, int mb_x, int mb_y, int b_deblock, int b_row )
+{
+    lean_snap_t **sn = lean_snaps[h->i_thread_idx];
+    int chroma422 = CHROMA_FORMAT == CHROMA_422;
+    if( !sn[0] )
+        for( int i = 0; i < 4; i++ )
+        {
+            sn[i] = x264_malloc( sizeof(lean_snap_t) );
+            memset( sn[i], 0, sizeof(lean_snap_t) );
+        }
+    /* the coordinates the snapshot needs; cache_load_neighbours writes the same */
+    h->mb.i_mb_x = mb_x;
+    h->mb.i_mb_y = mb_y;
+    h->mb.i_mb_xy = mb_y * h->mb.i_mb_stride + mb_x;
+    h->mb.i_b8_xy = 2*(mb_y * h->mb.i_b8_stride + mb_x);
+    h->mb.i_b4_xy = 4*(mb_y * h->mb.i_b4_stride + mb_x);
+    if( !lean_mask_done[chroma422] )
+    {
+        lean_mask_init( h, lean_mask[chroma422], chroma422 );
+        lean_mask_done[chroma422] = 1;
+    }
+    lean_snap( h, sn[0], 1 );
+    int lean = x264_macroblock_lean_pskip( h, mb_x, mb_y );
+    if( !lean )
+    {
+        lean_check( h, sn[0], NULL, "0" );
+        x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+        return 0;
+    }
+    x264_lean_cnt[h->i_thread_idx][8]++;
+    if( lean < 3 )
+    {
+        /* the full path, then lean's (1: and cache_load) and the analysis */
+        lean_snap( h, sn[1], 1 );
+        lean_restore( h, sn[0], 1 );
+        x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+        x264_macroblock_analyse( h );
+        int fp = LEAN_PRE( h );
+        x264_macroblock_encode( h );
+        lean_snap( h, sn[2], 1 );
+        lean_restore( h, sn[1], 1 );
+        if( lean == 1 )
+            x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+        x264_macroblock_analyse( h );
+        int lp = LEAN_PRE( h );
+        /* a fast P_SKIP of the full path lean_pskip rejected: 20 lean 1 (skip_invalid or qp >
+         * QP_MAX_SPEC), 22 lean 2 (its probe coded none); 17: the two analyses count differently */
+        x264_lean_cnt[h->i_thread_idx][lean == 2 ? 22 : 20] += fp;
+        x264_lean_cnt[h->i_thread_idx][17] += fp != lp;
+        lean_pre[h->i_thread_idx] = b_row ? lp : fp;
+        x264_macroblock_encode( h );
+        lean_check( h, sn[2], NULL, lean == 2 ? "2" : "1+load" );
+        return 2;
+    }
+    lean_snap( h, sn[1], 1 );
+    lean_restore( h, sn[0], 1 );
+    x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+    x264_macroblock_analyse( h );
+    /* 21: a lean mb the full path counts no fast P_SKIP */
+    int fp = LEAN_PRE( h );
+    x264_lean_cnt[h->i_thread_idx][21] += !fp;
+    lean_pre[h->i_thread_idx] = b_row ? 1 : fp;
+    x264_macroblock_encode( h );
+    if( h->mb.i_type != P_SKIP )
+    {
+        fprintf( stderr, "lean: frame %d mb %d,%d: the full path codes type %d\n", h->i_frame, mb_x, mb_y, h->mb.i_type );
+        abort();
+    }
+    lean_check( h, sn[1], lean_mask[chroma422], "3 encode" );
+    lean_snap( h, sn[0], 1 );
+    x264_macroblock_cache_save( h );
+    if( b_deblock )
+        x264_macroblock_deblock_strength( h );
+    lean_snap( h, sn[2], 1 );
+    lean_restore( h, sn[0], 0 );
+    memcpy( &h->mb, sn[1]->mb, sizeof(h->mb) );
+    x264_macroblock_cache_save( h );
+    if( b_deblock )
+        x264_macroblock_deblock_strength( h );
+    lean_check( h, sn[2], lean_mask[chroma422], "3 save" );
+    return 3;
+}
+
+/* LEAN_SHADOW 0: counters only, the lean path as the arm runs it (gated rows only) */
+#ifndef LEAN_SHADOW
+#define LEAN_SHADOW 1
+#endif
+/* LEAN_DUMP 1: "LR frame row count mbs lean gated" per mb row of a lean slice, to stderr */
+#ifndef LEAN_DUMP
+#define LEAN_DUMP 0
+#endif
+static int lean_plain( x264_t *h, int mb_x, int mb_y, int b_deblock, int b_row )
+{
+    int lean = b_row ? x264_macroblock_lean_pskip( h, mb_x, mb_y ) : 0;
+    if( !lean )
+        x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+    else if( lean < 3 )
+    {
+        if( lean == 1 )
+            x264_macroblock_cache_load_progressive( h, mb_x, mb_y );
+        return 1;
+    }
+    else
+    {
+        lean_pre[h->i_thread_idx] = 1;
+        x264_macroblock_cache_save( h );
+        if( b_deblock )
+            x264_macroblock_deblock_strength( h );
+    }
+    return lean;
+}
+
+static void lean_print( void )
+{
+    int64_t c[24] = {0};
+    for( int t = 0; t <= X264_THREAD_MAX; t++ )
+        for( int i = 0; i < 24; i++ )
+            c[i] += x264_lean_cnt[t][i];
+    if( !c[0] )
+        return;
+    /* 0 P mbs, 1 in lean slices, 2 a P_SKIP neighbour, 3 and pskip_mv 0, 4 static, 9 probed,
+     * 10 probed P_SKIP, 5 lean = 4 + 10, 6 P_SKIPs, 7 P_SKIPs of the full path in lean slices,
+     * 8 shadow checks */
+    fprintf( stderr, "lean: P mbs %"PRId64" in lean slices %"PRId64" skip nb %"PRId64" mv0 %"PRId64" static %"PRId64
+             " probed %"PRId64" probed skip %"PRId64" lean %"PRId64" (%.2f%% of P mbs, %.2f%% of P_SKIPs)"
+             " P_SKIP %"PRId64" full-path P_SKIP in lean slices %"PRId64" shadow checks %"PRId64"\n",
+             c[0], c[1], c[2], c[3], c[4], c[9], c[10], c[5], 100.*c[5]/c[0], c[6] ? 100.*c[5]/c[6] : 0.,
+             c[6], c[7], c[8] );
+    /* gate: 11 rows of lean slices, 12 gated on, 13 P mbs in gated rows, 14 lean there,
+     * 15 missed: lean (LEAN_SHADOW 1) or a fast P_SKIP (0) in a gated-off row; a fast P_SKIP
+     * (the gate's count) not lean: 16 lean_pskip returned 0, 20 1 (qp > QP_MAX_SPEC), 22 2, and
+     * 21 lean, no fast P_SKIP of the full path; 17 lean and full analyses count differently;
+     * 18/19 fref[0][0]'s mb a P_SKIP / and lean; 23 lean/full changes between neighbours in gated rows */
+    fprintf( stderr, "lean gate: shadow %d rows %"PRId64" on %"PRId64" (%.2f%%) P mbs on %"PRId64" (%.2f%%)"
+             " lean taken %"PRId64" (%.2f%% of P mbs, %.2f%% in gated rows) missed %"PRId64" (%.2f%% of P mbs,"
+             " %.2f%% in gated-off rows) count/lean mismatches 16:%"PRId64" 20:%"PRId64" 22:%"PRId64" 21:%"PRId64
+             " 17:%"PRId64" colo P_SKIP %"PRId64" and lean %"PRId64" interleave %"PRId64" (%.2f%% of gated mbs)\n",
+             LEAN_SHADOW, c[11], c[12], c[11] ? 100.*c[12]/c[11] : 0., c[13], 100.*c[13]/c[0],
+             c[14], 100.*c[14]/c[0], c[13] ? 100.*c[14]/c[13] : 0., c[15], 100.*c[15]/c[0],
+             c[0] > c[13] ? 100.*c[15]/(c[0]-c[13]) : 0., c[16], c[20], c[22], c[21], c[17], c[18], c[19],
+             c[23], c[13] ? 100.*c[23]/c[13] : 0. );
+}
+
 static intptr_t x264_slice_write( x264_t *h )
 {
     int i_skip;
@@ -3204,9 +3532,11 @@ static intptr_t x264_slice_write( x264_t *h )
     /* the row gate of this row, its history and its count: fast P_SKIPs from mb lean_x0 */
     int lean_hist = b_lean && i_mb_x ? x264_lean_row_hist( h, i_mb_y ) : 0;
     int b_lean_frame = b_lean && LEAN_ARM_FRAME && x264_lean_frame_gate( h );
-    int b_lean_row = b_lean && i_mb_x && LEAN_ARM_GATE( lean_hist, b_lean_frame );
+    int b_lean_row = b_lean && i_mb_x && (LEAN_ARM_GATE( lean_hist, b_lean_frame ) ^ (LEAN_MUT == 11));
     int lean_x0 = i_mb_x;
     int lean_skips = 0;
+    int lean_row3 = 0; /* cnt: lean mbs of the row */
+    int lean_prev = 0; /* cnt: the last mb was lean */
 
     while( 1 )
     {
@@ -3218,6 +3548,8 @@ static intptr_t x264_slice_write( x264_t *h )
             b_lean_row = 0;
             lean_x0 = 0;
             lean_skips = 0;
+            lean_row3 = 0;
+            lean_prev = 0;
             if( x264_bitstream_check_buffer( h ) )
                 return -1;
             /* before the row backup, so a row re-encode keeps the row above's PSNR/SSIM */
@@ -3261,14 +3593,23 @@ static intptr_t x264_slice_write( x264_t *h )
         int lean = 0;
         if( SLICE_MBAFF )
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
-        else if( !b_lean_row || (lean = x264_macroblock_lean_pskip( h, i_mb_x, i_mb_y )) < 2 )
+        /* cnt: the shadow runs in every row of a lean slice; LEAN_SHADOW 0 only in the gated rows */
+        else if( b_lean )
+            lean = LEAN_SHADOW ? lean_shadow( h, i_mb_x, i_mb_y, b_deblock, b_lean_row )
+                               : lean_plain( h, i_mb_x, i_mb_y, b_deblock, b_lean_row );
+        else
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
-        if( lean < 3 )
+        if( lean < 2 )
         {
             x264_macroblock_analyse( h );
             /* nr_offset_denoise: mb_analyse_init_qp's qp <= QP_MAX_SPEC */
-            lean_skips += h->mb.i_type == P_SKIP && !h->mb.i_vbv_emerg && h->nr_offset == h->nr_offset_denoise;
+            int pre = h->mb.i_type == P_SKIP && !h->mb.i_vbv_emerg && h->nr_offset == h->nr_offset_denoise;
+            lean_skips += pre;
+            /* a fast P_SKIP the lean path did not take: 15 missed in a gated-off row (LEAN_SHADOW 0),
+             * 16 one lean_pskip returned 0 for (LEAN_SHADOW 0: or 1) */
+            if( b_lean && pre && i_mb_x )
+                x264_lean_cnt[h->i_thread_idx][!LEAN_SHADOW && !b_lean_row ? 15 : 16]++;
 
             /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 #if HAS_CAVLC
@@ -3277,11 +3618,20 @@ reencode:
             x264_macroblock_encode( h );
         }
         else
-            lean_skips++;
+            lean_skips += lean_pre[h->i_thread_idx];
+        if( lean == 3 )
+        {
+            x264_lean_cnt[h->i_thread_idx][b_lean_row ? 14 : 15]++;
+            lean_row3++;
+        }
+        /* 23: in a gated row, a lean mb next to a full one (lean to full or full to lean) */
+        if( b_lean_row && i_mb_x > 1 )
+            x264_lean_cnt[h->i_thread_idx][23] += (lean == 3) != lean_prev;
+        lean_prev = lean == 3;
         if( !i_mb_x )
         {
             lean_hist = b_lean ? x264_lean_row_hist( h, i_mb_y ) : 0;
-            b_lean_row = b_lean && LEAN_ARM_GATE( lean_hist, b_lean_frame );
+            b_lean_row = b_lean && (LEAN_ARM_GATE( lean_hist, b_lean_frame ) ^ (LEAN_MUT == 11));
         }
 
         if( PARAM_CABAC )
@@ -3390,8 +3740,9 @@ reencode:
 cont:
         h->mb.b_reencode_mb = 0;
 
-        /* save cache */
-        x264_macroblock_cache_save( h );
+        /* save cache: lean_shadow saved a lean mb */
+        if( lean != 3 )
+            x264_macroblock_cache_save( h );
 
         if( x264_ratecontrol_mb( h, mb_size ) < 0 )
         {
@@ -3415,6 +3766,11 @@ cont:
                 __atomic_fetch_add( &h->fdec->lean_frame[0], lean_skips, __ATOMIC_RELAXED );
                 __atomic_fetch_add( &h->fdec->lean_frame[1], h->mb.i_mb_width - lean_x0, __ATOMIC_RELAXED );
             }
+            /* 11 rows of lean slices, 12 gated on */
+            x264_lean_cnt[h->i_thread_idx][11] += b_lean;
+            x264_lean_cnt[h->i_thread_idx][12] += b_lean && b_lean_row;
+            if( LEAN_DUMP && b_lean )
+                fprintf( stderr, "LR %d %d %d %d %d %d\n", h->i_frame, i_mb_y, lean_skips, h->mb.i_mb_width - lean_x0, lean_row3, b_lean_row );
         }
 
         /* accumulate mb stats */
@@ -3487,8 +3843,22 @@ cont:
             h->stat.frame.i_mb_field[b_intra?0:b_skip?2:1] += MB_INTERLACED;
         }
 
+        if( h->sh.i_type == SLICE_TYPE_P )
+        {
+            int64_t *cnt = x264_lean_cnt[h->i_thread_idx];
+            cnt[0]++;
+            cnt[1] += b_lean;
+            cnt[6] += b_skip;
+            cnt[7] += b_lean && b_skip && lean != 3;
+            /* 13 P mbs of gated rows; 18 the mbs of lean slices where fref[0][0]'s mb was a P_SKIP, 19 and lean */
+            cnt[13] += b_lean && b_lean_row;
+            int colo = b_lean && h->fref[0][0]->mb_type[mb_xy] == P_SKIP;
+            cnt[18] += colo;
+            cnt[19] += colo && lean == 3;
+        }
+
         /* calculate deblock strength values (actual deblocking is done per-row along with hpel) */
-        if( b_deblock )
+        if( b_deblock  && lean != 3 )
             x264_macroblock_deblock_strength( h );
 
         if( mb_xy == h->sh.i_last_mb )
@@ -4756,6 +5126,7 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_P][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
+    lean_print();
     x264_lookahead_delete( h );
 
 #if HAVE_OPENCL

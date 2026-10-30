@@ -27,6 +27,11 @@
 #ifndef X264_COMMON_H
 #define X264_COMMON_H
 
+/* lean-skip test branch: mutation number (0 none) */
+#ifndef LEAN_MUT
+#define LEAN_MUT 0
+#endif
+
 #include "base.h"
 
 /* Macros for templating function calls according to bit depth */

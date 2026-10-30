@@ -1446,7 +1446,11 @@ int x264_macroblock_cache_load_pskip( x264_t *h, int mb_x, int mb_y )
     int8_t *type = h->mb.type;
     int mb_xy = mb_y * h->mb.i_mb_stride + mb_x;
     int b_skip = type[mb_xy-1] == P_SKIP;
+#if LEAN_MUT == 7
+    if( mb_y > 0 )
+#else
     if( h->i_threadslice_start != mb_y && mb_y > 0 )
+#endif
     {
         int top = mb_xy - h->mb.i_mb_stride;
         b_skip |= (type[top] == P_SKIP) | (type[top-1] == P_SKIP);
@@ -1486,6 +1490,9 @@ void x264_macroblock_cache_pskip( x264_t *h )
         h->mb.cache.non_zero_count[x264_scan8[ 2] - 1] = nnz[ltop][left_index_table->nnz[1]];
         h->mb.cache.non_zero_count[x264_scan8[ 8] - 1] = nnz[ltop][left_index_table->nnz[2]];
         h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[ltop][left_index_table->nnz[3]];
+#if LEAN_MUT == 2
+        h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[ltop][left_index_table->nnz[0]];
+#endif
     }
     else
     {
@@ -1496,8 +1503,10 @@ void x264_macroblock_cache_pskip( x264_t *h )
     }
 
     h->mb.b_allow_skip = 1;
+#if LEAN_MUT != 1
     h->mb.cache.i_neighbour_skip = ((h->mb.i_neighbour & MB_LEFT) && !IS_SKIP( h->mb.i_mb_type_left[0] ))
                                  + ((h->mb.i_neighbour & MB_TOP)  && !IS_SKIP( h->mb.i_mb_type_top ));
+#endif
 
     /* x264_analyse_update_cache */
     x264_macroblock_cache_ref( h, 0, 0, 4, 4, 0, 0 );
