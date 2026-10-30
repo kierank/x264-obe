@@ -29,7 +29,7 @@
 #include "common/common.h"
 #include "macroblock.h"
 
-#define E4R_TWIN 0
+#define E4R_TWIN 1
 #if !E4R_TWIN && !HIGH_BIT_DEPTH
 #define E4R_STR2( x ) #x
 #define E4R_STR( x ) E4R_STR2( x )
