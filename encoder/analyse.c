@@ -1413,7 +1413,7 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
 /* analyse-p layout pair: AP_GATE gates the asm. Arm: x264_analyse_p_arm, defined in
  * api.c. Twin (AP_TWIN 1): the never defined x264_analyse_p_twin, which links as 0.
  * The code is the same in both. */
-#define AP_TWIN 0
+#define AP_TWIN 1
 extern const char x264_analyse_p_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_analyse_p_twin __attribute__((weak, visibility("hidden")));
 #if AP_TWIN
