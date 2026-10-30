@@ -44,7 +44,7 @@
  * x264_N_twin_me_search_fpel, which links as 0, so me_search_fpel stays NULL and me.c runs
  * the C search. The AVX2 levels dispatch nothing in either, as wip */
 #if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
-#define ME_FPEL_ARM 1
+#define ME_FPEL_ARM 0
 #define x264_twin_me_search_fpel x264_template(twin_me_search_fpel)
 extern __typeof__( x264_me_search_fpel_avx512 ) x264_twin_me_search_fpel __attribute__((weak, visibility("hidden")));
 /* both link me-64.asm (no bytes: R_X86_64_NONE relocations) */
