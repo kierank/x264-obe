@@ -3259,7 +3259,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
  * global qpel mv; 6, 7 as 0 with strong noise. Random mv / me ranges (small ones clip),
  * lambdas, mv cost shapes, skip thresholds at and around the sads, aq, weights, slices,
  * stored mvs (predictors, do_search 0), intra done or not, the C hex search, and the 8-bit
- * lookahead's cost correction (random tables and lengths) */
+ * lookahead's cost correction (random tables, zero prefixes and lengths) */
 static int check_lowres_p( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pf_ref, pf;
@@ -3417,6 +3417,8 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
         {
             for( int k = 0; k < 2048; k++ )
                 corr[0][k] = rand()%24, corr[1][k] = rand()%24;
+            memset( corr[0], 0, rand()%64 );
+            memset( corr[1], 0, rand()%64 );
             c.corr_intra = corr[0];
             c.corr_inter = corr[1];
             c.corr_intra_max = rand()%2048;
