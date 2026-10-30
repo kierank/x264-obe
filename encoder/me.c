@@ -1775,7 +1775,8 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
 typedef char x264_lowres_p_layout[offsetof( x264_lowres_p_t, get_ref ) == 64 && offsetof( x264_lowres_p_t, fenc ) == 72 &&
                                   offsetof( x264_lowres_p_t, ref_w ) == 112 && offsetof( x264_lowres_p_t, output_intra ) == 184 &&
                                   offsetof( x264_lowres_p_t, stride ) == 192 && offsetof( x264_lowres_p_t, weighted ) == 252 &&
-                                  sizeof(x264_lowres_p_t) == 256 ? 1 : -1];
+                                  offsetof( x264_lowres_p_t, corr_intra ) == 256 && offsetof( x264_lowres_p_t, corr_intra_max ) == 272 &&
+                                  sizeof(x264_lowres_p_t) == 280 ? 1 : -1];
 
 uint64_t x264_lowres_hex_search_c( pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
                                    const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
@@ -2028,6 +2029,8 @@ store:
             if( c->output_intra )
             {
                 int icost = c->intra( fenc_pre, c->fenc + pel, stride ) + 5 * c->lambda + 4;
+                if( c->corr_intra )
+                    icost = x264_lowres_cost_corr( icost, c->corr_intra, c->corr_intra_max, 5 * c->lambda + 4 );
                 c->intra_cost[mb_xy] = icost;
                 int icost_aq = icost;
                 if( c->inv_qscale )
@@ -2040,6 +2043,8 @@ store:
                 }
             }
             bcost += 4;
+            if( c->corr_inter )
+                bcost = x264_lowres_cost_corr( bcost, c->corr_inter, c->corr_inter_max, 4 );
 
             int icost = c->intra_cost[mb_xy];
             int b_intra = icost < bcost;

@@ -71,6 +71,10 @@ struc lowres_p
     .end_y:        resd 1
     .do_search:    resd 1
     .weighted:     resd 1
+    .corr_intra:   resq 1
+    .corr_inter:   resq 1
+    .corr_intra_max: resd 1
+    .corr_inter_max: resd 1
 endstruc
 
 ; stack: outgoing arguments at 0, then 64-aligned buffers and the locals.
@@ -863,6 +867,20 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    ecx, [rbx+lowres_p.lambda]
     lea    ecx, [rcx+rcx*4+4]
     add    eax, ecx
+    ; the 8-bit lookahead's correction, floor 5*lambda + 4
+    mov    rdx, [rbx+lowres_p.corr_intra]
+    test   rdx, rdx
+    jz .icorr
+    mov    esi, [rbx+lowres_p.corr_intra_max]
+    cmp    eax, esi
+    cmovb  esi, eax
+    movzx  esi, byte [rdx+rsi]
+    cmp    ecx, eax
+    cmovg  ecx, eax
+    sub    eax, esi
+    cmp    eax, ecx
+    cmovl  eax, ecx
+.icorr:
     mov    rcx, [rbx+lowres_p.intra_cost]
     mov    [rcx+R15*2], ax
     mov    ecx, eax
@@ -892,6 +910,21 @@ cglobal lowres_p_mbs, 1,15,0, LP_STACK
     mov    R8d, 1
 .notlist:
     add    ecx, 4
+    ; the 8-bit lookahead's correction, floor 4
+    mov    rdx, [rbx+lowres_p.corr_inter]
+    test   rdx, rdx
+    jz .bcorr
+    mov    eax, [rbx+lowres_p.corr_inter_max]
+    cmp    ecx, eax
+    cmovb  eax, ecx
+    movzx  eax, byte [rdx+rax]
+    mov    edx, 4
+    cmp    edx, ecx
+    cmovg  edx, ecx
+    sub    ecx, eax
+    cmp    ecx, edx
+    cmovl  ecx, edx
+.bcorr:
     mov    rdx, [rbx+lowres_p.intra_cost]
     movzx  eax, word [rdx+R15*2]
     xor    R9d, R9d

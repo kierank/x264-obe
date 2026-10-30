@@ -354,6 +354,7 @@ void x264_param_default( x264_param_t *param )
     param->rc.f_complexity_blur = 20;
     param->rc.i_zones = 0;
     param->rc.b_mb_tree = 1;
+    param->rc.b_lookahead_8bit = 1;
 
     // speedcontrol
     param->sc.f_speed = 0;
@@ -613,7 +614,6 @@ static int param_apply_tune( x264_param_t *param, const char *tune )
             param->b_sliced_threads = 1;
             param->b_vfr_input = 0;
             param->rc.b_mb_tree = 0;
-            param->rc.b_lookahead_8bit = 1;
         }
         else if( len == 6 && !strncasecmp( tune, "touhou", 6 ) )
         {

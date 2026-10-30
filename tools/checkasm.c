@@ -3258,7 +3258,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
  * fullpel mv (pred == fenc exits); 2 fenc == ref (skips); 3 flat; 4 noise; 5 ref moved by a
  * global qpel mv; 6, 7 as 0 with strong noise. Random mv / me ranges (small ones clip),
  * lambdas, mv cost shapes, skip thresholds at and around the sads, aq, weights, slices,
- * stored mvs (predictors, do_search 0), intra done or not, and the C hex search */
+ * stored mvs (predictors, do_search 0), intra done or not, the C hex search, and the 8-bit
+ * lookahead's cost correction (random tables, zero prefixes and lengths) */
 static int check_lowres_p( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pf_ref, pf;
@@ -3280,6 +3281,7 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
     hw->mc = mc;
     int16_t (*mvs[2])[2]; int *mvc[2]; uint16_t *costs[2], *icost[2]; int *out[2][2];
     uint16_t invq[NMB];
+    static uint8_t corr[2][2048];
     for( int k = 0; k < 2; k++ )
     {
         mvs[k] = x264_malloc( NMB * 4 );
@@ -3411,6 +3413,18 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
         c.do_search = !!(rand()&7);
         int intra = rand()&1;
         int aq = rand()&1;
+        if( j&0x200 )
+        {
+            for( int k = 0; k < 2048; k++ )
+                corr[0][k] = rand()%24, corr[1][k] = rand()%24;
+            memset( corr[0], 0, rand()%64 );
+            memset( corr[1], 0, rand()%64 );
+            c.corr_intra = corr[0];
+            c.corr_inter = corr[1];
+            c.corr_intra_max = rand()%2048;
+            c.corr_inter_max = rand()%2048;
+            st[7] += intra;
+        }
         for( int k = 0; k < NMB; k++ )
         {
             int r = rand()%4;
@@ -3477,7 +3491,7 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
             call_a2( pf.lowres_p_mbs, &ca );
         }
     }
-    for( int k = 0; k < 7 && ok; k++ )
+    for( int k = 0; k < 8 && ok; k++ )
         if( !st[k] )
         {
             ok = 0;

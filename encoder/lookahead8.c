@@ -29,12 +29,15 @@
 
 #if BIT_DEPTH == 8
 
+#include "lookahead8corr.h"
+
 typedef struct
 {
     x264_t h;
     int lambda;
     uint16_t *p_cost_mv;
     pixel *weight_buf;
+    const uint8_t *corr_intra, *corr_p, *corr_b; /* lookahead8corr.h, NULL for none */
 } lowres8_t;
 
 void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height, int stride, int lines )
@@ -121,6 +124,13 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         goto fail;
     c->lambda = x264_lambda_tab[X264_LOOKAHEAD_QP];
     c->p_cost_mv = h->cost_mv[X264_LOOKAHEAD_QP];
+    /* lowlat keeps the uncorrected costs: rack01 2026-10-30 prodll fades +2.7 % */
+    if( param->rc.i_lookahead )
+    {
+        c->corr_intra = la8_corr_intra;
+        c->corr_p = la8_corr_p;
+        c->corr_b = la8_corr_b;
+    }
 
     /* weight_scale_plane writes up to 15 pixels past the plane width */
     c->weight_buf = x264_malloc( stride * (lines + 2*PADV) + 64 );
@@ -434,6 +444,8 @@ lowres_intra_mb:
         }
 
         i_icost += intra_penalty + lowres_penalty;
+        if( c->corr_intra )
+            i_icost = x264_lowres_cost_corr( i_icost, c->corr_intra, LA8_CORR_INTRA_MAX, intra_penalty + lowres_penalty );
         fenc->i_intra_cost[i_mb_xy] = i_icost;
         int i_icost_aq = i_icost;
         if( h->param.rc.i_aq_mode )
@@ -446,6 +458,9 @@ lowres_intra_mb:
         }
     }
     i_bcost += lowres_penalty;
+    if( p0 != p1 && c->corr_p )
+        i_bcost = b_bidir ? x264_lowres_cost_corr( i_bcost, c->corr_b, LA8_CORR_B_MAX, lowres_penalty )
+                          : x264_lowres_cost_corr( i_bcost, c->corr_p, LA8_CORR_P_MAX, lowres_penalty );
 
     /* forbid intra-mbs in B-frames, because it's rare and not worth checking */
     /* FIXME: Should we still forbid them now that we cache intra scores? */
@@ -533,6 +548,10 @@ void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
         lp.start_y = start_y;
         lp.end_y = end_y;
         lp.do_search = do_search[0];
+        lp.corr_intra = c->corr_intra;
+        lp.corr_inter = c->corr_p;
+        lp.corr_intra_max = LA8_CORR_INTRA_MAX;
+        lp.corr_inter_max = LA8_CORR_P_MAX;
         x264_lowres_p_run( h, &lp );
         return;
     }
