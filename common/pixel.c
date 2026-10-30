@@ -615,6 +615,92 @@ uint64_t x264_pixel_satd_qpel_search_c( int i_pixel, pixel *fenc, pixel **fref, 
     return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
 }
 
+/* the qpel prediction of satd_qpel_search_c at (mx,my), bw x bh in pix (stride 16) */
+static void subpel_pred( pixel *pix, pixel **fref, intptr_t stride, int bw, int bh, int mx, int my )
+{
+    int qpel_idx = ((my&3)<<2) + (mx&3);
+    intptr_t offset = (my>>2)*stride + (mx>>2);
+    pixel *src1 = fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+    pixel *src2 = qpel_idx & 5 ? fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3) : src1;
+    for( int y = 0; y < bh; y++ )
+        for( int x = 0; x < bw; x++ )
+            pix[16*y+x] = (src1[y*stride+x] + src2[y*stride+x] + 1) >> 1;
+}
+
+/* reference for satd_subpel_search: refine_subpel's mvp try, hpel loop, satd re-cost and
+ * halfpel threshold, then satd_qpel_search_c */
+uint64_t x264_pixel_satd_subpel_search_c( int i_pixel, pixel *fenc, pixel **fref, intptr_t stride, const uint16_t *cost_mvx,
+                                          const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range,
+                                          int *halfpel_thresh, uint32_t mvp )
+{
+    static const x264_pixel_cmp_t sad[4] =
+    {
+        x264_pixel_sad_16x16, x264_pixel_sad_16x8, x264_pixel_sad_8x16, x264_pixel_sad_8x8
+    };
+    static const x264_pixel_cmp_t satd[4] =
+    {
+        x264_pixel_satd_16x16, x264_pixel_satd_16x8, x264_pixel_satd_8x16, x264_pixel_satd_8x8
+    };
+    static const int8_t dir_dx[4] = { 0, 0, -2, 2 };
+    static const int8_t dir_dy[4] = { -2, 2, 0, 0 };
+    pixel pix[16*16];
+    int bw = x264_pixel_size[i_pixel].w;
+    int bh = x264_pixel_size[i_pixel].h;
+    int min_x = (int16_t)range, min_y = (int16_t)(range >> 16);
+    int max_x = (int16_t)(range >> 32), max_y = (int16_t)(range >> 48);
+    int bmx = (int16_t)bmv, bmy = (int16_t)(bmv >> 16);
+    if( iters & 32 )
+    {
+        int mx = x264_clip3( (int16_t)mvp, min_x+2, max_x-2 );
+        int my = x264_clip3( (int16_t)(mvp >> 16), min_y+2, max_y-2 );
+        if( (mx-bmx)|(my-bmy) )
+        {
+            subpel_pred( pix, fref, stride, bw, bh, mx, my );
+            int cost = sad[i_pixel]( fenc, FENC_STRIDE, pix, 16 ) + cost_mvx[mx] + cost_mvy[my];
+            if( cost < bcost )
+            {
+                bcost = cost;
+                bmx = mx;
+                bmy = my;
+            }
+        }
+    }
+    for( int i = (iters >> 16) & 255; i > 0; i-- )
+    {
+        int bdir = -1;
+        int omx = bmx, omy = bmy;
+        for( int dir = 0; dir < 4; dir++ )
+        {
+            int mx = omx + dir_dx[dir];
+            int my = omy + dir_dy[dir];
+            subpel_pred( pix, fref, stride, bw, bh, mx, my );
+            int cost = sad[i_pixel]( fenc, FENC_STRIDE, pix, 16 ) + cost_mvx[mx] + cost_mvy[my];
+            if( cost < bcost )
+            {
+                bcost = cost;
+                bdir = dir;
+            }
+        }
+        if( bdir < 0 )
+            break;
+        bmx = omx + dir_dx[bdir];
+        bmy = omy + dir_dy[bdir];
+    }
+    subpel_pred( pix, fref, stride, bw, bh, bmx, bmy );
+    bcost = satd[i_pixel]( fenc, FENC_STRIDE, pix, 16 ) + cost_mvx[bmx] + cost_mvy[bmy];
+    if( halfpel_thresh )
+    {
+        if( (bcost*7)>>3 > *halfpel_thresh )
+            return (uint32_t)bcost | 1u << 31 | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+        else if( bcost < *halfpel_thresh )
+            *halfpel_thresh = bcost;
+    }
+    if( iters & 0xff00 )
+        return x264_pixel_satd_qpel_search_c( i_pixel, fenc, fref, stride, cost_mvx, cost_mvy,
+                                              pack16to32_mask( bmx, bmy ), bcost, iters & 0xff10, range );
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+
 static NOINLINE int sa8d_8x8( pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 )
 {
     sum2_t tmp[8][4];
@@ -1552,6 +1638,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
             pixf->satd_qpel_search[PIXEL_16x8]  = x264_pixel_satd_qpel_search_16x8_avx2;
             pixf->satd_qpel_search[PIXEL_8x16]  = x264_pixel_satd_qpel_search_8x16_avx2;
             pixf->satd_qpel_search[PIXEL_8x8]   = x264_pixel_satd_qpel_search_8x8_avx2;
+            pixf->satd_subpel_search[PIXEL_16x16] = x264_pixel_satd_subpel_search_16x16_avx2;
+            pixf->satd_subpel_search[PIXEL_16x8]  = x264_pixel_satd_subpel_search_16x8_avx2;
+            pixf->satd_subpel_search[PIXEL_8x16]  = x264_pixel_satd_subpel_search_8x16_avx2;
+            pixf->satd_subpel_search[PIXEL_8x8]   = x264_pixel_satd_subpel_search_8x8_avx2;
         }
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx2;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
@@ -1954,6 +2044,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
             pixf->satd_qpel_search[PIXEL_16x8]  = x264_pixel_satd_qpel_search_16x8_avx2;
             pixf->satd_qpel_search[PIXEL_8x16]  = x264_pixel_satd_qpel_search_8x16_avx2;
             pixf->satd_qpel_search[PIXEL_8x8]   = x264_pixel_satd_qpel_search_8x8_avx2;
+            pixf->satd_subpel_search[PIXEL_16x16] = x264_pixel_satd_subpel_search_16x16_avx2;
+            pixf->satd_subpel_search[PIXEL_16x8]  = x264_pixel_satd_subpel_search_16x8_avx2;
+            pixf->satd_subpel_search[PIXEL_8x16]  = x264_pixel_satd_subpel_search_8x16_avx2;
+            pixf->satd_subpel_search[PIXEL_8x8]   = x264_pixel_satd_subpel_search_8x8_avx2;
         }
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx2;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;

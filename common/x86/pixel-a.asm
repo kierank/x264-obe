@@ -44,6 +44,8 @@ mask_ff:   times 16 db 0xff
            times 16 db 0
 mask_ac4:  times 2 dw 0, -1, -1, -1, 0, -1, -1, -1
 mask_ac4b: times 2 dw 0, -1, 0, -1, -1, -1, -1, -1
+; subpel_search 8-bit 8 wide hpel: pixh bytes 0-7, 1-8 of a row
+subpel_hpel_shuf8: times 2 db 0,1,2,3,4,5,6,7, 1,2,3,4,5,6,7,8
 mask_ac8:  times 2 dw 0, -1, -1, -1, -1, -1, -1, -1
 intra_8x8c_dc_shuf: db 0,1,0,1,0,1,0,1,2,3,2,3,2,3,2,3, 4,5,4,5,4,5,4,5,6,7,6,7,6,7,6,7
 intra_8x8c_dc_shufb: db 0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1, 2,2,2,2,3,3,3,3,2,2,2,2,3,3,3,3
@@ -536,6 +538,298 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     shl      r10, 32
     lea      r6, [r12+r10]
     RET
+.satd:
+    QPEL_SATD %1, %2
+    ret
+%endmacro
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_satd_subpel_search_WxH( pixel *fenc, pixel **fref, intptr_t stride, uint16_t *cost_mvx,
+;                                        uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters,
+;                                        uint64_t range, x264_bi_fenc_t *qfenc, x264_pixel_qpel_search_t qpel,
+;                                        int *halfpel_thresh, uint32_t mvp )
+; refine_subpel up to its qpel stage, see x264_pixel_subpel_search_t, then a call of qpel.
+; A candidate's prediction is QPEL_CAND's; where both components are even it is the one
+; plane fref[(mx&2)>>1 | (my&2)] + (my>>2)*stride + (mx>>2). The hpel key is
+; (cost << 6) + code, codes 2, 6, 16, 48 for (0,-2) (0,2) (-2,0) (2,0): the min is the
+; strict < sequence and the step is bmx -= bits 3-5, bmy -= bits 0-2 (signed), as
+; refine_subpel's; the satd re-cost replaces the key, so it is never shifted back. Per bit depth: SUBPEL_SAD: r0 fenc, r1/r2 sources, r3 stride in bytes
+; -> eax; SUBPEL_SAD_HPEL: r1 pixv, r2 pixh -> xm0 the sads of pixv, pixv + stride, pixh,
+; pixh + 1 pixel, the m permutation unchanged; both clobber r1, r2, r4-r6, m0-m9.
+;-----------------------------------------------------------------------------
+; row %1 (0..4) of a 4 row group at stride r3, %2 = 3*r3 -> subpel_o
+%macro SUBPEL_ROWOFF 2
+%if %1 == 0
+    %xdefine subpel_o 0
+%elif %1 == 1
+    %xdefine subpel_o r3
+%elif %1 == 2
+    %xdefine subpel_o 2*r3
+%elif %1 == 3
+    %xdefine subpel_o %2
+%else
+    %xdefine subpel_o 4*r3
+%endif
+%endmacro
+
+; r5 = mx, r6 = my -> r2/r1 = QPEL_CAND's sources; clobbers r4-r6
+%macro SUBPEL_SRC 0
+    lea      r2d, [r6*4]
+    and      r2d, 12
+    mov      r1d, r5d
+    and      r1d, 3
+    or       r1d, r2d
+    shl      r1d, 2
+    mov      r2, QPEL_REF_NIBBLES
+    shrx     r1, r2, r1
+    mov      r2d, r1d
+    and      r2d, 3
+    shr      r1d, 2
+    and      r1d, 3
+    mov      r2, [r7+8*r2]
+    mov      r1, [r7+8*r1]
+    lea      r4, [r6+1]
+    sar      r4, 2
+    imul     r4, r3
+    add      r2, r4
+    mov      r4, r5
+    sar      r4, 2
+    lea      r2, [r2+r4*SIZEOF_PIXEL]
+    sar      r6, 2
+    imul     r6, r3
+    add      r1, r6
+    add      r5, 1
+    sar      r5, 2
+    lea      r1, [r1+r5*SIZEOF_PIXEL]
+%endmacro
+
+; r5 = mx, r6 = my, both even -> %1 = the one plane source; clobbers r4-r6
+%macro SUBPEL_SRC_HPEL 1
+    mov      r4d, r5d
+    shr      r4d, 1
+    and      r4d, 1
+    mov      %{1}d, r6d
+    and      %{1}d, 2
+    or       %{1}d, r4d
+    mov      %1, [r7+8*%1]
+    sar      r6, 2
+    imul     r6, r3
+    add      %1, r6
+    sar      r5, 2
+    lea      %1, [%1+r5*SIZEOF_PIXEL]
+%endmacro
+
+; r12d = min( r12d, ((sad + cost_mvx[bmx+dx] + cost_mvy[bmy+dy]) << 6) + code ); clobbers r1, r2
+%macro SUBPEL_HPEL_KEY 4 ; dx, dy, code, sad
+    movzx    r1d, word [r8+2*r10+2*(%1)]
+    movzx    r2d, word [r9+2*r11+2*(%2)]
+    add      r1d, r2d
+    add      r1d, %4
+    shl      r1d, 6
+    or       r1d, %3
+    cmp      r1d, r12d
+    cmovl    r12d, r1d
+%endmacro
+
+; an hpel candidate of a qpel position: two planes
+%macro SUBPEL_HPEL_AVG 3 ; dx, dy, code
+    lea      r5, [r10+%1]
+    lea      r6, [r11+%2]
+    SUBPEL_SRC
+    call .sad
+    SUBPEL_HPEL_KEY %1, %2, %3, r6d
+%endmacro
+
+; outgoing argument i (stack) of the qpel call
+%if WIN64
+    %define subpel_arg(i) [rsp+8*(i)]
+%else
+    %define subpel_arg(i) [rsp+8*((i)-6)]
+%endif
+
+; r7 fref, r8/r9 cost_mvx/y, r10/r11 bmx/bmy, r12 bcost (32 bits), r13 iters, r14 hpel count;
+; the outgoing arguments of the qpel call at rsp (STACK_ALIGNMENT aligned), the clipped mvp there
+; while it is tried
+%macro SUBPEL_SEARCH 2 ; w, h
+cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
+%if WIN64
+    %assign subpel_stk 72
+%else
+    %assign subpel_stk 24
+%endif
+    %assign subpel_stk subpel_stk + ((-(stack_offset + gprsize + subpel_stk)) & (STACK_ALIGNMENT-1))
+    SUB      rsp, subpel_stk
+    mov      r13d, r7d
+    mov      r7, r1
+    mov      r8, r3
+    mov      r9, r4
+    movsx    r10, r5w
+    sar      r5d, 16
+    movsxd   r11, r5d
+    mov      r12d, r6d
+    lea      r3, [r2*SIZEOF_PIXEL]
+    test     r13d, 0x20
+    jz .hpel
+    ; the mvp clipped to the range shrunk by 2, as x264_clip3
+    mov      r1, r8mp
+    mov      r4d, r12m
+    movsx    r5d, r4w
+    sar      r4d, 16
+    movsx    r2d, r1w
+    add      r2d, 2
+    mov      r6, r1
+    shr      r6, 32
+    cwde                        ; movsx r6d, r6w (r6 = rax)
+    sub      r6d, 2
+    mov      r14d, r5d
+    cmp      r5d, r6d
+    cmovg    r14d, r6d
+    cmp      r5d, r2d
+    cmovl    r14d, r2d
+    mov      r2, r1
+    sar      r2, 16
+    movsx    r2d, r2w
+    add      r2d, 2
+    sar      r1, 48
+    sub      r1d, 2
+    mov      r5d, r4d
+    cmp      r4d, r1d
+    cmovg    r5d, r1d
+    cmp      r4d, r2d
+    cmovl    r5d, r2d
+    cmp      r14d, r10d
+    jne .mvp
+    cmp      r5d, r11d
+    je .hpel
+.mvp:
+    mov      [rsp], r14d
+    mov      [rsp+4], r5d
+    movsxd   r6, r5d
+    movsxd   r5, r14d
+    SUBPEL_SRC
+    call .sad
+    movsxd   r4, dword [rsp]
+    movsxd   r5, dword [rsp+4]
+    movzx    r1d, word [r8+2*r4]
+    movzx    r2d, word [r9+2*r5]
+    add      r6d, r1d
+    add      r6d, r2d
+    cmp      r6d, r12d
+    jge .hpel
+    mov      r12d, r6d
+    mov      r10, r4
+    mov      r11, r5
+.hpel:
+    mov      r14d, r13d
+    shr      r14d, 16
+    jz .centre
+    shl      r12d, 6
+.hpel_loop:
+    mov      r1d, r10d
+    or       r1d, r11d
+    test     r1d, 1
+    jnz .hpel_avg
+    lea      r5, [r10-2]
+    mov      r6, r11
+    SUBPEL_SRC_HPEL r2
+    mov      r5, r10
+    lea      r6, [r11-2]
+    SUBPEL_SRC_HPEL r1
+    call .sadh
+    movd     r4d, xm0
+    pextrd   r5d, xm0, 1
+    SUBPEL_HPEL_KEY  0, -2,  2, r4d
+    SUBPEL_HPEL_KEY  0,  2,  6, r5d
+    pextrd   r4d, xm0, 2
+    pextrd   r5d, xm0, 3
+    SUBPEL_HPEL_KEY -2,  0, 16, r4d
+    SUBPEL_HPEL_KEY  2,  0, 48, r5d
+    jmp .hpel_step
+.hpel_avg:
+    SUBPEL_HPEL_AVG  0, -2,  2
+    SUBPEL_HPEL_AVG  0,  2,  6
+    SUBPEL_HPEL_AVG -2,  0, 16
+    SUBPEL_HPEL_AVG  2,  0, 48
+.hpel_step:
+    test     r12d, 63
+    jz .centre
+    mov      r1d, r12d
+    shl      r1d, 26
+    sar      r1d, 29
+    movsxd   r1, r1d
+    sub      r10, r1
+    mov      r2d, r12d
+    shl      r2d, 29
+    sar      r2d, 29
+    movsxd   r2, r2d
+    sub      r11, r2
+    and      r12d, ~63
+    dec      r14d
+    jnz .hpel_loop
+.centre:
+    mov      r5, r10
+    mov      r6, r11
+    SUBPEL_SRC
+    mov      r0, r9mp
+    call .satd
+    movzx    r1d, word [r8+2*r10]
+    movzx    r2d, word [r9+2*r11]
+    lea      r12d, [r6+r1]
+    add      r12d, r2d
+    mov      r1, r11mp
+    test     r1, r1
+    jz .qpel
+    mov      r2d, [r1]
+    imul     r4d, r12d, 7
+    sar      r4d, 3
+    cmp      r4d, r2d
+    jg .stop
+    cmp      r12d, r2d
+    jge .qpel
+    mov      [r1], r12d
+.qpel:
+    test     r13d, 0xff00
+    jz .done
+    ; qpel( qfenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range )
+    mov      r1, r8mp
+    mov      subpel_arg(8), r1
+    mov      subpel_arg(7), r13d
+    mov      subpel_arg(6), r12d
+    movzx    r5d, r10w
+    shl      r11d, 16
+    or       r5d, r11d
+    mov      r1, r7
+    mov      r2, r3
+%if HIGH_BIT_DEPTH
+    shr      r2, 1
+%endif
+    mov      r3, r8
+    mov      r4, r9
+%if WIN64
+    mov      subpel_arg(4), r4
+    mov      subpel_arg(5), r5
+%endif
+    mov      r6, r10mp
+    call     r6
+    jmp .ret
+.stop:
+    or       r12d, 0x80000000
+.done:
+    movzx    r10d, r10w
+    shl      r11d, 16
+    or       r10d, r11d
+    shl      r10, 32
+    mov      r6d, r12d
+    or       r6, r10
+.ret:
+    ADD      rsp, subpel_stk
+    RET
+.sadh:
+    SUBPEL_SAD_HPEL %1, %2
+    ret
+.sad:
+    SUBPEL_SAD %1, %2
+    ret
 .satd:
     QPEL_SATD %1, %2
     ret
@@ -6185,6 +6479,151 @@ QPEL_SEARCH 16, 16
 QPEL_SEARCH 16, 8
 QPEL_SEARCH 8, 16
 QPEL_SEARCH 8, 8
+
+; sad( fenc, pavgw( src1, src2 ) ): 16 wide a row a ymm, 8 wide 2 rows; at most 16*1023 a word
+%macro SUBPEL_SAD 2 ; w, h
+    lea           r4, [3*r3]
+%if %1 == 16
+%assign %%k 0
+%rep %2
+    SUBPEL_ROWOFF (%%k&3), r4
+    movu          m1, [r1+subpel_o]
+    pavgw         m1, [r2+subpel_o]
+%if %%k
+    psubw         m1, [r0+%%k*FENC_STRIDEB]
+    pabsw         m1, m1
+    paddw         m0, m1
+%else
+    psubw         m1, [r0]
+    pabsw         m0, m1
+%endif
+%if (%%k&3) == 3 && %%k < %2-1
+    lea           r1, [r1+4*r3]
+    lea           r2, [r2+4*r3]
+%endif
+%assign %%k %%k+1
+%endrep
+%else
+%assign %%k 0
+%rep %2/2
+    SUBPEL_ROWOFF (%%k&3), r4
+    %xdefine subpel_o0 subpel_o
+    SUBPEL_ROWOFF (%%k&3)+1, r4
+    movu         xm1, [r1+subpel_o0]
+    vinserti128   m1, m1, [r1+subpel_o], 1
+    movu         xm2, [r2+subpel_o0]
+    vinserti128   m2, m2, [r2+subpel_o], 1
+    pavgw         m1, m2
+    movu         xm2, [r0+%%k*FENC_STRIDEB]
+    vinserti128   m2, m2, [r0+(%%k+1)*FENC_STRIDEB], 1
+    psubw         m1, m2
+%if %%k
+    pabsw         m1, m1
+    paddw         m0, m1
+%else
+    pabsw         m0, m1
+%endif
+%if (%%k&3) == 2 && %%k < %2-2
+    lea           r1, [r1+4*r3]
+    lea           r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+%endif
+    pmaddwd       m0, [pw_1]
+    HADDD         m0, m1
+    movd         eax, xm0
+%endmacro
+
+; the 4 sads of an hpel step, pixv rows loaded once
+%macro SUBPEL_SAD_HPEL_ACC 2 ; k, h
+%if %1 == 0
+    pabsw          m0, m5
+    pabsw          m1, m6
+    pabsw          m2, m8
+    pabsw          m3, m9
+%else
+    pabsw          m5, m5
+    pabsw          m6, m6
+    pabsw          m8, m8
+    pabsw          m9, m9
+    paddw          m0, m5
+    paddw          m1, m6
+    paddw          m2, m8
+    paddw          m3, m9
+%endif
+%endmacro
+
+%macro SUBPEL_SAD_HPEL 2 ; w, h
+    lea            r6, [3*r3]
+%if %1 == 16
+    movu           m5, [r1]
+%assign %%k 0
+%rep %2
+    movu           m4, [r0+%%k*FENC_STRIDEB]
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    movu           m7, [r1+subpel_o]     ; v row k+1
+    SUBPEL_ROWOFF (%%k&3), r6
+    psubw          m8, m4, [r2+subpel_o]
+    psubw          m9, m4, [r2+subpel_o+2]
+    psubw          m5, m4
+    psubw          m6, m7, m4
+    SUBPEL_SAD_HPEL_ACC %%k, %2
+    SWAP            5, 7
+%if (%%k&3) == 3 && %%k < %2-1
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+1
+%endrep
+%else
+    movu          xm5, [r1]
+%assign %%k 0
+%rep %2/2
+    movu          xm4, [r0+%%k*FENC_STRIDEB]
+    vinserti128    m4, m4, [r0+(%%k+1)*FENC_STRIDEB], 1
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    movu          xm6, [r1+subpel_o]
+    SUBPEL_ROWOFF (%%k&3)+2, r6
+    movu          xm7, [r1+subpel_o]
+    vinserti128    m5, m5, xm6, 1        ; v rows k, k+1
+    vinserti128    m6, m6, xm7, 1        ; v rows k+1, k+2
+    SUBPEL_ROWOFF (%%k&3), r6
+    %xdefine subpel_o0 subpel_o
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    movu          xm8, [r2+subpel_o0]
+    vinserti128    m8, m8, [r2+subpel_o], 1
+    movu          xm9, [r2+subpel_o0+2]
+    vinserti128    m9, m9, [r2+subpel_o+2], 1
+    psubw          m5, m4
+    psubw          m6, m4
+    psubw          m8, m4
+    psubw          m9, m4
+    SUBPEL_SAD_HPEL_ACC %%k, %2
+    SWAP            5, 7
+%if (%%k&3) == 2 && %%k < %2-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+%endif
+    vpbroadcastd   m4, [pw_1]
+    pmaddwd        m0, m4
+    pmaddwd        m1, m4
+    pmaddwd        m2, m4
+    pmaddwd        m3, m4
+    phaddd         m0, m1
+    phaddd         m2, m3
+    phaddd         m0, m2
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+%endmacro
+
+SUBPEL_SEARCH 16, 16
+SUBPEL_SEARCH 16, 8
+SUBPEL_SEARCH 8, 16
+SUBPEL_SEARCH 8, 8
 %endif ; ARCH_X86_64
 
 %if ARCH_X86_64
@@ -8169,6 +8608,129 @@ QPEL_SEARCH 16, 16
 QPEL_SEARCH 16, 8
 QPEL_SEARCH 8, 16
 QPEL_SEARCH 8, 8
+
+; sad( fenc, pavgb( src1, src2 ) ), 2 rows a ymm; 8 wide: 16 byte loads, qword 1 of each lane dropped
+%macro SUBPEL_SAD 2 ; w, h
+%assign %%k 0
+%rep %2/2
+%if %%k
+    lea           r1, [r1+2*r3]
+    lea           r2, [r2+2*r3]
+%endif
+    movu         xm1, [r1]
+    vinserti128   m1, m1, [r1+r3], 1
+    movu         xm2, [r2]
+    vinserti128   m2, m2, [r2+r3], 1
+    pavgb         m1, m2
+%if %%k
+    psadbw        m1, [r0+%%k*FENC_STRIDE]
+    paddd         m0, m1
+%else
+    psadbw        m0, m1, [r0]
+%endif
+%assign %%k %%k+2
+%endrep
+    vextracti128 xm1, m0, 1
+    paddd        xm0, xm1
+%if %1 == 16
+    punpckhqdq   xm1, xm0, xm0
+    paddd        xm0, xm1
+%endif
+    movd         eax, xm0
+%endmacro
+
+; sad_hpel_min's sads (sad-a.asm)
+%macro SUBPEL_SAD_HPEL 2 ; w, h
+    lea            r6, [3*r3]
+%if %1 == 16
+    movu          xm5, [r1]
+%assign %%k 0
+%rep %2/2
+    movu           m4, [r0+%%k*FENC_STRIDE]
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    movu          xm6, [r1+subpel_o]
+    SUBPEL_ROWOFF (%%k&3)+2, r6
+    movu          xm7, [r1+subpel_o]
+    vinserti128    m5, m5, xm6, 1        ; v rows k, k+1
+    vinserti128    m6, m6, xm7, 1        ; v rows k+1, k+2
+    SUBPEL_ROWOFF (%%k&3), r6
+    %xdefine subpel_o0 subpel_o
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    movu          xm8, [r2+subpel_o0]
+    movu          xm9, [r2+subpel_o0+1]
+    vinserti128    m8, m8, [r2+subpel_o], 1
+    vinserti128    m9, m9, [r2+subpel_o+1], 1
+%if %%k == 0
+    psadbw         m0, m5, m4
+    psadbw         m1, m6, m4
+    psadbw         m2, m8, m4
+    psadbw         m3, m9, m4
+%else
+    psadbw         m5, m4
+    psadbw         m6, m4
+    psadbw         m8, m4
+    psadbw         m9, m4
+    paddw          m0, m5
+    paddw          m1, m6
+    paddw          m2, m8
+    paddw          m3, m9
+%endif
+    SWAP            5, 7
+%if (%%k&3) == 2 && %%k < %2-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+    packssdw       m0, m1
+    packssdw       m2, m3
+    phaddd         m0, m2
+%else
+    ; vpbroadcastq rows: v k, k+1 | k+1, k+2 against fenc k, k | k+1, k+1;
+    ; pixh rows k | k+1 by pshufb to bytes 0-7, 1-8
+    vpbroadcastq   m5, [r1]
+    mova           m7, [subpel_hpel_shuf8]
+%assign %%k 0
+%rep %2/2
+    vmovddup       m4, [r0+%%k*FENC_STRIDE]
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    vpbroadcastq   m2, [r1+subpel_o]
+    SUBPEL_ROWOFF (%%k&3)+2, r6
+    vpbroadcastq   m3, [r1+subpel_o]
+    SUBPEL_ROWOFF (%%k&3), r6
+    %xdefine subpel_o0 subpel_o
+    SUBPEL_ROWOFF (%%k&3)+1, r6
+    movu          xm6, [r2+subpel_o0]
+    vinserti128    m6, m6, [r2+subpel_o], 1
+    vpblendd       m2, m2, m5, 0x03
+    vpblendd       m2, m2, m3, 0xc0
+    pshufb         m6, m7
+%if %%k == 0
+    psadbw         m0, m2, m4
+    psadbw         m1, m6, m4
+%else
+    psadbw         m2, m4
+    psadbw         m6, m4
+    paddw          m0, m2
+    paddw          m1, m6
+%endif
+    SWAP            3, 5
+%if (%%k&3) == 2 && %%k < %2-2
+    lea            r1, [r1+4*r3]
+    lea            r2, [r2+4*r3]
+%endif
+%assign %%k %%k+2
+%endrep
+    packssdw       m0, m1
+%endif
+    vextracti128  xm1, m0, 1
+    paddd         xm0, xm1
+%endmacro
+
+SUBPEL_SEARCH 16, 16
+SUBPEL_SEARCH 16, 8
+SUBPEL_SEARCH 8, 16
+SUBPEL_SEARCH 8, 8
 
 ;-----------------------------------------------------------------------------
 ; satd_bi/satd_bi4 (see SATD_BI) against fenc_pre, the rows as satd_pre's. The
