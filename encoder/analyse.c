@@ -248,8 +248,11 @@ fail:
     return -1;
 }
 
+static void ap_print( void );
+
 void x264_analyse_free_costs( x264_t *h )
 {
+    ap_print();
     for( int i = 0; i < QP_MAX+1; i++ )
     {
         if( h->cost_mv[i] )
@@ -1495,9 +1498,11 @@ static int x264_mb_analyse_inter_p16x16_search( x264_t *h, x264_mb_analysis_t *a
     return 0;
 }
 
+static int ap_check_p16x16( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *ap );
+
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *ap )
 {
-    if( ap ? h->pixf.analyse_p16x16( ap ) : x264_mb_analyse_inter_p16x16_search( h, a ) )
+    if( ap ? ap_check_p16x16( h, a, ap ) : x264_mb_analyse_inter_p16x16_search( h, a ) )
     {
         h->mb.i_type = P_SKIP;
         x264_analyse_update_cache( h, a );
@@ -3496,6 +3501,203 @@ static ALWAYS_INLINE void x264_mb_analyse_p_sub16x16( x264_t *h, x264_mb_analysi
     *pi_cost = i_cost;
 }
 
+/* Cross check (test/x264-analyse-p-asm-cnt): every asm call runs the C on the same
+ * state first, then the asm on the restored state; x264_t, the analysis (but for
+ * the x264_me_t bytes C leaves as stack garbage) and the mvr entries must match.
+ * Path counters print at x264_analyse_free_costs. */
+enum
+{
+    APC_P16, APC_P16_MULTI, APC_P16_FIELD, APC_P16_DUPE, APC_P16_TRY, APC_P16_SKIP,
+    APC_SUB, APC_SUB_GATE, APC_SUB_8x8, APC_SUB_REF, APC_SUB_SRC, APC_SUB_FIELD, APC_SUB_SEL8x8,
+    APC_SUB_2, APC_SUB_ET16x8, APC_SUB_ET8x16, APC_SUB_SEL16x8, APC_SUB_SEL8x16, APC_SUB_TR,
+    APC_SUB_TR_LIVE, APC_SUB_NONE, APC_SUB_NOET, APC_SUB_MBRD, APC_MAX
+};
+static const char * const ap_cnt_names[APC_MAX] =
+{
+    "p16x16", "multi-ref", "field mb", "blind dupe", "try skip", "fast skip",
+    "sub16x16", "gate", "8x8", "8x8 ref>0", "8x8 dupe src", "field mb", "8x8 chosen",
+    "16x8+8x16", "16x8 et", "8x16 et", "16x8 chosen", "8x16 chosen", "mbaff topright",
+    "topright live", "top row rule", "no early term", "mbrd"
+};
+static uint64_t ap_cnt[APC_MAX];
+static uint64_t ap_checks;
+#define AP_COUNT(i) __atomic_fetch_add( &ap_cnt[i], 1, __ATOMIC_RELAXED )
+
+static void ap_print( void )
+{
+    fprintf( stderr, "analyse_p %d-bit: %" PRIu64 " checks passed\n", BIT_DEPTH, ap_checks );
+    for( int i = 0; i < APC_MAX; i++ )
+        fprintf( stderr, "  %-16s %" PRIu64 "\n", ap_cnt_names[i], ap_cnt[i] );
+}
+
+static __thread x264_t *ap_h0, *ap_hc;
+static __thread x264_mb_analysis_t *ap_a0, *ap_ac;
+
+static void ap_mask( x264_mb_analysis_t *a, int b_dead16 )
+{
+    x264_me_t *m = &a->l0.me16x16;
+    for( int i = 0; i < (int)(offsetof( x264_mb_analysis_list_t, i_rd16x16 ) / sizeof(x264_me_t)); i++ )
+    {
+        uint8_t *p = (uint8_t*)&m[i];
+        memset( p + 4, 0, 4 );
+        memset( p + offsetof( x264_me_t, p_fref[6] ), 0, 6*sizeof(pixel*) );
+        memset( p + offsetof( x264_me_t, mv ) + 4, 0, sizeof(x264_me_t) - offsetof( x264_me_t, mv ) - 4 );
+    }
+    if( b_dead16 )
+        memset( &a->l0.me16x16, 0, sizeof(x264_me_t) );
+}
+
+static void ap_alloc( void )
+{
+    if( !ap_h0 )
+    {
+        ap_h0 = x264_malloc( sizeof(x264_t) );
+        ap_hc = x264_malloc( sizeof(x264_t) );
+        ap_a0 = x264_malloc( sizeof(x264_mb_analysis_t) );
+        ap_ac = x264_malloc( sizeof(x264_mb_analysis_t) );
+    }
+}
+
+static void ap_fail( x264_t *h, const char *what, x264_t *hc, x264_mb_analysis_t *a, x264_mb_analysis_t *ac, int b_dead16 )
+{
+    fprintf( stderr, "analyse_p mismatch (%s) at frame %d mb %d,%d field %d\n", what, h->i_frame,
+             h->mb.i_mb_x, h->mb.i_mb_y, MB_INTERLACED );
+    if( hc )
+    {
+        uint8_t *p = (uint8_t*)h, *q = (uint8_t*)hc;
+        for( size_t i = 0; i < sizeof(x264_t); i++ )
+            if( p[i] != q[i] )
+            {
+                fprintf( stderr, "  x264_t byte %zu (mb+%ld): asm %d c %d\n", i,
+                         (long)i - (long)offsetof( x264_t, mb ), p[i], q[i] );
+                break;
+            }
+    }
+    if( ac )
+    {
+        ap_mask( a, b_dead16 );
+        ap_mask( ac, b_dead16 );
+        uint8_t *p = (uint8_t*)a, *q = (uint8_t*)ac;
+        for( size_t i = 0; i < sizeof(x264_mb_analysis_t); i++ )
+            if( p[i] != q[i] )
+            {
+                fprintf( stderr, "  analysis byte %zu (l0+%ld): asm %d c %d\n", i,
+                         (long)i - (long)offsetof( x264_mb_analysis_t, l0 ), p[i], q[i] );
+                break;
+            }
+    }
+    abort();
+}
+
+static int ap_check_p16x16( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *ap )
+{
+    ap_alloc();
+    int i_fref = h->mb.pic.i_fref[0], xy = h->mb.i_mb_xy;
+    uint32_t mvr0[X264_REF_MAX*2], mvrc[X264_REF_MAX*2];
+    memcpy( ap_h0, h, sizeof(x264_t) );
+    memcpy( ap_a0, a, sizeof(x264_mb_analysis_t) );
+    for( int i = 0; i < i_fref; i++ )
+        mvr0[i] = M32( h->mb.mvr[0][i][xy] );
+    int rc = x264_mb_analyse_inter_p16x16_search( h, a );
+    memcpy( ap_hc, h, sizeof(x264_t) );
+    memcpy( ap_ac, a, sizeof(x264_mb_analysis_t) );
+    for( int i = 0; i < i_fref; i++ )
+    {
+        mvrc[i] = M32( h->mb.mvr[0][i][xy] );
+        M32( h->mb.mvr[0][i][xy] ) = mvr0[i];
+    }
+    memcpy( h, ap_h0, sizeof(x264_t) );
+    memcpy( a, ap_a0, sizeof(x264_mb_analysis_t) );
+    int ra = h->pixf.analyse_p16x16( ap );
+    if( ra != rc )
+        ap_fail( h, "p16x16 skip", NULL, NULL, NULL, 0 );
+    if( memcmp( h, ap_hc, sizeof(x264_t) ) )
+        ap_fail( h, "p16x16 x264_t", ap_hc, NULL, NULL, 0 );
+    for( int i = 0; i < i_fref; i++ )
+        if( M32( h->mb.mvr[0][i][xy] ) != mvrc[i] )
+            ap_fail( h, "p16x16 mvr", NULL, NULL, NULL, 0 );
+    memcpy( ap_a0, a, sizeof(x264_mb_analysis_t) );
+    ap_mask( ap_a0, rc );
+    ap_mask( ap_ac, rc );
+    if( memcmp( ap_a0, ap_ac, sizeof(x264_mb_analysis_t) ) )
+        ap_fail( h, "p16x16 analysis", NULL, a, ap_ac, rc );
+    __atomic_fetch_add( &ap_checks, 1, __ATOMIC_RELAXED );
+    AP_COUNT( APC_P16 );
+    if( i_fref > 1 ) AP_COUNT( APC_P16_MULTI );
+    if( MB_INTERLACED ) AP_COUNT( APC_P16_FIELD );
+    for( int i = 0; i < i_fref; i++ )
+        if( x264_mb_blind_dupe_src( h, i ) >= 0 )
+        {
+            AP_COUNT( APC_P16_DUPE );
+            break;
+        }
+    if( a->b_try_skip ) AP_COUNT( APC_P16_TRY );
+    if( rc ) AP_COUNT( APC_P16_SKIP );
+    return ra;
+}
+
+static void ap_check_sub16x16( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *ap, int b_gate,
+                               int *pi_type, int *pi_partition, int *pi_cost )
+{
+    ap_alloc();
+    int t, p, c;
+    int b_tr = SLICE_MBAFF && h->mb.cache.ref[0][x264_scan8[8]-8+4] == -2 && h->mb.cache.ref[0][x264_scan8[0]-1] != -2
+               && MB_INTERLACED != h->mb.field[h->mb.i_mb_left_xy[0]];
+    memcpy( ap_h0, h, sizeof(x264_t) );
+    memcpy( ap_a0, a, sizeof(x264_mb_analysis_t) );
+    x264_mb_analyse_p_sub16x16( h, a, b_gate, &t, &p, &c );
+    memcpy( ap_hc, h, sizeof(x264_t) );
+    memcpy( ap_ac, a, sizeof(x264_mb_analysis_t) );
+    memcpy( h, ap_h0, sizeof(x264_t) );
+    memcpy( a, ap_a0, sizeof(x264_mb_analysis_t) );
+    ap->gate = b_gate;
+    h->pixf.analyse_p_sub16x16( ap );
+    if( ap->i_type != t || ap->i_partition != p || ap->i_cost != c )
+    {
+        fprintf( stderr, "  type %d/%d partition %d/%d cost %d/%d (asm/c)\n", ap->i_type, t, ap->i_partition, p, ap->i_cost, c );
+        ap_fail( h, "sub16x16 result", NULL, NULL, NULL, 0 );
+    }
+    if( memcmp( h, ap_hc, sizeof(x264_t) ) )
+        ap_fail( h, "sub16x16 x264_t", ap_hc, NULL, NULL, 0 );
+    memcpy( ap_a0, a, sizeof(x264_mb_analysis_t) );
+    ap_mask( ap_a0, 0 );
+    ap_mask( ap_ac, 0 );
+    if( memcmp( ap_a0, ap_ac, sizeof(x264_mb_analysis_t) ) )
+        ap_fail( h, "sub16x16 analysis", NULL, a, ap_ac, 0 );
+    __atomic_fetch_add( &ap_checks, 1, __ATOMIC_RELAXED );
+    AP_COUNT( APC_SUB );
+    if( b_gate ) AP_COUNT( APC_SUB_GATE );
+    else
+    {
+        AP_COUNT( APC_SUB_8x8 );
+        if( a->l0.me8x8[0].i_ref ) AP_COUNT( APC_SUB_REF );
+        if( x264_mb_blind_dupe_src( h, a->l0.me16x16.i_ref ) >= 0 ) AP_COUNT( APC_SUB_SRC );
+    }
+    if( MB_INTERLACED ) AP_COUNT( APC_SUB_FIELD );
+    if( t == P_8x8 ) AP_COUNT( APC_SUB_SEL8x8 );
+    if( h->mb.i_partition == D_8x16 )
+    {
+        AP_COUNT( APC_SUB_2 );
+        if( a->l0.i_cost16x8 == COST_MAX ) AP_COUNT( APC_SUB_ET16x8 );
+        if( a->l0.i_cost8x16 == COST_MAX ) AP_COUNT( APC_SUB_ET8x16 );
+        if( b_tr ) AP_COUNT( APC_SUB_TR );
+        /* the 16x8 idx 8 predictor reads refc: left of another ref, the substitute or the topleft of its ref */
+        int r8 = a->l0.me8x8[0].i_ref;
+        if( b_tr && ap_h0->mb.cache.ref[0][x264_scan8[8]-1] != r8 &&
+            (ap_h0->mb.cache.topright_ref[0][1] == r8 || ap_h0->mb.cache.ref[0][x264_scan8[8]-9] == r8) )
+            AP_COUNT( APC_SUB_TR_LIVE );
+        if( ap_h0->mb.cache.ref[0][x264_scan8[0]-8] == -2 && ap_h0->mb.cache.ref[0][x264_scan8[0]-1] != -2 )
+            AP_COUNT( APC_SUB_NONE );
+    }
+    if( p == D_16x8 ) AP_COUNT( APC_SUB_SEL16x8 );
+    if( p == D_8x16 ) AP_COUNT( APC_SUB_SEL8x16 );
+    if( !a->b_early_terminate ) AP_COUNT( APC_SUB_NOET );
+    if( a->i_mbrd ) AP_COUNT( APC_SUB_MBRD );
+    *pi_type = t;
+    *pi_partition = p;
+    *pi_cost = c;
+}
+
 /*****************************************************************************
  * x264_macroblock_analyse:
  *****************************************************************************/
@@ -3700,11 +3902,7 @@ skip_analysis:
             int b_gate = b_partgate || b_intra_prune;
             if( ap && (flags & X264_ANALYSE_PSUB16x16) && !(flags & X264_ANALYSE_PSUB8x8) && !h->param.analyse.b_mixed_references )
             {
-                ap->gate = b_gate;
-                h->pixf.analyse_p_sub16x16( ap );
-                i_type = ap->i_type;
-                i_partition = ap->i_partition;
-                i_cost = ap->i_cost;
+                ap_check_sub16x16( h, &analysis, ap, b_gate, &i_type, &i_partition, &i_cost );
             }
             else
                 x264_mb_analyse_p_sub16x16( h, &analysis, b_gate, &i_type, &i_partition, &i_cost );
