@@ -38,6 +38,29 @@
 #   include "arm/pixel.h"
 #   include "arm/predict.h"
 #endif
+
+/* layout pair of wip/x264-mesearch-asm-regs-sn512: the AVX512 levels dispatch ME_FPEL_Z.
+ * ME_FPEL_ARM 1: me_search_fpel_avx512 (ymm), as wip; 0 (the twin): the hidden weak
+ * x264_N_twin_me_search_fpel, which links as 0, so me_search_fpel stays NULL and me.c runs
+ * the C search. The AVX2 levels dispatch nothing in either, as wip */
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+#define ME_FPEL_ARM 1
+#define x264_twin_me_search_fpel x264_template(twin_me_search_fpel)
+extern __typeof__( x264_me_search_fpel_avx512 ) x264_twin_me_search_fpel __attribute__((weak, visibility("hidden")));
+/* both link me-64.asm (no bytes: R_X86_64_NONE relocations) */
+#define ME_FPEL_STR2( x ) #x
+#define ME_FPEL_STR( x ) ME_FPEL_STR2( x )
+__asm__( ".pushsection .text\n"
+         ".reloc ., R_X86_64_NONE, " ME_FPEL_STR( x264_me_search_fpel_avx2 ) "\n"
+         ".reloc ., R_X86_64_NONE, " ME_FPEL_STR( x264_me_search_fpel_avx512 ) "\n"
+         ".reloc ., R_X86_64_NONE, " ME_FPEL_STR( x264_me_search_fpel_zmm_avx512 ) "\n"
+         ".popsection" );
+#if ME_FPEL_ARM
+#define ME_FPEL_Z x264_me_search_fpel_avx512
+#else
+#define ME_FPEL_Z x264_twin_me_search_fpel
+#endif
+#endif
 #if ARCH_UltraSPARC
 #   include "sparc/pixel.h"
 #endif
@@ -1730,7 +1753,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #if !defined(_WIN32)
         if( cpu&X264_CPU_BMI2 )
-            pixf->me_search_fpel = x264_me_search_fpel_avx512;
+            pixf->me_search_fpel = ME_FPEL_Z;
 #endif
 #endif
     }
@@ -2225,7 +2248,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #if !defined(_WIN32)
         if( cpu&X264_CPU_BMI2 )
-            pixf->me_search_fpel = x264_me_search_fpel_avx512;
+            pixf->me_search_fpel = ME_FPEL_Z;
 #endif
 #endif
     }
