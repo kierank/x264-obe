@@ -4659,6 +4659,7 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_P][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
+    x264_mvpred_cnt_print();
     x264_lookahead_delete( h );
 
 #if HAVE_OPENCL

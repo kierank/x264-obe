@@ -3337,6 +3337,7 @@ static void x264_mb_analyse_intra_emerg( x264_t *h, x264_mb_analysis_t *a )
  *****************************************************************************/
 void x264_macroblock_analyse( x264_t *h )
 {
+    MVP_CNT( MVP_CNT_MB );
     x264_mb_analysis_t analysis;
     int i_cost = COST_MAX;
 

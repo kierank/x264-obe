@@ -335,8 +335,16 @@ void x264_copy_column8( pixel *dst, pixel *src );
 /* x264_mb_predict_mv_16x16:
  *      set mvp with predicted mv for D_16x16 block
  *      h->mb. need only valid values from other blocks */
+/* counters: calls by function, printed at encoder close */
+enum { MVP_CNT_MB, MVP_CNT_16x16, MVP_CNT_PSKIP, MVP_CNT_MV, MVP_CNT_MV_MBAFF_IDX, MVP_CNT_MV_TR, MVP_CNT_MV_DIR, MVP_CNT_REF16, MVP_CNT_REF16_MBAFF, MVP_CNT_REF16_FIELD, MVP_CNT_N };
+#define x264_mvpred_cnt x264_template(mvpred_cnt)
+extern uint64_t x264_mvpred_cnt[MVP_CNT_N];
+#define MVP_CNT( i ) __atomic_fetch_add( &x264_mvpred_cnt[i], 1, __ATOMIC_RELAXED )
+#define x264_mvpred_cnt_print x264_template(mvpred_cnt_print)
+void x264_mvpred_cnt_print( void );
 static ALWAYS_INLINE void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i_ref, int16_t mvp[2] )
 {
+    MVP_CNT( MVP_CNT_16x16 );
     h->pixf.mvpred_16x16( &h->mb.cache.ref[i_list][X264_SCAN8_0], &h->mb.cache.mv[i_list][X264_SCAN8_0], i_ref, mvp );
 }
 /* x264_mb_predict_mv_pskip:
@@ -344,6 +352,7 @@ static ALWAYS_INLINE void x264_mb_predict_mv_16x16( x264_t *h, int i_list, int i
  *      h->mb. need only valid values from other blocks */
 static ALWAYS_INLINE void x264_mb_predict_mv_pskip( x264_t *h, int16_t mv[2] )
 {
+    MVP_CNT( MVP_CNT_PSKIP );
     h->pixf.mvpred_pskip( &h->mb.cache.ref[0][X264_SCAN8_0], &h->mb.cache.mv[0][X264_SCAN8_0], mv );
 }
 /* x264_mb_predict_mv:

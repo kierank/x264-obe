@@ -140,6 +140,11 @@ void x264_mb_predict_mv( x264_t *h, int i_list, int idx, int i_width, int16_t mv
     uint32_t mode = ((b_forced ? -8 - 1 : -8 + i_width) & 0xff)
                   | (h->mb.i_partition == D_16x8 ? (idx ? 1 : 2) : h->mb.i_partition == D_8x16 ? (idx ? 4 : 1) : 0) << 9;
     int16_t *mv_tr = NULL;
+    MVP_CNT( MVP_CNT_MV );
+    if( mode >> 9 )
+        MVP_CNT( MVP_CNT_MV_DIR );
+    if( SLICE_MBAFF && (idx == 2 || idx == 8 || idx == 10) )
+        MVP_CNT( MVP_CNT_MV_MBAFF_IDX );
     /* MBAFF: C of blocks 2, 8 and 10 from the left pair's topright if it is the other type */
     if( SLICE_MBAFF && (idx == 2 || idx == 8 || idx == 10)
         && (b_forced || h->mb.cache.ref[i_list][i8 - 8 + i_width] == -2)
@@ -149,6 +154,7 @@ void x264_mb_predict_mv( x264_t *h, int i_list, int idx, int i_width, int16_t mv
         int t = idx == 2 ? 0 : idx == 8 ? 1 : 2;
         mode |= 1 << 12 | (uint32_t)(uint8_t)h->mb.cache.topright_ref[i_list][t] << 24;
         mv_tr = h->mb.cache.topright_mv[i_list][t];
+        MVP_CNT( MVP_CNT_MV_TR );
     }
     h->pixf.mvpred( &h->mb.cache.ref[i_list][i8], &h->mb.cache.mv[i_list][i8], mvp, mode, mv_tr );
 }
@@ -634,5 +640,25 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
         }
     }
 
+    MVP_CNT( MVP_CNT_REF16 );
+    if( SLICE_MBAFF )
+        MVP_CNT( MVP_CNT_REF16_MBAFF );
+    if( MB_INTERLACED )
+        MVP_CNT( MVP_CNT_REF16_FIELD );
     *i_mvc = i + h->pixf.mvpred_ref16x16( mvc + i, &h->mb, i_list, i_ref );
+}
+
+uint64_t x264_mvpred_cnt[MVP_CNT_N];
+
+void x264_mvpred_cnt_print( void )
+{
+    static const char *name[MVP_CNT_N] = { "mbs analysed", "16x16", "pskip", "predict_mv", "predict_mv mbaff idx 2/8/10",
+                                           "predict_mv topright", "predict_mv 16x8/8x16 dir", "ref16x16", "ref16x16 mbaff",
+                                           "ref16x16 field mb" };
+    uint64_t mbs = x264_mvpred_cnt[MVP_CNT_MB];
+    if( !mbs )
+        return;
+    for( int i = 0; i < MVP_CNT_N; i++ )
+        fprintf( stderr, "mvpred cnt %d-bit: %-28s %12"PRIu64" %8.3f/mb\n", BIT_DEPTH, name[i], x264_mvpred_cnt[i],
+                 (double)x264_mvpred_cnt[i] / mbs );
 }
