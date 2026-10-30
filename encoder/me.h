@@ -73,6 +73,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * partitions, lowres), so the call costs more than the duplicates it drops. */
 #define PREDICTOR_DEDUPE_MIN 5
 
+/* TEST ONLY: subpel_search counters */
+#define x264_me_subpel_cnt_print x264_template(me_subpel_cnt_print)
+void x264_me_subpel_cnt_print( void );
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)
