@@ -88,6 +88,50 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
+/* pixf.me_search_fpel: x264_me_search_ref at 16x16 to 8x8 for HEX, with the fn kernels of
+ * the size (sad fpelcmp), unweighted at subme >= 3: the predictors, the hexagon, half
+ * hexagons and square refine, then m's mv, cost and (subme < 3, the zero sad exit) cost_mv as
+ * me_search_ref leaves them; with qfenc, refine_subpel's subpel_search call, fn->subpel( ...,
+ * iters, range, qfenc, fn->qpel, halfpel_thresh, mvp ), and its m. Returns 1 if refine_subpel
+ * is still to run: ME_FPEL_REFINE, no qfenc and no zero sad exit. The asm offsets follow
+ * this layout. */
+struct x264_me_fpel
+{
+    x264_me_t *m;
+    int16_t (*mvc)[2];
+    int *halfpel_thresh;
+    const x264_me_fpel_fn_t *fn;
+    x264_bi_fenc_t *qfenc;      /* NULL: no subpel_search call */
+    int16_t (*mv_limit)[2];     /* mv_limit_fpel */
+    uint64_t range;             /* mv_min_spel | mv_max_spel << 32, x | y << 16 each */
+    int i_mvc;
+    int me_range;
+    int iters;                  /* subpel_search's iters */
+    int flags;
+};
+#define ME_FPEL_SUBME3 1        /* subme >= 3: the subpel predictors */
+#define ME_FPEL_ZEXIT  2        /* no chroma ME: the zero sad exit returns */
+#define ME_FPEL_REFINE 4        /* subme >= 2 */
+
+/* me_fpel_fn from pf's fpelcmp, mbcmp and predictor functions */
+static inline void x264_me_fpel_init( x264_pixel_function_t *pf )
+{
+    for( int i = 0; i < 4; i++ )
+    {
+        x264_me_fpel_fn_t *f = &pf->me_fpel_fn[i];
+        f->sad = pf->fpelcmp[i];
+        f->sad_avg2 = pf->fpelcmp_avg2[i];
+        f->x3_min = pf->fpelcmp_x3_min[i];
+        f->x4_min = pf->fpelcmp_x4_min[i];
+        f->sq_min = pf->fpelcmp_sq_min[i];
+        f->hex_min = pf->fpelcmp_hex_min[i];
+        f->hex_search = pf->fpelcmp_hex_search[i];
+        f->predictor_clip = pf->predictor_clip;
+        f->subpel = pf->mbcmp_subpel_search[i];
+        f->qpel = pf->mbcmp_qpel_search[i];
+    }
+}
+
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for
  * mbcmp_pre and mbcmp_avg2_pre, filled on first use in the mb; NULL without them */
 static inline int16_t *x264_me_fenc_pre( x264_t *h, int i_pixel, pixel *p_fenc )

@@ -101,6 +101,7 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         h->pixf.fpelcmp_hex_search[i] = satd ? NULL : h->pixf.sad_hex_search[i];
     }
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
+    x264_me_fpel_init( &h->pixf );
 
     /* x264_lowres_context_init() */
     if( param->analyse.i_subpel_refine > 1 )

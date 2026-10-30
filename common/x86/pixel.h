@@ -878,6 +878,12 @@ void x264_lowres_p_mbs_avx2( x264_lowres_p_t *c );
 int x264_analyse_p16x16_avx2( x264_analyse_p_t *c );
 #define x264_analyse_p_sub16x16_avx2 x264_template(analyse_p_sub16x16_avx2)
 void x264_analyse_p_sub16x16_avx2( x264_analyse_p_t *c );
+#define x264_me_search_fpel_avx2 x264_template(me_search_fpel_avx2)
+int x264_me_search_fpel_avx2( x264_me_fpel_t *c );
+#define x264_me_search_fpel_avx512 x264_template(me_search_fpel_avx512)
+int x264_me_search_fpel_avx512( x264_me_fpel_t *c );
+#define x264_me_search_fpel_zmm_avx512 x264_template(me_search_fpel_zmm_avx512)
+int x264_me_search_fpel_zmm_avx512( x264_me_fpel_t *c );
 #define x264_pixel_satd_mcc_avx2 x264_template(pixel_satd_mcc_avx2)
 void x264_pixel_satd_mcc_avx2( x264_mcc_fenc_t *, int *, pixel *, intptr_t, int, int, int, int );
 #define x264_pixel_satd_mcc_fenc_pre_avx2 x264_template(pixel_satd_mcc_fenc_pre_avx2)
