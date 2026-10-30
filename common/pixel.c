@@ -1651,6 +1651,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x4_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
         pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
+#if !defined(_WIN32)
+        if( cpu&X264_CPU_BMI2 )
+            pixf->me_search_fpel = x264_me_search_fpel_avx2;
+#endif
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1671,6 +1675,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_8x16c = x264_intra_sad_x3_8x16c_avx512;
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
+#if !defined(_WIN32)
+        if( cpu&X264_CPU_BMI2 )
+            pixf->me_search_fpel = x264_me_search_fpel_avx512;
+#endif
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )
@@ -2065,6 +2073,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
 #if !defined(_WIN32)
         pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
+        if( cpu&X264_CPU_BMI2 )
+            pixf->me_search_fpel = x264_me_search_fpel_avx2;
 #endif
 #endif
     }
@@ -2149,6 +2159,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512;
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
+#if !defined(_WIN32)
+        if( cpu&X264_CPU_BMI2 )
+            pixf->me_search_fpel = x264_me_search_fpel_avx512;
+#endif
 #endif
     }
 #endif //HAVE_MMX
