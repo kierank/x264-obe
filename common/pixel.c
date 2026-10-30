@@ -118,6 +118,18 @@ int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec )
     return 1;
 }
 
+/* reference for mb_eq */
+int x264_pixel_mb_eq_c( int chroma422, pixel *fenc_y, pixel *ref_y, intptr_t i_stride_y, pixel *fenc_uv, pixel *ref_uv, intptr_t i_stride_uv )
+{
+    for( int y = 0; y < 16; y++ )
+        if( memcmp( fenc_y + y*i_stride_y, ref_y + y*i_stride_y, 16 * sizeof(pixel) ) )
+            return 0;
+    for( int y = 0; y < (chroma422 ? 16 : 8); y++ )
+        if( memcmp( fenc_uv + y*i_stride_uv, ref_uv + y*i_stride_uv, 16 * sizeof(pixel) ) )
+            return 0;
+    return 1;
+}
+
 /* reference for zscreen_16x16 */
 int x264_pixel_zscreen_c( pixel *fenc, pixel *fdec, const int32_t thr[2], int32_t e8[4] )
 {
@@ -1651,6 +1663,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x4_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
         pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
+        pixf->mb_eq[0] = x264_pixel_mb_eq_420_avx2;
+        pixf->mb_eq[1] = x264_pixel_mb_eq_422_avx2;
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
@@ -1680,6 +1694,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
+        pixf->mb_eq[0] = x264_pixel_mb_eq_420_avx512icl;
+        pixf->mb_eq[1] = x264_pixel_mb_eq_422_avx512icl;
         /* zen4 prune, neutral (>= 1.000): var2[8x16], ssd[16x16] zmm, ssd[8x8] */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
@@ -2058,6 +2074,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_hpel_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
         pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
+        pixf->mb_eq[0] = x264_pixel_mb_eq_420_avx2;
+        pixf->mb_eq[1] = x264_pixel_mb_eq_422_avx2;
         pixf->intra_satd_x3_16x16 = x264_intra_satd_x3_16x16_avx2;
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
@@ -2071,6 +2089,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
+        pixf->mb_eq[0] = x264_pixel_mb_eq_420_avx512icl;
+        pixf->mb_eq[1] = x264_pixel_mb_eq_422_avx512icl;
         /* ymm, VBMI2 + opmask transform; not the X264_CPU_AVX512 zmm table below */
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* satd[16x16] 1.031x, satd_avg2[16x8] 1.073x, satd_pre[16x8] 1.069x, satd_bi[16x16] 1.038x, satd_bi4[16x8] 1.051x;

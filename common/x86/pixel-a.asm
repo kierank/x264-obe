@@ -1667,6 +1667,140 @@ INIT_YMM avx2
 FENC_EQ_AVX2 16, 16
 
 ;=============================================================================
+; mb_eq
+;=============================================================================
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int pixel_mb_eq_420( pixel *fenc_y, pixel *ref_y, intptr_t i_stride_y,
+;                      pixel *fenc_uv, pixel *ref_uv, intptr_t i_stride_uv )
+; 1 if the 16x16 luma block and the 16x8 (_422: 16x16) interleaved chroma
+; block at fenc equal those at ref, else 0; leaves after luma rows 0-3 and
+; after the rest. A row is 16 pixels: a xmm at 8-bit, a ymm at high bit depth.
+;-----------------------------------------------------------------------------
+%macro MB_EQ_FINISH 0
+    mov           eax, 1
+    RET
+.ne:
+    xor           eax, eax
+    RET
+%endmacro
+
+; m0 |= fenc ^ ref over 4 rows
+%macro MB_EQ_ROWS_AVX2 4 ; fenc, ref, stride, stride*3
+    movu           m1, [%1]
+    movu           m2, [%1+%3]
+    pxor           m1, [%2]
+    pxor           m2, [%2+%3]
+    por            m0, m1
+    movu           m1, [%1+%3*2]
+    por            m0, m2
+    movu           m2, [%1+%4]
+    pxor           m1, [%2+%3*2]
+    pxor           m2, [%2+%4]
+    por            m0, m1
+    por            m0, m2
+%endmacro
+
+; m0 and m3 |= fenc ^ ref over 4 rows, ref a memory operand of vpternlogd
+%macro MB_EQ_ROWS_ICL 4 ; fenc, ref, stride, stride*3
+    movu           m1, [%1]
+    movu           m2, [%1+%3]
+    vpternlogd     m0, m1, [%2], 0xf6
+    vpternlogd     m3, m2, [%2+%3], 0xf6
+    movu           m1, [%1+%3*2]
+    movu           m2, [%1+%4]
+    vpternlogd     m0, m1, [%2+%3*2], 0xf6
+    vpternlogd     m3, m2, [%2+%4], 0xf6
+%endmacro
+
+; zmm: 4 rows (8-bit) or 2 rows (high bit depth) a register
+%macro MB_EQ_ROWS_ZMM 4 ; fenc, ref, stride, stride*3
+%if HIGH_BIT_DEPTH
+    movu          ym1, [%1]
+    movu          ym2, [%2]
+    vinserti64x4   m1, m1, [%1+%3], 1
+    vinserti64x4   m2, m2, [%2+%3], 1
+    vpternlogd     m0, m1, m2, 0xf6
+    movu          ym1, [%1+%3*2]
+    movu          ym2, [%2+%3*2]
+    vinserti64x4   m1, m1, [%1+%4], 1
+    vinserti64x4   m2, m2, [%2+%4], 1
+    vpternlogd     m3, m1, m2, 0xf6
+%else
+    movu          xm1, [%1]
+    movu          xm2, [%2]
+    vinserti32x4   m1, m1, [%1+%3], 1
+    vinserti32x4   m2, m2, [%2+%3], 1
+    vinserti32x4   m1, m1, [%1+%3*2], 2
+    vinserti32x4   m2, m2, [%2+%3*2], 2
+    vinserti32x4   m1, m1, [%1+%4], 3
+    vinserti32x4   m2, m2, [%2+%4], 3
+    vpternlogd     m0, m1, m2, 0xf6
+%endif
+%endmacro
+
+%macro MB_EQ_TEST 0
+%if cpuflag(avx512)
+    vptestmd       k1, m0, m0
+    vptestmd       k2, m3, m3
+    kortestw       k1, k2
+%else
+    ptest          m0, m0
+%endif
+    jnz .ne
+%endmacro
+
+%macro MB_EQ 3 ; name, chroma rows, rows macro
+cglobal pixel_mb_eq_%1, 6,8,4
+    FIX_STRIDES    r2, r5
+    lea            r6, [r2*3]
+    lea            r7, [r5*3]
+    pxor           m0, m0
+%if cpuflag(avx512)
+    pxor           m3, m3
+%endif
+    %3             r0, r1, r2, r6
+    MB_EQ_TEST
+%rep 3
+    lea            r0, [r0+r2*4]
+    lea            r1, [r1+r2*4]
+    %3             r0, r1, r2, r6
+%endrep
+%assign %%n %2
+%rep %2/4
+    %3             r3, r4, r5, r7
+%assign %%n %%n-4
+%if %%n
+    lea            r3, [r3+r5*4]
+    lea            r4, [r4+r5*4]
+%endif
+%endrep
+    MB_EQ_TEST
+    MB_EQ_FINISH
+%endmacro
+
+%if HIGH_BIT_DEPTH
+INIT_YMM avx2
+%else
+INIT_XMM avx2
+%endif
+MB_EQ 420,  8, MB_EQ_ROWS_AVX2
+MB_EQ 422, 16, MB_EQ_ROWS_AVX2
+%if HIGH_BIT_DEPTH
+INIT_YMM avx512icl
+%else
+INIT_XMM avx512icl
+%endif
+MB_EQ 420,  8, MB_EQ_ROWS_ICL
+MB_EQ 422, 16, MB_EQ_ROWS_ICL
+; zmm: assembled, the arm of the layout pair
+INIT_ZMM avx512icl
+MB_EQ 420_zmm,  8, MB_EQ_ROWS_ZMM
+MB_EQ 422_zmm, 16, MB_EQ_ROWS_ZMM
+%endif ; ARCH_X86_64
+
+;=============================================================================
 ; zscreen
 ;=============================================================================
 
