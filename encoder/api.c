@@ -32,7 +32,7 @@
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
 /* lean-skip timing arm, see encoder/encoder.c: adapt, frame, twin or always */
-__attribute__((visibility("hidden"))) const char x264_lean_arm_adapt = 1;
+__attribute__((visibility("hidden"))) const char x264_lean_arm_always = 1;
 
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
