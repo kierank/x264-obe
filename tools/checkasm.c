@@ -2683,6 +2683,256 @@ static int check_pixel( int cpu_ref, int cpu_new )
     return ret;
 }
 
+#if !HIGH_BIT_DEPTH
+#include "encoder/me.h"
+
+/* lowres_p_mbs: whole slices of random geometry, from the same input state, against
+ * x264_lowres_p_mbs_c with the same kernels; every output compared. j&7 content: 0 fenc
+ * the ref moved by a random qpel mv per 2x2 MBs, plus noise; 1 the ref moved by a global
+ * fullpel mv (pred == fenc exits); 2 fenc == ref (skips); 3 flat; 4 noise; 5 ref moved by a
+ * global qpel mv; 6, 7 as 0 with strong noise. Random mv / me ranges (small ones clip),
+ * lambdas, mv cost shapes, skip thresholds at and around the sads, aq, weights, slices,
+ * stored mvs (predictors, do_search 0), intra done or not, and the C hex search */
+static int check_lowres_p( int cpu_ref, int cpu_new )
+{
+    x264_pixel_function_t pf_ref, pf;
+    x264_mc_functions_t mc;
+    int ret = 0, ok = 1, used_asm = 0;
+    x264_pixel_init( cpu_ref, &pf_ref );
+    x264_pixel_init( cpu_new, &pf );
+    x264_mc_init( cpu_new, &mc, 0 );
+    if( !pf.lowres_p_mbs || pf.lowres_p_mbs == pf_ref.lowres_p_mbs || !pf.satd_fenc_pre[1] || !pf.satd_pre[PIXEL_8x8] ||
+        !pf.satd_avg2_pre[PIXEL_8x8] || !pf.sad_avg2[PIXEL_8x8] || !pf.sad_hpel_min[PIXEL_8x8] || !pf.intra_satd_lowres )
+        return 0;
+    x264_t *hw = x264_malloc( sizeof(x264_t) );
+    enum { PAD = 48, MAXW = 14, MAXH = 9, ST = 8*MAXW + 2*PAD + 16, LINES = 8*MAXH + 2*PAD, NMB = MAXW*MAXH };
+    pixel *planes = x264_malloc( 6 * ST * LINES * sizeof(pixel) );
+    pixel *wplane = x264_malloc( ST * LINES * sizeof(pixel) );
+    uint16_t *cost_tab = x264_malloc( (2*8192+1) * sizeof(uint16_t) );
+    if( !hw || !planes || !wplane || !cost_tab )
+        return -1;
+    hw->mc = mc;
+    int16_t (*mvs[2])[2]; int *mvc[2]; uint16_t *costs[2], *icost[2]; int *out[2][2];
+    uint16_t invq[NMB];
+    for( int k = 0; k < 2; k++ )
+    {
+        mvs[k] = x264_malloc( NMB * 4 );
+        mvc[k] = x264_malloc( NMB * 4 );
+        costs[k] = x264_malloc( NMB * 2 );
+        icost[k] = x264_malloc( NMB * 2 );
+        out[k][0] = x264_malloc( (MAXH+4) * 4 );
+        out[k][1] = x264_malloc( (MAXH+4) * 4 );
+        if( !mvs[k] || !mvc[k] || !costs[k] || !icost[k] || !out[k][0] || !out[k][1] )
+            return -1;
+    }
+    int st[8] = {0};
+    set_func_name( "lowres_p_mbs" );
+    used_asm = 1;
+    for( int j = 0; j < 3000 && ok; j++ )
+    {
+        int mode = j&7;
+        int w = 1 + rand()%MAXW, h = 1 + rand()%MAXH;
+        if( j&8 )
+            w = X264_MAX( w, 6 ), h = X264_MAX( h, 5 );
+        intptr_t stride = 8*w + 2*PAD + (rand()&15);
+        int lines = 8*h + 2*PAD;
+        pixel *ref[4], *fenc;
+        for( int p = 0; p < 4; p++ )
+            ref[p] = planes + p*ST*LINES + PAD*stride + PAD;
+        fenc = planes + 4*ST*LINES + PAD*stride + PAD;
+        pixel *ref0 = ref[0] - PAD*stride - PAD;
+        /* a smooth ref, hpel planes from it */
+        for( int k = 0; k < stride*lines; k++ )
+            ref0[k] = rand() & PIXEL_MAX;
+        for( int pass = 0; pass < 2 + (rand()&3); pass++ )
+            for( int k = 0; k < stride*lines - stride - 1; k++ )
+                ref0[k] = (ref0[k] + ref0[k+1] + ref0[k+stride] + ref0[k+stride+1] + 2) >> 2;
+        if( mode == 3 )
+            for( int k = 0; k < stride*lines; k++ )
+                ref0[k] = 100 + (k&1);
+        for( int k = 0; k < stride*lines - stride - 1; k++ )
+        {
+            ref[1][k - PAD*stride - PAD] = (ref0[k] + ref0[k+1] + 1) >> 1;
+            ref[2][k - PAD*stride - PAD] = (ref0[k] + ref0[k+stride] + 1) >> 1;
+            ref[3][k - PAD*stride - PAD] = (ref0[k] + ref0[k+1] + ref0[k+stride] + ref0[k+stride+1] + 2) >> 2;
+        }
+        int gx = rand()%9 - 4, gy = rand()%9 - 4;
+        int noise = mode >= 6 ? 24 : mode == 4 ? 256 : (rand()&1) ? 3 : 0;
+        for( int y = -PAD/2; y < 8*h + PAD/2; y++ )
+            for( int x = -PAD/2; x < 8*w + PAD/2; x++ )
+            {
+                int v;
+                if( mode == 2 || mode == 3 )
+                    v = ref[0][x + y*stride];
+                else if( mode == 1 )
+                    v = ref[0][x+gx + (y+gy)*stride];
+                else if( mode == 4 )
+                    v = rand() & PIXEL_MAX;
+                else
+                {
+                    int mx = mode == 5 ? gx*4 + 1 : ((x>>4)*7 + (y>>4)*13 + j) % 11 - 5;
+                    int my = mode == 5 ? gy*4 + 3 : ((x>>4)*5 + (y>>4)*3 + j) % 9 - 4;
+                    int qx = mx&3, qy = my&3;
+                    pixel *s = ref[0] + x + (mx>>2) + (y + (my>>2))*stride;
+                    v = (s[0]*(4-qx)*(4-qy) + s[1]*qx*(4-qy) + s[stride]*(4-qx)*qy + s[stride+1]*qx*qy + 8) >> 4;
+                }
+                if( noise && mode != 2 && mode != 1 )
+                    v += rand()%(2*noise+1) - noise;
+                fenc[x + y*stride] = x264_clip_pixel( v );
+            }
+
+        x264_weight_t wt[3];
+        memset( wt, 0, sizeof(wt) );
+        int weighted = (j&0x30) == 0x30;
+        if( weighted )
+        {
+            wt[0].i_denom = rand()%7;
+            wt[0].i_scale = X264_MAX( (1 << wt[0].i_denom) + rand()%33 - 16, 0 );
+            wt[0].i_offset = rand()%41 - 20;
+            if( rand()&1 )
+                wt[0].i_scale = 1 << wt[0].i_denom;
+            mc.weight_cache( hw, &wt[0] );
+            for( int k = 0; k < stride*lines; k++ )
+                wplane[k] = x264_clip_pixel( ((ref0[k]*wt[0].i_scale + ((1<<wt[0].i_denom)>>1)) >> wt[0].i_denom) + wt[0].i_offset );
+        }
+
+        int lambda = 1 + rand()%40;
+        int cmode = (j>>6)&3;
+        for( int k = -8192; k <= 8192; k++ )
+        {
+            int v = cmode == 0 || cmode == 3 ? (int)(lambda * (2*log2f( abs(k)+1 ) + 1) + .5f)
+                  : cmode == 1 ? lambda : rand()%2048;
+            cost_tab[k+8192] = X264_MIN( v, 65535 );
+        }
+        int do_edges = (rand()&3) || w <= 2 || h <= 2;
+        int s0 = rand()%h, s1 = s0 + 1 + rand()%(h-s0);
+        if( rand()&1 )
+            s0 = 0, s1 = h;
+        int mvrange = (rand()&3) ? 512 : 1 + rand()%64;
+
+        x264_lowres_p_t c;
+        memset( &c, 0, sizeof(c) );
+        c.fenc_pre = pf.satd_fenc_pre[1];
+        c.satd = pf.satd_pre[PIXEL_8x8];
+        c.satd_avg2 = pf.satd_avg2_pre[PIXEL_8x8];
+        c.sad = pf.sad[PIXEL_8x8];
+        c.sad_avg2 = pf.sad_avg2[PIXEL_8x8];
+        c.hex_search = pf.sad_hex_search[PIXEL_8x8] && (j&0x100) ? pf.sad_hex_search[PIXEL_8x8] : x264_lowres_hex_search_c;
+        c.hpel_min = pf.sad_hpel_min[PIXEL_8x8];
+        c.intra = pf.intra_satd_lowres;
+        c.get_ref = mc.get_ref;
+        c.fenc = fenc;
+        for( int p = 0; p < 4; p++ )
+            c.ref[p] = ref[p];
+        c.weighted = weighted;
+        c.ref_w = weighted ? wplane + PAD*stride + PAD : ref[0];
+        c.weight = wt;
+        c.cost_mv = cost_tab + 8192;
+        c.stride = stride;
+        c.lambda = lambda;
+        int sk = rand()%6;
+        c.skip_thresh = sk == 0 ? 64 : sk == 1 ? 16 : sk == 2 ? 0 : sk == 3 ? 1<<30 : rand()%2000;
+        c.mv_range = 2*mvrange;
+        c.me_range = (rand()&3) ? 16 : 1 + rand()%24;
+        c.mb_width = w;
+        c.mb_height = h;
+        c.slice_start = s0;
+        c.slice_end = s1;
+        c.start_y = X264_MIN( s1 - 1, h - 2 + do_edges );
+        c.end_y = X264_MAX( s0, 1 - do_edges );
+        c.start_x = w - 2 + do_edges;
+        c.end_x = 1 - do_edges;
+        c.do_search = !!(rand()&7);
+        int intra = rand()&1;
+        int aq = rand()&1;
+        for( int k = 0; k < NMB; k++ )
+        {
+            int r = rand()%4;
+            mvs[0][k][0] = r == 0 ? 0 : r == 1 ? rand()%33 - 16 : rand()%(8*mvrange+1) - 4*mvrange;
+            mvs[0][k][1] = r == 0 ? 0 : r == 1 ? rand()%33 - 16 : rand()%(8*mvrange+1) - 4*mvrange;
+            if( mode == 1 && (rand()&1) )
+                mvs[0][k][0] = gx*4, mvs[0][k][1] = gy*4;
+            mvc[0][k] = rand()%3000;
+            costs[0][k] = rand();
+            icost[0][k] = intra ? rand() : rand()%3000;
+            invq[k] = 64 + rand()%960;
+        }
+        for( int k = 0; k < MAXH+4; k++ )
+            out[0][0][k] = out[0][1][k] = rand()%1000;
+        memcpy( mvs[1], mvs[0], NMB*4 );
+        memcpy( mvc[1], mvc[0], NMB*4 );
+        memcpy( costs[1], costs[0], NMB*2 );
+        memcpy( icost[1], icost[0], NMB*2 );
+        memcpy( out[1][0], out[0][0], (MAXH+4)*4 );
+        memcpy( out[1][1], out[0][1], (MAXH+4)*4 );
+        c.inv_qscale = aq ? invq : NULL;
+
+        x264_lowres_p_t ca = c;
+        c.mvs = mvs[0]; c.mv_costs = mvc[0]; c.costs = costs[0]; c.intra_cost = icost[0];
+        c.output_inter = out[0][0]; c.output_intra = intra ? out[0][1] : NULL;
+        ca.mvs = mvs[1]; ca.mv_costs = mvc[1]; ca.costs = costs[1]; ca.intra_cost = icost[1];
+        ca.output_inter = out[1][0]; ca.output_intra = intra ? out[1][1] : NULL;
+        call_c1( x264_lowres_p_mbs_c, &c );
+        call_a1( pf.lowres_p_mbs, &ca );
+        if( memcmp( mvs[0], mvs[1], NMB*4 ) || memcmp( mvc[0], mvc[1], NMB*4 ) || memcmp( costs[0], costs[1], NMB*2 ) ||
+            memcmp( icost[0], icost[1], NMB*2 ) || memcmp( out[0][0], out[1][0], (MAXH+4)*4 ) ||
+            memcmp( out[0][1], out[1][1], (MAXH+4)*4 ) )
+        {
+            ok = 0;
+            fprintf( stderr, "lowres_p_mbs: mode %d %dx%d rows %d-%d edges %d search %d intra %d aq %d weighted %d [FAILED]\n",
+                     mode, w, h, s0, s1, do_edges, c.do_search, intra, aq, weighted );
+            for( int k = 0; k < w*h; k++ )
+                if( M32( mvs[0][k] ) != M32( mvs[1][k] ) || mvc[0][k] != mvc[1][k] || costs[0][k] != costs[1][k] )
+                {
+                    fprintf( stderr, "  mb %d,%d: mv %d,%d cost %d lowres %x | asm mv %d,%d cost %d lowres %x\n", k%w, k/w,
+                             mvs[0][k][0], mvs[0][k][1], mvc[0][k], costs[0][k], mvs[1][k][0], mvs[1][k][1], mvc[1][k], costs[1][k] );
+                    break;
+                }
+        }
+        /* outcomes over the searched MBs */
+        if( c.do_search )
+            for( int y = c.start_y; y >= c.end_y; y-- )
+                for( int x = c.start_x; x >= c.end_x; x-- )
+                {
+                    int k = x + y*w;
+                    uint32_t mv = M32( mvs[0][k] );
+                    st[0] += !mv;
+                    st[1] += !!mv;
+                    st[2] += !!(mv & 0x00010001);
+                    st[3] += !!(mv & 0x00020002);
+                    st[4] += !(costs[0][k] >> LOWRES_COST_SHIFT);
+                    st[5] += weighted && (mv & 0x00030003);
+                    st[6] += mv && mvc[0][k] == cost_tab[8192] + 5*lambda;
+                }
+        /* bench on a mode 0 slice of 6x5 MBs or more, after the check */
+        if( j == 8 )
+        {
+            call_c2( x264_lowres_p_mbs_c, &c );
+            call_a2( pf.lowres_p_mbs, &ca );
+        }
+    }
+    for( int k = 0; k < 7 && ok; k++ )
+        if( !st[k] )
+        {
+            ok = 0;
+            fprintf( stderr, "lowres_p_mbs: case %d never occurred [FAILED]\n", k );
+        }
+    report( "lowres_p_mbs :" );
+    for( int k = 0; k < 2; k++ )
+    {
+        x264_free( mvs[k] ); x264_free( mvc[k] ); x264_free( costs[k] ); x264_free( icost[k] );
+        x264_free( out[k][0] ); x264_free( out[k][1] );
+    }
+    x264_free( planes );
+    x264_free( wplane );
+    x264_free( cost_tab );
+    x264_free( hw );
+    return ret;
+}
+#else
+static int check_lowres_p( int cpu_ref, int cpu_new ) { return 0; }
+#endif
+
 static int check_dct( int cpu_ref, int cpu_new )
 {
     x264_dct_function_t dct_c;
@@ -7010,6 +7260,7 @@ static int check_bitstream( int cpu_ref, int cpu_new )
 static int check_all_funcs( int cpu_ref, int cpu_new )
 {
     return check_pixel( cpu_ref, cpu_new )
+         + check_lowres_p( cpu_ref, cpu_new )
          + check_dct( cpu_ref, cpu_new )
          + check_mc( cpu_ref, cpu_new )
          + check_intra( cpu_ref, cpu_new )

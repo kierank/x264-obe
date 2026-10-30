@@ -145,6 +145,98 @@ static inline int16_t *x264_me_mcc_fenc_pre( x264_t *h, pixel *p_fenc, int bw, i
 }
 #endif
 
+/* pixf.lowres_p_mbs: slicetype_mb_cost of a P frame (b == p1, p0 < b) over the MBs
+ * of a slice, with the lowres x264_me_search of HEX and subme 4, satd mbcmp on
+ * fenc_pre and sad fpelcmp. 8-bit pixels only; the asm offsets follow this layout. */
+struct x264_lowres_p
+{
+    void (*fenc_pre)( int16_t *fenc_pre, pixel *fenc );   /* satd_fenc_pre[1] */
+    x264_pixel_cmp_pre_t satd;                            /* mbcmp_pre[PIXEL_8x8] */
+    x264_pixel_cmp_avg2_pre_t satd_avg2;                  /* mbcmp_avg2_pre[PIXEL_8x8] */
+    x264_pixel_cmp_t sad;                                 /* fpelcmp[PIXEL_8x8] */
+    x264_pixel_cmp_avg2_t sad_avg2;                       /* fpelcmp_avg2[PIXEL_8x8] */
+    x264_pixel_fpel_search_t hex_search;                  /* fpelcmp_hex_search[PIXEL_8x8] or x264_lowres_hex_search_c */
+    x264_pixel_cmp_hpel_min_t hpel_min;                   /* fpelcmp_hpel_min[PIXEL_8x8] */
+    int (*intra)( void *fenc_pre, pixel *src, intptr_t i_stride ); /* intra_mbcmp_lowres */
+    pixel *(*get_ref)( pixel *dst, intptr_t *i_dst, pixel **src, intptr_t i_src,
+                       int mvx, int mvy, int bw, int bh, const x264_weight_t *weight );
+    pixel *fenc;                /* lowres[0] of fenc */
+    pixel *ref[4];              /* lowres[] of the ref */
+    pixel *ref_w;               /* the fullpel search plane: ref[0] or the weighted one */
+    const x264_weight_t *weight;
+    const uint16_t *cost_mv;
+    int16_t (*mvs)[2];          /* lowres_mvs[0][b-p0-1] */
+    int *mv_costs;              /* lowres_mv_costs[0][b-p0-1] */
+    uint16_t *costs;            /* lowres_costs[b-p0][0] */
+    uint16_t *intra_cost;
+    uint16_t *inv_qscale;       /* NULL without aq */
+    int *output_inter;
+    int *output_intra;          /* NULL once b_intra_calculated */
+    intptr_t stride;
+    int lambda;
+    int skip_thresh;            /* the mv 0 skip: satd < skip_thresh */
+    int mv_range;               /* 2 * i_mv_range */
+    int me_range;
+    int mb_width;
+    int mb_height;
+    int slice_start;            /* the row of output_*[NUM_INTS] */
+    int slice_end;
+    int start_x, end_x, start_y, end_y; /* the MBs, as slicetype_slice_cost */
+    int do_search;
+    int weighted;               /* weight[0].weightfn */
+};
+
+#define x264_lowres_p_mbs_c x264_template(lowres_p_mbs_c)
+void x264_lowres_p_mbs_c( x264_lowres_p_t *c );
+#define x264_lowres_hex_search_c x264_template(lowres_hex_search_c)
+uint64_t x264_lowres_hex_search_c( pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
+                                   const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range );
+/* the struct for h's lowres analysis, the frame and slice fields excepted; 0 if
+ * pixf.lowres_p_mbs can't do it */
+static inline int x264_lowres_p_init( x264_t *h, x264_lowres_p_t *c )
+{
+    x264_pixel_function_t *pf = &h->pixf;
+    if( !pf->lowres_p_mbs || h->mb.i_me_method != X264_ME_HEX || h->mb.i_subpel_refine != 4 || h->mb.b_chroma_me ||
+        !pf->satd_fenc_pre[1] || !pf->mbcmp_pre[PIXEL_8x8] || !pf->mbcmp_avg2_pre[PIXEL_8x8] ||
+        !pf->fpelcmp_hpel_min[PIXEL_8x8] || !pf->fpelcmp_avg2[PIXEL_8x8] || !pf->intra_mbcmp_lowres ||
+        pf->mbcmp_unaligned[0] == pf->fpelcmp[0] )
+        return 0;
+    c->fenc_pre = pf->satd_fenc_pre[1];
+    c->satd = pf->mbcmp_pre[PIXEL_8x8];
+    c->satd_avg2 = pf->mbcmp_avg2_pre[PIXEL_8x8];
+    c->sad = pf->fpelcmp[PIXEL_8x8];
+    c->sad_avg2 = pf->fpelcmp_avg2[PIXEL_8x8];
+    c->hex_search = pf->fpelcmp_hex_search[PIXEL_8x8] ? pf->fpelcmp_hex_search[PIXEL_8x8] : x264_lowres_hex_search_c;
+    c->hpel_min = pf->fpelcmp_hpel_min[PIXEL_8x8];
+    c->intra = pf->intra_mbcmp_lowres;
+    c->get_ref = h->mc.get_ref;
+    c->mv_range = 2 * h->param.analyse.i_mv_range;
+    c->me_range = h->param.analyse.i_me_range;
+    c->mb_width = h->mb.i_mb_width;
+    c->mb_height = h->mb.i_mb_height;
+    return 1;
+}
+
+/* pixf.lowres_p_mbs, leaving h's mb position and mv limits as the MB loop would */
+static inline void x264_lowres_p_run( x264_t *h, x264_lowres_p_t *c )
+{
+    h->pixf.lowres_p_mbs( c );
+    if( c->start_y < c->end_y || c->start_x < c->end_x )
+        return;
+    int mb_x = c->end_x, mb_y = c->end_y;
+    h->mb.mv_min_spel[0] = X264_MAX( 4*(-8*mb_x - 12), -c->mv_range );
+    h->mb.mv_max_spel[0] = X264_MIN( 4*(8*(c->mb_width - mb_x - 1) + 12), c->mv_range-1 );
+    h->mb.mv_min_spel[1] = X264_MAX( 4*(-8*mb_y - 12), -c->mv_range );
+    h->mb.mv_max_spel[1] = X264_MIN( 4*(8*(c->mb_height - mb_y - 1) + 12), c->mv_range-1 );
+    for( int i = 0; i < 2; i++ )
+    {
+        h->mb.mv_limit_fpel[0][i] = h->mb.mv_min_spel[i] >> 2;
+        h->mb.mv_limit_fpel[1][i] = h->mb.mv_max_spel[i] >> 2;
+    }
+    h->mb.i_mb_x = mb_x - 1;
+    h->mb.i_mb_y = mb_y - 1;
+}
+
 #define COPY1_IF_LT(x,y)\
 if((y)<(x))\
     (x)=(y);
