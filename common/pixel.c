@@ -1201,6 +1201,18 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /****************************************************************************
  * x264_pixel_init:
  ****************************************************************************/
+/* mvpred layout pair: x264_mvpred_gate gates the asm mvpred dispatch. Arm:
+ * x264_mvpred_arm, defined in api.c. Twin (MVPRED_TWIN 1): the never defined
+ * x264_mvpred_twin, which links as 0. The code is the same in both. */
+#define MVPRED_TWIN 0
+extern const char x264_mvpred_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_mvpred_twin __attribute__((weak, visibility("hidden")));
+#if MVPRED_TWIN
+#define x264_mvpred_gate (&x264_mvpred_twin != NULL)
+#else
+#define x264_mvpred_gate (&x264_mvpred_arm != NULL)
+#endif
+
 void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 {
     memset( pixf, 0, sizeof(*pixf) );
@@ -2064,7 +2076,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
 #endif // !HIGH_BIT_DEPTH
 #if HAVE_MMX && ARCH_X86_64
-    if( (cpu&X264_CPU_AVX2) && (cpu&X264_CPU_BMI2) )
+    if( (cpu&X264_CPU_AVX2) && (cpu&X264_CPU_BMI2)  && x264_mvpred_gate )
     {
         pixf->mvpred_16x16 = x264_mvpred_16x16_avx2;
         pixf->mvpred = x264_mvpred_avx2;
