@@ -3106,6 +3106,26 @@ static void x264_threadslice_filter( x264_t *h )
 #define LEAN_ROW_FRAMES 2
 #define LEAN_ROW_MASK   ((1 << LEAN_ROW_FRAMES) - 1)
 
+/* lean-skip timing arms: encoder/api.c defines one of x264_lean_arm_adapt (A, this gate),
+ * x264_lean_arm_frame (F, the gate per frame: fref[0][0]'s whole frame at LEAN_ROW_SHARE),
+ * x264_lean_arm_twin (T, no lean path) and x264_lean_arm_always (O, no gate); the others,
+ * weak and hidden, link as 0. The arms differ in api.o only. */
+extern const char x264_lean_arm_frame __attribute__((weak, visibility("hidden")));
+extern const char x264_lean_arm_twin __attribute__((weak, visibility("hidden")));
+extern const char x264_lean_arm_always __attribute__((weak, visibility("hidden")));
+#define LEAN_ARM_FRAME  (&x264_lean_arm_frame != NULL)
+#define LEAN_ARM_TWIN   (&x264_lean_arm_twin != NULL)
+#define LEAN_ARM_ALWAYS (&x264_lean_arm_always != NULL)
+#define LEAN_ARM_GATE( hist, b_frame ) (LEAN_ARM_ALWAYS || (LEAN_ARM_FRAME ? (b_frame) : (hist) == LEAN_ROW_MASK))
+
+/* arm F: fref[0][0]'s fast P_SKIPs and mbs so far (frame threads: it may still be encoding) */
+static ALWAYS_INLINE int x264_lean_frame_gate( x264_t *h )
+{
+    int skips = __atomic_load_n( &h->fref[0][0]->lean_frame[0], __ATOMIC_RELAXED );
+    int mbs = __atomic_load_n( &h->fref[0][0]->lean_frame[1], __ATOMIC_RELAXED );
+    return mbs && skips * 100 >= LEAN_ROW_SHARE * mbs;
+}
+
 static ALWAYS_INLINE int x264_lean_row_hist( x264_t *h, int mb_y )
 {
     /* frame threads: fref[0][0] may still be encoding; read after mb 0's mb_analyse_init
@@ -3139,7 +3159,7 @@ static intptr_t x264_slice_write( x264_t *h )
     b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv
                || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
     /* x264_macroblock_lean_pskip: the fast P_SKIP; its static test needs probe_skip's fenc_eq */
-    int b_lean = h->sh.i_type == SLICE_TYPE_P && !SLICE_MBAFF && PARAM_CABAC && !slice_max_size &&
+    int b_lean = !LEAN_ARM_TWIN && h->sh.i_type == SLICE_TYPE_P && !SLICE_MBAFF && PARAM_CABAC && !slice_max_size &&
                  h->param.analyse.b_fast_pskip && h->param.analyse.i_subpel_refine < 3 && !h->mb.b_lossless &&
                  !(HAS_MBINFO && h->fdec->mb_info) && h->pixf.fenc_eq[PIXEL_16x16] &&
                  (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) &&
@@ -3183,7 +3203,8 @@ static intptr_t x264_slice_write( x264_t *h )
     i_skip = 0;
     /* the row gate of this row, its history and its count: fast P_SKIPs from mb lean_x0 */
     int lean_hist = b_lean && i_mb_x ? x264_lean_row_hist( h, i_mb_y ) : 0;
-    int b_lean_row = lean_hist == LEAN_ROW_MASK;
+    int b_lean_frame = b_lean && LEAN_ARM_FRAME && x264_lean_frame_gate( h );
+    int b_lean_row = b_lean && i_mb_x && LEAN_ARM_GATE( lean_hist, b_lean_frame );
     int lean_x0 = i_mb_x;
     int lean_skips = 0;
 
@@ -3260,7 +3281,7 @@ reencode:
         if( !i_mb_x )
         {
             lean_hist = b_lean ? x264_lean_row_hist( h, i_mb_y ) : 0;
-            b_lean_row = lean_hist == LEAN_ROW_MASK;
+            b_lean_row = b_lean && LEAN_ARM_GATE( lean_hist, b_lean_frame );
         }
 
         if( PARAM_CABAC )
@@ -3389,6 +3410,11 @@ cont:
             int b_share = lean_skips * 100 >= LEAN_ROW_SHARE * (h->mb.i_mb_width - lean_x0);
             __atomic_store_n( &h->fdec->lean_row[i_mb_y], (uint8_t)(b_lean ? ((lean_hist << 1) | b_share) & LEAN_ROW_MASK : 0),
                               __ATOMIC_RELAXED );
+            if( b_lean )
+            {
+                __atomic_fetch_add( &h->fdec->lean_frame[0], lean_skips, __ATOMIC_RELAXED );
+                __atomic_fetch_add( &h->fdec->lean_frame[1], h->mb.i_mb_width - lean_x0, __ATOMIC_RELAXED );
+            }
         }
 
         /* accumulate mb stats */
@@ -4117,6 +4143,8 @@ int     x264_encoder_encode( x264_t *h,
 
     h->fdec->i_type = h->fenc->i_type;
     h->fdec->i_frame = h->fenc->i_frame;
+    __atomic_store_n( &h->fdec->lean_frame[0], 0, __ATOMIC_RELAXED );
+    __atomic_store_n( &h->fdec->lean_frame[1], 0, __ATOMIC_RELAXED );
     h->fenc->b_kept_as_ref =
     h->fdec->b_kept_as_ref = i_nal_ref_idc != NAL_PRIORITY_DISPOSABLE && h->param.i_keyint_max > 1;
 

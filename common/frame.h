@@ -108,6 +108,7 @@ typedef struct x264_frame
     uint8_t *field;
     uint8_t *effective_qp;
     uint8_t *lean_row;  /* fdec: per mb row, x264_macroblock_lean_pskip runs there in the next frame */
+    int     lean_frame[2]; /* lean-skip timing arm F: the fast P_SKIPs and mbs of the frame */
 
     /* Stored as (lists_used << LOWRES_COST_SHIFT) + (cost).
      * Doesn't need special addressing for intra cost because
