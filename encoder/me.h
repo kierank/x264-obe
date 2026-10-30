@@ -186,6 +186,18 @@ struct x264_lowres_p
     int weighted;               /* weight[0].weightfn */
 };
 
+/* slicetype asm layout pair: x264_sltasm_gate gates pixf.lowres_p_mbs. Arm: x264_sltasm_arm,
+ * defined in api.c. Twin (SLTASM_TWIN 1): the never defined x264_sltasm_twin, which links
+ * as 0. The code is the same in both. */
+#define SLTASM_TWIN 0
+extern const char x264_sltasm_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_sltasm_twin __attribute__((weak, visibility("hidden")));
+#if SLTASM_TWIN
+#define x264_sltasm_gate (&x264_sltasm_twin != NULL)
+#else
+#define x264_sltasm_gate (&x264_sltasm_arm != NULL)
+#endif
+
 #define x264_lowres_p_mbs_c x264_template(lowres_p_mbs_c)
 void x264_lowres_p_mbs_c( x264_lowres_p_t *c );
 #define x264_lowres_hex_search_c x264_template(lowres_hex_search_c)
@@ -196,7 +208,7 @@ uint64_t x264_lowres_hex_search_c( pixel *fenc, pixel *ref, intptr_t i_stride, c
 static inline int x264_lowres_p_init( x264_t *h, x264_lowres_p_t *c )
 {
     x264_pixel_function_t *pf = &h->pixf;
-    if( !pf->lowres_p_mbs || h->mb.i_me_method != X264_ME_HEX || h->mb.i_subpel_refine != 4 || h->mb.b_chroma_me ||
+    if( !x264_sltasm_gate || !pf->lowres_p_mbs || h->mb.i_me_method != X264_ME_HEX || h->mb.i_subpel_refine != 4 || h->mb.b_chroma_me ||
         !pf->satd_fenc_pre[1] || !pf->mbcmp_pre[PIXEL_8x8] || !pf->mbcmp_avg2_pre[PIXEL_8x8] ||
         !pf->fpelcmp_hpel_min[PIXEL_8x8] || !pf->fpelcmp_avg2[PIXEL_8x8] || !pf->intra_mbcmp_lowres ||
         pf->mbcmp_unaligned[0] == pf->fpelcmp[0] )
