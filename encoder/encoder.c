@@ -1617,7 +1617,8 @@ static void mbcmp_init( x264_t *h )
     {
         memcpy( h->pixf.mbcmp_subpel_search, h->pixf.satd_subpel_search, sizeof(h->pixf.mbcmp_subpel_search) );
         if( x264_subpelrq_gate )
-            memcpy( h->pixf.mbcmp_subpel_search_weight, h->pixf.satd_subpel_search_weight, sizeof(h->pixf.mbcmp_subpel_search_weight) );
+            /* weighted refs keep the C path: the _weight entries were slower than it (rack01, fades) */
+            memset( h->pixf.mbcmp_subpel_search_weight, 0, sizeof(h->pixf.mbcmp_subpel_search_weight) );
         else
             memset( h->pixf.mbcmp_subpel_search_weight, 0, sizeof(h->pixf.mbcmp_subpel_search_weight) );
     }
