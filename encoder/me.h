@@ -64,6 +64,8 @@ typedef struct
 
 #define x264_me_search_ref x264_template(me_search_ref)
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );
+#define x264_me_fpel_cnt_print x264_template(me_fpel_cnt_print)
+void x264_me_fpel_cnt_print( void );
 #define x264_me_search( h, m, mvc, i_mvc )\
     x264_me_search_ref( h, m, mvc, i_mvc, NULL )
 

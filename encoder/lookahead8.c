@@ -131,6 +131,7 @@ void x264_lowres8_free( void *ctx )
     lowres8_t *c = ctx;
     if( !c )
         return;
+    x264_me_fpel_cnt_print();
     x264_analyse_free_costs( &c->h );
     x264_free( c->weight_buf );
     x264_free( c );
