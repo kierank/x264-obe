@@ -29,6 +29,13 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#define E4R_TWIN 0
+#if !E4R_TWIN && !HIGH_BIT_DEPTH
+#define E4R_STR2( x ) #x
+#define E4R_STR( x ) E4R_STR2( x )
+__asm__( ".set " E4R_STR( x264_e4r_gate ) ", " E4R_STR( x264_macroblock_encode ) );
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -799,7 +806,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
 #endif
                 CLEAR_16x16_NNZ( p );
-                if( !HIGH_BIT_DEPTH && (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                if( !HIGH_BIT_DEPTH && E4R_ON && (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
                     h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
@@ -810,7 +817,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
                 int plane_cbp = 0;
 #if !HIGH_BIT_DEPTH
-                int plane_ac = b_q8s ? 0 : 0xf;
+                int plane_ac = b_q8s && E4R_ON ? 0 : 0xf;
 #endif
                 for( int idx = 0; idx < 4; idx++ )
                 {
@@ -870,7 +877,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
 #if !HIGH_BIT_DEPTH
-                if( h->zigzagf.inter_resid_4x4 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
+                if( h->zigzagf.inter_resid_4x4 && E4R_ON && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
                     int ret = h->zigzagf.inter_resid_4x4( &h->dct.luma4x4[p*16], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
                                                           &h->mb.cache.non_zero_count[x264_scan8[p*16]],
@@ -882,7 +889,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
 #endif
                 CLEAR_16x16_NNZ( p );
-                if( !HIGH_BIT_DEPTH && (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                if( !HIGH_BIT_DEPTH && E4R_ON && (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
                     h->nr_count[0+!!p*2] += h->mb.b_noise_reduction * 16;
@@ -899,7 +906,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
                 int plane_cbp = 0;
 #if !HIGH_BIT_DEPTH
-                int plane_ac = h->mb.b_trellis ? 0xf : 0;
+                int plane_ac = h->mb.b_trellis || !E4R_ON ? 0xf : 0;
 #endif
                 for( int i8x8 = 0; i8x8 < 4; i8x8++ )
                 {
@@ -1320,7 +1327,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                                    : x264_quant_8x8( h, dct8x8, i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 0, p, i8 );
                 if( nnz8x8 )
                 {
-                    int b_ac = HIGH_BIT_DEPTH || !b_q8s || nnz8x8 >> 8;
+                    int b_ac = HIGH_BIT_DEPTH || !b_q8s || nnz8x8 >> 8 || !E4R_ON;
                     if( !b_q8s )
                         h->zigzagf.scan_8x8( h->dct.luma8x8[4*p+i8], dct8x8 );
 
@@ -1386,7 +1393,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                     if( nz )
                     {
                         i_decimate_8x8 += QSCAN_SCORE( nz );
-                        b_ac = HIGH_BIT_DEPTH || nz >> 8;
+                        b_ac = HIGH_BIT_DEPTH || nz >> 8 || !E4R_ON;
                         STORE_4x4x4_NNZ( p*16+i8*4, nz );
                     }
                 }
