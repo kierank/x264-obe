@@ -189,7 +189,7 @@ struct x264_lowres_p
 /* slicetype asm layout pair: x264_sltasm_gate gates pixf.lowres_p_mbs. Arm: x264_sltasm_arm,
  * defined in api.c. Twin (SLTASM_TWIN 1): the never defined x264_sltasm_twin, which links
  * as 0. The code is the same in both. */
-#define SLTASM_TWIN 0
+#define SLTASM_TWIN 1
 extern const char x264_sltasm_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_sltasm_twin __attribute__((weak, visibility("hidden")));
 #if SLTASM_TWIN
