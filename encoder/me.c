@@ -267,7 +267,7 @@ static const int8_t umh_ring[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, 
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
-void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
     const int bh = x264_pixel_size[m->i_pixel].h;
@@ -984,6 +984,58 @@ fpel_done:;
     }
 }
 #undef COST_MV
+
+#if ARCH_X86_64
+/* common/x86/me-64.asm reads x264_me_t, x264_me_fpel_t and x264_me_fpel_fn_t at fixed offsets */
+typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offsetof( x264_me_t, weight ) == 24 &&
+                                 offsetof( x264_me_t, p_fref ) == 32 && offsetof( x264_me_t, p_fref_w ) == 128 &&
+                                 offsetof( x264_me_t, p_fenc ) == 136 && offsetof( x264_me_t, i_stride ) == 168 &&
+                                 offsetof( x264_me_t, mvp ) == 184 && offsetof( x264_me_t, cost_mv ) == 188 &&
+                                 offsetof( x264_me_t, cost ) == 192 && offsetof( x264_me_t, mv ) == 196 &&
+                                 offsetof( x264_me_fpel_t, fn ) == 24 && offsetof( x264_me_fpel_t, range ) == 48 &&
+                                 offsetof( x264_me_fpel_t, flags ) == 68 && sizeof(x264_me_fpel_fn_t) == 80 &&
+                                 offsetof( x264_me_fpel_fn_t, hex_search ) == 48 && offsetof( x264_me_fpel_fn_t, qpel ) == 72 &&
+                                 sizeof(x264_me_t) == 256 && sizeof(x264_me_fpel_t) == 72 ? 1 : -1];
+#endif
+
+void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+{
+    int i_pixel = m->i_pixel;
+    int subme = h->mb.i_subpel_refine;
+    if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
+        && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
+        && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2)) )
+    {
+        int hpel = subpel_iterations[subme][2];
+        int qpel = subpel_iterations[subme][3];
+        x264_me_fpel_t c;
+        c.m = m;
+        c.mvc = mvc;
+        c.halfpel_thresh = p_halfpel_thresh;
+        c.fn = &h->pixf.me_fpel_fn[i_pixel];
+        c.qfenc = NULL;
+        c.mv_limit = h->mb.mv_limit_fpel;
+        c.i_mvc = i_mvc;
+        c.me_range = h->param.analyse.i_me_range;
+        c.flags = (subme >= 3) * ME_FPEL_SUBME3 | !h->mb.b_chroma_me * ME_FPEL_ZEXIT | (subme >= 2) * ME_FPEL_REFINE;
+        /* refine_subpel's subpel_search call */
+        if( subme >= 2 && !h->mb.b_chroma_me && !m->weight[0].weightfn && c.fn->subpel )
+        {
+            c.range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
+                    | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
+            c.iters = hpel << 16 | qpel << 8 | (hpel && subme < 3) << 5;
+#if HIGH_BIT_DEPTH
+            c.qfenc = m->p_fenc[0];
+#else
+            c.qfenc = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
+#endif
+        }
+        if( h->pixf.me_search_fpel( &c ) )
+            refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
+        return;
+    }
+    me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
+}
 
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
 {

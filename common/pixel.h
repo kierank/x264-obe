@@ -32,6 +32,7 @@
 // other cmp functions assume first arg aligned
 typedef struct x264_lowres_p x264_lowres_p_t;
 typedef struct x264_analyse_p x264_analyse_p_t;
+typedef struct x264_me_fpel x264_me_fpel_t;
 
 typedef int  (*x264_pixel_cmp_t) ( pixel *, intptr_t, pixel *, intptr_t );
 typedef void (*x264_pixel_cmp_x3_t) ( pixel *, pixel *, pixel *, pixel *, intptr_t, int[3] );
@@ -125,6 +126,20 @@ typedef uint64_t (*x264_pixel_subpel_search_weight_t) ( pixel *fenc, pixel **fre
                                                         uint32_t bmv, int bcost, int iters, uint64_t range,
                                                         x264_bi_fenc_t *qfenc, x264_pixel_qpel_search_weight_t qpel,
                                                         int *halfpel_thresh, uint32_t mvp, const struct x264_weight_t *w );
+/* the kernels of x264_me_search_ref at one partition size, for me_search_fpel */
+typedef struct
+{
+    x264_pixel_cmp_t sad;                   /* fpelcmp */
+    x264_pixel_cmp_avg2_t sad_avg2;         /* fpelcmp_avg2 */
+    x264_pixel_cmp_x3_min_t x3_min;         /* fpelcmp_x3_min */
+    x264_pixel_cmp_x4_min_t x4_min;         /* fpelcmp_x4_min */
+    x264_pixel_cmp_sq_min_t sq_min;         /* fpelcmp_sq_min */
+    x264_pixel_cmp_pt_min_t hex_min;        /* fpelcmp_hex_min */
+    x264_pixel_fpel_search_t hex_search;    /* fpelcmp_hex_search */
+    x264_predictor_clip_t predictor_clip;   /* predictor_clip */
+    x264_pixel_subpel_search_t subpel;      /* mbcmp_subpel_search */
+    x264_pixel_qpel_search_t qpel;          /* mbcmp_qpel_search */
+} x264_me_fpel_fn_t;
 
 enum
 {
@@ -331,6 +346,10 @@ typedef struct
     int  (*analyse_p16x16)( x264_analyse_p_t *c );
     void (*analyse_p_sub16x16)( x264_analyse_p_t *c );
     int  (*analyse_p16x16_ll)( x264_analyse_p_t *c ); /* analyse_p16x16 where subme < 3, not 4:4:4, else NULL */
+    /* asm only, NULL otherwise: x264_me_search_ref's HEX search and the subpel_search call
+     * (encoder/me.h); me_fpel_fn by partition size, from x264_me_fpel_init */
+    int (*me_search_fpel)( x264_me_fpel_t *c );
+    x264_me_fpel_fn_t me_fpel_fn[4];
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)
