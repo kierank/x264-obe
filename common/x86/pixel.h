@@ -1048,6 +1048,14 @@ uint64_t x264_pixel_sad_dia_search_8x8_avx512( pixel *, pixel *, intptr_t, const
 int x264_predictor_clip_avx512( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
 #define x264_predictor_roundclip_avx512 x264_template(predictor_roundclip_avx512)
 int x264_predictor_roundclip_avx512( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv );
+#define x264_mvpred_16x16_avx2 x264_template(mvpred_16x16_avx2)
+void x264_mvpred_16x16_avx2( int8_t *ref, int16_t (*mv)[2], intptr_t i_ref, int16_t mvp[2] );
+#define x264_mvpred_avx2 x264_template(mvpred_avx2)
+void x264_mvpred_avx2( int8_t *ref, int16_t (*mv)[2], int16_t mvp[2], intptr_t mode, int16_t *mv_tr );
+#define x264_mvpred_pskip_avx2 x264_template(mvpred_pskip_avx2)
+void x264_mvpred_pskip_avx2( int8_t *ref, int16_t (*mv)[2], int16_t mvp[2] );
+#define x264_mvpred_ref16x16_avx2 x264_template(mvpred_ref16x16_avx2)
+int x264_mvpred_ref16x16_avx2( int16_t (*mvc)[2], void *mb, intptr_t i_list, intptr_t i_ref );
 #define x264_pixel_sad_x3_min_16x16_avx512 x264_template(pixel_sad_x3_min_16x16_avx512)
 int x264_pixel_sad_x3_min_16x16_avx512( pixel *, pixel *, pixel *, pixel *, intptr_t, uint64_t, uint64_t );
 #define x264_pixel_sad_x3_min_16x8_avx512 x264_template(pixel_sad_x3_min_16x8_avx512)

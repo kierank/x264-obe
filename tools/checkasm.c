@@ -7007,6 +7007,192 @@ static int check_bitstream( int cpu_ref, int cpu_new )
     return ret;
 }
 
+static int16_t mvpred_rand_mv( void )
+{
+    static const int16_t pool[8] = { 0, 1, -1, 32767, -32768, 2, -4, 32766 };
+    int r = rand()&15;
+    return r < 8 ? pool[r] : rand() - 16384*(rand()&1);
+}
+
+static int check_mvpred( int cpu_ref, int cpu_new )
+{
+    x264_pixel_function_t pixel_ref;
+    x264_pixel_function_t pixel_asm;
+    int ret = 0, ok, used_asm;
+
+    x264_pixel_init( cpu_ref, &pixel_ref );
+    x264_pixel_init( cpu_new, &pixel_asm );
+
+    /* mvpred_16x16, mvpred, mvpred_pskip: a, b, c and d each -2, -1, i_ref or
+     * another ref (all 256), the rest of the cache random; i_ref -2..31; mvs
+     * equal, 0, +-1, the int16 extremes or random. mvpred: i_ref ref[0], every scan8
+     * idx 0..15, width 1/2/4, C forced to D or not, dir 0/1/2/4, the MBAFF topright
+     * in place of C or not (its ref -2..31). */
+    ok = 1; used_asm = 0;
+    if( pixel_asm.mvpred_16x16 != pixel_ref.mvpred_16x16 )
+    {
+        ALIGNED_16( int8_t ref[X264_SCAN8_LUMA_SIZE] );
+        ALIGNED_16( int16_t mv[X264_SCAN8_LUMA_SIZE][2] );
+        ALIGNED_4( int16_t mv_tr[2] );
+        used_asm = 1;
+        for( int f = 0; f < 3; f++ )
+        {
+            set_func_name( f == 0 ? "mvpred_16x16" : f == 1 ? "mvpred" : "mvpred_pskip" );
+            for( int j = 0; j < 256*64 && ok; j++ )
+            {
+                int k = j&255;
+                int i_ref = f == 2 ? 0 : (j>>8)&1 ? rand()%34 - 2 : (j>>9)&3;
+                int idx = f == 1 ? (j>>8)&15 : 0;
+                int width = f == 1 ? 1 << rand()%3 : 4;
+                int forced = f == 1 && (rand()&1);
+                int p = x264_scan8[idx];
+                int i_c = forced ? -9 : width - 8;
+                int dir = f == 1 ? (rand()&3 ? 0 : 1 << rand()%3) : 0;
+                int b_tr = f == 1 && !(rand()&3);
+                int i_ref_tr = rand()&1 ? i_ref : rand()%34 - 2;
+                mv_tr[0] = mvpred_rand_mv();
+                mv_tr[1] = mvpred_rand_mv();
+                uint32_t mode = (i_c & 0xff) | dir << 9 | b_tr << 12 | (uint32_t)(uint8_t)i_ref_tr << 24;
+                for( int i = 0; i < X264_SCAN8_LUMA_SIZE; i++ )
+                {
+                    ref[i] = rand()%34 - 2;
+                    mv[i][0] = mvpred_rand_mv();
+                    mv[i][1] = mvpred_rand_mv();
+                }
+                if( f == 1 )
+                    ref[p] = i_ref;
+                int pos[4] = { p - 1, p - 8, p + i_c, p - 9 };
+                for( int n = 0; n < 4; n++ )
+                {
+                    int e = (k >> (2*n))&3, other;
+                    do other = rand()%32; while( other == i_ref );
+                    ref[pos[n]] = e == 0 ? -2 : e == 1 ? -1 : e == 2 ? i_ref : other;
+                    if( !(rand()&3) )
+                        M32( mv[pos[n]] ) = 0;
+                    if( !(rand()&3) )
+                        CP32( mv[pos[n]], mv[pos[rand()&3]] );
+                }
+                ALIGNED_8( int16_t mvp_c[4] );
+                ALIGNED_8( int16_t mvp_a[4] );
+                M64( mvp_c ) = M64( mvp_a ) = 0x7fff80007fff8000ULL;
+                if( f == 0 )
+                {
+                    call_c1( pixel_ref.mvpred_16x16, ref+p, mv+p, (intptr_t)i_ref, mvp_c );
+                    call_a( pixel_asm.mvpred_16x16, ref+p, mv+p, (intptr_t)i_ref, mvp_a );
+                }
+                else if( f == 1 )
+                {
+                    call_c1( pixel_ref.mvpred, ref+p, mv+p, mvp_c, (intptr_t)(int32_t)mode, b_tr ? mv_tr : NULL );
+                    call_a( pixel_asm.mvpred, ref+p, mv+p, mvp_a, (intptr_t)(int32_t)mode, b_tr ? mv_tr : NULL );
+                }
+                else
+                {
+                    call_c1( pixel_ref.mvpred_pskip, ref+p, mv+p, mvp_c );
+                    call_a( pixel_asm.mvpred_pskip, ref+p, mv+p, mvp_a );
+                }
+                if( M64( mvp_c ) != M64( mvp_a ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "%s: idx %d width %d i_c %d dir %d tr %d i_ref %d refs a %d b %d c %d d %d: (%d,%d) != (%d,%d) [FAILED]\n",
+                             func_name, idx, width, i_c, dir, b_tr, i_ref, ref[pos[0]], ref[pos[1]], ref[pos[2]], ref[pos[3]],
+                             mvp_c[0], mvp_c[1], mvp_a[0], mvp_a[1] );
+                }
+            }
+        }
+    }
+    report( "mvpred :" );
+
+    /* mvpred_ref16x16 on an h->mb of 1..8 x 1..8 mbs: any position and the last
+     * column / row, neighbours -1 or any mb, random field flags, MB_INTERLACED,
+     * MBAFF, b_tmvp, b_tconv, temporal scales up to +-32767, i_list 0/1, i_ref
+     * 0..15 (frame mb) / 0..31 (field mb), mvc at 0..2 of 10. Nothing written
+     * past mvc[9]. */
+    ok = 1; used_asm = 0;
+    if( pixel_asm.mvpred_ref16x16 != pixel_ref.mvpred_ref16x16 )
+    {
+        x264_t *h = x264_malloc( sizeof(x264_t) );
+        int16_t (*mvrbuf)[65][2] = x264_malloc( 2*X264_REF_MAX*2 * sizeof(*mvrbuf) );
+        int16_t (*l0buf)[2] = x264_malloc( 65 * sizeof(*l0buf) );
+        uint8_t *fieldbuf = x264_malloc( 2*64 );
+        if( !h || !mvrbuf || !l0buf || !fieldbuf )
+            return -1;
+        memset( h, 0, sizeof(x264_t) );
+        used_asm = 1;
+        set_func_name( "mvpred_ref16x16" );
+        for( int j = 0; j < 100000 && ok; j++ )
+        {
+            int w = 1 + rand()%8, ht = 1 + rand()%8, count = w*ht;
+            h->mb.i_mb_width = w;
+            h->mb.i_mb_height = ht;
+            h->mb.i_mb_stride = w;
+            h->mb.i_mb_x = j&16 ? w-1 : rand()%w;
+            h->mb.i_mb_y = j&32 ? ht-1 : rand()%ht;
+            h->mb.i_mb_xy = h->mb.i_mb_y*w + h->mb.i_mb_x;
+            int b_mbaff = j&1;
+            h->mb.b_interlaced = b_mbaff && (rand()&1);
+            h->mb.mvref.b_mbaff = b_mbaff;
+            h->mb.mvref.b_tmvp = !!(rand()&3);
+            h->mb.mvref.b_tconv = b_mbaff && (rand()&3);
+            int *nb[4] = { &h->mb.i_mb_left_xy[0], &h->mb.i_mb_top_xy, &h->mb.i_mb_topleft_xy, &h->mb.i_mb_topright_xy };
+            for( int n = 0; n < 4; n++ )
+                *nb[n] = (j>>(6+n))&1 ? -1 : rand()%count;
+            h->mb.i_mb_left_xy[1] = rand();
+            for( int l = 0; l < 2; l++ )
+                for( int r = 0; r < X264_REF_MAX*2; r++ )
+                {
+                    for( int i = 0; i < 65; i++ )
+                    {
+                        mvrbuf[l*X264_REF_MAX*2+r][i][0] = mvpred_rand_mv();
+                        mvrbuf[l*X264_REF_MAX*2+r][i][1] = mvpred_rand_mv();
+                    }
+                    h->mb.mvr[l][r] = mvrbuf[l*X264_REF_MAX*2+r] + 1;
+                }
+            for( int i = 0; i < 65; i++ )
+            {
+                l0buf[i][0] = mvpred_rand_mv();
+                l0buf[i][1] = mvpred_rand_mv();
+            }
+            for( int i = 0; i < 2*64; i++ )
+                fieldbuf[i] = rand()&1;
+            h->mb.field = fieldbuf;
+            h->mb.mvref.l0_mv16x16 = l0buf + 1;
+            h->mb.mvref.l0_field = fieldbuf + 64;
+            for( int i = 0; i < 2*2*2*X264_REF_MAX*2; i++ )
+            {
+                int e = rand()&3;
+                (&h->mb.mvref.tscale[0][0][0][0])[i] = e == 0 ? 256*(rand()%9 - 4) : e == 1 ? rand()%65535 - 32767 :
+                                                       e == 2 ? (rand()&1 ? 32767 : -32767) : rand()%1025 - 512;
+            }
+            int i_list = rand()&1;
+            int i_ref = rand() % (h->mb.b_interlaced ? X264_REF_MAX*2 : X264_REF_MAX);
+            int i0 = rand()%3;
+            ALIGNED_16( int16_t mvc_c[12][2] );
+            ALIGNED_16( int16_t mvc_a[12][2] );
+            for( int i = 0; i < 12; i++ )
+                M32( mvc_c[i] ) = M32( mvc_a[i] ) = 0x7fff8000;
+            int n_c = call_c1( pixel_ref.mvpred_ref16x16, mvc_c+i0, &h->mb, (intptr_t)i_list, (intptr_t)i_ref );
+            int n_a = call_a( pixel_asm.mvpred_ref16x16, mvc_a+i0, &h->mb, (intptr_t)i_list, (intptr_t)i_ref );
+            if( n_c != n_a || memcmp( mvc_c+i0, mvc_a+i0, n_c*sizeof(mvc_c[0]) ) ||
+                M32( mvc_a[10] ) != 0x7fff8000 || M32( mvc_a[11] ) != 0x7fff8000 )
+            {
+                ok = 0;
+                fprintf( stderr, "mvpred_ref16x16: mbaff %d interlaced %d tmvp %d tconv %d mb %d,%d of %dx%d list %d ref %d: %d != %d [FAILED]\n",
+                         b_mbaff, h->mb.b_interlaced, h->mb.mvref.b_tmvp, h->mb.mvref.b_tconv, h->mb.i_mb_x, h->mb.i_mb_y,
+                         w, ht, i_list, i_ref, n_c, n_a );
+                for( int i = 0; i < 12; i++ )
+                    fprintf( stderr, "  %d: (%d,%d) (%d,%d)\n", i, mvc_c[i][0], mvc_c[i][1], mvc_a[i][0], mvc_a[i][1] );
+            }
+        }
+        x264_free( fieldbuf );
+        x264_free( l0buf );
+        x264_free( mvrbuf );
+        x264_free( h );
+    }
+    report( "mvpred ref16x16 :" );
+
+    return ret;
+}
+
 static int check_all_funcs( int cpu_ref, int cpu_new )
 {
     return check_pixel( cpu_ref, cpu_new )
@@ -7016,6 +7202,7 @@ static int check_all_funcs( int cpu_ref, int cpu_new )
          + check_deblock( cpu_ref, cpu_new )
          + check_quant( cpu_ref, cpu_new )
          + check_cabac( cpu_ref, cpu_new )
+         + check_mvpred( cpu_ref, cpu_new )
          + check_bitstream( cpu_ref, cpu_new );
 }
 

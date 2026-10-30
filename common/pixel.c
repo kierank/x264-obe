@@ -2063,6 +2063,15 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     INIT4( sad_x4, _vis );
 #endif
 #endif // !HIGH_BIT_DEPTH
+#if HAVE_MMX && ARCH_X86_64
+    if( (cpu&X264_CPU_AVX2) && (cpu&X264_CPU_BMI2) )
+    {
+        pixf->mvpred_16x16 = x264_mvpred_16x16_avx2;
+        pixf->mvpred = x264_mvpred_avx2;
+        pixf->mvpred_pskip = x264_mvpred_pskip_avx2;
+        pixf->mvpred_ref16x16 = x264_mvpred_ref16x16_avx2;
+    }
+#endif
 
     pixf->ads[PIXEL_8x16] =
     pixf->ads[PIXEL_8x4] =
