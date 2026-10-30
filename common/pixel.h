@@ -330,6 +330,7 @@ typedef struct
     /* asm only, NULL otherwise; encoder/analyse.c's P partition analysis, see x264_analyse_p_t */
     int  (*analyse_p16x16)( x264_analyse_p_t *c );
     void (*analyse_p_sub16x16)( x264_analyse_p_t *c );
+    int  (*analyse_p16x16_ll)( x264_analyse_p_t *c ); /* analyse_p16x16 where subme < 3, not 4:4:4, else NULL */
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)

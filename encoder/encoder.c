@@ -1642,6 +1642,8 @@ static void mbcmp_init( x264_t *h )
         h->pixf.fpelcmp_hex_search[i] = satd ? NULL : h->pixf.sad_hex_search[i];
     }
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
+    /* P6 kept on C: rack01 2026-10-30 APA 8p.prog +0.43 %, lowlat -0.9..-1.55 % */
+    h->pixf.analyse_p16x16_ll = h->param.analyse.i_subpel_refine < 3 && !CHROMA444 ? h->pixf.analyse_p16x16 : NULL;
 }
 
 static void chroma_dsp_init( x264_t *h )

@@ -1413,7 +1413,7 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
 /* The asm P partition analysis of this mb, or NULL */
 static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *c )
 {
-    if( !h->pixf.analyse_p16x16 || CHROMA444 )
+    if( !h->pixf.analyse_p16x16_ll )
         return NULL;
     c->h = h;
     c->mb = &h->mb;
@@ -1497,7 +1497,7 @@ static int x264_mb_analyse_inter_p16x16_search( x264_t *h, x264_mb_analysis_t *a
 
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *ap )
 {
-    if( ap ? h->pixf.analyse_p16x16( ap ) : x264_mb_analyse_inter_p16x16_search( h, a ) )
+    if( ap ? h->pixf.analyse_p16x16_ll( ap ) : x264_mb_analyse_inter_p16x16_search( h, a ) )
     {
         h->mb.i_type = P_SKIP;
         x264_analyse_update_cache( h, a );
