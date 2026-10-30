@@ -1204,7 +1204,7 @@ static int x264_pixel_ads1( int enc_dc[1], uint16_t *sums, int delta,
 /* mvpred layout pair: x264_mvpred_gate gates the asm mvpred dispatch. Arm:
  * x264_mvpred_arm, defined in api.c. Twin (MVPRED_TWIN 1): the never defined
  * x264_mvpred_twin, which links as 0. The code is the same in both. */
-#define MVPRED_TWIN 0
+#define MVPRED_TWIN 1
 extern const char x264_mvpred_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_mvpred_twin __attribute__((weak, visibility("hidden")));
 #if MVPRED_TWIN
