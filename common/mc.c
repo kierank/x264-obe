@@ -438,6 +438,8 @@ static void integral_init8v( uint16_t *sum8, intptr_t stride )
  * padding while encoding (x264_expand_border_mbpair). */
 static int lowres_deferred( x264_t *h, x264_frame_t *frame )
 {
+    if( getenv( "LA8SHADOW" ) )
+        return 0;
     return frame->buffer_lowres8 && !(PARAM_INTERLACED && h->param.analyse.i_weighted_pred);
 }
 

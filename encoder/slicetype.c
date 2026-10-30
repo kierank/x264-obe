@@ -1616,6 +1616,121 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
                                     s->do_search, s->w, s->output_inter, s->output_intra );
 }
 
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+/* test only: LA8SHADOW=file recomputes every frame cost with fresh searches at
+ * both depths on scratch state and appends per-MB records to file. */
+typedef struct
+{
+    int32_t frame, p0, p1, b, mb;
+    int32_t c[2], lu[2], ic[2];
+} la8_rec_t;
+
+static FILE *la8_shadow_file( void )
+{
+    static int init = 0;
+    static FILE *f = NULL;
+    if( !init )
+    {
+        init = 1;
+        char *s = getenv( "LA8SHADOW" );
+        if( s && *s )
+            f = fopen( s, "wb" );
+    }
+    return f;
+}
+
+static void la8_shadow( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, int p0, int p1, int b, int dist_scale_factor )
+{
+    FILE *f = la8_shadow_file();
+    if( !f || !h->lowres8 || h->param.i_lookahead_threads > 1 || h->param.b_sliced_threads )
+        return;
+    x264_frame_t *fenc = frames[b];
+    int n = h->mb.i_mb_width * h->mb.i_mb_height;
+    int16_t (*mvs[2][2])[2];
+    int *mvc[2][2], *cost[2];
+    uint16_t *intra[2];
+    for( int d = 0; d < 2; d++ )
+    {
+        for( int l = 0; l < 2; l++ )
+        {
+            mvs[d][l] = x264_malloc( n * 4 );
+            mvc[d][l] = x264_malloc( n * 4 );
+            memset( mvs[d][l], 0, n * 4 );
+            memset( mvc[d][l], 0, n * 4 );
+        }
+        cost[d] = x264_malloc( n * 4 );
+        intra[d] = x264_malloc( n * 2 );
+    }
+    int16_t (*smv0)[2] = b > p0 ? fenc->lowres_mvs[0][b-p0-1] : NULL;
+    int16_t (*smv1)[2] = b < p1 ? fenc->lowres_mvs[1][p1-b-1] : NULL;
+    int *smc0 = b > p0 ? fenc->lowres_mv_costs[0][b-p0-1] : NULL;
+    int *smc1 = b < p1 ? fenc->lowres_mv_costs[1][p1-b-1] : NULL;
+    uint16_t *scost = fenc->lowres_costs[b-p0][p1-b];
+    uint16_t *tcost = x264_malloc( n * 2 );
+    uint16_t *sintra = fenc->i_intra_cost;
+    int sintra_calc = fenc->b_intra_calculated;
+    int sintra_mbs = fenc->i_intra_mbs[b-p0];
+    void *slowres8 = h->lowres8;
+    int *out = x264_malloc( (h->mb.i_mb_height + 8) * 2 * sizeof(int) );
+    int est[2], iest[2];
+    for( int d = 0; d < 2; d++ )
+    {
+        int do_search[2] = { b != p0, b != p1 };
+        if( b > p0 ) { fenc->lowres_mvs[0][b-p0-1] = mvs[d][0]; fenc->lowres_mv_costs[0][b-p0-1] = mvc[d][0]; }
+        if( b < p1 ) { fenc->lowres_mvs[1][p1-b-1] = mvs[d][1]; fenc->lowres_mv_costs[1][p1-b-1] = mvc[d][1]; }
+        fenc->lowres_costs[b-p0][p1-b] = tcost;
+        fenc->i_intra_cost = p0 == p1 ? tcost : intra[d];
+        fenc->b_intra_calculated = 0;
+        h->lowres8 = d ? slowres8 : NULL;
+        int *oi = out, *oa = out + h->mb.i_mb_height + 8;
+        memset( out, 0, (h->mb.i_mb_height + 8) * 2 * sizeof(int) );
+        oi[3] = oa[3] = h->mb.i_mb_height;
+        h->i_threadslice_start = 0;
+        h->i_threadslice_end = h->mb.i_mb_height;
+        x264_slicetype_slice_t s = (x264_slicetype_slice_t){ h, a, frames, p0, p1, b, dist_scale_factor, do_search, x264_weight_none, oi, oa };
+        x264_slicetype_slice_cost( &s );
+        for( int i = 0; i < n; i++ )
+            cost[d][i] = tcost[i];
+        if( p0 == p1 )
+            memcpy( intra[d], tcost, n * 2 );
+        est[d] = oi[0];
+        iest[d] = oa[0];
+    }
+    h->lowres8 = slowres8;
+    if( smv0 ) { fenc->lowres_mvs[0][b-p0-1] = smv0; fenc->lowres_mv_costs[0][b-p0-1] = smc0; }
+    if( smv1 ) { fenc->lowres_mvs[1][p1-b-1] = smv1; fenc->lowres_mv_costs[1][p1-b-1] = smc1; }
+    fenc->lowres_costs[b-p0][p1-b] = scost;
+    fenc->i_intra_cost = sintra;
+    fenc->b_intra_calculated = sintra_calc;
+    fenc->i_intra_mbs[b-p0] = sintra_mbs;
+    for( int i = 0; i < n; i++ )
+    {
+        int x = i % h->mb.i_mb_width, y = i / h->mb.i_mb_width;
+        if( !(x > 0 && x < h->mb.i_mb_width - 1 && y > 0 && y < h->mb.i_mb_height - 1) )
+            continue;
+        la8_rec_t r = { fenc->i_frame, frames[p0]->i_frame, frames[p1]->i_frame, b - p0 + 16 * (p1 - b), i,
+                        { cost[0][i] & LOWRES_COST_MASK, cost[1][i] & LOWRES_COST_MASK },
+                        { cost[0][i] >> LOWRES_COST_SHIFT, cost[1][i] >> LOWRES_COST_SHIFT },
+                        { intra[0][i], intra[1][i] } };
+        fwrite( &r, sizeof(r), 1, f );
+    }
+    fprintf( stderr, "LA8S f=%d p0=%d p1=%d c10=%d c8=%d i10=%d i8=%d\n", fenc->i_frame, frames[p0]->i_frame,
+             frames[p1]->i_frame, est[0], est[1], iest[0], iest[1] );
+    for( int d = 0; d < 2; d++ )
+    {
+        for( int l = 0; l < 2; l++ )
+        {
+            x264_free( mvs[d][l] );
+            x264_free( mvc[d][l] );
+        }
+        x264_free( cost[d] );
+        x264_free( intra[d] );
+    }
+    x264_free( tcost );
+    x264_free( out );
+}
+#endif
+
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                                       x264_frame_t **frames, int p0, int p1, int b,
                                       int b_intra_penalty )
@@ -1785,6 +1900,10 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
 
             fenc->i_cost_est[b-p0][p1-b] = i_score;
             x264_emms();
+#if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
+            if( !w[0].weightfn )
+                la8_shadow( h, a, frames, p0, p1, b, dist_scale_factor );
+#endif
         }
     }
 
