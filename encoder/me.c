@@ -1135,19 +1135,65 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     } \
 }
 
+/* TEST ONLY: subpel_search counters, printed at encoder close */
+enum
+{
+    SC_CALLS, SC_ASM, SC_ASM_END = SC_ASM + 4, SC_REFINE_QPEL, SC_PART, SC_CHROMA, SC_WEIGHT, SC_NOFN, SC_NOFENC,
+    SC_HPEL0, SC_MVP, SC_THRESH, SC_STOP, SC_QPEL, SC_MISMATCH, SC_N
+};
+static uint64_t subpel_cnt[SC_N];
+#define SCNT( k ) __atomic_fetch_add( &subpel_cnt[k], 1, __ATOMIC_RELAXED )
+static __thread int subpel_cnt_c;
+
+void x264_me_subpel_cnt_print( void )
+{
+    uint64_t c[SC_N];
+    for( int k = 0; k < SC_N; k++ )
+        c[k] = __atomic_load_n( &subpel_cnt[k], __ATOMIC_RELAXED );
+    if( !c[SC_CALLS] )
+        return;
+    uint64_t a = c[SC_ASM] + c[SC_ASM+1] + c[SC_ASM+2] + c[SC_ASM+3];
+    fprintf( stderr, "subpel_cnt %d-bit: refine_subpel %"PRIu64": subpel_search %"PRIu64" (16x16 %"PRIu64" 16x8 %"PRIu64
+             " 8x16 %"PRIu64" 8x8 %"PRIu64"); C: refine_qpel %"PRIu64", p4x4 %"PRIu64", chroma ME %"PRIu64", weighted %"PRIu64
+             ", no asm %"PRIu64", no fenc_pre %"PRIu64"\n", BIT_DEPTH, c[SC_CALLS], a, c[SC_ASM], c[SC_ASM+1], c[SC_ASM+2],
+             c[SC_ASM+3], c[SC_REFINE_QPEL], c[SC_PART], c[SC_CHROMA], c[SC_WEIGHT], c[SC_NOFN], c[SC_NOFENC] );
+    fprintf( stderr, "subpel_cnt %d-bit: subpel_search calls: no hpel %"PRIu64", mvp tried %"PRIu64", threshold %"PRIu64
+             " (stops %"PRIu64"), qpel stage %"PRIu64", mismatches with the C %"PRIu64"\n", BIT_DEPTH,
+             c[SC_HPEL0], c[SC_MVP], c[SC_THRESH], c[SC_STOP], c[SC_QPEL], c[SC_MISMATCH] );
+}
+
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     /* luma only, unweighted: the whole search in one subpel_search call */
-    if( !b_refine_qpel && m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && !m->weight[0].weightfn
+    if( !subpel_cnt_c )
+    {
+        SCNT( SC_CALLS );
+        if( b_refine_qpel )
+            SCNT( SC_REFINE_QPEL );
+        else if( m->i_pixel > PIXEL_8x8 )
+            SCNT( SC_PART );
+        else if( h->mb.b_chroma_me )
+            SCNT( SC_CHROMA );
+        else if( m->weight[0].weightfn )
+            SCNT( SC_WEIGHT );
+        else if( h->mb.i_subpel_refine == 1 || !h->pixf.mbcmp_subpel_search[m->i_pixel] )
+            SCNT( SC_NOFN );
+    }
+    if( !subpel_cnt_c && !b_refine_qpel && m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && !m->weight[0].weightfn
         && h->mb.i_subpel_refine != 1 && h->pixf.mbcmp_subpel_search[m->i_pixel] )
     {
 #if HIGH_BIT_DEPTH
         x264_bi_fenc_t *qfenc = m->p_fenc[0];
 #else
         x264_bi_fenc_t *qfenc = x264_me_fenc_pre( h, m->i_pixel, m->p_fenc[0] );
+        if( !qfenc )
+            SCNT( SC_NOFENC );
         if( qfenc )
 #endif
         {
+            /* TEST ONLY: the C on a copy beside it */
+            x264_me_t mc = *m;
+            int thr_c = p_halfpel_thresh ? *p_halfpel_thresh : 0;
             const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
             const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
             uint64_t range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
@@ -1163,6 +1209,29 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             /* the halfpel threshold stop leaves cost_mv */
             if( !((uint32_t)res >> 31) )
                 m->cost_mv = p_cost_mvx[m->mv[0]] + p_cost_mvy[m->mv[1]];
+            SCNT( SC_ASM + m->i_pixel );
+            if( !hpel_iters )
+                SCNT( SC_HPEL0 );
+            if( iters & 32 )
+                SCNT( SC_MVP );
+            if( p_halfpel_thresh )
+                SCNT( SC_THRESH );
+            if( (uint32_t)res >> 31 )
+                SCNT( SC_STOP );
+            else if( qpel_iters )
+                SCNT( SC_QPEL );
+            subpel_cnt_c = 1;
+            refine_subpel( h, &mc, hpel_iters, qpel_iters, p_halfpel_thresh ? &thr_c : NULL, 0 );
+            subpel_cnt_c = 0;
+            if( mc.cost != m->cost || mc.mv[0] != m->mv[0] || mc.mv[1] != m->mv[1] || mc.cost_mv != m->cost_mv
+                || (p_halfpel_thresh && thr_c != *p_halfpel_thresh) )
+            {
+                SCNT( SC_MISMATCH );
+                fprintf( stderr, "subpel_search mismatch: i_pixel %d hpel %d qpel %d: C %d (%d,%d) %d thr %d, asm %d (%d,%d) %d thr %d\n",
+                         m->i_pixel, hpel_iters, qpel_iters, mc.cost, mc.mv[0], mc.mv[1], mc.cost_mv, thr_c,
+                         m->cost, m->mv[0], m->mv[1], m->cost_mv, p_halfpel_thresh ? *p_halfpel_thresh : 0 );
+                abort();
+            }
             return;
         }
     }
