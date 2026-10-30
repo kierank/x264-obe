@@ -77,7 +77,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * refine_subpel's subpel_search path. Arm: x264_subpelrq_arm, defined in api.c. Twin
  * (SUBPELRQ_TWIN 1): the never defined x264_subpelrq_twin, which links as 0. The code is the
  * same in both. */
-#define SUBPELRQ_TWIN 0
+#define SUBPELRQ_TWIN 1
 extern const char x264_subpelrq_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_subpelrq_twin __attribute__((weak, visibility("hidden")));
 #if SUBPELRQ_TWIN
