@@ -333,6 +333,18 @@ int x264_pixel_sad_hpel_min_c( int i_pixel, pixel *fenc, pixel *pixv, pixel *pix
                                uint64_t bias01, uint64_t bias23, int best );
 #define x264_pixel_fenc_eq_c x264_template(pixel_fenc_eq_c)
 int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec );
+/* lean-skip layout pair: x264_lean_gate gates x264_macroblock_lean_pskip; x264_lean_avx2 and
+ * x264_lean_zmm pick mb_eq at avx512icl. A set gate is the address of x264_lean_on (api.c),
+ * a clear one that of the never defined weak x264_lean_off, which links as 0. Arms: LEAN_TWIN 1
+ * clears the gate, LEAN_KERNEL 1 avx2, 2 zmm. The code is the same in every arm. */
+#define LEAN_TWIN 0
+#define LEAN_KERNEL 0
+extern const char x264_lean_on __attribute__((weak, visibility("hidden")));
+extern const char x264_lean_off __attribute__((weak, visibility("hidden")));
+#define LEAN_SYM(b) ((b) ? &x264_lean_on != NULL : &x264_lean_off != NULL)
+#define x264_lean_gate LEAN_SYM( !LEAN_TWIN )
+#define x264_lean_avx2 LEAN_SYM( LEAN_KERNEL == 1 )
+#define x264_lean_zmm  LEAN_SYM( LEAN_KERNEL == 2 )
 #define x264_pixel_mb_eq_c x264_template(pixel_mb_eq_c)
 int x264_pixel_mb_eq_c( int chroma422, pixel *fenc_y, pixel *ref_y, intptr_t i_stride_y, pixel *fenc_uv, pixel *ref_uv, intptr_t i_stride_uv );
 #define x264_pixel_zscreen_c x264_template(pixel_zscreen_c)

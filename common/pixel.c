@@ -1694,8 +1694,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_zmm_avx512icl;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx512icl;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx512icl;
-        pixf->mb_eq[0] = x264_pixel_mb_eq_420_avx512icl;
-        pixf->mb_eq[1] = x264_pixel_mb_eq_422_avx512icl;
+        pixf->mb_eq[0] = x264_lean_zmm ? x264_pixel_mb_eq_420_zmm_avx512icl : x264_lean_avx2 ? x264_pixel_mb_eq_420_avx2 : x264_pixel_mb_eq_420_avx512icl;
+        pixf->mb_eq[1] = x264_lean_zmm ? x264_pixel_mb_eq_422_zmm_avx512icl : x264_lean_avx2 ? x264_pixel_mb_eq_422_avx2 : x264_pixel_mb_eq_422_avx512icl;
         /* zen4 prune, neutral (>= 1.000): var2[8x16], ssd[16x16] zmm, ssd[8x8] */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avx512icl;
         pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_zmm_avx512icl;
@@ -2089,8 +2089,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
-        pixf->mb_eq[0] = x264_pixel_mb_eq_420_avx512icl;
-        pixf->mb_eq[1] = x264_pixel_mb_eq_422_avx512icl;
+        pixf->mb_eq[0] = x264_lean_zmm ? x264_pixel_mb_eq_420_zmm_avx512icl : x264_lean_avx2 ? x264_pixel_mb_eq_420_avx2 : x264_pixel_mb_eq_420_avx512icl;
+        pixf->mb_eq[1] = x264_lean_zmm ? x264_pixel_mb_eq_422_zmm_avx512icl : x264_lean_avx2 ? x264_pixel_mb_eq_422_avx2 : x264_pixel_mb_eq_422_avx512icl;
         /* ymm, VBMI2 + opmask transform; not the X264_CPU_AVX512 zmm table below */
         /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
         /* satd[16x16] 1.031x, satd_avg2[16x8] 1.073x, satd_pre[16x8] 1.069x, satd_bi[16x16] 1.038x, satd_bi4[16x8] 1.051x;

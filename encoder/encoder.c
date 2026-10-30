@@ -3112,7 +3112,7 @@ static intptr_t x264_slice_write( x264_t *h )
     b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv
                || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
     /* x264_macroblock_lean_pskip: the fast P_SKIP; its static test needs probe_skip's fenc_eq */
-    int b_lean = h->sh.i_type == SLICE_TYPE_P && !SLICE_MBAFF && PARAM_CABAC && !slice_max_size &&
+    int b_lean = x264_lean_gate && h->sh.i_type == SLICE_TYPE_P && !SLICE_MBAFF && PARAM_CABAC && !slice_max_size &&
                  h->param.analyse.b_fast_pskip && h->param.analyse.i_subpel_refine < 3 && !h->mb.b_lossless &&
                  !(HAS_MBINFO && h->fdec->mb_info) && h->pixf.fenc_eq[PIXEL_16x16] &&
                  (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) &&
