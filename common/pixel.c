@@ -44,7 +44,7 @@
  * 0 (the twin): the hidden weak x264_N_twin_me_search_fpel at both, which links as 0, so
  * me_search_fpel stays NULL and me.c runs the C search */
 #if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
-#define ME_FPEL_ARM 1
+#define ME_FPEL_ARM 3
 #define x264_twin_me_search_fpel x264_template(twin_me_search_fpel)
 extern __typeof__( x264_me_search_fpel_avx2 ) x264_twin_me_search_fpel __attribute__((weak, visibility("hidden")));
 /* every arm links me-64.asm (no bytes: R_X86_64_NONE relocations) */
