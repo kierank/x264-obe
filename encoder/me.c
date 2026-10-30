@@ -998,10 +998,29 @@ typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offset
                                  sizeof(x264_me_t) == 256 && sizeof(x264_me_fpel_t) == 72 ? 1 : -1];
 #endif
 
+/* counters: 0 searches, 1 me_search_fpel, 2 of them subme >= 3, 3 subpel_search in asm, 4 refine_subpel
+ * left to C, 5 shadow mismatches; C searches: 6 not HEX, 7 p4x4, 8 subme >= 3 weighted or no sad_avg2,
+ * 9 no me_search_fpel or kernels */
+static uint64_t me_fpel_cnt[10];
+#define ME_FPEL_CNT( i ) __atomic_fetch_add( &me_fpel_cnt[i], 1, __ATOMIC_RELAXED )
+
+void x264_me_fpel_cnt_print( void )
+{
+    uint64_t c[10];
+    for( int i = 0; i < 10; i++ )
+        c[i] = __atomic_load_n( &me_fpel_cnt[i], __ATOMIC_RELAXED );
+    if( !c[0] )
+        return;
+    fprintf( stderr, "me_fpel [%d-bit]: searches %"PRIu64" asm %"PRIu64" (%.2f%%) subme3 %"PRIu64" subpel_asm %"PRIu64
+             " refine_c %"PRIu64" MISMATCH %"PRIu64" | C: not_hex %"PRIu64" p4x4 %"PRIu64" weighted_subme3 %"PRIu64" no_asm %"PRIu64"\n",
+             BIT_DEPTH, c[0], c[1], 100.0 * c[1] / c[0], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9] );
+}
+
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     int i_pixel = m->i_pixel;
     int subme = h->mb.i_subpel_refine;
+    ME_FPEL_CNT( 0 );
     if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
         && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
         && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2)) )
@@ -1030,10 +1049,41 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             c.qfenc = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
 #endif
         }
+        /* shadow: the asm on a copy, then the C search, whose result is kept */
+        x264_me_t m_s = *m;
+        int th_s = p_halfpel_thresh ? *p_halfpel_thresh : 0;
+        c.m = &m_s;
+        c.halfpel_thresh = p_halfpel_thresh ? &th_s : NULL;
+        ME_FPEL_CNT( 1 );
+        if( subme >= 3 )
+            ME_FPEL_CNT( 2 );
+        if( c.qfenc )
+            ME_FPEL_CNT( 3 );
         if( h->pixf.me_search_fpel( &c ) )
-            refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
+        {
+            ME_FPEL_CNT( 4 );
+            refine_subpel( h, &m_s, hpel, qpel, c.halfpel_thresh, 0 );
+        }
+        me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
+        if( M32( m->mv ) != M32( m_s.mv ) || m->cost != m_s.cost || m->cost_mv != m_s.cost_mv ||
+            (p_halfpel_thresh && *p_halfpel_thresh != th_s) )
+        {
+            if( __atomic_fetch_add( &me_fpel_cnt[5], 1, __ATOMIC_RELAXED ) < 20 )
+                fprintf( stderr, "me_fpel MISMATCH: pixel %d subme %d mvp %d,%d i_mvc %d: C mv %d,%d cost %d cost_mv %d thr %d"
+                         " | asm mv %d,%d cost %d cost_mv %d thr %d\n", i_pixel, subme, m->mvp[0], m->mvp[1], i_mvc,
+                         m->mv[0], m->mv[1], m->cost, m->cost_mv, p_halfpel_thresh ? *p_halfpel_thresh : -1,
+                         m_s.mv[0], m_s.mv[1], m_s.cost, m_s.cost_mv, th_s );
+        }
         return;
     }
+    if( h->mb.i_me_method != X264_ME_HEX )
+        ME_FPEL_CNT( 6 );
+    else if( i_pixel > PIXEL_8x8 )
+        ME_FPEL_CNT( 7 );
+    else if( h->pixf.me_search_fpel && h->pixf.me_fpel_fn[i_pixel].x3_min )
+        ME_FPEL_CNT( 8 );
+    else
+        ME_FPEL_CNT( 9 );
     me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
 }
 
