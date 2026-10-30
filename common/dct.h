@@ -81,19 +81,20 @@ typedef struct
 #endif
     /* quant_4x4x4, then scan_4x4, dequant_4x4 (skipped if dequant_mf is NULL) and decimate_score16
      * (15 for _ac) of the nonzero blocks. Returns nz | min(summed score, 9) << 4,
-     * not _ac: | blocks with a nonzero ac level << 8. */
+     * 8-bit not _ac: | blocks with a nonzero ac level << 8. */
     int  (*quant_4x4x4_scan)   ( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
                                  int dequant_mf[6][16], int i_qp );
     int  (*quant_4x4x4_scan_ac)( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
                                  int dequant_mf[6][16], int i_qp );
     /* quant_8x8, then if nonzero scan_8x8, decimate_score64 and dequant_8x8 (skipped if dequant_mf is NULL).
-     * Returns 0, or 1 | min(score, 9) << 4 | a nonzero ac level << 8. */
+     * Returns 0, or 1 | min(score, 9) << 4, 8-bit: | a nonzero ac level << 8. */
     int  (*quant_8x8_scan)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                             int dequant_mf[6][64], int i_qp );
     /* intra_satd_x9_4x4; if the cost is <= limit, the chosen mode is then coded: sub4x4_dct, quant_4x4,
      * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24. */
     int  (*intra_satd_x9_4x4_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
                                      x264_quant4_recon_t *q, int limit );
+#if !HIGH_BIT_DEPTH
     /* Inter residual of a 16x16 plane: sub16x16_dct, quant_4x4x4_scan of each 8x8 (quant_8x8_scan for _8x8),
      * the decimation of x264_macroblock_encode (i_decimate_mb: the score of the earlier planes, or -1 for none),
      * nnz of the plane (scan8 layout, nnz = non_zero_count at scan8[0] of the plane), then add the idct of the
@@ -102,6 +103,7 @@ typedef struct
                              udctcoef bias[16], int dequant_mf[6][16], int i_qp, int i_decimate_mb );
     int  (*inter_resid_8x8)( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
                              udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
+#endif
 
 } x264_zigzag_function_t;
 
@@ -110,6 +112,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf );
 void x264_dct_init_weights( void );
 #define x264_zigzag_init x264_template(zigzag_init)
 void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced );
+#if !HIGH_BIT_DEPTH
 /* C references of the asm-only inter_resid functions */
 #define x264_inter_resid_4x4_frame x264_template(inter_resid_4x4_frame)
 int x264_inter_resid_4x4_frame( dctcoef level[16][16], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[16],
@@ -123,5 +126,6 @@ int x264_inter_resid_8x8_frame( dctcoef level[4][64], pixel *p_src, pixel *p_dst
 #define x264_inter_resid_8x8_field x264_template(inter_resid_8x8_field)
 int x264_inter_resid_8x8_field( dctcoef level[4][64], pixel *p_src, pixel *p_dst, uint8_t *nnz, udctcoef mf[64],
                                 udctcoef bias[64], int dequant_mf[6][64], int i_qp, int i_decimate_mb );
+#endif
 
 #endif

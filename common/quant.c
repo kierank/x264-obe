@@ -356,7 +356,7 @@ static int x264_decimate_score64( dctcoef *dct )
 
 /* quant_4x4x4, then for each nonzero block: zigzag into level, decimate score, dequant in place
  * (unless dequant_mf is NULL). Returns the nonzero mask | min(summed score, 9) << 4,
- * not _ac: | blocks with a nonzero ac level << 8. */
+ * 8-bit not _ac: | blocks with a nonzero ac level << 8. */
 static ALWAYS_INLINE int quant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
                                            int dequant_mf[6][16], int i_qp, int b_field, int b_ac )
 {
@@ -375,7 +375,7 @@ static ALWAYS_INLINE int quant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][
             level[j][i] = dct[j][x264_zigzag_scan4[b_field][i]];
             ac |= i ? level[j][i] : 0;
         }
-        if( !b_ac && ac )
+        if( !HIGH_BIT_DEPTH && !b_ac && ac )
             nza |= 0x100 << j;
         score += x264_decimate_score_internal( level[j]+b_ac, 16-b_ac );
         if( dequant_mf )
@@ -402,7 +402,8 @@ int x264_quant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], ud
 }
 
 /* quant_8x8, then if nonzero: zigzag into level, decimate score, dequant in place
- * (unless dequant_mf is NULL). Returns 0, or 1 | min(score, 9) << 4 | a nonzero ac level << 8. */
+ * (unless dequant_mf is NULL). Returns 0, or 1 | min(score, 9) << 4,
+ * 8-bit: | a nonzero ac level << 8. */
 static ALWAYS_INLINE int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                                          int dequant_mf[6][64], int i_qp, int b_field )
 {
@@ -420,7 +421,7 @@ static ALWAYS_INLINE int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udc
     int score = x264_decimate_score_internal( level, 64 );
     if( dequant_mf )
         dequant_8x8( dct, dequant_mf, i_qp );
-    return 1 | X264_MIN( score, 9 ) << 4 | !!ac << 8;
+    return 1 | X264_MIN( score, 9 ) << 4 | (!HIGH_BIT_DEPTH && ac) << 8;
 }
 
 int x264_quant_8x8_scan_frame( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp )

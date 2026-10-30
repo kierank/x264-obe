@@ -785,6 +785,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
 
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
+#if !HIGH_BIT_DEPTH
                 if( h->zigzagf.inter_resid_8x8 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
                     int i_quant_cat = p?CQM_8PC:CQM_8PY;
@@ -796,8 +797,9 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     i_decimate_mb = ret >> 4;
                     continue;
                 }
+#endif
                 CLEAR_16x16_NNZ( p );
-                if( (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                if( !HIGH_BIT_DEPTH && (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
                     h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
@@ -806,7 +808,10 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 h->dctf.sub16x16_dct8( dct8x8, h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] );
                 h->nr_count[1+!!p*2] += h->mb.b_noise_reduction * 4;
 
-                int plane_cbp = 0, plane_ac = b_q8s ? 0 : 0xf;
+                int plane_cbp = 0;
+#if !HIGH_BIT_DEPTH
+                int plane_ac = b_q8s ? 0 : 0xf;
+#endif
                 for( int idx = 0; idx < 4; idx++ )
                 {
                     if( b_q8s )
@@ -819,11 +824,13 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     {
                         if( !b_q8s )
                             h->zigzagf.scan_8x8( h->dct.luma8x8[p*4+idx], dct8x8[idx] );
+#if !HIGH_BIT_DEPTH
                         else
                             plane_ac |= (nz >> 8) << idx;
+#endif
                         if( b_decimate )
                         {
-                            int i_decimate_8x8 = b_q8s ? (nz >> 4) & 15 : h->quantf.decimate_score64( h->dct.luma8x8[p*4+idx] );
+                            int i_decimate_8x8 = b_q8s ? QSCAN_SCORE( nz ) : h->quantf.decimate_score64( h->dct.luma8x8[p*4+idx] );
                             i_decimate_mb += i_decimate_8x8;
                             if( i_decimate_8x8 >= 4 )
                                 plane_cbp |= 1<<idx;
@@ -836,7 +843,9 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 if( i_decimate_mb >= 6 || !b_decimate )
                 {
                     h->mb.i_cbp_luma |= plane_cbp;
+#if !HIGH_BIT_DEPTH
                     if( plane_ac & plane_cbp )
+#endif
                         FOREACH_BIT( idx, 0, plane_cbp )
                         {
                             if( !b_q8s )
@@ -844,12 +853,14 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                             h->dctf.add8x8_idct8( &h->mb.pic.p_fdec[p][8*(idx&1) + 8*(idx>>1)*FDEC_STRIDE], dct8x8[idx] );
                             STORE_8x8_NNZ( p, idx, 1 );
                         }
+#if !HIGH_BIT_DEPTH
                     else
                     {
                         x264_mb_add_dconly( h, h->mb.pic.p_fdec[p], dct8x8[0], plane_cbp, 1 );
                         FOREACH_BIT( idx, 0, plane_cbp )
                             STORE_8x8_NNZ( p, idx, 1 );
                     }
+#endif
                 }
             }
         }
@@ -858,6 +869,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
+#if !HIGH_BIT_DEPTH
                 if( h->zigzagf.inter_resid_4x4 && !h->mb.b_trellis && !h->mb.b_noise_reduction )
                 {
                     int ret = h->zigzagf.inter_resid_4x4( &h->dct.luma4x4[p*16], h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p],
@@ -868,8 +880,9 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     i_decimate_mb = ret >> 4;
                     continue;
                 }
+#endif
                 CLEAR_16x16_NNZ( p );
-                if( (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
+                if( !HIGH_BIT_DEPTH && (h->mb.b_trellis || h->mb.b_noise_reduction) && h->pixf.fenc_eq[PIXEL_16x16] && h->pixf.fenc_eq[PIXEL_16x16]( h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] ) )
                 {
                     /* prediction == fenc: every coefficient and the decimate score are 0 */
                     h->nr_count[0+!!p*2] += h->mb.b_noise_reduction * 16;
@@ -884,7 +897,10 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                         h->quantf.denoise_dct( dct4x4[idx], h->nr_residual_sum[0+!!p*2], h->nr_offset[0+!!p*2], 16 );
                 }
 
-                int plane_cbp = 0, plane_ac = h->mb.b_trellis ? 0xf : 0;
+                int plane_cbp = 0;
+#if !HIGH_BIT_DEPTH
+                int plane_ac = h->mb.b_trellis ? 0xf : 0;
+#endif
                 for( int i8x8 = 0; i8x8 < 4; i8x8++ )
                 {
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
@@ -913,8 +929,10 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                                                                    h->dequant4_mf[p?CQM_4PC:CQM_4PY], i_qp );
                         if( nz )
                         {
-                            i_decimate_8x8 += (nz >> 4) & 15;
+                            i_decimate_8x8 += QSCAN_SCORE( nz );
+#if !HIGH_BIT_DEPTH
                             plane_ac |= !!(nz >> 8) << i8x8;
+#endif
                             STORE_4x4x4_NNZ( p*16+i8x8*4, nz );
                         }
                     }
@@ -936,13 +954,17 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 else
                 {
                     h->mb.i_cbp_luma |= plane_cbp;
+#if !HIGH_BIT_DEPTH
                     if( plane_ac & plane_cbp )
+#endif
                         FOREACH_BIT( i8x8, 0, plane_cbp )
                         {
                             h->dctf.add8x8_idct( &h->mb.pic.p_fdec[p][(i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE], &dct4x4[i8x8*4] );
                         }
+#if !HIGH_BIT_DEPTH
                     else
                         x264_mb_add_dconly( h, h->mb.pic.p_fdec[p], dct4x4[0], plane_cbp, 0 );
+#endif
                 }
             }
         }
@@ -1076,8 +1098,8 @@ static ALWAYS_INLINE int x264_macroblock_probe_skip_internal( x264_t *h, int b_b
                 for( int i4x4 = 0; i4x4 < 4; i4x4++ )
                     h->quantf.denoise_dct( dct4x4[i4x4], h->nr_residual_sum[0+!!p*2], h->nr_offset[0+!!p*2], 16 );
 
-            i_decimate_mb += (h->zigzagf.quant_4x4x4_scan( dct4x4, dctscan, h->quant4_mf[quant_cat][i_qp],
-                                                           h->quant4_bias[quant_cat][i_qp], NULL, 0 ) >> 4) & 15;
+            i_decimate_mb += QSCAN_SCORE( h->zigzagf.quant_4x4x4_scan( dct4x4, dctscan, h->quant4_mf[quant_cat][i_qp],
+                                                                       h->quant4_bias[quant_cat][i_qp], NULL, 0 ) );
             if( i_decimate_mb >= 6 )
                 return 0;
         }
@@ -1298,12 +1320,12 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                                    : x264_quant_8x8( h, dct8x8, i_qp, ctx_cat_plane[DCT_LUMA_8x8][p], 0, p, i8 );
                 if( nnz8x8 )
                 {
-                    int b_ac = !b_q8s || nnz8x8 >> 8;
+                    int b_ac = HIGH_BIT_DEPTH || !b_q8s || nnz8x8 >> 8;
                     if( !b_q8s )
                         h->zigzagf.scan_8x8( h->dct.luma8x8[4*p+i8], dct8x8 );
 
                     if( b_decimate && !h->mb.b_trellis )
-                        nnz8x8 = 4 <= (b_q8s ? (nnz8x8 >> 4) & 15 : h->quantf.decimate_score64( h->dct.luma8x8[4*p+i8] ));
+                        nnz8x8 = 4 <= (b_q8s ? QSCAN_SCORE( nnz8x8 ) : h->quantf.decimate_score64( h->dct.luma8x8[4*p+i8] ));
 
                     if( nnz8x8 )
                     {
@@ -1363,8 +1385,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                                                                h->quant4_bias[quant_cat][i_qp], h->dequant4_mf[quant_cat], i_qp );
                     if( nz )
                     {
-                        i_decimate_8x8 += (nz >> 4) & 15;
-                        b_ac = nz >> 8;
+                        i_decimate_8x8 += QSCAN_SCORE( nz );
+                        b_ac = HIGH_BIT_DEPTH || nz >> 8;
                         STORE_4x4x4_NNZ( p*16+i8*4, nz );
                     }
                 }
