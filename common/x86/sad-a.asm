@@ -2890,6 +2890,8 @@ cglobal pixel_sad_ring_min_8x8, 5,13,12
 ; sad_sq_min's 12 windows, the costs from 8-word loads, cost_mv[4*b-4..4*b+4].
 ; Reads what the per-step kernels read at the same centres: the hexagon steps at
 ; centres inside the mv range, the square at most 2 outside.
+; UNIX64: pixel_sad_hex_search_reg_WxH, for me_search_fpel (me-64.asm), takes bcost,
+; iters and range in r6-r8 (rax, r10, r11) instead of on the stack.
 ;-----------------------------------------------------------------------------
 ; me.c's CHECK_MVRANGE( r5, r9 ), range r8: ZF set inside; r10, r12, r14
 %macro FSH_MVRANGE 0
@@ -3016,7 +3018,13 @@ cglobal pixel_sad_ring_min_8x8, 5,13,12
 %endmacro
 
 %macro FSH_HEX_SEARCH 2 ; width, height
+%if UNIX64
+cglobal pixel_sad_hex_search_%1x%2, 9,9
+    jmp mangle(private_prefix %+ _pixel_sad_hex_search_reg_%1x%2 %+ SUFFIX)
+cglobal pixel_sad_hex_search_reg_%1x%2, 6,15,16
+%else
 cglobal pixel_sad_hex_search_%1x%2, 9,15,16
+%endif
     %define dbp_o  r12
     %define dbp_o1 r14
     %define dbp_p0 r10-1
