@@ -669,23 +669,32 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     %define subpel_arg(i) [rsp+8*((i)-6)]
 %endif
 
-; the weight of x264_weight_t *%1 (i_denom at 32, i_scale 36, i_offset 40) for SUBPEL_WEIGHT:
+; x264_weight_t (common/mc.h), the fields the asm reads; the layout is checked in common/pixel.c
+struc weight_s
+    .cachea:   resw 8
+    .cacheb:   resw 8
+    .i_denom:  resd 1
+    .i_scale:  resd 1
+    .i_offset: resd 1
+endstruc
+
+; the weight of x264_weight_t *%1 for SUBPEL_WEIGHT:
 ; m10 (scale, round) pairs, m11 offset, xm12 denom, m13 ones, high bit depth m14 pixel_max;
 ; clobbers r12, r13
 %macro SUBPEL_WEIGHT_INIT 1
-    mov      r12d, [%1+32]
+    mov      r12d, [%1+weight_s.i_denom]
     movd     xm12, r12d
     mov      r13d, 1
     shlx     r13d, r13d, r12d
     shr      r13d, 1
-    mov      r12d, [%1+36]
+    mov      r12d, [%1+weight_s.i_scale]
 %if HIGH_BIT_DEPTH
     shl      r13d, 16
     movzx    r12d, r12w
     or       r12d, r13d
     movd     xm10, r12d
     vpbroadcastd m10, xm10
-    mov      r12d, [%1+40]
+    mov      r12d, [%1+weight_s.i_offset]
     shl      r12d, BIT_DEPTH-8
     movd     xm11, r12d
     vpbroadcastd m11, xm11
@@ -697,7 +706,7 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     or       r12d, r13d
     movd     xm10, r12d
     vpbroadcastw m10, xm10
-    movd     xm11, [%1+40]
+    movd     xm11, [%1+weight_s.i_offset]
     vpbroadcastw m11, xm11
     vpbroadcastd m13, [pb_1]
 %endif
