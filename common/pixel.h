@@ -30,6 +30,8 @@
 
 // SSD assumes all args aligned
 // other cmp functions assume first arg aligned
+typedef struct x264_lowres_p x264_lowres_p_t;
+
 typedef int  (*x264_pixel_cmp_t) ( pixel *, intptr_t, pixel *, intptr_t );
 typedef void (*x264_pixel_cmp_x3_t) ( pixel *, pixel *, pixel *, pixel *, intptr_t, int[3] );
 typedef void (*x264_pixel_cmp_x4_t) ( pixel *, pixel *, pixel *, pixel *, pixel *, intptr_t, int[4] );
@@ -306,6 +308,8 @@ typedef struct
      * (8-bit) or the fenc at FENC_STRIDE (high bit depth). */
     int (*intra_satd_lowres) ( void *fenc, pixel *src, intptr_t i_stride );
     int (*intra_mbcmp_lowres)( void *fenc, pixel *src, intptr_t i_stride ); /* intra_satd_lowres where mbcmp is satd, else NULL */
+    /* asm only, 8-bit only, NULL otherwise; reference x264_lowres_p_mbs_c (encoder/me.h) */
+    void (*lowres_p_mbs)( x264_lowres_p_t *c );
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)

@@ -1762,3 +1762,298 @@ void x264_me_refine_qpel_rd( x264_t *h, x264_me_t *m, int i_lambda2, int i4, int
     x264_macroblock_cache_mvd( h, block_idx_x[i4], block_idx_y[i4], bw>>2, bh>>2, i_list, amvd );
     h->mb.b_skip_mc = 0;
 }
+
+#if !HIGH_BIT_DEPTH
+/* common/x86/lowres-64.asm reads x264_lowres_p_t at fixed offsets */
+typedef char x264_lowres_p_layout[offsetof( x264_lowres_p_t, get_ref ) == 64 && offsetof( x264_lowres_p_t, fenc ) == 72 &&
+                                  offsetof( x264_lowres_p_t, ref_w ) == 112 && offsetof( x264_lowres_p_t, output_intra ) == 184 &&
+                                  offsetof( x264_lowres_p_t, stride ) == 192 && offsetof( x264_lowres_p_t, weighted ) == 252 &&
+                                  sizeof(x264_lowres_p_t) == 256 ? 1 : -1];
+
+uint64_t x264_lowres_hex_search_c( pixel *fenc, pixel *ref, intptr_t i_stride, const uint16_t *cost_mvx,
+                                   const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
+{
+    return x264_pixel_sad_hex_search_c( PIXEL_8x8, fenc, ref, i_stride, cost_mvx, cost_mvy, bmv, bcost, iters, range );
+}
+
+/* subpel_cmp (sad) and subpel_luma_cost (satd) of the lowres search */
+static ALWAYS_INLINE int lowres_p_subpel( x264_lowres_p_t *c, pixel **fref, pixel *fenc, int16_t *fenc_pre,
+                                          int mx, int my, int satd )
+{
+    ALIGNED_ARRAY_64( pixel, pix,[16*16] );
+    intptr_t stride = c->stride;
+    pixel *src;
+    if( !c->weighted )
+    {
+        int qpel_idx = ((my&3)<<2) + (mx&3);
+        intptr_t offset = (my>>2)*stride + (mx>>2);
+        src = fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+        if( qpel_idx & 5 )
+        {
+            pixel *src2 = fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
+            return satd ? c->satd_avg2( fenc_pre, src, src2, stride ) : c->sad_avg2( fenc, src, src2, stride );
+        }
+    }
+    else
+    {
+        stride = 16;
+        src = c->get_ref( pix, &stride, fref, c->stride, mx, my, 8, 8, c->weight );
+    }
+    return satd ? c->satd( fenc_pre, src, stride ) : c->sad( fenc, FENC_STRIDE, src, stride );
+}
+
+/* slicetype_mb_cost of a P frame, with x264_me_search_ref and refine_subpel( 1, 1 ) as they run there */
+void x264_lowres_p_mbs_c( x264_lowres_p_t *c )
+{
+    static const int8_t qpel_dx[5] = { 0, 0, 0, -1, 1 };
+    static const int8_t qpel_dy[5] = { 0, -1, 1, 0, 0 };
+    ALIGNED_ARRAY_64( pixel, fenc,[8*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( int16_t, fenc_pre,[64] );
+    ALIGNED_ARRAY_64( pixel, pix,[64*18] );
+    const intptr_t stride = c->stride;
+    const int width = c->mb_width;
+    const uint16_t *cost_mv = c->cost_mv;
+
+    for( int mb_y = c->start_y; mb_y >= c->end_y; mb_y-- )
+    {
+        int ymin_spel = X264_MAX( 4*(-8*mb_y - 12), -c->mv_range );
+        int ymax_spel = X264_MIN( 4*(8*(c->mb_height - mb_y - 1) + 12), c->mv_range-1 );
+        int row = 4 + mb_y - c->slice_start;
+        for( int mb_x = c->start_x; mb_x >= c->end_x; mb_x-- )
+        {
+            int mb_xy = mb_x + mb_y * width;
+            intptr_t pel = 8 * (mb_x + mb_y * stride);
+            int b_score = (mb_x > 0 && mb_x < width - 1 && mb_y > 0 && mb_y < c->mb_height - 1) ||
+                          width <= 2 || c->mb_height <= 2;
+            for( int i = 0; i < 8; i++ )
+                memcpy( fenc + i*FENC_STRIDE, c->fenc + pel + i*stride, 8 );
+            c->fenc_pre( fenc_pre, fenc );
+
+            uint32_t mv;
+            int mcost;
+            if( c->do_search )
+            {
+                int16_t (*fenc_mv)[2] = c->mvs + mb_xy;
+                ALIGNED_4( int16_t mvc[4][2] );
+                ALIGNED_4( int16_t mvp[2] );
+                int i_mvc = 0;
+                M32( mvc[0] ) = 0;
+                M32( mvc[2] ) = 0;
+                if( mb_x < width - 1 )
+                    CP32( mvc[i_mvc++], fenc_mv[1] );
+                if( mb_y < c->slice_end - 1 )
+                {
+                    CP32( mvc[i_mvc++], fenc_mv[width] );
+                    if( mb_x > 0 )
+                        CP32( mvc[i_mvc++], fenc_mv[width-1] );
+                    if( mb_x < width - 1 )
+                        CP32( mvc[i_mvc++], fenc_mv[width+1] );
+                }
+                if( i_mvc <= 1 )
+                    CP32( mvp, mvc[0] );
+                else
+                    x264_median_mv( mvp, mvc[0], mvc[1], mvc[2] );
+
+                if( !M32( mvp ) )
+                {
+                    mcost = c->satd( fenc_pre, c->ref[0] + pel, stride );
+                    if( mcost < c->skip_thresh )
+                    {
+                        mv = 0;
+                        goto store;
+                    }
+                }
+
+                int xmin_spel = X264_MAX( 4*(-8*mb_x - 12), -c->mv_range );
+                int xmax_spel = X264_MIN( 4*(8*(width - mb_x - 1) + 12), c->mv_range-1 );
+                int mv_x_min = xmin_spel >> 2, mv_x_max = xmax_spel >> 2;
+                int mv_y_min = ymin_spel >> 2, mv_y_max = ymax_spel >> 2;
+                uint32_t mv_min = ((-mv_x_min) << 16) | ((-mv_y_min) & 0x7FFF);
+                uint32_t mv_max = (mv_x_max << 16) | (mv_y_max & 0x7FFF) | 0x8000;
+                const uint16_t *p_cost_mvx = cost_mv - mvp[0];
+                const uint16_t *p_cost_mvy = cost_mv - mvp[1];
+                pixel *fref[4] = { c->ref[0] + pel, c->ref[1] + pel, c->ref[2] + pel, c->ref[3] + pel };
+                pixel *fref_w = c->ref_w + pel;
+
+                /* x264_me_search_ref */
+                int bpred_mx = x264_clip3( mvp[0], 4*mv_x_min, 4*mv_x_max );
+                int bpred_my = x264_clip3( mvp[1], 4*mv_y_min, 4*mv_y_max );
+                uint32_t pmv = pack16to32_mask( bpred_mx, bpred_my );
+                int bpred_cost = lowres_p_subpel( c, fref, fenc, fenc_pre, bpred_mx, bpred_my, 0 )
+                               + p_cost_mvx[bpred_mx] + p_cost_mvy[bpred_my];
+                int pmv_cost = bpred_cost;
+                int bcost, bmx, bmy;
+                if( bpred_cost == 2*cost_mv[0] )
+                {
+                    mv = pmv;
+                    mcost = bpred_cost;
+                    goto searched;
+                }
+                if( i_mvc > 0 )
+                {
+                    ALIGNED_4( int16_t mvc_temp[4][2] );
+                    int n = 0;
+                    for( int i = 0; i < i_mvc; i++ )
+                    {
+                        uint32_t m = M32( mvc[i] );
+                        if( !m || m == pmv )
+                            continue;
+                        mvc_temp[n][0] = x264_clip3( mvc[i][0], 4*mv_x_min, 4*mv_x_max );
+                        mvc_temp[n][1] = x264_clip3( mvc[i][1], 4*mv_y_min, 4*mv_y_max );
+                        n++;
+                    }
+                    if( n > 0 )
+                    {
+                        int key = bpred_cost << 4;
+                        for( int i = 1; i <= n; i++ )
+                        {
+                            int mx = mvc_temp[i-1][0], my = mvc_temp[i-1][1];
+                            int cost = lowres_p_subpel( c, fref, fenc, fenc_pre, mx, my, 0 ) + p_cost_mvx[mx] + p_cost_mvy[my];
+                            COPY1_IF_LT( key, (cost << 4) + i );
+                        }
+                        if( key & 15 )
+                        {
+                            bpred_mx = mvc_temp[(key&15)-1][0];
+                            bpred_my = mvc_temp[(key&15)-1][1];
+                        }
+                        bpred_cost = key >> 4;
+                    }
+                }
+                bmx = (bpred_mx + 2) >> 2;
+                bmy = (bpred_my + 2) >> 2;
+                uint32_t bpred_mv = pack16to32_mask( bpred_mx, bpred_my );
+                if( bpred_mv & 0x00030003 )
+                    bcost = c->sad( fenc, FENC_STRIDE, fref_w + bmy*stride + bmx, stride )
+                          + p_cost_mvx[bmx<<2] + p_cost_mvy[bmy<<2];
+                else
+                    bcost = bpred_cost;
+                if( pmv )
+                {
+                    if( bmx|bmy )
+                    {
+                        int cost = c->sad( fenc, FENC_STRIDE, fref_w, stride ) + p_cost_mvx[0] + p_cost_mvy[0];
+                        COPY3_IF_LT( bcost, cost, bmx, 0, bmy, 0 );
+                    }
+                }
+                else
+                    COPY3_IF_LT( bcost, pmv_cost, bmx, 0, bmy, 0 );
+                uint64_t res = c->hex_search( fenc, fref_w, stride, p_cost_mvx, p_cost_mvy, pack16to32_mask( bmx, bmy ),
+                                              bcost, c->me_range, mv_min | (uint64_t)mv_max << 32 );
+                bcost = (uint32_t)res;
+                bmx = (int16_t)(res >> 32);
+                bmy = (int16_t)(res >> 48);
+                if( bpred_cost < bcost )
+                {
+                    bmx = bpred_mx;
+                    bmy = bpred_my;
+                    bcost = bpred_cost;
+                }
+                else
+                {
+                    bmx *= 4;
+                    bmy *= 4;
+                }
+
+                /* refine_subpel: one halfpel and one qpel iteration */
+                int omx = bmx, omy = bmy;
+                intptr_t hstride = 64;
+                pixel *src0, *src2;
+                if( !((omx|omy)&1) && !c->weighted )
+                {
+                    hstride = stride;
+                    src0 = fref[x264_hpel_ref0[(((omy-2)&3)<<2) + (omx&3)]] + ((omy-2)>>2)*stride + (omx>>2);
+                    src2 = fref[x264_hpel_ref0[((omy&3)<<2) + ((omx-2)&3)]] + (omy>>2)*stride + ((omx-2)>>2);
+                }
+                else
+                {
+                    src0 = c->get_ref( pix,    &hstride, fref, stride, omx, omy-2, 8, 9, c->weight );
+                    src2 = c->get_ref( pix+32, &hstride, fref, stride, omx-2, omy, 12, 8, c->weight );
+                }
+                int b0 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy-2]) << 6) + 2;
+                int b1 = ((p_cost_mvx[omx  ] + p_cost_mvy[omy+2]) << 6) + 6;
+                int b2 = ((p_cost_mvx[omx-2] + p_cost_mvy[omy  ]) << 6) + 16;
+                int b3 = ((p_cost_mvx[omx+2] + p_cost_mvy[omy  ]) << 6) + 48;
+                int hkey = c->hpel_min( fenc, src0, src2, hstride, (uint32_t)b0 | (uint64_t)(uint32_t)b1 << 32,
+                                        (uint32_t)b2 | (uint64_t)(uint32_t)b3 << 32, bcost << 6 );
+                if( hkey&63 )
+                {
+                    bmx -= (hkey<<26)>>29;
+                    bmy -= (hkey<<29)>>29;
+                }
+                bcost = lowres_p_subpel( c, fref, fenc, fenc_pre, bmx, bmy, 1 ) + p_cost_mvx[bmx] + p_cost_mvy[bmy];
+                if( !(bmy <= ymin_spel || bmy >= ymax_spel || bmx <= xmin_spel || bmx >= xmax_spel) )
+                {
+                    uint64_t bkey = (uint64_t)bcost << 4;
+                    for( int d = 1; d <= 4; d++ )
+                    {
+                        int mx = bmx + qpel_dx[d], my = bmy + qpel_dy[d];
+                        int cost = lowres_p_subpel( c, fref, fenc, fenc_pre, mx, my, 1 ) + p_cost_mvx[mx] + p_cost_mvy[my];
+                        bkey = X264_MIN( bkey, ((uint64_t)cost << 4) + d );
+                    }
+                    int bidx = bkey & 15;
+                    if( bidx )
+                    {
+                        bcost = bkey >> 4;
+                        bmx += qpel_dx[bidx];
+                        bmy += qpel_dy[bidx];
+                    }
+                }
+                mv = pack16to32_mask( bmx, bmy );
+                mcost = bcost;
+searched:
+                mcost -= cost_mv[0];
+                if( mv )
+                    mcost += 5 * c->lambda;
+store:
+                M32( c->mvs[mb_xy] ) = mv;
+                c->mv_costs[mb_xy] = mcost;
+            }
+            else
+            {
+                mv = M32( c->mvs[mb_xy] );
+                mcost = c->mv_costs[mb_xy];
+            }
+
+            int bcost = COST_MAX;
+            int list_used = 0;
+            COPY2_IF_LT( bcost, mcost, list_used, 1 );
+
+            if( c->output_intra )
+            {
+                int icost = c->intra( fenc_pre, c->fenc + pel, stride ) + 5 * c->lambda + 4;
+                c->intra_cost[mb_xy] = icost;
+                int icost_aq = icost;
+                if( c->inv_qscale )
+                    icost_aq = (icost_aq * c->inv_qscale[mb_xy] + 128) >> 8;
+                c->output_intra[row] += icost_aq;
+                if( b_score )
+                {
+                    c->output_intra[0] += icost;
+                    c->output_intra[1] += icost_aq;
+                }
+            }
+            bcost += 4;
+
+            int icost = c->intra_cost[mb_xy];
+            int b_intra = icost < bcost;
+            if( b_intra )
+            {
+                bcost = icost;
+                list_used = 0;
+            }
+            if( b_score )
+                c->output_inter[2] += b_intra;
+            int bcost_aq = bcost;
+            if( c->inv_qscale )
+                bcost_aq = (bcost_aq * c->inv_qscale[mb_xy] + 128) >> 8;
+            c->output_inter[row] += bcost_aq;
+            if( b_score )
+            {
+                c->output_inter[0] += bcost;
+                c->output_inter[1] += bcost_aq;
+            }
+            c->costs[mb_xy] = X264_MIN( bcost, LOWRES_COST_MASK ) + (list_used << LOWRES_COST_SHIFT);
+        }
+    }
+}
+#endif

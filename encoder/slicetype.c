@@ -1574,6 +1574,42 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
     int start_x = h->mb.i_mb_width - 2 + do_edges;
     int end_x = 1 - do_edges;
 
+#if !HIGH_BIT_DEPTH
+    x264_lowres_p_t c;
+    if( s->b == s->p1 && s->p0 < s->b && x264_lowres_p_init( h, &c ) )
+    {
+        x264_frame_t *fenc = s->frames[s->b];
+        x264_frame_t *fref = s->frames[s->p0];
+        const x264_weight_t *w = s->w;
+        for( int i = 0; i < 4; i++ )
+            c.ref[i] = fref->lowres[i];
+        c.fenc = fenc->lowres[0];
+        c.weighted = !!w[0].weightfn;
+        c.ref_w = c.weighted ? fenc->weighted[0] : fref->lowres[0];
+        c.weight = w;
+        c.cost_mv = s->a->p_cost_mv;
+        c.mvs = fenc->lowres_mvs[0][s->b-s->p0-1];
+        c.mv_costs = fenc->lowres_mv_costs[0][s->b-s->p0-1];
+        c.costs = fenc->lowres_costs[s->b-s->p0][0];
+        c.intra_cost = fenc->i_intra_cost;
+        c.inv_qscale = h->param.rc.i_aq_mode ? fenc->i_inv_qscale_factor : NULL;
+        c.output_inter = s->output_inter;
+        c.output_intra = fenc->b_intra_calculated ? NULL : s->output_intra;
+        c.stride = fenc->i_stride_lowres;
+        c.lambda = s->a->i_lambda;
+        c.skip_thresh = 64;
+        c.slice_start = h->i_threadslice_start;
+        c.slice_end = h->i_threadslice_end;
+        c.start_x = start_x;
+        c.end_x = end_x;
+        c.start_y = start_y;
+        c.end_y = end_y;
+        c.do_search = s->do_search[0];
+        x264_lowres_p_run( h, &c );
+        return;
+    }
+#endif
+
     for( h->mb.i_mb_y = start_y; h->mb.i_mb_y >= end_y; h->mb.i_mb_y-- )
         for( h->mb.i_mb_x = start_x; h->mb.i_mb_x >= end_x; h->mb.i_mb_x-- )
             x264_slicetype_mb_cost( h, s->a, s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
