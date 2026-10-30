@@ -120,6 +120,7 @@ SRCASM_X = common/x86/const-a.asm common/x86/cabac-a.asm \
            common/x86/quant-a.asm common/x86/bitstream-a.asm \
            common/x86/trellis-64.asm common/x86/ratecontrol-a.asm \
            common/x86/lowres-64.asm common/x86/analyse-64.asm \
+           common/x86/me-64.asm \
            common/x86/weightp-a.asm
 SRCS_X  += common/x86/mc-c.c common/x86/predict-c.c
 
