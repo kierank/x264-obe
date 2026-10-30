@@ -3096,6 +3096,23 @@ static void x264_threadslice_filter( x264_t *h )
     }
 }
 
+/* lean-skip row gate: x264_macroblock_lean_pskip runs in an mb row where, in each of the last
+ * LEAN_ROW_FRAMES frames, at least LEAN_ROW_SHARE % of the row's mbs were the fast P_SKIPs the
+ * lean path takes: P_SKIP before the encode, outside a VBV emergency, qp <= QP_MAX_SPEC. The
+ * full path counts the rows the gate turns off the same way, so a row that turns static is
+ * taken up again. The lean path is exact: the gate changes the speed, never the output.
+ * frame->lean_row[y]: bit i, the row reached the share i frames before this one. */
+#define LEAN_ROW_SHARE  80
+#define LEAN_ROW_FRAMES 2
+#define LEAN_ROW_MASK   ((1 << LEAN_ROW_FRAMES) - 1)
+
+static ALWAYS_INLINE int x264_lean_row_hist( x264_t *h, int mb_y )
+{
+    /* frame threads: fref[0][0] may still be encoding; read after mb 0's mb_analyse_init
+     * waited for its rows below this one, so the row's flag is set */
+    return __atomic_load_n( &h->fref[0][0]->lean_row[mb_y], __ATOMIC_RELAXED );
+}
+
 static intptr_t x264_slice_write( x264_t *h )
 {
     int i_skip;
@@ -3164,6 +3181,11 @@ static intptr_t x264_slice_write( x264_t *h )
     i_mb_y = h->sh.i_first_mb / h->mb.i_mb_width;
     i_mb_x = h->sh.i_first_mb % h->mb.i_mb_width;
     i_skip = 0;
+    /* the row gate of this row, its history and its count: fast P_SKIPs from mb lean_x0 */
+    int lean_hist = b_lean && i_mb_x ? x264_lean_row_hist( h, i_mb_y ) : 0;
+    int b_lean_row = lean_hist == LEAN_ROW_MASK;
+    int lean_x0 = i_mb_x;
+    int lean_skips = 0;
 
     while( 1 )
     {
@@ -3172,6 +3194,9 @@ static intptr_t x264_slice_write( x264_t *h )
 
         if( i_mb_x == 0 )
         {
+            b_lean_row = 0;
+            lean_x0 = 0;
+            lean_skips = 0;
             if( x264_bitstream_check_buffer( h ) )
                 return -1;
             /* before the row backup, so a row re-encode keeps the row above's PSNR/SSIM */
@@ -3215,18 +3240,27 @@ static intptr_t x264_slice_write( x264_t *h )
         int lean = 0;
         if( SLICE_MBAFF )
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
-        else if( !b_lean || (lean = x264_macroblock_lean_pskip( h, i_mb_x, i_mb_y )) < 2 )
+        else if( !b_lean_row || (lean = x264_macroblock_lean_pskip( h, i_mb_x, i_mb_y )) < 2 )
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
         if( lean < 3 )
         {
             x264_macroblock_analyse( h );
+            /* nr_offset_denoise: mb_analyse_init_qp's qp <= QP_MAX_SPEC */
+            lean_skips += h->mb.i_type == P_SKIP && !h->mb.i_vbv_emerg && h->nr_offset == h->nr_offset_denoise;
 
             /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 #if HAS_CAVLC
 reencode:
 #endif
             x264_macroblock_encode( h );
+        }
+        else
+            lean_skips++;
+        if( !i_mb_x )
+        {
+            lean_hist = b_lean ? x264_lean_row_hist( h, i_mb_y ) : 0;
+            b_lean_row = lean_hist == LEAN_ROW_MASK;
         }
 
         if( PARAM_CABAC )
@@ -3347,6 +3381,14 @@ cont:
             h->mb.i_mb_prev_xy = i_mb_y * h->mb.i_mb_stride - 1;
             h->sh.i_last_mb = orig_last_mb;
             continue;
+        }
+
+        /* the row's history for the next frame, before x264_fdec_filter_row reports the row done */
+        if( i_mb_x == h->mb.i_mb_width - 1 )
+        {
+            int b_share = lean_skips * 100 >= LEAN_ROW_SHARE * (h->mb.i_mb_width - lean_x0);
+            __atomic_store_n( &h->fdec->lean_row[i_mb_y], (uint8_t)(b_lean ? ((lean_hist << 1) | b_share) & LEAN_ROW_MASK : 0),
+                              __ATOMIC_RELAXED );
         }
 
         /* accumulate mb stats */

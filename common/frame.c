@@ -202,6 +202,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
         PREALLOC( frame->i_row_bits, i_lines/16 * sizeof(int) );
         PREALLOC( frame->f_row_qp, i_lines/16 * sizeof(float) );
         PREALLOC( frame->f_row_qscale, i_lines/16 * sizeof(float) );
+        PREALLOC( frame->lean_row, i_lines/16 );
         if( h->param.analyse.i_me_method >= X264_ME_ESA )
             PREALLOC( frame->buffer[3], frame->i_stride[0] * (frame->i_lines[0] + 2*i_padv) * sizeof(uint16_t) << h->frames.b_have_sub8x8_esa );
         if( PARAM_INTERLACED )
@@ -302,6 +303,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     {
         M32( frame->mv16x16[0] ) = 0;
         frame->mv16x16++;
+        memset( frame->lean_row, 0, i_lines/16 );
 
         if( h->param.analyse.i_me_method >= X264_ME_ESA )
             frame->integral = (uint16_t*)frame->buffer[3] + frame->i_stride[0] * i_padv + PADH;
