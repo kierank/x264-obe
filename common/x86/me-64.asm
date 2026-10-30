@@ -53,6 +53,11 @@ me_sqcode:   dd 5,1,7,0, 6,2,8,0, 3,0,4,0, 0,0,0,0
 
 SECTION .text
 
+%if HIGH_BIT_DEPTH == 0
+cextern pixel_sad_hex_search_8x8_avx512
+cextern pixel_sad_hex_search_reg_8x8_avx512
+%endif
+
 %define pointer resq
 
 ; x264_me_t (encoder/me.h)
@@ -112,42 +117,43 @@ endstruc
 %define COST_MAX (1<<28)
 
 ; stack: the outgoing arguments at rsp (7 at most), then the locals at rbp = rsp +
-; S_OUTSZ + 128, [rbp+S_*] at every call depth (a byte displacement but for S_BIAS, S_MVCT)
+; S_OUTSZ + 128, [rbp+S_*] at every call depth (a byte displacement but for S_BIAS, S_MVCT).
+; Offsets are preprocessor numbers: cglobal's stack size has to be one.
 %define S_OUTSZ   64
 %define S_OUT     0
-%define S_FENC    -128
-%define S_REFW    (S_FENC+8)    ; fref_w
-%define S_STRIDE  (S_REFW+8)    ; pixels
-%define S_STRB    (S_STRIDE+8)  ; bytes
-%define S_CMX     (S_STRB+8)    ; p_cost_mv - mvp
-%define S_CMY     (S_CMX+8)
-%define S_FN      (S_CMY+8)
-%define S_TMX     (S_FN+8)      ; an internal call's mv
-%define S_TMY     (S_TMX+8)
-%define S_CPTR    (S_TMY+8)     ; x3/x4's candidate pointers
-%define S_MVMIN   (S_CPTR+32)   ; me.c's mv_min, mv_max
-%define S_MVMAX   (S_MVMIN+4)
-%define S_PMV     (S_MVMAX+4)
-%define S_BPMV    (S_PMV+4)     ; bpred_mv
-%define S_BPC     (S_BPMV+4)    ; bpred_cost
-%define S_PMVC    (S_BPC+4)     ; pmv_cost
-%define S_BPX     (S_PMVC+4)    ; bpred_mx, bpred_my
-%define S_BPY     (S_BPX+4)
-%define S_N       (S_BPY+4)
-%define S_I       (S_N+4)
-%define S_DIR     (S_I+4)
-%define S_XMIN    (S_DIR+4)     ; mv_limit_fpel
-%define S_YMIN    (S_XMIN+4)
-%define S_XMAX    (S_YMIN+4)
-%define S_YMAX    (S_XMAX+4)
-%define S_LXMIN   (S_YMAX+4)    ; the predictor clip's limits
-%define S_LYMIN   (S_LXMIN+4)
-%define S_LXMAX   (S_LYMIN+4)
-%define S_LYMAX   (S_LXMAX+4)
-%define S_CBIAS   (S_LYMAX+4)   ; x3/x4's biases, 4 dwords
-%define S_BIAS    ((S_CBIAS+16+15) & ~15) ; 12 dwords
-%define S_MVCT    (S_BIAS+48)   ; mvc_temp[18][2]
-%assign ME_STACK  S_OUTSZ+128+S_MVCT+72
+%assign me_stack_pos -128
+%macro ME_STACK_FIELD 2 ; name, bytes
+    %xdefine S_%1 me_stack_pos
+    %assign me_stack_pos me_stack_pos+%2
+%endmacro
+ME_STACK_FIELD FENC,   8
+ME_STACK_FIELD REFW,   8    ; fref_w
+ME_STACK_FIELD STRIDE, 8    ; pixels
+ME_STACK_FIELD STRB,   8    ; bytes
+ME_STACK_FIELD CMX,    8    ; p_cost_mv - mvp
+ME_STACK_FIELD CMY,    8
+ME_STACK_FIELD FN,     8
+ME_STACK_FIELD C,      8    ; c, m: rbx and R15 outside the loops
+ME_STACK_FIELD M,      8
+ME_STACK_FIELD FREF,  32    ; m->p_fref[0..3], subme >= 3
+ME_STACK_FIELD MVMIN,  4    ; me.c's mv_min, mv_max
+ME_STACK_FIELD MVMAX,  4
+ME_STACK_FIELD PMV,    4
+ME_STACK_FIELD BPMV,   4    ; bpred_mv
+ME_STACK_FIELD BPC,    4    ; bpred_cost
+ME_STACK_FIELD PMVC,   4    ; pmv_cost
+ME_STACK_FIELD BPX,    4    ; bpred_mx, bpred_my
+ME_STACK_FIELD BPY,    4
+ME_STACK_FIELD FLAGS,  4    ; c->flags
+ME_STACK_FIELD NMVC,   4    ; c->i_mvc
+ME_STACK_FIELD XMIN,   4    ; mv_limit_fpel
+ME_STACK_FIELD YMIN,   4
+ME_STACK_FIELD XMAX,   4
+ME_STACK_FIELD YMAX,   4
+%assign me_stack_pos (me_stack_pos+15) & ~15
+ME_STACK_FIELD BIAS,  48    ; 12 dwords
+ME_STACK_FIELD MVCT,  72    ; mvc_temp[18][2]
+%assign ME_STACK  S_OUTSZ+128+me_stack_pos
 
 ; an internal call that calls a kernel: its frame below the return address keeps rsp
 ; aligned; the outgoing arguments at SUB_OUT
@@ -175,7 +181,9 @@ endstruc
 
 ; rdx = fref_w + %2*stride + %1 (pixels, 64-bit)
 %macro FPEL_REF 2
+%ifnidni %2, rdx
     mov    rdx, %2
+%endif
     imul   rdx, [rbp+S_STRB]
     add    rdx, [rbp+S_REFW]
     lea    rdx, [rdx+%1*SIZEOF_PIXEL]
@@ -202,7 +210,7 @@ endstruc
 %endmacro
 
 ; xm0 = the 4 biases ((cost_mvx + cost_mvy) << 6) + R11d + k of the (dx, dy) bytes at R10
-; (.cands'); clobbers rax, rdi, m0-m3
+; (.x3 / .x4's); clobbers rax, rdi, m0-m3
 %macro FPEL_BIAS_V 0
     COST_WINDOWS
     vpmovsxbw xm0, [R10]
@@ -258,11 +266,12 @@ endstruc
     or     edx, edi
     vpbroadcastd m1, eax
     vpbroadcastd m2, edx
-    mov    ecx, [rbx+me_fpel.i_mvc]
+    mov    ecx, [rbp+S_NMVC]
     mov    eax, -1
     bzhi   eax, eax, ecx
     kmovw  k1, eax
-    mov    rsi, [rbx+me_fpel.mvc]
+    mov    rsi, [rbp+S_C]
+    mov    rsi, [rsi+me_fpel.mvc]
     vmovdqu32 m0{k1}{z}, [rsi]
 %if %1
     vpaddw   m0, m0, [me_pw_2]
@@ -281,42 +290,42 @@ endstruc
 
 ; mvc[0..i_mvc) -> mvc_temp[2..], eax = the count, as x264_predictor_clip (%1 = 0) or
 ; x264_predictor_roundclip (%1 = 1) of common/x86/util.h: 16-bit lanes (the + 2 and the
-; limits << 2 wrap), the unclipped (rounded) mv dropped if 0 or pmv, max then min
+; limits << 2 wrap), the unclipped (rounded) mv dropped if 0 or pmv, max then min;
+; i_mvc > 0, the limits in R9d-R11d, ebx
 %macro PRED_CLIP 1
-    mov    eax, [rbp+S_XMIN]
-    mov    ecx, [rbp+S_YMIN]
-    mov    edx, [rbp+S_XMAX]
-    mov    edi, [rbp+S_YMAX]
+    mov    R9d, [rbp+S_XMIN]
+    mov    R10d, [rbp+S_YMIN]
+    mov    R11d, [rbp+S_XMAX]
+    mov    ebx, [rbp+S_YMAX]
 %if %1 == 0
-    shl    eax, 2
-    cwde                        ; movsx eax, ax
-    shl    ecx, 2
-    movsx  ecx, cx
-    shl    edx, 2
-    movsx  edx, dx
-    shl    edi, 2
-    movsx  edi, di
+    shl    R9d, 2
+    movsx  R9d, R9w
+    shl    R10d, 2
+    movsx  R10d, R10w
+    shl    R11d, 2
+    movsx  R11d, R11w
+    shl    ebx, 2
+    movsx  ebx, bx
 %endif
-    mov    [rbp+S_LXMIN], eax
-    mov    [rbp+S_LYMIN], ecx
-    mov    [rbp+S_LXMAX], edx
-    mov    [rbp+S_LYMAX], edi
-    mov    rsi, [rbx+me_fpel.mvc]
+    mov    rsi, [rbp+S_C]
+    mov    rsi, [rsi+me_fpel.mvc]
+    mov    ecx, [rbp+S_NMVC]
     xor    eax, eax
-    xor    ecx, ecx
 %%loop:
 %if %1
-    movsx  edx, word [rsi+rcx*4]
+    movsx  edx, word [rsi]
     add    edx, 2
     movsx  edx, dx
     sar    edx, 2
-    movsx  edi, word [rsi+rcx*4+2]
+    movsx  edi, word [rsi+2]
     add    edi, 2
     movsx  edi, di
     sar    edi, 2
-    PACKMV R8d, edx, edi, R9d
+    mov    R8d, edi                 ; pack16to32_mask( edx, edi )
+    shl    R8d, 16
+    mov    R8w, dx
 %else
-    mov    R8d, [rsi+rcx*4]
+    mov    R8d, [rsi]
     movsx  edx, R8w
     mov    edi, R8d
     sar    edi, 16
@@ -325,27 +334,27 @@ endstruc
     jz %%next
     cmp    R8d, [rbp+S_PMV]
     je %%next
-    cmp    edx, [rbp+S_LXMIN]
-    cmovl  edx, [rbp+S_LXMIN]
-    cmp    edx, [rbp+S_LXMAX]
-    cmovg  edx, [rbp+S_LXMAX]
-    cmp    edi, [rbp+S_LYMIN]
-    cmovl  edi, [rbp+S_LYMIN]
-    cmp    edi, [rbp+S_LYMAX]
-    cmovg  edi, [rbp+S_LYMAX]
+    cmp    edx, R9d
+    cmovl  edx, R9d
+    cmp    edx, R11d
+    cmovg  edx, R11d
+    cmp    edi, R10d
+    cmovl  edi, R10d
+    cmp    edi, ebx
+    cmovg  edi, ebx
     mov    [rbp+S_MVCT+8+rax*4], dx
     mov    [rbp+S_MVCT+10+rax*4], di
     inc    eax
 %%next:
-    inc    ecx
-    cmp    ecx, [rbx+me_fpel.i_mvc]
-    jl %%loop
+    add    rsi, 4
+    dec    ecx
+    jnz %%loop
 %endmacro
 
 ; PRED_CLIP, or PRED_CLIP_V where the list fits a vector
 %macro PRED_CLIP_ANY 1
 %if cpuflag(avx512)
-    cmp    dword [rbx+me_fpel.i_mvc], mmsize/4
+    cmp    dword [rbp+S_NMVC], mmsize/4
     jg %%scalar
     PRED_CLIP_V %1
     jmp %%done
@@ -384,29 +393,86 @@ endstruc
 %endif
 %endmacro
 
-; the predictor loop: key %1 (register or memory) = min( key, (cost( mvc_temp[i+1] ) << 4) + i )
-; for i = 1..eax, cost by the internal call %2
-%macro PRED_LOOP 2
-    mov    [rbp+S_N], eax
+; the predictor loop: R14d = min( R14d, (cost( mvc_temp[i+1] ) << 4) + i ) for i = 1..eax;
+; R12d i, R13d the count. %1 0: the fullpel cost inline, the sad in R15, the mv cost in rbx
+; across the call; 1: .cost_hpel with the kernels at R15
+%macro PRED_LOOP 1
+    mov    R13d, eax
     mov    eax, [rbp+S_PMV]
     mov    [rbp+S_MVCT+4], eax
-    mov    dword [rbp+S_I], 1
+    mov    R12d, 1
+%if %1
+    mov    R15, [rbp+S_FN]
+%else
+    mov    rax, [rbp+S_FN]
+    mov    R15, [rax+me_fpel_fn.sad]
+%endif
 %%loop:
-    mov    eax, [rbp+S_I]
-    movsx  ecx, word [rbp+S_MVCT+4+rax*4]
-    movsx  edx, word [rbp+S_MVCT+6+rax*4]
-    call %2
+    movsx  rcx, word [rbp+S_MVCT+4+R12*4]
+    movsx  rdx, word [rbp+S_MVCT+6+R12*4]
+%if %1
+    call   .cost_hpel
+%else
+    mov    rsi, [rbp+S_CMX]
+    movzx  ebx, word [rsi+rcx*8]
+    mov    rsi, [rbp+S_CMY]
+    movzx  esi, word [rsi+rdx*8]
+    add    ebx, esi
+    FPEL_REF rcx, rdx
+    mov    rdi, [rbp+S_FENC]
+    mov    esi, FENC_STRIDE
+    mov    rcx, [rbp+S_STRIDE]
+    call   R15
+    add    eax, ebx
+%endif
     shl    eax, 4
-    add    eax, [rbp+S_I]
-    cmp    eax, %1
-    jge %%next
-    mov    %1, eax
-%%next:
-    mov    eax, [rbp+S_I]
-    inc    eax
-    mov    [rbp+S_I], eax
-    cmp    eax, [rbp+S_N]
+    add    eax, R12d
+    cmp    eax, R14d
+    cmovl  R14d, eax
+    inc    R12d
+    cmp    R12d, R13d
     jle %%loop
+%endmacro
+
+; bias k of the (dx, dy) bytes at R10 around (R12, R13) into %2:
+; ((cost_mvx[4*mx] + cost_mvy[4*my]) << 6) + R11d + k; rsi cost_mvx, rdi cost_mvy; clobbers rax, rdx
+%macro CAND_BIAS 2 ; k, dst
+    movsx  rax, byte [R10+2*%1]
+    add    rax, R12
+    movzx  %2, word [rsi+rax*8]
+    movsx  rdx, byte [R10+2*%1+1]
+    add    rdx, R13
+    movzx  edx, word [rdi+rdx*8]
+    add    %2, edx
+    shl    %2, 6
+    add    %2, R11d
+%if %1
+    add    %2, %1
+%endif
+%endmacro
+
+; the ref pointers of the first %1 (dx, dy) bytes at R10 around (R12, R13) into rsi, rdx,
+; rcx(, R8); clobbers rax, rdi, R11
+%macro CAND_PTRS 1
+    mov    rdi, [rbp+S_STRB]
+    mov    rax, R13
+    imul   rax, rdi
+    add    rax, [rbp+S_REFW]
+    lea    rax, [rax+R12*SIZEOF_PIXEL]
+    CAND_PTR 0, rsi
+    CAND_PTR 1, rdx
+    CAND_PTR 2, rcx
+%if %1 == 4
+    CAND_PTR 3, R8
+%endif
+%endmacro
+
+%macro CAND_PTR 2 ; k, dst
+    movsx  %2, byte [R10+2*%1+1]
+    imul   %2, rdi
+    add    %2, rax
+    movsx  R11, byte [R10+2*%1]
+    lea    %2, [%2+R11*SIZEOF_PIXEL]
 %endmacro
 
 ; CHECK_MVRANGE( R12, R13 ), jumps to %1 if out of range
@@ -446,12 +512,20 @@ endstruc
 ;-----------------------------------------------------------------------------
 ; int me_search_fpel( x264_me_fpel_t *c ), see encoder/me.h
 ;-----------------------------------------------------------------------------
-; rbx: c, R15: m, rbp: the locals, R12/R13: bmx/bmy (64-bit), R14d: bcost or its key
+; rbp: the locals, R12/R13: bmx/bmy (64-bit), R14d: bcost or its key; rbx: c and R15: m
+; but in the predictor loops (R12d i, R13d the count, R15 the sad or the kernels, rbx a
+; candidate's mv cost), the hexagon (rbx x3_min, R15d dir | i << 8) and the square (rbx x4_min)
 %macro ME_SEARCH_FPEL 1
 cglobal %1, 1,15,0, ME_STACK
     lea    rbp, [rsp+S_OUTSZ+128]
     mov    rbx, rdi
+    mov    [rbp+S_C], rdi
     mov    R15, [rbx+me_fpel.m]
+    mov    [rbp+S_M], R15
+    mov    eax, [rbx+me_fpel.flags]
+    mov    [rbp+S_FLAGS], eax
+    mov    eax, [rbx+me_fpel.i_mvc]
+    mov    [rbp+S_NMVC], eax
     mov    rax, [R15+me_t.p_fenc]
     mov    [rbp+S_FENC], rax
     mov    rax, [R15+me_t.p_fref_w]
@@ -521,13 +595,13 @@ cglobal %1, 1,15,0, ME_STACK
     mov    R14d, eax
     test   eax, eax
     jz .fpel_done
-    cmp    dword [rbx+me_fpel.i_mvc], 0
+    cmp    dword [rbp+S_NMVC], 0
     jle .zero2
     PRED_CLIP_ANY 1
     test   eax, eax
     jle .zero2
     shl    R14d, 4
-    PRED_LOOP R14d, .cost_fpel
+    PRED_LOOP 0
     mov    eax, R14d
     and    eax, 15
     movsx  R12, word [rbp+S_MVCT+4+rax*4]
@@ -564,17 +638,24 @@ cglobal %1, 1,15,0, ME_STACK
     mov    [rbp+S_BPY], edi
     PACKMV ecx, eax, edi, edx
     mov    [rbp+S_PMV], ecx
+    vmovdqu xm0, [R15+me_t.p_fref]
+    vmovdqu xm1, [R15+me_t.p_fref+16]
+    vmovdqu [rbp+S_FREF], xm0
+    vmovdqu [rbp+S_FREF+16], xm1
     mov    ecx, eax
     mov    edx, edi
+    mov    R15, [rbp+S_FN]
     call .cost_hpel
     mov    [rbp+S_BPC], eax
     mov    [rbp+S_PMVC], eax
     ; pred == fenc at the unclipped mvp
+    mov    R15, [rbp+S_M]
     mov    rcx, [R15+me_t.p_cost_mv]
     movzx  ecx, word [rcx]
     add    ecx, ecx
     cmp    eax, ecx
     jne .preds3
+    mov    rbx, [rbp+S_C]
     mov    ecx, [rbp+S_PMV]
     test   byte [rbx+me_fpel.flags], ME_FPEL_ZEXIT
     jz .zexit_search
@@ -608,7 +689,7 @@ cglobal %1, 1,15,0, ME_STACK
     jmp .fpel_done
 
 .preds3:
-    mov    ecx, [rbx+me_fpel.i_mvc]
+    mov    ecx, [rbp+S_NMVC]
     test   ecx, ecx
     jle .round3
     mov    rax, [rbp+S_FN]
@@ -619,9 +700,10 @@ cglobal %1, 1,15,0, ME_STACK
     jl .clip3
     ; predictor_clip( mvc_temp+2, mvc, i_mvc, mv_limit_fpel, pmv )
     lea    rdi, [rbp+S_MVCT+8]
-    mov    rsi, [rbx+me_fpel.mvc]
-    mov    edx, ecx
-    mov    rcx, [rbx+me_fpel.mv_limit]
+    mov    rsi, [rbp+S_C]
+    mov    rcx, [rsi+me_fpel.mv_limit]
+    mov    rsi, [rsi+me_fpel.mvc]
+    mov    edx, [rbp+S_NMVC]
     mov    R8d, [rbp+S_PMV]
     call   rax
     jmp .clipped3
@@ -630,15 +712,17 @@ cglobal %1, 1,15,0, ME_STACK
 .clipped3:
     test   eax, eax
     jle .round3
-    shl    dword [rbp+S_BPC], 4
-    PRED_LOOP [rbp+S_BPC], .cost_hpel
-    mov    eax, [rbp+S_BPC]
+    mov    R14d, [rbp+S_BPC]
+    shl    R14d, 4
+    PRED_LOOP 1
+    mov    eax, R14d
     and    eax, 15
     movsx  ecx, word [rbp+S_MVCT+4+rax*4]
     mov    [rbp+S_BPX], ecx
     movsx  ecx, word [rbp+S_MVCT+6+rax*4]
     mov    [rbp+S_BPY], ecx
-    sar    dword [rbp+S_BPC], 4
+    sar    R14d, 4
+    mov    [rbp+S_BPC], R14d
 .round3:
     ; the best predictor rounded to fullpel; its sad if it is subpel
     mov    eax, [rbp+S_BPX]
@@ -696,12 +780,24 @@ cglobal %1, 1,15,0, ME_STACK
     mov    rcx, [rbp+S_CMX]
     mov    R8, [rbp+S_CMY]
     PACKMV R9d, R12d, R13d, R10d
+    mov    R10, [rbp+S_C]
+    mov    R10d, [R10+me_fpel.me_range]
+    mov    R11, [rbp+S_MVMIN]
+%if HIGH_BIT_DEPTH == 0
+    ; sad_hex_search_8x8's register entry: the last three in r6-r8 (rax, R10, R11)
+    lea    rbx, [pixel_sad_hex_search_8x8_avx512]
+    cmp    rax, rbx
+    jne .hex_stack
+    mov    eax, R14d
+    call   pixel_sad_hex_search_reg_8x8_avx512
+    jmp .hex_ret
+.hex_stack:
+%endif
     mov    [rsp+S_OUT], R14d
-    mov    R10d, [rbx+me_fpel.me_range]
     mov    [rsp+S_OUT+8], R10d
-    mov    R10, [rbp+S_MVMIN]
-    mov    [rsp+S_OUT+16], R10
+    mov    [rsp+S_OUT+16], R11
     call   rax
+.hex_ret:
     mov    R14d, eax
     shr    rax, 32
     movsx  R12, ax
@@ -713,6 +809,7 @@ cglobal %1, 1,15,0, ME_STACK
     ; hexagon
     shl    R14d, 6
     mov    rax, [rbp+S_FN]
+    mov    rbx, [rax+me_fpel_fn.x3_min]
     cmp    qword [rax+me_fpel_fn.hex_min], 0
     je .hex_x3
     ; pt_bias[j] = (BITS_MVD( bmv + hex2[j+1] ) << 6) + j+2
@@ -758,19 +855,21 @@ cglobal %1, 1,15,0, ME_STACK
     mov    eax, R14d
     and    eax, 63
     sub    eax, 2
-    mov    [rbp+S_DIR], eax
+    mov    R15d, eax
     HEX_MOVE
-    ; half hexagons, not overlapping the previous iteration
-    mov    eax, [rbx+me_fpel.me_range]
+    ; half hexagons, not overlapping the previous iteration: R15d = dir | i << 8
+    mov    rax, [rbp+S_C]
+    mov    eax, [rax+me_fpel.me_range]
     sar    eax, 1
     dec    eax
-    mov    [rbp+S_I], eax
+    shl    eax, 8
+    or     R15d, eax
 .hex_loop:
-    cmp    dword [rbp+S_I], 0
-    jle .hex_end
+    cmp    R15d, 1<<8
+    jl .hex_end
     CHECK_MVRANGE .hex_end
     and    R14d, ~63
-    movsxd rax, dword [rbp+S_DIR]
+    movzx  eax, R15b
     lea    R10, [me_hex2]
     lea    R10, [R10+rax*2]
     mov    R11d, 1
@@ -780,13 +879,15 @@ cglobal %1, 1,15,0, ME_STACK
     mov    eax, R14d
     and    eax, 63
     sub    eax, 2
-    add    eax, [rbp+S_DIR]
+    movzx  ecx, R15b
+    add    eax, ecx
     cdqe                        ; movsxd rax, eax
     lea    rcx, [me_mod6m1]
     movzx  eax, byte [rcx+rax+1]
-    mov    [rbp+S_DIR], eax
+    sub    R15d, 1<<8
+    and    R15d, ~255
+    or     R15d, eax
     HEX_MOVE
-    dec    dword [rbp+S_I]
     jmp .hex_loop
 .hex_end:
     sar    R14d, 6
@@ -794,6 +895,7 @@ cglobal %1, 1,15,0, ME_STACK
 
     ; square refine
     mov    rax, [rbp+S_FN]
+    mov    rbx, [rax+me_fpel_fn.x4_min]
     cmp    qword [rax+me_fpel_fn.sq_min], 0
     je .sq_x4
 %if cpuflag(avx512)
@@ -850,6 +952,8 @@ cglobal %1, 1,15,0, ME_STACK
     sar    R14d, 6
 
 .fpel_done:
+    mov    rbx, [rbp+S_C]
+    mov    R15, [rbp+S_M]
     PACKMV eax, R12d, R13d, ecx
     mov    edx, eax
     shl    edx, 2
@@ -932,38 +1036,39 @@ cglobal %1, 1,15,0, ME_STACK
 .ret:
     RET
 
-; eax = sad( fenc, fref_w + ecx + edx*stride ) + cost_mvx[4*ecx] + cost_mvy[4*edx]
+; eax = sad( fenc, fref_w + ecx + edx*stride ) + cost_mvx[4*ecx] + cost_mvy[4*edx]; the mv cost
+; in rbx across the call
 .cost_fpel:
     sub    rsp, SUB_FRAME
     movsxd rcx, ecx
     movsxd rdx, edx
-    mov    [rbp+S_TMX], rcx
-    mov    [rbp+S_TMY], rdx
+    mov    rsi, [rbp+S_CMX]
+    movzx  ebx, word [rsi+rcx*8]
+    mov    rsi, [rbp+S_CMY]
+    movzx  esi, word [rsi+rdx*8]
+    add    ebx, esi
     FPEL_REF rcx, rdx
     mov    rdi, [rbp+S_FENC]
     mov    esi, FENC_STRIDE
     mov    rcx, [rbp+S_STRIDE]
     mov    rax, [rbp+S_FN]
     call   [rax+me_fpel_fn.sad]
-    mov    rcx, [rbp+S_TMX]
-    mov    rdx, [rbp+S_TMY]
-    mov    rsi, [rbp+S_CMX]
-    movzx  ecx, word [rsi+rcx*8]
-    add    eax, ecx
-    mov    rsi, [rbp+S_CMY]
-    movzx  edx, word [rsi+rdx*8]
-    add    eax, edx
+    add    eax, ebx
     add    rsp, SUB_FRAME
     ret
 
 ; eax = subpel_cmp( qpel mv ecx, edx ) + cost_mvx[ecx] + cost_mvy[edx], unweighted:
-; fpelcmp_avg2 of two hpel planes, else fpelcmp of one, as me.c's subpel_cmp
+; fpelcmp_avg2 of two hpel planes, else fpelcmp of one, as me.c's subpel_cmp; the kernels
+; at R15, the planes at S_FREF, the mv cost in rbx across the call
 .cost_hpel:
     sub    rsp, SUB_FRAME
     movsxd rcx, ecx
     movsxd rdx, edx
-    mov    [rbp+S_TMX], rcx
-    mov    [rbp+S_TMY], rdx
+    mov    rsi, [rbp+S_CMX]
+    movzx  ebx, word [rsi+rcx*2]
+    mov    rsi, [rbp+S_CMY]
+    movzx  esi, word [rsi+rdx*2]
+    add    ebx, esi
     mov    eax, edx
     and    eax, 3
     mov    R8d, ecx
@@ -977,7 +1082,7 @@ cglobal %1, 1,15,0, ME_STACK
     lea    R10, [R10+R11*SIZEOF_PIXEL] ; offset
     lea    rdi, [me_hpel_ref]
     movzx  esi, byte [rdi+R9]
-    mov    rsi, [R15+me_t.p_fref+rsi*8]
+    mov    rsi, [rbp+S_FREF+rsi*8]
     add    rsi, R10
     xor    R11d, R11d
     cmp    eax, 3
@@ -986,7 +1091,7 @@ cglobal %1, 1,15,0, ME_STACK
     test   R9d, 5
     jz .cost_hpel_one
     movzx  edx, byte [rdi+R9+16]
-    mov    rdx, [R15+me_t.p_fref+rdx*8]
+    mov    rdx, [rbp+S_FREF+rdx*8]
     add    rdx, R10
     xor    R11d, R11d
     cmp    R8d, 3
@@ -998,106 +1103,85 @@ cglobal %1, 1,15,0, ME_STACK
 %endif
     mov    rdi, [rbp+S_FENC]
     mov    rcx, [rbp+S_STRIDE]
-    mov    rax, [rbp+S_FN]
-    call   [rax+me_fpel_fn.sad_avg2]
-    jmp .cost_hpel_mv
+    call   [R15+me_fpel_fn.sad_avg2]
+    add    eax, ebx
+    add    rsp, SUB_FRAME
+    ret
 .cost_hpel_one:
     mov    rdx, rsi
     mov    rdi, [rbp+S_FENC]
     mov    esi, FENC_STRIDE
     mov    rcx, [rbp+S_STRIDE]
-    mov    rax, [rbp+S_FN]
-    call   [rax+me_fpel_fn.sad]
-.cost_hpel_mv:
-    mov    rcx, [rbp+S_TMX]
-    mov    rdx, [rbp+S_TMY]
-    mov    rsi, [rbp+S_CMX]
-    movzx  ecx, word [rsi+rcx*2]
-    add    eax, ecx
-    mov    rsi, [rbp+S_CMY]
-    movzx  edx, word [rsi+rdx*2]
-    add    eax, edx
+    call   [R15+me_fpel_fn.sad]
+    add    eax, ebx
     add    rsp, SUB_FRAME
     ret
 
-; the candidates k < ecx of the (dx, dy) bytes at R10 around (R12, R13): S_CPTR[k] = the
-; ref pointer, S_CBIAS[k] = ((cost_mvx[4*mx] + cost_mvy[4*my]) << 6) + R11d + k (avx512:
-; FPEL_BIAS_V's); clobbers rax, rdx, rsi, R8, R9, m0-m3
-.cands:
-    xor    R8d, R8d
-.cands_loop:
-    movsx  rax, byte [R10+R8*2]
-    add    rax, R12
-    movsx  R9, byte [R10+R8*2+1]
-    add    R9, R13
-%if notcpuflag(avx512)
-    mov    rdx, [rbp+S_CMX]
-    movzx  edx, word [rdx+rax*8]
-    mov    rsi, [rbp+S_CMY]
-    movzx  esi, word [rsi+R9*8]
-    add    edx, esi
-    shl    edx, 6
-    add    edx, R11d
-    add    edx, R8d
-    mov    [rbp+S_CBIAS+R8*4], edx
-%endif
-    imul   R9, [rbp+S_STRB]
-    add    R9, [rbp+S_REFW]
-    lea    R9, [R9+rax*SIZEOF_PIXEL]
-    mov    [rbp+S_CPTR+R8*8], R9
-    inc    R8d
-    cmp    R8d, ecx
-    jl .cands_loop
+; R14d = x3_min( fenc, the 3 candidates of the (dx, dy) bytes at R10 around (R12, R13), their
+; biases ((cost_mvx[4*mx] + cost_mvy[4*my]) << 6) + R11d + k (avx512: FPEL_BIAS_V's), R14d ), x3_min
+; in rbx
+.x3:
+    sub    rsp, SUB_FRAME
 %if cpuflag(avx512)
 %if mmsize == 64
     mov    eax, 0x1ffff
     kmovd  k1, eax
 %endif
     FPEL_BIAS_V
-    vmovdqu32 [rbp+S_CBIAS], xm0
+    vmovq  R9, xm0
+    vpinsrd xm0, xm0, R14d, 3
+    vpextrq [rsp+SUB_OUT], xm0, 1
+%else
+    mov    rsi, [rbp+S_CMX]
+    mov    rdi, [rbp+S_CMY]
+    CAND_BIAS 0, R9d
+    CAND_BIAS 1, ecx
+    shl    rcx, 32
+    or     R9, rcx
+    CAND_BIAS 2, ecx
+    mov    eax, R14d
+    shl    rax, 32
+    or     rcx, rax
+    mov    [rsp+SUB_OUT], rcx
 %endif
-    ret
-
-; R14d = x3_min( fenc, the 3 candidates of the (dx, dy) at R10 around bmv, idx R11d + k )
-.x3:
-    sub    rsp, SUB_FRAME
-    mov    ecx, 3
-    call .cands
-    mov    R9, [rbp+S_CBIAS]
-    mov    eax, [rbp+S_CBIAS+8]
-    mov    edi, R14d
-    shl    rdi, 32
-    or     rax, rdi
-    mov    [rsp+SUB_OUT], rax
-    mov    rsi, [rbp+S_CPTR]
-    mov    rdx, [rbp+S_CPTR+8]
-    mov    rcx, [rbp+S_CPTR+16]
+    CAND_PTRS 3
     mov    R8, [rbp+S_STRIDE]
     mov    rdi, [rbp+S_FENC]
-    mov    rax, [rbp+S_FN]
-    call   [rax+me_fpel_fn.x3_min]
+    call   rbx
     mov    R14d, eax
     add    rsp, SUB_FRAME
     ret
 
-; R14d = x4_min( fenc, the 4 candidates of the (dx, dy) at R10 around bmv, idx R11d + k )
+; R14d = x4_min( fenc, the 4 candidates of the (dx, dy) bytes at R10 around (R12, R13), as .x3 ),
+; x4_min in rbx
 .x4:
     sub    rsp, SUB_FRAME
-    mov    ecx, 4
-    call .cands
-    mov    rax, [rbp+S_CBIAS]
-    mov    [rsp+SUB_OUT], rax
-    mov    rax, [rbp+S_CBIAS+8]
-    mov    [rsp+SUB_OUT+8], rax
+%if cpuflag(avx512)
+%if mmsize == 64
+    mov    eax, 0x1ffff
+    kmovd  k1, eax
+%endif
+    FPEL_BIAS_V
+    vmovdqu [rsp+SUB_OUT], xm0
+%else
+    mov    rsi, [rbp+S_CMX]
+    mov    rdi, [rbp+S_CMY]
+    CAND_BIAS 0, R8d
+    CAND_BIAS 1, ecx
+    shl    rcx, 32
+    or     R8, rcx
+    mov    [rsp+SUB_OUT], R8
+    CAND_BIAS 2, R8d
+    CAND_BIAS 3, ecx
+    shl    rcx, 32
+    or     R8, rcx
+    mov    [rsp+SUB_OUT+8], R8
+%endif
     mov    [rsp+SUB_OUT+16], R14d
-    mov    rsi, [rbp+S_CPTR]
-    mov    rdx, [rbp+S_CPTR+8]
-    mov    rcx, [rbp+S_CPTR+16]
-    mov    R8, [rbp+S_CPTR+24]
+    CAND_PTRS 4
     mov    R9, [rbp+S_STRIDE]
     mov    rdi, [rbp+S_FENC]
-    mov    rax, [rbp+S_FN]
-    call   [rax+me_fpel_fn.x4_min]
+    call   rbx
     mov    R14d, eax
     add    rsp, SUB_FRAME
     ret
