@@ -184,7 +184,22 @@ struct x264_lowres_p
     int start_x, end_x, start_y, end_y; /* the MBs, as slicetype_slice_cost */
     int do_search;
     int weighted;               /* weight[0].weightfn */
+    /* the 8-bit lookahead's cost correction (encoder/lookahead8.c), NULL for none: the intra
+     * cost and the inter cost, penalties included, before the intra / inter choice become
+     * x264_lowres_cost_corr( cost, tab, max, floor ) */
+    const uint8_t *corr_intra;
+    const uint8_t *corr_inter;
+    int corr_intra_max;
+    int corr_inter_max;
 };
+
+/* max( cost - tab[min( cost, max )], min( cost, floor ) ), the min unsigned: a cost at or
+ * above its natural minimum floor drops to floor at most, any other only by tab[max] (0) */
+static ALWAYS_INLINE int x264_lowres_cost_corr( int cost, const uint8_t *tab, int max, int floor )
+{
+    int c = cost - tab[X264_MIN( (unsigned)cost, (unsigned)max )];
+    return X264_MAX( c, X264_MIN( cost, floor ) );
+}
 
 #define x264_lowres_p_mbs_c x264_template(lowres_p_mbs_c)
 void x264_lowres_p_mbs_c( x264_lowres_p_t *c );
@@ -214,6 +229,7 @@ static inline int x264_lowres_p_init( x264_t *h, x264_lowres_p_t *c )
     c->me_range = h->param.analyse.i_me_range;
     c->mb_width = h->mb.i_mb_width;
     c->mb_height = h->mb.i_mb_height;
+    c->corr_intra = c->corr_inter = NULL;
     return 1;
 }
 
