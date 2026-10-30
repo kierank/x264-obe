@@ -487,6 +487,107 @@ static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **f
     return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
 }
 
+/* refine_subpel up to its qpel stage in x264's form (get_ref predictions, a compare and branch
+ * per candidate), then qpel_search_model. st: 0 mvp better, 1 mvp no better, 2 mvp at the mv,
+ * 3 mvp clipped, 4-7 an hpel step in dir k, 8 no better hpel candidate, 9 hpel iterations used
+ * up, 10 an hpel step from a qpel mv, 11 an hpel cost tie, 12 threshold stop, 13 threshold
+ * lowered, 14 threshold kept, 15 qpel stage */
+static uint64_t subpel_search_model( x264_mc_functions_t *mc, x264_pixel_function_t *pf, int i_pixel, pixel *fenc,
+                                     pixel **fref, intptr_t stride, const uint16_t *cmx, const uint16_t *cmy,
+                                     int bmx, int bmy, int bcost, int hpel_iters, int qpel_iters, int mvp_try,
+                                     int mvpx, int mvpy, const int lim[4], int *thresh, int *st )
+{
+    ALIGNED_ARRAY_32( pixel, pix,[64*18] );
+    ALIGNED_16( int costs[4] );
+    int bw = x264_pixel_size[i_pixel].w, bh = x264_pixel_size[i_pixel].h;
+    intptr_t s;
+    pixel *src;
+    if( hpel_iters )
+    {
+        if( mvp_try )
+        {
+            int mx = x264_clip3( mvpx, lim[0]+2, lim[2]-2 );
+            int my = x264_clip3( mvpy, lim[1]+2, lim[3]-2 );
+            st[3] += mx != mvpx || my != mvpy;
+            if( (mx-bmx)|(my-bmy) )
+            {
+                s = 16;
+                src = mc->get_ref( pix, &s, fref, stride, mx, my, bw, bh, x264_weight_none );
+                int cost = pf->sad[i_pixel]( fenc, FENC_STRIDE, src, s ) + cmx[mx] + cmy[my];
+                if( cost < bcost )
+                {
+                    bcost = cost;
+                    bmx = mx;
+                    bmy = my;
+                    st[0]++;
+                }
+                else
+                    st[1]++;
+            }
+            else
+                st[2]++;
+        }
+        int i;
+        bcost <<= 6;
+        for( i = hpel_iters; i > 0; i-- )
+        {
+            int omx = bmx, omy = bmy;
+            s = 64;
+            pixel *src0 = mc->get_ref( pix,    &s, fref, stride, omx, omy-2, bw, bh+1, x264_weight_none );
+            pixel *src2 = mc->get_ref( pix+32, &s, fref, stride, omx-2, omy, bw+4, bh, x264_weight_none );
+            st[10] += (omx|omy)&1;
+            pf->sad_x4[i_pixel]( fenc, src0, src0+s, src2, src2+1, s, costs );
+            int b[4] = { ((cmx[omx  ] + cmy[omy-2]) << 6) + 2,  ((cmx[omx  ] + cmy[omy+2]) << 6) + 6,
+                         ((cmx[omx-2] + cmy[omy  ]) << 6) + 16, ((cmx[omx+2] + cmy[omy  ]) << 6) + 48 };
+            for( int k = 0; k < 4; k++ )
+            {
+                int c = (costs[k] << 6) + b[k];
+                st[11] += c>>6 == bcost>>6;
+                if( c < bcost )
+                    bcost = c;
+            }
+            if( !(bcost&63) )
+            {
+                st[8]++;
+                break;
+            }
+            st[4 + ((bcost&63) == 6) + 2*((bcost&63) == 16) + 3*((bcost&63) == 48)]++;
+            bmx -= (bcost<<26)>>29;
+            bmy -= (bcost<<29)>>29;
+            bcost &= ~63;
+        }
+        if( !i )
+            st[9]++;
+        bcost >>= 6;
+    }
+    s = 16;
+    src = mc->get_ref( pix, &s, fref, stride, bmx, bmy, bw, bh, x264_weight_none );
+    bcost = pf->satd[i_pixel]( fenc, FENC_STRIDE, src, s ) + cmx[bmx] + cmy[bmy];
+    if( thresh )
+    {
+        if( (bcost*7)>>3 > *thresh )
+        {
+            st[12]++;
+            return (uint32_t)bcost | 1u << 31 | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+        }
+        else if( bcost < *thresh )
+        {
+            *thresh = bcost;
+            st[13]++;
+        }
+        else
+            st[14]++;
+    }
+    if( qpel_iters )
+    {
+        int qst[16] = {0};
+        st[15]++;
+        return qpel_search_model( pf->satd[i_pixel], fenc, fref, stride, bw, bh, cmx, cmy, bmx, bmy, bcost,
+                                  qpel_iters, 0, lim, qst );
+    }
+    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+}
+
 /* reference of the asm only weightp_satd8_search: x264_weights_analyse's luma pass */
 static void wp_weight8x8( pixel *dst, pixel *src, intptr_t i_src, int scale, int denom, int offset )
 {
@@ -1822,6 +1923,151 @@ static int check_pixel( int cpu_ref, int cpu_new )
             }
     }
     report( "pixel qpel_search :" );
+
+    /* satd_subpel_search: refine_subpel through its qpel stage (the dispatched satd_qpel_search),
+     * against the C reference and x264's form, subpel_search_model. The qpel test's planes,
+     * strides, partitions, limits, contents and mv costs; the start an fpel, hpel or qpel mv;
+     * hpel iters 0-4, qpel 0-10, the mvp tried or not (anywhere: clipped, at the start, limits
+     * narrower than 4); no threshold, 0, about the start's satd or above; the incumbent cost the
+     * start's sad, below or above it. *halfpel_thresh is compared too. Every case must occur */
+    ok = 1; used_asm = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        x264_pixel_subpel_search_t fn_asm = pixel_asm.satd_subpel_search[i];
+        x264_pixel_qpel_search_t qpel_asm = pixel_asm.satd_qpel_search[i];
+        if( !fn_asm || !qpel_asm || (fn_asm == pixel_ref.satd_subpel_search[i] && qpel_asm == pixel_ref.satd_qpel_search[i]) )
+            continue;
+        static const uint8_t parts[4][4][2] = { {{0,0}}, {{0,0},{0,8}}, {{0,0},{8,0}}, {{0,0},{8,0},{0,8},{8,8}} };
+        static const uint8_t nparts[4] = { 1, 2, 2, 4 };
+        ALIGNED_16( static pixel planes[4][4][2*176*256] );
+        ALIGNED_16( pixel fenc[18*FENC_STRIDE] );
+        ALIGNED_ARRAY_32( int16_t, fenc_pre,[512] );
+        ALIGNED_ARRAY_32( pixel, pix,[16*16] );
+        static uint16_t cost_tab[2][2*8192+1];
+        x264_mc_functions_t mc_c;
+        x264_mc_init( 0, &mc_c, 0 );
+        int flat[4] = {0};
+        int bw = x264_pixel_size[i].w, bh = x264_pixel_size[i].h;
+        int st[16] = {0};
+        set_func_name( "satd_subpel_search_%s", pixel_names[i] );
+        used_asm = 1;
+        for( int j = 0; j < 8192 && ok; j++ )
+        {
+            int mode = j&3, cmode = (j>>2)&3;
+            int field = (j>>4)&1;
+            intptr_t pstride = 192 + (rand()&63);
+            intptr_t stride = pstride << field;
+            if( !(j&60) )
+            {
+                flat[mode] = rand() & PIXEL_MAX;
+                for( int p = 0; p < 4; p++ )
+                {
+                    pixel *plane = planes[mode][p];
+                    for( int k = 0; k < 2*176*256; k++ )
+                        plane[k] = mode == 1 ? flat[mode] : mode == 3 ? ((rand()&7) ? 0 : PIXEL_MAX) : rand() & PIXEL_MAX;
+                    for( int pass = 0; pass < 3*(mode == 0); pass++ )
+                        for( int k = 0; k < 2*176*256 - 2*256; k++ )
+                            plane[k] = (plane[k] + plane[k+1] + plane[k+256] + plane[k+257] + 2) >> 2;
+                }
+            }
+            int xmin = -(rand()%161), xmax = rand()%161, ymin = -(rand()%161), ymax = rand()%161;
+            if( j&32 )
+                xmin = -(rand()&7), xmax = rand()&7, ymin = -(rand()&7), ymax = rand()&7;
+            int bmx = xmin - 2 + rand()%(xmax-xmin+5), bmy = ymin - 2 + rand()%(ymax-ymin+5);
+            if( (j&0x180) == 0x180 )
+            {
+                xmin = -32768, ymin = -32768, xmax = 32767, ymax = 32767;
+                bmx = rand()%161 - 80, bmy = rand()%161 - 80;
+            }
+            /* an fpel (fpel ME), hpel or any start */
+            int smode = (j>>9)&3;
+            if( smode < 2 )
+            {
+                bmx &= smode ? ~1 : ~3;
+                bmy &= smode ? ~1 : ~3;
+            }
+            /* mv 0 at (96, 80) (field rows): reads stay inside the plane */
+            pixel *fref[4];
+            for( int p = 0; p < 4; p++ )
+                fref[p] = planes[mode][p] + 96 + 80*stride + (field && (j&64) ? pstride : 0);
+            int px = parts[i][rand()%nparts[i]][0], py = parts[i][rand()%nparts[i]][1];
+            if( mode == 0 )
+            {
+                int tx = (bmx>>2) + rand()%9 - 4 - px, ty = (bmy>>2) + rand()%9 - 4 - py;
+                for( int y = 0; y < 16; y++ )
+                    for( int x = 0; x < 16; x++ )
+                        fenc[y*FENC_STRIDE+x] = x264_clip_pixel( fref[0][tx+x + (ty+y)*stride] + (rand()%5) - 2 );
+            }
+            else
+                for( int k = 0; k < 16*FENC_STRIDE; k++ )
+                    fenc[k] = mode == 1 ? flat[mode] : mode == 2 ? rand() & PIXEL_MAX : (rand()&7) ? PIXEL_MAX : 0;
+            pixel *f = fenc + px + py*FENC_STRIDE;
+#if HIGH_BIT_DEPTH
+            x264_bi_fenc_t *qfenc = f;
+#else
+            pixel_asm.satd_fenc_pre[0]( fenc_pre, fenc );
+            for( int b = 0; b < 4; b++ )
+                pixel_asm.satd_fenc_pre[1]( fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+            x264_bi_fenc_t *qfenc = i <= PIXEL_16x8 ? fenc_pre+16*py : fenc_pre+256+64*(2*(px>>3)+(py>>3));
+#endif
+            int lambda = 1 + rand()%40;
+            for( int t = 0; t < 2; t++ )
+                for( int k = -512; k <= 512; k++ ) /* the part read: |mv - mvp| < 400 */
+                {
+                    int v = cmode == 0 ? (int)(lambda * (2*log2f( abs(k)+1 ) + 1) + .5f)
+                          : cmode == 1 ? 0 : cmode == 2 ? rand()%4096 : (rand()&1) * 65535;
+                    cost_tab[t][k+8192] = X264_MIN( v, 65535 );
+                }
+            int mvpx = rand()%321 - 160, mvpy = rand()%321 - 160;
+            if( !(rand()&7) )
+                mvpx = bmx, mvpy = bmy;
+            const uint16_t *cmx = cost_tab[0] + 8192 - mvpx, *cmy = cost_tab[1] + 8192 - mvpy;
+            int lim[4] = { xmin, ymin, xmax, ymax };
+            uint64_t range = pack16to32_mask( xmin, ymin ) | (uint64_t)pack16to32_mask( xmax, ymax ) << 32;
+            int hpel_iters = rand()%5;
+            int qpel_iters = rand()&1 ? rand()%3 : rand()%11;
+            int mvp_try = hpel_iters && (rand()&1);
+            int iters = hpel_iters << 16 | qpel_iters << 8 | mvp_try << 5;
+            intptr_t s = 16;
+            pixel *src = mc_c.get_ref( pix, &s, fref, stride, bmx, bmy, bw, bh, x264_weight_none );
+            int bcost = pixel_c.sad[i]( f, FENC_STRIDE, src, s ) + cmx[bmx] + cmy[bmy];
+            int csatd = pixel_c.satd[i]( f, FENC_STRIDE, src, s ) + cmx[bmx] + cmy[bmy];
+            if( (j&0x1800) == 0x1800 )
+                bcost = rand()&1 ? rand()%(bcost+1) : bcost + rand()%(bcost+1);
+            int tmode = rand()&3;
+            int thr0 = tmode == 1 ? 0 : tmode == 2 ? rand()%(2*csatd+1) : 1<<28;
+            int thr_m = thr0, thr_c = thr0, thr_a = thr0;
+            int *pt_m = tmode ? &thr_m : NULL, *pt_c = tmode ? &thr_c : NULL, *pt_a = tmode ? &thr_a : NULL;
+            uint32_t bmv = pack16to32_mask( bmx, bmy );
+            uint32_t mvp = pack16to32_mask( mvpx, mvpy );
+            uint64_t res_m = subpel_search_model( &mc_c, &pixel_c, i, f, fref, stride, cmx, cmy, bmx, bmy, bcost, hpel_iters,
+                                                  qpel_iters, mvp_try, mvpx, mvpy, lim, pt_m, st );
+            uint64_t res_c = x264_pixel_satd_subpel_search_c( i, f, fref, stride, cmx, cmy, bmv, bcost, iters, range, pt_c, mvp );
+            uint64_t res_a = call_a( fn_asm, f, fref, stride, cmx, cmy, bmv, bcost, iters, range, qfenc, qpel_asm, pt_a, mvp );
+            if( res_c != res_m || thr_c != thr_m )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_subpel_search[%d]: C reference mismatch %d (%d,%d) %d, model %d (%d,%d) %d [FAILED]\n", i,
+                         (int)(uint32_t)res_c, (int16_t)(res_c>>32), (int16_t)(res_c>>48), thr_c,
+                         (int)(uint32_t)res_m, (int16_t)(res_m>>32), (int16_t)(res_m>>48), thr_m );
+            }
+            if( res_c != res_a || thr_c != thr_a )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_subpel_search[%d]: mode %d %d start %d hpel %d qpel %d mvp %d thresh %d: "
+                         "%d (%d,%d) %d != %d (%d,%d) %d [FAILED]\n", i, mode, cmode, smode, hpel_iters, qpel_iters, mvp_try, tmode,
+                         (int)(uint32_t)res_c, (int16_t)(res_c>>32), (int16_t)(res_c>>48), thr_c,
+                         (int)(uint32_t)res_a, (int16_t)(res_a>>32), (int16_t)(res_a>>48), thr_a );
+            }
+        }
+        for( int k = 0; k < 16 && ok; k++ )
+            if( !st[k] )
+            {
+                ok = 0;
+                fprintf( stderr, "satd_subpel_search[%d]: case %d never occurred [FAILED]\n", i, k );
+            }
+    }
+    report( "pixel subpel_search :" );
 
     /* predictor_clip/roundclip, i_mvc 0..15. j>>5&3: 0 mvs from a small pool around the
      * limits with 0 and pmv (repeats, clipped-equal), 1 any int16, 2 distinct, 3 one mv
