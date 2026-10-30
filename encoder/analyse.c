@@ -1410,10 +1410,22 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
     return i_ref == dupe ? 0 : -1;
 }
 
+/* analyse-p layout pair: AP_GATE gates the asm. Arm: x264_analyse_p_arm, defined in
+ * api.c. Twin (AP_TWIN 1): the never defined x264_analyse_p_twin, which links as 0.
+ * The code is the same in both. */
+#define AP_TWIN 0
+extern const char x264_analyse_p_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_analyse_p_twin __attribute__((weak, visibility("hidden")));
+#if AP_TWIN
+#define AP_GATE (&x264_analyse_p_twin != NULL)
+#else
+#define AP_GATE (&x264_analyse_p_arm != NULL)
+#endif
+
 /* The asm P partition analysis of this mb, or NULL */
 static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *c )
 {
-    if( !h->pixf.analyse_p16x16 || CHROMA444 )
+    if( !h->pixf.analyse_p16x16 || CHROMA444 || !AP_GATE )
         return NULL;
     c->h = h;
     c->mb = &h->mb;
