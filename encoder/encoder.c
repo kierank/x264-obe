@@ -1616,7 +1616,10 @@ static void mbcmp_init( x264_t *h )
     if( satd && h->param.analyse.i_me_method != X264_ME_TESA )
     {
         memcpy( h->pixf.mbcmp_subpel_search, h->pixf.satd_subpel_search, sizeof(h->pixf.mbcmp_subpel_search) );
-        memcpy( h->pixf.mbcmp_subpel_search_weight, h->pixf.satd_subpel_search_weight, sizeof(h->pixf.mbcmp_subpel_search_weight) );
+        if( x264_subpelrq_gate )
+            memcpy( h->pixf.mbcmp_subpel_search_weight, h->pixf.satd_subpel_search_weight, sizeof(h->pixf.mbcmp_subpel_search_weight) );
+        else
+            memset( h->pixf.mbcmp_subpel_search_weight, 0, sizeof(h->pixf.mbcmp_subpel_search_weight) );
     }
     else
     {

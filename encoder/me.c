@@ -1138,7 +1138,7 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     /* luma only: the whole search in one subpel_search call */
-    if( m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && h->mb.i_subpel_refine != 1
+    if( m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && h->mb.i_subpel_refine != 1 && (!b_refine_qpel || x264_subpelrq_gate)
         && (m->weight[0].weightfn ? !!h->pixf.mbcmp_subpel_search_weight[m->i_pixel] : !!h->pixf.mbcmp_subpel_search[m->i_pixel]) )
     {
 #if HIGH_BIT_DEPTH

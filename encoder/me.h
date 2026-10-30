@@ -73,6 +73,19 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
  * partitions, lowres), so the call costs more than the duplicates it drops. */
 #define PREDICTOR_DEDUPE_MIN 5
 
+/* subpel_rq layout pair: x264_subpelrq_gate gates mbcmp_subpel_search_weight and b_refine_qpel in
+ * refine_subpel's subpel_search path. Arm: x264_subpelrq_arm, defined in api.c. Twin
+ * (SUBPELRQ_TWIN 1): the never defined x264_subpelrq_twin, which links as 0. The code is the
+ * same in both. */
+#define SUBPELRQ_TWIN 0
+extern const char x264_subpelrq_arm __attribute__((weak, visibility("hidden")));
+extern const char x264_subpelrq_twin __attribute__((weak, visibility("hidden")));
+#if SUBPELRQ_TWIN
+#define x264_subpelrq_gate (&x264_subpelrq_twin != NULL)
+#else
+#define x264_subpelrq_gate (&x264_subpelrq_arm != NULL)
+#endif
+
 #define x264_me_refine_qpel x264_template(me_refine_qpel)
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m );
 #define x264_me_refine_qpel_refdupe x264_template(me_refine_qpel_refdupe)
