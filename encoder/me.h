@@ -76,7 +76,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 /* subpel_full layout pair: x264_subpelf_gate gates mbcmp_subpel_search. Arm: x264_subpelf_arm,
  * defined in api.c. Twin (SUBPELF_TWIN 1): the never defined x264_subpelf_twin, which links
  * as 0. The code is the same in both. */
-#define SUBPELF_TWIN 0
+#define SUBPELF_TWIN 1
 extern const char x264_subpelf_arm __attribute__((weak, visibility("hidden")));
 extern const char x264_subpelf_twin __attribute__((weak, visibility("hidden")));
 #if SUBPELF_TWIN
