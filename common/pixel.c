@@ -1694,6 +1694,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
             pixf->satd_subpel_search_weight[PIXEL_16x8]  = x264_pixel_satd_subpel_search_weight_16x8_avx2;
             pixf->satd_subpel_search_weight[PIXEL_8x16]  = x264_pixel_satd_subpel_search_weight_8x16_avx2;
             pixf->satd_subpel_search_weight[PIXEL_8x8]   = x264_pixel_satd_subpel_search_weight_8x8_avx2;
+#if !defined(_WIN32)
+            pixf->analyse_p16x16 = x264_analyse_p16x16_avx2;
+            pixf->analyse_p_sub16x16 = x264_analyse_p_sub16x16_avx2;
+#endif
         }
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx2;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
@@ -2108,6 +2112,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
             pixf->satd_subpel_search_weight[PIXEL_16x8]  = x264_pixel_satd_subpel_search_weight_16x8_avx2;
             pixf->satd_subpel_search_weight[PIXEL_8x16]  = x264_pixel_satd_subpel_search_weight_8x16_avx2;
             pixf->satd_subpel_search_weight[PIXEL_8x8]   = x264_pixel_satd_subpel_search_weight_8x8_avx2;
+#if !defined(_WIN32)
+            pixf->analyse_p16x16 = x264_analyse_p16x16_avx2;
+            pixf->analyse_p_sub16x16 = x264_analyse_p_sub16x16_avx2;
+#endif
         }
         pixf->sad_avg2[PIXEL_16x16] = x264_pixel_sad_avg2_16x16_avx2;
         pixf->sad_avg2[PIXEL_16x8]  = x264_pixel_sad_avg2_16x8_avx2;
