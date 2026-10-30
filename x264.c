@@ -734,7 +734,7 @@ static void help( x264_param_t *defaults, int longhelp )
     H1( "      --rc-lookahead <integer> Number of frames for frametype lookahead [%d]\n", defaults->rc.i_lookahead );
     H2( "      --lookahead-8bit        Run the lookahead on 8-bit copies of the frames\n"
         "                              (high bit depth only; faster, changes output;\n"
-        "                              on with --tune zerolatency, --no-lookahead-8bit)\n" );
+        "                              on by default, --no-lookahead-8bit)\n" );
     H0( "      --vbv-maxrate <integer> Max local bitrate (kbit/s) [%d]\n", defaults->rc.i_vbv_max_bitrate );
     H0( "      --vbv-bufsize <integer> Set size of the VBV buffer (kbit) [%d]\n", defaults->rc.i_vbv_buffer_size );
     H2( "      --vbv-init <float>      Initial VBV buffer occupancy [%.1f]\n", defaults->rc.f_vbv_buffer_init );
