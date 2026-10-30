@@ -338,7 +338,7 @@ int x264_pixel_fenc_eq_c( int i_pixel, pixel *fenc, pixel *fdec );
  * a clear one that of the never defined weak x264_lean_off, which links as 0. Arms: LEAN_TWIN 1
  * clears the gate, LEAN_KERNEL 1 avx2, 2 zmm. The code is the same in every arm. */
 #define LEAN_TWIN 0
-#define LEAN_KERNEL 0
+#define LEAN_KERNEL 1
 extern const char x264_lean_on __attribute__((weak, visibility("hidden")));
 extern const char x264_lean_off __attribute__((weak, visibility("hidden")));
 #define LEAN_SYM(b) ((b) ? &x264_lean_on != NULL : &x264_lean_off != NULL)
