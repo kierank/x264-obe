@@ -463,7 +463,7 @@ cextern popcnt_table
     add      r5, 1
     sar      r5, 2
     lea      r1, [r1+r5*SIZEOF_PIXEL]
-    call .satd
+    call qpel_satd
     movzx    r1d, word [r8+2*r10+2*(%2)]
     movzx    r2d, word [r9+2*r11+2*(%3)]
     add      r1d, r2d
@@ -476,9 +476,22 @@ cextern popcnt_table
 %endmacro
 
 ; r7 fref, r8/r9 cost_mvx/y, r10/r11 bmx/bmy, r12 bkey, r13 range,
-; r14 iters << 8 | noskip << 4 | the code of the last step
-%macro QPEL_SEARCH 2 ; w, h
+; r14 iters << 8 | noskip << 4 | the code of the last step. Weighted
+; (pixel_satd_qpel_search_weight_WxH, the weight a 10th argument): a candidate is
+; satd( fenc, SUBPEL_WPRED's mc_weight of its prediction ), get_ref's with the weight
+%macro QPEL_SEARCH 2-3 0 ; w, h, weighted
+%if %3
+cglobal pixel_satd_qpel_search_weight_%1x%2, 9,15,15
+    SUBPEL_WFRAME 0
+    %assign subpel_stk subpel_stk + ((-(stack_offset + gprsize + subpel_stk)) & (STACK_ALIGNMENT-1))
+    SUB      rsp, subpel_stk
+    mov      r14, r9mp
+    SUBPEL_WEIGHT_INIT r14
+    %define qpel_satd .wsatd
+%else
 cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
+    %define qpel_satd .satd
+%endif
     mov      r14d, r7d
     and      r14d, 0xff10
     mov      r13, r8
@@ -491,6 +504,9 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     movsxd   r12, r6d
     shl      r12, 4
     lea      r3, [r2*SIZEOF_PIXEL]
+%if %3
+    mov      [rsp+subpel_sv], r3
+%endif
     test     r14d, 0xff00
     jz .end
 .loop:
@@ -537,10 +553,16 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     or       r10d, r11d
     shl      r10, 32
     lea      r6, [r12+r10]
+%if %3
+    ADD      rsp, subpel_stk
+    RET
+    SUBPEL_WCALLS %1, %2, 0
+%else
     RET
 .satd:
     QPEL_SATD %1, %2
     ret
+%endif
 %endmacro
 
 ;-----------------------------------------------------------------------------
@@ -636,7 +658,7 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     lea      r5, [r10+%1]
     lea      r6, [r11+%2]
     SUBPEL_SRC
-    call .sad
+    call subpel_sad
     SUBPEL_HPEL_KEY %1, %2, %3, r6d
 %endmacro
 
@@ -647,18 +669,194 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     %define subpel_arg(i) [rsp+8*((i)-6)]
 %endif
 
+; x264_weight_t (common/mc.h), the fields the asm reads; the layout is checked in common/pixel.c
+struc weight_s
+    .cachea:   resw 8
+    .cacheb:   resw 8
+    .i_denom:  resd 1
+    .i_scale:  resd 1
+    .i_offset: resd 1
+endstruc
+
+; the weight of x264_weight_t *%1 for SUBPEL_WEIGHT:
+; m10 (scale, round) pairs, m11 offset, xm12 denom, m13 ones, high bit depth m14 pixel_max;
+; clobbers r12, r13
+%macro SUBPEL_WEIGHT_INIT 1
+    mov      r12d, [%1+weight_s.i_denom]
+    movd     xm12, r12d
+    mov      r13d, 1
+    shlx     r13d, r13d, r12d
+    shr      r13d, 1
+    mov      r12d, [%1+weight_s.i_scale]
+%if HIGH_BIT_DEPTH
+    shl      r13d, 16
+    movzx    r12d, r12w
+    or       r12d, r13d
+    movd     xm10, r12d
+    vpbroadcastd m10, xm10
+    mov      r12d, [%1+weight_s.i_offset]
+    shl      r12d, BIT_DEPTH-8
+    movd     xm11, r12d
+    vpbroadcastd m11, xm11
+    vpbroadcastd m13, [pw_1]
+    vpbroadcastw m14, [pw_pixel_max]
+%else
+    shl      r13d, 8
+    movzx    r12d, r12b
+    or       r12d, r13d
+    movd     xm10, r12d
+    vpbroadcastw m10, xm10
+    movd     xm11, [%1+weight_s.i_offset]
+    vpbroadcastw m11, xm11
+    vpbroadcastd m13, [pb_1]
+%endif
+%endmacro
+
+; m0 -> m1 = mc_weight( m0 ): x264_clip_pixel( ((x*scale + round) >> denom) + offset ),
+; round = (1 << denom) >> 1, the products exact in pmaddubsw / pmaddwd; clobbers m0
+%macro SUBPEL_WEIGHT 0
+%if HIGH_BIT_DEPTH
+    punpcklwd     m1, m0, m13
+    punpckhwd     m0, m13
+    pmaddwd       m1, m10
+    pmaddwd       m0, m10
+    psrad         m1, xm12
+    psrad         m0, xm12
+    paddd         m1, m11
+    paddd         m0, m11
+    packusdw      m1, m0
+    pminuw        m1, m14
+%else
+    punpcklbw     m1, m0, m13
+    punpckhbw     m0, m13
+    pmaddubsw     m1, m10
+    pmaddubsw     m0, m10
+    psraw         m1, xm12
+    psraw         m0, xm12
+    paddw         m1, m11
+    paddw         m0, m11
+    packuswb      m1, m0
+%endif
+%endmacro
+
+; mc_weight( pavg( r1, r2 ) ), w x h at stride r3, to r5 at stride w pixels (32 bytes a ymm);
+; clobbers r1, r2, r4, m0-m2
+%macro SUBPEL_WPRED 2 ; w, h
+    lea           r4, [3*r3]
+%assign %%n %1*%2*SIZEOF_PIXEL/32
+%assign %%rows 32/(%1*SIZEOF_PIXEL)
+%assign %%k 0
+%rep %%n
+%assign %%r (%%k*%%rows)&3
+%if %%r == 0 && %%k
+    lea           r1, [r1+4*r3]
+    lea           r2, [r2+4*r3]
+%endif
+%if %%rows == 1
+    SUBPEL_ROWOFF %%r, r4
+    movu          m0, [r1+subpel_o]
+%if HIGH_BIT_DEPTH
+    pavgw         m0, [r2+subpel_o]
+%else
+    pavgb         m0, [r2+subpel_o]
+%endif
+%elif %%rows == 2
+    SUBPEL_ROWOFF %%r, r4
+    %xdefine subpel_o0 subpel_o
+    SUBPEL_ROWOFF %%r+1, r4
+    movu         xm0, [r1+subpel_o0]
+    vinserti128   m0, m0, [r1+subpel_o], 1
+    movu         xm1, [r2+subpel_o0]
+    vinserti128   m1, m1, [r2+subpel_o], 1
+%if HIGH_BIT_DEPTH
+    pavgw         m0, m1
+%else
+    pavgb         m0, m1
+%endif
+%else ; 8-bit 8 wide: 4 rows
+    movq         xm0, [r1]
+    movhps       xm0, [r1+r3]
+    movq         xm2, [r1+2*r3]
+    movhps       xm2, [r1+r4]
+    vinserti128   m0, m0, xm2, 1
+    movq         xm1, [r2]
+    movhps       xm1, [r2+r3]
+    movq         xm2, [r2+2*r3]
+    movhps       xm2, [r2+r4]
+    vinserti128   m1, m1, xm2, 1
+    pavgb         m0, m1
+%endif
+    SUBPEL_WEIGHT
+    movu  [r5+32*%%k], m1
+%assign %%k %%k+1
+%endrep
+%endmacro
+
+; the stack of a weighted search from offset %1: the frame stride, then the weighted
+; prediction (16x16 pixels, 16 bytes over-read)
+%macro SUBPEL_WFRAME 1 ; offset
+    %assign subpel_sv %1
+    %assign subpel_buf %1+16
+    %assign subpel_stk subpel_buf + 16*16*SIZEOF_PIXEL + 16
+%endmacro
+
+; the weighted searches' internal calls (from the function body): .wpred r1/r2 -> r1 = r2 =
+; the weighted prediction, r3 its stride; .wsad, .wsatd: SUBPEL_SAD, QPEL_SATD of it,
+; r3 restored
+%macro SUBPEL_WCALLS 3 ; w, h, with .wsad
+.wpred:
+    lea      r5, [rsp+2*gprsize+subpel_buf]
+    SUBPEL_WPRED %1, %2
+    lea      r1, [rsp+2*gprsize+subpel_buf]
+    mov      r2, r1
+    mov      r3d, %1*SIZEOF_PIXEL
+    ret
+%if %3
+.wsad:
+    call .wpred
+    SUBPEL_SAD %1, %2
+    mov      r3, [rsp+gprsize+subpel_sv]
+    ret
+%endif
+.wsatd:
+    call .wpred
+    QPEL_SATD %1, %2
+    mov      r3, [rsp+gprsize+subpel_sv]
+    ret
+%endmacro
+
 ; r7 fref, r8/r9 cost_mvx/y, r10/r11 bmx/bmy, r12 bcost (32 bits), r13 iters, r14 hpel count;
 ; the outgoing arguments of the qpel call at rsp (STACK_ALIGNMENT aligned), the clipped mvp there
-; while it is tried
-%macro SUBPEL_SEARCH 2 ; w, h
+; while it is tried. iters & 16 (b_refine_qpel): no satd re-cost (the hpel key shifted back), and
+; qpel gets it (no way-back skip). Weighted (the weight a 14th argument, qpel a
+; satd_qpel_search_weight): every candidate is SUBPEL_WPRED's, get_ref's with the weight, an hpel
+; step always four of them; the weight is qpel's 10th argument
+%macro SUBPEL_SEARCH 2-3 0 ; w, h, weighted
+%if %3
+cglobal pixel_satd_subpel_search_weight_%1x%2, 9,15,15
+%if WIN64
+    SUBPEL_WFRAME 80
+%else
+    SUBPEL_WFRAME 32
+%endif
+    %define subpel_sad .wsad
+    %define subpel_satd .wsatd
+%else
 cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
 %if WIN64
     %assign subpel_stk 72
 %else
     %assign subpel_stk 24
 %endif
+    %define subpel_sad .sad
+    %define subpel_satd .satd
+%endif
     %assign subpel_stk subpel_stk + ((-(stack_offset + gprsize + subpel_stk)) & (STACK_ALIGNMENT-1))
     SUB      rsp, subpel_stk
+%if %3
+    mov      r14, r13mp
+    SUBPEL_WEIGHT_INIT r14
+%endif
     mov      r13d, r7d
     mov      r7, r1
     mov      r8, r3
@@ -668,6 +866,9 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
     movsxd   r11, r5d
     mov      r12d, r6d
     lea      r3, [r2*SIZEOF_PIXEL]
+%if %3
+    mov      [rsp+subpel_sv], r3
+%endif
     test     r13d, 0x20
     jz .hpel
     ; the mvp clipped to the range shrunk by 2, as x264_clip3
@@ -707,7 +908,7 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
     movsxd   r6, r5d
     movsxd   r5, r14d
     SUBPEL_SRC
-    call .sad
+    call subpel_sad
     movsxd   r4, dword [rsp]
     movsxd   r5, dword [rsp+4]
     movzx    r1d, word [r8+2*r4]
@@ -725,6 +926,7 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
     jz .centre
     shl      r12d, 6
 .hpel_loop:
+%if %3 == 0
     mov      r1d, r10d
     or       r1d, r11d
     test     r1d, 1
@@ -746,13 +948,14 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
     SUBPEL_HPEL_KEY  2,  0, 48, r5d
     jmp .hpel_step
 .hpel_avg:
+%endif
     SUBPEL_HPEL_AVG  0, -2,  2
     SUBPEL_HPEL_AVG  0,  2,  6
     SUBPEL_HPEL_AVG -2,  0, 16
     SUBPEL_HPEL_AVG  2,  0, 48
 .hpel_step:
     test     r12d, 63
-    jz .centre
+    jz .hpel_end
     mov      r1d, r12d
     shl      r1d, 26
     sar      r1d, 29
@@ -766,16 +969,28 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
     and      r12d, ~63
     dec      r14d
     jnz .hpel_loop
+.hpel_end:
+    test     r13d, 16
+    jz .recost
+    sar      r12d, 6
+    jmp .norecost
 .centre:
+    test     r13d, 16
+    jz .recost
+.norecost:
+    mov      r0, r9mp
+    jmp .thresh
+.recost:
     mov      r5, r10
     mov      r6, r11
     SUBPEL_SRC
     mov      r0, r9mp
-    call .satd
+    call subpel_satd
     movzx    r1d, word [r8+2*r10]
     movzx    r2d, word [r9+2*r11]
     lea      r12d, [r6+r1]
     add      r12d, r2d
+.thresh:
     mov      r1, r11mp
     test     r1, r1
     jz .qpel
@@ -790,7 +1005,11 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
 .qpel:
     test     r13d, 0xff00
     jz .done
-    ; qpel( qfenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range )
+    ; qpel( qfenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range[, weight] )
+%if %3
+    mov      r1, r13mp
+    mov      subpel_arg(9), r1
+%endif
     mov      r1, r8mp
     mov      subpel_arg(8), r1
     mov      subpel_arg(7), r13d
@@ -824,6 +1043,9 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
 .ret:
     ADD      rsp, subpel_stk
     RET
+%if %3
+    SUBPEL_WCALLS %1, %2, 1
+%else
 .sadh:
     SUBPEL_SAD_HPEL %1, %2
     ret
@@ -833,6 +1055,7 @@ cglobal pixel_satd_subpel_search_%1x%2, 9,15,10
 .satd:
     QPEL_SATD %1, %2
     ret
+%endif
 %endmacro
 
 ;=============================================================================
@@ -6479,6 +6702,10 @@ QPEL_SEARCH 16, 16
 QPEL_SEARCH 16, 8
 QPEL_SEARCH 8, 16
 QPEL_SEARCH 8, 8
+QPEL_SEARCH 16, 16, 1
+QPEL_SEARCH 16, 8, 1
+QPEL_SEARCH 8, 16, 1
+QPEL_SEARCH 8, 8, 1
 
 ; sad( fenc, pavgw( src1, src2 ) ): 16 wide a row a ymm, 8 wide 2 rows; at most 16*1023 a word
 %macro SUBPEL_SAD 2 ; w, h
@@ -6624,6 +6851,10 @@ SUBPEL_SEARCH 16, 16
 SUBPEL_SEARCH 16, 8
 SUBPEL_SEARCH 8, 16
 SUBPEL_SEARCH 8, 8
+SUBPEL_SEARCH 16, 16, 1
+SUBPEL_SEARCH 16, 8, 1
+SUBPEL_SEARCH 8, 16, 1
+SUBPEL_SEARCH 8, 8, 1
 %endif ; ARCH_X86_64
 
 %if ARCH_X86_64
@@ -8608,6 +8839,10 @@ QPEL_SEARCH 16, 16
 QPEL_SEARCH 16, 8
 QPEL_SEARCH 8, 16
 QPEL_SEARCH 8, 8
+QPEL_SEARCH 16, 16, 1
+QPEL_SEARCH 16, 8, 1
+QPEL_SEARCH 8, 16, 1
+QPEL_SEARCH 8, 8, 1
 
 ; sad( fenc, pavgb( src1, src2 ) ), 2 rows a ymm; 8 wide: 16 byte loads, qword 1 of each lane dropped
 %macro SUBPEL_SAD 2 ; w, h
@@ -8731,6 +8966,10 @@ SUBPEL_SEARCH 16, 16
 SUBPEL_SEARCH 16, 8
 SUBPEL_SEARCH 8, 16
 SUBPEL_SEARCH 8, 8
+SUBPEL_SEARCH 16, 16, 1
+SUBPEL_SEARCH 16, 8, 1
+SUBPEL_SEARCH 8, 16, 1
+SUBPEL_SEARCH 8, 8, 1
 
 ;-----------------------------------------------------------------------------
 ; satd_bi/satd_bi4 (see SATD_BI) against fenc_pre, the rows as satd_pre's. The

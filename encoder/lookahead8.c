@@ -70,9 +70,16 @@ void *x264_lowres8_init( const x264_param_t *param, int mb_width, int mb_height,
         memset( h->pixf.mbcmp_avg2, 0, sizeof(h->pixf.mbcmp_avg2) );
     /* subpel_search wants sad fpelcmp */
     if( satd && param->analyse.i_me_method != X264_ME_TESA )
+    {
         memcpy( h->pixf.mbcmp_subpel_search, h->pixf.satd_subpel_search, sizeof(h->pixf.mbcmp_subpel_search) );
+        /* weighted refs keep the C path: the _weight entries were slower than it (rack01, fades) */
+        memset( h->pixf.mbcmp_subpel_search_weight, 0, sizeof(h->pixf.mbcmp_subpel_search_weight) );
+    }
     else
+    {
         memset( h->pixf.mbcmp_subpel_search, 0, sizeof(h->pixf.mbcmp_subpel_search) );
+        memset( h->pixf.mbcmp_subpel_search_weight, 0, sizeof(h->pixf.mbcmp_subpel_search_weight) );
+    }
     satd &= param->analyse.i_me_method == X264_ME_TESA;
     memcpy( h->pixf.fpelcmp, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.fpelcmp) );
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );

@@ -1137,9 +1137,9 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
-    /* luma only, unweighted: the whole search in one subpel_search call */
-    if( !b_refine_qpel && m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && !m->weight[0].weightfn
-        && h->mb.i_subpel_refine != 1 && h->pixf.mbcmp_subpel_search[m->i_pixel] )
+    /* luma only: the whole search in one subpel_search call */
+    if( m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && h->mb.i_subpel_refine != 1
+        && (m->weight[0].weightfn ? !!h->pixf.mbcmp_subpel_search_weight[m->i_pixel] : !!h->pixf.mbcmp_subpel_search[m->i_pixel]) )
     {
 #if HIGH_BIT_DEPTH
         x264_bi_fenc_t *qfenc = m->p_fenc[0];
@@ -1152,11 +1152,18 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
             uint64_t range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
                            | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
-            int iters = hpel_iters << 16 | qpel_iters << 8 | (hpel_iters && h->mb.i_subpel_refine < 3) << 5;
-            uint64_t res = h->pixf.mbcmp_subpel_search[m->i_pixel]( m->p_fenc[0], m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
-                                                                    pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
-                                                                    qfenc, h->pixf.mbcmp_qpel_search[m->i_pixel], p_halfpel_thresh,
-                                                                    pack16to32_mask( m->mvp[0], m->mvp[1] ) );
+            int iters = hpel_iters << 16 | qpel_iters << 8 | (hpel_iters && h->mb.i_subpel_refine < 3) << 5 | b_refine_qpel << 4;
+            uint64_t res;
+            if( m->weight[0].weightfn )
+                res = h->pixf.mbcmp_subpel_search_weight[m->i_pixel]( m->p_fenc[0], m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
+                                                                      pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
+                                                                      qfenc, h->pixf.satd_qpel_search_weight[m->i_pixel], p_halfpel_thresh,
+                                                                      pack16to32_mask( m->mvp[0], m->mvp[1] ), &m->weight[0] );
+            else
+                res = h->pixf.mbcmp_subpel_search[m->i_pixel]( m->p_fenc[0], m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
+                                                               pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
+                                                               qfenc, h->pixf.mbcmp_qpel_search[m->i_pixel], p_halfpel_thresh,
+                                                               pack16to32_mask( m->mvp[0], m->mvp[1] ) );
             m->cost = (uint32_t)res & 0x7fffffff;
             m->mv[0] = res >> 32;
             m->mv[1] = res >> 48;

@@ -918,6 +918,30 @@ uint64_t x264_pixel_satd_subpel_search_8x16_avx2( pixel *, pixel **, intptr_t, c
 #define x264_pixel_satd_subpel_search_8x8_avx2 x264_template(pixel_satd_subpel_search_8x8_avx2)
 uint64_t x264_pixel_satd_subpel_search_8x8_avx2( pixel *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
                                                  x264_bi_fenc_t *, x264_pixel_qpel_search_t, int *, uint32_t );
+#define x264_pixel_satd_subpel_search_weight_16x16_avx2 x264_template(pixel_satd_subpel_search_weight_16x16_avx2)
+uint64_t x264_pixel_satd_subpel_search_weight_16x16_avx2( pixel *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                        x264_bi_fenc_t *, x264_pixel_qpel_search_weight_t, int *, uint32_t, const struct x264_weight_t * );
+#define x264_pixel_satd_qpel_search_weight_16x16_avx2 x264_template(pixel_satd_qpel_search_weight_16x16_avx2)
+uint64_t x264_pixel_satd_qpel_search_weight_16x16_avx2( x264_bi_fenc_t *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                      const struct x264_weight_t * );
+#define x264_pixel_satd_subpel_search_weight_16x8_avx2 x264_template(pixel_satd_subpel_search_weight_16x8_avx2)
+uint64_t x264_pixel_satd_subpel_search_weight_16x8_avx2( pixel *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                        x264_bi_fenc_t *, x264_pixel_qpel_search_weight_t, int *, uint32_t, const struct x264_weight_t * );
+#define x264_pixel_satd_qpel_search_weight_16x8_avx2 x264_template(pixel_satd_qpel_search_weight_16x8_avx2)
+uint64_t x264_pixel_satd_qpel_search_weight_16x8_avx2( x264_bi_fenc_t *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                      const struct x264_weight_t * );
+#define x264_pixel_satd_subpel_search_weight_8x16_avx2 x264_template(pixel_satd_subpel_search_weight_8x16_avx2)
+uint64_t x264_pixel_satd_subpel_search_weight_8x16_avx2( pixel *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                        x264_bi_fenc_t *, x264_pixel_qpel_search_weight_t, int *, uint32_t, const struct x264_weight_t * );
+#define x264_pixel_satd_qpel_search_weight_8x16_avx2 x264_template(pixel_satd_qpel_search_weight_8x16_avx2)
+uint64_t x264_pixel_satd_qpel_search_weight_8x16_avx2( x264_bi_fenc_t *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                      const struct x264_weight_t * );
+#define x264_pixel_satd_subpel_search_weight_8x8_avx2 x264_template(pixel_satd_subpel_search_weight_8x8_avx2)
+uint64_t x264_pixel_satd_subpel_search_weight_8x8_avx2( pixel *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                        x264_bi_fenc_t *, x264_pixel_qpel_search_weight_t, int *, uint32_t, const struct x264_weight_t * );
+#define x264_pixel_satd_qpel_search_weight_8x8_avx2 x264_template(pixel_satd_qpel_search_weight_8x8_avx2)
+uint64_t x264_pixel_satd_qpel_search_weight_8x8_avx2( x264_bi_fenc_t *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t,
+                                                      const struct x264_weight_t * );
 #define x264_pixel_satd_qpel_search_16x16_avx2 x264_template(pixel_satd_qpel_search_16x16_avx2)
 uint64_t x264_pixel_satd_qpel_search_16x16_avx2( x264_bi_fenc_t *, pixel **, intptr_t, const uint16_t *, const uint16_t *, uint32_t, int, int, uint64_t );
 #define x264_pixel_satd_qpel_search_16x8_avx2 x264_template(pixel_satd_qpel_search_16x8_avx2)
