@@ -41,6 +41,11 @@ int x264_analyse_weight_height( x264_t *h );
 void x264_analyse_weight_rows( x264_t *h, int y0, int y1 );
 #define x264_macroblock_analyse x264_template(macroblock_analyse)
 void x264_macroblock_analyse( x264_t *h );
+/* x264_macroblock_lean_pskip: 3 the mb is a P_SKIP, analysed and encoded; 2 not, the pixels and the
+ * part of the cache of 1 are loaded; 1 x264_macroblock_cache_load_pskip loaded part of the cache;
+ * 0 nothing loaded. 1, 2: x264_macroblock_cache_load_rest completes the cache_load. */
+#define x264_macroblock_lean_pskip x264_template(macroblock_lean_pskip)
+int x264_macroblock_lean_pskip( x264_t *h, int mb_x, int mb_y );
 #define x264_slicetype_decide x264_template(slicetype_decide)
 void x264_slicetype_decide( x264_t *h );
 

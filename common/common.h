@@ -580,6 +580,8 @@ struct x264_t
         /* skip flag for motion compensation */
         /* if we've already done MC, we don't need to do it again */
         int b_skip_mc;
+        /* x264_macroblock_lean_pskip ran the fast P_SKIP probe, which coded no skip */
+        int b_lean_noskip;
         /* set to true if we are re-encoding a macroblock. */
         int b_reencode_mb;
         int ip_offset; /* Used by PIR to offset the quantizer of intra-refresh blocks. */
