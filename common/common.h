@@ -719,6 +719,8 @@ struct x264_t
          * Cleared in cache_load. */
         ALIGNED_4( int16_t mvp16[2][X264_REF_MAX*2][2] );
         uint32_t mvp16_valid[2];
+        /* x264_macroblock_lean_pskip ran the fast P_SKIP probe, which coded no skip */
+        int b_lean_noskip;
     } mb;
 
     /* rate control encoding only */

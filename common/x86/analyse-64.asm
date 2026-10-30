@@ -281,6 +281,7 @@ struc mb
     alignb 4
     .mvp16:               resw 2*32*2
     .mvp16_valid:         resd 2
+    .b_lean_noskip:       resd 1
 endstruc
 
 ; x264_mb_analysis_list_t (encoder/analyse.c)

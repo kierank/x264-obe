@@ -3121,6 +3121,12 @@ static intptr_t x264_slice_write( x264_t *h )
     x264_bs_bak_t bs_bak[4];
     b_deblock &= b_hpel || h->param.b_full_recon || h->param.psz_dump_yuv
                || h->param.analyse.b_psnr || h->param.analyse.b_ssim;
+    /* x264_macroblock_lean_pskip: the fast P_SKIP; its static test needs probe_skip's fenc_eq */
+    int b_lean = h->sh.i_type == SLICE_TYPE_P && !SLICE_MBAFF && PARAM_CABAC && !slice_max_size &&
+                 h->param.analyse.b_fast_pskip && h->param.analyse.i_subpel_refine < 3 && !h->mb.b_lossless &&
+                 !(HAS_MBINFO && h->fdec->mb_info) && h->pixf.fenc_eq[PIXEL_16x16] &&
+                 (CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422) &&
+                 h->pixf.mb_eq[CHROMA_FORMAT == CHROMA_422];
     bs_realign( &h->out.bs );
 
     /* Slice */
@@ -3206,18 +3212,27 @@ static intptr_t x264_slice_write( x264_t *h )
         }
 
         /* load cache */
+        int lean = 0;
         if( SLICE_MBAFF )
             x264_macroblock_cache_load_interlaced( h, i_mb_x, i_mb_y );
+        else if( b_lean && (lean = x264_macroblock_lean_pskip( h, i_mb_x, i_mb_y )) )
+        {
+            if( lean < 3 )
+                x264_macroblock_cache_load_rest( h, i_mb_x, i_mb_y, lean == 2 );
+        }
         else
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
-        x264_macroblock_analyse( h );
+        if( lean < 3 )
+        {
+            x264_macroblock_analyse( h );
 
-        /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
+            /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 #if HAS_CAVLC
 reencode:
 #endif
-        x264_macroblock_encode( h );
+            x264_macroblock_encode( h );
+        }
 
         if( PARAM_CABAC )
         {
@@ -3326,7 +3341,10 @@ cont:
         h->mb.b_reencode_mb = 0;
 
         /* save cache */
-        x264_macroblock_cache_save( h );
+        if( lean == 3 )
+            x264_macroblock_cache_save_pskip( h );
+        else
+            x264_macroblock_cache_save( h );
 
         if( x264_ratecontrol_mb( h, mb_size ) < 0 )
         {
