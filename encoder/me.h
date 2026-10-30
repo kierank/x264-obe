@@ -186,6 +186,8 @@ struct x264_lowres_p
     int weighted;               /* weight[0].weightfn */
 };
 
+/* counters: test/x264-slicetype-asm-cnt, printed at encoder close (api.c) */
+extern int64_t x264_sltasm_cnt[16];
 #define x264_lowres_p_mbs_c x264_template(lowres_p_mbs_c)
 void x264_lowres_p_mbs_c( x264_lowres_p_t *c );
 #define x264_lowres_hex_search_c x264_template(lowres_hex_search_c)
@@ -220,7 +222,7 @@ static inline int x264_lowres_p_init( x264_t *h, x264_lowres_p_t *c )
 /* pixf.lowres_p_mbs, leaving h's mb position and mv limits as the MB loop would */
 static inline void x264_lowres_p_run( x264_t *h, x264_lowres_p_t *c )
 {
-    h->pixf.lowres_p_mbs( c );
+    x264_lowres_p_mbs_c( c );
     if( c->start_y < c->end_y || c->start_x < c->end_x )
         return;
     int mb_x = c->end_x, mb_y = c->end_y;

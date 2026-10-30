@@ -31,6 +31,8 @@
  ****************************************************************************/
 const int x264_chroma_format = X264_CHROMA_FORMAT;
 
+int64_t x264_sltasm_cnt[16];
+
 #if HAVE_BITDEPTH8
 x264_t *x264_8_encoder_open( x264_param_t * );
 void x264_8_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
@@ -142,6 +144,10 @@ void x264_encoder_close( x264_t *h )
 
     api->encoder_close( api->x264 );
     free( api );
+    int64_t *n = x264_sltasm_cnt;
+    if( n[15] )
+        fprintf( stderr, "x264 [sltasm-cnt]: slices %"PRId64" P lowres mbs %"PRId64" searched %"PRId64" mv0 skip %"PRId64" pred==fenc %"PRId64" hex %"PRId64" preds %"PRId64" hex moved %"PRId64" pred kept %"PRId64" hpel get_ref %"PRId64" hpel moved %"PRId64" qpel %"PRId64" qpel moved %"PRId64" weighted %"PRId64" intra %"PRId64" intra won %"PRId64"\n",
+                 n[15], n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10], n[11], n[12], n[13], n[14] );
 }
 
 void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )
