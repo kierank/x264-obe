@@ -412,6 +412,135 @@ cextern pd_ffff
 cextern hsub_mul
 cextern popcnt_table
 
+;-----------------------------------------------------------------------------
+; uint64_t pixel_satd_qpel_search_WxH( fenc, pixel **fref, intptr_t stride, uint16_t *cost_mvx,
+;                                      uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
+; refine_subpel's qpel diamond, see x264_pixel_qpel_search_t. A candidate (mx, my) is
+; satd( fenc, pavg( src1, src2 ) ), src1 = fref[ref0] + ((my+1)>>2)*stride + (mx>>2),
+; src2 = fref[ref1] + (my>>2)*stride + ((mx+1)>>2): get_ref's planes and offsets, where
+; get_ref takes one plane ref1 = ref0 and src2 = src1, and pavg( x, x ) = x.
+; key = (cost<<4) + code, codes 1, 3, 4, 12 for dirs 0-3, so the min is the strict <
+; sequence; the step is bmy -= bits 0-1, bmx -= bits 2-3, as in the dia search.
+; QPEL_SATD (per bit depth): r0 fenc, r1/r2 sources, r3 stride in bytes -> eax;
+; clobbers r1, r2, r4-r6, m0-m7.
+;-----------------------------------------------------------------------------
+; nibble 4*(my&3) + (mx&3): x264_hpel_ref0 | x264_hpel_ref1 << 2, ref1 = ref0 where
+; the qpel index & 5 is 0
+%define QPEL_REF_NIBBLES 0x9D98BFBA9D981510
+
+; dir, dx, dy, code, code of the way back
+%macro QPEL_CAND 5
+    cmp      r14b, %5
+    je .skip%1
+    lea      r5, [r10+%2]
+    lea      r6, [r11+%3]
+    lea      r2d, [r6*4]
+    and      r2d, 12
+    mov      r1d, r5d
+    and      r1d, 3
+    or       r1d, r2d
+    shl      r1d, 2
+    mov      r2, QPEL_REF_NIBBLES
+    shrx     r1, r2, r1
+    mov      r2d, r1d
+    and      r2d, 3
+    shr      r1d, 2
+    and      r1d, 3
+    mov      r2, [r7+8*r2]
+    mov      r1, [r7+8*r1]
+    lea      r4, [r6+1]
+    sar      r4, 2
+    imul     r4, r3
+    add      r2, r4
+    mov      r4, r5
+    sar      r4, 2
+    lea      r2, [r2+r4*SIZEOF_PIXEL]
+    sar      r6, 2
+    imul     r6, r3
+    add      r1, r6
+    add      r5, 1
+    sar      r5, 2
+    lea      r1, [r1+r5*SIZEOF_PIXEL]
+    call .satd
+    movzx    r1d, word [r8+2*r10+2*(%2)]
+    movzx    r2d, word [r9+2*r11+2*(%3)]
+    add      r1d, r2d
+    add      r6d, r1d
+    shl      r6, 4
+    or       r6, %4
+    cmp      r6, r12
+    cmovb    r12, r6
+.skip%1:
+%endmacro
+
+; r7 fref, r8/r9 cost_mvx/y, r10/r11 bmx/bmy, r12 bkey, r13 range,
+; r14 iters << 8 | noskip << 4 | the code of the last step
+%macro QPEL_SEARCH 2 ; w, h
+cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
+    mov      r14d, r7d
+    and      r14d, 0xff10
+    mov      r13, r8
+    mov      r7, r1
+    mov      r8, r3
+    mov      r9, r4
+    movsx    r10, r5w
+    sar      r5d, 16
+    movsxd   r11, r5d
+    movsxd   r12, r6d
+    shl      r12, 4
+    lea      r3, [r2*SIZEOF_PIXEL]
+    test     r14d, 0xff00
+    jz .end
+.loop:
+    mov      r1, r13
+    movsx    r2d, r1w
+    cmp      r10d, r2d
+    jle .end
+    sar      r1, 16
+    movsx    r2d, r1w
+    cmp      r11d, r2d
+    jle .end
+    sar      r1, 16
+    movsx    r2d, r1w
+    cmp      r10d, r2d
+    jge .end
+    sar      r1, 16
+    cmp      r11d, r1d
+    jge .end
+    QPEL_CAND 0,  0, -1,  1,  3
+    QPEL_CAND 1,  0,  1,  3,  1
+    QPEL_CAND 2, -1,  0,  4, 12
+    QPEL_CAND 3,  1,  0, 12,  4
+    mov      r1d, r12d
+    and      r1d, 15
+    jz .end
+    and      r12, ~15
+    and      r14d, ~15
+    or       r14d, r1d
+    mov      r2, r1
+    shl      r1, 62
+    sar      r1, 62
+    sub      r11, r1
+    shl      r2, 60
+    sar      r2, 62
+    sub      r10, r2
+    sub      r14d, 256
+    test     r14d, 0xff00
+    jnz .loop
+.end:
+    shr      r12, 4
+    mov      r12d, r12d
+    movzx    r10d, r10w
+    shl      r11d, 16
+    or       r10d, r11d
+    shl      r10, 32
+    lea      r6, [r12+r10]
+    RET
+.satd:
+    QPEL_SATD %1, %2
+    ret
+%endmacro
+
 ;=============================================================================
 ; SSD
 ;=============================================================================
@@ -6012,6 +6141,53 @@ cglobal pixel_satd_avg2_16x16, 4,5,8
     SATD_HBD_END 1
 
 %if ARCH_X86_64
+; satd_avg2's body, r0 restored
+%macro QPEL_SATD 2 ; w, h
+    lea       r4, [3*r3]
+%if %1 == 16
+    SATD_AVG2_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%rep %2/4-1
+    lea       r1, [r1+4*r3]
+    lea       r2, [r2+4*r3]
+    add       r0, 4*FENC_STRIDEB
+    SATD_AVG2_LOAD_Y
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+%endrep
+    sub       r0, (%2-4)*FENC_STRIDEB
+%else
+    lea       r5, [r1+4*r3]
+    lea       r6, [r2+4*r3]
+    SATD_AVG2_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6, swap
+%if %2 == 16
+    lea       r1, [r1+8*r3]
+    lea       r2, [r2+8*r3]
+    lea       r5, [r5+8*r3]
+    lea       r6, [r6+8*r3]
+    add       r0, 8*FENC_STRIDEB
+    SATD_AVG2_LOAD_X
+    SATD_8x4_SSE 1, 0, 1, 2, 3, 4, 5, 6
+    sub       r0, 8*FENC_STRIDEB
+%endif
+%endif
+%if %1*%2 == 256
+    HADDUWD   m6, m7
+%else
+    vpbroadcastd m7, [pw_1]
+    pmaddwd   m6, m7
+%endif
+    HADDD     m6, m7
+    movd     eax, xm6
+%endmacro
+
+QPEL_SEARCH 16, 16
+QPEL_SEARCH 16, 8
+QPEL_SEARCH 8, 16
+QPEL_SEARCH 8, 8
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
 ;-----------------------------------------------------------------------------
 ; satd_bi/satd_bi4 (see SATD_BI) in the layout of the satd functions above. The
 ; weighted average is src1 + pmulhrsw( (src0-src1)<<5, w<<4 ) clipped, the same
@@ -7956,6 +8132,43 @@ cglobal pixel_satd_avg2_pre_8x8, 4,7,8
 %endmacro
 
 SATD_AVG2_PRE_FUNCS
+
+; satd_avg2_pre's body
+%macro QPEL_SATD 2 ; w, h
+    lea      r4, [3*r3]
+    mova     m7, [hmul_%1p]
+%if %1 == 16
+    SATD_AVG2_PRE_16x4 0, swap
+%assign qpel_i 4
+%rep %2/4-1
+    lea      r1, [r1+4*r3]
+    lea      r2, [r2+4*r3]
+    SATD_AVG2_PRE_16x4 qpel_i, add
+%assign qpel_i qpel_i+4
+%endrep
+%undef qpel_i
+%else
+    lea      r5, [r1+4*r3]
+    lea      r6, [r2+4*r3]
+    SATD_AVG2_PRE_8x8 0, swap
+%if %2 == 16
+    lea      r1, [r1+8*r3]
+    lea      r2, [r2+8*r3]
+    lea      r5, [r5+8*r3]
+    lea      r6, [r6+8*r3]
+    SATD_AVG2_PRE_8x8 128, add
+%endif
+%endif
+    vextracti128 xm0, m6, 1
+    paddw        xm0, xm6
+    HADDW        xm0, xm7
+    movd         eax, xm0
+%endmacro
+
+QPEL_SEARCH 16, 16
+QPEL_SEARCH 16, 8
+QPEL_SEARCH 8, 16
+QPEL_SEARCH 8, 8
 
 ;-----------------------------------------------------------------------------
 ; satd_bi/satd_bi4 (see SATD_BI) against fenc_pre, the rows as satd_pre's. The
