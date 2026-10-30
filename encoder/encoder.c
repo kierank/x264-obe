@@ -3211,17 +3211,7 @@ reencode:
 
         if( PARAM_CABAC )
         {
-            if( mb_xy > h->sh.i_first_mb && !(SLICE_MBAFF && (i_mb_y&1)) )
-                x264_cabac_encode_terminal( &h->cabac );
-
-            if( IS_SKIP( h->mb.i_type ) )
-                x264_cabac_mb_skip( h, 1 );
-            else
-            {
-                if( h->sh.i_type != SLICE_TYPE_I )
-                    x264_cabac_mb_skip( h, 0 );
-                x264_macroblock_write_cabac( h, &h->cabac );
-            }
+            x264_macroblock_write_cabac_mb( h, &h->cabac, mb_xy > h->sh.i_first_mb && !(SLICE_MBAFF && (i_mb_y&1)) );
         }
 #if HAS_CAVLC
         else

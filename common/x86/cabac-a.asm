@@ -1816,6 +1816,84 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %endrep
 %endmacro
 
+; emit the 0-3 whole bytes left, store the state unbiased and return
+; in: r6 = cb; %1 = cb after .putbytes_slow
+%macro CABAC_FLUSH_RET 1
+    lea     r0d, [queueq+32]        ; pending bits
+    mov     r4d, r0d
+    and     r0d, 7
+    add     r0d, 10                 ; lowest bit of the whole bytes
+    shr     r4d, 3                  ; n
+    shrx     r1, lowq, r0           ; carry, n bytes
+    cmp     r1b, 0xff
+    je .flush_slow
+    cmp dword [r6+cb.bytes_outstanding], 0
+    jne .flush_slow
+    bzhi   lowq, lowq, r0
+    lea     r2d, [r4*8]
+    sub  queued, r2d
+    neg     r2d
+    add     r2d, 32
+    shlx     r1, r1, r2             ; carry in bit 32, bytes from bit 31 down
+    mov      r5, [r6+cb.p]
+    rorx     r2, r1, 32
+    add  [r5-1], r2b
+    bswap   r1d
+    mov    [r5], r1d                ; 4-n bytes past p are rewritten later
+    add      r5, r4
+    mov [r6+cb.p], r5
+.flush_end:
+    add  queued, 24
+    mov [r6+cb.low], lowd
+    mov [r6+cb.range], ranged
+    mov [r6+cb.queue], queued
+    RET
+.flush_slow:
+    call .putbytes_slow
+    mov      r6, %1
+    jmp .flush_end
+%endmacro
+
+; x264_cabac_putbyte while queue >= 0; in: r6 = cb; clobbers r1, r4-r6
+; %1 = cb after it
+%macro PUTBYTES_SLOW 1
+.putbytes_slow:
+    mov     r4d, [r6+cb.bytes_outstanding]
+    mov      r5, [r6+cb.p]
+    jmp .slow_next
+.slow_loop:
+    lea     r6d, [queueq+34]
+    shrx     r1, lowq, r6           ; out
+    bzhi   lowq, lowq, r6
+    sub  queued, 8
+    cmp     r1b, 0xff
+    je .postpone
+    mov     r6d, r1d
+    shr     r6d, 8                  ; carry
+    add  [r5-1], r6b
+    dec     r6d
+    test    r4d, r4d
+    jz .write
+.loop_outstanding:
+    mov    [r5], r6b
+    inc      r5
+    dec     r4d
+    jg .loop_outstanding
+.write:
+    mov    [r5], r1b
+    inc      r5
+    jmp .slow_next
+.postpone:
+    inc     r4d
+.slow_next:
+    cmp  queued, -24
+    jge .slow_loop
+    mov      r6, %1
+    mov [r6+cb.p], r5
+    mov [r6+cb.bytes_outstanding], r4d
+    ret
+%endmacro
+
 ; %1 = bin, %2 = state address (else the state is in r2d)
 ; in: r2d = state if no %2; out: r2d = next state
 ; clobbers r1, r4-r6
@@ -2156,76 +2234,8 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     jge .level_loop
 ; emit the 0-3 whole bytes left, store the state unbiased
     mov      r6, cbm
-    lea     r0d, [queueq+32]        ; pending bits
-    mov     r4d, r0d
-    and     r0d, 7
-    add     r0d, 10                 ; lowest bit of the whole bytes
-    shr     r4d, 3                  ; n
-    shrx     r1, lowq, r0           ; carry, n bytes
-    cmp     r1b, 0xff
-    je .flush_slow
-    cmp dword [r6+cb.bytes_outstanding], 0
-    jne .flush_slow
-    bzhi   lowq, lowq, r0
-    lea     r2d, [r4*8]
-    sub  queued, r2d
-    neg     r2d
-    add     r2d, 32
-    shlx     r1, r1, r2             ; carry in bit 32, bytes from bit 31 down
-    mov      r5, [r6+cb.p]
-    rorx     r2, r1, 32
-    add  [r5-1], r2b
-    bswap   r1d
-    mov    [r5], r1d                ; 4-n bytes past p are rewritten later
-    add      r5, r4
-    mov [r6+cb.p], r5
-.flush_end:
-    add  queued, 24
-    mov [r6+cb.low], lowd
-    mov [r6+cb.range], ranged
-    mov [r6+cb.queue], queued
-    RET
-.flush_slow:
-    call .putbytes_slow
-    mov      r6, cbm
-    jmp .flush_end
-
-; x264_cabac_putbyte while queue >= 0; in: r6 = cb; clobbers r1, r4-r6
-.putbytes_slow:
-    mov     r4d, [r6+cb.bytes_outstanding]
-    mov      r5, [r6+cb.p]
-    jmp .slow_next
-.slow_loop:
-    lea     r6d, [queueq+34]
-    shrx     r1, lowq, r6           ; out
-    bzhi   lowq, lowq, r6
-    sub  queued, 8
-    cmp     r1b, 0xff
-    je .postpone
-    mov     r6d, r1d
-    shr     r6d, 8                  ; carry
-    add  [r5-1], r6b
-    dec     r6d
-    test    r4d, r4d
-    jz .write
-.loop_outstanding:
-    mov    [r5], r6b
-    inc      r5
-    dec     r4d
-    jg .loop_outstanding
-.write:
-    mov    [r5], r1b
-    inc      r5
-    jmp .slow_next
-.postpone:
-    inc     r4d
-.slow_next:
-    cmp  queued, -24
-    jge .slow_loop
-    mov      r6, [rsp+gprsize]
-    mov [r6+cb.p], r5
-    mov [r6+cb.bytes_outstanding], r4d
-    ret
+    CABAC_FLUSH_RET cbm
+    PUTBYTES_SLOW [rsp+gprsize]
 
     PUTBYTE_STUBS
 %endmacro
@@ -2241,4 +2251,826 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+%endif
+
+;-----------------------------------------------------------------------------
+; void cabac_mb_header( x264_cabac_t *cb, void *cache, x264_cabac_mbhdr_t *hdr )
+; The written syntax of an MB before its residual, as encoder/cabac.c: end_of_slice_flag,
+; mb_skip_flag, mb_field_decoding_flag, mb_type, sub_mb_type, ref_idx, mvd (and the mvd
+; cache), the intra modes, coded_block_pattern, transform_size_8x8_flag and mb_qp_delta.
+; cache is h->mb.cache. The coder stays in registers, as CABAC_RESIDUAL_BMI2.
+;-----------------------------------------------------------------------------
+%if ARCH_X86_64
+SECTION_RODATA 64
+align 32, db 0
+; x264_mb_pred_mode4x4_fix by mode+1
+cabac_hdr_i4fix:  times 2 db -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 2, 2, 2, 0, 0, 0
+; the predicted mode by min(fix(left), fix(top))+1
+cabac_hdr_i4pred: times 2 db  2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0
+; the 4x4 blocks in coding order from the two cache rows in each lane
+cabac_hdr_i4ord:  times 2 db  4, 5,12,13, 6, 7,14,15,-1,-1,-1,-1,-1,-1,-1,-1
+cabac_hdr_nibble: times 8 db 1, 16
+; bin strings: bins | 1 << count, then the ctxIdx of each bin; ctxIdxInc to the first
+cabac_hdr_type:
+    db  14, 14,15,17,0,0,0,0 ; P_L0 16x8
+    db  10, 14,15,17,0,0,0,0 ; P_L0 8x16
+    db   8, 14,15,16,0,0,0,0 ; P_L0 16x16
+    db  12, 14,15,16,0,0,0,0 ; P_8x8
+    db   5, 14,17,0,0,0,0,0  ; P: I_NxN
+    db   7, 14,17,0,0,0,0,0  ; P: I_16x16
+    db   2,  3,0,0,0,0,0,0   ; I: I_NxN
+    db   3,  3,0,0,0,0,0,0   ; I: I_16x16
+    db   2, 27,0,0,0,0,0,0   ; B_DIRECT
+    db 127, 27,30,31,32,32,32,0  ; B_8x8
+    db 175, 27,30,31,32,32,32,32 ; B: I_NxN
+    db 239, 27,30,31,32,32,32,32 ; B: I_16x16
+    ; B_L0_L0 to B_BI_BI, 16x8, 8x16, 16x16: x264_cabac_mb_header_b i_mb_bits
+    db  99, 27,30,31,32,32,32,0
+    db  83, 27,30,31,32,32,32,0
+    db   9, 27,30,32,0,0,0,0
+    db 107, 27,30,31,32,32,32,0
+    db  91, 27,30,31,32,32,32,0
+    db 129, 27,30,32,32,32,32,32
+    db 135, 27,30,31,32,32,32,32
+    db 199, 27,30,31,32,32,32,32
+    db 129, 27,30,32,32,32,32,32
+    db 123, 27,30,31,32,32,32,0
+    db  95, 27,30,31,32,32,32,0
+    db 129, 27,30,32,32,32,32,32
+    db 115, 27,30,31,32,32,32,0
+    db  75, 27,30,31,32,32,32,0
+    db  13, 27,30,32,0,0,0,0
+    db 167, 27,30,31,32,32,32,32
+    db 231, 27,30,31,32,32,32,32
+    db 129, 27,30,32,32,32,32,32
+    db 151, 27,30,31,32,32,32,32
+    db 215, 27,30,31,32,32,32,32
+    db 129, 27,30,32,32,32,32,32
+    db 183, 27,30,31,32,32,32,32
+    db 247, 27,30,31,32,32,32,32
+    db 129, 27,30,32,32,32,32,32
+    db 143, 27,30,31,32,32,32,32
+    db 207, 27,30,31,32,32,32,32
+    db  67, 27,30,31,32,32,32,0
+; sub_mb_type of P_8x8 by D_L0_4x4 to D_L0_8x8, of B_8x8 by D_L0_4x4 to D_DIRECT_8x8
+cabac_hdr_sub_p:
+    db  10, 21,22,23,0,0,0,0
+    db   4, 21,22,0,0,0,0,0
+    db  14, 21,22,23,0,0,0,0
+    db   3, 21,0,0,0,0,0,0
+cabac_hdr_sub_b:
+    times 7 db 9, 36,37,39,0,0,0,0
+    db  13, 36,37,39,0,0,0,0 ; D_L1_8x8
+    times 3 db 9, 36,37,39,0,0,0,0
+    db  35, 36,37,38,39,39,0,0 ; D_BI_8x8
+    db   2, 36,0,0,0,0,0,0 ; D_DIRECT_8x8
+    db   0
+
+SECTION .text
+
+; h->mb.cache
+struc mbcache
+    .intra4x4_pred_mode: resb 40
+    align 16, resb 1
+    .non_zero_count: resb 120
+    .ref: resb 2*40
+    align 16, resb 1
+    .mv: resw 2*40*2
+    .mvd: resb 2*40*2
+    .skip: resb 40
+    .direct_mv: resw 2*4*2
+    .direct_ref: resb 2*4
+    .direct_partition: resd 1
+    .pskip_mv: resw 2
+    .i_neighbour_transform_size: resd 1
+    .i_neighbour_skip: resd 1
+    .i_cbp_top: resd 1
+    .i_cbp_left: resd 1
+    .topright_mv: resw 2*3*2
+    .topright_ref: resb 2*3
+    align 8, resb 1
+    .deblock_strength: pointer 1
+endstruc
+
+; x264_cabac_mbhdr_t
+struc mbhdr
+    .flags: resd 1
+    .pos_start: resd 1
+    .pos_tex: resd 1
+    .type: resb 1
+    .cbp: resb 1
+    .dqp: resb 1
+    .i_ref: resb 1
+    .i_mvd: resb 1
+    .sub: resb 4
+    .ref: resb 8
+    .mvd: resb 16
+    .shape: resb 16
+    align 8, resb 1
+    .mvp: resw 16*2
+endstruc
+
+; CABAC_HDR_* of common/cabac.h
+%assign HDR_TERM      1<<0
+%assign HDR_SKIPFLAG  1<<1
+%assign HDR_BSLICE    1<<2
+%assign HDR_SKIP      1<<3
+%assign HDR_FIELD     1<<4
+%assign HDR_INTRA     1<<8
+%assign HDR_I16       1<<9
+%assign HDR_T8X8_HDR  1<<10
+%assign HDR_T8X8_OK   1<<12
+%assign HDR_SUB_P     1<<20
+%assign HDR_SUB_B     1<<21
+%define HDR_FIELD_CTX  5
+%define HDR_FIELD_VAL  7
+%define HDR_T8X8       11
+%define HDR_DQP_CTX    13
+%define HDR_CCTX       14
+%define HDR_CMODE      16
+%define HDR_PRED16     18
+%define HDR_TCTX       22
+
+; cb->state[x]
+%define CTX(x) r3+cb.state+x
+
+; %1 = a register whose bit 0 is the bin (not r2, r4-r6), %2 = state address (else the state
+; is in r2d); as CABAC_BIN
+%macro CABAC_BINV 1-2
+%if %0 > 1
+    movzx   r2d, byte [%2]
+%endif
+    mov      r5, [cabac_lps_trans+r2*8 GLOBAL] ; off the range chain
+    mov     r4d, ranged
+    and     r4d, 0xc0
+    shr     r4d, 3
+    shrx    r4d, r5d, r4d
+    movzx   r4d, r4b                ; range_lps
+    sub  ranged, r4d
+    lea      r6, [lowq+rangeq]
+    mov     r5d, %1
+    and     r5d, 1
+    lea      r5, [r5+r2*8]          ; 8*state + bin
+    test    r5b, 9                  ; odd parity: bin != mps
+    cmovnp ranged, r4d
+    cmovnp   lowq, r6
+    movzx   r2d, byte [cabac_lps_trans+4+r5 GLOBAL]
+%if %0 > 1
+    mov    [%2], r2b
+%endif
+    lzcnt   r5d, ranged
+    sub     r5d, 23
+    shlx ranged, ranged, r5d
+    shlx   lowq, lowq, r5
+    add  queued, r5d
+    PUTBYTE
+%endmacro
+
+; end_of_slice_flag 0 or the I_16x16 terminate bin
+%macro CABAC_TERMINAL0 0
+    sub  ranged, 2
+    lzcnt   r5d, ranged
+    sub     r5d, 23
+    shlx ranged, ranged, r5d
+    shlx   lowq, lowq, r5
+    add  queued, r5d
+    PUTBYTE
+%endmacro
+
+; x264_cabac_pos into %1; clobbers r1
+%macro CABAC_POS 1
+    mov      r1, [r3+cb.p]
+    sub      r1, [r3+cb.start]
+    add     r1d, [r3+cb.bytes_outstanding]
+    lea     r1d, [r1*8+queueq+24]
+    mov      %1, r1d
+%endmacro
+
+; r3 = cb, r11 = cache, r12 = hdr, r8-r10 = low, range, queue - 24
+INIT_YMM avx2,bmi2
+cglobal cabac_mb_header, 3,15,6,-32
+%ifdef PIC
+    lea      r7, [$$]
+    %define GLOBAL +r7-$$
+%else
+    %define GLOBAL
+%endif
+    %define cbm    r3
+    %define lowd   r8d
+    %define lowq   r8
+    %define ranged r9d
+    %define rangeq r9
+    %define queued r10d
+    %define queueq r10
+    %define idxm   [rsp+0]
+    %define ctxym  [rsp+4]
+    %define mvdym  [rsp+8]
+    %define mvdxm  [rsp+12]
+    %define absm   [rsp+16]
+    %define jm     [rsp+20]
+    %define cntm   [rsp+24]
+    %assign pb_count 0
+
+    mov      r3, r0
+    mov     r11, r1
+    mov     r12, r2
+    mov    lowd, [r3+cb.low]
+    mov  ranged, [r3+cb.range]
+    mov  queued, [r3+cb.queue]
+    sub  queued, 24
+    mov     r0d, [r12+mbhdr.flags]
+    test    r0b, HDR_TERM
+    jz .skip_flag
+    CABAC_TERMINAL0
+.skip_flag:
+    test    r0b, HDR_SKIPFLAG
+    jz .field
+    ; mb_skip_flag: ctx 11 + i_neighbour_skip, 13 more in B
+    mov     r1d, [r11+mbcache.i_neighbour_skip]
+    lea     r4d, [r1+13]
+    test    r0b, HDR_BSLICE
+    cmovnz  r1d, r4d
+    mov    r13d, r0d
+    shr    r13d, 3                  ; HDR_SKIP
+    CABAC_BINV r13d, CTX(r1+11)
+    test    r0b, HDR_SKIP
+    jnz .end
+.field:
+    CABAC_POS [r12+mbhdr.pos_start]
+    test    r0b, HDR_FIELD
+    jz .mb_type
+    mov     r1d, r0d
+    shr     r1d, HDR_FIELD_CTX
+    and     r1d, 3
+    mov    r13d, r0d
+    shr    r13d, HDR_FIELD_VAL
+    CABAC_BINV r13d, CTX(r1+70)
+.mb_type:
+    movzx  r13d, byte [r12+mbhdr.type]
+    lea     r13, [cabac_hdr_type+r13*8 GLOBAL]
+    mov    r14d, r0d
+    shr    r14d, HDR_TCTX
+    and    r14d, 3
+    call .binstr
+    test    r0d, HDR_INTRA
+    jnz .intra
+    test    r0d, HDR_SUB_P|HDR_SUB_B
+    jz .ref
+%assign i 0
+%rep 4
+    movzx  r13d, byte [r12+mbhdr.sub+i]
+    lea     r14, [cabac_hdr_sub_b+r13*8 GLOBAL]
+    lea     r13, [cabac_hdr_sub_p+r13*8 GLOBAL]
+    test    r0d, HDR_SUB_B
+    cmovnz  r13, r14
+    xor    r14d, r14d
+    call .binstr
+%assign i i+1
+%endrep
+
+.ref:
+    ; ref_idx: ctx 54 + (ref left > 0) + 2*(ref top > 0), skip and direct neighbours as 0 in B;
+    ; 1s at the next ctx, 58, then 59, and a 0
+    cmp byte [r12+mbhdr.i_ref], 0
+    je .mvd
+    xor    r14d, r14d
+    test    r0b, HDR_BSLICE
+    setnz  r14b
+    neg    r14d
+    xor    r13d, r13d
+.ref_loop:
+    movzx   r0d, byte [r12+r13+mbhdr.ref]
+    mov     r1d, r0d
+    and     r1d, 63                 ; scan8
+    shr     r0d, 6
+    imul    r0d, r0d, 40
+    add     r0d, r1d                ; [list][scan8]
+    test   [r11+r1+mbcache.skip-1], r14b
+    setz    r6b
+    cmp byte [r11+r0+mbcache.ref-1], 0
+    setg    r4b
+    and     r4b, r6b
+    test   [r11+r1+mbcache.skip-8], r14b
+    setz    r6b
+    cmp byte [r11+r0+mbcache.ref-8], 0
+    setg    r5b
+    and     r5b, r6b
+    movzx   r4d, r4b
+    movzx   r5d, r5b
+    lea     r1d, [r4+r5*2]
+    movsx   r0d, byte [r11+r0+mbcache.ref]
+    cmp     r0d, 0
+    jg .ref_1
+    CABAC_BIN 0, CTX(r1+54)
+    jmp .ref_next
+.ref_1:
+    CABAC_BIN 1, CTX(r1+54)
+    cmp     r0d, 1
+    jg .ref_2
+    CABAC_BIN 0, CTX(58)
+    jmp .ref_next
+.ref_2:
+    CABAC_BIN 1, CTX(58)
+    movzx   r2d, byte [CTX(59)]     ; in r2d for the run
+    sub     r0d, 2
+    jz .ref_0
+.ref_ones:
+    CABAC_BIN 1
+    dec     r0d
+    jg .ref_ones
+.ref_0:
+    CABAC_BIN 0
+    mov [CTX(59)], r2b
+.ref_next:
+    inc    r13d
+    cmp    r13b, [r12+mbhdr.i_ref]
+    jb .ref_loop
+
+.mvd:
+    ; mvd: x at ctx 40, y at 47
+    cmp byte [r12+mbhdr.i_mvd], 0
+    je .tex
+    xor    r13d, r13d
+.mvd_loop:
+    mov      jm, r13d
+    movzx   r0d, byte [r12+r13+mbhdr.mvd]
+    mov     r1d, r0d
+    and     r1d, 63
+    shr     r0d, 6
+    imul    r0d, r0d, 40
+    add     r0d, r1d                ; [list][scan8]
+    mov    idxm, r0d
+    ; ctxIdxInc: (left + top |mvd| > 2) + (> 32)
+    movzx   r1d, byte [r11+r0*2+mbcache.mvd-2]
+    movzx   r4d, byte [r11+r0*2+mbcache.mvd-16]
+    add     r1d, r4d
+    movzx   r5d, byte [r11+r0*2+mbcache.mvd-1]
+    movzx   r6d, byte [r11+r0*2+mbcache.mvd-15]
+    add     r5d, r6d
+    xor     r4d, r4d
+    cmp     r1d, 3
+    setae   r4b
+    cmp     r1d, 33
+    sbb     r4d, -1
+    xor     r6d, r6d
+    cmp     r5d, 3
+    setae   r6b
+    cmp     r5d, 33
+    sbb     r6d, -1
+    mov   ctxym, r6d
+    mov     r1d, r4d
+    mov     r4d, [r11+r0*4+mbcache.mv]
+    mov     r5d, [r12+r13*4+mbhdr.mvp]
+    cmp     r4d, r5d
+    je .mvd_zero
+    movsx  r14d, r4w
+    movsx   r6d, r5w
+    sub    r14d, r6d                ; mvd x
+    sar     r4d, 16
+    sar     r5d, 16
+    sub     r4d, r5d
+    mov   mvdym, r4d                ; mvd y
+    xor    r13d, r13d               ; ctx offset of the component
+.cpn:
+    add     r1d, r13d
+    test   r14d, r14d
+    jnz .cpn_nz
+    CABAC_BIN 0, CTX(r1+40)
+    xor     r0d, r0d
+    jmp .cpn_end
+.cpn_nz:
+    CABAC_BIN 1, CTX(r1+40)
+    mov     r0d, r14d
+    neg     r0d
+    cmovs   r0d, r14d               ; |mvd|
+    ; prefix: 1s at ctx 3, 4, 5, then 6, a 0 if |mvd| < 9
+    cmp     r0d, 2
+    jae .cpn_3
+    CABAC_BIN 0, CTX(r13+43)
+    jmp .cpn_sign
+.cpn_3:
+    CABAC_BIN 1, CTX(r13+43)
+    cmp     r0d, 3
+    jae .cpn_4
+    CABAC_BIN 0, CTX(r13+44)
+    jmp .cpn_sign
+.cpn_4:
+    CABAC_BIN 1, CTX(r13+44)
+    cmp     r0d, 4
+    jae .cpn_5
+    CABAC_BIN 0, CTX(r13+45)
+    jmp .cpn_sign
+.cpn_5:
+    CABAC_BIN 1, CTX(r13+45)
+    movzx   r2d, byte [CTX(r13+46)] ; in r2d for the run
+    mov     r1d, 9
+    cmp     r0d, r1d
+    cmovae  r0d, r1d
+    sub     r0d, 4
+    jz .cpn_6
+.cpn_ones:
+    CABAC_BIN 1
+    dec     r0d
+    jg .cpn_ones
+.cpn_6:
+    mov     r0d, r14d
+    neg     r0d
+    cmovs   r0d, r14d
+    cmp     r0d, 9
+    jae .cpn_ue
+    CABAC_BIN 0
+    mov [CTX(r13+46)], r2b
+.cpn_sign:
+    ; bypass: the sign
+    mov     r1d, r14d
+    sar     r1d, 31
+    and     r1d, ranged
+    lea    lowq, [lowq*2+r1]
+    inc  queued
+    PUTBYTE
+    jmp .cpn_clip
+.cpn_ue:
+    mov [CTX(r13+46)], r2b
+    ; bypass: exp-Golomb k=3 of |mvd|-9, then the sign: 2k-1 bins of
+    ; 2*((1 << 2k-2) - (3 << k) + v) + sign, v = |mvd|-1, k = ilog2(v)
+    mov    absm, r0d
+    dec     r0d
+    lzcnt   r1d, r0d
+    xor     r1d, 31                 ; k
+    lea     r4d, [r1*2-2]
+    mov     r5d, 1
+    shlx    r5d, r5d, r4d
+    add     r0d, r5d
+    mov     r5d, 3
+    shlx    r5d, r5d, r1d
+    sub     r0d, r5d
+    shr    r14d, 31
+    lea     r0d, [r0*2+r14]
+    lea    r14d, [r1*2-1]           ; bins
+    cmp    r14d, 16
+    jbe .cpn_ue_last
+    sub    r14d, 16
+    mov     r1d, r0d
+    shr     r1d, 16
+    imul    r1d, ranged
+    shlx   lowq, lowq, r14
+    add    lowq, r1
+    add  queued, r14d
+    movzx   r0d, r0w
+    mov    r14d, 16
+    PUTBYTE
+.cpn_ue_last:
+    imul    r0d, ranged
+    shlx   lowq, lowq, r14
+    add    lowq, r0
+    add  queued, r14d
+    PUTBYTE
+    mov     r0d, absm
+.cpn_clip:
+    mov     r1d, 66
+    cmp     r0d, r1d
+    cmova   r0d, r1d
+.cpn_end:
+    test   r13d, r13d
+    jnz .cpn_y
+    mov   mvdxm, r0d
+    mov    r13d, 7
+    mov    r14d, mvdym
+    mov     r1d, ctxym
+    jmp .cpn
+.cpn_y:
+    shl     r0d, 8
+    or      r0d, mvdxm
+.mvd_store:
+    ; the mvd cache rectangle of the partition
+    mov      r1, 0x0001000100010001
+    imul     r0, r1
+    mov    r13d, jm
+    mov     r4d, idxm
+    lea      r4, [r11+r4*2+mbcache.mvd]
+    movzx   r5d, byte [r12+r13+mbhdr.shape]
+    mov     r6d, r5d
+    shr     r6d, 3                  ; height
+    test    r5b, 4
+    jnz .rect4
+    test    r5b, 2
+    jnz .rect2
+    mov    [r4], r0w
+    cmp     r6d, 1
+    je .mvd_next
+    mov [r4+16], r0w
+    cmp     r6d, 2
+    je .mvd_next
+    mov [r4+32], r0w
+    mov [r4+48], r0w
+    jmp .mvd_next
+.rect2:
+    mov    [r4], r0d
+    cmp     r6d, 1
+    je .mvd_next
+    mov [r4+16], r0d
+    cmp     r6d, 2
+    je .mvd_next
+    mov [r4+32], r0d
+    mov [r4+48], r0d
+    jmp .mvd_next
+.rect4:
+    mov    [r4], r0
+    cmp     r6d, 1
+    je .mvd_next
+    mov [r4+16], r0
+    cmp     r6d, 2
+    je .mvd_next
+    mov [r4+32], r0
+    mov [r4+48], r0
+.mvd_next:
+    inc    r13d
+    cmp    r13b, [r12+mbhdr.i_mvd]
+    jb .mvd_loop
+    jmp .tex
+.mvd_zero:
+    ; mv == mvp: a 0 at the first bin of each component
+    CABAC_BIN 0, CTX(r1+40)
+    mov     r1d, ctxym
+    CABAC_BIN 0, CTX(r1+47)
+    xor     r0d, r0d
+    jmp .mvd_store
+
+.intra:
+    test    r0d, HDR_I16
+    jnz .i16
+    test    r0d, HDR_T8X8_HDR
+    jz .i_modes
+    mov     r1d, [r11+mbcache.i_neighbour_transform_size]
+    mov    r13d, r0d
+    shr    r13d, HDR_T8X8
+    CABAC_BINV r13d, CTX(r1+399)
+.i_modes:
+    ; prev_intra4x4_pred_mode_flag at ctx 68, rem_intra4x4_pred_mode at 69, of the 16 4x4
+    ; or 4 8x8 blocks: a nibble each, flag | rem << 1, from the cache rows of the MB
+    pcmpeqb  m5, m5
+    movu     m0, [r11+mbcache.intra4x4_pred_mode+8] ; the MB
+    movu     m1, [r11+mbcache.intra4x4_pred_mode+7] ; left
+    movu     m2, [r11+mbcache.intra4x4_pred_mode]   ; top
+    mova     m3, [cabac_hdr_i4fix GLOBAL]
+    psubb    m0, m5
+    psubb    m1, m5
+    psubb    m2, m5
+    pshufb   m0, m3, m0
+    pshufb   m1, m3, m1
+    pshufb   m2, m3, m2
+    pminsb   m1, m2
+    psubb    m1, m5
+    mova     m2, [cabac_hdr_i4pred GLOBAL]
+    pshufb   m1, m2, m1             ; predicted mode
+    pcmpeqb  m2, m0, m1
+    pcmpgtb  m1, m0, m1
+    paddb    m0, m1                 ; rem
+    paddb    m0, m0
+    psubb    m0, m2
+    pshufb   m0, [cabac_hdr_i4ord GLOBAL]
+    vpermq   m0, m0, q2020
+    pmaddubsw xm0, [cabac_hdr_nibble GLOBAL]
+    packuswb xm0, xm0
+    movq    r14, xm0
+    mov dword cntm, 16
+    bt      r0d, HDR_T8X8
+    jnc .i_modes_4x4
+    mov      r1, 0x000f000f000f000f
+    pext    r14, r14, r1
+    mov dword cntm, 4
+.i_modes_4x4:
+    movzx   r0d, byte [CTX(68)]
+    movzx  r13d, byte [CTX(69)]     ; both in registers for the whole MB
+.i_mode:
+    mov     r2d, r0d
+    CABAC_BINV r14d
+    mov     r0d, r2d
+    test   r14b, 1
+    jnz .i_mode_pred
+    mov     r2d, r13d
+    shr     r14, 1
+    CABAC_BINV r14d
+    shr     r14, 1
+    CABAC_BINV r14d
+    shr     r14, 1
+    CABAC_BINV r14d
+    mov    r13d, r2d
+    shr     r14, 1
+    jmp .i_mode_next
+.i_mode_pred:
+    shr     r14, 4
+.i_mode_next:
+    dec dword cntm
+    jnz .i_mode
+    mov [CTX(68)], r0b
+    mov [CTX(69)], r13b
+    jmp .i_chroma
+
+.i16:
+    CABAC_TERMINAL0
+    ; ctx 1-5 of the suffix: I 6, 7, 8, 9, 10; P 18, 19, 19, 20, 20; B 33, 34, 34, 35, 35
+    ; as r14 + 1, r14 + 2, r14 + r13 + 2, r14 + r13 + 3, r14 + 2*r13 + 3
+    mov    r14d, 17
+    mov     r1d, 32
+    test    r0b, HDR_BSLICE
+    cmovnz r14d, r1d
+    xor    r13d, r13d
+    mov     r1d, 5
+    test    r0b, HDR_SKIPFLAG
+    cmovz  r14d, r1d
+    setz   r13b
+    movzx   r0d, byte [r12+mbhdr.cbp]
+    and     r0d, 15
+    add     r0d, 15
+    shr     r0d, 4                  ; cbp luma != 0
+    CABAC_BINV r0d, CTX(r14+1)
+    movzx   r0d, byte [r12+mbhdr.cbp]
+    shr     r0d, 4
+    jnz .i16_chroma
+    CABAC_BIN 0, CTX(r14+2)
+    jmp .i16_pred
+.i16_chroma:
+    CABAC_BIN 1, CTX(r14+2)
+    shr     r0d, 1
+    lea     r1d, [r14+r13+2]
+    CABAC_BINV r0d, CTX(r1)
+.i16_pred:
+    mov     r0d, [r12+mbhdr.flags]
+    shr     r0d, HDR_PRED16+1
+    lea     r1d, [r14+r13+3]
+    CABAC_BINV r0d, CTX(r1)
+    mov     r0d, [r12+mbhdr.flags]
+    shr     r0d, HDR_PRED16
+    lea     r1d, [r14+r13*2+3]
+    CABAC_BINV r0d, CTX(r1)
+
+.i_chroma:
+    ; intra_chroma_pred_mode: > 0 at ctx 64 + ctxIdxInc, > 1 and > 2 at 67
+    mov     r0d, [r12+mbhdr.flags]
+    mov     r1d, r0d
+    shr     r1d, HDR_CCTX
+    and     r1d, 3
+    shr     r0d, HDR_CMODE
+    and     r0d, 3
+    jnz .i_chroma_nz
+    CABAC_BIN 0, CTX(r1+64)
+    jmp .tex
+.i_chroma_nz:
+    CABAC_BIN 1, CTX(r1+64)
+    movzx   r2d, byte [CTX(67)]     ; in r2d for the run
+    xor    r13d, r13d
+    cmp     r0d, 1
+    seta   r13b
+    CABAC_BINV r13d
+    cmp     r0d, 1
+    je .i_chroma_end
+    xor    r13d, r13d
+    cmp     r0d, 2
+    seta   r13b
+    CABAC_BINV r13d
+.i_chroma_end:
+    mov [CTX(67)], r2b
+
+.tex:
+    CABAC_POS [r12+mbhdr.pos_tex]
+    mov     r0d, [r12+mbhdr.flags]
+    movzx  r13d, byte [r12+mbhdr.cbp]
+    test    r0d, HDR_I16
+    jnz .t8x8
+    ; coded_block_pattern luma: bin i = cbp bit i at ctx 76 - a - 2*b, a and b by pext from
+    ; cbp | left << 4 | top << 8 | cbp << 12
+    mov     r1d, [r11+mbcache.i_cbp_left]
+    mov     r4d, [r11+mbcache.i_cbp_top]
+    mov    r14d, r13d
+    and    r14d, 15
+    and     r1d, 15
+    and     r4d, 15
+    shl     r1d, 4
+    shl     r4d, 8
+    or     r14d, r1d
+    or     r14d, r4d
+    mov     r1d, r13d
+    shl     r1d, 12
+    or     r14d, r1d
+%assign i 0
+%rep 4
+%if i == 0
+    mov     r0d, (1<<5)|(1<<10)
+%elif i == 1
+    mov     r0d, (1<<0)|(1<<11)
+%elif i == 2
+    mov     r0d, (1<<7)|(1<<12)
+%else
+    mov     r0d, (1<<2)|(1<<13)
+%endif
+    pext    r1d, r14d, r0d
+    neg      r1
+    mov     r0d, r13d
+    shr     r0d, i
+    CABAC_BINV r0d, CTX(r1+76)
+%assign i i+1
+%endrep
+    ; chroma: ctx 77 + (left & 0x30 != 0) + 2*(top & 0x30 != 0), unavailable as 0, bin cbp
+    ; chroma != 0; then 81 + (left & 0x30 == 0x20) + 2*(top & 0x30 == 0x20), cbp chroma >> 1
+    mov     r4d, [r11+mbcache.i_cbp_left]
+    mov     r5d, [r11+mbcache.i_cbp_top]
+    mov     r6d, r4d
+    sar     r6d, 31
+    andn    r4d, r6d, r4d
+    mov     r6d, r5d
+    sar     r6d, 31
+    andn    r5d, r6d, r5d
+    and     r4d, 0x30
+    and     r5d, 0x30
+    xor     r1d, r1d
+    xor     r6d, r6d
+    test    r4d, r4d
+    setnz   r1b
+    test    r5d, r5d
+    setnz   r6b
+    lea     r1d, [r1+r6*2]
+    xor    r14d, r14d
+    xor     r6d, r6d
+    cmp     r4d, 0x20
+    sete   r14b
+    cmp     r5d, 0x20
+    sete    r6b
+    lea    r14d, [r14+r6*2]
+    mov     r0d, r13d
+    shr     r0d, 4
+    jnz .cbp_chroma
+    CABAC_BIN 0, CTX(r1+77)
+    jmp .t8x8
+.cbp_chroma:
+    CABAC_BIN 1, CTX(r1+77)
+    shr     r0d, 1
+    CABAC_BINV r0d, CTX(r14+81)
+
+.t8x8:
+    ; transform_size_8x8_flag if allowed and cbp luma
+    mov     r0d, [r12+mbhdr.flags]
+    test    r0d, HDR_T8X8_OK
+    jz .dqp
+    test   r13b, 15
+    jz .dqp
+    mov     r1d, [r11+mbcache.i_neighbour_transform_size]
+    mov    r14d, r0d
+    shr    r14d, HDR_T8X8
+    CABAC_BINV r14d, CTX(r1+399)
+
+.dqp:
+    ; mb_qp_delta if cbp or I_16x16: 1s at ctx 60 + ctxIdxInc, 62, then 63, and a 0
+    test   r13d, r13d
+    jnz .dqp_coded
+    test    r0d, HDR_I16
+    jz .end
+.dqp_coded:
+    mov     r1d, r0d
+    shr     r1d, HDR_DQP_CTX
+    and     r1d, 1
+    movzx  r14d, byte [r12+mbhdr.dqp]
+    test   r14d, r14d
+    jnz .dqp_1
+    CABAC_BIN 0, CTX(r1+60)
+    jmp .end
+.dqp_1:
+    CABAC_BIN 1, CTX(r1+60)
+    dec    r14d
+    jnz .dqp_2
+    CABAC_BIN 0, CTX(62)
+    jmp .end
+.dqp_2:
+    CABAC_BIN 1, CTX(62)
+    movzx   r2d, byte [CTX(63)]     ; in r2d for the run
+    dec    r14d
+    jz .dqp_0
+.dqp_ones:
+    CABAC_BIN 1
+    dec    r14d
+    jnz .dqp_ones
+.dqp_0:
+    CABAC_BIN 0
+    mov [CTX(63)], r2b
+
+.end:
+    mov      r6, r3
+    CABAC_FLUSH_RET r3
+
+; a bin string at r13, r14d added to its first ctxIdx; clobbers r1, r2, r4-r6, r13, r14
+.binstr:
+    movzx   r1d, byte [r13+1]
+    add     r1d, r14d
+    movzx  r14d, byte [r13]
+.binstr_loop:
+    CABAC_BINV r14d, CTX(r1)
+    inc     r13
+    shr    r14d, 1
+    movzx   r1d, byte [r13+1]
+    cmp    r14d, 1
+    jne .binstr_loop
+    ret
+
+    PUTBYTES_SLOW r3
+    PUTBYTE_STUBS
 %endif

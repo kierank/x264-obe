@@ -51,6 +51,60 @@ typedef struct
     uint8_t padding[12];
 } x264_cabac_t;
 
+/* The written syntax of an MB before its residual, for bsf.cabac_mb_header:
+ * end_of_slice_flag, mb_skip_flag, mb_field_decoding_flag, mb_type, sub_mb_type,
+ * ref_idx, mvd, the intra modes, coded_block_pattern, transform_size_8x8_flag and
+ * mb_qp_delta. Mirrored by struc mbhdr in common/x86/cabac-a.asm. */
+#define CABAC_HDR_TERM          (1<<0)  /* end_of_slice_flag 0 first */
+#define CABAC_HDR_SKIPFLAG      (1<<1)  /* mb_skip_flag (P and B slices) */
+#define CABAC_HDR_BSLICE        (1<<2)
+#define CABAC_HDR_SKIP          (1<<3)  /* skipped: mb_skip_flag 1 and nothing else */
+#define CABAC_HDR_FIELD         (1<<4)  /* mb_field_decoding_flag */
+#define CABAC_HDR_FIELD_CTX_SHIFT  5    /* its ctxIdxInc, bits 5-6 */
+#define CABAC_HDR_FIELD_VAL     (1<<7)
+#define CABAC_HDR_INTRA         (1<<8)  /* I_4x4, I_8x8 or I_16x16 */
+#define CABAC_HDR_I16           (1<<9)
+#define CABAC_HDR_T8X8_HDR      (1<<10) /* I_NxN: transform_size_8x8_flag before the modes */
+#define CABAC_HDR_T8X8          (1<<11) /* b_transform_8x8 */
+#define CABAC_HDR_T8X8_OK       (1<<12) /* transform_size_8x8_flag after the cbp if cbp luma */
+#define CABAC_HDR_DQP_CTX       (1<<13)
+#define CABAC_HDR_CCTX_SHIFT    14      /* intra_chroma_pred_mode ctxIdxInc, bits 14-15 */
+#define CABAC_HDR_CMODE_SHIFT   16      /* intra_chroma_pred_mode, bits 16-17 */
+#define CABAC_HDR_PRED16_SHIFT  18      /* I_16x16 prediction, bits 18-19 */
+#define CABAC_HDR_SUB_P         (1<<20) /* sub_mb_type of P_8x8 */
+#define CABAC_HDR_SUB_B         (1<<21) /* sub_mb_type of B_8x8 */
+#define CABAC_HDR_TCTX_SHIFT    22      /* ctxIdxInc of the first mb_type bin, bits 22-23 */
+
+/* mb_type bin strings (cabac_mbhdr_type in common/x86/cabac-a.asm) */
+enum cabac_hdr_type_e
+{
+    CABAC_HDR_P_16x8 = 0, /* P_L0: + i_partition - D_16x8 */
+    CABAC_HDR_P_8x8 = 3,
+    CABAC_HDR_P_INXN = 4, /* intra: + 1 for I_16x16 */
+    CABAC_HDR_I_INXN = 6,
+    CABAC_HDR_B_DIRECT = 8,
+    CABAC_HDR_B_8x8 = 9,
+    CABAC_HDR_B_INXN = 10,
+    CABAC_HDR_B_L0_L0 = 12, /* + (i_mb_type - B_L0_L0) * 3 + i_partition - D_16x8 */
+};
+
+typedef struct
+{
+    uint32_t flags;         /* CABAC_HDR_* */
+    int32_t  pos_start;     /* out: x264_cabac_pos before the field flag */
+    int32_t  pos_tex;       /* out: x264_cabac_pos after the intra modes or mvd */
+    uint8_t  type;          /* cabac_hdr_type_e */
+    uint8_t  cbp;           /* luma | chroma << 4 */
+    uint8_t  dqp;           /* the 1 bins of mb_qp_delta */
+    uint8_t  i_ref;
+    uint8_t  i_mvd;
+    uint8_t  sub[4];        /* sub_mb_type */
+    uint8_t  ref[8];        /* ref_idx in order: scan8 | list << 6 */
+    uint8_t  mvd[16];       /* mvd in order: scan8 | list << 6 */
+    uint8_t  shape[16];     /* their mvd cache rectangle: width | height << 3, in 4x4 */
+    ALIGNED_8( int16_t mvp[16][2] );
+} x264_cabac_mbhdr_t;
+
 /* init the contexts given i_slice_type, the quantif and the model */
 #define x264_cabac_context_init x264_template(cabac_context_init)
 void x264_cabac_context_init( x264_t *h, x264_cabac_t *cb, int i_slice_type, int i_qp, int i_model );

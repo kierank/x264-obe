@@ -7197,6 +7197,189 @@ static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
         }
 }
 
+#define x264_cabac_mb_header_write_c x264_template(cabac_mb_header_write_c)
+#define x264_cabac_mb_header_prep_test x264_template(cabac_mb_header_prep_test)
+void x264_cabac_mb_header_write_c( x264_t *h, int b_term );
+void x264_cabac_mb_header_prep_test( x264_t *h, x264_cabac_mbhdr_t *hdr, int b_term );
+
+/* an MB for cabac_mb_header: every type but I_PCM, frame or field, MBAFF pairs (the field
+ * flag, its neighbour contexts, a skipped top), end_of_slice_flag or not. Any neighbour cache
+ * (ref_idx -2 to 31, skip flags, mvd bytes 0-255, intra modes -1 to 11, cbp_left/top -1,
+ * any i_neighbour_skip/transform_size), mv anywhere in int16, near a common mv or all equal,
+ * the saved 16x16 mvp or not, i_fref 1-2 or 1-32, every sub_mb_type, cbp, intra mode,
+ * transform size and qp delta. The header does not depend on the chroma format below 4:4:4
+ * (4:2:2 codes the same chroma cbp), so 4:2:0 and 4:2:2 are one case.
+ * Returns the class: 0-2 P_L0 16x16/16x8/8x16, 3 P_8x8, 4 P_SKIP, 5 B_DIRECT,
+ * 6-8 B 16x16 L0/L1/BI, 9-17 B 16x8, 18-26 B 8x16 (B_L0_L0 to B_BI_BI), 27 B_8x8, 28 B_SKIP,
+ * 29-37 I_4x4/I_8x8/I_16x16 in I, P, B */
+#define HDRW_CLASSES 38
+static int hdrw_gen( x264_t *h, int (*rnd)( void ), int *b_term )
+{
+    static int8_t type[8];
+    static int16_t cbp[8];
+    static int8_t chroma_pred_mode[8];
+    static uint16_t slice_table[8];
+    static uint8_t field[8];
+    static const int8_t ntype[7] = { B_SKIP, B_DIRECT, B_L0_L0, P_L0, I_4x4, B_BI_BI, I_16x16 };
+    static const int8_t skipv[5] = { 0, 1, 2, 4, 8 };
+    static const uint8_t slice[3] = { SLICE_TYPE_I, SLICE_TYPE_P, SLICE_TYPE_B };
+    static const uint8_t itype[3] = { I_4x4, I_8x8, I_16x16 };
+    static const uint8_t bsub[4] = { D_L0_8x8, D_L1_8x8, D_BI_8x8, D_DIRECT_8x8 };
+    int r = rnd();
+    int cls = (r>>2)%HDRW_CLASSES;
+    h->mb.b_interlaced = r&1;
+    h->sh.b_mbaff = r&2 ? rnd()&1 : 0;
+    *b_term = rnd()&1;
+    if( cls >= 29 )
+    {
+        h->sh.i_type = slice[(cls-29)/3];
+        h->mb.i_type = itype[(cls-29)%3];
+        h->mb.i_partition = D_16x16;
+    }
+    else if( cls >= 5 )
+    {
+        h->sh.i_type = SLICE_TYPE_B;
+        if( cls == 5 || cls == 28 )
+        {
+            h->mb.i_type = cls == 5 ? B_DIRECT : B_SKIP;
+            h->mb.i_partition = D_8x8;
+        }
+        else if( cls == 27 )
+        {
+            h->mb.i_type = B_8x8;
+            h->mb.i_partition = D_8x8;
+            for( int i = 0; i < 4; i++ )
+                h->mb.i_sub_partition[i] = bsub[rnd()&3];
+        }
+        else if( cls < 9 )
+        {
+            h->mb.i_type = (cls == 6 ? B_L0_L0 : cls == 7 ? B_L1_L1 : B_BI_BI);
+            h->mb.i_partition = D_16x16;
+        }
+        else
+        {
+            h->mb.i_type = B_L0_L0 + (cls - 9)%9;
+            h->mb.i_partition = cls < 18 ? D_16x8 : D_8x16;
+        }
+    }
+    else
+    {
+        h->sh.i_type = SLICE_TYPE_P;
+        if( cls < 3 )
+        {
+            h->mb.i_type = P_L0;
+            h->mb.i_partition = cls == 0 ? D_16x16 : cls == 1 ? D_16x8 : D_8x16;
+        }
+        else
+        {
+            h->mb.i_type = cls == 3 ? P_8x8 : P_SKIP;
+            h->mb.i_partition = cls == 3 ? D_8x8 : D_16x16;
+            for( int i = 0; i < 4; i++ )
+                h->mb.i_sub_partition[i] = rnd()&3 ? D_L0_8x8 - (rnd()&3) : D_L0_8x8;
+        }
+    }
+    h->mb.i_neighbour = rnd()&3;
+    h->mb.i_mb_type_left[0] = ntype[rnd()%7];
+    h->mb.i_mb_type_top = ntype[rnd()%7];
+    int maxref = rnd()&3 ? 2 : 32;
+    int mvmode = rnd()%5;
+    int mvrange = mvmode == 0 ? 4 : mvmode == 1 ? 13 : mvmode == 2 ? 4096 : mvmode == 3 ? 65536 : 0;
+    int16_t mvc[2] = { rnd() - 32768, rnd() - 32768 };
+    for( int l = 0; l < 2; l++ )
+    {
+        h->mb.pic.i_fref[l] = 1 + rnd()%maxref;
+        for( int i = 0; i < X264_SCAN8_LUMA_SIZE; i++ )
+        {
+            h->mb.cache.ref[l][i] = rnd()%34 - 2;
+            for( int c = 0; c < 2; c++ )
+            {
+                int v = rnd();
+                h->mb.cache.mv[l][i][c] = mvrange == 65536 ? v : mvc[c] + v%(2*mvrange+1) - mvrange;
+                h->mb.cache.mvd[l][i][c] = v&0x100 ? (v>>9)&0xff : (v>>9)%67;
+            }
+        }
+        /* ref_idx of the partitions: any for the C and the mv prediction */
+        for( int i = 0; i < 16; i++ )
+            if( rnd()&3 )
+                h->mb.cache.ref[l][x264_scan8[i]] = rnd()%h->mb.pic.i_fref[l];
+        h->mb.mvp16_valid[l] = rnd() & (rnd() | rnd());
+        for( int i = 0; i < X264_REF_MAX*2; i++ )
+            for( int c = 0; c < 2; c++ )
+                h->mb.mvp16[l][i][c] = mvc[c] + (mvrange ? rnd()%7 - 3 : 0);
+        for( int i = 0; i < 3; i++ )
+        {
+            h->mb.cache.topright_ref[l][i] = rnd()%4 - 2;
+            h->mb.cache.topright_mv[l][i][0] = mvc[0] + rnd()%9 - 4;
+            h->mb.cache.topright_mv[l][i][1] = mvc[1] + rnd()%9 - 4;
+        }
+    }
+    for( int i = 0; i < X264_SCAN8_LUMA_SIZE; i++ )
+        h->mb.cache.skip[i] = skipv[rnd()%5];
+    h->mb.cache.i_neighbour_skip = rnd()%3;
+    h->mb.i_cbp_luma = h->mb.i_type == I_16x16 ? (rnd()&1)*15 : rnd()&15;
+    h->mb.i_cbp_chroma = rnd()%3;
+    h->mb.cache.i_cbp_left = rnd()&3 ? rnd()&0x7ff : -1;
+    h->mb.cache.i_cbp_top  = rnd()&3 ? rnd()&0x7ff : -1;
+    h->mb.cache.i_neighbour_transform_size = rnd()%3;
+    h->pps->b_transform_8x8_mode = rnd()&1;
+    h->mb.b_transform_8x8 = rnd()&7 ? h->mb.i_type == I_8x8 || (!IS_INTRA( h->mb.i_type ) && rnd()&1) : rnd()&1;
+    for( int i = 0; i < X264_SCAN8_LUMA_SIZE; i++ )
+        h->mb.cache.intra4x4_pred_mode[i] = rnd()%13 - 1;
+    for( int i = 0; i < 16; i++ )
+        h->mb.cache.intra4x4_pred_mode[x264_scan8[i]] = rnd()%12;
+    /* the predicted mode often */
+    for( int i = 0; i < 16; i++ )
+        if( rnd()&1 )
+            h->mb.cache.intra4x4_pred_mode[x264_scan8[i]] = x264_mb_predict_intra4x4_mode( h, i );
+    h->mb.i_intra16x16_pred_mode = rnd()%7;
+    h->mb.i_chroma_pred_mode = rnd()%7;
+    h->mb.chroma_pred_mode = chroma_pred_mode;
+    h->mb.i_mb_stride = 2;
+    h->mb.i_mb_xy = 5;
+    h->mb.i_mb_prev_xy = 4;
+    h->mb.i_mb_left_xy[0] = 4;
+    h->mb.i_mb_left_xy[1] = 4;
+    h->mb.i_mb_top_xy = 3;
+    h->mb.i_mb_top_mbpair_xy = 1 + (rnd()&1)*2;
+    h->mb.i_mb_x = rnd()&1;
+    h->mb.i_mb_y = rnd()&1;
+    h->mb.field_decoding_flag = rnd()&1;
+    h->i_threadslice_start = rnd()&1;
+    h->sh.i_first_mb = rnd()&1;
+    h->mb.slice_table = slice_table;
+    h->mb.field = field;
+    for( int i = 0; i < 8; i++ )
+    {
+        slice_table[i] = rnd()&1;
+        field[i] = rnd()&1;
+        chroma_pred_mode[i] = rnd()&1 ? rnd()%4 : 0;
+        type[i] = ntype[rnd()%7];
+        cbp[i] = rnd()&1 ? rnd()&0x3f : 0;
+    }
+    h->mb.i_last_qp = rnd()%(QP_MAX_SPEC+1);
+    h->mb.i_qp = rnd()&1 ? h->mb.i_last_qp : rnd()&1 ? rnd()%(QP_MAX_SPEC+1) :
+                 x264_clip3( h->mb.i_last_qp + rnd()%7 - 3, 0, QP_MAX_SPEC );
+    h->mb.i_last_dqp = rnd()&1;
+    h->mb.type = type;
+    h->mb.cbp = cbp;
+    return cls;
+}
+
+/* the coder mid-stream: arbitrary low/queue, sometimes bytes outstanding, low just below a
+ * byte boundary (pending 0xff bits), as the residual test */
+static void hdrw_coder( x264_t *h, x264_cabac_t *cb, uint8_t *buf, int j, int (*rnd)( void ) )
+{
+    x264_cabac_encode_init( cb, buf, buf+0xfff0 );
+    for( int k = (rnd()&63) | (j&2)*12; k > 0; k-- )
+        x264_cabac_encode_bypass_c( cb, -(rnd()&1) );
+    if( (j&2) && cb->p > cb->p_start )
+    {
+        cb->i_low = (1 << (cb->i_queue+18)) - 1 - (rnd()&0x7f);
+        for( int k = (j&1) * (8 + (rnd()&31)); k > 0; k-- )
+            x264_cabac_encode_bypass_c( cb, -(2*cb->i_low + cb->i_range < (2 << (cb->i_queue+18))) );
+    }
+}
+
 static int check_cabac( int cpu_ref, int cpu_new )
 {
     int ret = 0, ok = 1, used_asm = 0;
@@ -7465,6 +7648,140 @@ name##fail:
     }
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     report( "cabac 4:2:2 dc :" );
+
+    /* the written syntax before the residual: bsf.cabac_mb_header against the C, from the
+     * same coder state into two buffers; the bytes, the coder, all contexts, the mvd cache,
+     * the qp, field_decoding_flag and the mv/tex bit counts */
+    ok = 1; used_asm = 0;
+    if( bs_a.cabac_mb_header && bs_a.cabac_mb_header != bs_ref.cabac_mb_header )
+    {
+        used_asm = 1;
+        set_func_name( "cabac_mb_header" );
+        uint64_t seen = 0;
+        int seen_x = 0;
+        uint8_t *hbuf = x264_malloc( 2*0x1000 );
+        for( int j = 0, fails = 0; j < 60000 && fails < 8; j++ )
+        {
+            ALIGNED_16( x264_cabac_mbhdr_t hdr );
+            ALIGNED_8( uint8_t mvd[2][2][X264_SCAN8_LUMA_SIZE][2] );
+            x264_cabac_t cb[2], init;
+            int b_term, res[2][4];
+            int cls = hdrw_gen( &h, rand, &b_term );
+            seen |= 1ULL << cls;
+            x264_cabac_context_init( &h, &h.cabac, h.sh.i_type, (j*13)%52, (j>>6)%3 );
+            if( j&1 )
+                for( int k = 0; k < 1024; k++ )
+                    for( int t = rand()%48; t > 0; t-- )
+                        h.cabac.state[k] = x264_cabac_transition[h.cabac.state[k]][rand()&1];
+            hdrw_coder( &h, &h.cabac, hbuf, j, rand );
+            memcpy( hbuf+0x1000, hbuf, 0x1000 );
+            memcpy( &init, &h.cabac, sizeof(x264_cabac_t) );
+            memcpy( mvd[1], h.mb.cache.mvd, sizeof(mvd[1]) );
+            int qp = h.mb.i_qp, fdf = h.mb.field_decoding_flag;
+            for( int a = 0; a < 2; a++ )
+            {
+                memcpy( &h.cabac, &init, sizeof(x264_cabac_t) );
+                h.cabac.p_start += a*0x1000;
+                h.cabac.p       += a*0x1000;
+                h.cabac.p_end   += a*0x1000;
+                memcpy( h.mb.cache.mvd, mvd[1], sizeof(mvd[1]) );
+                h.mb.i_qp = qp;
+                h.mb.field_decoding_flag = fdf;
+                h.stat.frame.i_mv_bits = h.stat.frame.i_tex_bits = 0;
+                if( !a )
+                {
+                    call_c1( x264_cabac_mb_header_write_c, &h, b_term );
+                    memcpy( mvd[0], h.mb.cache.mvd, sizeof(mvd[0]) );
+                }
+                else
+                {
+                    x264_cabac_mb_header_prep_test( &h, &hdr, b_term );
+                    call_a1( bs_a.cabac_mb_header, &h.cabac, &h.mb.cache, &hdr );
+                    if( !IS_SKIP( h.mb.i_type ) )
+                    {
+                        h.stat.frame.i_mv_bits += hdr.pos_tex - hdr.pos_start;
+                        h.stat.frame.i_tex_bits += x264_cabac_pos( &h.cabac ) - hdr.pos_tex;
+                    }
+                    for( int k = 0; k < hdr.i_ref; k++ )
+                    {
+                        int ref = h.mb.cache.ref[hdr.ref[k]>>6][hdr.ref[k]&63];
+                        seen_x |= (ref >= 2) | (ref >= 15) << 1;
+                    }
+                    for( int k = 0; k < hdr.i_mvd; k++ )
+                        for( int c = 0; c < 2; c++ )
+                        {
+                            int d = abs( h.mb.cache.mv[hdr.mvd[k]>>6][hdr.mvd[k]&63][c] - hdr.mvp[k][c] );
+                            seen_x |= (d >= 9) << 2 | (d >= 513) << 3;
+                        }
+                    seen_x |= !!(hdr.flags & CABAC_HDR_FIELD) << 4 | (hdr.dqp >= 3) << 5 | b_term << 6 |
+                              (h.mb.i_type == I_8x8 && h.mb.b_transform_8x8) << 7 |
+                              (h.mb.i_type == P_8x8 && h.mb.i_sub_partition[j&3] == (j>>2&3)) << (8+(j>>2&3));
+                }
+                memcpy( &cb[a], &h.cabac, sizeof(x264_cabac_t) );
+                res[a][0] = h.mb.i_qp;
+                res[a][1] = h.mb.field_decoding_flag;
+                res[a][2] = h.stat.frame.i_mv_bits;
+                res[a][3] = h.stat.frame.i_tex_bits;
+            }
+            /* a carry or a 0xff byte may be held in another form: compare the position, then
+             * flush copies and compare the whole stream */
+            int diff = 0;
+            while( diff < 1024 && cb[0].state[diff] == cb[1].state[diff] )
+                diff++;
+            int pos[2] = { x264_cabac_pos( &cb[0] ), x264_cabac_pos( &cb[1] ) };
+            int mok = diff == 1024 && !memcmp( res[0], res[1], sizeof(res[0]) ) &&
+                 !memcmp( mvd[0], h.mb.cache.mvd, sizeof(mvd[0]) ) &&
+                 pos[0] == pos[1] && cb[0].i_range == cb[1].i_range && cb[0].i_queue == cb[1].i_queue;
+            for( int a = 0; a < 2; a++ )
+            {
+                x264_cabac_encode_bypass_c( &cb[a], 0 ); /* flush ORs in bit 0 */
+                x264_cabac_encode_flush( &h, &cb[a] );
+            }
+            mok &= cb[0].p - cb[0].p_start == cb[1].p - cb[1].p_start &&
+                  !memcmp( hbuf, hbuf+0x1000, cb[0].p - hbuf );
+            ok &= mok;
+            if( !mok && ++fails )
+                fprintf( stderr, "cabac_mb_header :  [FAILED] class %d slice %d type %d partition %d mbaff %d/%d term %d cbp %x/%d "
+                         "qp %d/%d: ctx %d pos %d/%d range %x/%x qp %d/%d field %d/%d mv %d/%d tex %d/%d mvd %d\n",
+                         cls, h.sh.i_type, h.mb.i_type, h.mb.i_partition, h.sh.b_mbaff, h.mb.b_interlaced, b_term,
+                         h.mb.i_cbp_luma, h.mb.i_cbp_chroma, qp, h.mb.i_last_qp, diff, pos[0], pos[1],
+                         cb[0].i_range, cb[1].i_range, res[0][0], res[1][0], res[0][1], res[1][1], res[0][2], res[1][2],
+                         res[0][3], res[1][3], !memcmp( mvd[0], h.mb.cache.mvd, sizeof(mvd[0]) ) );
+        }
+        /* every class; ref_idx >= 2 and >= 15, |mvd| >= 9 and >= 513, the field flag, mb_qp_delta
+         * of 3+ bins, end_of_slice_flag, I_8x8, the 4 P sub types */
+        if( ok && (seen != (1ULL << HDRW_CLASSES) - 1 || seen_x != 0xfff) )
+        {
+            ok = 0;
+            fprintf( stderr, "cabac_mb_header :  [FAILED] not covered: classes %011"PRIx64" other %03x\n",
+                     (uint64_t)(~seen & ((1ULL << HDRW_CLASSES) - 1)), ~seen_x & 0xfff );
+        }
+        /* bench: 64 fixed MBs per group (P inter, B inter, intra, skip), contexts of the slice at
+         * qp 26; the C is the whole C header, the asm the call alone */
+        static const char *hdrw_group[4] = { "p", "b", "intra", "skip" };
+        uint8_t *bbuf = do_bench ? x264_malloc( 4<<20 ) : NULL;
+        for( int j = 0; j < 4*64 && bbuf; j++ )
+        {
+            ALIGNED_16( x264_cabac_mbhdr_t hdr );
+            int g = j>>6, b_term, cls;
+            set_func_name( "cabac_mb_header_%s", hdrw_group[g] );
+            bench_srand( 50 + j );
+            do
+                cls = hdrw_gen( &h, bench_rand, &b_term );
+            while( (cls == 4 || cls == 28 ? 3 : cls >= 29 ? 2 : cls >= 5) != g );
+            x264_cabac_context_init( &h, &h.cabac, h.sh.i_type, 26, 0 );
+            x264_cabac_encode_init( &h.cabac, bbuf, bbuf + (4<<20) - 64 );
+            call_c2( x264_cabac_mb_header_write_c, &h, b_term );
+            x264_cabac_encode_init( &h.cabac, bbuf, bbuf + (4<<20) - 64 );
+            x264_cabac_mb_header_prep_test( &h, &hdr, b_term );
+            call_a2( bs_a.cabac_mb_header, &h.cabac, &h.mb.cache, &hdr );
+        }
+        x264_free( bbuf );
+        x264_free( hbuf );
+        h.sh.i_type = SLICE_TYPE_P;
+        h.sh.b_mbaff = 0;
+    }
+    report( "cabac mb header :" );
 
 #if HAVE_MMX
     if( (cpu_new & (X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_BMI2|X264_CPU_LZCNT) &&
