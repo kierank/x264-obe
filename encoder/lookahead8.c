@@ -29,6 +29,8 @@
 
 #if BIT_DEPTH == 8
 
+#include "lookahead8corr.h"
+
 typedef struct
 {
     x264_t h;
@@ -434,6 +436,7 @@ lowres_intra_mb:
         }
 
         i_icost += intra_penalty + lowres_penalty;
+        i_icost = x264_lowres_cost_corr( i_icost, la8_corr_intra, LA8_CORR_INTRA_MAX, intra_penalty + lowres_penalty );
         fenc->i_intra_cost[i_mb_xy] = i_icost;
         int i_icost_aq = i_icost;
         if( h->param.rc.i_aq_mode )
@@ -446,6 +449,9 @@ lowres_intra_mb:
         }
     }
     i_bcost += lowres_penalty;
+    if( p0 != p1 )
+        i_bcost = b_bidir ? x264_lowres_cost_corr( i_bcost, la8_corr_b, LA8_CORR_B_MAX, lowres_penalty )
+                          : x264_lowres_cost_corr( i_bcost, la8_corr_p, LA8_CORR_P_MAX, lowres_penalty );
 
     /* forbid intra-mbs in B-frames, because it's rare and not worth checking */
     /* FIXME: Should we still forbid them now that we cache intra scores? */
@@ -533,6 +539,10 @@ void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
         lp.start_y = start_y;
         lp.end_y = end_y;
         lp.do_search = do_search[0];
+        lp.corr_intra = la8_corr_intra;
+        lp.corr_inter = la8_corr_p;
+        lp.corr_intra_max = LA8_CORR_INTRA_MAX;
+        lp.corr_inter_max = LA8_CORR_P_MAX;
         x264_lowres_p_run( h, &lp );
         return;
     }
