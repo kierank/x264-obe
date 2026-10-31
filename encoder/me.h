@@ -54,6 +54,9 @@ typedef struct
     int cost_mv;        /* lambda * nbits for the chosen mv */
     int cost;           /* satd + lambda * nbits */
     ALIGNED_4( int16_t mv[2] );
+    /* lazy hpel (x264_me_hpel_ensure): the ref's h->mb.hpel_win, NULL if it isn't
+     * lazy; after mv, in the padding, so the asm offsets above are unchanged */
+    int      *hpel_win;
 } ALIGNED_64( x264_me_t );
 
 typedef struct
@@ -130,6 +133,47 @@ static inline void x264_me_fpel_init( x264_pixel_function_t *pf )
         f->subpel = pf->mbcmp_subpel_search[i];
         f->qpel = pf->mbcmp_qpel_search[i];
     }
+}
+
+/* lazy hpel of m's ref */
+static ALWAYS_INLINE void x264_me_hpel_init( x264_t *h, x264_me_t *m, int list, int i_ref )
+{
+    m->hpel_win = NULL;
+    if( HPEL_LAZY && h->mb.b_hpel_lazy )
+    {
+        int j = i_ref >> MB_INTERLACED;
+        if( h->mb.hpel_lazy[MB_INTERLACED][list][j] )
+            m->hpel_win = h->mb.hpel_win[MB_INTERLACED][list][j];
+    }
+}
+
+/* lazy hpel: the row of p_fref[0] of m's block in its ref's hpel planes */
+static ALWAYS_INLINE int x264_me_hpel_y( x264_t *h, x264_me_t *m )
+{
+    return 16*(h->mb.i_mb_y >> MB_INTERLACED) + (int)(m->p_fenc[0] - h->mb.pic.p_fenc[0]) / FENC_STRIDE;
+}
+
+/* lazy hpel: the hpel rows of m's ref that mc_luma/get_ref read for m's block
+ * of height rows at every qpel mv with vertical component in [mvy0, mvy1] */
+static ALWAYS_INLINE void x264_me_hpel_ensure_span( x264_t *h, x264_me_t *m, int mvy0, int mvy1, int height )
+{
+    if( HPEL_LAZY && m->hpel_win && (mvy0 < m->hpel_win[0] || mvy1 > m->hpel_win[1]) )
+    {
+        int y = x264_me_hpel_y( h, m );
+        x264_hpel_ensure_win( h, m->hpel_win, y + (mvy0 >> 2), y + (mvy1 >> 2) + height );
+    }
+}
+/* the same at one qpel mv; a fullpel mv reads no hpel */
+static ALWAYS_INLINE void x264_me_hpel_ensure( x264_t *h, x264_me_t *m, int mvx, int mvy, int height )
+{
+    if( (mvx|mvy)&3 )
+        x264_me_hpel_ensure_span( h, m, mvy, mvy, height );
+}
+/* lazy hpel: whether m's window holds every vertical mv of the spel range, so
+ * no read of a search inside it needs an ensure */
+static ALWAYS_INLINE int x264_me_hpel_all( x264_t *h, x264_me_t *m )
+{
+    return !HPEL_LAZY || !m->hpel_win || (m->hpel_win[0] <= h->mb.mv_min_spel[1] && m->hpel_win[1] >= h->mb.mv_max_spel[1]);
 }
 
 /* fenc_pre of the luma partition i_pixel at p_fenc (in h->mb.pic.p_fenc[0]) for

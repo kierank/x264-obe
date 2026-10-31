@@ -719,6 +719,18 @@ struct x264_t
          * Cleared in cache_load. */
         ALIGNED_4( int16_t mvp16[2][X264_REF_MAX*2][2] );
         uint32_t mvp16_valid[2];
+        /* lazy hpel: by set (0 frame, 1 field), list and ref frame, whether the
+         * ref is lazy with rows not known built, and the hpel rows [0], [1]
+         * known built (x264_hpel_ensure); reset by x264_macroblock_slice_init.
+         * Slice threads copy them from the frame's context, so no pointers. */
+        int     b_hpel_lazy; /* any */
+        uint8_t hpel_lazy[2][2][X264_REF_MAX];
+        int     hpel_ok[2][2][X264_REF_MAX][2];
+        /* and the qpel vertical mvs [0], [1] at which any block of the current
+         * mb, or its pair if a frame mb of an interlaced frame (rows from
+         * hpel_win_y[set]), reads only those rows */
+        int     hpel_win[2][2][X264_REF_MAX][2];
+        int     hpel_win_y[2];
     } mb;
 
     /* rate control encoding only */

@@ -43,6 +43,7 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     /* H.264 8.4.3: a field mb's explicit weights are those of refIdxL0 >> 1 */
     x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
 
+    x264_mb_hpel_ensure( h, 0, i_ref, mvx, mvy, 4*height );
     MC_LUMA( 0, 0, &weight[0] );
 
     if( CHROMA444 )
@@ -83,6 +84,7 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
     int mvx   = x264_clip3( h->mb.cache.mv[1][i8][0], h->mb.mv_min[0], h->mb.mv_max[0] ) + 4*4*x;
     int mvy   = x264_clip3( h->mb.cache.mv[1][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
 
+    x264_mb_hpel_ensure( h, 1, i_ref, mvx, mvy, 4*height );
     MC_LUMA( 1, 0, x264_weight_none );
 
     if( CHROMA444 )
@@ -130,6 +132,8 @@ static NOINLINE void x264_mb_mc_01xywh( x264_t *h, int x, int y, int width, int 
     ALIGNED_ARRAY_N( pixel, tmp1,[16*16] );
     pixel *src0, *src1;
 
+    x264_mb_hpel_ensure( h, 0, i_ref0, mvx0, mvy0, 4*height );
+    x264_mb_hpel_ensure( h, 1, i_ref1, mvx1, mvy1, 4*height );
     MC_LUMA_BI( 0 );
 
     if( CHROMA444 )
@@ -468,6 +472,21 @@ void x264_macroblock_slice_init( x264_t *h )
 
     h->fdec->i_ref[0] = h->i_ref[0];
     h->fdec->i_ref[1] = h->i_ref[1];
+    /* lazy hpel: none of a lazy ref's rows are known built */
+    h->mb.b_hpel_lazy = 0;
+    for( int s = 0; HPEL_LAZY && s < 2; s++ )
+    {
+        h->mb.hpel_win_y[s] = INT_MIN;
+        for( int l = 0; l < 2; l++ )
+            for( int j = 0; j < X264_REF_MAX; j++ )
+            {
+                int b_lazy = j < h->i_ref[l] && h->fref[l][j]->orig->b_hpel_lazy;
+                h->mb.hpel_ok[s][l][j][0] = h->mb.hpel_win[s][l][j][0] = INT_MAX;
+                h->mb.hpel_ok[s][l][j][1] = h->mb.hpel_win[s][l][j][1] = INT_MIN;
+                h->mb.hpel_lazy[s][l][j] = b_lazy;
+                h->mb.b_hpel_lazy |= b_lazy;
+            }
+    }
     for( int i = 0; i < h->i_ref[0]; i++ )
         h->fdec->ref_poc[0][i] = h->fref[0][i]->i_poc;
     if( h->sh.i_type == SLICE_TYPE_B )

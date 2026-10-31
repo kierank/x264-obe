@@ -74,6 +74,8 @@ struc me
     .cost_mv:     resd 1
     .cost:        resd 1
     .mv:          resw 2
+    alignb 8
+    .hpel_win:    resq 1
     alignb 64
 endstruc
 
@@ -376,6 +378,8 @@ struc ap
     .i_type:      resd 1
     .i_partition: resd 1
     .i_cost:      resd 1
+    .hpel_win:    resq 1
+    .hpel_lazy:   resq 1
 endstruc
 
 %define PIC   (mb.pic)
@@ -1025,6 +1029,19 @@ ap_load:
     imul   eax, eax, 3*wt_size
     add    rax, [rbx+ap.weight]
     mov    [rdi+me.weight], rax
+    ; x264_me_hpel_init( h, m, 0, ref ): hpel_win[j], j = ref >> MB_INTERLACED, where
+    ; hpel_lazy[j], else NULL
+    xor    eax, eax
+    mov    rdx, [rbx+ap.hpel_win]
+    test   rdx, rdx
+    jz .nowin
+    sarx   esi, esi, ecx
+    mov    rcx, [rbx+ap.hpel_lazy]
+    cmp    byte [rcx+rsi], 0
+    je .nowin
+    lea    rax, [rdx+rsi*8]
+.nowin:
+    mov    [rdi+me.hpel_win], rax
     ret
 
 %endif ; UNIX64
