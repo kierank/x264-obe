@@ -62,6 +62,32 @@
 #define ALIGN(x,a) (((x)+((a)-1))&~((a)-1))
 #define IS_DISPOSABLE(type) ( type == X264_TYPE_B )
 
+/* number of pixels past the edge of the frame, for motion estimation/compensation */
+#define PADH 32
+#define PADV 32
+
+/* Frame plane alignment in pixels and the stride power of two to avoid, shared by
+ * x264_frame_new and x264_source_layout. 64 on x86 whatever the cpu flags, so a
+ * caller can allocate source planes in this layout before opening the encoder. */
+#if ARCH_X86 || ARCH_X86_64
+#define FRAME_ALIGN 64
+#else
+#define FRAME_ALIGN 16
+#endif
+#if ARCH_PPC
+#define FRAME_DISALIGN (1<<9)
+#else
+#define FRAME_DISALIGN (1<<10)
+#endif
+
+static ALWAYS_INLINE int x264_align_stride( int x, int align, int disalign )
+{
+    x = ALIGN( x, align );
+    if( !(x&(disalign-1)) )
+        x += align;
+    return x;
+}
+
 /* Unions for type-punning.
  * Mn: load or store n bits, aligned, native-endian
  * CPn: copy n bits, aligned, native-endian

@@ -27,14 +27,6 @@
 
 #include "common.h"
 
-static int align_stride( int x, int align, int disalign )
-{
-    x = ALIGN( x, align );
-    if( !(x&(disalign-1)) )
-        x += align;
-    return x;
-}
-
 static int align_plane_size( int x, int disalign )
 {
     if( !(x&(disalign-1)) )
@@ -73,18 +65,8 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     int i_mb_count = h->mb.i_mb_count;
     int i_stride, i_width, i_lines, luma_plane_count;
     int i_padv = PADV << PARAM_INTERLACED;
-    int align = 16;
-#if ARCH_X86 || ARCH_X86_64
-    if( h->param.cpu&X264_CPU_CACHELINE_64 || h->param.cpu&X264_CPU_AVX512 )
-        align = 64;
-    else if( h->param.cpu&X264_CPU_CACHELINE_32 || h->param.cpu&X264_CPU_AVX2 )
-        align = 32;
-#endif
-#if ARCH_PPC
-    int disalign = 1<<9;
-#else
-    int disalign = 1<<10;
-#endif
+    int align = FRAME_ALIGN;
+    int disalign = FRAME_DISALIGN;
 
     /* ensure frame alignment after PADH is added */
     int padh_align = X264_MAX( align - PADH * (int)sizeof(pixel), 0 ) / (int)sizeof(pixel);
@@ -95,7 +77,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     /* allocate frame data (+64 for extra data for me) */
     i_width  = h->mb.i_mb_width*16;
     i_lines  = h->mb.i_mb_height*16;
-    i_stride = align_stride( i_width + 2*PADH, align, disalign );
+    i_stride = x264_align_stride( i_width + 2*PADH, align, disalign );
 
     if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
     {
@@ -125,7 +107,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     frame->i_csp = i_csp;
     frame->i_width_lowres = frame->i_width[0]/2;
     frame->i_lines_lowres = frame->i_lines[0]/2;
-    frame->i_stride_lowres = align_stride( frame->i_width_lowres + 2*PADH, align, disalign<<1 );
+    frame->i_stride_lowres = x264_align_stride( frame->i_width_lowres + 2*PADH, align, disalign<<1 );
 
     for( int i = 0; i < h->param.i_bframe + 2; i++ )
         for( int j = 0; j < h->param.i_bframe + 2; j++ )
@@ -352,6 +334,7 @@ void x264_frame_delete( x264_frame_t *frame )
      * so freeing those pointers would cause a double free later. */
     if( !frame->b_duplicate )
     {
+        x264_frame_ext_release( frame );
         x264_free( frame->base );
 
         if( frame->param && frame->param->param_free )
@@ -506,13 +489,16 @@ void x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t 
         int c_rows = (y1 >> v_shift) - c0;
         /* parenthesised: the checking macro returns, x264_frame_copy_picture_init checked */
         (get_plane_ptr)( h, src, &pix[0], &stride[0], 0, 0, 0 );
-        h->mc.plane_copy( dst->plane[0] + y0 * dst->i_stride[0], dst->i_stride[0], (pixel*)(pix[0] + (intptr_t)y0 * stride[0]),
-                          stride[0]/sizeof(pixel), h->param.i_width, rows );
+        /* borrowed planes (x264_frame_ext_attach) are the source, nothing to copy */
+        if( !dst->b_ext_plane[0] )
+            h->mc.plane_copy( dst->plane[0] + y0 * dst->i_stride[0], dst->i_stride[0], (pixel*)(pix[0] + (intptr_t)y0 * stride[0]),
+                              stride[0]/sizeof(pixel), h->param.i_width, rows );
         if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
         {
             (get_plane_ptr)( h, src, &pix[1], &stride[1], 1, 0, v_shift );
-            h->mc.plane_copy( dst->plane[1] + c0 * dst->i_stride[1], dst->i_stride[1], (pixel*)(pix[1] + (intptr_t)c0 * stride[1]),
-                              stride[1]/sizeof(pixel), h->param.i_width, c_rows );
+            if( !dst->b_ext_plane[1] )
+                h->mc.plane_copy( dst->plane[1] + c0 * dst->i_stride[1], dst->i_stride[1], (pixel*)(pix[1] + (intptr_t)c0 * stride[1]),
+                                  stride[1]/sizeof(pixel), h->param.i_width, c_rows );
         }
         else if( i_csp == X264_CSP_I420 || i_csp == X264_CSP_I422 || i_csp == X264_CSP_YV12 || i_csp == X264_CSP_YV16 )
         {
@@ -542,6 +528,58 @@ int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
         return -1;
     x264_frame_copy_picture_rows( h, dst, src, 0, h->param.i_height );
     return 0;
+}
+
+/* After x264_frame_copy_picture_init: make the picture's luma plane, and its chroma
+ * plane if NV12/NV16, dst's source planes instead of copying them. A plane is only
+ * used with dst's own stride and an aligned origin (see x264_source_layout); the
+ * caller guarantees the padding around it exists and may be written. Returns 1 if
+ * the luma plane was attached, after which x264_frame_ext_release calls release. */
+int x264_frame_ext_attach( x264_t *h, x264_frame_t *dst, x264_picture_t *src,
+                           void (*release)( void * ), void *release_opaque )
+{
+    int i_csp = src->img.i_csp & X264_CSP_MASK;
+    int b_nv = i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16;
+    if( !b_nv && i_csp != X264_CSP_I420 && i_csp != X264_CSP_I422 &&
+        i_csp != X264_CSP_YV12 && i_csp != X264_CSP_YV16 )
+        return 0;
+
+    int b_ext[2] = { 0, 0 };
+    for( int i = 0; i <= b_nv; i++ )
+        b_ext[i] = src->img.plane[i] && !((intptr_t)src->img.plane[i] & (FRAME_ALIGN-1)) &&
+                   src->img.i_stride[i] == dst->i_stride[i] * (int)sizeof(pixel);
+    if( !b_ext[0] )
+        return 0;
+
+    for( int i = 0; i < 2; i++ )
+        if( b_ext[i] )
+        {
+            dst->ext_saved_plane[i] = dst->plane[i];
+            dst->plane[i] = (pixel*)src->img.plane[i];
+            dst->b_ext_plane[i] = 1;
+        }
+    /* an fenc's filtered[0][0] is its plane[0] */
+    dst->filtered[0][0] = dst->plane[0];
+    dst->ext_release = release;
+    dst->ext_release_opaque = release_opaque;
+    return 1;
+}
+
+/* Give the borrowed planes back to the caller and restore x264's own */
+void x264_frame_ext_release( x264_frame_t *frame )
+{
+    if( !frame->ext_release )
+        return;
+    for( int i = 0; i < 2; i++ )
+        if( frame->b_ext_plane[i] )
+        {
+            frame->plane[i] = frame->ext_saved_plane[i];
+            frame->b_ext_plane[i] = 0;
+        }
+    frame->filtered[0][0] = frame->plane[0];
+    void (*release)( void * ) = frame->ext_release;
+    frame->ext_release = NULL;
+    release( frame->ext_release_opaque );
 }
 
 static void ALWAYS_INLINE pixel_memset( pixel *dst, pixel *src, int len, int size )
@@ -914,7 +952,10 @@ void x264_frame_push_unused( x264_t *h, x264_frame_t *frame )
     assert( frame->i_reference_count > 0 );
     frame->i_reference_count--;
     if( frame->i_reference_count == 0 )
+    {
+        x264_frame_ext_release( frame );
         x264_frame_push( h->frames.unused[frame->b_fdec], frame );
+    }
 }
 
 x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )

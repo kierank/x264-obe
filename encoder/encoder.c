@@ -3820,10 +3820,41 @@ int x264_encoder_invalidate_reference( x264_t *h, int64_t pts )
  *       B      5   2*4
  *       B      6   2*5
  ****************************************************************************/
+static int encoder_encode( x264_t *h,
+                           x264_nal_t **pp_nal, int *pi_nal,
+                           x264_picture_t *pic_in,
+                           x264_picture_t *pic_out,
+                           void (*release)( void * ), void *release_opaque );
+
 int     x264_encoder_encode( x264_t *h,
                              x264_nal_t **pp_nal, int *pi_nal,
                              x264_picture_t *pic_in,
                              x264_picture_t *pic_out )
+{
+    return encoder_encode( h, pp_nal, pi_nal, pic_in, pic_out, NULL, NULL );
+}
+
+int     x264_encoder_encode_ext( x264_t *h,
+                                 x264_nal_t **pp_nal, int *pi_nal,
+                                 x264_picture_t *pic_in,
+                                 x264_picture_t *pic_out,
+                                 void (*release)( void * ), void *release_opaque )
+{
+    if( !pic_in && release )
+    {
+        release( release_opaque );
+        release = NULL;
+    }
+    return encoder_encode( h, pp_nal, pi_nal, pic_in, pic_out, release, release_opaque );
+}
+
+/* release, if set, is called once the caller's planes in pic_in are no longer used:
+ * here if they were copied, else when the frame is released */
+static int encoder_encode( x264_t *h,
+                           x264_nal_t **pp_nal, int *pi_nal,
+                           x264_picture_t *pic_in,
+                           x264_picture_t *pic_out,
+                           void (*release)( void * ), void *release_opaque )
 {
     x264_t *thread_current, *thread_prev, *thread_oldest;
     int i_nal_type, i_nal_ref_idc, i_global_qp;
@@ -3860,27 +3891,33 @@ int     x264_encoder_encode( x264_t *h,
     {
         /* 1: Copy the picture to a frame and move it to a buffer */
         x264_frame_t *fenc = x264_frame_pop_unused( h, 0 );
-        if( !fenc )
+        if( !fenc || x264_frame_copy_picture_init( h, fenc, pic_in ) < 0 )
+        {
+            if( release )
+                release( release_opaque );
             return -1;
+        }
+        /* or borrow the caller's planes, which then are not copied */
+        if( release && x264_frame_ext_attach( h, fenc, pic_in, release, release_opaque ) )
+            release = NULL;
 
         x264_prologue_band_t prologue[X264_LOOKAHEAD_THREAD_MAX];
         int prologue_bands = x264_prologue_band_count( h );
         if( prologue_bands )
         {
-            if( x264_frame_copy_picture_init( h, fenc, pic_in ) < 0 )
-                return -1;
             x264_prologue_bands_init( h, prologue, prologue_bands, fenc, pic_in );
             x264_prologue_run( h, prologue, prologue_bands, x264_prologue_copy_band );
         }
         else
         {
-            if( x264_frame_copy_picture( h, fenc, pic_in ) < 0 )
-                return -1;
+            x264_frame_copy_picture_rows( h, fenc, pic_in, 0, h->param.i_height );
 
             if( h->param.i_width != 16 * h->mb.i_mb_width ||
                 h->param.i_height != 16 * h->mb.i_mb_height )
                 x264_frame_expand_border_mod16( h, fenc );
         }
+        if( release )
+            release( release_opaque );
 
         fenc->i_frame = h->frames.i_input++;
 
@@ -3917,12 +3954,18 @@ int     x264_encoder_encode( x264_t *h,
         if( prologue_bands )
         {
             if( x264_prologue_analyse( h, prologue, prologue_bands, fenc, pic_in->prop.quant_offsets ) < 0 )
+            {
+                x264_frame_ext_release( fenc );
                 return -1;
+            }
         }
         else if( h->param.rc.b_mb_tree && h->param.rc.b_stat_read )
         {
             if( x264_macroblock_tree_read( h, fenc, pic_in->prop.quant_offsets ) )
+            {
+                x264_frame_ext_release( fenc );
                 return -1;
+            }
         }
         else
             x264_stack_align( x264_adaptive_quant_frame, h, fenc, pic_in->prop.quant_offsets );

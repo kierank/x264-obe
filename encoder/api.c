@@ -38,6 +38,8 @@ int  x264_8_encoder_reconfig( x264_t *, x264_param_t * );
 void x264_8_encoder_parameters( x264_t *, x264_param_t * );
 int  x264_8_encoder_headers( x264_t *, x264_nal_t **pp_nal, int *pi_nal );
 int  x264_8_encoder_encode( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out );
+int  x264_8_encoder_encode_ext( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out,
+                               void (*release)( void * ), void *release_opaque );
 void x264_8_encoder_close( x264_t * );
 int  x264_8_encoder_delayed_frames( x264_t * );
 int  x264_8_encoder_maximum_delayed_frames( x264_t * );
@@ -53,6 +55,8 @@ int  x264_10_encoder_reconfig( x264_t *, x264_param_t * );
 void x264_10_encoder_parameters( x264_t *, x264_param_t * );
 int  x264_10_encoder_headers( x264_t *, x264_nal_t **pp_nal, int *pi_nal );
 int  x264_10_encoder_encode( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out );
+int  x264_10_encoder_encode_ext( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out,
+                                void (*release)( void * ), void *release_opaque );
 void x264_10_encoder_close( x264_t * );
 int  x264_10_encoder_delayed_frames( x264_t * );
 int  x264_10_encoder_maximum_delayed_frames( x264_t * );
@@ -72,6 +76,8 @@ typedef struct x264_api_t
     void (*encoder_parameters)( x264_t *, x264_param_t * );
     int  (*encoder_headers)( x264_t *, x264_nal_t **pp_nal, int *pi_nal );
     int  (*encoder_encode)( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out );
+    int  (*encoder_encode_ext)( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out,
+                                void (*release)( void * ), void *release_opaque );
     void (*encoder_close)( x264_t * );
     int  (*encoder_delayed_frames)( x264_t * );
     int  (*encoder_maximum_delayed_frames)( x264_t * );
@@ -94,6 +100,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         api->encoder_parameters = x264_8_encoder_parameters;
         api->encoder_headers = x264_8_encoder_headers;
         api->encoder_encode = x264_8_encoder_encode;
+        api->encoder_encode_ext = x264_8_encoder_encode_ext;
         api->encoder_close = x264_8_encoder_close;
         api->encoder_delayed_frames = x264_8_encoder_delayed_frames;
         api->encoder_maximum_delayed_frames = x264_8_encoder_maximum_delayed_frames;
@@ -113,6 +120,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         api->encoder_parameters = x264_10_encoder_parameters;
         api->encoder_headers = x264_10_encoder_headers;
         api->encoder_encode = x264_10_encoder_encode;
+        api->encoder_encode_ext = x264_10_encoder_encode_ext;
         api->encoder_close = x264_10_encoder_close;
         api->encoder_delayed_frames = x264_10_encoder_delayed_frames;
         api->encoder_maximum_delayed_frames = x264_10_encoder_maximum_delayed_frames;
@@ -177,6 +185,14 @@ int x264_encoder_encode( x264_t *h, x264_nal_t **pp_nal, int *pi_nal, x264_pictu
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_encode( api->x264, pp_nal, pi_nal, pic_in, pic_out );
+}
+
+int x264_encoder_encode_ext( x264_t *h, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out,
+                             void (*release)( void * ), void *release_opaque )
+{
+    x264_api_t *api = (x264_api_t *)h;
+
+    return api->encoder_encode_ext( api->x264, pp_nal, pi_nal, pic_in, pic_out, release, release_opaque );
 }
 
 int x264_encoder_delayed_frames( x264_t *h )

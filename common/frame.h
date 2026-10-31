@@ -28,10 +28,6 @@
 #ifndef X264_FRAME_H
 #define X264_FRAME_H
 
-/* number of pixels past the edge of the frame, for motion estimation/compensation */
-#define PADH 32
-#define PADV 32
-
 typedef struct x264_frame
 {
     /* */
@@ -187,6 +183,13 @@ typedef struct x264_frame
     uint8_t *mb_info;
     void (*mb_info_free)( void* );
 
+    /* x264_encoder_encode_ext: planes borrowed from the caller instead of copied,
+     * with x264's own saved until x264_frame_ext_release */
+    int b_ext_plane[2];
+    pixel *ext_saved_plane[2];
+    void (*ext_release)( void * );
+    void *ext_release_opaque;
+
 #if HAVE_OPENCL
     x264_frame_opencl_t opencl;
 #endif
@@ -247,6 +250,11 @@ int           x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_pictur
 int           x264_frame_copy_picture_init( x264_t *h, x264_frame_t *dst, x264_picture_t *src );
 #define x264_frame_copy_picture_rows x264_template(frame_copy_picture_rows)
 void          x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t *src, int y0, int y1 );
+#define x264_frame_ext_attach x264_template(frame_ext_attach)
+int           x264_frame_ext_attach( x264_t *h, x264_frame_t *dst, x264_picture_t *src,
+                                     void (*release)( void * ), void *release_opaque );
+#define x264_frame_ext_release x264_template(frame_ext_release)
+void          x264_frame_ext_release( x264_frame_t *frame );
 
 #define x264_frame_expand_border x264_template(frame_expand_border)
 void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y );

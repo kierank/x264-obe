@@ -205,6 +205,35 @@ void x264_picture_init( x264_picture_t *pic )
 }
 
 /****************************************************************************
+ * x264_source_layout: the fenc layout of x264_frame_new
+ ****************************************************************************/
+int x264_source_layout( const x264_param_t *param, x264_source_layout_t *layout )
+{
+    int csp = param->i_csp & X264_CSP_MASK;
+    if( csp != X264_CSP_I420 && csp != X264_CSP_YV12 && csp != X264_CSP_NV12 &&
+        csp != X264_CSP_I422 && csp != X264_CSP_YV16 && csp != X264_CSP_NV16 )
+        return -1;
+    if( param->i_width <= 0 || param->i_height <= 0 )
+        return -1;
+
+    /* the macroblock size as x264_sps_init sets it */
+    int mb_width  = (param->i_width + 15) / 16;
+    int mb_height = (param->i_height + 15) / 16;
+    if( param->b_interlaced || param->b_fake_interlaced )
+        mb_height = (mb_height + 1) & ~1;
+    int padv = PADV << !!param->b_interlaced;
+    int stride = x264_align_stride( 16*mb_width + 2*PADH, FRAME_ALIGN, FRAME_DISALIGN );
+
+    layout->i_align    = FRAME_ALIGN;
+    layout->i_stride   = stride * (param->i_bitdepth > 8 ? 2 : 1);
+    layout->i_hprepend = PADH;
+    layout->i_happend  = stride - PADH - param->i_width;
+    layout->i_vprepend = padv;
+    layout->i_vappend  = 16*mb_height - param->i_height + padv;
+    return 0;
+}
+
+/****************************************************************************
  * x264_picture_alloc:
  ****************************************************************************/
 int x264_picture_alloc( x264_picture_t *pic, int i_csp, int i_width, int i_height )

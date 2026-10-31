@@ -40,6 +40,7 @@
 #define x264_encoder_parameters x264_template(encoder_parameters)
 #define x264_encoder_headers x264_template(encoder_headers)
 #define x264_encoder_encode x264_template(encoder_encode)
+#define x264_encoder_encode_ext x264_template(encoder_encode_ext)
 #define x264_encoder_close x264_template(encoder_close)
 #define x264_encoder_delayed_frames x264_template(encoder_delayed_frames)
 #define x264_encoder_maximum_delayed_frames x264_template(encoder_maximum_delayed_frames)

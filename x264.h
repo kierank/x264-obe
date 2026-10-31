@@ -925,6 +925,44 @@ int     x264_encoder_headers( x264_t *, x264_nal_t **pp_nal, int *pi_nal );
  *      returns negative on error and zero if no NAL units returned.
  *      the payloads of all output NALs are guaranteed to be sequential in memory. */
 int     x264_encoder_encode( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out );
+
+/* x264_source_layout_t:
+ *      the layout of the encoder's source frames, which x264_encoder_encode_ext can use
+ *      in place of its own. The luma plane, and an NV12/NV16 chroma plane, need:
+ *      - the first pixel of the picture aligned to i_align bytes;
+ *      - a line stride of exactly i_stride bytes (the same for both planes);
+ *      - i_hprepend pixels before and i_happend after each line, and i_vprepend luma
+ *        lines above and i_vappend below the picture (half of those for 4:2:0 chroma),
+ *        all allocated and writable: the encoder pads the picture into them.
+ *      Their contents need not be initialised. */
+typedef struct x264_source_layout_t
+{
+    int i_align;
+    int i_stride;
+    int i_hprepend;
+    int i_happend;
+    int i_vprepend;
+    int i_vappend;
+} x264_source_layout_t;
+
+/* x264_source_layout:
+ *      fill layout for the picture size, csp, bit depth and interlacing in param, which
+ *      must be those given to x264_encoder_open. Can be called before x264_encoder_open.
+ *      returns 0, or negative if param's csp has no such layout (only I420, YV12, NV12,
+ *      I422, YV16 and NV16 do). */
+int     x264_source_layout( const x264_param_t *param, x264_source_layout_t *layout );
+
+/* x264_encoder_encode_ext:
+ *      as x264_encoder_encode, but the encoder may keep pic_in's luma plane, and its chroma
+ *      plane if NV12/NV16, as the source frame instead of copying it, when it has the
+ *      layout from x264_source_layout. The encoder writes into the padding around the
+ *      picture, never into the picture itself.
+ *      release( release_opaque ) is called exactly once, when the encoder no longer uses
+ *      pic_in's planes: before x264_encoder_encode_ext returns if they were copied (or on
+ *      error), otherwise later from any encoder thread, at the latest in x264_encoder_close.
+ *      release may be NULL, which is x264_encoder_encode. */
+int     x264_encoder_encode_ext( x264_t *, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out,
+                                 void (*release)( void * ), void *release_opaque );
 /* x264_encoder_close:
  *      close an encoder handler */
 void    x264_encoder_close  ( x264_t * );
