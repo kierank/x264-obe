@@ -4725,6 +4725,120 @@ cglobal deblock_v_chroma_intra, 4,5,9
     mova   [r4+r1], xm1
     mova      [r0], xm2
     RET
+
+;-----------------------------------------------------------------------------
+; avx2 8-bit chroma, Copyright (C) 2026 Open Broadcast Systems Ltd
+; [p|q] lanes as in the avx2 luma, rows loaded by vbroadcasti128 and split by
+; vpblendd.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+; one psubusb per lane covers |p0-q0|, one |a-b| covers |p1-p0| and |q1-q0|,
+; OR-folded to lane 0 where the xmm p0/q0 filter runs.
+cglobal deblock_v_chroma, 5,6,12
+    mov          r5, r0
+    sub          r5, r1
+    sub          r5, r1           ; pix-2*stride
+    vbroadcasti128 m2, [r5+r1]    ; [p0|p0]
+    vbroadcasti128 m3, [r0]
+    vbroadcasti128 m5, [r5]
+    vbroadcasti128 m8, [r0+r1]
+    vpblendd     m0, m2, m3, 0xf0 ; [p0|q0]
+    vpblendd     m4, m3, m2, 0xf0 ; [q0|p0]
+    vpblendd     m1, m5, m8, 0xf0 ; [p1|q1]
+    mova        m11, [pb_1]
+    movd        xm6, r2d
+    movd        xm7, r3d
+    vpbroadcastb m6, xm6
+    vpbroadcastb m7, xm7
+    psubusb      m6, m11          ; alpha-1
+    psubusb      m7, m11          ; beta-1
+    psubusb      m9, m0, m4       ; p0-q0 | q0-p0
+    psubusb      m9, m6
+    psubusb      m6, m1, m0
+    psubusb     m10, m0, m1
+    por          m6, m10          ; |p1-p0| | |q1-q0|
+    psubusb      m6, m7
+    por          m9, m6
+    vextracti128 xm6, m9, 1
+    por         xm9, xm6
+    pxor       xm10, xm10
+    pcmpeqb     xm9, xm10         ; mask
+    movd        xm6, [r4]
+    pshufb      xm6, [pb_unpackbd1]
+    pand        xm9, xm6          ; tc & mask
+    pxor        xm7, xm2, xm3
+    pand        xm7, xm11         ; (p0^q0)&1
+    pcmpeqb     xm6, xm6
+    pxor       xm10, xm8, xm6     ; ~q1
+    pavgb      xm10, xm5          ; (p1 - q1 + 256)>>1
+    pavgb      xm10, [pb_3]       ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    pxor        xm6, xm2          ; ~p0
+    pavgb       xm6, xm3          ; (q0 - p0 + 256)>>1
+    pavgb      xm10, xm7
+    paddusb    xm10, xm6          ; d+128+33
+    mova        xm7, [pb_a1]
+    psubusb     xm6, xm7, xm10
+    psubusb    xm10, xm7
+    pminub      xm6, xm9          ; -d
+    pminub     xm10, xm9          ; +d
+    psubusb     xm2, xm6
+    psubusb     xm3, xm10
+    paddusb     xm2, xm10
+    paddusb     xm3, xm6
+    movu    [r5+r1], xm2
+    movu       [r0], xm3
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_v_chroma_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+; p0' and q0' are the same formula on [p|q] and [q|p], one pass for both.
+cglobal deblock_v_chroma_intra, 4,5,12
+    mov          r4, r0
+    sub          r4, r1
+    sub          r4, r1           ; pix-2*stride
+    vbroadcasti128 m2, [r4+r1]    ; [p0|p0]
+    vbroadcasti128 m3, [r0]
+    vbroadcasti128 m6, [r4]
+    vbroadcasti128 m7, [r0+r1]
+    vpblendd     m0, m2, m3, 0xf0 ; [p0|q0]
+    vpblendd     m4, m3, m2, 0xf0 ; [q0|p0]
+    vpblendd     m1, m6, m7, 0xf0 ; [p1|q1]
+    vpblendd     m5, m7, m6, 0xf0 ; [q1|p1]
+    mova        m11, [pb_1]
+    movd        xm6, r2d
+    movd        xm7, r3d
+    vpbroadcastb m6, xm6
+    vpbroadcastb m7, xm7
+    psubusb      m6, m11          ; alpha-1
+    psubusb      m7, m11          ; beta-1
+    psubusb      m9, m0, m4
+    psubusb     m10, m4, m0
+    por          m9, m10          ; |p0-q0|
+    psubusb      m9, m6
+    psubusb      m6, m1, m0
+    psubusb     m10, m0, m1
+    por          m6, m10          ; |p1-p0| | |q1-q0|
+    psubusb      m8, m5, m4
+    psubusb     m10, m4, m5
+    por          m8, m10          ; |q1-q0| | |p1-p0|
+    pmaxub       m6, m8
+    psubusb      m6, m7
+    por          m9, m6
+    pxor        m10, m10
+    pcmpeqb      m9, m10          ; mask, both lanes
+    pxor         m6, m0, m5
+    pand         m6, m11          ; (p0^q1)&1
+    pavgb        m7, m0, m5
+    psubusb      m7, m6
+    pavgb        m7, m1           ; (2*p1 + p0 + q1 + 2) >> 2 | (2*q1 + q0 + p1 + 2) >> 2
+    pblendvb     m0, m0, m7, m9
+    movu    [r4+r1], xm0
+    vextracti128 [r0], m0, 1
+    RET
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
