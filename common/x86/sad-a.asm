@@ -103,6 +103,15 @@ fsh_sq_mv:     db  0, 0, 0,-1, 1,-1,-1, 1, 1, 0, 0, 0, 0, 0, 0, 0
 fsh_dia_xidx:  dd 4, 0, 4, 15
 fsh_dia_yidx:  dd 0, 4, 15, 4
 fsh_dia_rank:  dd 1, 4, 3, 12
+ALIGN 32
+; avx2 point sets: pshufb of a 16 byte window to its 8 byte rows at offsets a, b
+spt_m02:       times 2 db 0,1,2,3,4,5,6,7, 2,3,4,5,6,7,8,9
+spt_m11:       times 2 db 1,2,3,4,5,6,7,8, 1,2,3,4,5,6,7,8
+spt_m13:       times 2 db 1,2,3,4,5,6,7,8, 3,4,5,6,7,8,9,10
+spt_m33:       times 2 db 3,4,5,6,7,8,9,10, 3,4,5,6,7,8,9,10
+; the bias of each sum (sq: dwords 6, 7 or 3, 7 from bias+16)
+spt_sq8_bidx:  dd 0, 2, 1, 5, 4, 6, 4, 6
+spt_sq16_bidx: dd 0, 1, 4, 4, 2, 5, 6, 6
 
 SECTION .text
 
@@ -3249,6 +3258,245 @@ cglobal pixel_sad_dia_search_%1x%2, 9,15,16
 FSH_DIA_SEARCH 8, 8
 
 INIT_YMM avx2
+;-----------------------------------------------------------------------------
+; avx2 point sets: no vdbpsadbw. psadbw against fenc rows doubled in their qwords
+; (vmovddup of rows 2k, 2k+1); the ref a window of rows a, a+1 (16 bytes at pix + bx +
+; a*stride, a lane each), pshufb taking one candidate row into each qword. A window
+; serves every pair of its rows; a pair at two rows unpacks or blends two windows.
+; The accumulators are pairs (qword 0 | 1) of qword sums by lane (rows 2k | 2k+1).
+;-----------------------------------------------------------------------------
+; m%1 = rows at %2, %3
+%macro SPT_WIN 3 ; dst, row a, row a+1
+    movu          xm%1, [%2]
+    vinserti128    m%1, m%1, [%3], 1
+%endmacro
+
+%macro SPT_ACC 5 ; acc, src, fenc, tmp, first
+%if %5
+    psadbw         m%1, m%2, m%3
+%else
+    psadbw         m%4, m%2, m%3
+    paddd          m%1, m%4
+%endif
+%endmacro
+
+; m%1 = { a b | c d } of the pairs, lanes summed
+%macro SPT_FOLD4 6 ; dst, a, b, c, d, tmp
+    packusdw       m%2, m%2, m%3
+    packusdw       m%4, m%4, m%5
+    vperm2i128     m%6, m%2, m%4, 0x20
+    vperm2i128     m%2, m%2, m%4, 0x31
+    paddd          m%1, m%2, m%6
+%endmacro
+
+; min of the dwords of xm0 -> %1
+%macro SPT_MIN4 1
+    pshufd         xm1, xm0, q1032
+    pminsd         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminsd         xm0, xm1
+    movd            %1, xm0
+%endmacro
+
+%macro SPT_MIN4_RET 0
+    SPT_MIN4       eax
+    cmp            eax, r4d
+    cmovg          eax, r4d
+    RET
+%endmacro
+
+; sad_sq_min 8x8's 8 points but dx 2 and the centre: m0 dy 0 (dx -1 | 1), m1 dy -1,
+; m2 dy 1, m3 dx 0 (dy -1 | 1). %1 pix - 1 - stride (advanced), %2 3*stride;
+; m6 spt_m02, m7 spt_m11; m8-m11 the odd windows' pshufb, m12 fenc
+%macro SPT_SQ8 2
+    SPT_WIN         4, %1, %1+r2
+    pshufb          m8, m4, m6
+    pshufb          m9, m4, m7
+%assign %%k 0
+%rep 4
+    %assign %%po 8+(%%k&1)*2
+    %assign %%pn 10-(%%k&1)*2
+    %assign %%qo %%po+1
+    %assign %%qn %%pn+1
+    vmovddup       m12, [r0+%%k*32]
+    SPT_WIN         4, %1+r2, %1+r2*2
+    SPT_WIN         5, %1+r2*2, %1+%2
+    pshufb          m4, m6
+    pshufb   m%[%%pn], m5, m6
+    pshufb   m%[%%qn], m5, m7
+    vpblendd m%[%%qo], m%[%%qo], m%[%%qn], 0xcc
+    SPT_ACC         0, 4, 12, 5, %%k == 0
+    SPT_ACC         1, %[%%po], 12, 5, %%k == 0
+    SPT_ACC         2, %[%%pn], 12, 5, %%k == 0
+    SPT_ACC         3, %[%%qo], 12, 5, %%k == 0
+  %if %%k < 3
+    lea            %1, [%1+r2*2]
+  %endif
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+; the other 4: m1 dy 0 (dx 0 | 2), m2 dx 2 (dy -1 | 1); m6 spt_m13, m7 spt_m33
+%macro SPT_SQ8_X 2
+    SPT_WIN         4, %1, %1+r2
+    pshufb          m8, m4, m7
+%assign %%k 0
+%rep 4
+    %assign %%qo 8+(%%k&1)
+    %assign %%qn 9-(%%k&1)
+    vmovddup       m12, [r0+%%k*32]
+    SPT_WIN         4, %1+r2, %1+r2*2
+    SPT_WIN         5, %1+r2*2, %1+%2
+    pshufb          m4, m6
+    pshufb   m%[%%qn], m5, m7
+    vpblendd        m5, m%[%%qo], m%[%%qn], 0xcc
+    SPT_ACC         1, 4, 12, 3, %%k == 0
+    SPT_ACC         2, 5, 12, 3, %%k == 0
+  %if %%k < 3
+    lea            %1, [%1+r2*2]
+  %endif
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_sq_min_8x8( uint8_t *fenc, uint8_t *pix, intptr_t i_stride,
+;                           const int32_t bias[12], int best )
+; dx 2 and the centre (bias 3, 7, 9, 11) only if a bias is below best: me.c's
+; 1<<30 can't win.
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_sq_min_8x8, 5,7,13
+    lea             r5, [r1-1]
+    sub             r5, r2
+    lea             r6, [r2*3]
+    mova            m6, [spt_m02]
+    mova            m7, [spt_m11]
+    SPT_SQ8         r5, r6
+    SPT_FOLD4       0, 1, 3, 2, 0, 4    ; { b0 b2 b1 b5 | b4 b6 b8 b10 }
+    mova            m2, [spt_sq8_bidx]
+    vpermd          m1, m2, [r3]
+    vpermd          m2, m2, [r3+16]
+    vpblendd        m1, m1, m2, 0xc0
+    pslld           m0, 6
+    paddd           m0, m1
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    cmp            r4d, [r3+12]
+    jg .full
+    cmp            r4d, [r3+28]
+    jg .full
+    cmp            r4d, [r3+36]
+    jg .full
+    cmp            r4d, [r3+44]
+    jg .full
+.min:
+    SPT_MIN4_RET
+.full:
+    lea             r5, [r1-1]
+    sub             r5, r2
+    mova            m6, [spt_m13]
+    mova            m7, [spt_m33]
+    SPT_SQ8_X       r5, r6
+    packusdw        m2, m2, m1          ; b3 b7 b9 b11
+    vextracti128   xm1, m2, 1
+    paddd          xm2, xm1
+    pslld          xm2, 6
+    movd           xm1, [r3+12]
+    vpinsrd        xm1, xm1, [r3+28], 1
+    vpinsrd        xm1, xm1, [r3+36], 2
+    vpinsrd        xm1, xm1, [r3+44], 3
+    paddd          xm2, xm1
+    pminsd         xm0, xm2
+    jmp .min
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_sq_min_16x16( ... ): a lane per row, both qwords of a candidate;
+; R(a) = { row a dx -1 | dx 1 } serves dy -1, 0, 1 (m4-m6 by (a+1)%3),
+; { row r-1 | r+1 } at dx 0 the rest of the 8; the other 4 as in 8x8
+;-----------------------------------------------------------------------------
+; m0 dy 0 (dx -1 | 1), m1 dy -1, m2 dy 1, m3 dx 0 (dy -1 | 1); %1 pix - 1 - stride (advanced)
+%macro SPT_SQ16 1
+    SPT_WIN         4, %1, %1+2
+    SPT_WIN         5, %1+r2, %1+r2+2
+%assign %%r 0
+%rep 16
+    %assign %%ro 4+(%%r % 3)
+    %assign %%rc 4+((%%r+1) % 3)
+    %assign %%rn 4+((%%r+2) % 3)
+    vbroadcasti128  m8, [r0+%%r*16]
+    SPT_WIN  %[%%rn], %1+r2*2, %1+r2*2+2
+    SPT_WIN         9, %1+1, %1+r2*2+1
+    SPT_ACC         1, %[%%ro], 8, 7, %%r == 0
+    SPT_ACC         0, %[%%rc], 8, 7, %%r == 0
+    SPT_ACC         2, %[%%rn], 8, 7, %%r == 0
+    SPT_ACC         3, 9, 8, 7, %%r == 0
+  %if %%r < 15
+    add             %1, r2
+  %endif
+    %assign %%r %%r+1
+%endrep
+%endmacro
+
+; m1 dy 0 (dx 0 | 2), m2 dx 2 (dy -1 | 1)
+%macro SPT_SQ16_X 1
+%assign %%r 0
+%rep 16
+    vbroadcasti128  m8, [r0+%%r*16]
+    SPT_WIN         4, %1+r2+1, %1+r2+3
+    SPT_WIN         5, %1+3, %1+r2*2+3
+    SPT_ACC         1, 4, 8, 7, %%r == 0
+    SPT_ACC         2, 5, 8, 7, %%r == 0
+  %if %%r < 15
+    add             %1, r2
+  %endif
+    %assign %%r %%r+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_sq_min_16x16, 5,6,10
+    lea             r5, [r1-1]
+    sub             r5, r2
+    SPT_SQ16        r5
+    packusdw        m1, m1, m3
+    packusdw        m2, m2, m0
+    packusdw        m1, m1, m2
+    pmaddwd         m0, m1, [pw_1]      ; { b0 b1 b4 b8 | b2 b5 b6 b10 }
+    mova            m2, [spt_sq16_bidx]
+    vpermd          m1, m2, [r3]
+    vpermd          m2, m2, [r3+16]
+    vpblendd        m1, m1, m2, 0x88
+    pslld           m0, 6
+    paddd           m0, m1
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    cmp            r4d, [r3+12]
+    jg .full
+    cmp            r4d, [r3+28]
+    jg .full
+    cmp            r4d, [r3+36]
+    jg .full
+    cmp            r4d, [r3+44]
+    jg .full
+.min:
+    SPT_MIN4_RET
+.full:
+    lea             r5, [r1-1]
+    sub             r5, r2
+    SPT_SQ16_X      r5
+    packusdw        m2, m2, m1
+    packusdw        m2, m2, m2
+    pmaddwd         m2, [pw_1]          ; { b3 b9 b3 b9 | b7 b11 b7 b11 }
+    vextracti128   xm1, m2, 1
+    punpckldq      xm2, xm2, xm1        ; b3 b7 b9 b11
+    pslld          xm2, 6
+    movd           xm1, [r3+12]
+    vpinsrd        xm1, xm1, [r3+28], 1
+    vpinsrd        xm1, xm1, [r3+36], 2
+    vpinsrd        xm1, xm1, [r3+44], 3
+    paddd          xm2, xm1
+    pminsd         xm0, xm2
+    jmp .min
+
 %endif ; ARCH_X86_64
 
 %macro SAD_X_W4_AVX512 2 ; x, h

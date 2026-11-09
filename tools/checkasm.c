@@ -1327,7 +1327,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(4);
 
     /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
-     * me.c's 1<<30 in unused slots, 3 a maximal sad (~fenc) in slot j%12, winning */
+     * me.c's 1<<30 in the unused slots (dx 2, the centre), 3 a maximal sad (~fenc) in slot j%12, winning */
     ok = 1; used_asm = 0;
     for( int i = 0; i < 7; i++ )
     {
@@ -1364,7 +1364,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     if( mode == 1 )
                         bias[k] = ((tmax - sad[k]) << 6) + 1 + (k + j) % 12;
                     else if( mode == 2 )
-                        bias[k] = (j&4) && (k&3) == 3 ? 1 << 30
+                        bias[k] = (j&4) && ((k&3) == 3 || k == 9) ? 1 << 30
                                 : ((((j>>(k%6))&1) * 131070) << 6) + ((j>>(k%5))&1) * 63;
                     else if( mode == 3 )
                         bias[k] = k == j%12 ? rand()&63 : 1 << 24;
