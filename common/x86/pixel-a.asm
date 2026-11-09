@@ -13090,8 +13090,8 @@ cglobal weightp_sum8_nv, 6,8,13
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
 %macro PSY_MADD 3 ; acc, src (clobbered), mul
-%if cpuflag(avx512icl)
-    vpdpwssd    m%1, m%2, m%3
+%if cpuflag(avx512icl) || cpuflag(avxvnni)
+    DPWSSD      m%1, m%2, m%3
 %else
     pmaddwd     m%2, m%3
     paddd       m%1, m%2
@@ -13213,6 +13213,11 @@ SSD_PSY_MB 422, 16
 INIT_YMM avx512icl
 SSD_PSY_MB 420,  8
 SSD_PSY_MB 422, 16
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avxvnni
+SSD_PSY_MB 420,  8
+SSD_PSY_MB 422, 16
+%endif
 %endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
