@@ -391,6 +391,32 @@ dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 ; ssd_psy_mb: ssd, ssd, hadamard_ac >> 1, >> 2
 ssd_psy_shift: dd 0, 0, 1, 2
+%if HIGH_BIT_DEPTH == 0
+; predictor_clip avx2: lane indices, the "lane > j" masks, the vpermd packing of 8 lanes
+ALIGN 32
+pcl_idx:   dd 0, 1, 2, 3, 4, 5, 6, 7
+pcl_8:     times 8 dd 8
+pcl_shift: dd 0, 4, 8, 12, 16, 20, 24, 28
+pcl_gt:    times 16 dd 0
+           times 16 dd -1
+; the set bits of m, ascending, by nibble
+pcl_lut:
+%assign pcl_m 0
+%rep 256
+    %assign pcl_v 0
+    %assign pcl_s 0
+    %assign pcl_b 0
+    %rep 8
+        %if (pcl_m >> pcl_b) & 1
+            %assign pcl_v pcl_v | (pcl_b << pcl_s)
+            %assign pcl_s pcl_s+4
+        %endif
+        %assign pcl_b pcl_b+1
+    %endrep
+    dd pcl_v
+    %assign pcl_m pcl_m+1
+%endrep
+%endif
 
 SECTION .text
 
@@ -13251,3 +13277,119 @@ cglobal predictor_clip, 5,6,4
 INIT_ZMM avx512
 PREDICTOR_CLIP 0
 PREDICTOR_CLIP 1
+
+%if HIGH_BIT_DEPTH == 0 && ARCH_X86_64
+;-----------------------------------------------------------------------------
+; predictor_clip / roundclip, avx2: mvc[0..7] in m4, mvc[8..14] in m5. A lane not
+; kept before the clip (past i_mvc, mv 0 or pmv) takes pmv: it goes, and drops
+; nothing pmv doesn't. Then a lane goes if it equals pmv or an earlier lane (lanes
+; 0..i_mvc-2 broadcast from the stack), the rest packed by vpermd (pcl_lut).
+; Writes dst[0..15] at most.
+;-----------------------------------------------------------------------------
+%macro PREDICTOR_CLIP_AVX2 1 ; round
+%if %1
+cglobal predictor_roundclip, 5,8,12,64
+%else
+cglobal predictor_clip, 5,8,12,64
+%endif
+    movd           xm0, r2d
+    vpbroadcastd    m0, xm0
+    mova            m1, [pcl_idx]
+    pcmpgtd         m2, m0, m1          ; lanes 0-7 < i_mvc
+    paddd           m1, [pcl_8]
+    pcmpgtd         m3, m0, m1          ; lanes 8-15
+    vpmaskmovd      m4, m2, [r1]
+    vpmaskmovd      m5, m3, [r1+32]
+%if %1
+    pcmpeqd         m6, m6
+    psraw           m4, 1
+    psubw           m4, m6
+    psraw           m4, 1
+    psraw           m5, 1
+    psubw           m5, m6
+    psraw           m5, 1               ; (mv + 2) >> 2 without the int16 overflow
+%endif
+    movd           xm6, r4d
+    vpbroadcastd    m6, xm6
+    pxor            m7, m7
+    pcmpeqd         m8, m4, m7
+    pcmpeqd         m9, m4, m6
+    por             m8, m9
+    pandn           m2, m8, m2
+    pcmpeqd         m8, m5, m7
+    pcmpeqd         m9, m5, m6
+    por             m8, m9
+    pandn           m3, m8, m3
+    vpbroadcastd    m8, [r3]
+    vpbroadcastd    m9, [r3+4]
+%if %1 == 0
+    psllw           m8, 2
+    psllw           m9, 2
+%endif
+    pmaxsw          m4, m8
+    pminsw          m4, m9
+    pmaxsw          m5, m8
+    pminsw          m5, m9
+    vpblendvb       m4, m6, m4, m2
+    vpblendvb       m5, m6, m5, m3
+    pcmpeqd        m10, m4, m6          ; dropped
+    pcmpeqd        m11, m5, m6
+    lea            r5d, [r2-1]
+    test           r5d, r5d
+    jle .pack
+    movu         [rsp], m4
+    movu      [rsp+32], m5
+    lea             r6, [pcl_gt+60]     ; lanes > j: pcl_gt + 4*(15-j), +32 for 8-15
+    mov             r7, rsp
+    cmp            r2d, 8
+    jg .dup16
+.dup8:
+    vpbroadcastd    m7, [r7]
+    pcmpeqd         m8, m4, m7
+    pand            m8, [r6]
+    por            m10, m8
+    add             r7, 4
+    sub             r6, 4
+    dec            r5d
+    jnz .dup8
+    jmp .pack
+.dup16:
+    vpbroadcastd    m7, [r7]
+    pcmpeqd         m8, m4, m7
+    pand            m8, [r6]
+    por            m10, m8
+    pcmpeqd         m9, m5, m7
+    pand            m9, [r6+32]
+    por            m11, m9
+    add             r7, 4
+    sub             r6, 4
+    dec            r5d
+    jnz .dup16
+.pack:
+    lea             r7, [pcl_lut]
+    mova            m8, [pcl_shift]
+    movmskps       r5d, m10
+    xor            r5d, 0xff
+    vpbroadcastd    m7, [r7+r5*4]
+    vpsrlvd         m7, m7, m8
+    vpermd          m4, m7, m4
+    movu          [r0], m4
+    popcnt         eax, r5d
+    cmp            r2d, 8
+    jle .ret
+    movmskps       r5d, m11
+    xor            r5d, 0xff
+    vpbroadcastd    m7, [r7+r5*4]
+    vpsrlvd         m7, m7, m8
+    vpermd          m5, m7, m5
+    movu   [r0+rax*4], m5
+    popcnt         r5d, r5d
+    add            eax, r5d
+.ret:
+    RET
+%endmacro
+
+INIT_YMM avx2
+PREDICTOR_CLIP_AVX2 0
+PREDICTOR_CLIP_AVX2 1
+%endif
