@@ -13465,5 +13465,72 @@ INIT_YMM avxvnni
 VAR_VNNI 16, 16
 VAR_VNNI  8, 16
 VAR_VNNI  8,  8
+
+;-----------------------------------------------------------------------------
+; void pixel_ssd_nv12_core( uint8_t *pixuv1, intptr_t stride1, uint8_t *pixuv2, intptr_t stride2,
+;                           int width, int height, uint64_t *ssd_u, uint64_t *ssd_v )
+; vpdpwssd of the u and v |differences|; 64 bytes a loop into two accumulator pairs
+; (the vpdpwssd latency), then 16 byte steps of xmm loads (zero upper lanes), so no
+; overread. Same overflow as the avx2 version.
+;-----------------------------------------------------------------------------
+%macro NV12_VNNI_ACC 4 ; a, b (clobbered), u, v; m5 = pw_00ff
+    psubusb      m6, m%1, m%2
+    psubusb     m%2, m%1
+    por         m%2, m6
+    psrlw       m%1, m%2, 8
+    pand        m%2, m5
+    DPWSSD      m%3, m%2, m%2
+    DPWSSD      m%4, m%1, m%1
+%endmacro
+
+INIT_YMM avxvnni
+cglobal pixel_ssd_nv12_core, 6,7,10
+    add         r4d, r4d
+    add          r0, r4
+    add          r2, r4
+    mova         m5, [pw_00ff]
+    pxor         m0, m0
+    pxor         m1, m1
+    pxor         m2, m2
+    pxor         m3, m3
+.loopy:
+    mov          r6, r4
+    neg          r6
+    add          r6, 64
+    jg .tail
+.loopx:
+    movu         m8, [r0+r6-64]
+    movu         m9, [r2+r6-64]
+    NV12_VNNI_ACC 8, 9, 0, 1
+    movu         m8, [r0+r6-32]
+    movu         m9, [r2+r6-32]
+    NV12_VNNI_ACC 8, 9, 2, 3
+    add          r6, 64
+    jle .loopx
+.tail:
+    sub          r6, 64          ; -(bytes left), 0 to -48
+    jz .next
+.loopt:
+    movu        xm8, [r0+r6]
+    movu        xm9, [r2+r6]
+    NV12_VNNI_ACC 8, 9, 0, 1
+    add          r6, 16
+    jl .loopt
+.next:
+    add          r0, r1
+    add          r2, r3
+    dec         r5d
+    jg .loopy
+    mov          r3, r6m
+    mov          r4, r7m
+    paddd        m0, m2
+    paddd        m1, m3
+    HADDD        m0, m2
+    HADDD        m1, m2
+    movd        r5d, xm0
+    movd        r6d, xm1
+    mov        [r3], r5
+    mov        [r4], r6
+    RET
 %endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64

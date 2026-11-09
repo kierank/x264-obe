@@ -757,6 +757,7 @@
 #define x264_pixel_var_8x8_avxvnni x264_template(pixel_var_8x8_avxvnni)
 #define x264_pixel_var2_8x16_avxvnni x264_template(pixel_var2_8x16_avxvnni)
 #define x264_pixel_var2_8x8_avxvnni x264_template(pixel_var2_8x8_avxvnni)
+#define x264_pixel_ssd_nv12_core_avxvnni x264_template(pixel_ssd_nv12_core_avxvnni)
 #define x264_pixel_vsad_avx2 x264_template(pixel_vsad_avx2)
 #define x264_pixel_vsad_mmx2 x264_template(pixel_vsad_mmx2)
 #define x264_pixel_vsad_sse2 x264_template(pixel_vsad_sse2)
@@ -1177,6 +1178,9 @@ void x264_pixel_ssd_nv12_core_avx ( pixel *pixuv1, intptr_t stride1,
 void x264_pixel_ssd_nv12_core_avx2( pixel *pixuv1, intptr_t stride1,
                                     pixel *pixuv2, intptr_t stride2, int width,
                                     int height, uint64_t *ssd_u, uint64_t *ssd_v );
+void x264_pixel_ssd_nv12_core_avxvnni( pixel *pixuv1, intptr_t stride1,
+                                       pixel *pixuv2, intptr_t stride2, int width,
+                                       int height, uint64_t *ssd_u, uint64_t *ssd_v );
 void x264_pixel_ssim_4x4x2_core_mmx2( const uint8_t *pix1, intptr_t stride1,
                                       const uint8_t *pix2, intptr_t stride2, int sums[2][4] );
 void x264_pixel_ssim_4x4x2_core_sse2( const pixel *pix1, intptr_t stride1,

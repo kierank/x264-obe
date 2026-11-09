@@ -3118,6 +3118,21 @@ static int check_pixel( int cpu_ref, int cpu_new )
                          w, hgt, res_u_c, res_v_c, res_u_a, res_v_a );
             }
         }
+        /* unequal strides; widths with 0, 16, 32 and 48 bytes past a multiple of 64, and under 64 bytes */
+        for( int k = 0; k < 24 && ok; k++ )
+        {
+            static const int nv12_w[6] = { 8, 24, 352, 360, 368, 376 };
+            int w = nv12_w[k>>2], hgt = k&1 ? 9 : 8;
+            intptr_t s1 = k&2 ? 400 : 368, s2 = k&2 ? 368 : 400;
+            pixel_c.ssd_nv12_core(   pbuf3, s1, pbuf4, s2, w, hgt, &res_u_c, &res_v_c );
+            pixel_asm.ssd_nv12_core( pbuf3, s1, pbuf4, s2, w, hgt, &res_u_a, &res_v_a );
+            if( res_u_c != res_u_a || res_v_c != res_v_a )
+            {
+                ok = 0;
+                fprintf( stderr, "ssd_nv12 %dx%d strides %d %d: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
+                         w, hgt, (int)s1, (int)s2, res_u_c, res_v_c, res_u_a, res_v_a );
+            }
+        }
         call_c( pixel_c.ssd_nv12_core,   pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_c, &res_v_c );
         call_a( pixel_asm.ssd_nv12_core, pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_a, &res_v_a );
     }
