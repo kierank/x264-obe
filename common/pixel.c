@@ -2049,6 +2049,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx2;
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx2;
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx2;
 #endif
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
@@ -2166,6 +2167,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd_nv12_core    = x264_pixel_ssd_nv12_core_avxvnni; /* zen5 */
         pixf->ssd_psy_mb[0]    = x264_pixel_ssd_psy_mb_420_avxvnni; /* zen5 */
         pixf->ssd_psy_mb[1]    = x264_pixel_ssd_psy_mb_422_avxvnni; /* zen5 */
+        pixf->weightp_dc8x8 = x264_weightp_dc8x8_avxvnni;
+        pixf->weightp_sum8 = x264_weightp_sum8_avxvnni;
+        pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avxvnni;
+        pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avxvnni;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )

@@ -562,9 +562,15 @@ int x264_mbtree_cost_scale_avx2( uint16_t *lowres_costs, float *qp_offset, int l
 #define x264_mbtree_finish_avx512 x264_template(mbtree_finish_avx512)
 void x264_mbtree_finish_avx512( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
                                 uint16_t *propagate_costs, float *params, int fps_factor, int len );
+#define x264_mbtree_finish_avx2 x264_template(mbtree_finish_avx2)
+void x264_mbtree_finish_avx2( float *qp_offset, float *qp_offset_aq, uint16_t *intra_costs, uint16_t *inv_qscales,
+                              uint16_t *propagate_costs, float *params, int fps_factor, int len );
 #define x264_aq_variance_tail_avx512icl x264_template(aq_variance_tail_avx512icl)
 void x264_aq_variance_tail_avx512icl( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
                                       float *quant_offsets, float *params, int len );
+#define x264_aq_variance_tail_avx2 x264_template(aq_variance_tail_avx2)
+void x264_aq_variance_tail_avx2( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
+                                 float *quant_offsets, float *params, int len );
 
 #define MC_CHROMA(cpu)\
 void x264_mc_chroma_##cpu( pixel *dstu, pixel *dstv, intptr_t i_dst, pixel *src, intptr_t i_src,\
@@ -953,6 +959,27 @@ static int weight_plane_icl8( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i
         f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );
     return 1;
 }
+
+void x264_mc_weight_plane_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+void x264_mc_offsetadd_plane_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+void x264_mc_offsetsub_plane_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+/* as weight_plane_icl8, for the tables dispatched at avx2 */
+static int weight_plane_avx2( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+                              const x264_weight_t *w, int width, int height )
+{
+    void (*f)( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+    if( w->weightfn == x264_mc_weight_wtab_avx2 )
+        f = x264_mc_weight_plane_avx2;
+    else if( w->weightfn == x264_mc_offsetadd_wtab_sse2 )
+        f = x264_mc_offsetadd_plane_avx2;
+    else if( w->weightfn == x264_mc_offsetsub_wtab_sse2 )
+        f = x264_mc_offsetsub_plane_avx2;
+    else
+        return 0;
+    if( width > 0 && height > 0 )
+        f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );
+    return 1;
+}
 #endif
 #endif // !HIGH_BIT_DEPTH
 
@@ -1307,6 +1334,8 @@ static void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, in
 PROPAGATE_LIST(ssse3)
 PROPAGATE_LIST(avx)
 #if ARCH_X86_64
+#define x264_mbtree_propagate_list_internal_avx2 x264_template(mbtree_propagate_list_internal_avx2)
+PROPAGATE_LIST(avx2)
 #define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
 PROPAGATE_LIST(avx512)
 #endif
@@ -1656,6 +1685,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight = x264_mc_weight_wtab_avx2;
 #if ARCH_X86_64
         pf->weight_cache = x264_weight_cache_avx2;
+        pf->weight_plane = weight_plane_avx2;
 #endif
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
         pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx2;
@@ -1713,6 +1743,15 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->plane_copy = x264_plane_copy_avx2;
     pf->get_ref = get_ref_avx2;
     pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx2;
+#if ARCH_X86_64
+    pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx2;
+    /* vgatherdps: 2.96x / 3.13x C on Core 3 Raptor Cove; unmeasured on slow-gather CPUs, which keep C */
+    if( !(cpu&X264_CPU_SLOW_GATHER) )
+    {
+        pf->mbtree_finish = x264_mbtree_finish_avx2;
+        pf->aq_variance_tail = x264_aq_variance_tail_avx2;
+    }
+#endif
 
     if( cpu&X264_CPU_FMA3 )
         pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx2_fma3;

@@ -1317,6 +1317,116 @@ OFFSET_AVG_ICL 20, add
 OFFSET_AVG_ICL 20, sub
 
 ;-----------------------------------------------------------------------------
+; 8-bit mc_X_plane, avx2: as the avx512icl version below, the ssse3 cache and
+; the mc_X_w16/w8 ops over whole rows (width a multiple of 8, even height).
+; 32 px a ymm, punpck{l,h}bw to words and packuswb back; the row tail is a
+; 16 px and/or an 8 px step. m3 = scale (<< 7 when fast), m4 = offset, m5 = 0.
+;-----------------------------------------------------------------------------
+%macro WEIGHT_AVX2_OP 4 ; reg, scale, offset, fast
+    %if %4 == 0
+    psllw         %1, 7
+    %endif
+    pmulhrsw      %1, %2
+    paddw         %1, %3
+%endmacro
+
+%macro WEIGHT_PLANE_AVX2_ROWS 1 ; fast
+.row%1:
+    xor          r8d, r8d
+    test         r5d, r5d
+    jz .tail%1
+.col%1:
+    movu          m0, [r2+r8]
+    punpckhbw     m1, m0, m5
+    punpcklbw     m0, m5
+    WEIGHT_AVX2_OP m0, m3, m4, %1
+    WEIGHT_AVX2_OP m1, m3, m4, %1
+    packuswb      m0, m1
+    movu     [r0+r8], m0
+    add           r8, 32
+    cmp          r8d, r5d
+    jl .col%1
+.tail%1:
+    test         r7d, 16
+    jz .tail8%1
+    pmovzxbw      m0, [r2+r8]
+    WEIGHT_AVX2_OP m0, m3, m4, %1
+    vextracti128 xm1, m0, 1
+    packuswb     xm0, xm1
+    movu     [r0+r8], xm0
+    add           r8, 16
+.tail8%1:
+    test         r7d, 8
+    jz .next%1
+    pmovzxbw     xm0, [r2+r8]
+    WEIGHT_AVX2_OP xm0, xm3, xm4, %1
+    packuswb     xm0, xm0
+    movq     [r0+r8], xm0
+.next%1:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row%1
+    RET
+%endmacro
+
+INIT_YMM avx2
+cglobal mc_weight_plane, 7,9,6
+    vpbroadcastw  m3, [r4]
+    vpbroadcastw  m4, [r4+16]
+    pxor          m5, m5
+    mov          r7d, r5d
+    and          r7d, 31
+    sub          r5d, r7d               ; full columns
+    cmp byte [r4+1], 0
+    jz .fast
+    WEIGHT_PLANE_AVX2_ROWS 0
+.fast:
+    psllw         m3, 7
+    WEIGHT_PLANE_AVX2_ROWS 1
+
+%macro OFFSET_PLANE_AVX2 1 ; add/sub
+cglobal mc_offset%1_plane, 7,9,3
+    vpbroadcastb  m2, [r4]
+    mov          r7d, r5d
+    and          r7d, 31
+    sub          r5d, r7d
+.row:
+    xor          r8d, r8d
+    test         r5d, r5d
+    jz .tail
+.col:
+    movu          m0, [r2+r8]
+    p%1usb        m0, m2
+    movu     [r0+r8], m0
+    add           r8, 32
+    cmp          r8d, r5d
+    jl .col
+.tail:
+    test         r7d, 16
+    jz .tail8
+    movu         xm0, [r2+r8]
+    p%1usb       xm0, xm2
+    movu     [r0+r8], xm0
+    add           r8, 16
+.tail8:
+    test         r7d, 8
+    jz .next
+    movq         xm0, [r2+r8]
+    p%1usb       xm0, xm2
+    movq     [r0+r8], xm0
+.next:
+    add           r0, r1
+    add           r2, r3
+    dec          r6d
+    jg .row
+    RET
+%endmacro
+
+OFFSET_PLANE_AVX2 add
+OFFSET_PLANE_AVX2 sub
+
+;-----------------------------------------------------------------------------
 ; 8-bit mc_X_plane( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
 ;                   weight_t *w, int width, int height ), avx512icl: the ssse3
 ; cache and the mc_X_wN ops over whole rows (x264_weight_scale_plane passes

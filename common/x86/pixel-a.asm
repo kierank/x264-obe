@@ -12507,6 +12507,64 @@ cglobal weightp_dc8x8, 5,7,8
     paddd     xm0, xm2
     movu     [r0], xm0
     RET
+
+%if HIGH_BIT_DEPTH == 0
+; 8-bit avx2: the avx512icl loads, rows 0-3 in m0 (pix1) m1 (pix2), 4-7 in m2 m3.
+; pmaddubsw by 1 into 2 px word sums, pix1 - pix2, rows 0 1 4 5 + rows 2 3 6 7,
+; pmaddwd into the 4 px row halves, then the row pairs.
+; avxvnni: the avx512icl dword sums, {vex} vpdpbusd.
+%macro WEIGHTP_DC8 0
+cglobal weightp_dc8x8, 5,7,8
+    lea        r5, [r2*3]
+    lea        r6, [r4*3]
+    WEIGHTP_DC_ICL_LOAD 0, r1, r2, r5
+    WEIGHTP_DC_ICL_LOAD 1, r3, r4, r6
+    lea        r1, [r1+r2*4]
+    lea        r3, [r3+r4*4]
+    WEIGHTP_DC_ICL_LOAD 2, r1, r2, r5
+    WEIGHTP_DC_ICL_LOAD 3, r3, r4, r6
+    vpbroadcastd m6, [pb_1]
+%if cpuflag(avxvnni)
+    pcmpeqb    m7, m7
+    pxor       m4, m4
+    pxor       m5, m5
+    {vex} vpdpbusd m4, m0, m6
+    {vex} vpdpbusd m4, m1, m7
+    {vex} vpdpbusd m5, m2, m6
+    {vex} vpdpbusd m5, m3, m7
+    vextracti128 xm2, m4, 1
+    paddd     xm4, xm2
+    vextracti128 xm2, m5, 1
+    paddd     xm5, xm2
+    punpcklqdq xm0, xm4, xm5
+    punpckhqdq xm4, xm5
+    paddd     xm0, xm4
+%else
+    pmaddubsw  m0, m6
+    pmaddubsw  m1, m6
+    pmaddubsw  m2, m6
+    pmaddubsw  m3, m6
+    psubw      m0, m1
+    psubw      m2, m3
+    vperm2i128 m1, m0, m2, 0x20
+    vperm2i128 m0, m0, m2, 0x31
+    paddw      m0, m1                  ; rows 0+2 1+3 | 4+6 5+7, |x| <= 4*255
+    vpbroadcastd m6, [pw_1]
+    pmaddwd    m0, m6
+    pshufd     m1, m0, q1032
+    paddd      m0, m1
+    vextracti128 xm1, m0, 1
+    punpcklqdq xm0, xm1
+%endif
+    movu     [r0], xm0
+    RET
+%endmacro
+
+INIT_YMM avx2
+WEIGHTP_DC8
+INIT_YMM avxvnni
+WEIGHTP_DC8
+%endif
 %endif
 
 ;=============================================================================
@@ -12970,11 +13028,30 @@ WEIGHTP_SUM8_NV
 INIT_YMM avx512icl
 WEIGHTP_STATS8_B
 
-; avx512icl 8-bit weightp_sum8(_clip): on words, x * scale + round fits (scale 0-127):
+; avx512icl and avxvnni 8-bit weightp_sum8(_clip): on words, x * scale + round fits (scale 0-127):
 ; pmullw, paddw, psraw [, + offset, clip], then vpdpwssd by 1 into the block's dword pairs.
 ; As the AVX2 version otherwise: one block a lane, 4 registers a pass.
 ; m5 = pw_1, m6 = scale, m7 = round, xm8 = denom, m10 = block order;
 ; _clip: m9 = offset, m11 = 255, m12 = 0.
+
+; vpbroadcast[wd] of a gpr: avx512 directly, avx2 through the xmm
+%macro BCAST_GPR 3 ; w/d, dst register number, gpr
+%if cpuflag(avx512)
+    vpbroadcast%1 m%2, %3
+%else
+    movd      xm%2, %3
+    vpbroadcast%1 m%2, xm%2
+%endif
+%endmacro
+
+%macro VNNI 4 ; op, acc, a, b: avxvnni needs the vex form
+%if cpuflag(avx512)
+    %1  %2, %3, %4
+%else
+    {vex} %1 %2, %3, %4
+%endif
+%endmacro
+
 %macro WEIGHTP_SUM8_ICL_ROW 3 ; acc, offset, clip
     pmovzxbw   m4, [r7+%2]
     pmullw     m4, m6
@@ -12985,24 +13062,24 @@ WEIGHTP_STATS8_B
     pmaxsw     m4, m12
     pminsw     m4, m11
 %endif
-    vpdpwssd   %1, m4, m5
+    VNNI vpdpwssd, %1, m4, m5
 %endmacro
 
 %macro WEIGHTP_SUM8_ICL 1 ; clip
 %if %1
 cglobal weightp_sum8_clip, 8,9,14
-    vpbroadcastw m9, r7d
+    BCAST_GPR  w, 9, r7d
     mov       r7d, 255
-    vpbroadcastw m11, r7d
+    BCAST_GPR  w, 11, r7d
     pxor      m12, m12
 %else
 cglobal weightp_sum8, 7,9,14
 %endif
-    vpbroadcastw m6, r5d
+    BCAST_GPR  w, 6, r5d
     xor       r7d, r7d
     bts       r7d, r6d
     shr       r7d, 1
-    vpbroadcastw m7, r7d
+    BCAST_GPR  w, 7, r7d
     movd      xm8, r6d
     vpbroadcastd m5, [pw_1]
     WEIGHTP_PERM m10
@@ -13033,19 +13110,22 @@ cglobal weightp_sum8, 7,9,14
 
 WEIGHTP_SUM8_ICL 0
 WEIGHTP_SUM8_ICL 1
+INIT_YMM avxvnni
+WEIGHTP_SUM8_ICL 0
+WEIGHTP_SUM8_ICL 1
 
-; avx512icl 8-bit: vpdpbusd of each row by 1,0,1,0 (u) and 0,1,0,1 (v) bytes, no unpacking.
+; avx512icl and avxvnni 8-bit: vpdpbusd of each row by 1,0,1,0 (u) and 0,1,0,1 (v) bytes, no unpacking.
 ; A ymm is two blocks, 8 a pass; u in m0-m3, v in m4-m7, then as weightp_sum8.
 %macro WEIGHTP_NV_ICL_ROW 3 ; u acc, v acc, offset
     movu       m8, [r6+%3]
-    vpdpbusd  m%1, m8, m10
-    vpdpbusd  m%2, m8, m11
+    VNNI vpdpbusd, m%1, m8, m10
+    VNNI vpdpbusd, m%2, m8, m11
 %endmacro
 
-INIT_YMM avx512icl
+%macro WEIGHTP_SUM8_NV_ICL 0
 cglobal weightp_sum8_nv, 6,8,13
     mov       r6d, 0x00010001
-    vpbroadcastd m10, r6d
+    BCAST_GPR  d, 10, r6d
     pslld     m11, m10, 8
     WEIGHTP_PERM m9
 .loopx:
@@ -13079,6 +13159,12 @@ cglobal weightp_sum8_nv, 6,8,13
     sub       r4d, 8
     jg .loopx
     RET
+%endmacro
+
+INIT_YMM avx512icl
+WEIGHTP_SUM8_NV_ICL
+INIT_YMM avxvnni
+WEIGHTP_SUM8_NV_ICL
 %endif
 %endif ; ARCH_X86_64
 

@@ -215,6 +215,7 @@ static void print_bench(void)
                     b->cpu&X264_CPU_SLOW_ATOM && b->cpu&X264_CPU_CACHELINE_64 ? "_c64_atom" :
                     b->cpu&X264_CPU_CACHELINE_64 ? "_c64" :
                     b->cpu&X264_CPU_SLOW_SHUFFLE ? "_slowshuffle" :
+                    b->cpu&X264_CPU_SLOW_GATHER ? "_slowgather" :
                     b->cpu&X264_CPU_LZCNT ? "_lzcnt" :
                     b->cpu&X264_CPU_BMI2 ? "_bmi2" :
                     b->cpu&X264_CPU_BMI1 ? "_bmi1" :
@@ -5146,7 +5147,7 @@ static int check_mc( int cpu_ref, int cpu_new )
     if( mc_a.mbtree_propagate_list != mc_ref.mbtree_propagate_list )
     {
         used_asm = 1;
-        for( int i = 0; i < 8; i++ )
+        for( int i = 0; i < 16; i++ )
         {
             set_func_name( "mbtree_propagate_list" );
             x264_t h;
@@ -5166,8 +5167,9 @@ static int check_mc( int cpu_ref, int cpu_new )
             int bipred_weight = (rand()%63)+1;
             int mb_y = rand()&3;
             int list = i&1;
-            /* also a row length that isn't a multiple of 8, with valid data past its end */
-            int len = (i&2) ? width-3 : width;
+            /* also row lengths that aren't a multiple of 8, with valid data past their end;
+             * avx2: 1-8 entries after the last 16 (width-11, short rows) */
+            int len = (i&6) == 2 ? width-3 : (i&6) == 4 ? width-11 : (i&6) == 6 ? 1 + rand()%24 : width;
             for( int j = -width; j < size+width; j++ )
                 ref_costsc[j] = ref_costsa[j] = rand()&32767;
             for( int j = 0; j < width; j++ )
@@ -8609,6 +8611,8 @@ static int check_all_flags( void )
     if( x264_cpu_detect() & X264_CPU_AVX2 )
     {
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_AVX2, "AVX2" );
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_GATHER, "AVX2 SlowGather" );
+        cpu1 &= ~X264_CPU_SLOW_GATHER;
         if( x264_cpu_detect() & X264_CPU_LZCNT )
         {
             ret |= add_flags( &cpu0, &cpu1, X264_CPU_LZCNT, "AVX2_LZCNT" );
