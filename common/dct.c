@@ -906,7 +906,8 @@ static void zigzag_interleave_8x8_cavlc( dctcoef *dst, dctcoef *src, uint8_t *nn
 }
 #endif
 
-void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced )
+/* b_cqm_flat: the cqm is flat (as x264_quant_init tests, i_cqm_preset == X264_CQM_FLAT) */
+void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zigzag_function_t *pf_interlaced, int b_cqm_flat )
 {
     pf_interlaced->scan_8x8   = zigzag_scan_8x8_field;
     pf_progressive->scan_8x8  = zigzag_scan_8x8_frame;
@@ -1056,9 +1057,13 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
-        /* quant_8x8_scan_{frame,field}_avx2 undispatched: on Core 3 vs the split chain (checkasm, 3 seeds)
-         * field_cqm 721 vs 872, frame_cqm 1008 vs 1056, but field_flat 656 vs 628, frame_flat 859 vs 781,
-         * and production is flat. The _flat_avx2 kernels need the cqm at init, which zigzag_init lacks. */
+#if !HIGH_BIT_DEPTH
+        /* vs the split chain on Core 3 (checkasm, nop-corrected ticks per call, median of 3 seeds):
+         * flat: _flat_avx2 field 60.2 vs 76.3 (1.27x), frame 75.5 vs 90.5 (1.20x); the general kernel
+         * loses on flat by 3-11 %. cqm: general field 85.6 vs 100.8 (1.18x), frame 115.1 vs 119.7 (1.04x) */
+        pf_interlaced->quant_8x8_scan  = b_cqm_flat ? x264_quant_8x8_scan_field_flat_avx2 : x264_quant_8x8_scan_field_avx2;
+        pf_progressive->quant_8x8_scan = b_cqm_flat ? x264_quant_8x8_scan_frame_flat_avx2 : x264_quant_8x8_scan_frame_avx2;
+#endif
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

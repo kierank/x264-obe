@@ -3865,9 +3865,9 @@ static int check_dct( int cpu_ref, int cpu_new )
         } \
     }
 
-    x264_zigzag_init( 0, &zigzag_c[0], &zigzag_c[1] );
-    x264_zigzag_init( cpu_ref, &zigzag_ref[0], &zigzag_ref[1] );
-    x264_zigzag_init( cpu_new, &zigzag_asm[0], &zigzag_asm[1] );
+    x264_zigzag_init( 0, &zigzag_c[0], &zigzag_c[1], 0 );
+    x264_zigzag_init( cpu_ref, &zigzag_ref[0], &zigzag_ref[1], 0 );
+    x264_zigzag_init( cpu_new, &zigzag_asm[0], &zigzag_asm[1], 0 );
 
 #if HAS_CAVLC
     ok = 1; used_asm = 0;
@@ -6009,9 +6009,9 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_quant_init( h, 0, &qf_c );
         x264_quant_init( h, cpu_ref, &qf_ref );
         x264_quant_init( h, cpu_new, &qf_a );
-        x264_zigzag_init( 0, &zz_c[0], &zz_c[1] );
-        x264_zigzag_init( cpu_ref, &zz_ref[0], &zz_ref[1] );
-        x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1] );
+        x264_zigzag_init( 0, &zz_c[0], &zz_c[1], h->param.i_cqm_preset == X264_CQM_FLAT );
+        x264_zigzag_init( cpu_ref, &zz_ref[0], &zz_ref[1], h->param.i_cqm_preset == X264_CQM_FLAT );
+        x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1], h->param.i_cqm_preset == X264_CQM_FLAT );
 
         /* zscreen thresholds, once per cqm: t - 1 quantises to 0 and t does not, and every 4x4
          * the C screen proves quantises to 0 */
@@ -6394,20 +6394,24 @@ static int check_quant( int cpu_ref, int cpu_new )
                 } \
             }
 
-        /* q8v 0: the dispatched pointers; at the first AVX2 level also the undispatched avx2 kernels,
-         * q8v 1 the general one, q8v 2 the flat-cqm one (flat cqm only) */
+        /* q8v 0: the dispatched pointers, those the encoder uses with this cqm. q8v 1, flat cqm at the first
+         * AVX2 level: the general avx2 kernel as a control (flat dispatches _flat_avx2). Bench names: flatk_ =
+         * a _flat_avx2 kernel. */
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define Q8S_FLATK( f ) ( (f) == x264_quant_8x8_scan_frame_flat_avx2 || (f) == x264_quant_8x8_scan_field_flat_avx2 )
+#else
+#define Q8S_FLATK( f ) 0
+#endif
         x264_zigzag_function_t zz_disp[2] = { zz_a[0], zz_a[1] };
-        for( int q8v = 0; q8v < 3; q8v++ )
+        for( int q8v = 0; q8v < 2; q8v++ )
         {
-        const char *q8k = "";
         if( q8v )
         {
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-            if( !(cpu_new&X264_CPU_AVX2) || (cpu_ref&X264_CPU_AVX2) || (q8v == 2 && h->param.i_cqm_preset != X264_CQM_FLAT) )
+            if( !(cpu_new&X264_CPU_AVX2) || (cpu_ref&X264_CPU_AVX2) || !Q8S_FLATK( zz_a[0].quant_8x8_scan ) )
                 continue;
-            zz_a[0].quant_8x8_scan = q8v == 1 ? x264_quant_8x8_scan_frame_avx2 : x264_quant_8x8_scan_frame_flat_avx2;
-            zz_a[1].quant_8x8_scan = q8v == 1 ? x264_quant_8x8_scan_field_avx2 : x264_quant_8x8_scan_field_flat_avx2;
-            q8k = q8v == 2 ? "flatk_" : "";
+            zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx2;
+            zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx2;
 #else
             continue;
 #endif
@@ -6440,12 +6444,12 @@ static int check_quant( int cpu_ref, int cpu_new )
                             dct0[k] = bench_rand() & ((1<<rate)-1) ? 0 : x;
                         }
                         dctcoef *l1 = (dctcoef*)lvl1, *l2 = (dctcoef*)lvl2;
-                        set_func_name( "quant_8x8_scan_%s%s_%s", q8k, fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        set_func_name( "quant_8x8_scan_%s%s_%s", Q8S_FLATK( zz_a[fld].quant_8x8_scan ) ? "flatk_" : "", fld?"field":"frame", i_cqm?"cqm":"flat" );
                         memcpy( dct1, dct0, 64*sizeof(dctcoef) );
                         memcpy( dct2, dct0, 64*sizeof(dctcoef) );
                         call_c2( q8s_c[fld], dct1, l1, mf, bias, dmf, qp );
                         call_a2( zz_a[fld].quant_8x8_scan, dct2, l2, mf, bias, dmf, qp );
-                        if( q8v == 2 )
+                        if( q8v )
                             continue;
                         set_func_name( "quant_8x8_scan_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
                         memcpy( dct5, dct0, 64*sizeof(dctcoef) );
@@ -6455,6 +6459,7 @@ static int check_quant( int cpu_ref, int cpu_new )
         }
         zz_a[0] = zz_disp[0];
         zz_a[1] = zz_disp[1];
+#undef Q8S_FLATK
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \
