@@ -377,5 +377,9 @@ int x264_quant_8x8_scan_field_avx512icl( dctcoef dct[64], dctcoef level[64], udc
 int x264_quant_8x8_scan_frame_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
 #define x264_quant_8x8_scan_field_avx2 x264_template(quant_8x8_scan_field_avx2)
 int x264_quant_8x8_scan_field_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_quant_8x8_scan_frame_flat_avx2 x264_template(quant_8x8_scan_frame_flat_avx2)
+int x264_quant_8x8_scan_frame_flat_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_quant_8x8_scan_field_flat_avx2 x264_template(quant_8x8_scan_field_flat_avx2)
+int x264_quant_8x8_scan_field_flat_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
 
 #endif

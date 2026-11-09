@@ -1056,10 +1056,9 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
-#if !HIGH_BIT_DEPTH
-        pf_interlaced->quant_8x8_scan       = x264_quant_8x8_scan_field_avx2;
-        pf_progressive->quant_8x8_scan      = x264_quant_8x8_scan_frame_avx2;
-#endif
+        /* quant_8x8_scan_{frame,field}_avx2 undispatched: on Core 3 vs the split chain (checkasm, 3 seeds)
+         * field_cqm 721 vs 872, frame_cqm 1008 vs 1056, but field_flat 656 vs 628, frame_flat 859 vs 781,
+         * and production is flat. The _flat_avx2 kernels need the cqm at init, which zigzag_init lacks. */
     }
     if( cpu&X264_CPU_AVX512ICL )
     {

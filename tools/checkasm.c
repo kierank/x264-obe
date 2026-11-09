@@ -6394,6 +6394,24 @@ static int check_quant( int cpu_ref, int cpu_new )
                 } \
             }
 
+        /* q8v 0: the dispatched pointers; at the first AVX2 level also the undispatched avx2 kernels,
+         * q8v 1 the general one, q8v 2 the flat-cqm one (flat cqm only) */
+        x264_zigzag_function_t zz_disp[2] = { zz_a[0], zz_a[1] };
+        for( int q8v = 0; q8v < 3; q8v++ )
+        {
+        const char *q8k = "";
+        if( q8v )
+        {
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+            if( !(cpu_new&X264_CPU_AVX2) || (cpu_ref&X264_CPU_AVX2) || (q8v == 2 && h->param.i_cqm_preset != X264_CQM_FLAT) )
+                continue;
+            zz_a[0].quant_8x8_scan = q8v == 1 ? x264_quant_8x8_scan_frame_avx2 : x264_quant_8x8_scan_frame_flat_avx2;
+            zz_a[1].quant_8x8_scan = q8v == 1 ? x264_quant_8x8_scan_field_avx2 : x264_quant_8x8_scan_field_flat_avx2;
+            q8k = q8v == 2 ? "flatk_" : "";
+#else
+            continue;
+#endif
+        }
         TEST_QUANT8_SCAN( CQM_8IY );
         TEST_QUANT8_SCAN( CQM_8PY );
 
@@ -6422,16 +6440,21 @@ static int check_quant( int cpu_ref, int cpu_new )
                             dct0[k] = bench_rand() & ((1<<rate)-1) ? 0 : x;
                         }
                         dctcoef *l1 = (dctcoef*)lvl1, *l2 = (dctcoef*)lvl2;
-                        set_func_name( "quant_8x8_scan_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                        set_func_name( "quant_8x8_scan_%s%s_%s", q8k, fld?"field":"frame", i_cqm?"cqm":"flat" );
                         memcpy( dct1, dct0, 64*sizeof(dctcoef) );
                         memcpy( dct2, dct0, 64*sizeof(dctcoef) );
                         call_c2( q8s_c[fld], dct1, l1, mf, bias, dmf, qp );
                         call_a2( zz_a[fld].quant_8x8_scan, dct2, l2, mf, bias, dmf, qp );
+                        if( q8v == 2 )
+                            continue;
                         set_func_name( "quant_8x8_scan_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
                         memcpy( dct5, dct0, 64*sizeof(dctcoef) );
                         call_bench( quant_8x8_scan_split, cpu_new, dct5, lvl3, mf, bias, dmf, qp );
                     }
                 }
+        }
+        zz_a[0] = zz_disp[0];
+        zz_a[1] = zz_disp[1];
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
         if( qf_a.dqname != qf_ref.dqname ) \

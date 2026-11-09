@@ -4225,7 +4225,7 @@ cglobal quant_8x8_scan_%1, 6,9,10
 %endmacro
 
 ; levels A-D (m0-m3) = coefs 0-15 .. 48-63, ' = lanes swapped (m4-m7)
-%macro QUANT_8x8_SCAN_AVX2 1 ; frame/field
+%macro QUANT_8x8_SCAN_AVX2 3 ; name, field, flat cqm
 cglobal quant_8x8_scan_%1, 6,9,16
     movu      m0, [r0+ 0]
     movu      m1, [r0+32]
@@ -4256,7 +4256,7 @@ cglobal quant_8x8_scan_%1, 6,9,16
     vperm2i128 m5, m1, m1, 0x01
     vperm2i128 m6, m2, m2, 0x01
     vperm2i128 m7, m3, m3, 0x01
-%ifidn %1, frame
+%if %2 == 0
     ; as zigzag_scan_8x8_frame avx2
     lea       r2, [pb_scan8frame_avx2]
     pshufb    m8, m0, [r2+ 0*32]
@@ -4340,6 +4340,30 @@ cglobal quant_8x8_scan_%1, 6,9,16
 %endif
     test      r4, r4
     jz .store
+%if %3
+    ; flat cqm: dmf = dequant8_scale << 4, so at qp >= 12 the dequant is a pmullw by dequant8_scale << (qp/6-2)
+    cmp       r5d, 12
+    jl .dequant
+    imul      r7d, r5d, 0x2b
+    shr       r7d, 8          ; i_qp / 6
+    lea       r8d, [r7*3]
+    add       r8d, r8d
+    sub       r5d, r8d        ; i_qp % 6
+    shl       r5d, 6
+    lea       r2, [dequant8_scale]
+    sub       r7d, 2
+    movd     xm8, r7d
+    movu      m4, [r2+r5]
+    movu      m5, [r2+r5+32]
+    psllw     m4, xm8
+    psllw     m5, xm8
+    pmullw    m0, m4
+    pmullw    m1, m5
+    pmullw    m2, m4
+    pmullw    m3, m5
+    jmp .store
+.dequant:
+%endif
     QUANT8_SCAN_DEQUANT_START
     ; dmf as words
     movu      m4, [r4+  0]
@@ -4416,7 +4440,9 @@ QUANT_8x8_SCAN_AVX512 frame
 QUANT_8x8_SCAN_AVX512 field
 %if HIGH_BIT_DEPTH == 0
 INIT_YMM avx2
-QUANT_8x8_SCAN_AVX2 frame
-QUANT_8x8_SCAN_AVX2 field
+QUANT_8x8_SCAN_AVX2 frame,      0, 0
+QUANT_8x8_SCAN_AVX2 field,      1, 0
+QUANT_8x8_SCAN_AVX2 frame_flat, 0, 1
+QUANT_8x8_SCAN_AVX2 field_flat, 1, 1
 %endif
 %endif ; ARCH_X86_64
