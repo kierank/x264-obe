@@ -34,6 +34,11 @@ rc_pd_128:    times 8 dd 128
 rc_pd_ffff:   times 8 dd 0xffff
 rc_pd_3fff:   times 8 dd 0x3fff
 rc_pd_63:     times 8 dd 63
+rc_pd_127:    times 8 dd 127
+rc_pd_7f:     times 8 dd 0x7f
+rc_pd_8:      times 8 dd 8
+rc_lanes:     times 8 dd -1                ; the first n lanes: rc_lanes+32-4*n
+              times 8 dd 0
 rc_pd_1:      dd 1
 rc_pd_32:     dd 32
 rc_pd_64:     dd 64
@@ -145,29 +150,68 @@ cglobal mbtree_cost_scale, 3,4
     vmovd       eax, xm0
     RET
 
-; avx2: exp2_lut in four pshufb tables, m12-m15
+; avx2 EXP2FIX8_ZMM: exp2_lut in four pshufb tables, m12-m15
+%macro EXP2FIX8_YMM 6 ; dst/src, tmp x5
+    mulps       %1, [rc_pf_m64_6]
+    addps       %1, [rc_pf_512_5]
+    cvttps2dq   %1, %1
+    pminsd      %1, [rc_pd_1024]
+    psrad       %2, %1, 6
+    pand        %1, [rc_pd_63]
+    pslld       %3, %1, 3                    ; index bit 4 -> bit 7
+    pshufb      %4, m12, %1                  ; bytes 1-3 take exp2_lut[0] = 0
+    pshufb      %5, m13, %1
+    pblendvb    %4, %5, %3
+    pshufb      %5, m14, %1
+    pshufb      %6, m15, %1
+    pblendvb    %5, %6, %3
+    pslld       %3, %1, 2                    ; index bit 5 -> bit 7
+    pblendvb    %4, %5, %3
+    por         %4, [rc_pd_256]
+    vpsllvd     %1, %4, %2
+    psrld       %1, 8
+%endmacro
+
+%macro LOAD_EXP2_LUT_YMM 0
+    vbroadcasti128 m12, [exp2_lut+ 0]
+    vbroadcasti128 m13, [exp2_lut+16]
+    vbroadcasti128 m14, [exp2_lut+32]
+    vbroadcasti128 m15, [exp2_lut+48]
+%endmacro
+
+; avx2 LOG2_ZMM: the float of x is exact (x >= 2^24 shifted down 8 first), so its
+; exponent is 31-lz less the shift and its mantissa bits 22-16 the lut index.
+; %2 nonzero, clobbered; %5 = log2_lut; small: %2 < 2^24
+%macro LOG2_YMM 5-6 0 ; dst, src, tmp, tmp, lut, small
+%if %6 == 0
+    psrld       %3, %2, 24
+    pxor        %4, %4
+    pcmpeqd     %3, %4
+    pandn       %3, [rc_pd_8]                ; the shift
+    vpsrlvd     %2, %2, %3
+    psubd       %3, [rc_pd_127]
+%endif
+    cvtdq2ps    %2, %2
+    psrld       %4, %2, 23
+%if %6 == 0
+    paddd       %4, %3
+%else
+    psubd       %4, [rc_pd_127]
+%endif
+    psrld       %2, 16
+    pand        %2, [rc_pd_7f]
+    pcmpeqd     %3, %3
+    pxor        %1, %1
+    vgatherdps  %1, [%5+%2*4], %3
+    cvtdq2ps    %4, %4
+    addps       %1, %4
+%endmacro
+
 %macro COST_SCALE_YMM 0 ; m1 = costs, m2 = qp
     pand        m1, [rc_pd_3fff]
-    mulps       m2, [rc_pf_m64_6]
-    addps       m2, [rc_pf_512_5]
-    cvttps2dq   m2, m2
-    pminsd      m2, [rc_pd_1024]
-    psrad       m3, m2, 6
-    pand        m2, [rc_pd_63]
-    pslld       m4, m2, 3                    ; index bit 4 -> bit 7
-    pshufb      m5, m12, m2                  ; bytes 1-3 take exp2_lut[0] = 0
-    pshufb      m6, m13, m2
-    pblendvb    m5, m6, m4
-    pshufb      m6, m14, m2
-    pshufb      m7, m15, m2
-    pblendvb    m6, m7, m4
-    pslld       m4, m2, 2                    ; index bit 5 -> bit 7
-    pblendvb    m5, m6, m4
-    por         m5, [rc_pd_256]
-    vpsllvd     m5, m5, m3
-    psrld       m5, 8
-    pminud      m5, [rc_pd_ffff]
-    pmulld      m1, m5
+    EXP2FIX8_YMM m2, m3, m4, m5, m6, m7
+    pminud      m2, [rc_pd_ffff]
+    pmulld      m1, m2
     paddd       m1, [rc_pd_128]
     psrad       m1, 8
     paddd       m0, m1
@@ -175,10 +219,7 @@ cglobal mbtree_cost_scale, 3,4
 
 INIT_YMM avx2
 cglobal mbtree_cost_scale, 3,5,16, 64
-    vbroadcasti128 m12, [exp2_lut+ 0]
-    vbroadcasti128 m13, [exp2_lut+16]
-    vbroadcasti128 m14, [exp2_lut+32]
-    vbroadcasti128 m15, [exp2_lut+48]
+    LOAD_EXP2_LUT_YMM
     pxor        m0, m0
     sub         r2d, 8
     jl .tail
@@ -284,6 +325,94 @@ cglobal mbtree_finish, 8,9
 .end:
     RET
 
+; avx2: intra_cost, propagate_cost < 2^23 where the C's int products don't
+; overflow, so LOG2_YMM small. m8 = strength, m9 = weightdelta, m10 = fps_factor,
+; m11 = pd_128, m13 = 0, r9 = log2_lut; tail: the rest of the row's costs on
+; the stack (0 past it), m7 = its lanes
+%macro MBTREE_FINISH_YMM 1 ; tail
+%if %1
+    pmovzxwd    m0, [rsp]
+    pmovzxwd    m1, [rsp+16]
+%else
+    pmovzxwd    m0, [r2+r8*2]
+    pmovzxwd    m1, [r3+r8*2]
+%endif
+    pmulld      m0, m1
+    paddd       m0, m11
+    psrad       m0, 8                        ; intra_cost
+%if %1
+    pmovzxwd    m1, [rsp+32]
+%else
+    pmovzxwd    m1, [r4+r8*2]
+%endif
+    pmulld      m1, m10
+    paddd       m1, m11
+    psrad       m1, 8                        ; propagate_cost
+    paddd       m1, m0
+    pcmpeqd     m6, m0, m13                  ; intra_cost == 0: unchanged
+    LOG2_YMM    m2, m1, m3, m4, r9, 1
+    LOG2_YMM    m5, m0, m3, m4, r9, 1
+    subps       m2, m5
+    addps       m2, m9                       ; + weightdelta
+    mulps       m2, m8                       ; * strength
+%if %1
+    vmaskmovps  m1, m7, [r1+r8*4]
+    subps       m1, m2
+    pandn       m6, m7
+    vmaskmovps  [r0+r8*4], m6, m1
+%else
+    movu        m1, [r1+r8*4]
+    subps       m1, m2
+    vblendvps   m1, m1, [r0+r8*4], m6
+    movu        [r0+r8*4], m1
+%endif
+%endmacro
+
+INIT_YMM avx2
+cglobal mbtree_finish, 8,11,14, 48
+    vbroadcastss m8, [r5]
+    vbroadcastss m9, [r5+4]
+    movd        xm10, r6d
+    vpbroadcastd m10, xm10
+    mova        m11, [rc_pd_128]
+    pxor        m13, m13
+    lea          r9, [log2_lut]
+    xor         r8d, r8d
+    sub         r7d, 8
+    jl .tail
+.loop:
+    MBTREE_FINISH_YMM 0
+    add         r8d, 8
+    sub         r7d, 8
+    jge .loop
+.tail:
+    add         r7d, 8
+    jz .end
+    pxor        xm0, xm0
+    mova   [rsp+ 0], xm0
+    mova   [rsp+16], xm0
+    mova   [rsp+32], xm0
+    lea          r2, [r2+r8*2]
+    lea          r3, [r3+r8*2]
+    lea          r4, [r4+r8*2]
+    xor         r5d, r5d
+.copy:
+    movzx       r6d, word [r2+r5*2]
+    mov  [rsp+ 0+r5*2], r6w
+    movzx       r6d, word [r3+r5*2]
+    mov  [rsp+16+r5*2], r6w
+    movzx       r6d, word [r4+r5*2]
+    mov  [rsp+32+r5*2], r6w
+    inc         r5d
+    cmp         r5d, r7d
+    jl .copy
+    neg          r7
+    lea         r10, [rc_lanes+32]
+    movu         m7, [r10+r7*4]
+    MBTREE_FINISH_YMM 1
+.end:
+    RET
+
 ;-----------------------------------------------------------------------------
 ; void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
 ;                        float *quant_offsets, float *params, int len )
@@ -345,5 +474,87 @@ cglobal aq_variance_tail, 7,9
     jz .end
     TAIL_MASK   r6d, r8d
     AQ_VARIANCE_ZMM 1
+.end:
+    RET
+
+; avx2: m8 = strength, m9 = bias, m10 = pd_1, r8 = log2_lut; tail: r6d < 8 lanes,
+; m7 = their mask
+%macro AQ_VARIANCE_YMM 1 ; tail
+%if %1
+    vpmaskmovd  m0, m7, [r3+r7*4]
+%else
+    movu        m0, [r3+r7*4]
+%endif
+    pmaxud      m0, m10
+    LOG2_YMM    m1, m0, m2, m3, r8
+    subps       m1, m9                       ; - bias
+    mulps       m1, m8                       ; * strength
+    test         r4, r4
+    jz %%no_offsets
+%if %1
+    vmaskmovps  m2, m7, [r4+r7*4]
+    addps       m1, m2
+%else
+    addps       m1, [r4+r7*4]
+%endif
+%%no_offsets:
+%if %1
+    vmaskmovps  [r0+r7*4], m7, m1
+    vmaskmovps  [r1+r7*4], m7, m1
+%else
+    movu        [r0+r7*4], m1
+    movu        [r1+r7*4], m1
+%endif
+    test         r2, r2
+    jz %%no_qscale
+    EXP2FIX8_YMM m1, m2, m3, m4, m5, m6
+    vextracti128 xm2, m1, 1
+    packusdw    xm1, xm2                     ; 65536 -> 0xffff
+%if %1
+    lea          r5, [r2+r7*2]
+    test        r6b, 4
+    jz %%w2
+    movq       [r5], xm1
+    psrldq      xm1, 8
+    add          r5, 8
+%%w2:
+    test        r6b, 2
+    jz %%w1
+    movd       [r5], xm1
+    psrldq      xm1, 4
+    add          r5, 4
+%%w1:
+    test        r6b, 1
+    jz %%no_qscale
+    pextrw     [r5], xm1, 0
+%else
+    movu  [r2+r7*2], xm1
+%endif
+%%no_qscale:
+%endmacro
+
+INIT_YMM avx2
+cglobal aq_variance_tail, 7,10,16
+    LOAD_EXP2_LUT_YMM
+    vbroadcastss m8, [r5]
+    vbroadcastss m9, [r5+4]
+    vpbroadcastd m10, [rc_pd_1]
+    lea          r8, [log2_lut]
+    xor         r7d, r7d
+    sub         r6d, 8
+    jl .tail
+.loop:
+    AQ_VARIANCE_YMM 0
+    add         r7d, 8
+    sub         r6d, 8
+    jge .loop
+.tail:
+    add         r6d, 8
+    jz .end
+    mov         r9d, r6d
+    neg          r9
+    lea          r5, [rc_lanes+32]
+    movu         m7, [r5+r9*4]
+    AQ_VARIANCE_YMM 1
 .end:
     RET
