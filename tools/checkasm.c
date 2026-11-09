@@ -5375,6 +5375,7 @@ static int check_deblock( int cpu_ref, int cpu_new )
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
     {
         db_a.deblock_luma[1] = x264_deblock_v_luma_avx2;
+        db_a.deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx2;
     }
 #endif
 
