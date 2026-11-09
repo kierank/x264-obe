@@ -704,6 +704,14 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_init( 0, &pixel_c );
     x264_pixel_init( cpu_ref, &pixel_ref );
     x264_pixel_init( cpu_new, &pixel_asm );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    /* the undispatched avxvnni kernels, at the AVXVNNI level */
+    if( (cpu_new&X264_CPU_AVXVNNI) && !(cpu_ref&X264_CPU_AVXVNNI) )
+    {
+        pixel_asm.ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avxvnni;
+        pixel_asm.ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avxvnni;
+    }
+#endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
     x264_predict_8x8_init( 0, predict_8x8, &predict_8x8_filter );
@@ -769,6 +777,31 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL( sad, 0 );
     TEST_PIXEL( sad_aligned, 1 );
     TEST_PIXEL( ssd, 1 );
+
+    /* ssd: the encoder's FENC/FDEC strides both ways round, equal strides, other frame-like strides */
+    ok = 1, used_asm = 0;
+    for( int i = 0; i < ARRAY_ELEMS(pixel_c.ssd); i++ )
+        if( pixel_asm.ssd[i] != pixel_ref.ssd[i] )
+        {
+            static const intptr_t ssd_strides[5][2] = { { FENC_STRIDE, FDEC_STRIDE }, { FDEC_STRIDE, FENC_STRIDE },
+                                                        { 48, 48 }, { 80, 112 }, { 112, 16 } };
+            set_func_name( "ssd_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int k = 0; k < 10 && ok; k++ )
+            {
+                intptr_t s1 = ssd_strides[k>>1][0], s2 = ssd_strides[k>>1][1];
+                pixel *p1 = k&1 ? pbuf3 : pbuf1, *p2 = k&1 ? pbuf4 : pbuf2;
+                int res_c   = pixel_c.ssd[i]( p1, s1, p2, s2 );
+                int res_asm = pixel_asm.ssd[i]( p1, s1, p2, s2 );
+                if( res_c != res_asm )
+                {
+                    ok = 0;
+                    fprintf( stderr, "ssd[%d] strides %d %d: %d != %d [FAILED]\n", i, (int)s1, (int)s2, res_c, res_asm );
+                }
+            }
+        }
+    report( "pixel ssd strides :" );
+
     TEST_PIXEL( satd, 0 );
 
 #define TEST_PIXEL_AVG2( name, cmp ) \

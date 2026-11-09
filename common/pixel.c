@@ -2142,6 +2142,21 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
 #endif
     }
+    /* VEX vpdpbusd/vpdpwssd, ymm0-15, for Intel AVX2-only parts (Raptor Lake, E-2400). Zen 4 has no
+     * AVX-VNNI. Zen 5 and Sapphire Rapids have it: there the AVX512ICL blocks below replace what they
+     * also set, and the pointers marked zen5 (not set below) stay these */
+    if( cpu&X264_CPU_AVXVNNI )
+    {
+#if ARCH_X86_64
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_avxvnni; /* zen5 */
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_avxvnni;  /* zen5 */
+        pixf->ssd[PIXEL_8x4]   = x264_pixel_ssd_8x4_avxvnni;   /* zen5 */
+        pixf->ssd[PIXEL_4x16]  = x264_pixel_ssd_4x16_avxvnni;
+        pixf->ssd[PIXEL_4x8]   = x264_pixel_ssd_4x8_avxvnni;
+        pixf->ssd[PIXEL_4x4]   = x264_pixel_ssd_4x4_avxvnni;
+        /* ssd[8x16], ssd[8x8]: not dispatched, slower than avx on the laptop (Zen 5); for Core 3 */
+#endif
+    }
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64

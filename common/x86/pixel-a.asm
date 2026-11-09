@@ -391,6 +391,8 @@ dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 ; ssd_psy_mb: ssd, ssd, hadamard_ac >> 1, >> 2
 ssd_psy_shift: dd 0, 0, 1, 2
+; avxvnni ssd/var: the 0x80 bytes
+pd_80808080: dd 0x80808080
 
 SECTION .text
 
@@ -413,6 +415,23 @@ cextern pd_1
 cextern pd_ffff
 cextern hsub_mul
 cextern popcnt_table
+
+; VNNI dot products: the VEX (AVX-VNNI) encoding under avxvnni, EVEX otherwise
+%macro DPBUSD 3
+%if cpuflag(avxvnni)
+    {vex} vpdpbusd %1, %2, %3
+%else
+    vpdpbusd   %1, %2, %3
+%endif
+%endmacro
+
+%macro DPWSSD 3
+%if cpuflag(avxvnni)
+    {vex} vpdpwssd %1, %2, %3
+%else
+    vpdpwssd   %1, %2, %3
+%endif
+%endmacro
 
 ;-----------------------------------------------------------------------------
 ; uint64_t pixel_satd_qpel_search_WxH( fenc, pixel **fref, intptr_t stride, uint16_t *cost_mvx,
@@ -13251,3 +13270,139 @@ cglobal predictor_clip, 5,6,4
 INIT_ZMM avx512
 PREDICTOR_CLIP 0
 PREDICTOR_CLIP 1
+
+;=============================================================================
+; avxvnni (VEX vpdpbusd/vpdpwssd), 8-bit: no opmasks, ymm0-15
+;=============================================================================
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH == 0
+; four rows of 8 a ymm, vpbroadcastq + vpblendd (row order is irrelevant)
+%macro LOAD8x4_VNNI 5 ; dst, tmp, src, stride, 3*stride
+    movq        xm%1, [%3]
+    vpbroadcastq m%2, [%3+%4]
+    vpblendd     m%1, m%1, m%2, 0x0c
+    vpbroadcastq m%2, [%3+%4*2]
+    vpblendd     m%1, m%1, m%2, 0x30
+    vpbroadcastq m%2, [%3+%5]
+    vpblendd     m%1, m%1, m%2, 0xc0
+%endmacro
+
+; rows of 4: four an xmm, eight a ymm (%6 = src + 4*stride)
+%macro LOAD4_VNNI 5-6 ; dst, tmp, src, stride, 3*stride, src4
+    movd        xm%1, [%3]
+%assign %%k 0
+%rep mmsize/4-1
+%assign %%k %%k+1
+%if %%k == 1
+    vpbroadcastd m%2, [%3+%4]
+%elif %%k == 2
+    vpbroadcastd m%2, [%3+%4*2]
+%elif %%k == 3
+    vpbroadcastd m%2, [%3+%5]
+%elif %%k == 4
+    vpbroadcastd m%2, [%6]
+%elif %%k == 5
+    vpbroadcastd m%2, [%6+%4]
+%elif %%k == 6
+    vpbroadcastd m%2, [%6+%4*2]
+%else
+    vpbroadcastd m%2, [%6+%5]
+%endif
+    vpblendd     m%1, m%1, m%2, 1<<%%k
+%endrep
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int pixel_ssd_WxH( uint8_t *, intptr_t, uint8_t *, intptr_t )
+; d = |a - b| bytes: d * (d ^ 0x80) = d*d - 128*d into m%3, d * 0x80 = -128*d
+; into m%4 (u8 x s8); ssd = the first sums - the second. m7 = 0x80 bytes
+;-----------------------------------------------------------------------------
+%macro SSD_VNNI_ACC 4 ; a (clobbered), b, square, sum
+    pminub       m6, m%1, m%2
+    pmaxub      m%1, m%2
+    psubb       m%1, m6
+    pxor         m6, m%1, m7
+    DPBUSD      m%3, m%1, m6
+    DPBUSD      m%4, m%1, m7
+%endmacro
+
+%macro SSD_VNNI 2 ; width, height
+%assign %%n %1*%2/mmsize ; vectors per source
+cglobal pixel_ssd_%1x%2, 4,8,10
+    lea          r5, [r1*3]
+    lea          r6, [r3*3]
+    vpbroadcastd m7, [pd_80808080]
+    pxor         m0, m0
+    pxor         m2, m2
+%if %%n > 1
+    pxor         m1, m1
+    pxor         m3, m3
+%endif
+%assign %%i 0
+%rep %%n/2 + (%%n&1)
+%if %1 == 16
+    movu        xm4, [r0]
+    vinserti128  m4, m4, [r0+r1], 1
+    movu        xm5, [r2]
+    vinserti128  m5, m5, [r2+r3], 1
+    movu        xm8, [r0+r1*2]
+    vinserti128  m8, m8, [r0+r5], 1
+    movu        xm9, [r2+r3*2]
+    vinserti128  m9, m9, [r2+r6], 1
+%elif %1 == 8
+    LOAD8x4_VNNI 4, 6, r0, r1, r5
+    LOAD8x4_VNNI 5, 6, r2, r3, r6
+%if %%n > 1
+    lea          r0, [r0+r1*4]
+    lea          r2, [r2+r3*4]
+    LOAD8x4_VNNI 8, 6, r0, r1, r5
+    LOAD8x4_VNNI 9, 6, r2, r3, r6
+%endif
+%else ; 4
+%if mmsize == 32
+    lea          r4, [r0+r1*4]
+    lea          r7, [r2+r3*4]
+%endif
+    LOAD4_VNNI   4, 6, r0, r1, r5, r4
+    LOAD4_VNNI   5, 6, r2, r3, r6, r7
+%if %%n > 1
+    lea          r0, [r0+r1*8]
+    lea          r2, [r2+r3*8]
+    lea          r4, [r4+r1*8]
+    lea          r7, [r7+r3*8]
+    LOAD4_VNNI   8, 6, r0, r1, r5, r4
+    LOAD4_VNNI   9, 6, r2, r3, r6, r7
+%endif
+%endif
+    SSD_VNNI_ACC 4, 5, 0, 2
+%if %%n > 1
+    SSD_VNNI_ACC 8, 9, 1, 3
+%endif
+%assign %%i %%i+1
+%if %%i < %%n/2
+    lea          r0, [r0+r1*4]
+    lea          r2, [r2+r3*4]
+%endif
+%endrep
+%if %%n > 1
+    paddd        m0, m1
+    paddd        m2, m3
+%endif
+    psubd        m0, m2
+    HADDD        m0, m1
+    movd        eax, xm0
+    RET
+%endmacro
+
+INIT_YMM avxvnni
+SSD_VNNI 16, 16
+SSD_VNNI 16,  8
+SSD_VNNI  8, 16
+SSD_VNNI  8,  8
+SSD_VNNI  8,  4
+SSD_VNNI  4, 16
+SSD_VNNI  4,  8
+INIT_XMM avxvnni
+SSD_VNNI  4,  4
+%endif ; !HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64
