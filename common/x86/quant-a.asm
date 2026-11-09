@@ -45,6 +45,9 @@ qscan4_frame_avx512: dw  0, 4, 1, 2, 5, 8,12, 9, 6, 3, 7,10,13,14,11,15
 qscan4_field_avx512: dw  0, 1, 4, 2, 3, 5, 6, 7, 8, 9,10,11,12,13,14,15
                      dw 16,17,20,18,19,21,22,23,24,25,26,27,28,29,30,31
 levelrun_rev_avx512: dw 15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 4, 5, 6, 7
+ALIGN 32
+; decimate_score15 avx2: the ac levels
+decimate_acmask_avx2: dw 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 %endif
 ALIGN 64, db 0
 
@@ -2080,6 +2083,57 @@ DECIMATE4x4 16
 INIT_XMM ssse3
 DECIMATE4x4 15
 DECIMATE4x4 16
+
+%if HIGH_BIT_DEPTH == 0
+; the block in one ymm; run score by popcnt from a 2 bits per coef zero mask
+%macro DECIMATE4x4_AVX2 1
+cglobal decimate_score%1, 1,4
+    pabsw     m0, [r0]
+    psubusw   m1, m0, [pw_1]
+%if %1 == 15
+    ptest     m1, [decimate_acmask_avx2]
+%else
+    ptest     m1, m1
+%endif
+    jnz .ret9
+    pxor      m2, m2
+    pcmpeqw   m0, m2
+    pmovmskb  r1d, m0
+    not       r1d
+%if %1 == 15
+    shr       r1d, 2        ; not the DC
+%endif
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below; each counted twice
+    lea       r2d, [r1*4]   ; shift 1
+    lea       r3d, [r2*4]
+    or        r3d, r2d
+    lea       eax, [r3*4]
+    or        r3d, eax      ; shifts 1-3
+    mov       eax, r3d
+    shl       eax, 6
+    or        eax, r3d      ; shifts 1-6
+    or        r2d, 0x3
+    or        r3d, 0x3f
+    or        eax, 0xfff
+    and       r2d, r1d
+    and       r3d, r1d
+    and       eax, r1d
+    popcnt    r2d, r2d
+    popcnt    r3d, r3d
+    popcnt    eax, eax
+    add       eax, r2d
+    add       eax, r3d
+    shr       eax, 1
+    RET
+.ret9:
+    mov       eax, 9
+    RET
+%endmacro
+
+INIT_YMM avx2
+DECIMATE4x4_AVX2 15
+DECIMATE4x4_AVX2 16
+%endif
 
 ; 2x gt1 output, 2x nz output, 1x mask
 %macro DECIMATE_MASK64_AVX2 5

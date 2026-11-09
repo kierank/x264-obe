@@ -6810,6 +6810,20 @@ static int check_quant( int cpu_ref, int cpu_new )
     BENCH_DECIMATE( decimate_score64, 8, 0 );
     BENCH_DECIMATE( decimate_score16, 4, 0 );
     BENCH_DECIMATE( decimate_score15, 4, 1 );
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+    /* undispatched decimate_score15/16 avx2 (slower than ssse3 on Zen 5), at the first AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+    {
+        x264_quant_function_t qf_disp = qf_a;
+        qf_a.decimate_score16 = x264_decimate_score16_avx2;
+        qf_a.decimate_score15 = x264_decimate_score15_avx2;
+        TEST_DECIMATE( decimate_score16, 4, 0, 6 );
+        TEST_DECIMATE( decimate_score15, 4, 1, 7 );
+        BENCH_DECIMATE( decimate_score16, 4, 0 );
+        BENCH_DECIMATE( decimate_score15, 4, 1 );
+        qf_a = qf_disp;
+    }
+#endif
     report( "decimate_score :" );
 
 /* i 8-15: dense +-1, else sparse with either sign and magnitudes up to the dctcoef range */
