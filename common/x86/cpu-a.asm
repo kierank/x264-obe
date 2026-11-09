@@ -53,6 +53,29 @@ cglobal cpu_cpuid, 5,7
     RET
 
 ;-----------------------------------------------------------------------------
+; void cpu_cpuid_sub( int op, int sub, int *eax, int *ebx, int *ecx, int *edx )
+;-----------------------------------------------------------------------------
+cglobal cpu_cpuid_sub, 6,7
+    push rbx
+    push  r5
+    push  r4
+    push  r3
+    push  r2
+    mov  eax, r0d
+    mov  ecx, r1d
+    cpuid
+    pop   r5
+    mov [r5], eax
+    pop   r5
+    mov [r5], ebx
+    pop   r5
+    mov [r5], ecx
+    pop   r5
+    mov [r5], edx
+    pop  rbx
+    RET
+
+;-----------------------------------------------------------------------------
 ; uint64_t cpu_xgetbv( int xcr )
 ;-----------------------------------------------------------------------------
 cglobal cpu_xgetbv

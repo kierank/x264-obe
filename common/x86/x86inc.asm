@@ -815,6 +815,7 @@ BRANCH_INSTR jz, je, jnz, jne, jl, jle, jnl, jnle, jg, jge, jng, jnge, ja, jae, 
 %assign cpuflags_avx2     (1<<19)| cpuflags_fma3|cpuflags_bmi2
 %assign cpuflags_avx512   (1<<20)| cpuflags_avx2 ; F, CD, BW, DQ, VL
 %assign cpuflags_avx512icl (1<<25)| cpuflags_avx512 ; VBMI, VBMI2, VNNI, BITALG, VPOPCNTDQ, GFNI, VAES, VPCLMULQDQ
+%assign cpuflags_avxvnni  (1<<26)| cpuflags_avx2 ; VEX vpdpbusd/vpdpwssd: write {vex}, xmm/ymm 0-15 only
 
 %assign cpuflags_cache32  (1<<21)
 %assign cpuflags_cache64  (1<<22)

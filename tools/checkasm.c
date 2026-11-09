@@ -188,6 +188,7 @@ static void print_bench(void)
 #if HAVE_MMX
                     b->cpu&X264_CPU_AVX512ICL ? "avx512icl" :
                     b->cpu&X264_CPU_AVX512 ? "avx512" :
+                    b->cpu&X264_CPU_AVXVNNI ? "avxvnni" :
                     b->cpu&X264_CPU_AVX2 && b->cpu&X264_CPU_FMA3 ? "avx2_fma3" :
                     b->cpu&X264_CPU_AVX2 ? "avx2" :
                     b->cpu&X264_CPU_FMA3 ? "fma3" :
@@ -8503,6 +8504,9 @@ static int check_all_flags( void )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3, "FMA3" );
         cpu1 &= ~X264_CPU_FMA3;
     }
+    /* everything AVX-VNNI machines have; kept set for the AVX-512 levels (Zen 5, Sapphire Rapids) */
+    if( x264_cpu_detect() & X264_CPU_AVXVNNI )
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVXVNNI, "AVXVNNI" );
     /* everything AVX-512 machines have, as x264_cpu_names' AVX512 */
     if( x264_cpu_detect() & X264_CPU_AVX512 )
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_FMA3|X264_CPU_LZCNT|X264_CPU_BMI1|X264_CPU_BMI2|X264_CPU_AVX512, "AVX512" );
