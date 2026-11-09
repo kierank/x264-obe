@@ -5354,6 +5354,10 @@ static int check_mc( int cpu_ref, int cpu_new )
     return ret;
 }
 
+#if HAVE_MMX
+#include "common/x86/deblock.h"
+#endif
+
 static int check_deblock( int cpu_ref, int cpu_new )
 {
     x264_deblock_function_t db_c;
@@ -5366,6 +5370,13 @@ static int check_deblock( int cpu_ref, int cpu_new )
     x264_deblock_init( 0, &db_c, 0 );
     x264_deblock_init( cpu_ref, &db_ref, 0 );
     x264_deblock_init( cpu_new, &db_a, 0 );
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched avx2 per-edge kernels, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+    {
+        db_a.deblock_luma[1] = x264_deblock_v_luma_avx2;
+    }
+#endif
 
     /* not exactly the real values of a,b,tc but close enough */
     for( int i = 35, a = 255, c = 250; i >= 0; i-- )
@@ -5386,32 +5397,34 @@ static int check_deblock( int cpu_ref, int cpu_new )
         c = c*9/10;
     }
 
+/* frame and field (MBAFF 2x) strides; bench at the frame stride */
 #define TEST_DEBLOCK( name, align, ... ) \
-    for( int k = 0; k < 72; k++ ) \
+    for( int k = 0; k < 144; k++ ) \
     { \
         int i = k % 36; \
-        intptr_t off = 8*32 + (i&15)*4*!align; /* benchmark various alignments of h filter */ \
-        for( int j = 0; j < 1024; j++ ) \
+        intptr_t db_stride = 32 << (k >= 72); \
+        intptr_t off = 8*db_stride + (i&15)*4*!align; /* benchmark various alignments of h filter */ \
+        for( int j = 0; j < 2048; j++ ) \
             /* three distributions of random to excersize different failure modes; \
-             * k >= 36 near PIXEL_MAX, where the filtered pixels clip at the top */ \
-            pbuf3[j] = k >= 36 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&1 ? 0xf : PIXEL_MAX ); \
-        memcpy( pbuf4, pbuf3, 1024 * sizeof(pixel) ); \
+             * k%72 >= 36 near PIXEL_MAX, where the filtered pixels clip at the top */ \
+            pbuf3[j] = k%72 >= 36 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&1 ? 0xf : PIXEL_MAX ); \
+        memcpy( pbuf4, pbuf3, 2048 * sizeof(pixel) ); \
         if( db_a.name != db_ref.name ) \
         { \
             set_func_name( #name ); \
             used_asm = 1; \
-            call_c1( db_c.name, pbuf3+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
-            call_a1( db_a.name, pbuf4+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
-            if( memcmp( pbuf3, pbuf4, 1024 * sizeof(pixel) ) ) \
+            call_c1( db_c.name, pbuf3+off, db_stride, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            call_a1( db_a.name, pbuf4+off, db_stride, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            if( memcmp( pbuf3, pbuf4, 2048 * sizeof(pixel) ) ) \
             { \
                 ok = 0; \
-                fprintf( stderr, #name "(a=%d, b=%d%s): [FAILED]\n", alphas[i], betas[i], k >= 36 ? ", near max" : "" ); \
+                fprintf( stderr, #name "(a=%d, b=%d, stride=%d%s): [FAILED]\n", alphas[i], betas[i], (int)db_stride, k%72 >= 36 ? ", near max" : "" ); \
                 break; \
             } \
             if( k < 36 ) \
             { \
-                call_c2( db_c.name, pbuf3+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
-                call_a2( db_a.name, pbuf4+off, (intptr_t)32, alphas[i], betas[i], ##__VA_ARGS__ ); \
+                call_c2( db_c.name, pbuf3+off, db_stride, alphas[i], betas[i], ##__VA_ARGS__ ); \
+                call_a2( db_a.name, pbuf4+off, db_stride, alphas[i], betas[i], ##__VA_ARGS__ ); \
             } \
         } \
     }

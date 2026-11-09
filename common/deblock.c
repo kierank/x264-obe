@@ -816,6 +816,12 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 #if ARCH_X86_64
             pf->deblock_luma_mb = x264_deblock_luma_mb_avx2;
 #endif
+#if !HIGH_BIT_DEPTH && ARCH_X86_64
+            /* [p|q] ymm lanes per edge */
+            pf->deblock_luma[0] = x264_deblock_h_luma_avx2;
+            /* undispatched, neutral or slower on laptop Zen 5 (checkasm tests and benches them at
+             * the AVX2 level): x264_deblock_v_luma_avx2 */
+#endif
 #if HIGH_BIT_DEPTH && ARCH_X86_64
             pf->deblock_luma[1] = x264_deblock_v_luma_avx2;
             pf->deblock_luma[0] = x264_deblock_h_luma_avx2;
