@@ -1449,6 +1449,23 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     ok = 0;
                     fprintf( stderr, "sad_sq_min[%d]: %s %d never selected [FAILED]\n", i, k ? "slot" : "best", k-1 );
                 }
+            /* bench as me.c's square refine calls it: dx 2 and the centre at 1 << 30, best the centre's
+             * cost; 16 fixed blocks, the same at every level */
+            if( do_bench )
+            {
+                static const int8_t sq_idx[12] = { 5, 1, 7, -1, 6, 2, 8, -1, 3, -1, 4, -1 };
+                set_func_name( "sad_sq_min_mepat_%s", pixel_names[i] );
+                bench_srand( 900 + i );
+                for( int b = 0; b < 16; b++ )
+                {
+                    ALIGNED_16( int32_t bias[12] );
+                    pixel *pix = pbuf2 + 2*64 + 2 + (bench_rand() & 15);
+                    for( int k = 0; k < 12; k++ )
+                        bias[k] = sq_idx[k] < 0 ? 1 << 30 : ((bench_rand() % 24) << 6) + sq_idx[k];
+                    int best = pixel_c.sad[i]( pbuf1 + 16*b, FENC_STRIDE, pix, 64 ) << 6;
+                    call_a2( pixel_asm.sad_sq_min[i], pbuf1 + 16*b, pix, (intptr_t)64, bias, best );
+                }
+            }
         }
     }
     report( "pixel sad_sq_min :" );
