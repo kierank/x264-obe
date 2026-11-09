@@ -1252,7 +1252,7 @@ cglobal %1, 1,15,0, ME_STACK
 %if HIGH_BIT_DEPTH == 0
 
 %ifndef FENC_RES
-%define FENC_RES 0
+%define FENC_RES 1
 %endif
 
 ; the frame below the 6 pushes (rsp 64-aligned)
