@@ -515,6 +515,40 @@ cabac_lps_trans:
     db 128,158,187,216,120,124,0,0, 128,158,187,216,125,121,0,0
     db 128,167,197,227,122,126,0,0, 128,167,197,227,127,123,0,0
     db 128,176,208,240,124,127,0,0, 128,176,208,240,126,125,0,0
+; rd sig/last/level1 flags (avx2): [2*state+bin] = transition[state][bin] | entropy[state^bin] << 16
+rd_sig_tab:
+    dd 0x0070000, 0x5bd0000, 0x5bd0001, 0x0070001, 0x0070002, 0x5a90032, 0x5a90033, 0x0070003
+    dd 0x0080002, 0x5960032, 0x5960033, 0x0080003, 0x0080004, 0x5830034, 0x5830035, 0x0080005
+    dd 0x0090006, 0x5700034, 0x5700035, 0x0090007, 0x0090008, 0x55c0034, 0x55c0035, 0x0090009
+    dd 0x00a000a, 0x5490036, 0x5490037, 0x00a000b, 0x00a000c, 0x5360036, 0x5360037, 0x00a000d
+    dd 0x00b000e, 0x5230036, 0x5230037, 0x00b000f, 0x00b0010, 0x50f0038, 0x50f0039, 0x00b0011
+    dd 0x00c0012, 0x4fc0038, 0x4fc0039, 0x00c0013, 0x00c0014, 0x4e90038, 0x4e90039, 0x00c0015
+    dd 0x00d0016, 0x4d6003a, 0x4d6003b, 0x00d0017, 0x00e0018, 0x4c2003a, 0x4c2003b, 0x00e0019
+    dd 0x00f001a, 0x4af003c, 0x4af003d, 0x00f001b, 0x00f001c, 0x49c003c, 0x49c003d, 0x00f001d
+    dd 0x010001e, 0x489003c, 0x489003d, 0x010001f, 0x0110020, 0x475003e, 0x475003f, 0x0110021
+    dd 0x0120022, 0x462003e, 0x462003f, 0x0120023, 0x0130024, 0x44f0040, 0x44f0041, 0x0130025
+    dd 0x0140026, 0x43c0042, 0x43c0043, 0x0140027, 0x0150028, 0x4280042, 0x4280043, 0x0150029
+    dd 0x016002a, 0x4150042, 0x4150043, 0x016002b, 0x018002c, 0x4020044, 0x4020045, 0x018002d
+    dd 0x019002e, 0x3ef0044, 0x3ef0045, 0x019002f, 0x01a0030, 0x3db0046, 0x3db0047, 0x01a0031
+    dd 0x01c0032, 0x3c80048, 0x3c80049, 0x01c0033, 0x01d0034, 0x3b50048, 0x3b50049, 0x01d0035
+    dd 0x01f0036, 0x3a2004a, 0x3a2004b, 0x01f0037, 0x0210038, 0x38e004a, 0x38e004b, 0x0210039
+    dd 0x023003a, 0x37b004c, 0x37b004d, 0x023003b, 0x025003c, 0x368004e, 0x368004f, 0x025003d
+    dd 0x027003e, 0x355004e, 0x355004f, 0x027003f, 0x0290040, 0x3410050, 0x3410051, 0x0290041
+    dd 0x02b0042, 0x32e0052, 0x32e0053, 0x02b0043, 0x02e0044, 0x31b0052, 0x31b0053, 0x02e0045
+    dd 0x0300046, 0x3080054, 0x3080055, 0x0300047, 0x0330048, 0x2f40054, 0x2f40055, 0x0330049
+    dd 0x036004a, 0x2e10058, 0x2e10059, 0x036004b, 0x039004c, 0x2ce0058, 0x2ce0059, 0x039004d
+    dd 0x03c004e, 0x2bb005a, 0x2bb005b, 0x03c004f, 0x0400050, 0x2a7005a, 0x2a7005b, 0x0400051
+    dd 0x0440052, 0x294005e, 0x294005f, 0x0440053, 0x0480054, 0x281005e, 0x281005f, 0x0480055
+    dd 0x04c0056, 0x26e0060, 0x26e0061, 0x04c0057, 0x0500058, 0x25a0060, 0x25a0061, 0x0500059
+    dd 0x055005a, 0x2470064, 0x2470065, 0x055005b, 0x05a005c, 0x2340064, 0x2340065, 0x05a005d
+    dd 0x060005e, 0x2210066, 0x2210067, 0x060005f, 0x0660060, 0x20d0068, 0x20d0069, 0x0660061
+    dd 0x06c0062, 0x1fa0068, 0x1fa0069, 0x06c0063, 0x0730064, 0x1e7006c, 0x1e7006d, 0x0730065
+    dd 0x07a0066, 0x1d4006c, 0x1d4006d, 0x07a0067, 0x0820068, 0x1c0006e, 0x1c0006f, 0x0820069
+    dd 0x08b006a, 0x1ad0070, 0x1ad0071, 0x08b006b, 0x094006c, 0x19a0072, 0x19a0073, 0x094006d
+    dd 0x09d006e, 0x1870074, 0x1870075, 0x09d006f, 0x0a80070, 0x1730076, 0x1730077, 0x0a80071
+    dd 0x0b40072, 0x1600076, 0x1600077, 0x0b40073, 0x0c00074, 0x14d007a, 0x14d007b, 0x0c00075
+    dd 0x0ce0076, 0x13a007a, 0x13a007b, 0x0ce0077, 0x0dd0078, 0x127007c, 0x127007d, 0x0dd0079
+    dd 0x0ee007a, 0x113007e, 0x113007f, 0x0ee007b, 0x100007c, 0x100007f, 0x100007e, 0x100007d
 
 SECTION .text
 
@@ -736,6 +770,7 @@ CABAC bmi2
 %macro RD_TMP_REGS 3 ; t0, t1, ctx
     %xdefine lt0  r%1
     %xdefine lt0d r%1d
+    %xdefine lt0b r%1b
     %xdefine lt1  r%2
     %xdefine lt1d r%2d
     %xdefine lt1b r%2b
@@ -1557,6 +1592,182 @@ CABAC bmi2
     RET
 %endmacro
 
+; build-time A/B: avx2 rd levels without a branch on abs > 1 (off: equal on fresh
+; blocks, slower once the branches are learned; laptop)
+%ifndef RD4_AVX2_BRANCHLESS
+    %define RD4_AVX2_BRANCHLESS 0
+%endif
+
+; one level of the avx2 rd: r1d = abs, r2d = node_ctx (%2: node_ctx 0), rd_bl: branchless
+%macro COEFF_ABS_LEVEL_AVX2 2
+%if rd_bl
+; first bin by rd_sig_tab[2*state+(abs>1)]; abs 1 then takes cabac_size_unary[0]
+; and cabac_transition_unary[0], i.e. the sign alone, gt1 state kept
+%if %2
+    %define ctx1 1
+%else
+    movzx   lctxd, byte [coeff_abs_level1_ctx+r2 GLOBAL]
+    %define ctx1 lctx
+%endif
+    xor     lt1d, lt1d
+    cmp     r1d, 1
+    seta    lt1b
+    movzx   lt0d, byte [r8+ctx1]
+    lea     lt0d, [lt0*2+lt1]
+    mov     lt0d, [rd_sig_tab+lt0*4 GLOBAL]
+    mov [r8+ctx1], lt0b
+    shr     lt0d, 16
+    add     r0d, lt0d
+%if %2
+    lea     r2d, [lt1*2+lt1+1]                                ; node_ctx 1 or 4
+    %define ctxg 5
+%else
+    movzx   lctxd, byte [coeff_abs_levelgt1_ctx+r2 GLOBAL]
+    lea     r2d, [r2+lt1*8]
+    movzx   r2d, byte [coeff_abs_level_transition+r2 GLOBAL]
+    %define ctxg lctx
+%endif
+    cmp     r1d, 15
+    jge .%1_escape
+    shl     r1d, 7
+    movzx   lt0d, byte [r8+ctxg]
+    add     r1d, lt0d
+    movzx   lt0d, byte [cabac_transition_unary-128+r1 GLOBAL]
+    movzx   r1d, word [cabac_size_unary-256+r1*2 GLOBAL]
+    mov [r8+ctxg], lt0b
+    add     r0d, r1d
+.%1_end:
+%else
+    COEFF_ABS_LEVEL_GT1 %1, %2
+%endif
+%endmacro
+
+; the escape of the branchless COEFF_ABS_LEVEL_AVX2, out of line
+%macro COEFF_ABS_LEVEL_AVX2_ESCAPE 2
+%if rd_bl
+.%1_escape:
+%if %2
+    %define ctxg 5
+%else
+    %define ctxg lctx
+%endif
+    movzx   lt0d, byte [r8+ctxg]
+    movzx   lt1d, byte [cabac_transition_unary+128*14+lt0 GLOBAL]
+    movzx   lt0d, word [cabac_size_unary+256*14+lt0*2 GLOBAL]
+    add     r0d, lt0d
+    mov [r8+ctxg], lt1b
+    sub     r1d, 14
+    lzcnt   lt0d, r1d
+    xor     lt0d, 0x1f
+    shl     lt0d, 9
+    lea     r0d, [r0+lt0+256]
+    jmp .%1_end
+%endif
+%endmacro
+
+; 4x4 blocks, avx2: each sig and last context is used at most once per block and
+; the sig, last and level context ranges are disjoint, so the kinds are coded one
+; after the other: the sig flags of every i < last without a branch on l[i]
+; (bt/adc gives 2*state+bin), then last flag and level of the nonzero ones,
+; descending. f8_bits is an integer sum.
+%macro CABAC_RESIDUAL_RD_4x4_AVX2 0
+    %assign rd4_stack (17*SIZEOF_DCTCOEF+15) & ~15
+%ifdef PIC
+    cglobal cabac_block_residual_rd_internal, 4,12,3,-rd4_stack
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    cglobal cabac_block_residual_rd_internal, 4,11,3,-rd4_stack
+    %define GLOBAL
+%endif
+    RD_TMP_REGS 4, 5, 10
+    %define dct rsp+SIZEOF_DCTCOEF
+    %define rd_bl RD4_AVX2_BRANCHLESS
+; abs() of the aligned block, l[0] at dct
+    mov      r4, r0
+    and     r4d, SIZEOF_DCTCOEF
+    neg      r4
+    pabsw    m0, [r0+r4+0*mmsize]
+    pabsw    m1, [r0+r4+1*mmsize]
+    movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
+    movu [rsp+r4+SIZEOF_DCTCOEF+1*mmsize], m1
+    packsswb m0, m1
+    pxor     m2, m2
+    pcmpeqb  m0, m2
+    pmovmskb r9d, m0
+    not      r9d
+    and      r9d, [rd_nzmask_4x4+r2*8 GLOBAL]
+    mov      r6d, [rd_nzmask_4x4+r2*8+4 GLOBAL]
+    shrx     r9d, r9d, r6d                                    ; bit i = l[i] != 0
+    lzcnt    r6d, r9d
+    xor      r6d, 31                                          ; r6 = last
+    shl      r1d, 4                                           ; MB_INTERLACED*16
+    add      r1d, r2d
+    movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx    r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+    mov      r0d, [r3+cb.bits_encoded]                        ; r0 = cabac.f8_bits_encoded
+    add       r3, cb.state
+    add       r5, r3
+    add       r7, r3
+    add       r8, r3
+; if( last != count_cat_m1[ctx_block_cat] ): sig and last flags of last, bin 1
+    cmp      r6b, [count_cat_m1+r2 GLOBAL]
+    je .skip_last_sigmap
+    movzx    r1d, byte [r5+r6]
+    mov      r1d, [rd_sig_tab+4+r1*8 GLOBAL]
+    mov [r5+r6], r1b
+    shr      r1d, 16
+    add      r0d, r1d
+    movzx    r1d, byte [r7+r6]
+    mov      r1d, [rd_sig_tab+4+r1*8 GLOBAL]
+    mov [r7+r6], r1b
+    shr      r1d, 16
+    add      r0d, r1d
+.skip_last_sigmap:
+; sig flags of i < last; r10d: entropy sum << 16 over the transitions, < 16*1469 and 16*127
+    xor     r10d, r10d
+    lea      r1d, [r6-1]
+    test     r6d, r6d
+    jz .sig_end
+.sig_loop:
+    movzx    r2d, byte [r5+r1]
+    bt       r9d, r1d
+    adc      r2d, r2d                                         ; 2*state+bin
+    mov      r2d, [rd_sig_tab+r2*4 GLOBAL]
+    mov [r5+r1], r2b
+    add     r10d, r2d
+    dec      r1d
+    jge .sig_loop
+    shr     r10d, 16
+    add      r0d, r10d
+.sig_end:
+; levels: last, then the nonzero coefficients below last with last flag 0
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_AVX2 last, 1
+    btr      r9d, r6d
+    test     r9d, r9d
+    jz .end
+.coeff_loop:
+    lzcnt    r6d, r9d
+    xor      r6d, 31
+    btr      r9d, r6d
+    movzx    r4d, byte [r7+r6]
+    movzx    r5d, byte [cabac_transition+r4*2 GLOBAL]
+    movzx    r4d, word [cabac_entropy+r4*2 GLOBAL]
+    mov [r7+r6], r5b
+    add      r0d, r4d
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_AVX2 coeff, 0
+    test     r9d, r9d
+    jnz .coeff_loop
+.end:
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+    COEFF_ABS_LEVEL_AVX2_ESCAPE last, 1
+    COEFF_ABS_LEVEL_AVX2_ESCAPE coeff, 0
+%endmacro
+
 %if ARCH_X86_64
 INIT_XMM sse2
 CABAC_RESIDUAL_RD_4x4
@@ -2241,4 +2452,9 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
+; avx2 (8-bit): rd 4x4; at the end, the layout above is unchanged
+%if HIGH_BIT_DEPTH == 0
+INIT_XMM avx2,bmi2
+CABAC_RESIDUAL_RD_4x4_AVX2
+%endif
 %endif
