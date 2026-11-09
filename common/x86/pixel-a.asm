@@ -13393,11 +13393,20 @@ PREDICTOR_CLIP 1
 
 ;=============================================================================
 ; avxvnni (VEX vpdpbusd/vpdpwssd), 8-bit: no opmasks, ymm0-15
+; ssd 16x16 16x8 8x4 and ssd_nv12_core are also built at avx512icl (EVEX AVX512-VNNI, ymm)
 ;=============================================================================
 %if ARCH_X86_64
 %if HIGH_BIT_DEPTH == 0
-; four rows of 8 a ymm, vpbroadcastq + vpblendd (row order is irrelevant)
+; four rows of 8 a ymm, vpbroadcastq + vpblendd (row order is irrelevant); EVEX has no
+; vpblendd, so avx512 uses movq + movhps pairs
 %macro LOAD8x4_VNNI 5 ; dst, tmp, src, stride, 3*stride
+%if cpuflag(avx512)
+    movq        xm%1, [%3]
+    movhps      xm%1, [%3+%4]
+    movq        xm%2, [%3+%4*2]
+    movhps      xm%2, [%3+%5]
+    vinserti128  m%1, m%1, xm%2, 1
+%else
     movq        xm%1, [%3]
     vpbroadcastq m%2, [%3+%4]
     vpblendd     m%1, m%1, m%2, 0x0c
@@ -13405,6 +13414,7 @@ PREDICTOR_CLIP 1
     vpblendd     m%1, m%1, m%2, 0x30
     vpbroadcastq m%2, [%3+%5]
     vpblendd     m%1, m%1, m%2, 0xc0
+%endif
 %endmacro
 
 ; rows of 4: four an xmm, eight a ymm (%6 = src + 4*stride)
@@ -13446,9 +13456,9 @@ PREDICTOR_CLIP 1
     DPBUSD      m%4, m%1, m7
 %endmacro
 
-%macro SSD_VNNI 2 ; width, height
+%macro SSD_VNNI 2-3 ; width, height, name suffix
 %assign %%n %1*%2/mmsize ; vectors per source
-cglobal pixel_ssd_%1x%2, 4,8,10
+cglobal pixel_ssd_%1x%2%3, 4,8,10
     lea          r5, [r1*3]
     lea          r6, [r3*3]
     vpbroadcastd m7, [pd_80808080]
@@ -13524,6 +13534,11 @@ SSD_VNNI  4, 16
 SSD_VNNI  4,  8
 INIT_XMM avxvnni
 SSD_VNNI  4,  4
+; for Zen 4 (AVX512_VNNI, no AVX-VNNI), the slots avx512icl doesn't set; not dispatched
+INIT_YMM avx512icl
+SSD_VNNI 16, 16, _vnni
+SSD_VNNI 16,  8, _vnni
+SSD_VNNI  8,  4, _vnni
 
 ;-----------------------------------------------------------------------------
 ; uint64_t pixel_var_wxh( uint8_t *, intptr_t )
@@ -13600,7 +13615,7 @@ VAR_VNNI  8,  8
     DPWSSD      m%4, m%1, m%1
 %endmacro
 
-INIT_YMM avxvnni
+%macro SSD_NV12_VNNI 0
 cglobal pixel_ssd_nv12_core, 6,7,10
     add         r4d, r4d
     add          r0, r4
@@ -13649,6 +13664,13 @@ cglobal pixel_ssd_nv12_core, 6,7,10
     mov        [r3], r5
     mov        [r4], r6
     RET
+%endmacro
+
+INIT_YMM avxvnni
+SSD_NV12_VNNI
+; for Zen 4 (AVX512_VNNI, no AVX-VNNI); not dispatched
+INIT_YMM avx512icl
+SSD_NV12_VNNI
 %endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64
 %if HIGH_BIT_DEPTH == 0 && ARCH_X86_64

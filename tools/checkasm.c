@@ -689,6 +689,10 @@ static void weightp_satd8_search_ref( x264_pixel_function_t *pf, uint32_t (*cost
     }
 }
 
+#if HAVE_MMX
+#include "common/x86/pixel.h"
+#endif
+
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -705,6 +709,18 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_init( 0, &pixel_c );
     x264_pixel_init( cpu_ref, &pixel_ref );
     x264_pixel_init( cpu_new, &pixel_asm );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    /* not dispatched (Zen 4 decides): the EVEX AVX512-VNNI builds of the avxvnni ssd and ssd_nv12_core,
+     * and the icl var2 8x16 (a Zen 4 prune), in place of the dispatched pointers at the first AVX512ICL level */
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+    {
+        pixel_asm.ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_vnni_avx512icl;
+        pixel_asm.ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_vnni_avx512icl;
+        pixel_asm.ssd[PIXEL_8x4]   = x264_pixel_ssd_8x4_vnni_avx512icl;
+        pixel_asm.var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
+        pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
+    }
+#endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
     x264_predict_8x8_init( 0, predict_8x8, &predict_8x8_filter );
