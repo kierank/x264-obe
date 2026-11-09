@@ -1056,6 +1056,10 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_progressive->quant_4x4x4_scan_ac = x264_quant_4x4x4_scan_frame_ac_avx2;
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
+#if !HIGH_BIT_DEPTH
+        pf_interlaced->quant_8x8_scan       = x264_quant_8x8_scan_field_avx2;
+        pf_progressive->quant_8x8_scan      = x264_quant_8x8_scan_frame_avx2;
+#endif
     }
     if( cpu&X264_CPU_AVX512ICL )
     {
