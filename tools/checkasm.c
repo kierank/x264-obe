@@ -6494,10 +6494,11 @@ static int check_quant( int cpu_ref, int cpu_new )
             }
 
         /* q8v 0: the dispatched pointers, those the encoder uses with this cqm. q8v 1, flat cqm at the first
-         * AVX2 level: the general avx2 kernel as a control (flat dispatches _flat_avx2). Bench names: flatk_ =
-         * a _flat_avx2 kernel. */
+         * AVX2 or AVX512ICL level: the general kernel of that level as a control (flat dispatches a _flat_
+         * kernel). Bench names: flatk_ = a _flat_ kernel. */
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-#define Q8S_FLATK( f ) ( (f) == x264_quant_8x8_scan_frame_flat_avx2 || (f) == x264_quant_8x8_scan_field_flat_avx2 )
+#define Q8S_FLATK( f ) ( (f) == x264_quant_8x8_scan_frame_flat_avx2 || (f) == x264_quant_8x8_scan_field_flat_avx2 || \
+                         (f) == x264_quant_8x8_scan_frame_flat_avx512icl || (f) == x264_quant_8x8_scan_field_flat_avx512icl )
 #else
 #define Q8S_FLATK( f ) 0
 #endif
@@ -6507,10 +6508,20 @@ static int check_quant( int cpu_ref, int cpu_new )
         if( q8v )
         {
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-            if( !(cpu_new&X264_CPU_AVX2) || (cpu_ref&X264_CPU_AVX2) || !Q8S_FLATK( zz_a[0].quant_8x8_scan ) )
+            if( !Q8S_FLATK( zz_a[0].quant_8x8_scan ) )
                 continue;
-            zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx2;
-            zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx2;
+            if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+            {
+                zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx512icl;
+                zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx512icl;
+            }
+            else if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+            {
+                zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx2;
+                zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx2;
+            }
+            else
+                continue;
 #else
             continue;
 #endif
