@@ -7459,6 +7459,10 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
 void x264_cabac_block_residual_422_dc_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#define x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2 x264_template(cabac_block_residual_8x8_rd_internal_avx2_bmi2)
+void x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#endif
 
 /* residual bench classes: nonzero coefs 1/16, 1/4, 7/8 with levels mostly 1-2;
  * large: 1/4 nonzero, levels up to 64, some escapes in the hundreds and beyond */
@@ -7491,6 +7495,11 @@ static int check_cabac( int cpu_ref, int cpu_new )
     x264_bitstream_function_t bs_a;
     x264_bitstream_init( cpu_ref, &bs_ref );
     x264_bitstream_init( cpu_new, &bs_a );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    /* not dispatched (neutral vs ssse3_lzcnt): tested at the level that adds BMI2 on AVX2 */
+    if( (cpu_new & (X264_CPU_AVX2|X264_CPU_BMI2)) == (X264_CPU_AVX2|X264_CPU_BMI2) && !(cpu_ref & X264_CPU_BMI2) )
+        bs_a.cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2;
+#endif
     x264_quant_init( &h, cpu_new, &h.quantf );
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     /* the rd functions read the unary tables and the context init states */
