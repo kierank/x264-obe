@@ -662,10 +662,19 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->sub8x8_dct       = x264_sub8x8_dct_avx2;
         dctf->sub16x16_dct     = x264_sub16x16_dct_avx2;
         dctf->add16x16_idct_dc = x264_add16x16_idct_dc_avx2;
+        dctf->sub4x4_dct       = x264_sub4x4_dct_avx2;
+        dctf->sub8x8_dct_dc    = x264_sub8x8_dct_dc_avx2;
+        dctf->sub8x16_dct_dc   = x264_sub8x16_dct_dc_avx2;
+        /* dct2x4dc_avx2: not faster than mmx2 on the laptop (Zen 5); assembled, checkasm tests it, Core 3 decides */
 #if ARCH_X86_64
         dctf->sub8x8_dct8      = x264_sub8x8_dct8_avx2;
         dctf->sub16x16_dct8    = x264_sub16x16_dct8_avx2;
 #endif
+    }
+
+    if( cpu&X264_CPU_AVXVNNI )
+    {
+        dctf->sub4x4_dct       = x264_sub4x4_dct_avxvnni;
     }
 
     if( cpu&X264_CPU_AVX512 )

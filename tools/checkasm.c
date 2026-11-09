@@ -3514,6 +3514,9 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
 static int check_lowres_p( int cpu_ref, int cpu_new ) { return 0; }
 #endif
 
+#if HAVE_MMX
+#include "common/x86/dct.h"
+#endif
 static int check_dct( int cpu_ref, int cpu_new )
 {
     x264_dct_function_t dct_c;
@@ -3532,6 +3535,13 @@ static int check_dct( int cpu_ref, int cpu_new )
     x264_dct_init( 0, &dct_c );
     x264_dct_init( cpu_ref, &dct_ref);
     x264_dct_init( cpu_new, &dct_asm );
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched avx2 dct2x4dc, at the AVX2 levels below AVX512ICL */
+    if( (cpu_ref&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        dct_ref.dct2x4dc = x264_dct2x4dc_avx2;
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_new&X264_CPU_AVX512ICL) )
+        dct_asm.dct2x4dc = x264_dct2x4dc_avx2;
+#endif
 
     memset( h, 0, sizeof(*h) );
     x264_param_default( &h->param );
