@@ -4574,36 +4574,43 @@ static int check_mc( int cpu_ref, int cpu_new )
                 break;
             }
         }
-        if( mc_a.load_deinterleave_chroma_fenc != mc_ref.load_deinterleave_chroma_fenc )
+        /* frame and field (2x) strides of narrow and wide frames, and a src not 32-byte aligned */
+        static const int deint_strides[4] = { 64, 128, 192, 320 };
+        for( int s = 0; s < 8 && ok; s++ )
         {
-            set_func_name( "load_deinterleave_chroma_fenc" );
-            used_asm = 1;
-            /* the functions leave parts of each row unwritten: start both outputs equal */
-            memset( pbuf3, 0x5a, 64*height * sizeof(pixel) );
-            memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
-            call_c( mc_c.load_deinterleave_chroma_fenc, pbuf3, pbuf1, (intptr_t)64, height );
-            call_a( mc_a.load_deinterleave_chroma_fenc, pbuf4, pbuf1, (intptr_t)64, height );
-            if( memcmp( pbuf3, pbuf4, FENC_STRIDE*height*sizeof(pixel) ) )
+            intptr_t stride = deint_strides[s>>1];
+            pixel *src = pbuf1 + (s&1)*16;
+            if( mc_a.load_deinterleave_chroma_fenc != mc_ref.load_deinterleave_chroma_fenc )
             {
-                ok = 0;
-                fprintf( stderr, "load_deinterleave_chroma_fenc FAILED: h=%d\n", height );
-                break;
+                set_func_name( "load_deinterleave_chroma_fenc" );
+                used_asm = 1;
+                /* the functions leave parts of each row unwritten: start both outputs equal */
+                memset( pbuf3, 0x5a, 64*height * sizeof(pixel) );
+                memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
+                call_c( mc_c.load_deinterleave_chroma_fenc, pbuf3, src, stride, height );
+                call_a( mc_a.load_deinterleave_chroma_fenc, pbuf4, src, stride, height );
+                if( memcmp( pbuf3, pbuf4, 64*height*sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "load_deinterleave_chroma_fenc FAILED: h=%d stride=%d\n", height, (int)stride );
+                    break;
+                }
             }
-        }
-        if( mc_a.load_deinterleave_chroma_fdec != mc_ref.load_deinterleave_chroma_fdec )
-        {
-            set_func_name( "load_deinterleave_chroma_fdec" );
-            used_asm = 1;
-            /* the functions leave parts of each row unwritten: start both outputs equal */
-            memset( pbuf3, 0x5a, 64*height * sizeof(pixel) );
-            memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
-            call_c( mc_c.load_deinterleave_chroma_fdec, pbuf3, pbuf1, (intptr_t)64, height );
-            call_a( mc_a.load_deinterleave_chroma_fdec, pbuf4, pbuf1, (intptr_t)64, height );
-            if( memcmp( pbuf3, pbuf4, FDEC_STRIDE*height*sizeof(pixel) ) )
+            if( mc_a.load_deinterleave_chroma_fdec != mc_ref.load_deinterleave_chroma_fdec )
             {
-                ok = 0;
-                fprintf( stderr, "load_deinterleave_chroma_fdec FAILED: h=%d\n", height );
-                break;
+                set_func_name( "load_deinterleave_chroma_fdec" );
+                used_asm = 1;
+                /* the functions leave parts of each row unwritten: start both outputs equal */
+                memset( pbuf3, 0x5a, 64*height * sizeof(pixel) );
+                memset( pbuf4, 0x5a, 64*height * sizeof(pixel) );
+                call_c( mc_c.load_deinterleave_chroma_fdec, pbuf3, src, stride, height );
+                call_a( mc_a.load_deinterleave_chroma_fdec, pbuf4, src, stride, height );
+                if( memcmp( pbuf3, pbuf4, 64*height*sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "load_deinterleave_chroma_fdec FAILED: h=%d stride=%d\n", height, (int)stride );
+                    break;
+                }
             }
         }
     }
