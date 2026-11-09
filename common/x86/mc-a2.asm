@@ -3364,6 +3364,118 @@ MBTREE_PROPAGATE_LIST
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
+; avx2: as above, 16 entries a ymm pass (two 96-byte output blocks), the last
+; 1-8 entries in xmm, so the reads and writes stay those of the AVX version.
+; packuswb of the two mv registers puts entries 0-3 8-11 | 4-7 12-15 in the
+; word lanes, the amounts are vpermq'd to match, and punpck{l,h}wd of the
+; weights gives blocks 0-7 and 8-15 in order.
+; m6 = {i, mb_y} dwords of the pass's first 8 entries, m8 = pd_8, m9 = pw_31,
+; m10 = pw_32, m11 = pw_0xc000, m12 = bipred_weight << 9, m13 = pw_1024
+;-----------------------------------------------------------------------------
+%macro PROPAGATE_LIST_PASS 1 ; entries
+%if %1 == 16
+    %define %%m(x) m %+ x
+%else
+    %define %%m(x) xm %+ x
+%endif
+    movu      %%m(4), [r1+r4*2]
+    movu      %%m(1), [r2+r4*2]
+    pand      %%m(1), %%m(11)
+    pcmpeqw   %%m(1), %%m(11)
+    pmulhrsw  %%m(5), %%m(4), %%m(12) ; propagate_amount = (propagate_amount * bipred_weight + 32) >> 6
+    pblendvb  %%m(5), %%m(4), %%m(5), %%m(1) ; if( lists_used == 3 )
+%if %1 == 16
+    vpermq    m5, m5, q3120
+    movu      m0, [r0+r4*4]           ; x,y
+    movu      m1, [r0+r4*4+32]
+    psraw     m2, m0, 5
+    psraw     m3, m1, 5
+    paddw     m2, m6                  ; {mbx, mby} = ({x,y}>>5)+{h->mb.i_mb_x,h->mb.i_mb_y}
+    paddd     m6, m8
+    paddw     m3, m6
+    paddd     m6, m8
+    movu [r3+ 0], m2
+    movu [r3+96], m3
+%else
+    movu      xm0, [r0+r4*4]
+    movu      xm1, [r0+r4*4+16]
+    vextracti128 xm7, m6, 1
+    psraw     xm2, xm0, 5
+    psraw     xm3, xm1, 5
+    paddw     xm2, xm6
+    paddw     xm3, xm7
+    movu [r3+ 0], xm2
+    movu [r3+16], xm3
+%endif
+    pand      %%m(0), %%m(9)          ; x &= 31
+    pand      %%m(1), %%m(9)          ; y &= 31
+    packuswb  %%m(0), %%m(1)
+    psrlw     %%m(1), %%m(0), 3
+    pand      %%m(0), %%m(9)          ; x
+    pandn     %%m(1), %%m(9), %%m(1)  ; y premultiplied by (1<<5) for later use of pmulhrsw
+    psubw     %%m(3), %%m(10), %%m(0) ; 32 - x
+    psubw     %%m(4), %%m(13), %%m(1) ; (32 - y) << 5
+    pmullw    %%m(2), %%m(3), %%m(4)  ; idx0weight = (32-y)*(32-x) << 5
+    pmullw    %%m(4), %%m(0)          ; idx1weight = (32-y)*x << 5
+    pmullw    %%m(0), %%m(1)          ; idx3weight = y*x << 5
+    pmullw    %%m(1), %%m(3)          ; idx2weight = y*(32-x) << 5
+    psrlw     %%m(3), %%m(2), 15
+    psubw     %%m(2), %%m(3)          ; idx0weight -= (idx0weight == 32768)
+    pmulhrsw  %%m(2), %%m(5)          ; idx0weight * propagate_amount + 512 >> 10
+    pmulhrsw  %%m(4), %%m(5)
+    pmulhrsw  %%m(1), %%m(5)
+    pmulhrsw  %%m(0), %%m(5)
+    punpcklwd %%m(3), %%m(2), %%m(4)
+    punpckhwd %%m(2), %%m(4)
+    punpcklwd %%m(4), %%m(1), %%m(0)
+    punpckhwd %%m(1), %%m(0)
+%if %1 == 16
+    movu [r3+ 32], m3
+    movu [r3+ 64], m4
+    movu [r3+128], m2
+    movu [r3+160], m1
+%else
+    movu [r3+32], xm3
+    movu [r3+48], xm2
+    movu [r3+64], xm4
+    movu [r3+80], xm1
+%endif
+%endmacro
+
+INIT_YMM avx2
+cglobal mbtree_propagate_list_internal, 7,7,14
+    vbroadcasti128 m11, [pw_0xc000]
+    movd          xm12, r4d
+    vpbroadcastw   m12, xm12
+    psllw          m12, 9              ; bipred_weight << 9
+    shl            r5d, 16
+    movd           xm6, r5d
+    vpbroadcastd    m6, xm6
+    por             m6, [pd_0123]      ; 0 y 1 y 2 y 3 y 4 y 5 y 6 y 7 y
+    vpbroadcastd    m8, [pd_8]
+    vbroadcasti128  m9, [pw_31]
+    mova           m10, [pw_32]
+    mova           m13, [pw_1024]
+    xor            r4d, r4d
+    lea            r5d, [r6-8]
+    test           r5d, r5d
+    jle .tail
+.loop:
+    PROPAGATE_LIST_PASS 16
+    add            r4d, 16
+    add             r3, 192
+    cmp            r4d, r5d
+    jl .loop
+.tail:
+    cmp            r4d, r6d
+    jge .end
+    PROPAGATE_LIST_PASS 8
+.end:
+    RET
+%endif
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
 ; void mbtree_propagate_list_internal( int16_t (*mvs)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
 ;                                      int16_t *output, int bipred_weight, int mb_y, int len )
 ; Same output layout as the SSSE3/AVX versions (per 8 entries: {mbx, mby}, then the

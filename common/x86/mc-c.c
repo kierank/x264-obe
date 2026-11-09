@@ -1313,6 +1313,8 @@ static void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, in
 PROPAGATE_LIST(ssse3)
 PROPAGATE_LIST(avx)
 #if ARCH_X86_64
+#define x264_mbtree_propagate_list_internal_avx2 x264_template(mbtree_propagate_list_internal_avx2)
+PROPAGATE_LIST(avx2)
 #define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
 PROPAGATE_LIST(avx512)
 #endif
@@ -1718,6 +1720,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->get_ref = get_ref_avx2;
     pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx2;
 #if ARCH_X86_64
+    pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx2;
     pf->mbtree_finish = x264_mbtree_finish_avx2;
     pf->aq_variance_tail = x264_aq_variance_tail_avx2;
 #endif
