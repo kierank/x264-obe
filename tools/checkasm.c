@@ -688,6 +688,9 @@ static void weightp_satd8_search_ref( x264_pixel_function_t *pf, uint32_t (*cost
     }
 }
 
+#if HAVE_MMX
+#include "common/x86/pixel.h"
+#endif
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
