@@ -56,6 +56,8 @@ SECTION .text
 %if HIGH_BIT_DEPTH == 0
 cextern pixel_sad_hex_search_8x8_avx512
 cextern pixel_sad_hex_search_reg_8x8_avx512
+cextern pixel_sad_hex_search_8x8_avx2
+cextern pixel_sad_hex_search_reg_8x8_avx2
 %endif
 
 %define pointer resq
@@ -787,10 +789,19 @@ cglobal %1, 1,15,0, ME_STACK
     ; sad_hex_search_8x8's register entry: the last three in r6-r8 (rax, R10, R11)
     lea    rbx, [pixel_sad_hex_search_8x8_avx512]
     cmp    rax, rbx
-    jne .hex_stack
+    jne .hex_avx2
     mov    eax, R14d
     call   pixel_sad_hex_search_reg_8x8_avx512
     jmp .hex_ret
+.hex_avx2:
+%if notcpuflag(avx512)
+    lea    rbx, [pixel_sad_hex_search_8x8_avx2]
+    cmp    rax, rbx
+    jne .hex_stack
+    mov    eax, R14d
+    call   pixel_sad_hex_search_reg_8x8_avx2
+    jmp .hex_ret
+%endif
 .hex_stack:
 %endif
     mov    [rsp+S_OUT], R14d

@@ -1353,7 +1353,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_X_MIN(4);
 
     /* j>>6: 0 random costs, 1 equal costs (ties go by idx), 2 extreme mv costs and best,
-     * me.c's 1<<30 in unused slots, 3 a maximal sad (~fenc) in slot j%12, winning */
+     * me.c's 1<<30 in the unused slots (dx 2, the centre), 3 a maximal sad (~fenc) in slot j%12, winning */
     ok = 1; used_asm = 0;
     for( int i = 0; i < 7; i++ )
     {
@@ -1390,7 +1390,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     if( mode == 1 )
                         bias[k] = ((tmax - sad[k]) << 6) + 1 + (k + j) % 12;
                     else if( mode == 2 )
-                        bias[k] = (j&4) && (k&3) == 3 ? 1 << 30
+                        bias[k] = (j&4) && ((k&3) == 3 || k == 9) ? 1 << 30
                                 : ((((j>>(k%6))&1) * 131070) << 6) + ((j>>(k%5))&1) * 63;
                     else if( mode == 3 )
                         bias[k] = k == j%12 ? rand()&63 : 1 << 24;
@@ -1804,10 +1804,17 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     xmin = -(rand()&3), xmax = rand()&3;
                 if( j&32 )
                     ymin = -(rand()&3), ymax = rand()&3;
+                /* doubled (field) strides: mv 0 at (96, 40), dy within +-20 */
+                if( j&1024 )
+                {
+                    stride = 384 + (rand()&127);
+                    ymin = X264_MAX( ymin, -20 );
+                    ymax = X264_MIN( ymax, 20 );
+                }
                 int bmx = xmin + rand()%(xmax-xmin+1), bmy = ymin + rand()%(ymax-ymin+1);
-                /* mv 0 at (96, 80): reads stay inside the plane. A new plane per mode every 64 */
+                /* mv 0 at (96, 80), or (96, 40): reads stay inside the plane. A new plane per mode every 64 */
                 pixel *plane = planes[mode];
-                pixel *ref = plane + 96 + 80*stride;
+                pixel *ref = plane + 96 + ((j&1024) ? 40 : 80)*stride;
                 if( !(j&60) )
                 {
                     flat[mode] = rand() & PIXEL_MAX;
