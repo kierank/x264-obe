@@ -5376,8 +5376,6 @@ static int check_deblock( int cpu_ref, int cpu_new )
     {
         db_a.deblock_luma[1] = x264_deblock_v_luma_avx2;
         db_a.deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx2;
-        db_a.deblock_chroma[1] = x264_deblock_v_chroma_avx2;
-        db_a.deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx2;
     }
 #endif
 
