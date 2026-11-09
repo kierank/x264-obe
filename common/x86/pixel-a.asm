@@ -391,6 +391,8 @@ dup_hilo_shuf: db 8, 9,10,11,12,13,14,15, 8, 9,10,11,12,13,14,15
 ssim_end_perm:    db  0, 4, 8,12, 1, 5, 9,13, 2, 6,10,14, 3, 7,11,15
 ; ssd_psy_mb: ssd, ssd, hadamard_ac >> 1, >> 2
 ssd_psy_shift: dd 0, 0, 1, 2
+; avxvnni ssd/var: the 0x80 bytes
+pd_80808080: dd 0x80808080
 
 SECTION .text
 
@@ -413,6 +415,23 @@ cextern pd_1
 cextern pd_ffff
 cextern hsub_mul
 cextern popcnt_table
+
+; VNNI dot products: the VEX (AVX-VNNI) encoding under avxvnni, EVEX otherwise
+%macro DPBUSD 3
+%if cpuflag(avxvnni)
+    {vex} vpdpbusd %1, %2, %3
+%else
+    vpdpbusd   %1, %2, %3
+%endif
+%endmacro
+
+%macro DPWSSD 3
+%if cpuflag(avxvnni)
+    {vex} vpdpwssd %1, %2, %3
+%else
+    vpdpwssd   %1, %2, %3
+%endif
+%endmacro
 
 ;-----------------------------------------------------------------------------
 ; uint64_t pixel_satd_qpel_search_WxH( fenc, pixel **fref, intptr_t stride, uint16_t *cost_mvx,
@@ -2837,7 +2856,7 @@ INIT_YMM avx2
 VAR2_8x8_AVX2  8, 6
 VAR2_8x8_AVX2 16, 7
 
-; avx512icl: vpdpwssd squares, two accumulators m4 m6
+; avx512icl, avxvnni: vpdpwssd squares, two accumulators m4 m6
 %macro VAR2_8x8_ICL 2
 cglobal pixel_var2_8x%1, 5,6,7
     pxor      m3, m3
@@ -2864,8 +2883,8 @@ cglobal pixel_var2_8x%1, 5,6,7
     pmaddubsw m1, m5
     paddw     m3, m0
     paddw     m3, m1
-    vpdpwssd  m4, m0, m0
-    vpdpwssd  m6, m1, m1
+    DPWSSD    m4, m0, m0
+    DPWSSD    m6, m1, m1
     dec      r5d
     jg .loop
     paddd     m4, m6
@@ -2878,6 +2897,9 @@ cglobal pixel_var2_8x%1, 5,6,7
 
 %if ARCH_X86_64
 INIT_YMM avx512icl
+VAR2_8x8_ICL  8, 6
+VAR2_8x8_ICL 16, 7
+INIT_YMM avxvnni
 VAR2_8x8_ICL  8, 6
 VAR2_8x8_ICL 16, 7
 %endif
@@ -13068,8 +13090,8 @@ cglobal weightp_sum8_nv, 6,8,13
 ;-----------------------------------------------------------------------------
 %if ARCH_X86_64
 %macro PSY_MADD 3 ; acc, src (clobbered), mul
-%if cpuflag(avx512icl)
-    vpdpwssd    m%1, m%2, m%3
+%if cpuflag(avx512icl) || cpuflag(avxvnni)
+    DPWSSD      m%1, m%2, m%3
 %else
     pmaddwd     m%2, m%3
     paddd       m%1, m%2
@@ -13191,6 +13213,11 @@ SSD_PSY_MB 422, 16
 INIT_YMM avx512icl
 SSD_PSY_MB 420,  8
 SSD_PSY_MB 422, 16
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avxvnni
+SSD_PSY_MB 420,  8
+SSD_PSY_MB 422, 16
+%endif
 %endif ; ARCH_X86_64
 
 ;-----------------------------------------------------------------------------
@@ -13251,3 +13278,264 @@ cglobal predictor_clip, 5,6,4
 INIT_ZMM avx512
 PREDICTOR_CLIP 0
 PREDICTOR_CLIP 1
+
+;=============================================================================
+; avxvnni (VEX vpdpbusd/vpdpwssd), 8-bit: no opmasks, ymm0-15
+;=============================================================================
+%if ARCH_X86_64
+%if HIGH_BIT_DEPTH == 0
+; four rows of 8 a ymm, vpbroadcastq + vpblendd (row order is irrelevant)
+%macro LOAD8x4_VNNI 5 ; dst, tmp, src, stride, 3*stride
+    movq        xm%1, [%3]
+    vpbroadcastq m%2, [%3+%4]
+    vpblendd     m%1, m%1, m%2, 0x0c
+    vpbroadcastq m%2, [%3+%4*2]
+    vpblendd     m%1, m%1, m%2, 0x30
+    vpbroadcastq m%2, [%3+%5]
+    vpblendd     m%1, m%1, m%2, 0xc0
+%endmacro
+
+; rows of 4: four an xmm, eight a ymm (%6 = src + 4*stride)
+%macro LOAD4_VNNI 5-6 ; dst, tmp, src, stride, 3*stride, src4
+    movd        xm%1, [%3]
+%assign %%k 0
+%rep mmsize/4-1
+%assign %%k %%k+1
+%if %%k == 1
+    vpbroadcastd m%2, [%3+%4]
+%elif %%k == 2
+    vpbroadcastd m%2, [%3+%4*2]
+%elif %%k == 3
+    vpbroadcastd m%2, [%3+%5]
+%elif %%k == 4
+    vpbroadcastd m%2, [%6]
+%elif %%k == 5
+    vpbroadcastd m%2, [%6+%4]
+%elif %%k == 6
+    vpbroadcastd m%2, [%6+%4*2]
+%else
+    vpbroadcastd m%2, [%6+%5]
+%endif
+    vpblendd     m%1, m%1, m%2, 1<<%%k
+%endrep
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int pixel_ssd_WxH( uint8_t *, intptr_t, uint8_t *, intptr_t )
+; d = |a - b| bytes: d * (d ^ 0x80) = d*d - 128*d into m%3, d * 0x80 = -128*d
+; into m%4 (u8 x s8); ssd = the first sums - the second. m7 = 0x80 bytes
+;-----------------------------------------------------------------------------
+%macro SSD_VNNI_ACC 4 ; a (clobbered), b, square, sum
+    pminub       m6, m%1, m%2
+    pmaxub      m%1, m%2
+    psubb       m%1, m6
+    pxor         m6, m%1, m7
+    DPBUSD      m%3, m%1, m6
+    DPBUSD      m%4, m%1, m7
+%endmacro
+
+%macro SSD_VNNI 2 ; width, height
+%assign %%n %1*%2/mmsize ; vectors per source
+cglobal pixel_ssd_%1x%2, 4,8,10
+    lea          r5, [r1*3]
+    lea          r6, [r3*3]
+    vpbroadcastd m7, [pd_80808080]
+    pxor         m0, m0
+    pxor         m2, m2
+%if %%n > 1
+    pxor         m1, m1
+    pxor         m3, m3
+%endif
+%assign %%i 0
+%rep %%n/2 + (%%n&1)
+%if %1 == 16
+    movu        xm4, [r0]
+    vinserti128  m4, m4, [r0+r1], 1
+    movu        xm5, [r2]
+    vinserti128  m5, m5, [r2+r3], 1
+    movu        xm8, [r0+r1*2]
+    vinserti128  m8, m8, [r0+r5], 1
+    movu        xm9, [r2+r3*2]
+    vinserti128  m9, m9, [r2+r6], 1
+%elif %1 == 8
+    LOAD8x4_VNNI 4, 6, r0, r1, r5
+    LOAD8x4_VNNI 5, 6, r2, r3, r6
+%if %%n > 1
+    lea          r0, [r0+r1*4]
+    lea          r2, [r2+r3*4]
+    LOAD8x4_VNNI 8, 6, r0, r1, r5
+    LOAD8x4_VNNI 9, 6, r2, r3, r6
+%endif
+%else ; 4
+%if mmsize == 32
+    lea          r4, [r0+r1*4]
+    lea          r7, [r2+r3*4]
+%endif
+    LOAD4_VNNI   4, 6, r0, r1, r5, r4
+    LOAD4_VNNI   5, 6, r2, r3, r6, r7
+%if %%n > 1
+    lea          r0, [r0+r1*8]
+    lea          r2, [r2+r3*8]
+    lea          r4, [r4+r1*8]
+    lea          r7, [r7+r3*8]
+    LOAD4_VNNI   8, 6, r0, r1, r5, r4
+    LOAD4_VNNI   9, 6, r2, r3, r6, r7
+%endif
+%endif
+    SSD_VNNI_ACC 4, 5, 0, 2
+%if %%n > 1
+    SSD_VNNI_ACC 8, 9, 1, 3
+%endif
+%assign %%i %%i+1
+%if %%i < %%n/2
+    lea          r0, [r0+r1*4]
+    lea          r2, [r2+r3*4]
+%endif
+%endrep
+%if %%n > 1
+    paddd        m0, m1
+    paddd        m2, m3
+%endif
+    psubd        m0, m2
+    HADDD        m0, m1
+    movd        eax, xm0
+    RET
+%endmacro
+
+INIT_YMM avxvnni
+SSD_VNNI 16, 16
+SSD_VNNI 16,  8
+SSD_VNNI  8, 16
+SSD_VNNI  8,  8
+SSD_VNNI  8,  4
+SSD_VNNI  4, 16
+SSD_VNNI  4,  8
+INIT_XMM avxvnni
+SSD_VNNI  4,  4
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_var_wxh( uint8_t *, intptr_t )
+; x * 1 and x * (x ^ 0x80) = x*x - 128*x (u8 x s8); m6 = 1, m7 = 0x80 bytes
+;-----------------------------------------------------------------------------
+%macro VAR_VNNI_ACC 4 ; pixels, tmp, sum, square
+    pxor        m%2, m%1, m7
+    DPBUSD      m%3, m%1, m6
+    DPBUSD      m%4, m%1, m%2
+%endmacro
+
+%macro VAR_VNNI 2 ; width, height
+cglobal pixel_var_%1x%2, 2,4,10
+    vpbroadcastd m6, [pb_1]
+    vpbroadcastd m7, [pd_80808080]
+    lea          r3, [r1*3]
+    pxor         m0, m0
+    pxor         m1, m1
+    pxor         m2, m2
+    pxor         m3, m3
+%assign %%i 0
+%rep %1*%2/64
+%if %1 == 16
+    movu        xm4, [r0]
+    vinserti128  m4, m4, [r0+r1], 1
+    movu        xm5, [r0+r1*2]
+    vinserti128  m5, m5, [r0+r3], 1
+%else
+    LOAD8x4_VNNI 4, 8, r0, r1, r3
+    lea          r0, [r0+r1*4]
+    LOAD8x4_VNNI 5, 9, r0, r1, r3
+%endif
+    VAR_VNNI_ACC 4, 8, 0, 2
+    VAR_VNNI_ACC 5, 9, 1, 3
+%assign %%i %%i+1
+%if %%i < %1*%2/64
+    lea          r0, [r0+r1*4]
+%endif
+%endrep
+    paddd        m0, m1
+    paddd        m2, m3
+    pslld        m1, m0, 7
+    paddd        m2, m1
+    punpckldq    m1, m0, m2
+    punpckhdq    m0, m2
+    paddd        m0, m1          ; sum, square qwords
+    vextracti128 xm1, m0, 1
+    paddd       xm0, xm1
+    punpckhqdq  xm1, xm0, xm0
+    paddd       xm0, xm1
+    movq        rax, xm0
+    RET
+%endmacro
+
+INIT_YMM avxvnni
+VAR_VNNI 16, 16
+VAR_VNNI  8, 16
+VAR_VNNI  8,  8
+
+;-----------------------------------------------------------------------------
+; void pixel_ssd_nv12_core( uint8_t *pixuv1, intptr_t stride1, uint8_t *pixuv2, intptr_t stride2,
+;                           int width, int height, uint64_t *ssd_u, uint64_t *ssd_v )
+; vpdpwssd of the u and v |differences|; 64 bytes a loop into two accumulator pairs
+; (the vpdpwssd latency), then 16 byte steps of xmm loads (zero upper lanes), so no
+; overread. Same overflow as the avx2 version.
+;-----------------------------------------------------------------------------
+%macro NV12_VNNI_ACC 4 ; a, b (clobbered), u, v; m5 = pw_00ff
+    psubusb      m6, m%1, m%2
+    psubusb     m%2, m%1
+    por         m%2, m6
+    psrlw       m%1, m%2, 8
+    pand        m%2, m5
+    DPWSSD      m%3, m%2, m%2
+    DPWSSD      m%4, m%1, m%1
+%endmacro
+
+INIT_YMM avxvnni
+cglobal pixel_ssd_nv12_core, 6,7,10
+    add         r4d, r4d
+    add          r0, r4
+    add          r2, r4
+    mova         m5, [pw_00ff]
+    pxor         m0, m0
+    pxor         m1, m1
+    pxor         m2, m2
+    pxor         m3, m3
+.loopy:
+    mov          r6, r4
+    neg          r6
+    add          r6, 64
+    jg .tail
+.loopx:
+    movu         m8, [r0+r6-64]
+    movu         m9, [r2+r6-64]
+    NV12_VNNI_ACC 8, 9, 0, 1
+    movu         m8, [r0+r6-32]
+    movu         m9, [r2+r6-32]
+    NV12_VNNI_ACC 8, 9, 2, 3
+    add          r6, 64
+    jle .loopx
+.tail:
+    sub          r6, 64          ; -(bytes left), 0 to -48
+    jz .next
+.loopt:
+    movu        xm8, [r0+r6]
+    movu        xm9, [r2+r6]
+    NV12_VNNI_ACC 8, 9, 0, 1
+    add          r6, 16
+    jl .loopt
+.next:
+    add          r0, r1
+    add          r2, r3
+    dec         r5d
+    jg .loopy
+    mov          r3, r6m
+    mov          r4, r7m
+    paddd        m0, m2
+    paddd        m1, m3
+    HADDD        m0, m2
+    HADDD        m1, m2
+    movd        r5d, xm0
+    movd        r6d, xm1
+    mov        [r3], r5
+    mov        [r4], r6
+    RET
+%endif ; !HIGH_BIT_DEPTH
+%endif ; ARCH_X86_64

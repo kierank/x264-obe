@@ -769,6 +769,31 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL( sad, 0 );
     TEST_PIXEL( sad_aligned, 1 );
     TEST_PIXEL( ssd, 1 );
+
+    /* ssd: the encoder's FENC/FDEC strides both ways round, equal strides, other frame-like strides */
+    ok = 1, used_asm = 0;
+    for( int i = 0; i < ARRAY_ELEMS(pixel_c.ssd); i++ )
+        if( pixel_asm.ssd[i] != pixel_ref.ssd[i] )
+        {
+            static const intptr_t ssd_strides[5][2] = { { FENC_STRIDE, FDEC_STRIDE }, { FDEC_STRIDE, FENC_STRIDE },
+                                                        { 48, 48 }, { 80, 112 }, { 112, 16 } };
+            set_func_name( "ssd_%s", pixel_names[i] );
+            used_asm = 1;
+            for( int k = 0; k < 10 && ok; k++ )
+            {
+                intptr_t s1 = ssd_strides[k>>1][0], s2 = ssd_strides[k>>1][1];
+                pixel *p1 = k&1 ? pbuf3 : pbuf1, *p2 = k&1 ? pbuf4 : pbuf2;
+                int res_c   = pixel_c.ssd[i]( p1, s1, p2, s2 );
+                int res_asm = pixel_asm.ssd[i]( p1, s1, p2, s2 );
+                if( res_c != res_asm )
+                {
+                    ok = 0;
+                    fprintf( stderr, "ssd[%d] strides %d %d: %d != %d [FAILED]\n", i, (int)s1, (int)s2, res_c, res_asm );
+                }
+            }
+        }
+    report( "pixel ssd strides :" );
+
     TEST_PIXEL( satd, 0 );
 
 #define TEST_PIXEL_AVG2( name, cmp ) \
@@ -2310,6 +2335,19 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 fprintf( stderr, "var[%d] %d: %d %d != %d %d [FAILED]\n", i, j, (int)res_c, (int)(res_c>>32), (int)res_asm, (int)(res_asm>>32) ); \
             } \
         } \
+        /* FDEC_STRIDE and frame-like strides */ \
+        for( int j = 0; j < 6; j++ ) \
+        { \
+            intptr_t stride = j>>1 == 0 ? FDEC_STRIDE : j>>1 == 1 ? 48 : 112; \
+            pixel *pix = j&1 ? pbuf3 : pbuf1; \
+            uint64_t res_c   = pixel_c.var[i]( pix, stride ); \
+            uint64_t res_asm = pixel_asm.var[i]( pix, stride ); \
+            if( res_c != res_asm ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, "var[%d] stride %d: %d %d != %d %d [FAILED]\n", i, (int)stride, (int)res_c, (int)(res_c>>32), (int)res_asm, (int)(res_asm>>32) ); \
+            } \
+        } \
         call_c2( pixel_c.var[i],   pbuf1, (intptr_t)16 ); \
         call_a2( pixel_asm.var[i], pbuf1, (intptr_t)16 ); \
     }
@@ -2349,6 +2387,19 @@ static int check_pixel( int cpu_ref, int cpu_new )
             { \
                 ok = 0; \
                 fprintf( stderr, "var2[%d] %d: %d != %d or %d != %d [FAILED]\n", i, j, res_c, res_asm, ssd_c, ssd_asm ); \
+            } \
+        } \
+        /* the encoder's strides (fenc FENC_STRIDE, fdec FDEC_STRIDE), and the other way round */ \
+        for( int j = 0; j < 4; j++ ) \
+        { \
+            intptr_t s1 = j&2 ? FDEC_STRIDE : FENC_STRIDE, s2 = j&2 ? FENC_STRIDE : FDEC_STRIDE; \
+            pixel *p1 = j&1 ? pbuf3 : pbuf1, *p2 = j&1 ? pbuf4 : pbuf2; \
+            res_c   = pixel_c.var2[i]( p1, s1, p2, s2, &ssd_c ); \
+            res_asm = pixel_asm.var2[i]( p1, s1, p2, s2, &ssd_asm ); \
+            if( res_c != res_asm || ssd_c != ssd_asm ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, "var2[%d] strides %d %d: %d != %d or %d != %d [FAILED]\n", i, (int)s1, (int)s2, res_c, res_asm, ssd_c, ssd_asm ); \
             } \
         } \
     }
@@ -3056,6 +3107,21 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 ok = 0;
                 fprintf( stderr, "ssd_nv12 %dx%d maxed: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
                          w, hgt, res_u_c, res_v_c, res_u_a, res_v_a );
+            }
+        }
+        /* unequal strides; widths with 0, 16, 32 and 48 bytes past a multiple of 64, and under 64 bytes */
+        for( int k = 0; k < 24 && ok; k++ )
+        {
+            static const int nv12_w[6] = { 8, 24, 352, 360, 368, 376 };
+            int w = nv12_w[k>>2], hgt = k&1 ? 9 : 8;
+            intptr_t s1 = k&2 ? 400 : 368, s2 = k&2 ? 368 : 400;
+            pixel_c.ssd_nv12_core(   pbuf3, s1, pbuf4, s2, w, hgt, &res_u_c, &res_v_c );
+            pixel_asm.ssd_nv12_core( pbuf3, s1, pbuf4, s2, w, hgt, &res_u_a, &res_v_a );
+            if( res_u_c != res_u_a || res_v_c != res_v_a )
+            {
+                ok = 0;
+                fprintf( stderr, "ssd_nv12 %dx%d strides %d %d: %"PRIu64",%"PRIu64" != %"PRIu64",%"PRIu64"\n",
+                         w, hgt, (int)s1, (int)s2, res_u_c, res_v_c, res_u_a, res_v_a );
             }
         }
         call_c( pixel_c.ssd_nv12_core,   pbuf1, (intptr_t)368, pbuf2, (intptr_t)368, 360, 8, &res_u_c, &res_v_c );

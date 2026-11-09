@@ -2142,6 +2142,32 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #endif
 #endif
     }
+    /* VEX vpdpbusd/vpdpwssd, ymm0-15, for Intel AVX2-only parts (Raptor Lake, E-2400). Zen 4 has no
+     * AVX-VNNI. Zen 5 and Sapphire Rapids have it but are excluded until measured in situ there: the
+     * pointers marked zen5 are not set by the AVX512ICL blocks below and would otherwise stay these */
+    if( (cpu&X264_CPU_AVXVNNI) && !(cpu&X264_CPU_AVX512) )
+    {
+#if ARCH_X86_64
+        pixf->ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_avxvnni; /* zen5 */
+        pixf->ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_avxvnni;  /* zen5 */
+        pixf->ssd[PIXEL_8x4]   = x264_pixel_ssd_8x4_avxvnni;   /* zen5 */
+        pixf->ssd[PIXEL_4x16]  = x264_pixel_ssd_4x16_avxvnni;
+        pixf->ssd[PIXEL_4x8]   = x264_pixel_ssd_4x8_avxvnni;
+        pixf->ssd[PIXEL_4x4]   = x264_pixel_ssd_4x4_avxvnni;
+        /* Core 3 Raptor Cove: 1.14x / 1.09x ssse3 (laptop Zen 5 slower than avx; icl wins there anyway) */
+        pixf->ssd[PIXEL_8x16]  = x264_pixel_ssd_8x16_avxvnni;
+        pixf->ssd[PIXEL_8x8]   = x264_pixel_ssd_8x8_avxvnni;
+        pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avxvnni;
+        pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avxvnni;
+        /* Core 3: 1.15-1.33x avx2; laptop Zen 5: equal to avx2 */
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avxvnni;   /* zen5 */
+        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avxvnni; /* zen5 */
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avxvnni;
+        pixf->ssd_nv12_core    = x264_pixel_ssd_nv12_core_avxvnni; /* zen5 */
+        pixf->ssd_psy_mb[0]    = x264_pixel_ssd_psy_mb_420_avxvnni; /* zen5 */
+        pixf->ssd_psy_mb[1]    = x264_pixel_ssd_psy_mb_422_avxvnni; /* zen5 */
+#endif
+    }
     if( cpu&X264_CPU_AVX512ICL )
     {
 #if ARCH_X86_64
