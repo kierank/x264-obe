@@ -2137,6 +2137,18 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
+        /* fused fpel point sets and searches (psadbw windows, no vdbpsadbw), for AVX2-only CPUs:
+         * the X264_CPU_AVX512 block below replaces every one */
+        pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx2;
+        pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx2;
+        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_8x8_avx2;
+        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_8x8_avx2;
+        pixf->sad_oct_min[PIXEL_8x8] = x264_pixel_sad_oct_min_8x8_avx2;
+        pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx2;
+        pixf->sad_hex_search[PIXEL_8x8] = x264_pixel_sad_hex_search_8x8_avx2;
+        pixf->sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx2;
+        pixf->predictor_clip = x264_predictor_clip_avx2;
+        pixf->predictor_roundclip = x264_predictor_roundclip_avx2;
 #if !defined(_WIN32)
         pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
         /* me_search_fpel: avx2 entry not dispatched: slower than C on Zen 4 lowlat (rack01 MESV2 MRA); AVX2-only CPUs untested */
