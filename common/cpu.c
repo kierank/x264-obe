@@ -124,14 +124,16 @@ uint64_t x264_cpu_xgetbv( int xcr );
  * (incl. Skylake-SP/Cascade Lake), slow on Gracemont and Zen 1-3, unmeasured elsewhere:
  * every AVX2 CPU gets the flag unless whitelisted here. Harmless where avx512/avx512icl
  * versions override the gather kernels. */
-static uint32_t cpu_slow_gather( uint32_t cpu, const char *vendor, uint32_t fms, uint32_t leaf7_edx )
+static uint32_t cpu_slow_gather( uint32_t cpu, const char *vendor, uint32_t fms )
 {
     if( !(cpu&X264_CPU_AVX2) )
         return 0;
     int family = ((fms>>8)&0xf) + ((fms>>20)&0xff);
     int model  = ((fms>>4)&0xf) + ((fms>>12)&0xf0);
-    /* CPUID.7.0:EDX[15] hybrid: threads can land on Gracemont E-cores */
-    if( !strcmp( vendor, "GenuineIntel" ) && family == 6 && !(leaf7_edx&0x00008000) )
+    /* Model only. CPUID.7.0:EDX[15] hybrid is set on these dies even with no E-cores
+     * (Core 3 100U: 2 P-cores, hybrid 1). OBE platforms run with E-cores disabled; a thread
+     * on an enabled Gracemont E-core would take the slow gather. */
+    if( !strcmp( vendor, "GenuineIntel" ) && family == 6 )
         switch( model )
         {
             /* Golden/Raptor Cove, not GDS-affected (intel-family.h names).
@@ -150,7 +152,7 @@ uint32_t x264_cpu_detect( void )
 {
     uint32_t cpu = 0;
     uint32_t eax, ebx, ecx, edx;
-    uint32_t fms, leaf7_edx = 0;
+    uint32_t fms;
     uint32_t vendor[4] = {0};
     uint32_t max_extended_cap, max_basic_cap;
     uint64_t xcr0 = 0;
@@ -200,7 +202,6 @@ uint32_t x264_cpu_detect( void )
     {
         x264_cpu_cpuid( 7, &eax, &ebx, &ecx, &edx );
         uint32_t max_leaf7_sub = eax;
-        leaf7_edx = edx;
 
         if( ebx&0x00000008 )
             cpu |= X264_CPU_BMI1;
@@ -306,7 +307,7 @@ uint32_t x264_cpu_detect( void )
         }
     }
 
-    cpu |= cpu_slow_gather( cpu, (char*)vendor, fms, leaf7_edx );
+    cpu |= cpu_slow_gather( cpu, (char*)vendor, fms );
 
     if( (!strcmp((char*)vendor, "GenuineIntel") || !strcmp((char*)vendor, "CyrixInstead")) && !(cpu&X264_CPU_SSE42))
     {

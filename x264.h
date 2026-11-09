@@ -149,7 +149,7 @@ typedef struct
                                              * new SLOW flags. */
 #define X264_CPU_SLOW_PSHUFB        (1<<24) /* such as on the Intel Atom */
 #define X264_CPU_SLOW_PALIGNR       (1<<25) /* such as on the AMD Bobcat */
-#define X264_CPU_SLOW_GATHER        (1<<28) /* vgatherdps not known to be fast: every AVX2 CPU except non-hybrid Golden/Raptor Cove */
+#define X264_CPU_SLOW_GATHER        (1<<28) /* vgatherdps not known to be fast: every AVX2 CPU except Golden/Raptor Cove models */
 
 /* PowerPC */
 #define X264_CPU_ALTIVEC         0x0000001
