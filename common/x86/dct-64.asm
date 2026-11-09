@@ -601,6 +601,49 @@ INIT_XMM avx
 ADD8x8_IDCT8
 
 ;-----------------------------------------------------------------------------
+; void add16x16_idct8( uint8_t *p_dst, int16_t dct[4][64] ), AVX2
+; Blocks 0 1, then 2 3: the left block in lane 0, the right one in lane 1, so
+; a ymm row is a 16-pixel row and both passes and the transpose run once per
+; pair, as the AVX version's do per block.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal add16x16_idct8, 2,2,11
+    call .add16x8_idct8
+    add            r0, 8*FDEC_STRIDE
+    add            r1, 256
+    call .add16x8_idct8
+    RET
+.add16x8_idct8:
+%assign idct8_i 0
+%rep 8
+    movu          xm %+ idct8_i, [r1+idct8_i*16]
+    vinserti128    m %+ idct8_i, m %+ idct8_i, [r1+128+idct8_i*16], 1
+%assign idct8_i idct8_i+1
+%endrep
+    IDCT8_1D      w,0,1,2,3,4,5,6,7,8,9
+    TRANSPOSE8x8W 0,1,2,3,4,5,6,7,8
+    paddw          m0, [pw_32] ; rounding for the >>6 at the end
+    IDCT8_1D      w,0,1,2,3,4,5,6,7,8,9
+%assign idct8_i 0
+%rep 4
+%assign idct8_j idct8_i+1
+    psraw          m %+ idct8_i, 6
+    psraw          m %+ idct8_j, 6
+    pmovzxbw       m8, [r0+idct8_i*FDEC_STRIDE]
+    pmovzxbw       m9, [r0+idct8_j*FDEC_STRIDE]
+    paddsw         m %+ idct8_i, m8
+    paddsw         m %+ idct8_j, m9
+    packuswb       m %+ idct8_i, m %+ idct8_j
+    vpermq         m %+ idct8_i, m %+ idct8_i, q3120
+    movu  [r0+idct8_i*FDEC_STRIDE], xm %+ idct8_i
+    vextracti128 [r0+idct8_j*FDEC_STRIDE], m %+ idct8_i, 1
+%assign idct8_i idct8_i+2
+%endrep
+    ret
+%undef idct8_i
+%undef idct8_j
+
+;-----------------------------------------------------------------------------
 ; void add8x8_idct( uint8_t *pix, int16_t dct[4][4][4] )
 ;-----------------------------------------------------------------------------
 %macro ADD8x8 0

@@ -217,6 +217,19 @@ zsub8_field_hbd: dw  0, 8,16, 1, 9,24,32,17, 2,25,40,48,56,33,10, 3
                  dw 45,53,61,30, 7,15,38,46,54,62,23,31,39,47,55,63
 %endif
 
+%if HIGH_BIT_DEPTH == 0
+ALIGN 32
+; sub4x4_dct avx2/avxvnni: the 4 transform rows, one per dword, then negated
+sub4x4_dct_mul:  times 2 db  1, 1, 1, 1,  2, 1,-1,-2,  1,-1,-1, 1,  1,-2, 2,-1
+                 times 2 db -1,-1,-1,-1, -2,-1, 1, 2, -1, 1, 1,-1, -1, 2,-2, 1
+sub4x4_dct_shl:  dd 0,0,0,0,1,1,1,1
+sub4x4_dct_perm: dd 0,4,2,6,1,5,3,7
+sub4x4_dct_shuf: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
+; sub8x16_dct_dc / dct2x4dc avx2: swap the words of each pair
+pb_swapw_pairs:  db 2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13
+; sub8x8_dct_dc avx2: words 0 4 2 6
+pb_dct2x2_dc_shuf: db 0,1,8,9,4,5,12,13,0,1,8,9,4,5,12,13
+%endif
 SECTION .text
 
 cextern pw_32_0
@@ -230,6 +243,7 @@ cextern pw_1
 cextern pd_1
 cextern pd_32
 cextern pw_ppppmmmm
+cextern pw_ppmmppmm
 cextern pw_pmpmpmpm
 cextern deinterleave_shufd
 cextern pb_unpackbd1
@@ -1966,6 +1980,159 @@ INIT_XMM sse2
 SUB8x16_DCT_DC
 INIT_XMM ssse3
 SUB8x16_DCT_DC
+
+;-----------------------------------------------------------------------------
+; void sub4x4_dct( int16_t dct[16], uint8_t *pix1, uint8_t *pix2 ), AVX2 / AVX-VNNI
+; Each dword of a ymm is one (row, kx) pair: the row's 4 pixels are broadcast
+; and multiplied with the kx-th transform row by pmaddubsw+pmaddwd, or by one
+; vpdpbusd each for fenc and -fdec. Rows 0 | 1 and 3 | 2 in the lanes, so the
+; vertical butterflies are lane-wise and one vperm2i128 pair finishes them.
+;-----------------------------------------------------------------------------
+%macro SUB4x4_DCT_YMM 0
+cglobal sub4x4_dct, 3,3,7
+    movu         m0, [r1+0*FENC_STRIDE]
+    pshufd       m0, m0, q0000            ; fenc rows 0 | 1
+    vpbroadcastd m1, [r1+3*FENC_STRIDE]
+    vpbroadcastd m4, [r1+2*FENC_STRIDE]
+    vpblendd     m1, m1, m4, 0xf0         ; fenc rows 3 | 2
+    vpbroadcastd m2, [r2+0*FDEC_STRIDE]
+    vpbroadcastd m4, [r2+1*FDEC_STRIDE]
+    vpblendd     m2, m2, m4, 0xf0
+    vpbroadcastd m3, [r2+3*FDEC_STRIDE]
+    vpbroadcastd m4, [r2+2*FDEC_STRIDE]
+    vpblendd     m3, m3, m4, 0xf0
+%if cpuflag(avxvnni)
+    pxor         m4, m4
+    pxor         m5, m5
+    {vex} vpdpbusd m4, m0, [sub4x4_dct_mul]
+    {vex} vpdpbusd m5, m1, [sub4x4_dct_mul]
+    {vex} vpdpbusd m4, m2, [sub4x4_dct_mul+32]
+    {vex} vpdpbusd m5, m3, [sub4x4_dct_mul+32]
+%else
+    mova         m6, [sub4x4_dct_mul]
+    pmaddubsw    m0, m6
+    pmaddubsw    m1, m6
+    pmaddubsw    m2, m6
+    pmaddubsw    m3, m6
+    psubw        m0, m2
+    psubw        m1, m3
+    vpbroadcastd m6, [pw_1]
+    pmaddwd      m4, m0, m6
+    pmaddwd      m5, m1, m6
+%endif
+    paddd        m0, m4, m5               ; s03 | s12, kx 0-3
+    psubd        m4, m5                   ; d03 | d12
+    vperm2i128   m1, m0, m4, 0x20         ; s03 | d03
+    vperm2i128   m0, m0, m4, 0x31         ; s12 | d12
+    mova         m5, [sub4x4_dct_shl]
+    vpsllvd      m2, m1, m5               ; s03 | 2*d03
+    vpsllvd      m3, m0, m5               ; s12 | 2*d12
+    paddd        m2, m0                   ; ky 0 | ky 1
+    psubd        m1, m3                   ; ky 2 | ky 3
+    packssdw     m2, m1                   ; ky 0, ky 2 | ky 1, ky 3
+    mova         m1, [sub4x4_dct_perm]
+    vpermd       m2, m1, m2
+    pshufb       m2, [sub4x4_dct_shuf]
+    movu       [r0], m2
+    RET
+%endmacro
+
+INIT_YMM avx2
+SUB4x4_DCT_YMM
+INIT_YMM avxvnni
+SUB4x4_DCT_YMM
+
+;-----------------------------------------------------------------------------
+; void sub8x8_dct_dc( int16_t dct[2][2], uint8_t *pix1, uint8_t *pix2 ), AVX2
+; void sub8x16_dct_dc( int16_t dct[8], uint8_t *pix1, uint8_t *pix2 ), AVX2
+; Rows r | r+1 in the lanes; punpckldq with rows r+2 | r+3 makes each qword
+; the 4x4 half-rows of one block, so one psadbw sums 8 pixels of it.
+;-----------------------------------------------------------------------------
+%macro DCTDC_4ROW_AVX2 2 ; dst, first row; m6 = 0
+    movu        m%1, [r1+(%2+0)*FENC_STRIDE]
+    punpckldq   m%1, [r1+(%2+2)*FENC_STRIDE]
+    movu        xm4, [r2+(%2+0)*FDEC_STRIDE]
+    vinserti128  m4, m4, [r2+(%2+1)*FDEC_STRIDE], 1
+    movu        xm5, [r2+(%2+2)*FDEC_STRIDE]
+    vinserti128  m5, m5, [r2+(%2+3)*FDEC_STRIDE], 1
+    punpckldq    m4, m5
+    psadbw      m%1, m6
+    psadbw       m4, m6
+    psubd       m%1, m4                   ; left | right 4x4 sums, half the rows per lane
+%endmacro
+
+; in: xm0 = the 8 4x4 sums in raster order; out: xm0 = the 2x4 dc transform
+%macro DCT2x4_DC_XMM 0
+    pshufb      xm1, xm0, [pb_swapw_pairs]
+    psignw      xm0, [pw_pmpmpmpm]
+    paddw       xm0, xm1                  ; s0 d0 s1 d1 s2 d2 s3 d3 (s/d of each row pair)
+    pshufd      xm1, xm0, q2301
+    psignw      xm0, [pw_ppmmppmm]
+    paddw       xm0, xm1
+    pshufd      xm1, xm0, q1032
+    psignw      xm0, [pw_ppppmmmm]
+    paddw       xm0, xm1                  ; dct 0 1 6 7 2 3 4 5
+    pshufd      xm0, xm0, q1320
+%endmacro
+
+INIT_YMM avx2
+cglobal sub8x8_dct_dc, 3,3,7
+    pxor         m6, m6
+    DCTDC_4ROW_AVX2 0, 0
+    DCTDC_4ROW_AVX2 1, 4
+    packssdw     m0, m1                   ; s0 _ s1 _ s2 _ s3 _, half the rows per lane
+    vextracti128 xm1, m0, 1
+    paddw       xm0, xm1
+    pshufd      xm1, xm0, q1032
+    psignw      xm0, [pw_ppppmmmm]
+    paddw       xm0, xm1                  ; s0+s2 _ s1+s3 _ s0-s2 _ s1-s3 _
+    pshufd      xm1, xm0, q2301
+    psignw      xm0, [pw_ppmmppmm]
+    paddw       xm0, xm1                  ; dct 0 _ 2 _ 1 _ 3 _
+    pshufb      xm0, [pb_dct2x2_dc_shuf]
+    movq       [r0], xm0
+    RET
+
+cglobal sub8x16_dct_dc, 3,3,7
+    pxor         m6, m6
+    DCTDC_4ROW_AVX2 0, 0
+    DCTDC_4ROW_AVX2 1, 4
+    DCTDC_4ROW_AVX2 2, 8
+    DCTDC_4ROW_AVX2 3, 12
+    shufps       m0, m1, q2020            ; sums 0-3, half the rows per lane
+    shufps       m2, m3, q2020            ; sums 4-7
+    packssdw     m0, m2
+    vextracti128 xm1, m0, 1
+    paddw       xm0, xm1
+    DCT2x4_DC_XMM
+    mova       [r0], xm0
+    RET
+
+;-----------------------------------------------------------------------------
+; void dct2x4dc( dctcoef dct[8], dctcoef dct4x4[8][16] ), AVX2 (xmm)
+;-----------------------------------------------------------------------------
+INIT_XMM avx2
+cglobal dct2x4dc, 2,3,4
+    movd         m0, [r1+0*32]
+    punpcklwd    m0, [r1+1*32]
+    movd         m1, [r1+2*32]
+    punpcklwd    m1, [r1+3*32]
+    movd         m2, [r1+4*32]
+    punpcklwd    m2, [r1+5*32]
+    movd         m3, [r1+6*32]
+    punpcklwd    m3, [r1+7*32]
+    punpckldq    m0, m1
+    punpckldq    m2, m3
+    punpcklqdq   m0, m2                   ; dc 0-7
+    xor         r2d, r2d
+%assign Y 0
+%rep 8
+    mov  [r1+Y*32], r2w
+%assign Y Y+1
+%endrep
+    DCT2x4_DC_XMM
+    movu       [r0], m0
+    RET
 
 %endif ; !HIGH_BIT_DEPTH
 

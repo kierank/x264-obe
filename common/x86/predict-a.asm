@@ -60,6 +60,16 @@ pb_p8x16c_rows: times 8 db -7
 pb_filt_left:   db 55,63,63,55,47,39,31,23,15,7,71,72,0,0,0,0
 pb_filt_r:      db 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,15
 pb_filt_l:      db 0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+; predict_8x8_filter avx2: pshufb indices of the left, centre and right samples
+; of edge[6..21] (lane 0: lt t0-t6 l0-l7) and edge[17..32] (lane 1: t0-t15);
+; without MB_TOPLEFT, then with it
+ALIGN 32
+filt8_shuf_avx2: db 14,15,15,14,13,12,11,10, 9, 8, 1, 1, 2, 3, 4, 5,  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
+                 db 15,15,14,13,12,11,10, 9, 8, 0, 1, 2, 3, 4, 5, 6,  1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,15
+                 db 15,14,13,12,11,10, 9, 8, 8, 1, 2, 3, 4, 5, 6, 7,  2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,15,14
+                 db 14,15,15,14,13,12,11,10, 9, 8, 0, 1, 2, 3, 4, 5,  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15
+                 db 15,15,14,13,12,11,10, 9, 8, 0, 1, 2, 3, 4, 5, 6,  1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,15
+                 db 15,14,13,12,11,10, 9, 8, 0, 1, 2, 3, 4, 5, 6, 7,  2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,15,14
 %endif
 
 SECTION .text
@@ -848,6 +858,50 @@ cglobal predict_8x8_filter, 4,6
     kmovw        k2, r4d
     vmovdqu8  [r1+17*SIZEOF_PIXEL]{k2}, xm0 ; edge[32] = edge[31]
 .done:
+    RET
+
+;-----------------------------------------------------------------------------
+; void predict_8x8_filter( pixel *src, pixel edge[36], int i_neighbor, int i_filters )
+;-----------------------------------------------------------------------------
+; avx2, all filters (the encoder's analysis): one ymm lowpass. Lane 0 makes
+; edge[6..21] from lt t0-t6 l0-l7 (the left column by an unpack chain), lane 1
+; edge[17..32] from t0-t15. The neighbours of each sample are pshufbs, with
+; the ends mirrored (edge[6] = edge[7], edge[32] = edge[31] fall out) and the
+; tables picked by MB_TOPLEFT. Other filter sets go to the ssse3 version.
+INIT_YMM avx2
+cglobal predict_8x8_filter, 4,6,4
+    mov         r4d, r3d
+    and         r4d, 7
+    cmp         r4d, 7
+    jne predict_8x8_filter_ssse3
+    movq        xm0, [r0+0*FDEC_STRIDEB-8]
+    punpcklbw   xm0, [r0+1*FDEC_STRIDEB-8] ; l0 l1 in bytes 14-15
+    movq        xm1, [r0+2*FDEC_STRIDEB-8]
+    punpcklbw   xm1, [r0+3*FDEC_STRIDEB-8]
+    movq        xm2, [r0+4*FDEC_STRIDEB-8]
+    punpcklbw   xm2, [r0+5*FDEC_STRIDEB-8]
+    movq        xm3, [r0+6*FDEC_STRIDEB-8]
+    punpcklbw   xm3, [r0+7*FDEC_STRIDEB-8]
+    punpckhwd   xm0, xm1                    ; l0-l3 in bytes 12-15
+    punpckhwd   xm2, xm3                    ; l4-l7
+    punpckhdq   xm0, xm2                    ; l0-l7 in bytes 8-15
+    vpblendd    xm0, xm0, [r0-FDEC_STRIDEB-1], 3 ; lt t0-t6 in bytes 0-7
+    mov         r4d, r2d
+    and         r4d, 4
+    lea          r5, [shuf_fixtr]
+    movu        xm1, [r0-FDEC_STRIDEB]
+    pshufb      xm1, [r5+r4*4]              ; t8-t15 = t7 without MB_TOPRIGHT
+    vinserti128  m0, m0, xm1, 1
+    and         r2d, 8
+    lea         r2d, [r2+r2*2]
+    lea          r5, [filt8_shuf_avx2]
+    lea          r2, [r5+r2*4]              ; MB_TOPLEFT ? +96 : +0
+    pshufb       m1, m0, [r2]               ; left neighbours
+    pshufb       m2, m0, [r2+64]            ; right neighbours
+    pshufb       m0, [r2+32]
+    PRED8x8_LOWPASS m0, m1, m2, m0, m3
+    movu    [r1+6*SIZEOF_PIXEL], xm0
+    vextracti128 [r1+17*SIZEOF_PIXEL], m0, 1
     RET
 %endif ; ARCH_X86_64 && !HIGH_BIT_DEPTH
 

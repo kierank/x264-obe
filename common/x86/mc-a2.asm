@@ -125,6 +125,11 @@ deint_rgb4_icl:
     db (lr_i & 15) * 4 + (lr_i >> 4)
     %assign lr_i lr_i+1
 %endrep
+; load_deinterleave_chroma_fdec avx2: u to lane 0, v to lane 1; dwords 0-1 of each lane stored
+ALIGN 32
+deint_fdec_shuf_avx2: db 0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15
+                      db 1,3,5,7,9,11,13,15,0,2,4,6,8,10,12,14
+deint_fdec_mask_avx2: dd -1,-1,0,0,-1,-1,0,0
 %endif
 
 SECTION .text
@@ -1858,6 +1863,58 @@ cglobal load_deinterleave_chroma_fdec, 4,4
     jg .loop
     RET
 %endif ; HIGH_BIT_DEPTH
+
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void load_deinterleave_chroma_fenc( uint8_t *dst, uint8_t *src, intptr_t i_src, int height )
+; void load_deinterleave_chroma_fdec( uint8_t *dst, uint8_t *src, intptr_t i_src, int height )
+; 8-bit, AVX2. fenc: two FENC_STRIDE rows are one ymm. fdec: a row is
+; broadcast to both lanes, shuffled to u | v, and stored with vpmaskmovd,
+; which keeps bytes 8-15 and 24-31 (the neighbour columns) as C does.
+; height is a multiple of 4.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal load_deinterleave_chroma_fenc, 4,5
+    vbroadcasti128 m2, [deinterleave_shuf]
+    lea            r4, [r2*3]
+.loop:
+    movu          xm0, [r1]
+    vinserti128    m0, m0, [r1+r2], 1
+    movu          xm1, [r1+r2*2]
+    vinserti128    m1, m1, [r1+r4], 1
+    lea            r1, [r1+r2*4]
+    pshufb         m0, m2
+    pshufb         m1, m2
+    mova         [r0], m0
+    mova [r0+2*FENC_STRIDE], m1
+    add            r0, 4*FENC_STRIDE
+    sub           r3d, 4
+    jg .loop
+    RET
+
+cglobal load_deinterleave_chroma_fdec, 4,5
+    mova           m2, [deint_fdec_shuf_avx2]
+    mova           m3, [deint_fdec_mask_avx2]
+    lea            r4, [r2*3]
+.loop:
+    vbroadcasti128 m0, [r1]
+    vbroadcasti128 m1, [r1+r2]
+    pshufb         m0, m2
+    pshufb         m1, m2
+    vpmaskmovd [r0+0*FDEC_STRIDE], m3, m0
+    vpmaskmovd [r0+1*FDEC_STRIDE], m3, m1
+    vbroadcasti128 m0, [r1+r2*2]
+    vbroadcasti128 m1, [r1+r4]
+    lea            r1, [r1+r2*4]
+    pshufb         m0, m2
+    pshufb         m1, m2
+    vpmaskmovd [r0+2*FDEC_STRIDE], m3, m0
+    vpmaskmovd [r0+3*FDEC_STRIDE], m3, m1
+    add            r0, 4*FDEC_STRIDE
+    sub           r3d, 4
+    jg .loop
+    RET
+%endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; avx512icl: each (de)interleave is one two-source byte/word permute
