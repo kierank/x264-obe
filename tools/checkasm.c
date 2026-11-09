@@ -215,6 +215,7 @@ static void print_bench(void)
                     b->cpu&X264_CPU_SLOW_ATOM && b->cpu&X264_CPU_CACHELINE_64 ? "_c64_atom" :
                     b->cpu&X264_CPU_CACHELINE_64 ? "_c64" :
                     b->cpu&X264_CPU_SLOW_SHUFFLE ? "_slowshuffle" :
+                    b->cpu&X264_CPU_SLOW_GATHER ? "_slowgather" :
                     b->cpu&X264_CPU_LZCNT ? "_lzcnt" :
                     b->cpu&X264_CPU_BMI2 ? "_bmi2" :
                     b->cpu&X264_CPU_BMI1 ? "_bmi1" :
@@ -8489,6 +8490,8 @@ static int check_all_flags( void )
     if( x264_cpu_detect() & X264_CPU_AVX2 )
     {
         ret |= add_flags( &cpu0, &cpu1, X264_CPU_AVX2, "AVX2" );
+        ret |= add_flags( &cpu0, &cpu1, X264_CPU_SLOW_GATHER, "AVX2 SlowGather" );
+        cpu1 &= ~X264_CPU_SLOW_GATHER;
         if( x264_cpu_detect() & X264_CPU_LZCNT )
         {
             ret |= add_flags( &cpu0, &cpu1, X264_CPU_LZCNT, "AVX2_LZCNT" );

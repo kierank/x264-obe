@@ -83,6 +83,7 @@ const x264_cpu_name_t x264_cpu_names[] =
     {"SlowPshufb",      X264_CPU_SLOW_PSHUFB},
     {"SlowPalignr",     X264_CPU_SLOW_PALIGNR},
     {"SlowShuffle",     X264_CPU_SLOW_SHUFFLE},
+    {"SlowGather",      X264_CPU_SLOW_GATHER},
     {"UnalignedStack",  X264_CPU_STACK_MOD4},
 #elif ARCH_PPC
     {"Altivec",         X264_CPU_ALTIVEC},
@@ -119,10 +120,37 @@ void x264_cpu_cpuid( uint32_t op, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, u
 void x264_cpu_cpuid_sub( uint32_t op, uint32_t sub, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx );
 uint64_t x264_cpu_xgetbv( int xcr );
 
+/* vgatherdps is microcoded on Haswell/Broadwell, GDS-mitigated on Skylake..Rocket Lake
+ * (incl. Skylake-SP/Cascade Lake), slow on Gracemont and Zen 1-3, unmeasured elsewhere:
+ * every AVX2 CPU gets the flag unless whitelisted here. Harmless where avx512/avx512icl
+ * versions override the gather kernels. */
+static uint32_t cpu_slow_gather( uint32_t cpu, const char *vendor, uint32_t fms, uint32_t leaf7_edx )
+{
+    if( !(cpu&X264_CPU_AVX2) )
+        return 0;
+    int family = ((fms>>8)&0xf) + ((fms>>20)&0xff);
+    int model  = ((fms>>4)&0xf) + ((fms>>12)&0xf0);
+    /* CPUID.7.0:EDX[15] hybrid: threads can land on Gracemont E-cores */
+    if( !strcmp( vendor, "GenuineIntel" ) && family == 6 && !(leaf7_edx&0x00008000) )
+        switch( model )
+        {
+            /* Golden/Raptor Cove, not GDS-affected (intel-family.h names).
+             * Xeon E-2400 (Raptor Lake-E) is LGA1700 Raptor Lake-S silicon: 0xb7 or 0xbf. */
+            case 0x97: /* ALDERLAKE: Alder Lake-S */
+            case 0x9a: /* ALDERLAKE_L: Alder Lake-P/H/U */
+            case 0xb7: /* RAPTORLAKE: Raptor Lake-S/HX */
+            case 0xba: /* RAPTORLAKE_P: Raptor Lake-P/U; Core 3 100U */
+            case 0xbf: /* RAPTORLAKE_S: Raptor Lake-S on Alder Lake dies */
+                return 0;
+        }
+    return X264_CPU_SLOW_GATHER;
+}
+
 uint32_t x264_cpu_detect( void )
 {
     uint32_t cpu = 0;
     uint32_t eax, ebx, ecx, edx;
+    uint32_t fms, leaf7_edx = 0;
     uint32_t vendor[4] = {0};
     uint32_t max_extended_cap, max_basic_cap;
     uint64_t xcr0 = 0;
@@ -139,6 +167,7 @@ uint32_t x264_cpu_detect( void )
         return 0;
 
     x264_cpu_cpuid( 1, &eax, &ebx, &ecx, &edx );
+    fms = eax;
     if( edx&0x00800000 )
         cpu |= X264_CPU_MMX;
     else
@@ -171,6 +200,7 @@ uint32_t x264_cpu_detect( void )
     {
         x264_cpu_cpuid( 7, &eax, &ebx, &ecx, &edx );
         uint32_t max_leaf7_sub = eax;
+        leaf7_edx = edx;
 
         if( ebx&0x00000008 )
             cpu |= X264_CPU_BMI1;
@@ -275,6 +305,8 @@ uint32_t x264_cpu_detect( void )
                 cpu |= X264_CPU_SLOW_SHUFFLE;
         }
     }
+
+    cpu |= cpu_slow_gather( cpu, (char*)vendor, fms, leaf7_edx );
 
     if( (!strcmp((char*)vendor, "GenuineIntel") || !strcmp((char*)vendor, "CyrixInstead")) && !(cpu&X264_CPU_SSE42))
     {

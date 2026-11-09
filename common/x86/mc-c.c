@@ -1743,8 +1743,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx2;
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx2;
-    pf->mbtree_finish = x264_mbtree_finish_avx2;
-    pf->aq_variance_tail = x264_aq_variance_tail_avx2;
+    /* vgatherdps: 2.96x / 3.13x C on Core 3 Raptor Cove; unmeasured on slow-gather CPUs, which keep C */
+    if( !(cpu&X264_CPU_SLOW_GATHER) )
+    {
+        pf->mbtree_finish = x264_mbtree_finish_avx2;
+        pf->aq_variance_tail = x264_aq_variance_tail_avx2;
+    }
 #endif
 
     if( cpu&X264_CPU_FMA3 )
