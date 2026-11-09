@@ -13404,5 +13404,63 @@ SSD_VNNI  4, 16
 SSD_VNNI  4,  8
 INIT_XMM avxvnni
 SSD_VNNI  4,  4
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_var_wxh( uint8_t *, intptr_t )
+; x * 1 and x * (x ^ 0x80) = x*x - 128*x (u8 x s8); m6 = 1, m7 = 0x80 bytes
+;-----------------------------------------------------------------------------
+%macro VAR_VNNI_ACC 4 ; pixels, tmp, sum, square
+    pxor        m%2, m%1, m7
+    DPBUSD      m%3, m%1, m6
+    DPBUSD      m%4, m%1, m%2
+%endmacro
+
+%macro VAR_VNNI 2 ; width, height
+cglobal pixel_var_%1x%2, 2,4,10
+    vpbroadcastd m6, [pb_1]
+    vpbroadcastd m7, [pd_80808080]
+    lea          r3, [r1*3]
+    pxor         m0, m0
+    pxor         m1, m1
+    pxor         m2, m2
+    pxor         m3, m3
+%assign %%i 0
+%rep %1*%2/64
+%if %1 == 16
+    movu        xm4, [r0]
+    vinserti128  m4, m4, [r0+r1], 1
+    movu        xm5, [r0+r1*2]
+    vinserti128  m5, m5, [r0+r3], 1
+%else
+    LOAD8x4_VNNI 4, 8, r0, r1, r3
+    lea          r0, [r0+r1*4]
+    LOAD8x4_VNNI 5, 9, r0, r1, r3
+%endif
+    VAR_VNNI_ACC 4, 8, 0, 2
+    VAR_VNNI_ACC 5, 9, 1, 3
+%assign %%i %%i+1
+%if %%i < %1*%2/64
+    lea          r0, [r0+r1*4]
+%endif
+%endrep
+    paddd        m0, m1
+    paddd        m2, m3
+    pslld        m1, m0, 7
+    paddd        m2, m1
+    punpckldq    m1, m0, m2
+    punpckhdq    m0, m2
+    paddd        m0, m1          ; sum, square qwords
+    vextracti128 xm1, m0, 1
+    paddd       xm0, xm1
+    punpckhqdq  xm1, xm0, xm0
+    paddd       xm0, xm1
+    movq        rax, xm0
+    RET
+%endmacro
+
+INIT_YMM avxvnni
+VAR_VNNI 16, 16
+VAR_VNNI  8, 16
+VAR_VNNI  8,  8
 %endif ; !HIGH_BIT_DEPTH
 %endif ; ARCH_X86_64

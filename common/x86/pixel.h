@@ -752,6 +752,9 @@
 #define x264_pixel_ssd_4x16_avxvnni x264_template(pixel_ssd_4x16_avxvnni)
 #define x264_pixel_ssd_4x8_avxvnni x264_template(pixel_ssd_4x8_avxvnni)
 #define x264_pixel_ssd_4x4_avxvnni x264_template(pixel_ssd_4x4_avxvnni)
+#define x264_pixel_var_16x16_avxvnni x264_template(pixel_var_16x16_avxvnni)
+#define x264_pixel_var_8x16_avxvnni x264_template(pixel_var_8x16_avxvnni)
+#define x264_pixel_var_8x8_avxvnni x264_template(pixel_var_8x8_avxvnni)
 #define x264_pixel_vsad_avx2 x264_template(pixel_vsad_avx2)
 #define x264_pixel_vsad_mmx2 x264_template(pixel_vsad_mmx2)
 #define x264_pixel_vsad_sse2 x264_template(pixel_vsad_sse2)
@@ -835,6 +838,9 @@ DECL_PIXELS( uint64_t, var, avx512, ( pixel *pix, intptr_t i_stride ))
 uint64_t x264_pixel_var_16x16_avx512icl( pixel *pix, intptr_t i_stride );
 uint64_t x264_pixel_var_8x16_avx512icl ( pixel *pix, intptr_t i_stride );
 uint64_t x264_pixel_var_8x8_avx512icl  ( pixel *pix, intptr_t i_stride );
+uint64_t x264_pixel_var_16x16_avxvnni( pixel *pix, intptr_t i_stride );
+uint64_t x264_pixel_var_8x16_avxvnni ( pixel *pix, intptr_t i_stride );
+uint64_t x264_pixel_var_8x8_avxvnni  ( pixel *pix, intptr_t i_stride );
 DECL_PIXELS( uint64_t, hadamard_ac, mmx2,  ( pixel *pix, intptr_t i_stride ))
 DECL_PIXELS( uint64_t, hadamard_ac, sse2,  ( pixel *pix, intptr_t i_stride ))
 DECL_PIXELS( uint64_t, hadamard_ac, ssse3, ( pixel *pix, intptr_t i_stride ))

@@ -710,6 +710,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
     {
         pixel_asm.ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avxvnni;
         pixel_asm.ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avxvnni;
+        pixel_asm.var[PIXEL_8x8]  = x264_pixel_var_8x8_avxvnni;
     }
 #endif
     x264_predict_4x4_init( 0, predict_4x4 );
@@ -2341,6 +2342,19 @@ static int check_pixel( int cpu_ref, int cpu_new )
             { \
                 ok = 0; \
                 fprintf( stderr, "var[%d] %d: %d %d != %d %d [FAILED]\n", i, j, (int)res_c, (int)(res_c>>32), (int)res_asm, (int)(res_asm>>32) ); \
+            } \
+        } \
+        /* FDEC_STRIDE and frame-like strides */ \
+        for( int j = 0; j < 6; j++ ) \
+        { \
+            intptr_t stride = j>>1 == 0 ? FDEC_STRIDE : j>>1 == 1 ? 48 : 112; \
+            pixel *pix = j&1 ? pbuf3 : pbuf1; \
+            uint64_t res_c   = pixel_c.var[i]( pix, stride ); \
+            uint64_t res_asm = pixel_asm.var[i]( pix, stride ); \
+            if( res_c != res_asm ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, "var[%d] stride %d: %d %d != %d %d [FAILED]\n", i, (int)stride, (int)res_c, (int)(res_c>>32), (int)res_asm, (int)(res_asm>>32) ); \
             } \
         } \
         call_c2( pixel_c.var[i],   pbuf1, (intptr_t)16 ); \
