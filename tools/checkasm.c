@@ -5896,6 +5896,9 @@ static int zscreen_sum7sq( int64_t q, int x[7] )
     return 0;
 }
 
+#if HAVE_MMX
+#include "common/x86/quant.h"
+#endif
 static int check_quant( int cpu_ref, int cpu_new )
 {
     x264_quant_function_t qf_c;
