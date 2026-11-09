@@ -1592,10 +1592,13 @@ CABAC bmi2
     RET
 %endmacro
 
-; build-time A/B: avx2 rd levels without a branch on abs > 1 (off: equal on fresh
-; blocks, slower once the branches are learned; laptop)
+; build-time A/B: avx2 rd levels without a branch on abs > 1, per block size (off:
+; equal or slower on fresh blocks, slower once the branches are learned; laptop)
 %ifndef RD4_AVX2_BRANCHLESS
     %define RD4_AVX2_BRANCHLESS 0
+%endif
+%ifndef RD8_AVX2_BRANCHLESS
+    %define RD8_AVX2_BRANCHLESS 0
 %endif
 
 ; one level of the avx2 rd: r1d = abs, r2d = node_ctx (%2: node_ctx 0), rd_bl: branchless
@@ -1763,6 +1766,121 @@ CABAC bmi2
     jnz .coeff_loop
 .end:
     mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+    COEFF_ABS_LEVEL_AVX2_ESCAPE last, 1
+    COEFF_ABS_LEVEL_AVX2_ESCAPE coeff, 0
+%endmacro
+
+; 8x8 blocks, avx2: as the ssse3 version (sig pass without a branch on l[i],
+; then last flags and levels of the nonzero ones), with the ymm abs()/mask and
+; one rd_sig_tab load per sig flag; r10: entropy sum << 16 over the transitions,
+; 64-bit, the transitions < 63*127
+%macro CABAC_RESIDUAL_RD_8x8_AVX2 0
+    %define dct rsp
+    %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb
+    %define cbm [rsp+64*SIZEOF_DCTCOEF]
+    %define rd_bl RD8_AVX2_BRANCHLESS
+%ifdef PIC
+    cglobal cabac_block_residual_8x8_rd_internal, 4,12,5,-rd8_stack
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    cglobal cabac_block_residual_8x8_rd_internal, 4,11,5,-rd8_stack
+    %define GLOBAL
+%endif
+    pabsw     m0, [r0+0*mmsize]
+    pabsw     m1, [r0+1*mmsize]
+    pabsw     m2, [r0+2*mmsize]
+    pabsw     m3, [r0+3*mmsize]
+    mova [rsp+0*mmsize], m0
+    mova [rsp+1*mmsize], m1
+    mova [rsp+2*mmsize], m2
+    mova [rsp+3*mmsize], m3
+    packsswb  m0, m1                                          ; 0-7 16-23 8-15 24-31
+    packsswb  m2, m3
+    pxor      m4, m4
+    pcmpeqb   m0, m4
+    pcmpeqb   m2, m4
+    vpermq    m0, m0, q3120
+    vpermq    m2, m2, q3120
+    pmovmskb r9d, m0
+    pmovmskb r10d, m2
+    shl      r10, 32
+    or        r9, r10
+    not       r9                                              ; bit i = l[i] != 0
+    lzcnt     r6, r9
+    xor      r6d, 63                                          ; r6 = last
+    shl      r1d, 4                                           ; MB_INTERLACED*16
+    lea       r4, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]    ; r4 = sig offset 8x8
+    add      r1d, r2d
+    movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx    r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+    mov      r0d, [r3+cb.bits_encoded]                        ; r0 = cabac.f8_bits_encoded
+    mov      cbm, r3
+    add       r3, cb.state
+    add       r5, r3
+    add       r7, r3
+    add       r8, r3
+; if( last != 63 ): sig and last flags of last, bin 1
+    cmp      r6d, 63
+    je .skip_last_sigmap
+    movzx    r1d, byte [r4+r6]
+    movzx    r2d, byte [r5+r1]
+    mov      r2d, [rd_sig_tab+4+r2*8 GLOBAL]
+    mov [r5+r1], r2b
+    shr      r2d, 16
+    add      r0d, r2d
+    movzx    r1d, byte [last_coeff_flag_offset_8x8+r6 GLOBAL]
+    movzx    r2d, byte [r7+r1]
+    mov      r2d, [rd_sig_tab+4+r2*8 GLOBAL]
+    mov [r7+r1], r2b
+    shr      r2d, 16
+    add      r0d, r2d
+.skip_last_sigmap:
+; for( int i = last-1 ; i >= 0; i-- ) x264_cabac_encode_decision( cb, ctx_sig + sig_off[i], !!l[i] )
+    xor     r10d, r10d
+    lea      r1d, [r6-1]
+    test     r6d, r6d
+    jz .sig_end
+.sig_loop:
+    movzx    r2d, byte [r4+r1]
+    movzx    r3d, byte [r5+r2]
+    bt        r9, r1
+    adc      r3d, r3d                                         ; 2*state+bin
+    mov      r3d, [rd_sig_tab+r3*4 GLOBAL]
+    mov [r5+r2], r3b
+    add      r10, r3
+    dec      r1d
+    jge .sig_loop
+    shr      r10, 16
+    add      r0d, r10d
+.sig_end:
+    RD_TMP_REGS 4, 5, 3
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_AVX2 last, 1
+    btr       r9, r6
+    test      r9, r9
+    jz .end
+; the nonzero coefficients below last, descending
+.coeff_loop:
+    lzcnt     r6, r9
+    xor      r6d, 63
+    btr       r9, r6
+; x264_cabac_encode_decision( cb, ctx_last + last_off[i], 0 )
+    movzx    r4d, byte [last_coeff_flag_offset_8x8+r6 GLOBAL]
+    movzx    r5d, byte [r7+r4]
+    movzx   r10d, byte [cabac_transition+r5*2 GLOBAL]
+    movzx    r5d, word [cabac_entropy+r5*2 GLOBAL]
+    mov [r7+r4], r10b
+    add      r0d, r5d
+    LOAD_DCTCOEF r1d
+    COEFF_ABS_LEVEL_AVX2 coeff, 0
+    test      r9, r9
+    jnz .coeff_loop
+.end:
+    mov       r3, cbm
+    mov [r3+cb.bits_encoded], r0d
     RET
     COEFF_ABS_LEVEL_AVX2_ESCAPE last, 1
     COEFF_ABS_LEVEL_AVX2_ESCAPE coeff, 0
@@ -2452,9 +2570,11 @@ INIT_XMM avx512
 CABAC_RESIDUAL_BMI2 coeff_last_avx512
 INIT_XMM avx512icl
 CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
-; avx2 (8-bit): rd 4x4; at the end, the layout above is unchanged
+; avx2 (8-bit): rd 4x4 and 8x8; at the end, the layout above is unchanged
 %if HIGH_BIT_DEPTH == 0
 INIT_XMM avx2,bmi2
 CABAC_RESIDUAL_RD_4x4_AVX2
+INIT_YMM avx2,bmi2
+CABAC_RESIDUAL_RD_8x8_AVX2
 %endif
 %endif
