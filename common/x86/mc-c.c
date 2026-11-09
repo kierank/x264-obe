@@ -959,6 +959,27 @@ static int weight_plane_icl8( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i
         f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );
     return 1;
 }
+
+void x264_mc_weight_plane_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+void x264_mc_offsetadd_plane_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+void x264_mc_offsetsub_plane_avx2( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+/* as weight_plane_icl8, for the tables dispatched at avx2 */
+static int weight_plane_avx2( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src,
+                              const x264_weight_t *w, int width, int height )
+{
+    void (*f)( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int, int );
+    if( w->weightfn == x264_mc_weight_wtab_avx2 )
+        f = x264_mc_weight_plane_avx2;
+    else if( w->weightfn == x264_mc_offsetadd_wtab_sse2 )
+        f = x264_mc_offsetadd_plane_avx2;
+    else if( w->weightfn == x264_mc_offsetsub_wtab_sse2 )
+        f = x264_mc_offsetsub_plane_avx2;
+    else
+        return 0;
+    if( width > 0 && height > 0 )
+        f( dst, i_dst, src, i_src, w, (width+7)&~7, (height+1)&~1 );
+    return 1;
+}
 #endif
 #endif // !HIGH_BIT_DEPTH
 
@@ -1664,6 +1685,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->weight = x264_mc_weight_wtab_avx2;
 #if ARCH_X86_64
         pf->weight_cache = x264_weight_cache_avx2;
+        pf->weight_plane = weight_plane_avx2;
 #endif
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
         pf->avg[PIXEL_16x8]  = x264_pixel_avg_16x8_avx2;
