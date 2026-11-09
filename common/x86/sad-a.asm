@@ -110,11 +110,28 @@ spt_m04:       times 2 db 0,1,2,3,4,5,6,7, 4,5,6,7,8,9,10,11
 spt_m11:       times 2 db 1,2,3,4,5,6,7,8, 1,2,3,4,5,6,7,8
 spt_m13:       times 2 db 1,2,3,4,5,6,7,8, 3,4,5,6,7,8,9,10
 spt_m33:       times 2 db 3,4,5,6,7,8,9,10, 3,4,5,6,7,8,9,10
+spt_dw:        times 8 dd 0xffff
 ; the bias of each sum (sq: dwords 6, 7 or 3, 7 from bias+16)
 spt_sq8_bidx:  dd 0, 2, 1, 5, 4, 6, 4, 6
 spt_sq16_bidx: dd 0, 1, 4, 4, 2, 5, 6, 6
 spt_hex_bidx:  dd 0, 3, 5, 4, 1, 2, 1, 2
 spt_oct_bidx:  dd 0, 7, 1, 2, 3, 4, 5, 6
+; avx2 searches: per axis V = { c-2 c2 c-1 _ c0 _ c1 _ } of the mv costs; vpermd indices
+; and me.c's idx of the points in the order of the sums
+fsa_hex_xidx:  dd 0, 1, 2, 6, 2, 6, 2, 6
+fsa_hex_yidx:  dd 4, 4, 0, 0, 1, 1, 1, 1
+fsa_hex_rank:  dd 2, 5, 7, 6, 3, 4, 3, 4
+fsa_sq_xidx:   dd 2, 6, 4, 4, 2, 6, 2, 6
+fsa_sq_yidx:   dd 2, 2, 2, 6, 6, 6, 4, 4
+fsa_sq_rank:   dd 5, 7, 1, 2, 6, 8, 3, 4
+fsa_dia_xidx:  dd 4, 4, 2, 6
+fsa_dia_yidx:  dd 2, 6, 4, 4
+fsa_dia_rank:  dd 1, 3, 4, 12
+; half hexagon of dir 0-5: me.c hex2[dir..dir+2], the last repeated
+fsa_hh_xidx:   dd 2, 0, 2, 2,  0, 2, 6, 6,  2, 6, 1, 1,  6, 1, 6, 6,  1, 6, 2, 2,  6, 2, 0, 0
+fsa_hh_yidx:   dd 0, 4, 1, 1,  4, 1, 1, 1,  1, 1, 4, 4,  1, 4, 0, 0,  4, 0, 0, 0,  0, 0, 4, 4
+fsa_hh_rank:   dd 1, 2, 3, 3
+fsa_mod6m1:    db 5, 0, 1, 2, 3, 4, 5, 0
 
 SECTION .text
 
@@ -3692,6 +3709,216 @@ cglobal pixel_sad_ring_min_8x8, 5,7,14
     pminsd         xm0, xm1
     SPT_MIN4_RET
 
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_hex_search_8x8( ... ), avx2: as the C reference. The hexagon and
+; the square are sad_hex_min's and sad_sq_min's windows (the square's 8 points); a
+; half hexagon's 3 points each alone: rows r, r+2 | r+1, r+3 (16 byte loads unpacked)
+; against fenc packed the same way (m14, m15), at hex2[0..7] * (1, stride) offsets on
+; the stack. The mv costs: per axis V = { c-2 c2 c-1 _ c0 _ c1 _ } (cost_mv[4*b-8..4*b+8],
+; a 32 byte load and a word broadcast), vpermd by point.
+; UNIX64: pixel_sad_hex_search_reg_8x8, for me_search_fpel (me-64.asm), takes bcost,
+; iters and range in r6-r8 (rax, R10, R11) instead of on the stack.
+;-----------------------------------------------------------------------------
+%macro FSA_COSTV 4 ; dst, cost_mv, b, tmp
+    vpbroadcastw   m%4, [%2+%3*8+16]
+    vpblendd       m%1, m%4, [%2+%3*8-16], 0xfd
+    pand           m%1, [spt_dw]
+%endmacro
+
+; m%1 = cost_mvx + cost_mvy of the points by vpermd indices m%2 (x), m%3 (y); m%4 tmp
+%macro FSA_COST 4
+    FSA_COSTV       %1, r3, r5, %4
+    vpermd         m%1, m%2, m%1
+    FSA_COSTV       %2, r4, r9, %4
+    vpermd         m%2, m%3, m%2
+    paddd          m%1, m%2
+%endmacro
+
+; m%2 = qword sums of hex2[dir + %1/8] (r13 dir), rows r, r+2 | r+1, r+3; r10, r12
+%macro FSA_ONE 2
+    mov            r10, [rsp+r13*8+%1]
+    add            r10, r1
+    lea            r12, [r10+r2*4]
+    SPT_WIN         4, r10, r10+r2
+    SPT_WIN         5, r10+r2*2, r10+r11
+    vpunpcklqdq     m4, m4, m5
+    psadbw         m%2, m4, m14
+    SPT_WIN         4, r12, r12+r2
+    SPT_WIN         5, r12+r2*2, r12+r11
+    vpunpcklqdq     m4, m4, m5
+    psadbw          m4, m15
+    paddd          m%2, m4
+%endmacro
+
+%if UNIX64
+cglobal pixel_sad_hex_search_8x8, 9,9
+    jmp mangle(private_prefix %+ _pixel_sad_hex_search_reg_8x8 %+ SUFFIX)
+cglobal pixel_sad_hex_search_reg_8x8, 6,15,16,64
+%else
+cglobal pixel_sad_hex_search_8x8, 9,15,16,64
+%endif
+    FSH_START
+    lea            r11, [r2*3]
+    movu           m14, [r0]
+    vpunpcklqdq    m14, m14, [r0+32]    ; fenc rows 0, 2 | 1, 3
+    movu           m15, [r0+64]
+    vpunpcklqdq    m15, m15, [r0+96]
+    shl            r6d, 6
+    ; hexagon, idx 2-7
+    lea            r10, [r2*2+2]
+    neg            r10
+    add            r10, r1
+    mova            m6, [spt_m13]
+    mova            m7, [spt_m04]
+    SPT_HEX8       r10
+    SPT_FOLD4       0, 0, 1, 2, 2, 4
+    mova            m2, [fsa_hex_xidx]
+    mova            m3, [fsa_hex_yidx]
+    FSA_COST        1, 2, 3, 4
+    paddd           m0, m1
+    pslld           m0, 6
+    paddd           m0, [fsa_hex_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .square
+    mov            r6d, r12d
+    and            r6d, ~63
+    and           r12d, 63
+    lea           r13d, [r12-2]
+    ; hex2[0..7] offsets
+    lea            r10, [r2*2]
+    lea            r12, [r10-1]
+    mov       [rsp+16], r12
+    add            r12, 2
+    mov       [rsp+24], r12
+    neg            r10
+    lea            r12, [r10-1]
+    mov        [rsp+0], r12
+    mov       [rsp+48], r12
+    add            r12, 2
+    mov       [rsp+40], r12
+    mov     qword [rsp+8], -2
+    mov    qword [rsp+56], -2
+    mov    qword [rsp+32], 2
+    ; me.c: i = (i_me_range>>1) - 1 after the hexagon, i-- after each half
+    sar            r7d, 1
+    dec            r7d
+.move:
+    lea            r10, [fsh_hex_mv]
+    movsx          r12, byte [r10+r13]
+    movsx          r14, byte [r10+r13+8]
+    add             r5, r12
+    add             r9, r14
+    add             r1, [rsp+r13*8+8]
+    test           r7d, r7d
+    jle .square
+    FSH_MVRANGE
+    jnz .square
+    ; half hexagon hex2[dir..dir+2], idx 1-3
+    FSA_ONE         0, 0
+    FSA_ONE         8, 1
+    FSA_ONE        16, 2
+    packusdw        m0, m0, m1
+    packusdw        m2, m2, m2
+    packusdw        m0, m0, m2
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+    pmaddwd        xm0, [pw_1]
+    mov           r12d, r13d
+    shl           r12d, 4
+    lea            r10, [fsa_hh_xidx]
+    movu           xm2, [r10+r12]
+    movu           xm3, [r10+r12+96]
+    FSA_COST        1, 2, 3, 4
+    paddd          xm0, xm1
+    pslld          xm0, 6
+    paddd          xm0, [fsa_hh_rank]
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .square
+    mov            r6d, r12d
+    and            r6d, ~63
+    and           r12d, 63
+    add           r12d, r13d
+    lea            r10, [fsa_mod6m1]
+    movzx         r13d, byte [r10+r12-1]
+    dec            r7d
+    jmp .move
+.square:
+    lea            r10, [r1-1]
+    sub            r10, r2
+    mova            m6, [spt_m02]
+    mova            m7, [spt_m11]
+    SPT_SQ8        r10, r11
+    SPT_FOLD4       0, 1, 3, 2, 0, 4
+    mova            m2, [fsa_sq_xidx]
+    mova            m3, [fsa_sq_yidx]
+    FSA_COST        1, 2, 3, 4
+    paddd           m0, m1
+    pslld           m0, 6
+    paddd           m0, [fsa_sq_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .end
+    mov            r6d, r12d
+    and           r12d, 63
+    lea            r10, [fsh_sq_mv]
+    movsx          r14, byte [r10+r12]
+    movsx          r10, byte [r10+r12+16]
+    add             r5, r14
+    add             r9, r10
+.end:
+    sar            r6d, 6
+    FSH_RET
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_dia_search_8x8( ... ), avx2: a step is sad_dia_min's windows
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_dia_search_8x8, 9,15,8
+    FSH_START
+    shl            r6d, 4
+    mova            m6, [spt_m02]
+.step:
+    mov            r10, r1
+    SPT_DIA8       r10, r11
+    packusdw        m0, m0, m1
+    vextracti128   xm1, m0, 1
+    paddd          xm0, xm1
+    movu           xm2, [fsa_dia_xidx]
+    movu           xm3, [fsa_dia_yidx]
+    FSA_COST        1, 2, 3, 4
+    paddd          xm0, xm1
+    pslld          xm0, 4
+    paddd          xm0, [fsa_dia_rank]
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .end
+    mov            r6d, r12d
+    and            r6d, ~15
+    ; me.c: bmx -= (bcost<<28)>>30, bmy -= (bcost<<30)>>30
+    mov           r14d, r12d
+    shl           r14d, 28
+    sar           r14d, 30
+    movsxd         r14, r14d
+    shl           r12d, 30
+    sar           r12d, 30
+    movsxd         r12, r12d
+    sub             r5, r14
+    sub             r9, r12
+    sub             r1, r14
+    imul           r12, r2
+    sub             r1, r12
+    dec            r7d
+    jz .end
+    FSH_MVRANGE
+    jz .step
+.end:
+    sar            r6d, 4
+    FSH_RET
 %endif ; ARCH_X86_64
 
 %macro SAD_X_W4_AVX512 2 ; x, h

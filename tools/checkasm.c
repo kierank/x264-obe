@@ -1778,10 +1778,17 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     xmin = -(rand()&3), xmax = rand()&3;
                 if( j&32 )
                     ymin = -(rand()&3), ymax = rand()&3;
+                /* doubled (field) strides: mv 0 at (96, 40), dy within +-20 */
+                if( j&1024 )
+                {
+                    stride = 384 + (rand()&127);
+                    ymin = X264_MAX( ymin, -20 );
+                    ymax = X264_MIN( ymax, 20 );
+                }
                 int bmx = xmin + rand()%(xmax-xmin+1), bmy = ymin + rand()%(ymax-ymin+1);
-                /* mv 0 at (96, 80): reads stay inside the plane. A new plane per mode every 64 */
+                /* mv 0 at (96, 80), or (96, 40): reads stay inside the plane. A new plane per mode every 64 */
                 pixel *plane = planes[mode];
-                pixel *ref = plane + 96 + 80*stride;
+                pixel *ref = plane + 96 + ((j&1024) ? 40 : 80)*stride;
                 if( !(j&60) )
                 {
                     flat[mode] = rand() & PIXEL_MAX;
