@@ -688,9 +688,6 @@ static void weightp_satd8_search_ref( x264_pixel_function_t *pf, uint32_t (*cost
     }
 }
 
-#if HAVE_MMX
-#include "common/x86/pixel.h"
-#endif
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -707,15 +704,6 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_init( 0, &pixel_c );
     x264_pixel_init( cpu_ref, &pixel_ref );
     x264_pixel_init( cpu_new, &pixel_asm );
-#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-    /* the undispatched avxvnni kernels, at the AVXVNNI level */
-    if( (cpu_new&X264_CPU_AVXVNNI) && !(cpu_ref&X264_CPU_AVXVNNI) )
-    {
-        pixel_asm.ssd[PIXEL_8x16] = x264_pixel_ssd_8x16_avxvnni;
-        pixel_asm.ssd[PIXEL_8x8]  = x264_pixel_ssd_8x8_avxvnni;
-        pixel_asm.var[PIXEL_8x8]  = x264_pixel_var_8x8_avxvnni;
-    }
-#endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
     x264_predict_8x8_init( 0, predict_8x8, &predict_8x8_filter );

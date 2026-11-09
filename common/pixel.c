@@ -2154,10 +2154,13 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->ssd[PIXEL_4x16]  = x264_pixel_ssd_4x16_avxvnni;
         pixf->ssd[PIXEL_4x8]   = x264_pixel_ssd_4x8_avxvnni;
         pixf->ssd[PIXEL_4x4]   = x264_pixel_ssd_4x4_avxvnni;
-        /* ssd[8x16], ssd[8x8]: not dispatched, slower than avx on the laptop (Zen 5); for Core 3 */
+        /* Core 3 Raptor Cove: 1.14x / 1.09x ssse3 (laptop Zen 5 slower than avx; icl wins there anyway) */
+        pixf->ssd[PIXEL_8x16]  = x264_pixel_ssd_8x16_avxvnni;
+        pixf->ssd[PIXEL_8x8]   = x264_pixel_ssd_8x8_avxvnni;
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avxvnni;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avxvnni;
-        /* var[8x8]: not dispatched, equal to avx2 on the laptop (Zen 5); for Core 3 */
+        /* Core 3: 1.15-1.33x avx2; laptop Zen 5: equal to avx2 */
+        pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avxvnni;   /* zen5 */
         pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avxvnni; /* zen5 */
         pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avxvnni;
         pixf->ssd_nv12_core    = x264_pixel_ssd_nv12_core_avxvnni; /* zen5 */
