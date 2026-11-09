@@ -2140,6 +2140,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
          * the X264_CPU_AVX512 block below replaces every one */
         pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx2;
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx2;
+        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_8x8_avx2;
+        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_8x8_avx2;
+        pixf->sad_oct_min[PIXEL_8x8] = x264_pixel_sad_oct_min_8x8_avx2;
+        pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx2;
 #if !defined(_WIN32)
         pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
         /* me_search_fpel: avx2 entry not dispatched: slower than C on Zen 4 lowlat (rack01 MESV2 MRA); AVX2-only CPUs untested */

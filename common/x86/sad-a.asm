@@ -106,12 +106,15 @@ fsh_dia_rank:  dd 1, 4, 3, 12
 ALIGN 32
 ; avx2 point sets: pshufb of a 16 byte window to its 8 byte rows at offsets a, b
 spt_m02:       times 2 db 0,1,2,3,4,5,6,7, 2,3,4,5,6,7,8,9
+spt_m04:       times 2 db 0,1,2,3,4,5,6,7, 4,5,6,7,8,9,10,11
 spt_m11:       times 2 db 1,2,3,4,5,6,7,8, 1,2,3,4,5,6,7,8
 spt_m13:       times 2 db 1,2,3,4,5,6,7,8, 3,4,5,6,7,8,9,10
 spt_m33:       times 2 db 3,4,5,6,7,8,9,10, 3,4,5,6,7,8,9,10
 ; the bias of each sum (sq: dwords 6, 7 or 3, 7 from bias+16)
 spt_sq8_bidx:  dd 0, 2, 1, 5, 4, 6, 4, 6
 spt_sq16_bidx: dd 0, 1, 4, 4, 2, 5, 6, 6
+spt_hex_bidx:  dd 0, 3, 5, 4, 1, 2, 1, 2
+spt_oct_bidx:  dd 0, 7, 1, 2, 3, 4, 5, 6
 
 SECTION .text
 
@@ -3496,6 +3499,198 @@ cglobal pixel_sad_sq_min_16x16, 5,6,10
     paddd          xm2, xm1
     pminsd         xm0, xm2
     jmp .min
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_dia_min_8x8( ... ): dy 0 a window at bx -1; dy -1, 1 the rows
+; 2k-1, 2k+1 | 2k, 2k+2 at dx 0, unpacked from two windows
+;-----------------------------------------------------------------------------
+; m0 dx 0 (dy -1 | 1), m1 dy 0 (dx -1 | 1); %1 pix (advanced), %2 tmp; m6 spt_m02
+%macro SPT_DIA8 2
+    mov             %2, %1
+    sub             %2, r2
+    SPT_WIN         7, %2, %1
+%assign %%k 0
+%rep 4
+    %assign %%yo 7-(%%k&1)*4
+    %assign %%yn 3+(%%k&1)*4
+    vmovddup        m5, [r0+%%k*32]
+    SPT_WIN         2, %1-1, %1+r2-1
+    SPT_WIN  %[%%yn], %1+r2, %1+r2*2
+    pshufb          m2, m6
+    vpunpcklqdq     m4, m%[%%yo], m%[%%yn]
+    SPT_ACC         1, 2, 5, 2, %%k == 0
+    SPT_ACC         0, 4, 5, 4, %%k == 0
+  %if %%k < 3
+    lea             %1, [%1+r2*2]
+  %endif
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_dia_min_8x8, 5,6,8
+    mova            m6, [spt_m02]
+    SPT_DIA8        r1, r5
+    packusdw        m0, m0, m1
+    vextracti128   xm1, m0, 1
+    paddd          xm0, xm1
+    pslld          xm0, 4
+    paddd          xm0, [r3]
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_hex_min_8x8( ... ): windows at bx -2 of rows a, a+1, a even: dy -2
+; and 2 (dx -1 | 1) share them
+;-----------------------------------------------------------------------------
+; m0 dy 0 (dx -2 | 2), m1 dy -2 (dx -1 | 1), m2 dy 2; %1 pix - 2 - 2*stride (advanced);
+; m6 spt_m13, m7 spt_m04; m8-m10 the m13 pshufb by a, m11-m12 the m04 one, m13 fenc
+%macro SPT_HEX8 1
+    SPT_WIN         4, %1, %1+r2
+    pshufb          m8, m4, m6
+    lea             %1, [%1+r2*2]
+    SPT_WIN         4, %1, %1+r2
+    pshufb          m9, m4, m6
+    pshufb         m11, m4, m7
+%assign %%k 0
+%rep 4
+    %assign %%pm 8+(%%k % 3)
+    %assign %%pn 8+((%%k+2) % 3)
+    %assign %%qc 11+(%%k&1)
+    %assign %%qn 12-(%%k&1)
+    vmovddup       m13, [r0+%%k*32]
+    lea             %1, [%1+r2*2]
+    SPT_WIN         4, %1, %1+r2
+    pshufb   m%[%%pn], m4, m6
+  %if %%k < 3
+    pshufb   m%[%%qn], m4, m7
+  %endif
+    SPT_ACC         0, %[%%qc], 13, 5, %%k == 0
+    SPT_ACC         1, %[%%pm], 13, 5, %%k == 0
+    SPT_ACC         2, %[%%pn], 13, 5, %%k == 0
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_hex_min_8x8, 5,6,14
+    lea             r5, [r2*2+2]
+    neg             r5
+    add             r5, r1
+    mova            m6, [spt_m13]
+    mova            m7, [spt_m04]
+    SPT_HEX8        r5
+    SPT_FOLD4       0, 0, 1, 2, 2, 4    ; { b0 b3 b5 b4 | b1 b2 b1 b2 }
+    movu           xm1, [r3]
+    vpbroadcastq    m2, [r3+16]
+    vpblendd        m1, m1, m2, 0xf0
+    mova            m2, [spt_hex_bidx]
+    vpermd          m1, m2, m1
+    pslld           m0, 6
+    paddd           m0, m1
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_oct_min_8x8( ... ): dy -1, 1 (dx -1 | 1) odd windows at bx -1,
+; dy 0 (dx -2 | 2) even ones at bx -2, dy -2, 2 at dx 0 unpacked from rows a, a+1
+; at bx 0 (a even)
+;-----------------------------------------------------------------------------
+; m0 dy 0, m1 dy -1, m2 dy 1, m3 dx 0 (dy -2 | 2); %1 pix (advanced), %2 3*stride, %3 tmp;
+; m6 spt_m02, m7 spt_m04; m8-m10 the bx 0 windows, m11-m12 the odd ones' pshufb, m13 fenc
+%macro SPT_OCT8 3
+    mov             %3, %1
+    sub             %3, r2
+    SPT_WIN         4, %3-1, %1-1
+    pshufb         m11, m4, m6
+    sub             %3, r2
+    SPT_WIN         8, %3, %3+r2
+    SPT_WIN         9, %1, %1+r2
+%assign %%k 0
+%rep 4
+    %assign %%yo 8+(%%k % 3)
+    %assign %%yn 8+((%%k+2) % 3)
+    %assign %%po 11+(%%k&1)
+    %assign %%pn 12-(%%k&1)
+    vmovddup       m13, [r0+%%k*32]
+    SPT_WIN         4, %1+r2-1, %1+r2*2-1
+    pshufb   m%[%%pn], m4, m6
+    SPT_WIN         5, %1-2, %1+r2-2
+    pshufb          m5, m7
+    SPT_WIN  %[%%yn], %1+r2*2, %1+%2
+    vpunpcklqdq     m4, m%[%%yo], m%[%%yn]
+    SPT_ACC         0, 5, 13, 5, %%k == 0
+    SPT_ACC         1, %[%%po], 13, 5, %%k == 0
+    SPT_ACC         2, %[%%pn], 13, 5, %%k == 0
+    SPT_ACC         3, 4, 13, 4, %%k == 0
+  %if %%k < 3
+    lea             %1, [%1+r2*2]
+  %endif
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_oct_min_8x8, 5,7,14
+    lea             r6, [r2*3]
+    mova            m6, [spt_m02]
+    mova            m7, [spt_m04]
+    SPT_OCT8        r1, r6, r5
+    SPT_FOLD4       0, 3, 1, 0, 2, 4    ; { b0 b7 b1 b2 | b3 b4 b5 b6 }
+    mova            m2, [spt_oct_bidx]
+    vpermd          m1, m2, [r3]
+    pslld           m0, 4
+    paddd           m0, m1
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_ring_min_8x8( ... ): dy -2, 2 (dx -1 | 1) even windows at bx -1,
+; dy -1, 1 (dx -2 | 2) odd ones at bx -2
+;-----------------------------------------------------------------------------
+; m0 dy -2, m1 dy -1, m2 dy 1, m3 dy 2; %1 pix (advanced), %2 3*stride, %3 tmp;
+; m6 spt_m02, m7 spt_m04; m8-m10 the even windows' pshufb, m11-m12 the odd ones', m13 fenc
+%macro SPT_RING8 3
+    mov             %3, %1
+    sub             %3, r2
+    SPT_WIN         4, %3-2, %1-2
+    pshufb         m11, m4, m7
+    sub             %3, r2
+    SPT_WIN         4, %3-1, %3+r2-1
+    pshufb          m8, m4, m6
+    SPT_WIN         4, %1-1, %1+r2-1
+    pshufb          m9, m4, m6
+%assign %%k 0
+%rep 4
+    %assign %%pm 8+(%%k % 3)
+    %assign %%pn 8+((%%k+2) % 3)
+    %assign %%qo 11+(%%k&1)
+    %assign %%qn 12-(%%k&1)
+    vmovddup       m13, [r0+%%k*32]
+    SPT_WIN         4, %1+r2*2-1, %1+%2-1
+    pshufb   m%[%%pn], m4, m6
+    SPT_WIN         4, %1+r2-2, %1+r2*2-2
+    pshufb   m%[%%qn], m4, m7
+    SPT_ACC         0, %[%%pm], 13, 5, %%k == 0
+    SPT_ACC         1, %[%%qo], 13, 5, %%k == 0
+    SPT_ACC         2, %[%%qn], 13, 5, %%k == 0
+    SPT_ACC         3, %[%%pn], 13, 5, %%k == 0
+  %if %%k < 3
+    lea             %1, [%1+r2*2]
+  %endif
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_ring_min_8x8, 5,7,14
+    lea             r6, [r2*3]
+    mova            m6, [spt_m02]
+    mova            m7, [spt_m04]
+    SPT_RING8       r1, r6, r5
+    SPT_FOLD4       0, 0, 1, 2, 3, 4    ; b0-b7
+    pslld           m0, 4
+    paddd           m0, [r3]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4_RET
 
 %endif ; ARCH_X86_64
 
