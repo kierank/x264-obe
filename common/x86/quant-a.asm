@@ -45,6 +45,9 @@ qscan4_frame_avx512: dw  0, 4, 1, 2, 5, 8,12, 9, 6, 3, 7,10,13,14,11,15
 qscan4_field_avx512: dw  0, 1, 4, 2, 3, 5, 6, 7, 8, 9,10,11,12,13,14,15
                      dw 16,17,20,18,19,21,22,23,24,25,26,27,28,29,30,31
 levelrun_rev_avx512: dw 15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 4, 5, 6, 7
+ALIGN 32
+; decimate_score15 avx2: the ac levels
+decimate_acmask_avx2: dw 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 %endif
 ALIGN 64, db 0
 
@@ -162,11 +165,49 @@ qscan8_frame_avx512: dw 0x700, 0x548, 0x381, 0x1c2, 0x3c9, 0x590, 0x758, 0x911, 
                      dw 0x5e1, 0x7da, 0x993, 0xb4c, 0xd05, 0xec6, 0xf0d, 0xd54, 0xb9b, 0x9e2, 0xbe9, 0xdb0, 0xf78, 0xfb1, 0xdea, 0xfe3
 qscan8_field_avx512: dw 0x700, 0x741, 0x782, 0x7c8, 0x8c9, 0xa43, 0xc04, 0xa8a, 0x910, 0x94b, 0x985, 0x9c6, 0xac7, 0xc4c, 0xc91, 0xb18
                      dw 0xb52, 0xb8d, 0xbce, 0xccf, 0xe13, 0xe59, 0xd20, 0xd5a, 0xd94, 0xdd5, 0xe96, 0xed7, 0xf1b, 0xf61, 0xfa8, 0xfe2
+ALIGN 32
+; quant_8x8_scan_field avx2: pshufb masks, lane 0 then lane 1, per source of each output ymm;
+; A-D = levels 0-15 .. 48-63, ' = lanes swapped, Q = a1|b0, R = b1|c0, S = c1|d0
+%define X 0x80
+qscan8_field_avx2: SHUFFLE_MASK_W 0, 1, 2, X, X, 3, 4, X ; o0: A
+                   SHUFFLE_MASK_W X, 3, X, X, X, 4, X, X
+                   SHUFFLE_MASK_W X, X, X, 0, 1, X, X, 2 ;     A'
+                   SHUFFLE_MASK_W X, X, 5, 6, 7, X, X, X
+                   SHUFFLE_MASK_W X, X, X, X, X, X, X, X ;     B
+                   SHUFFLE_MASK_W X, X, X, X, X, X, X, 0
+                   SHUFFLE_MASK_W X, X, X, X, X, X, X, X ;     B'
+                   SHUFFLE_MASK_W 0, X, X, X, X, X, 1, X
+                   SHUFFLE_MASK_W X, 5, 6, 7, X, X, X, X ; o1: Q
+                   SHUFFLE_MASK_W 4, 5, 6, 7, X, X, X, X
+                   SHUFFLE_MASK_W 2, X, X, X, 3, X, X, X ;     B
+                   SHUFFLE_MASK_W X, X, X, X, 3, X, X, X
+                   SHUFFLE_MASK_W X, X, X, X, X, 1, X, 2 ;     R
+                   SHUFFLE_MASK_W X, X, X, X, X, 1, X, 2
+                   SHUFFLE_MASK_W X, X, X, X, X, X, 0, X ;     C
+                   SHUFFLE_MASK_W X, X, X, X, X, X, 0, X
+                   SHUFFLE_MASK_W 4, 5, 6, 7, X, X, X, X ; o2: R
+                   SHUFFLE_MASK_W 4, 5, 6, 7, X, X, X, X
+                   SHUFFLE_MASK_W X, X, X, X, 3, X, X, X ;     C
+                   SHUFFLE_MASK_W X, X, X, X, 3, X, X, 4
+                   SHUFFLE_MASK_W X, X, X, X, X, 1, X, 2 ;     S
+                   SHUFFLE_MASK_W X, X, X, X, X, 1, 2, X
+                   SHUFFLE_MASK_W X, X, X, X, X, X, 0, X ;     D
+                   SHUFFLE_MASK_W X, X, X, X, X, X, X, X
+                   SHUFFLE_MASK_W 5, 6, 7, X, X, X, X, X ; o3: S
+                   SHUFFLE_MASK_W 6, 7, X, X, X, X, X, X
+                   SHUFFLE_MASK_W X, X, X, 3, X, X, 4, 5 ;     D
+                   SHUFFLE_MASK_W X, X, 2, 3, 4, 5, 6, 7
+                   SHUFFLE_MASK_W X, X, X, X, 0, 1, X, X ;     D'
+                   SHUFFLE_MASK_W X, X, X, X, X, X, X, X
+%undef X
 %endif
 %endif
 
 SECTION .text
 
+%if ARCH_X86_64 && HIGH_BIT_DEPTH == 0
+cextern pb_scan8frame_avx2
+%endif
 cextern pb_1
 cextern pw_1
 cextern pw_2
@@ -2042,6 +2083,57 @@ DECIMATE4x4 16
 INIT_XMM ssse3
 DECIMATE4x4 15
 DECIMATE4x4 16
+
+%if HIGH_BIT_DEPTH == 0
+; the block in one ymm; run score by popcnt from a 2 bits per coef zero mask
+%macro DECIMATE4x4_AVX2 1
+cglobal decimate_score%1, 1,4
+    pabsw     m0, [r0]
+    psubusw   m1, m0, [pw_1]
+%if %1 == 15
+    ptest     m1, [decimate_acmask_avx2]
+%else
+    ptest     m1, m1
+%endif
+    jnz .ret9
+    pxor      m2, m2
+    pcmpeqw   m0, m2
+    pmovmskb  r1d, m0
+    not       r1d
+%if %1 == 15
+    shr       r1d, 2        ; not the DC
+%endif
+    ; score = sum over nonzero coefs of [run<1] + [run<3] + [run<6], run = zeros below; each counted twice
+    lea       r2d, [r1*4]   ; shift 1
+    lea       r3d, [r2*4]
+    or        r3d, r2d
+    lea       eax, [r3*4]
+    or        r3d, eax      ; shifts 1-3
+    mov       eax, r3d
+    shl       eax, 6
+    or        eax, r3d      ; shifts 1-6
+    or        r2d, 0x3
+    or        r3d, 0x3f
+    or        eax, 0xfff
+    and       r2d, r1d
+    and       r3d, r1d
+    and       eax, r1d
+    popcnt    r2d, r2d
+    popcnt    r3d, r3d
+    popcnt    eax, eax
+    add       eax, r2d
+    add       eax, r3d
+    shr       eax, 1
+    RET
+.ret9:
+    mov       eax, 9
+    RET
+%endmacro
+
+INIT_YMM avx2
+DECIMATE4x4_AVX2 15
+DECIMATE4x4_AVX2 16
+%endif
 
 ; 2x gt1 output, 2x nz output, 1x mask
 %macro DECIMATE_MASK64_AVX2 5
@@ -4063,9 +4155,294 @@ cglobal quant_8x8_scan_%1, 6,9,10
     xor      eax, eax
     RET
 %endmacro
+
+; levels 0-15 .. 48-63 in scan order: store, eax = 1 | min(score,9) << 4
+%macro QUANT8_SCAN_LEVELS_AVX2 4
+    movu [r1+ 0], %1
+    movu [r1+32], %2
+    movu [r1+64], %3
+    movu [r1+96], %4
+    packsswb  m9, %1, %2
+    packsswb m10, %3, %4
+    pabsb     m5, m9
+    pabsb     m7, m10
+    por       m5, m7
+    psubusb   m5, [pb_1]
+    mov      r6d, 0x91
+    ptest     m5, m5
+    jnz .score_done         ; a |level| > 1: score 9
+    vpermq    m9, m9, q3120
+    vpermq   m10, m10, q3120
+    pxor      m6, m6
+    pcmpeqb   m9, m6
+    pcmpeqb  m10, m6
+    pmovmskb r1d, m9
+    pmovmskb r2d, m10
+    shl       r2, 32
+    or        r1, r2
+    not       r1            ; nonzero levels in scan order
+    ; score = sum over nonzero levels of [run<4] + [run<12] + [run<24], run = zeros below
+    lea       r2, [r1+r1]
+    or        r2, r1
+    lea       r3, [r2*4]
+    or        r3, r2
+    add       r3, r3        ; shifts 1-4
+    mov       r2, r3
+    shl       r2, 4
+    or        r2, r3        ; shifts 1-8
+    shl       r2, 4
+    or        r2, r3        ; shifts 1-12
+    mov       r6, r2
+    shl       r6, 12
+    or        r6, r2        ; shifts 1-24
+    or        r3, 0xf
+    or        r2, 0xfff
+    or        r6, 0xffffff
+    and       r3, r1
+    and       r2, r1
+    and       r6, r1
+    popcnt    r3, r3
+    popcnt    r2, r2
+    popcnt    r6, r6
+    add       r6d, r3d
+    add       r6d, r2d
+    mov       r2d, 9
+    cmp       r6d, r2d
+    cmova     r6d, r2d
+    shl       r6d, 4
+    inc       r6d
+.score_done:
+%endmacro
+
+; dst, dmf; m8: shift-1, m9: 16-shift, m10: 0
+%macro QUANT8_SCAN_DQ_ROUND 2
+    pmulhw   m11, m%1, m%2
+    pmullw   m%1, m%2
+    psrlw    m%1, xm8
+    pavgw    m%1, m10
+    psllw    m11, xm9
+    paddw    m%1, m11
+%endmacro
+
+; levels A-D (m0-m3) = coefs 0-15 .. 48-63, ' = lanes swapped (m4-m7)
+%macro QUANT_8x8_SCAN_AVX2 3 ; name, field, flat cqm
+cglobal quant_8x8_scan_%1, 6,9,16
+    movu      m0, [r0+ 0]
+    movu      m1, [r0+32]
+    movu      m2, [r0+64]
+    movu      m3, [r0+96]
+    pabsw     m4, m0
+    pabsw     m5, m1
+    pabsw     m6, m2
+    pabsw     m7, m3
+    paddusw   m4, [r3+ 0]
+    paddusw   m5, [r3+32]
+    paddusw   m6, [r3+64]
+    paddusw   m7, [r3+96]
+    pmulhuw   m4, [r2+ 0]
+    pmulhuw   m5, [r2+32]
+    pmulhuw   m6, [r2+64]
+    pmulhuw   m7, [r2+96]
+    psignw    m0, m4, m0
+    psignw    m1, m5, m1
+    psignw    m2, m6, m2
+    psignw    m3, m7, m3
+    por       m4, m0, m1
+    por       m5, m2, m3
+    por       m4, m5
+    ptest     m4, m4
+    jz .zero
+    vperm2i128 m4, m0, m0, 0x01
+    vperm2i128 m5, m1, m1, 0x01
+    vperm2i128 m6, m2, m2, 0x01
+    vperm2i128 m7, m3, m3, 0x01
+%if %2 == 0
+    ; as zigzag_scan_8x8_frame avx2
+    lea       r2, [pb_scan8frame_avx2]
+    pshufb    m8, m0, [r2+ 0*32]
+    pshufb    m9, m4, [r2+ 1*32]
+    pshufb   m10, m1, [r2+ 2*32]
+    pshufb   m11, m5, [r2+ 3*32]
+    pshufb   m12, m2, [r2+ 4*32]
+    pshufb   m13, m6, [r2+ 5*32]
+    por       m8, m9
+    por      m10, m11
+    por      m12, m13
+    por       m8, m10
+    por      m14, m8, m12       ; 0-15
+    pshufb    m8, m1, [r2+16*32]
+    pshufb    m9, m5, [r2+17*32]
+    pshufb   m10, m2, [r2+18*32]
+    pshufb   m11, m6, [r2+19*32]
+    pshufb   m12, m3, [r2+20*32]
+    pshufb   m13, m7, [r2+21*32]
+    por       m8, m9
+    por      m10, m11
+    por      m12, m13
+    por       m8, m10
+    por      m15, m8, m12       ; 48-63
+    vpblendd  m4, m0, m1, 0xf0
+    vperm2i128 m5, m0, m2, 0x21
+    vpblendd  m6, m1, m2, 0xf0
+    vperm2i128 m7, m1, m3, 0x21
+    vpblendd m13, m2, m3, 0xf0
+    pshufb    m8, m4, [r2+ 6*32]
+    pshufb    m9, m5, [r2+ 7*32]
+    pshufb   m10, m6, [r2+ 8*32]
+    pshufb   m11, m7, [r2+ 9*32]
+    pshufb   m12, m13, [r2+10*32]
+    por       m8, m9
+    por      m10, m11
+    por       m8, m12
+    por       m8, m10           ; 16-31
+    pshufb    m4, [r2+11*32]
+    pshufb    m5, [r2+12*32]
+    pshufb    m6, [r2+13*32]
+    pshufb    m7, [r2+14*32]
+    pshufb   m13, [r2+15*32]
+    por       m4, m5
+    por       m6, m7
+    por       m4, m13
+    por       m4, m6            ; 32-47
+    QUANT8_SCAN_LEVELS_AVX2 m14, m8, m4, m15
+%else
+    lea       r2, [qscan8_field_avx2]
+    pshufb    m8, m0, [r2+ 0*32]
+    pshufb    m9, m4, [r2+ 1*32]
+    pshufb   m10, m1, [r2+ 2*32]
+    pshufb   m11, m5, [r2+ 3*32]
+    por       m8, m9
+    por      m10, m11
+    por       m8, m10           ; 0-15
+    vpblendd  m4, m4, m5, 0xf0  ; Q
+    vpblendd  m9, m5, m6, 0xf0  ; R
+    vpblendd m10, m6, m7, 0xf0  ; S
+    pshufb   m11, m4, [r2+ 4*32]
+    pshufb   m12, m1, [r2+ 5*32]
+    pshufb   m13, m9, [r2+ 6*32]
+    pshufb   m14, m2, [r2+ 7*32]
+    por      m11, m12
+    por      m13, m14
+    por      m11, m13           ; 16-31
+    pshufb   m12, m9, [r2+ 8*32]
+    pshufb   m13, m2, [r2+ 9*32]
+    pshufb   m14, m10, [r2+10*32]
+    pshufb   m15, m3, [r2+11*32]
+    por      m12, m13
+    por      m14, m15
+    por      m12, m14           ; 32-47
+    pshufb   m13, m10, [r2+12*32]
+    pshufb   m14, m3, [r2+13*32]
+    pshufb   m15, m7, [r2+14*32]
+    por      m13, m14
+    por      m13, m15           ; 48-63
+    QUANT8_SCAN_LEVELS_AVX2 m8, m11, m12, m13
+%endif
+    test      r4, r4
+    jz .store
+%if %3
+    ; flat cqm: dmf = dequant8_scale << 4, so at qp >= 12 the dequant is a pmullw by dequant8_scale << (qp/6-2)
+    cmp       r5d, 12
+    jl .dequant
+    imul      r7d, r5d, 0x2b
+    shr       r7d, 8          ; i_qp / 6
+    lea       r8d, [r7*3]
+    add       r8d, r8d
+    sub       r5d, r8d        ; i_qp % 6
+    shl       r5d, 6
+    lea       r2, [dequant8_scale]
+    sub       r7d, 2
+    movd     xm8, r7d
+    movu      m4, [r2+r5]
+    movu      m5, [r2+r5+32]
+    psllw     m4, xm8
+    psllw     m5, xm8
+    pmullw    m0, m4
+    pmullw    m1, m5
+    pmullw    m2, m4
+    pmullw    m3, m5
+    jmp .store
+.dequant:
+%endif
+    QUANT8_SCAN_DEQUANT_START
+    ; dmf as words
+    movu      m4, [r4+  0]
+    movu      m5, [r4+ 64]
+    movu      m6, [r4+128]
+    movu      m7, [r4+192]
+    packssdw  m4, [r4+ 32]
+    packssdw  m5, [r4+ 96]
+    packssdw  m6, [r4+160]
+    packssdw  m7, [r4+224]
+    vpermq    m4, m4, q3120
+    vpermq    m5, m5, q3120
+    vpermq    m6, m6, q3120
+    vpermq    m7, m7, q3120
+    sub       r7d, 6
+    jl .rshift
+    movd     xm8, r7d
+    psllw     m4, xm8
+    psllw     m5, xm8
+    psllw     m6, xm8
+    psllw     m7, xm8
+.mul:
+    pmullw    m0, m4
+    pmullw    m1, m5
+    pmullw    m2, m6
+    pmullw    m3, m7
+.store:
+    movu [r0+ 0], m0
+    movu [r0+32], m1
+    movu [r0+64], m2
+    movu [r0+96], m3
+    RET
+.rshift:
+    neg       r7d
+    mov       r8d, 16
+    sub       r8d, r7d
+    movd     xm9, r8d           ; 16-shift
+    ; dmf divisible by 1<<shift (flat cqm, shift <= 4): level*(dmf>>shift) is exact
+    pcmpeqw   m8, m8
+    psrlw     m8, xm9
+    por      m10, m4, m5
+    por      m11, m6, m7
+    por      m10, m11
+    movd    xm11, r7d
+    ptest    m10, m8
+    jnz .round
+    psrlw     m4, xm11
+    psrlw     m5, xm11
+    psrlw     m6, xm11
+    psrlw     m7, xm11
+    jmp .mul
+.round:
+    ; low 16 bits of (level*dmf + (1<<(shift-1))) >> shift = pavgw( lo >> (shift-1), 0 ) + (hi << (16-shift))
+    dec       r7d
+    movd     xm8, r7d
+    pxor     m10, m10
+    QUANT8_SCAN_DQ_ROUND 0, 4
+    QUANT8_SCAN_DQ_ROUND 1, 5
+    QUANT8_SCAN_DQ_ROUND 2, 6
+    QUANT8_SCAN_DQ_ROUND 3, 7
+    jmp .store
+.zero:
+    movu [r0+ 0], m0
+    movu [r0+32], m1
+    movu [r0+64], m2
+    movu [r0+96], m3
+    xor      eax, eax
+    RET
+%endmacro
 %endif ; HIGH_BIT_DEPTH
 
 INIT_ZMM avx512icl
 QUANT_8x8_SCAN_AVX512 frame
 QUANT_8x8_SCAN_AVX512 field
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avx2
+QUANT_8x8_SCAN_AVX2 frame,      0, 0
+QUANT_8x8_SCAN_AVX2 field,      1, 0
+QUANT_8x8_SCAN_AVX2 frame_flat, 0, 1
+QUANT_8x8_SCAN_AVX2 field_flat, 1, 1
+%endif
 %endif ; ARCH_X86_64

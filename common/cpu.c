@@ -78,7 +78,8 @@ const x264_cpu_name_t x264_cpu_names[] =
     {"LZCNT",           X264_CPU_LZCNT},
     {"BMI1",            X264_CPU_BMI1},
     {"BMI2",            X264_CPU_BMI1|X264_CPU_BMI2},
-    {"SlowAtom",        X264_CPU_SLOW_ATOM},
+    {"AVXVNNI",         X264_CPU_AVXVNNI},
+    {"SlowAtom",       X264_CPU_SLOW_ATOM},
     {"SlowPshufb",      X264_CPU_SLOW_PSHUFB},
     {"SlowPalignr",     X264_CPU_SLOW_PALIGNR},
     {"SlowShuffle",     X264_CPU_SLOW_SHUFFLE},
@@ -115,6 +116,7 @@ static void sigill_handler( int sig )
 #if HAVE_MMX
 int x264_cpu_cpuid_test( void );
 void x264_cpu_cpuid( uint32_t op, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx );
+void x264_cpu_cpuid_sub( uint32_t op, uint32_t sub, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx );
 uint64_t x264_cpu_xgetbv( int xcr );
 
 uint32_t x264_cpu_detect( void )
@@ -168,6 +170,7 @@ uint32_t x264_cpu_detect( void )
     if( max_basic_cap >= 7 )
     {
         x264_cpu_cpuid( 7, &eax, &ebx, &ecx, &edx );
+        uint32_t max_leaf7_sub = eax;
 
         if( ebx&0x00000008 )
             cpu |= X264_CPU_BMI1;
@@ -178,6 +181,14 @@ uint32_t x264_cpu_detect( void )
         {
             if( ebx&0x00000020 )
                 cpu |= X264_CPU_AVX2;
+
+            if( (cpu&X264_CPU_AVX2) && max_leaf7_sub >= 1 )
+            {
+                uint32_t eax1, ebx1, ecx1, edx1;
+                x264_cpu_cpuid_sub( 7, 1, &eax1, &ebx1, &ecx1, &edx1 );
+                if( eax1&0x00000010 ) /* AVX-VNNI */
+                    cpu |= X264_CPU_AVXVNNI;
+            }
 
             if( (xcr0&0xE0) == 0xE0 ) /* OPMASK/ZMM state */
             {

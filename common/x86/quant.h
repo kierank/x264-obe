@@ -177,6 +177,8 @@ int x264_decimate_score15_mmx2( dctcoef *dct );
 int x264_decimate_score15_sse2( dctcoef *dct );
 #define x264_decimate_score15_ssse3 x264_template(decimate_score15_ssse3)
 int x264_decimate_score15_ssse3( dctcoef *dct );
+#define x264_decimate_score15_avx2 x264_template(decimate_score15_avx2)
+int x264_decimate_score15_avx2( dctcoef *dct );
 #define x264_decimate_score15_avx512 x264_template(decimate_score15_avx512)
 int x264_decimate_score15_avx512( dctcoef *dct );
 #define x264_decimate_score16_mmx2 x264_template(decimate_score16_mmx2)
@@ -185,6 +187,8 @@ int x264_decimate_score16_mmx2( dctcoef *dct );
 int x264_decimate_score16_sse2( dctcoef *dct );
 #define x264_decimate_score16_ssse3 x264_template(decimate_score16_ssse3)
 int x264_decimate_score16_ssse3( dctcoef *dct );
+#define x264_decimate_score16_avx2 x264_template(decimate_score16_avx2)
+int x264_decimate_score16_avx2( dctcoef *dct );
 #define x264_decimate_score16_avx512 x264_template(decimate_score16_avx512)
 int x264_decimate_score16_avx512( dctcoef *dct );
 #define x264_decimate_score64_mmx2 x264_template(decimate_score64_mmx2)
@@ -369,5 +373,13 @@ int x264_quant_4x4x4_scan_field_ac_avx512icl( dctcoef dct[4][16], dctcoef level[
 int x264_quant_8x8_scan_frame_avx512icl( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
 #define x264_quant_8x8_scan_field_avx512icl x264_template(quant_8x8_scan_field_avx512icl)
 int x264_quant_8x8_scan_field_avx512icl( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_quant_8x8_scan_frame_avx2 x264_template(quant_8x8_scan_frame_avx2)
+int x264_quant_8x8_scan_frame_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_quant_8x8_scan_field_avx2 x264_template(quant_8x8_scan_field_avx2)
+int x264_quant_8x8_scan_field_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_quant_8x8_scan_frame_flat_avx2 x264_template(quant_8x8_scan_frame_flat_avx2)
+int x264_quant_8x8_scan_frame_flat_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
+#define x264_quant_8x8_scan_field_flat_avx2 x264_template(quant_8x8_scan_field_flat_avx2)
+int x264_quant_8x8_scan_field_flat_avx2( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp );
 
 #endif
