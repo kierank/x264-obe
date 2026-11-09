@@ -2398,6 +2398,19 @@ static int check_pixel( int cpu_ref, int cpu_new )
                 fprintf( stderr, "var2[%d] %d: %d != %d or %d != %d [FAILED]\n", i, j, res_c, res_asm, ssd_c, ssd_asm ); \
             } \
         } \
+        /* the encoder's strides (fenc FENC_STRIDE, fdec FDEC_STRIDE), and the other way round */ \
+        for( int j = 0; j < 4; j++ ) \
+        { \
+            intptr_t s1 = j&2 ? FDEC_STRIDE : FENC_STRIDE, s2 = j&2 ? FENC_STRIDE : FDEC_STRIDE; \
+            pixel *p1 = j&1 ? pbuf3 : pbuf1, *p2 = j&1 ? pbuf4 : pbuf2; \
+            res_c   = pixel_c.var2[i]( p1, s1, p2, s2, &ssd_c ); \
+            res_asm = pixel_asm.var2[i]( p1, s1, p2, s2, &ssd_asm ); \
+            if( res_c != res_asm || ssd_c != ssd_asm ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, "var2[%d] strides %d %d: %d != %d or %d != %d [FAILED]\n", i, (int)s1, (int)s2, res_c, res_asm, ssd_c, ssd_asm ); \
+            } \
+        } \
     }
 
     ok = 1; used_asm = 0;

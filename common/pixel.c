@@ -2158,6 +2158,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avxvnni;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avxvnni;
         /* var[8x8]: not dispatched, equal to avx2 on the laptop (Zen 5); for Core 3 */
+        pixf->var2[PIXEL_8x16] = x264_pixel_var2_8x16_avxvnni; /* zen5 */
+        pixf->var2[PIXEL_8x8]  = x264_pixel_var2_8x8_avxvnni;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )

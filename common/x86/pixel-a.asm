@@ -2856,7 +2856,7 @@ INIT_YMM avx2
 VAR2_8x8_AVX2  8, 6
 VAR2_8x8_AVX2 16, 7
 
-; avx512icl: vpdpwssd squares, two accumulators m4 m6
+; avx512icl, avxvnni: vpdpwssd squares, two accumulators m4 m6
 %macro VAR2_8x8_ICL 2
 cglobal pixel_var2_8x%1, 5,6,7
     pxor      m3, m3
@@ -2883,8 +2883,8 @@ cglobal pixel_var2_8x%1, 5,6,7
     pmaddubsw m1, m5
     paddw     m3, m0
     paddw     m3, m1
-    vpdpwssd  m4, m0, m0
-    vpdpwssd  m6, m1, m1
+    DPWSSD    m4, m0, m0
+    DPWSSD    m6, m1, m1
     dec      r5d
     jg .loop
     paddd     m4, m6
@@ -2897,6 +2897,9 @@ cglobal pixel_var2_8x%1, 5,6,7
 
 %if ARCH_X86_64
 INIT_YMM avx512icl
+VAR2_8x8_ICL  8, 6
+VAR2_8x8_ICL 16, 7
+INIT_YMM avxvnni
 VAR2_8x8_ICL  8, 6
 VAR2_8x8_ICL 16, 7
 %endif
