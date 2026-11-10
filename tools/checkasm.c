@@ -5495,7 +5495,8 @@ static int check_deblock( int cpu_ref, int cpu_new )
              * k%72 >= 36 near PIXEL_MAX, where the filtered pixels clip at the top */ \
             pbuf3[j] = k%72 >= 36 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&1 ? 0xf : PIXEL_MAX ); \
         memcpy( pbuf4, pbuf3, 2048 * sizeof(pixel) ); \
-        if( db_a.name != db_ref.name ) \
+        /* beta 0 is out of contract: deblock_edge / deblock_edge_intra return before filtering */ \
+        if( db_a.name != db_ref.name && betas[i] ) \
         { \
             set_func_name( #name ); \
             used_asm = 1; \
