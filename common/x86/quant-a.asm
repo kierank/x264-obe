@@ -4068,7 +4068,7 @@ cglobal quant_8x8_scan_%1, 6,9,12
 %endmacro
 
 %else ; !HIGH_BIT_DEPTH
-%macro QUANT_8x8_SCAN_AVX512 1 ; frame/field
+%macro QUANT_8x8_SCAN_AVX512 3 ; name, frame/field, flat cqm
 cglobal quant_8x8_scan_%1, 6,9,10
     movu      m2, [r0+ 0]
     movu      m3, [r0+64]
@@ -4091,7 +4091,7 @@ cglobal quant_8x8_scan_%1, 6,9,10
     vptestmw  k1, m4, m4
     kortestd  k1, k1
     jz .zero
-    mova      m2, [qscan8_%1_avx512]
+    mova      m2, [qscan8_%2_avx512]
     psrlw     m3, m2, 6
     vpermi2w  m2, m0, m1
     vpermi2w  m3, m0, m1
@@ -4103,6 +4103,27 @@ cglobal quant_8x8_scan_%1, 6,9,10
     QUANT8_SCAN_SCORE d
     test      r4, r4
     jz .store
+%if %3
+    ; flat cqm: dmf = dequant8_scale << 4, so at qp >= 12 the dequant is a pmullw by dequant8_scale << (qp/6-2);
+    ; rows 4-7 of the scale repeat rows 0-3
+    cmp       r5d, 12
+    jl .dequant
+    imul      r7d, r5d, 0x2b
+    shr       r7d, 8          ; i_qp / 6
+    lea       r8d, [r7*3]
+    add       r8d, r8d
+    sub       r5d, r8d        ; i_qp % 6
+    shl       r5d, 6
+    lea       r2, [dequant8_scale]
+    sub       r7d, 2
+    movd     xm6, r7d
+    movu      m2, [r2+r5]
+    psllw     m2, xm6
+    pmullw    m0, m2
+    pmullw    m1, m2
+    jmp .store
+.dequant:
+%endif
     QUANT8_SCAN_DEQUANT_START
     movu      m2, [r4+0*64]
     movu      m3, [r4+1*64]
@@ -4436,8 +4457,15 @@ cglobal quant_8x8_scan_%1, 6,9,16
 %endif ; HIGH_BIT_DEPTH
 
 INIT_ZMM avx512icl
+%if HIGH_BIT_DEPTH
 QUANT_8x8_SCAN_AVX512 frame
 QUANT_8x8_SCAN_AVX512 field
+%else
+QUANT_8x8_SCAN_AVX512 frame,      frame, 0
+QUANT_8x8_SCAN_AVX512 field,      field, 0
+QUANT_8x8_SCAN_AVX512 frame_flat, frame, 1
+QUANT_8x8_SCAN_AVX512 field_flat, field, 1
+%endif
 %if HIGH_BIT_DEPTH == 0
 INIT_YMM avx2
 QUANT_8x8_SCAN_AVX2 frame,      0, 0

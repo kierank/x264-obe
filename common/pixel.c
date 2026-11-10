@@ -2258,15 +2258,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     if( cpu&X264_CPU_AVX512 )
     {
 #if ARCH_X86_64
-        pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512;
+        /* zen4 prune: rack01 Zen 4 checkasm, avx2 vs avx512: sq_min 16x16 0.87, dia/hex/oct/ring_min 8x8
+         * 0.55/0.47/0.50/0.43, hex/dia_search 8x8 0.74/0.80; kept assembled */
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
-        /* point sets: 8x8 only, the size that wins on rack01 Zen 4 */
-        pixf->sad_dia_min[PIXEL_8x8] = x264_pixel_sad_dia_min_8x8_avx512;
-        pixf->sad_hex_min[PIXEL_8x8] = x264_pixel_sad_hex_min_8x8_avx512;
-        pixf->sad_oct_min[PIXEL_8x8] = x264_pixel_sad_oct_min_8x8_avx512;
-        pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx512;
-        pixf->sad_hex_search[PIXEL_8x8] = x264_pixel_sad_hex_search_8x8_avx512;
-        pixf->sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512;
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #if !defined(_WIN32)

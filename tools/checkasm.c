@@ -689,6 +689,10 @@ static void weightp_satd8_search_ref( x264_pixel_function_t *pf, uint32_t (*cost
     }
 }
 
+#if HAVE_MMX
+#include "common/x86/pixel.h"
+#endif
+
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -705,6 +709,18 @@ static int check_pixel( int cpu_ref, int cpu_new )
     x264_pixel_init( 0, &pixel_c );
     x264_pixel_init( cpu_ref, &pixel_ref );
     x264_pixel_init( cpu_new, &pixel_asm );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    /* not dispatched (Zen 4 decides): the EVEX AVX512-VNNI builds of the avxvnni ssd and ssd_nv12_core,
+     * and the icl var2 8x16 (a Zen 4 prune), in place of the dispatched pointers at the first AVX512ICL level */
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+    {
+        pixel_asm.ssd[PIXEL_16x16] = x264_pixel_ssd_16x16_vnni_avx512icl;
+        pixel_asm.ssd[PIXEL_16x8]  = x264_pixel_ssd_16x8_vnni_avx512icl;
+        pixel_asm.ssd[PIXEL_8x4]   = x264_pixel_ssd_8x4_vnni_avx512icl;
+        pixel_asm.var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
+        pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
+    }
+#endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
     x264_predict_8x8_init( 0, predict_8x8, &predict_8x8_filter );
@@ -1433,6 +1449,23 @@ static int check_pixel( int cpu_ref, int cpu_new )
                     ok = 0;
                     fprintf( stderr, "sad_sq_min[%d]: %s %d never selected [FAILED]\n", i, k ? "slot" : "best", k-1 );
                 }
+            /* bench as me.c's square refine calls it: dx 2 and the centre at 1 << 30, best the centre's
+             * cost; 16 fixed blocks, the same at every level */
+            if( do_bench )
+            {
+                static const int8_t sq_idx[12] = { 5, 1, 7, -1, 6, 2, 8, -1, 3, -1, 4, -1 };
+                set_func_name( "sad_sq_min_mepat_%s", pixel_names[i] );
+                bench_srand( 900 + i );
+                for( int b = 0; b < 16; b++ )
+                {
+                    ALIGNED_16( int32_t bias[12] );
+                    pixel *pix = pbuf2 + 2*64 + 2 + (bench_rand() & 15);
+                    for( int k = 0; k < 12; k++ )
+                        bias[k] = sq_idx[k] < 0 ? 1 << 30 : ((bench_rand() % 24) << 6) + sq_idx[k];
+                    int best = pixel_c.sad[i]( pbuf1 + 16*b, FENC_STRIDE, pix, 64 ) << 6;
+                    call_a2( pixel_asm.sad_sq_min[i], pbuf1 + 16*b, pix, (intptr_t)64, bias, best );
+                }
+            }
         }
     }
     report( "pixel sad_sq_min :" );
@@ -6495,10 +6528,11 @@ static int check_quant( int cpu_ref, int cpu_new )
             }
 
         /* q8v 0: the dispatched pointers, those the encoder uses with this cqm. q8v 1, flat cqm at the first
-         * AVX2 level: the general avx2 kernel as a control (flat dispatches _flat_avx2). Bench names: flatk_ =
-         * a _flat_avx2 kernel. */
+         * AVX2 or AVX512ICL level: the general kernel of that level as a control (flat dispatches a _flat_
+         * kernel). Bench names: flatk_ = a _flat_ kernel. */
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-#define Q8S_FLATK( f ) ( (f) == x264_quant_8x8_scan_frame_flat_avx2 || (f) == x264_quant_8x8_scan_field_flat_avx2 )
+#define Q8S_FLATK( f ) ( (f) == x264_quant_8x8_scan_frame_flat_avx2 || (f) == x264_quant_8x8_scan_field_flat_avx2 || \
+                         (f) == x264_quant_8x8_scan_frame_flat_avx512icl || (f) == x264_quant_8x8_scan_field_flat_avx512icl )
 #else
 #define Q8S_FLATK( f ) 0
 #endif
@@ -6508,10 +6542,20 @@ static int check_quant( int cpu_ref, int cpu_new )
         if( q8v )
         {
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-            if( !(cpu_new&X264_CPU_AVX2) || (cpu_ref&X264_CPU_AVX2) || !Q8S_FLATK( zz_a[0].quant_8x8_scan ) )
+            if( !Q8S_FLATK( zz_a[0].quant_8x8_scan ) )
                 continue;
-            zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx2;
-            zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx2;
+            if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+            {
+                zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx512icl;
+                zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx512icl;
+            }
+            else if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+            {
+                zz_a[0].quant_8x8_scan = x264_quant_8x8_scan_frame_avx2;
+                zz_a[1].quant_8x8_scan = x264_quant_8x8_scan_field_avx2;
+            }
+            else
+                continue;
 #else
             continue;
 #endif
