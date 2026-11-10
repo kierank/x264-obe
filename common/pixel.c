@@ -2269,6 +2269,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #if !defined(_WIN32)
+        /* 8-bit: the avx2 entry's inline search in EVEX; at 8x8 it runs whichever kernel
+         * sad_hex_search[PIXEL_8x8] holds, so a Zen 4 prune of that pointer carries over */
         if( cpu&X264_CPU_BMI2 )
             pixf->me_search_fpel = x264_me_search_fpel_avx512;
 #endif
