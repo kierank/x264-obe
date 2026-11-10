@@ -587,21 +587,14 @@ cglobal %1, 1,15,0, ME_STACK
     neg    ecx
     and    ecx, 0x7fff
     or     eax, ecx
-%if cpuflag(avx512)
-    mov    [rbp+S_MVMIN], eax
-%endif
     shl    edx, 16
     and    edi, 0x7fff
     or     edx, edi
     or     edx, 0x8000
-%if notcpuflag(avx512)
     ; one qword store: .hex reads both as a qword (no store forwarding from two dwords)
     shl    rdx, 32
     or     rdx, rax
     mov    [rbp+S_MVMIN], rdx
-%else
-    mov    [rbp+S_MVMAX], edx
-%endif
     test   byte [rbx+me_fpel.flags], ME_FPEL_SUBME3
     jnz .subme3
 
@@ -834,8 +827,8 @@ cglobal %1, 1,15,0, ME_STACK
 %endif
 .hex_stack:
 %endif
-    mov    [rsp+S_OUT], R14d
-    mov    [rsp+S_OUT+8], R10d
+    mov    [rsp+S_OUT], R14     ; qwords, zero-extended by the dword writes
+    mov    [rsp+S_OUT+8], R10
     mov    [rsp+S_OUT+16], R11
     call   rax
 .hex_ret:
@@ -1040,18 +1033,11 @@ cglobal %1, 1,15,0, ME_STACK
     mov    rcx, [rbp+S_CMX]
     mov    R8, [rbp+S_CMY]
     mov    R9d, [R15+me_t.mv]
-%if notcpuflag(avx512)
     ; the int stack arguments as qwords: x86inc loads them as qwords
     mov    eax, [R15+me_t.cost]
     mov    [rsp+S_OUT], rax
     mov    eax, [rbx+me_fpel.iters]
     mov    [rsp+S_OUT+8], rax
-%else
-    mov    eax, [R15+me_t.cost]
-    mov    [rsp+S_OUT], eax
-    mov    eax, [rbx+me_fpel.iters]
-    mov    [rsp+S_OUT+8], eax
-%endif
     mov    rax, [rbx+me_fpel.range]
     mov    [rsp+S_OUT+16], rax
     mov    rax, [rbp+S_FN]
@@ -1060,11 +1046,7 @@ cglobal %1, 1,15,0, ME_STACK
     mov    R10, [rbx+me_fpel.halfpel_thresh]
     mov    [rsp+S_OUT+40], R10
     mov    R10d, [R15+me_t.mvp]
-%if notcpuflag(avx512)
     mov    [rsp+S_OUT+48], R10
-%else
-    mov    [rsp+S_OUT+48], R10d
-%endif
     call   [rax+me_fpel_fn.subpel]
     mov    ecx, eax
     and    ecx, 0x7fffffff
