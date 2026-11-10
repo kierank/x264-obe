@@ -2260,7 +2260,6 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         /* zen4 prune: rack01 Zen 4 checkasm, avx2 vs avx512: sq_min 16x16 0.87, dia/hex/oct/ring_min 8x8
          * 0.55/0.47/0.50/0.43, hex/dia_search 8x8 0.74/0.80; kept assembled */
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
-        /* point sets: 8x8 only, the size that wins on rack01 Zen 4 */
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #if !defined(_WIN32)
