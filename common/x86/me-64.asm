@@ -1223,13 +1223,15 @@ cglobal %1, 1,15,0, ME_STACK
 %endmacro
 
 ;=============================================================================
-; me_search_fpel avx2, 8-bit: the search on its own SAD kernels (internal calls, no
+; me_search_fpel avx2 and avx512, 8-bit: the search on its own SAD kernels (internal calls, no
 ; C ABI) and the mv costs of each point set from two cost windows (no bias tables);
 ; C ABI calls only for predictor_clip, subpel_search and, at 8x8, sad_hex_search's
 ; register entry. 16 wide squares in sad_sq_min_16x16's shared windows. Bit-exact with
 ; x264_me_search_ref: every point set is a min of distinct keys (cost << 6) + idx, so the
 ; order of the sads does not matter. FENC_RES 1: fenc in ymm registers for the whole
 ; search; 0: fenc as memory operands (16 wide) or a packed copy on the stack (8 wide).
+; FENC_RES512 the same for the avx512 entry. The ME_SEARCH_FPEL macro above is the
+; 10-bit and zmm form (fn kernels through the C ABI, bias tables on the stack).
 ;=============================================================================
 %if HIGH_BIT_DEPTH == 0
 
