@@ -695,6 +695,8 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 #if ARCH_X86_64
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
 #endif
+        /* not dispatched, Zen 4 decides (checkasm tests it at AVX512ICL): sub4x4_dct_avx512icl, the
+         * avxvnni dot-product kernel in EVEX, vs sub4x4_dct_avx512 above */
     }
 #endif //HAVE_MMX
 

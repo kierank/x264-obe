@@ -1988,10 +1988,22 @@ SUB8x16_DCT_DC
 ; vpdpbusd each for fenc and -fdec. Rows 0 | 1 and 3 | 2 in the lanes, so the
 ; vertical butterflies are lane-wise and one vperm2i128 pair finishes them.
 ;-----------------------------------------------------------------------------
+; avx512icl: the avxvnni kernel in EVEX (AVX512_VNNI; Zen 4 has no AVX-VNNI): the lane
+; blends by masked broadcasts, the lane moves by vinserti32x4 / vshufi32x4
 %macro SUB4x4_DCT_YMM 0
 cglobal sub4x4_dct, 3,3,7
     movu         m0, [r1+0*FENC_STRIDE]
     pshufd       m0, m0, q0000            ; fenc rows 0 | 1
+%if cpuflag(avx512)
+    mov         eax, 0xf0
+    kmovw        k1, eax
+    vpbroadcastd m1, [r1+3*FENC_STRIDE]
+    vpbroadcastd m1 {k1}, [r1+2*FENC_STRIDE] ; fenc rows 3 | 2
+    vpbroadcastd m2, [r2+0*FDEC_STRIDE]
+    vpbroadcastd m2 {k1}, [r2+1*FDEC_STRIDE]
+    vpbroadcastd m3, [r2+3*FDEC_STRIDE]
+    vpbroadcastd m3 {k1}, [r2+2*FDEC_STRIDE]
+%else
     vpbroadcastd m1, [r1+3*FENC_STRIDE]
     vpbroadcastd m4, [r1+2*FENC_STRIDE]
     vpblendd     m1, m1, m4, 0xf0         ; fenc rows 3 | 2
@@ -2001,6 +2013,7 @@ cglobal sub4x4_dct, 3,3,7
     vpbroadcastd m3, [r2+3*FDEC_STRIDE]
     vpbroadcastd m4, [r2+2*FDEC_STRIDE]
     vpblendd     m3, m3, m4, 0xf0
+%endif
 %if cpuflag(avxvnni)
     pxor         m4, m4
     pxor         m5, m5
@@ -2008,6 +2021,13 @@ cglobal sub4x4_dct, 3,3,7
     {vex} vpdpbusd m5, m1, [sub4x4_dct_mul]
     {vex} vpdpbusd m4, m2, [sub4x4_dct_mul+32]
     {vex} vpdpbusd m5, m3, [sub4x4_dct_mul+32]
+%elif cpuflag(avx512)
+    pxor         m4, m4
+    pxor         m5, m5
+    vpdpbusd     m4, m0, [sub4x4_dct_mul]
+    vpdpbusd     m5, m1, [sub4x4_dct_mul]
+    vpdpbusd     m4, m2, [sub4x4_dct_mul+32]
+    vpdpbusd     m5, m3, [sub4x4_dct_mul+32]
 %else
     mova         m6, [sub4x4_dct_mul]
     pmaddubsw    m0, m6
@@ -2022,8 +2042,13 @@ cglobal sub4x4_dct, 3,3,7
 %endif
     paddd        m0, m4, m5               ; s03 | s12, kx 0-3
     psubd        m4, m5                   ; d03 | d12
+%if cpuflag(avx512)
+    vinserti128  m1, m0, xm4, 1           ; s03 | d03
+    vshufi32x4   m0, m0, m4, 3            ; s12 | d12
+%else
     vperm2i128   m1, m0, m4, 0x20         ; s03 | d03
     vperm2i128   m0, m0, m4, 0x31         ; s12 | d12
+%endif
     mova         m5, [sub4x4_dct_shl]
     vpsllvd      m2, m1, m5               ; s03 | 2*d03
     vpsllvd      m3, m0, m5               ; s12 | 2*d12
@@ -2040,6 +2065,8 @@ cglobal sub4x4_dct, 3,3,7
 INIT_YMM avx2
 SUB4x4_DCT_YMM
 INIT_YMM avxvnni
+SUB4x4_DCT_YMM
+INIT_YMM avx512icl
 SUB4x4_DCT_YMM
 
 ;-----------------------------------------------------------------------------

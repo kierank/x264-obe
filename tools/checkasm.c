@@ -3642,6 +3642,12 @@ static int check_dct( int cpu_ref, int cpu_new )
     x264_dct_init( 0, &dct_c );
     x264_dct_init( cpu_ref, &dct_ref);
     x264_dct_init( cpu_new, &dct_asm );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    /* not dispatched (Zen 4 decides): the EVEX AVX512-VNNI build of the avxvnni sub4x4_dct, in place of
+     * the dispatched avx512 one at the first AVX512ICL level */
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        dct_asm.sub4x4_dct = x264_sub4x4_dct_avx512icl;
+#endif
 
     memset( h, 0, sizeof(*h) );
     x264_param_default( &h->param );
