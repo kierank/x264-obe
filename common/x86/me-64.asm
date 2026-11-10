@@ -1237,7 +1237,7 @@ cglobal %1, 1,15,0, ME_STACK
 %define FENC_RES 1
 %endif
 %ifndef FENC_RES512
-%define FENC_RES512 0
+%define FENC_RES512 1
 %endif
 
 ; the frame below the 6 pushes (rsp 64-aligned)
