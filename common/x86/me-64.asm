@@ -1236,6 +1236,9 @@ cglobal %1, 1,15,0, ME_STACK
 %ifndef FENC_RES
 %define FENC_RES 1
 %endif
+%ifndef FENC_RES512
+%define FENC_RES512 0
+%endif
 
 ; the frame below the 6 pushes (rsp 64-aligned)
 %define F_OUT   0       ; subpel_search's stack arguments
@@ -1252,10 +1255,15 @@ cglobal %1, 1,15,0, ME_STACK
 %define F_FENC  192     ; !FENC_RES 8 wide: the packed fenc, 128 bytes
 %define F_SIZE  328     ; rsp + 8 is 64-aligned at entry: 6 pushes + F_SIZE keep it so
 
-; m%1 = V of cost_mv %2 about b %3; m%4 temp
+; m%1 = V of cost_mv %2 about b %3; m%4 temp (avx2); avx512: k7 = 2 (MF_FENC_LOAD)
 %macro MF_COSTV 4
+%if cpuflag(avx512)
+    movu           m%1, [%2+%3*8-16]
+    vpbroadcastd   m%1 {k7}, [%2+%3*8+16]
+%else
     vpbroadcastw   m%4, [%2+%3*8+16]
     vpblendd       m%1, m%4, [%2+%3*8-16], 0xfd
+%endif
     pand           m%1, [mf_pd_ffff]
 %endmacro
 
@@ -1285,6 +1293,17 @@ cglobal %1, 1,15,0, ME_STACK
     movd            %1, xm0
 %endmacro
 
+; m%1 = phaddd( m%1, m%2 ) of packssdw'd sads (dwords below 1 << 15); avx512: phaddd has
+; no EVEX form, a second pack and pmaddwd
+%macro MF_HADDD 2
+%if cpuflag(avx512)
+    packssdw       m%1, m%2
+    pmaddwd        m%1, [pw_1]
+%else
+    phaddd         m%1, m%2
+%endif
+%endmacro
+
 ; %1 = fref_w + %3*stride + %2
 %macro MF_PTR 3
     mov             %1, %3
@@ -1295,7 +1314,7 @@ cglobal %1, 1,15,0, ME_STACK
 
 ; the operand of fenc row pair (16 wide) / packed row quad (8 wide) %1
 %macro MF_FENC 1
-%if FENC_RES
+%if mf_fres
     %assign %%r MF_F0+(%1)
     %xdefine mf_fenc m %+ %%r
 %else
@@ -1304,11 +1323,15 @@ cglobal %1, 1,15,0, ME_STACK
 %endmacro
 
 ; fenc into m(MF_F0..15), or R9 = it (16 wide) / its packed copy (8 wide); 8 wide packs
-; rows 4k, 4k+2 | 4k+1, 4k+3 by qword
+; rows 4k, 4k+2 | 4k+1, 4k+3 by qword; avx512: MF_COSTV's k7 (here: after every C call)
 %macro MF_FENC_LOAD 2 ; w, h
+%if cpuflag(avx512)
+    mov            eax, 2
+    kmovw           k7, eax
+%endif
 %if %1 == 16
     mov             R9, [R15+me_t.p_fenc]
-  %if FENC_RES
+  %if mf_fres
     %assign %%k 0
     %rep %2/2
     %assign %%r MF_F0+%%k
@@ -1320,7 +1343,7 @@ cglobal %1, 1,15,0, ME_STACK
     mov            rax, [R15+me_t.p_fenc]
     %assign %%k 0
     %rep %2/4
-  %if FENC_RES
+  %if mf_fres
     %assign %%r MF_F0+%%k
     movu          m %+ %%r, [rax+64*%%k]
     vpunpcklqdq   m %+ %%r, m %+ %%r, [rax+64*%%k+32]
@@ -1331,7 +1354,7 @@ cglobal %1, 1,15,0, ME_STACK
   %endif
     %assign %%k %%k+1
     %endrep
-  %if FENC_RES == 0
+  %if mf_fres == 0
     lea             R9, [rsp+F_FENC]
   %endif
 %endif
@@ -1472,7 +1495,7 @@ cglobal %1, 1,15,0, ME_STACK
   %else
     packssdw        m2, m2
   %endif
-    phaddd          m0, m2
+    MF_HADDD         0, 2
     vextracti128   xm1, m0, 1
     paddd          xm0, xm1
     ret
@@ -1502,10 +1525,15 @@ cglobal %1, 1,15,0, ME_STACK
     packssdw        m0, m1
     packssdw        m2, m3
     packssdw        m4, m5
-    phaddd          m0, m2              ; per lane { s0 s1 s2 s3 }
-    phaddd          m4, m4              ; per lane { s4 s5 s4 s5 }
+    MF_HADDD         0, 2               ; per lane { s0 s1 s2 s3 }
+    MF_HADDD         4, 4               ; per lane { s4 s5 s4 s5 }
+%if cpuflag(avx512)
+    vinserti128     m1, m0, xm4, 1
+    vshufi64x2      m0, m0, m4, 3
+%else
     vperm2i128      m1, m0, m4, 0x20
     vperm2i128      m0, m0, m4, 0x31
+%endif
     paddd           m0, m1
     ret
 %endif ; !8x8: sad_hex_search_8x8
@@ -1815,7 +1843,18 @@ cglobal %1, 1,15,0, ME_STACK
     PACKMV         R9d, R12d, R13d, eax
     mov            eax, R14d
     mov           R10d, [rbx+me_fpel.me_range]
+%if cpuflag(avx512)
+    ; fn->hex_search's kernel: vdbpsadbw, or the avx2 one where that is dispatched
+    mov            R12, [rbx+me_fpel.fn]
+    lea            R13, [pixel_sad_hex_search_8x8_avx2]
+    cmp            R13, [R12+me_fpel_fn.hex_search]
+    je .s%1x%2_hex_avx2
+    call pixel_sad_hex_search_reg_8x8_avx512
+    jmp .s%1x%2_hex_ret
+.s%1x%2_hex_avx2:
+%endif
     call pixel_sad_hex_search_reg_8x8_avx2
+.s%1x%2_hex_ret:
     mov           R14d, eax
     shr            rax, 32
     movsx          R12, ax
@@ -2046,8 +2085,9 @@ cglobal %1, 1,15,0, ME_STACK
 ; int me_search_fpel( x264_me_fpel_t *c ), see encoder/me.h
 ;-----------------------------------------------------------------------------
 ; rbx c, R15 m, R11 stride, R10 3*stride, R9 fenc (MF_FENC_LOAD), R12/R13 bmx/bmy, R14d bcost
-; or its key; rbp and R8 loop state
-INIT_YMM avx2
+; or its key; rbp and R8 loop state. avx512: the same search on m0-m15 (x86inc's ymm16-31,
+; EVEX), 8x8 on fn->hex_search's kernel
+%macro MF_SEARCH 0
 cglobal me_search_fpel, 1,1
     push           rbx
     push           rbp
@@ -2201,21 +2241,31 @@ cglobal me_search_fpel, 1,1
     pop            R12
     pop            rbp
     pop            rbx
+%if notcpuflag(avx512)
     vzeroupper
+%endif
     ret
 
     MF_BODY         16, 16
     MF_BODY          8,  8
     MF_BODY         16,  8
     MF_BODY          8, 16
+%endmacro
+
+INIT_YMM avx2
+%assign mf_fres FENC_RES
+MF_SEARCH
+INIT_YMM avx512
+%assign mf_fres FENC_RES512
+MF_SEARCH
 %endif ; HIGH_BIT_DEPTH == 0
 
 %if HIGH_BIT_DEPTH
 INIT_XMM avx2
 ME_SEARCH_FPEL me_search_fpel
-%endif
 INIT_YMM avx512
 ME_SEARCH_FPEL me_search_fpel
+%endif
 INIT_ZMM avx512
 ME_SEARCH_FPEL me_search_fpel_zmm
 
