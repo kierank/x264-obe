@@ -8500,6 +8500,11 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         fn.sq_min = rand()&3 ? pf.sad_sq_min[i_pixel] : NULL;
         fn.hex_min = rand()&3 ? pf.sad_hex_min[i_pixel] : NULL;
         fn.hex_search = rand()&1 ? pf.sad_hex_search[i_pixel] : NULL;
+#if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32) && !HIGH_BIT_DEPTH
+        /* the avx512 entry follows fn->hex_search's kernel at 8x8: the avx2 one too */
+        if( fn.hex_search && (cpu_new&X264_CPU_AVX512) && (cpu_new&X264_CPU_BMI2) && (rand()&1) )
+            fn.hex_search = x264_pixel_sad_hex_search_8x8_avx2;
+#endif
         fn.predictor_clip = rand()&3 ? pf.predictor_clip : NULL;
         fn.subpel = pf.satd_subpel_search[i_pixel];
         fn.qpel = pf.satd_qpel_search[i_pixel];
