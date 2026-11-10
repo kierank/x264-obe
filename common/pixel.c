@@ -2151,7 +2151,10 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_roundclip = x264_predictor_roundclip_avx2;
 #if !defined(_WIN32)
         pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
-        /* me_search_fpel: avx2 entry not dispatched: slower than C on Zen 4 lowlat (rack01 MESV2 MRA); AVX2-only CPUs untested */
+        /* Core 3 Raptor Cove in situ vs me_search_ref: -0.54..-1.76 % user time in 9/12 cells, rest within
+         * noise (the pre-rewrite entry lost 0.6-2.5 %). Zen 4 keeps the avx512 entry set below */
+        if( cpu&X264_CPU_BMI2 )
+            pixf->me_search_fpel = x264_me_search_fpel_avx2;
 #endif
 #endif
     }
