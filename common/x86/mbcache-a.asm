@@ -96,3 +96,85 @@ cglobal mb_fref_load, 6,7,4
     jg .loop1
 .end:
     RET
+
+; Rows as one run of zmm stores, 8 pointers each, from slot 4 of row 0. Row j
+; of mb.pic.p_fref (and of the table, see its pad) starts at 32 + 96*j mod 64,
+; so after the ymm of row 0's luma every store is a whole 64-byte line.
+; The run also writes slots 6-11 of rows < n with src's (0 in both, 4:2:0/4:2:2).
+; m0: off_y x4, m1: [y y y y c c 0 0], m4: [c c 0 0 0 0 0 0], m5: [0 0 0 0 y y y y]
+%macro FREF_ROWS 3 ; dst, src, n
+    test      %3d, %3d
+    jz %%end
+    paddq     ym3, ym0, [%2]
+    paddq      m2, m4, [%2+32]
+    movu     [%1], ym3
+    movu  [%1+32], m2
+    dec       %3d
+    jz %%end
+%%loop:
+    paddq      m2, m1, [%2+96]          ; row r 0-7
+    movu  [%1+96], m2
+    dec       %3d
+    jz %%end
+    paddq      m2, m5, [%2+160]         ; row r 8-11, row r+1 0-3
+    paddq      m3, m4, [%2+224]         ; row r+1 4-11
+    movu [%1+160], m2
+    movu [%1+224], m3
+    add        %1, 2*FREF_ROW
+    add        %2, 2*FREF_ROW
+    dec       %3d
+    jg %%loop
+%%end:
+%endmacro
+
+INIT_ZMM avx512
+cglobal mb_fref_load, 6,7,6
+%if HIGH_BIT_DEPTH
+    add        r2, r2
+    add        r3, r3
+%endif
+    mov       r6d, 0x0f
+    kmovw      k1, r6d
+    mov       r6d, 0x30
+    kmovw      k2, r6d
+    mov       r6d, 0x03
+    kmovw      k3, r6d
+    mov       r6d, 0xf0
+    kmovw      k4, r6d
+    vpbroadcastq m0, r2q
+    vpbroadcastq m1 {k1}{z}, r2q
+    vpbroadcastq m1 {k2}, r3q
+    vpbroadcastq m4 {k3}{z}, r3q
+    vpbroadcastq m5 {k4}{z}, r2q
+    ; weighted: whole ymm/xmm/qword stores of exactly n0 pointers
+    lea        r2, [r0+FREF_W]
+    lea        r3, [r1+FREF_W]
+    lea       r6d, [r4-4]
+    test      r6d, r6d
+    jl .w_tail
+.w4:
+    paddq     ym2, ym0, [r3]
+    movu     [r2], ym2
+    add        r2, 32
+    add        r3, 32
+    sub       r6d, 4
+    jge .w4
+.w_tail:
+    test      r6b, 2
+    jz .w1
+    paddq     xm2, xm0, [r3]
+    movu     [r2], xm2
+    add        r2, 16
+    add        r3, 16
+.w1:
+    test      r6b, 1
+    jz .l0
+    movq      xm2, [r3]
+    paddq     xm2, xm0
+    movq     [r2], xm2
+.l0:
+    lea        r2, [r0+FREF_LIST]
+    lea        r3, [r1+FREF_LIST]
+    FREF_ROWS  r0, r1, r4
+    FREF_ROWS  r2, r3, r5
+    RET
