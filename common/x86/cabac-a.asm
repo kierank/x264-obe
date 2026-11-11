@@ -1008,6 +1008,9 @@ cextern cabac_encode_ue_bypass
 cextern pb_1
 cextern pw_1
 cextern pd_1
+%if HIGH_BIT_DEPTH
+cextern deinterleave_shufd
+%endif
 
 %if ARCH_X86_64
     %define pointer resq
@@ -1302,6 +1305,15 @@ CABAC bmi2
     mov     %1, [dct+r6*4]
 %else
     movzx   %1, word [dct+r6*2]
+%endif
+%endmacro
+
+; abs() copy at dct, any index register
+%macro LOAD_DCTCOEF_AT 2 ; dst, index
+%if HIGH_BIT_DEPTH
+    mov      %1, [dct+%2*4]
+%else
+    movzx    %1, word [dct+%2*2]
 %endif
 %endmacro
 
@@ -2246,7 +2258,7 @@ CABAC bmi2
     COEFF_ABS_LEVEL_AVX2_ESCAPE coeff, 0
 %endmacro
 
-; rd 8x8 level pass helpers (8-bit). r0d = f8_bits.
+; rd 8x8 level pass helpers. r0d = f8_bits.
 ; n zeros (%3 = rd8_last) or n zeros then a one (%3 = rd8_zero1) on the state
 ; in r%1, n in r%2 (clobbered), any n; runs over 16 go out of line (.%5_long)
 %macro RD8_RUN 5 ; state, n, table, tmp, label
@@ -2339,7 +2351,7 @@ CABAC bmi2
     popcnt   r3, r3                                           ; level-1 coefs between p and the previous one
     bzhi     r10, r10, r2
     RD8_RUN  5, 3, rd8_zero1, 1, %2
-    movzx    r1d, word [dct+r2*2]
+    LOAD_DCTCOEF_AT r1d, r2
 %if %3 == 0
     movzx    r6d, byte [r8+%1]
 %endif
@@ -2416,7 +2428,7 @@ CABAC bmi2
     lea      r2d, [r4-1]                                      ; F
     btr      r10, r2                                          ; nonzero below F
     btr      r12, r2
-    movzx    r1d, word [dct+r2*2]
+    LOAD_DCTCOEF_AT r1d, r2
     movzx    r6d, byte [r8+5]
     RD8_GT1  6, f
     mov [r8+5], r6b
@@ -2760,7 +2772,8 @@ CABAC bmi2
 ; (bin, or 2 = not coded: above last or 63) is permuted to the slots by
 ; vpshufb, pairs give 3*c1+c2 by pmaddubsw, and each context runs its pairs on
 ; its state in a register: one rd8_sig9 load per pair. Then RD8_LEVELS. The
-; ymm abs() gives the nonzero mask and the mask of levels > 1.
+; ymm abs() gives the nonzero mask and the mask of levels > 1 (10-bit: the dwords
+; packed to saturated bytes, put back in order by one vpermd per 32).
 %ifndef RD8_SIG_PAIRS_MIN
     %define RD8_SIG_PAIRS_MIN 32
 %endif
@@ -2777,6 +2790,38 @@ CABAC bmi2
     cglobal cabac_block_residual_8x8_rd_internal, 4,13,8,-rd8_stack
     %define GLOBAL
 %endif
+%if HIGH_BIT_DEPTH
+    pabsd     m0, [r0+0*mmsize]
+    pabsd     m1, [r0+1*mmsize]
+    pabsd     m2, [r0+2*mmsize]
+    pabsd     m3, [r0+3*mmsize]
+    pabsd     m4, [r0+4*mmsize]
+    pabsd     m5, [r0+5*mmsize]
+    pabsd     m6, [r0+6*mmsize]
+    pabsd     m7, [r0+7*mmsize]
+    mova [rsp+0*mmsize], m0
+    mova [rsp+1*mmsize], m1
+    mova [rsp+2*mmsize], m2
+    mova [rsp+3*mmsize], m3
+    mova [rsp+4*mmsize], m4
+    mova [rsp+5*mmsize], m5
+    mova [rsp+6*mmsize], m6
+    mova [rsp+7*mmsize], m7
+    packssdw  m0, m1                                          ; 0-3 8-11 4-7 12-15, saturated
+    packssdw  m2, m3
+    packssdw  m4, m5
+    packssdw  m6, m7
+    packsswb  m0, m2                                          ; dwords of 0-3 8-11 16-19 24-27 4-7 ...
+    packsswb  m4, m6
+    movu      m1, [deinterleave_shufd]
+    vpermd    m0, m1, m0                                      ; 0-31
+    vpermd    m2, m1, m4                                      ; 32-63
+    pcmpeqb   m1, m0, [pb_1]
+    pcmpeqb   m3, m2, [pb_1]
+    pxor      m4, m4
+    pcmpeqb   m0, m4
+    pcmpeqb   m2, m4
+%else
     pabsw     m0, [r0+0*mmsize]
     pabsw     m1, [r0+1*mmsize]
     pabsw     m2, [r0+2*mmsize]
@@ -2796,6 +2841,7 @@ CABAC bmi2
     vpermq    m2, m2, q3120
     vpermq    m1, m1, q3120
     vpermq    m3, m3, q3120
+%endif
     pmovmskb r9d, m0
     pmovmskb r10d, m2
     shl      r10, 32
@@ -3610,8 +3656,9 @@ CABAC_RESIDUAL_RD_8x8_AVX2
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
 %else
-; 10-bit, after the layout above: avx2 rd 4x4 in ymm (vzeroupper on return)
+; 10-bit, after the layout above: avx2 rd 4x4 and 8x8 in ymm (vzeroupper on return)
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_4x4_AVX2
+CABAC_RESIDUAL_RD_8x8_AVX2
 %endif
 %endif
