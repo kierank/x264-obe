@@ -721,6 +721,12 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
         /* the zen4-pruned icl sa8d x9 */
         pixel_asm.intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;
+        pixel_asm.intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx512icl;
+    }
+    /* undispatched: intra_sa8d_x9_8x8_fdec avx2, at the first AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+    {
+        pixel_asm.intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx2;
     }
 #endif
     x264_predict_4x4_init( 0, predict_4x4 );
@@ -3042,6 +3048,56 @@ static int check_pixel( int cpu_ref, int cpu_new )
         INTRA_X_SOURCES( pat );
         TEST_INTRA_X9( intra_satd_x9_4x4, satd );
         TEST_INTRA8_X9( intra_sa8d_x9_8x8, sa8d );
+        /* intra_sa8d_x9_8x8_fdec: predict_8x8_filter of fdec (top, left, topleft, topright if b_tr), then x9 */
+        if( pixel_asm.intra_sa8d_x9_8x8_fdec && pixel_asm.intra_sa8d_x9_8x8_fdec != pixel_ref.intra_sa8d_x9_8x8_fdec )
+        {
+            set_func_name( "intra_sa8d_x9_8x8_fdec" );
+            used_asm = 1;
+            ALIGNED_ARRAY_64( uint16_t, bitcosts,[17] );
+            ALIGNED_ARRAY_16( uint16_t, satds_c,[16] );
+            ALIGNED_ARRAY_16( uint16_t, satds_a,[16] );
+            ALIGNED_ARRAY_32( pixel, edge8,[36] );
+            memset( satds_c, 0, sizeof(satds_c) );
+            memset( satds_a, 0, sizeof(satds_a) );
+            for( int i = 0; i < 17; i++ )
+                bitcosts[i] = pat ? rand() & 511 : 9*(i!=8);
+            /* the last blocks read their left column down to row 19 */
+            memcpy( pbuf3, x9_dec, 24*FDEC_STRIDE*sizeof(pixel) );
+            memcpy( pbuf4, x9_dec, 24*FDEC_STRIDE*sizeof(pixel) );
+            for( int i = 0; i < 64 && ok; i++ )
+            {
+                pixel *fenc = x9_fenc+48+(i>>1)*12;
+                pixel *fdec1 = pbuf3+48+(i>>1)*12;
+                pixel *fdec2 = pbuf4+48+(i>>1)*12;
+                int b_tr = i&1;
+                uint16_t *bc = bitcosts+8-(i>>1)%9;
+                int res_c = INT_MAX;
+                predict_8x8_filter( fdec1, edge8, MB_LEFT|MB_TOP|MB_TOPLEFT|(b_tr ? MB_TOPRIGHT : 0), ALL_NEIGHBORS );
+                for( int j = 0; j < 9; j++ )
+                {
+                    predict_8x8[j]( fdec1, edge8 );
+                    satds_c[j] = X264_MIN( pixel_c.sa8d[PIXEL_8x8]( fenc, FENC_STRIDE, fdec1, FDEC_STRIDE ) + bc[j], 0xffff );
+                    if( satds_c[j] < (uint16_t)res_c )
+                        res_c = satds_c[j] + (j<<16);
+                }
+                predict_8x8[res_c>>16]( fdec1, edge8 );
+                int res_a = call_a( pixel_asm.intra_sa8d_x9_8x8_fdec, fenc, fdec2, b_tr, bc, satds_a );
+                if( res_c != res_a || memcmp( satds_c, satds_a, sizeof(satds_c) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "intra_sa8d_x9_8x8_fdec: tr %d: %d,%d != %d,%d [FAILED]\n", b_tr, res_c>>16, res_c&0xffff, res_a>>16, res_a&0xffff );
+                    for( int j = 0; j < 9; j++ )
+                        fprintf( stderr, "%5d %5d\n", satds_c[j], satds_a[j] );
+                }
+                for( int j = -1; j < 8; j++ )
+                    if( memcmp( fdec1+j*FDEC_STRIDE-8, fdec2+j*FDEC_STRIDE-8, (j < 0 ? 24 : 16)*sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "intra_sa8d_x9_8x8_fdec: fdec row %d [FAILED]\n", j );
+                        break;
+                    }
+            }
+        }
     }
     report( "intra satd_x9 :" );
     ok = 1; used_asm = 0;

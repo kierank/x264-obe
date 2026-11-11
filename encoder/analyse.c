@@ -890,6 +890,10 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         if( h->sh.i_type == SLICE_TYPE_B )
             i_cost += lambda * i_mb_b_cost_table[I_8x8];
 
+        /* predict_8x8_filter in the x9 call: its loads each sit inside one row store of fdec */
+        int (*x9_fdec)( pixel *, pixel *, int, uint16_t *, uint16_t * ) =
+            h->pixf.intra_mbcmp_x9_8x8 == h->pixf.intra_sa8d_x9_8x8 ? h->pixf.intra_sa8d_x9_8x8_fdec : NULL;
+
         for( idx = 0;; idx++ )
         {
             int x = idx&1;
@@ -900,12 +904,20 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
             int i_pred_mode = x264_mb_predict_intra4x4_mode( h, 4*idx );
 
             const int8_t *predict_mode = predict_8x8_mode_available( a->b_avoid_topright, h->mb.i_neighbour8[idx], idx );
-            h->predict_8x8_filter( p_dst_by, edge, h->mb.i_neighbour8[idx], ALL_NEIGHBORS );
-
-            if( h->pixf.intra_mbcmp_x9_8x8 && predict_mode[8] >= 0 )
+            int b_x9 = h->pixf.intra_mbcmp_x9_8x8 && predict_mode[8] >= 0;
+            if( b_x9 && x9_fdec )
+                i_best = x9_fdec( p_src_by, p_dst_by, !!(h->mb.i_neighbour8[idx] & MB_TOPRIGHT),
+                                  cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx] );
+            else
             {
-                /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
-                i_best = h->pixf.intra_mbcmp_x9_8x8( p_src_by, p_dst_by, edge, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx] );
+                h->predict_8x8_filter( p_dst_by, edge, h->mb.i_neighbour8[idx], ALL_NEIGHBORS );
+                if( b_x9 )
+                    /* No shortcuts here. The SSSE3 implementation of intra_mbcmp_x9 is fast enough. */
+                    i_best = h->pixf.intra_mbcmp_x9_8x8( p_src_by, p_dst_by, edge, cost_i4x4_mode-i_pred_mode, a->i_satd_i8x8_dir[idx] );
+            }
+
+            if( b_x9 )
+            {
                 i_cost += i_best & 0xffff;
                 i_best >>= 16;
                 a->i_predict8x8[idx] = i_best;

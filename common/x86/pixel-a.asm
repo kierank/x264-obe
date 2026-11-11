@@ -309,6 +309,11 @@ x9r_scan_frame_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
                   SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
 x9r_scan_field:   SHUFFLE_MASK_W 0, 1, 4, 2, 3, 5, 6, 7
                   SHUFFLE_MASK_W 0, 1, 2, 3, 4, 5, 6, 7
+; intra_sa8d_x9_8x8_fdec: the edge of predict_8x8_filter from fdec
+x9r8_ulo_l:       db 14, 15, 15, 14, 13, 12, 11, 10, 9, 8, -1, -1, -1, -1, -1, -1
+x9r8_ulo_t:       db -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 8, 9, 10, 11, 12
+x9r8_uhi:         db 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15, 14, -1, -1, -1
+x9r8_lo8:         dd -1, -1, 0, 0
 %endif
 %if ARCH_X86_64
 ALIGN 16
@@ -10457,9 +10462,80 @@ ALIGN 16
     ret
 %endmacro
 
+; predict_8x8_filter with top, left and topleft, the topright if r%1: edge[i] = F2(U[i-1], U[i], U[i+1]),
+; U = l7 l7 l6..l0 lt t0..t15 t15 t14, t8..t15 = t7 without the topright. Each load sits inside one
+; row store of the blocks that wrote fdec. Leaves the rows of the edge loads of SA8D_X9_8BIT_BODY 0
+; in m0-m2: [edge+6 | edge+15], [edge+7 | edge+16], [edge+8 | edge+17]
+%macro X9B8_EDGE 1
+    movq        xm0, [r1+0*FDEC_STRIDE-8]
+    movq        xm1, [r1+1*FDEC_STRIDE-8]
+    movq        xm2, [r1+2*FDEC_STRIDE-8]
+    movq        xm3, [r1+3*FDEC_STRIDE-8]
+    movq        xm4, [r1+4*FDEC_STRIDE-8]
+    movq        xm5, [r1+5*FDEC_STRIDE-8]
+    movq        xm6, [r1+6*FDEC_STRIDE-8]
+    movq        xm7, [r1+7*FDEC_STRIDE-8]
+    punpcklbw   xm0, xm1
+    punpcklbw   xm2, xm3
+    punpcklbw   xm4, xm5
+    punpcklbw   xm6, xm7
+    punpckhwd   xm0, xm2
+    punpckhwd   xm4, xm6
+    punpckhdq   xm3, xm0, xm4         ; l0..l7 in bytes 8-15
+%if cpuflag(avx512icl)
+    neg         r%1d
+    and         r%1d, 0xff00
+    or          r%1d, 0xff
+    kmovd        k6, r%1d
+%else
+    neg         r%1d
+    movd        xm7, r%1d
+    vpbroadcastd xm7, xm7
+    por         xm7, [x9r8_lo8]
+%endif
+    movq        xm4, [r1-FDEC_STRIDE]
+    movhps      xm4, [r1-FDEC_STRIDE+8]
+    movq        xm6, [r1-FDEC_STRIDE-8]
+    vpbroadcastb xm5, [r1-FDEC_STRIDE+7]
+    punpcklqdq  xm6, xm4              ; lt t0..t7 in bytes 7-15
+%if cpuflag(avx512icl)
+    vpblendmb   xm4 {k6}, xm5, xm4    ; t0..t15
+%else
+    vpblendvb   xm4, xm5, xm4, xm7    ; t0..t15
+%endif
+    pshufb      xm5, xm3, [x9r8_ulo_l]
+    pshufb      xm6, [x9r8_ulo_t]
+    por         xm5, xm6              ; U[5..20]
+    pshufb      xm4, [x9r8_uhi]       ; U[21..36]
+    vinserti128  m5, m5, xm4, 1
+    vextracti128 xm4, m5, 1
+    vpalignr     m6, m4, m5, 1        ; U[6..21] | U[22..37]
+    vpalignr     m4, m4, m5, 2        ; U[7..22] | U[23..38]
+    PRED4x4_LOWPASS m3, m5, m4, m6, m7 ; edge[6..21] | edge[22..37]
+    vextracti128 xm4, m3, 1
+    vpalignr     m4, m4, m3, 9        ; edge[15..30] | edge[31..]
+    vinserti128  m0, m3, xm4, 1       ; edge[6..21] | edge[15..30]
+%if cpuflag(avx512icl)
+    vshufi64x2   m3, m3, m4, 3
+%else
+    vperm2i128   m3, m3, m4, 0x31
+%endif
+    vpalignr     m1, m3, m0, 1
+    vpalignr     m2, m3, m0, 2
+%endmacro
+%macro X9B8_EDGE_R2 0
+    X9B8_EDGE 2
+%endmacro
+
 %macro SA8D_X9_8BIT 0
 cglobal intra_sa8d_x9_8x8, 5,7,16, 0x540
     SA8D_X9_8BIT_BODY 0
+
+;-----------------------------------------------------------------------------
+; int intra_sa8d_x9_8x8_fdec( uint8_t *fenc, uint8_t *fdec, int b_tr, uint16_t *bitcosts, uint16_t *satds )
+;-----------------------------------------------------------------------------
+cglobal intra_sa8d_x9_8x8_fdec, 5,7,16, 0x540
+    SA8D_X9_8BIT_BODY X9B8_EDGE_R2
 %endmacro
 
 SA8D_X9_8BIT
