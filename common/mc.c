@@ -865,17 +865,17 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         if( b_interlaced )
         {
             /* MC must happen between pixels in the same field. */
-            start = (mb_y*16 >> 1) - 8;
+            int start_fld = (mb_y*16 >> 1) - 8;
             int height_fld = ((b_end ? frame->i_lines[p] : mb_y*16) >> 1) + 8;
             /* Rows whose 6-tap window (rows -2..3) is inside the picture see
              * the same pixels in the frame plane, and copy them to plane_fld.
              * The others read plane_fld's field borders, and the fullpel rows
              * near them, which the encoder copies (top and bottom 16 rows). */
-            int y0 = x264_clip3( 2, start, height_fld );
+            int y0 = x264_clip3( 2, start_fld, height_fld );
             int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
             for( int i = 0; i < 2; i++ )
             {
-                frame_filter_fld( h, frame, p, i, start, y0, 0 );
+                frame_filter_fld( h, frame, p, i, start_fld, y0, 0 );
                 frame_filter_fld( h, frame, p, i, y0, y1, 1 );
                 frame_filter_fld( h, frame, p, i, y1, height_fld, 0 );
             }
