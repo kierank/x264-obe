@@ -778,9 +778,7 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
                 pf->deblock_chroma[1] = x264_deblock_v_chroma_sse2;
                 pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_sse2;
                 pf->deblock_h_chroma_420_intra = x264_deblock_h_chroma_intra_sse2;
-#if HIGH_BIT_DEPTH
-                pf->deblock_chroma_420_intra_mbaff= x264_deblock_h_chroma_intra_mbaff_sse2;
-#endif
+                pf->deblock_chroma_420_intra_mbaff = x264_deblock_h_chroma_intra_mbaff_sse2;
             }
         }
         if( cpu&X264_CPU_SSSE3 )
@@ -804,10 +802,9 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
                 pf->deblock_chroma[1] = x264_deblock_v_chroma_avx;
                 pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx;
                 pf->deblock_h_chroma_420_intra = x264_deblock_h_chroma_intra_avx;
-#if HIGH_BIT_DEPTH
+                /* 8-bit too since wip/x264-deblock-gaps: xmm instead of mmx2 / sse2 */
                 pf->deblock_chroma_420_mbaff = x264_deblock_h_chroma_mbaff_avx;
                 pf->deblock_chroma_420_intra_mbaff = x264_deblock_h_chroma_intra_mbaff_avx;
-#endif
             }
         }
         if( cpu&X264_CPU_AVX2 )
@@ -836,6 +833,12 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx2;
             pf->deblock_h_chroma_420_intra = x264_deblock_h_chroma_intra_avx2;
             pf->deblock_h_chroma_422_intra = x264_deblock_h_chroma_422_intra_avx2;
+            /* luma intra: the 16 pixel edge per ymm; MBAFF mixed edge: [p|q] qword halves.
+             * AVX-512 machines keep the icl luma intra and take the avx2 MBAFF pair */
+            pf->deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx2;
+            pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx2;
+            pf->deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx2;
+            pf->deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx2;
 #endif
         }
 #if ARCH_X86_64
@@ -846,6 +849,8 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx512icl;
 #if HIGH_BIT_DEPTH
             pf->deblock_luma[1] = x264_deblock_v_luma_avx512icl;
+            /* undispatched (checkasm tests them at this level): x264_deblock_h_luma_mbaff_avx512icl,
+             * x264_deblock_h_luma_intra_mbaff_avx512icl, the avx2 MBAFF pair with k-mask filters */
             /* zen4 prune: slower than the previous level on rack01 Zen 4 (checkasm --bench, same test program); kept assembled */
             /* deblock_h_chroma_422 1.51x, deblock_h_chroma_422_intra 1.41x; borderline: deblock_luma_mb 1.016x, slower in 11/11 runs;
              * neutral (>= 1.000): deblock_strength */

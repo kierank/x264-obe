@@ -5499,26 +5499,8 @@ static int check_deblock( int cpu_ref, int cpu_new )
     x264_deblock_init( 0, &db_c, 0 );
     x264_deblock_init( cpu_ref, &db_ref, 0 );
     x264_deblock_init( cpu_new, &db_a, 0 );
-#if HAVE_MMX && !HIGH_BIT_DEPTH
-    /* the undispatched xmm 4:2:0 MBAFF chroma, at the SSE2 / AVX levels */
-    if( (cpu_new&X264_CPU_SSE2) && !(cpu_ref&X264_CPU_SSE2) )
-        db_a.deblock_chroma_420_intra_mbaff = x264_deblock_h_chroma_intra_mbaff_sse2;
-    if( (cpu_new&X264_CPU_AVX) && !(cpu_ref&X264_CPU_AVX) )
-    {
-        db_a.deblock_chroma_420_mbaff = x264_deblock_h_chroma_mbaff_avx;
-        db_a.deblock_chroma_420_intra_mbaff = x264_deblock_h_chroma_intra_mbaff_avx;
-    }
-#endif
 #if ARCH_X86_64 && HAVE_MMX && HIGH_BIT_DEPTH
-    /* the undispatched 10-bit avx2 luma intra and MBAFF luma, at the AVX2 level */
-    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-    {
-        db_a.deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx2;
-        db_a.deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx2;
-        db_a.deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx2;
-        db_a.deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx2;
-    }
-    /* and the undispatched 10-bit avx512icl MBAFF luma, at the AVX512ICL level */
+    /* the undispatched 10-bit avx512icl MBAFF luma, at the AVX512ICL level */
     if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
     {
         db_a.deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx512icl;
