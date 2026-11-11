@@ -930,6 +930,8 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
 
     h->mb.cache.deblock_strength = h->deblock_strength[mb_y&1][h->param.b_sliced_threads?h->mb.i_mb_xy:mb_x];
     h->mb.mvp16_valid[0] = h->mb.mvp16_valid[1] = 0;
+    if( b_mbaff )
+        h->mb.mvref.b_mb_ready = 0;
 
     /* load cache */
     if( h->mb.i_neighbour & MB_TOP )

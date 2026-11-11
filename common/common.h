@@ -730,6 +730,13 @@ struct x264_t
             int16_t (*l0_mv16x16)[2];       /* fref[0][0] */
             uint8_t *l0_field;
             int32_t tscale[2][2][2][X264_REF_MAX*2]; /* [list][MB_INTERLACED][mb_y&1][ref] */
+            /* MBAFF, per mb (mvpred.c mvref_mb_init); cache_load clears b_mb_ready */
+            int     b_mb_ready;
+            int     i_sp;                   /* available spatial neighbours */
+            int     i_tmv;                  /* temporal candidates if b_tmvp */
+            int     sp_xy[4];
+            uint8_t sp_shift[4];            /* 1 + MB_INTERLACED - field[xy] */
+            int32_t tmv[3][2];              /* collocated mv16x16, y converted if b_tconv */
         } mvref;
     } mb;
 
