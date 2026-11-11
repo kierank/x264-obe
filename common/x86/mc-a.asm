@@ -2100,6 +2100,49 @@ cglobal pixel_avg2_w16, 6,7
     lea    r6, [r4+r3]
     AVG2_ROWS_LOOP AVG2_W16_2ROWS
 
+%if ARCH_X86_64
+; four rows per zmm; 16-byte row stores
+INIT_ZMM avx512icl
+cglobal pixel_avg2_w16, 6,8
+    lea    r6, [r3*3]
+    lea    r7, [r1*3]
+    sub   r5d, 3
+    jl .tail
+.loop:
+    movu           xm0, [r2]
+    movu           xm2, [r2+r3*2]
+    vinserti32x4   ym0, ym0, [r2+r3], 1
+    vinserti32x4   ym2, ym2, [r2+r6], 1
+    movu           xm1, [r4]
+    movu           xm3, [r4+r3*2]
+    vinserti32x4   ym1, ym1, [r4+r3], 1
+    vinserti32x4   ym3, ym3, [r4+r6], 1
+    vinserti64x4    m0, m0, ym2, 1
+    vinserti64x4    m1, m1, ym3, 1
+    lea             r2, [r2+r3*4]
+    lea             r4, [r4+r3*4]
+    pavgb           m0, m1
+    mova          [r0], xm0
+    vextracti32x4 [r0+r1], m0, 1
+    vextracti32x4 [r0+r1*2], m0, 2
+    vextracti32x4 [r0+r7], m0, 3
+    lea             r0, [r0+r1*4]
+    sub            r5d, 4
+    jge .loop
+    cmp            r5d, -2
+    jl .end
+.tail:
+    movu           xm0, [r2]
+    vinserti32x4   ym0, ym0, [r2+r3], 1
+    movu           xm1, [r4]
+    vinserti32x4   ym1, ym1, [r4+r3], 1
+    pavgb          ym0, ym1
+    mova          [r0], xm0
+    vextracti32x4 [r0+r1], ym0, 1
+.end:
+    RET
+%endif
+
 ; Cacheline split code for processors with high latencies for loads
 ; split over cache lines.  See sad-a.asm for a more detailed explanation.
 ; This particular instance is complicated by the fact that src1 and src2
