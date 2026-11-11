@@ -2028,6 +2028,42 @@ cglobal pixel_avg2_w20, 6,7
     jg     .height_loop
     RET
 
+; 4 rows per iteration, then 2 if any are left: the (h+1)&~1 rows the
+; 2-row loops above write
+%macro AVG2_ROWS_LOOP 1 ; 2-row body macro
+    sub   r5d, 3
+    jl %%tail
+%%loop:
+    %1
+    %1
+    sub   r5d, 4
+    jge %%loop
+    cmp   r5d, -2
+    jl %%end
+%%tail:
+    %1
+%%end:
+    RET
+%endmacro
+
+; VEX: the second source folds into pavgb
+%macro AVG2_W16_2ROWS 0
+    movu   m0, [r2]
+    movu   m1, [r2+r3]
+    pavgb  m0, [r2+r4]
+    pavgb  m1, [r2+r6]
+    lea    r2, [r2+r3*2]
+    mova [r0], m0
+    mova [r0+r1], m1
+    lea    r0, [r0+r1*2]
+%endmacro
+
+INIT_XMM avx
+cglobal pixel_avg2_w16, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+    AVG2_ROWS_LOOP AVG2_W16_2ROWS
+
 ; Cacheline split code for processors with high latencies for loads
 ; split over cache lines.  See sad-a.asm for a more detailed explanation.
 ; This particular instance is complicated by the fact that src1 and src2
