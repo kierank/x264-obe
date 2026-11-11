@@ -132,6 +132,41 @@ fsa_hh_xidx:   dd 2, 0, 2, 2,  0, 2, 6, 6,  2, 6, 1, 1,  6, 1, 6, 6,  1, 6, 2, 2
 fsa_hh_yidx:   dd 0, 4, 1, 1,  4, 1, 1, 1,  1, 1, 4, 4,  1, 4, 0, 0,  4, 0, 0, 0,  0, 0, 4, 4
 fsa_hh_rank:   dd 1, 2, 3, 3
 fsa_mod6m1:    db 5, 0, 1, 2, 3, 4, 5, 0
+; avx512icl point sets: vpermi2b indices into two windows A, B (16 bytes of rows a, a+1 |
+; b, b+1, a lane each), qwords of 8 bytes from the given starts
+%macro EPT_IDX 4
+%rep 4
+    db %1, %1+1, %1+2, %1+3, %1+4, %1+5, %1+6, %1+7
+%rotate 1
+%endrep
+%endmacro
+ALIGN 32
+ept_l1a0:      EPT_IDX 16, 18, 32, 34   ; rows a+1 | b at 0, 2
+ept_l1a1:      EPT_IDX 17, 19, 33, 35   ; rows a+1 | b at 1, 3
+ept_l1a2:      EPT_IDX 16, 20, 32, 36   ; rows a+1 | b at 0, 4
+ept_ab1:       EPT_IDX  1, 33, 17, 49   ; rows a, b | a+1, b+1 at 1
+ept_ab2:       EPT_IDX  2, 34, 18, 50   ; rows a, b | a+1, b+1 at 2
+ept_ab3:       EPT_IDX  3, 35, 19, 51   ; rows a, b | a+1, b+1 at 3
+; bias dwords of [r3], [r3+16] (vpermi2d): sq 8x8's sums, then dx 2 and the centre
+ept_sq8_bidx:  dd 0, 2, 1, 5, 4, 6, 12, 14
+ept_sqx_bidx:  dd 3, 7, 13, 15, 3, 7, 13, 15
+; avx512icl hex search: the rank (idx*8) carries me.c's next dir in its low 3 bits;
+; hexagon by fsa_hex_rank's sums, half hexagon by dir (fsa_hh_rank's j+1 and mod6m1[dir+j])
+eps_hex_rank:  dd 16, 43, 61, 52, 25, 34, 25, 34
+eps_hh_rank:   dd 13, 16, 25, 25,  8, 17, 26, 26,  9, 18, 27, 27
+               dd 10, 19, 28, 28, 11, 20, 29, 29, 12, 21, 24, 24
+; sq_min 16x16 avx512icl: a fenc row's dwords 0 0 1 1 | 2 2 3 3 (pshufb of the row in both lanes)
+ept_sq16_fshuf: db 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7
+                db 8, 9,10,11, 8, 9,10,11,12,13,14,15,12,13,14,15
+; dia_min zmm: vpermi2b of rows -1..2 | 3..6 (or 3..6 | 7..8) at bx -1, a fenc row a lane
+%macro EPT_IDX8 8
+%rep 8
+    db %1, %1+1, %1+2, %1+3, %1+4, %1+5, %1+6, %1+7
+%rotate 1
+%endrep
+%endmacro
+ept_z_dia0:    EPT_IDX8 16, 18, 32, 34, 48, 50, 64, 66
+ept_z_dia1:    EPT_IDX8  1, 33, 17, 49, 33, 65, 49, 81
 
 SECTION .text
 
@@ -3919,6 +3954,628 @@ cglobal pixel_sad_dia_search_8x8, 9,15,8
 .end:
     sar            r6d, 4
     FSH_RET
+
+INIT_YMM avx512icl
+;-----------------------------------------------------------------------------
+; avx512icl point sets: the avx2 windows and pshufb pairs, but every row loaded once:
+; a pair whose two rows straddle two windows (rows a+1, a+2) is one vpermi2b of both
+; (EPT_P2B), where avx2 loads a third window. ymm, EVEX on ymm16-31.
+;-----------------------------------------------------------------------------
+; m%1 = vpermi2b( m%2, m%3, m%4 ), the index m%2 kept
+%macro EPT_P2B 4
+    mova           m%1, m%2
+    vpermi2b       m%1, m%3, m%4
+%endmacro
+
+; m%2.. = %3 windows of rows (a, a+1), (a+2, a+3), .. at %1 (advanced); %4 3*stride
+%macro EPT_WINS 4 ; ptr, first reg, count, 3*stride
+%assign %%i 0
+%rep %3
+    %assign %%r %2+%%i
+  %if %%i & 1
+    SPT_WIN  %[%%r], %1+r2*2, %1+%4
+    %if %%i < %3-1
+    lea             %1, [%1+r2*4]
+    %endif
+  %else
+    SPT_WIN  %[%%r], %1, %1+r2
+  %endif
+    %assign %%i %%i+1
+%endrep
+%endmacro
+
+; m%1 = { a b | c d } of the pairs, lanes summed; k1 0xf0
+%macro EPT_FOLD4 6 ; dst, a, b, c, d, tmp
+    packusdw       m%2, m%2, m%3
+    packusdw       m%4, m%4, m%5
+    valignq        m%6, m%4, m%2, 2
+    vpblendmd      m%2 {k1}, m%2, m%4
+    paddd          m%1, m%2, m%6
+%endmacro
+
+%macro EPT_K1 0
+    mov            r5d, 0xf0
+    kmovb           k1, r5d
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_dia_min_8x8( ... ): rows -1..8 at bx -1 in 5 windows; dy 0 (dx -1 | 1)
+; and dx 0 (dy -1 | 1) of rows 2k, 2k+1 both vpermi2b of windows 2k-1, 2k+1
+;-----------------------------------------------------------------------------
+; m0 dx 0 (dy -1 | 1), m1 dy 0 (dx -1 | 1); m5-m9 the windows, m10 ept_l1a0, m11 ept_ab1
+%macro EPT_DIA8 0
+%assign %%k 0
+%rep 4
+    %assign %%a 5+%%k
+    %assign %%b 6+%%k
+    vmovddup       m12, [r0+%%k*32]
+    EPT_P2B          2, 10, %[%%a], %[%%b]
+    EPT_P2B          3, 11, %[%%a], %[%%b]
+    SPT_ACC          1, 2, 12, 2, %%k == 0
+    SPT_ACC          0, 3, 12, 3, %%k == 0
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_dia_min_8x8, 5,7,13
+    lea             r5, [r1-1]
+    sub             r5, r2
+    lea             r6, [r2*3]
+    EPT_WINS        r5, 5, 5, r6
+    movu           m10, [ept_l1a0]
+    movu           m11, [ept_ab1]
+    EPT_DIA8
+    packusdw        m0, m0, m1
+    vextracti128   xm1, m0, 1
+    paddd          xm0, xm1
+    pslld          xm0, 4
+    paddd          xm0, [r3]
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_hex_min_8x8( ... ): avx2's windows (each row once already)
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_hex_min_8x8, 5,6,14
+    lea             r5, [r2*2+2]
+    neg             r5
+    add             r5, r1
+    mova            m6, [spt_m13]
+    mova            m7, [spt_m04]
+    SPT_HEX8        r5
+    EPT_K1
+    EPT_FOLD4       0, 0, 1, 2, 2, 4    ; { b0 b3 b5 b4 | b1 b2 b1 b2 }
+    mov            r5d, 0x3f
+    kmovb           k2, r5d
+    vmovdqu32       m1 {k2}{z}, [r3]
+    mova            m2, [spt_hex_bidx]
+    vpermd          m1, m2, m1
+    pslld           m0, 6
+    paddd           m0, m1
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_oct_min_8x8( ... ): rows -2..9 at bx -2 in 6 windows E(2j-2); rows 2k,
+; 2k+1: dy -1, 1 (dx -1 | 1) vpermi2b of E(2k-2), E(2k) and of E(2k), E(2k+2) (shared
+; by k and k+1), dy 0 a pshufb of E(2k), dx 0 (dy -2 | 2) vpermi2b of E(2k-2), E(2k+2)
+;-----------------------------------------------------------------------------
+; m0 dy 0, m1 dy -1, m2 dy 1, m3 dx 0 (dy -2 | 2); m8-m13 the windows; m5 ept_l1a1,
+; m6 ept_ab2, m7 spt_m04, m14 fenc, m15 the dy 1 pair of k-1
+%macro EPT_OCT8 0
+    EPT_P2B         15, 5, 8, 9
+%assign %%k 0
+%rep 4
+    %assign %%a 8+%%k
+    %assign %%b 9+%%k
+    %assign %%c 10+%%k
+    vmovddup       m14, [r0+%%k*32]
+    SPT_ACC          1, 15, 14, 4, %%k == 0
+    EPT_P2B         15, 5, %[%%b], %[%%c]
+    SPT_ACC          2, 15, 14, 4, %%k == 0
+    pshufb           m4, m%[%%b], m7
+    SPT_ACC          0, 4, 14, 4, %%k == 0
+    EPT_P2B          4, 6, %[%%a], %[%%c]
+    SPT_ACC          3, 4, 14, 4, %%k == 0
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_oct_min_8x8, 5,7,16
+    lea             r5, [r2*2+2]
+    neg             r5
+    add             r5, r1
+    lea             r6, [r2*3]
+    EPT_WINS        r5, 8, 6, r6
+    movu            m5, [ept_l1a1]
+    movu            m6, [ept_ab2]
+    mova            m7, [spt_m04]
+    EPT_OCT8
+    EPT_K1
+    EPT_FOLD4       0, 3, 1, 0, 2, 4    ; { b0 b7 b1 b2 | b3 b4 b5 b6 }
+    mova            m2, [spt_oct_bidx]
+    vpermd          m1, m2, [r3]
+    pslld           m0, 4
+    paddd           m0, m1
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_ring_min_8x8( ... ): oct's windows; rows 2k, 2k+1: dy -2, 2 (dx -1 | 1)
+; pshufb of E(2k-2), E(2k+2), dy -1, 1 (dx -2 | 2) vpermi2b of E(2k-2), E(2k) and of
+; E(2k), E(2k+2)
+;-----------------------------------------------------------------------------
+; m0 dy -2, m1 dy -1, m2 dy 1, m3 dy 2; m8-m13 the windows, m16-m21 their spt_m13 pshufb;
+; m6 spt_m13, m7 ept_l1a2, m14 fenc, m15 the dy 1 pair of k-1
+%macro EPT_RING8 0
+%assign %%i 0
+%rep 6
+    %assign %%p 16+%%i
+    %assign %%w 8+%%i
+    pshufb    m%[%%p], m%[%%w], m6
+    %assign %%i %%i+1
+%endrep
+    EPT_P2B         15, 7, 8, 9
+%assign %%k 0
+%rep 4
+    %assign %%b 9+%%k
+    %assign %%c 10+%%k
+    %assign %%m 16+%%k
+    %assign %%p 18+%%k
+    vmovddup       m14, [r0+%%k*32]
+    SPT_ACC          0, %[%%m], 14, 4, %%k == 0
+    SPT_ACC          1, 15, 14, 4, %%k == 0
+    EPT_P2B         15, 7, %[%%b], %[%%c]
+    SPT_ACC          2, 15, 14, 4, %%k == 0
+    SPT_ACC          3, %[%%p], 14, 4, %%k == 0
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_ring_min_8x8, 5,7,22
+    lea             r5, [r2*2+2]
+    neg             r5
+    add             r5, r1
+    lea             r6, [r2*3]
+    EPT_WINS        r5, 8, 6, r6
+    mova            m6, [spt_m13]
+    movu            m7, [ept_l1a2]
+    EPT_RING8
+    EPT_K1
+    EPT_FOLD4       0, 0, 1, 2, 3, 4    ; b0-b7
+    pslld           m0, 4
+    paddd           m0, [r3]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_sq_min_8x8( ... ): rows -1..8 at bx -1 in 5 windows O(2j-1); rows 2k,
+; 2k+1: dy -1, 1 (dx -1 | 1) pshufb of O(2k-1), O(2k+1) (shared by k and k+1); dx 0
+; (dy -1 | 1) and dy 0 (dx -1 | 1) vpermi2b of both; dx 2 and the centre the same way
+; from the windows kept, if a bias is below best
+;-----------------------------------------------------------------------------
+; m0 dy 0 (dx -1 | 1), m1 dy -1, m2 dy 1, m3 dx 0 (dy -1 | 1); m8-m12 the windows,
+; m16-m19 fenc; m5 spt_m02, m6 ept_ab1, m7 ept_l1a0, m14 the dy 1 pair of k-1
+%macro EPT_SQ8 0
+    pshufb          m14, m8, m5
+%assign %%k 0
+%rep 4
+    %assign %%a 8+%%k
+    %assign %%b 9+%%k
+    %assign %%f 16+%%k
+    vmovddup  m%[%%f], [r0+%%k*32]
+    SPT_ACC          1, 14, %[%%f], 4, %%k == 0
+    pshufb          m14, m%[%%b], m5
+    SPT_ACC          2, 14, %[%%f], 4, %%k == 0
+    EPT_P2B          4, 6, %[%%a], %[%%b]
+    SPT_ACC          3, 4, %[%%f], 4, %%k == 0
+    EPT_P2B          4, 7, %[%%a], %[%%b]
+    SPT_ACC          0, 4, %[%%f], 4, %%k == 0
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+; m1 dy 0 (dx 0 | 2), m2 dx 2 (dy -1 | 1); m6 ept_l1a1, m7 ept_ab3
+%macro EPT_SQ8_X 0
+%assign %%k 0
+%rep 4
+    %assign %%a 8+%%k
+    %assign %%b 9+%%k
+    %assign %%f 16+%%k
+    EPT_P2B          4, 6, %[%%a], %[%%b]
+    SPT_ACC          1, 4, %[%%f], 4, %%k == 0
+    EPT_P2B          4, 7, %[%%a], %[%%b]
+    SPT_ACC          2, 4, %[%%f], 4, %%k == 0
+    %assign %%k %%k+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_sq_min_8x8, 5,7,20
+    lea             r5, [r1-1]
+    sub             r5, r2
+    lea             r6, [r2*3]
+    EPT_WINS        r5, 8, 5, r6
+    mova            m5, [spt_m02]
+    movu            m6, [ept_ab1]
+    movu            m7, [ept_l1a0]
+    EPT_SQ8
+    EPT_K1
+    EPT_FOLD4       0, 1, 3, 2, 0, 4    ; { b0 b2 b1 b5 | b4 b6 b8 b10 }
+    movu           m13, [r3]
+    mova           m14, [ept_sq8_bidx]
+    vpermi2d       m14, m13, [r3+16]
+    pslld           m0, 6
+    paddd           m0, m14
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    cmp            r4d, [r3+12]
+    jg .full
+    cmp            r4d, [r3+28]
+    jg .full
+    cmp            r4d, [r3+36]
+    jg .full
+    cmp            r4d, [r3+44]
+    jg .full
+.min:
+    SPT_MIN4_RET
+.full:
+    movu            m6, [ept_l1a1]
+    movu            m7, [ept_ab3]
+    EPT_SQ8_X
+    packusdw        m2, m2, m1          ; b3 b7 b9 b11
+    vextracti128   xm1, m2, 1
+    paddd          xm2, xm1
+    pslld          xm2, 6
+    mova           m14, [ept_sqx_bidx]
+    vpermi2d       m14, m13, [r3+16]
+    paddd          xm2, xm14
+    pminsd         xm0, xm2
+    jmp .min
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_hex_search_8x8( ... ), avx512icl: avx2's search; the square in
+; sq_min's avx512icl windows; the next dir in the key (eps_*_rank), no mod6m1 lookup
+; UNIX64: pixel_sad_hex_search_reg_8x8 takes bcost, iters and range in r6-r8 (rax, R10,
+; R11), as the avx2 one.
+;-----------------------------------------------------------------------------
+; avx2's FSA_COSTV / FSA_COST in EVEX; k3 0xfd
+%macro EPS_COSTV 4 ; dst, cost_mv, b, tmp
+    vpbroadcastw   m%4, [%2+%3*8+16]
+    vpblendmd      m%1 {k3}, m%4, [%2+%3*8-16]
+    pand           m%1, [spt_dw]
+%endmacro
+
+%macro EPS_COST 4
+    EPS_COSTV       %1, r3, r5, %4
+    vpermd         m%1, m%2, m%1
+    EPS_COSTV       %2, r4, r9, %4
+    vpermd         m%2, m%3, m%2
+    paddd          m%1, m%2
+%endmacro
+
+%macro EPS_KMASKS 0
+    mov           r12d, 0xf0
+    kmovb           k1, r12d
+    mov           r12d, 0xfd
+    kmovb           k3, r12d
+%endmacro
+
+%if UNIX64
+cglobal pixel_sad_hex_search_8x8, 9,9
+    jmp mangle(private_prefix %+ _pixel_sad_hex_search_reg_8x8 %+ SUFFIX)
+cglobal pixel_sad_hex_search_reg_8x8, 6,15,20,64
+%else
+cglobal pixel_sad_hex_search_8x8, 9,15,20,64
+%endif
+    FSH_START
+    EPS_KMASKS
+    lea            r11, [r2*3]
+    movu           m14, [r0]
+    vpunpcklqdq    m14, m14, [r0+32]    ; fenc rows 0, 2 | 1, 3
+    movu           m15, [r0+64]
+    vpunpcklqdq    m15, m15, [r0+96]
+    shl            r6d, 6
+    ; hexagon, idx 2-7
+    lea            r10, [r2*2+2]
+    neg            r10
+    add            r10, r1
+    mova            m6, [spt_m13]
+    mova            m7, [spt_m04]
+    SPT_HEX8       r10
+    EPT_FOLD4       0, 0, 1, 2, 2, 4
+    mova            m2, [fsa_hex_xidx]
+    mova            m3, [fsa_hex_yidx]
+    EPS_COST        1, 2, 3, 4
+    paddd           m0, m1
+    pslld           m0, 6
+    paddd           m0, [eps_hex_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .square
+    mov            r6d, r12d
+    and            r6d, ~63
+    and           r12d, 7
+    mov           r13d, r12d
+    ; hex2[0..7] offsets
+    lea            r10, [r2*2]
+    lea            r12, [r10-1]
+    mov       [rsp+16], r12
+    add            r12, 2
+    mov       [rsp+24], r12
+    neg            r10
+    lea            r12, [r10-1]
+    mov        [rsp+0], r12
+    mov       [rsp+48], r12
+    add            r12, 2
+    mov       [rsp+40], r12
+    mov     qword [rsp+8], -2
+    mov    qword [rsp+56], -2
+    mov    qword [rsp+32], 2
+    ; me.c: i = (i_me_range>>1) - 1 after the hexagon, i-- after each half
+    sar            r7d, 1
+    dec            r7d
+.move:
+    lea            r10, [fsh_hex_mv]
+    movsx          r12, byte [r10+r13]
+    movsx          r14, byte [r10+r13+8]
+    add             r5, r12
+    add             r9, r14
+    add             r1, [rsp+r13*8+8]
+    test           r7d, r7d
+    jle .square
+    FSH_MVRANGE
+    jnz .square
+    ; half hexagon hex2[dir..dir+2], idx 1-3
+    FSA_ONE         0, 0
+    FSA_ONE         8, 1
+    FSA_ONE        16, 2
+    packusdw        m0, m0, m1
+    packusdw        m2, m2, m2
+    packusdw        m0, m0, m2
+    vextracti128   xm1, m0, 1
+    paddw          xm0, xm1
+    pmaddwd        xm0, [pw_1]
+    mov           r12d, r13d
+    shl           r12d, 4
+    lea            r10, [fsa_hh_xidx]
+    movu           xm2, [r10+r12]
+    movu           xm3, [r10+r12+96]
+    EPS_COST        1, 2, 3, 4
+    paddd          xm0, xm1
+    pslld          xm0, 6
+    lea            r10, [eps_hh_rank]
+    paddd          xm0, [r10+r12]
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .square
+    mov            r6d, r12d
+    and            r6d, ~63
+    and           r12d, 7
+    mov           r13d, r12d
+    dec            r7d
+    jmp .move
+.square:
+    lea            r10, [r1-1]
+    sub            r10, r2
+    EPT_WINS       r10, 8, 5, r11
+    mova            m5, [spt_m02]
+    movu            m6, [ept_ab1]
+    movu            m7, [ept_l1a0]
+    EPT_SQ8
+    EPT_FOLD4       0, 1, 3, 2, 0, 4
+    mova            m2, [fsa_sq_xidx]
+    mova            m3, [fsa_sq_yidx]
+    EPS_COST        1, 2, 3, 4
+    paddd           m0, m1
+    pslld           m0, 6
+    paddd           m0, [fsa_sq_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .end
+    mov            r6d, r12d
+    and           r12d, 63
+    lea            r10, [fsh_sq_mv]
+    movsx          r14, byte [r10+r12]
+    movsx          r10, byte [r10+r12+16]
+    add             r5, r14
+    add             r9, r10
+.end:
+    sar            r6d, 6
+    FSH_RET
+
+;-----------------------------------------------------------------------------
+; uint64_t pixel_sad_dia_search_8x8( ... ), avx512icl: a step is sad_dia_min's avx512icl
+; windows
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_dia_search_8x8, 9,15,13
+    FSH_START
+    EPS_KMASKS
+    shl            r6d, 4
+    lea            r11, [r2*3]
+    movu           m10, [ept_l1a0]
+    movu           m11, [ept_ab1]
+.step:
+    lea            r10, [r1-1]
+    sub            r10, r2
+    EPT_WINS       r10, 5, 5, r11
+    EPT_DIA8
+    packusdw        m0, m0, m1
+    vextracti128   xm1, m0, 1
+    paddd          xm0, xm1
+    movu           xm2, [fsa_dia_xidx]
+    movu           xm3, [fsa_dia_yidx]
+    EPS_COST        1, 2, 3, 4
+    paddd          xm0, xm1
+    pslld          xm0, 4
+    paddd          xm0, [fsa_dia_rank]
+    SPT_MIN4      r12d
+    cmp           r12d, r6d
+    jge .end
+    mov            r6d, r12d
+    and            r6d, ~15
+    ; me.c: bmx -= (bcost<<28)>>30, bmy -= (bcost<<30)>>30
+    mov           r14d, r12d
+    shl           r14d, 28
+    sar           r14d, 30
+    movsxd         r14, r14d
+    shl           r12d, 30
+    sar           r12d, 30
+    movsxd         r12, r12d
+    sub             r5, r14
+    sub             r9, r12
+    sub             r1, r14
+    imul           r12, r2
+    sub             r1, r12
+    dec            r7d
+    jz .end
+    FSH_MVRANGE
+    jz .step
+.end:
+    sar            r6d, 4
+    FSH_RET
+
+;-----------------------------------------------------------------------------
+; int pixel_sad_sq_min_16x16( ... ), avx512icl: dy -1, 1 by vdbpsadbw as the avx512 one
+; (a ref row at dx -1..2 against the fenc rows above and below it: dx 2 comes free);
+; dy 0 (dx -1 | 1) by psadbw of 16 byte rows; dy 0 dx 0, 2 by vdbpsadbw if bias 9 or 11
+; is below best
+;-----------------------------------------------------------------------------
+; m%1 += vdbpsadbw( m%2, m%3 ); m12 tmp
+%macro EPT_DBP 4 ; acc, fenc, ref, first
+%if %4
+    vdbpsadbw      m%1, m%2, m%3, 0x94
+%else
+    vdbpsadbw      m12, m%2, m%3, 0x94
+    paddw          m%1, m12
+%endif
+%endmacro
+
+; m0 dy -1, m1 dy 1 (words dx -1..2 by qword), m2 dy 0 (qwords dx -1 | 1);
+; r5 pix - 1 - stride (advanced), m13 ept_sq16_fshuf
+%macro EPT_SQ16 0
+    movu           xm4, [r5]
+    vinserti128     m4, m4, [r5+8], 1
+    add             r5, r2
+    movu           xm9, [r5]
+    vinserti128     m5, m9, [r5+8], 1
+%assign %%y 0
+%rep 16
+    %assign %%ro 4+(%%y % 3)
+    %assign %%rn 4+((%%y+2) % 3)
+    %assign %%xc 9+(%%y & 1)
+    %assign %%xn 10-(%%y & 1)
+    vbroadcasti128  m7, [r0+%%y*16]
+    pshufb          m8, m7, m13
+    vinserti128    m11, m%[%%xc], [r5+2], 1
+    add             r5, r2
+    movu      xm%[%%xn], [r5]
+    vinserti128 m%[%%rn], m%[%%xn], [r5+8], 1
+    EPT_DBP          0, 8, %[%%ro], %%y == 0
+    EPT_DBP          1, 8, %[%%rn], %%y == 0
+    SPT_ACC          2, 11, 7, 11, %%y == 0
+    %assign %%y %%y+1
+%endrep
+%endmacro
+
+cglobal pixel_sad_sq_min_16x16, 5,6,14
+    lea             r5, [r1-1]
+    sub             r5, r2
+    movu           m13, [ept_sq16_fshuf]
+    EPT_SQ16
+    vshufi64x2      m3, m0, m1, 0x3
+    vinserti128     m0, m0, xm1, 1
+    paddw           m0, m3
+    vpermq          m0, m0, q3120
+    vextracti128   xm3, m0, 1
+    paddw          xm0, xm3             ; dy -1 dx -1..2 | dy 1 dx -1..2
+    pmovzxwd        m0, xm0
+    pslld           m0, 6
+    paddd           m0, [r3]
+    punpckhqdq      m3, m2, m2
+    paddd           m2, m3
+    vextracti128   xm3, m2, 1
+    punpckldq      xm2, xm2, xm3        ; dy 0 dx -1, 1
+    pslld          xm2, 6
+    pshufd         xm2, xm2, q1010
+    movu           xm3, [r3+32]
+    pshufd         xm3, xm3, q2020
+    paddd          xm2, xm3
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    pminsd         xm0, xm2
+    cmp            r4d, [r3+36]
+    jg .full
+    cmp            r4d, [r3+44]
+    jg .full
+.min:
+    SPT_MIN4_RET
+.full:
+    mov             r5, r1
+    dec             r5
+%assign sqy 0
+%rep 16
+    vbroadcasti128  m7, [r0+sqy*16]
+    pshufb          m8, m7, m13
+    movu           xm4, [r5]
+    vinserti128     m4, m4, [r5+8], 1
+  %if sqy < 15
+    add             r5, r2
+  %endif
+    EPT_DBP          3, 8, 4, sqy == 0
+    %assign sqy sqy+1
+%endrep
+    vextracti128   xm1, m3, 1
+    paddw          xm3, xm1
+    punpckhqdq     xm1, xm3, xm3
+    paddw          xm3, xm1
+    pmovzxwd       xm3, xm3
+    pslld          xm3, 6
+    movu           xm1, [r3+32]
+    paddd          xm3, xm1
+    pminsd         xm0, xm3
+%undef sqy
+    jmp .min
+
+INIT_ZMM avx512icl
+;-----------------------------------------------------------------------------
+; int pixel_sad_dia_min_zmm_8x8( ... ): the ymm one with two windows a zmm (4 rows,
+; a fenc row a lane): 4 vpermi2b + 4 psadbw zmm
+;-----------------------------------------------------------------------------
+cglobal pixel_sad_dia_min_zmm_8x8, 5,7,10
+    lea             r5, [r1-1]
+    sub             r5, r2
+    lea             r6, [r2*3]
+    EPT_WINS        r5, 5, 5, r6
+    vinserti64x4    m5, m5, ym6, 1      ; rows -1..2
+    vinserti64x4    m7, m7, ym8, 1      ; rows 3..6
+    movu            m6, [ept_z_dia0]
+    movu            m8, [ept_z_dia1]
+    vmovddup        m4, [r0]
+    EPT_P2B          2, 6, 5, 7
+    EPT_P2B          3, 8, 5, 7
+    psadbw          m1, m2, m4
+    psadbw          m0, m3, m4
+    vmovddup        m4, [r0+64]
+    EPT_P2B          2, 6, 7, 9
+    EPT_P2B          3, 8, 7, 9
+    psadbw          m2, m4
+    psadbw          m3, m4
+    paddd           m1, m2
+    paddd           m0, m3
+    packusdw        m0, m0, m1
+    vextracti64x4  ym1, m0, 1
+    paddd          ym0, ym1
+    vextracti128   xm1, ym0, 1
+    paddd          xm0, xm1
+    pslld          xm0, 4
+    paddd          xm0, [r3]
+    SPT_MIN4_RET
 %endif ; ARCH_X86_64
 
 %macro SAD_X_W4_AVX512 2 ; x, h

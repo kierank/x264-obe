@@ -719,6 +719,27 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pixel_asm.ssd[PIXEL_8x4]   = x264_pixel_ssd_8x4_vnni_avx512icl;
         pixel_asm.var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
+        /* not dispatched (Zen 4 decides): the avx512icl point sets and searches */
+        pixel_asm.sad_sq_min[PIXEL_16x16]   = x264_pixel_sad_sq_min_16x16_avx512icl;
+        pixel_asm.sad_sq_min[PIXEL_8x8]     = x264_pixel_sad_sq_min_8x8_avx512icl;
+        pixel_asm.sad_dia_min[PIXEL_8x8]    = x264_pixel_sad_dia_min_8x8_avx512icl;
+        pixel_asm.sad_hex_min[PIXEL_8x8]    = x264_pixel_sad_hex_min_8x8_avx512icl;
+        pixel_asm.sad_oct_min[PIXEL_8x8]    = x264_pixel_sad_oct_min_8x8_avx512icl;
+        pixel_asm.sad_ring_min[PIXEL_8x8]   = x264_pixel_sad_ring_min_8x8_avx512icl;
+        pixel_asm.sad_hex_search[PIXEL_8x8] = x264_pixel_sad_hex_search_8x8_avx512icl;
+        pixel_asm.sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512icl;
+    }
+    /* not dispatched (the Zen 4 prune): the vdbpsadbw point sets and searches, at the first
+     * AVX512 level, so they stay tested and benched beside the avx2 and avx512icl ones */
+    if( (cpu_new&X264_CPU_AVX512) && !(cpu_ref&X264_CPU_AVX512) )
+    {
+        pixel_asm.sad_sq_min[PIXEL_16x16]   = x264_pixel_sad_sq_min_16x16_avx512;
+        pixel_asm.sad_dia_min[PIXEL_8x8]    = x264_pixel_sad_dia_min_8x8_avx512;
+        pixel_asm.sad_hex_min[PIXEL_8x8]    = x264_pixel_sad_hex_min_8x8_avx512;
+        pixel_asm.sad_oct_min[PIXEL_8x8]    = x264_pixel_sad_oct_min_8x8_avx512;
+        pixel_asm.sad_ring_min[PIXEL_8x8]   = x264_pixel_sad_ring_min_8x8_avx512;
+        pixel_asm.sad_hex_search[PIXEL_8x8] = x264_pixel_sad_hex_search_8x8_avx512;
+        pixel_asm.sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512;
     }
 #endif
     x264_predict_4x4_init( 0, predict_4x4 );
@@ -1473,24 +1494,30 @@ static int check_pixel( int cpu_ref, int cpu_new )
     /* dia, oct, ring (s 4), hex (s 6). j>>7: 0 random costs, 1 equal costs (ties go by idx),
      * 2 extreme mv costs and best, 3 a maximal sad (~fenc) in slot j%n, winning */
     ok = 1; used_asm = 0;
-    for( int kind = 0; kind < 4; kind++ )
+    for( int kind = 0; kind < 5; kind++ )
         for( int i = 0; i < 7; i++ )
         {
             static const int8_t dia_pt[4][2] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
             static const int8_t hex_pt[6][2] = {{-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}};
             static const int8_t oct_pt[8][2] = {{0,-2}, {-1,-1}, {1,-1}, {-2,0}, {2,0}, {-1,1}, {1,1}, {0,2}};
             static const int8_t ring_pt[8][2] = {{-1,-2}, {1,-2}, {-2,-1}, {2,-1}, {-2,1}, {2,1}, {-1,2}, {1,2}};
-            static const char *kind_names[4] = { "dia", "hex", "oct", "ring" };
-            static int (* const pt_c[4])( int, pixel *, pixel *, intptr_t, const int32_t *, int ) =
+            static const char *kind_names[5] = { "dia", "hex", "oct", "ring", "dia_zmm" };
+            static int (* const pt_c[5])( int, pixel *, pixel *, intptr_t, const int32_t *, int ) =
             {
-                x264_pixel_sad_dia_min_c, x264_pixel_sad_hex_min_c, x264_pixel_sad_oct_min_c, x264_pixel_sad_ring_min_c
+                x264_pixel_sad_dia_min_c, x264_pixel_sad_hex_min_c, x264_pixel_sad_oct_min_c, x264_pixel_sad_ring_min_c,
+                x264_pixel_sad_dia_min_c
             };
-            x264_pixel_cmp_pt_min_t pt_asm = (kind == 0 ? pixel_asm.sad_dia_min : kind == 1 ? pixel_asm.sad_hex_min
+            /* kind 4: the undispatched zmm sad_dia_min, at the first AVX512ICL level */
+            x264_pixel_cmp_pt_min_t pt_asm = kind == 4 ? NULL : (kind == 0 ? pixel_asm.sad_dia_min : kind == 1 ? pixel_asm.sad_hex_min
                                             : kind == 2 ? pixel_asm.sad_oct_min : pixel_asm.sad_ring_min)[i];
-            x264_pixel_cmp_pt_min_t pt_ref = (kind == 0 ? pixel_ref.sad_dia_min : kind == 1 ? pixel_ref.sad_hex_min
+            x264_pixel_cmp_pt_min_t pt_ref = kind == 4 ? NULL : (kind == 0 ? pixel_ref.sad_dia_min : kind == 1 ? pixel_ref.sad_hex_min
                                             : kind == 2 ? pixel_ref.sad_oct_min : pixel_ref.sad_ring_min)[i];
-            const int8_t (*pt)[2] = kind == 0 ? dia_pt : kind == 1 ? hex_pt : kind == 2 ? oct_pt : ring_pt;
-            int n = kind == 0 ? 4 : kind == 1 ? 6 : 8;
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+            if( kind == 4 && i == PIXEL_8x8 && (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+                pt_asm = x264_pixel_sad_dia_min_zmm_8x8_avx512icl;
+#endif
+            const int8_t (*pt)[2] = kind == 0 || kind == 4 ? dia_pt : kind == 1 ? hex_pt : kind == 2 ? oct_pt : ring_pt;
+            int n = kind == 0 || kind == 4 ? 4 : kind == 1 ? 6 : 8;
             int s = kind == 1 ? 6 : 4;
             if( !pt_asm || pt_asm == pt_ref )
                 continue;
