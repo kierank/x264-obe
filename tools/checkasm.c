@@ -7522,11 +7522,8 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
 void x264_cabac_block_residual_422_dc_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
-#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-#define x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2 x264_template(cabac_block_residual_8x8_rd_internal_avx2_bmi2)
-void x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
-#define x264_cabac_block_residual_8x8_rd2_internal_avx512icl x264_template(cabac_block_residual_8x8_rd2_internal_avx512icl)
-void x264_cabac_block_residual_8x8_rd2_internal_avx512icl( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#if HAVE_MMX && ARCH_X86_64
+#include "common/x86/bitstream.h"
 #define x264_cabac_block_residual_8x8_rd2_c x264_cabac_block_residual_8x8_rd_c
 #endif
 
@@ -7606,6 +7603,8 @@ static int check_cabac( int cpu_ref, int cpu_new )
                             coef += !(rnd&  63) * (rand()&0x0008);\
                             coef += !(rnd& 255) * (rand()&0x00F0);\
                             coef += !(rnd&1023) * (rand()&0x7F00);\
+                            /* 10-bit: levels past int16 (up to 65535, the C's bs_size_ue_big range) */\
+                            coef += HIGH_BIT_DEPTH && !(rnd&4095) ? rand()&0x8000 : 0;\
                             if( mode == 3 && coef && coef < 256 )\
                                 coef += rand()&31;\
                             nz |= dct[0][ac+k] = dct[1][ac+k] = coef * ((rand()&1) ? 1 : -1);\
@@ -7761,6 +7760,8 @@ name##fail:
                 for( int k = 0; k < 16; k++ )
                 {
                     int v = (j&256) ? lv[rand()%12] : 1 + (rand()&3);
+                    if( HIGH_BIT_DEPTH && v == 0x7fff && (rand()&1) )
+                        v = 0xffff; /* 10-bit: past int16 */
                     dct[0][k] = dct[1][k] = k < 8 && (mask >> k & 1) ? v * ((rand()&1) ? 1 : -1) : 0;
                 }
                 h.mb.b_interlaced = i;
