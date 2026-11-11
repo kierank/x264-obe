@@ -5649,6 +5649,52 @@ static int check_deblock( int cpu_ref, int cpu_new )
         }
     }
 
+    /* luma and 4:2:0 chroma edges at the encoder's 1080 strides (1984 frame, 3968 MBAFF field and
+     * mixed left edge), at the MB's edge positions: h luma at a 16-aligned pix + 0/4/8/12, h chroma
+     * + 0/8, v at + 0; pix is 4 rows down, so the v filters' p rows are inside the buffer */
+#define TEST_DEBLOCK_1080( name, v, chroma, ... ) \
+    if( ok && db_a.name != db_ref.name ) \
+    { \
+        set_func_name( #name "_1080" ); \
+        used_asm = 1; \
+        for( int k = 0; k < 144; k++ ) \
+        { \
+            int i = k % 36; \
+            intptr_t s = 1984 << (k&1); \
+            intptr_t off = 4*s + 64 + (v ? 0 : chroma ? 8*((k>>1)&1) : 4*((k>>1)&3)); \
+            if( !betas[i] ) \
+                continue; \
+            for( int y = 0; y < 22; y++ ) \
+                for( int x = 0; x < 128; x++ ) \
+                    db1080_c[y*s+x] = k%72 >= 36 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&1 ? 0xf : PIXEL_MAX); \
+            memcpy( db1080_a, db1080_c, 22*3968*sizeof(pixel) ); \
+            call_c1( db_c.name, db1080_c+off, s, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            call_a1( db_a.name, db1080_a+off, s, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            if( memcmp( db1080_c, db1080_a, 22*3968*sizeof(pixel) ) ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, #name "(a=%d, b=%d, stride=%d, 1080%s): [FAILED]\n", alphas[i], betas[i], (int)s, k%72 >= 36 ? ", near max" : "" ); \
+                break; \
+            } \
+        } \
+    }
+    pixel *db1080_c = x264_malloc( 2*22*3968*sizeof(pixel) );
+    if( !db1080_c )
+        return -1;
+    pixel *db1080_a = db1080_c + 22*3968;
+    memset( db1080_c, 0, 2*22*3968*sizeof(pixel) );
+    TEST_DEBLOCK_1080( deblock_luma[0], 0, 0, tcs[i] );
+    TEST_DEBLOCK_1080( deblock_luma[1], 1, 0, tcs[i] );
+    TEST_DEBLOCK_1080( deblock_luma_mbaff, 0, 0, tcs[i] );
+    TEST_DEBLOCK_1080( deblock_luma_intra[0], 0, 0 );
+    TEST_DEBLOCK_1080( deblock_luma_intra[1], 1, 0 );
+    TEST_DEBLOCK_1080( deblock_luma_intra_mbaff, 0, 0 );
+    TEST_DEBLOCK_1080( deblock_h_chroma_420, 0, 1, tcs_c[i] );
+    TEST_DEBLOCK_1080( deblock_h_chroma_420_intra, 0, 1 );
+    TEST_DEBLOCK_1080( deblock_chroma_420_mbaff, 0, 1, tcs_c[i] );
+    TEST_DEBLOCK_1080( deblock_chroma_420_intra_mbaff, 0, 1 );
+    x264_free( db1080_c );
+
     if( db_a.deblock_strength != db_ref.deblock_strength )
     {
         used_asm = 1;
