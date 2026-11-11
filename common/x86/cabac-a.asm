@@ -825,6 +825,169 @@ rd8_zero1_bits:
     dw 1665,6129,1683,6109,1704,5994,1728,5975,1754,5649,1781,5629,1812,5552,1846,5533
     dw 1884,5215,1925,5176,1971,5157,2021,4846,2076,4827,2135,4583,2201,4526,2273,4293
     dw 2351,4255,2435,4033,2528,4014,2629,3803,2740,3784,2861,3604,2995,3436,3142,3283
+; rd 8x8 sig pass by pairs (avx2): vpshufb indices of the 96 slots (15 contexts, each
+; its positions descending, padded at the front to whole pairs with position 63),
+; per output ymm and source 16-byte chunk; frame then field
+rd8_sig_perm:
+    db 128,0,128,1,128,2,128,128,128,10,9,3,128,128,128,128,13,12,11,8,7,4,15,14,6,5,128,128,128,128,128,128
+    db 128,128,128,128,128,128,128,5,4,128,128,128,3,2,1,0,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,6
+    db 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,14,6,1,128
+    db 15,128,15,128,15,128,15,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,15,3,128,128,128,128
+    db 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 128,128,15,9,8,7,128,128,128,128,14,10,128,128,128,128,128,128,128,128,128,128,13,11,128,128,128,128,128,128,128,128
+    db 7,0,128,128,128,128,128,128,13,8,128,128,128,128,128,128,128,128,128,128,12,9,128,128,128,128,128,128,128,128,128,128
+    db 128,128,128,128,128,128,15,15,128,128,128,128,15,15,15,15,15,15,7,4,128,128,128,128,15,15,15,15,15,15,15,15
+    db 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 128,128,128,12,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 128,128,11,128,128,128,128,15,5,2,128,128,128,3,128,128,128,4,128,128,128,128,128,10,128,128,128,128,128,128,128,128
+    db 13,6,128,128,11,8,2,128,128,128,14,9,0,128,15,10,1,128,15,15,15,12,5,128,15,15,15,15,15,15,15,15
+    db 128,0,2,1,4,3,128,128,128,128,6,5,128,128,128,128,128,128,128,128,14,7,128,128,15,8,128,128,128,128,128,9
+    db 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,0,128
+    db 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 15,128,128,128,128,128,15,15,15,15,128,128,15,15,15,15,15,15,15,15,128,128,15,15,128,128,15,15,15,15,128,128
+    db 128,128,128,12,11,10,128,128,128,128,128,13,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 128,128,128,128,128,128,128,128,128,12,4,128,128,128,128,128,128,128,128,128,128,9,8,1,128,128,128,128,128,128,128,128
+    db 128,128,128,128,128,128,128,12,4,128,128,128,128,128,128,128,15,9,8,1,0,128,128,128,128,128,128,128,11,10,3,2
+    db 15,15,15,128,128,128,3,128,128,128,128,128,15,7,6,0,128,128,128,128,128,128,128,128,9,8,2,1,128,128,128,128
+    db 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 11,10,3,2,128,128,15,13,7,5,128,128,14,6,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 128,128,128,128,7,5,128,128,128,128,128,6,128,128,128,128,14,13,128,128,128,128,128,128,128,128,128,128,128,128,128,128
+    db 128,128,128,128,128,128,128,128,128,128,15,128,128,128,5,4,128,128,15,14,13,12,11,10,15,15,15,15,15,15,15,15
+; positions for the coded test, 63 never coded
+rd8_sig_pos:
+    db 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    db 32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,127
+rd8_sig_pair: times 16 db 3, 1
+; [9*state+3*c1+c2], c = bin or 2 (not coded): 9*state' | entropy sum << 17
+rd8_sig9:
+    dd 0x001c0000, 0x0b880000, 0x000e0000, 0x0b880000, 0x16f40000, 0x0b7a0000, 0x000e0000, 0x0b7a0000, 0x00000000
+    dd 0x16f40009, 0x0b880009, 0x0b7a0009, 0x0b880009, 0x001c0009, 0x000e0009, 0x0b7a0009, 0x000e0009, 0x00000009
+    dd 0x001c0012, 0x0b6001c2, 0x000e0012, 0x0b8601b0, 0x13080276, 0x0b5201c2, 0x000e0012, 0x0b5201c2, 0x00000012
+    dd 0x1308027f, 0x0b8601b9, 0x0b5201cb, 0x0b6001cb, 0x001c001b, 0x000e001b, 0x0b5201cb, 0x000e001b, 0x0000001b
+    dd 0x001e0012, 0x0b6201c2, 0x00100012, 0x0b6001b0, 0x12e20276, 0x0b2c01c2, 0x00100012, 0x0b2c01c2, 0x00000024
+    dd 0x12e2027f, 0x0b6001b9, 0x0b2c01cb, 0x0b6201cb, 0x001e001b, 0x0010001b, 0x0b2c01cb, 0x0010001b, 0x0000002d
+    dd 0x00200012, 0x0b3c01c2, 0x00100024, 0x0b3e01c2, 0x12960288, 0x0b0601d4, 0x00100024, 0x0b0601d4, 0x00000036
+    dd 0x12960291, 0x0b3e01cb, 0x0b0601dd, 0x0b3c01cb, 0x0020001b, 0x0010002d, 0x0b0601dd, 0x0010002d, 0x0000003f
+    dd 0x00220024, 0x0b1801d4, 0x00120036, 0x0b1801c2, 0x12700288, 0x0ae001d4, 0x00120036, 0x0ae001d4, 0x00000048
+    dd 0x12700291, 0x0b1801cb, 0x0ae001dd, 0x0b1801dd, 0x0022002d, 0x0012003f, 0x0ae001dd, 0x0012003f, 0x00000051
+    dd 0x00240036, 0x0af201d4, 0x00120048, 0x0af001c2, 0x12480288, 0x0ab801d4, 0x00120048, 0x0ab801d4, 0x0000005a
+    dd 0x12480291, 0x0af001cb, 0x0ab801dd, 0x0af201dd, 0x0024003f, 0x00120051, 0x0ab801dd, 0x00120051, 0x00000063
+    dd 0x00260048, 0x0acc01d4, 0x0014005a, 0x0acc01d4, 0x11fc0288, 0x0a9201e6, 0x0014005a, 0x0a9201e6, 0x0000006c
+    dd 0x11fc0291, 0x0acc01dd, 0x0a9201ef, 0x0acc01dd, 0x00260051, 0x00140063, 0x0a9201ef, 0x00140063, 0x00000075
+    dd 0x0028005a, 0x0aa601e6, 0x0014006c, 0x0aa601d4, 0x11d60288, 0x0a6c01e6, 0x0014006c, 0x0a6c01e6, 0x0000007e
+    dd 0x11d60291, 0x0aa601dd, 0x0a6c01ef, 0x0aa601ef, 0x00280063, 0x00140075, 0x0a6c01ef, 0x00140075, 0x00000087
+    dd 0x002a006c, 0x0a8201e6, 0x0016007e, 0x0a8001d4, 0x11b00288, 0x0a4601e6, 0x0016007e, 0x0a4601e6, 0x00000090
+    dd 0x11b00291, 0x0a8001dd, 0x0a4601ef, 0x0a8201ef, 0x002a0075, 0x00160087, 0x0a4601ef, 0x00160087, 0x00000099
+    dd 0x002c007e, 0x0a5c01e6, 0x00160090, 0x0a5c01e6, 0x1162029a, 0x0a1e01f8, 0x00160090, 0x0a1e01f8, 0x000000a2
+    dd 0x116202a3, 0x0a5c01ef, 0x0a1e0201, 0x0a5c01ef, 0x002c0087, 0x00160099, 0x0a1e0201, 0x00160099, 0x000000ab
+    dd 0x002e0090, 0x0a3601f8, 0x001800a2, 0x0a3601e6, 0x113c029a, 0x09f801f8, 0x001800a2, 0x09f801f8, 0x000000b4
+    dd 0x113c02a3, 0x0a3601ef, 0x09f80201, 0x0a360201, 0x002e0099, 0x001800ab, 0x09f80201, 0x001800ab, 0x000000bd
+    dd 0x003000a2, 0x0a1001f8, 0x001800b4, 0x0a1001e6, 0x1116029a, 0x09d201f8, 0x001800b4, 0x09d201f8, 0x000000c6
+    dd 0x111602a3, 0x0a1001ef, 0x09d20201, 0x0a100201, 0x003000ab, 0x001800bd, 0x09d20201, 0x001800bd, 0x000000cf
+    dd 0x003200b4, 0x09ec01f8, 0x001a00c6, 0x09ee01f8, 0x10c8029a, 0x09ac020a, 0x001a00c6, 0x09ac020a, 0x000000d8
+    dd 0x10c802a3, 0x09ee0201, 0x09ac0213, 0x09ec0201, 0x003200bd, 0x001a00cf, 0x09ac0213, 0x001a00cf, 0x000000e1
+    dd 0x003600c6, 0x09c8020a, 0x001c00d8, 0x09c601f8, 0x10a0029a, 0x0984020a, 0x001c00d8, 0x0984020a, 0x000000ea
+    dd 0x10a002a3, 0x09c60201, 0x09840213, 0x09c80213, 0x003600cf, 0x001c00e1, 0x09840213, 0x001c00e1, 0x000000f3
+    dd 0x003a00d8, 0x09a2020a, 0x001e00ea, 0x09a4020a, 0x105402ac, 0x095e021c, 0x001e00ea, 0x095e021c, 0x000000fc
+    dd 0x105402b5, 0x09a40213, 0x095e0225, 0x09a20213, 0x003a00e1, 0x001e00f3, 0x095e0225, 0x001e00f3, 0x00000105
+    dd 0x003c00ea, 0x097c021c, 0x001e00fc, 0x097e020a, 0x102e02ac, 0x0938021c, 0x001e00fc, 0x0938021c, 0x0000010e
+    dd 0x102e02b5, 0x097e0213, 0x09380225, 0x097c0225, 0x003c00f3, 0x001e0105, 0x09380225, 0x001e0105, 0x00000117
+    dd 0x003e00fc, 0x0958021c, 0x0020010e, 0x0958020a, 0x100802ac, 0x0912021c, 0x0020010e, 0x0912021c, 0x00000120
+    dd 0x100802b5, 0x09580213, 0x09120225, 0x09580225, 0x003e0105, 0x00200117, 0x09120225, 0x00200117, 0x00000129
+    dd 0x0042010e, 0x0934021c, 0x00220120, 0x0934021c, 0x0fba02be, 0x08ea022e, 0x00220120, 0x08ea022e, 0x00000132
+    dd 0x0fba02c7, 0x09340225, 0x08ea0237, 0x09340225, 0x00420117, 0x00220129, 0x08ea0237, 0x00220129, 0x0000013b
+    dd 0x00460120, 0x090e022e, 0x00240132, 0x090e021c, 0x0f9402be, 0x08c4022e, 0x00240132, 0x08c4022e, 0x00000144
+    dd 0x0f9402c7, 0x090e0225, 0x08c40237, 0x090e0237, 0x00460129, 0x0024013b, 0x08c40237, 0x0024013b, 0x0000014d
+    dd 0x004a0132, 0x08ea022e, 0x00260144, 0x08ec022e, 0x0f4802be, 0x089e0240, 0x00260144, 0x089e0240, 0x00000156
+    dd 0x0f4802c7, 0x08ec0237, 0x089e0249, 0x08ea0237, 0x004a013b, 0x0026014d, 0x089e0249, 0x0026014d, 0x0000015f
+    dd 0x004e0144, 0x08c60240, 0x00280156, 0x08ca0240, 0x0efa02d0, 0x08780252, 0x00280156, 0x08780252, 0x00000168
+    dd 0x0efa02d9, 0x08ca0249, 0x0878025b, 0x08c60249, 0x004e014d, 0x0028015f, 0x0878025b, 0x0028015f, 0x00000171
+    dd 0x00520156, 0x08a20252, 0x002a0168, 0x08a20240, 0x0ed202d0, 0x08500252, 0x002a0168, 0x08500252, 0x0000017a
+    dd 0x0ed202d9, 0x08a20249, 0x0850025b, 0x08a2025b, 0x0052015f, 0x002a0171, 0x0850025b, 0x002a0171, 0x00000183
+    dd 0x00560168, 0x087c0252, 0x002c017a, 0x087c0240, 0x0eac02d0, 0x082a0252, 0x002c017a, 0x082a0252, 0x0000018c
+    dd 0x0eac02d9, 0x087c0249, 0x082a025b, 0x087c025b, 0x00560171, 0x002c0183, 0x082a025b, 0x002c0183, 0x00000195
+    dd 0x005c017a, 0x085a0252, 0x0030018c, 0x085a0252, 0x0e6002e2, 0x08040264, 0x0030018c, 0x08040264, 0x0000019e
+    dd 0x0e6002eb, 0x085a025b, 0x0804026d, 0x085a025b, 0x005c0183, 0x00300195, 0x0804026d, 0x00300195, 0x000001a7
+    dd 0x0062018c, 0x08360264, 0x0032019e, 0x08340252, 0x0e3a02e2, 0x07de0264, 0x0032019e, 0x07de0264, 0x000001b0
+    dd 0x0e3a02eb, 0x0834025b, 0x07de026d, 0x0836026d, 0x00620195, 0x003201a7, 0x07de026d, 0x003201a7, 0x000001b9
+    dd 0x0066019e, 0x08120264, 0x003401b0, 0x08120264, 0x0dec02e2, 0x07b60276, 0x003401b0, 0x07b60276, 0x000001c2
+    dd 0x0dec02eb, 0x0812026d, 0x07b6027f, 0x0812026d, 0x006601a7, 0x003401b9, 0x07b6027f, 0x003401b9, 0x000001cb
+    dd 0x006c01b0, 0x07ee0276, 0x003801c2, 0x07f00276, 0x0da002f4, 0x07900288, 0x003801c2, 0x07900288, 0x000001d4
+    dd 0x0da002fd, 0x07f0027f, 0x07900291, 0x07ee027f, 0x006c01b9, 0x003801cb, 0x07900291, 0x003801cb, 0x000001dd
+    dd 0x007201c2, 0x07ca0288, 0x003a01d4, 0x07ca0276, 0x0d7a02f4, 0x076a0288, 0x003a01d4, 0x076a0288, 0x000001e6
+    dd 0x0d7a02fd, 0x07ca027f, 0x076a0291, 0x07ca0291, 0x007201cb, 0x003a01dd, 0x076a0291, 0x003a01dd, 0x000001ef
+    dd 0x007801d4, 0x07a80288, 0x003e01e6, 0x07aa0288, 0x0d2c02f4, 0x0744029a, 0x003e01e6, 0x0744029a, 0x000001f8
+    dd 0x0d2c02fd, 0x07aa0291, 0x074402a3, 0x07a80291, 0x007801dd, 0x003e01ef, 0x074402a3, 0x003e01ef, 0x00000201
+    dd 0x008001e6, 0x0786029a, 0x004201f8, 0x07820288, 0x0d0402f4, 0x071c029a, 0x004201f8, 0x071c029a, 0x0000020a
+    dd 0x0d0402fd, 0x07820291, 0x071c02a3, 0x078602a3, 0x008001ef, 0x00420201, 0x071c02a3, 0x00420201, 0x00000213
+    dd 0x008801f8, 0x0762029a, 0x0046020a, 0x0762029a, 0x0cb80318, 0x06f602ac, 0x0046020a, 0x06f602ac, 0x0000021c
+    dd 0x0cb80321, 0x076202a3, 0x06f602b5, 0x076202a3, 0x00880201, 0x00460213, 0x06f602b5, 0x00460213, 0x00000225
+    dd 0x0090020a, 0x074002ac, 0x004a021c, 0x074202ac, 0x0c6c0318, 0x06d002be, 0x004a021c, 0x06d002be, 0x0000022e
+    dd 0x0c6c0321, 0x074202b5, 0x06d002c7, 0x074002b5, 0x00900213, 0x004a0225, 0x06d002c7, 0x004a0225, 0x00000237
+    dd 0x0098021c, 0x071e02be, 0x004e022e, 0x071c02ac, 0x0c460318, 0x06aa02be, 0x004e022e, 0x06aa02be, 0x00000240
+    dd 0x0c460321, 0x071c02b5, 0x06aa02c7, 0x071e02c7, 0x00980225, 0x004e0237, 0x06aa02c7, 0x004e0237, 0x00000249
+    dd 0x00a0022e, 0x06fc02be, 0x00520240, 0x06fa02be, 0x0bf8032a, 0x068202d0, 0x00520240, 0x068202d0, 0x00000252
+    dd 0x0bf80333, 0x06fa02c7, 0x068202d9, 0x06fc02c7, 0x00a00237, 0x00520249, 0x068202d9, 0x00520249, 0x0000025b
+    dd 0x00a80240, 0x06d802d0, 0x00560252, 0x06dc02d0, 0x0baa032a, 0x065c02e2, 0x00560252, 0x065c02e2, 0x00000264
+    dd 0x0baa0333, 0x06dc02d9, 0x065c02eb, 0x06d802d9, 0x00a80249, 0x0056025b, 0x065c02eb, 0x0056025b, 0x0000026d
+    dd 0x00b20252, 0x06b802e2, 0x005c0264, 0x06b602d0, 0x0b84032a, 0x063602e2, 0x005c0264, 0x063602e2, 0x00000276
+    dd 0x0b840333, 0x06b602d9, 0x063602eb, 0x06b802eb, 0x00b2025b, 0x005c026d, 0x063602eb, 0x005c026d, 0x0000027f
+    dd 0x00bc0264, 0x069602e2, 0x00600276, 0x069802e2, 0x0b38034e, 0x061002f4, 0x00600276, 0x061002f4, 0x00000288
+    dd 0x0b380357, 0x069802eb, 0x061002fd, 0x069602eb, 0x00bc026d, 0x0060027f, 0x061002fd, 0x0060027f, 0x00000291
+    dd 0x00c60276, 0x067602f4, 0x00660288, 0x067002e2, 0x0b10034e, 0x05e802f4, 0x00660288, 0x05e802f4, 0x0000029a
+    dd 0x0b100357, 0x067002eb, 0x05e802fd, 0x067602fd, 0x00c6027f, 0x00660291, 0x05e802fd, 0x00660291, 0x000002a3
+    dd 0x00d20288, 0x065402f4, 0x006c029a, 0x065a0306, 0x0a9e0360, 0x05c20318, 0x006c029a, 0x05c20318, 0x000002ac
+    dd 0x0a9e0369, 0x065a030f, 0x05c20321, 0x065402fd, 0x00d20291, 0x006c02a3, 0x05c20321, 0x006c02a3, 0x000002b5
+    dd 0x00de029a, 0x06340318, 0x007202ac, 0x06340306, 0x0a780360, 0x059c0318, 0x007202ac, 0x059c0318, 0x000002be
+    dd 0x0a780369, 0x0634030f, 0x059c0321, 0x06340321, 0x00de02a3, 0x007202b5, 0x059c0321, 0x007202b5, 0x000002c7
+    dd 0x00ea02ac, 0x06140318, 0x007802be, 0x06160318, 0x0a2a0360, 0x0576032a, 0x007802be, 0x0576032a, 0x000002d0
+    dd 0x0a2a0369, 0x06160321, 0x05760333, 0x06140321, 0x00ea02b5, 0x007802c7, 0x05760333, 0x007802c7, 0x000002d9
+    dd 0x00f802be, 0x05f6032a, 0x008002d0, 0x05ee0318, 0x0a020360, 0x054e032a, 0x008002d0, 0x054e032a, 0x000002e2
+    dd 0x0a020369, 0x05ee0321, 0x054e0333, 0x05f60333, 0x00f802c7, 0x008002d9, 0x054e0333, 0x008002d9, 0x000002eb
+    dd 0x010802d0, 0x05d6032a, 0x008802e2, 0x05dc033c, 0x09900384, 0x0528034e, 0x008802e2, 0x0528034e, 0x000002f4
+    dd 0x0990038d, 0x05dc0345, 0x05280357, 0x05d60333, 0x010802d9, 0x008802eb, 0x05280357, 0x008802eb, 0x000002fd
+    dd 0x011802e2, 0x05b8034e, 0x009002f4, 0x05b6033c, 0x096a0384, 0x0502034e, 0x009002f4, 0x0502034e, 0x00000306
+    dd 0x096a038d, 0x05b60345, 0x05020357, 0x05b80357, 0x011802eb, 0x009002fd, 0x05020357, 0x009002fd, 0x0000030f
+    dd 0x012802f4, 0x059a034e, 0x00980306, 0x059c034e, 0x091e0396, 0x04dc0360, 0x00980306, 0x04dc0360, 0x00000318
+    dd 0x091e039f, 0x059c0357, 0x04dc0369, 0x059a0357, 0x012802fd, 0x0098030f, 0x04dc0369, 0x0098030f, 0x00000321
+    dd 0x01380306, 0x057c0360, 0x00a00318, 0x0574034e, 0x08f60396, 0x04b40360, 0x00a00318, 0x04b40360, 0x0000032a
+    dd 0x08f6039f, 0x05740357, 0x04b40369, 0x057c0369, 0x0138030f, 0x00a00321, 0x04b40369, 0x00a00321, 0x00000333
+    dd 0x014a0318, 0x055e0360, 0x00aa032a, 0x05660372, 0x088203a8, 0x048e0384, 0x00aa032a, 0x048e0384, 0x0000033c
+    dd 0x088203b1, 0x0566037b, 0x048e038d, 0x055e0369, 0x014a0321, 0x00aa0333, 0x048e038d, 0x00aa0333, 0x00000345
+    dd 0x015e032a, 0x05420384, 0x00b4033c, 0x05400372, 0x085c03a8, 0x04680384, 0x00b4033c, 0x04680384, 0x0000034e
+    dd 0x085c03b1, 0x0540037b, 0x0468038d, 0x0542038d, 0x015e0333, 0x00b40345, 0x0468038d, 0x00b40345, 0x00000357
+    dd 0x0174033c, 0x05280384, 0x00c0034e, 0x05280384, 0x081003cc, 0x04420396, 0x00c0034e, 0x04420396, 0x00000360
+    dd 0x081003d5, 0x0528038d, 0x0442039f, 0x0528038d, 0x01740345, 0x00c00357, 0x0442039f, 0x00c00357, 0x00000369
+    dd 0x018c034e, 0x050e0396, 0x00cc0360, 0x050e0396, 0x07c203cc, 0x041a03a8, 0x00cc0360, 0x041a03a8, 0x00000372
+    dd 0x07c203d5, 0x050e039f, 0x041a03b1, 0x050e039f, 0x018c0357, 0x00cc0369, 0x041a03b1, 0x00cc0369, 0x0000037b
+    dd 0x01a40360, 0x04f203a8, 0x00d80372, 0x04e80396, 0x079c03cc, 0x03f403a8, 0x00d80372, 0x03f403a8, 0x00000384
+    dd 0x079c03d5, 0x04e8039f, 0x03f403b1, 0x04f203b1, 0x01a40369, 0x00d8037b, 0x03f403b1, 0x00d8037b, 0x0000038d
+    dd 0x01be0372, 0x04da03a8, 0x00e60384, 0x04e403ba, 0x072803f0, 0x03ce03cc, 0x00e60384, 0x03ce03cc, 0x00000396
+    dd 0x072803f9, 0x04e403c3, 0x03ce03d5, 0x04da03b1, 0x01be037b, 0x00e6038d, 0x03ce03d5, 0x00e6038d, 0x0000039f
+    dd 0x01da0384, 0x04c203cc, 0x00f40396, 0x04be03ba, 0x070203f0, 0x03a803cc, 0x00f40396, 0x03a803cc, 0x000003a8
+    dd 0x070203f9, 0x04be03c3, 0x03a803d5, 0x04c203d5, 0x01da038d, 0x00f4039f, 0x03a803d5, 0x00f4039f, 0x000003b1
+    dd 0x01f80396, 0x04ac03cc, 0x010403a8, 0x04a803cc, 0x06b40402, 0x038003de, 0x010403a8, 0x038003de, 0x000003ba
+    dd 0x06b4040b, 0x04a803d5, 0x038003e7, 0x04ac03d5, 0x01f8039f, 0x010403b1, 0x038003e7, 0x010403b1, 0x000003c3
+    dd 0x021a03a8, 0x049603de, 0x011603ba, 0x049403de, 0x06680414, 0x035a03f0, 0x011603ba, 0x035a03f0, 0x000003cc
+    dd 0x0668041d, 0x049403e7, 0x035a03f9, 0x049603e7, 0x021a03b1, 0x011603c3, 0x035a03f9, 0x011603c3, 0x000003d5
+    dd 0x023e03ba, 0x048203f0, 0x012803cc, 0x048403f0, 0x061a0426, 0x03340402, 0x012803cc, 0x03340402, 0x000003de
+    dd 0x061a042f, 0x048403f9, 0x0334040b, 0x048203f9, 0x023e03c3, 0x012803d5, 0x0334040b, 0x012803d5, 0x000003e7
+    dd 0x026203cc, 0x046e0402, 0x013a03de, 0x04760402, 0x05ce0426, 0x030e0414, 0x013a03de, 0x030e0414, 0x000003f0
+    dd 0x05ce042f, 0x0476040b, 0x030e041d, 0x046e040b, 0x026203d5, 0x013a03e7, 0x030e041d, 0x013a03e7, 0x000003f9
+    dd 0x028a03de, 0x045e0414, 0x015003f0, 0x04660414, 0x0580044a, 0x02e60426, 0x015003f0, 0x02e60426, 0x00000402
+    dd 0x05800453, 0x0466041d, 0x02e6042f, 0x045e041d, 0x028a03e7, 0x015003f9, 0x02e6042f, 0x015003f9, 0x0000040b
+    dd 0x02b803f0, 0x044e0426, 0x01680402, 0x04400414, 0x055a044a, 0x02c00426, 0x01680402, 0x02c00426, 0x00000414
+    dd 0x055a0453, 0x0440041d, 0x02c0042f, 0x044e042f, 0x02b803f9, 0x0168040b, 0x02c0042f, 0x0168040b, 0x0000041d
+    dd 0x02e80402, 0x04400426, 0x01800414, 0x04540438, 0x04e8045c, 0x029a044a, 0x01800414, 0x029a044a, 0x00000426
+    dd 0x04e80465, 0x04540441, 0x029a0453, 0x0440042f, 0x02e8040b, 0x0180041d, 0x029a0453, 0x0180041d, 0x0000042f
+    dd 0x031c0414, 0x0436044a, 0x019c0426, 0x042e0438, 0x04c2045c, 0x0274044a, 0x019c0426, 0x0274044a, 0x00000438
+    dd 0x04c20465, 0x042e0441, 0x02740453, 0x04360453, 0x031c041d, 0x019c042f, 0x02740453, 0x019c042f, 0x00000441
+    dd 0x03560426, 0x042e044a, 0x01ba0438, 0x042a044a, 0x0474046e, 0x024e045c, 0x01ba0438, 0x024e045c, 0x0000044a
+    dd 0x04740477, 0x042a0453, 0x024e0465, 0x042e0453, 0x0356042f, 0x01ba0441, 0x024e0465, 0x01ba0441, 0x00000453
+    dd 0x03960438, 0x042a045c, 0x01dc044a, 0x0426045c, 0x04260477, 0x0226046e, 0x01dc044a, 0x0226046e, 0x0000045c
+    dd 0x0426046e, 0x04260465, 0x02260477, 0x042a0465, 0x03960441, 0x01dc0453, 0x02260477, 0x01dc0453, 0x00000465
+    dd 0x03dc044a, 0x0426046e, 0x0200045c, 0x0400046e, 0x04000465, 0x02000477, 0x0200045c, 0x02000477, 0x0000046e
+    dd 0x0400045c, 0x04000477, 0x0200046e, 0x04260477, 0x03dc0453, 0x02000465, 0x0200046e, 0x02000465, 0x00000477
 
 SECTION .text
 
@@ -2251,20 +2414,328 @@ CABAC bmi2
     RD8_GT1_ESC 6, g9
 %endmacro
 
-; 8x8 blocks, avx2: the sig pass as the ssse3 version (every i < last without
-; a branch on l[i], one rd_sig_tab load per flag; r10: entropy sum << 16 over
-; the transitions, 64-bit, the transitions < 63*127), then RD8_LEVELS. The ymm
-; abs() gives the nonzero mask and the mask of levels > 1.
+; generated: per context, its pairs on the state in r2 (9*state), r10 the sum
+%macro RD8_SIG_PAIRS 0
+    movzx    r2d, byte [r5+0]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+0]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+0], r2b
+    movzx    r2d, byte [r5+1]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+2]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+1], r2b
+    movzx    r2d, byte [r5+2]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+4]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+2], r2b
+    movzx    r2d, byte [r5+3]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+6]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+8]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+10]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+3], r2b
+    movzx    r2d, byte [r5+4]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+12]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+14]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+16]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+18]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+20]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+4], r2b
+    movzx    r2d, byte [r5+5]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+22]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+24]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+5], r2b
+    movzx    r2d, byte [r5+6]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+26]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+28]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+30]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+6], r2b
+    movzx    r2d, byte [r5+7]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+32]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+34]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+36]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+7], r2b
+    movzx    r2d, byte [r5+8]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+38]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+40]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+42]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+8], r2b
+    movzx    r2d, byte [r5+9]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+44]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+46]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+48]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+50]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+52]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+54]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+9], r2b
+    movzx    r2d, byte [r5+10]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+56]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+58]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+60]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+62]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+64]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+66]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+10], r2b
+    movzx    r2d, byte [r5+11]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+68]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+70]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+72]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+11], r2b
+    movzx    r2d, byte [r5+12]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+74]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+76]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+12], r2b
+    movzx    r2d, byte [r5+13]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+78]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+80]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+13], r2b
+    movzx    r2d, byte [r5+14]
+    lea      r2d, [r2+r2*8]
+    movzx    r1d, word [sigp+82]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+84]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    movzx    r1d, word [sigp+86]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+    movzx    r2d, r1w
+    imul     r2d, r2d, 57
+    shr      r2d, 9
+    mov [r5+14], r2b
+%endmacro
+
+; 8x8 blocks, avx2. The sig pass, for last < RD8_SIG_PAIRS_MIN: as the ssse3
+; version (every i < last without a branch on l[i], one rd_sig_tab load per
+; flag; r10: entropy sum << 16 over the transitions, 64-bit, the transitions
+; < 63*127). Otherwise by pairs: each context's positions, descending, go to
+; fixed slots (padded at the front with position 63); a code per position
+; (bin, or 2 = not coded: above last or 63) is permuted to the slots by
+; vpshufb, pairs give 3*c1+c2 by pmaddubsw, and each context runs its pairs on
+; its state in a register: one rd8_sig9 load per pair. Then RD8_LEVELS. The
+; ymm abs() gives the nonzero mask and the mask of levels > 1.
+%ifndef RD8_SIG_PAIRS_MIN
+    %define RD8_SIG_PAIRS_MIN 32
+%endif
 %macro CABAC_RESIDUAL_RD_8x8_AVX2 0
     %define dct rsp
-    %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb
+    %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize+96 ; abs() copy, cb, sig pairs
     %define cbm [rsp+64*SIZEOF_DCTCOEF]
+    %define sigp rsp+64*SIZEOF_DCTCOEF+mmsize
 %ifdef PIC
-    cglobal cabac_block_residual_8x8_rd_internal, 4,13,6,-rd8_stack
+    cglobal cabac_block_residual_8x8_rd_internal, 4,13,8,-rd8_stack
     lea     r11, [$$]
     %define GLOBAL +r11-$$
 %else
-    cglobal cabac_block_residual_8x8_rd_internal, 4,13,6,-rd8_stack
+    cglobal cabac_block_residual_8x8_rd_internal, 4,13,8,-rd8_stack
     %define GLOBAL
 %endif
     pabsw     m0, [r0+0*mmsize]
@@ -2300,6 +2771,7 @@ CABAC bmi2
     xor      r6d, 63                                          ; r6 = last
     shl      r1d, 4                                           ; MB_INTERLACED*16
     lea       r4, [significant_coeff_flag_offset_8x8+r1*4 GLOBAL]    ; r4 = sig offset 8x8
+    lea     r10d, [r1+r1*2]                                   ; MB_INTERLACED*48
     add      r1d, r2d
     movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
     movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
@@ -2310,15 +2782,9 @@ CABAC bmi2
     add       r5, r3
     add       r7, r3
     add       r8, r3
-; if( last != 63 ): sig and last flags of last, bin 1
+; if( last != 63 ): last flag of last, bin 1
     cmp      r6d, 63
     je .skip_last_sigmap
-    movzx    r1d, byte [r4+r6]
-    movzx    r2d, byte [r5+r1]
-    mov      r2d, [rd_sig_tab+4+r2*8 GLOBAL]
-    mov [r5+r1], r2b
-    shr      r2d, 16
-    add      r0d, r2d
     movzx    r1d, byte [last_coeff_flag_offset_8x8+r6 GLOBAL]
     movzx    r2d, byte [r7+r1]
     mov      r2d, [rd_sig_tab+4+r2*8 GLOBAL]
@@ -2326,6 +2792,15 @@ CABAC bmi2
     shr      r2d, 16
     add      r0d, r2d
 .skip_last_sigmap:
+    cmp      r6d, RD8_SIG_PAIRS_MIN
+    jae .sig_pairs
+; sig flag of last, bin 1 (last < 63 here)
+    movzx    r1d, byte [r4+r6]
+    movzx    r2d, byte [r5+r1]
+    mov      r2d, [rd_sig_tab+4+r2*8 GLOBAL]
+    mov [r5+r1], r2b
+    shr      r2d, 16
+    add      r0d, r2d
 ; for( int i = last-1 ; i >= 0; i-- ) x264_cabac_encode_decision( cb, ctx_sig + sig_off[i], !!l[i] )
     xor     r10d, r10d
     lea      r1d, [r6-1]
@@ -2349,6 +2824,45 @@ CABAC bmi2
     mov [r3+cb.bits_encoded], r0d
     RET
     RD8_LEVELS_TAIL
+.sig_pairs:
+; codes: bin (l[i] != 0), or 2 for i > last and i = 63; m0/m2: l[i] == 0 bytes
+    vmovd    xm4, r6d
+    vpbroadcastb m4, xm4
+    movu      m5, [rd8_sig_pos]
+    movu      m6, [rd8_sig_pos+32]
+    pcmpgtb   m5, m4
+    pcmpgtb   m6, m4
+    por       m0, m5                                          ; no bin above last, nor at 63 = last
+    por       m2, m6
+    pandn     m0, [pb_1]
+    pandn     m2, [pb_1]
+    psubb     m0, m5
+    psubb     m2, m6
+    psubb     m0, m5
+    psubb     m2, m6
+    lea      r10, [rd8_sig_perm+r10*8 GLOBAL]                 ; frame or field slots
+    vpermq    m1, m0, q3232                                   ; codes 16-31, both lanes
+    vpermq    m0, m0, q1010                                   ; codes 0-15
+    vpermq    m3, m2, q3232
+    vpermq    m2, m2, q1010
+%assign %%o 0
+%rep 3
+    pshufb    m4, m0, [r10+(4*%%o+0)*32]
+    pshufb    m5, m1, [r10+(4*%%o+1)*32]
+    pshufb    m6, m2, [r10+(4*%%o+2)*32]
+    pshufb    m7, m3, [r10+(4*%%o+3)*32]
+    por       m4, m5
+    por       m6, m7
+    por       m4, m6
+    pmaddubsw m4, [rd8_sig_pair]                             ; 3*c1+c2 per slot pair
+    mova [sigp+%%o*32], m4
+%assign %%o %%o+1
+%endrep
+    xor     r10d, r10d
+    RD8_SIG_PAIRS
+    shr      r10, 17
+    add      r0d, r10d
+    jmp .sig_end
 %endmacro
 
 %if ARCH_X86_64
