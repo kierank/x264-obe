@@ -938,6 +938,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->quant_8x8_scan      = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
+    pf_interlaced->intra_satd_x9_4x4_recon_notr  = NULL;
+    pf_progressive->intra_satd_x9_4x4_recon_notr = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX
@@ -1068,6 +1070,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
         pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx2;
         pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx2;
 #if !HIGH_BIT_DEPTH
+        pf_interlaced->intra_satd_x9_4x4_recon_notr  = x264_intra_satd_x9_4x4_recon_field_notr_avx2;
+        pf_progressive->intra_satd_x9_4x4_recon_notr = x264_intra_satd_x9_4x4_recon_frame_notr_avx2;
         /* vs the split chain on Core 3 (checkasm, nop-corrected ticks per call, median of 3 seeds):
          * flat: _flat_avx2 field 60.2 vs 76.3 (1.27x), frame 75.5 vs 90.5 (1.20x); the general kernel
          * loses on flat by 3-11 %. cqm: general field 85.6 vs 100.8 (1.18x), frame 115.1 vs 119.7 (1.04x) */

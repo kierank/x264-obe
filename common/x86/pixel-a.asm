@@ -222,6 +222,11 @@ x9b4_vl:  X9B_MASK4 11,12,13,14,  5, 6, 7, 8, 12,13,14,15,  6, 7, 8, 9
 x9b4_hu:  X9B_MASK4 14, 2,13, 1, 13, 1,12, 0, 12, 0,11,11, 11,11,11,11
 ; v, h and dc in the hadamard domain: pmaddubsw of these bytes of e (dc splat) by these
 ; weights, then v takes the first horizontal stage, gives the pred's part of the stages
+; e from t0..t3 t4..t7 (lt l0 in their row dwords) | without the topright (t4..t7 = t3), and l1..l3
+x9b4_edge: db -1,-1,-1,-1,15,11, 0, 1, 2, 3, 4, 5, 6, 7, 7, 7
+           db -1,-1,-1,-1,15,11, 0, 1, 2, 3, 3, 3, 3, 3, 3, 3
+x9b4_edgel: db 11,11, 7, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+           times 16 db 0
 x9b4_vt:  times 2 db  6, 7, 8, 9, 6, 7, 8, 9, -1,-1,-1,-1,-1,-1,-1,-1
 x9b4_ht:  db  4, 3,-1,-1,-1,-1,-1,-1,  4, 3,-1,-1,-1,-1,-1,-1
           db  2, 1,-1,-1,-1,-1,-1,-1,  2, 1,-1,-1,-1,-1,-1,-1
@@ -9898,16 +9903,35 @@ cglobal intra_sad_x9_8x8, 5,7,8
 
 ; intra_satd_x9_4x4 up to the choice: eax = cost | mode<<16, r%2 = mode*16,
 ; the winner's source vector at pred_buf + 16*mode (its rows by x9b4c).
-; r%1: gpr tmp; %3: keep fenc rows 0-3 in xm15.
+; r%1: gpr tmp; %3: keep fenc rows 0-3 in xm15; %4: if a gpr, 1 = no topright: t4..t7
+; are then t3 (as the topright emulation of x264_mb_analyse_intra). With %4 each edge piece is
+; loaded from inside one row store: t0..t3, t4..t7 and the 4 bytes left of lt and of l0..l3 by dword.
 ; v, h and dc are scored in the hadamard domain: their predictions are rank 1
 ; or constant, so their part of the stages is a few words of the edge transforms.
-%macro X9B_4x4_SCORE 3
+%macro X9B_4x4_SCORE 3-4 0
+%ifidn %4, 0
     movu        xm1, [r1-1*FDEC_STRIDE-8]
     pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
     pinsrb      xm1, [r1+2*FDEC_STRIDE-1], 1
     pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
     pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
     pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+%else
+    lea         r%1, [x9b4_edge]
+    neg         r%4d
+    and         r%4d, 16
+    add         r%1, r%4
+    movd        xm1, [r1-1*FDEC_STRIDE]   ; t0..t3
+    movd        xm2, [r1+1*FDEC_STRIDE-4] ; .. l1
+    pinsrd      xm1, [r1-1*FDEC_STRIDE+4], 1 ; t4..t7
+    pinsrd      xm2, [r1+2*FDEC_STRIDE-4], 1 ; .. l2
+    pinsrd      xm1, [r1-1*FDEC_STRIDE-4], 2 ; .. lt
+    pinsrd      xm2, [r1+3*FDEC_STRIDE-4], 2 ; .. l3
+    pinsrd      xm1, [r1+0*FDEC_STRIDE-4], 3 ; .. l0
+    pshufb      xm2, [x9b4_edgel]
+    pshufb      xm1, [r%1]            ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+    por         xm1, xm2
+%endif
     pxor        xm4, xm4
     pshufb      xm2, xm1, [intrax9a_dc]
     psadbw      xm2, xm4
@@ -10033,14 +10057,22 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*16
 ;-----------------------------------------------------------------------------
 ; int intra_satd_x9_4x4_recon( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts, int16_t level[16],
 ;                              x264_quant4_recon_t *q, int limit )
+; int intra_satd_x9_4x4_recon_notr( same )
 ;-----------------------------------------------------------------------------
 ; intra_satd_x9_4x4; for a cost <= limit the winner is then coded as by sub4x4_dct,
 ; quant_4x4 and, if nonzero, scan_4x4 into level, dequant_4x4 and add4x4_idct.
+; _notr: no topright, t4..t7 = t3 (fdec's are not read); both entries share the body.
 ; Returns cost | mode<<16 | nz<<24.
 %macro X9B_4x4_RECON 2 ; name, field
-cglobal intra_satd_x9_4x4_recon_%1, 6,9,16, 9*16
+cglobal intra_satd_x9_4x4_recon_%1_notr, 0,0
+    mov         r6d, 1                ; no topright
+    jmp mangle(private_prefix %+ _intra_satd_x9_4x4_recon_%1 %+ SUFFIX %+ .entry)
+cglobal intra_satd_x9_4x4_recon_%1, 0,0
+    xor         r6d, r6d
+.entry:
+    PROLOGUE 6,9,16, 9*16
     %define pred_buf rsp
-    X9B_4x4_SCORE 8, 7, 1
+    X9B_4x4_SCORE 8, 7, 1, 6
     X9B_4x4_PRED 0, 7, 0              ; xm0: prediction rows 0-3
     movzx       r8d, ax
     cmp         r8d, r5d
