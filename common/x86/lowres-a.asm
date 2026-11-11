@@ -582,4 +582,9 @@ INIT_YMM avx2
 %assign LI_NREGS 16
 LOWRES_I_MBS
 
+INIT_YMM avx512icl
+%assign LI_STACK 0
+%assign LI_NREGS 23
+LOWRES_I_MBS
+
 %endif ; !HIGH_BIT_DEPTH && UNIX64
