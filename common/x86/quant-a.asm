@@ -1815,8 +1815,9 @@ OPTIMIZE_CHROMA_ICL 2x2, 4
 %endif
 
 %if HIGH_BIT_DEPTH == 0
+%if ARCH_X86_64
 ; 8-bit 2x4, AVX2: the avx512icl algorithm, vpblendd for the masked subtracts,
-; ptest against -64 for vptestmd, sign*dmf from the GPRs
+; ptest against -64 for vptestmd, sign*dmf from the GPRs (8 GPRs: x86-64 only)
 INIT_YMM avx2
 cglobal optimize_chroma_2x4_dc, 2,8,8
     pmovsxwd      m0, [r0]
@@ -1882,6 +1883,7 @@ cglobal optimize_chroma_2x4_dc, 2,8,8
     jge .coef
 .ret:
     RET
+%endif ; ARCH_X86_64
 %endif
 
 %if HIGH_BIT_DEPTH
