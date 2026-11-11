@@ -44,6 +44,9 @@ idct8_dstw:  db 0,-1,7,-1,3,-1,4,-1, 8,-1,15,-1,11,-1,12,-1
              db 2,-1,5,-1,1,-1,6,-1, 10,-1,13,-1,9,-1,14,-1
 idct8_rowb:  db 0,6,4,2,3,5,7,1, 8,14,12,10,11,13,15,9
 idct8_rowd:  dd 0,4,1,5, 2,6,3,7, 0,4,1,5
+idct8_rowp:  db 0,18,16,2,3,17,19,1, 4,22,20,6,7,21,23,5
+             db 8,26,24,10,11,25,27,9, 12,30,28,14,15,29,31,13
+             db 0,18,16,2,3,17,19,1, 4,22,20,6,7,21,23,5
 
 SECTION .text
 
@@ -947,5 +950,10 @@ cglobal add16x16_idct8, 2,2,12
     RET
 %undef dct8z_i
 %undef dct8z_j
+
+; the pairs kernel in EVEX: masked vpsubw for psignw, one vpermb for the
+; vpermd + pshufb row reorder
+INIT_YMM avx512icl
+ADD8x8_IDCT8_PAIRS
 
 %endif ; !HIGH_BIT_DEPTH
