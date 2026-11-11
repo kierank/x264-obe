@@ -89,12 +89,13 @@ uint64_t x264_rd_cost_part( x264_t *h, int i_lambda2, int i8, int i_pixel );
 extern uint16_t *x264_cost_mv_fpel[QP_MAX+1][4];
 
 /* pixf.me_search_fpel: x264_me_search_ref at 16x16 to 8x8 for HEX, with the fn kernels of
- * the size (sad fpelcmp), unweighted at subme >= 3: the predictors, the hexagon, half
- * hexagons and square refine, then m's mv, cost and (subme < 3, the zero sad exit) cost_mv as
- * me_search_ref leaves them; with qfenc, refine_subpel's subpel_search call, fn->subpel( ...,
- * iters, range, qfenc, fn->qpel, halfpel_thresh, mvp ), and its m. Returns 1 if refine_subpel
- * is still to run: ME_FPEL_REFINE, no qfenc and no zero sad exit. The asm offsets follow
- * this layout. */
+ * the size (sad fpelcmp): the predictors, the hexagon, half hexagons and square refine,
+ * then m's mv, cost and (subme < 3, the zero sad exit) cost_mv as me_search_ref leaves them;
+ * with qfenc, refine_subpel's subpel_search call, fn->subpel( ..., iters, range, qfenc,
+ * fn->qpel, halfpel_thresh, mvp ) (ME_FPEL_WEIGHT: fn->subpel_w( ..., fn->qpel_w, ..., mvp,
+ * m->weight )), and its m. Returns 1 if refine_subpel is still to run: ME_FPEL_REFINE, no
+ * qfenc and no zero sad exit. The asm offsets follow this layout. ME_FPEL_WEIGHT: the 8-bit
+ * entries only (high bit depth: unweighted at subme >= 3, no subpel_w call). */
 struct x264_me_fpel
 {
     x264_me_t *m;
@@ -112,6 +113,7 @@ struct x264_me_fpel
 #define ME_FPEL_SUBME3 1        /* subme >= 3: the subpel predictors */
 #define ME_FPEL_ZEXIT  2        /* no chroma ME: the zero sad exit returns */
 #define ME_FPEL_REFINE 4        /* subme >= 2 */
+#define ME_FPEL_WEIGHT 8        /* m->weight[0].weightfn: get_ref's weighted subpel predictors */
 
 /* me_fpel_fn from pf's fpelcmp, mbcmp and predictor functions */
 static inline void x264_me_fpel_init( x264_pixel_function_t *pf )
@@ -129,6 +131,8 @@ static inline void x264_me_fpel_init( x264_pixel_function_t *pf )
         f->predictor_clip = pf->predictor_clip;
         f->subpel = pf->mbcmp_subpel_search[i];
         f->qpel = pf->mbcmp_qpel_search[i];
+        f->subpel_w = pf->mbcmp_subpel_search_weight[i];
+        f->qpel_w = pf->satd_qpel_search_weight[i];
     }
 }
 

@@ -993,8 +993,9 @@ typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offset
                                  offsetof( x264_me_t, mvp ) == 184 && offsetof( x264_me_t, cost_mv ) == 188 &&
                                  offsetof( x264_me_t, cost ) == 192 && offsetof( x264_me_t, mv ) == 196 &&
                                  offsetof( x264_me_fpel_t, fn ) == 24 && offsetof( x264_me_fpel_t, range ) == 48 &&
-                                 offsetof( x264_me_fpel_t, flags ) == 68 && sizeof(x264_me_fpel_fn_t) == 80 &&
+                                 offsetof( x264_me_fpel_t, flags ) == 68 && sizeof(x264_me_fpel_fn_t) == 96 &&
                                  offsetof( x264_me_fpel_fn_t, hex_search ) == 48 && offsetof( x264_me_fpel_fn_t, qpel ) == 72 &&
+                                 offsetof( x264_me_fpel_fn_t, subpel_w ) == 80 && offsetof( x264_me_fpel_fn_t, qpel_w ) == 88 &&
                                  sizeof(x264_me_t) == 256 && sizeof(x264_me_fpel_t) == 72 ? 1 : -1];
 #endif
 
@@ -1017,9 +1018,10 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         c.mv_limit = h->mb.mv_limit_fpel;
         c.i_mvc = i_mvc;
         c.me_range = h->param.analyse.i_me_range;
-        c.flags = (subme >= 3) * ME_FPEL_SUBME3 | !h->mb.b_chroma_me * ME_FPEL_ZEXIT | (subme >= 2) * ME_FPEL_REFINE;
+        c.flags = (subme >= 3) * ME_FPEL_SUBME3 | !h->mb.b_chroma_me * ME_FPEL_ZEXIT | (subme >= 2) * ME_FPEL_REFINE
+                | !!m->weight[0].weightfn * ME_FPEL_WEIGHT;
         /* refine_subpel's subpel_search call */
-        if( subme >= 2 && !h->mb.b_chroma_me && !m->weight[0].weightfn && c.fn->subpel )
+        if( subme >= 2 && !h->mb.b_chroma_me && (m->weight[0].weightfn ? !HIGH_BIT_DEPTH && c.fn->subpel_w : !!c.fn->subpel) )
         {
             c.range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
                     | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;

@@ -78,6 +78,7 @@ cextern pixel_sad_hex_search_8x8_avx512
 cextern pixel_sad_hex_search_reg_8x8_avx512
 cextern pixel_sad_hex_search_8x8_avx2
 cextern pixel_sad_hex_search_reg_8x8_avx2
+cextern pb_1
 cextern pw_1
 %endif
 
@@ -131,11 +132,22 @@ struc me_fpel_fn
     .predictor_clip: pointer 1
     .subpel:         pointer 1
     .qpel:           pointer 1
+    .subpel_w:       pointer 1
+    .qpel_w:         pointer 1
+endstruc
+
+; x264_weight_t (common/mc.h), the fields read; the layout is checked in common/pixel.c
+struc me_weight
+    .cache:          resw 16
+    .i_denom:        resd 1
+    .i_scale:        resd 1
+    .i_offset:       resd 1
 endstruc
 
 %define ME_FPEL_SUBME3 1
 %define ME_FPEL_ZEXIT  2
 %define ME_FPEL_REFINE 4
+%define ME_FPEL_WEIGHT 8
 %define PREDICTOR_DEDUPE_MIN 5
 %define COST_MAX (1<<28)
 
@@ -1241,19 +1253,22 @@ cglobal %1, 1,15,0, ME_STACK
 %endif
 
 ; the frame below the 6 pushes (rsp 64-aligned)
-%define F_OUT   0       ; subpel_search's stack arguments
-%define F_CMX   56      ; cost_mvx, cost_mvy
-%define F_CMY   64
-%define F_MVR   72      ; mv_min | mv_max << 32, CHECK_MVRANGE's
-%define F_PMV   80
-%define F_BPMV  84
-%define F_BPC   88
-%define F_PMVC  92
-%define F_BPX   96
-%define F_BPY   100
-%define F_MVCT  104     ; mvc_temp[18][2]
+%define F_OUT   0       ; subpel_search(_weight)'s stack arguments
+%define F_CMX   64      ; cost_mvx, cost_mvy
+%define F_CMY   72
+%define F_MVR   80      ; mv_min | mv_max << 32, CHECK_MVRANGE's
+%define F_PMV   88
+%define F_BPMV  92
+%define F_BPC   96
+%define F_PMVC  100
+%define F_BPX   104
+%define F_BPY   108
+%define F_MVCT  112     ; mvc_temp[18][2]
 %define F_FENC  192     ; !FENC_RES 8 wide: the packed fenc, 128 bytes
-%define F_SIZE  328     ; rsp + 8 is 64-aligned at entry: 6 pushes + F_SIZE keep it so
+%define F_WSR   320     ; ME_FPEL_WEIGHT: words scale | round << 8, offset, the denom
+%define F_WOFF  352
+%define F_WDEN  384
+%define F_SIZE  456     ; rsp + 8 is 64-aligned at entry: 6 pushes + F_SIZE keep it so
 
 ; m%1 = V of cost_mv %2 about b %3; m%4 temp (avx2); avx512: k7 = 2 (MF_FENC_LOAD)
 %macro MF_COSTV 4
@@ -1401,9 +1416,24 @@ cglobal %1, 1,15,0, ME_STACK
 %endif
 %endmacro
 
+; m%1 = mc_weight( m%1 ): x264_clip_pixel( ((x*scale + round) >> denom) + offset ) by
+; the F_W* words (rsp + %3 the frame), exact in pmaddubsw; m%2 temp
+%macro MF_WEIGHT 3 ; data, tmp, frame
+    punpcklbw      m%2, m%1, [pb_1]
+    punpckhbw      m%1, m%1, [pb_1]
+    pmaddubsw      m%2, m%2, [rsp+%3+F_WSR]
+    pmaddubsw      m%1, m%1, [rsp+%3+F_WSR]
+    psraw          m%2, m%2, [rsp+%3+F_WDEN]
+    psraw          m%1, m%1, [rsp+%3+F_WDEN]
+    paddw          m%2, m%2, [rsp+%3+F_WOFF]
+    paddw          m%1, m%1, [rsp+%3+F_WOFF]
+    packuswb       m%1, m%2, m%1
+%endmacro
+
 ; the kernels of one size, internal calls with fenc as MF_FENC:
 ; .s1: eax = sad( rdi ); clobbers rdi, m0, m1, m4, m5
 ; .a1: eax = sad( avg( rdi, rsi ) ); clobbers rdi, rsi, m0-m2, m4, m5
+; .wa1: eax = sad( mc_weight( avg( rdi, rsi ) ) ), from .chp only; as .a1
 ; .x3 / .x4: xm0 = the sads of rdi, rsi, rdx(, rcx) (.x3: lane 3 = lane 2); clobbers the
 ;   pointers, m0-m2(, m3), m4, m5
 ; .cf: eax = cost of the fullpel mv rcx, rdx; clobbers rdi, rsi, as .s1
@@ -1433,7 +1463,13 @@ cglobal %1, 1,15,0, ME_STACK
     movd           eax, xm0
     ret
 
+%assign %%w 0
+%rep 2
+%if %%w
+.wa1_%1x%2:
+%else
 .a1_%1x%2:
+%endif
 %assign %%k 0
 %rep %%n
   %if %1 == 16
@@ -1446,6 +1482,9 @@ cglobal %1, 1,15,0, ME_STACK
     MF_QUAD8        0, 4, rdi, 5
     MF_QUAD8        0, 1, rsi, 2
     pavgb           m4, m1
+  %endif
+  %if %%w
+    MF_WEIGHT       4, 1, 16
   %endif
     MF_FENC %%k
   %if %%k == 0
@@ -1466,6 +1505,8 @@ cglobal %1, 1,15,0, ME_STACK
     paddd          xm0, xm1
     movd           eax, xm0
     ret
+%assign %%w 1
+%endrep
 
 %if %1 != 8 || %2 != 8
 %assign %%x 3
@@ -1580,6 +1621,8 @@ cglobal %1, 1,15,0, ME_STACK
     add            rdi, rax             ; src1
     movzx          eax, byte [rdx+rcx+16]
     add            rsi, [R15+me_t.p_fref+rax*8] ; src2
+    test   byte [rbx+me_fpel.flags], ME_FPEL_WEIGHT
+    jnz .chpw_%1x%2
     test           ecx, 5
     jz .chp1_%1x%2
     call .a1_%1x%2
@@ -1587,6 +1630,12 @@ cglobal %1, 1,15,0, ME_STACK
     ret
 .chp1_%1x%2:
     call .s1_%1x%2
+    add            eax, R8d
+    ret
+.chpw_%1x%2:
+    ; get_ref's with the weight: mc_weight( pavg( src1, src2 ) ); for one plane (qpel_idx & 5
+    ; 0) x264_hpel_ref1 is ref0 and src2 = src1, so pavg( src1, src1 ) = src1
+    call .wa1_%1x%2
     add            eax, R8d
     ret
 %endmacro
@@ -2110,6 +2159,25 @@ cglobal me_search_fpel, 1,1
     add            rax, rax
     sub            rcx, rax
     mov    [rsp+F_CMY], rcx
+    test   byte [rbx+me_fpel.flags], ME_FPEL_WEIGHT
+    jz .wdone
+    ; MF_WEIGHT's words: (scale, round) byte pairs, offset, the denom
+    mov            rax, [R15+me_t.weight]
+    mov            ecx, [rax+me_weight.i_denom]
+    movd           xm0, ecx
+    mova  [rsp+F_WDEN], xm0
+    mov            edx, 1
+    shlx           edx, edx, ecx
+    shr            edx, 1
+    shl            edx, 8
+    movzx          ecx, byte [rax+me_weight.i_scale]
+    or             edx, ecx
+    movd           xm0, edx
+    vpbroadcastw    m0, xm0
+    mova  [rsp+F_WSR], m0
+    vpbroadcastw    m0, [rax+me_weight.i_offset]
+    mova  [rsp+F_WOFF], m0
+.wdone:
     mov            eax, [R15+me_t.i_pixel]
     test           eax, eax
     jz .s16x16
@@ -2191,8 +2259,11 @@ cglobal me_search_fpel, 1,1
     jmp .ret
 .subpel_call:
     ; subpel( fenc, fref, stride, cost_mvx, cost_mvy, mv, cost, iters, range, qfenc, qpel,
-    ; halfpel_thresh, mvp ), the int stack arguments as qwords (x86inc loads qwords)
+    ; halfpel_thresh, mvp ), ME_FPEL_WEIGHT: subpel_w( ..., qpel_w, halfpel_thresh, mvp,
+    ; weight ); the int stack arguments as qwords (x86inc loads qwords)
     mov    [rsp+F_OUT+24], rax
+    mov            rax, [R15+me_t.weight]
+    mov    [rsp+F_OUT+56], rax
     mov            rdi, [R15+me_t.p_fenc]
     lea            rsi, [R15+me_t.p_fref]
     mov            rdx, R11
@@ -2206,13 +2277,17 @@ cglobal me_search_fpel, 1,1
     mov            rax, [rbx+me_fpel.range]
     mov    [rsp+F_OUT+16], rax
     mov            rax, [rbx+me_fpel.fn]
-    mov            R10, [rax+me_fpel_fn.qpel]
+    lea            R10, [rax+me_fpel_fn.subpel_w]
+    add            rax, me_fpel_fn.subpel
+    test   byte [rbx+me_fpel.flags], ME_FPEL_WEIGHT
+    cmovnz         rax, R10             ; the subpel, qpel pair
+    mov            R10, [rax+8]
     mov    [rsp+F_OUT+32], R10
     mov            R10, [rbx+me_fpel.halfpel_thresh]
     mov    [rsp+F_OUT+40], R10
     mov           R10d, [R15+me_t.mvp]
     mov    [rsp+F_OUT+48], R10
-    call   [rax+me_fpel_fn.subpel]
+    call   [rax]
     mov            ecx, eax
     and            ecx, 0x7fffffff
     mov    [R15+me_t.cost], ecx

@@ -8051,7 +8051,8 @@ static int check_bitstream( int cpu_ref, int cpu_new )
  * 11 walk: out of range, 12 a square move, 13 a key tie, 14 zero sad exit threshold stop,
  * 15 subpel_search called, 16 refine_subpel left to the caller, 17 the dedupe clip,
  * 18 a predictor dropped (0 or pmv), 19 a predictor clipped, 20 an mv on a limit, 21 no walk
- * (me_range < 4), 22 the subpel threshold stop, 23 a walk of 2 or more steps */
+ * (me_range < 4), 22 the subpel threshold stop, 23 a walk of 2 or more steps, 24 a weighted
+ * subpel predictor (subme >= 3), 25 the weighted subpel_search called */
 static int me_fpel_model( x264_pixel_function_t *pfc, x264_mc_functions_t *mc, x264_me_fpel_t *c, int *st )
 {
     static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
@@ -8079,7 +8080,7 @@ static int me_fpel_model( x264_pixel_function_t *pfc, x264_mc_functions_t *mc, x
 #define MODEL_SAD( mx, my ) pfc->sad[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[(my)*stride+(mx)], stride )
 #define MODEL_COST( mx, my ) (MODEL_SAD( mx, my ) + p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
 #define MODEL_MV( mx, my ) { int cost_ = MODEL_COST( mx, my ); if( cost_ < bcost ) { bcost = cost_; bmx = mx; bmy = my; } }
-#define MODEL_HPEL( mx, my ) ({ intptr_t s_ = 16; pixel *src_ = mc->get_ref( pix, &s_, m->p_fref, stride, mx, my, bw, bh, x264_weight_none );\
+#define MODEL_HPEL( mx, my ) ({ intptr_t s_ = 16; pixel *src_ = mc->get_ref( pix, &s_, m->p_fref, stride, mx, my, bw, bh, m->weight );\
                                 pfc->sad[i_pixel]( p_fenc, FENC_STRIDE, src_, s_ ) + p_cost_mvx[mx] + p_cost_mvy[my]; })
 #define MODEL_KEY( key ) { int k_ = key; st[13] += k_>>6 == bcost>>6; if( k_ < bcost ) bcost = k_; }
     int subme3 = c->flags & ME_FPEL_SUBME3;
@@ -8091,6 +8092,7 @@ static int me_fpel_model( x264_pixel_function_t *pfc, x264_mc_functions_t *mc, x
         pmx = (bpred_mx+2)>>2;
         pmy = (bpred_my+2)>>2;
         bpred_cost = MODEL_HPEL( bpred_mx, bpred_my );
+        st[24] += !!m->weight[0].weightfn;
         int pmv_cost = bpred_cost;
         if( bpred_cost == 2*m->p_cost_mv[0] )
         {
@@ -8283,8 +8285,16 @@ fpel_done:
     }
     st[15]++;
     (void)subpel_iterations;
-    uint64_t res = x264_pixel_satd_subpel_search_c( i_pixel, p_fenc, m->p_fref, stride, p_cost_mvx, p_cost_mvy, M32( m->mv ),
-                                                    m->cost, c->iters, c->range, c->halfpel_thresh, M32( m->mvp ) );
+    uint64_t res;
+    if( m->weight[0].weightfn )
+    {
+        st[25]++;
+        res = x264_pixel_satd_subpel_search_weight_c( i_pixel, p_fenc, m->p_fref, stride, p_cost_mvx, p_cost_mvy, M32( m->mv ),
+                                                      m->cost, c->iters, c->range, c->halfpel_thresh, M32( m->mvp ), m->weight );
+    }
+    else
+        res = x264_pixel_satd_subpel_search_c( i_pixel, p_fenc, m->p_fref, stride, p_cost_mvx, p_cost_mvy, M32( m->mv ),
+                                               m->cost, c->iters, c->range, c->halfpel_thresh, M32( m->mvp ) );
     m->cost = (uint32_t)res & 0x7fffffff;
     m->mv[0] = res >> 32;
     m->mv[1] = res >> 48;
@@ -8305,7 +8315,9 @@ fpel_done:
 /* me_search_fpel against me_fpel_model on random planes (frame and field strides), partitions,
  * fpel limits (wide, tight, int16, crossed), mvps, predictor lists (none, dupes, 0, pmv, out
  * of range, int16 extremes, up to 15 for the dedupe), mv cost tables, me ranges, subme 1-9 and
- * the zero sad exit flag, with and without the subpel_search call and halfpel threshold. Each
+ * the zero sad exit flag, with and without the subpel_search call and halfpel threshold, and
+ * (8-bit) weighted refs: a quarter of the searches on one of 8 weights (subpel_rand_weight's),
+ * p_fref_w that plane weighted and fenc cut from it, the subpel_search_weight call. Each
  * fn kernel (sq_min, hex_min, hex_search, predictor_clip) is also dropped at random, so the
  * kernel paths of every cpu level are taken. m, *halfpel_thresh and the return are compared;
  * every model case must occur */
@@ -8331,7 +8343,8 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
     /* also where only a kernel it calls changed */
 #define ME_FPEL_KERNELS( p, f ) { (void*)f, (void*)p.predictor_clip, (void*)p.sad_hex_search[3], (void*)p.sad_hex_min[3],\
                                (void*)p.sad_sq_min[0], (void*)p.sad_sq_min[3], (void*)p.satd_subpel_search[0], (void*)p.sad_x3_min[0],\
-                               (void*)p.sad_x4_min[0], (void*)p.sad[0], (void*)p.sad_avg2[0], (void*)p.sad_hex_search[0] }
+                               (void*)p.sad_x4_min[0], (void*)p.sad[0], (void*)p.sad_avg2[0], (void*)p.sad_hex_search[0],\
+                               (void*)p.satd_subpel_search_weight[0], (void*)p.satd_qpel_search_weight[0] }
     void *k_ref[] = ME_FPEL_KERNELS( pf_ref, me_fpel_ref ), *k_new[] = ME_FPEL_KERNELS( pf, me_fpel );
 #undef ME_FPEL_KERNELS
     if( !memcmp( k_ref, k_new, sizeof(k_ref) ) )
@@ -8347,7 +8360,7 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
     static const uint8_t nparts[4] = { 1, 2, 2, 4 };
     static const uint8_t subpel_iterations[][4] =
        {{0,0,0,0}, {1,1,0,0}, {0,1,1,0}, {0,2,1,0}, {0,2,1,1}, {0,2,1,2}, {0,0,2,2}, {0,0,2,2}, {0,0,4,10}, {0,0,4,10}};
-    int st[24] = {0};
+    int st[26] = {0};
     for( int k = 0; k < 3*4*NPL; k++ )
         planes[k] = rand() & PIXEL_MAX;
     /* set 0 smooth, 1 noise, 2 flat */
@@ -8360,19 +8373,43 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         for( int k = 0; k < NPL; k++ )
             planes[2*4*NPL + p*NPL + k] = PIXEL_MAX/2 + (k&1);
     }
+    /* weighted refs: NW weights, each set's plane 0 weighted by each (mc_weight's formula) */
+    enum { NW = 8 };
+    x264_weight_t wts[NW];
+    pixel *wplanes = x264_malloc( 3 * NW * NPL * sizeof(pixel) );
+    x264_t *hw = x264_malloc( sizeof(x264_t) );
+    if( !wplanes || !hw )
+        return -1;
+    hw->mc = mc;
+    for( int w = 0; w < NW; w++ )
+    {
+        subpel_rand_weight( &wts[w] );
+        mc.weight_cache( hw, &wts[w] );
+        for( int s = 0; s < 3; s++ )
+            for( int k = 0; k < NPL; k++ )
+            {
+                int v = planes[s*4*NPL + k];
+                v = ((v * wts[w].i_scale + ((1 << wts[w].i_denom) >> 1)) >> wts[w].i_denom) + wts[w].i_offset * (1 << (BIT_DEPTH-8));
+                wplanes[(s*NW + w)*NPL + k] = x264_clip_pixel( v );
+            }
+    }
     /* the dispatched control, and the other levels' on this level's kernels */
     int (*fns[3])( x264_me_fpel_t * ) = { me_fpel };
     const char *fn_names[3] = { pf.me_search_fpel ? "dispatched" : "avx2" };
+    /* ME_FPEL_WEIGHT: the 8-bit entries but zmm */
+    int fn_wt[3] = { !HIGH_BIT_DEPTH };
     int nfns = 1;
 #if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32)
     if( (cpu_new&X264_CPU_BMI2) && me_fpel != x264_me_search_fpel_avx2 )
     {
         fn_names[nfns] = "avx2";
+        fn_wt[nfns] = !HIGH_BIT_DEPTH;
         fns[nfns++] = x264_me_search_fpel_avx2;
     }
     if( (cpu_new&X264_CPU_AVX512) && (cpu_new&X264_CPU_BMI2) )
     {
         fn_names[nfns] = "zmm_avx512";
+        fn_wt[nfns] = 0;
         fns[nfns++] = x264_me_search_fpel_zmm_avx512;
     }
 #endif
@@ -8383,10 +8420,13 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         int i_pixel = rand()&3;
         int set = (j&7) == 7 ? 2 : (j&7) >= 5;
         int field = (j>>3)&1;
+        /* a weighted ref: 1 in 4, 8-bit */
+        int wi = !HIGH_BIT_DEPTH && !(rand()&3) ? rand()%NW : -1;
         intptr_t stride = PST << field;
         pixel *fref[4];
         for( int p = 0; p < 4; p++ )
             fref[p] = planes + set*4*NPL + p*NPL + 160 + (field ? 80 : 160)*stride + (field && (j&16) ? PST : 0);
+        pixel *fw = wi < 0 ? fref[0] : wplanes + (set*NW + wi)*NPL + (fref[0] - (planes + set*4*NPL));
         /* fpel limits */
         int lmode = rand()&15;
         int xmin = -(rand()%49), xmax = rand()%49, ymin = -(rand()%49), ymax = rand()%49;
@@ -8446,7 +8486,7 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
             int noise = fmode == 0 ? rand()%5 : 0;
             for( int y = 0; y < 16; y++ )
                 for( int x = 0; x < 16; x++ )
-                    fenc[y*FENC_STRIDE+x] = x264_clip_pixel( fref[0][tx+x + (ty+y)*stride] + (noise ? rand()%(2*noise+1) - noise : 0) );
+                    fenc[y*FENC_STRIDE+x] = x264_clip_pixel( fw[tx+x + (ty+y)*stride] + (noise ? rand()%(2*noise+1) - noise : 0) );
         }
         else if( fmode == 3 )
         {
@@ -8455,7 +8495,7 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
             int qx = x264_clip3( mvpx, 4*xmin, 4*xmax ), qy = x264_clip3( mvpy, 4*ymin, 4*ymax );
             qx = x264_clip3( qx, -240, 240 ), qy = x264_clip3( qy, -240, 240 );
             intptr_t s = 16;
-            pixel *src = mc.get_ref( pix, &s, fref, stride, qx, qy, bw, bh, x264_weight_none );
+            pixel *src = mc.get_ref( pix, &s, fref, stride, qx, qy, bw, bh, wi < 0 ? x264_weight_none : &wts[wi] );
             for( int y = 0; y < 16; y++ )
                 for( int x = 0; x < 16; x++ )
                     fenc[y*FENC_STRIDE+x] = rand() & PIXEL_MAX;
@@ -8503,6 +8543,8 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         fn.predictor_clip = rand()&3 ? pf.predictor_clip : NULL;
         fn.subpel = pf.satd_subpel_search[i_pixel];
         fn.qpel = pf.satd_qpel_search[i_pixel];
+        fn.subpel_w = pf.satd_subpel_search_weight[i_pixel];
+        fn.qpel_w = pf.satd_qpel_search_weight[i_pixel];
         if( !fn.x3_min || !fn.x4_min || !fn.sad_avg2 )
             continue;
         int subme = 1 + rand()%9;
@@ -8511,10 +8553,10 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         memset( &m_m, 0, sizeof(m_m) );
         m_m.i_pixel = i_pixel;
         m_m.p_cost_mv = cost_tab + CT;
-        m_m.weight = x264_weight_none;
+        m_m.weight = wi < 0 ? x264_weight_none : &wts[wi];
         for( int p = 0; p < 4; p++ )
             m_m.p_fref[p] = fref[p];
-        m_m.p_fref_w = fref[0];
+        m_m.p_fref_w = fw;
         m_m.p_fenc[0] = f;
         m_m.i_stride[0] = stride;
         m_m.mvp[0] = mvpx;
@@ -8530,11 +8572,12 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         c_m.mv_limit = mv_limit;
         c_m.i_mvc = i_mvc;
         c_m.me_range = rand()&3 ? 16 : 1 + rand()%24;
-        c_m.flags = (subme >= 3) * ME_FPEL_SUBME3 | (rand()&3 ? ME_FPEL_ZEXIT : 0) | (subme >= 2) * ME_FPEL_REFINE;
+        c_m.flags = (subme >= 3) * ME_FPEL_SUBME3 | (rand()&3 ? ME_FPEL_ZEXIT : 0) | (subme >= 2) * ME_FPEL_REFINE
+                  | (wi >= 0) * ME_FPEL_WEIGHT;
         c_m.qfenc = NULL;
         c_m.iters = 0;
         c_m.range = 0;
-        if( subme >= 2 && fn.subpel && fn.qpel && qfenc && (rand()&7) )
+        if( subme >= 2 && (wi < 0 ? fn.subpel && fn.qpel : fn.subpel_w && fn.qpel_w) && qfenc && (rand()&7) )
         {
             int sxmin = X264_MAX( 4*xmin - rand()%8, -32768 ), sxmax = X264_MIN( 4*xmax + rand()%8, 32767 );
             int symin = X264_MAX( 4*ymin - rand()%8, -32768 ), symax = X264_MIN( 4*ymax + rand()%8, 32767 );
@@ -8553,6 +8596,8 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         int r_m = me_fpel_model( &pfc, &mc, &c_m, st );
         for( int k = 0; k < nfns && ok; k++ )
         {
+            if( wi >= 0 && !fn_wt[k] )
+                continue;
             m_a = m_0;
             thr_a = thr0;
             int r_a = call_a1( fns[k], &c_a );
@@ -8560,28 +8605,30 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
             {
                 ok = 0;
                 fprintf( stderr, "me_search_fpel %s [%d]: j %d subme %d flags %d set %d field %d lim %d,%d %d,%d mvp %d,%d i_mvc %d "
-                         "range %d fmode %d cmode %d kernels %d%d%d%d qfenc %d thresh %d: ret %d mv %d,%d cost %d cost_mv %d thr %d | "
+                         "range %d fmode %d cmode %d kernels %d%d%d%d qfenc %d thresh %d weight %d: ret %d mv %d,%d cost %d cost_mv %d thr %d | "
                          "asm %d mv %d,%d cost %d cost_mv %d thr %d [FAILED]\n", fn_names[k], i_pixel, j, subme, c_m.flags, set, field,
                          xmin, ymin, xmax, ymax, mvpx, mvpy, i_mvc, c_m.me_range, fmode, cmode, !!fn.sq_min, !!fn.hex_min,
-                         !!fn.hex_search, !!fn.predictor_clip, !!c_m.qfenc, tmode, r_m, m_m.mv[0], m_m.mv[1], m_m.cost, m_m.cost_mv,
+                         !!fn.hex_search, !!fn.predictor_clip, !!c_m.qfenc, tmode, wi, r_m, m_m.mv[0], m_m.mv[1], m_m.cost, m_m.cost_mv,
                          thr_m, r_a, m_a.mv[0], m_a.mv[1], m_a.cost, m_a.cost_mv, thr_a );
             }
         }
-        if( j < 64 && fmode == 0 && cmode == 0 )
+        if( j < 64 && fmode == 0 && cmode == 0 && wi < 0 )
         {
             m_a = m_0;
             call_c2( me_fpel_model, &pfc, &mc, &c_m, st );
             call_a2( me_fpel, &c_a );
         }
     }
-    for( int k = 0; k < 24 && ok; k++ )
-        if( !st[k] && (k != 17 || pf.predictor_clip) )
+    for( int k = 0; k < 26 && ok; k++ )
+        if( !st[k] && (k != 17 || pf.predictor_clip) && (k < 24 || (!HIGH_BIT_DEPTH && (k != 25 || pf.satd_subpel_search_weight[0]))) )
         {
             ok = 0;
             fprintf( stderr, "me_search_fpel: case %d never occurred [FAILED]\n", k );
         }
     report( "me_search_fpel :" );
     x264_free( planes );
+    x264_free( wplanes );
+    x264_free( hw );
     x264_free( cost_tab );
     return ret;
 }

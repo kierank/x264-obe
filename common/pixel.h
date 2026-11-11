@@ -139,6 +139,8 @@ typedef struct
     x264_predictor_clip_t predictor_clip;   /* predictor_clip */
     x264_pixel_subpel_search_t subpel;      /* mbcmp_subpel_search */
     x264_pixel_qpel_search_t qpel;          /* mbcmp_qpel_search */
+    x264_pixel_subpel_search_weight_t subpel_w; /* mbcmp_subpel_search_weight */
+    x264_pixel_qpel_search_weight_t qpel_w; /* satd_qpel_search_weight */
 } x264_me_fpel_fn_t;
 
 enum
