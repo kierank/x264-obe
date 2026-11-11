@@ -5505,8 +5505,6 @@ static int check_deblock( int cpu_ref, int cpu_new )
     {
         db_a.deblock_luma[1] = x264_deblock_v_luma_avx2;
         db_a.deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx2;
-        db_a.deblock_h_chroma_422 = x264_deblock_h_chroma_422_avx2;
-        db_a.deblock_h_chroma_422_intra = x264_deblock_h_chroma_422_intra_avx2;
     }
     /* the undispatched avx512icl 4:2:2 h chroma, at the AVX512ICL level */
     if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )

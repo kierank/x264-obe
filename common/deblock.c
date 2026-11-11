@@ -824,6 +824,9 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             /* Core 3 Raptor Cove vs avx: 1.05x / 1.14x (laptop Zen 5 0.88x / 0.78x) */
             pf->deblock_chroma[1] = x264_deblock_v_chroma_avx2;
             pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx2;
+            /* 4:2:2: all 16 rows in one ymm pass; AVX-512 machines take these too */
+            pf->deblock_h_chroma_422 = x264_deblock_h_chroma_422_avx2;
+            pf->deblock_h_chroma_422_intra = x264_deblock_h_chroma_422_intra_avx2;
             /* undispatched, Core 3 vs avx 0.94x / 0.84x (checkasm tests and benches them at
              * the AVX2 level): x264_deblock_v_luma_avx2, x264_deblock_h_luma_intra_mbaff_avx2 */
 #endif
