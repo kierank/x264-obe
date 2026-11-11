@@ -568,17 +568,21 @@ static void x264_weight_luma_search_band( x264_weight_band_t *b )
 }
 
 /* fenc sums, motion compensation and statistics of the ref, the weighted sums of the
- * slots, then the costs of the trials: each only reads the rows of the band */
+ * slots, then the costs of the trials: each only reads its own rows, so a row at a time,
+ * while dst[] is in L1 (the costs are unsigned sums, the same in any order) */
 static void x264_weight_chroma_init_band( x264_weight_band_t *b )
 {
     x264_weight_pass_t *a = b->pass;
-    if( !a->s->b_fsum )
-        a->ops->chroma_fenc_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
-    a->ops->chroma_ref_rows( a->ops->k, a->s, b->mb_y0, b->mb_y1 );
-    for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
-        if( a->s->wscale[q] >= 0 )
-            a->ops->chroma_wsum_rows( a->ops->k, a->s, q, b->mb_y0, b->mb_y1 );
-    a->ops->chroma_search_rows( a->ops->k, a->s, a->ct, a->ccosts[b->i], b->mb_y0, b->mb_y1 );
+    for( int mb_y = b->mb_y0; mb_y < b->mb_y1; mb_y++ )
+    {
+        if( !a->s->b_fsum )
+            a->ops->chroma_fenc_rows( a->ops->k, a->s, mb_y, mb_y+1 );
+        a->ops->chroma_ref_rows( a->ops->k, a->s, mb_y, mb_y+1 );
+        for( int q = 0; q < 2*X264_WEIGHT_WSLOTS; q++ )
+            if( a->s->wscale[q] >= 0 )
+                a->ops->chroma_wsum_rows( a->ops->k, a->s, q, mb_y, mb_y+1 );
+        a->ops->chroma_search_rows( a->ops->k, a->s, a->ct, a->ccosts[b->i], mb_y, mb_y+1 );
+    }
 }
 
 static void x264_weight_chroma_wsum_band( x264_weight_band_t *b )
