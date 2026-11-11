@@ -86,6 +86,17 @@ typedef struct x264_frame
      * allocated data are stored in buffer */
     pixel *buffer[4];
     pixel *buffer_fld[4];
+    /* MBAFF fdec: buffer[p] and buffer_fld[p] in one mapping (frame_fld_map), in
+     * which the pages of plane_fld[p] (and of filtered_fld[p][1] if i_fld_alias[p]
+     * is 2) that hold only picture rows are those of plane[p] (filtered[p][1]).
+     * fld_shared[p]: the shared pixels of plane_fld[p], as offsets from it.
+     * i_fld_priv[p][j]: picture rows at the top and bottom of aliased plane j
+     * that have bytes outside the shared pages. */
+    void  *fld_map[3];
+    size_t fld_map_size[3];
+    int    i_fld_alias[3];
+    intptr_t fld_shared[3][2];
+    int    i_fld_priv[3][2][2];
     pixel *buffer_lowres[4];
     uint8_t *buffer_lowres8;
 

@@ -2732,12 +2732,33 @@ static inline void x264_reference_build_list( x264_t *h, int i_poc )
 
 static void fdec_copy_fld_rows( x264_t *h, int p, int y0, int y1 )
 {
-    if( y1 > y0 )
-        FLD_STAT( 0, (int64_t)(y1 - y0) * h->mb.i_mb_width*16 * sizeof(pixel) );
+    x264_frame_t *f = h->fdec;
+    intptr_t stride = f->i_stride[p];
+    int width = h->mb.i_mb_width*16;
     for( int i = y0; i < y1; i++ )
-        memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
-                h->fdec->plane[p]     + i*h->fdec->i_stride[p],
-                h->mb.i_mb_width*16*sizeof(pixel) );
+    {
+        intptr_t o0 = i*stride, o1 = o0 + width;
+        if( f->i_fld_alias[p] )
+        {
+            /* the shared pages are already the frame rows */
+            intptr_t s0 = f->fld_shared[p][0], s1 = f->fld_shared[p][1];
+            if( o0 < s0 )
+            {
+                intptr_t e = X264_MIN( o1, s0 );
+                memcpy( f->plane_fld[p] + o0, f->plane[p] + o0, (e - o0) * sizeof(pixel) );
+                FLD_STAT( 0, (e - o0) * sizeof(pixel) );
+            }
+            if( o1 > s1 )
+            {
+                intptr_t s = X264_MAX( o0, s1 );
+                memcpy( f->plane_fld[p] + s, f->plane[p] + s, (o1 - s) * sizeof(pixel) );
+                FLD_STAT( 0, (o1 - s) * sizeof(pixel) );
+            }
+            continue;
+        }
+        memcpy( f->plane_fld[p] + o0, f->plane[p] + o0, width * sizeof(pixel) );
+        FLD_STAT( 0, width * sizeof(pixel) );
+    }
 }
 
 static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
@@ -2798,7 +2819,9 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
      * for the top and bottom 16 rows (see x264_frame_filter).
      * NV12 chroma mc reads plane_fld only when its rows (at most 16 >> v_shift,
      * plus one) cross a field edge (x264_mb_fref_uv), so at most 16 >> v_shift
-     * rows into each field: the top and bottom 32 >> v_shift rows. */
+     * rows into each field: the top and bottom 32 >> v_shift rows.
+     * Luma planes aliased onto the frame planes (i_fld_alias) copy only the
+     * bytes outside the shared pages. */
     if( PARAM_INTERLACED && h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
     {
         int hpel_planes = h->param.analyse.i_subpel_refine ? (CHROMA444 ? 3 : 1) : 0;
