@@ -2013,8 +2013,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->plane_copy = x264_plane_copy_avx512;
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
 #if ARCH_X86_64
-    pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;
-    pf->mbtree_propagate_list2 = NULL; /* the strip on AVX-512: rack01 decides */
+    pf->mbtree_propagate_list = x264_mbtree_propagate_list_strip_asm_avx512;
+    pf->mbtree_propagate_list2 = x264_mbtree_propagate_list2_strip_asm_avx512;
     pf->mbtree_finish = x264_mbtree_finish_avx512;
 #endif
 
