@@ -161,10 +161,10 @@ static int fly_band_planes( x264_t *h, x264_fly_band_t *bd, pixel **fref, intptr
                             int ry0, int ry1, pixel *dst[4] )
 {
     x264_fly_t *fly = h->fly;
-    /* the mb row (pair row for MBAFF frame mbs) +- 24 */
+    /* the mb row (pair row for MBAFF frame mbs) +- 40 */
     int pair = SLICE_MBAFF && !MB_INTERLACED;
     int base = 16*(h->mb.i_mb_y >> (MB_INTERLACED|pair)) << pair;
-    int lo = base - 24, hi = base + (16 << pair) + 24;
+    int lo = base - 40, hi = base + (16 << pair) + 40;
     if( bd->gen != fly->gen )
     {
         bd->gen = fly->gen;
@@ -229,6 +229,16 @@ static int fly_band_planes( x264_t *h, x264_fly_band_t *bd, pixel **fref, intptr
     for( int k = 1; k < 4; k++ )
         dst[k] = bd->plane[k] + off;
     return bd->stride;
+}
+
+intptr_t x264_fly_band_cover( x264_t *h, pixel **fref, intptr_t stride, int bx, int by, int ry0, int ry1, pixel *dst[4] )
+{
+    x264_fly_band_t *bd = h->fly->slot[x264_fly_ref( fref )].band;
+    if( !bd || ry1 - ry0 > FLY_BR )
+        return 0;
+    int ax = 16*h->mb.i_mb_x + bx;
+    int ay = 16*(h->mb.i_mb_y >> MB_INTERLACED) + by;
+    return fly_band_planes( h, bd, fref, stride, ax, ay, ry0 + ay, ry1 + ay, dst ) ? stride : 0;
 }
 
 intptr_t x264_fly_planes( x264_t *h, pixel **fref, intptr_t stride, int bx, int by, const x264_fly_box_t *b, pixel *dst[4] )
@@ -497,9 +507,9 @@ void x264_fly_report( x264_t *h )
         return;
     x264_fly_ledger_flush( h );
     x264_log( h, X264_LOG_INFO, "hpelfly %s: slices %"PRId64" | stored H/V/C: written %"PRId64" B, read %"PRId64" B (distinct lines per slice)"
-              " | bands: requests %"PRId64" rows %"PRId64" moved %"PRId64" | windows: requests %"PRId64" placements %"PRId64" computed px F %"PRId64" H %"PRId64" V %"PRId64" C %"PRId64
+              " | bands: requests %"PRId64" rows %"PRId64" moved %"PRId64" | fused search on the band %"PRId64", C search %"PRId64" | windows: requests %"PRId64" placements %"PRId64" computed px F %"PRId64" H %"PRId64" V %"PRId64" C %"PRId64
               " calls %"PRId64" %"PRId64" %"PRId64" %"PRId64"\n", h->b_hpel_fly ? "on" : "off", f->st_slices,
-              f->st_wr_bytes, f->st_rd_lines*64, f->st_band_req, f->st_band_rows, f->st_band_moved, f->st_req, f->st_place,
+              f->st_wr_bytes, f->st_rd_lines*64, f->st_band_req, f->st_band_rows, f->st_band_moved, f->st_swap_hit, f->st_swap_miss, f->st_req, f->st_place,
               f->st_px[0], f->st_px[1], f->st_px[2], f->st_px[3], f->st_calls[0], f->st_calls[1], f->st_calls[2], f->st_calls[3] );
 #endif
 }

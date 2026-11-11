@@ -1007,14 +1007,54 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 {
     int i_pixel = m->i_pixel;
     int subme = h->mb.i_subpel_refine;
-    /* a fly reference has no planes for the asm's subpel predictors and subpel_search */
-    int b_fly = (HPEL_FLY && x264_fly_ref( m->p_fref ) >= 0) || HPELFLY_STATS; /* stats: every read through me.c's hooks */
-    if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
-        && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
-        && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2 && !b_fly)) )
+    int hpel = subpel_iterations[subme][2];
+    int qpel = subpel_iterations[subme][3];
+    int b_fused = h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
+                  && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
+                  && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2));
+    /* a fly reference has no planes for the asm's subpel predictors and subpel_search,
+     * unless every row it can read is in the band: then the band's planes, at F's stride */
+    int b_fly = HPEL_FLY && x264_fly_ref( m->p_fref ) >= 0;
+    pixel *fly_fref[3];
+    int b_swap = 0;
+    if( HPELFLY_SWAP && b_fly && b_fused )
     {
-        int hpel = subpel_iterations[subme][2];
-        int qpel = subpel_iterations[subme][3];
+        /* the predictors (and the zero mv), the hexagon and square refine (me_range + 1
+         * from the best, and fullpel rounding), the subpel walk, the block */
+        int lo = 0, hi = 0;
+        int my = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1], h->mb.mv_max_spel[1] );
+        lo = X264_MIN( lo, my );
+        hi = X264_MAX( hi, my );
+        for( int i = 0; i < i_mvc; i++ )
+        {
+            my = x264_clip3( mvc[i][1], h->mb.mv_min_spel[1], h->mb.mv_max_spel[1] );
+            lo = X264_MIN( lo, my );
+            hi = X264_MAX( hi, my );
+        }
+        int reach = h->param.analyse.i_me_range + 2 + (2*hpel + qpel + 3) / 4 + 1;
+        pixel *bp[4];
+        if( x264_fly_band_cover( h, m->p_fref, m->i_stride[0], FLY_PART_X( h, m ), FLY_PART_Y( h, m ),
+                                 (lo >> 2) - reach, (hi >> 2) + reach + x264_pixel_size[i_pixel].h + 2, bp ) )
+        {
+            for( int k = 1; k < 4; k++ )
+            {
+                fly_fref[k-1] = m->p_fref[k];
+                m->p_fref[k] = bp[k];
+            }
+            b_swap = 1;
+            b_fly = 0;
+        }
+#if HPELFLY_STATS
+        if( b_swap )
+            h->fly->st_swap_hit++;
+        else
+            h->fly->st_swap_miss++;
+#endif
+    }
+    /* stats with stored planes: every read through me.c's hooks */
+    int b_nofuse = b_fly || (HPELFLY_STATS && !(HPEL_FLY && h->b_hpel_fly));
+    if( b_fused && (subme < 3 || !b_nofuse) )
+    {
         x264_me_fpel_t c;
         c.m = m;
         c.mvc = mvc;
@@ -1026,7 +1066,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         c.me_range = h->param.analyse.i_me_range;
         c.flags = (subme >= 3) * ME_FPEL_SUBME3 | !h->mb.b_chroma_me * ME_FPEL_ZEXIT | (subme >= 2) * ME_FPEL_REFINE;
         /* refine_subpel's subpel_search call */
-        if( subme >= 2 && !h->mb.b_chroma_me && !m->weight[0].weightfn && c.fn->subpel && !b_fly )
+        if( subme >= 2 && !h->mb.b_chroma_me && !m->weight[0].weightfn && c.fn->subpel && !b_nofuse )
         {
             c.range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
                     | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
@@ -1039,6 +1079,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         }
         if( h->pixf.me_search_fpel( &c ) )
             refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
+        if( b_swap )
+            for( int k = 1; k < 4; k++ )
+                m->p_fref[k] = fly_fref[k-1];
         return;
     }
     me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );

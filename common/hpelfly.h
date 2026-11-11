@@ -24,6 +24,9 @@
 #ifndef HPEL_FLY
 #define HPEL_FLY 0          /* x264_encoder_open's default: 1 drops the stored hpel planes */
 #endif
+#ifndef HPELFLY_SWAP
+#define HPELFLY_SWAP 1      /* the fused me_search_fpel on band planes when they cover its reads; 0: C search */
+#endif
 #ifndef HPELFLY_STATS
 #define HPELFLY_STATS 0     /* window and hpel traffic counters, logged at close */
 #endif
@@ -64,7 +67,7 @@ typedef struct
  * slice, and the band is moved down (memmove of its computed rows) as the mb rows
  * advance, so the same lines are reused and stay in L2. Reads outside it take a
  * window. */
-#define FLY_BR  80              /* band rows: an mb pair row +- 24 */
+#define FLY_BR  112             /* band rows: an mb pair row +- 40 */
 typedef struct
 {
     pixel *plane[4];            /* -, H, V, C at band row 0, column 0 */
@@ -110,6 +113,7 @@ struct x264_fly
     /* fly: requests, window placements, samples computed and kernel calls per plane */
     int64_t st_req, st_place, st_px[4], st_calls[4];
     int64_t st_band_req, st_band_rows, st_band_moved;
+    int64_t st_swap_hit, st_swap_miss;     /* me_search_fpel on band planes, or the C search */
     /* stored planes: bytes the hpel pass and its borders write; distinct 64-byte lines
      * of H, V and C that a slice's consumers read (the ledger, cleared every slice) */
     int64_t st_wr_bytes, st_rd_lines, st_slices;
@@ -192,6 +196,11 @@ static ALWAYS_INLINE void x264_fly_box_search( x264_fly_box_t *b, int mvx, int m
  * The planes stay valid until the next x264_fly_planes on the same reference. */
 #define x264_fly_planes x264_template(fly_planes)
 intptr_t x264_fly_planes( x264_t *h, pixel **fref, intptr_t stride, int bx, int by, const x264_fly_box_t *b, pixel *dst[4] );
+/* the band's planes holding H, V, C rows [ry0, ry1) (relative to the block (bx,by)),
+ * computing the missing ones, or 0 if the reference has no band or the rows are not
+ * in it: for a caller that reads these planes in place (the fused me_search_fpel) */
+#define x264_fly_band_cover x264_template(fly_band_cover)
+intptr_t x264_fly_band_cover( x264_t *h, pixel **fref, intptr_t stride, int bx, int by, int ry0, int ry1, pixel *dst[4] );
 
 /* the band's planes if H, V, C rows [ry0, ry1) of the block (bx,by) (ry1 > ry0) are in
  * it and computed, else 0: x264_fly_planes' common case, inline */

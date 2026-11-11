@@ -8848,6 +8848,28 @@ static int check_hpelfly( int cpu_ref, int cpu_new )
                                                 break;
                                             }
                         }
+            if( !(rand() & 7) && ok )
+            {
+                /* x264_fly_band_cover: a tall span of rows (as the fused search's), then
+                 * samples of them anywhere in the row */
+                int c0 = -24 - ay + rand() % (ph + 24);
+                int span = 1 + rand() % 110;
+                int c1 = X264_MIN( c0 + span, ph + 24 - ay );
+                pixel *q[4];
+                intptr_t qs = x264_fly_band_cover( h, fref, ps, bx, by, c0, c1, q );
+                for( int n = 0; n < 256 && qs && ok; n++ )
+                {
+                    int y = c0 + rand() % (c1 - c0);
+                    int x = -24 - ax + rand() % (PW + 48);
+                    int k = 1 + rand() % 3;
+                    if( q[k][y*qs+x] != fly_ref_px( fref[0], ps, k, x, y ) || q[0] != fref[0] || qs != ps )
+                    {
+                        fprintf( stderr, "fly_band_cover [FAILED] t %d mode %d slot %d plane %d at %d,%d rows %d..%d\n",
+                                 t, mode, slot, k, x, y, c0, c1 );
+                        ok = 0;
+                    }
+                }
+            }
         }
         x264_fly_free( h );
         x264_free( fbuf );
