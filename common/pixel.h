@@ -333,6 +333,8 @@ typedef struct
     int (*intra_sad_x9_4x4)  ( pixel *fenc, pixel *fdec, uint16_t *bitcosts );
     int (*intra_mbcmp_x9_8x8)( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sa8d_x9_8x8) ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
+    /* intra_sa8d_x9_8x8 of the predict_8x8_filter edge of fdec (top, left, topleft; topright if b_tr) */
+    int (*intra_sa8d_x9_8x8_fdec)( pixel *fenc, pixel *fdec, int b_tr, uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sad_x9_8x8)  ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     /* asm only, NULL otherwise: slicetype's lowres intra cost of the 8x8 at src, all
      * its neighbours in the plane: the minimum satd of the 8x8c DC, H, V and P and the
