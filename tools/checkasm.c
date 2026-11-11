@@ -4058,17 +4058,18 @@ typedef void (*propagate_list2_fn)( x264_t *h, uint16_t *ref_costs0, uint16_t *r
                                     int16_t (*mvs1)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
                                     int bipred_weight0, int bipred_weight1, int mb_y, int len );
 
-static void propagate_list2_twice( propagate_list_fn fn, x264_t *h, uint16_t *rc0, uint16_t *rc1, int16_t (*mvs0)[2],
+static propagate_list_fn list2_twice_fn;
+static void propagate_list2_twice( x264_t *h, uint16_t *rc0, uint16_t *rc1, int16_t (*mvs0)[2],
                                    int16_t (*mvs1)[2], int16_t *amount, uint16_t *lowres_costs, int w0, int w1,
                                    int mb_y, int len )
 {
-    fn( h, rc0, mvs0, amount, lowres_costs, w0, mb_y, len, 0 );
-    fn( h, rc1, mvs1, amount, lowres_costs, w1, mb_y, len, 1 );
+    list2_twice_fn( h, rc0, mvs0, amount, lowres_costs, w0, mb_y, len, 0 );
+    list2_twice_fn( h, rc1, mvs1, amount, lowres_costs, w1, mb_y, len, 1 );
 }
 
 /* strip wrappers against the wrapper of the same internal kernel: exact over the frame and the
  * rows around it (list2: against list 0 then list 1), and the strips all zero after every call */
-static int check_propagate_list_strip( int cpu_new, const char *name, propagate_list_fn fn_ref,
+static int check_propagate_list_strip( int cpu_new, const char *name, const char *tag, propagate_list_fn fn_ref,
                                        propagate_list_fn fn_new, propagate_list2_fn fn2_new )
 {
     static const int widths[7] = { 128, 120, 45, 16, 13, 7, 1 };
@@ -4169,14 +4170,15 @@ static int check_propagate_list_strip( int cpu_new, const char *name, propagate_
             {
                 set_func_name( "mbtree_propagate_list%s_old", pan ? "_pan" : "" );
                 call_bench( fn_ref, cpu_new, h, rc[0], mvs[list], amount, lowres_costs, 32, 1, width, list );
-                set_func_name( "mbtree_propagate_list%s_strip", pan ? "_pan" : "" );
+                set_func_name( "mbtree_propagate_list%s_%s", pan ? "_pan" : "", tag );
                 call_bench( fn_new, cpu_new, h, rc[0], mvs[list], amount, lowres_costs, 32, 1, width, list );
             }
             else
             {
                 set_func_name( "mbtree_propagate_list2%s_old", pan ? "_pan" : "" );
-                call_bench( propagate_list2_twice, cpu_new, fn_ref, h, rc[0], rc[1], mvs[0], mvs[1], amount, lowres_costs, 40, 24, 1, width );
-                set_func_name( "mbtree_propagate_list2%s_strip", pan ? "_pan" : "" );
+                list2_twice_fn = fn_ref;
+                call_bench( propagate_list2_twice, cpu_new, h, rc[0], rc[1], mvs[0], mvs[1], amount, lowres_costs, 40, 24, 1, width );
+                set_func_name( "mbtree_propagate_list2%s_%s", pan ? "_pan" : "", tag );
                 call_bench( fn2_new, cpu_new, h, rc[0], rc[1], mvs[0], mvs[1], amount, lowres_costs, 40, 24, 1, width );
             }
         }
@@ -5432,11 +5434,15 @@ static int check_mc( int cpu_ref, int cpu_new )
 #if HAVE_MMX && ARCH_X86_64
     /* the strip wrappers (undispatched), at the first AVX2 / AVX512 level */
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-        ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx2",
+        ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx2", "strip",
                                            x264_mbtree_propagate_list_avx2, x264_mbtree_propagate_list_strip_avx2,
                                            x264_mbtree_propagate_list2_strip_avx2 );
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        ret |= check_propagate_list_strip( cpu_new, "propagate_list_sasm avx2", "strip_asm",
+                                           x264_mbtree_propagate_list_avx2, x264_mbtree_propagate_list_strip_asm_avx2,
+                                           x264_mbtree_propagate_list2_strip_asm_avx2 );
     if( (cpu_new&X264_CPU_AVX512) && !(cpu_ref&X264_CPU_AVX512) )
-        ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx512",
+        ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx512", "strip",
                                            x264_mbtree_propagate_list_avx512, x264_mbtree_propagate_list_strip_avx512,
                                            x264_mbtree_propagate_list2_strip_avx512 );
 #endif
