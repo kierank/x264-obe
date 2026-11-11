@@ -1699,6 +1699,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
+        /* laptop Zen 5: 1.4-1.65x ssse3 from cache, equal from DRAM; AVX512ICL replaces it */
+        pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx2;
     }
 
     if( cpu&X264_CPU_AVX512 )
