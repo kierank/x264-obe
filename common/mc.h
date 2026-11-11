@@ -125,6 +125,11 @@ typedef struct
     void (*hpel_filter_dual)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dsth2 );
 
+    /* the PADH side padding of rows [0, height) of a plane: pixel 0 and width-1,
+     * or the pairs at 0 and width-2 with b_chroma (NV12/NV16); also to pix2 at
+     * the same offsets unless it is NULL. NULL if there is no asm. */
+    void (*expand_border_sides)( pixel *pix, pixel *pix2, intptr_t stride, int width, int height, int b_chroma );
+
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );
     void (*prefetch_fenc_420)( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );

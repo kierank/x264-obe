@@ -663,14 +663,7 @@ static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i
         /* right band */
         pixel_memset( PPIXEL(i_width, y), SPIXEL(i_width-1-b_chroma, y), i_padh>>b_chroma, sizeof(pixel)<<b_chroma );
     }
-    /* upper band */
-    if( b_pad_top )
-        for( int y = 0; y < i_padv; y++ )
-            memcpy( PPIXEL(-i_padh, -y-1), SPIXEL(-i_padh, 0), (i_width+2*i_padh) * sizeof(pixel) );
-    /* lower band */
-    if( b_pad_bottom )
-        for( int y = 0; y < i_padv; y++ )
-            memcpy( PPIXEL(-i_padh, i_height+y), SPIXEL(-i_padh, i_height-1), (i_width+2*i_padh) * sizeof(pixel) );
+    plane_expand_border_bands( pix, src, i_stride, i_width, i_height, i_padh, i_padv, b_pad_top, b_pad_bottom );
 #undef SPIXEL
 #undef PPIXEL
 }
@@ -708,18 +701,35 @@ void x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y )
             if( b_end && !b_start )
                 height_frm += 4 >> v_shift;
             pixel *pix_frm = frame->plane[i] + (starty*stride >> v_shift);
-            plane_expand_border( pix_frm, stride, width, height_frm, padh, padv, pad_top, pad_bot, h_shift );
-
             /* border samples for each field are extended separately, from the
              * frame plane: plane_fld rows may not have been copied yet */
             pix = frame->plane_fld[i] + (starty*stride >> v_shift);
-            plane_expand_border_src( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
-            plane_expand_border_src( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            if( h->mc.expand_border_sides )
+            {
+                /* a field row is the frame row at the same offset, so its side
+                 * padding is the frame's: one pass writes both */
+                h->mc.expand_border_sides( pix_frm, pix, stride, width, height_frm, h_shift );
+                plane_expand_border_bands( pix_frm, pix_frm, stride, width, height_frm, padh, padv, pad_top, pad_bot );
+                plane_expand_border_bands( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot );
+                plane_expand_border_bands( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot );
+            }
+            else
+            {
+                plane_expand_border( pix_frm, stride, width, height_frm, padh, padv, pad_top, pad_bot, h_shift );
+                plane_expand_border_src( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+                plane_expand_border_src( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            }
         }
         else
         {
             pix = frame->plane[i] + (starty*stride >> v_shift);
-            plane_expand_border( pix, stride, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            if( h->mc.expand_border_sides )
+            {
+                h->mc.expand_border_sides( pix, NULL, stride, width, height, h_shift );
+                plane_expand_border_bands( pix, pix, stride, width, height, padh, padv, pad_top, pad_bot );
+            }
+            else
+                plane_expand_border( pix, stride, width, height, padh, padv, pad_top, pad_bot, h_shift );
         }
     }
 }

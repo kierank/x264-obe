@@ -3198,6 +3198,55 @@ FRAME_INIT_LOWRES 1
 %endif
 %endif
 
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void expand_border_sides( uint8_t *pix, uint8_t *pix2, intptr_t stride, int width,
+;                           int height, int b_chroma )
+; the PADH (32) bytes left and right of rows [0, height): pixel 0 / width-1, or the
+; pairs 0-1 / width-2..width-1 with b_chroma; the same bytes at the same offsets
+; from pix2 too, unless it is NULL (adaptive MBAFF: the field planes)
+;-----------------------------------------------------------------------------
+%macro SIDES_LOOP 2 ; b/w, pix2
+.loop%1%2:
+    vpbroadcast%1 m0, [r0]
+%ifidn %1, b
+    vpbroadcastb  m1, [r0+r3-1]
+%else
+    vpbroadcastw  m1, [r0+r3-2]
+%endif
+    movu   [r0-32], m0
+    movu   [r0+r3], m1
+%if %2
+    movu   [r1-32], m0
+    movu   [r1+r3], m1
+    add       r1, r2
+%endif
+    add       r0, r2
+    dec      r4d
+    jg .loop%1%2
+    RET
+%endmacro
+
+INIT_YMM avx2
+cglobal expand_border_sides, 6,6
+    movsxdifnidn r3, r3d
+    test     r4d, r4d
+    jle .end
+    test      r1, r1
+    jz .single
+    test     r5d, r5d
+    jnz .loopw1
+    SIDES_LOOP b, 1
+    SIDES_LOOP w, 1
+.single:
+    test     r5d, r5d
+    jnz .loopw0
+    SIDES_LOOP b, 0
+    SIDES_LOOP w, 0
+.end:
+    RET
+%endif ; !HIGH_BIT_DEPTH
+
 ;-----------------------------------------------------------------------------
 ; void mbtree_propagate_cost( int *dst, uint16_t *propagate_in, uint16_t *intra_costs,
 ;                             uint16_t *inter_costs, uint16_t *inv_qscales, float *fps_factor, int len )

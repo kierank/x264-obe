@@ -41,6 +41,8 @@ void x264_frame_init_lowres_core_pad_avx2( uint8_t *src0, uint8_t *dst0, uint8_t
 #define x264_frame_init_lowres_core_pad_avx512icl x264_template(frame_init_lowres_core_pad_avx512icl)
 void x264_frame_init_lowres_core_pad_avx512icl( uint8_t *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
                                                 intptr_t src_stride, intptr_t dst_stride, int width, int height );
+#define x264_expand_border_sides_avx2 x264_template(expand_border_sides_avx2)
+void x264_expand_border_sides_avx2( uint8_t *pix, uint8_t *pix2, intptr_t stride, int width, int height, int b_chroma );
 #endif
 
 #endif

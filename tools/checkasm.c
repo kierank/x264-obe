@@ -5214,6 +5214,58 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "lowres init pad :" );
     }
 
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched side padding, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.expand_border_sides )
+        mc_a.expand_border_sides = x264_expand_border_sides_avx2;
+#endif
+    if( mc_a.expand_border_sides && mc_a.expand_border_sides != mc_ref.expand_border_sides )
+    {
+        set_func_name( "expand_border_sides" );
+        ok = 1; used_asm = 1;
+        /* PADH bytes left and right of each row, of pix and the same offsets of
+         * pix2: from pixel 0 / width-1, or the pairs with b_chroma */
+        intptr_t stride = 256;
+        int size = 2*8*stride;
+        pixel *bc = x264_malloc( size * sizeof(pixel) );
+        pixel *ba = x264_malloc( size * sizeof(pixel) );
+        ok = bc && ba;
+        for( int k = 0; k < 4*6 && ok; k++ )
+        {
+            int b_chroma = k&1;
+            int b_pix2 = (k>>1)&1;
+            int w = (int[]){ 16, 48, 64, 112, 160, 176 }[k>>2];
+            int h = 1 + (k%7);
+            for( int i = 0; i < size; i++ )
+                bc[i] = ba[i] = rand();
+            pixel *pc = bc + 32, *pa = ba + 32;
+            pixel *pc2 = b_pix2 ? bc + 8*stride + 32 : NULL;
+            pixel *pa2 = b_pix2 ? ba + 8*stride + 32 : NULL;
+            for( int y = 0; y < h; y++ )
+                for( int x = 0; x < 32; x++ )
+                {
+                    pixel l = pc[y*stride + (x&b_chroma)];
+                    pixel r = pc[y*stride + w-1-b_chroma + (x&b_chroma)];
+                    pc[y*stride-32+x] = l;
+                    pc[y*stride+w+x] = r;
+                    if( pc2 )
+                    {
+                        pc2[y*stride-32+x] = l;
+                        pc2[y*stride+w+x] = r;
+                    }
+                }
+            call_a( mc_a.expand_border_sides, pa, pa2, stride, w, h, b_chroma );
+            if( memcmp( bc, ba, size * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "expand_border_sides differs: w %d h %d chroma %d pix2 %d\n", w, h, b_chroma, b_pix2 );
+            }
+        }
+        x264_free( bc );
+        x264_free( ba );
+        report( "expand border sides :" );
+    }
+
 #if HIGH_BIT_DEPTH
     if( mc_a.frame_init_lowres_core8 != mc_ref.frame_init_lowres_core8 )
     {
