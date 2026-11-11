@@ -796,6 +796,8 @@ struct x264_t
     struct
     {
         int b_active;
+        int b_frame;        /* this frame: the fdec arrays (b_nrb) */
+        int b_thread;       /* this frame: the thread's arrays */
         int i_arrays;
         int i_rows;         /* capacity in MB rows */
         int i_unit;         /* MB rows per unit: 1, MBAFF 2 */
@@ -804,9 +806,10 @@ struct x264_t
         struct
         {
             void **pp;      /* the h->mb array pointer */
+            void *orig;     /* thread array: the full-frame array, NULL: fdec array */
             uint8_t *buf;
             int i_row_size; /* bytes per MB row */
-        } a[4];
+        } a[16];
     } mbring;
 
     /* CPU functions dependents */

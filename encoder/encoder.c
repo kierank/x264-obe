@@ -3527,8 +3527,8 @@ static void *x264_slices_write( x264_t *h )
             && !h->param.b_full_recon && !h->param.psz_dump_yuv
             && !h->param.analyse.b_psnr && !h->param.analyse.b_ssim
             && !(HAS_SLICE_MAX_SIZE && h->param.i_slice_max_size);
-    h->mbring.b_active = h->b_nrb && h->mbring.i_arrays;
-    h->mbring.i_unit_last = -1;
+    /* off: the thread arrays ring is enabled by the next commit */
+    x264_macroblock_ring_frame( h, h->b_nrb, 0 );
     if( h->param.rc.i_vbv_buffer_size )
         x264_ratecontrol_slices_start( h );
     h->mb.b_fenc_bot = 0;

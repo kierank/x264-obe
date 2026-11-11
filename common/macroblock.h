@@ -316,6 +316,8 @@ void x264_macroblock_slice_init( x264_t *h );
 void x264_macroblock_thread_init( x264_t *h );
 #define x264_macroblock_ring_row x264_template(macroblock_ring_row)
 void x264_macroblock_ring_row( x264_t *h, int mb_y );
+#define x264_macroblock_ring_frame x264_template(macroblock_ring_frame)
+void x264_macroblock_ring_frame( x264_t *h, int b_frame, int b_thread );
 #define x264_macroblock_cache_load_interlaced x264_template(macroblock_cache_load_interlaced)
 void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_cache_load_progressive x264_template(macroblock_cache_load_progressive)

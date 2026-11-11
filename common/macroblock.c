@@ -262,18 +262,38 @@ void x264_mb_mc( x264_t *h )
  * threadslice, nothing reads them. */
 #define MBRING_UNITS 4
 
-static void x264_macroblock_ring_add( x264_t *h, void **pp, int i_row_size )
+static void x264_macroblock_ring_add( x264_t *h, void **pp, int i_row_size, int b_thread )
 {
     int i = h->mbring.i_arrays++;
     h->mbring.a[i].pp = pp;
+    h->mbring.a[i].orig = b_thread ? *pp : NULL;
     h->mbring.a[i].buf = NULL;
     h->mbring.a[i].i_row_size = i_row_size;
 }
 
+#define RING_ON( i ) (h->mbring.a[i].orig ? h->mbring.b_thread : h->mbring.b_frame)
+
 static void x264_macroblock_ring_map( x264_t *h )
 {
     for( int i = 0; i < h->mbring.i_arrays; i++ )
-        *h->mbring.a[i].pp = (void*)((intptr_t)h->mbring.a[i].buf - (intptr_t)h->mbring.i_y0 * h->mbring.a[i].i_row_size);
+        if( RING_ON( i ) )
+            *h->mbring.a[i].pp = (void*)((intptr_t)h->mbring.a[i].buf - (intptr_t)h->mbring.i_y0 * h->mbring.a[i].i_row_size);
+}
+
+/* Before the frame's slices: b_frame after x264_macroblock_slice_init. */
+void x264_macroblock_ring_frame( x264_t *h, int b_frame, int b_thread )
+{
+    h->mbring.b_frame = b_frame;
+    h->mbring.b_thread = b_thread;
+    h->mbring.b_active = 0;
+    for( int i = 0; i < h->mbring.i_arrays; i++ )
+    {
+        if( RING_ON( i ) )
+            h->mbring.b_active = 1;
+        else if( h->mbring.a[i].orig )
+            *h->mbring.a[i].pp = h->mbring.a[i].orig;
+    }
+    h->mbring.i_unit_last = -1;
 }
 
 void x264_macroblock_ring_row( x264_t *h, int mb_y )
@@ -289,8 +309,9 @@ void x264_macroblock_ring_row( x264_t *h, int mb_y )
     {
         /* keep the unit above */
         for( int i = 0; i < h->mbring.i_arrays; i++ )
-            memcpy( h->mbring.a[i].buf, h->mbring.a[i].buf + (y - unit - h->mbring.i_y0) * h->mbring.a[i].i_row_size,
-                    unit * h->mbring.a[i].i_row_size );
+            if( RING_ON( i ) )
+                memcpy( h->mbring.a[i].buf, h->mbring.a[i].buf + (y - unit - h->mbring.i_y0) * h->mbring.a[i].i_row_size,
+                        unit * h->mbring.a[i].i_row_size );
         h->mbring.i_y0 = y - unit;
     }
     else
@@ -301,6 +322,7 @@ void x264_macroblock_ring_row( x264_t *h, int mb_y )
     h->mbring.i_unit_last = u;
     x264_macroblock_ring_map( h );
 }
+#undef RING_ON
 
 int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
 {
@@ -464,8 +486,23 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
             /* fdec mv / ref of a non-reference B frame */
             for( int l = 0; l < 1 + !!h->param.i_bframe; l++ )
             {
-                x264_macroblock_ring_add( h, (void**)&h->mb.mv[l], 16 * w * sizeof(**h->mb.mv) );
-                x264_macroblock_ring_add( h, (void**)&h->mb.ref[l], 4 * w * sizeof(**h->mb.ref) );
+                x264_macroblock_ring_add( h, (void**)&h->mb.mv[l], 16 * w * sizeof(**h->mb.mv), 0 );
+                x264_macroblock_ring_add( h, (void**)&h->mb.ref[l], 4 * w * sizeof(**h->mb.ref), 0 );
+            }
+            /* the thread's arrays of x264_macroblock_cache_allocate, every frame. Not
+             * mvr: analysis leaves entries of unsearched refs as they were. */
+            x264_macroblock_ring_add( h, (void**)&h->mb.qp, w * sizeof(*h->mb.qp), 1 );
+            x264_macroblock_ring_add( h, (void**)&h->mb.cbp, w * sizeof(*h->mb.cbp), 1 );
+            x264_macroblock_ring_add( h, (void**)&h->mb.mb_transform_size, w * sizeof(*h->mb.mb_transform_size), 1 );
+            x264_macroblock_ring_add( h, (void**)&h->mb.slice_table, w * sizeof(*h->mb.slice_table), 1 );
+            x264_macroblock_ring_add( h, (void**)&h->mb.intra4x4_pred_mode, w * sizeof(*h->mb.intra4x4_pred_mode), 1 );
+            x264_macroblock_ring_add( h, (void**)&h->mb.non_zero_count, w * sizeof(*h->mb.non_zero_count), 1 );
+            if( PARAM_CABAC )
+            {
+                x264_macroblock_ring_add( h, (void**)&h->mb.skipbp, w * sizeof(*h->mb.skipbp), 1 );
+                x264_macroblock_ring_add( h, (void**)&h->mb.chroma_pred_mode, w * sizeof(*h->mb.chroma_pred_mode), 1 );
+                for( int l = 0; l < 1 + !!h->param.i_bframe; l++ )
+                    x264_macroblock_ring_add( h, (void**)&h->mb.mvd[l], w * sizeof(*h->mb.mvd[l]), 1 );
             }
             for( int i = 0; i < h->mbring.i_arrays; i++ )
                 CHECKED_MALLOCZERO( h->mbring.a[i].buf, h->mbring.i_rows * h->mbring.a[i].i_row_size );
