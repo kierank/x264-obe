@@ -817,7 +817,18 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 if( i_decimate_mb >= 6 || !b_decimate )
                 {
                     h->mb.i_cbp_luma |= plane_cbp;
-                    FOREACH_BIT( idx, 0, plane_cbp )
+                    if( plane_cbp == 0xf )
+                    {
+                        /* all four coded: one 16x16 call, the same pixels as four 8x8 ones */
+                        for( int idx = 0; idx < 4; idx++ )
+                        {
+                            if( !b_q8s )
+                                h->quantf.dequant_8x8( dct8x8[idx], h->dequant8_mf[p?CQM_8PC:CQM_8PY], i_qp );
+                            STORE_8x8_NNZ( p, idx, 1 );
+                        }
+                        h->dctf.add16x16_idct8( h->mb.pic.p_fdec[p], dct8x8 );
+                    }
+                    else FOREACH_BIT( idx, 0, plane_cbp )
                     {
                         if( !b_q8s )
                             h->quantf.dequant_8x8( dct8x8[idx], h->dequant8_mf[p?CQM_8PC:CQM_8PY], i_qp );
