@@ -362,6 +362,8 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed );
  *      h->mb. need only valid values from other blocks */
 #define x264_mb_predict_mv_ref16x16 x264_template(mb_predict_mv_ref16x16)
 void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc );
+#define x264_mvpred_ref16x16_init x264_template(mvpred_ref16x16_init)
+void x264_mvpred_ref16x16_init( x264_t *h );
 
 #define x264_mb_mc x264_template(mb_mc)
 void x264_mb_mc( x264_t *h );
