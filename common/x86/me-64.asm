@@ -78,6 +78,8 @@ cextern pixel_sad_hex_search_8x8_avx512
 cextern pixel_sad_hex_search_reg_8x8_avx512
 cextern pixel_sad_hex_search_8x8_avx2
 cextern pixel_sad_hex_search_reg_8x8_avx2
+cextern pixel_sad_hex_search_8x8_avx512icl
+cextern pixel_sad_hex_search_reg_8x8_avx512icl
 cextern pw_1
 %endif
 
@@ -1844,12 +1846,19 @@ cglobal %1, 1,15,0, ME_STACK
     mov            eax, R14d
     mov           R10d, [rbx+me_fpel.me_range]
 %if cpuflag(avx512)
-    ; fn->hex_search's kernel: vdbpsadbw, or the avx2 one where that is dispatched
+    ; fn->hex_search's kernel: vdbpsadbw, or the avx2 / avx512icl one where that is dispatched
     mov            R12, [rbx+me_fpel.fn]
+    mov            R12, [R12+me_fpel_fn.hex_search]
     lea            R13, [pixel_sad_hex_search_8x8_avx2]
-    cmp            R13, [R12+me_fpel_fn.hex_search]
+    cmp            R13, R12
     je .s%1x%2_hex_avx2
+    lea            R13, [pixel_sad_hex_search_8x8_avx512icl]
+    cmp            R13, R12
+    je .s%1x%2_hex_icl
     call pixel_sad_hex_search_reg_8x8_avx512
+    jmp .s%1x%2_hex_ret
+.s%1x%2_hex_icl:
+    call pixel_sad_hex_search_reg_8x8_avx512icl
     jmp .s%1x%2_hex_ret
 .s%1x%2_hex_avx2:
 %endif

@@ -8527,6 +8527,15 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         fn.sq_min = rand()&3 ? pf.sad_sq_min[i_pixel] : NULL;
         fn.hex_min = rand()&3 ? pf.sad_hex_min[i_pixel] : NULL;
         fn.hex_search = rand()&1 ? pf.sad_hex_search[i_pixel] : NULL;
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+        /* each 8x8 hex_search the avx512 fused search picks a register entry for by pointer */
+        if( fn.hex_search && i_pixel == PIXEL_8x8 && (cpu_new&X264_CPU_AVX512ICL) )
+        {
+            int k = rand()%3;
+            fn.hex_search = k == 0 ? x264_pixel_sad_hex_search_8x8_avx512icl
+                          : k == 1 ? x264_pixel_sad_hex_search_8x8_avx512 : x264_pixel_sad_hex_search_8x8_avx2;
+        }
+#endif
         fn.predictor_clip = rand()&3 ? pf.predictor_clip : NULL;
         fn.subpel = pf.satd_subpel_search[i_pixel];
         fn.qpel = pf.satd_qpel_search[i_pixel];
