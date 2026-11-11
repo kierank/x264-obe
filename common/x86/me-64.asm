@@ -70,6 +70,9 @@ mf_pd_ffff:  times 8 dd 0xffff
 mf_sq16_xidx: dd 2,4,2,2, 6,4,6,6
 mf_sq16_yidx: dd 2,2,6,4, 2,6,6,4
 mf_sq16_rank: dd 5,1,6,3, 7,2,8,4
+; 8 wide square (MF_SQ8): the dx -1 | 1 qwords and dx 0 of a 16 byte row at x - 1
+mf_sq8_vidx: db 0,1,2,3,4,5,6,7, 2,3,4,5,6,7,8,9, 0,1,2,3,4,5,6,7, 2,3,4,5,6,7,8,9
+mf_sq8_didx: db 1,2,3,4,5,6,7,8, -1,-1,-1,-1,-1,-1,-1,-1, 1,2,3,4,5,6,7,8, -1,-1,-1,-1,-1,-1,-1,-1
 
 SECTION .text
 
@@ -1991,13 +1994,23 @@ cglobal %1, 1,15,0, ME_STACK
 .s%1x%2_hex_end:
     and           R14d, ~63
 
+%define MF_SQW 0
 %if %1 == 16
+%define MF_SQW 1
+%elif notcpuflag(avx512)
+%define MF_SQW 1
+%endif
+%if MF_SQW
     ; square refine in windows: rows r-1, r, r+1 at dx -1 | 1 and dx 0 at rows
-    ; r-1 | r+1, against fenc row r in both lanes (memory: m8, m9 are free now)
+    ; r-1 | r+1, against fenc row r (16 wide: memory, m8, m9 are free now; 8 wide: MF_SQ8)
     MF_PTR         rdi, R12, R13
     sub            rdi, R11
     dec            rdi
+%if %1 == 16
     MF_SQ16         %2
+%else
+    MF_SQ8          %2
+%endif
     packusdw        m1, m3
     packusdw        m2, m0
     packusdw        m1, m2
@@ -2081,6 +2094,43 @@ cglobal %1, 1,15,0, ME_STACK
   %endif
   %assign %%r %%r+1
 %endrep
+%endmacro
+
+; the square of 8 wide blocks at rdi = pix - 1 - stride (advanced), as MF_SQ16's m0-m3: per row
+; pair a ymm of rows (y | y+1), 16 byte loads pshufb'd to the (dx -1 | dx 1) qwords, against
+; fenc rows (r | r+1) doubled by movddup (lane qwords: candidate pairs of even | odd rows, then
+; vpermq to MF_SQ16's lanes); dx 0 from qwords 1..8 of rows (r-1 | r+1); fenc from memory;
+; clobbers rax, m4-m11
+%macro MF_SQ8 1 ; h
+    mov            rax, [R15+me_t.p_fenc]
+    movu           m11, [mf_sq8_vidx]
+    MF_WIN          4, rdi, rdi+R11
+    pshufb          m6, m4, [mf_sq8_didx]
+    pshufb          m4, m4, m11
+%assign %%p 0
+%rep %1/2
+    MF_WIN          5, rdi+R11*2, rdi+R10
+    MF_WIN          7, rdi+R11, rdi+R11*2
+    pshufb          m8, m5, [mf_sq8_didx]
+    pshufb          m5, m5, m11
+    pshufb          m7, m7, m11
+    vpunpcklqdq     m9, m6, m8
+    movddup        m10, [rax+32*%%p]
+    MF_ACC          1, 4, 10, 6, %%p == 0
+    MF_ACC          0, 7, 10, 6, %%p == 0
+    MF_ACC          2, 5, 10, 6, %%p == 0
+    MF_ACC          3, 9, 10, 6, %%p == 0
+  %if %%p < %1/2-1
+    lea            rdi, [rdi+R11*2]
+    mova            m4, m5
+    mova            m6, m8
+  %endif
+  %assign %%p %%p+1
+%endrep
+    vpermq          m0, m0, q3120
+    vpermq          m1, m1, q3120
+    vpermq          m2, m2, q3120
+    vpermq          m3, m3, q3120
 %endmacro
 
 ; %1 = R8 + hex2[dir+%2] (rcx = &hex2[dir]) as a pointer offset; clobbers rax
