@@ -1,0 +1,25 @@
+lea            rdi, [R8-4]	lea            rdi, [R8-2]
+lea            rsi, [rdx+rsi*2]	lea            rsi, [rdx+rsi]
+movsxd         rdx, dword [R15+me_t.i_stride]\n    mov            rcx, [rsp+H_CMX]	mov            rdx, R11\n    mov            rcx, [rsp+H_CMX]
+lea             %4, [%4+R11*4]	lea             %4, [%4+R11*2]
+punpckhqdq     m%1, m%1, m%3	punpcklqdq     m%1, m%1, m%3
+pshufd          m6, m4, q1032	pshufd          m6, m4, q2301
+vinserti128   m %+ %%r, m %+ %%r, [rax+64*%%k+32], 1	vinserti128   m %+ %%r, m %+ %%r, [rax+64*%%k+16], 1
+movu   m %+ %%r, [R9+32*%%k]	movu   m %+ %%r, [R9+32*%%k+2]
+vpbroadcastd   m%1 {k7}, [%2+%3*8+16]	vpbroadcastd   m%1 {k7}, [%2+%3*8+8]
+vperm2i128      m0, m0, m4, 0x31	vperm2i128      m0, m0, m4, 0x21
+pavgw           m4, m4, [mh_addr]	pmaxsw          m4, m4, [mh_addr]
+pavgw           m4, m4, m1	pminsw          m4, m4, m1
+lea             %1, [%1+rax*2]	lea             %1, [%1+rax]
+lea            rdx, [rdi+4]	lea            rdx, [rdi+2]
+pshufd         xm1, xm0, q1111	pshufd         xm1, xm0, q2222
+psubw          m%2, mh_f, [mh_addr+%7]	psubusw        m%2, mh_f, [mh_addr+%7]
+%if mh_r == 0\n    lea             R9, [rsp+H_FENC]	%if mh_r == 0\n    lea             R9, [rsp+H_FENC+32]
+movsxd         R11, dword [R15+me_t.i_stride]\n    add            R11, R11\n    lea            R10, [R11*3]\n    mov            R12d, eax	movsxd         R11, dword [R15+me_t.i_stride]\n    lea            R10, [R11*3]\n    mov            R12d, eax
+lea            rcx, [R8+R11+2]	lea            rcx, [R8+R11+4]
+cmp            R8d, [rsp+H_PMV]	cmp            R8d, [rsp+H_PMV+4]
+MH_ROW          %1, 3, 8, rsi, %%k, %%k == 0, 2	MH_ROW          %1, 3, 8, rsi, %%k, %%k == 0, 4
+MH_ROW          %1, 5, 8, rdx, %%k, %%k == 0, -2	MH_ROW          %1, 5, 8, rdi, %%k, %%k == 0, -2
+punpcklqdq      m8, m4, m6	punpcklqdq      m8, m4, m4
+MH_F16          9, %%k	MH_F16          9, 0
+lea            rdx, [R8+R11]\n    call .x8_%1x%2	lea            rdx, [R8+R11*2]\n    call .x8_%1x%2
