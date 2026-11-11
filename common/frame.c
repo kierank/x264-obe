@@ -260,16 +260,16 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     }
 
     /* Fault the pages in now, not in the first frames that use them: all of an
-     * fdec; of an fenc, the picture rows and the lowres planes, as its borders,
-     * field planes and per-mb lowres data may never be used. */
+     * fdec; of an fenc, only the lowres planes. Its picture rows are left alone:
+     * x264_encoder_encode_ext borrows the caller's planes, so they are never
+     * touched, and its borders, field planes and per-mb lowres data may never
+     * be used. */
     if( b_touch )
     {
         if( b_fdec )
             memset( frame->base, 0, prealloc_size );
         else
         {
-            for( int p = 0; p < frame->i_plane; p++ )
-                memset( frame->plane[p] - PADH, 0, frame->i_stride[p] * frame->i_lines[p] * sizeof(pixel) );
             if( h->frames.b_have_lowres )
             {
                 int luma_plane_size = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
