@@ -42,6 +42,8 @@ void x264_deblock_h_luma_avx ( pixel *pix, intptr_t stride, int alpha, int beta,
 void x264_deblock_h_luma_mbaff_sse2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_h_luma_mbaff_avx x264_template(deblock_h_luma_mbaff_avx)
 void x264_deblock_h_luma_mbaff_avx ( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
+#define x264_deblock_h_luma_mbaff_avx2 x264_template(deblock_h_luma_mbaff_avx2)
+void x264_deblock_h_luma_mbaff_avx2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_v_chroma_sse2 x264_template(deblock_v_chroma_sse2)
 void x264_deblock_v_chroma_sse2( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 );
 #define x264_deblock_v_chroma_avx x264_template(deblock_v_chroma_avx)

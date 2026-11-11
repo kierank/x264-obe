@@ -104,6 +104,10 @@ transpose_shuf_avx2: times 2 db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
 ; 10-bit avx2 luma intra: +2
 ALIGN 32
 pw_2_avx2:     times 16 dw 2
+; [p|q] qword halves: sign, tc0 of rows 0-3 | 4-7
+pw_pq_sign:    times 2 dw 1, 1, 1, 1, -1, -1, -1, -1
+mbaff10_tc_shuf: db 0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1
+                 db 2,2,2,2,3,3,3,3,2,2,2,2,3,3,3,3
 
 SECTION .text
 
@@ -1584,6 +1588,221 @@ cglobal deblock_h_luma_intra, 4,8,16
     vextracti128 [r7+r1*2-8], m6, 1
     movu     [r4+r5-8], xm7
     vextracti128 [r7+r5-8], m7, 1
+    RET
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 10-bit MBAFF mixed edge, avx2, Copyright (C) 2026 Open Broadcast Systems Ltd
+; 8 rows, rows 0-3 in lane 0 and 4-7 in lane 1; per lane the low qword holds
+; the p side and the high qword the q side of the edge, so one ymm pass filters
+; both sides and every shuffle stays in its lane. The swapped copies [q|p] give
+; both sides of each mask in both halves; the p0/q0 delta is computed on
+; [R|-R], and pw_pq_sign makes it [R|R] before the rounding shift and [d|-d]
+; after the clip.
+;-----------------------------------------------------------------------------
+; 8 rows of p3..q3 -> column pairs, rows 0-3 in lane 0, rows 4-7 in lane 1
+; out: m0 = c0|c1, m1 = c2|c3, m2 = c4|c5, m3 = c6|c7 (qword per lane each)
+;      r5 = 3*stride, r6 = pix-4 pixels, r7 = r6+4*stride
+%macro LUMA_MBAFF10_LOAD 0
+    add          r1, r1
+    lea          r5, [r1*3]
+    lea          r6, [r0-8]
+    lea          r7, [r6+r1*4]
+    DEBLOCK_H_LOAD_ROW 0, [r6],      [r7]
+    DEBLOCK_H_LOAD_ROW 1, [r6+r1],   [r7+r1]
+    DEBLOCK_H_LOAD_ROW 2, [r6+r1*2], [r7+r1*2]
+    DEBLOCK_H_LOAD_ROW 3, [r6+r5],   [r7+r5]
+    punpckhwd    m4, m0, m1
+    punpcklwd    m0, m1
+    punpckhwd    m5, m2, m3
+    punpcklwd    m2, m3
+    punpckhdq    m1, m0, m2       ; c2|c3
+    punpckldq    m0, m2           ; c0|c1
+    punpckhdq    m3, m4, m5       ; c6|c7
+    punpckldq    m2, m4, m5       ; c4|c5
+%endmacro
+
+; in: m1 = c2|c3, m2 = c4|c5, m0 = c0|c1, m3 = c6|c7 (from LUMA_MBAFF10_LOAD)
+; out, [p|q] = p side in the low qword, q side in the high one:
+;      m0 = [p0|q0], m4 = [q0|p0], m1 = [p1|q1], m5 = [q1|p1], m2 = [p2|q2], m6 = [q2|p2]
+;      and, with %1, m3 = [p3|q3]
+%macro LUMA_MBAFF10_PQ 0-1 0
+    vpblendd     m4, m1, m2, 0x33 ; [q0|p0]
+    vpblendd     m1, m1, m2, 0xcc ; [p1|q1]
+    vpblendd     m6, m0, m3, 0x33 ; [q2|p2]
+    palignr      m2, m3, m0, 8    ; [p2|q2]
+%if %1
+    vpblendd     m3, m0, m3, 0xcc ; [p3|q3]
+%endif
+    pshufd       m0, m4, q1032    ; [p0|q0]
+    pshufd       m5, m1, q1032    ; [q1|p1]
+%endmacro
+
+; in: m0-m2 = [p0|q0] [p1|q1] [p2|q2], m4-m6 = the swapped copies
+;     r2d = alpha, r3d = beta, r4 = tc0 (tc0[i] covers rows 2i, 2i+1)
+; out: m0 = [p0'|q0'], m12 = [p1'|q1']
+%macro LUMA_INTER10_PQ_AVX2 0
+    movd        xm8, r2d
+    movd        xm9, r3d
+    vpbroadcastw m8, xm8
+    vpbroadcastw m9, xm9
+    psubw       m10, m0, m4
+    pabsw       m10, m10          ; |p0-q0|
+    pcmpgtw      m8, m10
+    psubw       m10, m1, m0
+    psubw       m11, m5, m4
+    pabsw       m10, m10
+    pabsw       m11, m11
+    pmaxsw      m10, m11          ; max(|p1-p0|, |q1-q0|), both lanes
+    pcmpgtw     m10, m9, m10
+    pand         m8, m10
+    psubw       m10, m2, m0
+    psubw       m11, m6, m4
+    pabsw       m10, m10
+    pabsw       m11, m11
+    pcmpgtw     m10, m9, m10      ; ap | aq
+    pcmpgtw      m9, m11          ; aq | ap
+    vpbroadcastd m11, [r4]
+    pshufb      m11, [mbaff10_tc_shuf]
+    psraw       m11, 8            ; tc0
+    psraw       m12, m11, 15
+    pandn        m8, m12, m8      ; mask, but not where tc0 < 0 (bS 0)
+    pand        m11, m8           ; tc0 & mask
+    pand        m10, m8
+    pand         m9, m8
+    pavgw       m12, m0, m4       ; (p0+q0+1)>>1
+    paddw       m12, m2
+    psrlw       m12, 1            ; (p2+((p0+q0+1)>>1))>>1 | (q2+...)>>1
+    pand        m13, m11, m10
+    psubw       m14, m1, m13
+    paddw       m13, m1
+    pmaxsw      m12, m14
+    pminsw      m12, m13          ; p1' | q1'
+    psubw       m11, m10
+    psubw       m11, m9           ; tc = tc0+ap+aq
+    psubw       m13, m4, m0
+    psllw       m13, 2
+    psubw       m14, m1, m5
+    paddw       m13, m14          ; (q0-p0)*4 + p1-q1 = [R|-R]
+    mova        m15, [pw_pq_sign]
+    psignw      m13, m15          ; [R|R]
+    paddw       m13, [pw_4]
+    psraw       m13, 3
+    pxor        m14, m14
+    psubw       m10, m14, m11
+    pmaxsw      m13, m10
+    pminsw      m13, m11          ; delta
+    psignw      m13, m15          ; [d|-d]
+    paddw        m0, m13
+    pmaxsw       m0, m14
+    pminsw       m0, [pw_pixel_max] ; p0' | q0'
+%endmacro
+
+; in: m0-m3 = [p0|q0] [p1|q1] [p2|q2] [p3|q3], m4-m5 = [q0|p0] [q1|p1]
+;     r2d = alpha, r3d = beta
+; out: m0-m2 = [p0'|q0'] [p1'|q1'] [p2'|q2']
+%macro LUMA_INTRA10_PQ_AVX2 0
+    movd        xm8, r2d
+    movd        xm9, r3d
+    shr         r2d, 2
+    add         r2d, 2
+    movd       xm10, r2d
+    vpbroadcastw m8, xm8
+    vpbroadcastw m9, xm9
+    vpbroadcastw m10, xm10
+    psubw       m11, m0, m4
+    pabsw       m11, m11          ; |p0-q0|
+    pcmpgtw      m8, m11          ; < alpha
+    pcmpgtw     m10, m11          ; < (alpha>>2)+2
+    psubw       m11, m1, m0
+    psubw       m12, m5, m4
+    pabsw       m11, m11
+    pabsw       m12, m12
+    pmaxsw      m11, m12
+    pcmpgtw     m11, m9, m11
+    pand         m8, m11          ; filter
+    psubw       m11, m2, m0
+    pabsw       m11, m11
+    pcmpgtw      m9, m11          ; |p2-p0| < beta | |q2-q0| < beta
+    pand        m10, m8
+    pand         m9, m10          ; strong p | strong q
+    paddw       m11, m2, m1
+    paddw       m12, m0, m4
+    paddw       m11, m12
+    paddw       m11, [pw_2_avx2]  ; p2+p1+p0+q0+2 | q2+q1+q0+p0+2
+    psubw       m12, m11, m2
+    psubw       m12, m4
+    paddw       m12, m5
+    paddw       m12, m1
+    psrlw       m12, 2            ; (2*p1+p0+q1+2)>>2
+    paddw       m13, m11, m11
+    psubw       m13, m2
+    paddw       m13, m5
+    psrlw       m13, 3            ; (p2+2*p1+2*p0+2*q0+q1+4)>>3
+    pblendvb    m12, m12, m13, m9
+    pblendvb     m0, m0, m12, m8  ; p0' | q0'
+    psrlw       m13, m11, 2
+    paddw       m12, m3, m2
+    paddw       m12, m12
+    paddw       m12, [pw_2_avx2]
+    paddw       m12, m11
+    psrlw       m12, 3            ; (2*p3+3*p2+p1+p0+q0+4)>>3
+    pblendvb     m1, m1, m13, m9  ; p1' | q1'
+    pblendvb     m2, m2, m12, m9  ; p2' | q2'
+%endmacro
+
+INIT_YMM avx2
+;-----------------------------------------------------------------------------
+; void deblock_h_luma_mbaff( uint16_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_luma_mbaff, 5,8,16
+    LUMA_MBAFF10_LOAD
+    LUMA_MBAFF10_PQ
+    LUMA_INTER10_PQ_AVX2
+    punpcklwd    m1, m12, m0      ; p1 p0, rows 0-3 | 4-7
+    punpckhwd    m2, m0, m12      ; q0 q1
+    punpckldq    m3, m1, m2       ; rows 0,1 | 4,5
+    punpckhdq    m1, m2           ; rows 2,3 | 6,7
+    movq       [r6+4], xm3
+    movhps  [r6+r1+4], xm3
+    movq  [r6+r1*2+4], xm1
+    movhps  [r6+r5+4], xm1
+    vextracti128 xm3, m3, 1
+    vextracti128 xm1, m1, 1
+    movq       [r7+4], xm3
+    movhps  [r7+r1+4], xm3
+    movq  [r7+r1*2+4], xm1
+    movhps  [r7+r5+4], xm1
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_luma_intra_mbaff( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_luma_intra_mbaff, 4,8,16
+    LUMA_MBAFF10_LOAD
+    LUMA_MBAFF10_PQ 1
+    LUMA_INTRA10_PQ_AVX2
+    punpcklwd    m4, m3, m2       ; p3 p2, rows 0-3 | 4-7
+    punpcklwd    m5, m1, m0       ; p1 p0
+    punpckhwd    m6, m0, m1       ; q0 q1
+    punpckhwd    m7, m2, m3       ; q2 q3
+    punpckldq    m8, m4, m5       ; p halves, rows 0,1
+    punpckhdq    m4, m5           ; rows 2,3
+    punpckldq    m5, m6, m7       ; q halves, rows 0,1
+    punpckhdq    m6, m7           ; rows 2,3
+    punpcklqdq   m0, m8, m5       ; row 0 | 4
+    punpckhqdq   m1, m8, m5       ; row 1 | 5
+    punpcklqdq   m2, m4, m6       ; row 2 | 6
+    punpckhqdq   m3, m4, m6       ; row 3 | 7
+    movu       [r6], xm0
+    movu    [r6+r1], xm1
+    movu  [r6+r1*2], xm2
+    movu    [r6+r5], xm3
+    vextracti128 [r7], m0, 1
+    vextracti128 [r7+r1], m1, 1
+    vextracti128 [r7+r1*2], m2, 1
+    vextracti128 [r7+r5], m3, 1
     RET
 %endif ; ARCH_X86_64
 
