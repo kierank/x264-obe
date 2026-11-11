@@ -60,6 +60,12 @@ filt_mul20: times 32 db 20
 filt_mul15: times 16 db 1, -5
 filt_mul51: times 16 db -5, 1
 hpel_shuf: times 2 db 0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15
+hpel_pb_3: times 32 db 3
+hpel_pb_4: times 32 db 4
+hpel_padl_mask: times 28 db 0
+                times 4 db -1
+hpel_padr_mask: times 4 db -1
+                times 28 db 0
 deinterleave_shuf: times 2 db 0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15
 
 mbtree_prop_list_avx512_shuf: dw 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7
@@ -1043,7 +1049,23 @@ cglobal hpel_filter_h, 3,3,8
 %endif
 
 %if ARCH_X86_64
-%macro DO_FILT_V 5
+; side pads in-kernel (x264_frame_expand_border_filtered's): chunk 0 is row columns
+; -32..-1, whose 0-27 take column -4; the last chunk is columns w..w+31, whose 4-31
+; take column w+3. x: the stored chunk, t0/t1 clobbered.
+%macro HPEL_PADL 3
+    vpermq    %2, %1, q3333
+    pshufb    %2, [hpel_pb_4]
+    movu      %3, [hpel_padl_mask]
+    vpblendvb %1, %2, %1, %3
+%endmacro
+%macro HPEL_PADR 3
+    vpermq    %2, %1, q0000
+    pshufb    %2, [hpel_pb_3]
+    movu      %3, [hpel_padr_mask]
+    vpblendvb %1, %2, %1, %3
+%endmacro
+
+%macro DO_FILT_V 5-6 0 ; ..., pad: 1 left, 2 right on the last chunk
     ;The optimum prefetch distance is difficult to determine in checkasm:
     ;any prefetch seems slower than not prefetching.
     ;In real use, the prefetch seems to be a slight win.
@@ -1098,6 +1120,14 @@ cglobal hpel_filter_h, 3,3,8
     mova      %2, m4
 %endif
     FILT_PACK m1, m4, m15, 5
+%if %6 == 1
+    HPEL_PADL m1, m2, m3
+%elif %6 == 2
+    cmp       r4, -mmsize
+    jl %%nopad
+    HPEL_PADR m1, m2, m3
+%%nopad:
+%endif
     movntps  [r8+r4+%5], m1
 %endmacro
 
@@ -1123,12 +1153,17 @@ cglobal hpel_filter_h, 3,3,8
     FILT_H    %3, m3, m4
 %endmacro
 
-%macro DO_FILT_C 4
+%macro DO_FILT_C 4-5 0 ; ..., pad: 1 left, 2 right
     FILT_C %1, %2, %3
     FILT_C %2, %1, %4
     FILT_PACK %3, %4, m15, 6
 %if mmsize==32
     vpermq %3, %3, q3120
+%endif
+%if %5 == 1
+    HPEL_PADL %3, m1, m2
+%elif %5 == 2
+    HPEL_PADR %3, m1, m2
 %endif
     movntps   [r5+r4], %3
 %endmacro
@@ -1142,7 +1177,7 @@ cglobal hpel_filter_h, 3,3,8
     paddw     %1, %4
 %endmacro
 
-%macro DO_FILT_H 3
+%macro DO_FILT_H 3-4 0 ; ..., pad: 1 left, 2 right
 %if mmsize==32
     vperm2i128 m3, %2, %1, q0003
 %endif
@@ -1175,6 +1210,11 @@ cglobal hpel_filter_h, 3,3,8
     FILT_V2   m1, m2, %2, m6, m5, m4
     FILT_PACK m1, m6, m15, 5
 %endif
+%if %4 == 1
+    HPEL_PADL m1, m2, m3
+%elif %4 == 2
+    HPEL_PADR m1, m2, m3
+%endif
     movntps [r0+r4], m1
 %if hpel_mode == 3
     movntps [r9+r4], m1
@@ -1182,7 +1222,7 @@ cglobal hpel_filter_h, 3,3,8
     mova      %2, %3
 %endmacro
 
-%macro HPEL 0-1 0 ; mode
+%macro HPEL 0-2 0, 0 ; mode, pad
 ;-----------------------------------------------------------------------------
 ; void hpel_filter( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                   uint8_t *src, intptr_t stride, int width, int height )
@@ -1195,19 +1235,34 @@ cglobal hpel_filter_h, 3,3,8
 ;                        uint8_t *src, intptr_t stride, int width, int height,
 ;                        int16_t *buf, uint8_t *dsth2 )
 ; dual also stores h to dsth2, at the same offsets (dsth2 = dsth mod mmsize)
+; _pad: also the side pads (avx2 only); needs src and the rows 32-aligned at column
+; 0 (src = row - 8) and width = w + 16 with w % 32 == 0, w >= 32
 ;-----------------------------------------------------------------------------
 %assign hpel_mode %1 ; 0 plain, 1 copy, 2 copy_vc, 3 dual
+%assign hpel_pad %2
+%if hpel_pad
+%if hpel_mode == 1
+cglobal hpel_filter_copy_pad, 7,10,16
+%elif hpel_mode == 2
+cglobal hpel_filter_copy_vc_pad, 7,10,16
+%elif hpel_mode == 3
+cglobal hpel_filter_dual_pad, 7,10,16
+%else
+cglobal hpel_filter_pad, 7,9,16
+%endif
+%else
 %if hpel_mode == 1
 cglobal hpel_filter_copy, 7,10,16
-    mov       r9, r8mp
 %elif hpel_mode == 2
 cglobal hpel_filter_copy_vc, 7,10,16
-    mov       r9, r8mp
 %elif hpel_mode == 3
 cglobal hpel_filter_dual, 7,10,16
-    mov       r9, r8mp
 %else
 cglobal hpel_filter, 7,9,16
+%endif
+%endif
+%if hpel_mode
+    mov       r9, r8mp
 %endif
     mov       r7, r3
     sub      r5d, mmsize
@@ -1239,10 +1294,26 @@ cglobal hpel_filter, 7,9,16
 ;ALIGN 16
 .loopy:
 ; first filter_v
-    DO_FILT_V m8, m7, m13, m12, 0
+    DO_FILT_V m8, m7, m13, m12, 0, hpel_pad
+%if hpel_pad
+; chunk 0 (never the last: w >= 32)
+    DO_FILT_V m6, m5, m11, m12, mmsize
+    psrlw   m15, 1
+    DO_FILT_C m9, m8, m7, m6, 1
+    paddw   m15, m15
+    mova     m7, m5
+%if hpel_mode != 2
+    DO_FILT_H m10, m13, m11, 1
+%endif
+    add      r4, mmsize
+    jl .loopx
+    cmp      r4, mmsize
+    jl .lastx_pad
+    jmp .rowend
+%endif
 ;ALIGN 16
 .loopx:
-    DO_FILT_V m6, m5, m11, m12, mmsize
+    DO_FILT_V m6, m5, m11, m12, mmsize, hpel_pad*2
 .lastx:
 %if cpuflag(ssse3)
     psrlw   m15, 1   ; pw_512
@@ -1262,7 +1333,23 @@ cglobal hpel_filter, 7,9,16
     add      r4, mmsize
     jl .loopx
     cmp      r4, mmsize
+%if hpel_pad
+    jl .lastx_pad
+    jmp .rowend
+; the last chunk (no v: the previous iteration stored it)
+.lastx_pad:
+    psrlw   m15, 1
+    DO_FILT_C m9, m8, m7, m6, 2
+    paddw   m15, m15
+    mova     m7, m5
+%if hpel_mode != 2
+    DO_FILT_H m10, m13, m11, 2
+%endif
+    add      r4, mmsize
+%else
     jl .lastx
+%endif
+.rowend:
 ; setup regs for next y
     sub      r4, r7
     sub      r4, r2
@@ -1295,6 +1382,10 @@ HPEL
 HPEL 1
 HPEL 2
 HPEL 3
+HPEL 0, 1
+HPEL 1, 1
+HPEL 2, 1
+HPEL 3, 1
 %endif ; ARCH_X86_64
 
 %undef movntq

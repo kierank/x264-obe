@@ -745,6 +745,14 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
     int padh = PADH - 4;
     int padv = PADV - 8;
     for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+    {
+        /* hpel_filter_pad wrote the side pads, from the same pixels */
+        int b_sides = !x264_frame_filter_pads( h, frame, p );
+#define EXPAND( pix, stride, height )\
+        if( b_sides )\
+            plane_expand_border( pix, stride, width, height, padh, padv, b_start, b_end, 0 );\
+        else\
+            plane_expand_border_bands( pix, pix, stride, width, height, padh, padv, b_start, b_end );
         for( int i = 1; i < 4; i++ )
         {
             int stride = frame->i_stride[p];
@@ -753,14 +761,17 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
             if( SLICE_MBAFF )
             {
                 pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
-                plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
-                plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                EXPAND( pix, stride*2, height )
+                EXPAND( pix+stride, stride*2, height )
             }
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
-            plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+            EXPAND( pix, stride, height << SLICE_MBAFF )
         }
+#undef EXPAND
+    }
 }
+
 
 /* Lowres rows [y0,y1): side padding (unless frame_init_lowres_core_pad wrote
  * it), and the padding above or below when the band is the first or last. */

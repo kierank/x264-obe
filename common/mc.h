@@ -124,6 +124,10 @@ typedef struct
      * dsth have the same alignment) */
     void (*hpel_filter_dual)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dsth2 );
+    /* hpel_filter, _copy, _copy_vc, _dual that also write x264_frame_expand_border_filtered's
+     * side pads: see x264_frame_filter_pads. dst unused by [0]. NULL if there is no asm. */
+    void (*hpel_filter_pad[4])( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                                intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
 
     /* the PADH side padding of rows [0, height) of a plane: pixel 0 and width-1,
      * or the pairs at 0 and width-2 with b_chroma (NV12/NV16); also to pix2 at

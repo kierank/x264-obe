@@ -5127,6 +5127,79 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "hpel filter copy_vc :" );
     }
 
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched in-kernel side pads, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.hpel_filter_pad[0] )
+    {
+        mc_a.hpel_filter_pad[0] = x264_hpel_filter_pad_avx2;
+        mc_a.hpel_filter_pad[1] = x264_hpel_filter_copy_pad_avx2;
+        mc_a.hpel_filter_pad[2] = x264_hpel_filter_copy_vc_pad_avx2;
+        mc_a.hpel_filter_pad[3] = x264_hpel_filter_dual_pad_avx2;
+    }
+#endif
+    if( mc_a.hpel_filter_pad[0] && mc_a.hpel_filter_pad[0] != mc_ref.hpel_filter_pad[0] &&
+        mc_a.hpel_filter_copy && mc_a.hpel_filter_copy_vc && mc_a.hpel_filter_dual )
+    {
+        /* each mode's _pad against the mode's own kernel then x264_frame_expand_border_filtered's
+         * side pads (columns -32..-5 from -4, w+4..w+31 from w+3) on h/v/c/dsth2; every byte of
+         * the planes. Rows 32-aligned at column 0, w % 32 == 0. */
+        set_func_name( "hpel_filter_pad" );
+        ok = 1; used_asm = 1;
+        intptr_t st = 192;
+        int hh = 6, sz = 16*st;
+        pixel *srcb = x264_malloc( sz * sizeof(pixel) );
+        pixel *bb = x264_malloc( 8*sz * sizeof(pixel) );
+        int16_t *tmp = x264_malloc( (st+48+32) * sizeof(int16_t) );
+        ok = srcb && bb && tmp;
+        for( int w = 32; w <= 128 && ok; w += 32 )
+            for( int mode = 0; mode < 4 && ok; mode++ )
+            {
+                for( int i = 0; i < sz; i++ )
+                    srcb[i] = rand();
+                for( int i = 0; i < 8*sz; i++ )
+                    bb[i] = 0xCD;
+                pixel *src = srcb + 4*st + 64 - 8;
+                pixel *d[2][4];
+                for( int s = 0; s < 2; s++ )
+                    for( int j = 0; j < 4; j++ )
+                        d[s][j] = bb + (s*4+j)*sz + 4*st + 64 - 8;
+                if( mode == 0 )
+                    mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp );
+                else
+                    (mode == 1 ? mc_a.hpel_filter_copy : mode == 2 ? mc_a.hpel_filter_copy_vc : mc_a.hpel_filter_dual)
+                        ( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp, d[0][3] );
+                for( int j = 0; j < 4; j++ )
+                {
+                    if( (j == 0 && mode == 2) || (j == 3 && mode != 3) )
+                        continue;
+                    for( int y = 0; y < hh; y++ )
+                    {
+                        pixel *row = d[0][j] + 8 + y*st;
+                        for( int x = -32; x < -4; x++ )
+                            row[x] = row[-4];
+                        for( int x = w+4; x < w+32; x++ )
+                            row[x] = row[w+3];
+                    }
+                }
+                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], src, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
+                if( memcmp( bb, bb + 4*sz, 4*sz * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    for( int i = 0; i < 4*sz; i++ )
+                        if( bb[i] != bb[4*sz+i] )
+                        {
+                            fprintf( stderr, "hpel_filter_pad mode %d w %d: plane %d row %d col %d: %d != %d\n", mode, w,
+                                     i/sz, i%sz/(int)st - 4, i%sz%(int)st - 64, bb[i], bb[4*sz+i] );
+                            break;
+                        }
+                }
+            }
+        x264_free( srcb );
+        x264_free( bb );
+        x264_free( tmp );
+        report( "hpel filter pad :" );
+    }
+
     if( mc_a.frame_init_lowres_core != mc_ref.frame_init_lowres_core )
     {
         pixel *dstc[4] = { pbuf3, pbuf3+1024, pbuf3+2048, pbuf3+3072 };
