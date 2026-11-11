@@ -650,6 +650,10 @@ static void (* const x264_pixel_avg_wtab_##instr[6])( pixel *, intptr_t, pixel *
 #define x264_pixel_avg2_w12_cache64_sse2 x264_pixel_avg2_w16_cache64_sse2
 #define x264_pixel_avg2_w12_sse3         x264_pixel_avg2_w16_sse3
 #define x264_pixel_avg2_w12_sse2         x264_pixel_avg2_w16_sse2
+#undef x264_pixel_avg2_w12_avx
+#undef x264_pixel_avg2_w12_avx2
+#define x264_pixel_avg2_w12_avx          x264_pixel_avg2_w16_avx
+#define x264_pixel_avg2_w12_avx2         x264_pixel_avg2_w16_avx2
 #endif // HIGH_BIT_DEPTH
 
 PIXEL_AVG_WTAB(mmx2, mmx2, mmx2, mmx2, mmx2, mmx2)
@@ -666,6 +670,8 @@ PIXEL_AVG_WTAB(cache64_sse2, mmx2, cache64_mmx2, cache64_sse2, cache64_sse2, cac
 PIXEL_AVG_WTAB(cache64_ssse3, mmx2, cache64_mmx2, cache64_ssse3, cache64_ssse3, cache64_sse2)
 PIXEL_AVG_WTAB(cache64_ssse3_atom, mmx2, mmx2, cache64_ssse3, cache64_ssse3, sse2)
 PIXEL_AVG_WTAB(avx2, mmx2, mmx2, sse2, sse2, avx2)
+/* Intel AVX2: VEX w8 (two rows per xmm) and w16 (w12 on it); AVX-512 machines keep avx2 */
+PIXEL_AVG_WTAB(avx2_intel, mmx2, avx, avx, avx, avx2)
 #endif // HIGH_BIT_DEPTH
 
 #define MC_COPY_WTAB(instr, name1, name2, name3)\
@@ -1076,6 +1082,20 @@ GET_REF(cache64_mmx2)
 GET_REF(cache64_sse2)
 GET_REF(cache64_ssse3)
 GET_REF(cache64_ssse3_atom)
+GET_REF(avx2_intel)
+#if ARCH_X86_64
+#define x264_get_ref_noweight_avx2 x264_template(get_ref_noweight_avx2)
+pixel *x264_get_ref_noweight_avx2( pixel *dst, intptr_t *i_dst_stride, pixel *src[4], intptr_t i_src_stride,
+                                   int mvx, int mvy, int i_width, int i_height );
+/* unweighted in asm, the avg2 loops inline; weighted as get_ref_avx2_intel */
+static pixel *get_ref_avx2_asm( pixel *dst, intptr_t *i_dst_stride, pixel *src[4], intptr_t i_src_stride,
+                                int mvx, int mvy, int i_width, int i_height, const x264_weight_t *weight )
+{
+    if( weight->weightfn )
+        return get_ref_avx2_intel( dst, i_dst_stride, src, i_src_stride, mvx, mvy, i_width, i_height, weight );
+    return x264_get_ref_noweight_avx2( dst, i_dst_stride, src, i_src_stride, mvx, mvy, i_width, i_height );
+}
+#endif
 #endif // !HIGH_BIT_DEPTH
 
 #define HPEL(align, cpu, cpuv, cpuc, cpuh)\
@@ -1768,6 +1788,17 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 
     if( cpu&X264_CPU_FMA3 )
         pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx2_fma3;
+
+#if !HIGH_BIT_DEPTH
+    /* VEX avg2 w8/w12/w16 for get_ref (weighted path) and get_ref in asm (unweighted). mc_luma keeps its table:
+     * on the Xeon E the mc_luma switch cost about 0.4 % in lowlat and bought nothing in normal. Every AVX2+ CPU
+     * runs these (Kieran 11-12: no AVX-512 exclusion); rack01 judges Zen 4 */
+    pf->get_ref = get_ref_avx2_intel;
+#if ARCH_X86_64
+    if( cpu&X264_CPU_BMI2 )
+        pf->get_ref = get_ref_avx2_asm;
+#endif
+#endif
 
     if( !(cpu&X264_CPU_AVX512) )
         return;
