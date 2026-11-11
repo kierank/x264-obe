@@ -3647,6 +3647,11 @@ static int check_dct( int cpu_ref, int cpu_new )
      * the dispatched avx512 one at the first AVX512ICL level */
     if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
         dct_asm.sub4x4_dct = x264_sub4x4_dct_avx512icl;
+    /* the undispatched add8x8_idct8 pairs kernels, at the first AVX2 / AVX512ICL level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        dct_asm.add8x8_idct8 = x264_add8x8_idct8_avx2;
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        dct_asm.add8x8_idct8 = x264_add8x8_idct8_avx512icl;
 #endif
 
     memset( h, 0, sizeof(*h) );

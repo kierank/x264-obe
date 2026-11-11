@@ -34,6 +34,19 @@ SECTION_RODATA
 idct8_zmm_pack: db 0,2,4,6,1,3,5,7
 ; sub16x16_dct8 avx512icl: 128-bit lanes of a row pair, blocks 0 1, then 2 3
 dct8_zmm_pairs: db 0,1,8,9,2,3,10,11, 4,5,12,13,6,7,14,15
+; add8x8_idct8 avx2/avx512icl (8-bit): lane and qword-half signs for the paired
+; 1-D passes, dst rows to the residual's column order (0,7,3,4 | 2,5,1,6) as
+; words, packed rows back to pixel order
+idct8_lsign: times 8 dw 1
+             times 8 dw -1
+idct8_qsign: times 2 dw 1,1,1,1,-1,-1,-1,-1
+idct8_dstw:  db 0,-1,7,-1,3,-1,4,-1, 8,-1,15,-1,11,-1,12,-1
+             db 2,-1,5,-1,1,-1,6,-1, 10,-1,13,-1,9,-1,14,-1
+idct8_rowb:  db 0,6,4,2,3,5,7,1, 8,14,12,10,11,13,15,9
+idct8_rowd:  dd 0,4,1,5, 2,6,3,7, 0,4,1,5
+idct8_rowp:  db 0,18,16,2,3,17,19,1, 4,22,20,6,7,21,23,5
+             db 8,26,24,10,11,25,27,9, 12,30,28,14,15,29,31,13
+             db 0,18,16,2,3,17,19,1, 4,22,20,6,7,21,23,5
 
 SECTION .text
 
@@ -644,6 +657,174 @@ cglobal add16x16_idct8, 2,2,11
 %undef idct8_j
 
 ;-----------------------------------------------------------------------------
+; void add8x8_idct8( uint8_t *p_dst, int16_t dct[8][8] ), AVX2 / AVX-512
+; One block, 16 useful words per op: each 1-D pass splits into pairs that run
+; the same ops in both halves of a register, (x|y) = x in one half, y in the
+; other, the y half negated where the two sides differ in sign (psignw, or a
+; masked vpsubw). Pass 1 halves are 128-bit lanes; the in-lane transpose
+; leaves pass 2 halves as the even/odd qwords of each lane, so a pass-2 row is
+; split over the lanes in column order (0,7,3,4 | 2,5,1,6): dst is loaded in
+; that order and the packed rows are put back in pixel order. Every op is the
+; avx version's op mod 2^16, so the output is identical to it for all inputs.
+;-----------------------------------------------------------------------------
+; in: pass (1, 2), x0, y0, s26, s62, s13, s31, s57, s75, tmp, tmp
+; pass inputs as pairs (s0|s0)/(s4|s4) in x0/y0 (pass 1) or (t4|t0)/(t0|t4)
+; (pass 2), s26 = (s2|s6), s62 = (s6|s2) and so on
+; out: (o0|o2) %3, (o7|o5) %10, (o3|o1) %4, (o4|o6) %2
+%macro IDCT8_PAIRS 11
+    LSIGN       %3, %1
+    paddw       m%2, m%3              ; a0|a2
+    psraw       m%5, 1
+    LSIGN       %5, %1
+    paddw       m%4, m%5              ; a6|-a4
+    psraw       m%10, m%6, 1          ; sign each term: 3 deep, not 4
+    LSIGN       %6, %1
+    LSIGN       %10, %1
+    psubw       m%11, m%8, m%7
+    paddw       m%7, m%8
+    paddw       m%6, m%7
+    paddw       m%6, m%10             ; a7|a3
+    psraw       m%10, m%9, 1
+    LSIGN       %9, %1
+    LSIGN       %10, %1
+    psubw       m%11, m%9
+    psubw       m%11, m%10            ; a1|a5
+    psraw       m%10, m%11, 2
+    LSIGN       %10, %1
+    psubw       m%8, m%6, m%10        ; b7|b3
+    psraw       m%6, 2
+    LSIGN       %11, %1
+    paddw       m%6, m%11             ; b1|b5
+    paddw       m%10, m%2, m%4        ; b0|b4
+    psubw       m%2, m%4              ; b6|b2
+    paddw       m%3, m%10, m%8        ; o0|o2
+    psubw       m%10, m%8             ; o7|o5
+    paddw       m%4, m%2, m%6         ; o3|o1
+    psubw       m%2, m%6              ; o4|o6
+%endmacro
+
+; negate the y half of m%1 in pass %2: k1/k2 (avx512, m15 = 0) or the
+; signs of the pass in m14 (avx2)
+%macro LSIGN 2
+%if cpuflag(avx512)
+    vpsubw      m%1 {k%2}, m15, m%1
+%else
+    psignw      m%1, m%1, m14
+%endif
+%endmacro
+
+; m%1 = dst rows %2, %3 as words in the residual's order
+%macro IDCT8_DSTW 3
+    vpbroadcastq m%1, [r0+%2*FDEC_STRIDE]
+    vpbroadcastq m12, [r0+%3*FDEC_STRIDE]
+%if cpuflag(avx512)
+    punpcklqdq  m%1, m12
+%else
+    vpblendd    m%1, m%1, m12, 0xcc
+%endif
+    pshufb      m%1, m13
+%endmacro
+
+%macro ADD8x8_IDCT8_PAIRS 0
+cglobal add8x8_idct8, 2,3,16
+%if cpuflag(avx512)
+    mov         r2d, 0xff00
+    kmovw       k1, r2d
+    mov         r2d, 0xf0f0
+    kmovw       k2, r2d
+    pxor        m15, m15
+%else
+    movu        m14, [idct8_lsign]
+%endif
+    vbroadcasti128 m0, [r1+0x00]      ; s0|s0
+    vbroadcasti128 m1, [r1+0x40]      ; s4|s4
+    movu        xm2, [r1+0x20]
+    vinserti128 m2, m2, [r1+0x60], 1  ; s2|s6
+    movu        xm3, [r1+0x60]
+    vinserti128 m3, m3, [r1+0x20], 1  ; s6|s2
+    movu        xm4, [r1+0x10]
+    vinserti128 m4, m4, [r1+0x30], 1  ; s1|s3
+    movu        xm5, [r1+0x30]
+    vinserti128 m5, m5, [r1+0x10], 1  ; s3|s1
+    movu        xm6, [r1+0x50]
+    vinserti128 m6, m6, [r1+0x70], 1  ; s5|s7
+    movu        xm7, [r1+0x70]
+    vinserti128 m7, m7, [r1+0x50], 1  ; s7|s5
+    IDCT8_PAIRS 1, 0,1,2,3,4,5,6,7,8,9
+    ; rows o0|o2 m1, o7|o5 m8, o3|o1 m2, o4|o6 m0: lane 0 rows 0,7,3,4
+    punpckhwd   m3, m1, m8
+    punpcklwd   m1, m8
+    punpckhwd   m4, m2, m0
+    punpcklwd   m2, m0
+    punpckhdq   m5, m1, m2            ; columns 2, 3
+    punpckldq   m1, m2                ; 0, 1
+    punpckhdq   m6, m3, m4            ; 6, 7
+    punpckldq   m3, m4                ; 4, 5
+    punpckhqdq  m7, m1, m5            ; t1|t3
+    punpckhqdq  m8, m5, m1            ; t3|t1
+    punpckhqdq  m9, m3, m6            ; t5|t7
+    punpckhqdq  m10, m6, m3           ; t7|t5
+    punpcklqdq  m0, m3, m1            ; t4|t0
+    punpcklqdq  m1, m3                ; t0|t4
+    punpcklqdq  m2, m5, m6            ; t2|t6
+    punpcklqdq  m4, m6, m5            ; t6|t2
+    paddw       m0, [pw_32]           ; rounding for the >>6 at the end
+%if cpuflag(avx512) == 0
+    movu        m14, [idct8_qsign]
+%endif
+    IDCT8_PAIRS 2, 0,1,2,4,7,8,9,10,3,5
+    ; pixel rows 0|2 m1, 7|5 m3, 3|1 m2, 4|6 m0
+    movu        m13, [idct8_dstw]
+    psraw       m1, 6
+    psraw       m3, 6
+    psraw       m2, 6
+    psraw       m0, 6
+    IDCT8_DSTW  4, 0, 2
+    paddsw      m1, m4
+    IDCT8_DSTW  4, 7, 5
+    paddsw      m3, m4
+    IDCT8_DSTW  4, 3, 1
+    paddsw      m2, m4
+    IDCT8_DSTW  4, 4, 6
+    paddsw      m0, m4
+    packuswb    m1, m3                ; X | Y halves of rows 0 2 7 5
+    packuswb    m2, m0                ; 3 1 4 6
+    ; two rows to each low lane, so every row store is from an xmm (no extract)
+%if cpuflag(avx512)
+    movu        m4, [idct8_rowp]
+    movu        m5, [idct8_rowp+16]
+    vpermb      m6, m5, m1            ; 7 5
+    vpermb      m1, m4, m1            ; 0 2
+    vpermb      m7, m5, m2            ; 4 6
+    vpermb      m2, m4, m2            ; 3 1
+%else
+    movu        m4, [idct8_rowd]
+    movu        m5, [idct8_rowd+16]
+    vpermd      m6, m5, m1
+    vpermd      m1, m4, m1
+    vpermd      m7, m5, m2
+    vpermd      m2, m4, m2
+    movu        xm4, [idct8_rowb]
+    pshufb      xm1, xm4
+    pshufb      xm6, xm4
+    pshufb      xm2, xm4
+    pshufb      xm7, xm4
+%endif
+    movq        [r0+0*FDEC_STRIDE], xm1
+    movhps      [r0+2*FDEC_STRIDE], xm1
+    movq        [r0+3*FDEC_STRIDE], xm2
+    movhps      [r0+1*FDEC_STRIDE], xm2
+    movq        [r0+7*FDEC_STRIDE], xm6
+    movhps      [r0+5*FDEC_STRIDE], xm6
+    movq        [r0+4*FDEC_STRIDE], xm7
+    movhps      [r0+6*FDEC_STRIDE], xm7
+    RET
+%endmacro
+
+INIT_YMM avx2
+ADD8x8_IDCT8_PAIRS
+
+;-----------------------------------------------------------------------------
 ; void add8x8_idct( uint8_t *pix, int16_t dct[4][4][4] )
 ;-----------------------------------------------------------------------------
 %macro ADD8x8 0
@@ -769,5 +950,10 @@ cglobal add16x16_idct8, 2,2,12
     RET
 %undef dct8z_i
 %undef dct8z_j
+
+; the pairs kernel in EVEX: masked vpsubw for psignw, one vpermb for the
+; vpermd + pshufb row reorder
+INIT_YMM avx512icl
+ADD8x8_IDCT8_PAIRS
 
 %endif ; !HIGH_BIT_DEPTH
