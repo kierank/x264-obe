@@ -10,7 +10,7 @@
 #   Core 3, AHEAD:          ARMAS=-DTRELLIS_AVX2_AHEAD=1 ab-insitu.sh <tip> <tip> x264_8_trellis_cabac_8x8_nodes_avx2
 set -e
 BASE=$1; ARM=$2; SYM=$3; R=${4:-5}
-CLIPS=${CLIPS:-/home/obe/x264-clips}; FRAMES=${FRAMES:-30}; CPU=${CPU:-2}
+CLIPS=${CLIPS:-/home/obe/x264-clips}; FRAMES=${FRAMES:-30}; CPU=${CPU:-2}   # Xeon E: CPU=12 or 14
 REPO=${REPO:-https://github.com/kierank/x264-obe.git}
 W=${W:-$HOME/nwtr-ab}; mkdir -p $W; cd $W
 [ -d src ] || git clone -q $REPO src
@@ -46,15 +46,16 @@ for c in $CLIPLIST; do for cell in LOW NOR; do
   echo "$c $cell base $md5_base arm $md5_arm $([ "$md5_base" = "$md5_arm" ] && echo SAME || echo DIFFER)"
 done; done
 
-echo "== liveness: calls of $SYM in the arm (5 frames, each cell)"
+echo "== liveness: perf samples of $SYM and the trellis symbols, base and arm ($FRAMES frames, each cell)"
 for c in $CLIPLIST; do for cell in LOW NOR; do eval o=\$$cell
-  n=$(gdb -batch -ex "break $SYM" -ex 'ignore 1 1000000000' -ex run -ex 'info breakpoints' \
-      --args $W/b-arm-t/x264 $o $(opts $c) --frames 5 -o /dev/null $CLIPS/$c.y4m 2>/dev/null | grep -o 'already hit [0-9]* time' || echo "0 (not hit)")
-  echo "$c $cell $SYM: $n"
+  for a in base arm; do
+    taskset -c $CPU perf record -q -e cycles:u -o $W/live-$a.data -- $W/b-$a-t/x264 $o $(opts $c) --frames $FRAMES -o /dev/null $CLIPS/$c.y4m 2>/dev/null
+    echo "$c $cell $a: $(perf report -q -i $W/live-$a.data --sort sym 2>/dev/null | grep -E 'trellis_cabac' | awk '{printf "%s %s; ", $NF, $1}')"
+  done
 done; done
 
 echo "== timing: base / base' / arm / arm' per round, taskset -c $CPU, $FRAMES frames, cycles:u"
-t() { perf stat -x, -e cycles:u -o $W/t.txt -- taskset -c $CPU $W/b-$1-t/x264 $2 --frames $FRAMES -o /dev/null $3 2>/dev/null; awk -F, '/cycles:u/{printf "%d", $1}' $W/t.txt; }   # cycles:u (Core 3 standard 11-11)
+t() { taskset -c $CPU perf stat -x, -e cycles:u -o $W/t.txt -- $W/b-$1-t/x264 $2 --frames $FRAMES -o /dev/null $3 2>/dev/null; awk -F, '/cycles:u/{printf "%d", $1}' $W/t.txt; }   # cycles:u (Core 3 standard 11-11)
 for c in $CLIPLIST; do for cell in LOW NOR; do eval o="\$$cell $(opts $c)"
   t base "$o" $CLIPS/$c.y4m > /dev/null   # warm-up
   for r in $(seq 1 $R); do
