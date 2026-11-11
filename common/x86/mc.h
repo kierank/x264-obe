@@ -30,4 +30,7 @@
 #define x264_mc_init_mmx x264_template(mc_init_mmx)
 void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf );
 
+#define x264_mb_fref_load_avx2 x264_template(mb_fref_load_avx2)
+void x264_mb_fref_load_avx2( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 );
+
 #endif

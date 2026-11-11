@@ -689,6 +689,12 @@ static int ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x,
 static void ALWAYS_INLINE x264_macroblock_load_fref( x264_t *h, int mb_y, int b_mbaff, int off_y, int off_c, int off_v )
 {
     x264_fref_base_t *b = &h->fref_base[(b_mbaff && MB_INTERLACED) ? 1 + (mb_y&1) : 0];
+    if( !CHROMA444 )
+    {
+        h->mc.mb_fref_load( &h->mb.pic.p_fref[0][0][0], &b->p_fref[0][0][0], off_y, off_c,
+                            h->mb.pic.i_fref[0], h->sh.i_type == SLICE_TYPE_B ? h->mb.pic.i_fref[1] : 0 );
+        return;
+    }
     for( int l = 0; l <= (h->sh.i_type == SLICE_TYPE_B); l++ )
         for( int j = 0; j < h->mb.pic.i_fref[l]; j++ )
         {

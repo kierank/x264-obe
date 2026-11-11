@@ -4025,6 +4025,10 @@ static void weight_plane_strips( pixel *dst, intptr_t i_dst, pixel *src, intptr_
     }
 }
 
+#if HAVE_MMX
+#include "common/x86/mc.h"
+#endif
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -4043,6 +4047,11 @@ static int check_mc( int cpu_ref, int cpu_new )
     x264_mc_init( 0, &mc_c, 0 );
     x264_mc_init( cpu_ref, &mc_ref, 0 );
     x264_mc_init( cpu_new, &mc_a, 0 );
+#if HAVE_MMX
+    /* undispatched (Core 3 decides): mb_fref_load avx2, at the first AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        mc_a.mb_fref_load = x264_mb_fref_load_avx2;
+#endif
     x264_pixel_init( 0, &pixf );
 
 #define MC_TEST_LUMA( w, h ) \
@@ -5428,6 +5437,58 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
     }
     report( "aq :" );
+
+    ok = 1; used_asm = 0;
+    if( mc_a.mb_fref_load != mc_ref.mb_fref_load )
+    {
+        used_asm = 1;
+        set_func_name( "mb_fref_load" );
+        /* tab: the slice table; dst: mb.pic.p_fref, at both 32-byte phases of a 64-byte line.
+         * Slots 6-11 of each row are 0 in both, as in the encoder (4:2:0/4:2:2 write neither). */
+        uint8_t *mem = x264_malloc( 3*sizeof(x264_fref_base_t) + 64 );
+        if( !mem )
+            return -1;
+        x264_fref_base_t *tab = (x264_fref_base_t*)mem;
+        for( int i = 0; i < 64 && ok; i++ )
+        {
+            int phase = (i&1)*32;
+            x264_fref_base_t *dc = (x264_fref_base_t*)(mem + sizeof(x264_fref_base_t) + phase);
+            x264_fref_base_t *da = (x264_fref_base_t*)(mem + 2*sizeof(x264_fref_base_t) + phase);
+            int n0 = i < 33 ? i : rand()%33;
+            int n1 = i < 33 ? (i*7)%33 : rand()%33;
+            intptr_t off_y = (intptr_t)(rand()%(1<<24)) - (1<<23);
+            intptr_t off_c = (intptr_t)(rand()%(1<<23)) - (1<<22);
+            pixel **s = &tab->p_fref[0][0][0];
+            for( int j = 0; j < (int)(sizeof(x264_fref_base_t)/sizeof(pixel*)); j++ )
+                s[j] = (pixel*)(((uintptr_t)rand() << 20 | (uintptr_t)rand()) + (1ull << 44));
+            for( int l = 0; l < 2; l++ )
+                for( int j = 0; j < X264_REF_MAX*2; j++ )
+                    for( int k = 6; k < 12; k++ )
+                        tab->p_fref[l][j][k] = NULL;
+            memset( dc, 0xA5, sizeof(x264_fref_base_t) );
+            for( int l = 0; l < 2; l++ )
+                for( int j = 0; j < X264_REF_MAX*2; j++ )
+                    for( int k = 6; k < 12; k++ )
+                        dc->p_fref[l][j][k] = NULL;
+            memcpy( da, dc, sizeof(x264_fref_base_t) );
+            call_c1( mc_c.mb_fref_load, &dc->p_fref[0][0][0], s, off_y, off_c, n0, n1 );
+            call_a1( mc_a.mb_fref_load, &da->p_fref[0][0][0], s, off_y, off_c, n0, n1 );
+            if( memcmp( dc, da, sizeof(x264_fref_base_t) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "mb_fref_load [FAILED]: n0 %d n1 %d phase %d\n", n0, n1, phase );
+            }
+        }
+        if( do_bench )
+        {
+            /* a field mb of a B frame at --ref 2 (4 + 2 rows), then a frame one (2 + 1) */
+            x264_fref_base_t *da = (x264_fref_base_t*)(mem + 2*sizeof(x264_fref_base_t));
+            call_c2( mc_c.mb_fref_load, &da->p_fref[0][0][0], &tab->p_fref[0][0][0], (intptr_t)4096, (intptr_t)2048, 4, 2 );
+            call_a2( mc_a.mb_fref_load, &da->p_fref[0][0][0], &tab->p_fref[0][0][0], (intptr_t)4096, (intptr_t)2048, 4, 2 );
+        }
+        x264_free( mem );
+    }
+    report( "fref load :" );
 
     if( mc_a.memcpy_aligned != mc_ref.memcpy_aligned )
     {

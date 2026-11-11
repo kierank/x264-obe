@@ -636,6 +636,24 @@ static void mbtree_finish( float *qp_offset, float *qp_offset_aq, uint16_t *intr
     }
 }
 
+static void mb_fref_load( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 )
+{
+    for( int l = 0; l < 2; l++ )
+    {
+        pixel **d = dst + l*X264_REF_MAX*2*12;
+        pixel **s = src + l*X264_REF_MAX*2*12;
+        for( int j = 0; j < (l ? n1 : n0); j++, d += 12, s += 12 )
+        {
+            for( int k = 0; k < 4; k++ )
+                d[k] = s[k] + off_y;
+            d[4] = s[4] + off_c;
+            d[5] = s[5] + off_c;
+        }
+    }
+    for( int j = 0; j < n0; j++ )
+        dst[2*X264_REF_MAX*2*12+j] = src[2*X264_REF_MAX*2*12+j] + off_y;
+}
+
 static void aq_variance_tail( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
                               float *quant_offsets, float *params, int len )
 {
@@ -792,6 +810,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->mbtree_cost_scale = mbtree_cost_scale;
     pf->mbtree_finish = mbtree_finish;
     pf->aq_variance_tail = aq_variance_tail;
+    pf->mb_fref_load = mb_fref_load;
 
 #if HAVE_MMX
     x264_mc_init_mmx( cpu, pf );
