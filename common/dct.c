@@ -1083,6 +1083,17 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
          * loses on flat by 3-11 %. cqm: general field 85.6 vs 100.8 (1.18x), frame 115.1 vs 119.7 (1.04x) */
         pf_interlaced->quant_8x8_scan  = b_cqm_flat ? x264_quant_8x8_scan_field_flat_avx2 : x264_quant_8x8_scan_field_avx2;
         pf_progressive->quant_8x8_scan = b_cqm_flat ? x264_quant_8x8_scan_frame_flat_avx2 : x264_quant_8x8_scan_frame_avx2;
+        /* CABAC trellis prep / post; also kept on AVX-512 (the avx512icl ones are undispatched).
+         * Laptop Zen 5 loop-of-N vs the split calls: prep 4x4x4 1.31-2.00x, 8x8 1.24-1.91x; post 4x4x4 0.95-1.59x;
+         * dequant_8x8_scan 0.79-1.00x, assembled but undispatched (Core 3 AB=post8) */
+        pf_interlaced->quant_4x4x4_scan_trellis  = x264_quant_4x4x4_scan_trellis_field_avx2;
+        pf_progressive->quant_4x4x4_scan_trellis = x264_quant_4x4x4_scan_trellis_frame_avx2;
+        pf_interlaced->quant_8x8_scan_trellis    = x264_quant_8x8_scan_trellis_field_avx2;
+        pf_progressive->quant_8x8_scan_trellis   = x264_quant_8x8_scan_trellis_frame_avx2;
+        pf_interlaced->dequant_4x4x4_scan        = x264_dequant_4x4x4_scan_field_avx2;
+        pf_progressive->dequant_4x4x4_scan       = x264_dequant_4x4x4_scan_frame_avx2;
+        pf_interlaced->dequant_4x4x4_scan_ac     = x264_dequant_4x4x4_scan_field_ac_avx2;
+        pf_progressive->dequant_4x4x4_scan_ac    = x264_dequant_4x4x4_scan_frame_ac_avx2;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )
