@@ -11,7 +11,7 @@ typedef void (*fpcd)( uint8_t *, intptr_t, uint8_t *, intptr_t, uint8_t *, intpt
 
 #define D(n) extern int x264_8_##n( int16_t * );
 D(coeff_last15_sse2_lzcnt) D(coeff_last16_sse2_lzcnt) D(coeff_last15_avx2_lzcnt) D(coeff_last16_avx2_lzcnt)
-D(coeff_last15_avx512) D(coeff_last16_avx512)
+D(coeff_last15_avx512) D(coeff_last16_avx512) D(coeff_last8_mmx2_lzcnt) D(coeff_last8_avx2_lzcnt) D(coeff_last8_avx512)
 D(decimate_score15_ssse3) D(decimate_score16_ssse3) D(decimate_score15_avx2) D(decimate_score16_avx2)
 D(decimate_score15_xmm_avx2) D(decimate_score16_xmm_avx2) D(decimate_score15_avx512) D(decimate_score16_avx512)
 #define P(n) extern void x264_8_##n( uint8_t *, intptr_t, uint8_t *, intptr_t, uint8_t *, intptr_t, int, int );
@@ -26,6 +26,7 @@ static uint64_t rng = 88172645463325252ull;
 static uint32_t rnd( void ) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (uint32_t)rng; }
 
 /* dist 0 sparse (high qp, +-1, short last), 1 mid, 2 dense with large levels */
+static int gen_n = 16;
 static void gen( int dist, int ac )
 {
     for( int b = 0; b < N; b++ )
@@ -43,7 +44,7 @@ static void gen( int dist, int ac )
             }
             if( i < ac ) v = (rnd() & 0x3ff) - 0x200;
             blk[b][i] = v;
-            nz |= i >= ac && v;
+            nz |= i >= ac && i < gen_n && v;
         }
         if( !nz ) blk[b][ac] = 1;
     }
@@ -109,6 +110,13 @@ static void row( const char *name, f1 *fs, const char **names, int nf, int ac )
 int main( int argc, char **argv )
 {
     no512 = argc > 1 && !strcmp( argv[1], "noavx512" ); /* AVX2-only machines */
+    {
+        f1 f[] = { x264_8_coeff_last8_mmx2_lzcnt, x264_8_coeff_last8_avx2_lzcnt, x264_8_coeff_last8_avx512 };
+        const char *n[] = { "mmx2_lzcnt", "avx2_lzcnt", "avx512" };
+        gen_n = 8;
+        row( "coeff_last8", f, n, 3, 0 );
+        gen_n = 16;
+    }
     {
         f1 f[] = { x264_8_coeff_last16_sse2_lzcnt, x264_8_coeff_last16_avx2_lzcnt, x264_8_coeff_last16_avx512 };
         const char *n[] = { "sse2_lzcnt", "avx2_lzcnt", "avx512" };
