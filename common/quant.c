@@ -601,6 +601,19 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     {
         pf->quant_4x4 = x264_quant_4x4_avx2;
         INIT_TRELLIS( avx2 );
+#if ARCH_X86_64
+        /* the 8-node vector trellis needs a fast vpgatherdd (Golden/Raptor Cove); avx512icl overrides 8x8,
+         * Zen 4/5 keep the avx2 4x4/dc (no fast gather) */
+        if( !(cpu&X264_CPU_SLOW_GATHER) )
+        {
+            pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_nodes_avx2;
+            pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_nodes_avx2;
+            pf->trellis_cabac_4x4 = x264_trellis_cabac_4x4_nodes_avx2;
+            pf->trellis_cabac_4x4_psy = x264_trellis_cabac_4x4_psy_nodes_avx2;
+            pf->trellis_cabac_dc = x264_trellis_cabac_dc_nodes_avx2;
+            pf->trellis_cabac_chroma_422_dc = x264_trellis_cabac_chroma_422_dc_nodes_avx2;
+        }
+#endif
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx2;
         pf->quant_8x8 = x264_quant_8x8_avx2;
         pf->quant_4x4x4 = x264_quant_4x4x4_avx2;
@@ -797,6 +810,19 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
     {
         pf->quant_4x4 = x264_quant_4x4_avx2;
         INIT_TRELLIS( avx2 );
+#if ARCH_X86_64
+        /* the 8-node vector trellis needs a fast vpgatherdd (Golden/Raptor Cove); avx512icl overrides 8x8,
+         * Zen 4/5 keep the avx2 4x4/dc (no fast gather) */
+        if( !(cpu&X264_CPU_SLOW_GATHER) )
+        {
+            pf->trellis_cabac_8x8 = x264_trellis_cabac_8x8_nodes_avx2;
+            pf->trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_nodes_avx2;
+            pf->trellis_cabac_4x4 = x264_trellis_cabac_4x4_nodes_avx2;
+            pf->trellis_cabac_4x4_psy = x264_trellis_cabac_4x4_psy_nodes_avx2;
+            pf->trellis_cabac_dc = x264_trellis_cabac_dc_nodes_avx2;
+            pf->trellis_cabac_chroma_422_dc = x264_trellis_cabac_chroma_422_dc_nodes_avx2;
+        }
+#endif
         pf->quant_4x4_dc = x264_quant_4x4_dc_avx2;
         pf->quant_8x8 = x264_quant_8x8_avx2;
         pf->quant_4x4x4 = x264_quant_4x4x4_avx2;

@@ -337,6 +337,18 @@ int x264_trellis_cabac_8x8_psy_avx2 ( TRELLIS_PARAMS, int b_interlaced, dctcoef 
 int x264_trellis_cabac_dc_avx2 ( TRELLIS_PARAMS, int i_coefs );
 #define x264_trellis_cabac_chroma_422_dc_avx2 x264_template(trellis_cabac_chroma_422_dc_avx2)
 int x264_trellis_cabac_chroma_422_dc_avx2 ( TRELLIS_PARAMS );
+#define x264_trellis_cabac_4x4_nodes_avx2 x264_template(trellis_cabac_4x4_nodes_avx2)
+int x264_trellis_cabac_4x4_nodes_avx2( TRELLIS_PARAMS, int b_ac );
+#define x264_trellis_cabac_8x8_nodes_avx2 x264_template(trellis_cabac_8x8_nodes_avx2)
+int x264_trellis_cabac_8x8_nodes_avx2( TRELLIS_PARAMS, int b_interlaced );
+#define x264_trellis_cabac_4x4_psy_nodes_avx2 x264_template(trellis_cabac_4x4_psy_nodes_avx2)
+int x264_trellis_cabac_4x4_psy_nodes_avx2( TRELLIS_PARAMS, int b_ac, dctcoef *fenc_dct, int i_psy_trellis );
+#define x264_trellis_cabac_8x8_psy_nodes_avx2 x264_template(trellis_cabac_8x8_psy_nodes_avx2)
+int x264_trellis_cabac_8x8_psy_nodes_avx2( TRELLIS_PARAMS, int b_interlaced, dctcoef *fenc_dct, int i_psy_trellis );
+#define x264_trellis_cabac_dc_nodes_avx2 x264_template(trellis_cabac_dc_nodes_avx2)
+int x264_trellis_cabac_dc_nodes_avx2( TRELLIS_PARAMS, int i_coefs );
+#define x264_trellis_cabac_chroma_422_dc_nodes_avx2 x264_template(trellis_cabac_chroma_422_dc_nodes_avx2)
+int x264_trellis_cabac_chroma_422_dc_nodes_avx2( TRELLIS_PARAMS );
 #define x264_trellis_cabac_4x4_avx512icl x264_template(trellis_cabac_4x4_avx512icl)
 int x264_trellis_cabac_4x4_avx512icl( TRELLIS_PARAMS, int b_ac );
 #define x264_trellis_cabac_8x8_avx512icl x264_template(trellis_cabac_8x8_avx512icl)

@@ -36,6 +36,9 @@
 uint8_t x264_cabac_transition_unary[15][128];
 #define x264_cabac_size_unary x264_template(cabac_size_unary)
 uint16_t x264_cabac_size_unary[15][128];
+/* the two above as size | transition << 16, for the avx2 trellis gathers */
+#define x264_cabac_size_trans_unary x264_template(cabac_size_trans_unary)
+uint32_t x264_cabac_size_trans_unary[15][128];
 /* Transition and size tables for abs>9 MVD */
 /* Consist of 5 1s and a bypass sign bit */
 static uint8_t cabac_transition_5ones[128];
@@ -422,6 +425,7 @@ void x264_rdo_init( void )
 
             x264_cabac_size_unary[i_prefix][i_ctx] = f8_bits;
             x264_cabac_transition_unary[i_prefix][i_ctx] = ctx;
+            x264_cabac_size_trans_unary[i_prefix][i_ctx] = f8_bits | ctx << 16;
         }
     }
     for( int i_ctx = 0; i_ctx < 128; i_ctx++ )

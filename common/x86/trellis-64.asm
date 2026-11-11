@@ -1937,3 +1937,913 @@ TRELLIS_ICL trellis_cabac_4x4_psy, 16, 0, 1
 TRELLIS_ICL trellis_cabac_8x8_psy, 64, 0, 1
 TRELLIS_ICL trellis_cabac_dc, 16, 1, 0
 TRELLIS_ICL trellis_cabac_chroma_422_dc, 8, 1, 0
+
+
+
+;=============================================================================
+; avx2: all 8 nodes at once in ymm for the whole block, as avx512icl, for
+; AVX2-only CPUs with a fast gather (Raptor Cove).
+; m0 / m1: keys of nodes 0,2,4,6 / 1,3,5,7: (score - 2^60) << 4 | code, signed,
+; so signed min is the C's strict < with ties to the lower code. code: 8+j for
+; a candidate from node j, j for one in the first pass of a two-pass coef, n
+; for kept node n. Invalid: key >= 2^63-16; the candidates of invalid nodes
+; get no ssd or bits. Same score range as avx512icl.
+; m2: payload, a dword per node: s | entropy[s] << 7 | entropy[s^1] << 18, s
+; the state of the node's level1 ctx (ctx 1,2,3 for nodes 0-2, 4 for 3, 0 for
+; 4-7). Every other ctx a node reads is the input one, but node 7's levelgt1.
+; m3: the levelgt1 states nodes 0-7 read: ctx 5,5,5,5,6,7,8 and node 7's own.
+; Tables by vpgatherdd. The 8 codes of a nonzero coef go to its row; the
+; writeback follows them back from the best node.
+; TRELLIS_AVX2_AHEAD (build-time A/B): P0, P1 (frame) per node, the payloads
+; of transition[s][0], [s][1], so a candidate takes its payload from them and
+; its P0/P1 from gathers of transition[transition[s][b]][c], made a coef ahead
+; of their use: no gather on the payload chain, two per pass.
+;=============================================================================
+
+SECTION_RODATA 32
+
+ALIGN 32
+
+trv_inv:    times 4 dq 0x7fffffffffffffff
+trv_thresh: times 4 dq 0x7ffffffffffffff0
+trv_m16:    times 4 dq -16
+trv_kinit:  dq 0, 0x7fffffffffffffff, 0x7fffffffffffffff, 0x7fffffffffffffff
+trv_iota0e: dq 0, 2, 4, 6
+trv_iota0o: dq 1, 3, 5, 7
+trv_iota8e: dq 8, 10, 12, 14
+trv_iota8o: dq 9, 11, 13, 15
+trv_d127:   times 8 dd 127
+trv_d7ff:   times 8 dd 0x7ff
+trv_dffff:  times 8 dd 0xffff
+trv_d7:     dd 0, 0, 0, 0, 0, 0, 0, -1
+trv_gm37:   dd 0, 0, 0, -1, -1, -1, -1, -1
+trv_gm47:   dd 0, 0, 0, 0, -1, -1, -1, -1
+trv_idxn:   dd 0, 0, 0, 0, 0, 4, 5, 6
+; level_state bytes: level1 ctx 1,2,3,4,0; levelgt1 ctx of nodes 0-7
+trv_ls1:    db 1, 2, 3, 4, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1
+trv_lsg:    db 5, 5, 5, 5, 6, 7, 8, 9, -1, -1, -1, -1, -1, -1, -1, -1
+trv_lsg422: db 5, 5, 5, 5, 6, 7, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1
+; payload of state s; of x264_cabac_transition[s][0]; [s][1]; w_bc: of transition[transition[s][b]][c]
+trv_xtab:
+    dd 0x16f40380, 0x001ede81, 0x16a40382, 0x001ed483, 0x16580404, 0x0022cb05, 0x160c0406, 0x0022c187
+    dd 0x15c00488, 0x0026b809, 0x1570048a, 0x0026ae0b, 0x1524050c, 0x002aa48d, 0x14d8050e, 0x002a9b0f
+    dd 0x148c0590, 0x002e9191, 0x143c0592, 0x002e8793, 0x13f00614, 0x00327e15, 0x13a40616, 0x00327497
+    dd 0x13580698, 0x00366b19, 0x1308071a, 0x003a611b, 0x12bc079c, 0x003e579d, 0x1270079e, 0x003e4e1f
+    dd 0x12240820, 0x004244a1, 0x11d408a2, 0x00463aa3, 0x11880924, 0x004a3125, 0x113c09a6, 0x004e27a7
+    dd 0x10f00a28, 0x00521e29, 0x10a00aaa, 0x0056142b, 0x10540b2c, 0x005a0aad, 0x10080c2e, 0x0062012f
+    dd 0x0fbc0cb0, 0x0065f7b1, 0x0f6c0d32, 0x0069edb3, 0x0f200e34, 0x0071e435, 0x0ed40eb6, 0x0075dab7
+    dd 0x0e880fb8, 0x007dd139, 0x0e3810ba, 0x0085c73b, 0x0dec11bc, 0x008dbdbd, 0x0da012be, 0x0095b43f
+    dd 0x0d5413c0, 0x009daac1, 0x0d0414c2, 0x00a5a0c3, 0x0cb815c4, 0x00ad9745, 0x0c6c1746, 0x00b98dc7
+    dd 0x0c201848, 0x00c18449, 0x0bd019ca, 0x00cd7a4b, 0x0b841b4c, 0x00d970cd, 0x0b381cce, 0x00e5674f
+    dd 0x0aec1e50, 0x00f15dd1, 0x0a9c2052, 0x010153d3, 0x0a502254, 0x01114a55, 0x0a042456, 0x012140d7
+    dd 0x09b82658, 0x01313759, 0x0968285a, 0x01412d5b, 0x091c2adc, 0x015523dd, 0x08d02d5e, 0x01691a5f
+    dd 0x08843060, 0x018110e1, 0x08343362, 0x019906e3, 0x07e83664, 0x01b0fd65, 0x079c39e6, 0x01ccf3e7
+    dd 0x07503d68, 0x01e8ea69, 0x0700416a, 0x0208e06b, 0x06b445ec, 0x022cd6ed, 0x06684a6e, 0x0250cd6f
+    dd 0x061c4ef0, 0x0274c3f1, 0x05cc5472, 0x02a0b9f3, 0x05805a74, 0x02d0b075, 0x05346076, 0x0300a6f7
+    dd 0x04e86778, 0x03389d79, 0x049c6efa, 0x037493fb, 0x044c777c, 0x03b889fd, 0x0400807e, 0x0400807f
+trv_u0:
+    dd 0x16f40380, 0x001ede81, 0x16a40382, 0x0069edb3, 0x16a40382, 0x0069edb3, 0x16580404, 0x0071e435
+    dd 0x160c0406, 0x0071e435, 0x15c00488, 0x0071e435, 0x1570048a, 0x0075dab7, 0x1524050c, 0x0075dab7
+    dd 0x14d8050e, 0x0075dab7, 0x148c0590, 0x007dd139, 0x143c0592, 0x007dd139, 0x13f00614, 0x007dd139
+    dd 0x13a40616, 0x0085c73b, 0x13580698, 0x0085c73b, 0x1308071a, 0x008dbdbd, 0x12bc079c, 0x008dbdbd
+    dd 0x1270079e, 0x008dbdbd, 0x12240820, 0x0095b43f, 0x11d408a2, 0x0095b43f, 0x11880924, 0x009daac1
+    dd 0x113c09a6, 0x00a5a0c3, 0x10f00a28, 0x00a5a0c3, 0x10a00aaa, 0x00a5a0c3, 0x10540b2c, 0x00ad9745
+    dd 0x10080c2e, 0x00ad9745, 0x0fbc0cb0, 0x00b98dc7, 0x0f6c0d32, 0x00c18449, 0x0f200e34, 0x00c18449
+    dd 0x0ed40eb6, 0x00cd7a4b, 0x0e880fb8, 0x00cd7a4b, 0x0e3810ba, 0x00d970cd, 0x0dec11bc, 0x00e5674f
+    dd 0x0da012be, 0x00e5674f, 0x0d5413c0, 0x00f15dd1, 0x0d0414c2, 0x010153d3, 0x0cb815c4, 0x010153d3
+    dd 0x0c6c1746, 0x01114a55, 0x0c201848, 0x01114a55, 0x0bd019ca, 0x01313759, 0x0b841b4c, 0x01313759
+    dd 0x0b381cce, 0x01412d5b, 0x0aec1e50, 0x01412d5b, 0x0a9c2052, 0x01691a5f, 0x0a502254, 0x01691a5f
+    dd 0x0a042456, 0x018110e1, 0x09b82658, 0x018110e1, 0x0968285a, 0x01b0fd65, 0x091c2adc, 0x01b0fd65
+    dd 0x08d02d5e, 0x01ccf3e7, 0x08843060, 0x01e8ea69, 0x08343362, 0x01e8ea69, 0x07e83664, 0x022cd6ed
+    dd 0x079c39e6, 0x022cd6ed, 0x07503d68, 0x0250cd6f, 0x0700416a, 0x0274c3f1, 0x06b445ec, 0x02a0b9f3
+    dd 0x06684a6e, 0x02d0b075, 0x061c4ef0, 0x0300a6f7, 0x05cc5472, 0x0300a6f7, 0x05805a74, 0x037493fb
+    dd 0x05346076, 0x037493fb, 0x04e86778, 0x03b889fd, 0x049c6efa, 0x0400807f, 0x044c777c, 0x0400807e
+trv_u1:
+    dd 0x16f40380, 0x001ede81, 0x0f6c0d32, 0x001ed483, 0x0f6c0d32, 0x001ed483, 0x0f200e34, 0x0022cb05
+    dd 0x0f200e34, 0x0022c187, 0x0f200e34, 0x0026b809, 0x0ed40eb6, 0x0026ae0b, 0x0ed40eb6, 0x002aa48d
+    dd 0x0ed40eb6, 0x002a9b0f, 0x0e880fb8, 0x002e9191, 0x0e880fb8, 0x002e8793, 0x0e880fb8, 0x00327e15
+    dd 0x0e3810ba, 0x00327497, 0x0e3810ba, 0x00366b19, 0x0dec11bc, 0x003a611b, 0x0dec11bc, 0x003e579d
+    dd 0x0dec11bc, 0x003e4e1f, 0x0da012be, 0x004244a1, 0x0da012be, 0x00463aa3, 0x0d5413c0, 0x004a3125
+    dd 0x0d0414c2, 0x004e27a7, 0x0d0414c2, 0x00521e29, 0x0d0414c2, 0x0056142b, 0x0cb815c4, 0x005a0aad
+    dd 0x0cb815c4, 0x0062012f, 0x0c6c1746, 0x0065f7b1, 0x0c201848, 0x0069edb3, 0x0c201848, 0x0071e435
+    dd 0x0bd019ca, 0x0075dab7, 0x0bd019ca, 0x007dd139, 0x0b841b4c, 0x0085c73b, 0x0b381cce, 0x008dbdbd
+    dd 0x0b381cce, 0x0095b43f, 0x0aec1e50, 0x009daac1, 0x0a9c2052, 0x00a5a0c3, 0x0a9c2052, 0x00ad9745
+    dd 0x0a502254, 0x00b98dc7, 0x0a502254, 0x00c18449, 0x09b82658, 0x00cd7a4b, 0x09b82658, 0x00d970cd
+    dd 0x0968285a, 0x00e5674f, 0x0968285a, 0x00f15dd1, 0x08d02d5e, 0x010153d3, 0x08d02d5e, 0x01114a55
+    dd 0x08843060, 0x012140d7, 0x08843060, 0x01313759, 0x07e83664, 0x01412d5b, 0x07e83664, 0x015523dd
+    dd 0x079c39e6, 0x01691a5f, 0x07503d68, 0x018110e1, 0x07503d68, 0x019906e3, 0x06b445ec, 0x01b0fd65
+    dd 0x06b445ec, 0x01ccf3e7, 0x06684a6e, 0x01e8ea69, 0x061c4ef0, 0x0208e06b, 0x05cc5472, 0x022cd6ed
+    dd 0x05805a74, 0x0250cd6f, 0x05346076, 0x0274c3f1, 0x05346076, 0x02a0b9f3, 0x049c6efa, 0x02d0b075
+    dd 0x049c6efa, 0x0300a6f7, 0x044c777c, 0x03389d79, 0x0400807e, 0x037493fb, 0x0400807f, 0x03b889fd
+trv_w00:
+    dd 0x16f40380, 0x001ede81, 0x16a40382, 0x00b98dc7, 0x16a40382, 0x00b98dc7, 0x16a40382, 0x00c18449
+    dd 0x16580404, 0x00c18449, 0x160c0406, 0x00c18449, 0x15c00488, 0x00c18449, 0x1570048a, 0x00c18449
+    dd 0x1524050c, 0x00c18449, 0x14d8050e, 0x00cd7a4b, 0x148c0590, 0x00cd7a4b, 0x143c0592, 0x00cd7a4b
+    dd 0x13f00614, 0x00cd7a4b, 0x13a40616, 0x00cd7a4b, 0x13580698, 0x00d970cd, 0x1308071a, 0x00d970cd
+    dd 0x12bc079c, 0x00d970cd, 0x1270079e, 0x00e5674f, 0x12240820, 0x00e5674f, 0x11d408a2, 0x00e5674f
+    dd 0x11880924, 0x00f15dd1, 0x113c09a6, 0x00f15dd1, 0x10f00a28, 0x00f15dd1, 0x10a00aaa, 0x010153d3
+    dd 0x10540b2c, 0x010153d3, 0x10080c2e, 0x010153d3, 0x0fbc0cb0, 0x01114a55, 0x0f6c0d32, 0x01114a55
+    dd 0x0f200e34, 0x01114a55, 0x0ed40eb6, 0x01114a55, 0x0e880fb8, 0x01313759, 0x0e3810ba, 0x01313759
+    dd 0x0dec11bc, 0x01313759, 0x0da012be, 0x01412d5b, 0x0d5413c0, 0x01412d5b, 0x0d0414c2, 0x01412d5b
+    dd 0x0cb815c4, 0x01691a5f, 0x0c6c1746, 0x01691a5f, 0x0c201848, 0x018110e1, 0x0bd019ca, 0x018110e1
+    dd 0x0b841b4c, 0x018110e1, 0x0b381cce, 0x018110e1, 0x0aec1e50, 0x01b0fd65, 0x0a9c2052, 0x01b0fd65
+    dd 0x0a502254, 0x01ccf3e7, 0x0a042456, 0x01ccf3e7, 0x09b82658, 0x01e8ea69, 0x0968285a, 0x01e8ea69
+    dd 0x091c2adc, 0x022cd6ed, 0x08d02d5e, 0x022cd6ed, 0x08843060, 0x022cd6ed, 0x08343362, 0x0274c3f1
+    dd 0x07e83664, 0x0274c3f1, 0x079c39e6, 0x02a0b9f3, 0x07503d68, 0x02d0b075, 0x0700416a, 0x0300a6f7
+    dd 0x06b445ec, 0x0300a6f7, 0x06684a6e, 0x037493fb, 0x061c4ef0, 0x037493fb, 0x05cc5472, 0x03b889fd
+    dd 0x05805a74, 0x03b889fd, 0x05346076, 0x0400807f, 0x04e86778, 0x0400807e, 0x049c6efa, 0x044c777c
+trv_w01:
+    dd 0x16f40380, 0x001ede81, 0x0f6c0d32, 0x0065f7b1, 0x0f6c0d32, 0x0065f7b1, 0x0f6c0d32, 0x0069edb3
+    dd 0x0f200e34, 0x0069edb3, 0x0f200e34, 0x0069edb3, 0x0f200e34, 0x0071e435, 0x0ed40eb6, 0x0071e435
+    dd 0x0ed40eb6, 0x0071e435, 0x0ed40eb6, 0x0075dab7, 0x0e880fb8, 0x0075dab7, 0x0e880fb8, 0x0075dab7
+    dd 0x0e880fb8, 0x007dd139, 0x0e3810ba, 0x007dd139, 0x0e3810ba, 0x0085c73b, 0x0dec11bc, 0x0085c73b
+    dd 0x0dec11bc, 0x0085c73b, 0x0dec11bc, 0x008dbdbd, 0x0da012be, 0x008dbdbd, 0x0da012be, 0x0095b43f
+    dd 0x0d5413c0, 0x009daac1, 0x0d0414c2, 0x009daac1, 0x0d0414c2, 0x009daac1, 0x0d0414c2, 0x00a5a0c3
+    dd 0x0cb815c4, 0x00a5a0c3, 0x0cb815c4, 0x00ad9745, 0x0c6c1746, 0x00b98dc7, 0x0c201848, 0x00b98dc7
+    dd 0x0c201848, 0x00c18449, 0x0bd019ca, 0x00c18449, 0x0bd019ca, 0x00cd7a4b, 0x0b841b4c, 0x00d970cd
+    dd 0x0b381cce, 0x00d970cd, 0x0b381cce, 0x00e5674f, 0x0aec1e50, 0x00f15dd1, 0x0a9c2052, 0x00f15dd1
+    dd 0x0a9c2052, 0x010153d3, 0x0a502254, 0x010153d3, 0x0a502254, 0x012140d7, 0x09b82658, 0x012140d7
+    dd 0x09b82658, 0x01313759, 0x0968285a, 0x01313759, 0x0968285a, 0x015523dd, 0x08d02d5e, 0x015523dd
+    dd 0x08d02d5e, 0x01691a5f, 0x08843060, 0x01691a5f, 0x08843060, 0x019906e3, 0x07e83664, 0x019906e3
+    dd 0x07e83664, 0x01b0fd65, 0x079c39e6, 0x01ccf3e7, 0x07503d68, 0x01ccf3e7, 0x07503d68, 0x0208e06b
+    dd 0x06b445ec, 0x0208e06b, 0x06b445ec, 0x022cd6ed, 0x06684a6e, 0x0250cd6f, 0x061c4ef0, 0x0274c3f1
+    dd 0x05cc5472, 0x02a0b9f3, 0x05805a74, 0x02d0b075, 0x05346076, 0x02d0b075, 0x05346076, 0x03389d79
+    dd 0x049c6efa, 0x03389d79, 0x049c6efa, 0x037493fb, 0x044c777c, 0x03b889fd, 0x0400807e, 0x0400807f
+trv_w10:
+    dd 0x16f40380, 0x001ede81, 0x0fbc0cb0, 0x0069edb3, 0x0fbc0cb0, 0x0069edb3, 0x0f6c0d32, 0x0069edb3
+    dd 0x0f6c0d32, 0x0071e435, 0x0f6c0d32, 0x0071e435, 0x0f200e34, 0x0071e435, 0x0f200e34, 0x0075dab7
+    dd 0x0f200e34, 0x0075dab7, 0x0ed40eb6, 0x0075dab7, 0x0ed40eb6, 0x007dd139, 0x0ed40eb6, 0x007dd139
+    dd 0x0e880fb8, 0x007dd139, 0x0e880fb8, 0x0085c73b, 0x0e3810ba, 0x0085c73b, 0x0e3810ba, 0x008dbdbd
+    dd 0x0e3810ba, 0x008dbdbd, 0x0dec11bc, 0x008dbdbd, 0x0dec11bc, 0x0095b43f, 0x0da012be, 0x0095b43f
+    dd 0x0d5413c0, 0x009daac1, 0x0d5413c0, 0x00a5a0c3, 0x0d5413c0, 0x00a5a0c3, 0x0d0414c2, 0x00a5a0c3
+    dd 0x0d0414c2, 0x00ad9745, 0x0cb815c4, 0x00ad9745, 0x0c6c1746, 0x00b98dc7, 0x0c6c1746, 0x00c18449
+    dd 0x0c201848, 0x00c18449, 0x0c201848, 0x00cd7a4b, 0x0bd019ca, 0x00cd7a4b, 0x0b841b4c, 0x00d970cd
+    dd 0x0b841b4c, 0x00e5674f, 0x0b381cce, 0x00e5674f, 0x0aec1e50, 0x00f15dd1, 0x0aec1e50, 0x010153d3
+    dd 0x0a9c2052, 0x010153d3, 0x0a9c2052, 0x01114a55, 0x0a042456, 0x01114a55, 0x0a042456, 0x01313759
+    dd 0x09b82658, 0x01313759, 0x09b82658, 0x01412d5b, 0x091c2adc, 0x01412d5b, 0x091c2adc, 0x01691a5f
+    dd 0x08d02d5e, 0x01691a5f, 0x08d02d5e, 0x018110e1, 0x08343362, 0x018110e1, 0x08343362, 0x01b0fd65
+    dd 0x07e83664, 0x01b0fd65, 0x079c39e6, 0x01ccf3e7, 0x079c39e6, 0x01e8ea69, 0x0700416a, 0x01e8ea69
+    dd 0x0700416a, 0x022cd6ed, 0x06b445ec, 0x022cd6ed, 0x06684a6e, 0x0250cd6f, 0x061c4ef0, 0x0274c3f1
+    dd 0x05cc5472, 0x02a0b9f3, 0x05805a74, 0x02d0b075, 0x05805a74, 0x0300a6f7, 0x04e86778, 0x0300a6f7
+    dd 0x04e86778, 0x037493fb, 0x049c6efa, 0x037493fb, 0x044c777c, 0x03b889fd, 0x0400807e, 0x0400807f
+trv_w11:
+    dd 0x16f40380, 0x001ede81, 0x0c6c1746, 0x001ed483, 0x0c6c1746, 0x001ed483, 0x0c201848, 0x001ed483
+    dd 0x0c201848, 0x0022cb05, 0x0c201848, 0x0022c187, 0x0c201848, 0x0026b809, 0x0c201848, 0x0026ae0b
+    dd 0x0c201848, 0x002aa48d, 0x0bd019ca, 0x002a9b0f, 0x0bd019ca, 0x002e9191, 0x0bd019ca, 0x002e8793
+    dd 0x0bd019ca, 0x00327e15, 0x0bd019ca, 0x00327497, 0x0b841b4c, 0x00366b19, 0x0b841b4c, 0x003a611b
+    dd 0x0b841b4c, 0x003e579d, 0x0b381cce, 0x003e4e1f, 0x0b381cce, 0x004244a1, 0x0b381cce, 0x00463aa3
+    dd 0x0aec1e50, 0x004a3125, 0x0aec1e50, 0x004e27a7, 0x0aec1e50, 0x00521e29, 0x0a9c2052, 0x0056142b
+    dd 0x0a9c2052, 0x005a0aad, 0x0a9c2052, 0x0062012f, 0x0a502254, 0x0065f7b1, 0x0a502254, 0x0069edb3
+    dd 0x0a502254, 0x0071e435, 0x0a502254, 0x0075dab7, 0x09b82658, 0x007dd139, 0x09b82658, 0x0085c73b
+    dd 0x09b82658, 0x008dbdbd, 0x0968285a, 0x0095b43f, 0x0968285a, 0x009daac1, 0x0968285a, 0x00a5a0c3
+    dd 0x08d02d5e, 0x00ad9745, 0x08d02d5e, 0x00b98dc7, 0x08843060, 0x00c18449, 0x08843060, 0x00cd7a4b
+    dd 0x08843060, 0x00d970cd, 0x08843060, 0x00e5674f, 0x07e83664, 0x00f15dd1, 0x07e83664, 0x010153d3
+    dd 0x079c39e6, 0x01114a55, 0x079c39e6, 0x012140d7, 0x07503d68, 0x01313759, 0x07503d68, 0x01412d5b
+    dd 0x06b445ec, 0x015523dd, 0x06b445ec, 0x01691a5f, 0x06b445ec, 0x018110e1, 0x061c4ef0, 0x019906e3
+    dd 0x061c4ef0, 0x01b0fd65, 0x05cc5472, 0x01ccf3e7, 0x05805a74, 0x01e8ea69, 0x05346076, 0x0208e06b
+    dd 0x05346076, 0x022cd6ed, 0x049c6efa, 0x0250cd6f, 0x049c6efa, 0x0274c3f1, 0x044c777c, 0x02a0b9f3
+    dd 0x044c777c, 0x02d0b075, 0x0400807e, 0x0300a6f7, 0x0400807f, 0x03389d79, 0x03b889fd, 0x037493fb
+
+cextern cabac_size_trans_unary
+
+SECTION .text
+
+; build-time A/B: P0/P1 a coef ahead (two gathers per pass, none on the payload chain)
+%ifndef TRELLIS_AVX2_AHEAD
+    %define TRELLIS_AVX2_AHEAD 0
+%endif
+%if TRELLIS_AVX2_AHEAD
+    %define TRV_T1 trv_w00
+    %define TRV_TN trv_w10
+%else
+    %define TRV_T1 trv_u0
+    %define TRV_TN trv_u1
+%endif
+
+INIT_YMM avx2
+
+; a = min( a, b ), m = a > b (b taken)
+%macro TRV_MIN 4 ; a, b, m, tmp
+    vpcmpgtq %3, %1, %2
+    vpxor    %4, %1, %2
+    vpand    %4, %4, %3
+    vpxor    %1, %1, %4
+%endmacro
+
+; f8_bits but cost_siglast (m8, a dword per node) -> candidate keys m8 (nodes 0,2,4,6), m10 (1,3,5,7)
+%macro TRV_KEYS 3 ; ctx_hi, pass, base
+    vpbroadcastd m10, [r4+TRV_CSL1+%2]
+%if %1 == 0
+    vmovd      xm11, [r4+TRV_CSL2+%2]
+    vpblendd   m10, m10, m11, 0x01
+%endif
+    vpaddd     m8, m8, m10
+    vpsrlq     m10, m8, 32
+    vpmuludq   m8, m8, [r4+TRV_LAMBDA]
+    vpmuludq   m10, m10, [r4+TRV_LAMBDA]
+    vpand      m8, m8, [r4+TRV_M16VE]
+    vpand      m10, m10, [r4+TRV_M16VO]
+    vpbroadcastq m12, [r4+TRV_SSD1+%2]
+%if %1 == 0
+    vmovq      xm11, [r4+TRV_SSD0+%2]
+    vpblendd   m11, m12, m11, 0x03
+    vpand      m11, m11, [r4+TRV_VE]
+%else
+    vpand      m11, m12, [r4+TRV_VE]
+%endif
+    vpand      m12, m12, [r4+TRV_VO]
+    vpaddq     m11, m11, [r4+%3E]
+    vpaddq     m12, m12, [r4+%3O]
+    vpaddq     m8, m8, m11
+    vpaddq     m10, m10, m12
+%endmacro
+
+%if TRELLIS_AVX2_AHEAD
+; abs_level 1: node j -> 1,2,3,3,4,5,6,7; bin 0 (r10: trv_w00). A candidate's payload is
+; P0[j]; its P0/P1 are gathered here, one coef ahead of their use, off the payload chain
+%macro TRV_PASS1 6 ; ctx_hi, pass, base, merge, payload dst, P0/P1 dst
+    vpand      m8, m2, [trv_d127]
+    vmovdqa    m10, [r4+TRV_VN]
+    vpand      m10, m10, [trv_gm37]
+    vmovdqa    m11, m10
+    vmovdqa    m9, [r4+TRV_CP0]
+    vpgatherdd m9, [r10+m8*4], m10
+    vmovdqa    m6, [r4+TRV_CP1]
+    vpgatherdd m6, [r10+512+m8*4], m11
+    vmovdqa    m7, [r4+TRV_P0]
+    vpblendd   m7, m7, [r4+TRV_CONST1], 0x07
+    vpsrld     m8, m2, 7
+    vpand      m8, m8, [trv_d7ff]
+    TRV_KEYS   %1, %2, %3
+    vpslldq    m11, m10, 8
+    vpblendd   m11, m8, m11, 0x0c
+    vpblendd   m11, m11, [trv_inv], 0x03   ; -, c1, c4, c6
+    vpblendd   m12, m10, m8, 0x03          ; c0, c3, c5, c7
+    vpblendd   m8, m8, [trv_inv], 0xf3     ; -, c2, -, -
+    TRV_MIN    m12, m8, m10, m13           ; m10: node 3 from node 2
+    vblendvps  m7, m7, [r4+TRV_CONST1], m10
+    vblendvps  m9, m9, [r4+TRV_CP0], m10
+    vblendvps  m6, m6, [r4+TRV_CP1], m10
+%if %4
+    TRV_MIN    m0, m11, m13, m14
+    TRV_MIN    m1, m12, m14, m15
+    vpblendd   m13, m13, m14, 0xaa         ; a candidate won
+    vblendvps  %5, %5, m7, m13
+    vmovdqa    m11, [r4+%6]
+    vblendvps  m11, m11, m9, m13
+    vmovdqa    [r4+%6], m11
+    vmovdqa    m12, [r4+%6+32]
+    vblendvps  m12, m12, m6, m13
+    vmovdqa    [r4+%6+32], m12
+%else
+    vmovdqa    m0, m11
+    vmovdqa    m1, m12
+    vmovdqa    %5, m7
+    vmovdqa    [r4+%6], m9
+    vmovdqa    [r4+%6+32], m6
+%endif
+%endmacro
+
+; abs_level > 1: node j -> 4,4,4,4,5,6,7,7; bin 1 (r10: trv_w10, r11: cabac_size_trans_unary[prefix]);
+; payload dst m4, P0/P1 dst TRV_P0C
+%macro TRV_PASSN 5 ; ctx_hi, pass, base, merge, gather P0/P1 of the candidates (else from the previous pass)
+%if %5
+    vpand      m8, m2, [trv_d127]
+    vmovdqa    m10, [r4+TRV_VN]
+    vpand      m10, m10, [trv_gm47]
+    vmovdqa    m11, m10
+    vmovdqa    m6, [r4+TRV_CP0N]
+    vpgatherdd m6, [r10+m8*4], m10
+    vmovdqa    m9, [r4+TRV_CP1N]
+    vpgatherdd m9, [r10+512+m8*4], m11
+    vmovdqa    [r4+TRV_GW0], m6
+    vmovdqa    [r4+TRV_GW1], m9
+%endif
+    vmovdqa    m10, [r4+TRV_VN]
+    vpxor      xm7, xm7, xm7
+    vpgatherdd m7, [r11+m3*4], m10
+    vpsrld     m8, m2, 18
+    vpand      m9, m7, [trv_dffff]
+    vpaddd     m8, m8, m9
+    TRV_KEYS   %1, %2, %3
+    vmovdqa    m11, m8
+    TRV_MIN    m11, m10, m12, m13          ; m12 lane 3: node 7 from node 7
+    vpermq     m13, m11, q3000
+    vpermq     m14, m11, q3100
+    TRV_MIN    m13, m14, m9, m15           ; lane 2: min(c0..c3)
+    vpslldq    m14, m10, 8
+    vpblendd   m13, m13, m14, 0xc0
+    vpblendd   m13, m13, [trv_inv], 0x0f   ; -, -, min(c0..c3), c5
+    vpblendd   m14, m8, m11, 0xc0
+    vpblendd   m14, m14, [trv_inv], 0x0f   ; -, -, c4, min(c6,c7)
+    vpand      m9, m12, [trv_d7]
+    vmovdqa    m15, [trv_idxn]
+    vpsubd     m15, m15, m9                ; node 4 pristine, 5,6,7 from 4,5,6|7
+    vmovdqa    m9, [r4+TRV_P1]
+    vpblendd   m9, m9, [r4+TRV_CONSTN], 0x0f
+    vpermd     m9, m15, m9
+    vpermd     m6, m15, [r4+TRV_GW0]
+    vpermd     m11, m15, [r4+TRV_GW1]
+    vpsrld     m7, m7, 16
+%if num_coefs == 8 && dc
+    vpslldq    m15, m7, 4
+%else
+    vmovdqa    m15, [r4+TRV_GINIT]
+%endif
+    vblendvps  m7, m15, m7, m12            ; node 7's levelgt1 state
+%if %4
+    TRV_MIN    m0, m13, m8, m10
+    TRV_MIN    m1, m14, m10, m12
+    vpblendd   m8, m8, m10, 0xaa
+    vblendvps  m4, m4, m9, m8
+    vmovdqa    m10, [r4+TRV_P0C]
+    vblendvps  m10, m10, m6, m8
+    vmovdqa    [r4+TRV_P0C], m10
+    vmovdqa    m10, [r4+TRV_P0C+32]
+    vblendvps  m10, m10, m11, m8
+    vmovdqa    [r4+TRV_P0C+32], m10
+    vpand      m8, m8, [trv_d7]
+    vblendvps  m5, m5, m7, m8
+%else
+    vmovdqa    m0, m13
+    vmovdqa    m1, m14
+    vmovdqa    m4, m9
+    vmovdqa    [r4+TRV_P0C], m6
+    vmovdqa    [r4+TRV_P0C+32], m11
+    vpblendd   m5, m3, m7, 0x80
+%endif
+%endmacro
+
+%else
+; abs_level 1: node j -> 1,2,3,3,4,5,6,7; bin 0 (r10: trv_u0)
+%macro TRV_PASS1 6 ; ctx_hi, pass, base, merge, payload dst, -
+    vpand      m8, m2, [trv_d127]
+    vmovdqa    m9, [r4+TRV_CONST1]
+    vmovdqa    m10, [r4+TRV_VN]
+    vpand      m10, m10, [trv_gm37]
+    vpgatherdd m9, [r10+m8*4], m10
+    vpsrld     m8, m2, 7
+    vpand      m8, m8, [trv_d7ff]
+    TRV_KEYS   %1, %2, %3
+    vpslldq    m11, m10, 8
+    vpblendd   m11, m8, m11, 0x0c
+    vpblendd   m11, m11, [trv_inv], 0x03   ; -, c1, c4, c6
+    vpblendd   m12, m10, m8, 0x03          ; c0, c3, c5, c7
+    vpblendd   m8, m8, [trv_inv], 0xf3     ; -, c2, -, -
+    TRV_MIN    m12, m8, m10, m13           ; m10: node 3 from node 2
+    vblendvps  m9, m9, [r4+TRV_CONST1], m10
+%if %4
+    TRV_MIN    m0, m11, m13, m14
+    TRV_MIN    m1, m12, m14, m15
+    vpblendd   m13, m13, m14, 0xaa         ; a candidate won
+    vblendvps  %5, %5, m9, m13
+%else
+    vmovdqa    m0, m11
+    vmovdqa    m1, m12
+    vmovdqa    %5, m9
+%endif
+%endmacro
+
+; abs_level > 1: node j -> 4,4,4,4,5,6,7,7; bin 1 (r10: trv_u1, r11: cabac_size_trans_unary[prefix])
+%macro TRV_PASSN 5 ; ctx_hi, pass, base, merge, gather the level1 payloads (else m6)
+%if %5
+    vpand      m8, m2, [trv_d127]
+    vmovdqa    m6, [r4+TRV_CONSTN]
+    vmovdqa    m10, [r4+TRV_VN]
+    vpand      m10, m10, [trv_gm47]
+    vpgatherdd m6, [r10+m8*4], m10
+%endif
+    vmovdqa    m10, [r4+TRV_VN]
+    vpxor      xm7, xm7, xm7
+    vpgatherdd m7, [r11+m3*4], m10
+    vpsrld     m8, m2, 18
+    vpand      m9, m7, [trv_dffff]
+    vpaddd     m8, m8, m9
+    TRV_KEYS   %1, %2, %3
+    vmovdqa    m11, m8
+    TRV_MIN    m11, m10, m12, m13          ; m12 lane 3: node 7 from node 7
+    vpermq     m13, m11, q3000
+    vpermq     m14, m11, q3100
+    TRV_MIN    m13, m14, m9, m15           ; lane 2: min(c0..c3)
+    vpslldq    m14, m10, 8
+    vpblendd   m13, m13, m14, 0xc0
+    vpblendd   m13, m13, [trv_inv], 0x0f   ; -, -, min(c0..c3), c5
+    vpblendd   m14, m8, m11, 0xc0
+    vpblendd   m14, m14, [trv_inv], 0x0f   ; -, -, c4, min(c6,c7)
+    vpand      m9, m12, [trv_d7]
+    vmovdqa    m15, [trv_idxn]
+    vpsubd     m15, m15, m9
+    vpermd     m15, m15, m6                ; node 4 pristine, 5,6,7 from 4,5,6|7
+    vpsrld     m7, m7, 16
+%if num_coefs == 8 && dc
+    vpslldq    m9, m7, 4
+%else
+    vmovdqa    m9, [r4+TRV_GINIT]
+%endif
+    vblendvps  m7, m9, m7, m12             ; node 7's levelgt1 state
+%if %4
+    TRV_MIN    m0, m13, m8, m9
+    TRV_MIN    m1, m14, m9, m10
+    vpblendd   m8, m8, m9, 0xaa
+    vblendvps  m4, m4, m15, m8
+    vpand      m8, m8, [trv_d7]
+    vblendvps  m5, m5, m7, m8
+%else
+    vmovdqa    m0, m13
+    vmovdqa    m1, m14
+    vmovdqa    m4, m15
+    vpblendd   m5, m3, m7, 0x80
+%endif
+%endmacro
+
+%endif ; TRELLIS_AVX2_AHEAD
+
+%macro TRV_ROW 0
+    vpsllq     m8, m1, 32
+    vpblendd   m8, m0, m8, 0xaa
+    mov        r6d, r3d
+    shl        r6d, 5
+    vmovdqa    [r4+TRV_ROWS+r6], m8
+%endmacro
+
+%macro TRV_LOOP 1 ; ctx_hi
+.coef%1:
+    ; valid nodes, keys without their codes
+    vmovdqa    m8, [trv_thresh]
+    vpcmpgtq   m9, m8, m0
+    vpcmpgtq   m10, m8, m1
+    vmovdqa    m11, [trv_m16]
+    vmovdqa    [r4+TRV_VE], m9
+    vmovdqa    [r4+TRV_VO], m10
+    vpblendd   m12, m9, m10, 0xaa
+    vmovdqa    [r4+TRV_VN], m12          ; per node, for the gather masks
+    vpand      m9, m9, m11
+    vpand      m10, m10, m11
+    vmovdqa    [r4+TRV_M16VE], m9
+    vmovdqa    [r4+TRV_M16VO], m10
+    vpand      m12, m0, m11
+    vpand      m13, m1, m11
+    vpor       m14, m12, [trv_iota0e]
+    vpor       m15, m13, [trv_iota0o]
+    vpor       m12, m12, [trv_iota8e]
+    vpor       m13, m13, [trv_iota8o]
+    vmovdqa    [r4+TRV_B0E], m14
+    vmovdqa    [r4+TRV_B0O], m15
+    vmovdqa    [r4+TRV_B8E], m12
+    vmovdqa    [r4+TRV_B8O], m13
+    TR_PREP %1
+
+.q1_%1:
+    ; the kept nodes, then abs_level 1 against them
+    imul   r11, r2
+    shr    r11, CABAC_SIZE_BITS - LAMBDA_BITS
+    add    r11, r7
+%if %1 == 0
+    mov    r6, ssd00m
+    sub    r6, r11
+    shl    r6, 4
+    vmovq  xm8, r6
+%endif
+    sub    r13, r11
+    shl    r13, 4
+    mov    [r4+TRV_SSD1], r13
+%if %1 == 0
+    mov    r6, ssd01m
+    sub    r6, r11
+    shl    r6, 4
+    mov    [r4+TRV_SSD0], r6
+    add    r9d, 1<<CABAC_SIZE_BITS
+    mov    [r4+TRV_CSL2], r9d
+%endif
+    add    r14d, 1<<CABAC_SIZE_BITS
+    mov    [r4+TRV_CSL1], r14d
+    vmovdqa m0, [r4+TRV_B0E]
+    vmovdqa m1, [r4+TRV_B0O]
+%if %1 == 0
+    vpaddq m0, m0, m8
+%endif
+    lea    r10, [TRV_T1]
+    TRV_PASS1 %1, 0, TRV_B8, 1, m2, TRV_P0
+    TRV_ROW
+    jmp .next%1
+
+.q2_%1:
+    shl    r7, 4
+    shl    r13, 4
+    mov    [r4+TRV_SSD1], r7
+    mov    [r4+TRV_SSD1+TRV_PB], r13
+%if %1 == 0
+    mov    r6, ssd00m
+    shl    r6, 4
+    mov    [r4+TRV_SSD0], r6
+    mov    r6, ssd01m
+    shl    r6, 4
+    mov    [r4+TRV_SSD0+TRV_PB], r6
+    mov    [r4+TRV_CSL2+TRV_PB], r9d
+    add    r9d, 1<<CABAC_SIZE_BITS
+    mov    [r4+TRV_CSL2], r9d
+%endif
+    mov    [r4+TRV_CSL1+TRV_PB], r14d
+    add    r14d, 1<<CABAC_SIZE_BITS
+    mov    [r4+TRV_CSL1], r14d
+    lea    r10, [TRV_T1]
+    TRV_PASS1 %1, 0, TRV_B0, 0, m4, TRV_P0C
+    vmovdqa m5, m3
+    lea    r10, [TRV_TN]
+    lea    r11, [cabac_size_trans_unary + 1*512 GLOBAL]
+    TRV_PASSN %1, TRV_PB, TRV_B8, 1, 1
+    TRV_ROW
+%if TRELLIS_AVX2_AHEAD
+    vmovdqa m8, [r4+TRV_P0C]
+    vmovdqa m9, [r4+TRV_P0C+32]
+    vmovdqa [r4+TRV_P0], m8
+    vmovdqa [r4+TRV_P0+32], m9
+%endif
+    vmovdqa m2, m4
+    vmovdqa m3, m5
+    jmp .next1
+
+.qn_%1:
+    ; abs_level q-1, then q
+    lea    r10d, [r8-1]
+    TR_SUFFIX r12d, r10, r10d, r6d
+    lea    r6d, [r14+r12]
+    mov    [r4+TRV_CSL1], r6d
+%if %1 == 0
+    lea    r6d, [r9+r12]
+    mov    [r4+TRV_CSL2], r6d
+    mov    r6, ssd00m
+    shl    r6, 4
+    mov    [r4+TRV_SSD0], r6
+    mov    r6, ssd01m
+    shl    r6, 4
+    mov    [r4+TRV_SSD0+TRV_PB], r6
+%endif
+    shl    r7, 4
+    mov    [r4+TRV_SSD1], r7
+    shl    r13, 4
+    mov    [r4+TRV_SSD1+TRV_PB], r13
+    TR_SUFFIX r12d, r8, r8d, r6d
+    lea    r6d, [r14+r12]
+    mov    [r4+TRV_CSL1+TRV_PB], r6d
+%if %1 == 0
+    lea    r6d, [r9+r12]
+    mov    [r4+TRV_CSL2+TRV_PB], r6d
+%endif
+    ; prefix = X264_MIN( abs_level-1, 14 )
+    mov    r12d, 14
+    lea    r6d, [r8-2]
+    cmp    r6d, r12d
+    cmova  r6d, r12d
+    lea    r13d, [r8-1]
+    cmp    r13d, r12d
+    cmova  r13d, r12d
+    shl    r6d, 9
+    shl    r13d, 9
+    lea    r11, [cabac_size_trans_unary GLOBAL]
+    add    r13, r11
+    add    r11, r6
+    lea    r10, [TRV_TN]
+    TRV_PASSN %1, 0, TRV_B0, 0, 1
+    mov    r11, r13
+    TRV_PASSN %1, TRV_PB, TRV_B8, 1, 0
+    TRV_ROW
+%if TRELLIS_AVX2_AHEAD
+    vmovdqa m8, [r4+TRV_P0C]
+    vmovdqa m9, [r4+TRV_P0C+32]
+    vmovdqa [r4+TRV_P0], m8
+    vmovdqa [r4+TRV_P0+32], m9
+%endif
+    vmovdqa m2, m4
+    vmovdqa m3, m5
+    jmp .next1
+%endmacro
+
+; frame, 32-aligned at r4
+%define TRV_LAMBDA   0
+%define TRV_CONST1  32 ; payloads of the input level1 ctx 1,2,3,4, then ctx 0
+%define TRV_CONSTN  64 ; ctx 0
+%define TRV_GINIT   96
+%define TRV_VE     128
+%define TRV_VO     160
+%define TRV_M16VE  192
+%define TRV_M16VO  224
+%define TRV_B0E    256
+%define TRV_B0O    288
+%define TRV_B8E    320
+%define TRV_B8O    352
+%define TRV_SSD1   384 ; per pass: ssd1 << 4, ssd0 << 4 (node 0), cost_siglast[1] and [2] + level bits
+%define TRV_SSD0   392
+%define TRV_CSL1   400
+%define TRV_CSL2   404
+%define TRV_PB      32 ; the second pass
+%define TRV_VN     448
+%define TRV_CP0    480 ; P0, P1 (payloads of transition[s][0], [s][1]) of the input level1 ctx 1,2,3,4, then 0
+%define TRV_CP1    512
+%define TRV_CP0N   544 ; ctx 0
+%define TRV_CP1N   576
+%define TRV_P0     608 ; per node, P1 at +32
+%define TRV_P1     640
+%define TRV_P0C    672 ; the second pass
+%define TRV_GW0    736 ; gathered P0, P1 of the abs_level > 1 candidates
+%define TRV_GW1    768
+%define TRV_ROWS   800 ; the codes of nonzero coef i at TRV_ROWS + i*32
+%define TRV_FRAME (800 + 64*32)
+
+%macro TRELLIS_AVX2 4
+%define num_coefs %2
+%define dc %3
+%define psy %4
+%if num_coefs == 64
+    %define dct_weight1_tab dct8_weight_tab
+    %define dct_weight2_tab dct8_weight2_tab
+%else
+    %define dct_weight1_tab dct4_weight_tab
+    %define dct_weight2_tab dct4_weight2_tab
+%endif
+cglobal %1, 4,15,16
+    mov r2d, r2d
+    mov r3d, r3d
+    %assign pad 64 + 32 + TRV_FRAME + 16-gprsize-(stack_offset&15)
+    SUB  rsp, pad
+%if WIN64
+    %define level_statem rsp+stack_offset+80
+%else
+    %define level_statem rsp+stack_offset+32
+%endif
+    %define cabac_state_sigm  r7m
+    %define cabac_state_lastm r8m
+    %define i_coefsm   r11m ; dc only
+    %define fenc_dctm  r12m
+    %define psy_trellism r13m
+    %define quantp  [rsp+ 0]
+    %define origp   [rsp+ 8]
+    %define unqp    [rsp+16]
+    %define mf2m    dword [rsp+24]
+    %define maskp   [rsp+32]
+    %define sigtabp [rsp+40]
+    %define ssd00m  [rsp+48]
+    %define ssd01m  [rsp+56]
+    mov    r6, r4mp
+    mov    origp, r6
+    mov    r6, r5mp
+    mov    quantp, r6
+    mov    unqp, r0
+%if dc
+    mov    r6d, [r0]
+    add    r6d, r6d
+    mov    mf2m, r6d
+%endif
+%ifdef PIC
+    lea    r0, [$$]
+    %define GLOBAL +r0-$$
+%else
+    %define GLOBAL
+%endif
+    lea    r4, [rsp+64+31]
+    and    r4, ~31
+
+    ; nonzero quant_coefs[i], b_ac <= i <= last_nnz
+    mov    r6, quantp
+    vpxor  xm10, xm10, xm10
+%if num_coefs == 64
+%if HIGH_BIT_DEPTH
+    vmovdqu   m8, [r6+  0]
+    vpackssdw m8, m8, [r6+ 32]
+    vmovdqu   m9, [r6+ 64]
+    vpackssdw m9, m9, [r6+ 96]
+    vmovdqu   m11, [r6+128]
+    vpackssdw m11, m11, [r6+160]
+    vmovdqu   m12, [r6+192]
+    vpackssdw m12, m12, [r6+224]
+    vpacksswb m8, m8, m9
+    vpacksswb m11, m11, m12
+    vmovdqu   m9, [deinterleave_shufd]
+    vpermd    m8, m9, m8
+    vpermd    m11, m9, m11
+%else
+    vmovdqu   m8, [r6+ 0]
+    vpacksswb m8, m8, [r6+32]
+    vmovdqu   m11, [r6+64]
+    vpacksswb m11, m11, [r6+96]
+    vpermq    m8, m8, q3120
+    vpermq    m11, m11, q3120
+%endif
+    vpcmpeqb  m8, m8, m10
+    vpcmpeqb  m11, m11, m10
+    vpmovmskb r5d, m8
+    vpmovmskb r7d, m11
+    shl       r7, 32
+    or        r5, r7
+%elif HIGH_BIT_DEPTH
+    vpcmpeqd  m8, m10, [r6]
+    vmovmskps r5d, m8
+%if num_coefs == 16
+    vpcmpeqd  m9, m10, [r6+32]
+    vmovmskps r7d, m9
+    shl       r7d, 8
+    or        r5d, r7d
+%endif
+%else
+    vmovdqu   xm8, [r6]
+%if num_coefs == 16
+    vpacksswb xm8, xm8, [r6+16]
+%else
+    vpacksswb xm8, xm8, xm8
+%endif
+    vpcmpeqb  xm8, xm8, xm10
+    vpmovmskb r5d, xm8
+%endif
+    not    r5
+    xor    r6d, r6d
+    bts    r6, r3
+    lea    r6, [r6*2-1]
+    and    r5, r6
+%if num_coefs == 16 && dc == 0
+    mov    r6d, r11m ; b_ac
+    not    r6
+    and    r5, r6
+%endif
+    mov    maskp, r5
+%if num_coefs == 64
+    mov    r7d, r11m ; b_interlaced
+    shl    r7d, 6
+    lea    r6, [significant_coeff_flag_offset_8x8 GLOBAL]
+    add    r6, r7
+    mov    sigtabp, r6
+%endif
+
+    vmovq      xm8, r2
+    vpbroadcastq m8, xm8
+    vmovdqa    [r4+TRV_LAMBDA], m8
+    vmovq      xm6, [level_statem]
+    vpinsrw    xm6, xm6, [level_statem+8], 4
+    vpshufb    xm7, xm6, [trv_ls1]
+    vpmovzxbd  m7, xm7
+    vpcmpeqd   m9, m9, m9
+    vpxor      xm2, xm2, xm2
+    lea        r6, [trv_xtab]
+    vpgatherdd m2, [r6+m7*4], m9
+    vpermq     m8, m2, q2222
+    vmovdqa    [r4+TRV_CONST1], m2
+    vmovdqa    [r4+TRV_CONSTN], m8
+%if TRELLIS_AVX2_AHEAD
+    vpcmpeqd   m9, m9, m9
+    vpxor      xm10, xm10, xm10
+    lea        r6, [trv_u0]
+    vpgatherdd m10, [r6+m7*4], m9
+    vpcmpeqd   m9, m9, m9
+    vpxor      xm11, xm11, xm11
+    vpgatherdd m11, [r6+512+m7*4], m9    ; trv_u1
+    vmovdqa    [r4+TRV_CP0], m10
+    vmovdqa    [r4+TRV_CP1], m11
+    vmovdqa    [r4+TRV_P0], m10
+    vmovdqa    [r4+TRV_P0+32], m11
+    vpermq     m10, m10, q2222
+    vpermq     m11, m11, q2222
+    vmovdqa    [r4+TRV_CP0N], m10
+    vmovdqa    [r4+TRV_CP1N], m11
+%endif
+%if num_coefs == 8 && dc
+    vpshufb    xm7, xm6, [trv_lsg422]
+%else
+    vpshufb    xm7, xm6, [trv_lsg]
+%endif
+    vpmovzxbd  m3, xm7
+    vmovdqa    [r4+TRV_GINIT], m3
+    vmovdqa    m0, [trv_kinit]
+    vmovdqa    m1, [trv_inv]
+
+    TRV_LOOP 0
+.next0:
+    ; the zeros below i, down to the next nonzero or b_ac:
+    ; nodes_cur[0].score -= cost_sig0
+    btr    r5, r3
+%if num_coefs == 16 && dc == 0
+    mov    r12d, r11m
+    dec    r12d
+%else
+    mov    r12d, -1
+%endif
+    bsr    r6, r5
+    cmovnz r12d, r6d
+    lea    r7d, [r3-1]
+    cmp    r7d, r12d
+    jle .zeros_done
+    mov    r9, cabac_state_sigm
+%if num_coefs == 64
+    mov    r10, sigtabp
+%endif
+    xor    r11d, r11d
+.zeros:
+%if num_coefs == 64
+    movzx  r6d, byte [r10+r7]
+%elif num_coefs == 8
+    movzx  r6d, byte [coeff_flag_offset_chroma_422_dc + r7 GLOBAL]
+%else
+    mov    r6d, r7d
+%endif
+    movzx  r6d, byte [r9+r6]
+    movzx  r6d, word [cabac_entropy + r6*2 GLOBAL]
+    imul   r6, r2
+    shr    r6, CABAC_SIZE_BITS - LAMBDA_BITS
+    add    r11, r6
+    dec    r7d
+    cmp    r7d, r12d
+    jg .zeros
+    shl    r11, 4
+    vmovq  xm8, r11
+    vpsubq m0, m0, m8
+.zeros_done:
+    mov    r3d, r12d
+    test   r5, r5
+    jnz .coef0
+    call .bnode
+    jnz .writeback
+%if num_coefs == 16 && dc == 0
+    mov    r10, r6m ; dct
+    vpxor  xm8, xm8, xm8
+    vmovdqu [r10], m8
+%if HIGH_BIT_DEPTH
+    vmovdqu [r10+32], m8
+%endif
+%endif
+    xor    eax, eax
+    jmp .return
+
+    TRV_LOOP 1
+.next1:
+    btr    r5, r3
+    bsr    r3, r5
+    jnz .coef1
+    call .bnode
+.writeback:
+    ; nonzero i, lowest first: dct[zigzag[i]] = SIGN(level, dct[zigzag[i]]),
+    ; level and the next node from the code of the node in row i
+    mov    r12, maskp
+    mov    r10, r6m ; dct
+    mov    r11, quantp
+.writeback_loop:
+    bsf    r3, r12
+    movzx  r2d, byte [r1+r3]
+    mov    r6d, r3d
+    shl    r6d, 5
+    add    r6, r4
+    movzx  r7d, byte [r6+r14*4+TRV_ROWS]
+%if HIGH_BIT_DEPTH
+    mov    r8d, [r11+r3*4]
+%else
+    movsx  r8d, word [r11+r3*2]
+%endif
+    mov    r9d, r8d
+    neg    r9d
+    cmovl  r9d, r8d
+    mov    r14d, r7d
+    and    r14d, 7
+    shr    r7d, 3
+    and    r7d, 1
+    lea    r9d, [r9+r7-1]
+%if HIGH_BIT_DEPTH
+    mov    r8d, [r10 + r2*4]
+%else
+    movsx  r8d, word [r10 + r2*2]
+%endif
+    sar    r8d, 31
+    xor    r9d, r8d
+    sub    r9d, r8d
+%if HIGH_BIT_DEPTH
+    mov    [r10 + r2*4], r9d
+%else
+    mov    [r10 + r2*2], r9w
+%endif
+    lea    r13, [r12-1]
+    and    r12, r13
+    jnz .writeback_loop
+    mov    eax, 1
+.return:
+    ADD    rsp, pad
+    RET
+
+.bnode:
+    ; first node with the lowest score: r14, ZF if node 0
+    vmovdqa    m8, [trv_m16]
+    vpand      m9, m0, m8
+    vpor       m9, m9, [trv_iota0e]
+    vpand      m10, m1, m8
+    vpor       m10, m10, [trv_iota0o]
+    TRV_MIN    m9, m10, m11, m12
+    vpermq     m10, m9, q1032
+    TRV_MIN    m9, m10, m11, m12
+    vpshufd    m10, m9, q1032
+    TRV_MIN    m9, m10, m11, m12
+    vmovq      r14, xm9
+    and        r14d, 7
+    ret
+%endmacro ; TRELLIS_AVX2
+
+TRELLIS_AVX2 trellis_cabac_4x4_nodes, 16, 0, 0
+TRELLIS_AVX2 trellis_cabac_8x8_nodes, 64, 0, 0
+TRELLIS_AVX2 trellis_cabac_4x4_psy_nodes, 16, 0, 1
+TRELLIS_AVX2 trellis_cabac_8x8_psy_nodes, 64, 0, 1
+TRELLIS_AVX2 trellis_cabac_dc_nodes, 16, 1, 0
+TRELLIS_AVX2 trellis_cabac_chroma_422_dc_nodes, 8, 1, 0
