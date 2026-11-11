@@ -2043,6 +2043,12 @@ cglobal pixel_avg2_w20, 6,7
 %%tail:
     %1
 %%end:
+%ifdef AVG2_RET_R7
+    mov   rax, r7
+%endif
+%ifdef AVG2_VZU
+    vzeroupper
+%endif
     RET
 %endmacro
 
@@ -2141,6 +2147,101 @@ cglobal pixel_avg2_w16, 6,8
     vextracti32x4 [r0+r1], ym0, 1
 .end:
     RET
+%endif
+
+%if ARCH_X86_64
+%macro AVG2_W4_2ROWS 0
+    movd   m0, [r2]
+    movd   m1, [r2+r3]
+    movd   m2, [r2+r4]
+    movd   m3, [r2+r6]
+    lea    r2, [r2+r3*2]
+    pavgb  m0, m2
+    pavgb  m1, m3
+    movd [r0], m0
+    movd [r0+r1], m1
+    lea    r0, [r0+r1*2]
+%endmacro
+
+%macro AVG2_W20_2ROWS 0 ; ymm (raw VEX names: the function is INIT_XMM)
+    vmovdqu  ymm0, [r2]
+    vmovdqu  ymm1, [r2+r3]
+    vpavgb   ymm0, ymm0, [r2+r4]
+    vpavgb   ymm1, ymm1, [r2+r6]
+    lea       r2, [r2+r3*2]
+    vmovdqa  [r0], ymm0
+    vmovdqa  [r0+r1], ymm1
+    lea       r0, [r0+r1*2]
+%endmacro
+
+;-----------------------------------------------------------------------------
+; pixel *get_ref_noweight( pixel *dst, intptr_t *i_dst_stride, pixel *src[4], intptr_t i_src_stride,
+;                          int mvx, int mvy, int i_width, int i_height )
+; get_ref without a weight: the hpel plane at mv, else pixel_avg2 of two planes into dst;
+; hpel_ref0/1 as 2-bit fields by qpel_idx
+;-----------------------------------------------------------------------------
+INIT_XMM avx2
+cglobal get_ref_noweight, 6,9,6
+    movsxd  r6, r4d
+    movsxd  r7, r5d
+    mov    r4d, r6d
+    and    r4d, 3              ; mvx&3
+    mov    r5d, r7d
+    and    r5d, 3              ; mvy&3
+    sar     r6, 2
+    sar     r7, 2
+    imul    r7, r3
+    add     r6, r7              ; offset
+    lea    r7d, [r4+r5*4]
+    add    r7d, r7d            ; 2*qpel_idx
+    mov    r8d, 0x54FE5454      ; hpel_ref0
+    shrx   r8d, r8d, r7d
+    and    r8d, 3
+    mov     r8, [r2+r8*8]
+    add     r8, r6
+    test   r7d, 10             ; qpel_idx&5
+    jnz .avg
+    mov   [r1], r3
+    mov    rax, r8
+    RET
+.avg:
+    inc    r5d
+    shr    r5d, 2
+    neg     r5
+    and     r5, r3
+    add     r8, r5              ; src1: + i_src_stride if mvy&3 == 3
+    mov    r5d, 0xBABABA00      ; hpel_ref1
+    shrx   r5d, r5d, r7d
+    and    r5d, 3
+    mov     r5, [r2+r5*8]
+    add     r5, r6
+    inc    r4d
+    shr    r4d, 2
+    add     r4, r5              ; src2: + 1 if mvx&3 == 3
+    mov     r2, r8
+    sub     r4, r2
+    lea     r6, [r4+r3]
+    mov     r1, [r1]
+    mov     r7, r0
+    mov    r8d, r6m
+    mov    r5d, r7m
+%define AVG2_RET_R7
+    cmp    r8d, 16
+    je .w16
+    ja .w20
+    cmp    r8d, 8
+    je .w8
+    ja .w16                    ; w12
+    AVG2_ROWS_LOOP AVG2_W4_2ROWS
+.w8:
+    AVG2_ROWS_LOOP AVG2_W8_2ROWS
+.w16:
+    AVG2_ROWS_LOOP AVG2_W16_2ROWS
+.w20:
+%define AVG2_VZU
+    AVG2_ROWS_LOOP AVG2_W20_2ROWS
+%undef AVG2_VZU
+%undef AVG2_RET_R7
 %endif
 
 ; Cacheline split code for processors with high latencies for loads
