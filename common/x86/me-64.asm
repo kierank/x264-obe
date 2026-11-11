@@ -2226,7 +2226,7 @@ cglobal me_search_fpel, 1,1
     mov            rax, [R15+me_t.weight]
     mov            ecx, [rax+me_weight.i_denom]
     movd           xm0, ecx
-    mova  [rsp+F_WDEN], xm0
+    movu  [rsp+F_WDEN], xm0
     mov            edx, 1
     shlx           edx, edx, ecx
     shr            edx, 1
@@ -2235,9 +2235,9 @@ cglobal me_search_fpel, 1,1
     or             edx, ecx
     movd           xm0, edx
     vpbroadcastw    m0, xm0
-    mova  [rsp+F_WSR], m0
+    movu  [rsp+F_WSR], m0
     vpbroadcastw    m0, [rax+me_weight.i_offset]
-    mova  [rsp+F_WOFF], m0
+    movu  [rsp+F_WOFF], m0
 .wdone:
     mov            eax, [R15+me_t.i_pixel]
     test           eax, eax
