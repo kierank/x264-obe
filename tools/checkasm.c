@@ -4025,6 +4025,10 @@ static void weight_plane_strips( pixel *dst, intptr_t i_dst, pixel *src, intptr_
     }
 }
 
+#if HAVE_MMX
+#include "common/x86/mc.h"
+#endif
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -5026,6 +5030,101 @@ static int check_mc( int cpu_ref, int cpu_new )
                 }
         }
         report( "hpel filter copy :" );
+    }
+
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched adaptive MBAFF pair, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.hpel_filter_dual )
+    {
+        mc_a.hpel_filter_dual = x264_hpel_filter_dual_avx2;
+        mc_a.hpel_filter_copy_vc = x264_hpel_filter_copy_vc_avx2;
+    }
+#endif
+    if( mc_a.hpel_filter_dual && mc_a.hpel_filter_dual != mc_ref.hpel_filter_dual )
+    {
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        pixel *dsth2 = pbuf4+8+52*64;
+        void *tmp = pbuf3+49*64;
+        set_func_name( "hpel_filter_dual" );
+        ok = 1; used_asm = 1;
+        /* as hpel_filter, and dsth2 gets the same bytes as dsth */
+        for( int i_off = 0; i_off < 3 && ok; i_off++ )
+        {
+            int o = (int[]){ 0, 8, 24 }[i_off];
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, srchpel+o, 64, 48, 10, tmp );
+            call_a( mc_a.hpel_filter_dual, dsta[0]+o, dsta[1]+o, dsta[2]+o, srchpel+o, (intptr_t)64, 48, 10, tmp, dsth2+o );
+            for( int i = 0; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter dual differs at plane %c line %d offset %d\n", "hvc"[i], j, o );
+                        break;
+                    }
+            if( memcmp( dsta[0]-8, dsth2-8, 12*64 * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "hpel filter dual: dsth2 != dsth offset %d\n", o );
+            }
+        }
+        report( "hpel filter dual :" );
+    }
+
+    if( mc_a.hpel_filter_copy_vc && mc_a.hpel_filter_copy_vc != mc_ref.hpel_filter_copy_vc )
+    {
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        pixel *cpyc = pbuf3+8+52*64;
+        pixel *cpya = pbuf4+8+52*64;
+        void *tmp = pbuf3+49*64;
+        set_func_name( "hpel_filter_copy_vc" );
+        ok = 1; used_asm = 1;
+        /* hpel_filter_copy without h: dsth untouched */
+        for( int i_off = 0; i_off < 3 && ok; i_off++ )
+        {
+            int o = (int[]){ 0, 8, 24 }[i_off];
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, srchpel+o, 64, 48, 10, tmp );
+            for( int j = 0; j < 10; j++ )
+                memcpy( cpyc+o+j*64, srchpel+o+j*64, 48 * sizeof(pixel) );
+            call_a( mc_a.hpel_filter_copy_vc, dsta[0]+o, dsta[1]+o, dsta[2]+o, srchpel+o, (intptr_t)64, 48, 10, tmp, cpya+o );
+            for( int i = 1; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter copy_vc differs at plane %c line %d offset %d\n", "hvc"[i], j, o );
+                        break;
+                    }
+            for( int k = 0; k < 16*64; k++ )
+                if( pbuf4[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter copy_vc: h written at %d offset %d\n", k, o );
+                    break;
+                }
+            for( int j = 0; j < 10; j++ )
+                if( memcmp( cpyc+o+j*64, cpya+o+j*64, 48 * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter copy_vc: copy differs at line %d offset %d\n", j, o );
+                    break;
+                }
+            for( int k = -64; k < 11*64; k++ )
+                if( cpya[o+k] && cpya[o+k] != srchpel[o+k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter copy_vc: stray write at %d offset %d\n", k, o );
+                    break;
+                }
+        }
+        report( "hpel filter copy_vc :" );
     }
 
     if( mc_a.frame_init_lowres_core != mc_ref.frame_init_lowres_core )

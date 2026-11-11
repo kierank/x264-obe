@@ -1054,7 +1054,7 @@ cglobal hpel_filter_h, 3,3,8
     mova m1, [r3]
     mova m2, [r3+r2]
     mova %3, [r3+r2*2]
-%if hpel_copy
+%if hpel_mode == 1 || hpel_mode == 2
     movntps [r9+r4+%5], %3
 %endif
     mova m3, [r1]
@@ -1083,7 +1083,7 @@ cglobal hpel_filter_h, 3,3,8
     LOAD_ADD_2 m2, m5, [r3+r2  ], [r1+r2  ], m3, m6            ; b0 / b1
     LOAD_ADD_2 m3, m6, [r3+r2*2], [r1     ], %3, %4            ; c0 / c1
     packuswb %3, %4
-%if hpel_copy
+%if hpel_mode == 1 || hpel_mode == 2
     movntps [r9+r4+%5], %3
 %endif
     FILT_V2 m1, m2, m3, m4, m5, m6
@@ -1176,10 +1176,13 @@ cglobal hpel_filter_h, 3,3,8
     FILT_PACK m1, m6, m15, 5
 %endif
     movntps [r0+r4], m1
+%if hpel_mode == 3
+    movntps [r9+r4], m1
+%endif
     mova      %2, %3
 %endmacro
 
-%macro HPEL 0-1 0 ; copy
+%macro HPEL 0-1 0 ; mode
 ;-----------------------------------------------------------------------------
 ; void hpel_filter( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                   uint8_t *src, intptr_t stride, int width, int height )
@@ -1187,10 +1190,21 @@ cglobal hpel_filter_h, 3,3,8
 ;                        uint8_t *src, intptr_t stride, int width, int height,
 ;                        int16_t *buf, uint8_t *dst )
 ; copy also stores src to dst, at the columns of dstv
+; void hpel_filter_copy_vc( same ): copy without h, dsth unused
+; void hpel_filter_dual( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+;                        uint8_t *src, intptr_t stride, int width, int height,
+;                        int16_t *buf, uint8_t *dsth2 )
+; dual also stores h to dsth2, at the same offsets (dsth2 = dsth mod mmsize)
 ;-----------------------------------------------------------------------------
-%assign hpel_copy %1
-%if hpel_copy
+%assign hpel_mode %1 ; 0 plain, 1 copy, 2 copy_vc, 3 dual
+%if hpel_mode == 1
 cglobal hpel_filter_copy, 7,10,16
+    mov       r9, r8mp
+%elif hpel_mode == 2
+cglobal hpel_filter_copy_vc, 7,10,16
+    mov       r9, r8mp
+%elif hpel_mode == 3
+cglobal hpel_filter_dual, 7,10,16
     mov       r9, r8mp
 %else
 cglobal hpel_filter, 7,9,16
@@ -1202,7 +1216,7 @@ cglobal hpel_filter, 7,9,16
     sub       r3, r7
     add       r0, r5
     add       r8, r5
-%if hpel_copy
+%if hpel_mode != 0
     add       r9, r5
 %endif
     add       r7, r5
@@ -1242,7 +1256,9 @@ cglobal hpel_filter, 7,9,16
     psrlw   m15, 1   ; pw_16
 %endif
     mova     m7, m5
+%if hpel_mode != 2
     DO_FILT_H m10, m13, m11
+%endif
     add      r4, mmsize
     jl .loopx
     cmp      r4, mmsize
@@ -1254,7 +1270,7 @@ cglobal hpel_filter, 7,9,16
     sub      r3, r4
     add      r0, r2
     add      r8, r2
-%if hpel_copy
+%if hpel_mode != 0
     add      r9, r2
 %endif
     add      r5, r2
@@ -1277,6 +1293,8 @@ HPEL 1
 INIT_YMM avx2
 HPEL
 HPEL 1
+HPEL 2
+HPEL 3
 %endif ; ARCH_X86_64
 
 %undef movntq

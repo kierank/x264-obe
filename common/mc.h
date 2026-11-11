@@ -116,6 +116,14 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* adaptive MBAFF, set together or NULL. hpel_filter_copy without dsth,
+     * which is not written: for field rows whose h the frame pass stored. */
+    void (*hpel_filter_copy_vc)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                                 intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* hpel_filter that also stores h to dsth2, at the same offsets (dsth2 and
+     * dsth have the same alignment) */
+    void (*hpel_filter_dual)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                              intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dsth2 );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );

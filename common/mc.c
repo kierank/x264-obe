@@ -771,6 +771,8 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 
     pf->hpel_filter = hpel_filter;
     pf->hpel_filter_copy = NULL;
+    pf->hpel_filter_copy_vc = NULL;
+    pf->hpel_filter_dual = NULL;
 
     pf->prefetch_fenc_420 = prefetch_fenc_null;
     pf->prefetch_fenc_422 = prefetch_fenc_null;
@@ -814,7 +816,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 }
 
 /* Field hpel of field rows [y0, y1) of parity i. With b_copy, read the frame
- * plane and copy it to plane_fld as we go. */
+ * plane and copy it to plane_fld as we go; b_copy 2: h is already there (dual). */
 static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int y0, int y1, int b_copy )
 {
     intptr_t stride = frame->i_stride[p] << 1;
@@ -827,6 +829,9 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
         return;
     if( !b_copy )
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
+    else if( b_copy == 2 )
+        h->mc.hpel_filter_copy_vc( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_hpel,
+                                   frame->plane_fld[p] + offs );
     else if( h->mc.hpel_filter_copy )
         h->mc.hpel_filter_copy( dsth, dstv, dstc, frame->plane[p] + offs, stride, width, y1 - y0, h->scratch_hpel,
                                 frame->plane_fld[p] + offs );
@@ -838,6 +843,23 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     }
 }
 
+/* Frame hpel of rows [y0, y1); with b_dual, h also to the field h plane, whose
+ * rows are frame rows at the same offsets. */
+static void frame_filter_frm( x264_t *h, x264_frame_t *frame, int p, int y0, int y1, int b_dual )
+{
+    intptr_t stride = frame->i_stride[p];
+    int offs = y0*stride - 8; // buffer = 3 for 6tap, aligned to 8 for simd
+    if( y1 <= y0 )
+        return;
+    if( b_dual )
+        h->mc.hpel_filter_dual( frame->filtered[p][1] + offs, frame->filtered[p][2] + offs, frame->filtered[p][3] + offs,
+                                frame->plane[p] + offs, stride, frame->i_width[p] + 16, y1 - y0, h->scratch_hpel,
+                                frame->filtered_fld[p][1] + offs );
+    else
+        h->mc.hpel_filter( frame->filtered[p][1] + offs, frame->filtered[p][2] + offs, frame->filtered[p][3] + offs,
+                           frame->plane[p] + offs, stride, frame->i_width[p] + 16, y1 - y0, h->scratch_hpel );
+}
+
 void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 {
     const int b_interlaced = PARAM_INTERLACED;
@@ -847,20 +869,21 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
     if( mb_y & b_interlaced )
         return;
 
+    /* adaptive MBAFF: h of a row is the same in the frame and field planes, so
+     * the frame pass stores it to both for the field rows that frame_filter_fld
+     * copies, frame rows [4, i_lines-6), and those skip it */
+    const int b_dual = b_interlaced && h->mb.b_adaptive_mbaff && h->mc.hpel_filter_dual && h->mc.hpel_filter_copy_vc;
+
     for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
     {
-        int stride = frame->i_stride[p];
-        const int width = frame->i_width[p];
-        int offs = start*stride - 8; // buffer = 3 for 6tap, aligned to 8 for simd
-
         if( !b_interlaced || h->mb.b_adaptive_mbaff )
-            h->mc.hpel_filter(
-                frame->filtered[p][1] + offs,
-                frame->filtered[p][2] + offs,
-                frame->filtered[p][3] + offs,
-                frame->plane[p] + offs,
-                stride, width + 16, height - start,
-                h->scratch_hpel );
+        {
+            int r0 = b_dual ? x264_clip3( 4, start, height ) : start;
+            int r1 = b_dual ? x264_clip3( frame->i_lines[p] - 6, r0, height ) : start;
+            frame_filter_frm( h, frame, p, start, r0, 0 );
+            frame_filter_frm( h, frame, p, r0, r1, 1 );
+            frame_filter_frm( h, frame, p, r1, height, 0 );
+        }
 
         if( b_interlaced )
         {
@@ -876,7 +899,7 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
             for( int i = 0; i < 2; i++ )
             {
                 frame_filter_fld( h, frame, p, i, start, y0, 0 );
-                frame_filter_fld( h, frame, p, i, y0, y1, 1 );
+                frame_filter_fld( h, frame, p, i, y0, y1, 1 + b_dual );
                 frame_filter_fld( h, frame, p, i, y1, height_fld, 0 );
             }
         }
