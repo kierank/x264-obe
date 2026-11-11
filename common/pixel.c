@@ -2064,6 +2064,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_sum8_nv = x264_weightp_sum8_nv_avx2;
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx2;
         pixf->weightp_dc8x8 = x264_weightp_dc8x8_avx2;
+        /* laptop/Zen 5: 0.80x (4:2:0), 0.71x (4:2:2) plane_copy_deinterleave + 2x weightp_stats8; Core 3 decides */
+        pixf->weightp_deint_stats8 = x264_weightp_deint_stats8_avx2;
 #endif
         INIT2( ssd, _avx2 );
         INIT2( sad, _avx2 );
@@ -2262,6 +2264,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->weightp_satd8_search = x264_weightp_satd8_search_avx512icl;
         pixf->weightp_sum8 = x264_weightp_sum8_avx512icl;
         pixf->weightp_sum8_clip = x264_weightp_sum8_clip_avx512icl;
+        /* laptop/Zen 5: 0.66x (4:2:0), 0.63x (4:2:2) the old pair, 0.70x / 0.76x avx2; rack01 decides */
+        pixf->weightp_deint_stats8 = x264_weightp_deint_stats8_avx512icl;
         pixf->ssim_4x4x2_core = x264_pixel_ssim_4x4x2_core_avx512icl;
         pixf->ssim_end4 = x264_pixel_ssim_end4_avx512icl;
         pixf->asd8 = x264_pixel_asd8_avx512icl;

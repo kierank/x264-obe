@@ -719,11 +719,7 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pixel_asm.ssd[PIXEL_8x4]   = x264_pixel_ssd_8x4_vnni_avx512icl;
         pixel_asm.var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
-        pixel_asm.weightp_deint_stats8 = x264_weightp_deint_stats8_avx512icl;
     }
-    /* not dispatched: the avx2 weightp_deint_stats8 at the first AVX2 level */
-    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-        pixel_asm.weightp_deint_stats8 = x264_weightp_deint_stats8_avx2;
 #endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
