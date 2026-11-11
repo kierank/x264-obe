@@ -1023,6 +1023,9 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         int (*x9_recon)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
             h->pixf.intra_mbcmp_x9_4x4 == h->pixf.intra_satd_x9_4x4 && !h->mb.b_noise_reduction && !h->mb.b_trellis
             ? h->zigzagf.intra_satd_x9_4x4_recon : NULL;
+        /* the same for a block without the topright, emulating it in registers (8-bit) */
+        int (*x9_recon_notr)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
+            x9_recon ? h->zigzagf.intra_satd_x9_4x4_recon_notr : NULL;
 
         for( idx = 0;; idx++ )
         {
@@ -1033,16 +1036,20 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
 
             const int8_t *predict_mode = predict_4x4_mode_available( a->b_avoid_topright, h->mb.i_neighbour4[idx], idx );
 
-            if( (h->mb.i_neighbour4[idx] & (MB_TOPRIGHT|MB_TOP)) == MB_TOP )
+            int b_x9r = x9_recon && predict_mode[8] >= 0;
+            int b_notr = (h->mb.i_neighbour4[idx] & (MB_TOPRIGHT|MB_TOP)) == MB_TOP;
+            /* x9_recon_notr emulates in registers: the emulated bytes are only read as this block's
+             * topright (the final encode and the RD refine emulate again) */
+            if( b_notr && !(b_x9r && x9_recon_notr) )
                 /* emulate missing topright samples */
                 MPIXEL_X4( &p_dst_by[4 - FDEC_STRIDE] ) = PIXEL_SPLAT_X4( p_dst_by[3 - FDEC_STRIDE] );
 
-            if( x9_recon && predict_mode[8] >= 0 )
+            if( b_x9r )
             {
                 /* the block is coded if its cost keeps i_cost <= i_satd_thresh and it is not the last */
                 int limit = idx == 15 ? -1 : i_satd_thresh - i_cost;
-                i_best = x9_recon( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode, h->dct.luma4x4[idx],
-                                   &h->quant4_recon[a->i_qp], limit );
+                i_best = (b_notr && x9_recon_notr ? x9_recon_notr : x9_recon)( p_src_by, p_dst_by, cost_i4x4_mode-i_pred_mode,
+                                   h->dct.luma4x4[idx], &h->quant4_recon[a->i_qp], limit );
                 i_cost += i_best & 0xffff;
                 int nz = i_best >> 24;
                 i_best = (i_best >> 16) & 0xff;

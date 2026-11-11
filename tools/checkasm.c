@@ -7409,7 +7409,7 @@ static int check_quant( int cpu_ref, int cpu_new )
 
         /* intra_satd_x9_4x4_recon against x9r_chain with the C functions and with the cpu_new ones.
          * j: bits 0-1 source (noise, near the neighbours, 0/max, smooth), bits 2-3 limit (big, the cost,
-         * the cost - 1, -1); random bitcosts, predicted mode and block position */
+         * the cost - 1, -1), bit 4 no topright (b_notr); random bitcosts, predicted mode and block position */
         for( int fld = 0; fld < 2; fld++ )
             if( zz_a[fld].intra_satd_x9_4x4_recon && zz_a[fld].intra_satd_x9_4x4_recon != zz_ref[fld].intra_satd_x9_4x4_recon )
             {
@@ -7442,12 +7442,23 @@ static int check_quant( int cpu_ref, int cpu_new )
                             x9r_bitcosts[i] = rand() & (src == 1 ? 7 : 511);
                         uint16_t *bitcosts = x9r_bitcosts + 8 - rand()%9;
                         int off = FDEC_STRIDE + xoff;
+                        /* no topright: the C emulation in the C chains, the _notr entry takes the flag */
+                        int notr = (j>>4)&1;
+#define X9R_EMU(d) if( notr ) for( int i = 4; i < 8; i++ ) (d)[off-FDEC_STRIDE+i] = (d)[off-FDEC_STRIDE+3];
                         memcpy( x9r_dec[1], x9r_dec[0], sizeof(x9r_dec[0]) );
+                        X9R_EMU( x9r_dec[1] )
                         int cost = x9r_chain( h, &x9r_pf_c, x9r_pred4, &x9r_df_c, &qf_c, &zz_c[fld], 1, x9r_enc, x9r_dec[1]+off,
                                               bitcosts, x9r_lvl[0], qp, -1 ) & 0xffff;
                         int limit = lim == 0 ? 1<<20 : lim == 1 ? cost : lim == 2 ? cost-1 : -1;
                         for( int k = 1; k < 4; k++ )
                             memcpy( x9r_dec[k], x9r_dec[0], sizeof(x9r_dec[0]) );
+                        X9R_EMU( x9r_dec[1] )
+                        X9R_EMU( x9r_dec[2] )
+                        int (*x9rf)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
+                            notr && zz_a[fld].intra_satd_x9_4x4_recon_notr ? zz_a[fld].intra_satd_x9_4x4_recon_notr
+                                                                          : zz_a[fld].intra_satd_x9_4x4_recon;
+                        if( x9rf == zz_a[fld].intra_satd_x9_4x4_recon )
+                            X9R_EMU( x9r_dec[3] )
                         for( int k = 0; k < 3; k++ )
                             for( int i = 0; i < 16; i++ )
                                 x9r_lvl[k][i] = 0x5a5a + i;
@@ -7456,8 +7467,10 @@ static int check_quant( int cpu_ref, int cpu_new )
                         int res_s = x9r_chain( h, &x9r_pf_a, x9r_pred4, &x9r_df_a, &qf_a, &zz_a[fld], 0, x9r_enc, x9r_dec[2]+off,
                                                bitcosts, x9r_lvl[1], qp, limit );
                         ok = 1;
-                        int res_a = call_a1( zz_a[fld].intra_satd_x9_4x4_recon, x9r_enc, x9r_dec[3]+off, bitcosts, x9r_lvl[2],
+                        int res_a = call_a1( x9rf, x9r_enc, x9r_dec[3]+off, bitcosts, x9r_lvl[2],
                                              &h->quant4_recon[qp], limit );
+                        X9R_EMU( x9r_dec[3] )
+#undef X9R_EMU
                         oks[4] &= ok;
                         int bad_c = res_c != res_a || memcmp( x9r_dec[1], x9r_dec[3], sizeof(x9r_dec[0]) )
                                  || memcmp( x9r_lvl[0], x9r_lvl[2], sizeof(x9r_lvl[0]) );
@@ -7466,13 +7479,22 @@ static int check_quant( int cpu_ref, int cpu_new )
                         if( bad_c || bad_s )
                         {
                             oks[4] = 0;
-                            fprintf( stderr, "intra_satd_x9_4x4_recon_%s (qp=%d, cqm=%d, j=%d, limit=%d, c=%x, chain=%x, asm=%x, vs c %d, vs chain %d): [FAILED]\n",
-                                     fld?"field":"frame", qp, i_cqm, j, limit, res_c, res_s, res_a, bad_c, bad_s );
+                            fprintf( stderr, "intra_satd_x9_4x4_recon_%s (qp=%d, cqm=%d, j=%d, notr=%d, limit=%d, c=%x, chain=%x, asm=%x, vs c %d, vs chain %d): [FAILED]\n",
+                                     fld?"field":"frame", qp, i_cqm, j, notr, limit, res_c, res_s, res_a, bad_c, bad_s );
                             break;
                         }
                         if( !i_cqm && !j && qp == 26 )
+                        {
                             call_a2( zz_a[fld].intra_satd_x9_4x4_recon, x9r_enc, x9r_dec[3]+off, bitcosts, x9r_lvl[2],
                                      &h->quant4_recon[qp], 1<<20 );
+                            if( zz_a[fld].intra_satd_x9_4x4_recon_notr )
+                            {
+                                set_func_name( "intra_satd_x9_4x4_recon_%s_notr", fld?"field":"frame" );
+                                call_a2( zz_a[fld].intra_satd_x9_4x4_recon_notr, x9r_enc, x9r_dec[3]+off, bitcosts, x9r_lvl[2],
+                                         &h->quant4_recon[qp], 1<<20 );
+                                set_func_name( "intra_satd_x9_4x4_recon_%s", fld?"field":"frame" );
+                            }
+                        }
                     }
             }
 
