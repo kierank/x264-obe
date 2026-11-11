@@ -2133,6 +2133,52 @@ cglobal decimate_score%1, 1,4
 INIT_YMM avx2
 DECIMATE4x4_AVX2 15
 DECIMATE4x4_AVX2 16
+
+; VEX.128, no ymm: the block packed to bytes, 1 mask bit per coef.
+; score = popcnt(m & S0) + popcnt(m & S2) + popcnt(m & S5): S_k = M | M<<1 | .. | M<<k, M = 2m+1,
+; so bit i of S_k is set when the zero run below coef i is <= k (bit 0 of M: the run ends at the start)
+%macro DECIMATE4x4_XMM 1
+cglobal decimate_score%1_xmm, 1,4
+    movu      m0, [r0]
+    packsswb  m0, [r0+16]       ; saturated: |c| > 1 stays so
+    pabsb     m1, m0
+    psubusb   m1, [pb_1]
+%if %1 == 15
+    psrldq    m1, 1             ; not the DC
+%endif
+    ptest     m1, m1
+    jnz .ret9
+    pxor      m2, m2
+    pcmpeqb   m0, m2
+    pmovmskb r1d, m0
+    xor      r1d, 0xffff
+%if %1 == 15
+    shr      r1d, 1
+%endif
+    lea      eax, [r1*2+1]      ; M
+    lea      r2d, [rax*2]
+    or       r2d, eax
+    lea      r3d, [rax*4]
+    or       r2d, r3d           ; S2
+    lea      r3d, [r2*8]
+    or       r3d, r2d           ; S5
+    and      eax, r1d
+    and      r2d, r1d
+    and      r3d, r1d
+    popcnt   eax, eax
+    popcnt   r2d, r2d
+    popcnt   r3d, r3d
+    add      eax, r2d
+    add      eax, r3d
+    RET
+.ret9:
+    mov      eax, 9
+    RET
+%endmacro
+
+INIT_XMM avx2
+DECIMATE4x4_XMM 15
+DECIMATE4x4_XMM 16
 %endif
 
 ; 2x gt1 output, 2x nz output, 1x mask

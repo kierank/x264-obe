@@ -6998,6 +6998,20 @@ static int check_quant( int cpu_ref, int cpu_new )
         BENCH_DECIMATE( decimate_score15, 4, 1 );
         qf_a = qf_disp;
     }
+    /* undispatched decimate_score15/16 xmm (VEX.128, 1 bit per coef), at the AVX2 level that adds
+     * LZCNT, so its bench stays apart from the ymm one */
+    if( (cpu_new&X264_CPU_AVX2) && (cpu_new&X264_CPU_LZCNT) && !(cpu_ref&X264_CPU_LZCNT) &&
+        !(cpu_new&(X264_CPU_AVXVNNI|X264_CPU_AVX512)) )
+    {
+        x264_quant_function_t qf_disp = qf_a;
+        qf_a.decimate_score16 = x264_decimate_score16_xmm_avx2;
+        qf_a.decimate_score15 = x264_decimate_score15_xmm_avx2;
+        TEST_DECIMATE( decimate_score16, 4, 0, 6 );
+        TEST_DECIMATE( decimate_score15, 4, 1, 7 );
+        BENCH_DECIMATE( decimate_score16, 4, 0 );
+        BENCH_DECIMATE( decimate_score15, 4, 1 );
+        qf_a = qf_disp;
+    }
 #endif
     report( "decimate_score :" );
 

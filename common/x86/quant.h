@@ -179,6 +179,10 @@ int x264_decimate_score15_sse2( dctcoef *dct );
 int x264_decimate_score15_ssse3( dctcoef *dct );
 #define x264_decimate_score15_avx2 x264_template(decimate_score15_avx2)
 int x264_decimate_score15_avx2( dctcoef *dct );
+#define x264_decimate_score15_xmm_avx2 x264_template(decimate_score15_xmm_avx2)
+int x264_decimate_score15_xmm_avx2( dctcoef *dct );
+#define x264_decimate_score16_xmm_avx2 x264_template(decimate_score16_xmm_avx2)
+int x264_decimate_score16_xmm_avx2( dctcoef *dct );
 #define x264_decimate_score15_avx512 x264_template(decimate_score15_avx512)
 int x264_decimate_score15_avx512( dctcoef *dct );
 #define x264_decimate_score16_mmx2 x264_template(decimate_score16_mmx2)
