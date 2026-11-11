@@ -22,7 +22,7 @@
 #define X264_HPELFLY_H
 
 #ifndef HPEL_FLY
-#define HPEL_FLY 0          /* x264_encoder_open's default: 1 drops the stored hpel planes */
+#define HPEL_FLY (BIT_DEPTH == 8) /* x264_encoder_open's default: 1 drops the stored hpel planes; -DHPEL_FLY=0 keeps them */
 #endif
 #ifndef HPELFLY_SWAP
 #define HPELFLY_SWAP 1      /* the fused me_search_fpel on band planes when they cover its reads; 0: C search */
