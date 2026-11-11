@@ -214,14 +214,31 @@ x9r_pd_32_0:      dd 32, 32, 32, 32, 0, 0, 0, 0
 %endmacro
 ALIGN 32
 ; 4x4, from e = l3 l3 l2 l1 l0 lt t0 .. t7 t7 t7, F = F2(e), P and Q as in INTRA_X9_PRED
-x9b4_v:   X9B_MASK4  6, 7, 8, 9,  6, 7, 8, 9,  6, 7, 8, 9,  6, 7, 8, 9
-x9b4_h:   X9B_MASK4  4, 4, 4, 4,  3, 3, 3, 3,  2, 2, 2, 2,  1, 1, 1, 1
 x9b4_ddl: X9B_MASK4  6, 7, 8, 9,  7, 8, 9,10,  8, 9,10,11,  9,10,11,12
 x9b4_ddr: X9B_MASK4  4, 5, 6, 7,  3, 4, 5, 6,  2, 3, 4, 5,  1, 2, 3, 4
 x9b4_vr:  X9B_MASK4 10,11,12,13,  3, 4, 5, 6,  2,10,11,12,  1, 3, 4, 5
 x9b4_hd:  X9B_MASK4 15, 4, 5, 6, 14, 3,15, 4, 13, 2,14, 3, 12, 1,13, 2
 x9b4_vl:  X9B_MASK4 11,12,13,14,  5, 6, 7, 8, 12,13,14,15,  6, 7, 8, 9
 x9b4_hu:  X9B_MASK4 14, 2,13, 1, 13, 1,12, 0, 12, 0,11,11, 11,11,11,11
+; v, h and dc in the hadamard domain: pmaddubsw of these bytes of e (dc splat) by these
+; weights, then v takes the first horizontal stage, gives the pred's part of the stages
+x9b4_vt:  times 2 db  6, 7, 8, 9, 6, 7, 8, 9, -1,-1,-1,-1,-1,-1,-1,-1
+x9b4_ht:  db  4, 3,-1,-1,-1,-1,-1,-1,  4, 3,-1,-1,-1,-1,-1,-1
+          db  2, 1,-1,-1,-1,-1,-1,-1,  2, 1,-1,-1,-1,-1,-1,-1
+x9b4_wv:  times 4 db 2, 2, 2, 2, 2,-2, 2,-2
+x9b4_wh:  times 2 db 4, 4, 0, 0, 0, 0, 0, 0, 4,-4, 0, 0, 0, 0, 0, 0
+x9b4_wdc: times 2 db 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+; the winner's rows 0-3 from its source (e, dc, F, P, Q), in mode order
+x9b4c:    db  6, 7, 8, 9,  6, 7, 8, 9,  6, 7, 8, 9,  6, 7, 8, 9
+          db  4, 4, 4, 4,  3, 3, 3, 3,  2, 2, 2, 2,  1, 1, 1, 1
+          times 16 db 0
+          db  6, 7, 8, 9,  7, 8, 9,10,  8, 9,10,11,  9,10,11,12
+          db  4, 5, 6, 7,  3, 4, 5, 6,  2, 3, 4, 5,  1, 2, 3, 4
+          db 10,11,12,13,  3, 4, 5, 6,  2,10,11,12,  1, 3, 4, 5
+          db 15, 4, 5, 6, 14, 3,15, 4, 13, 2,14, 3, 12, 1,13, 2
+          db 11,12,13,14,  5, 6, 7, 8, 12,13,14,15,  6, 7, 8, 9
+          db 14, 2,13, 1, 13, 1,12, 0, 12, 0,11,11, 11,11,11,11
+ALIGN 32
 ; 8x8, rows 0-7 of each mode pair. Sources (lane 0 | lane 1):
 ; v | h: edge[16..31] | edge[7..22]
 x9b8_vh:   X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  7, 7, 7, 7, 7, 7, 7, 7
@@ -232,15 +249,6 @@ x9b8_vh:   X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  7, 7, 7, 7, 7, 7, 7, 7
            X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  2, 2, 2, 2, 2, 2, 2, 2
            X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  1, 1, 1, 1, 1, 1, 1, 1
            X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  0, 0, 0, 0, 0, 0, 0, 0
-; dc | ddl: dc splat | FT
-x9b8_dcddl: X9B_MASK8 0, 0, 0, 0, 0, 0, 0, 0,  1, 2, 3, 4, 5, 6, 7, 8
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  2, 3, 4, 5, 6, 7, 8, 9
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  3, 4, 5, 6, 7, 8, 9,10
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  4, 5, 6, 7, 8, 9,10,11
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  5, 6, 7, 8, 9,10,11,12
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  6, 7, 8, 9,10,11,12,13
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  7, 8, 9,10,11,12,13,14
-           X9B_MASK8  0, 0, 0, 0, 0, 0, 0, 0,  8, 9,10,11,12,13,14,15
 ; ddr | vr: FL | FL (odd rows), FL | FL[0..7] GL[8..15] (even rows)
 x9b8_ddrvr: X9B_MASK8 8, 9,10,11,12,13,14,15,  8, 9,10,11,12,13,14,15
            X9B_MASK8  7, 8, 9,10,11,12,13,14,  8, 9,10,11,12,13,14,15
@@ -259,15 +267,39 @@ x9b8_hdvl: X9B_MASK8  8, 9,10,11,12,13,14,15,  0, 1, 2, 3, 4, 5, 6, 7
            X9B_MASK8  4, 5, 6, 7, 8, 9,10,11,  3, 4, 5, 6, 7, 8, 9,10
            X9B_MASK8  2, 3, 4, 5, 6, 7, 8, 9,  3, 4, 5, 6, 7, 8, 9,10
            X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  4, 5, 6, 7, 8, 9,10,11
-; hu: GL[0] FL[0] .. GL[6] FL[6] l7 l7 in both lanes (lane 1 unused)
-x9b8_hu:   X9B_MASK8 12,13,10,11, 8, 9, 6, 7, 12,13,10,11, 8, 9, 6, 7
-           X9B_MASK8 10,11, 8, 9, 6, 7, 4, 5, 10,11, 8, 9, 6, 7, 4, 5
-           X9B_MASK8  8, 9, 6, 7, 4, 5, 2, 3,  8, 9, 6, 7, 4, 5, 2, 3
-           X9B_MASK8  6, 7, 4, 5, 2, 3, 0, 1,  6, 7, 4, 5, 2, 3, 0, 1
-           X9B_MASK8  4, 5, 2, 3, 0, 1,15,15,  4, 5, 2, 3, 0, 1,15,15
-           X9B_MASK8  2, 3, 0, 1,15,15,15,15,  2, 3, 0, 1,15,15,15,15
-           X9B_MASK8  0, 1,15,15,15,15,15,15,  0, 1,15,15,15,15,15,15
-           X9B_MASK8 15,15,15,15,15,15,15,15, 15,15,15,15,15,15,15,15
+; hu | ddl: GL[0] FL[0] .. GL[6] FL[6] l7 l7 | FT
+x9b8_huddl: X9B_MASK8 12,13,10,11, 8, 9, 6, 7,  1, 2, 3, 4, 5, 6, 7, 8
+           X9B_MASK8 10,11, 8, 9, 6, 7, 4, 5,  2, 3, 4, 5, 6, 7, 8, 9
+           X9B_MASK8  8, 9, 6, 7, 4, 5, 2, 3,  3, 4, 5, 6, 7, 8, 9,10
+           X9B_MASK8  6, 7, 4, 5, 2, 3, 0, 1,  4, 5, 6, 7, 8, 9,10,11
+           X9B_MASK8  4, 5, 2, 3, 0, 1,15,15,  5, 6, 7, 8, 9,10,11,12
+           X9B_MASK8  2, 3, 0, 1,15,15,15,15,  6, 7, 8, 9,10,11,12,13
+           X9B_MASK8  0, 1,15,15,15,15,15,15,  7, 8, 9,10,11,12,13,14
+           X9B_MASK8 15,15,15,15,15,15,15,15,  8, 9,10,11,12,13,14,15
+; v | dc in the hadamard domain: a row of t (dc) by 8*hmul_8p, then its
+; sumsub stages are 8 * (lo + hi | hi - lo) in the pair m0, m4
+x9b8_trow:  times 2 db 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7
+x9b8_w8:    times 2 db 8, 8, 8, 8, 8, 8, 8, 8, 8,-8, 8,-8, 8,-8, 8,-8
+x9b8_lo:    SHUFFLE_MASK_W 0, 1, 4, 5, 0x80, 0x80, 0x80, 0x80
+            SHUFFLE_MASK_W 0, 1, 4, 5, 0x80, 0x80, 0x80, 0x80
+x9b8_hi:    SHUFFLE_MASK_W 2, 3, 6, 7, 0x80, 0x80, 0x80, 0x80
+            SHUFFLE_MASK_W 2, 3, 6, 7, 0x80, 0x80, 0x80, 0x80
+; h (lane 1 of v | h): 4 * the vertical stages of l0..l7, then their words in m0-m3
+x9b8_hpair: times 16 db -1
+            db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
+x9b8_w4h:   times 2 db 4, 4, 4, 4, 4, 4, 4, 4,-4, 4,-4, 4,-4, 4,-4, 4
+x9b8_swapw: SHUFFLE_MASK_W 1, 0, 3, 2, 5, 4, 7, 6
+            SHUFFLE_MASK_W 1, 0, 3, 2, 5, 4, 7, 6
+x9b8_pm:    times 8 dw 1,-1
+x9b8_ppmm:  times 4 dw 1, 1,-1,-1
+x9b8_hput:  SHUFFLE_MASK_W 0, 0, 0x80, 0x80, 2, 2, 0x80, 0x80
+            SHUFFLE_MASK_W 0, 0, 0x80, 0x80, 2, 2, 0x80, 0x80
+            SHUFFLE_MASK_W 4, 4, 0x80, 0x80, 6, 6, 0x80, 0x80
+            SHUFFLE_MASK_W 4, 4, 0x80, 0x80, 6, 6, 0x80, 0x80
+            SHUFFLE_MASK_W 1, 1, 0x80, 0x80, 3, 3, 0x80, 0x80
+            SHUFFLE_MASK_W 1, 1, 0x80, 0x80, 3, 3, 0x80, 0x80
+            SHUFFLE_MASK_W 5, 5, 0x80, 0x80, 7, 7, 0x80, 0x80
+            SHUFFLE_MASK_W 5, 5, 0x80, 0x80, 7, 7, 0x80, 0x80
 x9b_swapw: SHUFFLE_MASK_W 1, 0, 3, 2, 5, 4, 7, 6
 ; intra_satd_x9_4x4_recon: scan_4x4 of a 4x4 in one ymm (as quant_4x4x4_scan)
 ALIGN 32
@@ -277,7 +309,6 @@ x9r_scan_frame_b: SHUFFLE_MASK_W 0x80, 0x80, 0x80, 0x80, 0x80, 0, 4, 1
                   SHUFFLE_MASK_W 6, 3, 7, 0x80, 0x80, 0x80, 0x80, 0x80
 x9r_scan_field:   SHUFFLE_MASK_W 0, 1, 4, 2, 3, 5, 6, 7
                   SHUFFLE_MASK_W 0, 1, 2, 3, 4, 5, 6, 7
-x9r_pred_idx:     dd 0, 2, 4, 6, 0, 2, 4, 6
 %endif
 %if ARCH_X86_64
 ALIGN 16
@@ -9838,17 +9869,18 @@ cglobal intra_sad_x9_8x8, 5,7,8
 
 ; 4x4 block in one ymm: rows 0,1 in lane 0, rows 2,3 in lane 1.
 ; m%1: pred in, |three of the four hadamard stages of pred-fenc| out
-; (m8 fenc, m11 hmul_4p, m12 swapw, m13-m14 signs). The cross-lane stage is
-; the max in X9B_MERGE.
+; (m8 those stages of fenc, m11 hmul_4p, m12 swapw, m13-m14 signs). The
+; cross-lane stage is the max in X9B_MERGE. The stages are linear, so pred
+; and fenc go through them apart.
 %macro X9B_SATD 2
     pmaddubsw   m%1, m11
-    psubw       m%1, m8
     pshufb      m%2, m%1, m12
     psignw      m%1, m13
     paddw       m%1, m%2
     pshufd      m%2, m%1, q1032
     psignw      m%1, m14
     paddw       m%1, m%2
+    psubw       m%1, m8
     pabsw       m%1, m%1
 %endmacro
 
@@ -9859,8 +9891,11 @@ cglobal intra_sad_x9_8x8, 5,7,8
     pmaxsw      m%1, m%3
 %endmacro
 
-; intra_satd_x9_4x4 up to the choice: eax = cost | mode<<16, r%2 = mode*32,
-; the predictions at pred_buf + 32*mode. r%1: gpr tmp; %3: keep fenc rows 0-3 in xm15
+; intra_satd_x9_4x4 up to the choice: eax = cost | mode<<16, r%2 = mode*16,
+; the winner's source vector at pred_buf + 16*mode (its rows by x9b4c).
+; r%1: gpr tmp; %3: keep fenc rows 0-3 in xm15.
+; v, h and dc are scored in the hadamard domain: their predictions are rank 1
+; or constant, so their part of the stages is a few words of the edge transforms.
 %macro X9B_4x4_SCORE 3
     movu        xm1, [r1-1*FDEC_STRIDE-8]
     pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
@@ -9883,6 +9918,15 @@ cglobal intra_sad_x9_8x8, 5,7,8
     palignr      m7, m5, m6, 5        ; Q: Fl3 .. Ft5 Gl3 Gl2 Gl1 Gl0 Glt
     psrldq       m5, 5
     palignr      m5, m5, m6, 6        ; P: __ Fl1 .. Ft5 Gt0 .. Gt5
+    mova [pred_buf+0*16], xm1
+    mova [pred_buf+1*16], xm1
+    mova [pred_buf+2*16], xm2
+    mova [pred_buf+3*16], xm0
+    mova [pred_buf+4*16], xm0
+    mova [pred_buf+5*16], xm5
+    mova [pred_buf+6*16], xm7
+    mova [pred_buf+7*16], xm5
+    mova [pred_buf+8*16], xm7
 
     movd        xm8, [r0+0*FENC_STRIDE]
     pinsrd      xm8, [r0+1*FENC_STRIDE], 1
@@ -9898,36 +9942,42 @@ cglobal intra_sad_x9_8x8, 5,7,8
     vbroadcasti128 m13, [pw_pmpmpmpm]
     vbroadcasti128 m14, [pw_ppppmmmm]
     pmaddubsw    m8, m11
+    pshufb       m3, m8, m12
+    psignw       m8, m13
+    paddw        m8, m3
+    pshufd       m3, m8, q1032
+    psignw       m8, m14
+    paddw        m8, m3               ; fenc stages
 
-    pshufb       m9, m1, [x9b4_v]
-    mova [pred_buf+0*32], m9
-    X9B_SATD      9, 10
-    vperm2i128  m10, m9, m9, 0x01
-    pmaxsw       m9, m10              ; v | v
-    pshufb      m10, m1, [x9b4_h]
-    mova [pred_buf+1*32], m10
-    mova [pred_buf+2*32], m2
-    X9B_SATD     10, 3
-    X9B_SATD      2, 3
+    pshufb       m9, m1, [x9b4_vt]
+    pmaddubsw    m9, [x9b4_wv]
+    pshufb       m3, m9, m12
+    psignw       m9, m13
+    paddw        m9, m3               ; v: 2*H(t0..t3) in the row-sum words
+    pshufb      m10, m1, [x9b4_ht]
+    pmaddubsw   m10, [x9b4_wh]        ; h: 4*(l0+l1), 4*(l0-l1) | l2, l3
+    pmaddubsw    m2, [x9b4_wdc]       ; dc: 8*dc
+    psubw        m9, m8
+    psubw       m10, m8
+    psubw        m2, m8
+    pabsw        m9, m9
+    pabsw       m10, m10
+    pabsw        m2, m2
+    vperm2i128   m3, m9, m9, 0x01
+    pmaxsw       m9, m3               ; v | v
     X9B_MERGE    10, 2, 3             ; h | dc
     pshufb       m1, m0, [x9b4_ddl]
     pshufb       m2, m0, [x9b4_ddr]
-    mova [pred_buf+3*32], m1
-    mova [pred_buf+4*32], m2
     X9B_SATD      1, 3
     X9B_SATD      2, 3
     X9B_MERGE     1, 2, 3             ; ddl | ddr
     pshufb       m0, m5, [x9b4_vr]
     pshufb       m2, m7, [x9b4_hd]
-    mova [pred_buf+5*32], m0
-    mova [pred_buf+6*32], m2
     X9B_SATD      0, 3
     X9B_SATD      2, 3
     X9B_MERGE     0, 2, 3             ; vr | hd
     pshufb       m2, m5, [x9b4_vl]
     pshufb       m3, m7, [x9b4_hu]
-    mova [pred_buf+7*32], m2
-    mova [pred_buf+8*32], m3
     X9B_SATD      2, 4
     X9B_SATD      3, 4
     X9B_MERGE     2, 3, 4             ; vl | hu
@@ -9952,23 +10002,27 @@ cglobal intra_sad_x9_8x8, 5,7,8
 
     mov         r%2d, eax
     shr         r%2d, 16
-    shl         r%2d, 5
+    shl         r%2d, 4
+%endmacro
+
+; xm%1 = the winner's rows 0-3, r%2 = mode*16, r%3: gpr tmp
+%macro X9B_4x4_PRED 3
+    lea          r%3, [x9b4c]
+    mova        xm%1, [pred_buf+r%2]
+    pshufb      xm%1, [r%3+r%2]
 %endmacro
 
 ;-----------------------------------------------------------------------------
 ; int intra_satd_x9_4x4( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts )
 ;-----------------------------------------------------------------------------
-cglobal intra_satd_x9_4x4, 3,4,16, 9*32
+cglobal intra_satd_x9_4x4, 3,4,16, 9*16
     %define pred_buf rsp
     X9B_4x4_SCORE 0, 3, 0
-    mov         r0d, [pred_buf+r3+ 0]
-    mov         r2d, [pred_buf+r3+ 8]
-    mov [r1+0*FDEC_STRIDE], r0d
-    mov [r1+1*FDEC_STRIDE], r2d
-    mov         r0d, [pred_buf+r3+16]
-    mov         r2d, [pred_buf+r3+24]
-    mov [r1+2*FDEC_STRIDE], r0d
-    mov [r1+3*FDEC_STRIDE], r2d
+    X9B_4x4_PRED 0, 3, 0
+    movd   [r1+0*FDEC_STRIDE], xm0
+    pextrd [r1+1*FDEC_STRIDE], xm0, 1
+    pextrd [r1+2*FDEC_STRIDE], xm0, 2
+    pextrd [r1+3*FDEC_STRIDE], xm0, 3
     RET
 
 ;-----------------------------------------------------------------------------
@@ -9979,14 +10033,13 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*32
 ; quant_4x4 and, if nonzero, scan_4x4 into level, dequant_4x4 and add4x4_idct.
 ; Returns cost | mode<<16 | nz<<24.
 %macro X9B_4x4_RECON 2 ; name, field
-cglobal intra_satd_x9_4x4_recon_%1, 6,9,16, 9*32
+cglobal intra_satd_x9_4x4_recon_%1, 6,9,16, 9*16
     %define pred_buf rsp
     X9B_4x4_SCORE 8, 7, 1
+    X9B_4x4_PRED 0, 7, 0              ; xm0: prediction rows 0-3
     movzx       r8d, ax
     cmp         r8d, r5d
-    jg .pred
-    mova         m1, [x9r_pred_idx]
-    vpermd       m0, m1, [pred_buf+r7] ; xm0: prediction rows 0-3
+    jg .zero
     mova        xm3, [hsub_mul]
     mova        xm7, [x9r_hi]
     punpcklbw   xm1, xm15, xm0
@@ -10060,16 +10113,6 @@ cglobal intra_satd_x9_4x4_recon_%1, 6,9,16, 9*32
     pextrd [r1+2*FDEC_STRIDE], xm0, 2
     pextrd [r1+3*FDEC_STRIDE], xm0, 3
     RET
-.pred:
-    mov         r8d, [pred_buf+r7+ 0]
-    mov         r5d, [pred_buf+r7+ 8]
-    mov [r1+0*FDEC_STRIDE], r8d
-    mov [r1+1*FDEC_STRIDE], r5d
-    mov         r8d, [pred_buf+r7+16]
-    mov         r5d, [pred_buf+r7+24]
-    mov [r1+2*FDEC_STRIDE], r8d
-    mov [r1+3*FDEC_STRIDE], r5d
-    RET
 %endmacro
 
 X9B_4x4_RECON frame, 0
@@ -10105,10 +10148,44 @@ X9B_4x4_RECON field, 1
 %endif
 %endmacro
 
+; the sumsub stages of HADAMARD8_2D_HMUL / SA8D_X9_HMUL on m0-m7, m8 m9 tmp
+%macro X9B8_SSTAGE 0
+    HADAMARD4_V 0, 1, 2, 3, 8
+    HADAMARD4_V 4, 5, 6, 7, 8
+    SUMSUB_BADC w, 0, 4, 1, 5, 8
+    HADAMARD 2, sumsub, 0, 4, 8, 9
+    HADAMARD 2, sumsub, 1, 5, 8, 9
+    SUMSUB_BADC w, 2, 6, 3, 7, 8
+    HADAMARD 2, sumsub, 2, 6, 8, 9
+    HADAMARD 2, sumsub, 3, 7, 8, 9
+%endmacro
+
+; m%1 = the amax stage of the pair m%1, m%2 (as SA8D_X9_HMUL), %3 %4 tmp
+%macro X9B8_AMAX 4
+%if cpuflag(avx512icl)
+    ABSW2 m%1, m%2, m%1, m%2, m%3, m%4
+    SATD_ICL_HMAX %1, %2, %3
+%else
+    HADAMARD 1, amax, %1, %2, %3, %4
+%endif
+%endmacro
+
+%macro X9B8_SIGNW 2
+%if cpuflag(avx512icl)
+    pmullw      m%1, [%2]
+%else
+    psignw      m%1, [%2]
+%endif
+%endmacro
+
 ; avx2, and avx512icl with EVEX forms of the VEX-only phaddw, vpblendd, vpblendw,
-; vperm2i128 and phminposuw
-%macro SA8D_X9_8BIT 0
-cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
+; vperm2i128, psignw and phminposuw.
+; hd|vl, ddr|vr and hu|ddl go through .sa8d. v, h and dc are scored from S(F),
+; the sumsub stages of fenc stored once, and their own S: rows of v are equal, so
+; S(v) is in the pair m0, m4 only, as S(dc); h's rows are constant, so S(h) is in
+; m0-m3 only. pred - fenc is then the same words as through .sa8d.
+; %1: 0 loads the edge from r2, else a macro that leaves its rows in m0-m2
+%macro SA8D_X9_8BIT_BODY 1
 %if cpuflag(avx512icl)
     mov         r5d, 0x80805555
     kmovd        k1, r5d              ; words 0x5555
@@ -10120,6 +10197,8 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %endif
     %define fenc_buf rsp
     %define pred_buf rsp+0x100
+    %define sf_buf   rsp+0x100        ; pred_buf+0 is free: v|h is not stored
+    %define vhdc_buf rsp+0x500
     mova        m15, [hmul_8p]
 %assign x9i 0
 %rep 8
@@ -10128,13 +10207,26 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     mova [fenc_buf+x9i*32], m %+ x9i
 %assign x9i x9i+1
 %endrep
+    X9B8_SSTAGE
+%assign x9i 0
+%rep 8
+    mova [sf_buf+x9i*32], m %+ x9i
+%assign x9i x9i+1
+%endrep
+    RESET_MM_PERMUTATION
 
+%ifidn %1, 0
     movu        xm0, [r2+6]
     vinserti128  m0, m0, [r2+15], 1
     movu        xm1, [r2+7]
     vinserti128  m1, m1, [r2+16], 1
     movu        xm2, [r2+8]
     vinserti128  m2, m2, [r2+17], 1
+    %define x9b8_e7 [r2+7]
+%else
+    %1
+    %define x9b8_e7 xm1
+%endif
     pavgb        m8, m1, m2           ; GL | GT
     PRED4x4_LOWPASS m9, m0, m2, m1, m5 ; FL | FT
     pxor        xm0, xm0
@@ -10146,22 +10238,26 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
     vpbroadcastb m5, xm5              ; dc
     vpermq      m12, m1, q1032        ; v | h
 %if cpuflag(avx512icl)
-    vpblendmd   m13 {k3}, m9, m5      ; dc | ddl
     vpermq      m10, m9, q1010        ; ddr | vr odd rows
     vpblendmd    m2 {k5}, m9, m8
     vinserti128 m11, m9, xm2, 1       ; ddr | vr even rows
     punpcklbw   m14, m8, m9
-    vpbroadcastb m0, [r2+7]
+    vpbroadcastb m0, x9b8_e7
     vpblendmw   m14 {k2}, m14, m0     ; hu
+    vpblendmd   m13 {k4}, m14, m9     ; hu | ddl
+    vpblendmd   m14 {k4}, m12, m5     ; t | dc
 %else
-    vpblendd    m13, m9, m5, 0x0f     ; dc | ddl
     vpermq      m10, m9, q1010        ; ddr | vr odd rows
     vpblendd     m2, m9, m8, 0xcc
     vperm2i128  m11, m9, m2, 0x20     ; ddr | vr even rows
     punpcklbw   m14, m8, m9
-    vpbroadcastb m0, [r2+7]
+    vpbroadcastb m0, x9b8_e7
     vpblendw    m14, m14, m0, 0x80    ; hu
+    vpblendd    m13, m14, m9, 0xf0    ; hu | ddl
+    vpblendd    m14, m12, m5, 0xf0    ; t | dc
 %endif
+    mova [vhdc_buf+ 0], m14
+    mova [vhdc_buf+32], m12
     psrldq       m0, m9, 1
     punpcklbw    m0, m8, m0           ; HDT[0..15]: GL[0] FL[1] .. GL[7] FL[8]
     psrldq       m1, m9, 9
@@ -10201,46 +10297,79 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 %endif
 %assign x9i x9i+1
 %endrep
-    mova        m10, m8
+    mova        m10, m8               ; hd | vl
     sub          r5, 0x100
     call .sa8d
-    HADD_ILV  w,  wd, m11,  m0, m10, m1 ; (ddr hd) x4 | (vr vl) x4
-    ; v | h
+    mova        m11, m0               ; ddr | vr
+    ; hu | ddl
 %assign x9i 0
 %rep 8
-    pshufb       m %+ x9i, m12, [x9b8_vh+x9i*32]
+    pshufb       m %+ x9i, m13, [x9b8_huddl+x9i*32]
 %assign x9i x9i+1
 %endrep
-    sub          r5, 0x200
+    sub          r5, 0x100
     call .sa8d
-    mova        m12, m0
-    ; dc | ddl
-%assign x9i 0
-%rep 8
-    pshufb       m %+ x9i, m13, [x9b8_dcddl+x9i*32]
-%assign x9i x9i+1
-%endrep
-    add          r5, 0x100
-    call .sa8d
-    HADD_ILV  w,  wd, m12, m12,  m0, m1 ; (v dc) x4 | (h ddl) x4
-    HADD_ILV  w,  dq, m12, m12, m11, m1 ; (v dc ddr hd) x2 | (h ddl vr vl) x2
-    ; hu
-%assign x9i 0
-%rep 8
-    pshufb       m %+ x9i, m14, [x9b8_hu+x9i*32]
-%assign x9i x9i+1
-%endrep
-    add          r5, 0x300
-    call .sa8d
+    mova        m13, m0               ; hu | ddl
 
-    HADD_ILV  w,  wd,  m0,  m0,  m0, m1
-    HADD_ILV  w,  dq,  m0,  m0,  m0, m1 ; hu hu hu hu halves of hu
-    HADD_ILV  w, qdq, m12, m12,  m0, m1 ; v dc ddr hd hu hu hu hu | h ddl vr vl x x x x
+    ; h in lane 1; lane 0 is fenc alone, its pairs 1-3 are those of v and dc
+    pshufb       m0, m12, [x9b8_hpair]
+    pmaddubsw    m0, [x9b8_w4h]
+    pshufb       m1, m0, [x9b8_swapw]
+    X9B8_SIGNW    1, x9b8_pm
+    paddw        m0, m1
+    pshufd       m1, m0, q2301
+    X9B8_SIGNW    1, x9b8_ppmm
+    paddw        m0, m1               ; 4 * H8(l): h0 h2 h4 h6 h1 h3 h5 h7
+    pshufb       m4, m0, [x9b8_hput+0*32]
+    pshufb       m5, m0, [x9b8_hput+1*32]
+    pshufb       m6, m0, [x9b8_hput+2*32]
+    pshufb       m7, m0, [x9b8_hput+3*32]
+    psubw        m0, m4, [sf_buf+0*32]
+    psubw        m1, m5, [sf_buf+1*32]
+    psubw        m2, m6, [sf_buf+2*32]
+    psubw        m3, m7, [sf_buf+3*32]
+    mova         m4, [sf_buf+4*32]
+    mova         m5, [sf_buf+5*32]
+    mova         m6, [sf_buf+6*32]
+    mova         m7, [sf_buf+7*32]
+    X9B8_AMAX     0, 4, 8, 9
+    X9B8_AMAX     1, 5, 8, 9
+    X9B8_AMAX     2, 6, 8, 9
+    X9B8_AMAX     3, 7, 8, 9
+    paddw        m1, m2
+    paddw        m1, m3               ; pairs 1-3 of fenc (lane 0)
+    paddw        m0, m1               ; h (lane 1)
+    ; v | dc: S = 8 * (lo + hi, hi - lo) of pmaddubsw by hmul_8p, in m0 and m4
+    pshufb       m2, m14, [x9b8_trow]
+    pmaddubsw    m2, [x9b8_w8]
+    pshufb       m3, m2, [x9b8_lo]
+    pshufb       m2, m2, [x9b8_hi]
+    psubw        m4, m2, m3
+    paddw        m2, m3
+    psubw        m2, [sf_buf+0*32]
+    psubw        m4, [sf_buf+4*32]
+    X9B8_AMAX     2, 4, 8, 9
+    vpermq       m1, m1, q1010
+    paddw        m2, m1               ; v | dc
+
+    HADD_ILV  w,  wd, m11, m11, m10, m1 ; (ddr hd) x4 | (vr vl) x4
+%if cpuflag(avx512icl)
+    vpblendmd    m3 {k4}, m2, m0      ; v | h
+    vshufi64x2   m4, m2, m13, 3       ; dc | ddl
+%else
+    vpblendd     m3, m2, m0, 0xf0     ; v | h
+    vperm2i128   m4, m2, m13, 0x31    ; dc | ddl
+%endif
+    HADD_ILV  w,  wd,  m3,  m3,  m4, m1 ; (v dc) x4 | (h ddl) x4
+    HADD_ILV  w,  dq,  m3,  m3, m11, m1 ; (v dc ddr hd) x2 | (h ddl vr vl) x2
+    HADD_ILV  w,  wd, m13, m13, m13, m1
+    HADD_ILV  w,  dq, m13, m13, m13, m1 ; hu hu hu hu halves of hu
+    HADD_ILV  w, qdq,  m3,  m3, m13, m1 ; v dc ddr hd hu hu hu hu | h ddl vr vl x x x x
     pxor        xm1, xm1
-    pavgw       m12, m1
-    vextracti128 xm1, m12, 1
-    punpcklwd   xm2, xm12, xm1        ; v h dc ddl ddr vr hd vl
-    pextrw      r5d, xm12, 4
+    pavgw        m3, m1
+    vextracti128 xm1, m3, 1
+    punpcklwd   xm2, xm3, xm1         ; v h dc ddl ddr vr hd vl
+    pextrw      r5d, xm3, 4
     paddw       xm2, [r3]
     movu       [r4], xm2
     movzx       r2d, word [r3+16]
@@ -10271,15 +10400,40 @@ cglobal intra_sa8d_x9_8x8, 5,7,16, 0x600
 
     mov         r2d, eax
     shr         r2d, 16
+    cmp         r2d, 2
+    jbe .vhdc
     mov         r3d, r2d
     and         r3d, 1
     and         r2d, ~1
     shl         r2d, 7
     shl         r3d, 4
     add         r2d, r3d
+    mov         r3d, 0x100            ; hu: lane 0 of hu | ddl
+    cmp         r2d, 0x400
+    cmove       r2d, r3d
 %assign x9i 0
 %rep 8
     movq        xm0, [pred_buf+r2+32*x9i]
+    movq [r1+x9i*FDEC_STRIDE], xm0
+%assign x9i x9i+1
+%endrep
+    RET
+.vhdc:
+    cmp         r2d, 1
+    je .h
+    shl         r2d, 3
+    movq        xm0, [vhdc_buf+r2]    ; t0..t7 or dc
+%assign x9i 0
+%rep 8
+    movq [r1+x9i*FDEC_STRIDE], xm0
+%assign x9i x9i+1
+%endrep
+    RET
+.h:
+    mova        xm1, [vhdc_buf+48]    ; edge[7..22]
+%assign x9i 0
+%rep 8
+    pshufb      xm0, xm1, [x9b8_vh+32*x9i+16]
     movq [r1+x9i*FDEC_STRIDE], xm0
 %assign x9i x9i+1
 %endrep
@@ -10301,6 +10455,11 @@ ALIGN 16
     paddw        m2, m3
     paddw      mret, m0, m2
     ret
+%endmacro
+
+%macro SA8D_X9_8BIT 0
+cglobal intra_sa8d_x9_8x8, 5,7,16, 0x540
+    SA8D_X9_8BIT_BODY 0
 %endmacro
 
 SA8D_X9_8BIT
