@@ -4,6 +4,7 @@
 # stored planes (base = tip~1, HPEL_FLY 0). Core 3 (AVX2) or rack01 (AVX-512).
 # usage: ab-hpelfly.sh <base sha = tip~1> <arm sha = tip> [rounds=5]
 # env: CLIPS (/home/obe/x264-clips), CPU (taskset cpu, 2), W (work dir, ~/hpelfly-ab),
+#      BASE_CFLAGS: extra cflags of every base build (base sha = arm sha, a path compiled off),
 #      MBM=1: rack01 only, resctrl mounted at /sys/fs/resctrl: L3<->DRAM bytes per encode.
 # Every build has the same version string (x264_config.h rewritten), so recon AND
 # bitstream md5 compare across the two shas.
@@ -22,10 +23,13 @@ build() { # name sha flavour: t timing, m md5 (no fast-math), s md5 + HPELFLY_ST
   case $3 in m) cf="-fno-pie -fno-fast-math -ffp-contract=off";; s) cf="-fno-pie -fno-fast-math -ffp-contract=off -DHPELFLY_STATS=1";; esac
   # 10-bit: the fly path runs only where forced (C kernels), the arm with HPEL_FLY=1
   [ $3 = m10 ] && { bd=10; cf="-fno-pie -fno-fast-math -ffp-contract=off"; [ $1 = arm ] && cf="$cf -DHPEL_FLY=1"; }
+  # BASE_CFLAGS: the base built from the arm's sha with a path off (e.g. -DHPELFLY_SWAP=0)
+  [ $1 = base ] && cf="$cf $BASE_CFLAGS"
   (cd $d && ./configure --bit-depth=$bd --disable-opencl --disable-lavf --disable-ffms --disable-gpac --disable-lsmash \
       --extra-cflags="$cf" --extra-ldflags="-no-pie" > cfg.log &&
    sed -i 's/^#define X264_VERSION .*/#define X264_VERSION " hpelfly-ab"/; s/^#define X264_POINTVER .*/#define X264_POINTVER "0.164.ab"/' x264_config.h &&
    make -j$(nproc) x264 > make.log 2>&1)
+  [ -n "$BASE_CFLAGS" ] && [ $1 = base ] && echo "(base cflags: $BASE_CFLAGS)"
   echo "built $1-$3 $(git -C $d rev-parse --short=8 HEAD): $($d/x264 --version | head -1)"
 }
 for a in base arm; do s=$BASE; [ $a = arm ] && s=$ARM; for f in t m s; do build $a $s $f; done; done
@@ -67,6 +71,17 @@ for c in $CLIPLIST; do for cell in LOW NOR; do eval o=\$$cell
   for a in base arm; do
     $W/b-$a-s/x264 $o $(tff $c) --frames $(frames $c) -o /dev/null $CLIPS/$c.y4m 2>&1 | grep "hpelfly" | sed "s/^/$c $cell $a: /"
   done
+done; done
+
+
+echo "== fused-path liveness: me_search_fpel and satd_subpel_search calls (gdb, 5 frames)"
+for c in tile-chaos-p field-frame-mix-i; do for cell in LOW NOR; do eval o=\$$cell
+  for a in base arm; do for sym in x264_8_me_search_fpel_avx2 x264_8_me_search_fpel_avx512 x264_8_pixel_satd_subpel_search_16x16_avx2; do
+    nm $W/b-$a-t/x264 | grep -q " $sym\$" || continue
+    n=$(gdb -batch -ex "break $sym" -ex 'ignore 1 1000000000' -ex run -ex 'info breakpoints' \
+        --args $W/b-$a-t/x264 $o $(tff $c) --frames 5 -o /dev/null $CLIPS/$c.y4m 2>/dev/null | grep -o 'already hit [0-9]* time' || echo "0 (not hit)")
+    echo "$c $cell $a $sym: $n"
+  done; done
 done; done
 
 echo "== timing: base / base' / arm / arm' per round, taskset -c $CPU, perf stat cycles:u"
