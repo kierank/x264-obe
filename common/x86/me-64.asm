@@ -2263,11 +2263,1094 @@ MF_SEARCH
 %endif ; HIGH_BIT_DEPTH == 0
 
 %if HIGH_BIT_DEPTH
-INIT_XMM avx2
-ME_SEARCH_FPEL me_search_fpel
 INIT_YMM avx512
 ME_SEARCH_FPEL me_search_fpel
+
+;=============================================================================
+; me_search_fpel avx2 and me_search_fpel_inline avx512, high bit depth: MF_SEARCH on uint16
+; pixels, with R11 the stride in bytes. SADs are psubw/pabsw word sums (at most 16 rows of
+; 1023 a word), then pmaddwd. 16 wide: a row a register; fenc rows as registers at 16x8
+; (FENC_RES), from memory once a row at 16x16. 8 wide: row pairs; fenc pairs as registers
+; (FENC_RES) or a packed copy on the stack. avx512 (FENC_RES512): fenc in m16-31 (ymm0-15,
+; VEX encodable) at every size, 16x16 included, and a vzeroupper at the exit. 8x8 runs the
+; inline search too (no hex_search kernel here), the squares as two x4. Bit-exact as
+; MF_SEARCH.
+;=============================================================================
+cextern pw_1
+
+SECTION_RODATA 64
+ALIGN 32
+; square1[1..4] | square1[5..8], as mf_sq_*
+mh_sq_xidx:  dd 4,4,2,6, 2,2,6,6
+mh_sq_yidx:  dd 2,6,4,4, 2,6,2,6
+mh_sq_rank:  dd 1,2,3,4, 5,6,7,8
+
+SECTION .text
+
+%ifndef FENC_RES
+%define FENC_RES 1
 %endif
+%ifndef FENC_RES512
+%define FENC_RES512 1
+%endif
+
+; the frame below the 6 pushes (rsp 64-aligned), as MF_SEARCH's
+%define H_OUT   0       ; subpel_search's stack arguments
+%define H_CMX   56      ; cost_mvx, cost_mvy
+%define H_CMY   64
+%define H_MVR   72      ; mv_min | mv_max << 32, CHECK_MVRANGE's
+%define H_PMV   80
+%define H_BPMV  84
+%define H_BPC   88
+%define H_PMVC  92
+%define H_BPX   96
+%define H_BPY   100
+%define H_MVCT  104     ; mvc_temp[18][2]
+%define H_FENC  192     ; !FENC_RES 8 wide: the packed fenc, 256 bytes
+%define H_SIZE  456     ; rsp + 8 is 64-aligned at entry: 6 pushes + H_SIZE keep it so
+
+; m%1 = V of cost_mv %2 about b %3 (MF_COSTV); m%4 temp (avx2); avx512: k7 = 2
+%macro MH_COSTV 4
+%if cpuflag(avx512)
+    movu           m%1, [%2+%3*8-16]
+    vpbroadcastd   m%1 {k7}, [%2+%3*8+16]
+%else
+    vpbroadcastw   m%4, [%2+%3*8+16]
+    vpblendd       m%1, m%4, [%2+%3*8-16], 0xfd
+%endif
+    pand           m%1, [mf_pd_ffff]
+%endmacro
+
+; m%1 = cost_mvx + cost_mvy of the points by indices at %2, %3 (about R12, R13); clobbers
+; m%1-m%1+3, rdi
+%macro MH_COSTS 3
+    %assign %%a %1+1
+    %assign %%b %1+2
+    %assign %%c %1+3
+    mov            rdi, [rsp+H_CMX]
+    MH_COSTV       %%a, rdi, R12, %%b
+    mov            rdi, [rsp+H_CMY]
+    MH_COSTV       %%b, rdi, R13, %%c
+    movu           m%1, %2
+    vpermd         m%1, m%1, m %+ %%a
+    movu           m %+ %%c, %3
+    vpermd         m %+ %%c, m %+ %%c, m %+ %%b
+    paddd          m%1, m %+ %%c
+%endmacro
+
+; min of the dwords of xm0 -> %1
+%macro MH_MIN4 1
+    pshufd         xm1, xm0, q1032
+    pminsd         xm0, xm1
+    pshufd         xm1, xm0, q2301
+    pminsd         xm0, xm1
+    movd            %1, xm0
+%endmacro
+
+; %1 = fref_w + %3*stride + %2 pixels
+%macro MH_PTR 3
+    mov             %1, %3
+    imul            %1, R11
+    add             %1, [R15+me_t.p_fref_w]
+    lea             %1, [%1+%2*2]
+%endmacro
+
+; mh_fenc = the operand of fenc row (16 wide) / packed row pair (8 wide) %1
+%macro MH_FENC 1
+%if mh_r
+    %assign %%r MH_F0+(%1)
+    %xdefine mh_fenc m %+ %%r
+%else
+    %xdefine mh_fenc [R9+32*(%1)]
+%endif
+%endmacro
+
+; 16 wide: mh_f = fenc row %2 in a register (into m%1 if not resident)
+%macro MH_F16 2
+%if mh_r
+    %assign %%r MH_F0+(%2)
+    %xdefine mh_f m %+ %%r
+%else
+    movu           m%1, [R9+32*(%2)]
+    %xdefine mh_f m%1
+%endif
+%endmacro
+
+; fenc into m(MH_F0..15), or R9 = it (16 wide) / its copy packed by row pairs (8 wide);
+; avx512: MH_COSTV's k7 (here: after every C call)
+%macro MH_FENC_LOAD 2 ; w, h
+%if cpuflag(avx512)
+    mov            eax, 2
+    kmovw           k7, eax
+%endif
+%if %1 == 16
+    mov             R9, [R15+me_t.p_fenc]
+  %if mh_r
+    %assign %%k 0
+    %rep %2
+    %assign %%r MH_F0+%%k
+    movu   m %+ %%r, [R9+32*%%k]
+    %assign %%k %%k+1
+    %endrep
+  %endif
+%else
+    mov            rax, [R15+me_t.p_fenc]
+    %assign %%k 0
+    %rep %2/2
+  %if mh_r
+    %assign %%r MH_F0+%%k
+    movu         xm %+ %%r, [rax+64*%%k]
+    vinserti128   m %+ %%r, m %+ %%r, [rax+64*%%k+32], 1
+  %else
+    movu           xm0, [rax+64*%%k]
+    vinserti128     m0, m0, [rax+64*%%k+32], 1
+    movu [rsp+H_FENC+32*%%k], m0
+  %endif
+    %assign %%k %%k+1
+    %endrep
+  %if mh_r == 0
+    lea             R9, [rsp+H_FENC]
+  %endif
+%endif
+%endmacro
+
+; mh_addr = %1 + row %2 (0-3) of a group of 4 rows
+%macro MH_RADDR 2
+%if %2 == 0
+    %xdefine mh_addr %1
+%elif %2 == 1
+    %xdefine mh_addr %1+R11
+%elif %2 == 2
+    %xdefine mh_addr %1+R11*2
+%else
+    %xdefine mh_addr %1+R10
+%endif
+%endmacro
+
+; acc m%2 (+)= |fenc - ref| words of row (16 wide, fenc mh_f) / row pair (8 wide) %5 at %4 + %7
+; bytes; m%3 temp
+%macro MH_ROW 6-7 0 ; w, acc, tmp, ptr, k, first, disp
+%if %1 == 16
+    %assign %%g (%5) % 4
+    MH_RADDR        %4, %%g
+  %if %6
+    psubw          m%2, mh_f, [mh_addr+%7]
+    pabsw          m%2, m%2
+  %else
+    psubw          m%3, mh_f, [mh_addr+%7]
+    pabsw          m%3, m%3
+    paddw          m%2, m%3
+  %endif
+%else
+    %assign %%g ((%5) % 2) * 2
+    MH_RADDR        %4, %%g
+    movu          xm%3, [mh_addr+%7]
+    %assign %%g %%g+1
+    MH_RADDR        %4, %%g
+    vinserti128    m%3, m%3, [mh_addr+%7], 1
+    MH_FENC         %5
+    psubw          m%3, m%3, mh_fenc
+  %if %6
+    pabsw          m%2, m%3
+  %else
+    pabsw          m%3, m%3
+    paddw          m%2, m%3
+  %endif
+%endif
+%endmacro
+
+; after row (16 wide) / row pair (8 wide) %2 of %3: the pointers down 4 rows at the end of a group
+%macro MH_ADV 4-* ; w, k, n, ptrs
+%if %1 == 16
+    %assign %%e ((%2) % 4) == 3
+%else
+    %assign %%e ((%2) % 2) == 1
+%endif
+%if %%e && (%2) < (%3)-1
+    %rep %0-3
+    lea             %4, [%4+R11*4]
+    %rotate 1
+    %endrep
+%endif
+%endmacro
+
+; xm%1 = { the sums of words m%1 m%2 m%3 m%4 } (%4 = %3: lane 3 = lane 2); clobbers m%2-m%4, m4
+%macro MH_RED4 4
+    pmaddwd        m%1, m%1, [pw_1]
+    pmaddwd        m%2, m%2, [pw_1]
+    pmaddwd        m%3, m%3, [pw_1]
+%if %4 != %3
+    pmaddwd        m%4, m%4, [pw_1]
+%endif
+    punpckldq       m4, m%1, m%2
+    punpckhdq      m%1, m%1, m%2
+    paddd          m%1, m4              ; { 0 1 0 1 }
+    punpckldq       m4, m%3, m%4
+    punpckhdq      m%3, m%3, m%4
+    paddd          m%3, m4              ; { 2 3 2 3 }
+    punpcklqdq      m4, m%1, m%3
+    punpckhqdq     m%1, m%1, m%3
+    paddd          m%1, m4
+    vextracti128   xm4, m%1, 1
+    paddd         xm%1, xm4
+%endmacro
+
+; eax = the sum of the words of m0; clobbers m1
+%macro MH_SUM1 0
+    pmaddwd         m0, m0, [pw_1]
+    vextracti128   xm1, m0, 1
+    paddd          xm0, xm1
+    punpckhqdq     xm1, xm0, xm0
+    paddd          xm0, xm1
+    pshufd         xm1, xm0, q1111
+    paddd          xm0, xm1
+    movd           eax, xm0
+%endmacro
+
+; the kernels of one size, internal calls with fenc as MH_FENC / MH_F16:
+; .s1: eax = sad( rdi ); clobbers rdi, m0, m1, m4, m5
+; .a1: eax = sad( avg( rdi, rsi ) ); clobbers rdi, rsi, m0, m1, m4, m5
+; .x3 / .x4: xm0 = the sads of rdi, rsi, rdx(, rcx) (.x3: lane 3 = lane 2); clobbers the
+;   pointers, m0-m5
+; .x6: m0 = { the sads of rdi, rsi, rdx, rcx | rax, rbp, rax, rbp }; clobbers them, m0-m7
+; .cf: eax = cost of the fullpel mv rcx, rdx; clobbers rax, rdi, rsi, as .s1
+; .chp: eax = me.c's COST_MV_HPEL cost of the qpel mv ecx, edx; clobbers rax, rcx, rdx, rsi,
+;   rdi, R8, as .a1
+%macro MH_KERNELS 2 ; w, h
+%if %1 == 16
+    %assign %%n %2
+%else
+    %assign %%n %2/2
+%endif
+.s1_%1x%2:
+%assign %%k 0
+%rep %%n
+  %if %1 == 16
+    MH_F16          5, %%k
+  %endif
+    MH_ROW          %1, 0, 4, rdi, %%k, %%k == 0
+    MH_ADV          %1, %%k, %%n, rdi
+  %assign %%k %%k+1
+%endrep
+    MH_SUM1
+    ret
+
+.a1_%1x%2:
+%assign %%k 0
+%rep %%n
+  %if %1 == 16
+    %assign %%g %%k % 4
+    MH_RADDR       rdi, %%g
+    movu            m4, [mh_addr]
+    MH_RADDR       rsi, %%g
+    pavgw           m4, m4, [mh_addr]
+  %else
+    %assign %%g (%%k % 2) * 2
+    MH_RADDR       rdi, %%g
+    movu           xm4, [mh_addr]
+    MH_RADDR       rsi, %%g
+    movu           xm1, [mh_addr]
+    %assign %%g %%g+1
+    MH_RADDR       rdi, %%g
+    vinserti128     m4, m4, [mh_addr], 1
+    MH_RADDR       rsi, %%g
+    vinserti128     m1, m1, [mh_addr], 1
+    pavgw           m4, m4, m1
+  %endif
+    MH_FENC         %%k
+    psubw           m4, m4, mh_fenc
+  %if %%k == 0
+    pabsw           m0, m4
+  %else
+    pabsw           m4, m4
+    paddw           m0, m4
+  %endif
+    MH_ADV          %1, %%k, %%n, rdi, rsi
+  %assign %%k %%k+1
+%endrep
+    MH_SUM1
+    ret
+
+%assign %%x 3
+%rep 2
+%if %%x == 3 || mh_x8 == 0
+.x%[%%x]_%1x%2:
+  %assign %%k 0
+  %rep %%n
+    %if %1 == 16
+    MH_F16          5, %%k
+    %endif
+    MH_ROW          %1, 0, 4, rdi, %%k, %%k == 0
+    MH_ROW          %1, 1, 4, rsi, %%k, %%k == 0
+    MH_ROW          %1, 2, 4, rdx, %%k, %%k == 0
+    %if %%x == 4
+    MH_ROW          %1, 3, 4, rcx, %%k, %%k == 0
+    MH_ADV          %1, %%k, %%n, rdi, rsi, rdx, rcx
+    %else
+    MH_ADV          %1, %%k, %%n, rdi, rsi, rdx
+    %endif
+    %assign %%k %%k+1
+  %endrep
+  %if %%x == 4
+    MH_RED4          0, 1, 2, 3
+  %else
+    MH_RED4          0, 1, 2, 2
+  %endif
+    ret
+%endif
+  %assign %%x %%x+1
+%endrep
+
+%if mh_x8
+; m0 = { the sads of square1[1..4] | square1[5..8] } about rsi, with rdi = rsi - stride,
+; rdx = rsi + stride (all advanced); clobbers them, m0-m9
+.x8_%1x%2:
+%assign %%k 0
+%rep %%n
+  %if %1 == 16
+    MH_F16          9, %%k
+  %endif
+    MH_ROW          %1, 0, 8, rdi, %%k, %%k == 0
+    MH_ROW          %1, 1, 8, rdx, %%k, %%k == 0
+    MH_ROW          %1, 2, 8, rsi, %%k, %%k == 0, -2
+    MH_ROW          %1, 3, 8, rsi, %%k, %%k == 0, 2
+    MH_ROW          %1, 4, 8, rdi, %%k, %%k == 0, -2
+    MH_ROW          %1, 5, 8, rdx, %%k, %%k == 0, -2
+    MH_ROW          %1, 6, 8, rdi, %%k, %%k == 0, 2
+    MH_ROW          %1, 7, 8, rdx, %%k, %%k == 0, 2
+    MH_ADV          %1, %%k, %%n, rdi, rsi, rdx
+  %assign %%k %%k+1
+%endrep
+%assign %%k 0
+%rep 8
+    pmaddwd      m %+ %%k, m %+ %%k, [pw_1]
+  %assign %%k %%k+1
+%endrep
+%assign %%k 0
+%rep 4
+    %assign %%j %%k+1
+    punpckldq       m8, m %+ %%k, m %+ %%j
+    punpckhdq    m %+ %%k, m %+ %%k, m %+ %%j
+    paddd        m %+ %%k, m8
+  %assign %%k %%k+2
+%endrep
+    punpcklqdq      m8, m0, m2
+    punpckhqdq      m0, m0, m2
+    paddd           m0, m8              ; per lane { s0 s1 s2 s3 }
+    punpcklqdq      m8, m4, m6
+    punpckhqdq      m4, m4, m6
+    paddd           m4, m8              ; per lane { s4 s5 s6 s7 }
+%if cpuflag(avx512)
+    vinserti128     m1, m0, xm4, 1
+    vshufi64x2      m0, m0, m4, 3
+%else
+    vperm2i128      m1, m0, m4, 0x20
+    vperm2i128      m0, m0, m4, 0x31
+%endif
+    paddd           m0, m1
+    ret
+%endif
+
+.x6_%1x%2:
+%assign %%k 0
+%rep %%n
+  %if %1 == 16
+    MH_F16          7, %%k
+  %endif
+    MH_ROW          %1, 0, 6, rdi, %%k, %%k == 0
+    MH_ROW          %1, 1, 6, rsi, %%k, %%k == 0
+    MH_ROW          %1, 2, 6, rdx, %%k, %%k == 0
+    MH_ROW          %1, 3, 6, rcx, %%k, %%k == 0
+    MH_ROW          %1, 4, 6, rax, %%k, %%k == 0
+    MH_ROW          %1, 5, 6, rbp, %%k, %%k == 0
+    MH_ADV          %1, %%k, %%n, rdi, rsi, rdx, rcx, rax, rbp
+  %assign %%k %%k+1
+%endrep
+%assign %%k 0
+%rep 6
+    pmaddwd      m %+ %%k, m %+ %%k, [pw_1]
+  %assign %%k %%k+1
+%endrep
+    punpckldq       m6, m0, m1
+    punpckhdq       m0, m0, m1
+    paddd           m0, m6
+    punpckldq       m6, m2, m3
+    punpckhdq       m2, m2, m3
+    paddd           m2, m6
+    punpckldq       m6, m4, m5
+    punpckhdq       m4, m4, m5
+    paddd           m4, m6
+    punpcklqdq      m6, m0, m2
+    punpckhqdq      m0, m0, m2
+    paddd           m0, m6              ; per lane { s0 s1 s2 s3 }
+    pshufd          m6, m4, q1032
+    paddd           m4, m6              ; per lane { s4 s5 s4 s5 }
+%if cpuflag(avx512)
+    vinserti128     m1, m0, xm4, 1
+    vshufi64x2      m0, m0, m4, 3
+%else
+    vperm2i128      m1, m0, m4, 0x20
+    vperm2i128      m0, m0, m4, 0x31
+%endif
+    paddd           m0, m1
+    ret
+
+.cf_%1x%2:
+    mov            rax, [rsp+8+H_CMX]
+    movzx          esi, word [rax+rcx*8]
+    mov            rax, [rsp+8+H_CMY]
+    movzx          eax, word [rax+rdx*8]
+    add            esi, eax
+    MH_PTR         rdi, rcx, rdx
+    call .s1_%1x%2
+    add            eax, esi
+    ret
+
+.chp_%1x%2:
+    movsxd         rcx, ecx
+    movsxd         rdx, edx
+    mov            rax, [rsp+8+H_CMX]
+    movzx          R8d, word [rax+rcx*2]
+    mov            rax, [rsp+8+H_CMY]
+    movzx          eax, word [rax+rdx*2]
+    add            R8d, eax             ; the mv cost
+    mov            esi, ecx
+    and            esi, 3
+    mov            edi, edx
+    and            edi, 3
+    sar            rcx, 2
+    sar            rdx, 2
+    imul           rdx, R11
+    lea            rdx, [rdx+rcx*2]     ; offset
+    lea            ecx, [rsi+rdi*4]     ; qpel_idx
+    lea            eax, [rdi+1]
+    shr            eax, 2
+    neg            rax
+    and            rax, R11             ; ((my&3) == 3) * stride
+    add            rax, rdx
+    inc            esi
+    shr            esi, 2               ; (mx&3) == 3
+    lea            rsi, [rdx+rsi*2]
+    lea            rdx, [me_hpel_ref]
+    movzx          edi, byte [rdx+rcx]
+    mov            rdi, [R15+me_t.p_fref+rdi*8]
+    add            rdi, rax             ; src1
+    movzx          eax, byte [rdx+rcx+16]
+    add            rsi, [R15+me_t.p_fref+rax*8] ; src2
+    test           ecx, 5
+    jz .chp1_%1x%2
+    call .a1_%1x%2
+    add            eax, R8d
+    ret
+.chp1_%1x%2:
+    call .s1_%1x%2
+    add            eax, R8d
+    ret
+%endmacro
+
+; MF_PRED_CLIP: mvc[0..i_mvc) -> mvc_temp[2..], eax = the count, as x264_predictor_clip (%1 = 0)
+; or x264_predictor_roundclip (%1 = 1); i_mvc > 0; clobbers rsi, ecx, edx, R8d, xm0-xm3
+%macro MH_PRED_CLIP 1
+    mov            rsi, [rbx+me_fpel.mv_limit]
+    movd           xm1, [rsi]
+    movd           xm2, [rsi+4]
+%if %1 == 0
+    psllw          xm1, 2
+    psllw          xm2, 2
+%else
+    vpbroadcastd   xm3, [me_pw_2]
+%endif
+    mov            rsi, [rbx+me_fpel.mvc]
+    mov            ecx, [rbx+me_fpel.i_mvc]
+    xor            eax, eax
+%%loop:
+    movd           xm0, [rsi]
+%if %1
+    paddw          xm0, xm3
+    psraw          xm0, 2
+%endif
+    movd           R8d, xm0
+    pmaxsw         xm0, xm1
+    pminsw         xm0, xm2
+    movd [rsp+H_MVCT+8+rax*4], xm0
+    xor            edx, edx
+    cmp            R8d, [rsp+H_PMV]
+    setne           dl
+    test           R8d, R8d
+    cmovz          edx, R8d
+    add            eax, edx
+    add            rsi, 4
+    dec            ecx
+    jnz %%loop
+%endmacro
+
+; %1 = R8 + hex2[dir+%2] (rcx = &hex2[dir]) as a pointer offset; clobbers rax
+%macro MH_HH_PTR 2
+    movsx           %1, byte [rcx+2*%2+1]
+    imul            %1, R11
+    movsx          rax, byte [rcx+2*%2]
+    lea             %1, [%1+rax*2]
+    add             %1, R8
+%endmacro
+
+; rax = mv_min | mv_max << 32 to H_MVR (MF_MVRANGE_INIT); clobbers rcx, rdx, rsi
+%macro MH_MVRANGE_INIT 0
+    mov            rsi, [rbx+me_fpel.mv_limit]
+    movsx          eax, word [rsi]
+    movsx          ecx, word [rsi+2]
+    neg            eax
+    shl            eax, 16
+    neg            ecx
+    and            ecx, 0x7fff
+    or             eax, ecx
+    movsx          edx, word [rsi+4]
+    movsx          ecx, word [rsi+6]
+    shl            edx, 16
+    and            ecx, 0x7fff
+    or             edx, ecx
+    or             edx, 0x8000
+    shl            rdx, 32
+    or             rax, rdx
+    mov    [rsp+H_MVR], rax
+%endmacro
+
+; CHECK_MVRANGE( R12, R13 ), jumps to %1 if out of range
+%macro MH_CHECK_MVRANGE 1
+    mov            eax, R12d
+    shl            eax, 16
+    mov            ecx, R13d
+    and            ecx, 0x7fff
+    or             eax, ecx
+    mov            ecx, [rsp+H_MVR]
+    add            ecx, eax
+    mov            edx, [rsp+H_MVR+4]
+    sub            edx, eax
+    or             ecx, edx
+    test           ecx, 0x80004000
+    jnz %1
+%endmacro
+
+; the search of one size from .s%1x%2 (MF_BODY's, 8x8 included): R12, R13 bmx, bmy, R14d
+; bcost; to .fpel_done
+%macro MH_BODY 2 ; w, h
+%if cpuflag(avx512)
+    ; fenc in m16-31 (ymm0-15), 16x16 included
+    %assign MH_F0 16
+    %assign mh_r mh_fres
+%else
+  %if %1 == 16
+    %assign MH_F0 16-%2
+  %else
+    %assign MH_F0 16-%2/2
+  %endif
+  %if %1 == 16 && %2 == 16
+    %assign mh_r 0
+  %else
+    %assign mh_r mh_fres
+  %endif
+%endif
+; the square in one .x8 where m0-m9 are free of fenc
+%assign mh_x8 cpuflag(avx512) || mh_r == 0 || MH_F0 >= 10
+.s%1x%2:
+    MH_FENC_LOAD    %1, %2
+    test   byte [rbx+me_fpel.flags], ME_FPEL_SUBME3
+    jnz .s%1x%2_sub3
+
+    ; subme < 3: the fullpel mvp, its sad alone
+    mov            rsi, [rbx+me_fpel.mv_limit]
+    movsx          eax, word [R15+me_t.mvp]
+    add            eax, 2
+    sar            eax, 2
+    movsx          ecx, word [rsi]
+    movsx          edx, word [rsi+4]
+    CLIP3          eax, ecx, edx, edi
+    movsxd         R12, eax
+    movsx          eax, word [R15+me_t.mvp+2]
+    add            eax, 2
+    sar            eax, 2
+    movsx          ecx, word [rsi+2]
+    movsx          edx, word [rsi+6]
+    CLIP3          eax, ecx, edx, edi
+    movsxd         R13, eax
+    PACKMV         eax, R12d, R13d, ecx
+    mov    [rsp+H_PMV], eax
+    MH_PTR         rdi, R12, R13
+    call .s1_%1x%2
+    mov           R14d, eax
+    test           eax, eax
+    jz .fpel_done
+    cmp    dword [rbx+me_fpel.i_mvc], 0
+    jle .s%1x%2_zero2
+    MH_PRED_CLIP    1
+    test           eax, eax
+    jle .s%1x%2_zero2
+    shl           R14d, 4
+    mov            ecx, [rsp+H_PMV]
+    mov    [rsp+H_MVCT+4], ecx
+    mov            R8d, eax
+    mov            ebp, 1
+.s%1x%2_pred2:
+    movsx          rcx, word [rsp+H_MVCT+4+rbp*4]
+    movsx          rdx, word [rsp+H_MVCT+6+rbp*4]
+    call .cf_%1x%2
+    shl            eax, 4
+    add            eax, ebp
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    inc            ebp
+    cmp            ebp, R8d
+    jle .s%1x%2_pred2
+    mov            eax, R14d
+    and            eax, 15
+    movsx          R12, word [rsp+H_MVCT+4+rax*4]
+    movsx          R13, word [rsp+H_MVCT+6+rax*4]
+    sar           R14d, 4
+.s%1x%2_zero2:
+    cmp    dword [rsp+H_PMV], 0
+    je .s%1x%2_hex
+    xor            ecx, ecx
+    xor            edx, edx
+    call .cf_%1x%2
+    cmp            eax, R14d
+    jge .s%1x%2_hex
+    mov           R14d, eax
+    xor           R12d, R12d
+    xor           R13d, R13d
+    jmp .s%1x%2_hex
+
+.s%1x%2_sub3:
+    ; the mvp clipped to the spel limits, its subpel cost
+    mov            rsi, [rbx+me_fpel.mv_limit]
+    movsx          eax, word [R15+me_t.mvp]
+    movsx          ecx, word [rsi]
+    shl            ecx, 2
+    movsx          edx, word [rsi+4]
+    shl            edx, 2
+    CLIP3          eax, ecx, edx, R8d
+    mov    [rsp+H_BPX], eax
+    movsx          edi, word [R15+me_t.mvp+2]
+    movsx          ecx, word [rsi+2]
+    shl            ecx, 2
+    movsx          edx, word [rsi+6]
+    shl            edx, 2
+    CLIP3          edi, ecx, edx, R8d
+    mov    [rsp+H_BPY], edi
+    PACKMV         ecx, eax, edi, edx
+    mov    [rsp+H_PMV], ecx
+    mov            ecx, eax
+    mov            edx, edi
+    call .chp_%1x%2
+    mov    [rsp+H_BPC], eax
+    mov    [rsp+H_PMVC], eax
+    ; pred == fenc at the unclipped mvp
+    mov            rcx, [R15+me_t.p_cost_mv]
+    movzx          ecx, word [rcx]
+    add            ecx, ecx
+    cmp            eax, ecx
+    je .zexit
+    mov            ecx, [rbx+me_fpel.i_mvc]
+    test           ecx, ecx
+    jle .s%1x%2_round3
+    cmp            ecx, PREDICTOR_DEDUPE_MIN
+    jl .s%1x%2_clip3
+    mov            rax, [rbx+me_fpel.fn]
+    mov            rax, [rax+me_fpel_fn.predictor_clip]
+    test           rax, rax
+    jz .s%1x%2_clip3
+    ; predictor_clip( mvc_temp+2, mvc, i_mvc, mv_limit_fpel, pmv ), then what it clobbered
+    lea            rdi, [rsp+H_MVCT+8]
+    mov            rsi, [rbx+me_fpel.mvc]
+    mov            edx, ecx
+    mov            rcx, [rbx+me_fpel.mv_limit]
+    mov            R8d, [rsp+H_PMV]
+    call           rax
+    movsxd         R11, dword [R15+me_t.i_stride]
+    add            R11, R11
+    lea            R10, [R11*3]
+    mov            R12d, eax
+    MH_FENC_LOAD    %1, %2
+    mov            eax, R12d
+    jmp .s%1x%2_clipped3
+.s%1x%2_clip3:
+    MH_PRED_CLIP    0
+.s%1x%2_clipped3:
+    test           eax, eax
+    jle .s%1x%2_round3
+    mov           R14d, [rsp+H_BPC]
+    shl           R14d, 4
+    mov           R13d, eax
+    mov            eax, [rsp+H_PMV]
+    mov    [rsp+H_MVCT+4], eax
+    mov           R12d, 1
+.s%1x%2_pred3:
+    movsx          ecx, word [rsp+H_MVCT+4+R12*4]
+    movsx          edx, word [rsp+H_MVCT+6+R12*4]
+    call .chp_%1x%2
+    shl            eax, 4
+    add            eax, R12d
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    inc           R12d
+    cmp           R12d, R13d
+    jle .s%1x%2_pred3
+    mov            eax, R14d
+    and            eax, 15
+    movsx          ecx, word [rsp+H_MVCT+4+rax*4]
+    mov    [rsp+H_BPX], ecx
+    movsx          ecx, word [rsp+H_MVCT+6+rax*4]
+    mov    [rsp+H_BPY], ecx
+    sar           R14d, 4
+    mov    [rsp+H_BPC], R14d
+.s%1x%2_round3:
+    ; the best predictor rounded to fullpel; its sad if it is subpel
+    mov            eax, [rsp+H_BPX]
+    mov            edx, [rsp+H_BPY]
+    PACKMV         ecx, eax, edx, edi
+    mov    [rsp+H_BPMV], ecx
+    add            eax, 2
+    sar            eax, 2
+    movsxd         R12, eax
+    add            edx, 2
+    sar            edx, 2
+    movsxd         R13, edx
+    mov           R14d, [rsp+H_BPC]
+    test           ecx, 0x00030003
+    jz .s%1x%2_zero3
+    mov           R14d, COST_MAX
+    mov            rcx, R12
+    mov            rdx, R13
+    call .cf_%1x%2
+    cmp            eax, R14d
+    cmovl         R14d, eax
+.s%1x%2_zero3:
+    cmp    dword [rsp+H_PMV], 0
+    je .s%1x%2_zero3_pmv
+    mov            eax, R12d
+    or             eax, R13d
+    jz .s%1x%2_hex
+    xor            ecx, ecx
+    xor            edx, edx
+    call .cf_%1x%2
+    cmp            eax, R14d
+    jge .s%1x%2_hex
+    mov           R14d, eax
+    xor           R12d, R12d
+    xor           R13d, R13d
+    jmp .s%1x%2_hex
+.s%1x%2_zero3_pmv:
+    ; a subpel candidate better than the zero vector
+    mov            eax, [rsp+H_PMVC]
+    cmp            eax, R14d
+    jge .s%1x%2_hex
+    mov           R14d, eax
+    xor           R12d, R12d
+    xor           R13d, R13d
+
+.s%1x%2_hex:
+    ; hexagon: hex2[1..6], idx 2-7
+    shl           R14d, 6
+    MH_PTR          R8, R12, R13
+    lea            rdi, [R8-4]
+    lea            rsi, [R8+R11*2-2]
+    lea            rdx, [R8+R11*2+2]
+    lea            rcx, [R8+4]
+    mov            rbp, R8
+    sub            rbp, R11
+    sub            rbp, R11
+    lea            rax, [rbp+2]
+    sub            rbp, 2
+    call .x6_%1x%2
+    mova            m6, m0
+    MH_COSTS        0, [mf_hex_xidx], [mf_hex_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mf_hex_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    MH_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    test          R14d, 63
+    jz .s%1x%2_hex_end
+    mov            eax, R14d
+    and            eax, 63
+    sub            eax, 2
+    mov            ebp, eax
+    HEX_MOVE
+    ; half hexagons, not overlapping the previous iteration: ebp = dir | i << 8
+    mov            eax, [rbx+me_fpel.me_range]
+    sar            eax, 1
+    dec            eax
+    shl            eax, 8
+    or             ebp, eax
+    cmp            ebp, 1<<8
+    jl .s%1x%2_hex_end
+    MH_MVRANGE_INIT
+.s%1x%2_walk:
+    MH_CHECK_MVRANGE .s%1x%2_hex_end
+    and           R14d, ~63
+    MH_PTR          R8, R12, R13
+    movzx          eax, bpl
+    lea            rcx, [me_hex2]
+    lea            rcx, [rcx+rax*2]
+    MH_HH_PTR      rdi, 0
+    MH_HH_PTR      rsi, 1
+    MH_HH_PTR      rdx, 2
+    call .x3_%1x%2
+    movzx          eax, bpl
+    shl            eax, 4
+    lea            rcx, [mf_hh_xidx]
+    MH_COSTS        2, [rcx+rax], [rcx+rax+mf_hh_yidx-mf_hh_xidx]
+    paddd          xm0, xm2
+    pslld          xm0, 6
+    paddd          xm0, [mf_hh_rank]
+    MH_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    test          R14d, 63
+    jz .s%1x%2_hex_end
+    mov            eax, R14d
+    and            eax, 63
+    sub            eax, 2
+    movzx          ecx, bpl
+    add            eax, ecx
+    cdqe                                ; -1 .. 6
+    lea            rcx, [me_mod6m1]
+    movzx          eax, byte [rcx+rax+1]
+    sub            ebp, 1<<8
+    and            ebp, ~255
+    or             ebp, eax
+    HEX_MOVE
+    cmp            ebp, 1<<8
+    jge .s%1x%2_walk
+.s%1x%2_hex_end:
+    and           R14d, ~63
+
+    ; square refine: square1[1..4] | square1[5..8]
+    MH_PTR          R8, R12, R13
+%if mh_x8
+    mov            rsi, R8
+    mov            rdi, R8
+    sub            rdi, R11
+    lea            rdx, [R8+R11]
+    call .x8_%1x%2
+    mova            m6, m0
+%else
+    mov            rdi, R8
+    sub            rdi, R11
+    lea            rsi, [R8+R11]
+    lea            rdx, [R8-2]
+    lea            rcx, [R8+2]
+    call .x4_%1x%2
+    mova           xm7, xm0
+    lea            rdi, [R8-2]
+    sub            rdi, R11
+    lea            rsi, [R8+R11-2]
+    lea            rdx, [rdi+4]
+    lea            rcx, [R8+R11+2]
+    call .x4_%1x%2
+    vinserti128     m6, m7, xm0, 1
+%endif
+    MH_COSTS        0, [mh_sq_xidx], [mh_sq_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mh_sq_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    MH_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    mov            eax, R14d
+    and            eax, 63
+    lea            rcx, [me_square1]
+    movsx          rdx, byte [rcx+rax*2]
+    add            R12, rdx
+    movsx          rdx, byte [rcx+rax*2+1]
+    add            R13, rdx
+    sar           R14d, 6
+    jmp .fpel_done
+
+    MH_KERNELS      %1, %2
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int me_search_fpel( x264_me_fpel_t *c ), see encoder/me.h
+;-----------------------------------------------------------------------------
+; rbx c, R15 m, R11 stride (bytes), R10 3*stride, R9 fenc (MH_FENC_LOAD), R12/R13 bmx/bmy,
+; R14d bcost or its key; rbp and R8 loop state. avx512: m0-m15 are x86inc's ymm16-31 (EVEX)
+%macro MH_SEARCH 1
+cglobal %1, 1,1
+    push           rbx
+    push           rbp
+    push           R12
+    push           R13
+    push           R14
+    push           R15
+    sub            rsp, H_SIZE
+    mov            rbx, rdi
+    mov            R15, [rdi+me_fpel.m]
+    movsxd         R11, dword [R15+me_t.i_stride]
+    add            R11, R11
+    lea            R10, [R11*3]
+    mov            rcx, [R15+me_t.p_cost_mv]
+    movsx          rax, word [R15+me_t.mvp]
+    add            rax, rax
+    mov            rdx, rcx
+    sub            rdx, rax
+    mov    [rsp+H_CMX], rdx
+    movsx          rax, word [R15+me_t.mvp+2]
+    add            rax, rax
+    sub            rcx, rax
+    mov    [rsp+H_CMY], rcx
+    mov            eax, [R15+me_t.i_pixel]
+    test           eax, eax
+    jz .s16x16
+    cmp            eax, 3               ; PIXEL_8x8
+    je .s8x8
+    cmp            eax, 1               ; PIXEL_16x8
+    je .s16x8
+    jmp .s8x16
+
+.zexit:
+    ; eax the pmv cost
+    mov            ecx, [rsp+H_PMV]
+    test   byte [rbx+me_fpel.flags], ME_FPEL_ZEXIT
+    jz .zexit_search
+    mov    [R15+me_t.mv], ecx
+    mov    [R15+me_t.cost], eax
+    mov            rcx, [rbx+me_fpel.halfpel_thresh]
+    test           rcx, rcx
+    jz .zexit_costmv
+    imul           edx, eax, 7
+    sar            edx, 3
+    cmp            edx, [rcx]
+    jg .ret0
+    cmp            eax, [rcx]
+    jge .zexit_costmv
+    mov          [rcx], eax
+.zexit_costmv:
+    mov    [R15+me_t.cost_mv], eax
+    jmp .ret0
+.zexit_search:
+    ; bpred_mv = pmv, bmv the fullpel pmv, bcost COST_MAX
+    mov    [rsp+H_BPMV], ecx
+    mov            eax, [rsp+H_BPX]
+    add            eax, 2
+    sar            eax, 2
+    movsxd         R12, eax
+    mov            eax, [rsp+H_BPY]
+    add            eax, 2
+    sar            eax, 2
+    movsxd         R13, eax
+    mov           R14d, COST_MAX
+
+.fpel_done:
+    PACKMV         eax, R12d, R13d, ecx
+    mov            edx, eax
+    shl            edx, 2
+    and            edx, 0xFFFCFFFC
+    test   byte [rbx+me_fpel.flags], ME_FPEL_SUBME3
+    jnz .done3
+    ; cost_mv, the real cost (+ cost_mv at the pmv), mv
+    mov            rsi, [rsp+H_CMX]
+    movzx          ecx, word [rsi+R12*8]
+    mov            rsi, [rsp+H_CMY]
+    movzx          esi, word [rsi+R13*8]
+    add            ecx, esi
+    mov    [R15+me_t.cost_mv], ecx
+    xor            esi, esi
+    cmp            eax, [rsp+H_PMV]
+    cmove          esi, ecx
+    add            esi, R14d
+    mov    [R15+me_t.cost], esi
+    mov    [R15+me_t.mv], edx
+    jmp .subpel
+.done3:
+    mov            ecx, [rsp+H_BPC]
+    cmp            ecx, R14d
+    cmovl          edx, [rsp+H_BPMV]
+    mov    [R15+me_t.mv], edx
+    cmp            ecx, R14d
+    cmovg          ecx, R14d
+    mov    [R15+me_t.cost], ecx
+.subpel:
+    test   byte [rbx+me_fpel.flags], ME_FPEL_REFINE
+    jz .ret0
+    mov            rax, [rbx+me_fpel.qfenc]
+    test           rax, rax
+    jnz .subpel_call
+    mov            eax, 1
+    jmp .ret
+.subpel_call:
+    ; subpel( fenc, fref, stride, cost_mvx, cost_mvy, mv, cost, iters, range, qfenc, qpel,
+    ; halfpel_thresh, mvp ), the stride in pixels, the int stack arguments as qwords
+    mov    [rsp+H_OUT+24], rax
+    mov            rdi, [R15+me_t.p_fenc]
+    lea            rsi, [R15+me_t.p_fref]
+    movsxd         rdx, dword [R15+me_t.i_stride]
+    mov            rcx, [rsp+H_CMX]
+    mov             R8, [rsp+H_CMY]
+    mov            R9d, [R15+me_t.mv]
+    mov            eax, [R15+me_t.cost]
+    mov    [rsp+H_OUT], rax
+    mov            eax, [rbx+me_fpel.iters]
+    mov    [rsp+H_OUT+8], rax
+    mov            rax, [rbx+me_fpel.range]
+    mov    [rsp+H_OUT+16], rax
+    mov            rax, [rbx+me_fpel.fn]
+    mov            R10, [rax+me_fpel_fn.qpel]
+    mov    [rsp+H_OUT+32], R10
+    mov            R10, [rbx+me_fpel.halfpel_thresh]
+    mov    [rsp+H_OUT+40], R10
+    mov           R10d, [R15+me_t.mvp]
+    mov    [rsp+H_OUT+48], R10
+    call   [rax+me_fpel_fn.subpel]
+    mov            ecx, eax
+    and            ecx, 0x7fffffff
+    mov    [R15+me_t.cost], ecx
+    mov            rdx, rax
+    shr            rdx, 32
+    mov    [R15+me_t.mv], edx
+    ; the halfpel threshold stop leaves cost_mv
+    test           eax, eax
+    js .ret0
+    movsx          rcx, dx
+    sar            edx, 16
+    movsxd         rdx, edx
+    mov            rsi, [rsp+H_CMX]
+    movzx          ecx, word [rsi+rcx*2]
+    mov            rsi, [rsp+H_CMY]
+    movzx          edx, word [rsi+rdx*2]
+    add            ecx, edx
+    mov    [R15+me_t.cost_mv], ecx
+.ret0:
+    xor            eax, eax
+.ret:
+    add            rsp, H_SIZE
+    pop            R15
+    pop            R14
+    pop            R13
+    pop            R12
+    pop            rbp
+    pop            rbx
+%if notcpuflag(avx512) || mh_fres
+    vzeroupper
+%endif
+    ret
+
+    MH_BODY         16, 16
+    MH_BODY          8,  8
+    MH_BODY         16,  8
+    MH_BODY          8, 16
+%endmacro
+
+INIT_YMM avx2
+%assign mh_fres FENC_RES
+MH_SEARCH me_search_fpel
+INIT_YMM avx512
+%assign mh_fres FENC_RES512
+MH_SEARCH me_search_fpel_inline
+%endif ; HIGH_BIT_DEPTH
 INIT_ZMM avx512
 ME_SEARCH_FPEL me_search_fpel_zmm
 

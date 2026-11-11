@@ -8385,8 +8385,8 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
             planes[2*4*NPL + p*NPL + k] = PIXEL_MAX/2 + (k&1);
     }
     /* the dispatched control, and the other levels' on this level's kernels */
-    int (*fns[3])( x264_me_fpel_t * ) = { me_fpel };
-    const char *fn_names[3] = { pf.me_search_fpel ? "dispatched" : "avx2" };
+    int (*fns[4])( x264_me_fpel_t * ) = { me_fpel };
+    const char *fn_names[4] = { pf.me_search_fpel ? "dispatched" : "avx2" };
     int nfns = 1;
 #if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32)
     if( (cpu_new&X264_CPU_BMI2) && me_fpel != x264_me_search_fpel_avx2 )
@@ -8398,6 +8398,14 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
     {
         fn_names[nfns] = "zmm_avx512";
         fns[nfns++] = x264_me_search_fpel_zmm_avx512;
+    }
+#endif
+#if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32) && HIGH_BIT_DEPTH
+    /* the undispatched inline avx512 entry */
+    if( (cpu_new&X264_CPU_AVX512) && (cpu_new&X264_CPU_BMI2) )
+    {
+        fn_names[nfns] = "inline_avx512";
+        fns[nfns++] = x264_me_search_fpel_inline_avx512;
     }
 #endif
     set_func_name( "me_search_fpel" );
