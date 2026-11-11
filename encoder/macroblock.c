@@ -171,7 +171,22 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
         dct4x4[idx][0] = 0;
     }
 
-    if( h->mb.b_trellis )
+    if( h->mb.b_trellis && PARAM_CABAC && h->zigzagf.dequant_4x4x4_scan_ac )
+    {
+        /* min(score, 9) instead of stopping at 6: the same decisions */
+        for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+        {
+            int nz4 = x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], i_quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_AC][p], 1, !!p, i8x8*4 );
+            if( nz4 )
+            {
+                block_cbp = 0xf;
+                decimate_score += h->zigzagf.dequant_4x4x4_scan_ac( &dct4x4[i8x8*4], &h->dct.luma4x4[16*p+i8x8*4],
+                                                                    h->dequant4_mf[i_quant_cat], i_qp ) >> 4;
+                STORE_4x4x4_NNZ( 16*p+i8x8*4, nz4 );
+            }
+        }
+    }
+    else if( h->mb.b_trellis )
     {
         for( int i8x8 = 0; i8x8 < 4; i8x8++ )
         {
@@ -387,7 +402,19 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
         /* calculate dct coeffs */
         for( int i8x8 = 0; i8x8 < (chroma422?2:1); i8x8++ )
         {
-            if( h->mb.b_trellis )
+            if( h->mb.b_trellis && PARAM_CABAC && h->zigzagf.dequant_4x4x4_scan_ac )
+            {
+                /* min(score, 9) instead of stopping at 7: the same decisions */
+                int nz4 = x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 );
+                if( nz4 )
+                {
+                    nz_ac = 1;
+                    i_decimate_score += h->zigzagf.dequant_4x4x4_scan_ac( &dct4x4[i8x8*4], &h->dct.luma4x4[16+ch*16+i8x8*8],
+                                                                          dequant_mf, i_qp ) >> 4;
+                    STORE_4x4x4_NNZ( 16+ch*16+i8x8*8, nz4 );
+                }
+            }
+            else if( h->mb.b_trellis )
             {
                 int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 ) : 0xf;
                 FOREACH_BIT( i4x4, 0, nz4 )
@@ -847,7 +874,19 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 {
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
                     int nnz8x8 = 0;
-                    if( h->mb.b_trellis )
+                    if( h->mb.b_trellis && PARAM_CABAC && h->zigzagf.dequant_4x4x4_scan )
+                    {
+                        /* min(score, 9) instead of stopping at 6: the same decisions */
+                        int nz4 = x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+i8x8*4 );
+                        if( nz4 )
+                        {
+                            i_decimate_8x8 += h->zigzagf.dequant_4x4x4_scan( &dct4x4[i8x8*4], &h->dct.luma4x4[p*16+i8x8*4],
+                                                                             h->dequant4_mf[p?CQM_4PC:CQM_4PY], i_qp ) >> 4;
+                            STORE_4x4x4_NNZ( p*16+i8x8*4, nz4 );
+                            nnz8x8 = 1;
+                        }
+                    }
+                    else if( h->mb.b_trellis )
                     {
                         int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+i8x8*4 ) : 0xf;
                         FOREACH_BIT( i4x4, 0, nz4 )
@@ -1291,7 +1330,19 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                     for( int idx = 0; idx < 4; idx++ )
                         h->quantf.denoise_dct( dct4x4[idx], h->nr_residual_sum[0+!!p*2], h->nr_offset[0+!!p*2], 16 );
 
-                if( h->mb.b_trellis )
+                if( h->mb.b_trellis && PARAM_CABAC && h->zigzagf.dequant_4x4x4_scan )
+                {
+                    /* min(score, 9) instead of stopping at 4: the same decisions */
+                    int nz4 = x264_quant_4x4x4_trellis( h, dct4x4, quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+p*16 );
+                    if( nz4 )
+                    {
+                        i_decimate_8x8 += h->zigzagf.dequant_4x4x4_scan( dct4x4, &h->dct.luma4x4[p*16+i8*4],
+                                                                         h->dequant4_mf[quant_cat], i_qp ) >> 4;
+                        STORE_4x4x4_NNZ( p*16+i8*4, nz4 );
+                        nnz8x8 = 1;
+                    }
+                }
+                else if( h->mb.b_trellis )
                 {
                     int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, dct4x4, quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+p*16 ) : 0xf;
                     FOREACH_BIT( i4x4, 0, nz4 )
