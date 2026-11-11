@@ -526,6 +526,8 @@ void x264_macroblock_slice_init( x264_t *h )
             h->fdec->inv_ref_poc[field] = (256 + delta/2) / delta;
         }
 
+    x264_mvpred_ref16x16_init( h );
+
     h->mb.i_neighbour4[6] =
     h->mb.i_neighbour4[9] =
     h->mb.i_neighbour4[12] =

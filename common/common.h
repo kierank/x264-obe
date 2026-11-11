@@ -730,6 +730,17 @@ struct x264_t
          * Cleared in cache_load. */
         ALIGNED_4( int16_t mvp16[2][X264_REF_MAX*2][2] );
         uint32_t mvp16_valid[2];
+
+        /* x264_mb_predict_mv_ref16x16's temporal candidates, per frame: x264_mvpred_ref16x16_init.
+         * After the fields of analyse-64.asm's struc mb. */
+        struct
+        {
+            int     b_tmvp;                 /* fref[0][0] has refs */
+            int     b_tconv;                /* MBAFF: mv16x16 in the units of its mb (l0_field) */
+            int16_t (*l0_mv16x16)[2];       /* fref[0][0] */
+            uint8_t *l0_field;
+            int32_t tscale[2][2][2][X264_REF_MAX*2]; /* [list][MB_INTERLACED][mb_y&1][ref] */
+        } mvref;
     } mb;
 
     /* rate control encoding only */
