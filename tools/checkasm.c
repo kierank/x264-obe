@@ -8134,6 +8134,10 @@ static void cabac_bench_block( dctcoef dct[2][64], int cat, int ac, int cls )
         }
 }
 
+#if HAVE_MMX && ARCH_X86_64
+#include "common/x86/bitstream.h"
+#endif
+
 static int check_cabac( int cpu_ref, int cpu_new )
 {
     int ret = 0, ok = 1, used_asm = 0;
@@ -8339,17 +8343,33 @@ name##fail:
     report( "cabac residual rd:" );
 
     /* 4:2:2 chroma dc (8 coefs, repeated sig/last contexts): writer and rd; the C finds last
-     * through coeff_last[DCT_CHROMA_DC], which the encoder sets to coeff_last8 for 4:2:2 */
+     * through coeff_last[DCT_CHROMA_DC], which the encoder sets to coeff_last8 for 4:2:2.
+     * slot 0-1: the dispatched writer and rd; slot 2-3: rd kernels not dispatched, at the first
+     * level that has them (avx2_bmi2 while the AVX2 level leaves it out; avx512icl 54f7ee3e) */
     ok = 1; used_asm = 0;
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last8;
-    for( int rd = 0; rd < 2; rd++ )
+    for( int slot = 0; slot < 4; slot++ )
     {
-        void (*fa)( dctcoef *, int, intptr_t, x264_cabac_t * ) = rd ? bs_a.cabac_block_residual_422_dc_rd_internal : bs_a.cabac_block_residual_422_dc_internal;
-        void (*fr)( dctcoef *, int, intptr_t, x264_cabac_t * ) = rd ? bs_ref.cabac_block_residual_422_dc_rd_internal : bs_ref.cabac_block_residual_422_dc_internal;
+        int rd = slot > 0;
+        void (*fa)( dctcoef *, int, intptr_t, x264_cabac_t * ) = slot == 0 ? bs_a.cabac_block_residual_422_dc_internal : slot == 1 ? bs_a.cabac_block_residual_422_dc_rd_internal : NULL;
+        void (*fr)( dctcoef *, int, intptr_t, x264_cabac_t * ) = slot == 0 ? bs_ref.cabac_block_residual_422_dc_internal : slot == 1 ? bs_ref.cabac_block_residual_422_dc_rd_internal : NULL;
+        const char *fname = rd ? "cabac_block_residual_422_dc_rd" : "cabac_block_residual_422_dc";
+#if HAVE_MMX && ARCH_X86_64
+        if( slot == 2 && (cpu_new & (X264_CPU_AVX2|X264_CPU_BMI2|X264_CPU_LZCNT)) == (X264_CPU_AVX2|X264_CPU_BMI2|X264_CPU_LZCNT) &&
+            (cpu_ref & (X264_CPU_AVX2|X264_CPU_BMI2|X264_CPU_LZCNT)) != (X264_CPU_AVX2|X264_CPU_BMI2|X264_CPU_LZCNT) &&
+            bs_a.cabac_block_residual_422_dc_rd_internal != x264_cabac_block_residual_422_dc_rd_internal_avx2_bmi2 )
+            fa = x264_cabac_block_residual_422_dc_rd_internal_avx2_bmi2;
+        if( slot == 3 && (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) &&
+            bs_a.cabac_block_residual_422_dc_rd_internal != x264_cabac_block_residual_422_dc_rd_internal_avx512icl )
+        {
+            fa = x264_cabac_block_residual_422_dc_rd_internal_avx512icl;
+            fname = "cabac_block_residual_422_dc_rd1";
+        }
+#endif
         if( !fa || fa == fr )
             continue;
         used_asm = 1;
-        set_func_name( rd ? "cabac_block_residual_422_dc_rd" : "cabac_block_residual_422_dc" );
+        set_func_name( "%s", fname );
         for( int i = 0; i < 2 && ok; i++ )
             for( int j = 0; j < 2048 && ok; j++ )
             {
@@ -8422,7 +8442,7 @@ name##fail:
                           !memcmp( bitstream[1], bitstream[0], fl[0].p - bitstream[0] );
                 }
                 if( !ok )
-                    fprintf( stderr, "%s :  [FAILED] mask %02x field %d\n", rd ? "cabac_block_residual_422_dc_rd" : "cabac_block_residual_422_dc", mask, i );
+                    fprintf( stderr, "%s :  [FAILED] mask %02x field %d\n", fname, mask, i );
                 if( (j&255) == 0 )
                 {
                     if( rd )
