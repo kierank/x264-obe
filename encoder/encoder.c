@@ -3174,6 +3174,9 @@ static intptr_t x264_slice_write( x264_t *h )
             if( !(i_mb_y & SLICE_MBAFF) && h->param.rc.i_vbv_buffer_size )
                 x264_bitstream_backup( h, &bs_bak[BS_BAK_ROW_VBV], i_skip, 1 );
         }
+        /* after the deblock of the unit above */
+        if( h->mbring.b_active && (i_mb_y >> SLICE_MBAFF) > h->mbring.i_unit_last )
+            x264_macroblock_ring_row( h, i_mb_y );
 
         if( back_up_bitstream )
         {
@@ -3517,6 +3520,10 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
+    /* off: enabled for non-reference B frames by the next commit */
+    h->b_nrb = 0;
+    h->mbring.b_active = h->b_nrb && h->mbring.i_arrays;
+    h->mbring.i_unit_last = -1;
     if( h->param.rc.i_vbv_buffer_size )
         x264_ratecontrol_slices_start( h );
     h->mb.b_fenc_bot = 0;

@@ -784,6 +784,31 @@ struct x264_t
      * there are four extra values that need to be stored, located in [4][i]. */
     uint8_t (*deblock_strength[2])[2][8][4];
 
+    /* Non-reference B frame whose recon nothing reads (x264_slices_write): no
+     * stores to the fdec planes. Intra prediction gets the top row from
+     * intra_border_backup and the left column from nrb_col, the right column
+     * of each MB (MBAFF: pair) by mb_x&1, frame rows of the MB row (pair). */
+    int b_nrb;
+    pixel nrb_col[2][3][64];
+
+    /* Per-MB arrays held as a ring of MB rows (x264_macroblock_ring_row):
+     * readers only reach the row (MBAFF: pair) above and the deblock row. */
+    struct
+    {
+        int b_active;
+        int i_arrays;
+        int i_rows;         /* capacity in MB rows */
+        int i_unit;         /* MB rows per unit: 1, MBAFF 2 */
+        int i_y0;           /* MB row in ring row 0 */
+        int i_unit_last;    /* last unit entered in this frame, -1: none */
+        struct
+        {
+            void **pp;      /* the h->mb array pointer */
+            uint8_t *buf;
+            int i_row_size; /* bytes per MB row */
+        } a[4];
+    } mbring;
+
     /* CPU functions dependents */
     x264_predict_t      predict_16x16[4+3];
     x264_predict8x8_t   predict_8x8[9+3];
