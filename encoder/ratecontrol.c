@@ -394,6 +394,17 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
 void x264_adaptive_quant_frame_rows( x264_t *h, x264_frame_t *frame, float *quant_offsets,
                                      int mb_y0, int mb_y1, uint32_t *pixel_sum, uint64_t *pixel_ssd )
 {
+#if X264_BWLEDGER
+    if( h->param.analyse.i_weighted_pred || (h->param.rc.i_aq_mode != X264_AQ_NONE && h->param.rc.f_aq_strength != 0) )
+    {
+        /* x264_ac_energy_mb: the MB's luma and chroma; the qp offset arrays */
+        uint64_t w = 16 * h->mb.i_mb_width * sizeof(pixel), rows = mb_y1 - mb_y0;
+        BWL_RD( BWL_AQ, frame->plane[0], 16 * w * rows );
+        BWL_RD( BWL_AQ, frame->plane[1], (CHROMA444 ? 32 : 16 >> CHROMA_V_SHIFT) * w * rows );
+        if( h->param.rc.i_aq_mode != X264_AQ_NONE && h->param.rc.f_aq_strength != 0 )
+            BWL_WRC( BWL_AQ, BWL_ARR_RC, (4 + 4 + 2*h->frames.b_have_lowres) * h->mb.i_mb_width * rows );
+    }
+#endif
     if( h->param.rc.i_aq_mode == X264_AQ_NONE || h->param.rc.f_aq_strength == 0 )
     {
         /* Need variance data for weighted prediction */

@@ -312,6 +312,43 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
         }
     }
 
+#if X264_BWLEDGER
+    {
+        size_t px = sizeof(pixel);
+        if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
+        {
+            int chroma_padv = i_padv >> (i_csp == X264_CSP_NV12);
+            size_t cps = (frame->i_stride[1] * (frame->i_lines[1] + 2*chroma_padv) + padh_align) * px;
+            size_t cin = (size_t)frame->i_stride[1] * frame->i_lines[1] * px;
+            x264_bwl_register( frame, frame->buffer[1], cps, 1, b_fdec ? BWL_UV : BWL_SRC_C, 0, &frame->i_frame, cin );
+            if( PARAM_INTERLACED && b_fdec )
+                x264_bwl_register( frame, frame->buffer_fld[1], cps, 1, BWL_UVF, 0, &frame->i_frame, cin );
+        }
+        for( int p = 0; p < luma_plane_count; p++ )
+        {
+            size_t lps = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign ) * px;
+            size_t lin = (size_t)frame->i_stride[p] * frame->i_lines[p] * px;
+            int n = h->param.analyse.i_subpel_refine && b_fdec ? 4 : 1;
+            if( !b_fdec )
+                x264_bwl_register( frame, frame->buffer[p], lps, 1, p ? BWL_SRC_C : BWL_SRC_Y, 0, &frame->i_frame, lin );
+            else if( p )
+                x264_bwl_register( frame, frame->buffer[p], lps, n, BWL_UV, 0, &frame->i_frame, lin );
+            else
+            {
+                x264_bwl_register( frame, frame->buffer[p], lps, n, BWL_F, 1, &frame->i_frame, lin );
+                if( PARAM_INTERLACED )
+                    x264_bwl_register( frame, frame->buffer_fld[p], lps, n, BWL_FF, 1, &frame->i_frame, lin );
+            }
+        }
+        if( !b_fdec && h->frames.b_have_lowres )
+        {
+            size_t lps = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign ) * px;
+            x264_bwl_register( frame, frame->buffer_lowres[0], lps, 4, BWL_LR0, 1, &frame->i_frame,
+                               (size_t)frame->i_stride_lowres * frame->i_lines_lowres * px );
+        }
+    }
+#endif
+
     if( x264_pthread_mutex_init( &frame->mutex, NULL ) )
         goto fail;
     if( x264_pthread_cond_init( &frame->cv, NULL ) )
@@ -335,6 +372,9 @@ void x264_frame_delete( x264_frame_t *frame )
     if( !frame->b_duplicate )
     {
         x264_frame_ext_release( frame );
+#if X264_BWLEDGER
+        x264_bwl_unregister( frame );
+#endif
         x264_free( frame->base );
 
         if( frame->param && frame->param->param_free )
@@ -519,6 +559,22 @@ void x264_frame_copy_picture_rows( x264_t *h, x264_frame_t *dst, x264_picture_t 
             h->mc.plane_copy( dst->plane[2] + y0 * dst->i_stride[2], dst->i_stride[2], (pixel*)(pix[2] + (intptr_t)y0 * stride[2]),
                               stride[2]/sizeof(pixel), h->param.i_width, rows );
         }
+#if X264_BWLEDGER
+        {
+            uint64_t w = h->param.i_width * sizeof(pixel);
+            uint64_t cb = i_csp == X264_CSP_I444 || i_csp == X264_CSP_YV24 ? 2*w*rows : w*c_rows;
+            if( !dst->b_ext_plane[0] )
+            {
+                BWL_RD( BWL_SRCCOPY, pix[0], w*rows );
+                BWL_WR( BWL_SRCCOPY, dst->plane[0], w*rows );
+            }
+            if( !dst->b_ext_plane[1] )
+            {
+                BWL_RD( BWL_SRCCOPY, pix[1], cb );
+                BWL_WR( BWL_SRCCOPY, dst->plane[1], cb );
+            }
+        }
+#endif
     }
 }
 
@@ -639,6 +695,12 @@ static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i
 {
 #define PPIXEL(x, y) ( pix + (x) + (y)*i_stride )
 #define SPIXEL(x, y) ( src + (x) + (y)*i_stride )
+#if X264_BWLEDGER
+    /* pads written; the edge pixels read */
+    BWL_WR( BWL_BORDER, pix, ((uint64_t)i_height * 2 * i_padh
+                              + (uint64_t)(b_pad_top + b_pad_bottom) * i_padv * (i_width + 2*i_padh)) * sizeof(pixel) );
+    BWL_RD( BWL_BORDER, src, ((uint64_t)i_height * 2 * sizeof(pixel)) << b_chroma );
+#endif
     for( int y = 0; y < i_height; y++ )
     {
         /* left band */
@@ -800,6 +862,13 @@ void x264_frame_expand_border_mod16_rows( x264_t *h, x264_frame_t *frame, int y0
         int i_padx = (h->mb.i_mb_width * 16 - h->param.i_width);
         int i_pady = (h->mb.i_mb_height * 16 - h->param.i_height) >> v_shift;
 
+#if X264_BWLEDGER
+        /* a few pixels per row dirty a whole line: count lines */
+        if( i_padx && X264_MIN( y1 >> v_shift, i_height ) > (y0 >> v_shift) )
+            BWL_WR( BWL_SRCPAD, frame->plane[i], 64 * (X264_MIN( y1 >> v_shift, i_height ) - (y0 >> v_shift)) );
+        if( i_pady && y1 == 16 * h->mb.i_mb_height )
+            BWL_WR( BWL_SRCPAD, frame->plane[i], (uint64_t)i_pady * (i_width + i_padx) * sizeof(pixel) );
+#endif
         if( i_padx )
         {
             int row_end = X264_MIN( y1 >> v_shift, i_height );
@@ -1023,6 +1092,8 @@ x264_frame_t *x264_frame_pop_blank_unused( x264_t *h )
 void x264_weight_scale_plane( x264_t *h, pixel *dst, intptr_t i_dst_stride, pixel *src, intptr_t i_src_stride,
                               int i_width, int i_height, x264_weight_t *w )
 {
+    BWL_RD( BWL_WEIGHT, src, (uint64_t)i_width * i_height * sizeof(pixel) );
+    BWL_WR( BWL_WEIGHT, dst, (uint64_t)i_width * i_height * sizeof(pixel) );
     if( h->mc.weight_plane && h->mc.weight_plane( dst, i_dst_stride, src, i_src_stride, w, i_width, i_height ) )
         return;
     /* Weight horizontal strips of height 16. This was found to be the optimal height

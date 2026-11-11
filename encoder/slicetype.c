@@ -1246,6 +1246,7 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
 
     h->mb.pic.p_fenc[0] = h->mb.pic.fenc_buf;
     h->mc.copy[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, &fenc->lowres[0][i_pel_offset], i_stride, 8 );
+    BWL_TOUCH( &fenc->lowres[0][i_pel_offset], i_stride * sizeof(pixel), 8 * sizeof(pixel), 8 );
     h->mb.pic.i_fenc_pre = 0;
     int16_t *fenc_pre = x264_me_fenc_pre( h, PIXEL_8x8, h->mb.pic.p_fenc[0] );
     /* bipred cost without storing the average where mbcmp is satd */
@@ -1442,6 +1443,8 @@ lowres_intra_mb:
     if( !fenc->b_intra_calculated )
     {
         pixel *src = &fenc->lowres[0][i_pel_offset];
+        /* the C edge path below: rows -1..7, columns -4..15 */
+        BWL_TOUCH_ST( BWL_LAINTRA, src - i_stride - 4, i_stride * sizeof(pixel), 20 * sizeof(pixel), 9 );
         const int intra_penalty = 5 * a->i_lambda;
         void *lowres_fenc = HIGH_BIT_DEPTH ? (void*)h->mb.pic.p_fenc[0] : (void*)fenc_pre;
         int i_icost;
@@ -1525,6 +1528,14 @@ lowres_intra_mb:
     }
 
     fenc->lowres_costs[b-p0][p1-b][i_mb_xy] = X264_MIN( i_bcost, LOWRES_COST_MASK ) + (list_used << LOWRES_COST_SHIFT);
+#if X264_BWLEDGER
+    {
+        /* lowres_mvs / mv_costs / costs; predictor mvs read from the other distances */
+        int ns = (b != p0 && do_search[0]) + (b != p1 && do_search[1]);
+        BWL_RDC( BWL_LA, BWL_ARR_LA, 16*ns + 2*!!h->param.rc.i_aq_mode );
+        BWL_WRC( BWL_LA, BWL_ARR_LA, 2 + 8*ns + 2*!fenc->b_intra_calculated );
+    }
+#endif
 }
 #undef TRY_BIDIR
 #undef LOWRES_MBCMP
@@ -1841,6 +1852,8 @@ static void x264_macroblock_tree_finish( x264_t *h, x264_frame_t *frame, float a
     float params[2] = { strength, weightdelta };
     h->mc.mbtree_finish( frame->f_qp_offset, frame->f_qp_offset_aq, frame->i_intra_cost, frame->i_inv_qscale_factor,
                          frame->i_propagate_cost, params, fps_factor, h->mb.i_mb_count );
+    BWL_RDC( BWL_LATREE, BWL_ARR_LA, (uint64_t)h->mb.i_mb_count * 10 );
+    BWL_WRC( BWL_LATREE, BWL_ARR_LA, (uint64_t)h->mb.i_mb_count * 4 );
 }
 
 static void x264_macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, float average_duration, int p0, int p1, int b, int referenced )
@@ -1877,6 +1890,14 @@ static void x264_macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, fl
             h->mc.mbtree_propagate_list( h, ref_costs[1], &mvs[1][mb_index], buf, &lowres_costs[mb_index],
                                          bipred_weights[1], h->mb.i_mb_y, h->mb.i_mb_width, 1 );
         }
+#if X264_BWLEDGER
+        {
+            /* costs in, mvs, ref_costs read-modify-write per list */
+            int nl = 1 + (b != p1);
+            BWL_RDC( BWL_LATREE, BWL_ARR_LA, (uint64_t)h->mb.i_mb_width * (8 + 6*nl) );
+            BWL_WRC( BWL_LATREE, BWL_ARR_LA, (uint64_t)h->mb.i_mb_width * 2*nl );
+        }
+#endif
     }
 
     if( h->param.rc.i_vbv_buffer_size && h->param.rc.i_lookahead && referenced )

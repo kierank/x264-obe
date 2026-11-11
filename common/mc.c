@@ -496,6 +496,8 @@ void x264_frame_init_lowres_edge( x264_frame_t *frame, int y0, int y1 )
         src[i_width+y*i_stride] = src[i_width-1+y*i_stride];
     if( y1 == i_height )
         memcpy( src+i_stride*i_height, src+i_stride*(i_height-1), (i_width+1) * sizeof(pixel) );
+    /* one pixel per row dirties a whole line: count lines */
+    BWL_WR( BWL_SRCPAD, src, 64 * (y1 - y0) + (y1 == i_height) * (i_width+1) * sizeof(pixel) );
 }
 
 void x264_frame_init_lowres_rows( x264_t *h, x264_frame_t *frame, int mb_y0, int mb_y1 )
@@ -522,6 +524,11 @@ void x264_frame_init_lowres_pixel_rows( x264_t *h, x264_frame_t *frame, int mb_y
                                   frame->lowres[0] + offset, frame->lowres[1] + offset,
                                   frame->lowres[2] + offset, frame->lowres[3] + offset,
                                   i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+#if X264_BWLEDGER
+    BWL_RD( BWL_LOWRES, frame->plane[0], (uint64_t)(2*(y1 - y0) + 1) * (2*frame->i_width_lowres + 1) * sizeof(pixel) );
+    for( int i = 0; i < 4; i++ )
+        BWL_WR( BWL_LOWRES, frame->lowres[i], (uint64_t)(y1 - y0) * frame->i_width_lowres * sizeof(pixel) );
+#endif
     x264_frame_expand_border_lowres_rows( frame, y0, y1 );
 }
 
@@ -825,6 +832,17 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     pixel *dstc = frame->filtered_fld[p][3] + offs;
     if( y1 <= y0 )
         return;
+#if X264_BWLEDGER
+    {
+        uint64_t n = (uint64_t)(y1 - y0) * width * sizeof(pixel);
+        BWL_RD( BWL_HPEL, b_copy ? frame->plane[p] + offs : frame->plane_fld[p] + offs, n );
+        BWL_WR( BWL_HPEL, dsth, n );
+        BWL_WR( BWL_HPEL, dstv, n );
+        BWL_WR( BWL_HPEL, dstc, n );
+        if( b_copy )
+            BWL_WR( BWL_FLDCOPY, frame->plane_fld[p] + offs, n );
+    }
+#endif
     if( !b_copy )
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
     else if( h->mc.hpel_filter_copy )
@@ -853,6 +871,15 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         const int width = frame->i_width[p];
         int offs = start*stride - 8; // buffer = 3 for 6tap, aligned to 8 for simd
 
+#if X264_BWLEDGER
+        if( !b_interlaced || h->mb.b_adaptive_mbaff )
+        {
+            uint64_t n = (uint64_t)(height - start) * (width + 16) * sizeof(pixel);
+            BWL_RD( BWL_HPEL, frame->plane[p] + offs, n );
+            for( int i = 1; i < 4; i++ )
+                BWL_WR( BWL_HPEL, frame->filtered[p][i] + offs, n );
+        }
+#endif
         if( !b_interlaced || h->mb.b_adaptive_mbaff )
             h->mc.hpel_filter(
                 frame->filtered[p][1] + offs,

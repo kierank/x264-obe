@@ -341,6 +341,16 @@ int x264_macroblock_cache_allocate( x264_t *h, int b_touch )
     }
 
     PREALLOC_END( h->mb.base );
+#if X264_BWLEDGER
+    for( int i = 0; i < 3; i++ )
+        if( h->mb.p_weight_buf[i] )
+        {
+            size_t sz = h->param.analyse.i_weighted_pred == X264_WEIGHTP_FAKE
+                      ? (size_t)h->fdec->i_stride_lowres * (h->mb.i_mb_height*8 + 2*(PADV << PARAM_INTERLACED))
+                      : (size_t)h->fdec->i_stride[0] * (h->mb.i_mb_height*(16<<(CHROMA_FORMAT==CHROMA_422)) + 2*(PADV << PARAM_INTERLACED));
+            x264_bwl_register( h, h->mb.p_weight_buf[i], sz * sizeof(pixel), 1, BWL_WBUF, 0, NULL, sz * sizeof(pixel) );
+        }
+#endif
     if( b_touch )
         memset( h->mb.base + touch_start, 0, prealloc_size - touch_start );
 
@@ -366,6 +376,9 @@ fail:
 }
 void x264_macroblock_cache_free( x264_t *h )
 {
+#if X264_BWLEDGER
+    x264_bwl_unregister( h );
+#endif
     x264_free( h->mb.base );
 }
 
@@ -622,6 +635,7 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     h->mb.pic.p_fenc_plane[i] = &h->fenc->plane[i][i_pix_offset];
     if( b_mbaff && h->mb.b_fenc_bot && mb_y >= h->mb.i_mb_height - 2 )
         h->mb.pic.p_fenc_plane[i] = h->mb.fenc_bot[i] + PADH + i_pix_offset - (height*(h->mb.i_mb_height-2) - 2) * i_stride;
+    BWL_RD( BWL_SRCENC, h->mb.pic.p_fenc_plane[i], 16 * height * sizeof(pixel) );
     h->mb.pic.i_fenc_pre = 0;
     if( b_chroma )
     {
@@ -1680,6 +1694,7 @@ static void ALWAYS_INLINE x264_macroblock_store_pic( x264_t *h, int mb_x, int mb
     int i_pix_offset = (b_mbaff && MB_INTERLACED)
                      ? 16 * mb_x + height * (mb_y&~1) * i_stride + (mb_y&1) * i_stride
                      : 16 * mb_x + height * mb_y * i_stride;
+    BWL_WR( BWL_FDEC, &h->fdec->plane[i][i_pix_offset], 16 * height * sizeof(pixel) );
     if( b_chroma )
         h->mc.store_interleave_chroma( &h->fdec->plane[1][i_pix_offset], i_stride2, h->mb.pic.p_fdec[1], h->mb.pic.p_fdec[2], height );
     else
@@ -1768,6 +1783,19 @@ void x264_macroblock_cache_save( x264_t *h )
     }
 
     x264_prefetch_fenc( h, h->fdec, h->mb.i_mb_x, h->mb.i_mb_y );
+#if X264_BWLEDGER
+    {
+        /* Per-MB arrays. Written here: type slice_table partition intra4x4 qp cbp nnz transform_size,
+         * ref + mv per list, mv16x16, CABAC skipbp chroma_pred_mode mvd per list, field. Read by
+         * cache_load (estimate): top neighbours, temporal mvp (mv16x16), B co-located mv/ref/type. */
+        int st = h->sh.i_type;
+        int nl = (st != SLICE_TYPE_I) + (st == SLICE_TYPE_B);
+        uint64_t wr = 1 + 2 + 1 + 8 + 1 + 2 + 48 + 1 + 68*nl + 4*!!nl + PARAM_CABAC * (2 + 16*nl) + PARAM_INTERLACED;
+        uint64_t rd = 48 + 24*nl + 20*h->mb.pic.i_fref[0]*!!nl + 70*(st == SLICE_TYPE_B);
+        BWL_WRC( BWL_MBARR, BWL_ARR_MB, wr );
+        BWL_RDC( BWL_MBARR, BWL_ARR_MB, rd );
+    }
+#endif
 
     h->mb.type[i_mb_xy] = i_mb_type;
     h->mb.slice_table[i_mb_xy] = h->sh.i_first_mb;

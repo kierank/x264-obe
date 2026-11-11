@@ -68,6 +68,10 @@ void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )
 
     dst = h->bsf.nal_escape( dst, src, end );
     int size = (dst - orig_dst) - 4;
+    /* the entropy coder's payload writes, the escape's read of them and its output */
+    BWL_WRC( BWL_BS, BWL_BSBUF, nal->i_payload );
+    BWL_RDC( BWL_BS, BWL_BSBUF, nal->i_payload );
+    BWL_WRC( BWL_BS, BWL_BSBUF, dst - orig_dst );
 
     /* Write the size header for mp4/etc */
     if( !h->param.b_annexb )

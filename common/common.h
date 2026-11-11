@@ -28,6 +28,7 @@
 #define X264_COMMON_H
 
 #include "base.h"
+#include "bwledger.h"
 
 /* Macros for templating function calls according to bit depth */
 #define x264_template(w) x264_glue3(x264, BIT_DEPTH, w)

@@ -1576,6 +1576,10 @@ static int x264_validate_parameters( x264_t *h, int b_open )
     return 0;
 }
 
+#if X264_BWLEDGER
+static void bwl_wrap( x264_t *h );
+#endif
+
 static void mbcmp_init( x264_t *h )
 {
     int satd = !h->mb.b_lossless && h->param.analyse.i_subpel_refine > 1;
@@ -1645,6 +1649,9 @@ static void mbcmp_init( x264_t *h )
     /* P6 kept on C: rack01 2026-10-30 APA 8p.prog +0.43 %, lowlat -0.9..-1.55 % */
     h->pixf.analyse_p16x16_ll = h->param.analyse.i_subpel_refine < 3 && !CHROMA444 ? h->pixf.analyse_p16x16 : NULL;
     x264_me_fpel_init( &h->pixf );
+#if X264_BWLEDGER
+    bwl_wrap( h );
+#endif
 }
 
 static void chroma_dsp_init( x264_t *h )
@@ -1682,6 +1689,10 @@ static void chroma_dsp_init( x264_t *h )
             break;
     }
 }
+
+#if X264_BWLEDGER
+#include "bwledger_wrap.h"
+#endif
 
 static void x264_set_aspect_ratio( x264_t *h, x264_param_t *param, int initial )
 {
@@ -1744,6 +1755,9 @@ x264_t *x264_encoder_open( x264_param_t *param )
 
     if( x264_validate_parameters( h, 1 ) < 0 )
         goto fail;
+#if X264_BWLEDGER
+    x264_bwl_init( h->param.i_threads > 1 || h->param.i_lookahead_threads > 1 );
+#endif
 
     if( h->param.psz_cqm_file )
         if( x264_cqm_parse_file( h, h->param.psz_cqm_file ) < 0 )
@@ -2732,6 +2746,13 @@ static inline void x264_reference_build_list( x264_t *h, int i_poc )
 
 static void fdec_copy_fld_rows( x264_t *h, int p, int y0, int y1 )
 {
+#if X264_BWLEDGER
+    if( y1 > y0 )
+    {
+        BWL_RD( BWL_FLDCOPY, h->fdec->plane[p], (uint64_t)(y1 - y0) * h->mb.i_mb_width*16*sizeof(pixel) );
+        BWL_WR( BWL_FLDCOPY, h->fdec->plane_fld[p], (uint64_t)(y1 - y0) * h->mb.i_mb_width*16*sizeof(pixel) );
+    }
+#endif
     for( int i = y0; i < y1; i++ )
         memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
                 h->fdec->plane[p]     + i*h->fdec->i_stride[p],
@@ -3211,13 +3232,16 @@ static intptr_t x264_slice_write( x264_t *h )
         else
             x264_macroblock_cache_load_progressive( h, i_mb_x, i_mb_y );
 
+        BWL_CTX_SET( BWL_ME );
         x264_macroblock_analyse( h );
 
         /* encode this macroblock -> be careful it can change the mb type to P_SKIP if needed */
 #if HAS_CAVLC
 reencode:
 #endif
+        BWL_CTX_SET( BWL_MC );
         x264_macroblock_encode( h );
+        BWL_CTX_SET( BWL_OTHER );
 
         if( PARAM_CABAC )
         {
@@ -3859,6 +3883,9 @@ static int encoder_encode( x264_t *h,
     x264_t *thread_current, *thread_prev, *thread_oldest;
     int i_nal_type, i_nal_ref_idc, i_global_qp;
     int overhead = 0;
+#if X264_BWLEDGER
+    x264_bwl_row();
+#endif
 
 #if HAVE_OPENCL
     if( h->opencl.b_fatal_error )
@@ -4472,6 +4499,10 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     /* Set output picture properties */
     pic_out->i_type = h->fenc->i_type;
     pic_out->b_keyframe = h->fenc->b_keyframe;
+#if X264_BWLEDGER
+    x264_bwl_frame_done( h->fenc->i_frame, h->sh.i_type == SLICE_TYPE_I ? 'I' : h->sh.i_type == SLICE_TYPE_P ? 'P'
+                                         : h->fdec->b_kept_as_ref ? 'B' : 'b' );
+#endif
     pic_out->i_pic_struct = h->fenc->i_pic_struct;
 
     pic_out->i_pts = h->fdec->i_pts;
@@ -4718,6 +4749,9 @@ void    x264_encoder_close  ( x264_t *h )
     int b_print_pcm = h->stat.i_mb_count[SLICE_TYPE_I][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_P][I_PCM]
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
+#if X264_BWLEDGER
+    x264_bwl_close();
+#endif
 
     x264_lookahead_delete( h );
 

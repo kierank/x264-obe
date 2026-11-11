@@ -407,6 +407,17 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
     int chroma444 = CHROMA444;
     int chroma_height = 16 >> CHROMA_V_SHIFT;
     intptr_t uvdiff = chroma444 ? h->fdec->plane[2] - h->fdec->plane[1] : 1;
+#if X264_BWLEDGER
+    /* the row's pixels are read and written in place (L2-hot one row behind the encode) */
+    {
+        uint64_t ly = (uint64_t)(16 << b_interlaced) * 16 * h->mb.i_mb_width * sizeof(pixel);
+        uint64_t lc = chroma444 ? 2*ly : (uint64_t)(chroma_height << b_interlaced) * 16 * h->mb.i_mb_width * sizeof(pixel);
+        BWL_RD( BWL_DEBLOCK, h->fdec->plane[0], ly );
+        BWL_WR( BWL_DEBLOCK, h->fdec->plane[0], ly );
+        BWL_RD( BWL_DEBLOCK, h->fdec->plane[1], lc );
+        BWL_WR( BWL_DEBLOCK, h->fdec->plane[1], lc );
+    }
+#endif
 
     for( int mb_x = 0; mb_x < h->mb.i_mb_width; mb_x += (~b_interlaced | mb_y)&1, mb_y ^= b_interlaced )
     {
