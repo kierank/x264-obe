@@ -7744,11 +7744,12 @@ name##fail:
 
     /* 4:2:2 chroma dc (8 coefs, repeated sig/last contexts): writer and rd; the C finds last
      * through coeff_last[DCT_CHROMA_DC], which the encoder sets to coeff_last8 for 4:2:2.
-     * slot 0-1: the dispatched writer and rd; slot 2-3: rd kernels not dispatched, at the first
-     * level that has them (avx2_bmi2 while the AVX2 level leaves it out; avx512icl 54f7ee3e) */
+     * slot 0-1: the dispatched writer and rd; slot 2-4: rd kernels not dispatched, at the first
+     * level that has them (avx2_bmi2 while the AVX2 level leaves it out; avx512icl 54f7ee3e;
+     * avx512icl rd2) */
     ok = 1; used_asm = 0;
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last8;
-    for( int slot = 0; slot < 4; slot++ )
+    for( int slot = 0; slot < 5; slot++ )
     {
         int rd = slot > 0;
         void (*fa)( dctcoef *, int, intptr_t, x264_cabac_t * ) = slot == 0 ? bs_a.cabac_block_residual_422_dc_internal : slot == 1 ? bs_a.cabac_block_residual_422_dc_rd_internal : NULL;
@@ -7764,6 +7765,12 @@ name##fail:
         {
             fa = x264_cabac_block_residual_422_dc_rd_internal_avx512icl;
             fname = "cabac_block_residual_422_dc_rd1";
+        }
+        if( slot == 4 && (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) &&
+            bs_a.cabac_block_residual_422_dc_rd_internal != x264_cabac_block_residual_422_dc_rd2_internal_avx512icl )
+        {
+            fa = x264_cabac_block_residual_422_dc_rd2_internal_avx512icl;
+            fname = "cabac_block_residual_422_dc_rd2";
         }
 #endif
         if( !fa || fa == fr )

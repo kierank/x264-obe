@@ -994,6 +994,9 @@ rd8_sig9:
 rd422_pairs:        db 1, 0, 3, 2, 6, 5, 4, -1, 9, 8, 11, 10, 14, 13, 12, -1
 rd422_k:            dd 14, -64768
 rd422_w15:          times 8 dw 15
+; avx512icl: the unary row cap, 63<<8; code 2 (not coded)
+rd422_ki:           dd 15, 16128
+rd422_b2:           times 16 db 2
 
 SECTION .text
 
@@ -3213,6 +3216,72 @@ CABAC bmi2
     mov [r8], r5b
 %endmacro
 
+; 4:2:2 chroma dc rd, avx512icl: the avx2 kernel's passes, with the masks from
+; vptestm/vpcmpu, the codes by mask blends and the escapes by vplzcntd
+%macro CABAC_RESIDUAL_RD_422DC_ICL2 0
+    %define rd422c rsp
+    %define rd422u rsp+16
+    cglobal cabac_block_residual_422_dc_rd2_internal, 4,13,8,-32
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%if HIGH_BIT_DEPTH
+    vpabsd    m6, [r0]
+    vptestmd  k1, m6, m6                                      ; nonzero
+    vpcmpud   k2, m6, [pd_1] {1to8}, 6                        ; abs > 1
+    vpminud   m1, m6, [rd422_ki+0] {1to8}
+    vpmovdw  xm1, m1
+%else
+    vpabsw   xm0, [r0]
+    vptestmw  k1, xm0, xm0
+    vpcmpuw   k2, xm0, [pw_1], 6
+    vpminuw  xm1, xm0, [rd422_w15]
+    vpmovzxwd m6, xm0
+%endif
+    vpsllw   xm1, xm1, 7
+    vmovdqa32 [rd422u], xm1                                   ; unary rows min(abs,15)*128
+; escapes: (2*ilog2(abs-14)+1)<<8 = 16128 - 512*lzcnt(abs-14) over abs >= 15
+    vpsubd    m6, m6, [rd422_k+0] {1to8}
+    vpxord   xm2, xm2, xm2
+    vpcmpgtd  k3, m6, m2
+    vplzcntd  m7, m6
+    vpslld    m7, m7, 9
+    vpbroadcastd m3, [rd422_ki+4]
+    vpsubd    m7 {k3}{z}, m3, m7
+    vextracti32x4 xm6, m7, 1
+    vpaddd   xm7, xm7, xm6
+    vpshufd  xm6, xm7, q1032
+    vpaddd   xm7, xm7, xm6
+    vpshufd  xm6, xm7, q2301
+    vpaddd   xm7, xm7, xm6
+    vmovd    r4d, xm7
+    kmovb    r9d, k1                                          ; bit i = l[i] != 0
+    kmovb   r12d, k2                                          ; bit i = abs(l[i]) > 1
+    lzcnt     r6d, r9d
+    xor       r6d, 31                                         ; r6 = last
+; codes: sig = p <= last ? nz : 2, last = nz ? p == last : 2
+    lea      r10d, [r6+1]
+    mov       r7d, 0xff
+    bzhi      r7d, r7d, r10d
+    kmovb     k3, r7d                                         ; p <= last
+    mov       r7d, 1
+    shlx      r7d, r7d, r6d
+    kmovb     k4, r7d                                         ; p == last
+    vmovdqu8 xm2, [rd422_b2]
+    vmovdqu8 xm3 {k1}{z}, [pb_1]
+    vmovdqu8 xm4 {k4}{z}, [pb_1]
+    vpblendmb xm1 {k3}, xm2, xm3                              ; sig codes
+    vpblendmb xm2 {k1}, xm2, xm4                              ; last codes
+    vpunpcklqdq xm1, xm1, xm2
+    vpshufb  xm1, xm1, [rd422_pairs]
+    vpmaddubsw xm1, xm1, [rd8_sig_pair]                       ; 3*c1+c2
+    vmovdqa32 [rd422c], xm1
+    RD422_BODY
+%endmacro
+
 %if ARCH_X86_64
 INIT_XMM sse2
 CABAC_RESIDUAL_RD_4x4
@@ -3922,4 +3991,6 @@ CABAC_RESIDUAL_RD_8x8 1
 ; 4:2:2 chroma dc rd, both depths
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_422DC_AVX2
+INIT_YMM avx512icl
+CABAC_RESIDUAL_RD_422DC_ICL2
 %endif
