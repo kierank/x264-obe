@@ -5445,6 +5445,10 @@ static int check_mc( int cpu_ref, int cpu_new )
         ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx512", "strip",
                                            x264_mbtree_propagate_list_avx512, x264_mbtree_propagate_list_strip_avx512,
                                            x264_mbtree_propagate_list2_strip_avx512 );
+    if( (cpu_new&X264_CPU_AVX512) && !(cpu_ref&X264_CPU_AVX512) )
+        ret |= check_propagate_list_strip( cpu_new, "propagate_list_sasm avx512", "strip_asm",
+                                           x264_mbtree_propagate_list_avx512, x264_mbtree_propagate_list_strip_asm_avx512,
+                                           x264_mbtree_propagate_list2_strip_asm_avx512 );
 #endif
 
     if( mc_a.mbtree_cost_scale != mc_ref.mbtree_cost_scale )

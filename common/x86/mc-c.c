@@ -1583,6 +1583,9 @@ void x264_mbtree_propagate_list2_strip_asm_##cpu( x264_t *h, uint16_t *ref_costs
 #define x264_mbtree_propagate_list_strip_internal_avx2 x264_template(mbtree_propagate_list_strip_internal_avx2)
 #define x264_mbtree_strip_flush_avx2 x264_template(mbtree_strip_flush_avx2)
 PROPAGATE_LIST_STRIP_ASM(avx2, 8)
+#define x264_mbtree_propagate_list_strip_internal_avx512 x264_template(mbtree_propagate_list_strip_internal_avx512)
+#define x264_mbtree_strip_flush_avx512 x264_template(mbtree_strip_flush_avx512)
+PROPAGATE_LIST_STRIP_ASM(avx512, 16)
 #endif
 #undef CLIP_ADD
 #undef CLIP_ADD2

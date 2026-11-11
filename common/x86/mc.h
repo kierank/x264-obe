@@ -49,6 +49,8 @@ void name( x264_t *h, uint16_t *ref_costs0, uint16_t *ref_costs1, int16_t (*mvs0
 #define x264_mbtree_propagate_list2_strip_avx512 x264_template(mbtree_propagate_list2_strip_avx512)
 #define x264_mbtree_propagate_list_strip_asm_avx2 x264_template(mbtree_propagate_list_strip_asm_avx2)
 #define x264_mbtree_propagate_list2_strip_asm_avx2 x264_template(mbtree_propagate_list2_strip_asm_avx2)
+#define x264_mbtree_propagate_list_strip_asm_avx512 x264_template(mbtree_propagate_list_strip_asm_avx512)
+#define x264_mbtree_propagate_list2_strip_asm_avx512 x264_template(mbtree_propagate_list2_strip_asm_avx512)
 PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_ssse3 )
 PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_avx )
 PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_avx2 )
@@ -59,6 +61,8 @@ PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_avx2 )
 PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_avx512 )
 PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_asm_avx2 )
 PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_asm_avx2 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_asm_avx512 )
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_asm_avx512 )
 #undef PROPAGATE_LIST_DECL
 #undef PROPAGATE_LIST2_DECL
 

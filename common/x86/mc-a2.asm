@@ -138,6 +138,10 @@ mbtree_strip_pd6:  times 8 dd 6
 mbtree_strip_pdm2: times 8 dd -2
 mbtree_strip_pdfb: times 8 dd 0x103 ; rows 0-1 (the offset-0 padding cell) | direct path
 mbtree_strip_c000: times 16 dw 0xc000
+mbtree_strip_pd31: dd 31 ; {1to16} broadcasts
+mbtree_strip_pd32: dd 32
+mbtree_strip_pd1024: dd 1024
+mbtree_strip_pd32767: dd 32767
 
 SECTION .text
 
@@ -3741,6 +3745,160 @@ cglobal mbtree_strip_flush, 3,6,2
     sub             r1, 32
 .lz:
     mova          [r1], m0
+    add             r1, 32
+    dec            r2d
+    jg .lz
+    RET
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int mbtree_propagate_list_strip_internal( int16_t (*mvs)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
+;                                           int32_t *output, int bipred_weight, int list, int len, int width )
+;-----------------------------------------------------------------------------
+; avx512: as the avx2 version, 16 entries a zmm in dword lanes in entry order. The weights' factors
+; sit in the low words, so pmullw / pmulhrsw give the internal kernel's words zero-extended. Per 16
+; entries (320 bytes): 16 offsets, then the idx0..3 weights, 16 each. Unused entries touch no rows.
+; m6 = i, m7 = rows touched, m8 = width, m9 = strip stride, m10 = list bit, m11 = bipred_weight << 9,
+; m12 = 3, r8d = entries needing the direct path (r7d: temp); k7 = entries < len in the tail
+%macro PROPAGATE_STRIP_PASS512 1 ; tail
+%if %1
+    movu          ym1 {k7}{z}, [r2+r4*2]
+    movu          ym4 {k7}{z}, [r1+r4*2]
+    movu           m0 {k7}{z}, [r0+r4*4]
+%else
+    movu          ym1, [r2+r4*2]
+    movu          ym4, [r1+r4*2]
+    movu           m0, [r0+r4*4]       ; {x, y}
+%endif
+    vpcmpuw        k1, ym1, [mbtree_strip_c000], 5 ; lists_used == 3
+    vpmulhrsw     ym4 {k1}, ym11       ; propagate_amount = (propagate_amount * bipred_weight + 32) >> 6
+    vptestmw       k2, ym1, ym10       ; used
+    vpmovzxwd      m5 {k2}{z}, ym4     ; 0 when unused
+    vpsrad         m1 {k2}{z}, m0, 16  ; y, 0 when unused
+    vpslld         m2, m0, 16
+    vpsrad         m2, 16              ; x
+    vpandd         m3, m2, [mbtree_strip_pd31] {1to16} ; x &= 31
+    vpandd         m4, m1, [mbtree_strip_pd31] {1to16} ; y &= 31
+    vpsrad         m2, 5
+    vpaddd         m2, m6              ; mbx
+    vpaddd         m6, [pd_16] {1to16}
+    vpsrad         m1, 5               ; dy
+    vpmaxsd        m2, [mbtree_strip_pdm2] {1to16}
+    vpminsd        m2, m8              ; -2 .. width
+    vpsubd         m2, m8
+    vpaddd         m1, m12             ; t = dy+3
+    vpcmpud        k3, m1, [mbtree_strip_pd6] {1to16}, 2 ; 0 <= t <= 6
+    vpmaddwd      m13, m1, m9          ; t*stride
+    vpaddd        m13 {k3}{z}, m2      ; offset, 0 for |dy| > 3
+    mova         [r3], m13
+    kandw          k4, k3, k2
+    vpsllvd       m14 {k4}{z}, m12, m1 ; 3 << t
+    vpord          m7, m14
+    kandnw         k5, k3, k2          ; used, |dy| > 3
+    kmovw         r7d, k5
+    or            r8d, r7d
+    vpbroadcastd  m13, [mbtree_strip_pd32]
+    vpsubd        m13, m3              ; 32 - x
+    vpslld        m15, m4, 5           ; y << 5
+    vpbroadcastd  m14, [mbtree_strip_pd1024]
+    vpsubd        m14, m15             ; (32 - y) << 5
+    vpmullw        m0, m14, m13        ; idx0weight = (32-y)*(32-x) << 5
+    vpminud        m0, [mbtree_strip_pd32767] {1to16} ; idx0weight -= (idx0weight == 32768)
+    vpmullw        m1, m14, m3         ; idx1weight = (32-y)*x << 5
+    vpmullw        m2, m15, m13        ; idx2weight = y*(32-x) << 5
+    vpmullw        m4, m15, m3         ; idx3weight = y*x << 5
+    vpmulhrsw      m0, m5              ; idx0weight * propagate_amount + 512 >> 10
+    vpmulhrsw      m1, m5
+    vpmulhrsw      m2, m5
+    vpmulhrsw      m4, m5
+    mova    [r3+ 64], m0
+    mova    [r3+128], m1
+    mova    [r3+192], m2
+    mova    [r3+256], m4
+%endmacro
+
+INIT_ZMM avx512
+cglobal mbtree_propagate_list_strip_internal, 8,9,16
+    lea            r5d, [r5+1]
+    shl            r5d, 14             ; 1 << (list+LOWRES_COST_SHIFT)
+    vpbroadcastw  ym10, r5d
+    vpbroadcastw  ym11, r4d
+    psllw         ym11, 9              ; bipred_weight << 9
+    vpbroadcastd    m8, r7d
+    lea            r5d, [r7+7+16]
+    and            r5d, ~7             ; MBTREE_STRIP_STRIDE
+    vpbroadcastd    m9, r5d
+    vpmovzxwd       m6, [pw_0to15]
+    vpbroadcastd   m12, [mbtree_strip_pd3]
+    vpxord         xm7, xm7, xm7
+    xor            r4d, r4d
+    xor            r8d, r8d
+    lea            r5d, [r6-16]
+.loop:
+    cmp            r4d, r5d
+    jg .tail
+    PROPAGATE_STRIP_PASS512 0
+    add            r4d, 16
+    add             r3, 320
+    jmp .loop
+.tail:
+    cmp            r4d, r6d
+    jge .end
+    vpbroadcastd   m13, r6d
+    vpcmpud         k7, m6, m13, 1     ; i < len
+    PROPAGATE_STRIP_PASS512 1
+.end:
+    vextracti32x8 ym0, m7, 1
+    vpord         ym0, ym7
+    vextracti128  xm1, ym0, 1
+    vpord         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    vpord         xm0, xm1
+    pshufd        xm1, xm0, q2301
+    vpord         xm0, xm1
+    neg            r8d
+    sbb            r8d, r8d
+    and            r8d, 0x103
+    movd           eax, xm0
+    or             eax, r8d
+    RET
+
+;-----------------------------------------------------------------------------
+; void mbtree_strip_flush( uint16_t *dst, int32_t *strip, int width )
+;-----------------------------------------------------------------------------
+cglobal mbtree_strip_flush, 3,5,3
+    xor            r3d, r3d
+    lea            r4d, [r2-16]
+.l16:
+    cmp            r3d, r4d
+    jg .tail
+    vpmovsxwd       m0, [r0+r3*2]
+    vpaddd          m0, [r1+r3*4]
+    vpmovsdw       ym0, m0             ; min( s + sum, 32767 )
+    movu   [r0+r3*2], ym0
+    add            r3d, 16
+    jmp .l16
+.tail:
+    cmp            r3d, r2d
+    jge .zero
+    mov            r4d, r2d
+    sub            r4d, r3d
+    vpbroadcastd    m2, r4d
+    vpmovzxwd       m1, [pw_0to15]
+    vpcmpud         k1, m1, m2, 1
+    vpmovsxwd       m0 {k1}{z}, [r0+r3*2]
+    vpaddd          m0 {k1}{z}, m0, [r1+r3*4]
+    vpmovsdw       ym0, m0
+    vmovdqu16 [r0+r3*2] {k1}, ym0
+.zero:
+    vpxord         xm0, xm0, xm0
+    add            r2d, 7
+    shr            r2d, 3
+    add            r2d, 2              ; MBTREE_STRIP_STRIDE / 8
+    sub             r1, 32
+.lz:
+    mova          [r1], ym0
     add             r1, 32
     dec            r2d
     jg .lz
