@@ -905,6 +905,8 @@ int x264_intra_satd_lowres_avx2( void *, pixel *, intptr_t );
 void x264_lowres_p_mbs_avx2( x264_lowres_p_t *c );
 #define x264_lowres_i_mbs_avx2 x264_template(lowres_i_mbs_avx2)
 void x264_lowres_i_mbs_avx2( x264_lowres_i_t *c );
+#define x264_lowres_i_mbs_avx512icl x264_template(lowres_i_mbs_avx512icl)
+void x264_lowres_i_mbs_avx512icl( x264_lowres_i_t *c );
 #define x264_analyse_p16x16_avx2 x264_template(analyse_p16x16_avx2)
 int x264_analyse_p16x16_avx2( x264_analyse_p_t *c );
 #define x264_analyse_p_sub16x16_avx2 x264_template(analyse_p_sub16x16_avx2)

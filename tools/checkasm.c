@@ -3638,6 +3638,8 @@ static int check_lowres_i( int cpu_ref, int cpu_new )
     const char *name = NULL;
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
         fn = x264_lowres_i_mbs_avx2, name = "lowres_i_mbs_avx2";
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        fn = x264_lowres_i_mbs_avx512icl, name = "lowres_i_mbs_avx512icl";
     if( !fn )
         return 0;
     x264_pixel_init( cpu_new, &pf );
