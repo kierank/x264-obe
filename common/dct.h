@@ -89,6 +89,16 @@ typedef struct
      * Returns 0, or 1 | min(score, 9) << 4. */
     int  (*quant_8x8_scan)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                             int dequant_mf[6][64], int i_qp );
+    /* CABAC trellis, asm only (NULL: the separate calls). quant_*_scan_trellis: orig = dct, quant in place,
+     * level = every block's levels in scan order; returns the nonzero levels in scan order (16 bits per 4x4).
+     * dequant_*_scan: quant_*_scan without the quant, for the trellis output. */
+    uint64_t (*quant_4x4x4_scan_trellis)( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
+                                          dctcoef orig[4][16] );
+    uint64_t (*quant_8x8_scan_trellis)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
+                                        dctcoef orig[64] );
+    int  (*dequant_4x4x4_scan)   ( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp );
+    int  (*dequant_4x4x4_scan_ac)( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp );
+    int  (*dequant_8x8_scan)( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp );
     /* intra_satd_x9_4x4; if the cost is <= limit, the chosen mode is then coded: sub4x4_dct, quant_4x4,
      * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24. */
     int  (*intra_satd_x9_4x4_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],

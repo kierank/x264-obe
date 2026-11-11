@@ -936,6 +936,16 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     /* asm only: NULL keeps the separate quant_8x8, scan_8x8, decimate_score64 and dequant_8x8 calls */
     pf_interlaced->quant_8x8_scan       = NULL;
     pf_progressive->quant_8x8_scan      = NULL;
+    pf_interlaced->quant_4x4x4_scan_trellis  = NULL;
+    pf_progressive->quant_4x4x4_scan_trellis = NULL;
+    pf_interlaced->quant_8x8_scan_trellis    = NULL;
+    pf_progressive->quant_8x8_scan_trellis   = NULL;
+    pf_interlaced->dequant_4x4x4_scan        = NULL;
+    pf_progressive->dequant_4x4x4_scan       = NULL;
+    pf_interlaced->dequant_4x4x4_scan_ac     = NULL;
+    pf_progressive->dequant_4x4x4_scan_ac    = NULL;
+    pf_interlaced->dequant_8x8_scan          = NULL;
+    pf_progressive->dequant_8x8_scan         = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
 

@@ -3634,14 +3634,46 @@ cglobal quant_4x4x4_scan_%1, 6,9,12
     packssdw  %1, %2
 %endmacro
 
-%macro QUANT_4x4x4_SCAN 3 ; name, field, ac
+; mode 0: quant_4x4x4_scan. 1: dequant_4x4x4_scan( dct, level, dequant_mf, i_qp ), the same without the
+; quant. 2: quant_4x4x4_scan_trellis( dct, level, mf, bias, orig ), the trellis input: orig = dct, quant
+; in place, level = every block in scan order; returns the nonzero levels in scan order, 16 bits per block.
+%macro QUANT_4x4x4_SCAN 3-4 0 ; name, field, ac, mode
+%if %4 == 1
+cglobal dequant_4x4x4_scan_%1, 4,9,16
+    mov       r4, r2
+    mov       r5d, r3d
+    mova      m0, [r0+ 0]
+    mova      m1, [r0+32]
+    mova      m2, [r0+64]
+    mova      m3, [r0+96]
+%else
+%if %4 == 2
+cglobal quant_4x4x4_scan_trellis_%1, 5,9,16
+    mova      m0, [r0+ 0]
+    mova      m1, [r0+32]
+    mova      m2, [r0+64]
+    mova      m3, [r0+96]
+    mova [r4+ 0], m0
+    mova [r4+32], m1
+    mova [r4+64], m2
+    mova [r4+96], m3
+    %define %%src0 m0
+    %define %%src1 m1
+    %define %%src2 m2
+    %define %%src3 m3
+%else
 cglobal quant_4x4x4_scan_%1, 6,9,16
+    %define %%src0 [r0+ 0]
+    %define %%src1 [r0+32]
+    %define %%src2 [r0+64]
+    %define %%src3 [r0+96]
+%endif
     mova      m14, [r2]
     mova      m15, [r3]
-    pabsw     m8,  [r0+ 0]
-    pabsw     m9,  [r0+32]
-    pabsw     m10, [r0+64]
-    pabsw     m11, [r0+96]
+    pabsw     m8,  %%src0
+    pabsw     m9,  %%src1
+    pabsw     m10, %%src2
+    pabsw     m11, %%src3
     paddusw   m8,  m15
     paddusw   m9,  m15
     paddusw   m10, m15
@@ -3650,10 +3682,11 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
     pmulhuw   m9,  m14
     pmulhuw   m10, m14
     pmulhuw   m11, m14
-    psignw    m0, m8,  [r0+ 0]
-    psignw    m1, m9,  [r0+32]
-    psignw    m2, m10, [r0+64]
-    psignw    m3, m11, [r0+96]
+    psignw    m0, m8,  %%src0
+    psignw    m1, m9,  %%src1
+    psignw    m2, m10, %%src2
+    psignw    m3, m11, %%src3
+%endif
     packssdw  m8, m0, m1
     packssdw  m9, m2, m3
     packssdw  m8, m9
@@ -3691,13 +3724,37 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
     por       m6, m8
     por       m7, m9
 %endif
+%if %4 == 2
+    mova [r1+ 0], m4
+    mova [r1+32], m5
+    mova [r1+64], m6
+    mova [r1+96], m7
+    mova [r0+ 0], m0
+    mova [r0+32], m1
+    mova [r0+64], m2
+    mova [r0+96], m3
+    packsswb  m8, m4, m5
+    packsswb  m9, m6, m7
+    vpermq    m8, m8, q3120
+    vpermq    m9, m9, q3120
+    pcmpeqb   m8, m13
+    pcmpeqb   m9, m13
+    pmovmskb  eax, m8
+    pmovmskb  r5d, m9
+    shl       r5, 32
+    or        rax, r5
+    not       rax
+    RET
+%else
     sub       r1, r0
     QUANT_SCAN_STORE 0, m4
     QUANT_SCAN_STORE 1, m5
     QUANT_SCAN_STORE 2, m6
     QUANT_SCAN_STORE 3, m7
+%if %4 == 0
     test      r4, r4
     jz .store_q_score
+%endif
     QUANT_SCAN_DEQUANT_START
     mova      m8, [r4]
     packssdw  m8, [r4+32]
@@ -3746,11 +3803,14 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
     QUANT_SCAN_RSHIFT m2, m11
     QUANT_SCAN_RSHIFT m3, m11
     jmp .store_q_score
+%endif ; %4 != 2
 .store_q:
+%if %4 != 1
     mova [r0+ 0], m0
     mova [r0+32], m1
     mova [r0+64], m2
     mova [r0+96], m3
+%endif
     RET
 %endmacro
 ; dst; m2: dmf, m4: rounding, xm3: shift
@@ -3766,12 +3826,28 @@ cglobal quant_4x4x4_scan_%1, 6,9,16
     packssdw  %1, m5
 %endmacro
 
-%macro QUANT_4x4x4_SCAN_AVX512 3 ; name, field, ac
+; mode: as QUANT_4x4x4_SCAN
+%macro QUANT_4x4x4_SCAN_AVX512 3-4 0 ; name, field, ac, mode
+%if %4 == 1
+cglobal dequant_4x4x4_scan_%1, 4,9,7
+    mov       r4, r2
+    mov       r5d, r3d
+    movu      m0, [r0+ 0]
+    movu      m1, [r0+64]
+%else
+%if %4 == 2
+cglobal quant_4x4x4_scan_trellis_%1, 5,9,7
+%else
 cglobal quant_4x4x4_scan_%1, 6,9,7
+%endif
     vbroadcasti32x8 m4, [r2]
     vbroadcasti32x8 m5, [r3]
     movu      m2, [r0+ 0]
     movu      m3, [r0+64]
+%if %4 == 2
+    movu [r4+ 0], m2
+    movu [r4+64], m3
+%endif
     pabsw     m0, m2
     pabsw     m1, m3
     paddusw   m0, m5
@@ -3783,6 +3859,7 @@ cglobal quant_4x4x4_scan_%1, 6,9,7
     pxor     xm5, xm5
     vpsubw    m0{k1}, m5, m0
     vpsubw    m1{k2}, m5, m1
+%endif
     pabsw     m4, m0
     pabsw     m5, m1
     por       m4, m5        ; |level| of all blocks, wrapped like the stored levels
@@ -3807,12 +3884,25 @@ cglobal quant_4x4x4_scan_%1, 6,9,7
     vptestmw  k1, m2, m2
     vptestmw  k2, m3, m3
     kunpckdq  k1, k2, k1
+%if %4 == 2
+    ; the trellis reads the levels next: ymm stores
+    movu [r1+ 0], ym2
+    vextracti32x8 [r1+32], m2, 1
+    movu [r1+64], ym3
+    vextracti32x8 [r1+96], m3, 1
+    movu [r0+ 0], m0
+    movu [r0+64], m1
+    kmovq     rax, k1
+    RET
+%else
     QUANT_SCAN_NZ_AVX512
     vmovdqu16 [r1+ 0]{k2}, m2
     kshiftrq  k2, k2, 32
     vmovdqu16 [r1+64]{k2}, m3
+%if %4 == 0
     test      r4, r4
     jz .store_q_score
+%endif
     QUANT_SCAN_DEQUANT_START
     movu      m2, [dequant_shuf_avx512]
     vpermw    m2, m2, [r4]  ; dmf of both blocks as words
@@ -3848,9 +3938,12 @@ cglobal quant_4x4x4_scan_%1, 6,9,7
     QUANT_SCAN_RSHIFT_AVX512 m0
     QUANT_SCAN_RSHIFT_AVX512 m1
     jmp .store_q_score
+%endif ; %4 != 2
 .store_q:
+%if %4 != 1
     movu [r0+ 0], m0
     movu [r0+64], m1
+%endif
     xor      eax, eax
     RET
 %endmacro
@@ -3861,12 +3954,28 @@ QUANT_4x4x4_SCAN frame,    0, 0
 QUANT_4x4x4_SCAN field,    1, 0
 QUANT_4x4x4_SCAN frame_ac, 0, 1
 QUANT_4x4x4_SCAN field_ac, 1, 1
+%if HIGH_BIT_DEPTH == 0
+QUANT_4x4x4_SCAN frame,    0, 0, 1
+QUANT_4x4x4_SCAN field,    1, 0, 1
+QUANT_4x4x4_SCAN frame_ac, 0, 1, 1
+QUANT_4x4x4_SCAN field_ac, 1, 1, 1
+QUANT_4x4x4_SCAN frame,    0, 0, 2
+QUANT_4x4x4_SCAN field,    1, 0, 2
+%endif
 
 INIT_ZMM avx512icl
 QUANT_4x4x4_SCAN_AVX512 frame,    0, 0
 QUANT_4x4x4_SCAN_AVX512 field,    1, 0
 QUANT_4x4x4_SCAN_AVX512 frame_ac, 0, 1
 QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1
+%if HIGH_BIT_DEPTH == 0
+QUANT_4x4x4_SCAN_AVX512 frame,    0, 0, 1
+QUANT_4x4x4_SCAN_AVX512 field,    1, 0, 1
+QUANT_4x4x4_SCAN_AVX512 frame_ac, 0, 1, 1
+QUANT_4x4x4_SCAN_AVX512 field_ac, 1, 1, 1
+QUANT_4x4x4_SCAN_AVX512 frame,    0, 0, 2
+QUANT_4x4x4_SCAN_AVX512 field,    1, 0, 2
+%endif
 
 ;-----------------------------------------------------------------------------
 ; int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
@@ -4068,10 +4177,26 @@ cglobal quant_8x8_scan_%1, 6,9,12
 %endmacro
 
 %else ; !HIGH_BIT_DEPTH
-%macro QUANT_8x8_SCAN_AVX512 3 ; name, frame/field, flat cqm
+; mode: as QUANT_8x8_SCAN_AVX2
+%macro QUANT_8x8_SCAN_AVX512 3-4 0 ; name, frame/field, flat cqm, mode
+%if %4 == 1
+cglobal dequant_8x8_scan_%1, 4,9,10
+    mov       r4, r2
+    mov       r5d, r3d
+    movu      m0, [r0+ 0]
+    movu      m1, [r0+64]
+%else
+%if %4 == 2
+cglobal quant_8x8_scan_trellis_%1, 5,9,10
+%else
 cglobal quant_8x8_scan_%1, 6,9,10
+%endif
     movu      m2, [r0+ 0]
     movu      m3, [r0+64]
+%if %4 == 2
+    movu [r4+ 0], m2
+    movu [r4+64], m3
+%endif
     pabsw     m0, m2
     pabsw     m1, m3
     paddusw   m0, [r3+ 0]
@@ -4083,6 +4208,7 @@ cglobal quant_8x8_scan_%1, 6,9,10
     pxor     xm7, xm7
     vpsubw    m0{k1}, m7, m0
     vpsubw    m1{k2}, m7, m1
+%endif
     pabsw     m4, m0
     pabsw     m5, m1
     por       m4, m5        ; |level|, wrapped like the stored levels
@@ -4097,12 +4223,25 @@ cglobal quant_8x8_scan_%1, 6,9,10
     vpermi2w  m3, m0, m1
     vptestmw  k1, m2, m2
     vptestmw  k2, m3, m3
+%if %4 == 2
+    ; the trellis reads the levels next: ymm stores
+    movu [r1+ 0], ym2
+    vextracti32x8 [r1+32], m2, 1
+    movu [r1+64], ym3
+    vextracti32x8 [r1+96], m3, 1
+    kunpckdq  k1, k2, k1
+    kmovq     rax, k1
+    jmp .store
+%else
     movu [r1+ 0], m2
     movu [r1+64], m3
     kunpckdq  k1, k2, k1
     QUANT8_SCAN_SCORE d
+%if %4 == 0
     test      r4, r4
     jz .store
+%endif
+%endif
 %if %3
     ; flat cqm: dmf = dequant8_scale << 4, so at qp >= 12 the dequant is a pmullw by dequant8_scale << (qp/6-2);
     ; rows 4-7 of the scale repeat rows 0-3
@@ -4235,6 +4374,30 @@ cglobal quant_8x8_scan_%1, 6,9,10
 .score_done:
 %endmacro
 
+; mode, levels 0-15 .. 48-63 in scan order: store; mode 2: rax = the nonzero levels, else as QUANT8_SCAN_LEVELS_AVX2
+%macro QUANT8_SCAN_OUT_AVX2 5
+%if %1 == 2
+    movu [r1+ 0], %2
+    movu [r1+32], %3
+    movu [r1+64], %4
+    movu [r1+96], %5
+    packsswb  m9, %2, %3
+    packsswb m10, %4, %5
+    vpermq    m9, m9, q3120
+    vpermq   m10, m10, q3120
+    pxor      m6, m6
+    pcmpeqb   m9, m6
+    pcmpeqb  m10, m6
+    pmovmskb r6d, m9
+    pmovmskb r2d, m10
+    shl       r2, 32
+    or        r6, r2
+    not       r6
+%else
+    QUANT8_SCAN_LEVELS_AVX2 %2, %3, %4, %5
+%endif
+%endmacro
+
 ; dst, dmf; m8: shift-1, m9: 16-shift, m10: 0
 %macro QUANT8_SCAN_DQ_ROUND 2
     pmulhw   m11, m%1, m%2
@@ -4246,12 +4409,33 @@ cglobal quant_8x8_scan_%1, 6,9,10
 %endmacro
 
 ; levels A-D (m0-m3) = coefs 0-15 .. 48-63, ' = lanes swapped (m4-m7)
-%macro QUANT_8x8_SCAN_AVX2 3 ; name, field, flat cqm
+; mode 0: quant_8x8_scan. 1: dequant_8x8_scan( dct, level, dequant_mf, i_qp ), the same without the quant.
+; 2: quant_8x8_scan_trellis( dct, level, mf, bias, orig ): orig = dct, quant in place, level in scan order;
+; returns the nonzero levels in scan order.
+%macro QUANT_8x8_SCAN_AVX2 3-4 0 ; name, field, flat cqm, mode
+%if %4 == 1
+cglobal dequant_8x8_scan_%1, 4,9,16
+    mov       r4, r2
+    mov       r5d, r3d
+%elif %4 == 2
+cglobal quant_8x8_scan_trellis_%1, 5,9,16
+%else
 cglobal quant_8x8_scan_%1, 6,9,16
+%endif
     movu      m0, [r0+ 0]
     movu      m1, [r0+32]
     movu      m2, [r0+64]
     movu      m3, [r0+96]
+%if %4 == 2
+    movu [r4+ 0], m0
+    movu [r4+32], m1
+    movu [r4+64], m2
+    movu [r4+96], m3
+%endif
+%if %4 == 1
+    por       m4, m0, m1
+    por       m5, m2, m3
+%else
     pabsw     m4, m0
     pabsw     m5, m1
     pabsw     m6, m2
@@ -4270,6 +4454,7 @@ cglobal quant_8x8_scan_%1, 6,9,16
     psignw    m3, m7, m3
     por       m4, m0, m1
     por       m5, m2, m3
+%endif
     por       m4, m5
     ptest     m4, m4
     jz .zero
@@ -4325,7 +4510,7 @@ cglobal quant_8x8_scan_%1, 6,9,16
     por       m6, m7
     por       m4, m13
     por       m4, m6            ; 32-47
-    QUANT8_SCAN_LEVELS_AVX2 m14, m8, m4, m15
+    QUANT8_SCAN_OUT_AVX2 %4, m14, m8, m4, m15
 %else
     lea       r2, [qscan8_field_avx2]
     pshufb    m8, m0, [r2+ 0*32]
@@ -4357,10 +4542,14 @@ cglobal quant_8x8_scan_%1, 6,9,16
     pshufb   m15, m7, [r2+14*32]
     por      m13, m14
     por      m13, m15           ; 48-63
-    QUANT8_SCAN_LEVELS_AVX2 m8, m11, m12, m13
+    QUANT8_SCAN_OUT_AVX2 %4, m8, m11, m12, m13
 %endif
+%if %4 == 2
+    jmp .store
+%elif %4 == 0
     test      r4, r4
     jz .store
+%endif
 %if %3
     ; flat cqm: dmf = dequant8_scale << 4, so at qp >= 12 the dequant is a pmullw by dequant8_scale << (qp/6-2)
     cmp       r5d, 12
@@ -4465,6 +4654,12 @@ QUANT_8x8_SCAN_AVX512 frame,      frame, 0
 QUANT_8x8_SCAN_AVX512 field,      field, 0
 QUANT_8x8_SCAN_AVX512 frame_flat, frame, 1
 QUANT_8x8_SCAN_AVX512 field_flat, field, 1
+QUANT_8x8_SCAN_AVX512 frame,      frame, 0, 1
+QUANT_8x8_SCAN_AVX512 field,      field, 0, 1
+QUANT_8x8_SCAN_AVX512 frame_flat, frame, 1, 1
+QUANT_8x8_SCAN_AVX512 field_flat, field, 1, 1
+QUANT_8x8_SCAN_AVX512 frame,      frame, 0, 2
+QUANT_8x8_SCAN_AVX512 field,      field, 0, 2
 %endif
 %if HIGH_BIT_DEPTH == 0
 INIT_YMM avx2
@@ -4472,5 +4667,11 @@ QUANT_8x8_SCAN_AVX2 frame,      0, 0
 QUANT_8x8_SCAN_AVX2 field,      1, 0
 QUANT_8x8_SCAN_AVX2 frame_flat, 0, 1
 QUANT_8x8_SCAN_AVX2 field_flat, 1, 1
+QUANT_8x8_SCAN_AVX2 frame,      0, 0, 1
+QUANT_8x8_SCAN_AVX2 field,      1, 0, 1
+QUANT_8x8_SCAN_AVX2 frame_flat, 0, 1, 1
+QUANT_8x8_SCAN_AVX2 field_flat, 1, 1, 1
+QUANT_8x8_SCAN_AVX2 frame,      0, 0, 2
+QUANT_8x8_SCAN_AVX2 field,      1, 0, 2
 %endif
 %endif ; ARCH_X86_64

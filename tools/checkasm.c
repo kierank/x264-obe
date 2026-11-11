@@ -5969,6 +5969,81 @@ static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf
     return 1 | X264_MIN( score, 9 ) << 4;
 }
 
+
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#include "common/x86/quant.h"
+/* trellis prep / post: asm only and NULL in zigzagf, so the C references are called directly.
+ * [frame, field] per isa (avx2, avx512icl) */
+typedef uint64_t (*trq4_fn)( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], dctcoef orig[4][16] );
+typedef uint64_t (*trq8_fn)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], dctcoef orig[64] );
+typedef int (*trd4_fn)( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp );
+typedef int (*trd8_fn)( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp );
+static const trq4_fn trq4_c[2] = { x264_quant_4x4x4_scan_trellis_frame, x264_quant_4x4x4_scan_trellis_field };
+static const trq4_fn trq4_a[2][2] = { { x264_quant_4x4x4_scan_trellis_frame_avx2, x264_quant_4x4x4_scan_trellis_field_avx2 },
+                                      { x264_quant_4x4x4_scan_trellis_frame_avx512icl, x264_quant_4x4x4_scan_trellis_field_avx512icl } };
+static const trq8_fn trq8_c[2] = { x264_quant_8x8_scan_trellis_frame, x264_quant_8x8_scan_trellis_field };
+static const trq8_fn trq8_a[2][2] = { { x264_quant_8x8_scan_trellis_frame_avx2, x264_quant_8x8_scan_trellis_field_avx2 },
+                                      { x264_quant_8x8_scan_trellis_frame_avx512icl, x264_quant_8x8_scan_trellis_field_avx512icl } };
+/* [ac][field] */
+static const trd4_fn trd4_c[2][2] = { { x264_dequant_4x4x4_scan_frame, x264_dequant_4x4x4_scan_field },
+                                      { x264_dequant_4x4x4_scan_frame_ac, x264_dequant_4x4x4_scan_field_ac } };
+static const trd4_fn trd4_a[2][2][2] = {
+    { { x264_dequant_4x4x4_scan_frame_avx2, x264_dequant_4x4x4_scan_field_avx2 },
+      { x264_dequant_4x4x4_scan_frame_ac_avx2, x264_dequant_4x4x4_scan_field_ac_avx2 } },
+    { { x264_dequant_4x4x4_scan_frame_avx512icl, x264_dequant_4x4x4_scan_field_avx512icl },
+      { x264_dequant_4x4x4_scan_frame_ac_avx512icl, x264_dequant_4x4x4_scan_field_ac_avx512icl } } };
+static const trd8_fn trd8_c[2] = { x264_dequant_8x8_scan_frame, x264_dequant_8x8_scan_field };
+/* [isa][flat][field] */
+static const trd8_fn trd8_a[2][2][2] = {
+    { { x264_dequant_8x8_scan_frame_avx2, x264_dequant_8x8_scan_field_avx2 },
+      { x264_dequant_8x8_scan_frame_flat_avx2, x264_dequant_8x8_scan_field_flat_avx2 } },
+    { { x264_dequant_8x8_scan_frame_avx512icl, x264_dequant_8x8_scan_field_avx512icl },
+      { x264_dequant_8x8_scan_frame_flat_avx512icl, x264_dequant_8x8_scan_field_flat_avx512icl } } };
+
+/* the calls they replace (bench): rdo.c's copy, quant and per nonzero block scan + coeff_last;
+ * macroblock.c's per nonzero block scan, dequant and decimate score */
+static x264_quant_function_t *trs_qf;
+static x264_zigzag_function_t *trs_zz;
+static uint64_t trq4_split( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], dctcoef orig[4][16] )
+{
+    memcpy( orig, dct, 4*16*sizeof(dctcoef) );
+    int nz = trs_qf->quant_4x4x4( dct, mf, bias );
+    uint64_t r = 0;
+    for( int i = 0; i < 4; i++ )
+        if( nz & (1<<i) )
+        {
+            trs_zz->scan_4x4( level[i], dct[i] );
+            r += trs_qf->coeff_last[DCT_LUMA_4x4]( level[i] );
+        }
+    return r;
+}
+static uint64_t trq8_split( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], dctcoef orig[64] )
+{
+    memcpy( orig, dct, 64*sizeof(dctcoef) );
+    if( !trs_qf->quant_8x8( dct, mf, bias ) )
+        return 0;
+    trs_zz->scan_8x8( level, dct );
+    return trs_qf->coeff_last[DCT_LUMA_8x8]( level );
+}
+static int trd4_split( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp )
+{
+    int score = 0;
+    for( int i = 0; i < 4; i++ )
+        if( M64( &dct[i][0] ) | M64( &dct[i][4] ) | M64( &dct[i][8] ) | M64( &dct[i][12] ) )
+        {
+            trs_zz->scan_4x4( level[i], dct[i] );
+            trs_qf->dequant_4x4( dct[i], dequant_mf, i_qp );
+            score += trs_qf->decimate_score16( level[i] );
+        }
+    return score;
+}
+static int trd8_split( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp )
+{
+    trs_zz->scan_8x8( level, dct );
+    trs_qf->dequant_8x8( dct, dequant_mf, i_qp );
+    return 1;
+}
+#endif
 /* the calls intra_satd_x9_4x4_recon replaces: x9 (C: 9 predictions and satds, else intra_satd_x9_4x4),
  * then for a cost <= limit sub4x4_dct, quant_4x4 and if nonzero scan_4x4, dequant_4x4, add4x4_idct */
 static int x9r_chain( x264_t *h, x264_pixel_function_t *pf, x264_predict_t *pred4, x264_dct_function_t *df,
@@ -6056,7 +6131,7 @@ static int check_quant( int cpu_ref, int cpu_new )
     ALIGNED_ARRAY_64( dctcoef, x9r_lvl,[3],[16] );
     ALIGNED_ARRAY_64( uint16_t, x9r_bitcosts,[17] );
     int ret = 0, ok, used_asm;
-    int oks[5] = {1,1,1,1,1}, used_asms[5] = {0,0,0,0,0};
+    int oks[6] = {1,1,1,1,1,1}, used_asms[6] = {0,0,0,0,0,0};
     x264_t h_buf;
     x264_t *h = &h_buf;
     memset( h, 0, sizeof(*h) );
@@ -6603,6 +6678,162 @@ static int check_quant( int cpu_ref, int cpu_new )
         }
         zz_a[0] = zz_disp[0];
         zz_a[1] = zz_disp[1];
+
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+        /* trellis prep (quant_*_scan_trellis) and post (dequant_*_scan), undispatched: at the first AVX2 /
+         * AVX512ICL level. j: bits 0-3 nonzero blocks (all zero when j%8 == 7), bits 4-5 level size,
+         * bit 7 zero DC (post _ac). The post input is the C quant of the same blocks. */
+        {
+            int isa = (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) ? 1 :
+                      (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) ? 0 : -1;
+            ALIGNED_ARRAY_64( dctcoef, tsrc,[4],[16] );
+            ALIGNED_ARRAY_64( dctcoef, td_buf,[3*64] );
+            dctcoef (*td)[4][16] = (void*)td_buf;
+            ALIGNED_ARRAY_64( dctcoef, tl_buf,[3*64] );
+            dctcoef (*tl)[4][16] = (void*)tl_buf;
+            ALIGNED_ARRAY_64( dctcoef, to_buf,[3*64] );
+            dctcoef (*to)[4][16] = (void*)to_buf;
+            trs_qf = &qf_a;
+            for( int fld = 0; fld < 2 && isa >= 0; fld++ )
+            {
+                trs_zz = &zz_a[fld];
+                used_asms[5] = 1;
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min; qp-- )
+                for( int b8 = 0; b8 < 2; b8++ )
+                {
+                    int block = b8 ? CQM_8PY : (qp&1) ? CQM_4PC : CQM_4IY;
+                    udctcoef *mf = b8 ? h->quant8_mf[block][qp] : h->quant4_mf[block][qp];
+                    udctcoef *bias = b8 ? h->quant8_bias[block][qp] : h->quant4_bias[block][qp];
+                    for( int j = 0; j < 256; j++ )
+                    {
+                        static const int scale4[4] = {4,6,4,6};
+                        static const int scale8[8] = {32,31,24,31,32,31,24,31};
+                        for( int k = 0; k < 64; k++ )
+                        {
+                            int m = b8 ? mf[k] : mf[k&15];
+                            int big = b8 ? PIXEL_MAX*scale8[k>>3]*scale8[k&7]/16 : PIXEL_MAX*scale4[(k>>2)&3]*scale4[k&3];
+                            int small = X264_MIN( big, ((j>>4)&3) == 1 ? (3<<15)/m : (3<<16)/m );
+                            int x = ((j>>4)&3) == 0 ? rand30()%(2*big+1) - big
+                                  : ((j>>4)&3) == 3 ? (rand()&15 ? 0 : rand()&1 ? big : -big)
+                                  : (rand()&3 ? 0 : rand()%(2*small+1) - small);
+                            int on = (j&7) != 7 && ((j>>(k>>4))&1 || (b8 && (j&8)));
+                            tsrc[k>>4][k&15] = on ? x : 0;
+                        }
+                        if( j&128 )
+                            for( int k = 0; k < 4; k++ )
+                                tsrc[k][0] = 0;
+                        /* prep */
+                        for( int v = 0; v < 3; v++ )
+                            for( int k = 0; k < 64; k++ )
+                            {
+                                td[v][k>>4][k&15] = tsrc[k>>4][k&15];
+                                tl[v][k>>4][k&15] = to[v][k>>4][k&15] = 0x5a5a + k;
+                            }
+                        uint64_t rc, ra;
+                        if( b8 )
+                        {
+                            set_func_name( "quant_8x8_scan_trellis_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                            rc = call_c1( trq8_c[fld], td[0][0], tl[0][0], mf, bias, to[0][0] );
+                            ra = call_a1( trq8_a[isa][fld], td[1][0], tl[1][0], mf, bias, to[1][0] );
+                        }
+                        else
+                        {
+                            set_func_name( "quant_4x4x4_scan_trellis_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                            rc = call_c1( trq4_c[fld], td[0], tl[0], mf, bias, to[0] );
+                            ra = call_a1( trq4_a[isa][fld], td[1], tl[1], mf, bias, to[1] );
+                        }
+                        /* all zero: the asm skips the levels */
+                        if( !rc && !ra )
+                            memcpy( tl[1], tl[0], sizeof(tl[0]) );
+                        if( rc != ra || memcmp( td[0], td[1], sizeof(td[0]) ) || memcmp( tl[0], tl[1], sizeof(tl[0]) ) ||
+                            memcmp( to[0], to[1], sizeof(to[0]) ) )
+                        {
+                            oks[5] = 0;
+                            fprintf( stderr, "quant_%s_scan_trellis_%s (qp=%d, cqm=%d, j=%d, %llx vs %llx): [FAILED]\n",
+                                     b8?"8x8":"4x4x4", fld?"field":"frame", qp, i_cqm, j, (unsigned long long)rc, (unsigned long long)ra );
+                            break;
+                        }
+                        if( do_bench && (j&15) == 5 && qp == 30 )
+                        {
+                            if( b8 )
+                            {
+                                call_c2( trq8_c[fld], td[0][0], tl[0][0], mf, bias, to[0][0] );
+                                call_a2( trq8_a[isa][fld], td[1][0], tl[1][0], mf, bias, to[1][0] );
+                                set_func_name( "quant_8x8_scan_trellis_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                                call_bench( trq8_split, cpu_new, (dctcoef*)td[2], (dctcoef*)tl[2], mf, bias, (dctcoef*)to[2] );
+                            }
+                            else
+                            {
+                                call_c2( trq4_c[fld], td[0], tl[0], mf, bias, to[0] );
+                                call_a2( trq4_a[isa][fld], td[1], tl[1], mf, bias, to[1] );
+                                set_func_name( "quant_4x4x4_scan_trellis_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                                call_bench( trq4_split, cpu_new, td[2], tl[2], mf, bias, to[2] );
+                            }
+                        }
+                        /* post, on the C quant */
+                        for( int v = 0; v < 3; v++ )
+                            for( int k = 0; k < 64; k++ )
+                            {
+                                td[v][k>>4][k&15] = tsrc[k>>4][k&15];
+                                tl[v][k>>4][k&15] = 0x5a5a + k;
+                            }
+                        if( b8 )
+                        {
+                            int (*dmf)[64] = h->dequant8_mf[block];
+                            int flat = i_cqm == 0 && (j&1);
+                            for( int v = 0; v < 3; v++ )
+                                qf_c.quant_8x8( td[v][0], mf, bias );
+                            set_func_name( "dequant_8x8_scan_%s%s_%s", flat?"flatk_":"", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                            int pc = call_c1( trd8_c[fld], td[0][0], tl[0][0], dmf, qp );
+                            int pa = call_a1( trd8_a[isa][flat][fld], td[1][0], tl[1][0], dmf, qp );
+                            if( pc != pa || memcmp( td[0], td[1], sizeof(td[0]) ) || memcmp( tl[0], tl[1], sizeof(tl[0]) ) )
+                            {
+                                oks[5] = 0;
+                                fprintf( stderr, "dequant_8x8_scan_%s%s (qp=%d, cqm=%d, j=%d, %x vs %x): [FAILED]\n",
+                                         flat?"flat_":"", fld?"field":"frame", qp, i_cqm, j, pc, pa );
+                                break;
+                            }
+                            if( do_bench && (j&15) == 5 && qp == 30 && pc )
+                            {
+                                memcpy( td[0], td[2], sizeof(td[0]) );
+                                memcpy( td[1], td[2], sizeof(td[1]) );
+                                call_c2( trd8_c[fld], td[0][0], tl[0][0], dmf, qp );
+                                call_a2( trd8_a[isa][flat][fld], td[1][0], tl[1][0], dmf, qp );
+                                set_func_name( "dequant_8x8_scan_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                                call_bench( trd8_split, cpu_new, (dctcoef*)td[2], (dctcoef*)tl[2], dmf, qp );
+                            }
+                        }
+                        else
+                        {
+                            int ac = (j>>7)&1;
+                            int (*dmf)[16] = h->dequant4_mf[block];
+                            for( int v = 0; v < 3; v++ )
+                                qf_c.quant_4x4x4( td[v], mf, bias );
+                            set_func_name( "dequant_4x4x4_scan%s_%s_%s", ac?"_ac":"", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                            int pc = call_c1( trd4_c[ac][fld], td[0], tl[0], dmf, qp );
+                            int pa = call_a1( trd4_a[isa][ac][fld], td[1], tl[1], dmf, qp );
+                            if( pc != pa || memcmp( td[0], td[1], sizeof(td[0]) ) || memcmp( tl[0], tl[1], sizeof(tl[0]) ) )
+                            {
+                                oks[5] = 0;
+                                fprintf( stderr, "dequant_4x4x4_scan%s_%s (qp=%d, cqm=%d, j=%d, %x vs %x): [FAILED]\n",
+                                         ac?"_ac":"", fld?"field":"frame", qp, i_cqm, j, pc, pa );
+                                break;
+                            }
+                            if( do_bench && (j&15) == 5 && qp == 30 && pc )
+                            {
+                                memcpy( td[0], td[2], sizeof(td[0]) );
+                                memcpy( td[1], td[2], sizeof(td[1]) );
+                                call_c2( trd4_c[ac][fld], td[0], tl[0], dmf, qp );
+                                call_a2( trd4_a[isa][ac][fld], td[1], tl[1], dmf, qp );
+                                set_func_name( "dequant_4x4x4_scan_split%s_%s_%s", ac?"_ac":"", fld?"field":"frame", i_cqm?"cqm":"flat" );
+                                call_bench( trd4_split, cpu_new, td[2], tl[2], dmf, qp );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+#endif
 #undef Q8S_FLATK
 
 #define TEST_DEQUANT_DC( qname, dqname, block, w ) \
@@ -6855,6 +7086,9 @@ static int check_quant( int cpu_ref, int cpu_new )
 
     ok = oks[4]; used_asm = used_asms[4];
     report( "intra x9 recon :" );
+
+    ok = oks[5]; used_asm = used_asms[5];
+    report( "trellis scan :" );
 
     ok = 1; used_asm = 0;
     if( qf_a.denoise_dct != qf_ref.denoise_dct )

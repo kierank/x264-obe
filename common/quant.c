@@ -421,6 +421,112 @@ int x264_quant_8x8_scan_field( dctcoef dct[64], dctcoef level[64], udctcoef mf[6
     return quant_8x8_scan( dct, level, mf, bias, dequant_mf, i_qp, 1 );
 }
 
+/* The CABAC trellis input: orig = dct, quant in place, every block's levels in scan order.
+ * Returns the nonzero levels in scan order, 16 bits per block (4x4x4) / 64 bits (8x8). */
+static ALWAYS_INLINE uint64_t quant_scan_trellis( dctcoef *dct, dctcoef *level, udctcoef *mf, udctcoef *bias,
+                                                  dctcoef *orig, int nblocks, int n, const uint8_t *zigzag )
+{
+    uint64_t mask = 0;
+    for( int j = 0; j < nblocks; j++ )
+    {
+        dctcoef *d = dct + j*n;
+        int nz = 0;
+        for( int i = 0; i < n; i++ )
+        {
+            orig[j*n+i] = d[i];
+            QUANT_ONE( d[i], mf[i], bias[i] );
+        }
+        (void)nz;
+        for( int i = 0; i < n; i++ )
+        {
+            level[j*n+i] = d[zigzag[i]];
+            mask |= (uint64_t)!!level[j*n+i] << (j*n+i);
+        }
+    }
+    return mask;
+}
+
+uint64_t x264_quant_4x4x4_scan_trellis_frame( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], dctcoef orig[4][16] )
+{
+    return quant_scan_trellis( dct[0], level[0], mf, bias, orig[0], 4, 16, x264_zigzag_scan4[0] );
+}
+uint64_t x264_quant_4x4x4_scan_trellis_field( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], dctcoef orig[4][16] )
+{
+    return quant_scan_trellis( dct[0], level[0], mf, bias, orig[0], 4, 16, x264_zigzag_scan4[1] );
+}
+uint64_t x264_quant_8x8_scan_trellis_frame( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], dctcoef orig[64] )
+{
+    return quant_scan_trellis( dct, level, mf, bias, orig, 1, 64, x264_zigzag_scan8[0] );
+}
+uint64_t x264_quant_8x8_scan_trellis_field( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], dctcoef orig[64] )
+{
+    return quant_scan_trellis( dct, level, mf, bias, orig, 1, 64, x264_zigzag_scan8[1] );
+}
+
+/* quant_4x4x4_scan without the quant, after the trellis: for each nonzero block, zigzag into level,
+ * decimate score, dequant in place. Returns the nonzero mask | min(summed score, 9) << 4. */
+static ALWAYS_INLINE int dequant_4x4x4_scan( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp,
+                                             int b_field, int b_ac )
+{
+    int nza = 0, score = 0;
+    for( int j = 0; j < 4; j++ )
+    {
+        int nz = 0;
+        for( int i = 0; i < 16; i++ )
+            nz |= dct[j][i];
+        if( !nz )
+            continue;
+        nza |= 1 << j;
+        for( int i = 0; i < 16; i++ )
+            level[j][i] = dct[j][x264_zigzag_scan4[b_field][i]];
+        score += x264_decimate_score_internal( level[j]+b_ac, 16-b_ac );
+        dequant_4x4( dct[j], dequant_mf, i_qp );
+    }
+    return nza | X264_MIN( score, 9 ) << 4;
+}
+
+int x264_dequant_4x4x4_scan_frame( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp )
+{
+    return dequant_4x4x4_scan( dct, level, dequant_mf, i_qp, 0, 0 );
+}
+int x264_dequant_4x4x4_scan_field( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp )
+{
+    return dequant_4x4x4_scan( dct, level, dequant_mf, i_qp, 1, 0 );
+}
+int x264_dequant_4x4x4_scan_frame_ac( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp )
+{
+    return dequant_4x4x4_scan( dct, level, dequant_mf, i_qp, 0, 1 );
+}
+int x264_dequant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], int dequant_mf[6][16], int i_qp )
+{
+    return dequant_4x4x4_scan( dct, level, dequant_mf, i_qp, 1, 1 );
+}
+
+/* quant_8x8_scan without the quant: if nonzero, zigzag into level, decimate score, dequant in place.
+ * Returns 0, or 1 | min(score, 9) << 4. */
+static ALWAYS_INLINE int dequant_8x8_scan( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp, int b_field )
+{
+    int nz = 0;
+    for( int i = 0; i < 64; i++ )
+        nz |= dct[i];
+    if( !nz )
+        return 0;
+    for( int i = 0; i < 64; i++ )
+        level[i] = dct[x264_zigzag_scan8[b_field][i]];
+    int score = x264_decimate_score_internal( level, 64 );
+    dequant_8x8( dct, dequant_mf, i_qp );
+    return 1 | X264_MIN( score, 9 ) << 4;
+}
+
+int x264_dequant_8x8_scan_frame( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp )
+{
+    return dequant_8x8_scan( dct, level, dequant_mf, i_qp, 0 );
+}
+int x264_dequant_8x8_scan_field( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp )
+{
+    return dequant_8x8_scan( dct, level, dequant_mf, i_qp, 1 );
+}
+
 #define last(num)\
 static int x264_coeff_last##num( dctcoef *l )\
 {\
