@@ -59,6 +59,10 @@ isad816c_dcidx: times 4 db 16,16,16,16,20,20,20,20
 isad816c_wperm: dw 0, 4, 2, 2, 6, 6, 2, 6, 8, 8, 2, 8, 10, 10, 2, 10
 isad816c_wmul:  dw 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1
 isad816c_shift: dd 2, 1, 1, 2, 1, 2, 1, 2
+; 8x16c avx2: { s0 s1 s2 s3 | s4 s5 } -> dc numerators as P + Q; dc0-7 dwords -> 4 bytes each
+isad816c_avx2_p:   dd 0, 1, 3, 1, 4, 1, 5, 1
+isad816c_avx2_q:   dd 2, 1, 3, 3, 4, 4, 5, 5
+isad816c_avx2_dcb: times 2 db 0,0,0,0,4,4,4,4,8,8,8,8,12,12,12,12
 ALIGN 64
 ; 8x8 H rows from edge[7..14] = l7..l0
 isad8_hidxr:   db 7,7,7,7,7,7,7,7, 6,6,6,6,6,6,6,6, 5,5,5,5,5,5,5,5, 4,4,4,4,4,4,4,4
@@ -1362,6 +1366,76 @@ cglobal intra_sad_x3_8x8, 3,3,8
     psadbw         m4, m6
     psadbw         m2, m6
     INTRA_SAD_PACK3_END 1, 4, 2         ; V H DC
+
+;-----------------------------------------------------------------------------
+; void intra_sad_x3_8x16c( uint8_t *fenc, uint8_t *fdec, int res[3] )
+; 4:2:2 chroma, AVX2: the 8x8c avx2 scheme over 16 rows. A fenc row pair (movddup:
+; row 2k in lane 0, 2k+1 in lane 1) against { DC V | DC V } gives the DC and V sads
+; in one psadbw, against the pshuflw-broadcast left pixels the H sads; dc0-7 come
+; from the six edge sums by two vpermd (dc = (P+Q+4)>>3). res: DC H V.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal intra_sad_x3_8x16c, 3,3,13
+    INTRA_SAD_LEFT4 0, 0
+    INTRA_SAD_LEFT4 2, 1
+    INTRA_SAD_LEFT4 3, 2
+    INTRA_SAD_LEFT4 4, 3
+    movq          xm1, [r1-FDEC_STRIDE]
+    pxor          xm5, xm5
+    punpcklqdq    xm7, xm0, xm2         ; left 0-3 _ 4-7 _
+    punpcklqdq    xm8, xm3, xm4         ; left 8-11 _ 12-15 _
+    punpckldq     xm6, xm1, xm5         ; top 0-3 _ 4-7 _
+    psadbw        xm6, xm5              ; s0 s1
+    psadbw        xm9, xm7, xm5         ; s2 s3
+    psadbw       xm10, xm8, xm5         ; s4 s5
+    shufps        xm9, xm6, xm9, q2020  ; s0 s1 s2 s3
+    shufps       xm10, xm10, q2020      ; s4 s5 s4 s5
+    vinserti128    m9, m9, xm10, 1
+    movu          m11, [isad816c_avx2_p]
+    vpermd        m10, m11, m9
+    movu          m11, [isad816c_avx2_q]
+    vpermd        m11, m11, m9
+    paddd         m10, m11
+    psrld         m10, 2
+    pavgw         m10, m5               ; dc0 .. dc7
+    pshufb        m10, [isad816c_avx2_dcb] ; DC rows 0-3, 4-7 | 8-11, 12-15
+    vpbroadcastq   m1, xm1              ; V
+    pshufb        xm7, [hpred_shuf]     ; rows 0-7: l0 l0 l2 l2 l4 l4 l6 l6 | l1 l1 l3 ..
+    pshufb        xm8, [hpred_shuf]     ; rows 8-15
+    vpermq         m7, m7, q3120        ; even rows in lane 0, odd in lane 1
+    vpermq         m8, m8, q3120
+%assign isad_k 0
+%rep 8
+%if isad_k % 2 == 0
+    vpermq         m6, m10, (isad_k/2)*0x55
+    vpblendd       m6, m6, m1, 11001100b ; DC V DC V for rows 2k .. 2k+3
+%endif
+    movddup        m2, [r0+FENC_STRIDE*2*isad_k]
+%if isad_k < 4
+    pshuflw        m4, m7, (isad_k&3)*0x55
+%else
+    pshuflw        m4, m8, (isad_k&3)*0x55
+%endif
+%if isad_k == 0
+    psadbw        m11, m2, m6
+    psadbw        m12, m4, m2
+%else
+    psadbw         m3, m2, m6
+    psadbw         m4, m2
+    paddd         m11, m3
+    paddd         m12, m4
+%endif
+%assign isad_k isad_k+1
+%endrep
+%undef isad_k
+    vextracti128  xm0, m11, 1
+    vextracti128  xm1, m12, 1
+    paddd        xm11, xm0              ; DC _ V _
+    paddd        xm12, xm1              ; H
+    movd      [r2+0], xm11
+    movd      [r2+4], xm12
+    pextrd    [r2+8], xm11, 2
+    RET
 %endif ; ARCH_X86_64
 
 ;=============================================================================
