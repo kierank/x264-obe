@@ -8111,6 +8111,7 @@ void x264_rdo_init( void );
 #if HAVE_MMX && ARCH_X86_64
 #include "common/x86/bitstream.h"
 #define x264_cabac_block_residual_8x8_rd2_c x264_cabac_block_residual_8x8_rd_c
+#define x264_cabac_block_residual_rd2_c x264_cabac_block_residual_rd_c
 #endif
 
 /* residual bench classes: nonzero coefs 1/16, 1/4, 7/8 with levels mostly 1-2;
@@ -8328,6 +8329,20 @@ name##fail:
 #undef bs_a
 #undef bs_ref
     }
+#if HIGH_BIT_DEPTH
+    /* rd2_avx512icl (4x4, levels per level > 1, 10-bit), not dispatched: as above */
+    if( (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) )
+    {
+        struct { void (*cabac_block_residual_rd2_internal)( dctcoef *, int, intptr_t, x264_cabac_t * ); }
+            bs_a2 = { x264_cabac_block_residual_rd2_internal_avx512icl },
+            bs_ref2 = { bs_ref.cabac_block_residual_rd_internal };
+#define bs_a bs_a2
+#define bs_ref bs_ref2
+        CABAC_RESIDUAL( cabac_block_residual_rd2, ((1<<14)-1) & ~CATS_8x8, 1 );
+#undef bs_a
+#undef bs_ref
+    }
+#endif
 #endif
 #undef CATS_8x8
     report( "cabac residual rd:" );

@@ -1525,7 +1525,23 @@ CABAC bmi2
 ; last context is used at most once per 4x4 block, and the sig, last and
 ; level context ranges are disjoint, so the decisions are independent and
 ; only f8_bits (an integer sum) depends on their order.
-%macro CABAC_RESIDUAL_RD_4x4_ICL 0
+; %1 = 1: rd2, the levels by RD_LEVELS (per level > 1) when the block has at
+; least RD4_ICL_LEVELS_MIN coefs of level 1, else the per-coefficient loop.
+%ifndef RD4_ICL_LEVELS_MIN
+    %define RD4_ICL_LEVELS_MIN 1
+%endif
+%macro CABAC_RESIDUAL_RD_4x4_ICL 0-1 0
+%if %1
+    %define cbm [rsp+16*SIZEOF_DCTCOEF]
+    %assign rd4i_stack 16*SIZEOF_DCTCOEF+8
+    cglobal cabac_block_residual_rd2_internal, 4,13,7,-rd4i_stack
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%else
 %ifdef PIC
     cglobal cabac_block_residual_rd_internal, 4,11,7,-16*SIZEOF_DCTCOEF
     lea     r10, [$$]
@@ -1533,6 +1549,7 @@ CABAC bmi2
 %else
     cglobal cabac_block_residual_rd_internal, 4,10,7,-16*SIZEOF_DCTCOEF
     %define GLOBAL
+%endif
 %endif
     RD_TMP_REGS 5, 7, 9                                       ; r5/r7 are free once the map is written
     %define dct rsp
@@ -1542,11 +1559,20 @@ CABAC bmi2
     vptestmd  k2, zm0, zm0
     vpabsd    zm0, zm0
     vmovdqu32 [rsp], zm0
+%if %1
+    vpcmpud   k5, zm0, [pd_1] {1to16}, 6
+%endif
 %else
     vmovdqu16 ym0 {k1}{z}, [r0]
     vptestmw  k2, ym0, ym0
     vpabsw    ym0, ym0
     vmovdqu16 [rsp], ym0
+%if %1
+    vpcmpuw   k5, ym0, [pw_1], 6
+%endif
+%endif
+%if %1
+    kmovd   r12d, k5                                          ; bit i = abs(l[i]) > 1
 %endif
     shl      r1d, 4                                           ; MB_INTERLACED*16
     add      r1d, r2d
@@ -1605,6 +1631,20 @@ CABAC bmi2
     vmovd    r1d, xm3
     add      r0d, r1d
 ; levels: last, then the other nonzero coefficients in descending order
+%if %1
+    andn     r1d, r12d, r4d
+    popcnt   r1d, r1d                                         ; level-1 coefs
+    cmp      r1d, RD4_ICL_LEVELS_MIN
+    jb .levels_coef
+    mov      r9d, r4d
+    mov      cbm, r3
+    RD_LEVELS
+    mov       r3, cbm
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+    RD8_LEVELS_TAIL
+.levels_coef:
+%endif
     LOAD_DCTCOEF r1d
     COEFF_ABS_LEVEL_GT1 last, 1
     btr      r4d, r6d
@@ -3756,7 +3796,7 @@ INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
 %else
 ; 10-bit, after the layout above: avx2 rd 4x4 and 8x8 in ymm (vzeroupper on
-; return), the 4:2:2 chroma dc writer; the avx512icl rd2
+; return), the 4:2:2 chroma dc writer; the avx512icl rd2 8x8 and 4x4
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_4x4_AVX2 1
 CABAC_RESIDUAL_RD_8x8_AVX2
@@ -3764,5 +3804,6 @@ INIT_XMM avx2,bmi2
 CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 1
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
+CABAC_RESIDUAL_RD_4x4_ICL 1
 %endif
 %endif
