@@ -4851,14 +4851,22 @@ cglobal deblock_v_chroma_intra, 4,5,12
     lea          r6, [r0+r1*4]
     lea          r7, [r0+r1*8]
     lea          r8, [r6+r1*8]
+%if cpuflag(avx512)
+    kxnorb       k2, k2, k2
+    kshiftlb     k2, k2, 2
+%endif
 %endmacro
 
 ; 8-byte row loads: a 16-byte load would also span the stores of the other
 ; vertical edge of the MB (store-forwarding failures on back-to-back calls)
 %macro CHROMA422_H_ROWS8 3 ; dst, row 0-7, row 8-15
     movq        xm%1, %2
+%if cpuflag(avx512)
+    vpbroadcastq m%1 {k2}, %3     ; k2 = qwords 2-3
+%else
     vpbroadcastq m8, %3
     vpblendd     m%1, m%1, m8, 0xf0
+%endif
 %endmacro
 
 ; out: m0-m3 = p1 p0 q0 q1 (a row's u,v pair per word); clobbers m4-m8
@@ -4994,6 +5002,24 @@ cglobal deblock_h_chroma_422_intra, 4,9,12
     CHROMA422_H_STORE8
     RET
 
+;-----------------------------------------------------------------------------
+; the same pass at avx512icl: EVEX ymm, rows 8-15 by a k2-masked vpbroadcastq,
+; k-mask filter (CHROMA_*_ICL8 y)
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+cglobal deblock_h_chroma_422, 5,9,12
+    CHROMA422_H_START8
+    CHROMA422_H_LOAD8
+    CHROMA_INTER_ICL8 y, deblock_tc_shuf_avx2
+    CHROMA422_H_STORE8
+    RET
+
+cglobal deblock_h_chroma_422_intra, 4,9,12
+    CHROMA422_H_START8
+    CHROMA422_H_LOAD8
+    CHROMA_INTRA_ICL8 y
+    CHROMA422_H_STORE8
+    RET
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 

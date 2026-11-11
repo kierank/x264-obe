@@ -857,6 +857,8 @@ void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
             pf->deblock_luma[1] = x264_deblock_v_luma_avx512icl;
             pf->deblock_chroma[1] = x264_deblock_v_chroma_avx512icl;
             pf->deblock_chroma_intra[1] = x264_deblock_v_chroma_intra_avx512icl;
+            /* undispatched (checkasm tests them at this level): x264_deblock_h_chroma_422_avx512icl,
+             * x264_deblock_h_chroma_422_intra_avx512icl, the avx2 16-row pass with EVEX k-mask filters */
 #endif
         }
 #endif
