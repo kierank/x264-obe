@@ -7079,15 +7079,20 @@ static int check_quant( int cpu_ref, int cpu_new )
     TEST_LAST( coeff_last[ DCT_LUMA_4x4], coeff_last16, 16, 0 );
     TEST_LAST( coeff_last[ DCT_LUMA_8x8], coeff_last64, 64, 0 );
 #if HAVE_MMX && !HIGH_BIT_DEPTH
-    /* undispatched coeff_last15/16 avx2, at the AVX2 level that adds LZCNT */
+    /* undispatched coeff_last8/15/16 avx2, at the AVX2 level that adds LZCNT; bench names of
+     * their own, as the dispatched sse2_lzcnt/mmx2_lzcnt ones run at this level too */
     if( (cpu_new&X264_CPU_AVX2) && (cpu_new&X264_CPU_LZCNT) && !(cpu_ref&X264_CPU_LZCNT) &&
         !(cpu_new&(X264_CPU_AVXVNNI|X264_CPU_AVX512)) )
     {
         x264_quant_function_t qf_disp = qf_a;
+#if ARCH_X86_64
+        qf_a.coeff_last8 = x264_coeff_last8_avx2_lzcnt;
+        TEST_LAST( coeff_last8              , coeff_last8_alt,   8, 0 );
+#endif
         qf_a.coeff_last[  DCT_LUMA_AC] = x264_coeff_last15_avx2_lzcnt;
         qf_a.coeff_last[ DCT_LUMA_4x4] = x264_coeff_last16_avx2_lzcnt;
-        TEST_LAST( coeff_last[  DCT_LUMA_AC], coeff_last15, 16, 1 );
-        TEST_LAST( coeff_last[ DCT_LUMA_4x4], coeff_last16, 16, 0 );
+        TEST_LAST( coeff_last[  DCT_LUMA_AC], coeff_last15_alt, 16, 1 );
+        TEST_LAST( coeff_last[ DCT_LUMA_4x4], coeff_last16_alt, 16, 0 );
         qf_a = qf_disp;
     }
 #endif

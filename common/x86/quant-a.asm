@@ -1814,6 +1814,7 @@ INIT_XMM avx512icl
 OPTIMIZE_CHROMA_ICL 2x2, 4
 %endif
 
+
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------
 ; void denoise_dct( int32_t *dct, uint32_t *sum, uint32_t *offset, int size )
@@ -2950,6 +2951,20 @@ cglobal coeff_last%1, 1,1
 INIT_YMM avx2,lzcnt
 COEFF_LAST_AVX2 15
 COEFF_LAST_AVX2 16
+
+%if ARCH_X86_64
+; 8 coefs (4:2:2 chroma dc), GPRs only: lzcnt of each qword, the low one + 64 when the
+; high one is zero (lzcnt's CF), no MMX state
+INIT_XMM avx2,lzcnt
+cglobal coeff_last8, 1,2
+    lzcnt     r1, [r0]
+    add      r1d, 64
+    lzcnt    rax, [r0+8]
+    cmovc    eax, r1d
+    xor      eax, 127
+    shr      eax, 4
+    RET
+%endif
 %endif
 
 %macro COEFF_LAST_AVX512 2 ; num, w/d
