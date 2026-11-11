@@ -4143,8 +4143,8 @@ static int check_propagate_list_strip( int cpu_new, const char *name, const char
     }
 
     /* bench: the mbtree_propagate_list inputs (128 wide, row 1 of 4, mvs +-32), and a 120-wide pan;
-     * list: lists 0 and 1, list2: a B row, against two list calls */
-    for( int pan = 0; pan < 2 && do_bench; pan++ )
+     * list: lists 0 and 1, list2: a B row, against two list calls; tag NULL: no bench */
+    for( int pan = 0; pan < 2 && do_bench && tag; pan++ )
     {
         static const uint8_t list_dist[3][8] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2},{1,2,3,3,3,3,1,2}};
         int width = pan ? 120 : 128;
@@ -5353,6 +5353,11 @@ static int check_mc( int cpu_ref, int cpu_new )
     if( mc_a.mbtree_propagate_list != mc_ref.mbtree_propagate_list )
     {
         used_asm = 1;
+        /* the strip wrappers: a zeroed strip, and 2 lists x 20 bytes an entry of scratch */
+        uint8_t *pl_mem = x264_malloc( MBTREE_STRIP_SIZE( 128 ) + (8<<10) );
+        if( !pl_mem )
+            return -1;
+        memset( pl_mem, 0, MBTREE_STRIP_SIZE( 128 ) );
         for( int i = 0; i < 16; i++ )
         {
             set_func_name( "mbtree_propagate_list" );
@@ -5369,7 +5374,8 @@ static int check_mc( int cpu_ref, int cpu_new )
             int16_t (*mvs)[2] = (int16_t(*)[2])(ref_costsc + width + size);
             int16_t *propagate_amount = (int16_t*)(mvs + width);
             uint16_t *lowres_costs = (uint16_t*)(propagate_amount + width);
-            h.scratch_buffer2 = (uint8_t*)(ref_costsa + width + size);
+            h.scratch_buffer2 = pl_mem + MBTREE_STRIP_SIZE( 128 );
+            h.mbtree_strip = (int32_t*)pl_mem;
             int bipred_weight = (rand()%63)+1;
             int mb_y = rand()&3;
             int list = i&1;
@@ -5414,6 +5420,7 @@ static int check_mc( int cpu_ref, int cpu_new )
             hb->mb.i_mb_width = width;
             hb->mb.i_mb_height = 4;
             hb->scratch_buffer2 = mb + (32<<10);
+            hb->mbtree_strip = (int32_t*)pl_mem;
             bench_srand( 600 + list );
             for( int j = -width; j < size+width; j++ )
                 ref_costsc[j] = ref_costsa[j] = bench_rand()&32767;
@@ -5430,7 +5437,18 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
         x264_free( hb );
         x264_free( mb );
+        x264_free( pl_mem );
     }
+#if HAVE_MMX && ARCH_X86_64
+    /* the dispatched list2: list 0 then list 1 of the dispatched list, exactly */
+    if( mc_a.mbtree_propagate_list2 != mc_ref.mbtree_propagate_list2 && mc_a.mbtree_propagate_list2 )
+    {
+        used_asm = 1;
+        set_func_name( "mbtree_propagate_list2" );
+        ret |= check_propagate_list_strip( cpu_new, "propagate_list2 :", NULL, mc_a.mbtree_propagate_list,
+                                           mc_a.mbtree_propagate_list, mc_a.mbtree_propagate_list2 );
+    }
+#endif
 #if HAVE_MMX && ARCH_X86_64
     /* the strip wrappers (undispatched), at the first AVX2 / AVX512 level */
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )

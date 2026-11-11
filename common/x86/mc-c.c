@@ -1992,7 +1992,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->get_ref = get_ref_avx2;
     pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx2;
 #if ARCH_X86_64
-    pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx2;
+    /* int32 strip, both B lists in one pass; Core 3 in situ decides (laptop/Zen 5: see the commit) */
+    pf->mbtree_propagate_list = x264_mbtree_propagate_list_strip_asm_avx2;
+    pf->mbtree_propagate_list2 = x264_mbtree_propagate_list2_strip_asm_avx2;
     /* vgatherdps: 2.96x / 3.13x C on Core 3 Raptor Cove; unmeasured on slow-gather CPUs, which keep C */
     if( !(cpu&X264_CPU_SLOW_GATHER) )
     {
@@ -2012,6 +2014,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->mbtree_propagate_cost = x264_mbtree_propagate_cost_avx512;
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx512;
+    pf->mbtree_propagate_list2 = NULL; /* the strip on AVX-512: rack01 decides */
     pf->mbtree_finish = x264_mbtree_finish_avx512;
 #endif
 
