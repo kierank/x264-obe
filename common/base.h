@@ -300,6 +300,15 @@ void x264_log_internal( int i_level, const char *psz_fmt, ... );
 void *x264_malloc( int );
 void  x264_free( void * );
 
+#ifdef X264_FLD_STATS
+/* Test builds (-DX264_FLD_STATS): bytes written to the MBAFF field planes:
+ * plane_fld copies, field hpel h, field hpel v+c, field borders. */
+extern uint64_t x264_fld_stats[4];
+#define FLD_STAT( i, n ) __atomic_fetch_add( &x264_fld_stats[i], (uint64_t)(n), __ATOMIC_RELAXED )
+#else
+#define FLD_STAT( i, n ) do {} while( 0 )
+#endif
+
 /* x264_slurp_file: malloc space for the whole file and read it */
 char *x264_slurp_file( const char *filename );
 

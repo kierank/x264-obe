@@ -2732,6 +2732,8 @@ static inline void x264_reference_build_list( x264_t *h, int i_poc )
 
 static void fdec_copy_fld_rows( x264_t *h, int p, int y0, int y1 )
 {
+    if( y1 > y0 )
+        FLD_STAT( 0, (int64_t)(y1 - y0) * h->mb.i_mb_width*16 * sizeof(pixel) );
     for( int i = y0; i < y1; i++ )
         memcpy( h->fdec->plane_fld[p] + i*h->fdec->i_stride[p],
                 h->fdec->plane[p]     + i*h->fdec->i_stride[p],
@@ -4751,6 +4753,17 @@ void    x264_encoder_close  ( x264_t *h )
         h->i_frame = thread_prev->i_frame + 1 - h->i_thread_frames;
     }
     h->i_frame++;
+
+#ifdef X264_FLD_STATS
+    if( PARAM_INTERLACED )
+    {
+        int i_frames = h->stat.i_frame_count[SLICE_TYPE_I] + h->stat.i_frame_count[SLICE_TYPE_P] + h->stat.i_frame_count[SLICE_TYPE_B];
+        double f = 1.0 / (1 << 20) / X264_MAX( i_frames, 1 );
+        x264_log( h, X264_LOG_INFO, "field-plane writes MB/f: copy %.3f h %.3f vc %.3f border %.3f total %.3f\n",
+                  x264_fld_stats[0] * f, x264_fld_stats[1] * f, x264_fld_stats[2] * f, x264_fld_stats[3] * f,
+                  (x264_fld_stats[0] + x264_fld_stats[1] + x264_fld_stats[2] + x264_fld_stats[3]) * f );
+    }
+#endif
 
     /* Slices used and PSNR */
     for( int i = 0; i < 3; i++ )

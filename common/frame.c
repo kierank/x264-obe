@@ -658,6 +658,13 @@ static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i
 #undef PPIXEL
 }
 
+/* bytes a field plane_expand_border(_src) of frame rows [y, y+i_height) of plane
+ * j of plane set p writes, for X264_FLD_STATS */
+static void fld_stat_border( x264_frame_t *frame, int p, int j, int y, int i_width, int i_height, int i_padh, int i_padv, int b_pad_top, int b_pad_bottom )
+{
+    FLD_STAT( 3, ((int64_t)2*i_padh*i_height + (int64_t)(b_pad_top + b_pad_bottom)*i_padv*(i_width+2*i_padh)) * sizeof(pixel) );
+}
+
 static void ALWAYS_INLINE plane_expand_border( pixel *pix, int i_stride, int i_width, int i_height, int i_padh, int i_padv, int b_pad_top, int b_pad_bottom, int b_chroma )
 {
     plane_expand_border_src( pix, pix, i_stride, i_width, i_height, i_padh, i_padv, b_pad_top, b_pad_bottom, b_chroma );
@@ -698,6 +705,7 @@ void x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y )
             pix = frame->plane_fld[i] + (starty*stride >> v_shift);
             plane_expand_border_src( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
             plane_expand_border_src( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            fld_stat_border( frame, i, 0, starty >> v_shift, width, 2*height, padh, padv, 2*pad_top, 2*pad_bot );
         }
         else
         {
@@ -728,6 +736,7 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
                 pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
                 plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
                 plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                fld_stat_border( frame, p, i, 16*mb_y - 16, width, 2*height, padh, padv, 2*b_start, 2*b_end );
             }
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;

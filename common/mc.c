@@ -826,6 +826,10 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     pixel *dstc = frame->filtered_fld[p][3] + offs;
     if( y1 <= y0 )
         return;
+    FLD_STAT( 1, (int64_t)(y1 - y0) * width * sizeof(pixel) );
+    FLD_STAT( 2, (int64_t)(y1 - y0) * width * 2 * sizeof(pixel) );
+    if( b_copy )
+        FLD_STAT( 0, (int64_t)(y1 - y0) * width * sizeof(pixel) );
     if( !b_copy )
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
     else if( h->mc.hpel_filter_copy )
