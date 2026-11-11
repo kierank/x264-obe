@@ -557,6 +557,65 @@ void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
         x264_lowres_p_run( h, &lp );
         return;
     }
+    x264_lowres_b_t lb;
+    if( p0 < b && b < p1 && !w[0].weightfn && h->i_threadslice_end - h->i_threadslice_start <= LOWRES_B_ROWS &&
+        (!(do_search[0] || do_search[1]) || x264_lowres_p_init( h, &lp )) && x264_lowres_b_init( h, &lb, c->lambda ) )
+    {
+        x264_frame_t *fenc = (x264_frame_t*)frames[b];
+        x264_frame_t *fref[2] = { (x264_frame_t*)frames[p0], (x264_frame_t*)frames[p1] };
+        int16_t (*mvs[2])[2] = { fenc->lowres_mvs[0][b-p0-1], fenc->lowres_mvs[1][p1-b-1] };
+        int *mv_costs[2] = { fenc->lowres_mv_costs[0][b-p0-1], fenc->lowres_mv_costs[1][p1-b-1] };
+        uint16_t *costs = fenc->lowres_costs[b-p0][p1-b];
+        if( do_search[0] || do_search[1] )
+        {
+            int out[NUM_INTS + LOWRES_B_ROWS];
+            lp.fenc = fenc->lowres8[0];
+            lp.cost_mv = c->p_cost_mv;
+            lp.intra_cost = fenc->i_intra_cost;
+            lp.stride = fenc->i_stride_lowres;
+            lp.lambda = c->lambda;
+            lp.skip_thresh = 64 >> LOWRES8_COST_SHIFT;
+            lp.slice_start = h->i_threadslice_start;
+            lp.slice_end = h->i_threadslice_end;
+            lp.start_x = start_x;
+            lp.end_x = end_x;
+            lp.start_y = start_y;
+            lp.end_y = end_y;
+            for( int l = 0; l < 2; l++ )
+                if( do_search[l] )
+                    x264_lowres_b_search( h, &lp, fref[l]->lowres8, mvs[l], mv_costs[l], costs, out );
+        }
+        lb.fenc = fenc->lowres8[0];
+        for( int i = 0; i < 4; i++ )
+        {
+            lb.ref0[i] = fref[0]->lowres8[i];
+            lb.ref1[i] = fref[1]->lowres8[i];
+        }
+        lb.mvs[0] = mvs[0];
+        lb.mvs[1] = mvs[1];
+        lb.mv_costs[0] = mv_costs[0];
+        lb.mv_costs[1] = mv_costs[1];
+        lb.mvr = fref[1]->lowres_mvs[0][p1-p0-1][0][0] != 0x7FFF ? fref[1]->lowres_mvs[0][p1-p0-1] : NULL;
+        lb.costs = costs;
+        lb.intra_cost = fenc->i_intra_cost;
+        lb.inv_qscale = h->param.rc.i_aq_mode ? fenc->i_inv_qscale_factor : NULL;
+        lb.output_inter = output_inter;
+        lb.output_intra = fenc->b_intra_calculated ? NULL : output_intra;
+        lb.stride = fenc->i_stride_lowres;
+        lb.dist_scale_factor = dist_scale_factor;
+        lb.bipred_weight = h->param.analyse.b_weighted_bipred ? 64 - (dist_scale_factor>>2) : 32;
+        lb.slice_start = h->i_threadslice_start;
+        lb.start_x = start_x;
+        lb.end_x = end_x;
+        lb.start_y = start_y;
+        lb.end_y = end_y;
+        lb.corr_intra = c->corr_intra;
+        lb.corr_inter = c->corr_b;
+        lb.corr_intra_max = LA8_CORR_INTRA_MAX;
+        lb.corr_inter_max = LA8_CORR_B_MAX;
+        x264_lowres_b_run( h, &lb );
+        return;
+    }
     x264_lowres_i_t li;
     if( p0 == p1 && x264_lowres_i_init( h, &li, c->lambda ) )
     {

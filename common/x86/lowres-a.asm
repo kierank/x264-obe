@@ -99,6 +99,10 @@ li_hu2:        db  9, 8, 7, 6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2
 li_hu3:        db  7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
                db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
 
+; x264_hpel_ref0, x264_hpel_ref1
+li_hpel_ref:   db 0,1,1,1,0,1,1,1,2,3,3,3,0,1,1,1
+               db 0,0,1,0,2,2,3,2,2,2,3,2,2,2,3,2
+
 SECTION .text
 
 cextern pb_1
@@ -131,6 +135,58 @@ struc lowres_i
     .end_y:          resd 1
 endstruc
 
+; x264_lowres_b_t (encoder/lowres.h); the layout is checked in encoder/slicetype.c
+struc lowres_b
+    .fenc_pre:       resq 1
+    .intra:          resq 1
+    .bi:             resq 1
+    .bi4:            resq 1
+    .fenc:           resq 1
+    .ref0:           resq 4
+    .ref1:           resq 4
+    .mvs:            resq 2
+    .mv_costs:       resq 2
+    .mvr:            resq 1
+    .costs:          resq 1
+    .intra_cost:     resq 1
+    .inv_qscale:     resq 1
+    .output_inter:   resq 1
+    .output_intra:   resq 1
+    .corr_intra:     resq 1
+    .corr_inter:     resq 1
+    .stride:         resq 1
+    .lambda:         resd 1
+    .dist_scale_factor: resd 1
+    .bipred_weight:  resd 1
+    .mv_range:       resd 1
+    .mb_width:       resd 1
+    .mb_height:      resd 1
+    .slice_start:    resd 1
+    .start_x:        resd 1
+    .end_x:          resd 1
+    .start_y:        resd 1
+    .end_y:          resd 1
+    .corr_intra_max: resd 1
+    .corr_inter_max: resd 1
+endstruc
+
+; lowres_b_mbs stack: outgoing arguments, fenc_pre and the LI_REGS slots, locals
+%assign LB_ARGS 0
+%assign LB_PRE 32
+%assign LB_ROW   LB_PRE+7*32
+%assign LB_SCORE LB_ROW+4
+%assign LB_XMIN  LB_ROW+8
+%assign LB_XMAX  LB_ROW+12
+%assign LB_YMIN  LB_ROW+16
+%assign LB_YMAX  LB_ROW+20
+%assign LB_BC    LB_ROW+24
+%assign LB_LIST  LB_ROW+28
+%assign LB_DMV0  LB_ROW+32
+%assign LB_DMV1  LB_ROW+36
+%assign LB_MV0   LB_ROW+40
+%assign LB_MV1   LB_ROW+44
+%assign LB_STACK (LB_ROW+48+31) & ~31
+
 %macro PRED4x4_LOWPASS 5
     pavgb       %5, %2, %3
     pxor        %3, %2
@@ -159,7 +215,7 @@ endstruc
 
 ; fenc_pre row pairs (k, k+4) and the per-MB constants of LI_SATD_FLAT: avx2 on the
 ; stack, avx512icl in m16-m22
-%macro LI_REGS 0
+%macro LI_REGS 1 ; stack offset of the avx2 slots (7*32 bytes)
 %if cpuflag(avx512icl)
 %define LI_FPRE0 m16
 %define LI_FPRE1 m17
@@ -169,13 +225,13 @@ endstruc
 %define LI_A2  m21
 %define LI_S13 m22
 %else
-%define LI_FPRE0 [rsp+0*32]
-%define LI_FPRE1 [rsp+1*32]
-%define LI_FPRE2 [rsp+2*32]
-%define LI_FPRE3 [rsp+3*32]
-%define LI_HF0 [rsp+4*32]
-%define LI_A2  [rsp+5*32]
-%define LI_S13 [rsp+6*32]
+%xdefine LI_FPRE0 [rsp+%1+0*32]
+%xdefine LI_FPRE1 [rsp+%1+1*32]
+%xdefine LI_FPRE2 [rsp+%1+2*32]
+%xdefine LI_FPRE3 [rsp+%1+3*32]
+%xdefine LI_HF0 [rsp+%1+4*32]
+%xdefine LI_A2  [rsp+%1+5*32]
+%xdefine LI_S13 [rsp+%1+6*32]
 %endif
 %endmacro
 
@@ -240,12 +296,9 @@ endstruc
 %endif
 %endmacro
 
-;-----------------------------------------------------------------------------
-; intra_satd_lowres of the 8x8 at r1 + r2 (r1 = src - stride, r2 = stride, r3 = 3*stride,
-; r4 = r1 + 4*stride), fenc_pre and its per-MB constants computed here: the minimum
-; in r6d. m15 = hmul_8p; avx512icl: k1-k7 as set in LI_KMASKS.
-;-----------------------------------------------------------------------------
-%macro LI_INTRA 0
+; fenc_pre of the 8x8 at r1 + r2 (r1 = src - stride, r2 = stride, r3 = 3*stride,
+; r4 = r1 + 4*stride) into m0-m3 and LI_FPRE0-3; m15 = hmul_8p, avx512icl: k7
+%macro LI_FENC_PRE 0
     ; fenc_pre: rows (k, k+4) of the plane's 8x8, first stage
     LI_DUP8      0, 4, [r1+r2],   [r4+r2]
     LI_DUP8      1, 5, [r1+2*r2], [r4+2*r2]
@@ -259,6 +312,14 @@ endstruc
     mova  LI_FPRE1, m1
     mova  LI_FPRE2, m2
     mova  LI_FPRE3, m3
+%endmacro
+
+;-----------------------------------------------------------------------------
+; intra_satd_lowres of the 8x8 at r1 + r2 (r1 = src - stride, r2 = stride, r3 = 3*stride,
+; r4 = r1 + 4*stride) from its fenc_pre in m0-m3 and LI_FPRE0-3, the per-MB constants
+; computed here: the minimum in r6d. m15 = hmul_8p; avx512icl: k1-k6 as set in LI_KMASKS.
+;-----------------------------------------------------------------------------
+%macro LI_INTRA 0
     HADAMARD4_V  0, 1, 2, 3, 4
     mova      LI_HF0, m0
     pabsw        m2, m2
@@ -468,7 +529,7 @@ endstruc
 ;-----------------------------------------------------------------------------
 ; r0: c, r2: stride, r3: 3*stride, r5: mb_x, r7: mb_y, r8: mb_xy, r9: row, r10: score
 %macro LOWRES_I_MBS 0
-LI_REGS
+LI_REGS 0
 cglobal lowres_i_mbs, 1,15,LI_NREGS, LI_STACK
     LI_KMASKS
     mova        m15, [li_hmul_8p]
@@ -521,6 +582,7 @@ cglobal lowres_i_mbs, 1,15,LI_NREGS, LI_STACK
     add          r1, [r0+lowres_i.fenc]
     sub          r1, r2
     lea          r4, [r1+4*r2]
+    LI_FENC_PRE
     LI_INTRA
     mov        r12d, [r0+lowres_i.penalty]
     add         r6d, r12d
@@ -577,10 +639,393 @@ cglobal lowres_i_mbs, 1,15,LI_NREGS, LI_STACK
     RET
 %endmacro
 
+; x264_mc_hpel_pair of the packed mv %5 over the planes at c+%6, at the MB (R14 = pel):
+; %1 (%2 dword) = dst[0], %3 (%4 dword) = dst[1]; rax, rdi, R9-R11 clobbered
+%macro LB_PAIR 6
+    mov        R11d, %5
+    movsx       R9d, R11w
+    sar        R11d, 16
+    mov         eax, R11d
+    and         eax, 3
+    mov        R10d, R9d
+    and        R10d, 3
+    lea         edi, [R10+rax*4]      ; qpel_idx
+    sar        R11d, 2
+    movsxd      R11, R11d
+    imul        R11, rbp
+    sar         R9d, 2
+    movsxd       R9, R9d
+    add         R11, R9
+    add         R11, R14              ; pel + offset
+    lea          R9, [li_hpel_ref]
+    movzx        %2, byte [R9+rdi]
+    mov          %1, [rbx+%6+%1*8]
+    add          %1, R11
+    xor          %4, %4
+    cmp         eax, 3
+    cmove        %3, rbp
+    add          %1, %3
+    test        edi, 5
+    jz %%one
+    movzx        %4, byte [R9+rdi+16]
+    mov          %3, [rbx+%6+%3*8]
+    add          %3, R11
+    xor         eax, eax
+    cmp        R10d, 3
+    sete         al
+    add          %3, rax
+    jmp %%done
+%%one:
+    mov          %3, %1
+%%done:
+%endmacro
+
+; TRY_BIDIR of the packed mvs %1, %2 (dwords), penalty %3*lambda
+%macro LB_BIDIR 3
+    LB_PAIR     rcx, ecx, R8, R8d, %2, lowres_b.ref1
+    LB_PAIR     rsi, esi, rdx, edx, %1, lowres_b.ref0
+    mov          R9, rbp
+    mov         eax, [rbx+lowres_b.bipred_weight]
+    mov  [rsp+LB_ARGS], rax
+    lea         rdi, [rsp+LB_PRE]
+    call [rbx+lowres_b.bi4]
+%if %3
+    mov         ecx, [rbx+lowres_b.lambda]
+    lea         ecx, [rcx+rcx*4]
+    add         eax, ecx
+%endif
+    cmp         eax, [rsp+LB_BC]
+    jge %%no
+    mov  [rsp+LB_BC], eax
+    mov dword [rsp+LB_LIST], 3
+%%no:
+%endmacro
+
+; %1 = x264_clip3( %1, [rsp+%2], [rsp+%3] ); %4 tmp
+%macro LB_CLIP3 4
+    mov          %4, %1
+    cmp          %1, [rsp+%3]
+    cmovg        %4, [rsp+%3]
+    cmp          %1, [rsp+%2]
+    cmovl        %4, [rsp+%2]
+    mov          %1, %4
+%endmacro
+
+;-----------------------------------------------------------------------------
+; void lowres_b_mbs( x264_lowres_b_t *c )
+;-----------------------------------------------------------------------------
+; rbx: c, rbp: stride, R12: mb_x, R13: mb_y, R14: pel offset, R15: mb_xy (callee-saved:
+; satd_bi / satd_bi4 are called with the C ABI on fenc_pre at rsp+LB_PRE)
+%macro LOWRES_B_MBS 0
+cglobal lowres_b_mbs, 1,15,LI_NREGS, LB_STACK
+    mov         rbx, r0
+    mov         rbp, [rbx+lowres_b.stride]
+    mov        R13d, [rbx+lowres_b.start_y]
+    cmp        R13d, [rbx+lowres_b.end_y]
+    jl .end
+.row:
+    ; y spel limits of slicetype_mb_cost
+    mov         eax, R13d
+    shl         eax, 5
+    neg         eax
+    sub         eax, 48
+    mov         ecx, [rbx+lowres_b.mv_range]
+    neg         ecx
+    cmp         eax, ecx
+    cmovl       eax, ecx
+    mov  [rsp+LB_YMIN], eax
+    mov         eax, [rbx+lowres_b.mb_height]
+    sub         eax, R13d
+    dec         eax
+    shl         eax, 5
+    add         eax, 48
+    mov         ecx, [rbx+lowres_b.mv_range]
+    dec         ecx
+    cmp         eax, ecx
+    cmovg       eax, ecx
+    mov  [rsp+LB_YMAX], eax
+    mov         eax, R13d
+    sub         eax, [rbx+lowres_b.slice_start]
+    add         eax, 4
+    mov   [rsp+LB_ROW], eax
+    mov        R12d, [rbx+lowres_b.start_x]
+    cmp        R12d, [rbx+lowres_b.end_x]
+    jl .rownext
+
+.col:
+    mov         eax, R13d
+    imul        eax, [rbx+lowres_b.mb_width]
+    add         eax, R12d
+    mov        R15d, eax
+    movsxd      rax, R13d
+    imul        rax, rbp
+    movsxd      rcx, R12d
+    add         rax, rcx
+    lea         R14, [rax*8]
+    ; b_frame_score_mb
+    xor         eax, eax
+    mov         ecx, [rbx+lowres_b.mb_width]
+    mov         edx, [rbx+lowres_b.mb_height]
+    cmp         ecx, 2
+    jle .score1
+    cmp         edx, 2
+    jle .score1
+    test       R12d, R12d
+    jle .score0
+    dec         ecx
+    cmp        R12d, ecx
+    jge .score0
+    test       R13d, R13d
+    jle .score0
+    dec         edx
+    cmp        R13d, edx
+    jge .score0
+.score1:
+    mov         eax, 1
+.score0:
+    mov [rsp+LB_SCORE], eax
+    ; x spel limits
+    mov         eax, R12d
+    shl         eax, 5
+    neg         eax
+    sub         eax, 48
+    mov         ecx, [rbx+lowres_b.mv_range]
+    neg         ecx
+    cmp         eax, ecx
+    cmovl       eax, ecx
+    mov  [rsp+LB_XMIN], eax
+    mov         eax, [rbx+lowres_b.mb_width]
+    sub         eax, R12d
+    dec         eax
+    shl         eax, 5
+    add         eax, 48
+    mov         ecx, [rbx+lowres_b.mv_range]
+    dec         ecx
+    cmp         eax, ecx
+    cmovg       eax, ecx
+    mov  [rsp+LB_XMAX], eax
+
+    ; fenc_pre to rsp+LB_PRE
+    LI_KMASKS
+    mova        m15, [li_hmul_8p]
+    mov          r2, rbp
+    lea          r3, [rbp*3]
+    mov          r1, [rbx+lowres_b.fenc]
+    add          r1, R14
+    sub          r1, r2
+    lea          r4, [r1+4*r2]
+    LI_FENC_PRE
+%if cpuflag(avx512icl)
+    mova [rsp+LB_PRE+0*32], m0
+    mova [rsp+LB_PRE+1*32], m1
+    mova [rsp+LB_PRE+2*32], m2
+    mova [rsp+LB_PRE+3*32], m3
+%endif
+
+    mov dword [rsp+LB_BC], 1<<28      ; COST_MAX
+    mov dword [rsp+LB_LIST], 0
+    ; the scaled mvs of fref1, clipped
+    xor         eax, eax
+    xor         edx, edx
+    mov         rsi, [rbx+lowres_b.mvr]
+    test        rsi, rsi
+    jz .dmv
+    movsx       ecx, word [rsi+R15*4]
+    movsx       R8d, word [rsi+R15*4+2]
+    mov         R9d, [rbx+lowres_b.dist_scale_factor]
+    mov         eax, ecx
+    imul        eax, R9d
+    add         eax, 128
+    sar         eax, 8
+    movsx       eax, ax               ; dmv[0][0]
+    mov         edx, eax
+    sub         edx, ecx
+    movsx       edx, dx               ; dmv[1][0]
+    LB_CLIP3    eax, LB_XMIN, LB_XMAX, R10d
+    LB_CLIP3    edx, LB_XMIN, LB_XMAX, R10d
+    mov        R10d, R8d
+    imul       R10d, R9d
+    add        R10d, 128
+    sar        R10d, 8
+    movsx      R10d, R10w             ; dmv[0][1]
+    mov        R11d, R10d
+    sub        R11d, R8d
+    movsx      R11d, R11w             ; dmv[1][1]
+    LB_CLIP3   R10d, LB_YMIN, LB_YMAX, ecx
+    LB_CLIP3   R11d, LB_YMIN, LB_YMAX, ecx
+    movzx       eax, ax
+    shl        R10d, 16
+    or          eax, R10d
+    movzx       edx, dx
+    shl        R11d, 16
+    or          edx, R11d
+.dmv:
+    mov  [rsp+LB_DMV0], eax
+    mov  [rsp+LB_DMV1], edx
+    LB_BIDIR    [rsp+LB_DMV0], [rsp+LB_DMV1], 0
+    mov         eax, [rsp+LB_DMV0]
+    or          eax, [rsp+LB_DMV1]
+    jz .lists
+    ; mv 0
+    lea         rdi, [rsp+LB_PRE]
+    mov         rsi, [rbx+lowres_b.ref0]
+    add         rsi, R14
+    mov         rdx, rbp
+    mov         rcx, [rbx+lowres_b.ref1]
+    add         rcx, R14
+    mov          R8, rbp
+    mov         R9d, [rbx+lowres_b.bipred_weight]
+    call [rbx+lowres_b.bi]
+    cmp         eax, [rsp+LB_BC]
+    jge .lists
+    mov  [rsp+LB_BC], eax
+    mov dword [rsp+LB_LIST], 3
+.lists:
+    mov         rsi, [rbx+lowres_b.mvs]
+    mov         eax, [rsi+R15*4]
+    mov   [rsp+LB_MV0], eax
+    mov         rsi, [rbx+lowres_b.mvs+8]
+    mov         eax, [rsi+R15*4]
+    mov   [rsp+LB_MV1], eax
+    mov         rsi, [rbx+lowres_b.mv_costs]
+    mov         eax, [rsi+R15*4]
+    cmp         eax, [rsp+LB_BC]
+    jge .list1
+    mov  [rsp+LB_BC], eax
+    mov dword [rsp+LB_LIST], 1
+.list1:
+    mov         rsi, [rbx+lowres_b.mv_costs+8]
+    mov         eax, [rsi+R15*4]
+    cmp         eax, [rsp+LB_BC]
+    jge .list2
+    mov  [rsp+LB_BC], eax
+    mov dword [rsp+LB_LIST], 2
+.list2:
+    mov         eax, [rsp+LB_MV0]
+    or          eax, [rsp+LB_MV1]
+    jz .intra
+    LB_BIDIR    [rsp+LB_MV0], [rsp+LB_MV1], 5
+
+.intra:
+    mov         rsi, [rbx+lowres_b.output_intra]
+    test        rsi, rsi
+    jz .inter
+    LI_KMASKS
+    mova        m15, [li_hmul_8p]
+    mova         m0, [rsp+LB_PRE+0*32]
+    mova         m1, [rsp+LB_PRE+1*32]
+    mova         m2, [rsp+LB_PRE+2*32]
+    mova         m3, [rsp+LB_PRE+3*32]
+%if cpuflag(avx512icl)
+    mova   LI_FPRE0, m0
+    mova   LI_FPRE1, m1
+    mova   LI_FPRE2, m2
+    mova   LI_FPRE3, m3
+%endif
+    mov          r2, rbp
+    lea          r3, [rbp*3]
+    mov          r1, [rbx+lowres_b.fenc]
+    add          r1, R14
+    sub          r1, r2
+    lea          r4, [r1+4*r2]
+    LI_INTRA
+    mov         ecx, [rbx+lowres_b.lambda]
+    lea         ecx, [rcx+rcx*4+4]
+    add         eax, ecx
+    ; the 8-bit lookahead's correction, floor 5*lambda + 4
+    mov         rdx, [rbx+lowres_b.corr_intra]
+    test        rdx, rdx
+    jz .icorr
+    mov         esi, [rbx+lowres_b.corr_intra_max]
+    cmp         eax, esi
+    cmovb       esi, eax
+    movzx       esi, byte [rdx+rsi]
+    cmp         ecx, eax
+    cmovg       ecx, eax
+    sub         eax, esi
+    cmp         eax, ecx
+    cmovl       eax, ecx
+.icorr:
+    mov         rcx, [rbx+lowres_b.intra_cost]
+    mov  [rcx+R15*2], ax
+    mov         ecx, eax
+    mov         rdx, [rbx+lowres_b.inv_qscale]
+    test        rdx, rdx
+    jz .intranoaq
+    movzx       edx, word [rdx+R15*2]
+    imul        ecx, edx
+    add         ecx, 128
+    sar         ecx, 8
+.intranoaq:
+    mov         rdx, [rbx+lowres_b.output_intra]
+    movsxd      rsi, dword [rsp+LB_ROW]
+    add  [rdx+rsi*4], ecx
+    cmp dword [rsp+LB_SCORE], 0
+    je .inter
+    add       [rdx], eax
+    add     [rdx+4], ecx
+
+.inter:
+    mov         ecx, [rsp+LB_BC]
+    add         ecx, 4
+    ; the 8-bit lookahead's correction, floor 4
+    mov         rdx, [rbx+lowres_b.corr_inter]
+    test        rdx, rdx
+    jz .bcorr
+    mov         eax, [rbx+lowres_b.corr_inter_max]
+    cmp         ecx, eax
+    cmovb       eax, ecx
+    movzx       eax, byte [rdx+rax]
+    mov         edx, 4
+    cmp         edx, ecx
+    cmovg       edx, ecx
+    sub         ecx, eax
+    cmp         ecx, edx
+    cmovl       ecx, edx
+.bcorr:
+    mov         eax, ecx
+    mov         rsi, [rbx+lowres_b.inv_qscale]
+    test        rsi, rsi
+    jz .internoaq
+    movzx       esi, word [rsi+R15*2]
+    imul        eax, esi
+    add         eax, 128
+    sar         eax, 8
+.internoaq:
+    mov         rdx, [rbx+lowres_b.output_inter]
+    movsxd      rsi, dword [rsp+LB_ROW]
+    add  [rdx+rsi*4], eax
+    cmp dword [rsp+LB_SCORE], 0
+    je .noscore
+    add       [rdx], ecx
+    add     [rdx+4], eax
+.noscore:
+    mov         eax, (1<<14)-1        ; LOWRES_COST_MASK
+    cmp         ecx, eax
+    cmovl       eax, ecx
+    mov         ecx, [rsp+LB_LIST]
+    shl         ecx, 14
+    add         eax, ecx
+    mov         rdx, [rbx+lowres_b.costs]
+    mov  [rdx+R15*2], ax
+
+    dec        R12d
+    cmp        R12d, [rbx+lowres_b.end_x]
+    jge .col
+.rownext:
+    dec        R13d
+    cmp        R13d, [rbx+lowres_b.end_y]
+    jge .row
+.end:
+    RET
+%endmacro
+
 INIT_YMM avx2
 %assign LI_STACK 7*32
 %assign LI_NREGS 16
 LOWRES_I_MBS
+LI_REGS LB_PRE
+LOWRES_B_MBS
 
 INIT_YMM avx512icl
 %assign LI_STACK 0
