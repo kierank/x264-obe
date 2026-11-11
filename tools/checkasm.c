@@ -3029,6 +3029,16 @@ static int check_pixel( int cpu_ref, int cpu_new )
             TEST_INTRA_X3( intra_sad_x3_8x8c, 0 );
             TEST_INTRA_X3( intra_sad_x3_8x8, 1, edge );
             TEST_INTRA_X3( intra_sad_x3_4x4, 0 );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+            /* undispatched intra_sad_x3_8x16c avx2 (4:2:2), at the AVX2 level */
+            if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+            {
+                void (*isad_disp)( pixel *, pixel *, int * ) = pixel_asm.intra_sad_x3_8x16c;
+                pixel_asm.intra_sad_x3_8x16c = x264_intra_sad_x3_8x16c_avx2;
+                TEST_INTRA_X3( intra_sad_x3_8x16c, 0 );
+                pixel_asm.intra_sad_x3_8x16c = isad_disp;
+            }
+#endif
             x9_fenc = fenc0;
             pbuf3 = fdec0;
         }
