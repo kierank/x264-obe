@@ -1,0 +1,15 @@
+pair order|rd422_pairs:        db 1, 0, 3, 2|rd422_pairs:        db 0, 1, 3, 2, 6, 5, 4, -1, 9, 8, 11, 10, 14, 13, 12, -1
+ctx2 second slot|    mov      r1d, [rd8_sig9+8+r1*4 GLOBAL]|    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+skip ctx2 at last 4|    cmp      r6d, 4|    cmp      r6d, 5
+skip ctx1 at last 2|    cmp      r6d, 2|    cmp      r6d, 3
+phase A ae|    setae    r2b|    seta     r2b
+F context|    cmovb    r2d, r4d|    cmova    r2d, r4d
+gt1 ctx 7|    RD422_NEXT 7, 0, .tail|    RD422_NEXT 6, 0, .tail
+gt1 cap 8|    movzx    r6d, byte [r8+8]|    movzx    r6d, byte [r8+9]
+node init|    lea      r7d, [r2*2+r2+1]|    lea      r7d, [r2*2+r2]
+gt1 table|    movzx   r12d, byte [coeff_abs_levelgt1_ctx_chroma_dc+r7 GLOBAL]|    movzx   r12d, byte [coeff_abs_levelgt1_ctx+r7 GLOBAL]
+esc const|rd422_k:            dd 14, -64768|rd422_k:            dd 14, -64512
+row cap|rd422_w15:          times 8 dw 15|rd422_w15:          times 8 dw 14
+level1 test|    cmp      r1d, 128|    cmp      r1d, 256
+tail run|    movzx    r5d, byte [rd8_last_pow+r2 GLOBAL]|    movzx    r5d, byte [rd8_zero1_pow+r2 GLOBAL]
+levels min|    cmp      r4d, RD422_LEVELS_MIN|    cmp      r4d, 6
