@@ -1680,6 +1680,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->hpel_filter = x264_hpel_filter_avx2;
 #if ARCH_X86_64
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
+        pf->hpel_filter_copy_vc = x264_hpel_filter_copy_vc_avx2;
+        pf->hpel_filter_dual = x264_hpel_filter_dual_avx2;
 #endif
         pf->mc_chroma = x264_mc_chroma_avx2;
         pf->weight = x264_mc_weight_wtab_avx2;
