@@ -1,7 +1,7 @@
 # Xeon E x264-obe in-situ queue (Intel AVX2 timing judge)
 
 Machine: Xeon E-2478 (Raptor Cove: AVX2 + AVX-VNNI, no AVX-512, no SlowGather). x264 runs on cpu 12 or 14 only;
-builds run on cpus 12-15. Ranked in the lead's order (O, AD, 10b-me, 10b-cabac, K, then Z T M R L AC U J).
+builds run on cpus 12-15. Run order (lead, 11-11, after the 8-bit 4:2:2 profile): X1 (done), O, AD, M, J (oc, cl8, then il / pcd), 10b-me, 10b-cabac, K k2, Z, T, L, R, AC, U, K k1 last. The section numbers below are the original ranking.
 Expected effects are the package reports' laptop (Zen 5) numbers and estimates, not Intel measurements.
 
 ## How to run
@@ -46,7 +46,7 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
 - base 5db22450 (tip~2, kernels assembled, nothing dispatched), arm b81cae5e (tip~1, AVX2 dispatch of lowres_i_mbs,
   lowres_b_mbs, intra_satd_lowres_tf). The tip 0877c420 only adds avx512icl: same pointers as b81cae5e here.
 - ```
-  for p in build bash la2/la2-ab.sh live bash la2/la2-ab.sh md5; do bash la2/la2-ab.sh $p; done      # build window
+  for p in build live md5; do bash la2/la2-ab.sh $p; done      # build window
   bash la2/la2-ab.sh time 9; bash la2/la2-ab.sh report
   ```
 - Cells: LOWLAT / NORMAL on tile-chaos-p, field-frame-mix-i; fades-p NORMAL 60 (weightp: lowres_i_mbs pre-pass).
