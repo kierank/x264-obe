@@ -51,7 +51,7 @@ tree() { # name sha patch? cnt?
         git diff common/dct.c | grep '^[-+] '
     fi
     [ "${4:-}" = cnt ] && { sh $W/idct8cnt.sh $d || exit 1; }
-    ./configure --bit-depth=8 --enable-static --disable-opencl --extra-cflags="-fno-fast-math -ffp-contract=off" > cfg.log 2>&1 || exit 1
+    ./configure --bit-depth=8 --enable-static --disable-opencl --extra-cflags="-fno-fast-math -ffp-contract=off -fno-pie" --extra-ldflags="-no-pie" > cfg.log 2>&1 || exit 1
     make -j"$(nproc)" x264 checkasm8 > make.log 2>&1 || { tail make.log; exit 1; }
 }
 
@@ -88,8 +88,10 @@ md5)
     for c in $CLIPLIST; do for m in lowlat normal; do
         for a in base base2 arm arm2; do DUMP="--dump-yuv $W/out/rec_$a.yuv" bash $0 enc $a $c $m md5_${a}_${c}_$m > /dev/null; done
         r=$(md5sum $W/out/rec_{base,base2,arm,arm2}.yuv | awk '{print $1}' | sort -u | wc -l)
-        b=$(md5sum $W/out/md5_{base,base2,arm,arm2}_${c}_$m.264 | awk '{print $1}' | sort -u | wc -l)
-        echo "$c $m: recon md5 distinct $r, bitstream md5 distinct $b (1 and 1 = pass)"
+        # arms at different shas differ in the version SEI: compare bitstreams within a sha only
+        bb=$(md5sum $W/out/md5_{base,base2}_${c}_$m.264 | awk '{print $1}' | sort -u | wc -l)
+        ba=$(md5sum $W/out/md5_{arm,arm2}_${c}_$m.264 | awk '{print $1}' | sort -u | wc -l)
+        echo "$c $m: recon md5 distinct $r (1 = pass); bitstream distinct base/base2 $bb, arm/arm2 $ba (1 and 1 = deterministic)"
         rm -f $W/out/rec_*.yuv
     done; done
     ;;
