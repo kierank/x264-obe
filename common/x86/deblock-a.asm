@@ -4839,6 +4839,161 @@ cglobal deblock_v_chroma_intra, 4,5,12
     movu    [r4+r1], xm0
     vextracti128 [r0], m0, 1
     RET
+
+;-----------------------------------------------------------------------------
+; 8-bit 4:2:2 h chroma, Copyright (C) 2026 Open Broadcast Systems Ltd
+; All 16 rows in one ymm pass: rows 0-7 in lane 0, rows 8-15 in lane 1, so the
+; word transposes stay lane-local and tc0[i] covers bytes 8i..8i+7 in order.
+;-----------------------------------------------------------------------------
+%macro CHROMA422_H_START8 0
+    sub          r0, 4
+    lea          r5, [r1*3]
+    lea          r6, [r0+r1*4]
+    lea          r7, [r0+r1*8]
+    lea          r8, [r6+r1*8]
+%endmacro
+
+; 8-byte row loads: a 16-byte load would also span the stores of the other
+; vertical edge of the MB (store-forwarding failures on back-to-back calls)
+%macro CHROMA422_H_ROWS8 3 ; dst, row 0-7, row 8-15
+    movq        xm%1, %2
+    vpbroadcastq m8, %3
+    vpblendd     m%1, m%1, m8, 0xf0
+%endmacro
+
+; out: m0-m3 = p1 p0 q0 q1 (a row's u,v pair per word); clobbers m4-m8
+%macro CHROMA422_H_LOAD8 0
+    CHROMA422_H_ROWS8 0, [r0],      [r7]
+    CHROMA422_H_ROWS8 1, [r0+r1],   [r7+r1]
+    CHROMA422_H_ROWS8 2, [r0+r1*2], [r7+r1*2]
+    CHROMA422_H_ROWS8 3, [r0+r5],   [r7+r5]
+    CHROMA422_H_ROWS8 4, [r6],      [r8]
+    CHROMA422_H_ROWS8 5, [r6+r1],   [r8+r1]
+    CHROMA422_H_ROWS8 6, [r6+r1*2], [r8+r1*2]
+    CHROMA422_H_ROWS8 7, [r6+r5],   [r8+r5]
+    punpcklwd    m0, m1
+    punpcklwd    m2, m3
+    punpcklwd    m4, m5
+    punpcklwd    m6, m7
+    punpckhdq    m1, m0, m2       ; q0 q1, rows 0-3
+    punpckldq    m0, m2           ; p1 p0, rows 0-3
+    punpckhdq    m3, m4, m6       ; q0 q1, rows 4-7
+    punpckldq    m4, m6           ; p1 p0, rows 4-7
+    punpckhqdq   m5, m0, m4       ; p0
+    punpcklqdq   m0, m4           ; p1
+    punpcklqdq   m2, m1, m3       ; q0
+    punpckhqdq   m3, m1, m3       ; q1
+    SWAP          1, 5
+%endmacro
+
+; in: m1 = p0', m2 = q0'; clobbers m4, m5
+%macro CHROMA422_H_STORE8 0
+    punpcklwd    m4, m1, m2       ; rows 0-3 | 8-11
+    punpckhwd    m5, m1, m2       ; rows 4-7 | 12-15
+    movd         [r0+2], xm4
+    pextrd       [r0+r1+2], xm4, 1
+    pextrd       [r0+r1*2+2], xm4, 2
+    pextrd       [r0+r5+2], xm4, 3
+    movd         [r6+2], xm5
+    pextrd       [r6+r1+2], xm5, 1
+    pextrd       [r6+r1*2+2], xm5, 2
+    pextrd       [r6+r5+2], xm5, 3
+    vextracti128 xm4, m4, 1
+    vextracti128 xm5, m5, 1
+    movd         [r7+2], xm4
+    pextrd       [r7+r1+2], xm4, 1
+    pextrd       [r7+r1*2+2], xm4, 2
+    pextrd       [r7+r5+2], xm4, 3
+    movd         [r8+2], xm5
+    pextrd       [r8+r1+2], xm5, 1
+    pextrd       [r8+r1*2+2], xm5, 2
+    pextrd       [r8+r5+2], xm5, 3
+%endmacro
+
+; in: m0-m3 = p1 p0 q0 q1, r2d = alpha, r3d = beta
+; out: m7 = mask, m11 = pb_1; clobbers m4-m6, m8, m9
+%macro CHROMA_MASK8_AVX2 0
+    movd        xm4, r2d
+    movd        xm5, r3d
+    vpbroadcastb m4, xm4
+    vpbroadcastb m5, xm5
+    mova        m11, [pb_1]
+    psubusb      m4, m11          ; alpha-1
+    psubusb      m5, m11          ; beta-1
+    psubusb      m7, m1, m2
+    psubusb      m6, m2, m1
+    por          m7, m6
+    psubusb      m7, m4           ; |p0-q0| > alpha-1
+    psubusb      m6, m0, m1
+    psubusb      m8, m1, m0
+    por          m6, m8           ; |p1-p0|
+    psubusb      m8, m3, m2
+    psubusb      m9, m2, m3
+    por          m8, m9           ; |q1-q0|
+    pmaxub       m6, m8
+    psubusb      m6, m5           ; > beta-1
+    por          m7, m6
+    pxor         m6, m6
+    pcmpeqb      m7, m6
+%endmacro
+
+INIT_YMM avx2
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422( uint8_t *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422, 5,9,12
+    CHROMA422_H_START8
+    CHROMA422_H_LOAD8
+    CHROMA_MASK8_AVX2
+    vpbroadcastd m6, [r4]
+    pshufb       m6, [deblock_tc_shuf_avx2]
+    pand         m7, m6           ; tc & mask
+    ; DEBLOCK_P0_Q0 at ymm width
+    pxor         m5, m1, m2
+    pand         m5, m11          ; (p0^q0)&1
+    pcmpeqb      m4, m4
+    pxor         m3, m4           ; ~q1
+    pavgb        m3, m0           ; (p1 - q1 + 256)>>1
+    vpbroadcastd m6, [pb_3]
+    pavgb        m3, m6           ; (((p1 - q1 + 256)>>1)+4)>>1 = 64+2+(p1-q1)>>2
+    pxor         m4, m1           ; ~p0
+    pavgb        m4, m2           ; (q0 - p0 + 256)>>1
+    pavgb        m3, m5
+    paddusb      m3, m4           ; d+128+33
+    vpbroadcastd m6, [pb_a1]
+    psubusb      m5, m6, m3
+    psubusb      m3, m6
+    pminub       m5, m7           ; -d
+    pminub       m3, m7           ; +d
+    psubusb      m1, m5
+    psubusb      m2, m3
+    paddusb      m1, m3
+    paddusb      m2, m5
+    CHROMA422_H_STORE8
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_chroma_422_intra( uint8_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_chroma_422_intra, 4,9,12
+    CHROMA422_H_START8
+    CHROMA422_H_LOAD8
+    CHROMA_MASK8_AVX2
+    pxor         m4, m1, m3
+    pand         m4, m11          ; (p0^q1)&1
+    pavgb        m5, m1, m3
+    psubusb      m5, m4
+    pavgb        m5, m0           ; (2*p1 + p0 + q1 + 2) >> 2
+    pxor         m4, m2, m0
+    pand         m4, m11          ; (q0^p1)&1
+    pavgb        m6, m2, m0
+    psubusb      m6, m4
+    pavgb        m6, m3           ; (2*q1 + q0 + p1 + 2) >> 2
+    pblendvb     m1, m1, m5, m7
+    pblendvb     m2, m2, m6, m7
+    CHROMA422_H_STORE8
+    RET
+
 %endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
