@@ -1005,7 +1005,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     int subme = h->mb.i_subpel_refine;
     if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
         && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
-        && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2)) )
+        && (subme < 3 || ((!HIGH_BIT_DEPTH || !m->weight[0].weightfn) && h->pixf.me_fpel_fn[i_pixel].sad_avg2)) )
     {
         int hpel = subpel_iterations[subme][2];
         int qpel = subpel_iterations[subme][3];
