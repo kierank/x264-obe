@@ -1914,6 +1914,55 @@ cglobal load_deinterleave_chroma_fdec, 4,5
     sub           r3d, 4
     jg .loop
     RET
+
+;-----------------------------------------------------------------------------
+; void plane_copy_deinterleave( uint8_t *dstu, intptr_t i_dstu, uint8_t *dstv, intptr_t i_dstv,
+;                               uint8_t *src, intptr_t i_src, int w, int h )
+; 8-bit, AVX2: 16 pixels are a ymm, pshufb + vpermq give u | v. 32 per step, then
+; 16 per step: writes and reads up to the same multiple of 16 as ssse3.
+;-----------------------------------------------------------------------------
+cglobal plane_copy_deinterleave, 6,7
+    vbroadcasti128 m2, [deinterleave_shuf]
+    mov           r6d, r6m
+    add            r0, r6
+    add            r2, r6
+    lea            r4, [r4+r6*2]
+.loopy:
+    mov           r6d, r6m
+    neg            r6
+    add            r6, 32
+    jg .tail
+.loopx:
+    movu           m0, [r4+r6*2-64]
+    movu           m1, [r4+r6*2-32]
+    pshufb         m0, m2
+    pshufb         m1, m2
+    vpermq         m0, m0, q3120
+    vpermq         m1, m1, q3120
+    movu [r0+r6-32], xm0
+    movu [r0+r6-16], xm1
+    vextracti128 [r2+r6-32], m0, 1
+    vextracti128 [r2+r6-16], m1, 1
+    add            r6, 32
+    jle .loopx
+.tail:
+    sub            r6, 32
+    jge .next
+.tail16:
+    movu           m0, [r4+r6*2]
+    pshufb         m0, m2
+    vpermq         m0, m0, q3120
+    movu    [r0+r6], xm0
+    vextracti128 [r2+r6], m0, 1
+    add            r6, 16
+    jl .tail16
+.next:
+    add            r0, r1
+    add            r2, r3
+    add            r4, r5
+    dec dword     r7m
+    jg .loopy
+    RET
 %endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------

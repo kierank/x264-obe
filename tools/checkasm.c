@@ -4025,6 +4025,10 @@ static void weight_plane_strips( pixel *dst, intptr_t i_dst, pixel *src, intptr_
     }
 }
 
+#if HAVE_MMX
+#include "common/x86/mc.h"
+#endif
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -4782,9 +4786,25 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
     }
 
+    /* undispatched 8-bit plane_copy_deinterleave: avx2 at the AVX2 level; pcd_extra: a second
+     * pass after the dispatched one */
+    void (*pcd_disp)( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int, int ) = mc_a.plane_copy_deinterleave;
+    void (*pcd_extra)( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int, int ) = NULL;
+    const char *pcd_name = "plane_copy_deinterleave";
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        mc_a.plane_copy_deinterleave = x264_plane_copy_deinterleave_avx2;
+#endif
+    for( int pcd_pass = 0; pcd_pass < 1 + !!pcd_extra; pcd_pass++ )
+    {
+    if( pcd_pass )
+    {
+        mc_a.plane_copy_deinterleave = pcd_extra;
+        pcd_name = "plane_copy_deinterleave_zmm";
+    }
     if( mc_a.plane_copy_deinterleave != mc_ref.plane_copy_deinterleave )
     {
-        set_func_name( "plane_copy_deinterleave" );
+        set_func_name( "%s", pcd_name );
         used_asm = 1;
         for( int i = 0; i < sizeof(plane_specs)/sizeof(*plane_specs); i++ )
         {
@@ -4810,7 +4830,7 @@ static int check_mc( int cpu_ref, int cpu_new )
 
     /* 1080p chroma rows (960 wide, 64-byte aligned, padded stride): the full-row
      * paths without the C fallbacks, and their bench */
-    if( mc_a.plane_copy_interleave != mc_ref.plane_copy_interleave ||
+    if( (!pcd_pass && mc_a.plane_copy_interleave != mc_ref.plane_copy_interleave) ||
         mc_a.plane_copy_deinterleave != mc_ref.plane_copy_deinterleave )
     {
         int w = 960, h = 4;
@@ -4825,7 +4845,7 @@ static int check_mc( int cpu_ref, int cpu_new )
             pixel *srcu = src, *srcv = src + stride_p * h, *srci = src + 2 * stride_p * h;
             for( int i = 0; i < (2*stride_p + stride_i) * h; i++ )
                 src[i] = rand() & PIXEL_MAX;
-            if( mc_a.plane_copy_interleave != mc_ref.plane_copy_interleave )
+            if( !pcd_pass && mc_a.plane_copy_interleave != mc_ref.plane_copy_interleave )
             {
                 set_func_name( "plane_copy_interleave_960x4" );
                 used_asm = 1;
@@ -4844,7 +4864,7 @@ static int check_mc( int cpu_ref, int cpu_new )
             if( mc_a.plane_copy_deinterleave != mc_ref.plane_copy_deinterleave )
             {
                 pixel *dstv_c = dst_c + stride_p * h, *dstv_a = dst_a + stride_p * h;
-                set_func_name( "plane_copy_deinterleave_960x4" );
+                set_func_name( "%s_960x4", pcd_name );
                 used_asm = 1;
                 memset( dst_c, 0, 2 * stride_i * h * sizeof(pixel) );
                 memset( dst_a, 0, 2 * stride_i * h * sizeof(pixel) );
@@ -4864,6 +4884,8 @@ static int check_mc( int cpu_ref, int cpu_new )
         x264_free( dst_c );
         x264_free( dst_a );
     }
+    }
+    mc_a.plane_copy_deinterleave = pcd_disp;
 
     if( mc_a.plane_copy_deinterleave_rgb != mc_ref.plane_copy_deinterleave_rgb )
     {
