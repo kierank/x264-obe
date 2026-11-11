@@ -2048,6 +2048,16 @@ cglobal pixel_avg2_w20, 6,7
 
 ; VEX: the second source folds into pavgb
 %macro AVG2_W16_2ROWS 0
+%if mmsize == 32
+    movu         xm0, [r2]
+    vinserti128   m0, m0, [r2+r3], 1
+    movu         xm1, [r2+r4]
+    vinserti128   m1, m1, [r2+r6], 1
+    lea           r2, [r2+r3*2]
+    pavgb         m0, m1
+    mova        [r0], xm0
+    vextracti128 [r0+r1], m0, 1
+%else
     movu   m0, [r2]
     movu   m1, [r2+r3]
     pavgb  m0, [r2+r4]
@@ -2055,10 +2065,18 @@ cglobal pixel_avg2_w20, 6,7
     lea    r2, [r2+r3*2]
     mova [r0], m0
     mova [r0+r1], m1
+%endif
     lea    r0, [r0+r1*2]
 %endmacro
 
 INIT_XMM avx
+cglobal pixel_avg2_w16, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+    AVG2_ROWS_LOOP AVG2_W16_2ROWS
+
+; two rows per ymm
+INIT_YMM avx2
 cglobal pixel_avg2_w16, 6,7
     sub    r4, r2
     lea    r6, [r4+r3]
