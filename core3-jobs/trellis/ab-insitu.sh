@@ -12,7 +12,7 @@ set -e
 BASE=$1; ARM=$2; SYM=$3; R=${4:-5}
 CLIPS=${CLIPS:-/home/obe/x264-clips}; FRAMES=${FRAMES:-30}; CPU=${CPU:-2}   # Xeon E: CPU=12 or 14
 REPO=${REPO:-https://github.com/kierank/x264-obe.git}
-W=${W:-$HOME/nwtr-ab}; mkdir -p $W; cd $W
+W=${W:-$HOME/nwtr-ab-$(printf %s "$BASE-$ARM${ARMPATCH:+-$ARMPATCH}${ARMAS:+-as}" | tr -c "A-Za-z0-9-" _)}; mkdir -p $W; cd $W   # per-sha: cells never share binaries
 [ -d src ] || git clone -q $REPO src
 git -C src fetch -q origin wip/x264-nw-trellis
 build() { # name sha flavour(t|m)
@@ -54,8 +54,9 @@ for c in $CLIPLIST; do for cell in LOW NOR; do eval o=\$$cell
   done
 done; done
 
-echo "== timing: base / base' / arm / arm' per round, taskset -c $CPU, $FRAMES frames, cycles:u"
-t() { taskset -c $CPU perf stat -x, -e cycles:u -o $W/t.txt -- $W/b-$1-t/x264 $2 --frames $FRAMES -o /dev/null $3 2>/dev/null; awk -F, '/cycles:u/{printf "%d", $1}' $W/t.txt; }   # cycles:u (Core 3 standard 11-11)
+echo "== timing: base / base' / arm / arm' per round, taskset -c $CPU, $FRAMES frames, cycles:u (instructions:u logged to insn.txt)"
+rm -f $W/insn.txt
+t() { taskset -c $CPU perf stat -x, -e cycles:u,instructions:u -o $W/t.txt -- $W/b-$1-t/x264 $2 --frames $FRAMES -o /dev/null $3 2>/dev/null; awk -F, -v k="$c $cell $1" '/instructions:u/{print k, $1}' $W/t.txt >> $W/insn.txt; awk -F, '/cycles:u/{printf "%d", $1}' $W/t.txt; }
 for c in $CLIPLIST; do for cell in LOW NOR; do eval o="\$$cell $(opts $c)"
   t base "$o" $CLIPS/$c.y4m > /dev/null   # warm-up
   for r in $(seq 1 $R); do
@@ -71,5 +72,11 @@ for c in $CLIPLIST; do for cell in LOW NOR; do
   ma=$(awk '{print $8-$6}' $W/k.txt | sort -n | awk '{v[NR]=$1} END{print v[int((NR+1)/2)]}')
   bm=$(awk '{s+=($6+$8)/2} END{print s/NR}' $W/k.txt)
   fa=$(awk '{if($10+$12<$6+$8) f++} END{print f+0"/"NR}' $W/k.txt)
-  echo "$c $cell: median arm-base $md ms of base $bm ms ($(awk -v a=$md -v b=$bm 'BEGIN{printf "%+.2f%%", 100*a/b}')), median A/A $ma ms, arm faster in $fa rounds"
+  echo "$c $cell: median arm-base $md cycles of base $bm cycles ($(awk -v a=$md -v b=$bm 'BEGIN{printf "%+.2f%%", 100*a/b}')), median A/A $ma cycles, arm faster in $fa rounds"
+done; done
+# instructions:u per cell: median base vs arm (liveness / sizing witness)
+for c in $CLIPLIST; do for cell in LOW NOR; do
+  bi=$(awk -v k="$c $cell base" '$1" "$2" "$3==k{print $4}' $W/insn.txt | sort -n | awk '{v[NR]=$1} END{print v[int((NR+1)/2)]}')
+  ai=$(awk -v k="$c $cell arm" '$1" "$2" "$3==k{print $4}' $W/insn.txt | sort -n | awk '{v[NR]=$1} END{print v[int((NR+1)/2)]}')
+  echo "$c $cell: instructions:u base $bi arm $ai ($(awk -v a=$ai -v b=$bi 'BEGIN{printf "%+.4f%%", 100*(a-b)/b}'))"
 done; done
