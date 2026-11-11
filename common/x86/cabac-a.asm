@@ -2252,9 +2252,13 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*64
 %endmacro
 
 ; %2 = 4:2:2 chroma dc (cabac_block_residual_422_dc_internal, ctx_block_cat = DCT_CHROMA_DC)
-%macro CABAC_RESIDUAL_BMI2 1-2 0
+; %3 = 8-bit avx2: last found inline for 4, 15 and 16 coefs (cabac_block_residual_internal_il),
+;      the coeff_last call kept for 8x8
+%macro CABAC_RESIDUAL_BMI2 1-3 0, 0
 %if %2
 cglobal cabac_block_residual_422_dc_internal, 4,15,0,-4*72
+%elif %3
+cglobal cabac_block_residual_internal_il, 4,15,0,-4*72
 %else
 cglobal cabac_block_residual_internal, 4,15,0,-4*72
 %endif
@@ -2381,6 +2385,36 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     shr     r1d, 1
     mov   lastm, r1d
     mov    r13d, -1                 ; coeff_idx
+%elif %3
+; r13d = count-1: 3, 14, 15 or 63
+    cmp    r13d, 63
+    je .last_call
+    cmp    r13d, 3
+    je .last4
+    lea      r1, [r14+r13*2-30]     ; l-1 (15 coefs, as coeff_last15) or l
+    movu    xm0, [r1]
+    packsswb xm0, [r1+16]
+    pxor    xm1, xm1
+    pcmpeqb xm0, xm1
+    pmovmskb r1d, xm0
+    xor     r1d, 0xffff
+    mov     r6d, 15
+    sub     r6d, r13d
+    shrx    r1d, r1d, r6d           ; 15 coefs: drop l[-1]
+    lzcnt   r1d, r1d
+    xor     r1d, 31
+    mov   lastm, r1d
+    jmp .last_done
+.last4:
+    lzcnt    r1, [r14]
+    xor     r1d, 63
+    shr     r1d, 4
+    mov   lastm, r1d
+    jmp .last_done
+.last_call:
+    call [%1+gprsize*r2 GLOBAL]     ; preserves r3, r7-r14
+    mov   lastm, eax
+.last_done:
 %else
     call [%1+gprsize*r2 GLOBAL]     ; preserves r3, r7-r14
     mov   lastm, eax
@@ -2587,6 +2621,7 @@ CABAC_RESIDUAL_BMI2 coeff_last_avx512, 1
 INIT_XMM avx2,bmi2
 CABAC_RESIDUAL_RD_4x4_AVX2
 CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 1
+CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 0, 1
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_8x8_AVX2
 %endif

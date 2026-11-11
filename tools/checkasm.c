@@ -7541,6 +7541,8 @@ void x264_rdo_init( void );
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
 #define x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2 x264_template(cabac_block_residual_8x8_rd_internal_avx2_bmi2)
 void x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#define x264_cabac_block_residual_internal_il_avx2_bmi2 x264_template(cabac_block_residual_internal_il_avx2_bmi2)
+void x264_cabac_block_residual_internal_il_avx2_bmi2( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
 #endif
 
 /* residual bench classes: nonzero coefs 1/16, 1/4, 7/8 with levels mostly 1-2;
@@ -7578,6 +7580,10 @@ static int check_cabac( int cpu_ref, int cpu_new )
     /* not dispatched (neutral vs ssse3_lzcnt): tested at the level that adds BMI2 on AVX2 */
     if( (cpu_new & (X264_CPU_AVX2|X264_CPU_BMI2)) == (X264_CPU_AVX2|X264_CPU_BMI2) && !(cpu_ref & X264_CPU_BMI2) )
         bs_a.cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2;
+    /* not dispatched: the writer with last found inline, at the same level */
+    if( (cpu_new & (X264_CPU_AVX2|X264_CPU_BMI2)) == (X264_CPU_AVX2|X264_CPU_BMI2) && !(cpu_ref & X264_CPU_BMI2) &&
+        !(cpu_new & X264_CPU_AVX512) )
+        bs_a.cabac_block_residual_internal = x264_cabac_block_residual_internal_il_avx2_bmi2;
 #endif
     x264_quant_init( &h, cpu_new, &h.quantf );
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
