@@ -92,7 +92,7 @@ enc) # arm clip mode tag: one encode, cycles:u to stdout
     a=$2; c=$3; m=$4; t=$5
     il=""; case $c in *-i) il="--tff";; esac
     opt=$LOWLAT; [ $m = normal ] && opt=$NORMAL
-    perf stat -x, -e cycles:u -o $W/out/$t.time taskset -c $CORE $W/$a/x264 $COMMON $opt $il $FR ${DUMP:-} -o $W/out/$t.264 $CLIPS/$c.y4m 2> $W/out/$t.log
+    taskset -c $CORE perf stat -x, -e cycles:u -o $W/out/$t.time -- $W/$a/x264$COMMON $opt $il $FR ${DUMP:-} -o $W/out/$t.264 $CLIPS/$c.y4m 2> $W/out/$t.log
     awk -F, '/cycles/ {print $1}' $W/out/$t.time
     ;;
 live)
@@ -108,8 +108,8 @@ perf) # instructions:u / cycles:u per cell for base and arm, then the x9 symbols
         il=""; case $c in *-i) il="--tff";; esac
         opt=$LOWLAT; [ $m = normal ] && opt=$NORMAL
         for a in base arm; do
-            perf stat -x, -e instructions:u,cycles:u -o $W/out/perf_${a}_${c}_$m.txt \
-                taskset -c $CORE $W/$a/x264 $COMMON $opt $il $FR -o /dev/null $CLIPS/$c.y4m 2> /dev/null
+            taskset -c $CORE perf stat -x, -e instructions:u,cycles:u -o $W/out/perf_${a}_${c}_$m.txt -- \
+                $W/$a/x264$COMMON $opt $il $FR -o /dev/null $CLIPS/$c.y4m 2> /dev/null
             echo "$a $c $m: $(grep -E 'instructions|cycles' $W/out/perf_${a}_${c}_$m.txt | cut -d, -f1,3 | paste -sd' ')"
         done
         perf record -q -o $W/out/rec_${c}_$m.data taskset -c $CORE $W/arm/x264 $COMMON $opt $il $FR -o /dev/null $CLIPS/$c.y4m 2> /dev/null
