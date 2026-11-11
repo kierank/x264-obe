@@ -7559,15 +7559,6 @@ static int check_cabac( int cpu_ref, int cpu_new )
     x264_bitstream_function_t bs_a;
     x264_bitstream_init( cpu_ref, &bs_ref );
     x264_bitstream_init( cpu_new, &bs_a );
-#if HAVE_MMX && ARCH_X86_64 && HIGH_BIT_DEPTH
-    /* 10-bit avx2_bmi2 residual kernels, not dispatched yet: tested at the level that adds BMI2 on AVX2 */
-    if( (cpu_new & (X264_CPU_AVX2|X264_CPU_BMI2)) == (X264_CPU_AVX2|X264_CPU_BMI2) && !(cpu_ref & X264_CPU_BMI2) )
-    {
-        bs_a.cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx2_bmi2;
-        bs_a.cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2;
-        bs_a.cabac_block_residual_422_dc_internal = x264_cabac_block_residual_422_dc_internal_avx2_bmi2;
-    }
-#endif
     x264_quant_init( &h, cpu_new, &h.quantf );
     h.quantf.coeff_last[DCT_CHROMA_DC] = h.quantf.coeff_last4;
     /* the rd functions read the unary tables and the context init states */
