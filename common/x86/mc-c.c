@@ -59,6 +59,12 @@
 #define x264_hpel_filter_ssse3 x264_template(hpel_filter_ssse3)
 #define x264_hpel_filter_v_mmx2 x264_template(hpel_filter_v_mmx2)
 #define x264_hpel_filter_v_sse2 x264_template(hpel_filter_v_sse2)
+#define x264_hpel_fly_h_avx2 x264_template(hpel_fly_h_avx2)
+#define x264_hpel_fly_v_avx2 x264_template(hpel_fly_v_avx2)
+#define x264_hpel_fly_c_avx2 x264_template(hpel_fly_c_avx2)
+#define x264_hpel_fly_h_avx512 x264_template(hpel_fly_h_avx512)
+#define x264_hpel_fly_v_avx512 x264_template(hpel_fly_v_avx512)
+#define x264_hpel_fly_c_avx512 x264_template(hpel_fly_c_avx512)
 #define x264_integral_init4h_avx2 x264_template(integral_init4h_avx2)
 #define x264_integral_init4h_avx512icl x264_template(integral_init4h_avx512icl)
 #define x264_integral_init8h_avx512icl x264_template(integral_init8h_avx512icl)
@@ -1143,6 +1149,13 @@ HPEL(32, avx2, avx2, avx2, avx2)
 #endif
 HPEL_COPY(32, avx2, avx2, avx2, avx2)
 #else // !HIGH_BIT_DEPTH
+/* hpelfly: hpel_filter's H, V, C of a rect (common/x86/hpelfly-a.asm) */
+void x264_hpel_fly_h_avx2( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_v_avx2( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_c_avx2( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_h_avx512( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_v_avx512( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_c_avx512( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
 HPEL(16, sse2_amd, mmx2, mmx2, sse2)
 #if ARCH_X86_64
 void x264_hpel_filter_sse2 ( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf );
@@ -1681,6 +1694,9 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
 #endif
+        pf->hpel_fly[1] = x264_hpel_fly_h_avx2;
+        pf->hpel_fly[2] = x264_hpel_fly_v_avx2;
+        pf->hpel_fly[3] = x264_hpel_fly_c_avx2;
         pf->mc_chroma = x264_mc_chroma_avx2;
         pf->weight = x264_mc_weight_wtab_avx2;
 #if ARCH_X86_64

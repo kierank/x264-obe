@@ -238,6 +238,7 @@ typedef struct x264_lookahead_t
 
 typedef struct x264_ratecontrol_t   x264_ratecontrol_t;
 typedef struct x264_speedcontrol_t  x264_speedcontrol_t;
+typedef struct x264_fly x264_fly_t;
 
 typedef struct x264_left_table_t
 {
@@ -779,6 +780,8 @@ struct x264_t
     void *scratch_buffer; /* for any temporary storage that doesn't want repeated malloc */
     void *scratch_buffer2; /* if the first one's already in use */
     void *scratch_hpel; /* x264_frame_filter: the sliced filter pass of thread[0] runs beside the lookahead */
+    int b_hpel_fly; /* references keep only F; subpel samples come from h->fly (common/hpelfly.h) */
+    x264_fly_t *fly; /* this thread's windows, NULL in the lookahead */
     pixel *intra_border_backup[5][3]; /* bottom pixels of the previous mb row, used for intra prediction after the framebuffer has been deblocked */
     /* Deblock strength values are stored for each 4x4 partition. In MBAFF
      * there are four extra values that need to be stored, located in [4][i]. */
@@ -816,6 +819,7 @@ struct x264_t
 
 // included at the end because it needs x264_t
 #include "macroblock.h"
+#include "hpelfly.h"
 
 static int ALWAYS_INLINE x264_predictor_roundclip( int16_t (*dst)[2], int16_t (*mvc)[2], int i_mvc, int16_t mv_limit[2][2], uint32_t pmv )
 {

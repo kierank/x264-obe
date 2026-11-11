@@ -116,6 +116,9 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* hpelfly: hpel_filter's plane k (1 H, 2 V, 3 C; 0 copies src) of a rect at src, width a
+     * multiple of 16; reads src rows -2..height+2 and columns -2..width+2 (the asm more to the right) */
+    void (*hpel_fly[4])( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int width, int height );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );

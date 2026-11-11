@@ -190,6 +190,42 @@ static void hpel_filter( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
 static const uint8_t hpel_ref0[16] = {0,1,1,1,0,1,1,1,2,3,3,3,0,1,1,1};
 static const uint8_t hpel_ref1[16] = {0,0,0,0,2,2,3,2,2,2,3,2,2,2,3,2};
 
+/* hpelfly: hpel_filter's H, V or C (fly[1..3]), or F (fly[0]), of a width x height
+ * rect, width a multiple of 16 up to 64 */
+static void hpel_fly_f( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int width, int height )
+{
+    mc_copy( src, i_src, dst, i_dst, width, height );
+}
+
+static void hpel_fly_h( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int width, int height )
+{
+    for( int y = 0; y < height; y++, dst += i_dst, src += i_src )
+        for( int x = 0; x < width; x++ )
+            dst[x] = x264_clip_pixel( (TAPFILTER(src,1) + 16) >> 5 );
+}
+
+static void hpel_fly_v( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int width, int height )
+{
+    for( int y = 0; y < height; y++, dst += i_dst, src += i_src )
+        for( int x = 0; x < width; x++ )
+            dst[x] = x264_clip_pixel( (TAPFILTER(src,i_src) + 16) >> 5 );
+}
+
+static void hpel_fly_c( pixel *dst, intptr_t i_dst, pixel *src, intptr_t i_src, int width, int height )
+{
+    int buf[64+5];
+    for( int y = 0; y < height; y++, dst += i_dst, src += i_src )
+        for( int x0 = 0; x0 < width; x0 += 64 )
+        {
+            int w = X264_MIN( width - x0, 64 );
+            pixel *s = src + x0;
+            for( int x = -2; x < w+3; x++ )
+                buf[x+2] = TAPFILTER(s,i_src);
+            for( int x = 0; x < w; x++ )
+                dst[x0+x] = x264_clip_pixel( (TAPFILTER(buf+2,1) + 512) >> 10 );
+        }
+}
+
 static void mc_luma( pixel *dst,    intptr_t i_dst_stride,
                      pixel *src[4], intptr_t i_src_stride,
                      int mvx, int mvy,
@@ -771,6 +807,10 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 
     pf->hpel_filter = hpel_filter;
     pf->hpel_filter_copy = NULL;
+    pf->hpel_fly[0] = hpel_fly_f;
+    pf->hpel_fly[1] = hpel_fly_h;
+    pf->hpel_fly[2] = hpel_fly_v;
+    pf->hpel_fly[3] = hpel_fly_c;
 
     pf->prefetch_fenc_420 = prefetch_fenc_null;
     pf->prefetch_fenc_422 = prefetch_fenc_null;

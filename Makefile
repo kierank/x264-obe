@@ -24,7 +24,7 @@ SRCS = common/osdep.c common/base.c common/cpu.c common/tables.c \
 # since every symbol here is templated via x264_template()/BIT_DEPTH and
 # would otherwise collide across the two depths' object files.
 SRCS_X = common/mc.c common/predict.c common/pixel.c common/macroblock.c \
-         common/frame.c common/dct.c common/cabac.c \
+         common/frame.c common/dct.c common/cabac.c common/hpelfly.c \
          common/common.c common/rectangle.c \
          common/set.c common/quant.c common/deblock.c common/vlc.c \
          common/mvpred.c common/bitstream.c \
@@ -120,7 +120,7 @@ SRCASM_X = common/x86/const-a.asm common/x86/cabac-a.asm \
            common/x86/quant-a.asm common/x86/bitstream-a.asm \
            common/x86/trellis-64.asm common/x86/ratecontrol-a.asm \
            common/x86/lowres-64.asm common/x86/analyse-64.asm \
-           common/x86/me-64.asm \
+           common/x86/me-64.asm common/x86/hpelfly-a.asm \
            common/x86/weightp-a.asm
 SRCS_X  += common/x86/mc-c.c common/x86/predict-c.c
 

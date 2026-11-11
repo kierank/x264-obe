@@ -8597,6 +8597,270 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
     return ret;
 }
 
+/* hpelfly: the 6-tap plane k of F (k 1 H, 2 V, 3 C; 0 F) at x, y, as hpel_filter */
+static int fly_ref_px( pixel *f, intptr_t s, int k, int x, int y )
+{
+#define FT(p, d) ((p)[-2*(d)] + (p)[3*(d)] - 5*((p)[-(d)] + (p)[2*(d)]) + 20*((p)[0] + (p)[d]))
+    pixel *p = f + y*s + x;
+    if( k == 0 )
+        return *p;
+    if( k == 1 )
+        return x264_clip_pixel( (FT(p, 1) + 16) >> 5 );
+    if( k == 2 )
+        return x264_clip_pixel( (FT(p, s) + 16) >> 5 );
+    int v[6];
+    for( int i = 0; i < 6; i++ )
+        v[i] = FT(p + i - 2, s);
+    return x264_clip_pixel( (v[0] + v[5] - 5*(v[1] + v[4]) + 20*(v[2] + v[3]) + 512) >> 10 );
+#undef FT
+}
+
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+/* common/x86/hpelfly-a.asm's avx512 kernels, undispatched */
+#define x264_hpel_fly_h_avx512 x264_template(hpel_fly_h_avx512)
+#define x264_hpel_fly_v_avx512 x264_template(hpel_fly_v_avx512)
+#define x264_hpel_fly_c_avx512 x264_template(hpel_fly_c_avx512)
+void x264_hpel_fly_h_avx512( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_v_avx512( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+void x264_hpel_fly_c_avx512( uint8_t *dst, intptr_t i_dst, uint8_t *src, intptr_t i_src, int width, int height );
+#endif
+
+static int check_hpelfly( int cpu_ref, int cpu_new )
+{
+    x264_mc_functions_t mc_c, mc_ref, mc_a;
+    int ret = 0, ok, used_asm;
+    x264_mc_init( 0, &mc_c, 0 );
+    x264_mc_init( cpu_ref, &mc_ref, 0 );
+    x264_mc_init( cpu_new, &mc_a, 0 );
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+    if( (cpu_new & X264_CPU_AVX512) && !(cpu_ref & X264_CPU_AVX512) )
+    {
+        mc_a.hpel_fly[1] = x264_hpel_fly_h_avx512;
+        mc_a.hpel_fly[2] = x264_hpel_fly_v_avx512;
+        mc_a.hpel_fly[3] = x264_hpel_fly_c_avx512;
+    }
+#endif
+
+    /* src: 80 rows x 192, random, with a band of rows 40..59 of the vertical and
+     * horizontal extremes (the stripe pattern of the hpel_filter test) */
+    enum { SS = 192, SR = 80 };
+    pixel *srcbuf = x264_malloc( SS*SR*sizeof(pixel) );
+    pixel *dstc = x264_malloc( 70*FLY_WS*sizeof(pixel) );
+    pixel *dsta = x264_malloc( 70*FLY_WS*sizeof(pixel) );
+    if( !srcbuf || !dstc || !dsta )
+        return 1;
+    for( int y = 0; y < SR; y++ )
+        for( int x = 0; x < SS; x++ )
+            srcbuf[y*SS+x] = y >= 40 && y < 60 ? ((y%3 == 1) ^ ("010010"[x%6] - '0') ^ (x >= 96)) * PIXEL_MAX
+                                               : rand() & PIXEL_MAX;
+
+    static int c_done = 0;
+    if( !c_done )
+    {
+        /* the C kernels against the 6-tap reference and against hpel_filter */
+        c_done = 1;
+        ok = 1;
+        for( int k = 0; k < 4 && ok; k++ )
+            for( int w = 16; w <= 64 && ok; w += 16 )
+                for( int y0 = 3; y0 < SR - 26 && ok; y0 += 9 )
+                {
+                    int x0 = 3 + (y0 % 17), hh = 1 + (y0 % 20);
+                    pixel *s = srcbuf + y0*SS + x0;
+                    mc_c.hpel_fly[k]( dstc, FLY_WS, s, SS, w, hh );
+                    for( int y = 0; y < hh && ok; y++ )
+                        for( int x = 0; x < w; x++ )
+                            if( dstc[y*FLY_WS+x] != fly_ref_px( s, SS, k, x, y ) )
+                            {
+                                fprintf( stderr, "hpel_fly_c[%d] differs from the 6-tap at %d,%d w %d\n", k, x, y, w );
+                                ok = 0;
+                                break;
+                            }
+                }
+        pixel *hbuf = x264_malloc( 3*16*SS*sizeof(pixel) );
+        if( !hbuf )
+            return 1;
+        for( int i = 0; i < 2 && ok; i++ )
+        {
+            pixel *s = srcbuf + (8 + 36*i)*SS + 8;
+            pixel *hc[3] = { hbuf + 8, hbuf + 16*SS + 8, hbuf + 32*SS + 8 };
+            int16_t tmp[256];
+            mc_c.hpel_filter( hc[0], hc[1], hc[2], s, SS, 64, 16, tmp );
+            for( int k = 1; k < 4 && ok; k++ )
+            {
+                mc_c.hpel_fly[k]( dsta, FLY_WS, s, SS, 64, 16 );
+                for( int y = 0; y < 16; y++ )
+                    if( memcmp( dsta + y*FLY_WS, hc[k-1] + y*SS, 64*sizeof(pixel) ) )
+                    {
+                        fprintf( stderr, "hpel_fly_c[%d] differs from hpel_filter at line %d\n", k, y );
+                        ok = 0;
+                        break;
+                    }
+            }
+        }
+        x264_free( hbuf );
+        used_asm = 1;
+        report( "hpel_fly c :" );
+    }
+
+    for( int k = 0; k < 4; k++ )
+        if( mc_a.hpel_fly[k] != mc_ref.hpel_fly[k] )
+        {
+            set_func_name( "hpel_fly_%c", "fhvc"[k] );
+            used_asm = 1;
+            ok = 1;
+            for( int w = 16; w <= 64 && ok; w += 16 )
+                for( int t = 0; t < 24 && ok; t++ )
+                {
+                    int hh = t < 4 ? t+1 : 1 + rand() % 64;
+                    int x0 = 2 + rand() % (SS - 64 - 5);
+                    int y0 = 2 + rand() % (SR - hh - 5);
+                    int doff = 16 * (rand() % ((64 - w)/16 + 1));
+                    pixel *s = srcbuf + y0*SS + x0;
+                    for( int i = 0; i < 70*FLY_WS; i++ )
+                        dstc[i] = dsta[i] = 0xCD & PIXEL_MAX;
+                    mc_c.hpel_fly[k]( dstc + FLY_WS + doff, FLY_WS, s, SS, w, hh );
+                    call_a1( mc_a.hpel_fly[k], dsta + FLY_WS + doff, (intptr_t)FLY_WS, s, (intptr_t)SS, w, hh );
+                    if( memcmp( dstc, dsta, 70*FLY_WS*sizeof(pixel) ) )
+                    {
+                        fprintf( stderr, "hpel_fly_%c [FAILED] w %d h %d at %d,%d dst +%d\n", "fhvc"[k], w, hh, x0, y0, doff );
+                        ok = 0;
+                    }
+                }
+            for( int x0 = 2; x0 < 100 && ok; x0 += 5 )
+            {
+                pixel *s = srcbuf + 41*SS + x0;
+                mc_c.hpel_fly[k]( dstc, FLY_WS, s, SS, 64, 16 );
+                mc_a.hpel_fly[k]( dsta, FLY_WS, s, SS, 64, 16 );
+                if( memcmp( dstc, dsta, 16*FLY_WS*sizeof(pixel) ) )
+                {
+                    fprintf( stderr, "hpel_fly_%c [FAILED] on the stripe band at %d\n", "fhvc"[k], x0 );
+                    ok = 0;
+                }
+            }
+            pixel *s = srcbuf + 4*SS + 5;
+            call_c2( mc_c.hpel_fly[k], dstc, (intptr_t)FLY_WS, s, (intptr_t)SS, 32, 20 );
+            call_a2( mc_a.hpel_fly[k], dsta, (intptr_t)FLY_WS, s, (intptr_t)SS, 32, 20 );
+            report( "hpel_fly :" );
+        }
+
+    /* once with the C kernels, once with each asm set */
+    static int e_done = 0;
+    int e_key = mc_a.hpel_fly[3] == mc_c.hpel_fly[3] ? 1 : mc_a.hpel_fly[3] == mc_ref.hpel_fly[3] ? 0 : (cpu_new & X264_CPU_AVX512) ? 4 : 2;
+    if( e_key && !(e_done & e_key) )
+    {
+        /* x264_fly_planes: random requests (single mvs and refine_subpel searches) over
+         * three references and mbs mostly in raster order; every read of every mv of a
+         * request, through the planes it returns, against the 6-tap of F */
+        e_done |= e_key;
+        ok = 1;
+        enum { PW = 128, PH = 96, PAD = 64, PS = PW + 2*PAD };
+        x264_t *h = calloc( 1, sizeof(x264_t) );
+        pixel *fbuf = x264_malloc( PS * (PH + 2*PAD) * sizeof(pixel) );
+        if( !h || !fbuf )
+            return 1;
+        pixel *f = fbuf + PAD*PS + PAD;
+        for( int y = 0; y < PH; y++ )
+            for( int x = 0; x < PW; x++ )
+                f[y*PS+x] = rand() & PIXEL_MAX;
+        for( int y = -PAD; y < PH + PAD; y++ )
+            for( int x = -PAD; x < PW + PAD; x++ )
+                f[y*PS+x] = f[x264_clip3( y, 0, PH-1 )*PS + x264_clip3( x, 0, PW-1 )];
+        h->mc = mc_a;
+        h->param.i_bframe = 1;
+        h->frames.i_max_ref0 = 2;
+        h->frames.i_max_ref1 = 1;
+        h->param.b_interlaced = 1;
+        x264_fly_tables_init();
+        if( x264_fly_alloc( h, PS, PW ) )
+            return 1;
+        static const uint8_t sizes[7][2] = { {16,16}, {16,8}, {8,16}, {8,8}, {8,4}, {4,8}, {4,4} };
+        for( int t = 0; t < 40000 && ok; t++ )
+        {
+            if( !(t & 4095) )
+                x264_fly_invalidate( h );
+            int mbi = (t >> 4) % ((PW/16) * (PH/16));
+            if( (t & 15) == 0 && rand() % 8 == 0 )
+                mbi = rand() % ((PW/16) * (PH/16));
+            h->mb.i_mb_x = mbi % (PW/16);
+            h->mb.i_mb_y = mbi / (PW/16);
+            /* progressive, MBAFF frame mb, MBAFF field mb of either parity */
+            int mode = rand() % 3;
+            h->sh.b_mbaff = mode > 0;
+            h->mb.b_interlaced = mode == 2;
+            int par = rand() & 1;
+            pixel *pl = mode == 2 ? f + par*PS : f;
+            intptr_t ps = mode == 2 ? 2*PS : PS;
+            int ph = mode == 2 ? PH/2 : PH;
+            int sz = rand() % 7;
+            int bw = sizes[sz][0], bh = sizes[sz][1];
+            int bx = rand() % (16/bw) * bw, by = rand() % (16/bh) * bh;
+            int ax = 16*h->mb.i_mb_x + bx, ay = 16*(h->mb.i_mb_y >> (mode == 2)) + by;
+            int slot = mode == 2 ? x264_fly_slot_idx( h->fly, 0, 2*(rand() % 3) + par, 1 ) : rand() % 3;
+            pixel *fref[4];
+            fref[0] = pl + ay*ps + ax;
+            fref[1] = (pixel*)((uintptr_t)fref[0] + x264_fly_magic( slot ));
+            fref[2] = fref[3] = fref[1];
+            /* an mv near zero, now and then anywhere: the reads stay in [-24, PW+24) x [-24, PH+24) */
+            int search = rand() & 1;
+            int hi = search ? rand() % (FLY_HMAX+1) : 0;
+            int qi = search ? rand() % (FLY_QMAX+1) : 0;
+            int reach = (2*hi + qi + 3) / 4 + 1;
+            int lo_x = -24 + reach - ax, hi_x = PW + 24 - bw - reach - 1 - ax;
+            int lo_y = -24 + reach - ay, hi_y = ph + 24 - bh - reach - 1 - ay;
+            int mx = rand() % 4 ? 4*x264_clip3( (rand() % 9) - 4, lo_x, hi_x ) + (rand() & 3)
+                                : 4*(lo_x + rand() % (hi_x - lo_x + 1)) + (rand() & 3);
+            int my = rand() % 4 ? 4*x264_clip3( (rand() % 9) - 4, lo_y, hi_y ) + (rand() & 3)
+                                : 4*(lo_y + rand() % (hi_y - lo_y + 1)) + (rand() & 3);
+            /* the inline band-hit paths, then x264_fly_planes, or x264_fly_planes direct */
+            pixel *p[4];
+            intptr_t ws;
+            if( rand() & 3 )
+                ws = search ? x264_fly_planes_search( h, fref, ps, bx, by, mx, my, hi, qi, bw, bh, p )
+                            : x264_fly_planes_mv( h, fref, ps, bx, by, mx, my, bw, bh, p );
+            else
+            {
+                x264_fly_box_t b;
+                if( search )
+                    x264_fly_box_search( &b, mx, my, hi, qi, bw, bh );
+                else
+                    x264_fly_box_mv( &b, mx, my, bw, bh );
+                ws = x264_fly_planes( h, fref, ps, bx, by, &b, p );
+            }
+            for( int i = -hi; i <= hi && ok; i++ )
+                for( int j = -hi; j <= hi && ok; j++ )
+                    for( int a = -qi; a <= qi && ok; a++ )
+                        for( int c = -qi; c <= qi && ok; c++ )
+                        {
+                            if( abs(i) + abs(j) > hi || abs(a) + abs(c) > qi )
+                                continue;
+                            int vx = mx + 2*i + a, vy = my + 2*j + c;
+                            x264_fly_box_t r;
+                            x264_fly_box_mv( &r, vx, vy, bw, bh );
+                            for( int k = 0; k < 4 && ok; k++ )
+                                if( r.mask & (1 << k) )
+                                    for( int y = r.y0[k]; y < r.y1[k] && ok; y++ )
+                                        for( int x = r.x0[k]; x < r.x1[k]; x++ )
+                                            if( p[k][y*ws+x] != fly_ref_px( fref[0], ps, k, x, y ) )
+                                            {
+                                                fprintf( stderr, "fly_planes [FAILED] t %d mode %d slot %d plane %d at %d,%d of mv %d,%d (start %d,%d h%d q%d) %dx%d\n",
+                                                         t, mode, slot, k, x, y, vx, vy, mx, my, hi, qi, bw, bh );
+                                                ok = 0;
+                                                break;
+                                            }
+                        }
+        }
+        x264_fly_free( h );
+        x264_free( fbuf );
+        free( h );
+        used_asm = 1;
+        report( "hpel_fly windows :" );
+    }
+    x264_free( srcbuf );
+    x264_free( dstc );
+    x264_free( dsta );
+    return ret;
+}
+
 static int check_all_funcs( int cpu_ref, int cpu_new )
 {
     return check_pixel( cpu_ref, cpu_new )
@@ -8604,6 +8868,7 @@ static int check_all_funcs( int cpu_ref, int cpu_new )
          + check_me_fpel( cpu_ref, cpu_new )
          + check_dct( cpu_ref, cpu_new )
          + check_mc( cpu_ref, cpu_new )
+         + check_hpelfly( cpu_ref, cpu_new )
          + check_intra( cpu_ref, cpu_new )
          + check_deblock( cpu_ref, cpu_new )
          + check_quant( cpu_ref, cpu_new )
