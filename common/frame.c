@@ -147,7 +147,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     for( int p = 0; p < luma_plane_count; p++ )
     {
         int luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
-        if( h->param.analyse.i_subpel_refine && b_fdec )
+        if( h->param.analyse.i_subpel_refine && b_fdec && !(HPEL_FLY && h->b_hpel_fly) )
         {
             /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
             PREALLOC( frame->buffer[p], (4*luma_plane_size + padh_align) * sizeof(pixel) );
@@ -242,7 +242,7 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     for( int p = 0; p < luma_plane_count; p++ )
     {
         int luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
-        if( h->param.analyse.i_subpel_refine && b_fdec )
+        if( h->param.analyse.i_subpel_refine && b_fdec && !(HPEL_FLY && h->b_hpel_fly) )
         {
             for( int i = 0; i < 4; i++ )
             {
@@ -732,6 +732,9 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
             plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+            /* the pads written: side bands, top and bottom bands; and both fields' */
+            FLY_COUNT_WR( h, ((height << SLICE_MBAFF) * 2*padh + (b_start + b_end) * padv * (width + 2*padh)
+                             + SLICE_MBAFF * 2 * (height * 2*padh + (b_start + b_end) * padv * (width + 2*padh))) * sizeof(pixel) );
         }
 }
 

@@ -30,9 +30,9 @@
 #include "encoder/me.h"
 
 #define MC_LUMA(list,p,w) \
-    h->mc.mc_luma( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
-                   &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
-                   mvx, mvy, 4*width, 4*height, w );
+    X264_MC_LUMA( h, &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
+                  &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
+                  mvx, mvy, 4*width, 4*height, w, 0, 0 );
 
 static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int height )
 {
@@ -107,10 +107,10 @@ static NOINLINE void x264_mb_mc_1xywh( x264_t *h, int x, int y, int width, int h
 }
 
 #define MC_LUMA_BI(p) \
-    src0 = h->mc.get_ref( tmp0, &i_stride0, &h->mb.pic.p_fref[0][i_ref0][p*4], h->mb.pic.i_stride[p], \
-                          mvx0, mvy0, 4*width, 4*height, x264_weight_none ); \
-    src1 = h->mc.get_ref( tmp1, &i_stride1, &h->mb.pic.p_fref[1][i_ref1][p*4], h->mb.pic.i_stride[p], \
-                          mvx1, mvy1, 4*width, 4*height, x264_weight_none ); \
+    src0 = X264_GET_REF( h, tmp0, &i_stride0, &h->mb.pic.p_fref[0][i_ref0][p*4], h->mb.pic.i_stride[p], \
+                         mvx0, mvy0, 4*width, 4*height, x264_weight_none, 0, 0 ); \
+    src1 = X264_GET_REF( h, tmp1, &i_stride1, &h->mb.pic.p_fref[1][i_ref1][p*4], h->mb.pic.i_stride[p], \
+                         mvx1, mvy1, 4*width, 4*height, x264_weight_none, 0, 0 ); \
     h->mc.avg[i_mode]( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
                        src0, i_stride0, src1, i_stride1, weight );
 
@@ -414,6 +414,9 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
     {
         int buf_hpel = (h->thread[0]->fdec->i_width[0]+48+32) * sizeof(int16_t);
         CHECKED_MALLOC( h->scratch_hpel, buf_hpel );
+        if( ((HPEL_FLY && h->b_hpel_fly) || HPELFLY_STATS) &&
+            x264_fly_alloc( h, h->thread[0]->fdec->i_stride[0], h->thread[0]->fdec->i_width[0] ) < 0 )
+            goto fail;
         int buf_ssim = h->param.analyse.b_ssim * 8 * (h->param.i_width/4+3) * sizeof(int);
         int me_range = X264_MIN(h->param.analyse.i_me_range, h->param.analyse.i_mv_range);
         int buf_tesa = (h->param.analyse.i_me_method >= X264_ME_ESA) *
@@ -453,6 +456,7 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
     x264_free( h->scratch_buffer );
     x264_free( h->scratch_buffer2 );
     x264_free( h->scratch_hpel );
+    x264_fly_free( h );
 }
 
 void x264_macroblock_slice_init( x264_t *h )
@@ -540,6 +544,11 @@ void x264_macroblock_slice_init( x264_t *h )
 
 void x264_macroblock_thread_init( x264_t *h )
 {
+    /* new slice, new references: no window holds anything */
+    x264_fly_invalidate( h );
+#if HPELFLY_STATS
+    x264_fly_ledger_flush( h );
+#endif
     h->mb.i_me_method = h->param.analyse.i_me_method;
     h->mb.i_subpel_refine = h->param.analyse.i_subpel_refine;
     if( h->sh.i_type == SLICE_TYPE_B && (h->mb.i_subpel_refine == 6 || h->mb.i_subpel_refine == 8) )
@@ -651,6 +660,18 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
                 h->mb.pic.p_fdec[i][-1+j*FDEC_STRIDE] = plane_fdec[-1+j*i_stride2];
     }
     pixel *plane_src, **filtered_src;
+    /* hpelfly: fref[1] - fref[0] carries the window slot; field refs by absolute parity */
+#define FLY_LOAD_REF( list )\
+    if( HPEL_FLY && h->b_hpel_fly && !i )\
+    {\
+        int jf = mb_interlaced ? (j & ~1) + ((j ^ mb_y) & 1) : j;\
+        uintptr_t magic = x264_fly_magic( x264_fly_slot_idx( h->fly, list, jf, mb_interlaced ) );\
+        for( int k = 1; k < 4; k++ )\
+            h->mb.pic.p_fref[list][j][k] = (pixel*)((uintptr_t)h->mb.pic.p_fref[list][j][0] + magic + (k-1)*4096);\
+    }\
+    else\
+        for( int k = 1; k < 4; k++ )\
+            h->mb.pic.p_fref[list][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
     for( int j = 0; j < h->mb.pic.i_fref[0]; j++ )
     {
         // Interpolate between pixels in same field.
@@ -668,8 +689,7 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
 
         if( !b_chroma )
         {
-            for( int k = 1; k < 4; k++ )
-                h->mb.pic.p_fref[0][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
+            FLY_LOAD_REF( 0 );
             if( !i )
             {
                 /* both fields of a weighted frame: rows of its weighted plane */
@@ -701,8 +721,9 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             h->mb.pic.p_fref[1][j][i*4] = plane_src + ref_pix_offset[j&1];
 
             if( !b_chroma )
-                for( int k = 1; k < 4; k++ )
-                    h->mb.pic.p_fref[1][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
+            {
+                FLY_LOAD_REF( 1 );
+            }
             else
             {
                 h->mb.pic.p_fref[1][j][5] = plane_src + ref_pix_offset[j&1];

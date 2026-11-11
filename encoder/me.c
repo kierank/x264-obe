@@ -74,21 +74,26 @@ do\
 static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw, int bh, int mx, int my,
                                      x264_pixel_cmp_avg2_t cmp_avg2, x264_pixel_cmp_t cmp )
 {
+    pixel **fref = m->p_fref;
+    intptr_t i_stride = m->i_stride[0];
+    pixel *fly[4];
+    if( (HPEL_FLY || HPELFLY_STATS) && ((mx|my)&3) )
+        fref = x264_fly_ref_mv( h, fref, &i_stride, FLY_PART_X( h, m ), FLY_PART_Y( h, m ), mx, my, bw, bh, fly );
     if( cmp_avg2 && !m->weight[0].weightfn )
     {
         int qpel_idx = ((my&3)<<2) + (mx&3);
-        intptr_t stride = m->i_stride[0];
+        intptr_t stride = i_stride;
         intptr_t offset = (my>>2)*stride + (mx>>2);
-        pixel *src1 = m->p_fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
+        pixel *src1 = fref[x264_hpel_ref0[qpel_idx]] + offset + ((my&3) == 3) * stride;
         if( qpel_idx & 5 )
         {
-            pixel *src2 = m->p_fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
+            pixel *src2 = fref[x264_hpel_ref1[qpel_idx]] + offset + ((mx&3) == 3);
             return cmp_avg2( m->p_fenc[0], src1, src2, stride );
         }
         return cmp( m->p_fenc[0], FENC_STRIDE, src1, stride );
     }
     intptr_t stride = 16;
-    pixel *src = h->mc.get_ref( pix, &stride, &m->p_fref[0], m->i_stride[0], mx, my, bw, bh, &m->weight[0] );
+    pixel *src = h->mc.get_ref( pix, &stride, fref, i_stride, mx, my, bw, bh, &m->weight[0] );
     return cmp( m->p_fenc[0], FENC_STRIDE, src, stride );
 }
 
@@ -1002,9 +1007,11 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 {
     int i_pixel = m->i_pixel;
     int subme = h->mb.i_subpel_refine;
+    /* a fly reference has no planes for the asm's subpel predictors and subpel_search */
+    int b_fly = (HPEL_FLY && x264_fly_ref( m->p_fref ) >= 0) || HPELFLY_STATS; /* stats: every read through me.c's hooks */
     if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
         && h->pixf.me_fpel_fn[i_pixel].x3_min && h->pixf.me_fpel_fn[i_pixel].x4_min
-        && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2)) )
+        && (subme < 3 || (!m->weight[0].weightfn && h->pixf.me_fpel_fn[i_pixel].sad_avg2 && !b_fly)) )
     {
         int hpel = subpel_iterations[subme][2];
         int qpel = subpel_iterations[subme][3];
@@ -1019,7 +1026,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         c.me_range = h->param.analyse.i_me_range;
         c.flags = (subme >= 3) * ME_FPEL_SUBME3 | !h->mb.b_chroma_me * ME_FPEL_ZEXIT | (subme >= 2) * ME_FPEL_REFINE;
         /* refine_subpel's subpel_search call */
-        if( subme >= 2 && !h->mb.b_chroma_me && !m->weight[0].weightfn && c.fn->subpel )
+        if( subme >= 2 && !h->mb.b_chroma_me && !m->weight[0].weightfn && c.fn->subpel && !b_fly )
         {
             c.range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
                     | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
@@ -1187,7 +1194,9 @@ static const int8_t qpel_dir_dy[5] = { 0, -1, 1, 0, 0 };
     } \
 }
 
-static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
+/* b_mvp_done: the caller tried the mvp (subme < 3) */
+static void refine_subpel_core( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel,
+                                int b_mvp_done )
 {
     /* luma only: the whole search in one subpel_search call */
     if( m->i_pixel <= PIXEL_8x8 && !h->mb.b_chroma_me && h->mb.i_subpel_refine != 1
@@ -1204,7 +1213,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
             const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
             uint64_t range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
                            | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
-            int iters = hpel_iters << 16 | qpel_iters << 8 | (hpel_iters && h->mb.i_subpel_refine < 3) << 5 | b_refine_qpel << 4;
+            int iters = hpel_iters << 16 | qpel_iters << 8 | (hpel_iters && h->mb.i_subpel_refine < 3 && !b_mvp_done) << 5 | b_refine_qpel << 4;
             uint64_t res;
             if( m->weight[0].weightfn )
                 res = h->pixf.mbcmp_subpel_search_weight[m->i_pixel]( m->p_fenc[0], m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
@@ -1275,7 +1284,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     if( hpel_iters )
     {
         /* try the subpel component of the predicted mv */
-        if( h->mb.i_subpel_refine < 3 )
+        if( h->mb.i_subpel_refine < 3 && !b_mvp_done )
         {
             int mx = x264_clip3( m->mvp[0], h->mb.mv_min_spel[0]+2, h->mb.mv_max_spel[0]-2 );
             int my = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1]+2, h->mb.mv_max_spel[1]-2 );
@@ -1449,6 +1458,61 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     m->cost_mv = p_cost_mvx[bmx] + p_cost_mvy[bmy];
 }
 
+static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
+{
+    int b_fly = HPEL_FLY && x264_fly_ref( m->p_fref ) >= 0;
+    if( b_fly || (HPELFLY_STATS && h->fly) )
+    {
+        /* the mvp try first, as refine_subpel_core's: it can start the search anywhere */
+        int b_mvp = hpel_iters && h->mb.i_subpel_refine < 3;
+        if( b_mvp )
+        {
+            int mx = x264_clip3( m->mvp[0], h->mb.mv_min_spel[0]+2, h->mb.mv_max_spel[0]-2 );
+            int my = x264_clip3( m->mvp[1], h->mb.mv_min_spel[1]+2, h->mb.mv_max_spel[1]-2 );
+            if( (mx-m->mv[0])|(my-m->mv[1]) )
+            {
+                ALIGNED_ARRAY_N( pixel, pix,[16*16] );
+                const uint16_t *p_cost_mvx = m->p_cost_mv - m->mvp[0];
+                const uint16_t *p_cost_mvy = m->p_cost_mv - m->mvp[1];
+                int bw = x264_pixel_size[m->i_pixel].w;
+                int bh = x264_pixel_size[m->i_pixel].h;
+                int cost = subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[m->i_pixel], h->pixf.fpelcmp[m->i_pixel] )
+                         + p_cost_mvx[mx] + p_cost_mvy[my];
+                if( cost < m->cost )
+                {
+                    m->cost = cost;
+                    m->mv[0] = mx;
+                    m->mv[1] = my;
+                }
+            }
+        }
+        /* then everything the search can read from its start, in the band or one window */
+        pixel *fref[4];
+        intptr_t stride = m->i_stride[0];
+        int bw = x264_pixel_size[m->i_pixel].w, bh = x264_pixel_size[m->i_pixel].h;
+        for( int k = 0; k < 4; k++ )
+            fref[k] = m->p_fref[k];
+#if HPELFLY_STATS
+        if( !b_fly )
+        {
+            x264_fly_box_t b;
+            x264_fly_box_search( &b, m->mv[0], m->mv[1], hpel_iters, qpel_iters, bw, bh );
+            x264_fly_ledger( h, m->p_fref, stride, FLY_PART_X( h, m ), FLY_PART_Y( h, m ), &b );
+            refine_subpel_core( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, b_mvp );
+            return;
+        }
+#endif
+        m->i_stride[0] = x264_fly_planes_search( h, fref, stride, FLY_PART_X( h, m ), FLY_PART_Y( h, m ), m->mv[0], m->mv[1],
+                                                 hpel_iters, qpel_iters, bw, bh, m->p_fref );
+        refine_subpel_core( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, b_mvp );
+        for( int k = 0; k < 4; k++ )
+            m->p_fref[k] = fref[k];
+        m->i_stride[0] = stride;
+        return;
+    }
+    refine_subpel_core( h, m, hpel_iters, qpel_iters, p_halfpel_thresh, b_refine_qpel, 0 );
+}
+
 #define BIME_CACHE( dx, dy, list )\
 {\
     x264_me_t *m = m##list;\
@@ -1456,8 +1520,9 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int mvx = bm##list##x+dx;\
     int mvy = bm##list##y+dy;\
     stride[0][list][i] = bw;\
-    src[0][list][i] = h->mc.get_ref( pixy_buf[list][i], &stride[0][list][i], &m->p_fref[0],\
-                                     m->i_stride[0], mvx, mvy, bw, bh, x264_weight_none );\
+    src[0][list][i] = X264_GET_REF_COPY( h, pixy_buf[list][i], &stride[0][list][i], &m->p_fref[0],\
+                                         m->i_stride[0], mvx, mvy, bw, bh, x264_weight_none,\
+                                         FLY_PART_X( h, m ), FLY_PART_Y( h, m ) );\
     if( rd )\
     {\
         if( CHROMA444 )\
@@ -1668,7 +1733,8 @@ void x264_me_refine_bidir_rd( x264_t *h, x264_me_t *m0, x264_me_t *m1, int i_wei
 { \
     if( !avoid_mvp || !(mx == pmx && my == pmy) ) \
     { \
-        h->mc.mc_luma( pix, FDEC_STRIDE, m->p_fref, m->i_stride[0], mx, my, bw, bh, &m->weight[0] ); \
+        X264_MC_LUMA( h, pix, FDEC_STRIDE, m->p_fref, m->i_stride[0], mx, my, bw, bh, &m->weight[0], \
+                      FLY_PART_X( h, m ), FLY_PART_Y( h, m ) ); \
         dst = h->pixf.mbcmp[i_pixel]( m->p_fenc[0], FENC_STRIDE, pix, FDEC_STRIDE ) \
             + p_cost_mvx[mx] + p_cost_mvy[my]; \
         COPY1_IF_LT( bsatd, dst ); \

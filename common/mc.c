@@ -865,6 +865,7 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     pixel *dstc = frame->filtered_fld[p][3] + offs;
     if( y1 <= y0 )
         return;
+    FLY_COUNT_WR( h, 3 * width * (y1 - y0) * sizeof(pixel) );
     if( !b_copy )
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
     else if( h->mc.hpel_filter_copy )
@@ -893,7 +894,9 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         const int width = frame->i_width[p];
         int offs = start*stride - 8; // buffer = 3 for 6tap, aligned to 8 for simd
 
-        if( !b_interlaced || h->mb.b_adaptive_mbaff )
+        int b_hpel = !(HPEL_FLY && h->b_hpel_fly); /* hpelfly: F only, but start as below for the integral */
+        if( b_hpel && (!b_interlaced || h->mb.b_adaptive_mbaff) )
+        {
             h->mc.hpel_filter(
                 frame->filtered[p][1] + offs,
                 frame->filtered[p][2] + offs,
@@ -901,6 +904,8 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
                 frame->plane[p] + offs,
                 stride, width + 16, height - start,
                 h->scratch_hpel );
+            FLY_COUNT_WR( h, 3 * (width + 16) * (height - start) * sizeof(pixel) );
+        }
 
         if( b_interlaced )
         {
@@ -913,7 +918,7 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
              * near them, which the encoder copies (top and bottom 16 rows). */
             int y0 = x264_clip3( 2, start, height_fld );
             int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
-            for( int i = 0; i < 2; i++ )
+            for( int i = 0; i < 2 && b_hpel; i++ )
             {
                 frame_filter_fld( h, frame, p, i, start, y0, 0 );
                 frame_filter_fld( h, frame, p, i, y0, y1, 1 );

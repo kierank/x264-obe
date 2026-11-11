@@ -1810,6 +1810,10 @@ x264_t *x264_encoder_open( x264_param_t *param )
     h->frames.i_max_ref0 = h->param.i_frame_reference;
     h->frames.i_max_ref1 = X264_MIN( h->sps->vui.i_num_reorder_frames, h->param.i_frame_reference );
     h->frames.i_max_dpb  = h->sps->vui.i_max_dec_frame_buffering;
+    /* hpelfly: references without H, V, C planes (not 4:4:4: its chroma planes have them too) */
+    h->b_hpel_fly = HPEL_FLY && h->param.analyse.i_subpel_refine && !CHROMA444;
+    if( h->b_hpel_fly )
+        x264_fly_tables_init();
     h->frames.b_have_lowres = !h->param.rc.b_stat_read
         && ( h->param.rc.i_rc_method == X264_RC_ABR
           || h->param.rc.i_rc_method == X264_RC_CRF
@@ -2799,7 +2803,7 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
      * rows into each field: the top and bottom 32 >> v_shift rows. */
     if( PARAM_INTERLACED && h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
     {
-        int hpel_planes = h->param.analyse.i_subpel_refine ? (CHROMA444 ? 3 : 1) : 0;
+        int hpel_planes = h->param.analyse.i_subpel_refine && !(HPEL_FLY && h->b_hpel_fly) ? (CHROMA444 ? 3 : 1) : 0;
         for( int p = 0; p < h->fdec->i_plane; p++ )
         {
             int v_shift = CHROMA_V_SHIFT && p;
@@ -2825,7 +2829,8 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
         if( h->param.analyse.i_subpel_refine )
         {
             x264_frame_filter( h, h->fdec, min_y, end );
-            x264_frame_expand_border_filtered( h, h->fdec, min_y, end );
+            if( !(HPEL_FLY && h->b_hpel_fly) )
+                x264_frame_expand_border_filtered( h, h->fdec, min_y, end );
         }
     }
 
@@ -5079,6 +5084,7 @@ void    x264_encoder_close  ( x264_t *h )
             }
             x264_macroblock_cache_free( h->thread[i] );
         }
+        x264_fly_report( h->thread[i] );
         x264_macroblock_thread_free( h->thread[i], 0 );
         x264_free( h->thread[i]->out.p_bitstream );
         x264_free( h->thread[i]->out.nal );
