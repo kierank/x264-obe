@@ -3520,8 +3520,13 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
-    /* off: enabled for non-reference B frames by the next commit */
-    h->b_nrb = 0;
+    /* A non-reference B frame's recon and mv / ref are read only by its own
+     * neighbouring MBs, unless the recon is asked for. slice-max-size can roll
+     * back across rows. */
+    h->b_nrb = h->sh.i_type == SLICE_TYPE_B && !h->fdec->b_kept_as_ref
+            && !h->param.b_full_recon && !h->param.psz_dump_yuv
+            && !h->param.analyse.b_psnr && !h->param.analyse.b_ssim
+            && !(HAS_SLICE_MAX_SIZE && h->param.i_slice_max_size);
     h->mbring.b_active = h->b_nrb && h->mbring.i_arrays;
     h->mbring.i_unit_last = -1;
     if( h->param.rc.i_vbv_buffer_size )

@@ -356,7 +356,8 @@ typedef struct x264_param_t
     void        (*pf_log)( void *, int i_level, const char *psz, va_list );
     void        *p_log_private;
     int         i_log_level;
-    int         b_full_recon;   /* fully reconstruct frames, even when not necessary for encoding.  Implied by psz_dump_yuv */
+    int         b_full_recon;   /* fully reconstruct frames, even when not necessary for encoding.  Implied by psz_dump_yuv.
+                                 * Without it, x264_picture_t.img of a non-reference B-frame is undefined */
     char        *psz_dump_yuv;  /* filename (in UTF-8) for reconstructed frames */
 
     /* Encoder analyser parameters */
@@ -846,7 +847,10 @@ typedef struct
     /* In: raw image data */
     /* Out: reconstructed image data.  x264 may skip part of the reconstruction process,
             e.g. deblocking, in frames where it isn't necessary.  To force complete
-            reconstruction, at a small speed cost, set b_full_recon. */
+            reconstruction, at a small speed cost, set b_full_recon.
+            For non-reference B-frames (i_type X264_TYPE_B, not X264_TYPE_BREF) the image
+            is undefined unless b_full_recon, psz_dump_yuv, analyse.b_psnr or analyse.b_ssim
+            is set: their recon is not stored at all. */
     x264_image_t img;
     /* In: optional information to modify encoder decisions for this frame
      * Out: information about the encoded frame */
