@@ -5518,6 +5518,12 @@ static int check_deblock( int cpu_ref, int cpu_new )
         db_a.deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx2;
         db_a.deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx2;
     }
+    /* and the undispatched 10-bit avx512icl MBAFF luma, at the AVX512ICL level */
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+    {
+        db_a.deblock_luma_mbaff = x264_deblock_h_luma_mbaff_avx512icl;
+        db_a.deblock_luma_intra_mbaff = x264_deblock_h_luma_intra_mbaff_avx512icl;
+    }
 #endif
 #if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
     /* the undispatched avx2 per-edge kernels, at the AVX2 level */
