@@ -2150,6 +2150,20 @@ CABAC bmi2
     mov      r4, r0
     and     r4d, SIZEOF_DCTCOEF
     neg      r4
+%if HIGH_BIT_DEPTH
+; ymm (INIT_YMM): 8 dwords each, the zero test per dword
+    pabsd    m0, [r0+r4+0*mmsize]
+    pabsd    m1, [r0+r4+1*mmsize]
+    movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
+    movu [rsp+r4+SIZEOF_DCTCOEF+1*mmsize], m1
+    pxor     m2, m2
+    pcmpeqd  m0, m2
+    pcmpeqd  m1, m2
+    movmskps r9d, m0
+    movmskps r6d, m1
+    shl      r6d, 8
+    or       r9d, r6d
+%else
     pabsw    m0, [r0+r4+0*mmsize]
     pabsw    m1, [r0+r4+1*mmsize]
     movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
@@ -2158,6 +2172,7 @@ CABAC bmi2
     pxor     m2, m2
     pcmpeqb  m0, m2
     pmovmskb r9d, m0
+%endif
     not      r9d
     and      r9d, [rd_nzmask_4x4+r2*8 GLOBAL]
     mov      r6d, [rd_nzmask_4x4+r2*8+4 GLOBAL]
@@ -3594,5 +3609,9 @@ INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_8x8_AVX2
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
+%else
+; 10-bit, after the layout above: avx2 rd 4x4 in ymm (vzeroupper on return)
+INIT_YMM avx2,bmi2
+CABAC_RESIDUAL_RD_4x4_AVX2
 %endif
 %endif
