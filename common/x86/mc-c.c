@@ -1682,6 +1682,10 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
         pf->hpel_filter_copy_vc = x264_hpel_filter_copy_vc_avx2;
         pf->hpel_filter_dual = x264_hpel_filter_dual_avx2;
+        pf->hpel_filter_pad[0] = x264_hpel_filter_pad_avx2;
+        pf->hpel_filter_pad[1] = x264_hpel_filter_copy_pad_avx2;
+        pf->hpel_filter_pad[2] = x264_hpel_filter_copy_vc_pad_avx2;
+        pf->hpel_filter_pad[3] = x264_hpel_filter_dual_pad_avx2;
 #endif
         pf->mc_chroma = x264_mc_chroma_avx2;
         pf->weight = x264_mc_weight_wtab_avx2;
