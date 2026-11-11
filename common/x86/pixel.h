@@ -1061,6 +1061,8 @@ int x264_intra_satd_lowres_avx512icl( void *, pixel *, intptr_t );
 int x264_intra_sa8d_x9_8x8_avx512icl( pixel *, pixel *, pixel *, uint16_t *, uint16_t * );
 #define x264_intra_sa8d_x9_8x8_fdec_avx512icl x264_template(intra_sa8d_x9_8x8_fdec_avx512icl)
 int x264_intra_sa8d_x9_8x8_fdec_avx512icl( pixel *, pixel *, int, uint16_t *, uint16_t * );
+#define x264_intra_satd_x9_4x4_avx512icl x264_template(intra_satd_x9_4x4_avx512icl)
+int x264_intra_satd_x9_4x4_avx512icl( pixel *, pixel *, uint16_t * );
 #define x264_pixel_satd_bi_16x16_avx512icl x264_template(pixel_satd_bi_16x16_avx512icl)
 int x264_pixel_satd_bi_16x16_avx512icl( x264_bi_fenc_t *, pixel *, intptr_t, pixel *, intptr_t, int );
 #define x264_pixel_satd_bi4_16x16_avx512icl x264_template(pixel_satd_bi4_16x16_avx512icl)

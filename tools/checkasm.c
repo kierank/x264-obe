@@ -721,6 +721,8 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
         /* the zen4-pruned icl sa8d x9 */
         pixel_asm.intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;
+        /* undispatched: the vpermb intra_satd_x9_4x4 */
+        pixel_asm.intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx512icl;
         pixel_asm.intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx512icl;
     }
     /* undispatched: intra_sa8d_x9_8x8_fdec avx2, at the first AVX2 level */
@@ -6265,6 +6267,14 @@ static int check_quant( int cpu_ref, int cpu_new )
         {
             zz_a[0].intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_frame_avx2;
             zz_a[1].intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_field_avx2;
+        }
+        /* undispatched: the vpermb intra_satd_x9_4x4_recon, at the first AVX512ICL level */
+        if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        {
+            zz_a[0].intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx512icl;
+            zz_a[1].intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_field_avx512icl;
+            zz_a[0].intra_satd_x9_4x4_recon_notr = x264_intra_satd_x9_4x4_recon_frame_notr_avx512icl;
+            zz_a[1].intra_satd_x9_4x4_recon_notr = x264_intra_satd_x9_4x4_recon_field_notr_avx512icl;
         }
 #endif
 

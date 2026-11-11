@@ -244,6 +244,23 @@ x9b4c:    db  6, 7, 8, 9,  6, 7, 8, 9,  6, 7, 8, 9,  6, 7, 8, 9
           db 11,12,13,14,  5, 6, 7, 8, 12,13,14,15,  6, 7, 8, 9
           db 14, 2,13, 1, 13, 1,12, 0, 12, 0,11,11, 11,11,11,11
 ALIGN 32
+ALIGN 64
+; avx512icl: the X9B_MASK4 rows of two modes from [e | F | P | Q]
+x9i4_ddlddr: db 22,23,24,25,22,23,24,25,23,24,25,26,23,24,25,26
+             db 24,25,26,27,24,25,26,27,25,26,27,28,25,26,27,28
+             db 20,21,22,23,20,21,22,23,19,20,21,22,19,20,21,22
+             db 18,19,20,21,18,19,20,21,17,18,19,20,17,18,19,20
+x9i4_vrhd:   db 42,43,44,45,42,43,44,45,35,36,37,38,35,36,37,38
+             db 34,42,43,44,34,42,43,44,33,35,36,37,33,35,36,37
+             db 63,52,53,54,63,52,53,54,62,51,63,52,62,51,63,52
+             db 61,50,62,51,61,50,62,51,60,49,61,50,60,49,61,50
+x9i4_vlhu:   db 43,44,45,46,43,44,45,46,37,38,39,40,37,38,39,40
+             db 44,45,46,47,44,45,46,47,38,39,40,41,38,39,40,41
+             db 62,50,61,49,62,50,61,49,61,49,60,48,61,49,60,48
+             db 60,48,59,59,60,48,59,59,59,59,59,59,59,59,59,59
+; the 9 sums from the lanes of ddl ddr vr hd | vl hu h dc: h dc ddl ddr vr hd vl hu
+x9i4_gw:     dw 17, 25, 0, 8, 16, 24, 1, 9
+             times 24 dw 0
 ; 8x8, rows 0-7 of each mode pair. Sources (lane 0 | lane 1):
 ; v | h: edge[16..31] | edge[7..22]
 x9b8_vh:   X9B_MASK8  0, 1, 2, 3, 4, 5, 6, 7,  7, 7, 7, 7, 7, 7, 7, 7
@@ -7526,11 +7543,17 @@ INTRA_SATD_X3_16x16_HBD
 %endmacro
 
 ; %1 = [x0|x1], %2 = [x2|x3] -> %1 = [y0|y1], %2 = [y3|y2] of the inverse transform; %3, %4 tmp
-%macro X9R_IDCT 4
+%macro X9R_IDCT 4 ; avx512icl: k5 = dwords 0x0c
     psraw       %3, %2, 1
+%if cpuflag(avx512icl)
+    vpblendmd   %3 {k5}, %2, %3       ; x2|x3>>1
+    psraw       %4, %1, 1
+    vpblendmd   %4 {k5}, %1, %4       ; x0|x1>>1
+%else
     vpblendd    %3, %2, %3, 0x0c      ; x2|x3>>1
     psraw       %4, %1, 1
     vpblendd    %4, %1, %4, 0x0c      ; x0|x1>>1
+%endif
     paddw       %3, %1                ; s02|s13
     psubw       %4, %2                ; d02|d13
     punpcklqdq  %1, %3, %4            ; s02|d02
@@ -10073,8 +10096,8 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*16
 
 ; %1: field; %2: 1 for the subroutine of intra_satd_x9_4x4_mb, which also stores the
 ; prediction to [r9] and returns by ret
-%macro X9B_4x4_RECON_BODY 2
-    X9B_4x4_SCORE 8, 7, 1, 6
+%macro X9B_4x4_RECON_BODY 2-3 X9B_4x4_SCORE ; %3: the score macro
+    %3 8, 7, 1, 6
     X9B_4x4_PRED 0, 7, 0              ; xm0: prediction rows 0-3
 %if %2
     mova       [r9], xm0
@@ -10097,13 +10120,25 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*16
     pabsw        m2, m1
     paddusw      m2, [r4+32]
     pmulhuw      m2, [r4]
+%if cpuflag(avx512icl)
+    vpmovw2m     k4, m1
+    pxor         m4, m4
+    vpsubw       m2 {k4}, m4, m2
+    vptestmw     k4, m2, m2
+    kortestd     k4, k4
+%else
     psignw       m2, m1
     ptest        m2, m2
+%endif
     jz .zero
 %if %1
     pshufb       m3, m2, [x9r_scan_field]
 %else
+%if cpuflag(avx512icl)
+    vpermq       m4, m2, q1032
+%else
     vperm2i128   m4, m2, m2, 0x01
+%endif
     pshufb       m3, m2, [x9r_scan_frame_a]
     pshufb       m4, [x9r_scan_frame_b]
     por          m3, m4
@@ -10373,6 +10408,210 @@ ALIGN 16
 
 X9M_FUNC frame, 0
 X9M_FUNC field, 1
+
+;-----------------------------------------------------------------------------
+; 8-bit intra_satd_x9_4x4 / intra_satd_x9_4x4_recon avx512icl: the six directional
+; predictions by three vpermb from [e | F | P | Q], two modes per zmm in the
+; layout of X9B_SATD; v, h and dc in the hadamard domain as the avx2 kernels;
+; the signs of the hadamard stages by masked subtracts (k1 odd words, k2 the
+; high 4 words of each lane), the 9 sums by one vpermw.
+;-----------------------------------------------------------------------------
+INIT_YMM avx512icl
+
+; %1: pred in (two modes), |three stages of pred-fenc| out (zmm24 fenc stages); %2 tmp
+%macro X9I_SATD 3
+    pmaddubsw  %1, zmm27
+    pshufb     %2, %1, zmm28
+    vpaddw     %3, %2, %1
+    vpsubw     %3 {k1}, %2, %1
+    pshufd     %2, %3, q1032
+    vpaddw     %1, %2, %3
+    vpsubw     %1 {k2}, %2, %3
+    psubw      %1, zmm24
+    pabsw      %1, %1
+    vshufi64x2 %2, %1, %1, q2301
+    pmaxsw     %1, %2              ; each mode's 8 maxes in both of its lanes
+%endmacro
+
+; the first two hadamard stages of m%1 in place (ymm), m%2 m%3 tmp
+%macro X9I_STAGES 3
+    pshufb      m%2, m%1, m12
+    vpaddw      m%3, m%2, m%1
+    vpsubw      m%3 {k1}, m%2, m%1
+    pshufd      m%2, m%3, q1032
+    vpaddw      m%1, m%2, m%3
+    vpsubw      m%1 {k2}, m%2, m%3
+%endmacro
+
+; as X9B_4x4_SCORE
+%macro X9I_4x4_SCORE 3-4 0
+    mov         r%2d, 0xaaaaaaaa
+    kmovd        k1, r%2d
+    mov         r%2d, 0xf0f0f0f0
+    kmovd        k2, r%2d
+    mov         r%2d, 0xf00c
+    kmovd        k5, r%2d             ; dwords 2-3 (X9R_IDCT)
+    kshiftrd     k3, k5, 8            ; dwords 4-7
+%ifidn %4, 0
+    movu        xm1, [r1-1*FDEC_STRIDE-8]
+    pinsrb      xm1, [r1+3*FDEC_STRIDE-1], 0
+    pinsrb      xm1, [r1+2*FDEC_STRIDE-1], 1
+    pinsrb      xm1, [r1+1*FDEC_STRIDE-1], 2
+    pinsrb      xm1, [r1+0*FDEC_STRIDE-1], 3
+    pshufb      xm1, [intrax9_edge]   ; l3 l3 l2 l1 l0 lt t0 t1 t2 t3 t4 t5 t6 t7 t7 t7
+%else
+    lea         r%1, [x9b4_edge]
+    neg         r%4d
+    and         r%4d, 16
+    add         r%1, r%4
+    movd        xm1, [r1-1*FDEC_STRIDE]   ; t0..t3
+    movd        xm2, [r1+1*FDEC_STRIDE-4] ; .. l1
+    pinsrd      xm1, [r1-1*FDEC_STRIDE+4], 1 ; t4..t7
+    pinsrd      xm2, [r1+2*FDEC_STRIDE-4], 1 ; .. l2
+    pinsrd      xm1, [r1-1*FDEC_STRIDE-4], 2 ; .. lt
+    pinsrd      xm2, [r1+3*FDEC_STRIDE-4], 2 ; .. l3
+    pinsrd      xm1, [r1+0*FDEC_STRIDE-4], 3 ; .. l0
+    pshufb      xm2, [x9b4_edgel]
+    pshufb      xm1, [r%1]
+    por         xm1, xm2
+%endif
+    pxor        xm4, xm4
+    pshufb      xm2, xm1, [intrax9a_dc]
+    psadbw      xm2, xm4
+    psrlw       xm2, 2
+    pavgw       xm2, xm4
+    vpbroadcastb m2, xm2              ; dc
+    vpermq       m1, m1, q1010
+    psrldq       m0, m1, 1
+    psrldq       m3, m1, 2
+    pavgb        m5, m0, m1
+    PRED4x4_LOWPASS m0, m1, m3, m0, m4 ; F
+    pslldq       m6, m0, 5
+    palignr      m7, m5, m6, 5        ; Q
+    psrldq       m5, 5
+    palignr      m5, m5, m6, 6        ; P
+    mova [pred_buf+0*16], xm1
+    mova [pred_buf+1*16], xm1
+    mova [pred_buf+2*16], xm2
+    mova [pred_buf+3*16], xm0
+    mova [pred_buf+4*16], xm0
+    mova [pred_buf+5*16], xm5
+    mova [pred_buf+6*16], xm7
+    mova [pred_buf+7*16], xm5
+    mova [pred_buf+8*16], xm7
+    vinserti32x4 zmm22, zmm17, xm0, 1
+    vinserti32x4 zmm22, zmm22, xm5, 2
+    vinserti32x4 zmm22, zmm22, xm7, 3     ; e | F | P | Q
+
+    movd        xm8, [r0+0*FENC_STRIDE]
+    pinsrd      xm8, [r0+1*FENC_STRIDE], 1
+    movd        xm9, [r0+2*FENC_STRIDE]
+    pinsrd      xm9, [r0+3*FENC_STRIDE], 1
+%if %3
+    punpcklqdq  xm15, xm8, xm9
+%endif
+    vinserti128  m8, m8, xm9, 1
+    punpckldq    m8, m8
+    vbroadcasti32x4 zmm27, [hmul_4p]
+    vbroadcasti32x4 zmm28, [x9b_swapw]
+    pmaddubsw    m8, m11
+    X9I_STAGES    8, 3, 4
+    vshufi64x2  zmm24, zmm24, zmm24, q1010  ; fenc stages, both halves
+
+    mova        zmm29, [x9i4_ddlddr]
+    mova        zmm30, [x9i4_vrhd]
+    mova        zmm26, [x9i4_vlhu]
+    vpermb      zmm29, zmm29, zmm22
+    vpermb      zmm30, zmm30, zmm22
+    vpermb      zmm26, zmm26, zmm22
+    X9I_SATD     zmm29, zmm19, zmm20
+    X9I_SATD     zmm30, zmm19, zmm20
+    X9I_SATD     zmm26, zmm19, zmm20
+
+    pshufb       m9, m1, [x9b4_vt]
+    pmaddubsw    m9, [x9b4_wv]
+    pshufb       m3, m9, m12
+    vpaddw       m4, m3, m9
+    vpsubw       m4 {k1}, m3, m9      ; v
+    pshufb       m3, m1, [x9b4_ht]
+    pmaddubsw    m3, [x9b4_wh]        ; h
+    pmaddubsw    m2, [x9b4_wdc]       ; dc
+    psubw        m4, m8
+    psubw        m3, m8
+    psubw        m2, m8
+    pabsw        m4, m4
+    pabsw        m3, m3
+    pabsw        m2, m2
+    vpermq       m9, m4, q1032
+    pmaxsw       m4, m9               ; v | v
+    vshufi64x2   m9, m3, m2, 1
+    vpblendmd    m3 {k3}, m3, m2
+    pmaxsw       m3, m9               ; h | dc
+
+    vshufi64x2  zmm29, zmm29, zmm30, q2020 ; ddl ddr vr hd
+    vshufi64x2  zmm26, zmm26, zmm19, q1020  ; vl hu h dc
+    HADD_ILV  w,  wd, zmm29, zmm29, zmm26, zmm16
+    HADD_ILV  w,  dq, zmm29, zmm29, zmm29, zmm16
+    HADD_ILV  w, qdq, zmm29, zmm29, zmm29, zmm16 ; words 0, 1 of each lane: the sums
+    HADD_ILV  w,  wd,  m4,  m4,  m4,  m0
+    HADD_ILV  w,  dq,  m4,  m4,  m4,  m0
+    HADD_ILV  w, qdq,  m4,  m4,  m4,  m0 ; v
+    mova        zmm16, [x9i4_gw]
+    vpermw      zmm16, zmm16, zmm29        ; h dc ddl ddr vr hd vl hu
+    vpextrw     r%2d, xm4, 0
+    paddw       xm0, [r2+2]
+    movzx       r%1d, word [r2]
+    add         r%2d, r%1d
+    pshufd      xm1, xm0, q1032
+    pminuw      xm1, xm0
+    pshuflw     xm2, xm1, q1032
+    pminuw      xm1, xm2
+    psrld       xm2, xm1, 16
+    pminuw      xm1, xm2
+    vpbroadcastw xm2, xm1
+    vpcmpeqw     k4, xm0, xm2
+    kmovd       eax, k4
+    tzcnt       eax, eax              ; first minimum, as phminposuw
+    shl         eax, 16
+    vpextrw     r%1d, xm1, 0
+    or          eax, r%1d
+    add         eax, 1<<16
+    cmp          ax, r%2w
+    cmovae      eax, r%2d
+
+    mov         r%2d, eax
+    shr         r%2d, 16
+    shl         r%2d, 4
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int intra_satd_x9_4x4( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts )
+;-----------------------------------------------------------------------------
+cglobal intra_satd_x9_4x4, 3,4,16, 9*16
+    %define pred_buf rsp
+    X9I_4x4_SCORE 0, 3, 0
+    X9B_4x4_PRED 0, 3, 0
+    movd   [r1+0*FDEC_STRIDE], xm0
+    pextrd [r1+1*FDEC_STRIDE], xm0, 1
+    pextrd [r1+2*FDEC_STRIDE], xm0, 2
+    pextrd [r1+3*FDEC_STRIDE], xm0, 3
+    RET
+
+%macro X9I_4x4_RECON 2 ; name, field
+cglobal intra_satd_x9_4x4_recon_%1_notr, 0,0
+    mov         r6d, 1                ; no topright
+    jmp mangle(private_prefix %+ _intra_satd_x9_4x4_recon_%1 %+ SUFFIX %+ .entry)
+cglobal intra_satd_x9_4x4_recon_%1, 0,0
+    xor         r6d, r6d
+.entry:
+    PROLOGUE 6,9,16, 9*16
+    %define pred_buf rsp
+    X9B_4x4_RECON_BODY %2, 0, X9I_4x4_SCORE
+%endmacro
+
+X9I_4x4_RECON frame, 0
+X9I_4x4_RECON field, 1
+INIT_YMM avx2
 
 ;-----------------------------------------------------------------------------
 ; int intra_sa8d_x9_8x8( uint8_t *fenc, uint8_t *fdec, uint8_t edge[36], uint16_t *bitcosts, uint16_t *satds )
