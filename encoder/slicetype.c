@@ -2851,16 +2851,35 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
 
                 if( j - last_nonb <= 1 )
                 {
-                    int cost2p1 = x264_slicetype_frame_cost( h, &a, frames, last_nonb+0, j+1, j+1, 1 );
+                    /* The four costs in one group: their MB rows interleaved, all reading
+                     * frames last_nonb..j+1. The three after cost2p1 run speculatively
+                     * and are cancelled if the intra test below ends the pair. */
+                    x264_frame_cost_t c[4] = { { .p0 = last_nonb+0, .p1 = j+1, .b = j+1 },
+                                               { .p0 = last_nonb+0, .p1 = j+1, .b = j+0 },
+                                               { .p0 = last_nonb+0, .p1 = j+0, .b = j+0 },
+                                               { .p0 = last_nonb+1, .p1 = j+1, .b = j+1 } };
+                    int n = 4;
+                    /* a cached cost2p1 decides first */
+                    if( x264_frame_cost_cached( h, frames[j+1], last_nonb+0, j+1, j+1 ) &&
+                        frames[j+1]->i_intra_mbs[2] > i_mb_count / 2 )
+                        n = 1;
+                    int m = x264_frame_cost_start( h, &a, frames, c, n );
+                    int cost2p1 = x264_frame_cost_finish( h, frames, &c[0], 1 );
                     if( frames[j+1]->i_intra_mbs[2] > i_mb_count / 2 )
                     {
+                        for( int k = 1; k < m; k++ )
+                            x264_frame_cost_cancel( frames, &c[k] );
                         frames[j]->i_type = X264_TYPE_P;
                         continue;
                     }
 
-                    int cost1b1 = x264_slicetype_frame_cost( h, &a, frames, last_nonb+0, j+1, j+0, 0 );
-                    int cost1p0 = x264_slicetype_frame_cost( h, &a, frames, last_nonb+0, j+0, j+0, 0 );
-                    int cost2p0 = x264_slicetype_frame_cost( h, &a, frames, last_nonb+1, j+1, j+1, 0 );
+                    int cost[4];
+                    for( int k = 1; k < 4; k++ )
+                        cost[k] = k < m ? x264_frame_cost_finish( h, frames, &c[k], 0 )
+                                        : x264_slicetype_frame_cost( h, &a, frames, c[k].p0, c[k].p1, c[k].b, 0 );
+                    int cost1b1 = cost[1];
+                    int cost1p0 = cost[2];
+                    int cost2p0 = cost[3];
 
                     if( cost1p0 + cost2p0 < cost1b1 + cost2p1 )
                     {
