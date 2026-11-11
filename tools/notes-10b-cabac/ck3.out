@@ -1,0 +1,175 @@
+start Wed Nov 11 13:10:33 UTC 2026 cpu 4
+241bb592 8-bit built 13:11:10, CR files 0, C warnings in bitstream.c/checkasm.c: 14
+241bb592 checkasm8 seed 1 rc 0 13:11:30: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm8 seed 2 rc 0 13:11:50: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm8 seed 3 rc 0 13:12:10: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm8 seed 4 rc 0 13:12:30: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm8 seed 5 rc 0 13:12:50: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+/tmp/cab10t/241bb592-8/common/x86/cabac-a-8.o: non-avx512 functions with EVEX: 0, EVEX insns inside avx512/icl fns: 277
+241bb592 10-bit built 13:13:15, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+241bb592 checkasm10 seed 1 rc 0 13:13:35: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm10 seed 2 rc 0 13:13:54: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm10 seed 3 rc 0 13:14:14: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm10 seed 4 rc 0 13:14:34: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+241bb592 checkasm10 seed 5 rc 0 13:14:53: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+/tmp/cab10t/241bb592-10/common/x86/cabac-a-10.o: non-avx512 functions with EVEX: 0, EVEX insns inside avx512/icl fns: 333
+  x264_10_cabac_block_residual_8x8_rd_internal_avx2_bmi2: 964 non-EVEX insns
+  x264_10_cabac_block_residual_internal_avx2_bmi2: 735 non-EVEX insns
+  x264_10_cabac_block_residual_rd_internal_avx2_bmi2: 535 non-EVEX insns
+  x264_10_cabac_block_residual_422_dc_internal_avx2_bmi2: 558 non-EVEX insns
+nop: 159
+cabac_block_residual_8x8_rd2_dense_c: 2786
+cabac_block_residual_8x8_rd2_dense_avx512icl_lzcnt: 653
+cabac_block_residual_8x8_rd2_large_c: 1430
+cabac_block_residual_8x8_rd2_large_avx512icl_lzcnt: 888
+cabac_block_residual_8x8_rd2_mid_c: 1309
+cabac_block_residual_8x8_rd2_mid_avx512icl_lzcnt: 533
+cabac_block_residual_8x8_rd2_sparse_c: 969
+cabac_block_residual_8x8_rd2_sparse_avx512icl_lzcnt: 525
+cabac_block_residual_8x8_rd_dense_c: 2800
+cabac_block_residual_8x8_rd_dense_sse2slow: 3090
+cabac_block_residual_8x8_rd_dense_sse2_lzcnt: 3100
+cabac_block_residual_8x8_rd_dense_ssse3: 3063
+cabac_block_residual_8x8_rd_dense_avx2_lzcnt: 3080
+cabac_block_residual_8x8_rd_dense_avx2_bmi2: 712
+cabac_block_residual_8x8_rd_dense_avx512icl_lzcnt: 2666
+cabac_block_residual_8x8_rd_large_c: 1447
+cabac_block_residual_8x8_rd_large_sse2slow: 1411
+cabac_block_residual_8x8_rd_large_sse2_lzcnt: 1395
+cabac_block_residual_8x8_rd_large_ssse3: 1357
+cabac_block_residual_8x8_rd_large_avx2_lzcnt: 1371
+cabac_block_residual_8x8_rd_large_avx2_bmi2: 931
+cabac_block_residual_8x8_rd_large_avx512icl_lzcnt: 1013
+cabac_block_residual_8x8_rd_mid_c: 1315
+cabac_block_residual_8x8_rd_mid_sse2slow: 1278
+cabac_block_residual_8x8_rd_mid_sse2_lzcnt: 1264
+cabac_block_residual_8x8_rd_mid_ssse3: 1255
+cabac_block_residual_8x8_rd_mid_avx2_lzcnt: 1274
+cabac_block_residual_8x8_rd_mid_avx2_bmi2: 651
+cabac_block_residual_8x8_rd_mid_avx512icl_lzcnt: 853
+cabac_block_residual_8x8_rd_sparse_c: 971
+cabac_block_residual_8x8_rd_sparse_sse2slow: 854
+cabac_block_residual_8x8_rd_sparse_sse2_lzcnt: 849
+cabac_block_residual_8x8_rd_sparse_ssse3: 835
+cabac_block_residual_8x8_rd_sparse_avx2_lzcnt: 845
+cabac_block_residual_8x8_rd_sparse_avx2_bmi2: 612
+cabac_block_residual_8x8_rd_sparse_avx512icl_lzcnt: 498
+cabac_block_residual_422_dc_c: 2695
+cabac_block_residual_422_dc_avx2_bmi2: 966
+cabac_block_residual_422_dc_avx512icl_lzcnt: 1370
+cabac_block_residual_dense_c: 4410
+cabac_block_residual_dense_sse2slow: 4449
+cabac_block_residual_dense_sse2_lzcnt: 3734
+cabac_block_residual_dense_avx2_bmi2: 2305
+cabac_block_residual_dense_avx512_lzcnt: 2342
+cabac_block_residual_large_c: 7994
+cabac_block_residual_large_sse2slow: 5731
+cabac_block_residual_large_sse2_lzcnt: 5697
+cabac_block_residual_large_avx2_bmi2: 3383
+cabac_block_residual_large_avx512_lzcnt: 3510
+cabac_block_residual_mid_c: 2285
+cabac_block_residual_mid_sse2slow: 1956
+cabac_block_residual_mid_sse2_lzcnt: 1939
+cabac_block_residual_mid_avx2_bmi2: 1145
+cabac_block_residual_mid_avx512_lzcnt: 1162
+cabac_block_residual_rd_dense_c: 489
+cabac_block_residual_rd_dense_sse2slow: 415
+cabac_block_residual_rd_dense_sse2_lzcnt: 394
+cabac_block_residual_rd_dense_ssse3: 401
+cabac_block_residual_rd_dense_avx2_lzcnt: 392
+cabac_block_residual_rd_dense_avx2_bmi2: 277
+cabac_block_residual_rd_dense_avx512icl_lzcnt: 106
+cabac_block_residual_rd_large_c: 252
+cabac_block_residual_rd_large_sse2slow: 201
+cabac_block_residual_rd_large_sse2_lzcnt: 192
+cabac_block_residual_rd_large_ssse3: 205
+cabac_block_residual_rd_large_avx2_lzcnt: 213
+cabac_block_residual_rd_large_avx2_bmi2: 207
+cabac_block_residual_rd_large_avx512icl_lzcnt: 132
+cabac_block_residual_rd_mid_c: 216
+cabac_block_residual_rd_mid_sse2slow: 190
+cabac_block_residual_rd_mid_sse2_lzcnt: 172
+cabac_block_residual_rd_mid_ssse3: 187
+cabac_block_residual_rd_mid_avx2_lzcnt: 169
+cabac_block_residual_rd_mid_avx2_bmi2: 190
+cabac_block_residual_rd_mid_avx512icl_lzcnt: 79
+cabac_block_residual_rd_sparse_c: 171
+cabac_block_residual_rd_sparse_sse2slow: 135
+cabac_block_residual_rd_sparse_sse2_lzcnt: 112
+cabac_block_residual_rd_sparse_ssse3: 129
+cabac_block_residual_rd_sparse_avx2_lzcnt: 109
+cabac_block_residual_rd_sparse_avx2_bmi2: 121
+cabac_block_residual_rd_sparse_avx512icl_lzcnt: 171
+cabac_block_residual_sparse_c: 1244
+cabac_block_residual_sparse_sse2slow: 1096
+cabac_block_residual_sparse_sse2_lzcnt: 1079
+cabac_block_residual_sparse_avx2_bmi2: 634
+cabac_block_residual_sparse_avx512_lzcnt: 641
+d625b235 8-bit built 13:15:54, CR files 0, C warnings in bitstream.c/checkasm.c: 14
+d04be24f 10-bit built 13:16:19, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+d04be24f checkasm10 seed 1 rc 0 13:16:37: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d04be24f checkasm10 seed 2 rc 0 13:16:56: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d04be24f checkasm10 seed 3 rc 0 13:17:16: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d04be24f checkasm10 seed 4 rc 0 13:17:35: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d04be24f checkasm10 seed 5 rc 0 13:17:54: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+2b83c12c 10-bit built 13:18:19, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+2b83c12c checkasm10 seed 1 rc 0 13:18:39: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+2b83c12c checkasm10 seed 2 rc 0 13:18:59: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+2b83c12c checkasm10 seed 3 rc 0 13:19:18: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+2b83c12c checkasm10 seed 4 rc 0 13:19:37: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+2b83c12c checkasm10 seed 5 rc 0 13:19:56: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+a2d60ded 10-bit built 13:20:27, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+a2d60ded checkasm10 seed 1 rc 0 13:20:46: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+a2d60ded checkasm10 seed 2 rc 0 13:21:05: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+a2d60ded checkasm10 seed 3 rc 0 13:21:24: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+a2d60ded checkasm10 seed 4 rc 0 13:21:42: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+a2d60ded checkasm10 seed 5 rc 0 13:22:00: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+3b31def8 10-bit built 13:22:27, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+3b31def8 checkasm10 seed 1 rc 0 13:22:45: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+3b31def8 checkasm10 seed 2 rc 0 13:23:04: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+3b31def8 checkasm10 seed 3 rc 0 13:23:22: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+3b31def8 checkasm10 seed 4 rc 0 13:23:40: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+3b31def8 checkasm10 seed 5 rc 0 13:23:59: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea 10-bit built 13:24:23, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+873f5dea checkasm10 seed 1 rc 0 13:24:41: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm10 seed 2 rc 0 13:25:00: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm10 seed 3 rc 0 13:25:18: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm10 seed 4 rc 0 13:25:36: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm10 seed 5 rc 0 13:25:54: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+5cf6d4ae 10-bit built 13:26:26, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+5cf6d4ae checkasm10 seed 1 rc 0 13:26:48: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+5cf6d4ae checkasm10 seed 2 rc 0 13:27:07: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+5cf6d4ae checkasm10 seed 3 rc 0 13:27:29: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+5cf6d4ae checkasm10 seed 4 rc 0 13:27:51: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+5cf6d4ae checkasm10 seed 5 rc 0 13:28:13: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+bcc7df8d 10-bit built 13:28:46, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+bcc7df8d checkasm10 seed 1 rc 0 13:29:09: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+bcc7df8d checkasm10 seed 2 rc 0 13:29:27: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+bcc7df8d checkasm10 seed 3 rc 0 13:29:46: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+bcc7df8d checkasm10 seed 4 rc 0 13:30:06: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+bcc7df8d checkasm10 seed 5 rc 0 13:30:25: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+7641d69e 10-bit built 13:30:53, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+7641d69e checkasm10 seed 1 rc 0 13:31:11: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+7641d69e checkasm10 seed 2 rc 0 13:31:29: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+7641d69e checkasm10 seed 3 rc 0 13:31:47: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+7641d69e checkasm10 seed 4 rc 0 13:32:05: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+7641d69e checkasm10 seed 5 rc 0 13:32:24: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 10-bit built 13:32:57, CR files 0, C warnings in bitstream.c/checkasm.c: 30
+d57d0370 checkasm10 seed 1 rc 0 13:33:16: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm10 seed 2 rc 0 13:33:34: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm10 seed 3 rc 0 13:33:52: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm10 seed 4 rc 0 13:34:10: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm10 seed 5 rc 0 13:34:28: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  1 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 7 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 8-bit built 13:35:10, CR files 0, C warnings in bitstream.c/checkasm.c: 14
+d57d0370 checkasm8 seed 1 rc 0 13:35:30: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm8 seed 2 rc 0 13:35:51: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm8 seed 3 rc 0 13:36:13: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm8 seed 4 rc 0 13:36:37: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+d57d0370 checkasm8 seed 5 rc 0 13:36:57: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea 8-bit built 13:37:34, CR files 0, C warnings in bitstream.c/checkasm.c: 14
+873f5dea checkasm8 seed 1 rc 0 13:37:54: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm8 seed 2 rc 0 13:38:13: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm8 seed 3 rc 0 13:38:33: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm8 seed 4 rc 0 13:38:54: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+873f5dea checkasm8 seed 5 rc 0 13:39:13: 0 FAILED; x264: All tests passed Yeah :); cabac lines:  3 - cabac 4:2:2 dc : [OK]| 1 - cabac decision bmi2: [OK]| 8 - cabac residual rd: [OK]| 6 - cabac residual: [OK]|
+end Wed Nov 11 13:39:13 UTC 2026

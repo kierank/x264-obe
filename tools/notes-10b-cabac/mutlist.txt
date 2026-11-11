@@ -1,0 +1,8 @@
+4x4 avx2 gt1 mask not shifted (AC)|    shrx    r12d, r12d, r6d|    nop
+4x4 avx2 last0 bin 1|    mov      r4d, [rd_sig_tab+r4*8 GLOBAL]|    mov      r4d, [rd_sig_tab+4+r4*8 GLOBAL]
+4x4 avx2 abs==1 mask upper half from lower|    pcmpeqd  m4, m1, [pd_1]|    pcmpeqd  m4, m0, [pd_1]
+8x8 avx2 pack from a stale register|    packsswb  m0, m2   |    packsswb  m0, m3
+8x8 avx2 no vpermd|    vpermd    m0, m1, m0|    nop
+422 dc no upper pack|    packssdw m0, [r14+16]|    nop
+icl rd2 8x8 gt1 mask halves swapped|    kunpckwd  k5, k7, k6|    kunpckwd  k5, k6, k7
+icl rd2 4x4 gt1 as >= 1|    vpcmpud   k5, zm0, [pd_1] {1to16}, 6|    vpcmpud   k5, zm0, [pd_1] {1to16}, 5
