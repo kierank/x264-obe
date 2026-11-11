@@ -1704,6 +1704,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
+        pf->expand_border_sides = x264_expand_border_sides_avx2;
     }
 
     if( cpu&X264_CPU_AVX512 )
