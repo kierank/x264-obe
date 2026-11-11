@@ -4048,9 +4048,6 @@ static int check_mc( int cpu_ref, int cpu_new )
     x264_mc_init( cpu_ref, &mc_ref, 0 );
     x264_mc_init( cpu_new, &mc_a, 0 );
 #if HAVE_MMX
-    /* undispatched (Core 3 decides): mb_fref_load avx2, at the first AVX2 level */
-    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-        mc_a.mb_fref_load = x264_mb_fref_load_avx2;
     /* undispatched (rack01 decides): mb_fref_load avx512, at the first AVX512 level */
     if( (cpu_new&X264_CPU_AVX512) && !(cpu_ref&X264_CPU_AVX512) )
         mc_a.mb_fref_load = x264_mb_fref_load_avx512;
