@@ -267,6 +267,11 @@ typedef struct
     void (*weightp_sum8_clip)( int32_t *sum, pixel *src, intptr_t i_src, int n, int height, int scale, int denom,
                                int offset );
     void (*weightp_sum8_nv)( int32_t *sumu, int32_t *sumv, pixel *src, intptr_t i_src, int n, int height );
+    /* plane_copy_deinterleave of the interleaved src (8*n u v pairs x height) to dstu and
+     * dstv, then weightp_stats8 of each, in one pass; dst and src rows share i_stride.
+     * asm may do n rounded up to 4: src read, dst written up to 8 * that a row. */
+    void (*weightp_deint_stats8)( int32_t *sumu, int32_t *sumv, uint32_t *minmaxu, uint32_t *minmaxv,
+                                  pixel *dstu, pixel *dstv, pixel *src, intptr_t i_stride, int n, int height );
     /* x264_weights_analyse luma: the sums of pix1 - pix2 over the 4x4 blocks of an 8x8,
      * in raster order */
     void (*weightp_dc8x8)( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 );

@@ -1315,6 +1315,19 @@ static void pixel_weightp_sum8_nv( int32_t *sumu, int32_t *sumv, pixel *src, int
     }
 }
 
+static void pixel_weightp_deint_stats8( int32_t *sumu, int32_t *sumv, uint32_t *minmaxu, uint32_t *minmaxv,
+                                        pixel *dstu, pixel *dstv, pixel *src, intptr_t i_stride, int n, int height )
+{
+    for( int y = 0; y < height; y++ )
+        for( int x = 0; x < 8*n; x++ )
+        {
+            dstu[x+y*i_stride] = src[2*x  +y*i_stride];
+            dstv[x+y*i_stride] = src[2*x+1+y*i_stride];
+        }
+    pixel_weightp_stats8( sumu, minmaxu, dstu, i_stride, n, height );
+    pixel_weightp_stats8( sumv, minmaxv, dstv, i_stride, n, height );
+}
+
 static void pixel_weightp_dc8x8( int32_t dc[4], pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2 )
 {
     for( int q = 0; q < 4; q++ )
@@ -1445,6 +1458,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->weightp_sum8 = pixel_weightp_sum8;
     pixf->weightp_sum8_clip = pixel_weightp_sum8_clip;
     pixf->weightp_sum8_nv = pixel_weightp_sum8_nv;
+    pixf->weightp_deint_stats8 = pixel_weightp_deint_stats8;
     pixf->weightp_dc8x8 = pixel_weightp_dc8x8;
 
     pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4;

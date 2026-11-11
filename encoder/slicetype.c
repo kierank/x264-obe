@@ -283,8 +283,19 @@ void x264_weight_chroma_ref_rows( x264_t *h, x264_weight_src_t *s, int mb_y0, in
                                  src1, i_stride, mvx, 2*mvy>>v_shift, 8, height );
             }
         else
+        {
+#if HIGH_BIT_DEPTH
             h->mc.plane_copy_deinterleave( dst[0] + pel_offset_y, i_stride, dst[1] + pel_offset_y, i_stride,
                                            ref + pel_offset_y, i_stride, 8*n, height );
+#else
+            /* the copy and the statistics in one pass (8-bit asm) */
+            h->pixf.weightp_deint_stats8( s->rsum[0] + mb_y*s->n16, s->rsum[1] + mb_y*s->n16,
+                                          s->minmax[0] + mb_y*s->n16, s->minmax[1] + mb_y*s->n16,
+                                          dst[0] + pel_offset_y, dst[1] + pel_offset_y, ref + pel_offset_y,
+                                          i_stride, n, height );
+            continue;
+#endif
+        }
         for( int p = 0; p < 2; p++ )
             h->pixf.weightp_stats8( s->rsum[p] + mb_y*s->n16, s->minmax[p] + mb_y*s->n16,
                                     dst[p] + pel_offset_y, i_stride, n, height );
