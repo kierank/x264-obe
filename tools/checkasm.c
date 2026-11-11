@@ -3642,6 +3642,11 @@ static int check_dct( int cpu_ref, int cpu_new )
     x264_dct_init( 0, &dct_c );
     x264_dct_init( cpu_ref, &dct_ref);
     x264_dct_init( cpu_new, &dct_asm );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    /* the undispatched add8x8_idct8 pairs kernel, at the first AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        dct_asm.add8x8_idct8 = x264_add8x8_idct8_avx2;
+#endif
 
     memset( h, 0, sizeof(*h) );
     x264_param_default( &h->param );
