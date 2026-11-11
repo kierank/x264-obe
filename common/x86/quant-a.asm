@@ -2881,6 +2881,31 @@ cglobal coeff_last64, 1,3
     RET
 %endif
 
+%if HIGH_BIT_DEPTH == 0
+; 8-bit: the 16 coefs in one ymm, no pack: 2 mask bits per coef. 15 loads from the coef
+; before the block (aligned there, as the sse2 version)
+%macro COEFF_LAST_AVX2 1
+cglobal coeff_last%1, 1,1
+    pxor      m1, m1
+    pcmpeqw   m0, m1, [r0-(%1&1)*SIZEOF_DCTCOEF]
+    pmovmskb eax, m0
+    not      eax
+    lzcnt    eax, eax
+    shr      eax, 1
+%if %1 == 15
+    neg      eax
+    add      eax, 14
+%else
+    xor      eax, 15
+%endif
+    RET
+%endmacro
+
+INIT_YMM avx2,lzcnt
+COEFF_LAST_AVX2 15
+COEFF_LAST_AVX2 16
+%endif
+
 %macro COEFF_LAST_AVX512 2 ; num, w/d
 cglobal coeff_last%1, 1,2
     mova         m0, [r0-(%1&1)*SIZEOF_DCTCOEF]
