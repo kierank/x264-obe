@@ -1020,12 +1020,49 @@ cglobal lowres_b_mbs, 1,15,LI_NREGS, LB_STACK
     RET
 %endmacro
 
+;-----------------------------------------------------------------------------
+; int intra_satd_lowres_tf( int16_t *fenc_pre, uint8_t *src, intptr_t stride )
+;-----------------------------------------------------------------------------
+; intra_satd_lowres (pixel-a.asm) with V and DC through the transform of fenc_pre
+%macro INTRA_SATD_LOWRES_TF 0
+LI_REGS 0
+%if cpuflag(avx512icl) == 0
+%xdefine LI_FPRE0 [r0+0*32]
+%xdefine LI_FPRE1 [r0+1*32]
+%xdefine LI_FPRE2 [r0+2*32]
+%xdefine LI_FPRE3 [r0+3*32]
+%xdefine LI_HF0 [rsp+0*32]
+%xdefine LI_A2  [rsp+1*32]
+%xdefine LI_S13 [rsp+2*32]
+%endif
+cglobal intra_satd_lowres_tf, 3,7,LI_NREGS, LI_TF_STACK
+    LI_KMASKS
+    mova        m15, [li_hmul_8p]
+    mova         m0, [r0+0*32]
+    mova         m1, [r0+1*32]
+    mova         m2, [r0+2*32]
+    mova         m3, [r0+3*32]
+%if cpuflag(avx512icl)
+    mova   LI_FPRE0, m0
+    mova   LI_FPRE1, m1
+    mova   LI_FPRE2, m2
+    mova   LI_FPRE3, m3
+%endif
+    sub          r1, r2
+    lea          r3, [r2*3]
+    lea          r4, [r1+4*r2]
+    LI_INTRA
+    RET
+%endmacro
+
 INIT_YMM avx2
 %assign LI_STACK 7*32
 %assign LI_NREGS 16
 LOWRES_I_MBS
 LI_REGS LB_PRE
 LOWRES_B_MBS
+%assign LI_TF_STACK 3*32
+INTRA_SATD_LOWRES_TF
 
 INIT_YMM avx512icl
 %assign LI_STACK 0
@@ -1033,5 +1070,7 @@ INIT_YMM avx512icl
 LOWRES_I_MBS
 LI_REGS LB_PRE
 LOWRES_B_MBS
+%assign LI_TF_STACK 0
+INTRA_SATD_LOWRES_TF
 
 %endif ; !HIGH_BIT_DEPTH && UNIX64
