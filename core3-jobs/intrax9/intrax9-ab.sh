@@ -9,7 +9,7 @@
 #   bash intrax9-ab.sh report       # per-cell paired medians + A/A
 # Set: CLIPS (dir with the clips as .y4m), CORE (one cpu), AB; on Core 3 FRAMES=30.
 #   AB=i1    item 1, x9 v/h/dc in the hadamard domain:   base = speed-next 42c3f783, arm = ad2e4638
-#   AB=i3    item 3, topright in-kernel, edge loads:      base = f6e9a53f, arm = bbcb56c1
+#   AB=i3    item 3, topright in-kernel, edge loads:      base = f6e9a53f, arm = 219b043c
 #   AB=tip   items 2 + 4 dispatched (8x8 fdec edge, MB driver): base = tip~1, arm = tip
 #   AB=i2    item 2 alone: base = tip~1, arm = tip without the MB driver pointer
 #   AB=i4    item 4 alone: base = tip~1, arm = tip without the 8x8 fdec pointer
@@ -24,9 +24,9 @@ BRANCH=wip/x264-nw-intrax9
 SN=42c3f783
 C1=ad2e4638
 C2=f6e9a53f
-C3=bbcb56c1
-TIP=b5c43194
-TIP1=b3d0b0b9
+C3=219b043c
+TIP=76142791
+TIP1=5cdbdd1c
 PFILE=""; PATCH=""
 case $AB in
 i1)  BASE=$SN;   ARM=$C1 ;;
@@ -49,14 +49,15 @@ NORMAL="--subme 6 --me hex --ref 2 --no-mixed-refs --no-chroma-me --trellis 1 --
 
 patch_icl() { # dispatch the undispatched avx512icl x9 kernels in the AVX512ICL block of pixel.c and dct.c
     perl -0pi -e 's|(    if\( cpu&X264_CPU_AVX512ICL \)\n    \{\n#if ARCH_X86_64\n)|$1        pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx512icl;\n        pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx512icl;\n        pixf->intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx512icl;\n|' common/pixel.c
-    perl -0pi -e 's|(        pf_progressive->intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_frame_avx2;\n)|$1        if( cpu&X264_CPU_AVX512ICL )\n        {\n            pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx512icl;\n            pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx512icl;\n        }\n|' common/dct.c
+    perl -0pi -e 's|(        pf_progressive->intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_frame_avx2;\n)|$1        if( cpu&X264_CPU_AVX512ICL )\n        {\n            pf_interlaced->intra_satd_x9_4x4_recon  = x264_intra_satd_x9_4x4_recon_field_avx512icl;\n            pf_progressive->intra_satd_x9_4x4_recon = x264_intra_satd_x9_4x4_recon_frame_avx512icl;\n            pf_interlaced->intra_satd_x9_4x4_recon_notr  = x264_intra_satd_x9_4x4_recon_field_notr_avx512icl;\n            pf_progressive->intra_satd_x9_4x4_recon_notr = x264_intra_satd_x9_4x4_recon_frame_notr_avx512icl;\n        }\n|' common/dct.c
     n=$(git diff --stat | grep -cE 'common/(pixel|dct).c')
     [ "$n" = 2 ] || { echo "ICL PATCH DID NOT APPLY"; git diff --stat; exit 1; }
 }
 
 cnt_patch() { # counters in x264_mb_analyse_intra, printed at exit as X9_CNT
     perl -0pi -e 's|(static void x264_mb_analyse_intra\( x264_t \*h)|#include <stdio.h>\nstatic unsigned long long x9cnt[3];\n__attribute__((destructor)) static void x9cnt_print( void ) { fprintf( stderr, "X9_CNT mb %llu fdec8x8 %llu recon4x4 %llu\\n", x9cnt[0], x9cnt[1], x9cnt[2] ); }\n$1|' encoder/analyse.c
-    perl -pi -e 's/^(\s+)(idx = h->zigzagf\.intra_satd_x9_4x4_mb\()/$1x9cnt[0]++, $2/; s/^(\s+)(i_best = x9_fdec\()/$1x9cnt[1]++, $2/; s/^(\s+)(i_best = x9_recon\()/$1x9cnt[2]++, $2/' encoder/analyse.c
+    perl -pi -e 's/^(\s+)(idx = h->zigzagf\.intra_satd_x9_4x4_mb\()/$1x9cnt[0]++, $2/; s/^(\s+)(i_best = x9_fdec\()/$1x9cnt[1]++, $2/; s/^(\s+)(i_best = (x9_recon|\(b_notr && x9_recon_notr \? x9_recon_notr : x9_recon\))\()/$1x9cnt[2]++, $2/' encoder/analyse.c
+    [ $(grep -c 'x9cnt\[[012]\]++' encoder/analyse.c) -ge 1 ] || { echo "CNT SITES NOT FOUND"; exit 1; }
     grep -q 'X9_CNT' encoder/analyse.c || { echo "CNT PATCH DID NOT APPLY"; exit 1; }
 }
 
