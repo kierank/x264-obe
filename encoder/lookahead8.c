@@ -26,6 +26,7 @@
 #include "me.h"
 #include "analyse.h"
 #include "lookahead8.h"
+#include "lowres.h"
 
 #if BIT_DEPTH == 8
 
@@ -554,6 +555,27 @@ void x264_lowres8_slice_cost( void *ctx, void **frames, int p0, int p1, int b,
         lp.corr_intra_max = LA8_CORR_INTRA_MAX;
         lp.corr_inter_max = LA8_CORR_P_MAX;
         x264_lowres_p_run( h, &lp );
+        return;
+    }
+    x264_lowres_i_t li;
+    if( p0 == p1 && x264_lowres_i_init( h, &li, c->lambda ) )
+    {
+        x264_frame_t *fenc = (x264_frame_t*)frames[b];
+        li.fenc = fenc->lowres8[0];
+        li.intra_cost = fenc->i_intra_cost;
+        li.costs = fenc->lowres_costs[0][0];
+        li.inv_qscale = h->param.rc.i_aq_mode ? fenc->i_inv_qscale_factor : NULL;
+        li.output_inter = output_inter;
+        li.output_intra = fenc->b_intra_calculated ? NULL : output_intra;
+        li.stride = fenc->i_stride_lowres;
+        li.slice_start = h->i_threadslice_start;
+        li.start_x = start_x;
+        li.end_x = end_x;
+        li.start_y = start_y;
+        li.end_y = end_y;
+        li.corr_intra = c->corr_intra;
+        li.corr_intra_max = LA8_CORR_INTRA_MAX;
+        x264_lowres_i_run( h, &li );
         return;
     }
 
