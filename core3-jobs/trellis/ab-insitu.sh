@@ -57,7 +57,7 @@ done; done
 echo "== timing: base / base' / arm / arm' per round, taskset -c $CPU, $FRAMES frames, cycles:u (instructions:u logged to insn.txt)"
 rm -f $W/insn.txt
 t() { taskset -c $CPU perf stat -x, -e cycles:u,instructions:u -o $W/t.txt -- $W/b-$1-t/x264 $2 --frames $FRAMES -o /dev/null $3 2>/dev/null; awk -F, -v k="$c $cell $1" '/instructions:u/{print k, $1}' $W/t.txt >> $W/insn.txt; awk -F, '/cycles:u/{printf "%d", $1}' $W/t.txt; }
-for c in $CLIPLIST; do for cell in LOW NOR; do eval o="\$$cell $(opts $c)"
+for c in $CLIPLIST; do for cell in LOW NOR; do o="${!cell} $(opts $c)"
   t base "$o" $CLIPS/$c.y4m > /dev/null   # warm-up
   for r in $(seq 1 $R); do
     b1=$(t base "$o" $CLIPS/$c.y4m); b2=$(t base "$o" $CLIPS/$c.y4m)

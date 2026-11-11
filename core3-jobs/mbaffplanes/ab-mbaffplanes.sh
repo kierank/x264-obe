@@ -93,7 +93,7 @@ t() { # arm opts clip frames -> "cycles_u instr_u cycles_k taskclock_ms faults [
   awk -F, '/cycles:u/{cu=$1} /instructions:u/{iu=$1} /cycles:k/{ck=$1} /task-clock/{tc=$1} /page-faults/{pf=$1} END{printf "%s %s %s %.1f %s", cu, iu, ck, tc, pf}' $W/ps.txt
   echo -n "$mb"
 }
-for c in $CLIPLIST; do for cell in LOW NOR; do eval o="\$$cell --tff"; n=$(frames $c)
+for c in $CLIPLIST; do for cell in LOW NOR; do o="${!cell} --tff"; n=$(frames $c)
   t base "$o" $CLIPS/$c.y4m $n > /dev/null   # warm-up
   for r in $(seq 1 $R); do
     b1=$(t base "$o" $CLIPS/$c.y4m $n); b2=$(t base "$o" $CLIPS/$c.y4m $n)
