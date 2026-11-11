@@ -3635,11 +3635,12 @@ static int check_lowres_i( int cpu_ref, int cpu_new )
     x264_pixel_function_t pf;
     int ret = 0, ok = 1, used_asm = 0;
     void (*fn)( x264_lowres_i_t * ) = NULL;
+    int (*tf)( void *, pixel *, intptr_t ) = NULL;
     const char *name = NULL;
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-        fn = x264_lowres_i_mbs_avx2, name = "lowres_i_mbs_avx2";
+        fn = x264_lowres_i_mbs_avx2, tf = x264_intra_satd_lowres_tf_avx2, name = "lowres_i_mbs_avx2";
     if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
-        fn = x264_lowres_i_mbs_avx512icl, name = "lowres_i_mbs_avx512icl";
+        fn = x264_lowres_i_mbs_avx512icl, tf = x264_intra_satd_lowres_tf_avx512icl, name = "lowres_i_mbs_avx512icl";
     if( !fn )
         return 0;
     x264_pixel_init( cpu_new, &pf );
@@ -3755,6 +3756,23 @@ static int check_lowres_i( int cpu_ref, int cpu_new )
                              icost[0][k], costs[0][k], icost[1][k], costs[1][k] );
                     break;
                 }
+        }
+        /* intra_satd_lowres_tf against intra_satd_lowres_avx2 (tested against the C path while dispatched) at every MB */
+        for( int k = 0; k < w*h && ok; k++ )
+        {
+            ALIGNED_ARRAY_64( pixel, fe,[8*FENC_STRIDE] );
+            ALIGNED_ARRAY_64( int16_t, fp,[64] );
+            pixel *src = fenc + 8*(k%w) + 8*(k/w)*stride;
+            for( int i = 0; i < 8; i++ )
+                memcpy( fe + i*FENC_STRIDE, src + i*stride, 8 );
+            pf.satd_fenc_pre[1]( fp, fe );
+            int r0 = x264_intra_satd_lowres_avx2( fp, src, stride );
+            int r1 = call_a1( tf, fp, src, stride );
+            if( r0 != r1 )
+            {
+                ok = 0;
+                fprintf( stderr, "intra_satd_lowres_tf (%s) mode %d mb %d: %d != %d [FAILED]\n", name, mode, k, r0, r1 );
+            }
         }
         for( int y = c.start_y; y >= c.end_y; y-- )
             for( int x = c.start_x; x >= c.end_x; x-- )
