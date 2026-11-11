@@ -1853,7 +1853,7 @@ CABAC bmi2
 ; = rd_transition_sb[idx] ^ bin, so a round is a merge-masked vpermi2b and an
 ; xor with bin ^ next bin. The idx of each round is kept for the entropy,
 ; which is summed once.
-%macro CABAC_RESIDUAL_RD_8x8 0-1 0 ; 1: rd2 (avx512icl, 8-bit), levels by RD8_LEVELS
+%macro CABAC_RESIDUAL_RD_8x8 0-1 0 ; 1: rd2 (avx512icl), levels by RD8_LEVELS
     %define dct rsp
     %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb, ctx_sig
     %define cbm [rsp+64*SIZEOF_DCTCOEF]
@@ -1883,10 +1883,20 @@ CABAC bmi2
 %endif
     ABS_NZMASK_8x8
 %if %1
+%if HIGH_BIT_DEPTH
+    vpcmpud   k4, m0, [pd_1] {1to16}, 6
+    vpcmpud   k5, m1, [pd_1] {1to16}, 6
+    vpcmpud   k6, m2, [pd_1] {1to16}, 6
+    vpcmpud   k7, m3, [pd_1] {1to16}, 6
+    kunpckwd  k4, k5, k4
+    kunpckwd  k5, k7, k6
+    kunpckdq  k5, k5, k4
+%else
     vpbroadcastw m2, [pw_1]
     vpcmpuw   k5, m0, m2, 6
     vpcmpuw   k6, m1, m2, 6
     kunpckdq  k5, k6, k5
+%endif
     kmovq    r12, k5                                          ; bit i = abs(l[i]) > 1
 %endif
 %if cpuflag(lzcnt)
@@ -3660,11 +3670,13 @@ INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
 %else
 ; 10-bit, after the layout above: avx2 rd 4x4 and 8x8 in ymm (vzeroupper on
-; return), the 4:2:2 chroma dc writer
+; return), the 4:2:2 chroma dc writer; the avx512icl rd2
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_4x4_AVX2
 CABAC_RESIDUAL_RD_8x8_AVX2
 INIT_XMM avx2,bmi2
 CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 1
+INIT_ZMM avx512icl
+CABAC_RESIDUAL_RD_8x8 1
 %endif
 %endif

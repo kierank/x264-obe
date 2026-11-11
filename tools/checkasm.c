@@ -7728,7 +7728,7 @@ name##fail:
 #define CATS_8x8 ((1<<DCT_LUMA_8x8) | (1<<DCT_CHROMAU_8x8) | (1<<DCT_CHROMAV_8x8))
     CABAC_RESIDUAL( cabac_block_residual_rd, ((1<<14)-1) & ~CATS_8x8, 1 )
     CABAC_RESIDUAL( cabac_block_residual_8x8_rd, CATS_8x8, 1 )
-#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#if HAVE_MMX && ARCH_X86_64
     /* 8x8_rd2_avx512icl (levels per level > 1), not dispatched: tested and benched as
      * cabac_block_residual_8x8_rd2 at the AVX512ICL level, next to the dispatched icl */
     if( (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) )
