@@ -5509,6 +5509,14 @@ static int check_deblock( int cpu_ref, int cpu_new )
         db_a.deblock_chroma_420_intra_mbaff = x264_deblock_h_chroma_intra_mbaff_avx;
     }
 #endif
+#if ARCH_X86_64 && HAVE_MMX && HIGH_BIT_DEPTH
+    /* the undispatched 10-bit avx2 luma intra, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+    {
+        db_a.deblock_luma_intra[0] = x264_deblock_h_luma_intra_avx2;
+        db_a.deblock_luma_intra[1] = x264_deblock_v_luma_intra_avx2;
+    }
+#endif
 #if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
     /* the undispatched avx2 per-edge kernels, at the AVX2 level */
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )

@@ -101,6 +101,9 @@ align 32
 mbaff_pq_idx_avx2:   dd 3,7,0,4,2,6,1,5
 mbaff_cols_idx_avx2: dd 2,6,4,0,3,7,5,1
 transpose_shuf_avx2: times 2 db 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15
+; 10-bit avx2 luma intra: +2
+ALIGN 32
+pw_2_avx2:     times 16 dw 2
 
 SECTION .text
 
@@ -1443,6 +1446,146 @@ INIT_XMM avx
 DEBLOCK_LUMA_INTRA_64
 
 %endif
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; 10-bit luma intra, avx2, Copyright (C) 2026 Open Broadcast Systems Ltd
+; The whole 16 pixel edge per ymm (h: rows 0-7 | 8-15 per lane), the filter of
+; LUMA_INTRA10_ICL with vector masks and pblendvb selects.
+;-----------------------------------------------------------------------------
+; %1-%6 = p0 p1 p2 p3 q0 q1, %7 = strong mask of this side, %8/%9 = p0'/p1' out
+; (%8/%9 may be %5/%6); in: m8 = filter mask; p2' is written over p2
+; clobbers m12-m14
+%macro LUMA_INTRA10_SIDE_AVX2 9
+    paddw      m12, m%3, m%2
+    paddw      m12, m%1
+    paddw      m12, m%5
+    paddw      m12, [pw_2_avx2]  ; p2+p1+p0+q0+2
+    psubw      m13, m12, m%3
+    psubw      m13, m%5
+    paddw      m13, m%6
+    paddw      m13, m%2
+    psrlw      m13, 2           ; (2*p1+p0+q1+2)>>2
+    paddw      m14, m12, m12
+    psubw      m14, m%3
+    paddw      m14, m%6
+    psrlw      m14, 3           ; (p2+2*p1+2*p0+2*q0+q1+4)>>3
+    pblendvb   m13, m13, m14, m%7
+    pblendvb   m%8, m%1, m13, m8
+    psrlw      m14, m12, 2      ; (p2+p1+p0+q0+2)>>2
+    pblendvb   m%9, m%2, m14, m%7
+    paddw      m14, m%4, m%3
+    paddw      m14, m14
+    paddw      m14, [pw_2_avx2]
+    paddw      m14, m12
+    psrlw      m14, 3           ; (2*p3+3*p2+p1+p0+q0+4)>>3
+    pblendvb   m%3, m%3, m14, m%7
+%endmacro
+
+; in: m0-m3 = p0-p3, m4-m7 = q0-q3, r2d = alpha, r3d = beta
+; out: m0-m2, m4-m6 filtered
+%macro LUMA_INTRA10_AVX2 0
+    movd       xm8, r2d
+    movd       xm9, r3d
+    shr        r2d, 2
+    add        r2d, 2
+    movd      xm10, r2d
+    vpbroadcastw m8, xm8
+    vpbroadcastw m9, xm9
+    vpbroadcastw m10, xm10
+    psubw      m11, m0, m4
+    psubw      m12, m1, m0
+    psubw      m13, m5, m4
+    pabsw      m11, m11         ; |p0-q0|
+    pabsw      m12, m12
+    pabsw      m13, m13
+    pmaxsw     m12, m13         ; max(|p1-p0|, |q1-q0|)
+    pcmpgtw    m12, m9, m12
+    pcmpgtw    m10, m11         ; |p0-q0| < (alpha>>2)+2
+    pcmpgtw     m8, m11         ; |p0-q0| < alpha
+    pand        m8, m12         ; filter
+    pand       m10, m8
+    psubw      m11, m2, m0
+    psubw      m12, m6, m4
+    pabsw      m11, m11         ; |p2-p0|
+    pabsw      m12, m12         ; |q2-q0|
+    pcmpgtw    m11, m9, m11
+    pcmpgtw     m9, m12
+    pand       m11, m10         ; strong p
+    pand        m9, m10         ; strong q
+    LUMA_INTRA10_SIDE_AVX2 0, 1, 2, 3, 4, 5, 11, 10, 15
+    LUMA_INTRA10_SIDE_AVX2 4, 5, 6, 7, 0, 1, 9, 0, 1
+    SWAP         4, 0
+    SWAP         5, 1
+    SWAP         0, 10
+    SWAP         1, 15
+%endmacro
+
+INIT_YMM avx2
+;-----------------------------------------------------------------------------
+; void deblock_v_luma_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_v_luma_intra, 4,6,16
+    add         r1, r1
+    lea         r4, [r1*4]
+    lea         r5, [r1*3]
+    neg         r4
+    add         r4, r0          ; pix-4*stride
+    movu        m0, [r4+r5]
+    movu        m1, [r4+r1*2]
+    movu        m2, [r4+r1]
+    movu        m3, [r4]
+    movu        m4, [r0]
+    movu        m5, [r0+r1]
+    movu        m6, [r0+r1*2]
+    movu        m7, [r0+r5]
+    LUMA_INTRA10_AVX2
+    movu   [r4+r5], m0
+    movu [r4+r1*2], m1
+    movu   [r4+r1], m2
+    movu      [r0], m4
+    movu   [r0+r1], m5
+    movu [r0+r1*2], m6
+    RET
+
+;-----------------------------------------------------------------------------
+; void deblock_h_luma_intra( uint16_t *pix, intptr_t stride, int alpha, int beta )
+;-----------------------------------------------------------------------------
+cglobal deblock_h_luma_intra, 4,8,16
+    add         r1, r1
+    lea         r5, [r1*3]
+    lea         r4, [r0+r1*4]
+    lea         r6, [r0+r1*8]
+    lea         r7, [r4+r1*8]
+    DEBLOCK_H_LOAD_ROW 3, [r0-8],      [r6-8]
+    DEBLOCK_H_LOAD_ROW 2, [r0+r1-8],   [r6+r1-8]
+    DEBLOCK_H_LOAD_ROW 1, [r0+r1*2-8], [r6+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 0, [r0+r5-8],   [r6+r5-8]
+    DEBLOCK_H_LOAD_ROW 4, [r4-8],      [r7-8]
+    DEBLOCK_H_LOAD_ROW 5, [r4+r1-8],   [r7+r1-8]
+    DEBLOCK_H_LOAD_ROW 6, [r4+r1*2-8], [r7+r1*2-8]
+    DEBLOCK_H_LOAD_ROW 7, [r4+r5-8],   [r7+r5-8]
+    TRANSPOSE8x8W 3, 2, 1, 0, 4, 5, 6, 7, 8
+    LUMA_INTRA10_AVX2
+    TRANSPOSE8x8W 3, 2, 1, 0, 4, 5, 6, 7, 8
+    movu        [r0-8], xm3
+    vextracti128 [r6-8], m3, 1
+    movu     [r0+r1-8], xm2
+    vextracti128 [r6+r1-8], m2, 1
+    movu   [r0+r1*2-8], xm1
+    vextracti128 [r6+r1*2-8], m1, 1
+    movu     [r0+r5-8], xm0
+    vextracti128 [r6+r5-8], m0, 1
+    movu        [r4-8], xm4
+    vextracti128 [r7-8], m4, 1
+    movu     [r4+r1-8], xm5
+    vextracti128 [r7+r1-8], m5, 1
+    movu   [r4+r1*2-8], xm6
+    vextracti128 [r7+r1*2-8], m6, 1
+    movu     [r4+r5-8], xm7
+    vextracti128 [r7+r5-8], m7, 1
+    RET
+%endif ; ARCH_X86_64
 
 %macro DEBLOCK_LUMA_INTRA 0
 ;-----------------------------------------------------------------------------
