@@ -160,6 +160,12 @@ typedef struct
     void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list );
+    /* a B row's two lists in one pass: the same output as mbtree_propagate_list list 0, then list 1
+     * (ref_costs0 != ref_costs1); NULL: those two calls */
+    void (*mbtree_propagate_list2)( x264_t *h, uint16_t *ref_costs0, uint16_t *ref_costs1,
+                                    int16_t (*mvs0)[2], int16_t (*mvs1)[2], int16_t *propagate_amount,
+                                    uint16_t *lowres_costs, int bipred_weight0, int bipred_weight1,
+                                    int mb_y, int len );
 
     /* sum of the lowres costs scaled by x264_exp2fix8( qp_offset ) */
     int (*mbtree_cost_scale)( uint16_t *lowres_costs, float *qp_offset, int len );

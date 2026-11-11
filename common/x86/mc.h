@@ -46,5 +46,14 @@ PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_avx512 )
 PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_avx2 )
 PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_avx512 )
 #undef PROPAGATE_LIST_DECL
+#define PROPAGATE_LIST2_DECL( name )\
+void name( x264_t *h, uint16_t *ref_costs0, uint16_t *ref_costs1, int16_t (*mvs0)[2], int16_t (*mvs1)[2],\
+           int16_t *propagate_amount, uint16_t *lowres_costs, int bipred_weight0, int bipred_weight1,\
+           int mb_y, int len );
+#define x264_mbtree_propagate_list2_strip_avx2 x264_template(mbtree_propagate_list2_strip_avx2)
+#define x264_mbtree_propagate_list2_strip_avx512 x264_template(mbtree_propagate_list2_strip_avx512)
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_avx2 )
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_avx512 )
+#undef PROPAGATE_LIST2_DECL
 
 #endif

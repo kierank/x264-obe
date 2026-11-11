@@ -789,6 +789,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 
     pf->mbtree_propagate_cost = mbtree_propagate_cost;
     pf->mbtree_propagate_list = mbtree_propagate_list;
+    pf->mbtree_propagate_list2 = NULL;
     pf->mbtree_cost_scale = mbtree_cost_scale;
     pf->mbtree_finish = mbtree_finish;
     pf->aq_variance_tail = aq_variance_tail;
@@ -808,6 +809,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     {
         pf->mbtree_propagate_cost = mbtree_propagate_cost;
         pf->mbtree_propagate_list = mbtree_propagate_list;
+        pf->mbtree_propagate_list2 = NULL;
         pf->mbtree_finish = mbtree_finish;
         pf->aq_variance_tail = aq_variance_tail;
     }

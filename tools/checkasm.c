@@ -4054,28 +4054,44 @@ static void propagate_list_mvs( int16_t (*mvs)[2], int width, int mode, int (*rn
 
 static int rand_c( void ) { return rand(); }
 
-/* a strip wrapper against the wrapper of the same internal kernel: exact over the frame and
- * the rows around it, and the strip all zero after every call */
-static int check_propagate_list_strip( int cpu_new, const char *name, propagate_list_fn fn_ref, propagate_list_fn fn_new )
+typedef void (*propagate_list2_fn)( x264_t *h, uint16_t *ref_costs0, uint16_t *ref_costs1, int16_t (*mvs0)[2],
+                                    int16_t (*mvs1)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
+                                    int bipred_weight0, int bipred_weight1, int mb_y, int len );
+
+static void propagate_list2_twice( propagate_list_fn fn, x264_t *h, uint16_t *rc0, uint16_t *rc1, int16_t (*mvs0)[2],
+                                   int16_t (*mvs1)[2], int16_t *amount, uint16_t *lowres_costs, int w0, int w1,
+                                   int mb_y, int len )
+{
+    fn( h, rc0, mvs0, amount, lowres_costs, w0, mb_y, len, 0 );
+    fn( h, rc1, mvs1, amount, lowres_costs, w1, mb_y, len, 1 );
+}
+
+/* strip wrappers against the wrapper of the same internal kernel: exact over the frame and the
+ * rows around it (list2: against list 0 then list 1), and the strips all zero after every call */
+static int check_propagate_list_strip( int cpu_new, const char *name, propagate_list_fn fn_ref,
+                                       propagate_list_fn fn_new, propagate_list2_fn fn2_new )
 {
     static const int widths[7] = { 128, 120, 45, 16, 13, 7, 1 };
     int ok = 1;
     int maxw = 128, maxh = 9, guard = 2*maxw;
     int size = maxw*maxh + 2*guard;
     x264_t *h = x264_malloc( sizeof(x264_t) );
-    uint8_t *mem = x264_malloc( 2*size*sizeof(uint16_t) + maxw*8 + (64<<10) + MBTREE_STRIP_SIZE( maxw ) );
+    uint8_t *mem = x264_malloc( 4*size*sizeof(uint16_t) + maxw*12 + (64<<10) + MBTREE_STRIP_SIZE( maxw ) );
     if( !h || !mem )
         return -1;
-    uint16_t *rc_ref = (uint16_t*)mem + guard;
-    uint16_t *rc_new = rc_ref + size;
-    int16_t (*mvs)[2] = (int16_t(*)[2])(rc_new + size - guard);
-    int16_t *amount = (int16_t*)(mvs + maxw);
+    uint16_t *rc[4];
+    for( int k = 0; k < 4; k++ )
+        rc[k] = (uint16_t*)mem + guard + k*size;
+    int16_t (*mvs[2])[2];
+    mvs[0] = (int16_t(*)[2])((uint16_t*)mem + 4*size);
+    mvs[1] = mvs[0] + maxw;
+    int16_t *amount = (int16_t*)(mvs[1] + maxw);
     uint16_t *lowres_costs = (uint16_t*)(amount + maxw);
     h->scratch_buffer2 = (uint8_t*)(lowres_costs + maxw) + 64 - ((intptr_t)(lowres_costs + maxw) & 63);
     h->mbtree_strip = (int32_t*)((uint8_t*)h->scratch_buffer2 + (32<<10));
     memset( h->mbtree_strip, 0, MBTREE_STRIP_SIZE( maxw ) );
 
-    for( int it = 0; it < 420 && ok; it++ )
+    for( int it = 0; it < 840 && ok; it++ )
     {
         int width = widths[it%7];
         int height = 1 + rand()%maxh;
@@ -4084,26 +4100,39 @@ static int check_propagate_list_strip( int cpu_new, const char *name, propagate_
         int list = rand()&1;
         int bipred_weight = (rand()%63)+1;
         int len = it&32 ? width : 1 + rand()%width;
+        int two = it >= 420;
         h->mb.i_mb_stride = width;
         h->mb.i_mb_width = width;
         h->mb.i_mb_height = height;
         for( int j = -guard; j < width*height+guard; j++ )
-            rc_ref[j] = rc_new[j] = rand()&7 ? rand()&32767 : 32767 - (rand()&63);
-        propagate_list_mvs( mvs, width, mode, rand_c );
+            rc[0][j] = rc[1][j] = rc[2][j] = rc[3][j] = rand()&7 ? rand()&32767 : 32767 - (rand()&63);
+        propagate_list_mvs( mvs[0], width, mode, rand_c );
+        propagate_list_mvs( mvs[1], width, it&64 ? mode : rand()%6, rand_c );
         for( int j = 0; j < width; j++ )
         {
             amount[j] = rand()&7 ? rand()&32767 : rand()&1 ? 32767 : 0;
             lowres_costs[j] = ((rand()&3) << LOWRES_COST_SHIFT) + (rand()&LOWRES_COST_MASK);
         }
-        fn_ref( h, rc_ref, mvs, amount, lowres_costs, bipred_weight, mb_y, len, list );
-        fn_new( h, rc_new, mvs, amount, lowres_costs, bipred_weight, mb_y, len, list );
-        for( int j = -guard; j < width*height+guard && ok; j++ )
-            if( rc_ref[j] != rc_new[j] )
-            {
-                ok = 0;
-                fprintf( stderr, "%s FAILED: w %d h %d mb_y %d len %d list %d mode %d at %d: %d != %d\n",
-                         name, width, height, mb_y, len, list, mode, j, rc_ref[j], rc_new[j] );
-            }
+        if( two )
+        {
+            fn_ref( h, rc[0], mvs[0], amount, lowres_costs, bipred_weight, mb_y, len, 0 );
+            fn_ref( h, rc[1], mvs[1], amount, lowres_costs, 64-bipred_weight, mb_y, len, 1 );
+            fn2_new( h, rc[2], rc[3], mvs[0], mvs[1], amount, lowres_costs, bipred_weight, 64-bipred_weight, mb_y, len );
+        }
+        else
+        {
+            fn_ref( h, rc[0], mvs[list], amount, lowres_costs, bipred_weight, mb_y, len, list );
+            fn_new( h, rc[2], mvs[list], amount, lowres_costs, bipred_weight, mb_y, len, list );
+        }
+        for( int k = 0; k < 2; k++ )
+            for( int j = -guard; j < width*height+guard && ok; j++ )
+                if( rc[k][j] != rc[k+2][j] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "%s FAILED: %s w %d h %d mb_y %d len %d list %d mode %d at %d: %d != %d\n",
+                             name, two ? "list2" : "list", width, height, mb_y, len, two ? k : list, mode, j,
+                             rc[k][j], rc[k+2][j] );
+                }
         for( int j = 0; j < MBTREE_STRIP_SIZE( maxw )/4 && ok; j++ )
             if( h->mbtree_strip[j] )
             {
@@ -4112,32 +4141,46 @@ static int check_propagate_list_strip( int cpu_new, const char *name, propagate_
             }
     }
 
-    /* bench: the mbtree_propagate_list inputs (128 wide, row 1 of 4, both lists), and a 120-wide pan */
+    /* bench: the mbtree_propagate_list inputs (128 wide, row 1 of 4, mvs +-32), and a 120-wide pan;
+     * list: lists 0 and 1, list2: a B row, against two list calls */
     for( int pan = 0; pan < 2 && do_bench; pan++ )
-        for( int k = 0; k < 2; k++ )
+    {
+        static const uint8_t list_dist[3][8] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2},{1,2,3,3,3,3,1,2}};
+        int width = pan ? 120 : 128;
+        h->mb.i_mb_stride = width;
+        h->mb.i_mb_width = width;
+        h->mb.i_mb_height = 4;
+        for( int list = 0; list < 3; list++ )
         {
-            static const uint8_t list_dist[2][8] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2}};
-            propagate_list_fn fn = k ? fn_new : fn_ref;
-            int width = pan ? 120 : 128;
-            h->mb.i_mb_stride = width;
-            h->mb.i_mb_width = width;
-            h->mb.i_mb_height = 4;
-            for( int list = 0; list < 2; list++ )
+            bench_srand( 600 + list );
+            for( int j = -width; j < 5*width; j++ )
+                rc[0][j] = rc[1][j] = bench_rand()&32767;
+            for( int j = 0; j < width; j++ )
             {
-                bench_srand( 600 + list );
-                for( int j = -width; j < 5*width; j++ )
-                    rc_ref[j] = bench_rand()&32767;
-                for( int j = 0; j < width; j++ )
+                for( int c = 0; c < 2; c++ )
                 {
-                    for( int c = 0; c < 2; c++ )
-                        mvs[j][c] = pan ? 37 - 58*c : (bench_rand()&63) - 32;
-                    amount[j] = bench_rand()&4095;
-                    lowres_costs[j] = list_dist[list][bench_rand()&7] << LOWRES_COST_SHIFT;
+                    mvs[0][j][c] = pan ? 37 - 58*c : (bench_rand()&63) - 32;
+                    mvs[1][j][c] = pan ? -29 + 50*c : (bench_rand()&63) - 32;
                 }
-                set_func_name( "mbtree_propagate_list%s%s", pan ? "_pan" : "", k ? "_strip" : "_old" );
-                call_bench( fn, cpu_new, h, rc_ref, mvs, amount, lowres_costs, 32, 1, width, list );
+                amount[j] = bench_rand()&4095;
+                lowres_costs[j] = list_dist[list][bench_rand()&7] << LOWRES_COST_SHIFT;
+            }
+            if( list < 2 )
+            {
+                set_func_name( "mbtree_propagate_list%s_old", pan ? "_pan" : "" );
+                call_bench( fn_ref, cpu_new, h, rc[0], mvs[list], amount, lowres_costs, 32, 1, width, list );
+                set_func_name( "mbtree_propagate_list%s_strip", pan ? "_pan" : "" );
+                call_bench( fn_new, cpu_new, h, rc[0], mvs[list], amount, lowres_costs, 32, 1, width, list );
+            }
+            else
+            {
+                set_func_name( "mbtree_propagate_list2%s_old", pan ? "_pan" : "" );
+                call_bench( propagate_list2_twice, cpu_new, fn_ref, h, rc[0], rc[1], mvs[0], mvs[1], amount, lowres_costs, 40, 24, 1, width );
+                set_func_name( "mbtree_propagate_list2%s_strip", pan ? "_pan" : "" );
+                call_bench( fn2_new, cpu_new, h, rc[0], rc[1], mvs[0], mvs[1], amount, lowres_costs, 40, 24, 1, width );
             }
         }
+    }
     x264_free( mem );
     x264_free( h );
     if( !quiet )
@@ -5390,10 +5433,12 @@ static int check_mc( int cpu_ref, int cpu_new )
     /* the strip wrappers (undispatched), at the first AVX2 / AVX512 level */
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
         ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx2",
-                                           x264_mbtree_propagate_list_avx2, x264_mbtree_propagate_list_strip_avx2 );
+                                           x264_mbtree_propagate_list_avx2, x264_mbtree_propagate_list_strip_avx2,
+                                           x264_mbtree_propagate_list2_strip_avx2 );
     if( (cpu_new&X264_CPU_AVX512) && !(cpu_ref&X264_CPU_AVX512) )
         ret |= check_propagate_list_strip( cpu_new, "propagate_list_strip avx512",
-                                           x264_mbtree_propagate_list_avx512, x264_mbtree_propagate_list_strip_avx512 );
+                                           x264_mbtree_propagate_list_avx512, x264_mbtree_propagate_list_strip_avx512,
+                                           x264_mbtree_propagate_list2_strip_avx512 );
 #endif
 
     if( mc_a.mbtree_cost_scale != mc_ref.mbtree_cost_scale )
