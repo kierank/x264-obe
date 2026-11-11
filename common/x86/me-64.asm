@@ -1677,6 +1677,45 @@ cglobal %1, 1,15,0, ME_STACK
     jnz %%loop
 %endmacro
 
+; avx512: mvc[0..i_mvc) -> mvc_temp[2..], eax = the count, as predictor_clip_avx512 (x264_predictor_clip
+; without the duplicates: an mv kept if it isn't 0 or pmv before the clip and vpconflictd finds no
+; earlier kept lane, pmv included, with its clipped mv) inline, where me.c calls predictor_clip
+; (i_mvc >= PREDICTOR_DEDUPE_MIN): no C call and no fenc reload. zmm16-19
+; (m0-m3), k1-k3; two ymm stores (a misaligned zmm store forwards nothing); clobbers rax, rsi
+%macro MF_PRED_DEDUPE 0
+    mov            eax, 2
+    shlx           eax, eax, ecx
+    sub            eax, 2
+    kmovw           k1, eax
+    mov            rsi, [rbx+me_fpel.mvc]
+    vmovdqu32   zmm16 {k1}{z}, [rsi-4]
+    vpbroadcastd zmm17, [rsp+F_PMV]
+    vptestmd     k2 {k1}, zmm16, zmm16
+    vpcmpd       k2 {k2}, zmm16, zmm17, 4
+    mov            rsi, [rbx+me_fpel.mv_limit]
+    vpbroadcastd zmm18, [rsi]
+    vpbroadcastd zmm19, [rsi+4]
+    vpsllw       zmm18, zmm18, 2
+    vpsllw       zmm19, zmm19, 2
+    vpmaxsw      zmm16, zmm16, zmm18
+    vpminsw      zmm16, zmm16, zmm19
+    mov            eax, 1
+    kmovw           k3, eax
+    vmovdqa32    zmm16 {k3}, zmm17
+    korw            k2, k2, k3
+    vpconflictd  zmm18, zmm16
+    kmovw          eax, k2
+    vpbroadcastd zmm19, eax
+    vptestnmd    k2 {k2}, zmm18, zmm19
+    kandnw          k2, k3, k2
+    vpcompressd  zmm16 {k2}{z}, zmm16
+    vextracti32x8 ymm17, zmm16, 1
+    vmovdqu32 [rsp+F_MVCT+8], ymm16
+    vmovdqu32 [rsp+F_MVCT+40], ymm17
+    kmovw          eax, k2
+    popcnt         eax, eax
+%endmacro
+
 ; the search of one size from .s%1x%2: R12, R13 bmx, bmy, R14d bcost; to .fpel_done
 %macro MF_BODY 2 ; w, h
 %if %1 == 16
@@ -1786,6 +1825,9 @@ cglobal %1, 1,15,0, ME_STACK
     jle .s%1x%2_round3
     cmp            ecx, PREDICTOR_DEDUPE_MIN
     jl .s%1x%2_clip3
+%if cpuflag(avx512)
+    MF_PRED_DEDUPE
+%else
     mov            rax, [rbx+me_fpel.fn]
     mov            rax, [rax+me_fpel_fn.predictor_clip]
     test           rax, rax
@@ -1802,6 +1844,7 @@ cglobal %1, 1,15,0, ME_STACK
     mov            R12d, eax
     MF_FENC_LOAD    %1, %2
     mov            eax, R12d
+%endif
     jmp .s%1x%2_clipped3
 .s%1x%2_clip3:
     MF_PRED_CLIP    0

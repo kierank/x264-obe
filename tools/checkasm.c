@@ -8480,8 +8480,10 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
         int cmx_ = x264_clip3( (mvpx+2)>>2, xmin, xmax ), cmy_ = x264_clip3( (mvpy+2)>>2, ymin, ymax );
         if( fmode < 3 )
         {
-            int tx = fmode == 0 ? cmx_ + rand()%13 - 6 : fmode == 1 ? cmx_ : (i_mvc ? (mvc[0][0]+2)>>2 : 0);
-            int ty = fmode == 0 ? cmy_ + rand()%13 - 6 : fmode == 1 ? cmy_ : (i_mvc ? (mvc[0][1]+2)>>2 : 0);
+            /* fmode 2: fenc at a random predictor, unclipped: a predictor clip that is off shows */
+            int kf = i_mvc ? rand()%i_mvc : 0;
+            int tx = fmode == 0 ? cmx_ + rand()%13 - 6 : fmode == 1 ? cmx_ : (i_mvc ? (mvc[kf][0]+2)>>2 : 0);
+            int ty = fmode == 0 ? cmy_ + rand()%13 - 6 : fmode == 1 ? cmy_ : (i_mvc ? (mvc[kf][1]+2)>>2 : 0);
             tx = x264_clip3( tx, -60, 60 ) - px, ty = x264_clip3( ty, -60, 60 ) - py;
             int noise = fmode == 0 ? rand()%5 : 0;
             for( int y = 0; y < 16; y++ )
