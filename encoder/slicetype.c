@@ -1710,9 +1710,12 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                     output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
                     output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
 
-                    x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
+                    /* slice 0 runs here, on lookahead_thread[0] as in the pool */
+                    if( i )
+                        x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
                 }
-                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+                x264_stack_align( x264_slicetype_slice_cost, &s[0] );
+                for( int i = 1; i < h->param.i_lookahead_threads; i++ )
                     x264_threadpool_wait( h->lookaheadpool, &s[i] );
             }
             else
