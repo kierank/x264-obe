@@ -129,6 +129,7 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
         if( cpu&X264_CPU_BMI2 )
         {
             pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_avx2_bmi2;
+            pf->cabac_block_residual_422_dc_rd_internal = x264_cabac_block_residual_422_dc_rd_internal_avx2_bmi2;
             pf->cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx2_bmi2;
             pf->cabac_block_residual_422_dc_internal = x264_cabac_block_residual_422_dc_internal_avx2_bmi2;
             pf->cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2;
