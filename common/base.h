@@ -154,6 +154,7 @@ enum sei_payload_type_e
 #define X264_REF_MAX 16
 #define X264_THREAD_MAX 128
 #define X264_LOOKAHEAD_THREAD_MAX 16
+#define X264_LOWRES_GROUP_MAX 4 /* lookahead frame costs with interleaved MB rows */
 #define X264_LOOKAHEAD_MAX 250
 
 // number of pixels (per thread) in progress at any given time.

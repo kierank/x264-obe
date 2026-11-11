@@ -1217,7 +1217,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
                                     x264_frame_t **frames, int p0, int p1, int b,
                                     int dist_scale_factor, int do_search[2], const x264_weight_t *w,
-                                    int *output_inter, int *output_intra )
+                                    int16_t (*fref1_mvs)[2], int *output_inter, int *output_intra )
 {
     x264_frame_t *fref0 = frames[p0];
     x264_frame_t *fref1 = frames[p1];
@@ -1348,9 +1348,9 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
         LOAD_HPELS_LUMA( m[1].p_fref, fref1->lowres );
         m[1].p_fref_w = m[1].p_fref[0];
 
-        if( fref1->lowres_mvs[0][p1-p0-1][0][0] != 0x7FFF )
+        if( fref1_mvs )
         {
-            int16_t *mvr = fref1->lowres_mvs[0][p1-p0-1][i_mb_xy];
+            int16_t *mvr = fref1_mvs[i_mb_xy];
             dmv[0][0] = ( mvr[0] * dist_scale_factor + 128 ) >> 8;
             dmv[0][1] = ( mvr[1] * dist_scale_factor + 128 ) >> 8;
             dmv[1][0] = dmv[0][0] - mvr[0];
@@ -1545,9 +1545,24 @@ typedef struct
     int dist_scale_factor;
     int *do_search;
     const x264_weight_t *w;
+    int16_t (*fref1_mvs)[2];    /* frames[p1]'s list 0 mvs to p0, NULL if unsearched */
     int *output_inter;
     int *output_intra;
+    int band_y;                 /* the one MB row to cost, -1 for the slice */
 } x264_slicetype_slice_t;
+
+/* The MBs x264_slicetype_slice_cost costs, from (start_x,start_y) back to (end_x,end_y) */
+static void x264_slicetype_slice_bounds( x264_t *h, int *start_x, int *end_x, int *start_y, int *end_y )
+{
+    /* The edge mbs seem to reduce the predictive quality of the
+     * whole frame's score, but are needed for a spatial distribution. */
+    int do_edges = h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size || h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2;
+
+    *start_y = X264_MIN( h->i_threadslice_end - 1, h->mb.i_mb_height - 2 + do_edges );
+    *end_y = X264_MAX( h->i_threadslice_start, 1 - do_edges );
+    *start_x = h->mb.i_mb_width - 2 + do_edges;
+    *end_x = 1 - do_edges;
+}
 
 static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 {
@@ -1564,15 +1579,10 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 
     /* Lowres lookahead goes backwards because the MVs are used as predictors in the main encode.
      * This considerably improves MV prediction overall. */
-
-    /* The edge mbs seem to reduce the predictive quality of the
-     * whole frame's score, but are needed for a spatial distribution. */
-    int do_edges = h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size || h->mb.i_mb_width <= 2 || h->mb.i_mb_height <= 2;
-
-    int start_y = X264_MIN( h->i_threadslice_end - 1, h->mb.i_mb_height - 2 + do_edges );
-    int end_y = X264_MAX( h->i_threadslice_start, 1 - do_edges );
-    int start_x = h->mb.i_mb_width - 2 + do_edges;
-    int end_x = 1 - do_edges;
+    int start_x, end_x, start_y, end_y;
+    x264_slicetype_slice_bounds( h, &start_x, &end_x, &start_y, &end_y );
+    if( s->band_y >= 0 )
+        start_y = end_y = s->band_y;
 
 #if !HIGH_BIT_DEPTH
     x264_lowres_p_t c;
@@ -1613,179 +1623,238 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
     for( h->mb.i_mb_y = start_y; h->mb.i_mb_y >= end_y; h->mb.i_mb_y-- )
         for( h->mb.i_mb_x = start_x; h->mb.i_mb_x >= end_x; h->mb.i_mb_x-- )
             x264_slicetype_mb_cost( h, s->a, s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
-                                    s->do_search, s->w, s->output_inter, s->output_intra );
+                                    s->do_search, s->w, s->fref1_mvs, s->output_inter, s->output_intra );
 }
 
-static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
-                                      x264_frame_t **frames, int p0, int p1, int b,
-                                      int b_intra_penalty )
+/* One x264_slicetype_frame_cost, split around its MB costs so that a group of them can
+ * cost their MBs row-interleaved: each MB row of a slice for every member in turn, so the
+ * lowres rows they share stay in cache from one member to the next. Bit-exact: a member's
+ * MB row reads, of what the others write, only the same MBs (cost order) or rows below. */
+typedef struct
 {
-    int i_score = 0;
+    int p0, p1, b;
+    int b_run;                  /* not cached: init has run, finish sums its costs */
     int do_search[2];
-    const x264_weight_t *w = x264_weight_none;
-    x264_frame_t *fenc = frames[b];
+    int dist_scale_factor;
+    const x264_weight_t *w;
+    int16_t (*fref1_mvs)[2];
+    int *output_inter[X264_LOOKAHEAD_THREAD_MAX+1];
+    int *output_intra[X264_LOOKAHEAD_THREAD_MAX+1];
+} x264_frame_cost_t;
 
+typedef struct
+{
+    x264_t *h;
+    x264_mb_analysis_t *a;
+    x264_frame_t **frames;
+    x264_frame_cost_t **c;
+    int n;
+    int slice;
+} x264_slicetype_group_t;
+
+static int x264_frame_cost_cached( x264_t *h, x264_frame_t *fenc, int p0, int p1, int b )
+{
     /* Check whether we already evaluated this frame
      * If we have tried this frame as P, then we have also tried
      * the preceding frames as B. (is this still true?) */
     /* Also check that we already calculated the row SATDs for the current frame. */
-    if( fenc->i_cost_est[b-p0][p1-b] >= 0 && (!h->param.rc.i_vbv_buffer_size || fenc->i_row_satds[b-p0][p1-b][0] != -1) )
+    return fenc->i_cost_est[b-p0][p1-b] >= 0 && (!h->param.rc.i_vbv_buffer_size || fenc->i_row_satds[b-p0][p1-b][0] != -1);
+}
+
+/* x264_slicetype_frame_cost up to its MB costs; 0 if cached. Not inlined: its constant
+ * p0 == p1 == b call from x264_weights_analyse warns on the dead list indexing. */
+static NOINLINE int x264_frame_cost_init( x264_t *h, x264_frame_t **frames, x264_frame_cost_t *c )
+{
+    int p0 = c->p0, p1 = c->p1, b = c->b;
+    x264_frame_t *fenc = frames[b];
+
+    c->w = x264_weight_none;
+    c->b_run = !x264_frame_cost_cached( h, fenc, p0, p1, b );
+    if( !c->b_run )
+        return 0;
+
+    /* For each list, check to see whether we have lowres motion-searched this reference frame before. */
+    c->do_search[0] = b != p0 && fenc->lowres_mvs[0][b-p0-1][0][0] == 0x7FFF;
+    c->do_search[1] = b != p1 && fenc->lowres_mvs[1][p1-b-1][0][0] == 0x7FFF;
+    if( c->do_search[0] )
+    {
+        if( h->param.analyse.i_weighted_pred && b == p1 )
+        {
+            x264_emms();
+            x264_weights_analyse( h, fenc, frames[p0], 1 );
+            c->w = fenc->weight[0];
+        }
+        fenc->lowres_mvs[0][b-p0-1][0][0] = 0;
+    }
+    if( c->do_search[1] ) fenc->lowres_mvs[1][p1-b-1][0][0] = 0;
+
+    c->dist_scale_factor = 128;
+    if( p1 != p0 )
+        c->dist_scale_factor = ( ((b-p0) << 8) + ((p1-p0) >> 1) ) / (p1-p0);
+
+    /* now, not per MB: a later member of a group may search it */
+    c->fref1_mvs = NULL;
+    if( b < p1 && frames[p1]->lowres_mvs[0][p1-p0-1][0][0] != 0x7FFF )
+        c->fref1_mvs = frames[p1]->lowres_mvs[0][p1-p0-1];
+    return 1;
+}
+
+static void x264_slicetype_group_cost( x264_slicetype_group_t *g )
+{
+    x264_slicetype_slice_t s[X264_LOWRES_GROUP_MAX];
+    for( int k = 0; k < g->n; k++ )
+    {
+        x264_frame_cost_t *c = g->c[k];
+        s[k] = (x264_slicetype_slice_t){ g->h, g->a, g->frames, c->p0, c->p1, c->b, c->dist_scale_factor, c->do_search, c->w,
+                                         c->fref1_mvs, c->output_inter[g->slice], c->output_intra[g->slice], -1 };
+    }
+    if( g->n == 1 )
+    {
+        x264_slicetype_slice_cost( &s[0] );
+        return;
+    }
+    int start_x, end_x, start_y, end_y;
+    x264_slicetype_slice_bounds( g->h, &start_x, &end_x, &start_y, &end_y );
+    for( int y = start_y; y >= end_y; y-- )
+        for( int k = 0; k < g->n; k++ )
+        {
+            s[k].band_y = y;
+            x264_slicetype_slice_cost( &s[k] );
+        }
+}
+
+/* The MB costs of the n inited members c[], row-interleaved if n > 1 */
+static void x264_frame_cost_rows( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, x264_frame_cost_t **c, int n )
+{
+    int output_buf_size = h->mb.i_mb_height + (NUM_INTS + PAD_SIZE) * h->param.i_lookahead_threads;
+    for( int k = 0; k < n; k++ )
+    {
+        c[k]->output_inter[0] = (int*)h->scratch_buffer2 + 2 * k * output_buf_size;
+        c[k]->output_intra[0] = c[k]->output_inter[0] + output_buf_size;
+    }
+
+    if( h->param.i_lookahead_threads > 1 )
+    {
+        x264_slicetype_group_t g[X264_LOOKAHEAD_THREAD_MAX];
+
+        for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+        {
+            x264_t *t = h->lookahead_thread[i];
+
+            /* FIXME move this somewhere else */
+            t->mb.i_me_method = h->mb.i_me_method;
+            t->mb.i_subpel_refine = h->mb.i_subpel_refine;
+            t->mb.b_chroma_me = h->mb.b_chroma_me;
+
+            g[i] = (x264_slicetype_group_t){ t, a, frames, c, n, i };
+
+            t->i_threadslice_start = ((h->mb.i_mb_height *  i    + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
+            t->i_threadslice_end   = ((h->mb.i_mb_height * (i+1) + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
+
+            int thread_height = t->i_threadslice_end - t->i_threadslice_start;
+            int thread_output_size = thread_height + NUM_INTS;
+            for( int k = 0; k < n; k++ )
+            {
+                memset( c[k]->output_inter[i], 0, thread_output_size * sizeof(int) );
+                memset( c[k]->output_intra[i], 0, thread_output_size * sizeof(int) );
+                c[k]->output_inter[i][NUM_ROWS] = c[k]->output_intra[i][NUM_ROWS] = thread_height;
+
+                c[k]->output_inter[i+1] = c[k]->output_inter[i] + thread_output_size + PAD_SIZE;
+                c[k]->output_intra[i+1] = c[k]->output_intra[i] + thread_output_size + PAD_SIZE;
+            }
+
+            x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_group_cost, &g[i] );
+        }
+        for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+            x264_threadpool_wait( h->lookaheadpool, &g[i] );
+    }
+    else
+    {
+        /* With sliced threads, thread 0 (h) may still be filtering the
+         * previous frame on its slice worker, reading its threadslice
+         * bounds and writing mb state, so cost on a context of our own. */
+        x264_t *t = h;
+        if( h->param.b_sliced_threads )
+        {
+            t = h->lookahead_thread[0];
+            t->param = h->param;
+            t->pixf = h->pixf;
+            t->mb.i_me_method = h->mb.i_me_method;
+            t->mb.i_subpel_refine = h->mb.i_subpel_refine;
+            t->mb.b_chroma_me = h->mb.b_chroma_me;
+        }
+        t->i_threadslice_start = 0;
+        t->i_threadslice_end = h->mb.i_mb_height;
+        for( int k = 0; k < n; k++ )
+        {
+            memset( c[k]->output_inter[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
+            memset( c[k]->output_intra[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
+            c[k]->output_inter[0][NUM_ROWS] = c[k]->output_intra[0][NUM_ROWS] = h->mb.i_mb_height;
+        }
+        x264_slicetype_group_t g = (x264_slicetype_group_t){ t, a, frames, c, n, 0 };
+        x264_slicetype_group_cost( &g );
+    }
+}
+
+/* x264_slicetype_frame_cost after its MB costs */
+static int x264_frame_cost_finish( x264_t *h, x264_frame_t **frames, x264_frame_cost_t *c, int b_intra_penalty )
+{
+    int p0 = c->p0, p1 = c->p1, b = c->b;
+    x264_frame_t *fenc = frames[b];
+    int i_score;
+
+    if( !c->b_run )
         i_score = fenc->i_cost_est[b-p0][p1-b];
     else
     {
-        int dist_scale_factor = 128;
+        int **output_inter = c->output_inter;
+        int **output_intra = c->output_intra;
 
-        /* For each list, check to see whether we have lowres motion-searched this reference frame before. */
-        do_search[0] = b != p0 && fenc->lowres_mvs[0][b-p0-1][0][0] == 0x7FFF;
-        do_search[1] = b != p1 && fenc->lowres_mvs[1][p1-b-1][0][0] == 0x7FFF;
-        if( do_search[0] )
+        /* Sum up accumulators */
+        if( b == p1 )
+            fenc->i_intra_mbs[b-p0] = 0;
+        if( !fenc->b_intra_calculated )
         {
-            if( h->param.analyse.i_weighted_pred && b == p1 )
-            {
-                x264_emms();
-                x264_weights_analyse( h, fenc, frames[p0], 1 );
-                w = fenc->weight[0];
-            }
-            fenc->lowres_mvs[0][b-p0-1][0][0] = 0;
+            fenc->i_cost_est[0][0] = 0;
+            fenc->i_cost_est_aq[0][0] = 0;
         }
-        if( do_search[1] ) fenc->lowres_mvs[1][p1-b-1][0][0] = 0;
+        fenc->i_cost_est[b-p0][p1-b] = 0;
+        fenc->i_cost_est_aq[b-p0][p1-b] = 0;
 
-        if( p1 != p0 )
-            dist_scale_factor = ( ((b-p0) << 8) + ((p1-p0) >> 1) ) / (p1-p0);
-
-        int output_buf_size = h->mb.i_mb_height + (NUM_INTS + PAD_SIZE) * h->param.i_lookahead_threads;
-        int *output_inter[X264_LOOKAHEAD_THREAD_MAX+1];
-        int *output_intra[X264_LOOKAHEAD_THREAD_MAX+1];
-        output_inter[0] = h->scratch_buffer2;
-        output_intra[0] = output_inter[0] + output_buf_size;
-
-#if HAVE_OPENCL
-        if( h->param.b_opencl )
+        int *row_satd_inter = fenc->i_row_satds[b-p0][p1-b];
+        int *row_satd_intra = fenc->i_row_satds[0][0];
+        for( int i = 0; i < h->param.i_lookahead_threads; i++ )
         {
-            x264_opencl_lowres_init(h, fenc, a->i_lambda );
-            if( do_search[0] )
-            {
-                x264_opencl_lowres_init( h, frames[p0], a->i_lambda );
-                x264_opencl_motionsearch( h, frames, b, p0, 0, a->i_lambda, w );
-            }
-            if( do_search[1] )
-            {
-                x264_opencl_lowres_init( h, frames[p1], a->i_lambda );
-                x264_opencl_motionsearch( h, frames, b, p1, 1, a->i_lambda, NULL );
-            }
-            if( b != p0 )
-                x264_opencl_finalize_cost( h, a->i_lambda, frames, p0, p1, b, dist_scale_factor );
-            x264_opencl_flush( h );
-
-            i_score = fenc->i_cost_est[b-p0][p1-b];
-        }
-        else
-#endif
-        {
-            if( h->param.i_lookahead_threads > 1 )
-            {
-                x264_slicetype_slice_t s[X264_LOOKAHEAD_THREAD_MAX];
-
-                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-                {
-                    x264_t *t = h->lookahead_thread[i];
-
-                    /* FIXME move this somewhere else */
-                    t->mb.i_me_method = h->mb.i_me_method;
-                    t->mb.i_subpel_refine = h->mb.i_subpel_refine;
-                    t->mb.b_chroma_me = h->mb.b_chroma_me;
-
-                    s[i] = (x264_slicetype_slice_t){ t, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
-                        output_inter[i], output_intra[i] };
-
-                    t->i_threadslice_start = ((h->mb.i_mb_height *  i    + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
-                    t->i_threadslice_end   = ((h->mb.i_mb_height * (i+1) + h->param.i_lookahead_threads/2) / h->param.i_lookahead_threads);
-
-                    int thread_height = t->i_threadslice_end - t->i_threadslice_start;
-                    int thread_output_size = thread_height + NUM_INTS;
-                    memset( output_inter[i], 0, thread_output_size * sizeof(int) );
-                    memset( output_intra[i], 0, thread_output_size * sizeof(int) );
-                    output_inter[i][NUM_ROWS] = output_intra[i][NUM_ROWS] = thread_height;
-
-                    output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
-                    output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
-
-                    x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
-                }
-                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
-                    x264_threadpool_wait( h->lookaheadpool, &s[i] );
-            }
-            else
-            {
-                /* With sliced threads, thread 0 (h) may still be filtering the
-                 * previous frame on its slice worker, reading its threadslice
-                 * bounds and writing mb state, so cost on a context of our own. */
-                x264_t *t = h;
-                if( h->param.b_sliced_threads )
-                {
-                    t = h->lookahead_thread[0];
-                    t->param = h->param;
-                    t->pixf = h->pixf;
-                    t->mb.i_me_method = h->mb.i_me_method;
-                    t->mb.i_subpel_refine = h->mb.i_subpel_refine;
-                    t->mb.b_chroma_me = h->mb.b_chroma_me;
-                }
-                t->i_threadslice_start = 0;
-                t->i_threadslice_end = h->mb.i_mb_height;
-                memset( output_inter[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
-                memset( output_intra[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
-                output_inter[0][NUM_ROWS] = output_intra[0][NUM_ROWS] = h->mb.i_mb_height;
-                x264_slicetype_slice_t s = (x264_slicetype_slice_t){ t, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
-                    output_inter[0], output_intra[0] };
-                x264_slicetype_slice_cost( &s );
-            }
-
-            /* Sum up accumulators */
             if( b == p1 )
-                fenc->i_intra_mbs[b-p0] = 0;
+                fenc->i_intra_mbs[b-p0] += output_inter[i][INTRA_MBS];
             if( !fenc->b_intra_calculated )
             {
-                fenc->i_cost_est[0][0] = 0;
-                fenc->i_cost_est_aq[0][0] = 0;
+                fenc->i_cost_est[0][0] += output_intra[i][COST_EST];
+                fenc->i_cost_est_aq[0][0] += output_intra[i][COST_EST_AQ];
             }
-            fenc->i_cost_est[b-p0][p1-b] = 0;
-            fenc->i_cost_est_aq[b-p0][p1-b] = 0;
 
-            int *row_satd_inter = fenc->i_row_satds[b-p0][p1-b];
-            int *row_satd_intra = fenc->i_row_satds[0][0];
-            for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+            fenc->i_cost_est[b-p0][p1-b] += output_inter[i][COST_EST];
+            fenc->i_cost_est_aq[b-p0][p1-b] += output_inter[i][COST_EST_AQ];
+
+            if( h->param.rc.i_vbv_buffer_size )
             {
-                if( b == p1 )
-                    fenc->i_intra_mbs[b-p0] += output_inter[i][INTRA_MBS];
+                int row_count = output_inter[i][NUM_ROWS];
+                memcpy( row_satd_inter, output_inter[i] + NUM_INTS, row_count * sizeof(int) );
                 if( !fenc->b_intra_calculated )
-                {
-                    fenc->i_cost_est[0][0] += output_intra[i][COST_EST];
-                    fenc->i_cost_est_aq[0][0] += output_intra[i][COST_EST_AQ];
-                }
-
-                fenc->i_cost_est[b-p0][p1-b] += output_inter[i][COST_EST];
-                fenc->i_cost_est_aq[b-p0][p1-b] += output_inter[i][COST_EST_AQ];
-
-                if( h->param.rc.i_vbv_buffer_size )
-                {
-                    int row_count = output_inter[i][NUM_ROWS];
-                    memcpy( row_satd_inter, output_inter[i] + NUM_INTS, row_count * sizeof(int) );
-                    if( !fenc->b_intra_calculated )
-                        memcpy( row_satd_intra, output_intra[i] + NUM_INTS, row_count * sizeof(int) );
-                    row_satd_inter += row_count;
-                    row_satd_intra += row_count;
-                }
+                    memcpy( row_satd_intra, output_intra[i] + NUM_INTS, row_count * sizeof(int) );
+                row_satd_inter += row_count;
+                row_satd_intra += row_count;
             }
-
-            i_score = fenc->i_cost_est[b-p0][p1-b];
-            if( b != p1 )
-                i_score = (uint64_t)i_score * 100 / (120 + h->param.i_bframe_bias);
-            else
-                fenc->b_intra_calculated = 1;
-
-            fenc->i_cost_est[b-p0][p1-b] = i_score;
-            x264_emms();
         }
+
+        i_score = fenc->i_cost_est[b-p0][p1-b];
+        if( b != p1 )
+            i_score = (uint64_t)i_score * 100 / (120 + h->param.i_bframe_bias);
+        else
+            fenc->b_intra_calculated = 1;
+
+        fenc->i_cost_est[b-p0][p1-b] = i_score;
+        x264_emms();
     }
 
     if( b_intra_penalty )
@@ -1795,6 +1864,112 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
         i_score += (uint64_t)i_score * fenc->i_intra_mbs[b-p0] / (nmb * 8);
     }
     return i_score;
+}
+
+/* Undoes the init of a member that is not finished. Its MB costs wrote only what the
+ * search marks, its unset i_cost_est and the unset b_intra_calculated keep unread. */
+static void x264_frame_cost_cancel( x264_frame_t **frames, x264_frame_cost_t *c )
+{
+    if( !c->b_run )
+        return;
+    x264_frame_t *fenc = frames[c->b];
+    if( c->do_search[0] )
+        fenc->lowres_mvs[0][c->b-c->p0-1][0][0] = 0x7FFF;
+    if( c->do_search[1] )
+        fenc->lowres_mvs[1][c->p1-c->b-1][0][0] = 0x7FFF;
+}
+
+/* c[m] may join c[0..m): its init now, before their MB costs and finishes, and its MB
+ * costs with theirs, do what it would do after them; and cancel undoes it. */
+static int x264_frame_cost_joins( x264_t *h, x264_frame_t **frames, x264_frame_cost_t *c, int m )
+{
+#if HIGH_BIT_DEPTH
+    /* lowres8's slice cost has no MB row bands */
+    return 0;
+#else
+    if( m >= X264_LOWRES_GROUP_MAX )
+        return 0;
+#if HAVE_OPENCL
+    if( h->param.b_opencl )
+        return 0;
+#endif
+    int p0 = c[m].p0, p1 = c[m].p1, b = c[m].b;
+    x264_frame_t *fenc = frames[b];
+    for( int k = 0; k < m; k++ )
+        if( frames[c[k].b] == fenc && c[k].b - c[k].p0 == b - p0 && c[k].p1 - c[k].b == p1 - b )
+            return 0;
+    if( x264_frame_cost_cached( h, fenc, p0, p1, b ) )
+        return 1;
+    /* rows costed under a stale i_cost_est would stay readable */
+    if( fenc->i_cost_est[b-p0][p1-b] >= 0 )
+        return 0;
+    /* x264_weights_analyse rewrites h->mb.p_weight_buf[0] and fenc->weight */
+    if( h->param.analyse.i_weighted_pred && b != p0 && b == p1 && fenc->lowres_mvs[0][b-p0-1][0][0] == 0x7FFF )
+        return 0;
+    /* a P member's finish sets b_intra_calculated */
+    if( !fenc->b_intra_calculated )
+        for( int k = 0; k < m; k++ )
+            if( c[k].b_run && c[k].b == c[k].p1 && frames[c[k].b] == fenc )
+                return 0;
+    return 1;
+#endif
+}
+
+/* Inits c[0..n) in order while they can share their MB rows (x264_frame_cost_joins), and
+ * costs the rows of those that run. Returns that count m >= 1: the caller finishes c[0..m)
+ * in order, or cancels any after c[0], then costs c[m..n) itself. */
+static int x264_frame_cost_start( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, x264_frame_cost_t *c, int n )
+{
+    x264_frame_cost_t *run[X264_LOWRES_GROUP_MAX];
+    int nrun = 0;
+    int m = 0;
+    for( ; m < n; m++ )
+    {
+        if( m && !x264_frame_cost_joins( h, frames, c, m ) )
+            break;
+        if( x264_frame_cost_init( h, frames, &c[m] ) )
+            run[nrun++] = &c[m];
+    }
+    if( nrun )
+        x264_frame_cost_rows( h, a, frames, run, nrun );
+    return m;
+}
+
+static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
+                                      x264_frame_t **frames, int p0, int p1, int b,
+                                      int b_intra_penalty )
+{
+    x264_frame_cost_t c = { .p0 = p0, .p1 = p1, .b = b };
+
+#if HAVE_OPENCL
+    if( h->param.b_opencl )
+    {
+        if( x264_frame_cost_init( h, frames, &c ) )
+        {
+            x264_frame_t *fenc = frames[b];
+            x264_opencl_lowres_init(h, fenc, a->i_lambda );
+            if( c.do_search[0] )
+            {
+                x264_opencl_lowres_init( h, frames[p0], a->i_lambda );
+                x264_opencl_motionsearch( h, frames, b, p0, 0, a->i_lambda, c.w );
+            }
+            if( c.do_search[1] )
+            {
+                x264_opencl_lowres_init( h, frames[p1], a->i_lambda );
+                x264_opencl_motionsearch( h, frames, b, p1, 1, a->i_lambda, NULL );
+            }
+            if( b != p0 )
+                x264_opencl_finalize_cost( h, a->i_lambda, frames, p0, p1, b, c.dist_scale_factor );
+            x264_opencl_flush( h );
+        }
+        /* i_cost_est is set */
+        c.b_run = 0;
+        return x264_frame_cost_finish( h, frames, &c, b_intra_penalty );
+    }
+#endif
+
+    x264_frame_cost_start( h, a, frames, &c, 1 );
+    return x264_frame_cost_finish( h, frames, &c, b_intra_penalty );
 }
 
 /* If MB-tree changes the quantizers, we need to recalculate the frame cost without

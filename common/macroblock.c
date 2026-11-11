@@ -427,7 +427,7 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
     else
         h->scratch_buffer = NULL;
 
-    int buf_lookahead_threads = (h->mb.i_mb_height + (4 + 32) * h->param.i_lookahead_threads) * sizeof(int) * 2;
+    int buf_lookahead_threads = (h->mb.i_mb_height + (4 + 32) * h->param.i_lookahead_threads) * sizeof(int) * 2 * X264_LOWRES_GROUP_MAX;
     int buf_mbtree2 = buf_mbtree * 12; /* size of the internal propagate_list asm buffer */
     scratch_size = X264_MAX( buf_lookahead_threads, buf_mbtree2 );
     CHECKED_MALLOC( h->scratch_buffer2, scratch_size );
