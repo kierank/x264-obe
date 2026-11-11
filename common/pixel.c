@@ -2219,6 +2219,12 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->satd_bi[PIXEL_8x8] = x264_pixel_satd_bi_8x8_avx512icl;
         pixf->satd_bi4[PIXEL_8x16] = x264_pixel_satd_bi4_8x16_avx512icl;
         pixf->satd_bi4[PIXEL_8x8] = x264_pixel_satd_bi4_8x8_avx512icl;
+#if !defined(_WIN32)
+        /* lowres-a.asm avx512icl: fenc_pre and the V/DC transform constants in m16-m22 */
+        pixf->lowres_i_mbs = x264_lowres_i_mbs_avx512icl;
+        pixf->lowres_b_mbs = x264_lowres_b_mbs_avx512icl;
+        pixf->intra_satd_lowres = x264_intra_satd_lowres_tf_avx512icl;
+#endif
 #endif
     }
 
