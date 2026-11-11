@@ -3347,6 +3347,9 @@ cglobal %1, 1,1
 INIT_YMM avx2
 %assign mh_fres FENC_RES
 MH_SEARCH me_search_fpel
+INIT_YMM avx512
+%assign mh_fres FENC_RES512
+MH_SEARCH me_search_fpel_inline
 %endif ; HIGH_BIT_DEPTH
 INIT_ZMM avx512
 ME_SEARCH_FPEL me_search_fpel_zmm
