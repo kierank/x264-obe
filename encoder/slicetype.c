@@ -1534,6 +1534,186 @@ lowres_intra_mb:
    (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) :\
     h->mb.i_mb_width * h->mb.i_mb_height)
 
+#if X264_LOWRES_TRAFFIC
+/* Test builds only (--extra-cflags=-DX264_LOWRES_TRAFFIC=1): a model of the lookahead's
+ * reads of the lowres planes. Each MB row a frame cost evaluates touches its fenc's lowres[0]
+ * rows and, per ref it reads (a P search, or both refs of a B for the bidir), that ref's 4
+ * planes over the row +-LT_WIN lowres rows, plus the weighted plane of a weighted P search;
+ * x264_weights_analyse touches lowres[0] of fenc and ref whole, and the ref's again when it
+ * builds the weighted plane. Touches run through two per-thread LRUs of 1 KB blocks, 1 MB and
+ * 2 MB (the L2 sizes of Zen 4 and Raptor Cove), cleared at each x264_slicetype_analyse (the
+ * encode between evicts them). At exit: bytes touched, and missed by each LRU. */
+#define LT_WIN 24
+#define LT_HASH 8192
+typedef struct
+{
+    int cap, n, head, tail;
+    uint64_t miss;
+    int bucket[LT_HASH];
+    struct { uintptr_t key; int prev, next, hnext; } node[4096];
+} x264_lt_lru_t;
+
+typedef struct
+{
+    x264_lt_lru_t lru[2];
+    int epoch;
+} x264_lt_t;
+
+static uint64_t lt_req, lt_frames, lt_groups, lt_members, lt_cancels;
+static int lt_epoch, lt_nthreads;
+static x264_lt_t *lt_threads[256];
+static __thread x264_lt_t *lt_tls;
+
+static void lt_lru_clear( x264_lt_lru_t *l, int cap )
+{
+    l->cap = cap;
+    l->n = 0;
+    l->head = l->tail = -1;
+    for( int i = 0; i < LT_HASH; i++ )
+        l->bucket[i] = -1;
+}
+
+static void lt_lru_unlink( x264_lt_lru_t *l, int i )
+{
+    int p = l->node[i].prev, q = l->node[i].next;
+    if( p >= 0 ) l->node[p].next = q; else l->head = q;
+    if( q >= 0 ) l->node[q].prev = p; else l->tail = p;
+}
+
+static void lt_lru_front( x264_lt_lru_t *l, int i )
+{
+    l->node[i].prev = -1;
+    l->node[i].next = l->head;
+    if( l->head >= 0 ) l->node[l->head].prev = i;
+    l->head = i;
+    if( l->tail < 0 ) l->tail = i;
+}
+
+static void lt_lru_touch( x264_lt_lru_t *l, uintptr_t key )
+{
+    int hb = (key * 0x9E3779B1u >> 7) & (LT_HASH-1);
+    for( int i = l->bucket[hb]; i >= 0; i = l->node[i].hnext )
+        if( l->node[i].key == key )
+        {
+            lt_lru_unlink( l, i );
+            lt_lru_front( l, i );
+            return;
+        }
+    l->miss++;
+    int i;
+    if( l->n < l->cap )
+        i = l->n++;
+    else
+    {
+        i = l->tail;
+        lt_lru_unlink( l, i );
+        int ob = (l->node[i].key * 0x9E3779B1u >> 7) & (LT_HASH-1);
+        int *pp = &l->bucket[ob];
+        while( *pp != i )
+            pp = &l->node[*pp].hnext;
+        *pp = l->node[i].hnext;
+    }
+    l->node[i].key = key;
+    l->node[i].hnext = l->bucket[hb];
+    l->bucket[hb] = i;
+    lt_lru_front( l, i );
+}
+
+static x264_lt_t *lt_get( void )
+{
+    if( !lt_tls )
+    {
+        lt_tls = calloc( 1, sizeof(x264_lt_t) );
+        lt_lru_clear( &lt_tls->lru[0], 1024 );
+        lt_lru_clear( &lt_tls->lru[1], 2048 );
+        lt_tls->epoch = __atomic_load_n( &lt_epoch, __ATOMIC_RELAXED );
+        int i = __atomic_fetch_add( &lt_nthreads, 1, __ATOMIC_RELAXED );
+        if( i < 256 )
+            __atomic_store_n( &lt_threads[i], lt_tls, __ATOMIC_RELEASE );
+    }
+    /* a new analyse: this thread's blocks are evicted, misses kept */
+    int e = __atomic_load_n( &lt_epoch, __ATOMIC_RELAXED );
+    if( lt_tls->epoch != e )
+    {
+        lt_tls->epoch = e;
+        for( int k = 0; k < 2; k++ )
+        {
+            uint64_t miss = lt_tls->lru[k].miss;
+            lt_lru_clear( &lt_tls->lru[k], lt_tls->lru[k].cap );
+            lt_tls->lru[k].miss = miss;
+        }
+    }
+    return lt_tls;
+}
+
+/* at x264_slicetype_analyse */
+static void lt_new_analyse( void )
+{
+    __atomic_fetch_add( &lt_epoch, 1, __ATOMIC_RELAXED );
+    __atomic_fetch_add( &lt_frames, 1, __ATOMIC_RELAXED );
+}
+
+/* rows [y0,y1) of the plane at pix, clipped to its padding */
+static void lt_rows( x264_frame_t *f, pixel *pix, int y0, int y1 )
+{
+    y0 = X264_MAX( y0, -PADV );
+    y1 = X264_MIN( y1, f->i_lines_lowres + PADV );
+    if( y0 >= y1 )
+        return;
+    x264_lt_t *t = lt_get();
+    intptr_t stride = f->i_stride_lowres * sizeof(pixel);
+    uintptr_t a0 = (uintptr_t)(pix + y0 * f->i_stride_lowres - PADH) >> 10;
+    uintptr_t a1 = ((uintptr_t)(pix + (y1-1) * f->i_stride_lowres + f->i_width_lowres + PADH) + 1023) >> 10;
+    for( uintptr_t a = a0; a < a1; a++ )
+        for( int k = 0; k < 2; k++ )
+            lt_lru_touch( &t->lru[k], a );
+    __atomic_fetch_add( &lt_req, (uint64_t)(y1 - y0) * stride, __ATOMIC_RELAXED );
+}
+
+/* MB row y of the frame cost (p0,p1,b) with do_search and w */
+static void lt_mb_row( x264_frame_t **frames, int p0, int p1, int b, int *do_search, const x264_weight_t *w, int y )
+{
+    x264_frame_t *fenc = frames[b];
+    lt_rows( fenc, fenc->lowres[0], 8*y - 1, 8*y + 8 );
+    x264_frame_t *refs[2] = { NULL, NULL };
+    if( p0 < b && b == p1 && do_search[0] )
+        refs[0] = frames[p0];
+    else if( p0 < b && b < p1 )
+    {
+        refs[0] = frames[p0];
+        refs[1] = frames[p1];
+    }
+    for( int l = 0; l < 2; l++ )
+        if( refs[l] )
+            for( int i = 0; i < 4; i++ )
+                lt_rows( refs[l], refs[l]->lowres[i], 8*y - LT_WIN, 8*y + 8 + LT_WIN );
+    if( refs[0] && b == p1 && w[0].weightfn )
+        lt_rows( fenc, fenc->weighted[0], 8*y - LT_WIN, 8*y + 8 + LT_WIN );
+}
+
+static void lt_weights( x264_frame_t *fenc, x264_frame_t *ref, const x264_weight_t *w )
+{
+    lt_rows( fenc, fenc->lowres[0], 0, fenc->i_lines_lowres );
+    lt_rows( ref, ref->lowres[0], 0, ref->i_lines_lowres );
+    if( w[0].weightfn )
+    {
+        lt_rows( ref, ref->lowres[0], -PADV, ref->i_lines_lowres + PADV );
+        lt_rows( fenc, fenc->weighted[0], -PADV, fenc->i_lines_lowres + PADV );
+    }
+}
+
+static void __attribute__((destructor)) lt_report( void )
+{
+    uint64_t lt_miss[2] = { 0, 0 };
+    for( int i = 0; i < X264_MIN( lt_nthreads, 256 ); i++ )
+        for( int k = 0; k < 2; k++ )
+            lt_miss[k] += lt_threads[i]->lru[k].miss;
+    if( lt_req )
+        fprintf( stderr, "LOWRES_TRAFFIC analyses %"PRIu64" touched %"PRIu64" B missed L1M %"PRIu64" B L2M %"PRIu64" B (per thread LRUs, 1 KB blocks) groups %"PRIu64" members %"PRIu64" cancelled %"PRIu64"\n",
+                 lt_frames, lt_req, lt_miss[0] << 10, lt_miss[1] << 10, lt_groups, lt_members, lt_cancels );
+}
+#endif
+
 typedef struct
 {
     x264_t *h;
@@ -1683,6 +1863,9 @@ static NOINLINE int x264_frame_cost_init( x264_t *h, x264_frame_t **frames, x264
             x264_emms();
             x264_weights_analyse( h, fenc, frames[p0], 1 );
             c->w = fenc->weight[0];
+#if X264_LOWRES_TRAFFIC
+            lt_weights( fenc, frames[p0], c->w );
+#endif
         }
         fenc->lowres_mvs[0][b-p0-1][0][0] = 0;
     }
@@ -1710,15 +1893,33 @@ static void x264_slicetype_group_cost( x264_slicetype_group_t *g )
     }
     if( g->n == 1 )
     {
+#if X264_LOWRES_TRAFFIC
+        {
+            int sx, ex, sy, ey;
+            x264_slicetype_slice_bounds( g->h, &sx, &ex, &sy, &ey );
+            for( int y = sy; y >= ey; y-- )
+                lt_mb_row( g->frames, s[0].p0, s[0].p1, s[0].b, s[0].do_search, s[0].w, y );
+        }
+#endif
         x264_slicetype_slice_cost( &s[0] );
         return;
     }
+#if X264_LOWRES_TRAFFIC
+    if( !g->slice )
+    {
+        __atomic_fetch_add( &lt_groups, 1, __ATOMIC_RELAXED );
+        __atomic_fetch_add( &lt_members, g->n, __ATOMIC_RELAXED );
+    }
+#endif
     int start_x, end_x, start_y, end_y;
     x264_slicetype_slice_bounds( g->h, &start_x, &end_x, &start_y, &end_y );
     for( int y = start_y; y >= end_y; y-- )
         for( int k = 0; k < g->n; k++ )
         {
             s[k].band_y = y;
+#if X264_LOWRES_TRAFFIC
+            lt_mb_row( g->frames, s[k].p0, s[k].p1, s[k].b, s[k].do_search, s[k].w, y );
+#endif
             x264_slicetype_slice_cost( &s[k] );
         }
 }
@@ -1872,6 +2073,9 @@ static void x264_frame_cost_cancel( x264_frame_t **frames, x264_frame_cost_t *c 
 {
     if( !c->b_run )
         return;
+#if X264_LOWRES_TRAFFIC
+    __atomic_fetch_add( &lt_cancels, 1, __ATOMIC_RELAXED );
+#endif
     x264_frame_t *fenc = frames[c->b];
     if( c->do_search[0] )
         fenc->lowres_mvs[0][c->b-c->p0-1][0][0] = 0x7FFF;
@@ -2446,6 +2650,9 @@ static int scenecut( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, in
 
 void x264_slicetype_analyse( x264_t *h, int intra_minigop )
 {
+#if X264_LOWRES_TRAFFIC
+    lt_new_analyse();
+#endif
     x264_mb_analysis_t a;
     x264_frame_t *frames[X264_LOOKAHEAD_MAX+3] = { NULL, };
     int num_frames, orig_num_frames, keyint_limit, framecnt;
