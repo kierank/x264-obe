@@ -720,6 +720,9 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pixel_asm.var2[PIXEL_8x16] = x264_pixel_var2_8x16_avx512icl;
         pixel_asm.ssd_nv12_core    = x264_pixel_ssd_nv12_core_avx512icl;
     }
+    /* not dispatched: the avx2 weightp_deint_stats8 at the first AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        pixel_asm.weightp_deint_stats8 = x264_weightp_deint_stats8_avx2;
 #endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
@@ -2699,6 +2702,84 @@ static int check_pixel( int cpu_ref, int cpu_new )
         x264_free( out );
     }
     report( "weightp stats :" );
+
+    ok = 1; used_asm = 0;
+    if( pixel_asm.weightp_deint_stats8 != pixel_ref.weightp_deint_stats8 )
+    {
+        /* random, near PIXEL_MAX and near 0; heights 8 (4:2:0) and 16 (4:2:2); strides tight
+         * (16 * n rounded up to 4), odd and padded; aligned and odd pointers. Outputs compared
+         * up to n, dst rows up to 8n, and dst past 8 * (n rounded up to 4) must be untouched. */
+        static const int ns[] = { 1, 2, 3, 4, 5, 7, 8, 9, 13, 40, 120, 121 };
+        int maxn4 = 124;
+        intptr_t maxstride = 16*maxn4 + 96 + 3;
+        size_t size = (16*maxstride + 128) * sizeof(pixel);
+        pixel *src = x264_malloc( size );
+        pixel *dst = x264_malloc( 4*size );
+        int32_t *out = x264_malloc( 8*128*sizeof(int32_t) );
+        ok = src && dst && out;
+        set_func_name( "weightp_deint_stats8" );
+        used_asm = 1;
+        for( int k = 0; k < 3 && ok; k++ )
+        {
+            for( size_t i = 0; i < size/sizeof(pixel); i++ )
+                src[i] = k == 0 ? rand() & PIXEL_MAX : k == 1 ? PIXEL_MAX - (rand()&3) : rand() & 3;
+            for( int height = 8; height <= 16 && ok; height += 8 )
+                for( int ni = 0; ni < ARRAY_ELEMS(ns) && ok; ni++ )
+                    for( int si = 0; si < 3 && ok; si++ )
+                        for( int oi = 0; oi < 2 && ok; oi++ )
+                        {
+                            int n = ns[ni];
+                            int n4 = (n+3)&~3;
+                            intptr_t stride = 16*n4 + (si == 1 ? 7 : si == 2 ? 96 : 0);
+                            int off = oi ? 3 : 0;
+                            pixel *dc[2] = { dst + off, dst + size/sizeof(pixel) + off };
+                            pixel *da[2] = { dst + 2*size/sizeof(pixel) + off, dst + 3*size/sizeof(pixel) + off };
+                            int32_t *oc[4] = { out, out+128, out+256, out+384 };
+                            int32_t *oa[4] = { out+512, out+640, out+768, out+896 };
+                            memset( dst, 0x5a, 4*size );
+                            memset( out, 0, 8*128*sizeof(int32_t) );
+                            call_c( pixel_c.weightp_deint_stats8, oc[0], oc[1], (uint32_t*)oc[2], (uint32_t*)oc[3],
+                                    dc[0], dc[1], src + off, stride, n, height );
+                            call_a( pixel_asm.weightp_deint_stats8, oa[0], oa[1], (uint32_t*)oa[2], (uint32_t*)oa[3],
+                                    da[0], da[1], src + off, stride, n, height );
+                            for( int j = 0; j < 4; j++ )
+                                if( memcmp( oc[j], oa[j], n*sizeof(int32_t) ) )
+                                    ok = 0;
+                            for( int p = 0; p < 2; p++ )
+                                for( int y = 0; y < height; y++ )
+                                {
+                                    if( memcmp( dc[p] + y*stride, da[p] + y*stride, 8*n*sizeof(pixel) ) )
+                                        ok = 0;
+                                    for( int x = 8*n4; x < stride && (y < height-1 || x < 8*n4 + 64); x++ )
+                                        if( da[p][y*stride+x] != dc[p][y*stride+x] )
+                                            ok = 0;
+                                }
+                            if( !ok )
+                                fprintf( stderr, "weightp_deint_stats8 FAILED: src %d n %d height %d stride %d off %d\n",
+                                         k, n, height, (int)stride, off );
+                        }
+        }
+        /* the encoder's: a 1080 row */
+        for( int height = 8; height <= 16 && ok; height += 8 )
+        {
+            set_func_name( "weightp_deint_stats8_120x%d", height );
+            intptr_t stride = 16*120 + 128;
+            memset( out, 0, 8*128*sizeof(int32_t) );
+            call_c( pixel_c.weightp_deint_stats8, out, out+128, (uint32_t*)out+256, (uint32_t*)out+384,
+                    dst, dst + size/sizeof(pixel), src, stride, 120, height );
+            call_a( pixel_asm.weightp_deint_stats8, out+512, out+640, (uint32_t*)out+768, (uint32_t*)out+896,
+                    dst + 2*size/sizeof(pixel), dst + 3*size/sizeof(pixel), src, stride, 120, height );
+            if( memcmp( out, out+512, 4*128*sizeof(int32_t) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "weightp_deint_stats8 FAILED: 120x%d\n", height );
+            }
+        }
+        x264_free( src );
+        x264_free( dst );
+        x264_free( out );
+    }
+    report( "weightp deint stats :" );
 
     ok = 1; used_asm = 0;
     if( pixel_asm.weightp_dc8x8 != pixel_ref.weightp_dc8x8 )

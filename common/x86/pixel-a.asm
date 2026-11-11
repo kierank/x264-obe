@@ -431,6 +431,7 @@ cextern pw_16
 cextern pw_32
 cextern pw_32_0
 cextern pw_00ff
+cextern deinterleave_shufd
 cextern pw_ppppmmmm
 cextern pw_ppmmppmm
 cextern pw_pmpmpmpm
@@ -13038,6 +13039,93 @@ cglobal weightp_stats8, 6,8,13
     jg .loopx
     RET
 %endmacro
+
+;-----------------------------------------------------------------------------
+; void weightp_deint_stats8( int32_t *sumu, int32_t *sumv, uint32_t *minmaxu, uint32_t *minmaxv,
+;                            pixel *dstu, pixel *dstv, pixel *src, intptr_t i_stride, int n, int height )
+;-----------------------------------------------------------------------------
+; 8-bit: plane_copy_deinterleave + weightp_stats8 of u and v in one pass, 4 blocks of each a
+; pass (64 bytes of src a row). n rounded up to 4.
+; avx2: pand / psrlw + packuswb to u' v' = blocks 0 2 | 1 3, vpermq for the stores; stats on
+; u' v' as weightp_stats8, the dwords u 0 2 v 0 2 | u 1 3 v 1 3 put in order by vpermd.
+; m0 m1 = u v sums, m2 m3 = u v min, m4 m5 = u v max, m6 = 0, m7 = pw_00ff, m13 = 0x00ff0000,
+; m14 = deinterleave_shufd.
+%macro WEIGHTP_DEINT_STATS8 0
+cglobal weightp_deint_stats8, 10,12,15
+    pxor       m6, m6
+    vpbroadcastd m7, [pw_00ff]
+    pcmpeqb   m13, m13
+    psrld     m13, 24
+    pslld     m13, 16
+    movu      m14, [deinterleave_shufd]
+.loopx:
+    pxor       m0, m0
+    pxor       m1, m1
+    pcmpeqb    m2, m2
+    pcmpeqb    m3, m3
+    pxor       m4, m4
+    pxor       m5, m5
+    xor      r10d, r10d
+    mov      r11d, r9d
+.loopy:
+    movu       m8, [r6+r10]
+    movu       m9, [r6+r10+32]
+    pand      m10, m7, m8
+    pand      m11, m7, m9
+    packuswb  m10, m11
+    psrlw      m8, 8
+    psrlw      m9, 8
+    packuswb   m8, m9
+    pminub     m2, m10
+    pmaxub     m4, m10
+    pminub     m3, m8
+    pmaxub     m5, m8
+    vpermq    m11, m10, q3120
+    vpermq     m9, m8, q3120
+    movu [r4+r10], m11
+    movu [r5+r10], m9
+    psadbw    m10, m6
+    psadbw     m8, m6
+    paddd      m0, m10
+    paddd      m1, m8
+    add       r10, r7
+    dec      r11d
+    jg .loopy
+    shufps     m8, m2, m3, q2020
+    shufps     m2, m3, q3131
+    pminub     m2, m8
+    shufps     m8, m4, m5, q2020
+    shufps     m4, m5, q3131
+    pmaxub     m4, m8
+    psrld      m8, m2, 16
+    pminub     m2, m8
+    psrlw      m8, m2, 8
+    pminub     m2, m8      ; min in byte 0, bytes 1-3 0
+    psrld      m8, m4, 16
+    pmaxub     m4, m8
+    psrlw      m8, m4, 8
+    pmaxub     m4, m8
+    pslld      m4, 16
+    pand       m4, m13
+    por        m2, m4
+    vpermd     m2, m14, m2
+    shufps     m0, m1, q2020
+    vpermd     m0, m14, m0
+    movu     [r0], xm0
+    vextracti128 [r1], m0, 1
+    movu     [r2], xm2
+    vextracti128 [r3], m2, 1
+    add        r0, 16
+    add        r1, 16
+    add        r2, 16
+    add        r3, 16
+    add        r4, 32
+    add        r5, 32
+    add        r6, 64
+    sub       r8d, 4
+    jg .loopx
+    RET
+%endmacro
 %endif
 
 INIT_YMM avx2
@@ -13047,6 +13135,7 @@ WEIGHTP_SUM8 1
 WEIGHTP_STATS8
 %else
 WEIGHTP_STATS8_B
+WEIGHTP_DEINT_STATS8
 %endif
 WEIGHTP_SUM8_NV
 
