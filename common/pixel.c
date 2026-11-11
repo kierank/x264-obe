@@ -2072,6 +2072,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_sad_x3_8x8c = x264_intra_sad_x3_8x8c_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
 #if ARCH_X86_64
+        /* 4:2:2 chroma, subme <= 1 only; laptop Zen 5 2-3x sse2; AVX512ICL replaces it */
+        pixf->intra_sad_x3_8x16c = x264_intra_sad_x3_8x16c_avx2;
         pixf->sa8d_satd[PIXEL_16x16] = x264_pixel_sa8d_satd_16x16_avx2;
         pixf->hadamard_ac[PIXEL_8x16] = x264_pixel_hadamard_ac_8x16_avx2;
         pixf->ssd_psy_mb[0] = x264_pixel_ssd_psy_mb_420_avx2;
