@@ -1814,6 +1814,75 @@ INIT_XMM avx512icl
 OPTIMIZE_CHROMA_ICL 2x2, 4
 %endif
 
+%if HIGH_BIT_DEPTH == 0
+; 8-bit 2x4, AVX2: the avx512icl algorithm, vpblendd for the masked subtracts,
+; ptest against -64 for vptestmd, sign*dmf from the GPRs
+INIT_YMM avx2
+cglobal optimize_chroma_2x4_dc, 2,8,8
+    pmovsxwd      m0, [r0]
+    vpbroadcastd  m6, [optchroma_m64]
+    pshufd        m1, m0, q2301
+    paddd         m2, m0, m1
+    psubd         m7, m1, m0
+    vpblendd      m2, m2, m7, 0xaa
+    pshufd        m1, m2, q1032
+    paddd         m0, m2, m1
+    psubd         m7, m1, m2
+    vpblendd      m0, m0, m7, 0xcc
+    vextracti128 xm1, m0, 1
+    paddd        xm2, xm0, xm1
+    psubd        xm0, xm1
+    punpcklqdq   xm1, xm2, xm0
+    punpckhqdq   xm0, xm2
+    vinserti128   m0, m1, xm0, 1             ; T*dct
+    movd         xm3, r1d
+    vpbroadcastd  m3, xm3
+    pmulld        m0, m3
+    vpbroadcastd  m7, [optchroma_2080]
+    paddd         m0, m7
+    psrad         m4, m0, 6
+    pslld         m4, 16                     ; the C keeps the outputs in int16
+    psrad         m4, 16                     ; reference output
+    xor          eax, eax
+    ptest         m4, m6
+    jz .ret                                  ; already rounds to zero
+    mov          r2d, 7
+    lea           r5, [optchroma_col2x4+7*mmsize]
+.coef:
+    movsx        r3d, word [r0+r2*2]
+    test         r3d, r3d
+    jz .next
+    mov          r4d, r3d
+    sar          r4d, 31
+    or           r4d, 1                      ; sign
+    mov          r7d, r4d
+    imul         r7d, r1d                    ; sign*dmf (r6 is eax)
+    movd         xm5, r7d
+    vpbroadcastd  m5, xm5
+    pmulld        m5, [r5]                   ; sign*dmf*T[:,k]
+.try:
+    psubd         m1, m0, m5
+    psrad         m2, m1, 6
+    pslld         m2, 16
+    psrad         m2, 16
+    pxor          m2, m4
+    ptest         m2, m6
+    jz .accept
+    mov          eax, 1
+    jmp .store
+.accept:
+    mova          m0, m1
+    sub          r3d, r4d
+    jnz .try
+.store:
+    mov    [r0+r2*2], r3w
+.next:
+    sub           r5, mmsize
+    dec          r2d
+    jge .coef
+.ret:
+    RET
+%endif
 
 %if HIGH_BIT_DEPTH
 ;-----------------------------------------------------------------------------

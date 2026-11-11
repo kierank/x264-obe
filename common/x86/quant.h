@@ -245,6 +245,8 @@ int x264_coeff_last64_sse2_lzcnt( dctcoef *dct );
 int x264_coeff_last64_avx2_lzcnt( dctcoef *dct );
 #define x264_coeff_last8_avx2_lzcnt x264_template(coeff_last8_avx2_lzcnt)
 int x264_coeff_last8_avx2_lzcnt( dctcoef *dct );
+#define x264_optimize_chroma_2x4_dc_avx2 x264_template(optimize_chroma_2x4_dc_avx2)
+int x264_optimize_chroma_2x4_dc_avx2( dctcoef dct[8], int dequant_mf );
 #define x264_coeff_last15_avx2_lzcnt x264_template(coeff_last15_avx2_lzcnt)
 int x264_coeff_last15_avx2_lzcnt( dctcoef *dct );
 #define x264_coeff_last16_avx2_lzcnt x264_template(coeff_last16_avx2_lzcnt)

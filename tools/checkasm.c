@@ -6790,6 +6790,17 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
         BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x2_dc, 4 );
         BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+        /* undispatched optimize_chroma_2x4_dc avx2 (4:2:2), at the AVX2 level */
+        if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        {
+            x264_quant_function_t qf_disp = qf_a;
+            qf_a.optimize_chroma_2x4_dc = x264_optimize_chroma_2x4_dc_avx2;
+            TEST_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
+            BENCH_OPTIMIZE_CHROMA_DC( optimize_chroma_2x4_dc, 8 );
+            qf_a = qf_disp;
+        }
+#endif
 
         /* intra_satd_x9_4x4_recon against x9r_chain with the C functions and with the cpu_new ones.
          * j: bits 0-1 source (noise, near the neighbours, 0/max, smooth), bits 2-3 limit (big, the cost,
