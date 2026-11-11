@@ -7564,6 +7564,7 @@ static int check_cabac( int cpu_ref, int cpu_new )
     {
         bs_a.cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx2_bmi2;
         bs_a.cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2;
+        bs_a.cabac_block_residual_422_dc_internal = x264_cabac_block_residual_422_dc_internal_avx2_bmi2;
     }
 #endif
     x264_quant_init( &h, cpu_new, &h.quantf );

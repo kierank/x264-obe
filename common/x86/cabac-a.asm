@@ -3434,8 +3434,11 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     xor     r1d, 63
     mov   lastm, r1d
 %elif %2
-; 4:2:2 dc (8-bit): last from the nonzero mask of the 8 coefs
+; 4:2:2 dc (avx2): last from the nonzero mask of the 8 coefs
     movu     m0, [r14]
+%if HIGH_BIT_DEPTH
+    packssdw m0, [r14+16]           ; saturated, 0 only for 0
+%endif
     pxor     m1, m1
     pcmpeqw  m0, m1
     pmovmskb r1d, m0
@@ -3656,9 +3659,12 @@ CABAC_RESIDUAL_RD_8x8_AVX2
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
 %else
-; 10-bit, after the layout above: avx2 rd 4x4 and 8x8 in ymm (vzeroupper on return)
+; 10-bit, after the layout above: avx2 rd 4x4 and 8x8 in ymm (vzeroupper on
+; return), the 4:2:2 chroma dc writer
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_4x4_AVX2
 CABAC_RESIDUAL_RD_8x8_AVX2
+INIT_XMM avx2,bmi2
+CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 1
 %endif
 %endif
