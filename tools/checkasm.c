@@ -725,11 +725,6 @@ static int check_pixel( int cpu_ref, int cpu_new )
         pixel_asm.intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx512icl;
         pixel_asm.intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx512icl;
     }
-    /* undispatched: intra_sa8d_x9_8x8_fdec avx2, at the first AVX2 level */
-    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-    {
-        pixel_asm.intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx2;
-    }
 #endif
     x264_predict_4x4_init( 0, predict_4x4 );
     x264_predict_8x8c_init( 0, predict_8x8c );
@@ -6262,12 +6257,6 @@ static int check_quant( int cpu_ref, int cpu_new )
         x264_zigzag_init( cpu_ref, &zz_ref[0], &zz_ref[1], h->param.i_cqm_preset == X264_CQM_FLAT );
         x264_zigzag_init( cpu_new, &zz_a[0], &zz_a[1], h->param.i_cqm_preset == X264_CQM_FLAT );
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-        /* undispatched: the avx2 intra_satd_x9_4x4_mb, at the first AVX2 level */
-        if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-        {
-            zz_a[0].intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_frame_avx2;
-            zz_a[1].intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_field_avx2;
-        }
         /* undispatched: the vpermb intra_satd_x9_4x4_recon, at the first AVX512ICL level */
         if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
         {

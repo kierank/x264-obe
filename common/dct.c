@@ -1079,6 +1079,9 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
          * loses on flat by 3-11 %. cqm: general field 85.6 vs 100.8 (1.18x), frame 115.1 vs 119.7 (1.04x) */
         pf_interlaced->quant_8x8_scan  = b_cqm_flat ? x264_quant_8x8_scan_field_flat_avx2 : x264_quant_8x8_scan_field_avx2;
         pf_progressive->quant_8x8_scan = b_cqm_flat ? x264_quant_8x8_scan_frame_flat_avx2 : x264_quant_8x8_scan_frame_avx2;
+        /* the i4x4 analysis loop of an MB in dependency order */
+        pf_interlaced->intra_satd_x9_4x4_mb  = x264_intra_satd_x9_4x4_mb_field_avx2;
+        pf_progressive->intra_satd_x9_4x4_mb = x264_intra_satd_x9_4x4_mb_frame_avx2;
 #endif
     }
     if( cpu&X264_CPU_AVX512ICL )

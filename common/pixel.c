@@ -2136,6 +2136,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->intra_satd_x3_8x8c  = x264_intra_satd_x3_8x8c_avx2;
         pixf->intra_satd_x9_4x4 = x264_intra_satd_x9_4x4_avx2;
         pixf->intra_sa8d_x9_8x8 = x264_intra_sa8d_x9_8x8_avx2;
+        /* the 8x8 x9 with the edge filter in the kernel: the filter's 16-byte edge stores no longer feed straddling loads */
+        pixf->intra_sa8d_x9_8x8_fdec = x264_intra_sa8d_x9_8x8_fdec_avx2;
         pixf->intra_satd_lowres = x264_intra_satd_lowres_avx2;
         /* fused fpel point sets and searches (psadbw windows, no vdbpsadbw), for AVX2-only CPUs:
          * the X264_CPU_AVX512 block below replaces every one */
