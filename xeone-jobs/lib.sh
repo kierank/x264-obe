@@ -70,6 +70,10 @@ xe_tree() { # tree flavour: one clone of the tree's sha, patched by the job, con
     (cd $d && taskset -c $BUILD_CPUS ./configure --bit-depth=$BITDEPTH --enable-static --disable-opencl --disable-lavf --disable-ffms \
         --disable-gpac --disable-lsmash --extra-cflags="$cf" --extra-ldflags="-no-pie" ${as:+--extra-asflags="$as"} > cfg.log 2>&1) ||
         { tail -5 $d/cfg.log; echo "configure failed $d"; return 1; }
+    # Pin the version string: the SEI carries it, and a patched (dirty, "M") tree or a different r-count changes the
+    # I-frame size, which under tight VBV (lowlat 667/1667) diverges rate control and recon (.44 44-CB, 11-11).
+    sed -i -e 's|^#define X264_VERSION .*|#define X264_VERSION " rpinned"|' -e 's|^#define X264_POINTVER .*|#define X264_POINTVER "0.0.pinned"|' $d/x264_config.h
+    grep -q '"0.0.pinned"' $d/x264_config.h || { echo "version pin failed $d"; return 1; }
     (cd $d && taskset -c $BUILD_CPUS make -j$MAKEJ x264 $ck > make.log 2>&1) || { tail -20 $d/make.log; echo "make failed $d"; return 1; }
     echo "built $(basename $d): $(git -C $d log -1 --format='%h %s' | cut -c1-90)${cf:+ [cflags $cf]}"
 }
