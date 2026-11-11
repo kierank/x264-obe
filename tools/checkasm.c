@@ -5577,6 +5577,48 @@ static int check_deblock( int cpu_ref, int cpu_new )
     TEST_DEBLOCK( deblock_chroma_422_intra_mbaff, 0 );
     TEST_DEBLOCK( deblock_chroma_intra[1], 1 );
 
+    /* 4:2:2 chroma edges at the encoder's 1080 chroma strides (1984 frame, 3968 MBAFF field)
+     * and positions (vertical edges 0 and 2 of an MB at pix 16-aligned + 0 / + 8, horizontal edges at
+     * + 0, aligned); rows 2-17 of the buffer, so the v filter's p rows are inside it */
+#define TEST_DEBLOCK_422( name, align, ... ) \
+    if( ok && db_a.name != db_ref.name ) \
+    { \
+        set_func_name( #name ); \
+        used_asm = 1; \
+        for( int k = 0; k < 72; k++ ) \
+        { \
+            int i = k % 36; \
+            intptr_t s = 1984 << (k&1); \
+            intptr_t off = 2*s + 64 + 8*((k>>1)&1)*!align; \
+            if( !betas[i] ) \
+                continue; \
+            for( int y = 0; y < 18; y++ ) \
+                for( int x = 0; x < 128; x++ ) \
+                    db422_c[y*s+x] = k >= 36 ? PIXEL_MAX - (rand() & 0xf) : rand() & (i&1 ? 0xf : PIXEL_MAX); \
+            memcpy( db422_a, db422_c, 18*3968*sizeof(pixel) ); \
+            call_c1( db_c.name, db422_c+off, s, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            call_a1( db_a.name, db422_a+off, s, alphas[i], betas[i], ##__VA_ARGS__ ); \
+            if( memcmp( db422_c, db422_a, 18*3968*sizeof(pixel) ) ) \
+            { \
+                ok = 0; \
+                fprintf( stderr, #name "(a=%d, b=%d, stride=%d, 4:2:2 mb): [FAILED]\n", alphas[i], betas[i], (int)s ); \
+                break; \
+            } \
+        } \
+    }
+    pixel *db422_c = x264_malloc( 2*18*3968*sizeof(pixel) );
+    if( !db422_c )
+        return -1;
+    pixel *db422_a = db422_c + 18*3968;
+    memset( db422_c, 0, 2*18*3968*sizeof(pixel) );
+    TEST_DEBLOCK_422( deblock_h_chroma_422, 0, tcs_c[i] );
+    TEST_DEBLOCK_422( deblock_h_chroma_422_intra, 0 );
+    TEST_DEBLOCK_422( deblock_chroma_422_mbaff, 0, tcs_c[i] );
+    TEST_DEBLOCK_422( deblock_chroma_422_intra_mbaff, 0 );
+    TEST_DEBLOCK_422( deblock_chroma[1], 1, tcs_c[i] );
+    TEST_DEBLOCK_422( deblock_chroma_intra[1], 1 );
+    x264_free( db422_c );
+
     if( db_a.deblock_luma_mb && db_a.deblock_luma_mb != db_ref.deblock_luma_mb )
     {
         ALIGNED_ARRAY_16( uint8_t, bs, [2],[8][4] );
