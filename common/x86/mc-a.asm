@@ -2069,7 +2069,25 @@ cglobal pixel_avg2_w20, 6,7
     lea    r0, [r0+r1*2]
 %endmacro
 
+; w8: two rows per xmm
+%macro AVG2_W8_2ROWS 0
+    movq   m0, [r2]
+    movhps m0, [r2+r3]
+    movq   m1, [r2+r4]
+    movhps m1, [r2+r6]
+    lea    r2, [r2+r3*2]
+    pavgb  m0, m1
+    movq   [r0], m0
+    movhps [r0+r1], m0
+    lea    r0, [r0+r1*2]
+%endmacro
+
 INIT_XMM avx
+cglobal pixel_avg2_w8, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+    AVG2_ROWS_LOOP AVG2_W8_2ROWS
+
 cglobal pixel_avg2_w16, 6,7
     sub    r4, r2
     lea    r6, [r4+r3]
