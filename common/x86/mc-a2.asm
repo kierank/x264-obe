@@ -2980,14 +2980,43 @@ cglobal integral_init4v, 3,5,6
 %endif
 %endmacro
 
-%macro FRAME_INIT_LOWRES 0
+;-----------------------------------------------------------------------------
+; void frame_init_lowres_core_pad( same ): 8-bit ymm, also the PADH side padding
+; of each row of the four planes, written after the row: dst[0] from the last
+; chunk's registers, dst[width-1] (width before rounding) from memory
+;-----------------------------------------------------------------------------
+%macro LOWRES_PAD 4 ; the row's first 32 bytes of the four planes
+    vpbroadcastb m8, %1
+    vpbroadcastb m9, %2
+    mova [r1-mmsize], m8
+    mova [r2-mmsize], m9
+    vpbroadcastb m8, %3
+    vpbroadcastb m9, %4
+    mova [r3-mmsize], m8
+    mova [r4-mmsize], m9
+    vpbroadcastb m8, [r1+r7-1]
+    vpbroadcastb m9, [r2+r7-1]
+    movu [r1+r7], m8
+    movu [r2+r7], m9
+    vpbroadcastb m8, [r3+r7-1]
+    vpbroadcastb m9, [r4+r7-1]
+    movu [r3+r7], m8
+    movu [r4+r7], m9
+%endmacro
+
+%macro FRAME_INIT_LOWRES 0-1 0 ; pad
 ; nasm < 2.15 can't take comparisons in the register count
 %if HIGH_BIT_DEPTH && mmsize < 32
     %assign lowres_xmm_regs 8
 %else
     %assign lowres_xmm_regs 12
 %endif
+%if %1
+cglobal frame_init_lowres_core_pad, 6,8,lowres_xmm_regs
+    mov      r7d, r7m
+%else
 cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
+%endif
 %if HIGH_BIT_DEPTH
     shl   dword r6m, 1
     FIX_STRIDES r5
@@ -3120,6 +3149,13 @@ cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
 %endif
     sub      r6d, mmsize
     jg .hloop
+%if %1
+%if cpuflag(avx512icl)
+    LOWRES_PAD xm4, xm0, xm5, xm1
+%else
+    LOWRES_PAD xm2, xm4, xm3, xm5
+%endif
+%endif
 %endif ; HIGH_BIT_DEPTH
 .skip:
     mov       r6, dst_gap
@@ -3154,6 +3190,12 @@ FRAME_INIT_LOWRES
 %if ARCH_X86_64
 INIT_YMM avx512icl
 FRAME_INIT_LOWRES
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avx2
+FRAME_INIT_LOWRES 1
+INIT_YMM avx512icl
+FRAME_INIT_LOWRES 1
+%endif
 %endif
 
 ;-----------------------------------------------------------------------------

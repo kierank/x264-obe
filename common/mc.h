@@ -143,6 +143,10 @@ typedef struct
 
     void (*frame_init_lowres_core)( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height );
+    /* frame_init_lowres_core that also writes the PADH side padding of each row
+     * of the four planes (from dst[0] and dst[width-1]); NULL if there is no asm */
+    void (*frame_init_lowres_core_pad)( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
+                                        intptr_t src_stride, intptr_t dst_stride, int width, int height );
     /* rc.b_lookahead_8bit, high bit depth only: frame_init_lowres_core with each
      * output min( (x + 2) >> 2, 255 ) */
     void (*frame_init_lowres_core8)( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,

@@ -5159,6 +5159,61 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "lowres init :" );
     }
 
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched padding lowres, at its first levels */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.frame_init_lowres_core_pad )
+        mc_a.frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx2;
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        mc_a.frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx512icl;
+#endif
+    if( mc_a.frame_init_lowres_core_pad && mc_a.frame_init_lowres_core_pad != mc_ref.frame_init_lowres_core_pad )
+    {
+        set_func_name( "lowres_init_pad" );
+        ok = 1; used_asm = 1;
+        /* frame_init_lowres_core then the PADH side pads of every row of the four
+         * planes; anything else in the buffer untouched */
+        intptr_t sl = (120+64+31)&~31;
+        int size = 4*10*sl + 64;
+        pixel *bc = x264_malloc( size * sizeof(pixel) );
+        pixel *ba = x264_malloc( size * sizeof(pixel) );
+        ok = bc && ba;
+        for( int w = 96; w <= 96+24 && ok; w += 8 )
+            for( int h = 1; h <= 8 && ok; h += 7 )
+            {
+                intptr_t stride = (w*2+31)&~31;
+                pixel *dc[4], *da[4];
+                for( int j = 0; j < 4; j++ )
+                {
+                    dc[j] = bc + 32 + j*10*sl;
+                    da[j] = ba + 32 + j*10*sl;
+                }
+                for( int i = 0; i < size; i++ )
+                    bc[i] = ba[i] = 0xAA ^ (i&7);
+                mc_c.frame_init_lowres_core( pbuf1, dc[0], dc[1], dc[2], dc[3], stride, sl, w, h );
+                for( int j = 0; j < 4; j++ )
+                    for( int y = 0; y < h; y++ )
+                        for( int x = 0; x < 32; x++ )
+                        {
+                            dc[j][y*sl-32+x] = dc[j][y*sl];
+                            dc[j][y*sl+w+x] = dc[j][y*sl+w-1];
+                        }
+                call_a( mc_a.frame_init_lowres_core_pad, pbuf1, da[0], da[1], da[2], da[3], stride, sl, w, h );
+                if( memcmp( bc, ba, size * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    for( int i = 0; i < size; i++ )
+                        if( bc[i] != ba[i] )
+                        {
+                            fprintf( stderr, "lowres_init_pad differs: w %d h %d at %d: %d != %d\n", w, h, i, bc[i], ba[i] );
+                            break;
+                        }
+                }
+            }
+        x264_free( bc );
+        x264_free( ba );
+        report( "lowres init pad :" );
+    }
+
 #if HIGH_BIT_DEPTH
     if( mc_a.frame_init_lowres_core8 != mc_ref.frame_init_lowres_core8 )
     {

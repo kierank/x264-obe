@@ -634,6 +634,23 @@ static void ALWAYS_INLINE pixel_memset( pixel *dst, pixel *src, int len, int siz
     }
 }
 
+/* the upper and lower bands only: the rows they copy are already padded at the sides */
+static void ALWAYS_INLINE plane_expand_border_bands( pixel *pix, pixel *src, int i_stride, int i_width, int i_height, int i_padh, int i_padv, int b_pad_top, int b_pad_bottom )
+{
+#define PPIXEL(x, y) ( pix + (x) + (y)*i_stride )
+#define SPIXEL(x, y) ( src + (x) + (y)*i_stride )
+    /* upper band */
+    if( b_pad_top )
+        for( int y = 0; y < i_padv; y++ )
+            memcpy( PPIXEL(-i_padh, -y-1), SPIXEL(-i_padh, 0), (i_width+2*i_padh) * sizeof(pixel) );
+    /* lower band */
+    if( b_pad_bottom )
+        for( int y = 0; y < i_padv; y++ )
+            memcpy( PPIXEL(-i_padh, i_height+y), SPIXEL(-i_padh, i_height-1), (i_width+2*i_padh) * sizeof(pixel) );
+#undef SPIXEL
+#undef PPIXEL
+}
+
 /* src: same layout as pix, already expanded wherever its padded rows are copied */
 static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i_stride, int i_width, int i_height, int i_padh, int i_padv, int b_pad_top, int b_pad_bottom, int b_chroma )
 {
@@ -735,19 +752,20 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
         }
 }
 
-void x264_frame_expand_border_lowres( x264_frame_t *frame )
+/* Lowres rows [y0,y1): side padding (unless frame_init_lowres_core_pad wrote
+ * it), and the padding above or below when the band is the first or last. */
+void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1, int b_sides )
 {
     for( int i = 0; i < 4; i++ )
-        plane_expand_border( frame->lowres[i], frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres, PADH, PADV, 1, 1, 0 );
-}
-
-/* Lowres rows [y0,y1): side padding, and the padding above or below when the
- * band is the first or last. */
-void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 )
-{
-    for( int i = 0; i < 4; i++ )
-        plane_expand_border( frame->lowres[i] + y0 * frame->i_stride_lowres, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
-                             PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+    {
+        pixel *pix = frame->lowres[i] + y0 * frame->i_stride_lowres;
+        if( b_sides )
+            plane_expand_border( pix, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                                 PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+        else
+            plane_expand_border_bands( pix, pix, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                                       PADH, PADV, !y0, y1 == frame->i_lines_lowres );
+    }
 }
 
 #if HIGH_BIT_DEPTH

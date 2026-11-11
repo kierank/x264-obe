@@ -473,11 +473,7 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
         frame_init_lowres8_rows( h, frame, 0, frame->i_lines_lowres );
     if( !lowres_deferred( h, frame ) )
 #endif
-    {
-        h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
-                                      i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
-        x264_frame_expand_border_lowres( frame );
-    }
+        x264_frame_init_lowres_pixel_rows( h, frame, 0, frame->i_lines_lowres >> 3 );
 
     x264_frame_init_lowres_finish( h, frame );
 }
@@ -518,11 +514,17 @@ void x264_frame_init_lowres_pixel_rows( x264_t *h, x264_frame_t *frame, int mb_y
     int offset = y0 * i_stride_lowres;
 
     /* reads source rows 2*y0 to 2*y1 inclusive, so one row of the next band */
-    h->mc.frame_init_lowres_core( frame->plane[0] + 2*y0*i_stride,
-                                  frame->lowres[0] + offset, frame->lowres[1] + offset,
-                                  frame->lowres[2] + offset, frame->lowres[3] + offset,
-                                  i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
-    x264_frame_expand_border_lowres_rows( frame, y0, y1 );
+    if( h->mc.frame_init_lowres_core_pad )
+        h->mc.frame_init_lowres_core_pad( frame->plane[0] + 2*y0*i_stride,
+                                          frame->lowres[0] + offset, frame->lowres[1] + offset,
+                                          frame->lowres[2] + offset, frame->lowres[3] + offset,
+                                          i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+    else
+        h->mc.frame_init_lowres_core( frame->plane[0] + 2*y0*i_stride,
+                                      frame->lowres[0] + offset, frame->lowres[1] + offset,
+                                      frame->lowres[2] + offset, frame->lowres[3] + offset,
+                                      i_stride, i_stride_lowres, frame->i_width_lowres, y1 - y0 );
+    x264_frame_expand_border_lowres_rows( frame, y0, y1, !h->mc.frame_init_lowres_core_pad );
 }
 
 void x264_frame_init_lowres_finish( x264_t *h, x264_frame_t *frame )
@@ -780,6 +782,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->memcpy_aligned = memcpy;
     pf->memzero_aligned = memzero_aligned;
     pf->frame_init_lowres_core = frame_init_lowres_core;
+    pf->frame_init_lowres_core_pad = NULL;
 #if HIGH_BIT_DEPTH
     pf->frame_init_lowres_core8 = frame_init_lowres_core8;
 #endif
