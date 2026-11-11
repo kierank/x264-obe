@@ -778,6 +778,7 @@ struct x264_t
     /* Buffers that are allocated per-thread even in sliced threads. */
     void *scratch_buffer; /* for any temporary storage that doesn't want repeated malloc */
     void *scratch_buffer2; /* if the first one's already in use */
+    int32_t *mbtree_strip; /* x86 mbtree_propagate_list accumulator rows (MBTREE_STRIP_*), zero between calls */
     void *scratch_hpel; /* x264_frame_filter: the sliced filter pass of thread[0] runs beside the lookahead */
     pixel *intra_border_backup[5][3]; /* bottom pixels of the previous mb row, used for intra prediction after the framebuffer has been deblocked */
     /* Deblock strength values are stored for each 4x4 partition. In MBAFF

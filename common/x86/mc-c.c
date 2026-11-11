@@ -1268,9 +1268,9 @@ void x264_mbtree_propagate_list_internal_##cpu( int16_t (*mvs)[2], int16_t *prop
                                                 uint16_t *lowres_costs, int16_t *output,\
                                                 int bipred_weight, int mb_y, int len );\
 \
-static void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],\
-                                              int16_t *propagate_amount, uint16_t *lowres_costs,\
-                                              int bipred_weight, int mb_y, int len, int list )\
+void x264_mbtree_propagate_list_##cpu( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],\
+                                       int16_t *propagate_amount, uint16_t *lowres_costs,\
+                                       int bipred_weight, int mb_y, int len, int list )\
 {\
     int16_t *current = h->scratch_buffer2;\
 \
@@ -1338,6 +1338,130 @@ PROPAGATE_LIST(avx)
 PROPAGATE_LIST(avx2)
 #define x264_mbtree_propagate_list_internal_avx512 x264_template(mbtree_propagate_list_internal_avx512)
 PROPAGATE_LIST(avx512)
+#endif
+
+#if ARCH_X86_64
+/* Strip form of the wrapper above, same output. Every increment is >= 0 (weights
+ * (w*amount+512)>>10 of amounts >= 0) and each target saturates at 32767 with no
+ * other clamp (paddsw's -32768 floor is never reached from s >= -32768 adding
+ * x >= 0), and
+ *     min( min( s+a, M ) + b, M ) = min( s+a+b, M+b, M ) = min( s+a+b, M )   (b >= 0)
+ * so any run of clipped adds into one target equals min( s + sum, M ) in any order.
+ * The adds go into int32 cells of rows mb_y-3 .. mb_y+4 (exact-address dwords,
+ * which always store-forward) and each touched row is folded into ref_costs once
+ * at the end. Columns -1 and width.. land in the padding; rows outside the strip
+ * (|dy| > 3, rare) take the direct clipped adds. */
+static void mbtree_list_direct( x264_t *h, uint16_t *ref_costs, unsigned mbx, unsigned mby, int16_t *w )
+{
+    unsigned stride = h->mb.i_mb_stride;
+    unsigned width = h->mb.i_mb_width;
+    unsigned height = h->mb.i_mb_height;
+    unsigned idx0 = mbx + mby * stride;
+    unsigned idx2 = idx0 + stride;
+    if( mby < height )
+    {
+        if( mbx < width )
+            CLIP_ADD( ref_costs[idx0+0], w[0] );
+        if( mbx+1 < width )
+            CLIP_ADD( ref_costs[idx0+1], w[1] );
+    }
+    if( mby+1 < height )
+    {
+        if( mbx < width )
+            CLIP_ADD( ref_costs[idx2+0], w[16] );
+        if( mbx+1 < width )
+            CLIP_ADD( ref_costs[idx2+1], w[17] );
+    }
+}
+
+/* add and clear one strip row (cols -8 .. stride-9) */
+static void mbtree_strip_flush_c( uint16_t *dst, int32_t *strip, int width )
+{
+    for( int i = 0; i < width; i++ )
+    {
+#if HAVE_X86_INLINE_ASM
+        int v = (int16_t)dst[i] + strip[i]; /* paddsw */
+#else
+        int v = dst[i] + strip[i];
+#endif
+        dst[i] = X264_MIN( v, (1<<15)-1 );
+    }
+    memset( strip-8, 0, MBTREE_STRIP_STRIDE( width ) * sizeof(int32_t) );
+}
+
+static void mbtree_strip_flush( x264_t *h, uint16_t *ref_costs, int32_t *strip, unsigned dirty, int mb_y,
+                                void (*flush)( uint16_t *, int32_t *, int ) )
+{
+    int width = h->mb.i_mb_width;
+    int sw = MBTREE_STRIP_STRIDE( width );
+    for( int k = 0; dirty; k++, dirty >>= 1, strip += sw )
+        if( dirty&1 )
+        {
+            unsigned y = mb_y + k - MBTREE_STRIP_DY;
+            if( y < (unsigned)h->mb.i_mb_height )
+                flush( ref_costs + y * h->mb.i_mb_stride, strip, width );
+            else
+                memset( strip-8, 0, sw * sizeof(int32_t) );
+        }
+}
+
+/* current: the internal kernel's output for mb_y 0 (so {mbx, dy}) */
+static void mbtree_strip_scatter( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2], int16_t *current,
+                                  uint16_t *lowres_costs, int mb_y, int len, int list, int32_t *strip,
+                                  void (*flush)( uint16_t *, int32_t *, int ) )
+{
+    unsigned width = h->mb.i_mb_width;
+    int sw = MBTREE_STRIP_STRIDE( width );
+    int32_t *row = strip + MBTREE_STRIP_DY*sw;
+    unsigned dirty = 0;
+
+    for( unsigned i = 0; i < len; current += 32 )
+    {
+        int end = X264_MIN( i+8, len );
+        for( ; i < end; i++, current += 2 )
+        {
+            if( !(lowres_costs[i] & (1 << (list+LOWRES_COST_SHIFT))) )
+                continue;
+
+            if( !M32( mvs[i] ) )
+            {
+                row[i] += current[16];
+                dirty |= 1 << MBTREE_STRIP_DY;
+                continue;
+            }
+
+            int mbx = current[0];
+            int dy = current[1];
+            if( (unsigned)(dy + MBTREE_STRIP_DY) <= 2*MBTREE_STRIP_DY && (unsigned)(mbx + 1) <= width )
+            {
+                int32_t *s = row + dy*sw + mbx;
+                s[0]    += current[16];
+                s[1]    += current[17];
+                s[sw]   += current[32];
+                s[sw+1] += current[33];
+                dirty |= 3 << (dy + MBTREE_STRIP_DY);
+            }
+            else
+                mbtree_list_direct( h, ref_costs, mbx, dy + mb_y, current+16 );
+        }
+    }
+    mbtree_strip_flush( h, ref_costs, strip, dirty, mb_y, flush );
+}
+
+#define PROPAGATE_LIST_STRIP(cpu)\
+void x264_mbtree_propagate_list_strip_##cpu( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],\
+                                             int16_t *propagate_amount, uint16_t *lowres_costs,\
+                                             int bipred_weight, int mb_y, int len, int list )\
+{\
+    int16_t *current = h->scratch_buffer2;\
+    x264_mbtree_propagate_list_internal_##cpu( mvs, propagate_amount, lowres_costs,\
+                                               current, bipred_weight, 0, len );\
+    mbtree_strip_scatter( h, ref_costs, mvs, current, lowres_costs, mb_y, len, list,\
+                          h->mbtree_strip + 8, mbtree_strip_flush_c );\
+}
+
+PROPAGATE_LIST_STRIP(avx2)
+PROPAGATE_LIST_STRIP(avx512)
 #endif
 #undef CLIP_ADD
 #undef CLIP_ADD2

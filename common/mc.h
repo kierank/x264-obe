@@ -33,6 +33,13 @@
 #define x264_plane_copy_interleave_c x264_template(plane_copy_interleave_c)
 #define x264_plane_copy_deinterleave_v210_c x264_template(plane_copy_deinterleave_v210_c)
 
+/* x86 mbtree_propagate_list int32 accumulator (h->mbtree_strip): per list MBTREE_STRIP_ROWS rows,
+ * mb_y-MBTREE_STRIP_DY .. mb_y+MBTREE_STRIP_DY+1, columns -8 .. stride-9; all zero between calls */
+#define MBTREE_STRIP_DY 3
+#define MBTREE_STRIP_ROWS (2*MBTREE_STRIP_DY+2)
+#define MBTREE_STRIP_STRIDE(width) ((((width)+7)&~7)+16)
+#define MBTREE_STRIP_SIZE(width) (2*MBTREE_STRIP_ROWS*MBTREE_STRIP_STRIDE(width)*(int)sizeof(int32_t))
+
 struct x264_weight_t;
 typedef void (* weight_fn_t)( pixel *, intptr_t, pixel *,intptr_t, const struct x264_weight_t *, int );
 /* ( dst, i_dst, src1, i_src, weight, height, src2 ) */
