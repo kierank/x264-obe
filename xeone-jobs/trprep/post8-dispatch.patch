@@ -1,0 +1,13 @@
+diff --git a/common/dct.c b/common/dct.c
+index ae9260dc..b2306515 100644
+--- a/common/dct.c
++++ b/common/dct.c
+@@ -1094,6 +1094,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
+         pf_progressive->dequant_4x4x4_scan       = x264_dequant_4x4x4_scan_frame_avx2;
+         pf_interlaced->dequant_4x4x4_scan_ac     = x264_dequant_4x4x4_scan_field_ac_avx2;
+         pf_progressive->dequant_4x4x4_scan_ac    = x264_dequant_4x4x4_scan_frame_ac_avx2;
++        pf_interlaced->dequant_8x8_scan  = b_cqm_flat ? x264_dequant_8x8_scan_field_flat_avx2 : x264_dequant_8x8_scan_field_avx2;
++        pf_progressive->dequant_8x8_scan = b_cqm_flat ? x264_dequant_8x8_scan_frame_flat_avx2 : x264_dequant_8x8_scan_frame_avx2;
+ #endif
+     }
+     if( cpu&X264_CPU_AVX512ICL )
