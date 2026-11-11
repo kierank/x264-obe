@@ -418,6 +418,25 @@ pcl_lut:
     dd pcl_v
     %assign pcl_m pcl_m+1
 %endrep
+; weightp_deint_stats8 avx512icl: vpermb of 32 u v pairs to u | v; vpermt2b of the min (0-63)
+; and max (64-127) qwords of blocks u 0-3 v 0-3 to min | max << 16
+weightp_deint_perm:
+%assign i 0
+%rep 32
+    db 2*i
+    %assign i i+1
+%endrep
+%assign i 0
+%rep 32
+    db 2*i+1
+    %assign i i+1
+%endrep
+weightp_deint_mm:
+%assign i 0
+%rep 8
+    db 8*i, 0, 64+8*i, 0
+    %assign i i+1
+%endrep
 %endif
 
 SECTION .text
@@ -13050,7 +13069,55 @@ cglobal weightp_stats8, 6,8,13
 ; u' v' as weightp_stats8, the dwords u 0 2 v 0 2 | u 1 3 v 1 3 put in order by vpermd.
 ; m0 m1 = u v sums, m2 m3 = u v min, m4 m5 = u v max, m6 = 0, m7 = pw_00ff, m13 = 0x00ff0000,
 ; m14 = deinterleave_shufd.
+; avx512icl: vpermb to u | v (ymm stores), one zmm of the 8 blocks for the sum, min and max;
+; vpermt2b of min and max, vpmovqd of the sums. m0 = sum, m1 = min, m2 = max, m3 = the vpermb
+; order, m4 = 0, m6 = all ones, m7 = the vpermt2b order, k1 = min | max bytes.
 %macro WEIGHTP_DEINT_STATS8 0
+%if mmsize == 64
+cglobal weightp_deint_stats8, 10,12,8
+    movu       m3, [weightp_deint_perm]
+    movu      ym7, [weightp_deint_mm]
+    pxor       m4, m4
+    vpternlogd m6, m6, m6, 0xff
+    mov      r10d, 0x55555555
+    kmovd      k1, r10d
+.loopx:
+    pxor       m0, m0
+    mova       m1, m6
+    pxor       m2, m2
+    xor      r10d, r10d
+    mov      r11d, r9d
+.loopy:
+    vpermb     m5, m3, [r6+r10]
+    movu [r4+r10], ym5
+    vextracti64x4 [r5+r10], m5, 1
+    pminub     m1, m5
+    pmaxub     m2, m5
+    psadbw     m5, m4
+    paddd      m0, m5
+    add       r10, r7
+    dec      r11d
+    jg .loopy
+    ; the bytes of each qword to byte 0 (min: the other bytes 0)
+    psrlq      m5, m1, 32
+    pminub     m1, m5
+    psrlq      m5, m2, 32
+    pmaxub     m2, m5
+    psrld      m5, m1, 16
+    pminub     m1, m5
+    psrld      m5, m2, 16
+    pmaxub     m2, m5
+    psrlw      m5, m1, 8
+    pminub     m1, m5
+    psrlw      m5, m2, 8
+    pmaxub     m2, m5
+    vpermt2b   m1 {k1}{z}, m7, m2
+    vpmovqd   ym0, m0
+    movu     [r0], xm0
+    vextracti128 [r1], ym0, 1
+    movu     [r2], xm1
+    vextracti32x4 [r3], m1, 1
+%else
 cglobal weightp_deint_stats8, 10,12,15
     pxor       m6, m6
     vpbroadcastd m7, [pw_00ff]
@@ -13115,6 +13182,7 @@ cglobal weightp_deint_stats8, 10,12,15
     vextracti128 [r1], m0, 1
     movu     [r2], xm2
     vextracti128 [r3], m2, 1
+%endif
     add        r0, 16
     add        r1, 16
     add        r2, 16
@@ -13142,6 +13210,9 @@ WEIGHTP_SUM8_NV
 %if HIGH_BIT_DEPTH == 0
 INIT_YMM avx512icl
 WEIGHTP_STATS8_B
+INIT_ZMM avx512icl
+WEIGHTP_DEINT_STATS8
+INIT_YMM avx512icl
 
 ; avx512icl and avxvnni 8-bit weightp_sum8(_clip): on words, x * scale + round fits (scale 0-127):
 ; pmullw, paddw, psraw [, + offset, clip], then vpdpwssd by 1 into the block's dword pairs.
