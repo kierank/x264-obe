@@ -516,7 +516,7 @@ int x264_mb_predict_mv_direct16x16( x264_t *h, int *b_changed )
 }
 
 /* This just improves encoder performance, it's not part of the spec */
-void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
+static void mvpred_twin_new( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
 {
     int16_t (*mvr)[2] = h->mb.mvr[i_list][i_ref];
     int i = 0;
@@ -655,4 +655,163 @@ void x264_mvpred_ref16x16_init( x264_t *h )
                     h->mb.mvref.tscale[i_list][mbi][field][i_ref] = (curpoc - refpoc) * l0->inv_ref_poc[mbi&field];
                 }
             }
+}
+
+/* test/x264-mvpred-c-twin: speed-next 44754802's x264_mb_predict_mv_ref16x16 beside
+ * the new one, abort on any count / mvc difference. Not for merging. */
+#include <stdio.h>
+#include <stdlib.h>
+static void mvpred_twin_old( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
+{
+    int16_t (*mvr)[2] = h->mb.mvr[i_list][i_ref];
+    int i = 0;
+
+#define SET_MVP(mvp) \
+    { \
+        CP32( mvc[i], mvp ); \
+        i++; \
+    }
+
+#define SET_IMVP(xy) \
+    if( xy >= 0 ) \
+    { \
+        int shift = 1 + MB_INTERLACED - h->mb.field[xy]; \
+        int16_t *mvp = h->mb.mvr[i_list][i_ref<<1>>shift][xy]; \
+        mvc[i][0] = mvp[0]; \
+        mvc[i][1] = mvp[1]<<1>>shift; \
+        i++; \
+    }
+
+    /* b_direct */
+    if( h->sh.i_type == SLICE_TYPE_B
+        && h->mb.cache.ref[i_list][x264_scan8[12]] == i_ref )
+    {
+        SET_MVP( h->mb.cache.mv[i_list][x264_scan8[12]] );
+    }
+
+    if( i_ref == 0 && h->frames.b_have_lowres )
+    {
+        int idx = i_list ? h->fref[1][0]->i_frame-h->fenc->i_frame-1
+                         : h->fenc->i_frame-h->fref[0][0]->i_frame-1;
+        if( idx <= h->param.i_bframe )
+        {
+            int16_t (*lowres_mv)[2] = h->fenc->lowres_mvs[i_list][idx];
+            if( lowres_mv[0][0] != 0x7fff )
+            {
+                if( MB_INTERLACED )
+                {
+                    /* lowres qpel is 2 frame qpel, 1 field qpel vertically */
+                    mvc[i][0] = lowres_mv[h->mb.i_mb_xy][0] * 2;
+                    mvc[i][1] = lowres_mv[h->mb.i_mb_xy][1];
+                }
+                else
+                    M32( mvc[i] ) = (M32( lowres_mv[h->mb.i_mb_xy] )*2)&0xfffeffff;
+                i++;
+            }
+        }
+    }
+
+    /* spatial predictors */
+    if( SLICE_MBAFF )
+    {
+        SET_IMVP( h->mb.i_mb_left_xy[0] );
+        SET_IMVP( h->mb.i_mb_top_xy );
+        SET_IMVP( h->mb.i_mb_topleft_xy );
+        SET_IMVP( h->mb.i_mb_topright_xy );
+        /* the top MB of the pair, analysed just before and in the same slice,
+         * is a field MB too, its refs in the same parity-relative units */
+        if( MB_INTERLACED && (h->mb.i_mb_y & 1) )
+            SET_MVP( mvr[h->mb.i_mb_xy - h->mb.i_mb_stride] );
+    }
+    else
+    {
+        SET_MVP( mvr[h->mb.i_mb_left_xy[0]] );
+        SET_MVP( mvr[h->mb.i_mb_top_xy] );
+        SET_MVP( mvr[h->mb.i_mb_topleft_xy] );
+        SET_MVP( mvr[h->mb.i_mb_topright_xy] );
+    }
+#undef SET_IMVP
+#undef SET_MVP
+
+    /* temporal predictors */
+    if( h->fref[0][0]->i_ref[0] > 0 )
+    {
+        x264_frame_t *l0 = h->fref[0][0];
+        int field = h->mb.i_mb_y&1;
+        int curpoc = h->fdec->i_poc + h->fdec->i_delta_poc[field];
+        int refpoc = h->fref[i_list][i_ref>>SLICE_MBAFF]->i_poc;
+        refpoc += l0->i_delta_poc[field^(i_ref&1)];
+        /* In MBAFF a frame MB's i_ref is a frame index and its own parity,
+         * and mv16x16 is in the units of the collocated MB (l0->field) */
+        int b_tconv = SLICE_MBAFF && l0->field;
+        if( b_tconv )
+            refpoc = h->fref[i_list][i_ref>>MB_INTERLACED]->i_poc + l0->i_delta_poc[field^(i_ref&MB_INTERLACED)];
+
+#define SET_TMVP( dx, dy ) \
+        { \
+            int mb_index = h->mb.i_mb_xy + dx + dy*h->mb.i_mb_stride; \
+            int scale = (curpoc - refpoc) * l0->inv_ref_poc[MB_INTERLACED&field]; \
+            if( b_tconv ) \
+            { \
+                int tmvy = l0->mv16x16[mb_index][1] * 2 >> (1 + MB_INTERLACED - l0->field[mb_index]); \
+                mvc[i][0] = x264_clip3( (l0->mv16x16[mb_index][0]*scale + 128) >> 8, -32768, 32767 ); \
+                mvc[i][1] = x264_clip3( (tmvy*scale + 128) >> 8, -32768, 32767 ); \
+            } \
+            else \
+            { \
+                mvc[i][0] = (l0->mv16x16[mb_index][0]*scale + 128) >> 8; \
+                mvc[i][1] = (l0->mv16x16[mb_index][1]*scale + 128) >> 8; \
+            } \
+            i++; \
+        }
+
+        SET_TMVP(0,0);
+        if( h->mb.i_mb_x < h->mb.i_mb_width-1 )
+            SET_TMVP(1,0);
+        if( h->mb.i_mb_y < h->mb.i_mb_height-1 )
+            SET_TMVP(0,1);
+#undef SET_TMVP
+    }
+
+    *i_mvc = i;
+}
+
+static uint64_t twin_calls, twin_tmvp, twin_mbaff, twin_bad;
+static void __attribute__((destructor)) twin_report( void )
+{
+    fprintf( stderr, "mvpred-twin %d-bit: calls %llu tmvp %llu mbaff %llu mismatches %llu\n", BIT_DEPTH,
+             (unsigned long long)twin_calls, (unsigned long long)twin_tmvp,
+             (unsigned long long)twin_mbaff, (unsigned long long)twin_bad );
+}
+
+void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[10][2], int *i_mvc )
+{
+    ALIGNED_4( int16_t mvc_old[10][2] );
+    int n_old = -1;
+    if( h->mb.mvref.b_tmvp && i_ref >= (h->i_ref[i_list] << MB_INTERLACED) )
+    {
+        fprintf( stderr, "mvpred-twin: i_ref %d out of the tscale range (list %d, i_ref %d, MB_INTERLACED %d)\n",
+                 i_ref, i_list, h->i_ref[i_list], MB_INTERLACED );
+        abort();
+    }
+    mvpred_twin_old( h, i_list, i_ref, mvc_old, &n_old );
+    mvpred_twin_new( h, i_list, i_ref, mvc, i_mvc );
+    __atomic_fetch_add( &twin_calls, 1, __ATOMIC_RELAXED );
+    if( h->mb.mvref.b_tmvp )
+        __atomic_fetch_add( &twin_tmvp, 1, __ATOMIC_RELAXED );
+    if( SLICE_MBAFF )
+        __atomic_fetch_add( &twin_mbaff, 1, __ATOMIC_RELAXED );
+    int bad = n_old != *i_mvc;
+    for( int k = 0; !bad && k < n_old; k++ )
+        bad = M32( mvc_old[k] ) != M32( mvc[k] );
+    if( bad )
+    {
+        __atomic_fetch_add( &twin_bad, 1, __ATOMIC_RELAXED );
+        fprintf( stderr, "mvpred-twin MISMATCH: frame %d mb %d,%d list %d ref %d mbaff %d field %d: count old %d new %d\n",
+                 h->fenc->i_frame, h->mb.i_mb_x, h->mb.i_mb_y, i_list, i_ref, SLICE_MBAFF, MB_INTERLACED, n_old, *i_mvc );
+        for( int k = 0; k < X264_MAX( n_old, *i_mvc ); k++ )
+            fprintf( stderr, "  [%d] old %d,%d new %d,%d\n", k, mvc_old[k][0], mvc_old[k][1], mvc[k][0], mvc[k][1] );
+        twin_report();
+        abort();
+    }
 }
