@@ -5034,6 +5034,41 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "hpel filter copy :" );
     }
 
+    if( mc_a.hpel_filter_vc && mc_a.hpel_filter_vc != mc_ref.hpel_filter_vc )
+    {
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        void *tmp = pbuf3+49*64;
+        set_func_name( "hpel_filter_vc" );
+        ok = 1; used_asm = 1;
+        /* as hpel_filter's v and c; nothing written to dsth */
+        for( int i_off = 0; i_off < 3 && ok; i_off++ )
+        {
+            int o = (int[]){ 0, 8, 24 }[i_off];
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, srchpel+o, 64, 48, 10, tmp );
+            call_a( mc_a.hpel_filter_vc, dsta[0]+o, dsta[1]+o, dsta[2]+o, srchpel+o, (intptr_t)64, 48, 10, tmp );
+            for( int i = 1; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter vc differs at plane %c line %d offset %d\n", "hvc"[i], j, o );
+                        break;
+                    }
+            for( int k = -8; k < 16*64-8; k++ )
+                if( dsta[0][k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter vc: write to dsth at %d offset %d\n", k, o );
+                    break;
+                }
+        }
+        report( "hpel filter vc :" );
+    }
+
     if( mc_a.frame_init_lowres_core != mc_ref.frame_init_lowres_core )
     {
         pixel *dstc[4] = { pbuf3, pbuf3+1024, pbuf3+2048, pbuf3+3072 };

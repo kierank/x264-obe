@@ -116,6 +116,10 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* hpel_filter without the h plane: dsth is not written. NULL if there is
+     * no asm. */
+    void (*hpel_filter_vc)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                            intptr_t i_stride, int i_width, int i_height, int16_t *buf );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );

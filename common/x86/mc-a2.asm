@@ -1179,19 +1179,25 @@ cglobal hpel_filter_h, 3,3,8
     mova      %2, %3
 %endmacro
 
-%macro HPEL 0-1 0 ; copy
+%macro HPEL 0-1 0 ; 1: copy, 2: vc (no h)
 ;-----------------------------------------------------------------------------
 ; void hpel_filter( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                   uint8_t *src, intptr_t stride, int width, int height )
 ; void hpel_filter_copy( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                        uint8_t *src, intptr_t stride, int width, int height,
 ;                        int16_t *buf, uint8_t *dst )
+; void hpel_filter_vc( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+;                      uint8_t *src, intptr_t stride, int width, int height )
 ; copy also stores src to dst, at the columns of dstv
+; vc writes no dsth
 ;-----------------------------------------------------------------------------
-%assign hpel_copy %1
+%assign hpel_copy %1 == 1
+%assign hpel_noh %1 == 2
 %if hpel_copy
 cglobal hpel_filter_copy, 7,10,16
     mov       r9, r8mp
+%elif hpel_noh
+cglobal hpel_filter_vc, 7,9,16
 %else
 cglobal hpel_filter, 7,9,16
 %endif
@@ -1242,7 +1248,9 @@ cglobal hpel_filter, 7,9,16
     psrlw   m15, 1   ; pw_16
 %endif
     mova     m7, m5
+%if hpel_noh == 0
     DO_FILT_H m10, m13, m11
+%endif
     add      r4, mmsize
     jl .loopx
     cmp      r4, mmsize
@@ -1268,15 +1276,19 @@ cglobal hpel_filter, 7,9,16
 INIT_XMM sse2
 HPEL
 HPEL 1
+HPEL 2
 INIT_XMM ssse3
 HPEL
 HPEL 1
+HPEL 2
 INIT_XMM avx
 HPEL
 HPEL 1
+HPEL 2
 INIT_YMM avx2
 HPEL
 HPEL 1
+HPEL 2
 %endif ; ARCH_X86_64
 
 %undef movntq
