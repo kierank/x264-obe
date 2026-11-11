@@ -47,6 +47,22 @@ struct x264_threadpool_t
     x264_sync_frame_list_t done;   /* list of jobs that have finished processing */
 };
 
+/* x264_sync_frame_list_push, waking one waiter: for run and uninit, whose
+ * waiters (idle workers, callers wanting a job slot) are interchangeable and
+ * take one entry each. Every push signals after its insert, and a thread
+ * blocks only after seeing the list empty under the mutex, so each entry has
+ * a waiter woken for it or a thread that has not yet looked. Not for done:
+ * its waiters each want one particular job. */
+static void x264_threadpool_list_push( x264_sync_frame_list_t *slist, void *entry )
+{
+    x264_pthread_mutex_lock( &slist->mutex );
+    while( slist->i_size == slist->i_max_size )
+        x264_pthread_cond_wait( &slist->cv_empty, &slist->mutex );
+    slist->list[ slist->i_size++ ] = entry;
+    x264_pthread_mutex_unlock( &slist->mutex );
+    x264_pthread_cond_signal( &slist->cv_fill );
+}
+
 static void *x264_threadpool_thread( x264_threadpool_t *pool )
 {
     if( pool->init_func )
@@ -113,7 +129,7 @@ void x264_threadpool_run( x264_threadpool_t *pool, void *(*func)(void *), void *
     x264_threadpool_job_t *job = (void*)x264_sync_frame_list_pop( &pool->uninit );
     job->func = func;
     job->arg  = arg;
-    x264_sync_frame_list_push( &pool->run, (void*)job );
+    x264_threadpool_list_push( &pool->run, job );
 }
 
 void *x264_threadpool_wait( x264_threadpool_t *pool, void *arg )
@@ -138,7 +154,7 @@ void *x264_threadpool_wait( x264_threadpool_t *pool, void *arg )
     x264_pthread_mutex_unlock( &pool->done.mutex );
 
     void *ret = job->ret;
-    x264_sync_frame_list_push( &pool->uninit, (void*)job );
+    x264_threadpool_list_push( &pool->uninit, job );
     return ret;
 }
 
