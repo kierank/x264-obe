@@ -7094,6 +7094,21 @@ static int check_quant( int cpu_ref, int cpu_new )
 #if HAVE_MMX && ARCH_X86_64
     ok = 1; used_asm = 0;
     x264_rdo_init();
+    /* ov 1: the undispatched avx2 node-vector trellis, at the first AVX2 level */
+    x264_quant_function_t qf_disp = qf_a;
+    for( int ov = 0; ov < 2; ov++ )
+    {
+    if( ov )
+    {
+        if( !(cpu_new&X264_CPU_AVX2) || (cpu_ref&X264_CPU_AVX2) )
+            break;
+        qf_a.trellis_cabac_4x4 = x264_trellis_cabac_4x4_nodes_avx2;
+        qf_a.trellis_cabac_8x8 = x264_trellis_cabac_8x8_nodes_avx2;
+        qf_a.trellis_cabac_4x4_psy = x264_trellis_cabac_4x4_psy_nodes_avx2;
+        qf_a.trellis_cabac_8x8_psy = x264_trellis_cabac_8x8_psy_nodes_avx2;
+        qf_a.trellis_cabac_dc = x264_trellis_cabac_dc_nodes_avx2;
+        qf_a.trellis_cabac_chroma_422_dc = x264_trellis_cabac_chroma_422_dc_nodes_avx2;
+    }
     for( int v = 0; v < 7; v++ )
     {
         /* 4x4, 8x8, 4x4_psy, 8x8_psy, dc 4x4, dc 2x2, chroma 4:2:2 dc */
@@ -7108,10 +7123,10 @@ static int check_quant( int cpu_ref, int cpu_new )
                    v == 2 ? (void*)qf_ref.trellis_cabac_4x4_psy : v == 3 ? (void*)qf_ref.trellis_cabac_8x8_psy :
                    v <= 5 ? (void*)qf_ref.trellis_cabac_dc : (void*)qf_ref.trellis_cabac_chroma_422_dc;
         /* the sse2 versions are installed without any cpu flag: test them once, against the C */
-        if( !fa || (fa == fr && !((cpu_new&X264_CPU_SSE2) && !(cpu_ref&X264_CPU_SSE2))) )
+        if( !fa || (!ov && fa == fr && !((cpu_new&X264_CPU_SSE2) && !(cpu_ref&X264_CPU_SSE2))) )
             continue;
         used_asm = 1;
-        set_func_name( "%s", names[v] );
+        set_func_name( ov ? "%s_nodes" : "%s", names[v] );
         int num_coefs = v == 1 || v == 3 ? 64 : v == 5 ? 4 : v == 6 ? 8 : 16;
         int dc = v >= 4;
         int psy = v == 2 || v == 3;
@@ -7270,6 +7285,8 @@ static int check_quant( int cpu_ref, int cpu_new )
 #undef TRELLIS_ARGS_T
         }
     }
+    }
+    qf_a = qf_disp;
     report( "trellis :" );
 #endif
 
