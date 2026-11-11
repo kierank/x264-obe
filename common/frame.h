@@ -264,6 +264,8 @@ void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame,
 void          x264_frame_expand_border_lowres( x264_frame_t *frame );
 #define x264_frame_expand_border_lowres_rows x264_template(frame_expand_border_lowres_rows)
 void          x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 );
+#define x264_frame_expand_border_lowres0_rows x264_template(frame_expand_border_lowres0_rows)
+void          x264_frame_expand_border_lowres0_rows( x264_frame_t *frame, int y0, int y1 );
 #if HIGH_BIT_DEPTH
 #define x264_frame_expand_border_lowres8_rows x264_template(frame_expand_border_lowres8_rows)
 void          x264_frame_expand_border_lowres8_rows( x264_frame_t *frame, int y0, int y1 );

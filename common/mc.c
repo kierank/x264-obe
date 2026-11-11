@@ -457,6 +457,25 @@ static void frame_init_lowres8_rows( x264_t *h, x264_frame_t *frame, int y0, int
 }
 #endif
 
+/* rc.b_lookahead_fpel: lowres[0] alone on lowres rows [y0,y1) with its padding, after the
+ * source edge. frame_init_lowres_core a row at a time, its h/v/c rows in scratch rows: no
+ * lowres hpel plane is written. 0 if out of memory. */
+static int frame_init_lowres0_rows( x264_t *h, x264_frame_t *frame, int y0, int y1 )
+{
+    intptr_t i_stride = frame->i_stride[0];
+    intptr_t i_stride_lowres = frame->i_stride_lowres;
+    pixel *hvc = x264_malloc( 3 * i_stride_lowres * sizeof(pixel) );
+    if( !hvc )
+        return 0;
+    for( int y = y0; y < y1; y++ )
+        h->mc.frame_init_lowres_core( frame->plane[0] + 2*y*i_stride, frame->lowres[0] + y*i_stride_lowres,
+                                      hvc, hvc + i_stride_lowres, hvc + 2*i_stride_lowres,
+                                      i_stride, i_stride_lowres, frame->i_width_lowres, 1 );
+    x264_free( hvc );
+    x264_frame_expand_border_lowres0_rows( frame, y0, y1 );
+    return 1;
+}
+
 void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
 {
     pixel *src = frame->plane[0];
@@ -473,6 +492,7 @@ void x264_frame_init_lowres( x264_t *h, x264_frame_t *frame )
         frame_init_lowres8_rows( h, frame, 0, frame->i_lines_lowres );
     if( !lowres_deferred( h, frame ) )
 #endif
+    if( !h->param.rc.b_lookahead_fpel || !frame_init_lowres0_rows( h, frame, 0, frame->i_lines_lowres ) )
     {
         h->mc.frame_init_lowres_core( src, frame->lowres[0], frame->lowres[1], frame->lowres[2], frame->lowres[3],
                                       i_stride, frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres );
@@ -517,6 +537,8 @@ void x264_frame_init_lowres_pixel_rows( x264_t *h, x264_frame_t *frame, int mb_y
     int y1 = 8 * mb_y1;
     int offset = y0 * i_stride_lowres;
 
+    if( h->param.rc.b_lookahead_fpel && frame_init_lowres0_rows( h, frame, y0, y1 ) )
+        return;
     /* reads source rows 2*y0 to 2*y1 inclusive, so one row of the next band */
     h->mc.frame_init_lowres_core( frame->plane[0] + 2*y0*i_stride,
                                   frame->lowres[0] + offset, frame->lowres[1] + offset,

@@ -750,6 +750,13 @@ void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 )
                              PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
 }
 
+/* x264_frame_expand_border_lowres_rows on lowres[0] alone (rc.b_lookahead_fpel) */
+void x264_frame_expand_border_lowres0_rows( x264_frame_t *frame, int y0, int y1 )
+{
+    plane_expand_border( frame->lowres[0] + y0 * frame->i_stride_lowres, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                         PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+}
+
 #if HIGH_BIT_DEPTH
 /* x264_frame_expand_border_lowres_rows on lowres8[] */
 void x264_frame_expand_border_lowres8_rows( x264_frame_t *frame, int y0, int y1 )

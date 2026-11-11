@@ -60,6 +60,9 @@ static void x264_lowres_context_init( x264_t *h, x264_mb_analysis_t *a )
         h->mb.i_me_method = X264_ME_DIA;
         h->mb.i_subpel_refine = 2;
     }
+    /* fullpel: no lowres hpel planes (x264_slicetype_mb_cost) */
+    if( h->param.rc.b_lookahead_fpel )
+        h->mb.i_subpel_refine = 0;
     h->mb.b_chroma_me = 0;
 }
 
@@ -591,7 +594,7 @@ static NOINLINE void *x264_weight_cost_init_luma( x264_t *h, x264_weight_src_t *
     s->mvs = fenc->lowres_mvs[0][ref0_distance][0][0] != 0x7FFF ? fenc->lowres_mvs[0][ref0_distance] : NULL;
     s->fenc_luma = fenc->lowres[0];
     for( int i = 0; i < 4; i++ )
-        s->ref_luma[i] = ref->lowres[i];
+        s->ref_luma[i] = ref->lowres[h->param.rc.b_lookahead_fpel ? 0 : i];
     s->mc_luma = dst;
     s->stride_luma = fenc->i_stride_lowres;
     s->intra_cost = fenc->i_intra_cost;
@@ -1331,6 +1334,9 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
     m[0].weight = w;
     m[0].i_ref = 0;
     LOAD_HPELS_LUMA( m[0].p_fref, fref0->lowres );
+    /* rc.b_lookahead_fpel builds lowres[0] alone, and its mvs stay fullpel */
+    if( h->param.rc.b_lookahead_fpel )
+        m[0].p_fref[1] = m[0].p_fref[2] = m[0].p_fref[3] = m[0].p_fref[0];
     m[0].p_fref_w = m[0].p_fref[0];
     if( w[0].weightfn )
         LOAD_WPELS_LUMA( m[0].p_fref_w, fenc->weighted[0] );
@@ -1419,6 +1425,13 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
             }
 
             x264_me_search( h, &m[l], mvc, i_mvc );
+            if( h->param.rc.b_lookahead_fpel )
+            {
+                /* the fullpel search's cost in mbcmp, as refine_subpel's start point */
+                pixel *src = m[l].p_fref_w + (m[l].mv[0]>>2) + (m[l].mv[1]>>2) * m[l].i_stride[0];
+                m[l].cost = LOWRES_MBCMP( src, m[l].i_stride[0] )
+                          + m[l].p_cost_mv[m[l].mv[0] - m[l].mvp[0]] + m[l].p_cost_mv[m[l].mv[1] - m[l].mvp[1]];
+            }
             m[l].cost -= a->p_cost_mv[0]; // remove mvcost from skip mbs
             if( M32( m[l].mv ) )
                 m[l].cost += 5 * a->i_lambda;

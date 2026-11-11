@@ -1824,6 +1824,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
 #else
     h->param.rc.b_lookahead_8bit = 0;
 #endif
+    /* only lowres[0] is built and read: P lowres costs only */
+    h->param.rc.b_lookahead_fpel &= h->frames.b_have_lowres && !h->param.i_bframe && !h->param.rc.b_lookahead_8bit && !h->param.b_opencl;
 
     h->frames.i_last_idr =
     h->frames.i_last_keyframe = - h->param.i_keyint_max;

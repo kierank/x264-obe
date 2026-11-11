@@ -1424,6 +1424,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         s += sprintf( s, " rc_lookahead=%d", p->rc.i_lookahead );
     if( p->rc.b_lookahead_8bit )
         s += sprintf( s, " lookahead_8bit=1" );
+    if( p->rc.b_lookahead_fpel )
+        s += sprintf( s, " lookahead_fpel=1" );
 
     s += sprintf( s, " rc=%s mbtree=%d", p->rc.i_rc_method == X264_RC_ABR ?
                                ( p->rc.b_stat_read ? "2pass" : p->rc.i_vbv_max_bitrate == p->rc.i_bitrate ? "cbr" : "abr" )

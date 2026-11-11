@@ -425,6 +425,8 @@ typedef struct x264_param_t
         int         b_mb_tree;      /* Macroblock-tree ratecontrol. */
         int         i_lookahead;
         int         b_lookahead_8bit; /* high bit depth: lowres analysis on 8-bit copies (changes output) */
+        int         b_lookahead_fpel; /* no B-frames: lowres analysis at fullpel, without the lowres hpel planes
+                                       * (changes output; API only, default off) */
 
         /* 2pass */
         int         b_stat_write;   /* Enable stat writing in psz_stat_out */
