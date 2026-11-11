@@ -57,9 +57,6 @@ ALIGN 32
 mf_hex_xidx: dd 0,2,6,1, 6,2,6,2     ; hex2[1..6], lanes 6, 7 repeat 4, 5
 mf_hex_yidx: dd 4,1,1,4, 0,0,0,0
 mf_hex_rank: dd 2,3,4,5, 6,7,6,7
-mf_sq_xidx:  dd 4,4,2,6, 2,2,6,6     ; square1[1..4] | square1[5..8]
-mf_sq_yidx:  dd 2,6,4,4, 2,6,2,6
-mf_sq_rank:  dd 1,2,3,4, 5,6,7,8
 ; half hexagon of dir 0-5: hex2[dir..dir+2], the last repeated
 mf_hh_xidx:  dd 2,0,2,2, 0,2,6,6, 2,6,1,1, 6,1,6,6, 1,6,2,2, 6,2,0,0
 mf_hh_yidx:  dd 0,4,1,1, 4,1,1,1, 1,1,4,4, 1,4,0,0, 4,0,0,0, 0,0,4,4
@@ -1437,7 +1434,7 @@ cglobal %1, 1,15,0, ME_STACK
 ; .s1: eax = sad( rdi ); clobbers rdi, m0, m1, m4, m5
 ; .a1: eax = sad( avg( rdi, rsi ) ); clobbers rdi, rsi, m0-m2, m4, m5
 ; .wa1: eax = sad( mc_weight( avg( rdi, rsi ) ) ), from .chp only; as .a1
-; .x3 / .x4: xm0 = the sads of rdi, rsi, rdx(, rcx) (.x3: lane 3 = lane 2); clobbers the
+; .x3 (.x4 not built): xm0 = the sads of rdi, rsi, rdx(, rcx) (.x3: lane 3 = lane 2); clobbers the
 ;   pointers, m0-m2(, m3), m4, m5
 ; .cf: eax = cost of the fullpel mv rcx, rdx; clobbers rdi, rsi, as .s1
 ; .chp: eax = me.c's COST_MV_HPEL cost of the qpel mv ecx, edx; clobbers rcx, rdx, rsi, rdi,
@@ -1513,7 +1510,7 @@ cglobal %1, 1,15,0, ME_STACK
 
 %if %1 != 8 || %2 != 8
 %assign %%x 3
-%rep 2
+%rep 1 ; .x3 only; 2 also builds .x4
 .x%[%%x]_%1x%2:
   %assign %%k 0
   %rep %%n
@@ -1994,13 +1991,6 @@ cglobal %1, 1,15,0, ME_STACK
 .s%1x%2_hex_end:
     and           R14d, ~63
 
-%define MF_SQW 0
-%if %1 == 16
-%define MF_SQW 1
-%elif notcpuflag(avx512)
-%define MF_SQW 1
-%endif
-%if MF_SQW
     ; square refine in windows: rows r-1, r, r+1 at dx -1 | 1 and dx 0 at rows
     ; r-1 | r+1, against fenc row r (16 wide: memory, m8, m9 are free now; 8 wide: MF_SQ8)
     MF_PTR         rdi, R12, R13
@@ -2019,28 +2009,6 @@ cglobal %1, 1,15,0, ME_STACK
     paddd           m0, m6
     pslld           m0, 6
     paddd           m0, [mf_sq16_rank]
-%else
-    ; square refine: square1[1..4] | square1[5..8]
-    MF_PTR          R8, R12, R13
-    mov            rdi, R8
-    sub            rdi, R11
-    lea            rsi, [R8+R11]
-    lea            rdx, [R8-1]
-    lea            rcx, [R8+1]
-    call .x4_%1x%2
-    mova           xm7, xm0
-    lea            rdi, [R8-1]
-    sub            rdi, R11
-    lea            rsi, [R8+R11-1]
-    lea            rdx, [rdi+2]
-    lea            rcx, [R8+R11+1]
-    call .x4_%1x%2
-    vinserti128     m6, m7, xm0, 1
-    MF_COSTS        0, [mf_sq_xidx], [mf_sq_yidx]
-    paddd           m0, m6
-    pslld           m0, 6
-    paddd           m0, [mf_sq_rank]
-%endif
     vextracti128   xm1, m0, 1
     pminsd         xm0, xm1
     MF_MIN4        eax
