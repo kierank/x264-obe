@@ -1841,7 +1841,7 @@ CABAC bmi2
 ; = rd_transition_sb[idx] ^ bin, so a round is a merge-masked vpermi2b and an
 ; xor with bin ^ next bin. The idx of each round is kept for the entropy,
 ; which is summed once.
-%macro CABAC_RESIDUAL_RD_8x8 0
+%macro CABAC_RESIDUAL_RD_8x8 0-1 0 ; 1: rd2 (avx512icl, 8-bit), levels by RD8_LEVELS
     %define dct rsp
     %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb, ctx_sig
     %define cbm [rsp+64*SIZEOF_DCTCOEF]
@@ -1851,6 +1851,15 @@ CABAC bmi2
 %else
     %define rd8_mm 6
 %endif
+%if %1
+    cglobal cabac_block_residual_8x8_rd2_internal, 4,13,rd8_mm,-rd8_stack
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%else
 %ifdef PIC
     cglobal cabac_block_residual_8x8_rd_internal, 4,12,rd8_mm,-rd8_stack
     lea     r11, [$$]
@@ -1859,7 +1868,15 @@ CABAC bmi2
     cglobal cabac_block_residual_8x8_rd_internal, 4,11,rd8_mm,-rd8_stack
     %define GLOBAL
 %endif
+%endif
     ABS_NZMASK_8x8
+%if %1
+    vpbroadcastw m2, [pw_1]
+    vpcmpuw   k5, m0, m2, 6
+    vpcmpuw   k6, m1, m2, 6
+    kunpckdq  k5, k6, k5
+    kmovq    r12, k5                                          ; bit i = abs(l[i]) > 1
+%endif
 %if cpuflag(lzcnt)
     lzcnt     r6, r9
     xor      r6d, 63
@@ -1993,6 +2010,9 @@ CABAC bmi2
     jge .sig_loop
 .sig_end:
 %endif
+%if %1
+    RD8_LEVELS
+%else
     RD_TMP_REGS 4, 5, 3
     LOAD_DCTCOEF r1d
     COEFF_ABS_LEVEL_GT1 last, 1
@@ -2019,6 +2039,7 @@ CABAC bmi2
     COEFF_ABS_LEVEL_GT1 coeff, 0
     test      r9, r9
     jnz .coeff_loop
+%endif
 .end:
 %if cpuflag(avx512icl)
     mov       r1, sigm
@@ -2029,6 +2050,9 @@ CABAC bmi2
     mov       r3, cbm
     mov [r3+cb.bits_encoded], r0d
     RET
+%if %1
+    RD8_LEVELS_TAIL
+%endif
 %endmacro
 
 ; build-time A/B: avx2 rd 4x4 levels without a branch on abs > 1 (off:
@@ -3568,5 +3592,7 @@ CABAC_RESIDUAL_RD_4x4_AVX2
 CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 1
 INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_8x8_AVX2
+INIT_ZMM avx512icl
+CABAC_RESIDUAL_RD_8x8 1
 %endif
 %endif
