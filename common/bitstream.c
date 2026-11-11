@@ -130,6 +130,8 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
         {
             pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_avx2_bmi2;
 #if !HIGH_BIT_DEPTH
+            /* last inline for 4/15/16 coefs, no coeff_last call; laptop Zen 5 neutral (noise) */
+            pf->cabac_block_residual_internal = x264_cabac_block_residual_internal_il_avx2_bmi2;
             pf->cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx2_bmi2;
             pf->cabac_block_residual_422_dc_internal = x264_cabac_block_residual_422_dc_internal_avx2_bmi2;
             /* cabac_block_residual_8x8_rd_internal_avx2_bmi2 is not dispatched: neutral vs ssse3_lzcnt (laptop) */
