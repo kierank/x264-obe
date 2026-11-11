@@ -583,6 +583,42 @@ void x264_macroblock_thread_init( x264_t *h )
         h->mb.pic.p_fenc[2] = h->mb.pic.fenc_buf + 16*FENC_STRIDE + 8;
         h->mb.pic.p_fdec[2] = h->mb.pic.fdec_buf + 20*FDEC_STRIDE + 16;
     }
+
+    /* Ref pointers less the mb offset. Field mbs: ref j is field j&1 of frame
+     * ref j>>1, the opposite field one line from the current one. */
+    for( int v = 0; v <= 2*SLICE_MBAFF; v++ )
+    {
+        x264_fref_base_t *b = &h->fref_base[v];
+        int fld = v > 0;
+        for( int l = 0; l <= (h->sh.i_type == SLICE_TYPE_B); l++ )
+            for( int j = 0; j < (h->i_ref[l] << fld); j++ )
+            {
+                x264_frame_t *f = h->fref[l][j >> fld];
+                for( int i = 0; i < (CHROMA444 ? 3 : 2); i++ )
+                {
+                    int adj = (j & fld) ? (v == 1 ? 1 : -1) * h->fdec->i_stride[i] : 0;
+                    pixel *plane_src = fld ? f->plane_fld[i] : f->plane[i];
+                    if( CHROMA444 || !i )
+                    {
+                        pixel **filtered_src = fld ? f->filtered_fld[i] : f->filtered[i];
+                        b->p_fref[l][j][i*4] = plane_src + adj;
+                        for( int k = 1; k < 4; k++ )
+                            b->p_fref[l][j][i*4+k] = filtered_src[k] + adj;
+                    }
+                    else
+                    {
+                        b->p_fref[l][j][5] = plane_src + adj;
+                        b->p_fref[l][j][4] = f->plane[i] + adj;
+                    }
+                }
+                if( !l )
+                {
+                    /* both fields of a weighted frame: rows of its weighted plane */
+                    int adj = (j & fld) ? (v == 1 ? 1 : -1) * h->fdec->i_stride[0] : 0;
+                    b->p_fref_w[j] = h->sh.weight[j >> fld][0].weightfn ? h->fenc->weighted[j >> fld] + adj : b->p_fref[0][j][0];
+                }
+            }
+    }
 }
 
 void x264_prefetch_fenc( x264_t *h, x264_frame_t *fenc, int i_mb_x, int i_mb_y )
@@ -602,7 +638,7 @@ NOINLINE void x264_copy_column8( pixel *dst, pixel *src )
         dst[i*FDEC_STRIDE] = src[i*FDEC_STRIDE];
 }
 
-static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )
+static int ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )
 {
     int mb_interlaced = b_mbaff && MB_INTERLACED;
     int height = b_chroma ? 16 >> CHROMA_V_SHIFT : 16;
@@ -614,10 +650,6 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
     pixel *plane_fdec = &h->fdec->plane[i][i_pix_offset];
     int fdec_idx = b_mbaff ? (mb_interlaced ? (3 + (mb_y&1)) : (mb_y&1) ? 2 : 4) : !(mb_y&1);
     pixel *intra_fdec = &h->intra_border_backup[fdec_idx][i][mb_x*16];
-    int ref_pix_offset[2] = { i_pix_offset, i_pix_offset };
-    /* ref_pix_offset[0] references the current field and [1] the opposite field. */
-    if( mb_interlaced )
-        ref_pix_offset[1] += (1-2*(mb_y&1)) * i_stride;
     h->mb.pic.i_stride[i] = i_stride2;
     h->mb.pic.p_fenc_plane[i] = &h->fenc->plane[i][i_pix_offset];
     if( b_mbaff && h->mb.b_fenc_bot && mb_y >= h->mb.i_mb_height - 2 )
@@ -650,65 +682,32 @@ static void ALWAYS_INLINE x264_macroblock_load_pic_pointers( x264_t *h, int mb_x
             else
                 h->mb.pic.p_fdec[i][-1+j*FDEC_STRIDE] = plane_fdec[-1+j*i_stride2];
     }
-    pixel *plane_src, **filtered_src;
+    return i_pix_offset;
+}
+
+/* p_fref, p_fref_w: the slice's bases for this kind of mb plus the mb offsets */
+static void ALWAYS_INLINE x264_macroblock_load_fref( x264_t *h, int mb_y, int b_mbaff, int off_y, int off_c, int off_v )
+{
+    x264_fref_base_t *b = &h->fref_base[(b_mbaff && MB_INTERLACED) ? 1 + (mb_y&1) : 0];
+    for( int l = 0; l <= (h->sh.i_type == SLICE_TYPE_B); l++ )
+        for( int j = 0; j < h->mb.pic.i_fref[l]; j++ )
+        {
+            for( int k = 0; k < 4; k++ )
+                h->mb.pic.p_fref[l][j][k] = b->p_fref[l][j][k] + off_y;
+            if( CHROMA444 )
+                for( int k = 0; k < 4; k++ )
+                {
+                    h->mb.pic.p_fref[l][j][4+k] = b->p_fref[l][j][4+k] + off_c;
+                    h->mb.pic.p_fref[l][j][8+k] = b->p_fref[l][j][8+k] + off_v;
+                }
+            else
+            {
+                h->mb.pic.p_fref[l][j][4] = b->p_fref[l][j][4] + off_c;
+                h->mb.pic.p_fref[l][j][5] = b->p_fref[l][j][5] + off_c;
+            }
+        }
     for( int j = 0; j < h->mb.pic.i_fref[0]; j++ )
-    {
-        // Interpolate between pixels in same field.
-        if( mb_interlaced )
-        {
-            plane_src = h->fref[0][j>>1]->plane_fld[i];
-            filtered_src = h->fref[0][j>>1]->filtered_fld[i];
-        }
-        else
-        {
-            plane_src = h->fref[0][j]->plane[i];
-            filtered_src = h->fref[0][j]->filtered[i];
-        }
-        h->mb.pic.p_fref[0][j][i*4] = plane_src + ref_pix_offset[j&1];
-
-        if( !b_chroma )
-        {
-            for( int k = 1; k < 4; k++ )
-                h->mb.pic.p_fref[0][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
-            if( !i )
-            {
-                /* both fields of a weighted frame: rows of its weighted plane */
-                if( h->sh.weight[j >> mb_interlaced][0].weightfn )
-                    h->mb.pic.p_fref_w[j] = &h->fenc->weighted[j >> mb_interlaced][ref_pix_offset[j&1]];
-                else
-                    h->mb.pic.p_fref_w[j] = h->mb.pic.p_fref[0][j][0];
-            }
-        }
-        else
-        {
-            h->mb.pic.p_fref[0][j][5] = plane_src + ref_pix_offset[j&1];
-            h->mb.pic.p_fref[0][j][4] = h->fref[0][j >> mb_interlaced]->plane[i] + ref_pix_offset[j&1];
-        }
-    }
-    if( h->sh.i_type == SLICE_TYPE_B )
-        for( int j = 0; j < h->mb.pic.i_fref[1]; j++ )
-        {
-            if( mb_interlaced )
-            {
-                plane_src = h->fref[1][j>>1]->plane_fld[i];
-                filtered_src = h->fref[1][j>>1]->filtered_fld[i];
-            }
-            else
-            {
-                plane_src = h->fref[1][j]->plane[i];
-                filtered_src = h->fref[1][j]->filtered[i];
-            }
-            h->mb.pic.p_fref[1][j][i*4] = plane_src + ref_pix_offset[j&1];
-
-            if( !b_chroma )
-                for( int k = 1; k < 4; k++ )
-                    h->mb.pic.p_fref[1][j][i*4+k] = filtered_src[k] + ref_pix_offset[j&1];
-            else
-            {
-                h->mb.pic.p_fref[1][j][5] = plane_src + ref_pix_offset[j&1];
-                h->mb.pic.p_fref[1][j][4] = h->fref[1][j >> mb_interlaced]->plane[i] + ref_pix_offset[j&1];
-            }
-        }
+        h->mb.pic.p_fref_w[j] = b->p_fref_w[j] + off_y;
 }
 
 static const x264_left_table_t left_indices[4] =
@@ -1050,19 +1049,20 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
         h->mb.pic.i_fref[1] = h->i_ref[1] << MB_INTERLACED;
     }
 
+    int off_y, off_c, off_v = 0;
     if( !b_mbaff )
     {
         x264_copy_column8( h->mb.pic.p_fdec[0]-1+ 4*FDEC_STRIDE, h->mb.pic.p_fdec[0]+15+ 4*FDEC_STRIDE );
         x264_copy_column8( h->mb.pic.p_fdec[0]-1+12*FDEC_STRIDE, h->mb.pic.p_fdec[0]+15+12*FDEC_STRIDE );
-        x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 0, 0, 0 );
+        off_y = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 0, 0, 0 );
         if( CHROMA444 )
         {
             x264_copy_column8( h->mb.pic.p_fdec[1]-1+ 4*FDEC_STRIDE, h->mb.pic.p_fdec[1]+15+ 4*FDEC_STRIDE );
             x264_copy_column8( h->mb.pic.p_fdec[1]-1+12*FDEC_STRIDE, h->mb.pic.p_fdec[1]+15+12*FDEC_STRIDE );
             x264_copy_column8( h->mb.pic.p_fdec[2]-1+ 4*FDEC_STRIDE, h->mb.pic.p_fdec[2]+15+ 4*FDEC_STRIDE );
             x264_copy_column8( h->mb.pic.p_fdec[2]-1+12*FDEC_STRIDE, h->mb.pic.p_fdec[2]+15+12*FDEC_STRIDE );
-            x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 0, 0 );
-            x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 2, 0, 0 );
+            off_c = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 0, 0 );
+            off_v = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 2, 0, 0 );
         }
         else
         {
@@ -1073,20 +1073,21 @@ static void ALWAYS_INLINE x264_macroblock_cache_load( x264_t *h, int mb_x, int m
                 x264_copy_column8( h->mb.pic.p_fdec[1]-1+12*FDEC_STRIDE, h->mb.pic.p_fdec[1]+ 7+12*FDEC_STRIDE );
                 x264_copy_column8( h->mb.pic.p_fdec[2]-1+12*FDEC_STRIDE, h->mb.pic.p_fdec[2]+ 7+12*FDEC_STRIDE );
             }
-            x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 1, 0 );
+            off_c = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 1, 0 );
         }
     }
     else
     {
-        x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 0, 0, 1 );
+        off_y = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 0, 0, 1 );
         if( CHROMA444 )
         {
-            x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 0, 1 );
-            x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 2, 0, 1 );
+            off_c = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 0, 1 );
+            off_v = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 2, 0, 1 );
         }
         else
-            x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 1, 1 );
+            off_c = x264_macroblock_load_pic_pointers( h, mb_x, mb_y, 1, 1, 1 );
     }
+    x264_macroblock_load_fref( h, mb_y, b_mbaff, off_y, off_c, off_v );
 
     if( h->fdec->integral )
     {

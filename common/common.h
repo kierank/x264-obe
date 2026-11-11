@@ -248,6 +248,16 @@ typedef struct x264_left_table_t
     uint8_t ref[4];
 } x264_left_table_t;
 
+/* mb.pic.p_fref and p_fref_w of one kind of mb, less the mb's pixel offset.
+ * pad: p_fref has the 32-byte phase in a 64-byte line of mb.pic.p_fref. */
+typedef struct
+{
+    pixel *pad[4];
+    pixel *p_fref[2][X264_REF_MAX*2][12];
+    pixel *p_fref_w[X264_REF_MAX*2];
+    pixel *pad2[4];
+} x264_fref_base_t;
+
 /* Current frame stats */
 typedef struct
 {
@@ -780,6 +790,8 @@ struct x264_t
     void *scratch_buffer2; /* if the first one's already in use */
     void *scratch_hpel; /* x264_frame_filter: the sliced filter pass of thread[0] runs beside the lookahead */
     pixel *intra_border_backup[5][3]; /* bottom pixels of the previous mb row, used for intra prediction after the framebuffer has been deblocked */
+    /* Built per slice by x264_macroblock_thread_init: [0] frame, [1] top field, [2] bottom field mbs. */
+    ALIGNED_64( x264_fref_base_t fref_base[3] );
     /* Deblock strength values are stored for each 4x4 partition. In MBAFF
      * there are four extra values that need to be stored, located in [4][i]. */
     uint8_t (*deblock_strength[2])[2][8][4];
