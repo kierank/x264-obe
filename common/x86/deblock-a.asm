@@ -4470,6 +4470,8 @@ cglobal deblock_h_chroma_mbaff, 5,7,8
 
 INIT_XMM sse2
 DEBLOCK_H_CHROMA_420_MBAFF
+INIT_XMM avx
+DEBLOCK_H_CHROMA_420_MBAFF
 %if ARCH_X86_64 == 0
 INIT_MMX mmx2
 DEBLOCK_H_CHROMA_420_MBAFF
@@ -4607,13 +4609,23 @@ DEBLOCK_CHROMA_INTRA
 ;-----------------------------------------------------------------------------
 ; void deblock_h_chroma_intra_mbaff( uint8_t *pix, intptr_t stride, int alpha, int beta )
 ;-----------------------------------------------------------------------------
-INIT_MMX mmx2
+%macro DEBLOCK_H_CHROMA_420_INTRA_MBAFF 0
 cglobal deblock_h_chroma_intra_mbaff, 4,6,8
     CHROMA_H_START
     TRANSPOSE4x4W_LOAD  PASS8ROWS(t5, r0, r1, t6)
     call chroma_intra_body
     TRANSPOSE4x2W_STORE PASS8ROWS(t5, r0, r1, t6, 2)
     RET
+%endmacro
+
+INIT_MMX mmx2
+DEBLOCK_H_CHROMA_420_INTRA_MBAFF
+; 4 rows of the mixed edge in the low qwords, the xmm intra body (avx: 3-operand
+; forms and pblendvb) instead of the mmx2 one; Copyright (C) 2026 Open Broadcast Systems Ltd
+INIT_XMM sse2
+DEBLOCK_H_CHROMA_420_INTRA_MBAFF
+INIT_XMM avx
+DEBLOCK_H_CHROMA_420_INTRA_MBAFF
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
