@@ -2263,6 +2263,19 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512;
         pixf->predictor_clip = x264_predictor_clip_avx512;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
+        /* rack01 A/B arm only, not for merging: the avx512icl point sets, sq_min 16x16 and dia_search.
+         * hex_search 8x8 stays avx2: me_search_fpel_avx512 calls the old avx512 register entry for any
+         * other pointer */
+        if( cpu&X264_CPU_AVX512ICL )
+        {
+            pixf->sad_sq_min[PIXEL_16x16] = x264_pixel_sad_sq_min_16x16_avx512icl;
+            pixf->sad_sq_min[PIXEL_8x8]   = x264_pixel_sad_sq_min_8x8_avx512icl;
+            pixf->sad_dia_min[PIXEL_8x8]  = x264_pixel_sad_dia_min_8x8_avx512icl;
+            pixf->sad_hex_min[PIXEL_8x8]  = x264_pixel_sad_hex_min_8x8_avx512icl;
+            pixf->sad_oct_min[PIXEL_8x8]  = x264_pixel_sad_oct_min_8x8_avx512icl;
+            pixf->sad_ring_min[PIXEL_8x8] = x264_pixel_sad_ring_min_8x8_avx512icl;
+            pixf->sad_dia_search[PIXEL_8x8] = x264_pixel_sad_dia_search_8x8_avx512icl;
+        }
 #if !defined(_WIN32)
         if( cpu&X264_CPU_BMI2 )
             pixf->me_search_fpel = x264_me_search_fpel_avx512;
