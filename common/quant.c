@@ -815,6 +815,10 @@ void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
             pf->coeff_last[DCT_LUMA_8x8] = x264_coeff_last64_avx2_lzcnt;
             pf->coeff_level_run[ DCT_LUMA_AC] = x264_coeff_level_run15_avx2_lzcnt;
             pf->coeff_level_run[DCT_LUMA_4x4] = x264_coeff_level_run16_avx2_lzcnt;
+#if ARCH_X86_64
+            /* 4:2:2 chroma dc; GPRs only, laptop Zen 5 latency 1.5x mmx2_lzcnt; AVX512 replaces it */
+            pf->coeff_last8 = x264_coeff_last8_avx2_lzcnt;
+#endif
         }
     }
     if( cpu&X264_CPU_AVX512 )
