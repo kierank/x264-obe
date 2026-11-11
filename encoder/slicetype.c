@@ -2058,6 +2058,33 @@ static void x264_macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, fl
         x264_macroblock_tree_finish( h, frames[b], average_duration, b == p1 ? b - p0 : 0 );
 }
 
+/* The frame costs of the minigop cur_nonb..last_nonb in x264_macroblock_tree's order, in
+ * row-interleaved groups: its own calls then find them cached. Bit-exact, as nothing it does
+ * between them (propagate, the propagate cost memsets) touches what a frame cost reads. */
+static void x264_macroblock_tree_costs( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, int cur_nonb, int last_nonb )
+{
+    x264_frame_cost_t c[X264_BFRAME_MAX+2];
+    int bframes = last_nonb - cur_nonb - 1;
+    int middle = h->param.i_bframe_pyramid && bframes > 1 ? (bframes + 1)/2 + cur_nonb : -1;
+    int n = 0;
+    c[n++] = (x264_frame_cost_t){ .p0 = cur_nonb, .p1 = last_nonb, .b = last_nonb };
+    if( middle >= 0 )
+        c[n++] = (x264_frame_cost_t){ .p0 = cur_nonb, .p1 = last_nonb, .b = middle };
+    for( int i = last_nonb - 1; i > cur_nonb; i-- )
+        if( i != middle )
+        {
+            int p0 = middle >= 0 && i > middle ? middle : cur_nonb;
+            int p1 = middle >= 0 && i < middle ? middle : last_nonb;
+            c[n++] = (x264_frame_cost_t){ .p0 = p0, .p1 = p1, .b = i };
+        }
+    for( int k = 0; k < n; )
+    {
+        int m = x264_frame_cost_start( h, a, frames, c+k, n-k );
+        for( int e = k + m; k < e; k++ )
+            x264_frame_cost_finish( h, frames, &c[k], 0 );
+    }
+}
+
 static void x264_macroblock_tree( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, int num_frames, int b_intra )
 {
     int idx = !b_intra;
@@ -2107,6 +2134,7 @@ static void x264_macroblock_tree( x264_t *h, x264_mb_analysis_t *a, x264_frame_t
             cur_nonb--;
         if( cur_nonb < idx )
             break;
+        x264_macroblock_tree_costs( h, a, frames, cur_nonb, last_nonb );
         x264_slicetype_frame_cost( h, a, frames, cur_nonb, last_nonb, last_nonb, 0 );
         memset( frames[cur_nonb]->i_propagate_cost, 0, h->mb.i_mb_count * sizeof(uint16_t) );
         bframes = last_nonb - cur_nonb - 1;
