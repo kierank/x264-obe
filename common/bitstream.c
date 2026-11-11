@@ -132,7 +132,7 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
 #if !HIGH_BIT_DEPTH
             pf->cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx2_bmi2;
             pf->cabac_block_residual_422_dc_internal = x264_cabac_block_residual_422_dc_internal_avx2_bmi2;
-            /* cabac_block_residual_8x8_rd_internal_avx2_bmi2 is not dispatched: neutral vs ssse3_lzcnt (laptop) */
+            pf->cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2;
 #endif
         }
     }
