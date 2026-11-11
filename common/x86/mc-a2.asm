@@ -2077,6 +2077,47 @@ cglobal plane_copy_deinterleave, 6,7
     jg .loopy
     RET
 
+%if HIGH_BIT_DEPTH == 0
+; 8-bit: 32 pixels are a zmm load, one vpermb gives u | v, two ymm stores; then the
+; 16 pixel step above, so the same multiple of 16 is written as there
+INIT_ZMM avx512icl
+cglobal plane_copy_deinterleave_zmm, 6,7
+    movu   m2, [pb_even_icl]        ; even | odd bytes, 64 in all
+    movu  ym3, [pb_deint_icl]
+    mov    r6d, r6m
+    add    r0,  r6
+    add    r2,  r6
+    lea    r4, [r4+r6*2]
+.loopy:
+    mov    r6d, r6m
+    neg    r6
+    add    r6, 32
+    jg .tail
+.loopx:
+    vpermb m0, m2, [r4+r6*2-64]
+    movu [r0+r6-32], ym0
+    vextracti64x4 [r2+r6-32], m0, 1
+    add    r6, 32
+    jle .loopx
+.tail:
+    sub    r6, 32
+    jge .next
+.tail16:
+    vpermb ym0, ym3, [r4+r6*2]
+    movu [r0+r6], xm0
+    vextracti32x4 [r2+r6], ym0, 1
+    add    r6, 16
+    jl .tail16
+.next:
+    add    r0, r1
+    add    r2, r3
+    add    r4, r5
+    dec dword r7m
+    jg .loopy
+    RET
+INIT_YMM avx512icl
+%endif
+
 %if HIGH_BIT_DEPTH
 cglobal store_interleave_chroma, 5,5
     FIX_STRIDES r1

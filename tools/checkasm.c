@@ -4786,14 +4786,16 @@ static int check_mc( int cpu_ref, int cpu_new )
         }
     }
 
-    /* undispatched 8-bit plane_copy_deinterleave: avx2 at the AVX2 level; pcd_extra: a second
-     * pass after the dispatched one */
+    /* undispatched 8-bit plane_copy_deinterleave: avx2 at the AVX2 level; zmm_avx512icl at
+     * AVX512ICL, in a second pass after the dispatched one */
     void (*pcd_disp)( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int, int ) = mc_a.plane_copy_deinterleave;
     void (*pcd_extra)( pixel *, intptr_t, pixel *, intptr_t, pixel *, intptr_t, int, int ) = NULL;
     const char *pcd_name = "plane_copy_deinterleave";
 #if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
         mc_a.plane_copy_deinterleave = x264_plane_copy_deinterleave_avx2;
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        pcd_extra = x264_plane_copy_deinterleave_zmm_avx512icl;
 #endif
     for( int pcd_pass = 0; pcd_pass < 1 + !!pcd_extra; pcd_pass++ )
     {

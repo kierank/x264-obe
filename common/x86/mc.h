@@ -34,5 +34,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf );
 #define x264_plane_copy_deinterleave_avx2 x264_template(plane_copy_deinterleave_avx2)
 void x264_plane_copy_deinterleave_avx2( pixel *dstu, intptr_t i_dstu, pixel *dstv, intptr_t i_dstv,
                                         pixel *src, intptr_t i_src, int w, int h );
+#define x264_plane_copy_deinterleave_zmm_avx512icl x264_template(plane_copy_deinterleave_zmm_avx512icl)
+void x264_plane_copy_deinterleave_zmm_avx512icl( pixel *dstu, intptr_t i_dstu, pixel *dstv, intptr_t i_dstv,
+                                                 pixel *src, intptr_t i_src, int w, int h );
 
 #endif
