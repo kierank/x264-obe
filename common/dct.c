@@ -670,6 +670,7 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->sub8x8_dct8      = x264_sub8x8_dct8_avx2;
         dctf->sub16x16_dct8    = x264_sub16x16_dct8_avx2;
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx2;
+        dctf->add8x8_idct8     = x264_add8x8_idct8_avx2; /* one block per call: intra 8x8 recon, inter 8x8 partial cbp */
 #endif
     }
 
@@ -694,6 +695,8 @@ void x264_dct_init( int cpu, x264_dct_function_t *dctf )
         dctf->dct2x4dc         = x264_dct2x4dc_avx512icl;
 #if ARCH_X86_64
         dctf->add16x16_idct8   = x264_add16x16_idct8_avx512icl;
+        /* Zen 4 / Zen 5 keep avx until rack01 judges the avx2 and avx512icl pairs kernels in situ */
+        dctf->add8x8_idct8     = x264_add8x8_idct8_avx;
 #endif
     }
 #endif //HAVE_MMX
