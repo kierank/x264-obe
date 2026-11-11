@@ -940,6 +940,8 @@ void x264_zigzag_init( int cpu, x264_zigzag_function_t *pf_progressive, x264_zig
     pf_progressive->intra_satd_x9_4x4_recon = NULL;
     pf_interlaced->intra_satd_x9_4x4_recon_notr  = NULL;
     pf_progressive->intra_satd_x9_4x4_recon_notr = NULL;
+    pf_interlaced->intra_satd_x9_4x4_mb     = NULL;
+    pf_progressive->intra_satd_x9_4x4_mb    = NULL;
 
 #if HIGH_BIT_DEPTH
 #if HAVE_MMX

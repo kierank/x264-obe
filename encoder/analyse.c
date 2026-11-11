@@ -1027,7 +1027,33 @@ static void x264_mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_
         int (*x9_recon_notr)( pixel *, pixel *, uint16_t *, dctcoef *, x264_quant4_recon_t *, int ) =
             x9_recon ? h->zigzagf.intra_satd_x9_4x4_recon_notr : NULL;
 
-        for( idx = 0;; idx++ )
+        /* the whole loop in one call when every block takes x9_recon */
+        if( x9_recon && h->zigzagf.intra_satd_x9_4x4_mb && !a->b_avoid_topright
+            && (h->mb.i_neighbour4[0] & (MB_TOP|MB_LEFT|MB_TOPLEFT)) == (MB_TOP|MB_LEFT|MB_TOPLEFT) )
+        {
+            static const uint8_t nb_left[4] = { 0, 2, 8, 10 }, nb_top[4] = { 0, 1, 4, 5 };
+            const int8_t *pm = h->mb.cache.intra4x4_pred_mode;
+            x264_intra4x4_mb_t s;
+            s.mode = a->i_predict4x4;
+            s.cost = i_cost;
+            s.thresh = i_satd_thresh;
+            s.topright = !!(h->mb.i_neighbour4[5] & MB_TOPRIGHT);
+            for( int i = 0; i < 4; i++ )
+            {
+                s.nb[i]   = x264_mb_pred_mode4x4_fix( pm[x264_scan8[nb_left[i]] - 1] );
+                s.nb[4+i] = x264_mb_pred_mode4x4_fix( pm[x264_scan8[nb_top[i]] - 8] );
+            }
+            idx = h->zigzagf.intra_satd_x9_4x4_mb( p_src, p_dst, cost_i4x4_mode, h->dct.luma4x4,
+                                                    &h->quant4_recon[a->i_qp], &s );
+            i_cost = s.cost;
+            for( int k = 0; k < idx; k++ )
+            {
+                h->mb.cache.intra4x4_pred_mode[x264_scan8[k]] = a->i_predict4x4[k];
+                h->mb.cache.non_zero_count[x264_scan8[k]] = s.nz[k];
+                h->mb.i_cbp_luma |= s.nz[k] << (k>>2);
+            }
+        }
+        else for( idx = 0;; idx++ )
         {
             pixel *p_src_by = p_src + block_idx_xy_fenc[idx];
             pixel *p_dst_by = p_dst + block_idx_xy_fdec[idx];

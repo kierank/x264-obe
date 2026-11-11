@@ -10063,17 +10063,22 @@ cglobal intra_satd_x9_4x4, 3,4,16, 9*16
 ; quant_4x4 and, if nonzero, scan_4x4 into level, dequant_4x4 and add4x4_idct.
 ; _notr: no topright, t4..t7 = t3 (fdec's are not read); both entries share the body.
 ; Returns cost | mode<<16 | nz<<24.
-%macro X9B_4x4_RECON 2 ; name, field
-cglobal intra_satd_x9_4x4_recon_%1_notr, 0,0
-    mov         r6d, 1                ; no topright
-    jmp mangle(private_prefix %+ _intra_satd_x9_4x4_recon_%1 %+ SUFFIX %+ .entry)
-cglobal intra_satd_x9_4x4_recon_%1, 0,0
-    xor         r6d, r6d
-.entry:
-    PROLOGUE 6,9,16, 9*16
-    %define pred_buf rsp
+%macro X9B_RET 1
+%if %1
+    ret
+%else
+    RET
+%endif
+%endmacro
+
+; %1: field; %2: 1 for the subroutine of intra_satd_x9_4x4_mb, which also stores the
+; prediction to [r9] and returns by ret
+%macro X9B_4x4_RECON_BODY 2
     X9B_4x4_SCORE 8, 7, 1, 6
     X9B_4x4_PRED 0, 7, 0              ; xm0: prediction rows 0-3
+%if %2
+    mova       [r9], xm0
+%endif
     movzx       r8d, ax
     cmp         r8d, r5d
     jg .zero
@@ -10095,7 +10100,7 @@ cglobal intra_satd_x9_4x4_recon_%1, 0,0
     psignw       m2, m1
     ptest        m2, m2
     jz .zero
-%if %2
+%if %1
     pshufb       m3, m2, [x9r_scan_field]
 %else
     vperm2i128   m4, m2, m2, 0x01
@@ -10129,7 +10134,7 @@ cglobal intra_satd_x9_4x4_recon_%1, 0,0
     pextrd [r1+1*FDEC_STRIDE], xm2, 1
     pextrd [r1+3*FDEC_STRIDE], xm2, 2
     pextrd [r1+2*FDEC_STRIDE], xm2, 3
-    RET
+    X9B_RET %2
 .dq_round:
     vpbroadcastd m5, [r4+100]
     movd        xm6, r8d
@@ -10149,11 +10154,225 @@ cglobal intra_satd_x9_4x4_recon_%1, 0,0
     pextrd [r1+1*FDEC_STRIDE], xm0, 1
     pextrd [r1+2*FDEC_STRIDE], xm0, 2
     pextrd [r1+3*FDEC_STRIDE], xm0, 3
-    RET
+    X9B_RET %2
+%endmacro
+
+%macro X9B_4x4_RECON 2 ; name, field
+cglobal intra_satd_x9_4x4_recon_%1_notr, 0,0
+    mov         r6d, 1                ; no topright
+    jmp mangle(private_prefix %+ _intra_satd_x9_4x4_recon_%1 %+ SUFFIX %+ .entry)
+cglobal intra_satd_x9_4x4_recon_%1, 0,0
+    xor         r6d, r6d
+.entry:
+    PROLOGUE 6,9,16, 9*16
+    %define pred_buf rsp
+    X9B_4x4_RECON_BODY %2, 0
 %endmacro
 
 X9B_4x4_RECON frame, 0
 X9B_4x4_RECON field, 1
+
+;-----------------------------------------------------------------------------
+; int intra_satd_x9_4x4_mb( uint8_t *fenc, uint8_t *fdec, uint16_t *bitcosts, int16_t level[16][16],
+;                           x264_quant4_recon_t *q, x264_intra4x4_mb_t *s )
+;-----------------------------------------------------------------------------
+; The i4x4 loop of x264_mb_analyse_intra over an MB whose blocks all have left,
+; top and topleft, as intra_satd_x9_4x4_recon per block, in dependency order:
+; a block needs its left, top, topleft and topright, so 2|4, 3|5, 6|8, 7|9,
+; 10|12 and 11|13 are independent pairs, run back to back, and the MB takes
+; 10 steps instead of 16. Every block but 15 is coded (the cost decides only
+; where the loop breaks); the break is found in z-order on the costs: its block
+; gets its prediction, the pair blocks after it get their fdec back, and the
+; levels, modes and nz of the blocks before it are committed. Returns the
+; break block (15 if none).
+
+; z-order block k: fenc / fdec offsets
+%macro X9M_XY 1
+    %assign x9m_bx ((%1)&1) | (((%1)>>1)&2)
+    %assign x9m_by (((%1)>>1)&1) | (((%1)>>2)&2)
+    %assign x9m_fenc 4*x9m_bx + 4*x9m_by*FENC_STRIDE
+    %assign x9m_fdec 4*x9m_bx + 4*x9m_by*FDEC_STRIDE
+%endmacro
+
+; block %1: predicted mode from ext_buf[%2], ext_buf[%3]; %4 b_notr (0, 1, or 5: from s);
+; %5 coded (else block 15, prediction only); %6: keep its fdec rows for a break before it
+%macro X9M_BLK 6
+    X9M_XY %1
+    movsx       r7d, byte [ext_buf+%2]
+    movsx       r8d, byte [ext_buf+%3]
+    cmp         r7d, r8d
+    cmovg       r7d, r8d
+    mov         r8d, 2
+    test        r7d, r7d
+    cmovs       r7d, r8d
+    neg          r7
+    lea          r2, [r12+r7*2]
+    lea          r0, [r10+x9m_fenc]
+    lea          r1, [r11+x9m_fdec]
+    lea          r3, [lvl_buf+32*%1]
+    lea          r9, [prd_buf+16*%1]
+%if %5
+    mov         r5d, 0x7fffffff
+%else
+    mov         r5d, -1
+%endif
+%if %4 == 5
+    mov         r6d, [var_notr5]
+%else
+    mov         r6d, %4
+%endif
+%if %6
+%assign x9i 0
+%rep 4
+    mov         r7d, [r1+x9i*FDEC_STRIDE]
+    mov [org_buf+16*%1+4*x9i], r7d
+%assign x9i x9i+1
+%endrep
+%endif
+    call .blk
+    mov [res_buf+4*%1], eax
+    shr         eax, 16
+    mov [ext_buf+8+%1], al
+%endmacro
+
+; the cost after block %1 in z-order; break there if over thresh
+%macro X9M_CHK 1
+    movzx       r7d, word [res_buf+4*%1]
+    add         r13d, r7d
+    cmp         r13d, [var_thresh]
+    jg .brk%1
+%endmacro
+
+; xm0 rows 0-3 of block %2 from %1
+%macro X9M_PUT 2
+    X9M_XY %2
+    mova        xm0, [%1]
+    movd   [r11+x9m_fdec+0*FDEC_STRIDE], xm0
+    pextrd [r11+x9m_fdec+1*FDEC_STRIDE], xm0, 1
+    pextrd [r11+x9m_fdec+2*FDEC_STRIDE], xm0, 2
+    pextrd [r11+x9m_fdec+3*FDEC_STRIDE], xm0, 3
+%endmacro
+
+; break at block %1: its prediction, the fdec of the pair blocks %2.. back
+%macro X9M_BRK 1-*
+.brk%1:
+    mov         r9d, %1
+    X9M_PUT prd_buf+16*%1, %1
+%rep %0-1
+    %rotate 1
+    X9M_PUT org_buf+16*%1, %1
+%endrep
+    jmp .commit
+%endmacro
+
+%macro X9M_FUNC 2 ; name, field
+cglobal intra_satd_x9_4x4_mb_%1, 6,14,16, 0x500
+    %define pred_buf   rsp
+    %define var_s      rsp+0x90
+    %define var_lvl    rsp+0x98
+    %define ext_buf    rsp+0xa0       ; [0..3] left, [4..7] top neighbour modes, [8+k] block k
+    %define var_thresh rsp+0xb8
+    %define var_notr5  rsp+0xbc
+    %define res_buf    rsp+0xc0       ; per block: cost | mode<<16 | nz<<24
+    %define prd_buf    rsp+0x100      ; per block: prediction rows 0-3
+    %define org_buf    rsp+0x200      ; pair blocks: fdec rows 0-3 before
+    %define lvl_buf    rsp+0x300      ; per block: level
+    mov    [var_s], r5
+    mov  [var_lvl], r3
+    mov         r10, r0
+    mov         r11, r1
+    mov         r12, r2
+    mov         r13d, [r5+8]
+    mov          r7d, [r5+12]
+    mov [var_thresh], r7d
+    mov          r7d, [r5+16]
+    xor          r7d, 1
+    mov  [var_notr5], r7d
+    mov           r7, [r5+20]
+    mov   [ext_buf], r7
+    ; block, left, top, notr, coded, kept
+    X9M_BLK  0,  0,  4, 0, 1, 0
+    X9M_CHK  0
+    X9M_BLK  1,  8,  5, 0, 1, 0
+    X9M_CHK  1
+    X9M_BLK  2,  1,  8, 0, 1, 0
+    X9M_BLK  4,  9,  6, 0, 1, 1
+    X9M_CHK  2
+    X9M_BLK  3, 10,  9, 1, 1, 0
+    X9M_BLK  5, 12,  7, 5, 1, 1
+    X9M_CHK  3
+    X9M_CHK  4
+    X9M_CHK  5
+    X9M_BLK  6, 11, 12, 0, 1, 0
+    X9M_BLK  8,  2, 10, 0, 1, 1
+    X9M_CHK  6
+    X9M_BLK  7, 14, 13, 1, 1, 0
+    X9M_BLK  9, 16, 11, 0, 1, 1
+    X9M_CHK  7
+    X9M_CHK  8
+    X9M_CHK  9
+    X9M_BLK 10,  3, 16, 0, 1, 0
+    X9M_BLK 12, 17, 14, 0, 1, 1
+    X9M_CHK 10
+    X9M_BLK 11, 18, 17, 1, 1, 0
+    X9M_BLK 13, 20, 15, 1, 1, 1
+    X9M_CHK 11
+    X9M_CHK 12
+    X9M_CHK 13
+    X9M_BLK 14, 19, 20, 0, 1, 0
+    X9M_CHK 14
+    X9M_BLK 15, 22, 21, 1, 0, 0
+    movzx       r7d, word [res_buf+4*15]
+    add         r13d, r7d
+    mov         r9d, 15
+.commit: ; r9d: break block, r13d: cost
+    mov          r5, [var_s]
+    mov      [r5+8], r13d
+    mov          r3, [var_lvl]
+    mov          r8, [r5]
+    xor         r7d, r7d
+.cloop:
+    movzx       eax, byte [res_buf+4*r7+2]
+    mov  [r8+4*r7], eax
+    cmp         r7d, r9d
+    je .cdone
+    movzx       eax, byte [res_buf+4*r7+3]
+    mov [r5+28+r7], al
+    test        eax, eax
+    jz .cnext
+    mov          r0, r7
+    shl          r0, 5
+    mova         m0, [lvl_buf+r0]
+    mova    [r3+r0], m0
+.cnext:
+    inc         r7d
+    jmp .cloop
+.cdone:
+    mov         eax, r9d
+    RET
+    X9M_BRK  0
+    X9M_BRK  1
+    X9M_BRK  2, 4
+    X9M_BRK  3, 4, 5
+    X9M_BRK  4, 5
+    X9M_BRK  5
+    X9M_BRK  6, 8
+    X9M_BRK  7, 8, 9
+    X9M_BRK  8, 9
+    X9M_BRK  9
+    X9M_BRK 10, 12
+    X9M_BRK 11, 12, 13
+    X9M_BRK 12, 13
+    X9M_BRK 13
+    X9M_BRK 14
+ALIGN 16
+.blk: ; r0 fenc, r1 fdec, r2 bitcosts, r3 level, r4 q, r5 limit, r6 b_notr, r9 prediction out
+    %define pred_buf rsp+gprsize
+    X9B_4x4_RECON_BODY %2, 1
+%endmacro
+
+X9M_FUNC frame, 0
+X9M_FUNC field, 1
 
 ;-----------------------------------------------------------------------------
 ; int intra_sa8d_x9_8x8( uint8_t *fenc, uint8_t *fdec, uint8_t edge[36], uint16_t *bitcosts, uint16_t *satds )
