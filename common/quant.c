@@ -502,8 +502,8 @@ int x264_dequant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], 
     return dequant_4x4x4_scan( dct, level, dequant_mf, i_qp, 1, 1 );
 }
 
-/* quant_8x8_scan without the quant: if nonzero, zigzag into level, decimate score, dequant in place.
- * Returns 0, or 1 | min(score, 9) << 4. */
+/* quant_8x8_scan without the quant and the decimate score (the trellis callers never use it):
+ * if nonzero, zigzag into level and dequant in place. Returns 0 or 1. */
 static ALWAYS_INLINE int dequant_8x8_scan( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp, int b_field )
 {
     int nz = 0;
@@ -513,9 +513,8 @@ static ALWAYS_INLINE int dequant_8x8_scan( dctcoef dct[64], dctcoef level[64], i
         return 0;
     for( int i = 0; i < 64; i++ )
         level[i] = dct[x264_zigzag_scan8[b_field][i]];
-    int score = x264_decimate_score_internal( level, 64 );
     dequant_8x8( dct, dequant_mf, i_qp );
-    return 1 | X264_MIN( score, 9 ) << 4;
+    return 1;
 }
 
 int x264_dequant_8x8_scan_frame( dctcoef dct[64], dctcoef level[64], int dequant_mf[6][64], int i_qp )

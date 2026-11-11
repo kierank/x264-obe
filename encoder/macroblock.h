@@ -117,11 +117,12 @@ static ALWAYS_INLINE int x264_quant_8x8_scan( x264_t *h, dctcoef dct[64], dctcoe
     {
         if( !x264_quant_8x8( h, dct, i_qp, ctx_block_cat, b_intra, p, idx ) )
             return 0;
-        /* CABAC: the trellis returned 0 or a nonzero block */
-        if( PARAM_CABAC && h->zigzagf.dequant_8x8_scan )
+        /* CABAC: the trellis returned 0 or a nonzero block; no decimate score (every CABAC trellis caller
+         * passes b_decimate 0) */
+        if( PARAM_CABAC && !b_decimate && h->zigzagf.dequant_8x8_scan )
         {
-            int nz = h->zigzagf.dequant_8x8_scan( dct, level, h->dequant8_mf[i_quant_cat], i_qp );
-            return b_decimate ? nz : 1 | 9 << 4;
+            h->zigzagf.dequant_8x8_scan( dct, level, h->dequant8_mf[i_quant_cat], i_qp );
+            return 1 | 9 << 4;
         }
         h->zigzagf.scan_8x8( level, dct );
         int score = b_decimate ? h->quantf.decimate_score64( level ) : 9;

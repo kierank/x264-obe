@@ -91,7 +91,7 @@ typedef struct
                             int dequant_mf[6][64], int i_qp );
     /* CABAC trellis, asm only (NULL: the separate calls). quant_*_scan_trellis: orig = dct, quant in place,
      * level = every block's levels in scan order; returns the nonzero levels in scan order (16 bits per 4x4).
-     * dequant_*_scan: quant_*_scan without the quant, for the trellis output. */
+     * dequant_*_scan: quant_*_scan without the quant, for the trellis output (8x8: no score, returns 0 or 1). */
     uint64_t (*quant_4x4x4_scan_trellis)( dctcoef dct[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16],
                                           dctcoef orig[4][16] );
     uint64_t (*quant_8x8_scan_trellis)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],

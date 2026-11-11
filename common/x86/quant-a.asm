@@ -4236,7 +4236,11 @@ cglobal quant_8x8_scan_%1, 6,9,10
     movu [r1+ 0], m2
     movu [r1+64], m3
     kunpckdq  k1, k2, k1
+%if %4 == 1
+    mov      eax, 1          ; the trellis callers never use the score
+%else
     QUANT8_SCAN_SCORE d
+%endif
 %if %4 == 0
     test      r4, r4
     jz .store
@@ -4374,7 +4378,8 @@ cglobal quant_8x8_scan_%1, 6,9,10
 .score_done:
 %endmacro
 
-; mode, levels 0-15 .. 48-63 in scan order: store; mode 2: rax = the nonzero levels, else as QUANT8_SCAN_LEVELS_AVX2
+; mode, levels 0-15 .. 48-63 in scan order: store; mode 2: rax = the nonzero levels, 1: eax = 1,
+; else as QUANT8_SCAN_LEVELS_AVX2
 %macro QUANT8_SCAN_OUT_AVX2 5
 %if %1 == 2
     movu [r1+ 0], %2
@@ -4393,6 +4398,13 @@ cglobal quant_8x8_scan_%1, 6,9,10
     shl       r2, 32
     or        r6, r2
     not       r6
+%elif %1 == 1
+    ; the trellis callers never use the score
+    movu [r1+ 0], %2
+    movu [r1+32], %3
+    movu [r1+64], %4
+    movu [r1+96], %5
+    mov      r6d, 1
 %else
     QUANT8_SCAN_LEVELS_AVX2 %2, %3, %4, %5
 %endif
@@ -4409,7 +4421,8 @@ cglobal quant_8x8_scan_%1, 6,9,10
 %endmacro
 
 ; levels A-D (m0-m3) = coefs 0-15 .. 48-63, ' = lanes swapped (m4-m7)
-; mode 0: quant_8x8_scan. 1: dequant_8x8_scan( dct, level, dequant_mf, i_qp ), the same without the quant.
+; mode 0: quant_8x8_scan. 1: dequant_8x8_scan( dct, level, dequant_mf, i_qp ), the same without the quant
+; and the decimate score (returns 0 or 1).
 ; 2: quant_8x8_scan_trellis( dct, level, mf, bias, orig ): orig = dct, quant in place, level in scan order;
 ; returns the nonzero levels in scan order.
 %macro QUANT_8x8_SCAN_AVX2 3-4 0 ; name, field, flat cqm, mode
