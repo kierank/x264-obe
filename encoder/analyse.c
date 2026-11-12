@@ -2176,6 +2176,32 @@ static void x264_mb_analyse_inter_direct( x264_t *h, x264_mb_analysis_t *a )
     }
 }
 
+/* mbcmp_bi4 of the bipred average of the unweighted predictions of the bw x bh block
+ * (bx,by) of the mb at mv0 in fref0 and mv1 in fref1 (stride: theirs). Fly references
+ * get band or window planes, each at its own stride: where they differ (one list in its
+ * band, the other in a window), mbcmp_bi of get_ref's two predictions, which is
+ * mbcmp_bi4 of the pairs (pavg, then the weighted average, as checkasm checks both) */
+static ALWAYS_INLINE int x264_analyse_bi4( x264_t *h, x264_bi_fenc_t *bi_fenc, int i_pixel, pixel **fref0, int mvx0, int mvy0,
+                                           pixel **fref1, int mvx1, int mvy1, intptr_t stride, int bx, int by, int i_weight )
+{
+    pixel *src0[2], *src1[2], *fly0[4], *fly1[4];
+    int bw = x264_pixel_size[i_pixel].w, bh = x264_pixel_size[i_pixel].h;
+    intptr_t stride0 = stride, stride1 = stride;
+    fref0 = x264_fly_ref_mv( h, fref0, &stride0, bx, by, mvx0, mvy0, bw, bh, fly0 );
+    fref1 = x264_fly_ref_mv( h, fref1, &stride1, bx, by, mvx1, mvy1, bw, bh, fly1 );
+    if( HPEL_FLY && stride0 != stride1 )
+    {
+        ALIGNED_ARRAY_32( pixel, pix,[2],[16*16] );
+        intptr_t ps0 = 16, ps1 = 16;
+        pixel *p0 = h->mc.get_ref( pix[0], &ps0, fref0, stride0, mvx0, mvy0, bw, bh, x264_weight_none );
+        pixel *p1 = h->mc.get_ref( pix[1], &ps1, fref1, stride1, mvx1, mvy1, bw, bh, x264_weight_none );
+        return h->pixf.mbcmp_bi[i_pixel]( bi_fenc, p0, ps0, p1, ps1, i_weight );
+    }
+    x264_mc_hpel_pair( src0, fref0, stride0, mvx0, mvy0 );
+    x264_mc_hpel_pair( src1, fref1, stride0, mvx1, mvy1 );
+    return h->pixf.mbcmp_bi4[i_pixel]( bi_fenc, src0[0], src0[1], src1[0], src1[1], stride0, i_weight );
+}
+
 static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
 {
     ALIGNED_ARRAY_N( pixel, pix0,[16*16] );
@@ -2270,18 +2296,11 @@ static void x264_mb_analyse_inter_b16x16( x264_t *h, x264_mb_analysis_t *a )
     x264_bi_fenc_t *bi_fenc = x264_me_bi_fenc( h, PIXEL_16x16, h->mb.pic.p_fenc[0] );
     int i_satd_bi;
     if( bi_fenc )
-    {
-        pixel *src0p[2], *src1p[2], *fly0[4], *fly1[4];
-        intptr_t fs0 = h->mb.pic.i_stride[0], fs1 = fs0;
-        pixel **fref0 = x264_fly_ref_mv( h, h->mb.pic.p_fref[0][a->l0.bi16x16.i_ref], &fs0, 0, 0,
-                                         a->l0.bi16x16.mv[0], a->l0.bi16x16.mv[1], 16, 16, fly0 );
-        pixel **fref1 = x264_fly_ref_mv( h, h->mb.pic.p_fref[1][a->l1.bi16x16.i_ref], &fs1, 0, 0,
-                                         a->l1.bi16x16.mv[0], a->l1.bi16x16.mv[1], 16, 16, fly1 );
-        x264_mc_hpel_pair( src0p, fref0, fs0, a->l0.bi16x16.mv[0], a->l0.bi16x16.mv[1] );
-        x264_mc_hpel_pair( src1p, fref1, fs0, a->l1.bi16x16.mv[0], a->l1.bi16x16.mv[1] );
-        i_satd_bi = h->pixf.mbcmp_bi4[PIXEL_16x16]( bi_fenc, src0p[0], src0p[1], src1p[0], src1p[1], fs0,
-                                                    h->mb.bipred_weight[a->l0.bi16x16.i_ref][a->l1.bi16x16.i_ref] );
-    }
+        i_satd_bi = x264_analyse_bi4( h, bi_fenc, PIXEL_16x16,
+                                      h->mb.pic.p_fref[0][a->l0.bi16x16.i_ref], a->l0.bi16x16.mv[0], a->l0.bi16x16.mv[1],
+                                      h->mb.pic.p_fref[1][a->l1.bi16x16.i_ref], a->l1.bi16x16.mv[0], a->l1.bi16x16.mv[1],
+                                      h->mb.pic.i_stride[0], 0, 0,
+                                      h->mb.bipred_weight[a->l0.bi16x16.i_ref][a->l1.bi16x16.i_ref] );
     else
     {
         src0 = X264_GET_REF( h, pix0, &stride0,
@@ -2493,15 +2512,8 @@ static inline void x264_mb_cache_mv_b8x16( x264_t *h, x264_mb_analysis_t *a, int
 static ALWAYS_INLINE int x264_analyse_bi_satd( x264_t *h, x264_bi_fenc_t *bi_fenc, int i_pixel,
                                                x264_me_t *m0, x264_me_t *m1 )
 {
-    pixel *src0[2], *src1[2], *fly0[4], *fly1[4];
-    int bw = x264_pixel_size[i_pixel].w, bh = x264_pixel_size[i_pixel].h;
-    intptr_t stride = m0->i_stride[0], stride1 = stride;
-    pixel **fref0 = x264_fly_ref_mv( h, m0->p_fref, &stride, FLY_PART_X( h, m0 ), FLY_PART_Y( h, m0 ), m0->mv[0], m0->mv[1], bw, bh, fly0 );
-    pixel **fref1 = x264_fly_ref_mv( h, m1->p_fref, &stride1, FLY_PART_X( h, m1 ), FLY_PART_Y( h, m1 ), m1->mv[0], m1->mv[1], bw, bh, fly1 );
-    x264_mc_hpel_pair( src0, fref0, stride, m0->mv[0], m0->mv[1] );
-    x264_mc_hpel_pair( src1, fref1, stride, m1->mv[0], m1->mv[1] );
-    return h->pixf.mbcmp_bi4[i_pixel]( bi_fenc, src0[0], src0[1], src1[0], src1[1], stride,
-                                       h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
+    return x264_analyse_bi4( h, bi_fenc, i_pixel, m0->p_fref, m0->mv[0], m0->mv[1], m1->p_fref, m1->mv[0], m1->mv[1],
+                             m0->i_stride[0], FLY_PART_X( h, m0 ), FLY_PART_Y( h, m0 ), h->mb.bipred_weight[m0->i_ref][m1->i_ref] );
 }
 
 static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t *a )
