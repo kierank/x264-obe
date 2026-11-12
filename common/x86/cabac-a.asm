@@ -989,6 +989,15 @@ rd8_sig9:
     dd 0x03dc044a, 0x0426046e, 0x0200045c, 0x0400046e, 0x04000465, 0x02000477, 0x0200045c, 0x02000477, 0x0000046e
     dd 0x0400045c, 0x04000477, 0x0200046e, 0x04260477, 0x03dc0453, 0x02000465, 0x0200046e, 0x02000465, 0x00000477
 
+; 4:2:2 chroma dc rd (avx2): context pairs, sig then last codes, descending (-1: not
+; coded); escapes: abs-14, (1-2*127)<<8 for the float exponent; the unary row cap
+rd422_pairs:        db 1, 0, 3, 2, 6, 5, 4, -1, 9, 8, 11, 10, 14, 13, 12, -1
+rd422_k:            dd 14, -64768
+rd422_w15:          times 8 dw 15
+; avx512icl: the unary row cap, 63<<8; code 2 (not coded)
+rd422_ki:           dd 15, 16128
+rd422_b2:           times 16 db 2
+
 SECTION .text
 
 cextern_common cabac_range_lps
@@ -3086,6 +3095,390 @@ CABAC bmi2
     jmp .sig_end
 %endmacro
 
+
+; 4:2:2 chroma dc rd, avx2 (ctx_block_cat = DCT_CHROMA_DC, 8 coefficients, sig and
+; last contexts 0,0,1,1,2,2,2). The contexts of the sig, last and level flags are
+; disjoint and each context's decisions keep the C order, so f8_bits (an integer
+; sum) and the states are those of the C.
+; - sig/last: per position p <= 6 a sig code (l[p] != 0 for p <= last, else 2:
+;   not coded) and a last code (p == last for l[p] != 0, else 2), from a
+;   suffix-or of the nonzero bytes. Each context codes its positions in
+;   descending order as pairs (3*c1+c2) on its state in a register, one rd8_sig9
+;   load per pair: contexts 0 and 1 one pair, context 2 two (6,5 then 4);
+;   contexts above last are skipped.
+; - levels: per coefficient for fewer than RD422_LEVELS_MIN nonzero coefs, else
+;   per level > 1 (as RD8_LEVELS) with the chroma dc gt1 contexts, capped at 8.
+;   The unary row min(abs,15)*128 of every coefficient comes from the vector
+;   abs(), and the escapes' bs_size_ue_big(abs-15) from the float exponent of
+;   abs-14, summed over the block: no branch on the level.
+%ifndef RD422_LEVELS_MIN
+    %define RD422_LEVELS_MIN 4
+%endif
+
+; one context of the sig/last pass: state at [%1+%2], pair code word %3, and for
+; context 2 a second pair %4 (its second slot not coded); sum in r10
+%macro RD422_CTX 3-4
+    movzx    r1d, byte [%1+%2]
+    lea      r1d, [r1+r1*8]
+    movzx    r2d, word [rd422c+%3*2]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+r1*4 GLOBAL]
+    add      r10, r1
+%if %0 == 4
+    movzx    r1d, r1w
+    movzx    r2d, word [rd422c+%4*2]
+    add      r1d, r2d
+    mov      r1d, [rd8_sig9+8+r1*4 GLOBAL]
+    add      r10, r1
+%endif
+    movzx    r1d, r1w
+    imul     r1d, r1d, 57
+    shr      r1d, 9                                           ; 9*state' / 9
+    mov [%1+%2], r1b
+%endmacro
+
+; unary suffix of a level: unary row in r%2 (clobbered), gt1 state in r%1
+; (level 1: row 0, the sign alone, state kept)
+%macro RD422_UNARY 2
+    add     r%2d, r%1d
+    movzx   r%1d, byte [cabac_transition_unary-128+r%2 GLOBAL]
+    movzx   r%2d, word [cabac_size_unary-256+r%2*2 GLOBAL]
+    add      r0d, r%2d
+%endmacro
+
+; the next level > 1 below F, descending: its run of level-1 coefs and its own
+; bin on level1 context 0 (r5, rd8_zero1), then its unary on gt1 context %1
+; (memory) or, %2 = 1, on the gt1 state in r6. Exit to %3 when there is none.
+%macro RD422_NEXT 3 ; gt1 context, state in r6, exit
+    test    r12d, r12d
+    jz %3
+    lzcnt    r2d, r12d
+    xor      r2d, 31                                          ; p
+    btr     r12d, r2d
+    lea      r4d, [r2+1]
+    shrx     r9d, r10d, r4d
+    popcnt   r9d, r9d                                         ; level-1 coefs above p
+    bzhi    r10d, r10d, r2d
+    shl      r9d, 7
+    add      r9d, r5d
+    movzx    r5d, byte [rd8_zero1_pow+r9 GLOBAL]
+    movzx    r9d, word [rd8_zero1_bits+r9*2 GLOBAL]
+    add      r0d, r9d
+    movzx    r1d, word [rd422u+r2*2]
+%if %2 == 0
+    movzx    r6d, byte [r8+%1]
+%endif
+    RD422_UNARY 6, 1
+%if %2 == 0
+    mov [r8+%1], r6b
+%endif
+%endmacro
+
+; one level of the per-coefficient pass: position in r6, level1 context %1 and
+; gt1 context %2 (constants, or registers other than r1, r2, r4, r5); out r2d = abs > 1
+%macro RD422_LEVEL 2
+    movzx    r1d, word [rd422u+r6*2]
+    xor      r4d, r4d
+    cmp      r1d, 128
+    seta     r4b
+    movzx    r5d, byte [r8+%1]
+    lea      r5d, [r5*2+r4]
+    mov      r2d, r4d
+    mov      r4d, [rd_sig_tab+r5*4 GLOBAL]
+    mov [r8+%1], r4b
+    shr      r4d, 16
+    add      r0d, r4d
+    movzx    r5d, byte [r8+%2]
+    RD422_UNARY 5, 1
+    mov [r8+%2], r5b
+%endmacro
+
+; the escape sum of the 8 abs-14 dwords in m6 (clobbered) to %1; m1, m7 clobbered, m3 = 0.
+; The float exponent is floor(log2) below 2^24: 4:2:2 levels are below 2^(7+bit depth)
+; and the C (bs_size_ue_big) only covers abs-15 < 65535.
+%macro RD422_ESC_SUM 1
+    cvtdq2ps  m7, m6
+    psrld     m7, 23
+    pslld     m7, 9
+    vpbroadcastd m1, [rd422_k+4]
+    paddd     m7, m1                                          ; (2*ilog2(abs-14)+1)<<8, exact below 2^24
+    pxor      m3, m3
+    pcmpgtd   m6, m3
+    pand      m7, m6
+    vextracti128 xm6, m7, 1
+    paddd    xm7, xm6
+    pshufd   xm6, xm7, q1032
+    paddd    xm7, xm6
+    pshufd   xm6, xm7, q2301
+    paddd    xm7, xm6
+    movd      %1, xm7
+%endmacro
+
+%macro CABAC_RESIDUAL_RD_422DC_AVX2 0
+    %define rd422c rsp
+    %define rd422u rsp+16
+    cglobal cabac_block_residual_422_dc_rd_internal, 4,13,8,-32
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%if HIGH_BIT_DEPTH
+    pabsd     m6, [r0]
+    vextracti128 xm1, m6, 1
+    packssdw xm0, xm6, xm1                                    ; abs, saturated
+%else
+    pabsw    xm0, [r0]
+    pmovzxwd  m6, xm0
+%endif
+; escapes: sum over abs >= 15 of bs_size_ue_big(abs-15)<<8 = (2*ilog2(abs-14)+1)<<8
+    vpbroadcastd m7, [rd422_k+0]
+    psubd     m6, m7                                          ; abs-14
+    RD422_ESC_SUM r4d
+; unary rows min(abs,15)*128
+    pminuw   xm1, xm0, [rd422_w15]
+    psllw    xm1, 7
+    mova [rd422u], xm1
+    packsswb xm0, xm0                                         ; abs bytes, saturated
+    mova     xm5, [pb_1]
+    pcmpeqb  xm2, xm0, xm5
+    pcmpeqb  xm1, xm0, xm3
+    pmovmskb r12d, xm2
+    pmovmskb  r9d, xm1
+    not       r9d
+    movzx     r9d, r9b                                        ; bit i = l[i] != 0
+    andn     r12d, r12d, r9d                                  ; bit i = abs(l[i]) > 1
+    lzcnt     r6d, r9d
+    xor       r6d, 31                                         ; r6 = last
+; codes: sig = p <= last ? nz : 2, last = nz ? p == last : 2
+    pminub   xm3, xm0, xm5                                    ; nz
+    psrlq    xm4, xm3, 8
+    por      xm4, xm3
+    psrlq    xm1, xm4, 16
+    por      xm4, xm1
+    psrlq    xm1, xm4, 32
+    por      xm4, xm1                                         ; p <= last
+    psubb    xm1, xm5, xm4
+    paddb    xm1, xm1
+    paddb    xm1, xm3                                         ; sig codes
+    psrlq    xm2, xm4, 8
+    psubb    xm4, xm2                                         ; p == last
+    psubb    xm2, xm5, xm3
+    paddb    xm2, xm2
+    paddb    xm2, xm4                                         ; last codes
+    punpcklqdq xm1, xm2
+    pshufb   xm1, [rd422_pairs]
+    pmaddubsw xm1, [rd8_sig_pair]                             ; 3*c1+c2
+    mova [rd422c], xm1
+    RD422_BODY
+%endmacro
+
+; the scalar passes of the 4:2:2 dc rd kernels: in r1d b_interlaced, r2 ctx_block_cat,
+; r3 cb, r4d the escape sum, r6 last, r9 nonzero mask, r12 levels > 1, the pair
+; codes at rd422c and the unary rows at rd422u
+%macro RD422_BODY 0
+    shl      r1d, 4                                           ; MB_INTERLACED*16
+    add      r1d, r2d
+    movzx    r5d, word [significant_coeff_flag_offset+r1*2 GLOBAL]    ; r5 = ctx_sig
+    movzx    r7d, word [last_coeff_flag_offset+r1*2 GLOBAL]           ; r7 = ctx_last
+    movzx    r8d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]        ; r8 = ctx_level
+    mov      r0d, [r3+cb.bits_encoded]                        ; r0 = cabac.f8_bits_encoded
+    add      r0d, r4d
+    add       r3, cb.state
+    add       r5, r3
+    add       r7, r3
+    add       r8, r3
+    xor     r10d, r10d
+    RD422_CTX r5, 0, 0
+    RD422_CTX r7, 0, 4
+    cmp      r6d, 2
+    jb .sig_end
+    RD422_CTX r5, 1, 1
+    RD422_CTX r7, 1, 5
+    cmp      r6d, 4
+    jb .sig_end
+    RD422_CTX r5, 2, 2, 3
+    RD422_CTX r7, 2, 6, 7
+.sig_end:
+    shr      r10, 17
+    add      r0d, r10d
+    popcnt   r4d, r9d                                         ; N
+%if RD422_LEVELS_MIN > 1
+    cmp      r4d, RD422_LEVELS_MIN
+    jb .levels_coef
+%endif
+    RD422_LEVELS
+.end:
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+%if RD422_LEVELS_MIN > 1
+; levels per coefficient, descending, no branch on the level; node_ctx in r7
+.levels_coef:
+    btr      r9d, r6d
+    RD422_LEVEL 1, 5
+    lea      r7d, [r2*2+r2+1]                                 ; node_ctx 1 or 4
+%rep RD422_LEVELS_MIN-2
+    test     r9d, r9d
+    jz .end
+    lzcnt    r6d, r9d
+    xor      r6d, 31
+    btr      r9d, r6d
+    movzx   r10d, byte [coeff_abs_level1_ctx+r7 GLOBAL]
+    movzx   r12d, byte [coeff_abs_levelgt1_ctx_chroma_dc+r7 GLOBAL]
+    RD422_LEVEL r10, r12
+    lea      r7d, [r7+r2*8]
+    movzx    r7d, byte [coeff_abs_level_transition+r7 GLOBAL]
+%endrep
+    jmp .end
+%endif
+%endmacro
+
+; levels per level > 1: in r0d f8_bits, r4d N, r8 ctx_level, r9 nonzero mask,
+; r12 levels > 1, the unary rows at rd422u; exits to .end
+%macro RD422_LEVELS 0
+; signs of the level-1 coefs (the unary sizes hold those of the others)
+    xor      r7d, r7d
+    popcnt   r1d, r12d
+    mov      r2d, r4d
+    sub      r2d, r1d
+    shl      r2d, 8
+    add      r0d, r2d
+    lzcnt    r1d, r12d
+    mov      r6d, 32
+    sub      r6d, r1d                                         ; F+1, 0 if no level > 1
+    bzhi    r10d, r9d, r6d                                    ; nonzero at F and below
+    popcnt   r2d, r10d
+    sub      r4d, r2d                                         ; nA, the level-1 coefs above F
+; phase A: one bin 0 on level1 contexts 1-3 if nA >= c, nA-3 of them on 4
+%assign %%c 1
+%rep 3
+    xor      r2d, r2d
+    cmp      r4d, %%c
+    setae    r2b
+    shl      r2d, 7
+    movzx    r1d, byte [r8+%%c]
+    add      r2d, r1d
+    movzx    r1d, byte [rd8_last_pow+r2 GLOBAL]
+    mov [r8+%%c], r1b
+    movzx    r1d, word [rd8_last_bits+r2*2 GLOBAL]
+    add      r0d, r1d
+%assign %%c %%c+1
+%endrep
+    lea      r2d, [r4-3]
+    test     r2d, r2d
+    cmovs    r2d, r7d
+    shl      r2d, 7
+    movzx    r1d, byte [r8+4]
+    add      r2d, r1d
+    movzx    r1d, byte [rd8_last_pow+r2 GLOBAL]
+    mov [r8+4], r1b
+    movzx    r1d, word [rd8_last_bits+r2*2 GLOBAL]
+    add      r0d, r1d
+    test    r12d, r12d
+    jz .end
+; F: bin 1 on level1 context min(nA,3)+1, its unary on gt1 context 5
+    mov      r2d, 3
+    cmp      r4d, r2d
+    cmovb    r2d, r4d
+    movzx    r1d, byte [r8+r2+1]
+    mov      r1d, [rd_sig_tab+4+r1*8 GLOBAL]
+    mov [r8+r2+1], r1b
+    shr      r1d, 16
+    add      r0d, r1d
+    dec      r6d                                              ; F
+    btr     r10d, r6d                                         ; nonzero below F
+    btr     r12d, r6d
+    movzx    r1d, word [rd422u+r6*2]
+    movzx    r6d, byte [r8+5]
+    RD422_UNARY 6, 1
+    mov [r8+5], r6b
+; below F: level1 context 0; gt1 contexts 6, 7, then 8
+    movzx    r5d, byte [r8]
+    RD422_NEXT 6, 0, .tail
+    RD422_NEXT 7, 0, .tail
+    movzx    r6d, byte [r8+8]
+.g8_loop:
+    RD422_NEXT 8, 1, .g8_tail
+    jmp .g8_loop
+.g8_tail:
+    mov [r8+8], r6b
+.tail:
+    popcnt   r2d, r10d
+    shl      r2d, 7
+    add      r2d, r5d
+    movzx    r5d, byte [rd8_last_pow+r2 GLOBAL]
+    movzx    r2d, word [rd8_last_bits+r2*2 GLOBAL]
+    add      r0d, r2d
+    mov [r8], r5b
+%endmacro
+
+; 4:2:2 chroma dc rd, avx512icl: the avx2 kernel's passes, with the masks from
+; vptestm/vpcmpu, the codes by mask blends and the escapes by vplzcntd
+%macro CABAC_RESIDUAL_RD_422DC_ICL2 0
+    %define rd422c rsp
+    %define rd422u rsp+16
+    cglobal cabac_block_residual_422_dc_rd2_internal, 4,13,8,-32
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%if HIGH_BIT_DEPTH
+    vpabsd    m6, [r0]
+    vptestmd  k1, m6, m6                                      ; nonzero
+    vpcmpud   k2, m6, [pd_1] {1to8}, 6                        ; abs > 1
+    vpminud   m1, m6, [rd422_ki+0] {1to8}
+    vpmovdw  xm1, m1
+%else
+    vpabsw   xm0, [r0]
+    vptestmw  k1, xm0, xm0
+    vpcmpuw   k2, xm0, [pw_1], 6
+    vpminuw  xm1, xm0, [rd422_w15]
+    vpmovzxwd m6, xm0
+%endif
+    vpsllw   xm1, xm1, 7
+    vmovdqa32 [rd422u], xm1                                   ; unary rows min(abs,15)*128
+; escapes: (2*ilog2(abs-14)+1)<<8 = 16128 - 512*lzcnt(abs-14) over abs >= 15
+    vpsubd    m6, m6, [rd422_k+0] {1to8}
+    vpxord   xm2, xm2, xm2
+    vpcmpgtd  k3, m6, m2
+    vplzcntd  m7, m6
+    vpslld    m7, m7, 9
+    vpbroadcastd m3, [rd422_ki+4]
+    vpsubd    m7 {k3}{z}, m3, m7
+    vextracti32x4 xm6, m7, 1
+    vpaddd   xm7, xm7, xm6
+    vpshufd  xm6, xm7, q1032
+    vpaddd   xm7, xm7, xm6
+    vpshufd  xm6, xm7, q2301
+    vpaddd   xm7, xm7, xm6
+    vmovd    r4d, xm7
+    kmovb    r9d, k1                                          ; bit i = l[i] != 0
+    kmovb   r12d, k2                                          ; bit i = abs(l[i]) > 1
+    lzcnt     r6d, r9d
+    xor       r6d, 31                                         ; r6 = last
+; codes: sig = p <= last ? nz : 2, last = nz ? p == last : 2
+    lea      r10d, [r6+1]
+    mov       r7d, 0xff
+    bzhi      r7d, r7d, r10d
+    kmovb     k3, r7d                                         ; p <= last
+    mov       r7d, 1
+    shlx      r7d, r7d, r6d
+    kmovb     k4, r7d                                         ; p == last
+    vmovdqu8 xm2, [rd422_b2]
+    vmovdqu8 xm3 {k1}{z}, [pb_1]
+    vmovdqu8 xm4 {k4}{z}, [pb_1]
+    vpblendmb xm1 {k3}, xm2, xm3                              ; sig codes
+    vpblendmb xm2 {k1}, xm2, xm4                              ; last codes
+    vpunpcklqdq xm1, xm1, xm2
+    vpshufb  xm1, xm1, [rd422_pairs]
+    vpmaddubsw xm1, xm1, [rd8_sig_pair]                       ; 3*c1+c2
+    vmovdqa32 [rd422c], xm1
+    RD422_BODY
+%endmacro
+
 %if ARCH_X86_64
 INIT_XMM sse2
 CABAC_RESIDUAL_RD_4x4
@@ -3806,4 +4199,9 @@ INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
 CABAC_RESIDUAL_RD_4x4_ICL 1
 %endif
+; 4:2:2 chroma dc rd, both depths
+INIT_YMM avx2,bmi2
+CABAC_RESIDUAL_RD_422DC_AVX2
+INIT_YMM avx512icl
+CABAC_RESIDUAL_RD_422DC_ICL2
 %endif
