@@ -2151,8 +2151,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_roundclip = x264_predictor_roundclip_avx2;
 #if !defined(_WIN32)
         pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
-        /* la2 split arm b: lowres_b_mbs alone */
-        pixf->lowres_b_mbs = x264_lowres_b_mbs_avx2;
+        /* la2 split arm c: intra_satd_lowres_tf alone */
+        pixf->intra_satd_lowres = x264_intra_satd_lowres_tf_avx2;
         /* Core 3 Raptor Cove in situ vs me_search_ref: -0.54..-1.76 % user time in 9/12 cells, rest within
          * noise (the pre-rewrite entry lost 0.6-1.3 % on this tree, 0.6-2.5 % before the ME package). Zen 4 keeps the avx512 entry set below */
         if( cpu&X264_CPU_BMI2 )
