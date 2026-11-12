@@ -90,9 +90,14 @@ typedef struct
     int  (*quant_8x8_scan)( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                             int dequant_mf[6][64], int i_qp );
     /* intra_satd_x9_4x4; if the cost is <= limit, the chosen mode is then coded: sub4x4_dct, quant_4x4,
-     * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24. */
+     * and if nonzero scan_4x4 into level, dequant_4x4 and add4x4_idct. Returns cost | mode << 16 | nz << 24.
+ */
     int  (*intra_satd_x9_4x4_recon)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
                                      x264_quant4_recon_t *q, int limit );
+    /* intra_satd_x9_4x4_recon of a block without the topright: t4..t7 = t3 in the kernel, fdec's are not
+     * read (8-bit; NULL: emulate them in fdec and call intra_satd_x9_4x4_recon) */
+    int  (*intra_satd_x9_4x4_recon_notr)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
+                                          x264_quant4_recon_t *q, int limit );
 
 } x264_zigzag_function_t;
 
