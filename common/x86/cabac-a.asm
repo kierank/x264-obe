@@ -1008,6 +1008,9 @@ cextern cabac_encode_ue_bypass
 cextern pb_1
 cextern pw_1
 cextern pd_1
+%if HIGH_BIT_DEPTH
+cextern deinterleave_shufd
+%endif
 
 %if ARCH_X86_64
     %define pointer resq
@@ -1305,6 +1308,15 @@ CABAC bmi2
 %endif
 %endmacro
 
+; abs() copy at dct, any index register
+%macro LOAD_DCTCOEF_AT 2 ; dst, index
+%if HIGH_BIT_DEPTH
+    mov      %1, [dct+%2*4]
+%else
+    movzx    %1, word [dct+%2*2]
+%endif
+%endmacro
+
 ;-----------------------------------------------------------------------------
 ; void x264_cabac_block_residual_rd_internal_sse2 ( dctcoef *l, int b_interlaced,
 ;                                                   int ctx_block_cat, x264_cabac_t *cb );
@@ -1513,7 +1525,23 @@ CABAC bmi2
 ; last context is used at most once per 4x4 block, and the sig, last and
 ; level context ranges are disjoint, so the decisions are independent and
 ; only f8_bits (an integer sum) depends on their order.
-%macro CABAC_RESIDUAL_RD_4x4_ICL 0
+; %1 = 1: rd2, the levels by RD_LEVELS (per level > 1) when the block has at
+; least RD4_ICL_LEVELS_MIN coefs of level 1, else the per-coefficient loop.
+%ifndef RD4_ICL_LEVELS_MIN
+    %define RD4_ICL_LEVELS_MIN 1
+%endif
+%macro CABAC_RESIDUAL_RD_4x4_ICL 0-1 0
+%if %1
+    %define cbm [rsp+16*SIZEOF_DCTCOEF]
+    %assign rd4i_stack 16*SIZEOF_DCTCOEF+8
+    cglobal cabac_block_residual_rd2_internal, 4,13,7,-rd4i_stack
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%else
 %ifdef PIC
     cglobal cabac_block_residual_rd_internal, 4,11,7,-16*SIZEOF_DCTCOEF
     lea     r10, [$$]
@@ -1521,6 +1549,7 @@ CABAC bmi2
 %else
     cglobal cabac_block_residual_rd_internal, 4,10,7,-16*SIZEOF_DCTCOEF
     %define GLOBAL
+%endif
 %endif
     RD_TMP_REGS 5, 7, 9                                       ; r5/r7 are free once the map is written
     %define dct rsp
@@ -1530,11 +1559,20 @@ CABAC bmi2
     vptestmd  k2, zm0, zm0
     vpabsd    zm0, zm0
     vmovdqu32 [rsp], zm0
+%if %1
+    vpcmpud   k5, zm0, [pd_1] {1to16}, 6
+%endif
 %else
     vmovdqu16 ym0 {k1}{z}, [r0]
     vptestmw  k2, ym0, ym0
     vpabsw    ym0, ym0
     vmovdqu16 [rsp], ym0
+%if %1
+    vpcmpuw   k5, ym0, [pw_1], 6
+%endif
+%endif
+%if %1
+    kmovd   r12d, k5                                          ; bit i = abs(l[i]) > 1
 %endif
     shl      r1d, 4                                           ; MB_INTERLACED*16
     add      r1d, r2d
@@ -1593,6 +1631,20 @@ CABAC bmi2
     vmovd    r1d, xm3
     add      r0d, r1d
 ; levels: last, then the other nonzero coefficients in descending order
+%if %1
+    andn     r1d, r12d, r4d
+    popcnt   r1d, r1d                                         ; level-1 coefs
+    cmp      r1d, RD4_ICL_LEVELS_MIN
+    jb .levels_coef
+    mov      r9d, r4d
+    mov      cbm, r3
+    RD_LEVELS
+    mov       r3, cbm
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+    RD8_LEVELS_TAIL
+.levels_coef:
+%endif
     LOAD_DCTCOEF r1d
     COEFF_ABS_LEVEL_GT1 last, 1
     btr      r4d, r6d
@@ -1841,7 +1893,7 @@ CABAC bmi2
 ; = rd_transition_sb[idx] ^ bin, so a round is a merge-masked vpermi2b and an
 ; xor with bin ^ next bin. The idx of each round is kept for the entropy,
 ; which is summed once.
-%macro CABAC_RESIDUAL_RD_8x8 0-1 0 ; 1: rd2 (avx512icl, 8-bit), levels by RD8_LEVELS
+%macro CABAC_RESIDUAL_RD_8x8 0-1 0 ; 1: rd2 (avx512icl), levels by RD8_LEVELS
     %define dct rsp
     %assign rd8_stack 64*SIZEOF_DCTCOEF+mmsize ; abs() copy, cb, ctx_sig
     %define cbm [rsp+64*SIZEOF_DCTCOEF]
@@ -1871,10 +1923,20 @@ CABAC bmi2
 %endif
     ABS_NZMASK_8x8
 %if %1
+%if HIGH_BIT_DEPTH
+    vpcmpud   k4, m0, [pd_1] {1to16}, 6
+    vpcmpud   k5, m1, [pd_1] {1to16}, 6
+    vpcmpud   k6, m2, [pd_1] {1to16}, 6
+    vpcmpud   k7, m3, [pd_1] {1to16}, 6
+    kunpckwd  k4, k5, k4
+    kunpckwd  k5, k7, k6
+    kunpckdq  k5, k5, k4
+%else
     vpbroadcastw m2, [pw_1]
     vpcmpuw   k5, m0, m2, 6
     vpcmpuw   k6, m1, m2, 6
     kunpckdq  k5, k6, k5
+%endif
     kmovq    r12, k5                                          ; bit i = abs(l[i]) > 1
 %endif
 %if cpuflag(lzcnt)
@@ -2133,7 +2195,27 @@ CABAC bmi2
 ; after the other: the sig flags of every i < last without a branch on l[i]
 ; (bt/adc gives 2*state+bin), then last flag and level of the nonzero ones,
 ; descending. f8_bits is an integer sum.
-%macro CABAC_RESIDUAL_RD_4x4_AVX2 0
+; %1 = 1 (10-bit): the last flags of the nonzero ones below last in one more
+; branchless pass (each its own context), then the levels by RD_LEVELS (per
+; level > 1, as the 8x8 kernels) when the block has at least
+; RD4_AVX2_LEVELS_MIN coefs of level 1, else the per-coefficient loop.
+%ifndef RD4_AVX2_LEVELS_MIN
+    %define RD4_AVX2_LEVELS_MIN 2
+%endif
+%macro CABAC_RESIDUAL_RD_4x4_AVX2 0-1 0
+    %define rd4_lv %1
+%if rd4_lv
+    %assign rd4_cbm (17*SIZEOF_DCTCOEF+7) & ~7
+    %assign rd4_stack (rd4_cbm+8+15) & ~15
+    %define cbm [rsp+rd4_cbm]
+    cglobal cabac_block_residual_rd_internal, 4,13,5,-rd4_stack
+%ifdef PIC
+    lea     r11, [$$]
+    %define GLOBAL +r11-$$
+%else
+    %define GLOBAL
+%endif
+%else
     %assign rd4_stack (17*SIZEOF_DCTCOEF+15) & ~15
 %ifdef PIC
     cglobal cabac_block_residual_rd_internal, 4,12,3,-rd4_stack
@@ -2143,6 +2225,7 @@ CABAC bmi2
     cglobal cabac_block_residual_rd_internal, 4,11,3,-rd4_stack
     %define GLOBAL
 %endif
+%endif
     RD_TMP_REGS 4, 5, 10
     %define dct rsp+SIZEOF_DCTCOEF
     %define rd_bl RD4_AVX2_BRANCHLESS
@@ -2150,6 +2233,28 @@ CABAC bmi2
     mov      r4, r0
     and     r4d, SIZEOF_DCTCOEF
     neg      r4
+%if HIGH_BIT_DEPTH
+; ymm (INIT_YMM): 8 dwords each, the zero test per dword
+    pabsd    m0, [r0+r4+0*mmsize]
+    pabsd    m1, [r0+r4+1*mmsize]
+    movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
+    movu [rsp+r4+SIZEOF_DCTCOEF+1*mmsize], m1
+%if rd4_lv
+    pcmpeqd  m3, m0, [pd_1]
+    pcmpeqd  m4, m1, [pd_1]
+    movmskps r12d, m3
+    movmskps r10d, m4
+    shl     r10d, 8
+    or      r12d, r10d                                        ; abs == 1, lanes of the aligned block
+%endif
+    pxor     m2, m2
+    pcmpeqd  m0, m2
+    pcmpeqd  m1, m2
+    movmskps r9d, m0
+    movmskps r6d, m1
+    shl      r6d, 8
+    or       r9d, r6d
+%else
     pabsw    m0, [r0+r4+0*mmsize]
     pabsw    m1, [r0+r4+1*mmsize]
     movu [rsp+r4+SIZEOF_DCTCOEF+0*mmsize], m0
@@ -2158,10 +2263,15 @@ CABAC bmi2
     pxor     m2, m2
     pcmpeqb  m0, m2
     pmovmskb r9d, m0
+%endif
     not      r9d
     and      r9d, [rd_nzmask_4x4+r2*8 GLOBAL]
     mov      r6d, [rd_nzmask_4x4+r2*8+4 GLOBAL]
     shrx     r9d, r9d, r6d                                    ; bit i = l[i] != 0
+%if rd4_lv
+    shrx    r12d, r12d, r6d
+    andn    r12d, r12d, r9d                                   ; bit i = abs(l[i]) > 1
+%endif
     lzcnt    r6d, r9d
     xor      r6d, 31                                          ; r6 = last
     shl      r1d, 4                                           ; MB_INTERLACED*16
@@ -2205,6 +2315,48 @@ CABAC bmi2
     shr     r10d, 16
     add      r0d, r10d
 .sig_end:
+%if rd4_lv
+%if RD4_AVX2_LEVELS_MIN > 0
+    andn     r1d, r12d, r9d
+    popcnt   r1d, r1d                                         ; level-1 coefs
+    cmp      r1d, RD4_AVX2_LEVELS_MIN
+    jb .levels_coef
+%endif
+; last flags (bin 0) of the nonzero coefs below last, each its own context
+    mov      r1d, r9d
+    btr      r1d, r6d
+    test     r1d, r1d
+    jz .last0_end
+    xor     r10d, r10d
+.last0_loop:
+    tzcnt    r2d, r1d
+    movzx    r4d, byte [r7+r2]
+    mov      r4d, [rd_sig_tab+r4*8 GLOBAL]
+    mov [r7+r2], r4b
+    add     r10d, r4d
+    blsr     r1d, r1d
+    jnz .last0_loop
+    shr     r10d, 16
+    add      r0d, r10d
+.last0_end:
+    mov      cbm, r3
+    RD_LEVELS
+    mov       r3, cbm
+.end:
+    mov [r3+cb.bits_encoded-cb.state], r0d
+    RET
+    RD8_LEVELS_TAIL
+%if RD4_AVX2_LEVELS_MIN > 0
+.levels_coef:
+%endif
+%endif
+    %assign rd4_coef 1
+%if rd4_lv
+%if RD4_AVX2_LEVELS_MIN == 0
+    %assign rd4_coef 0
+%endif
+%endif
+%if rd4_coef
 ; levels: last, then the nonzero coefficients below last with last flag 0
     LOAD_DCTCOEF r1d
     COEFF_ABS_LEVEL_AVX2 last, 1
@@ -2224,14 +2376,19 @@ CABAC bmi2
     COEFF_ABS_LEVEL_AVX2 coeff, 0
     test     r9d, r9d
     jnz .coeff_loop
+%if rd4_lv
+    jmp .end
+%else
 .end:
     mov [r3+cb.bits_encoded-cb.state], r0d
     RET
+%endif
     COEFF_ABS_LEVEL_AVX2_ESCAPE last, 1
     COEFF_ABS_LEVEL_AVX2_ESCAPE coeff, 0
+%endif
 %endmacro
 
-; rd 8x8 level pass helpers (8-bit). r0d = f8_bits.
+; rd 8x8 level pass helpers. r0d = f8_bits.
 ; n zeros (%3 = rd8_last) or n zeros then a one (%3 = rd8_zero1) on the state
 ; in r%1, n in r%2 (clobbered), any n; runs over 16 go out of line (.%5_long)
 %macro RD8_RUN 5 ; state, n, table, tmp, label
@@ -2324,7 +2481,7 @@ CABAC bmi2
     popcnt   r3, r3                                           ; level-1 coefs between p and the previous one
     bzhi     r10, r10, r2
     RD8_RUN  5, 3, rd8_zero1, 1, %2
-    movzx    r1d, word [dct+r2*2]
+    LOAD_DCTCOEF_AT r1d, r2
 %if %3 == 0
     movzx    r6d, byte [r8+%1]
 %endif
@@ -2364,6 +2521,12 @@ CABAC bmi2
     RD8_LAST0 7, r2d, 0xf000000
     RD8_LAST0 8, r2d, 0xf0000000
 .last_hi_end:
+    RD_LEVELS
+%endmacro
+
+; the levels of RD8_LEVELS, from the level-1 signs on: any block of up to 64
+; coefs (masks in r9/r12, contexts at r8, abs() copy at dct); r7 is not used
+%macro RD_LEVELS 0
 ; signs of the level-1 coefs (the unary sizes hold those of the others)
     popcnt    r3, r9                                          ; N
     popcnt    r4, r12
@@ -2401,7 +2564,7 @@ CABAC bmi2
     lea      r2d, [r4-1]                                      ; F
     btr      r10, r2                                          ; nonzero below F
     btr      r12, r2
-    movzx    r1d, word [dct+r2*2]
+    LOAD_DCTCOEF_AT r1d, r2
     movzx    r6d, byte [r8+5]
     RD8_GT1  6, f
     mov [r8+5], r6b
@@ -2745,7 +2908,8 @@ CABAC bmi2
 ; (bin, or 2 = not coded: above last or 63) is permuted to the slots by
 ; vpshufb, pairs give 3*c1+c2 by pmaddubsw, and each context runs its pairs on
 ; its state in a register: one rd8_sig9 load per pair. Then RD8_LEVELS. The
-; ymm abs() gives the nonzero mask and the mask of levels > 1.
+; ymm abs() gives the nonzero mask and the mask of levels > 1 (10-bit: the dwords
+; packed to saturated bytes, put back in order by one vpermd per 32).
 %ifndef RD8_SIG_PAIRS_MIN
     %define RD8_SIG_PAIRS_MIN 32
 %endif
@@ -2762,6 +2926,38 @@ CABAC bmi2
     cglobal cabac_block_residual_8x8_rd_internal, 4,13,8,-rd8_stack
     %define GLOBAL
 %endif
+%if HIGH_BIT_DEPTH
+    pabsd     m0, [r0+0*mmsize]
+    pabsd     m1, [r0+1*mmsize]
+    pabsd     m2, [r0+2*mmsize]
+    pabsd     m3, [r0+3*mmsize]
+    pabsd     m4, [r0+4*mmsize]
+    pabsd     m5, [r0+5*mmsize]
+    pabsd     m6, [r0+6*mmsize]
+    pabsd     m7, [r0+7*mmsize]
+    mova [rsp+0*mmsize], m0
+    mova [rsp+1*mmsize], m1
+    mova [rsp+2*mmsize], m2
+    mova [rsp+3*mmsize], m3
+    mova [rsp+4*mmsize], m4
+    mova [rsp+5*mmsize], m5
+    mova [rsp+6*mmsize], m6
+    mova [rsp+7*mmsize], m7
+    packssdw  m0, m1                                          ; 0-3 8-11 4-7 12-15, saturated
+    packssdw  m2, m3
+    packssdw  m4, m5
+    packssdw  m6, m7
+    packsswb  m0, m2                                          ; dwords of 0-3 8-11 16-19 24-27 4-7 ...
+    packsswb  m4, m6
+    movu      m1, [deinterleave_shufd]
+    vpermd    m0, m1, m0                                      ; 0-31
+    vpermd    m2, m1, m4                                      ; 32-63
+    pcmpeqb   m1, m0, [pb_1]
+    pcmpeqb   m3, m2, [pb_1]
+    pxor      m4, m4
+    pcmpeqb   m0, m4
+    pcmpeqb   m2, m4
+%else
     pabsw     m0, [r0+0*mmsize]
     pabsw     m1, [r0+1*mmsize]
     pabsw     m2, [r0+2*mmsize]
@@ -2781,6 +2977,7 @@ CABAC bmi2
     vpermq    m2, m2, q3120
     vpermq    m1, m1, q3120
     vpermq    m3, m3, q3120
+%endif
     pmovmskb r9d, m0
     pmovmskb r10d, m2
     shl      r10, 32
@@ -3373,8 +3570,11 @@ cglobal cabac_block_residual_internal, 4,15,0,-4*72
     xor     r1d, 63
     mov   lastm, r1d
 %elif %2
-; 4:2:2 dc (8-bit): last from the nonzero mask of the 8 coefs
+; 4:2:2 dc (avx2): last from the nonzero mask of the 8 coefs
     movu     m0, [r14]
+%if HIGH_BIT_DEPTH
+    packssdw m0, [r14+16]           ; saturated, 0 only for 0
+%endif
     pxor     m1, m1
     pcmpeqw  m0, m1
     pmovmskb r1d, m0
@@ -3594,5 +3794,16 @@ INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_8x8_AVX2
 INIT_ZMM avx512icl
 CABAC_RESIDUAL_RD_8x8 1
+%else
+; 10-bit, after the layout above: avx2 rd 4x4 and 8x8 in ymm (vzeroupper on
+; return), the 4:2:2 chroma dc writer; the avx512icl rd2 8x8 and 4x4
+INIT_YMM avx2,bmi2
+CABAC_RESIDUAL_RD_4x4_AVX2 1
+CABAC_RESIDUAL_RD_8x8_AVX2
+INIT_XMM avx2,bmi2
+CABAC_RESIDUAL_BMI2 coeff_last_avx2_lzcnt, 1
+INIT_ZMM avx512icl
+CABAC_RESIDUAL_RD_8x8 1
+CABAC_RESIDUAL_RD_4x4_ICL 1
 %endif
 %endif

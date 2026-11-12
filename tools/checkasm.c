@@ -8108,12 +8108,10 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
 void x264_cabac_block_residual_422_dc_rd_c( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l );
 #define x264_rdo_init x264_template(rdo_init)
 void x264_rdo_init( void );
-#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-#define x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2 x264_template(cabac_block_residual_8x8_rd_internal_avx2_bmi2)
-void x264_cabac_block_residual_8x8_rd_internal_avx2_bmi2( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
-#define x264_cabac_block_residual_8x8_rd2_internal_avx512icl x264_template(cabac_block_residual_8x8_rd2_internal_avx512icl)
-void x264_cabac_block_residual_8x8_rd2_internal_avx512icl( dctcoef *l, int b_interlaced, intptr_t ctx_block_cat, x264_cabac_t *cb );
+#if HAVE_MMX && ARCH_X86_64
+#include "common/x86/bitstream.h"
 #define x264_cabac_block_residual_8x8_rd2_c x264_cabac_block_residual_8x8_rd_c
+#define x264_cabac_block_residual_rd2_c x264_cabac_block_residual_rd_c
 #endif
 
 /* residual bench classes: nonzero coefs 1/16, 1/4, 7/8 with levels mostly 1-2;
@@ -8192,6 +8190,8 @@ static int check_cabac( int cpu_ref, int cpu_new )
                             coef += !(rnd&  63) * (rand()&0x0008);\
                             coef += !(rnd& 255) * (rand()&0x00F0);\
                             coef += !(rnd&1023) * (rand()&0x7F00);\
+                            /* 10-bit: levels past int16 (up to 65535, the C's bs_size_ue_big range) */\
+                            coef += HIGH_BIT_DEPTH && !(rnd&4095) ? rand()&0x8000 : 0;\
                             if( mode == 3 && coef && coef < 256 )\
                                 coef += rand()&31;\
                             nz |= dct[0][ac+k] = dct[1][ac+k] = coef * ((rand()&1) ? 1 : -1);\
@@ -8306,7 +8306,7 @@ name##fail:
 #define CATS_8x8 ((1<<DCT_LUMA_8x8) | (1<<DCT_CHROMAU_8x8) | (1<<DCT_CHROMAV_8x8))
     CABAC_RESIDUAL( cabac_block_residual_rd, ((1<<14)-1) & ~CATS_8x8, 1 )
     CABAC_RESIDUAL( cabac_block_residual_8x8_rd, CATS_8x8, 1 )
-#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+#if HAVE_MMX && ARCH_X86_64
     /* 8x8_rd2_avx512icl (levels per level > 1), not dispatched: tested and benched as
      * cabac_block_residual_8x8_rd2 at the AVX512ICL level, next to the dispatched icl */
     if( (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) )
@@ -8320,6 +8320,20 @@ name##fail:
 #undef bs_a
 #undef bs_ref
     }
+#if HIGH_BIT_DEPTH
+    /* rd2_avx512icl (4x4, levels per level > 1, 10-bit), not dispatched: as above */
+    if( (cpu_new & X264_CPU_AVX512ICL) && !(cpu_ref & X264_CPU_AVX512ICL) )
+    {
+        struct { void (*cabac_block_residual_rd2_internal)( dctcoef *, int, intptr_t, x264_cabac_t * ); }
+            bs_a2 = { x264_cabac_block_residual_rd2_internal_avx512icl },
+            bs_ref2 = { bs_ref.cabac_block_residual_rd_internal };
+#define bs_a bs_a2
+#define bs_ref bs_ref2
+        CABAC_RESIDUAL( cabac_block_residual_rd2, ((1<<14)-1) & ~CATS_8x8, 1 );
+#undef bs_a
+#undef bs_ref
+    }
+#endif
 #endif
 #undef CATS_8x8
     report( "cabac residual rd:" );
@@ -8347,6 +8361,8 @@ name##fail:
                 for( int k = 0; k < 16; k++ )
                 {
                     int v = (j&256) ? lv[rand()%12] : 1 + (rand()&3);
+                    if( HIGH_BIT_DEPTH && v == 0x7fff && (rand()&1) )
+                        v = 0xffff; /* 10-bit: past int16 */
                     dct[0][k] = dct[1][k] = k < 8 && (mask >> k & 1) ? v * ((rand()&1) ? 1 : -1) : 0;
                 }
                 h.mb.b_interlaced = i;
