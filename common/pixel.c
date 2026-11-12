@@ -1707,7 +1707,11 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         INIT4( sad_x4_min, _avx2 );
         pixf->fenc_eq[PIXEL_16x16] = x264_pixel_fenc_eq_16x16_avx2;
         pixf->zscreen_16x16 = x264_pixel_zscreen_16x16_avx2;
-        /* me_search_fpel: avx2 entry not dispatched: slower than C on Zen 4 lowlat (rack01 MESV2 MRA); AVX2-only CPUs untested */
+#if !defined(_WIN32)
+        /* the inline search (MH_SEARCH) for AVX2-only CPUs; AVX-512 machines keep the avx512 entry set below */
+        if( cpu&X264_CPU_BMI2 )
+            pixf->me_search_fpel = x264_me_search_fpel_avx2;
+#endif
 #endif
         pixf->vsad = x264_pixel_vsad_avx2;
         pixf->ssd_nv12_core = x264_pixel_ssd_nv12_core_avx2;
