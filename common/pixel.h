@@ -31,6 +31,8 @@
 // SSD assumes all args aligned
 // other cmp functions assume first arg aligned
 typedef struct x264_lowres_p x264_lowres_p_t;
+typedef struct x264_lowres_i x264_lowres_i_t;
+typedef struct x264_lowres_b x264_lowres_b_t;
 typedef struct x264_analyse_p x264_analyse_p_t;
 typedef struct x264_me_fpel x264_me_fpel_t;
 
@@ -342,6 +344,9 @@ typedef struct
     int (*intra_mbcmp_lowres)( void *fenc, pixel *src, intptr_t i_stride ); /* intra_satd_lowres where mbcmp is satd, else NULL */
     /* asm only, 8-bit only, NULL otherwise; reference x264_lowres_p_mbs_c (encoder/me.h) */
     void (*lowres_p_mbs)( x264_lowres_p_t *c );
+    /* asm only, 8-bit only, NULL otherwise; reference x264_lowres_i_mbs_c (encoder/lowres.h) */
+    void (*lowres_i_mbs)( x264_lowres_i_t *c );
+    void (*lowres_b_mbs)( x264_lowres_b_t *c );    /* reference x264_lowres_b_mbs_c */
     /* asm only, NULL otherwise; encoder/analyse.c's P partition analysis, see x264_analyse_p_t */
     int  (*analyse_p16x16)( x264_analyse_p_t *c );
     void (*analyse_p_sub16x16)( x264_analyse_p_t *c );

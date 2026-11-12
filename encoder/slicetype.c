@@ -29,6 +29,7 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#include "lowres.h"
 #include "weightp.h"
 
 // Indexed by pic_struct values
@@ -1529,6 +1530,165 @@ lowres_intra_mb:
 #undef TRY_BIDIR
 #undef LOWRES_MBCMP
 
+#if !HIGH_BIT_DEPTH
+/* common/x86/lowres-a.asm mirrors x264_lowres_i_t as struc lowres_i */
+typedef char x264_lowres_i_layout[offsetof( x264_lowres_i_t, fenc ) == 16 && offsetof( x264_lowres_i_t, corr_intra ) == 64 &&
+                                  offsetof( x264_lowres_i_t, stride ) == 72 && offsetof( x264_lowres_i_t, penalty ) == 80 &&
+                                  offsetof( x264_lowres_i_t, slice_start ) == 96 && offsetof( x264_lowres_i_t, end_y ) == 112 &&
+                                  sizeof(x264_lowres_i_t) == 120 ? 1 : -1];
+
+/* x264_slicetype_mb_cost with p0 == p1 (and x264_lowres8_slice_cost's), fenc_pre and
+ * intra_mbcmp_lowres set: i_bcost is COST_MAX + 4, so every MB takes the intra cost */
+void x264_lowres_i_mbs_c( x264_lowres_i_t *c )
+{
+    ALIGNED_ARRAY_64( pixel, fenc,[8*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( int16_t, fenc_pre,[64] );
+    const intptr_t stride = c->stride;
+    const int width = c->mb_width;
+    for( int mb_y = c->start_y; mb_y >= c->end_y; mb_y-- )
+    {
+        int row = NUM_INTS + mb_y - c->slice_start;
+        for( int mb_x = c->start_x; mb_x >= c->end_x; mb_x-- )
+        {
+            int mb_xy = mb_x + mb_y * width;
+            intptr_t pel = 8 * (mb_x + mb_y * stride);
+            int b_score = (mb_x > 0 && mb_x < width - 1 && mb_y > 0 && mb_y < c->mb_height - 1) ||
+                          width <= 2 || c->mb_height <= 2;
+            if( c->output_intra )
+            {
+                for( int i = 0; i < 8; i++ )
+                    memcpy( fenc + i*FENC_STRIDE, c->fenc + pel + i*stride, 8 );
+                c->fenc_pre( fenc_pre, fenc );
+                int icost = c->intra( fenc_pre, c->fenc + pel, stride ) + c->penalty;
+                if( c->corr_intra )
+                    icost = x264_lowres_cost_corr( icost, c->corr_intra, c->corr_intra_max, c->penalty );
+                c->intra_cost[mb_xy] = icost;
+                int icost_aq = icost;
+                if( c->inv_qscale )
+                    icost_aq = (icost_aq * c->inv_qscale[mb_xy] + 128) >> 8;
+                c->output_intra[row] += icost_aq;
+                if( b_score )
+                {
+                    c->output_intra[COST_EST] += icost;
+                    c->output_intra[COST_EST_AQ] += icost_aq;
+                }
+            }
+            int icost = c->intra_cost[mb_xy];
+            if( b_score )
+                c->output_inter[INTRA_MBS]++;
+            c->costs[mb_xy] = X264_MIN( icost, LOWRES_COST_MASK );
+        }
+    }
+}
+
+typedef char x264_lowres_b_layout[offsetof( x264_lowres_b_t, fenc ) == 32 && offsetof( x264_lowres_b_t, mvs ) == 104 &&
+                                  offsetof( x264_lowres_b_t, mvr ) == 136 && offsetof( x264_lowres_b_t, stride ) == 200 &&
+                                  offsetof( x264_lowres_b_t, lambda ) == 208 && offsetof( x264_lowres_b_t, start_x ) == 236 &&
+                                  offsetof( x264_lowres_b_t, corr_inter_max ) == 256 && sizeof(x264_lowres_b_t) == 264 ? 1 : -1];
+
+/* x264_slicetype_mb_cost with p0 < b < p1, do_search 0 for both lists, satd mbcmp, no
+ * weights (bi_fenc, as x264_lowres8_slice_cost's get_ref + avg + satd) */
+void x264_lowres_b_mbs_c( x264_lowres_b_t *c )
+{
+    ALIGNED_ARRAY_64( pixel, fenc,[8*FENC_STRIDE] );
+    ALIGNED_ARRAY_64( int16_t, fenc_pre,[64] );
+    const intptr_t stride = c->stride;
+    const int width = c->mb_width;
+    for( int mb_y = c->start_y; mb_y >= c->end_y; mb_y-- )
+    {
+        int ymin = X264_MAX( 4*(-8*mb_y - 12), -c->mv_range );
+        int ymax = X264_MIN( 4*(8*(c->mb_height - mb_y - 1) + 12), c->mv_range-1 );
+        int row = NUM_INTS + mb_y - c->slice_start;
+        for( int mb_x = c->start_x; mb_x >= c->end_x; mb_x-- )
+        {
+            int mb_xy = mb_x + mb_y * width;
+            intptr_t pel = 8 * (mb_x + mb_y * stride);
+            int b_score = (mb_x > 0 && mb_x < width - 1 && mb_y > 0 && mb_y < c->mb_height - 1) ||
+                          width <= 2 || c->mb_height <= 2;
+            int xmin = X264_MAX( 4*(-8*mb_x - 12), -c->mv_range );
+            int xmax = X264_MIN( 4*(8*(width - mb_x - 1) + 12), c->mv_range-1 );
+            for( int i = 0; i < 8; i++ )
+                memcpy( fenc + i*FENC_STRIDE, c->fenc + pel + i*stride, 8 );
+            c->fenc_pre( fenc_pre, fenc );
+            pixel *fref[2][4];
+            for( int i = 0; i < 4; i++ )
+            {
+                fref[0][i] = c->ref0[i] + pel;
+                fref[1][i] = c->ref1[i] + pel;
+            }
+            int bcost = COST_MAX, list_used = 0;
+            ALIGNED_ARRAY_8( int16_t, dmv,[2],[2] );
+            if( c->mvr )
+            {
+                int16_t *mvr = c->mvr[mb_xy];
+                dmv[0][0] = ( mvr[0] * c->dist_scale_factor + 128 ) >> 8;
+                dmv[0][1] = ( mvr[1] * c->dist_scale_factor + 128 ) >> 8;
+                dmv[1][0] = dmv[0][0] - mvr[0];
+                dmv[1][1] = dmv[0][1] - mvr[1];
+                for( int l = 0; l < 2; l++ )
+                {
+                    dmv[l][0] = x264_clip3( dmv[l][0], xmin, xmax );
+                    dmv[l][1] = x264_clip3( dmv[l][1], ymin, ymax );
+                }
+            }
+            else
+                M64( dmv ) = 0;
+#define TRY_BIDIR( mv0, mv1, penalty ) \
+            { \
+                pixel *src0[2], *src1[2]; \
+                x264_mc_hpel_pair( src0, fref[0], stride, (mv0)[0], (mv0)[1] ); \
+                x264_mc_hpel_pair( src1, fref[1], stride, (mv1)[0], (mv1)[1] ); \
+                int cost = c->bi4( fenc_pre, src0[0], src0[1], src1[0], src1[1], stride, c->bipred_weight ) \
+                         + (penalty) * c->lambda; \
+                COPY2_IF_LT( bcost, cost, list_used, 3 ); \
+            }
+            TRY_BIDIR( dmv[0], dmv[1], 0 );
+            if( M64( dmv ) )
+            {
+                int cost = c->bi( fenc_pre, fref[0][0], stride, fref[1][0], stride, c->bipred_weight );
+                COPY2_IF_LT( bcost, cost, list_used, 3 );
+            }
+            int16_t *mv[2] = { c->mvs[0][mb_xy], c->mvs[1][mb_xy] };
+            for( int l = 0; l < 2; l++ )
+                COPY2_IF_LT( bcost, c->mv_costs[l][mb_xy], list_used, l+1 );
+            if( M32( mv[0] ) || M32( mv[1] ) )
+                TRY_BIDIR( mv[0], mv[1], 5 );
+#undef TRY_BIDIR
+            if( c->output_intra )
+            {
+                int penalty = 5 * c->lambda + 4;
+                int icost = c->intra( fenc_pre, c->fenc + pel, stride ) + penalty;
+                if( c->corr_intra )
+                    icost = x264_lowres_cost_corr( icost, c->corr_intra, c->corr_intra_max, penalty );
+                c->intra_cost[mb_xy] = icost;
+                int icost_aq = icost;
+                if( c->inv_qscale )
+                    icost_aq = (icost_aq * c->inv_qscale[mb_xy] + 128) >> 8;
+                c->output_intra[row] += icost_aq;
+                if( b_score )
+                {
+                    c->output_intra[COST_EST] += icost;
+                    c->output_intra[COST_EST_AQ] += icost_aq;
+                }
+            }
+            bcost += 4;
+            if( c->corr_inter )
+                bcost = x264_lowres_cost_corr( bcost, c->corr_inter, c->corr_inter_max, 4 );
+            int bcost_aq = bcost;
+            if( c->inv_qscale )
+                bcost_aq = (bcost_aq * c->inv_qscale[mb_xy] + 128) >> 8;
+            c->output_inter[row] += bcost_aq;
+            if( b_score )
+            {
+                c->output_inter[COST_EST] += bcost;
+                c->output_inter[COST_EST_AQ] += bcost_aq;
+            }
+            c->costs[mb_xy] = X264_MIN( bcost, LOWRES_COST_MASK ) + (list_used << LOWRES_COST_SHIFT);
+        }
+    }
+}
+#endif
+
 #define NUM_MBS\
    (h->mb.i_mb_width > 2 && h->mb.i_mb_height > 2 ?\
    (h->mb.i_mb_width - 2) * (h->mb.i_mb_height - 2) :\
@@ -1606,6 +1766,82 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
         c.end_y = end_y;
         c.do_search = s->do_search[0];
         x264_lowres_p_run( h, &c );
+        return;
+    }
+    x264_lowres_b_t cb;
+    if( s->p0 < s->b && s->b < s->p1 && !s->w[0].weightfn &&
+        h->i_threadslice_end - h->i_threadslice_start <= LOWRES_B_ROWS &&
+        (!(s->do_search[0] || s->do_search[1]) || x264_lowres_p_init( h, &c )) &&
+        x264_lowres_b_init( h, &cb, s->a->i_lambda ) )
+    {
+        x264_frame_t *fenc = s->frames[s->b];
+        x264_frame_t *fref[2] = { s->frames[s->p0], s->frames[s->p1] };
+        int16_t (*mvs[2])[2] = { fenc->lowres_mvs[0][s->b-s->p0-1], fenc->lowres_mvs[1][s->p1-s->b-1] };
+        int *mv_costs[2] = { fenc->lowres_mv_costs[0][s->b-s->p0-1], fenc->lowres_mv_costs[1][s->p1-s->b-1] };
+        uint16_t *costs = fenc->lowres_costs[s->b-s->p0][s->p1-s->b];
+        if( s->do_search[0] || s->do_search[1] )
+        {
+            int out[NUM_INTS + LOWRES_B_ROWS];
+            c.fenc = fenc->lowres[0];
+            c.cost_mv = s->a->p_cost_mv;
+            c.intra_cost = fenc->i_intra_cost;
+            c.stride = fenc->i_stride_lowres;
+            c.lambda = s->a->i_lambda;
+            c.skip_thresh = 64;
+            c.slice_start = h->i_threadslice_start;
+            c.slice_end = h->i_threadslice_end;
+            c.start_x = start_x;
+            c.end_x = end_x;
+            c.start_y = start_y;
+            c.end_y = end_y;
+            for( int l = 0; l < 2; l++ )
+                if( s->do_search[l] )
+                    x264_lowres_b_search( h, &c, fref[l]->lowres, mvs[l], mv_costs[l], costs, out );
+        }
+        cb.fenc = fenc->lowres[0];
+        for( int i = 0; i < 4; i++ )
+        {
+            cb.ref0[i] = fref[0]->lowres[i];
+            cb.ref1[i] = fref[1]->lowres[i];
+        }
+        cb.mvs[0] = mvs[0];
+        cb.mvs[1] = mvs[1];
+        cb.mv_costs[0] = mv_costs[0];
+        cb.mv_costs[1] = mv_costs[1];
+        cb.mvr = fref[1]->lowres_mvs[0][s->p1-s->p0-1][0][0] != 0x7FFF ? fref[1]->lowres_mvs[0][s->p1-s->p0-1] : NULL;
+        cb.costs = costs;
+        cb.intra_cost = fenc->i_intra_cost;
+        cb.inv_qscale = h->param.rc.i_aq_mode ? fenc->i_inv_qscale_factor : NULL;
+        cb.output_inter = s->output_inter;
+        cb.output_intra = fenc->b_intra_calculated ? NULL : s->output_intra;
+        cb.stride = fenc->i_stride_lowres;
+        cb.dist_scale_factor = s->dist_scale_factor;
+        cb.bipred_weight = h->param.analyse.b_weighted_bipred ? 64 - (s->dist_scale_factor>>2) : 32;
+        cb.slice_start = h->i_threadslice_start;
+        cb.start_x = start_x;
+        cb.end_x = end_x;
+        cb.start_y = start_y;
+        cb.end_y = end_y;
+        x264_lowres_b_run( h, &cb );
+        return;
+    }
+    x264_lowres_i_t ci;
+    if( s->p0 == s->p1 && x264_lowres_i_init( h, &ci, s->a->i_lambda ) )
+    {
+        x264_frame_t *fenc = s->frames[s->b];
+        ci.fenc = fenc->lowres[0];
+        ci.intra_cost = fenc->i_intra_cost;
+        ci.costs = fenc->lowres_costs[0][0];
+        ci.inv_qscale = h->param.rc.i_aq_mode ? fenc->i_inv_qscale_factor : NULL;
+        ci.output_inter = s->output_inter;
+        ci.output_intra = fenc->b_intra_calculated ? NULL : s->output_intra;
+        ci.stride = fenc->i_stride_lowres;
+        ci.slice_start = h->i_threadslice_start;
+        ci.start_x = start_x;
+        ci.end_x = end_x;
+        ci.start_y = start_y;
+        ci.end_y = end_y;
+        x264_lowres_i_run( h, &ci );
         return;
     }
 #endif
