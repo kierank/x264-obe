@@ -223,9 +223,9 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
   was slower on Zen 5 (hence nomcl).
 - Decides: merge 6454133a for Intel, with or without the mc_luma switch.
 
-### 11. AC: hpelfly (wip/x264-nw-hpelfly, tip 401d882f)
-- AB=series: base 14953cf5 (HPEL_FLY default off), arm 401d882f (on at 8-bit). AB=swap: base 401d882f built with
-  -DHPELFLY_SWAP=0, arm 401d882f (the band-pointer swap of 33d409a1).
+### 11. AC: hpelfly (wip/x264-nw-hpelfly, tip e40733b2; rewritten 11-12, the B BI-cost stride fix e8bb50a5 before default-on)
+- AB=series: base e8bb50a5 (HPEL_FLY default off), arm e40733b2 (on at 8-bit). AB=swap: base e40733b2 built with
+  -DHPELFLY_SWAP=0, arm e40733b2 (the band-pointer swap of 33d409a1).
 - ```
   for p in build live md5; do AB=series bash hpelfly/hpelfly-ab.sh $p; done      # build window
   AB=series bash hpelfly/hpelfly-ab.sh time 9      # timing block

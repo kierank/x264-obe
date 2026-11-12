@@ -140,8 +140,8 @@ names it in "The verdict decides".
 | Job | Base | Arm |
 |---|---|---|
 | 10b-me-inline512 | 41f6b02e | 41f6b02e + 10-bit AVX512 me_search_fpel -> inline_avx512 |
-| hpelfly-ab / -mbm | 14953cf5 | 401d882f |
-| hpelfly-swap | 401d882f -DHPELFLY_SWAP=0 | 401d882f |
+| hpelfly-ab / -mbm | e8bb50a5 | e40733b2 |
+| hpelfly-swap | e40733b2 -DHPELFLY_SWAP=0 | e40733b2 |
 | 10b-cabac-rd2 | c1fa65f4 | 75947ac3 |
 | 10b-cabac-rd8 | 75947ac3 | 75947ac3 + 8x8 rd -> rd2_avx512icl |
 | rd8x8-rd2 | e3a52acd | f7162d21 |
