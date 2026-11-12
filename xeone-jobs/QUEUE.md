@@ -58,7 +58,7 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
 
 ### 2. AD: intrax9 (wip/x264-nw-intrax9, tip 76142791)
 - AB=tip: base 5cdbdd1c (tip~1), arm 76142791 (8x8 fdec edge filter in the kernel + i4x4 MB driver dispatched).
-  Splits if tip is mixed: AB=i2 (driver alone), AB=i4 (fdec alone); earlier items AB=i1 (42c3f783 -> ad2e4638),
+  Splits if tip is mixed: AB=i4 (MB driver alone: fdec pointer removed), AB=i2 (fdec alone: MB driver pointer removed); earlier items AB=i1 (42c3f783 -> ad2e4638),
   AB=i3 (f6e9a53f -> 219b043c).
 - ```
   for p in build live md5; do CORE=12 AB=tip bash intrax9/intrax9-ab.sh $p; done      # build window
