@@ -1,7 +1,7 @@
 # Xeon E x264-obe in-situ queue (Intel AVX2 timing judge)
 
 Machine: Xeon E-2478 (Raptor Cove: AVX2 + AVX-VNNI, no AVX-512, no SlowGather). x264 runs on cpu 12 or 14 only;
-builds run on cpus 12-15. Run order (lead, 11-11, after the 8-bit 4:2:2 profile): X1 (done), O, AD, M, J (oc, cl8, then il / pcd), 10b-me, 10b-cabac, K k2, Z, T, L, R, AC, U, K k1 last. The section numbers below are the original ranking.
+builds run on cpus 12-15. Run order (lead, 11-11, after the 8-bit 4:2:2 profile): X1 (done), O (done, blocked), O-split (1a), AD, M, J (oc, cl8, then il / pcd), 10b-me, 10b-cabac, K k2, Z, T, L, R, AC, U, K k1 last. The section numbers below are the original ranking.
 Expected effects are the package reports' laptop (Zen 5) numbers and estimates, not Intel measurements.
 
 ## How to run
@@ -55,6 +55,26 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
   (LOWLAT reaches intra_satd_lowres_tf through lowres_p_mbs).
 - Expected: lowlat -0.1 to -0.3 %, normal about -1 to -2 % (B path moved out of C slicetype_mb_cost; not measured).
 - Decides: merge of the AVX2 dispatch b81cae5e for Intel (0877c420 stays rack01's).
+- Result (11-11): fades-p normal -1.44 % 9/9, tile-chaos-p lowlat -0.34 %, normal -0.22 %, ffm-i normal 0.00 %,
+  **ffm-i lowlat +0.40 % 0/9 (insn -0.06 %)**: blocked; split below.
+
+### 1a. O-split: la2split (wip/x264-me2-la2-split, all arms on base 5db22450)
+- AB=a 5a47d2ef (lowres_i_mbs alone), AB=b d956198b (lowres_b_mbs alone), AB=c 4c000a1c (intra_satd_lowres_tf
+  alone), AB=fix 0c47ef53 (tip: b81cae5e's dispatch on the fixed kernels: V/DC constants in registers, tf without a
+  stack frame), AB=cfix (0c47ef53 with only the tf pointer dispatched, xe_patch), AB=fix1 9c531856 (v1, on request),
+  AB=lay (5db22450 -> b81cae5e, both -falign-functions=64: code-placement control, diagnostic only).
+- ```
+  for ab in c fix a b; do for p in build live md5 prof layout; do AB=$ab bash la2split/la2split-ab.sh $p; done; done   # build window
+  for ab in c fix a b; do AB=$ab bash la2split/la2split-ab.sh time 9; AB=$ab bash la2split/la2split-ab.sh report; done
+  # only if c or fix still lose ffm-i lowlat: the same for AB=cfix and AB=lay
+  ```
+- Cells: ffm-i LOWLAT (decides), tile-chaos-p LOWLAT, ffm-i NORMAL, fades-p NORMAL 60; md5 adds ffm422-i, fades-i 60,
+  ffm-i NORMAL@10, ffm422p10-i LOWLAT@10. `live` prints LA2_CNT (exact calls / MBs of each pointer, counter trees);
+  `prof` sums 3 perf records per arm of ffm-i lowlat (top symbols, shares, largest moves); `layout` prints
+  x264_8_pixel_init's size, the code shift of every function and the hot symbols' address mod 64.
+- Liveness per call (instructions:u, base -> arm, both kernels branch-free, per LA2_CNT intra call): c -9, cfix -12,
+  fix -12 plus the lowres_i_mbs / lowres_b_mbs part (sign only). ffm-i lowlat is expected to make ~236640 intra calls
+  (29 P frames x 8160 lowres MBs inside lowres_p_mbs) and almost no lowres_i_mbs / lowres_b_mbs work.
 
 ### 2. AD: intrax9 (wip/x264-nw-intrax9, tip 76142791)
 - AB=tip: base 5cdbdd1c (tip~1), arm 76142791 (8x8 fdec edge filter in the kernel + i4x4 MB driver dispatched).
