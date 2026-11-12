@@ -155,7 +155,7 @@ xe_md5() { # recon across the 4 arms; bitstream within one sha
         [ -f $CL ] || { echo "$CN: SKIP (no $CL)"; continue; }
         bad=""
         for a in base base2 arm arm2; do
-            taskset -c $CC $(xe_bin $a m) $CO --dump-yuv $W/out/rec_$a.yuv -o $W/out/bs_$a.264 $CL 2> $W/out/md5_$a.log || bad="$bad $a:rc$?"
+            taskset -c $CC $(xe_bin $a m) $CO --dump-yuv $W/out/rec_$a.yuv -o $W/out/bs_$a.264 $CL 2> $W/out/md5_${a}_$CN.log || bad="$bad $a:rc$?"
             [ -s $W/out/rec_$a.yuv ] && [ -s $W/out/bs_$a.264 ] || bad="$bad $a:empty"
         done
         nr=$(md5sum $W/out/rec_{base,base2,arm,arm2}.yuv | awk '{print $1}' | sort -u | wc -l)

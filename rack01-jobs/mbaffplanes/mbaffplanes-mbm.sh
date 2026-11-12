@@ -313,15 +313,15 @@ md5)
     mkdir -p $W/out; rc=0
     for x in $(cells_md5); do c=${x%%:*}; m=${x#*:}; r=""; b=""
         for a in $ARMS; do
-            enc $a $c $m md5_$a dump > /dev/null || { rc=1; continue 2; }
-            r="$r $(md5sum < $W/out/md5_$a.yuv | cut -c1-32)"; b="$b $(md5sum < $W/out/md5_$a.264 | cut -c1-32)"; rm -f $W/out/md5_$a.yuv
+            t=md5_${a}_${c}_$m; enc $a $c $m $t dump > /dev/null || { rc=1; continue 2; }   # per-cell tag: a failed cell keeps its log
+            r="$r $(md5sum < $W/out/$t.yuv | cut -c1-32)"; b="$b $(md5sum < $W/out/$t.264 | cut -c1-32)"; rm -f $W/out/$t.yuv
         done
         set -- $b; rd=$(echo $r | tr ' ' '\n' | sort -u | wc -l)
         bb=$(printf "%s\n%s\n" $1 $2 | sort -u | wc -l); ba=$(printf "%s\n%s\n" $3 $4 | sort -u | wc -l); bx=$(printf "%s\n" $b | sort -u | wc -l)
         v=PASS; [ $rd = 1 ] && [ $bb = 1 ] && [ $ba = 1 ] || { v=FAIL; rc=1; }
         line="$x: recon distinct across 4 arms $rd; bitstream distinct base/base2 $bb, arm/arm2 $ba (info: across arms $bx)"
         if [ "$NODUMP_GATE" = 1 ]; then b=""
-            for a in $ARMS; do enc $a $c $m nd_$a bs > /dev/null || { rc=1; continue 2; }; b="$b $(md5sum < $W/out/nd_$a.264 | cut -c1-32)"; done
+            for a in $ARMS; do t=nd_${a}_${c}_$m; enc $a $c $m $t bs > /dev/null || { rc=1; continue 2; }; b="$b $(md5sum < $W/out/$t.264 | cut -c1-32)"; done
             nd=$(printf "%s\n" $b | sort -u | wc -l); [ $nd = 1 ] || { v=FAIL; rc=1; }
             line="$line; no-dump bitstream distinct across 4 arms $nd (the gate: archive trees share one version string)"
         fi
