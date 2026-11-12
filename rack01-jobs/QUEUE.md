@@ -61,6 +61,14 @@ bash rack01-jobs/<pkg>/<job>.sh all                 # preflight build check live
   - both at 20 Mb/s (4:2:2: 50 Mb/s), VBV, fakevbr HRD, keyint 30, open GOP.
 - **MBM jobs** (`*-mbm`) NEED KIERAN ROOT. `bash <job>.sh setup-cmds` prints the resctrl mount, group and chown
   commands (never run by the script). Without them, `mbm` stops and prints them.
+- **Arm pairs and depths (`AB`, `BITDEPTH`):** dcrd-zen4, dbk422-zen4, dbkgap-zen4 and mvpredc-zen4 offer several arm
+  pairs and both depths in one .conf. Each run is its own job (`$JOB` = `<job>-<AB>-<depth>b`, with its own `$W` and
+  results directory), so the runs of one package do not share state. An unknown or unsupported pair stops at once.
+- **Package steps:** a .conf may define `pkgstep_<name>`, run as `bash <job>.sh <name>` or from its `ALLSTEPS`.
+  mvpredc-zen4 runs `twin` after `check`: test/x264-mvpred-c-twin a2abd958 (the old x264_mb_predict_mv_ref16x16
+  beside the new one, abort on any difference) on every md5 cell plus frame threads, sliced threads and medium
+  `--direct temporal --weightp 2`. Each must exit 0 and print "mismatches 0" (mbaff > 0 on the -i cells), or the job
+  stops before live / md5 / timing.
 - **Replaced scripts:** none of the older scripts is to be used on rack01.
   - The core3-jobs scripts for these packages and the scratchpad rack01-rd8x8.sh / rack01-pts512.sh used
     `/usr/bin/time`, gdb liveness, or `perf stat -- taskset` (perf unpinned).
@@ -122,6 +130,10 @@ names it in "The verdict decides".
 | 32 | a512only-cl8 | `bash rack01-jobs/a512only/a512only-cl8.sh all` | ~-0.05 % of 8-bit 4:2:2 (coeff_last8 avx2_lzcnt vs avx512); 4:2:0 is the null control | prune coeff_last8 avx512 on Zen 4; ZEN5 on a verdict against AVX-512: PRUNE job (the arm drops avx512): if the prune WINS, zen5/x264-a512only-cl8-avx512 = 86666108 (the base, coeff_last8_avx512 dispatched); otherwise nothing is parked |
 | 33 | a512only-zmm | `bash rack01-jobs/a512only/a512only-zmm.sh all` | 0: expected zero-call, since the no-mvs weightp pcd path is production-dead (wpdeint). The job should stop at `live` with NOT LIVE | confirm there is nothing to dispatch (leave zmm undispatched); ZEN5 on a verdict against AVX-512: zen5/x264-a512only-pcd-zmm = 86666108 + this job's patch_arm, committed as "zen5: dispatch plane_copy_deinterleave_zmm_avx512icl" (also on NOT LIVE) |
 | 34 | a512only-pcd | `bash rack01-jobs/a512only/a512only-pcd.sh all` | 0: expected zero-call, as for #33 | confirm there is nothing to prune; ZEN5 on a verdict against AVX-512: PRUNE job (the arm drops avx512icl): if the prune WINS, zen5/x264-a512only-pcd-icl = 86666108 (the base); NOT LIVE / loss / tie: nothing is parked |
+| 35 | dcrd-zen4 | `AB=avx2 bash rack01-jobs/dcrd/dcrd-zen4.sh all`, then `AB=icl2` and `AB=icl1`, each at `BITDEPTH=8` and `BITDEPTH=10` (6 runs). `AB=icl2-avx2` (head-to-head) only if avx2 and icl2 both win within 0.3 % | -0.1 to -0.4 % of 4:2:2 normal at both depths: Zen 4 still runs the C 4:2:2 dc rd; laptop per call C / avx2 / icl2 ~1.0x on sparse, 1.7x on dense, 2.1x on full blocks. Lowlat 0 (the null control) | which Zen 4/5 dispatch the 4:2:2 dc rd takes at 8 and 10-bit (arms vs base fe2db406 = C): the C (the tip as is), avx2_bmi2 (a02322ce), rd2_avx512icl (b14be256) or icl1 (14b473a4); ZEN5: the AVX-512 arms already are their zen5 branches (zen5/x264-422-dcrd-icl2 = b14be256, zen5/x264-422-dcrd-icl1 = 14b473a4, pushed): nothing new to create |
+| 36 | dbk422-zen4 (gate) | `AB=tip bash rack01-jobs/dbk422/dbk422-zen4.sh all`, then `AB=icl` (8-bit). Optional `AB=tip BITDEPTH=10` (every cell null, 6 rounds) | ~-0.05 % of 8-bit 4:2:2 (instructions:u -79 / -72 per h_chroma_422(_intra) call). It gates the wip/x264-422-deblock merge (the Intel AVX2 win, Xeon E) for AVX-512 machines | AB=tip: merge with Zen 4/5 on the avx2 pair, or keep them on avx (an AVX512ICL override before the merge); AB=icl: dispatch the 8-bit icl pair on Zen 4/5; ZEN5 on a verdict against AVX-512 (AB=icl): zen5/x264-422-deblock-icl = beec0fb5 + this job's patch_arm, committed as "zen5: dispatch deblock_h_chroma_422(_intra)_avx512icl (8-bit)"; AB=tip has no AVX-512 kernel: nothing is parked |
+| 37 | dbkgap-zen4 (gate) | `AB=tip bash rack01-jobs/dbkgap/dbkgap-zen4.sh all` at `BITDEPTH=8` and `BITDEPTH=10`, then `AB=icl BITDEPTH=10` | ~-0.05 % of interlaced (MBAFF mixed edges only: instructions:u -11 to -81 per call). It gates the wip/x264-deblock-gaps merge (the Intel win) for AVX-512 machines | AB=tip: merge with Zen 4/5 on the new pointers (8-bit 4:2:0 MBAFF chroma avx, 10-bit luma MBAFF avx2), or AVX512ICL overrides back per depth; AB=icl: dispatch the 10-bit icl luma MBAFF pair on Zen 4/5; ZEN5 on a verdict against AVX-512 (AB=icl): zen5/x264-deblock-gaps-icl = 42c8bdbd + this job's patch_arm, committed as "zen5: dispatch deblock_h_luma(_intra)_mbaff_avx512icl (10-bit)"; AB=tip has no AVX-512 kernel: nothing is parked |
+| 38 | mvpredc-zen4 | `AB=all bash rack01-jobs/mvpredc/mvpredc-zen4.sh all`; `AB=c1` / `AB=c2` split it | -0.1 to -0.3 % of interlaced: the 4-6 ref16x16 calls per MBAFF mb stop re-deriving the neighbour shifts, the collocated mvs and the temporal scales. Progressive ~0. The twin gate (step `twin`, a2abd958 "mismatches 0") runs before live / md5 / timing | merge wip/x264-mvpred-c (both commits, or c1 alone if c2 loses on the interlaced cells); C only: no zen5 branch |
 
 ## Shas (full shas are in each .conf)
 
@@ -153,3 +165,8 @@ names it in "The verdict decides".
 | pts512-bench | 3956bfc2 (bench only) | |
 | cacheload-avx512 | ab419b5c | ab419b5c + mb_fref_load avx512 |
 | a512only-* | 86666108 | 86666108 + oc / cl8 / zmm / pcd edit (bench: no arm) |
+| dcrd-zen4 AB=avx2 / icl2 / icl1 | fe2db406 | a02322ce / b14be256 / 14b473a4 |
+| dcrd-zen4 AB=icl2-avx2 | a02322ce | b14be256 |
+| dbk422-zen4 AB=tip / icl | baf5b648 / beec0fb5 | beec0fb5 / beec0fb5 + 8-bit icl h_chroma_422 pair at AVX512ICL |
+| dbkgap-zen4 AB=tip / icl | 9ef632af / 42c8bdbd | 42c8bdbd / 42c8bdbd + 10-bit icl luma MBAFF pair at AVX512ICL |
+| mvpredc-zen4 AB=all / c1 / c2 | 44754802 / 44754802 / 970be01c | c234b4b1 / 970be01c / c234b4b1 (twin: a2abd958; AB=c1 also 9f158ea7) |

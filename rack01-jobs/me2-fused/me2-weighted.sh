@@ -39,9 +39,11 @@ LIVE_ASSERT=${LIVE_ASSERT:-'A<B:me_search_ref A>B:me_search_fpel'}
 #   bash <job>.sh setup-cmds       prints the root commands for mbm (never runs them)
 #   bash <job>.sh clean            copies the step outputs to $RES, removes $W (trees, clips, outputs)
 #   bash <job>.sh patchcheck       archive + patch only, no build (dry check of the arm patch)
+#   bash <job>.sh <step>           a package step: pkgstep_<step> in the job's .conf (e.g. mvpredc's twin gate)
 # Env: CORE (required: one idle cpu, e.g. a node-3 cpu), CLIPS (default ~/x264-parity/clips), W, SRC (shared
 #      clone, kept), RES, ROUNDS (12), FRAMES (0 = whole clips), GENFRAMES (150: generated 4:2:2 clips),
-#      CLIPLIST / MODES / NULLCELLS / MD5X to override the job's cells.
+#      CLIPLIST / MODES / NULLCELLS / MD5X to override the job's cells. AB / BITDEPTH pick the arm pair / build depth
+#      where the .conf offers several ($JOB, $W and $RES then carry them).
 # Timing: taskset -c $CORE perf stat -x, -e cycles:u,instructions:u -- x264 ... (perf pinned with x264).
 # Rules: decoders stopped (SNMP) before timing, nothing else heavy on the box, --threads 1.
 # ===========================================================================================
@@ -397,6 +399,7 @@ all)
     done
     ;;
 *)
+    declare -F "pkgstep_${1:-}" > /dev/null && { "pkgstep_$1" "$@"; return; }
     sed -n '/^#   bash <job>.sh all/,/^# Env:/p' $0; return 1
     ;;
 esac
