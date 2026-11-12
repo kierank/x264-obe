@@ -214,7 +214,7 @@ endstruc
 %endmacro
 
 ; fenc_pre row pairs (k, k+4) and the per-MB constants of LI_SATD_FLAT: avx512icl in m16-m22;
-; avx2 fenc_pre on the stack, the constants in m8, m13, m14 (free until P and the edge filter)
+; avx2 fenc_pre on the stack, the constants in m8, m13, m14 (V and DC run first, before the edge filter)
 %macro LI_REGS 1 ; stack offset of the avx2 fenc_pre slots (4*32 bytes)
 %if cpuflag(avx512icl)
 %define LI_FPRE0 m16
@@ -345,15 +345,10 @@ endstruc
     palignr      m9, m11, m12, 1
     pshufb       m9, [li_shuf_ul]     ; U5..U15: l6 l7 l7 l6..l0 lt
 
-    ; v
+    ; v, dc first: their constants are dead after them (avx2: m8, m13, m14 free again)
     vpbroadcastq m4, [r1]
     pmaddubsw    m4, m15
     LI_SATD_FLAT m6
-    ; h
-    LI_SHUF8 h, m12, m12, m12, m12
-    LI_SATD      m7
-    HADD_ILV  w,  wd,  m6,  m6,  m7, m4 ; (v h) x4
-    ; dc
 %if cpuflag(avx512icl)
     vpblendmd   xm4 {k3}, xm10, xm12  ; t0..t7 l7..l0
     pmaddubsw   xm4, [pb_1]
@@ -373,7 +368,18 @@ endstruc
     vpbroadcastd m4, xm4
     pshufb       m4, [li_dc_shufb]
     pmaddubsw    m4, m15
-    LI_SATD_FLAT m7
+    LI_SATD_FLAT m8
+    ; edge E[i] = F2(U[i-1], U[i], U[i+1]), U = l7 l7 l6..l0 lt t0..t15 t15,
+    ; in the bytes of predict_8x8_filter's edge: E6..E15 in m14, E16..E31 in m13
+    pslldq       m0, m9, 1
+    palignr      m1, m10, m9, 1
+    PRED4x4_LOWPASS m14, m0, m1, m9, m2
+    pshufb       m0, m10, [li_shuf_t2]
+    PRED4x4_LOWPASS m13, m11, m0, m10, m1
+    ; h
+    LI_SHUF8 h, m12, m12, m12, m12
+    LI_SATD      m7
+    HADD_ILV  w,  wd,  m6,  m6,  m7, m4 ; (v h) x4
     ; p: clip((a + 16 + b*(x-3) + c*(y-3)) >> 5)
     pmaddubsw   xm0, xm11, [li_p_wh]
     pmaddubsw   xm1, xm9, [li_p_wv]
@@ -417,17 +423,9 @@ endstruc
     packuswb     m2, m2
     packuswb     m3, m3
     LI_PRE8
-    LI_SATD      m8
-    HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (dc p) x4
+    LI_SATD      m7
+    HADD_ILV  w,  wd,  m7,  m8,  m7, m4 ; (dc p) x4
     HADD_ILV  w,  dq,  m6,  m6,  m7, m4 ; (v h dc p) x2
-
-    ; edge E[i] = F2(U[i-1], U[i], U[i+1]), U = l7 l7 l6..l0 lt t0..t15 t15,
-    ; in the bytes of predict_8x8_filter's edge: E6..E15 in m14, E16..E31 in m13
-    pslldq       m0, m9, 1
-    palignr      m1, m10, m9, 1
-    PRED4x4_LOWPASS m14, m0, m1, m9, m2
-    pshufb       m0, m10, [li_shuf_t2]
-    PRED4x4_LOWPASS m13, m11, m0, m10, m1
 
     ; ddl, vl
     pshufb      m10, m13, [li_shuf_t2] ; E17..E32
