@@ -213,9 +213,9 @@ endstruc
 %endif
 %endmacro
 
-; fenc_pre row pairs (k, k+4) and the per-MB constants of LI_SATD_FLAT: avx2 on the
-; stack, avx512icl in m16-m22
-%macro LI_REGS 1 ; stack offset of the avx2 slots (7*32 bytes)
+; fenc_pre row pairs (k, k+4) and the per-MB constants of LI_SATD_FLAT: avx512icl in m16-m22;
+; avx2 fenc_pre on the stack, the constants in m8, m13, m14 (free until P and the edge filter)
+%macro LI_REGS 1 ; stack offset of the avx2 fenc_pre slots (4*32 bytes)
 %if cpuflag(avx512icl)
 %define LI_FPRE0 m16
 %define LI_FPRE1 m17
@@ -229,9 +229,9 @@ endstruc
 %xdefine LI_FPRE1 [rsp+%1+1*32]
 %xdefine LI_FPRE2 [rsp+%1+2*32]
 %xdefine LI_FPRE3 [rsp+%1+3*32]
-%xdefine LI_HF0 [rsp+%1+4*32]
-%xdefine LI_A2  [rsp+%1+5*32]
-%xdefine LI_S13 [rsp+%1+6*32]
+%define LI_HF0 m8
+%define LI_A2  m13
+%define LI_S13 m14
 %endif
 %endmacro
 
@@ -322,8 +322,7 @@ endstruc
 %macro LI_INTRA 0
     HADAMARD4_V  0, 1, 2, 3, 4
     mova      LI_HF0, m0
-    pabsw        m2, m2
-    mova       LI_A2, m2
+    pabsw      LI_A2, m2
     pabsw        m1, m1
     pabsw        m3, m3
     LI_HMAX      1, 3, 4, 5
@@ -343,15 +342,8 @@ endstruc
     vinserti128 m12, m3, xm3, 1
     vbroadcasti128 m11, [r1-1]        ; lt t0..t14
     vbroadcasti128 m10, [r1]          ; t0..t15
-    ; edge E[i] = F2(U[i-1], U[i], U[i+1]), U = l7 l7 l6..l0 lt t0..t15 t15,
-    ; in the bytes of predict_8x8_filter's edge: E6..E15 in m14, E16..E31 in m13
     palignr      m9, m11, m12, 1
     pshufb       m9, [li_shuf_ul]     ; U5..U15: l6 l7 l7 l6..l0 lt
-    pslldq       m0, m9, 1
-    palignr      m1, m10, m9, 1
-    PRED4x4_LOWPASS m14, m0, m1, m9, m2
-    pshufb       m0, m10, [li_shuf_t2]
-    PRED4x4_LOWPASS m13, m11, m0, m10, m1
 
     ; v
     vpbroadcastq m4, [r1]
@@ -428,6 +420,14 @@ endstruc
     LI_SATD      m8
     HADD_ILV  w,  wd,  m7,  m7,  m8, m4 ; (dc p) x4
     HADD_ILV  w,  dq,  m6,  m6,  m7, m4 ; (v h dc p) x2
+
+    ; edge E[i] = F2(U[i-1], U[i], U[i+1]), U = l7 l7 l6..l0 lt t0..t15 t15,
+    ; in the bytes of predict_8x8_filter's edge: E6..E15 in m14, E16..E31 in m13
+    pslldq       m0, m9, 1
+    palignr      m1, m10, m9, 1
+    PRED4x4_LOWPASS m14, m0, m1, m9, m2
+    pshufb       m0, m10, [li_shuf_t2]
+    PRED4x4_LOWPASS m13, m11, m0, m10, m1
 
     ; ddl, vl
     pshufb      m10, m13, [li_shuf_t2] ; E17..E32
@@ -1031,9 +1031,6 @@ LI_REGS 0
 %xdefine LI_FPRE1 [r0+1*32]
 %xdefine LI_FPRE2 [r0+2*32]
 %xdefine LI_FPRE3 [r0+3*32]
-%xdefine LI_HF0 [rsp+0*32]
-%xdefine LI_A2  [rsp+1*32]
-%xdefine LI_S13 [rsp+2*32]
 %endif
 cglobal intra_satd_lowres_tf, 3,7,LI_NREGS, LI_TF_STACK
     LI_KMASKS
@@ -1056,12 +1053,12 @@ cglobal intra_satd_lowres_tf, 3,7,LI_NREGS, LI_TF_STACK
 %endmacro
 
 INIT_YMM avx2
-%assign LI_STACK 7*32
+%assign LI_STACK 4*32
 %assign LI_NREGS 16
 LOWRES_I_MBS
 LI_REGS LB_PRE
 LOWRES_B_MBS
-%assign LI_TF_STACK 3*32
+%assign LI_TF_STACK 0
 INTRA_SATD_LOWRES_TF
 
 INIT_YMM avx512icl
