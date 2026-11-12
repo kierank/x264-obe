@@ -1730,7 +1730,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_roundclip = x264_predictor_roundclip_avx512;
 #if !defined(_WIN32)
         if( cpu&X264_CPU_BMI2 )
-            pixf->me_search_fpel = x264_me_search_fpel_avx512;
+            pixf->me_search_fpel = x264_me_search_fpel_inline_avx512;
 #endif
 #endif
     }
