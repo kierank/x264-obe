@@ -1743,6 +1743,8 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     pf->plane_copy = x264_plane_copy_avx2;
     pf->get_ref = get_ref_avx2;
     pf->mbtree_cost_scale = x264_mbtree_cost_scale_avx2;
+    /* the avx512 one is undispatched (rack01 decides) */
+    pf->mb_fref_load = x264_mb_fref_load_avx2;
 #if ARCH_X86_64
     pf->mbtree_propagate_list = x264_mbtree_propagate_list_avx2;
     /* vgatherdps: 2.96x / 3.13x C on Core 3 Raptor Cove; unmeasured on slow-gather CPUs, which keep C */

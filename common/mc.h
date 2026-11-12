@@ -162,6 +162,11 @@ typedef struct
     /* aq-mode 1 offsets from the MB energies; params: strength, bias; inv_qscale, quant_offsets may be NULL */
     void (*aq_variance_tail)( float *qp_offset, float *qp_offset_aq, uint16_t *inv_qscale, uint32_t *energy,
                               float *quant_offsets, float *params, int len );
+
+    /* cache_load, 4:2:0 / 4:2:2: dst and src at the p_fref of an x264_fref_base_t
+     * layout. Rows j < n0 of list 0 and j < n1 of list 1: slots 0-3 = src + off_y,
+     * 4-5 = src + off_c, 6-11 left or copied from src; p_fref_w[j < n0] = src + off_y. */
+    void (*mb_fref_load)( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 );
 } x264_mc_functions_t;
 
 #define x264_mc_init x264_template(mc_init)
