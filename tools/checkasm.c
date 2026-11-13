@@ -5846,16 +5846,16 @@ static int check_mc( int cpu_ref, int cpu_new )
                     srcb[i] = rand();
                 for( int i = 0; i < 8*sz; i++ )
                     bb[i] = 0xCD;
-                pixel *src = srcb + 4*st + 64 - 8;
+                pixel *srcp = srcb + 4*st + 64 - 8;
                 pixel *d[2][4];
                 for( int s = 0; s < 2; s++ )
                     for( int j = 0; j < 4; j++ )
                         d[s][j] = bb + (s*4+j)*sz + 4*st + 64 - 8;
                 if( mode == 0 )
-                    mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp );
+                    mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp );
                 else
                     (mode == 1 ? mc_a.hpel_filter_copy : mode == 2 ? mc_a.hpel_filter_copy_vc : mc_a.hpel_filter_dual)
-                        ( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp, d[0][3] );
+                        ( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp, d[0][3] );
                 for( int j = 0; j < 4; j++ )
                 {
                     if( (j == 0 && mode == 2) || (j == 3 && mode != 3) )
@@ -5869,7 +5869,7 @@ static int check_mc( int cpu_ref, int cpu_new )
                             row[x] = row[w+3];
                     }
                 }
-                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], src, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
+                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], srcp, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
                 if( memcmp( bb, bb + 4*sz, 4*sz * sizeof(pixel) ) )
                 {
                     ok = 0;

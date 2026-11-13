@@ -748,7 +748,7 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
     {
         /* hpel_filter_pad wrote the side pads, from the same pixels */
         int b_sides = !x264_frame_filter_pads( h, frame, p );
-#define EXPAND( pix, stride, height )\
+#define EXPAND_SIDES( pix, stride, height )\
         if( b_sides )\
             plane_expand_border( pix, stride, width, height, padh, padv, b_start, b_end, 0 );\
         else\
@@ -761,14 +761,14 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
             if( SLICE_MBAFF )
             {
                 pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
-                EXPAND( pix, stride*2, height )
-                EXPAND( pix+stride, stride*2, height )
+                EXPAND_SIDES( pix, stride*2, height )
+                EXPAND_SIDES( pix+stride, stride*2, height )
             }
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
-            EXPAND( pix, stride, height << SLICE_MBAFF )
+            EXPAND_SIDES( pix, stride, height << SLICE_MBAFF )
         }
-#undef EXPAND
+#undef EXPAND_SIDES
     }
 }
 
