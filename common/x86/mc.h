@@ -56,5 +56,40 @@ void x264_hpel_filter_dual_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc
 #define x264_expand_border_sides_avx2 x264_template(expand_border_sides_avx2)
 void x264_expand_border_sides_avx2( uint8_t *pix, uint8_t *pix2, intptr_t stride, int width, int height, int b_chroma );
 #endif
+/* mbtree_propagate_list wrappers: the original (internal kernel + clipped adds), strip (the same
+ * kernel + int32 strip in C), strip_asm (the strip kernels); list2: both lists of a B row */
+#define PROPAGATE_LIST_DECL( name )\
+void name( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2], int16_t *propagate_amount,\
+           uint16_t *lowres_costs, int bipred_weight, int mb_y, int len, int list );
+#define PROPAGATE_LIST2_DECL( name )\
+void name( x264_t *h, uint16_t *ref_costs0, uint16_t *ref_costs1, int16_t (*mvs0)[2], int16_t (*mvs1)[2],\
+           int16_t *propagate_amount, uint16_t *lowres_costs, int bipred_weight0, int bipred_weight1,\
+           int mb_y, int len );
+#define x264_mbtree_propagate_list_ssse3 x264_template(mbtree_propagate_list_ssse3)
+#define x264_mbtree_propagate_list_avx x264_template(mbtree_propagate_list_avx)
+#define x264_mbtree_propagate_list_avx2 x264_template(mbtree_propagate_list_avx2)
+#define x264_mbtree_propagate_list_avx512 x264_template(mbtree_propagate_list_avx512)
+#define x264_mbtree_propagate_list_strip_avx2 x264_template(mbtree_propagate_list_strip_avx2)
+#define x264_mbtree_propagate_list_strip_avx512 x264_template(mbtree_propagate_list_strip_avx512)
+#define x264_mbtree_propagate_list2_strip_avx2 x264_template(mbtree_propagate_list2_strip_avx2)
+#define x264_mbtree_propagate_list2_strip_avx512 x264_template(mbtree_propagate_list2_strip_avx512)
+#define x264_mbtree_propagate_list_strip_asm_avx2 x264_template(mbtree_propagate_list_strip_asm_avx2)
+#define x264_mbtree_propagate_list2_strip_asm_avx2 x264_template(mbtree_propagate_list2_strip_asm_avx2)
+#define x264_mbtree_propagate_list_strip_asm_avx512 x264_template(mbtree_propagate_list_strip_asm_avx512)
+#define x264_mbtree_propagate_list2_strip_asm_avx512 x264_template(mbtree_propagate_list2_strip_asm_avx512)
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_ssse3 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_avx )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_avx2 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_avx512 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_avx2 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_avx512 )
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_avx2 )
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_avx512 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_asm_avx2 )
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_asm_avx2 )
+PROPAGATE_LIST_DECL( x264_mbtree_propagate_list_strip_asm_avx512 )
+PROPAGATE_LIST2_DECL( x264_mbtree_propagate_list2_strip_asm_avx512 )
+#undef PROPAGATE_LIST_DECL
+#undef PROPAGATE_LIST2_DECL
 
 #endif

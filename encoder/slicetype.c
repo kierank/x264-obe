@@ -2109,12 +2109,17 @@ static void x264_macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, fl
         if( referenced )
             propagate_cost += h->mb.i_mb_width;
 
-        h->mc.mbtree_propagate_list( h, ref_costs[0], &mvs[0][mb_index], buf, &lowres_costs[mb_index],
-                                     bipred_weights[0], h->mb.i_mb_y, h->mb.i_mb_width, 0 );
-        if( b != p1 )
+        if( b != p1 && h->mc.mbtree_propagate_list2 )
+            h->mc.mbtree_propagate_list2( h, ref_costs[0], ref_costs[1], &mvs[0][mb_index], &mvs[1][mb_index], buf,
+                                          &lowres_costs[mb_index], bipred_weights[0], bipred_weights[1],
+                                          h->mb.i_mb_y, h->mb.i_mb_width );
+        else
         {
-            h->mc.mbtree_propagate_list( h, ref_costs[1], &mvs[1][mb_index], buf, &lowres_costs[mb_index],
-                                         bipred_weights[1], h->mb.i_mb_y, h->mb.i_mb_width, 1 );
+            h->mc.mbtree_propagate_list( h, ref_costs[0], &mvs[0][mb_index], buf, &lowres_costs[mb_index],
+                                         bipred_weights[0], h->mb.i_mb_y, h->mb.i_mb_width, 0 );
+            if( b != p1 )
+                h->mc.mbtree_propagate_list( h, ref_costs[1], &mvs[1][mb_index], buf, &lowres_costs[mb_index],
+                                             bipred_weights[1], h->mb.i_mb_y, h->mb.i_mb_width, 1 );
         }
     }
 

@@ -33,6 +33,13 @@
 #define x264_plane_copy_interleave_c x264_template(plane_copy_interleave_c)
 #define x264_plane_copy_deinterleave_v210_c x264_template(plane_copy_deinterleave_v210_c)
 
+/* x86 mbtree_propagate_list int32 accumulator (h->mbtree_strip): per list MBTREE_STRIP_ROWS rows,
+ * mb_y-MBTREE_STRIP_DY .. mb_y+MBTREE_STRIP_DY+1, columns -8 .. stride-9; all zero between calls */
+#define MBTREE_STRIP_DY 3
+#define MBTREE_STRIP_ROWS (2*MBTREE_STRIP_DY+2)
+#define MBTREE_STRIP_STRIDE(width) ((((width)+7)&~7)+16)
+#define MBTREE_STRIP_SIZE(width) (2*MBTREE_STRIP_ROWS*MBTREE_STRIP_STRIDE(width)*(int)sizeof(int32_t))
+
 struct x264_weight_t;
 typedef void (* weight_fn_t)( pixel *, intptr_t, pixel *,intptr_t, const struct x264_weight_t *, int );
 /* ( dst, i_dst, src1, i_src, weight, height, src2 ) */
@@ -174,6 +181,12 @@ typedef struct
     void (*mbtree_propagate_list)( x264_t *h, uint16_t *ref_costs, int16_t (*mvs)[2],
                                    int16_t *propagate_amount, uint16_t *lowres_costs,
                                    int bipred_weight, int mb_y, int len, int list );
+    /* a B row's two lists in one pass: the same output as mbtree_propagate_list list 0, then list 1
+     * (ref_costs0 != ref_costs1); NULL: those two calls */
+    void (*mbtree_propagate_list2)( x264_t *h, uint16_t *ref_costs0, uint16_t *ref_costs1,
+                                    int16_t (*mvs0)[2], int16_t (*mvs1)[2], int16_t *propagate_amount,
+                                    uint16_t *lowres_costs, int bipred_weight0, int bipred_weight1,
+                                    int mb_y, int len );
 
     /* sum of the lowres costs scaled by x264_exp2fix8( qp_offset ) */
     int (*mbtree_cost_scale)( uint16_t *lowres_costs, float *qp_offset, int len );

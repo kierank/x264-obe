@@ -138,6 +138,17 @@ deint_fdec_shuf_avx2: db 0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15
 deint_fdec_mask_avx2: dd -1,-1,0,0,-1,-1,0,0
 %endif
 
+ALIGN 32
+mbtree_strip_pd3:  times 8 dd 3
+mbtree_strip_pd6:  times 8 dd 6
+mbtree_strip_pdm2: times 8 dd -2
+mbtree_strip_pdfb: times 8 dd 0x103 ; rows 0-1 (the offset-0 padding cell) | direct path
+mbtree_strip_c000: times 16 dw 0xc000
+mbtree_strip_pd31: dd 31 ; {1to16} broadcasts
+mbtree_strip_pd32: dd 32
+mbtree_strip_pd1024: dd 1024
+mbtree_strip_pd32767: dd 32767
+
 SECTION .text
 
 cextern pb_0
@@ -3730,6 +3741,369 @@ cglobal mbtree_propagate_list_internal, 7,7,14
 .end:
     RET
 %endif
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int mbtree_propagate_list_strip_internal( int16_t (*mvs)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
+;                                           int32_t *output, int bipred_weight, int list, int len, int width )
+;-----------------------------------------------------------------------------
+; avx2: the internal kernel's weights, widened, for the strip wrapper (x86/mc-c.c). Per 8 entries
+; (160 bytes): the dword strip offsets from row mb_y-3 column width, then the idx0..3 weights as
+; dwords. Unused list: weights 0, dy 0. Columns clamp to -2 .. width. |dy| > 3: offset 0 (that
+; padding cell, whose rows 0-1 then count as touched) and the direct path in C. Returns the rows
+; touched (bit k: row mb_y-3+k) | 0x100 if any entry needs the direct path. 3 = MBTREE_STRIP_DY.
+; m6 = {i, 0} dwords, m8 = pd_8, m9 = pw_31, m10 = pw_32, m11 = pw_1024, m12 = pd_3,
+; m13 = width, m14 = strip stride, m15 = rows touched; [rsp] = list bit, [rsp+32] = bipred_weight << 9
+%macro PROPAGATE_STRIP_OFFSETS 2 ; {x, y} dwords of 8 entries, output offset; m3 = used dwords
+    psraw          m2, %1, 5
+    paddw          m2, m6              ; {mbx, dy}
+    paddd          m6, m8
+    psrad          m4, m2, 16
+    pand           m4, m3              ; dy, 0 when unused
+    pslld          m2, 16
+    psrad          m2, 16              ; mbx
+    pmaxsd         m2, [mbtree_strip_pdm2]
+    pminsd         m2, m13             ; -2 .. width: both columns of a clamped entry are padding
+    psubd          m2, m13
+    paddd          m4, m12             ; t = dy+3
+    pmaddwd        m3, m4, m14         ; t*stride (the high word of t is 0 for 0 <= t <= 6)
+    paddd          m3, m2
+    pminud         m2, m4, [mbtree_strip_pd6]
+    pcmpeqd        m2, m4              ; 0 <= t <= 6
+    pand           m3, m2
+    mova    [r3+%2], m3
+    vpsllvd        m3, m12, m4         ; 3 << t
+    pand           m3, m2
+    pandn          m2, [mbtree_strip_pdfb] ; 0x103 for |dy| > 3 (an unused entry has t = 3)
+    por           m15, m3
+    por           m15, m2
+%endmacro
+
+%macro PROPAGATE_STRIP_PASS 1 ; entries
+%if %1 == 16
+    %define %%m(x) m %+ x
+    %assign %%hi 160
+%else
+    %define %%m(x) xm %+ x
+    %assign %%hi 16
+%endif
+    movu      %%m(4), [r1+r4*2]
+    movu      %%m(1), [r2+r4*2]
+    pand      %%m(7), %%m(1), [rsp]
+    pcmpeqw   %%m(7), [rsp]           ; used
+    pand      %%m(1), [mbtree_strip_c000]
+    pcmpeqw   %%m(1), [mbtree_strip_c000]
+    pmulhrsw  %%m(5), %%m(4), [rsp+32] ; propagate_amount = (propagate_amount * bipred_weight + 32) >> 6
+    pblendvb  %%m(5), %%m(4), %%m(5), %%m(1) ; if( lists_used == 3 )
+    pand      %%m(5), %%m(7)          ; 0 when unused
+    movu      m0, [r0+r4*4]           ; x,y
+    vpmovsxwd m3, xm7
+    PROPAGATE_STRIP_OFFSETS m0, 0
+%if %1 == 16
+    vpermq    m5, m5, q3120
+    movu      m1, [r0+r4*4+32]
+    vextracti128 xm3, m7, 1
+    vpmovsxwd m3, xm3
+    PROPAGATE_STRIP_OFFSETS m1, 160
+%else
+    vextracti128 xm1, m0, 1
+%endif
+    pand      %%m(0), %%m(9)          ; x &= 31
+    pand      %%m(1), %%m(9)          ; y &= 31
+    packuswb  %%m(0), %%m(1)
+    psrlw     %%m(1), %%m(0), 3
+    pand      %%m(0), %%m(9)          ; x
+    pandn     %%m(1), %%m(9), %%m(1)  ; y premultiplied by (1<<5) for later use of pmulhrsw
+    psubw     %%m(3), %%m(10), %%m(0) ; 32 - x
+    psubw     %%m(4), %%m(11), %%m(1) ; (32 - y) << 5
+    pmullw    %%m(2), %%m(3), %%m(4)  ; idx0weight = (32-y)*(32-x) << 5
+    pmullw    %%m(4), %%m(0)          ; idx1weight = (32-y)*x << 5
+    pmullw    %%m(0), %%m(1)          ; idx3weight = y*x << 5
+    pmullw    %%m(1), %%m(3)          ; idx2weight = y*(32-x) << 5
+    psrlw     %%m(3), %%m(2), 15
+    psubw     %%m(2), %%m(3)          ; idx0weight -= (idx0weight == 32768)
+    pmulhrsw  %%m(2), %%m(5)          ; idx0weight * propagate_amount + 512 >> 10
+    pmulhrsw  %%m(4), %%m(5)
+    pmulhrsw  %%m(1), %%m(5)
+    pmulhrsw  %%m(0), %%m(5)
+    pxor      %%m(7), %%m(7)
+    punpcklwd %%m(3), %%m(2), %%m(7)  ; 16: entries 0-7 | 8-15 are the words 0-3 | 4-7 of each lane
+    punpckhwd %%m(2), %%m(7)
+    mova [r3+ 32], %%m(3)
+    mova [r3+ 32+%%hi], %%m(2)
+    punpcklwd %%m(3), %%m(4), %%m(7)
+    punpckhwd %%m(4), %%m(7)
+    mova [r3+ 64], %%m(3)
+    mova [r3+ 64+%%hi], %%m(4)
+    punpcklwd %%m(3), %%m(1), %%m(7)
+    punpckhwd %%m(1), %%m(7)
+    mova [r3+ 96], %%m(3)
+    mova [r3+ 96+%%hi], %%m(1)
+    punpcklwd %%m(3), %%m(0), %%m(7)
+    punpckhwd %%m(0), %%m(7)
+    mova [r3+128], %%m(3)
+    mova [r3+128+%%hi], %%m(0)
+%endmacro
+
+INIT_YMM avx2
+cglobal mbtree_propagate_list_strip_internal, 8,8,16,-64
+    lea            r5d, [r5+1]
+    shl            r5d, 14             ; 1 << (list+LOWRES_COST_SHIFT)
+    movd           xm0, r5d
+    vpbroadcastw    m0, xm0
+    mova         [rsp], m0
+    movd           xm0, r4d
+    vpbroadcastw    m0, xm0
+    psllw           m0, 9              ; bipred_weight << 9
+    mova      [rsp+32], m0
+    movd          xm13, r7d
+    vpbroadcastd   m13, xm13
+    lea            r5d, [r7+7+16]
+    and            r5d, ~7             ; MBTREE_STRIP_STRIDE
+    movd          xm14, r5d
+    vpbroadcastd   m14, xm14
+    movu            m6, [pd_0123]      ; {i, 0}
+    vpbroadcastd    m8, [pd_8]
+    vbroadcasti128  m9, [pw_31]
+    mova           m10, [pw_32]
+    mova           m11, [pw_1024]
+    mova           m12, [mbtree_strip_pd3]
+    pxor          xm15, xm15
+    xor            r4d, r4d
+    lea            r5d, [r6-8]
+    test           r5d, r5d
+    jle .tail
+.loop:
+    PROPAGATE_STRIP_PASS 16
+    add            r4d, 16
+    add             r3, 320
+    cmp            r4d, r5d
+    jl .loop
+.tail:
+    cmp            r4d, r6d
+    jge .end
+    PROPAGATE_STRIP_PASS 8
+.end:
+    vextracti128   xm0, m15, 1
+    por            xm0, xm15
+    pshufd         xm1, xm0, q1032
+    por            xm0, xm1
+    pshufd         xm1, xm0, q2301
+    por            xm0, xm1
+    movd           eax, xm0
+    RET
+
+;-----------------------------------------------------------------------------
+; void mbtree_strip_flush( uint16_t *dst, int32_t *strip, int width )
+;-----------------------------------------------------------------------------
+; dst[i] = min( (int16_t)dst[i] + strip[i], 32767 ) (paddsw of a sum >= 0), then strip
+; columns -8 .. MBTREE_STRIP_STRIDE-9 = 0
+cglobal mbtree_strip_flush, 3,6,2
+    xor            r3d, r3d
+    cmp            r2d, 16
+    jl .t8
+.l16:
+    pmovsxwd        m0, [r0+r3*2]
+    pmovsxwd        m1, [r0+r3*2+16]
+    paddd           m0, [r1+r3*4]
+    paddd           m1, [r1+r3*4+32]
+    packssdw        m0, m1
+    vpermq          m0, m0, q3120
+    movu   [r0+r3*2], m0
+    add            r3d, 16
+    lea            r4d, [r3+16]
+    cmp            r4d, r2d
+    jle .l16
+.t8:
+    lea            r4d, [r3+8]
+    cmp            r4d, r2d
+    jg .t1
+    pmovsxwd        m0, [r0+r3*2]
+    paddd           m0, [r1+r3*4]
+    vextracti128   xm1, m0, 1
+    packssdw       xm0, xm1
+    movu   [r0+r3*2], xm0
+    mov            r3d, r4d
+.t1:
+    cmp            r3d, r2d
+    jge .zero
+    mov            r5d, 32767
+.l1:
+    movsx          r4d, word [r0+r3*2]
+    add            r4d, [r1+r3*4]
+    cmp            r4d, r5d
+    cmovg          r4d, r5d
+    mov    [r0+r3*2], r4w
+    inc            r3d
+    cmp            r3d, r2d
+    jl .l1
+.zero:
+    pxor           xm0, xm0
+    add            r2d, 7
+    shr            r2d, 3
+    add            r2d, 2              ; MBTREE_STRIP_STRIDE / 8
+    sub             r1, 32
+.lz:
+    mova          [r1], m0
+    add             r1, 32
+    dec            r2d
+    jg .lz
+    RET
+%endif ; ARCH_X86_64
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; int mbtree_propagate_list_strip_internal( int16_t (*mvs)[2], int16_t *propagate_amount, uint16_t *lowres_costs,
+;                                           int32_t *output, int bipred_weight, int list, int len, int width )
+;-----------------------------------------------------------------------------
+; avx512: as the avx2 version, 16 entries a zmm in dword lanes in entry order. The weights' factors
+; sit in the low words, so pmullw / pmulhrsw give the internal kernel's words zero-extended. Per 16
+; entries (320 bytes): 16 offsets, then the idx0..3 weights, 16 each. Unused entries touch no rows.
+; m6 = i, m7 = rows touched, m8 = width, m9 = strip stride, m10 = list bit, m11 = bipred_weight << 9,
+; m12 = 3, r8d = entries needing the direct path (r7d: temp); k7 = entries < len in the tail
+%macro PROPAGATE_STRIP_PASS512 1 ; tail
+%if %1
+    movu          ym1 {k7}{z}, [r2+r4*2]
+    movu          ym4 {k7}{z}, [r1+r4*2]
+    movu           m0 {k7}{z}, [r0+r4*4]
+%else
+    movu          ym1, [r2+r4*2]
+    movu          ym4, [r1+r4*2]
+    movu           m0, [r0+r4*4]       ; {x, y}
+%endif
+    vpcmpuw        k1, ym1, [mbtree_strip_c000], 5 ; lists_used == 3
+    vpmulhrsw     ym4 {k1}, ym11       ; propagate_amount = (propagate_amount * bipred_weight + 32) >> 6
+    vptestmw       k2, ym1, ym10       ; used
+    vpmovzxwd      m5 {k2}{z}, ym4     ; 0 when unused
+    vpsrad         m1 {k2}{z}, m0, 16  ; y, 0 when unused
+    vpslld         m2, m0, 16
+    vpsrad         m2, 16              ; x
+    vpandd         m3, m2, [mbtree_strip_pd31] {1to16} ; x &= 31
+    vpandd         m4, m1, [mbtree_strip_pd31] {1to16} ; y &= 31
+    vpsrad         m2, 5
+    vpaddd         m2, m6              ; mbx
+    vpaddd         m6, [pd_16] {1to16}
+    vpsrad         m1, 5               ; dy
+    vpmaxsd        m2, [mbtree_strip_pdm2] {1to16}
+    vpminsd        m2, m8              ; -2 .. width
+    vpsubd         m2, m8
+    vpaddd         m1, m12             ; t = dy+3
+    vpcmpud        k3, m1, [mbtree_strip_pd6] {1to16}, 2 ; 0 <= t <= 6
+    vpmaddwd      m13, m1, m9          ; t*stride
+    vpaddd        m13 {k3}{z}, m2      ; offset, 0 for |dy| > 3
+    mova         [r3], m13
+    kandw          k4, k3, k2
+    vpsllvd       m14 {k4}{z}, m12, m1 ; 3 << t
+    vpord          m7, m14
+    kandnw         k5, k3, k2          ; used, |dy| > 3
+    kmovw         r7d, k5
+    or            r8d, r7d
+    vpbroadcastd  m13, [mbtree_strip_pd32]
+    vpsubd        m13, m3              ; 32 - x
+    vpslld        m15, m4, 5           ; y << 5
+    vpbroadcastd  m14, [mbtree_strip_pd1024]
+    vpsubd        m14, m15             ; (32 - y) << 5
+    vpmullw        m0, m14, m13        ; idx0weight = (32-y)*(32-x) << 5
+    vpminud        m0, [mbtree_strip_pd32767] {1to16} ; idx0weight -= (idx0weight == 32768)
+    vpmullw        m1, m14, m3         ; idx1weight = (32-y)*x << 5
+    vpmullw        m2, m15, m13        ; idx2weight = y*(32-x) << 5
+    vpmullw        m4, m15, m3         ; idx3weight = y*x << 5
+    vpmulhrsw      m0, m5              ; idx0weight * propagate_amount + 512 >> 10
+    vpmulhrsw      m1, m5
+    vpmulhrsw      m2, m5
+    vpmulhrsw      m4, m5
+    mova    [r3+ 64], m0
+    mova    [r3+128], m1
+    mova    [r3+192], m2
+    mova    [r3+256], m4
+%endmacro
+
+INIT_ZMM avx512
+cglobal mbtree_propagate_list_strip_internal, 8,9,16
+    lea            r5d, [r5+1]
+    shl            r5d, 14             ; 1 << (list+LOWRES_COST_SHIFT)
+    vpbroadcastw  ym10, r5d
+    vpbroadcastw  ym11, r4d
+    psllw         ym11, 9              ; bipred_weight << 9
+    vpbroadcastd    m8, r7d
+    lea            r5d, [r7+7+16]
+    and            r5d, ~7             ; MBTREE_STRIP_STRIDE
+    vpbroadcastd    m9, r5d
+    vpmovzxwd       m6, [pw_0to15]
+    vpbroadcastd   m12, [mbtree_strip_pd3]
+    vpxord         xm7, xm7, xm7
+    xor            r4d, r4d
+    xor            r8d, r8d
+    lea            r5d, [r6-16]
+.loop:
+    cmp            r4d, r5d
+    jg .tail
+    PROPAGATE_STRIP_PASS512 0
+    add            r4d, 16
+    add             r3, 320
+    jmp .loop
+.tail:
+    cmp            r4d, r6d
+    jge .end
+    vpbroadcastd   m13, r6d
+    vpcmpud         k7, m6, m13, 1     ; i < len
+    PROPAGATE_STRIP_PASS512 1
+.end:
+    vextracti32x8 ym0, m7, 1
+    vpord         ym0, ym7
+    vextracti128  xm1, ym0, 1
+    vpord         xm0, xm1
+    pshufd        xm1, xm0, q1032
+    vpord         xm0, xm1
+    pshufd        xm1, xm0, q2301
+    vpord         xm0, xm1
+    neg            r8d
+    sbb            r8d, r8d
+    and            r8d, 0x103
+    movd           eax, xm0
+    or             eax, r8d
+    RET
+
+;-----------------------------------------------------------------------------
+; void mbtree_strip_flush( uint16_t *dst, int32_t *strip, int width )
+;-----------------------------------------------------------------------------
+cglobal mbtree_strip_flush, 3,5,3
+    xor            r3d, r3d
+    lea            r4d, [r2-16]
+.l16:
+    cmp            r3d, r4d
+    jg .tail
+    vpmovsxwd       m0, [r0+r3*2]
+    vpaddd          m0, [r1+r3*4]
+    vpmovsdw       ym0, m0             ; min( s + sum, 32767 )
+    movu   [r0+r3*2], ym0
+    add            r3d, 16
+    jmp .l16
+.tail:
+    cmp            r3d, r2d
+    jge .zero
+    mov            r4d, r2d
+    sub            r4d, r3d
+    vpbroadcastd    m2, r4d
+    vpmovzxwd       m1, [pw_0to15]
+    vpcmpud         k1, m1, m2, 1
+    vpmovsxwd       m0 {k1}{z}, [r0+r3*2]
+    vpaddd          m0 {k1}{z}, m0, [r1+r3*4]
+    vpmovsdw       ym0, m0
+    vmovdqu16 [r0+r3*2] {k1}, ym0
+.zero:
+    vpxord         xm0, xm0, xm0
+    add            r2d, 7
+    shr            r2d, 3
+    add            r2d, 2              ; MBTREE_STRIP_STRIDE / 8
+    sub             r1, 32
+.lz:
+    mova          [r1], ym0
+    add             r1, 32
+    dec            r2d
+    jg .lz
+    RET
+%endif ; ARCH_X86_64
 
 %if ARCH_X86_64
 ;-----------------------------------------------------------------------------
