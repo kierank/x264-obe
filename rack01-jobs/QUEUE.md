@@ -101,7 +101,8 @@ names it in "The verdict decides".
 | 3 | hpelfly-mbm | `bash rack01-jobs/hpelfly/hpelfly-mbm.sh all` (**needs Kieran root**) | traffic only: MB/f of stored H/V/C per ref frame | the traffic half of the hpelfly case (E-2400 one-DIMM goal) |
 | 4 | 10b-cabac-rd2 | `bash rack01-jobs/10b-cabac/10b-cabac-rd2.sh all` | -0.5 to -1 % of 10-bit 4:2:2 normal. ~4-4.5 % is in these coders; Zen 4 already runs icl and rd2 is 1.5-2.5x on the laptop. Lowlat 0 | keep 75947ac3 (the Zen 4/5 rd2 dispatch, droppable); ZEN5 on a verdict against AVX-512: zen5/x264-10b-cabac-rd2 = 75947ac3 (the arm commit; then drop 75947ac3 from the merge) |
 | 5 | rd8x8-rd2 | `bash rack01-jobs/rd8x8/rd8x8-rd2.sh all` | -0.3 to -0.6 % normal: the 8x8 rd slot is ~1.2 %, and rd2 is 0.33-0.68x of icl in most classes | merge wip/x264-gap-rd8x8-icl f7162d21; ZEN5 on a verdict against AVX-512: zen5/x264-rd8x8-rd2 = f7162d21 (the arm commit) |
-| 6 | mbtree-avx512 | `bash rack01-jobs/mbtree/mbtree-avx512.sh all` | -0.3 to -0.4 % normal: the propagate slot is ~0.7 % and the strip is 1.5-2.5x per call | merge the mbtree branch with 0b09bab8 (AVX-512 arm) or only to f017bec6; ZEN5 on a verdict against AVX-512: zen5/x264-mbtree-avx512 = 0b09bab8 (the arm commit; merge stops at f017bec6) |
+| 6a | mbtree-zen4 | `bash rack01-jobs/mbtree/mbtree-zen4.sh all` | -0.2 to -0.4 % normal: the merged mbtree (b401b2e4) on Zen 4 = the avx2 list2 strip for B rows (the avx512 list stays for P rows) | the merge stands on Zen 4, or an AVX512-block list2 NULL override if Zen 4 loses (no AVX-512 kernel: no zen5 branch) |
+| 6b | mbtree-avx512 | `bash rack01-jobs/mbtree/mbtree-avx512.sh all` | -0.1 to -0.3 % normal over the merge: the avx512 strip for both P and B rows | merge 608a1c9c (wip/x264-mbtree-avx512-arm) after the mbtree merge; ZEN5 on a verdict against AVX-512: zen5/x264-mbtree-avx512 = 608a1c9c |
 | 7 | nrbskip-ab | `bash rack01-jobs/nrbskip/nrbskip-ab.sh all` | -0.2 to -0.5 % normal (fewer stores), lowlat small | merge nrbskip (both phases) or phase 1 only |
 | 8 | nrbskip-mbm | `bash rack01-jobs/nrbskip/nrbskip-mbm.sh all` (**needs Kieran root**) | traffic only: ~4.8 MB/f analytic | the traffic half of the nrbskip case |
 | 9 | mbaffplanes-ab | `bash rack01-jobs/mbaffplanes/mbaffplanes-ab.sh all` | -0.2 to -0.5 % on interlaced, or a loss if the lost THP on F/H costs dTLB. Progressive cells are the null control | merge mbaffplanes |
@@ -145,7 +146,8 @@ names it in "The verdict decides".
 | 10b-cabac-rd2 | c1fa65f4 | 75947ac3 |
 | 10b-cabac-rd8 | 75947ac3 | 75947ac3 + 8x8 rd -> rd2_avx512icl |
 | rd8x8-rd2 | e3a52acd | f7162d21 |
-| mbtree-avx512 | f017bec6 | 0b09bab8 |
+| mbtree-zen4 | 33754121 | b401b2e4 |
+| mbtree-avx512 | b401b2e4 | 608a1c9c |
 | nrbskip-ab / -mbm | 4e292d6a | cb5b86c2 |
 | mbaffplanes-ab / -mbm | c664d151 | 2d0dbfac |
 | trellis-z1 | 939df094 | 939df094 + icl 4x4 / 4x4_psy / dc / 422_dc |
