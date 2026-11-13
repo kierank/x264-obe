@@ -228,7 +228,7 @@ analyse() { # N mode(stop|final): per-cell medians over rounds <= N, prints the 
     $1 <= N { cy[$2" "$1" "$3] = $4; in_[$2" "$3" "$1] = $5; ins[$2" "$1" "$3] = $5; if( !($2 in seen) ) { seen[$2] = 1; order[++nc] = $2 } }
     END {
       split( NULLS, nl, " " ); for( i in nl ) isnull[nl[i]] = 1
-      win = 1; loss = 1; fwin = 1; floss = 1; np = 0
+      win = 1; loss = 1; fwin = 1; floss = 1; np = 0; nok = 0; sig = 0; hardloss = 0
       for( q = 1; q <= nc; q++ ) { c = order[q]; n = 0; slow = 0; fast = 0
         for( r = 1; r <= N; r++ ) { k = c" "r
           if( !((k" base") in cy && (k" base2") in cy && (k" arm") in cy && (k" arm2") in cy) ) continue
@@ -243,12 +243,20 @@ analyse() { # N mode(stop|final): per-cell medians over rounds <= N, prints the 
         if( tag == "NULL" ) continue
         np++
         if( !(n >= 6 && slow >= 5*n/6 && m > 0.3) ) loss = 0
-        if( !(n >= 6 && fast == n) ) win = 0
+        aa = med(a1,n); ab = med(a2,n); if( aa < 0 ) aa = -aa; if( ab < 0 ) ab = -ab; if( ab > aa ) aa = ab
+        pflag = (med(di,n) <= 0.01 && med(di,n) >= -0.01 && (m > 0.2 || m < -0.2))   # instructions flat, cycles moved: placement
+        if( m < 0 && fast >= 4*n/6 ) nok++
+        if( m < -aa && fast >= 5*n/6 ) sig = 1
+        if( !pflag && m > aa && fast <= n/6 ) hardloss = 1
         if( !(m < 0 && fast >= 0.75*n) ) fwin = 0
         if( !(m > 0 && slow >= 0.75*n) ) floss = 0
       }
       if( np == 0 ) { print "STATUS NO-DECISION-CELLS"; exit }
-      if( MODE == "stop" ) print (win ? "STATUS STOP-WIN (faster in every round on every decision cell)" : loss ? "STATUS STOP-LOSS (slower in >= 5/6 rounds and > +0.3 % on every decision cell)" : "STATUS CONTINUE")
+      # Kieran 11-13: a test that wins clearly after six rounds stops there. Clear win = no real loss
+      # (no non-placement cell slower beyond its A/A with <= 1/6 faster), >= 2/3 of cells faster (median < 0, >= 4/6),
+      # and at least one cell faster beyond its A/A in >= 5/6
+      win = (N >= 6 && !hardloss && nok >= 2*np/3 && sig)
+      if( MODE == "stop" ) print (win ? "STATUS STOP-WIN (clear win: no real loss, >= 2/3 of cells faster, one beyond its A/A)" : loss ? "STATUS STOP-LOSS (slower in >= 5/6 rounds and > +0.3 % on every decision cell)" : "STATUS CONTINUE")
       else print (fwin ? "STATUS WIN (median faster and faster in >= 75 % of rounds on every decision cell)" : floss ? "STATUS LOSS (median slower and slower in >= 75 % of rounds on every decision cell)" : "STATUS MIXED/NEUTRAL (judge per cell against the A/A rows)")
     }' $W/times.txt
 }
