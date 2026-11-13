@@ -2028,6 +2028,222 @@ cglobal pixel_avg2_w20, 6,7
     jg     .height_loop
     RET
 
+; 4 rows per iteration, then 2 if any are left: the (h+1)&~1 rows the
+; 2-row loops above write
+%macro AVG2_ROWS_LOOP 1 ; 2-row body macro
+    sub   r5d, 3
+    jl %%tail
+%%loop:
+    %1
+    %1
+    sub   r5d, 4
+    jge %%loop
+    cmp   r5d, -2
+    jl %%end
+%%tail:
+    %1
+%%end:
+%ifdef AVG2_RET_R7
+    mov   rax, r7
+%endif
+%ifdef AVG2_VZU
+    vzeroupper
+%endif
+    RET
+%endmacro
+
+; VEX: the second source folds into pavgb
+%macro AVG2_W16_2ROWS 0
+%if mmsize == 32
+    movu         xm0, [r2]
+    vinserti128   m0, m0, [r2+r3], 1
+    movu         xm1, [r2+r4]
+    vinserti128   m1, m1, [r2+r6], 1
+    lea           r2, [r2+r3*2]
+    pavgb         m0, m1
+    mova        [r0], xm0
+    vextracti128 [r0+r1], m0, 1
+%else
+    movu   m0, [r2]
+    movu   m1, [r2+r3]
+    pavgb  m0, [r2+r4]
+    pavgb  m1, [r2+r6]
+    lea    r2, [r2+r3*2]
+    mova [r0], m0
+    mova [r0+r1], m1
+%endif
+    lea    r0, [r0+r1*2]
+%endmacro
+
+; w8: two rows per xmm
+%macro AVG2_W8_2ROWS 0
+    movq   m0, [r2]
+    movhps m0, [r2+r3]
+    movq   m1, [r2+r4]
+    movhps m1, [r2+r6]
+    lea    r2, [r2+r3*2]
+    pavgb  m0, m1
+    movq   [r0], m0
+    movhps [r0+r1], m0
+    lea    r0, [r0+r1*2]
+%endmacro
+
+INIT_XMM avx
+cglobal pixel_avg2_w8, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+    AVG2_ROWS_LOOP AVG2_W8_2ROWS
+
+cglobal pixel_avg2_w16, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+    AVG2_ROWS_LOOP AVG2_W16_2ROWS
+
+; two rows per ymm
+INIT_YMM avx2
+cglobal pixel_avg2_w16, 6,7
+    sub    r4, r2
+    lea    r6, [r4+r3]
+    AVG2_ROWS_LOOP AVG2_W16_2ROWS
+
+%if ARCH_X86_64
+; four rows per zmm; 16-byte row stores
+INIT_ZMM avx512icl
+cglobal pixel_avg2_w16, 6,8
+    lea    r6, [r3*3]
+    lea    r7, [r1*3]
+    sub   r5d, 3
+    jl .tail
+.loop:
+    movu           xm0, [r2]
+    movu           xm2, [r2+r3*2]
+    vinserti32x4   ym0, ym0, [r2+r3], 1
+    vinserti32x4   ym2, ym2, [r2+r6], 1
+    movu           xm1, [r4]
+    movu           xm3, [r4+r3*2]
+    vinserti32x4   ym1, ym1, [r4+r3], 1
+    vinserti32x4   ym3, ym3, [r4+r6], 1
+    vinserti64x4    m0, m0, ym2, 1
+    vinserti64x4    m1, m1, ym3, 1
+    lea             r2, [r2+r3*4]
+    lea             r4, [r4+r3*4]
+    pavgb           m0, m1
+    mova          [r0], xm0
+    vextracti32x4 [r0+r1], m0, 1
+    vextracti32x4 [r0+r1*2], m0, 2
+    vextracti32x4 [r0+r7], m0, 3
+    lea             r0, [r0+r1*4]
+    sub            r5d, 4
+    jge .loop
+    cmp            r5d, -2
+    jl .end
+.tail:
+    movu           xm0, [r2]
+    vinserti32x4   ym0, ym0, [r2+r3], 1
+    movu           xm1, [r4]
+    vinserti32x4   ym1, ym1, [r4+r3], 1
+    pavgb          ym0, ym1
+    mova          [r0], xm0
+    vextracti32x4 [r0+r1], ym0, 1
+.end:
+    RET
+%endif
+
+%if ARCH_X86_64
+%macro AVG2_W4_2ROWS 0
+    movd   m0, [r2]
+    movd   m1, [r2+r3]
+    movd   m2, [r2+r4]
+    movd   m3, [r2+r6]
+    lea    r2, [r2+r3*2]
+    pavgb  m0, m2
+    pavgb  m1, m3
+    movd [r0], m0
+    movd [r0+r1], m1
+    lea    r0, [r0+r1*2]
+%endmacro
+
+%macro AVG2_W20_2ROWS 0 ; ymm (raw VEX names: the function is INIT_XMM)
+    vmovdqu  ymm0, [r2]
+    vmovdqu  ymm1, [r2+r3]
+    vpavgb   ymm0, ymm0, [r2+r4]
+    vpavgb   ymm1, ymm1, [r2+r6]
+    lea       r2, [r2+r3*2]
+    vmovdqa  [r0], ymm0
+    vmovdqa  [r0+r1], ymm1
+    lea       r0, [r0+r1*2]
+%endmacro
+
+;-----------------------------------------------------------------------------
+; pixel *get_ref_noweight( pixel *dst, intptr_t *i_dst_stride, pixel *src[4], intptr_t i_src_stride,
+;                          int mvx, int mvy, int i_width, int i_height )
+; get_ref without a weight: the hpel plane at mv, else pixel_avg2 of two planes into dst;
+; hpel_ref0/1 as 2-bit fields by qpel_idx
+;-----------------------------------------------------------------------------
+INIT_XMM avx2
+cglobal get_ref_noweight, 6,9,6
+    movsxd  r6, r4d
+    movsxd  r7, r5d
+    mov    r4d, r6d
+    and    r4d, 3              ; mvx&3
+    mov    r5d, r7d
+    and    r5d, 3              ; mvy&3
+    sar     r6, 2
+    sar     r7, 2
+    imul    r7, r3
+    add     r6, r7              ; offset
+    lea    r7d, [r4+r5*4]
+    add    r7d, r7d            ; 2*qpel_idx
+    mov    r8d, 0x54FE5454      ; hpel_ref0
+    shrx   r8d, r8d, r7d
+    and    r8d, 3
+    mov     r8, [r2+r8*8]
+    add     r8, r6
+    test   r7d, 10             ; qpel_idx&5
+    jnz .avg
+    mov   [r1], r3
+    mov    rax, r8
+    RET
+.avg:
+    inc    r5d
+    shr    r5d, 2
+    neg     r5
+    and     r5, r3
+    add     r8, r5              ; src1: + i_src_stride if mvy&3 == 3
+    mov    r5d, 0xBABABA00      ; hpel_ref1
+    shrx   r5d, r5d, r7d
+    and    r5d, 3
+    mov     r5, [r2+r5*8]
+    add     r5, r6
+    inc    r4d
+    shr    r4d, 2
+    add     r4, r5              ; src2: + 1 if mvx&3 == 3
+    mov     r2, r8
+    sub     r4, r2
+    lea     r6, [r4+r3]
+    mov     r1, [r1]
+    mov     r7, r0
+    mov    r8d, r6m
+    mov    r5d, r7m
+%define AVG2_RET_R7
+    cmp    r8d, 16
+    je .w16
+    ja .w20
+    cmp    r8d, 8
+    je .w8
+    ja .w16                    ; w12
+    AVG2_ROWS_LOOP AVG2_W4_2ROWS
+.w8:
+    AVG2_ROWS_LOOP AVG2_W8_2ROWS
+.w16:
+    AVG2_ROWS_LOOP AVG2_W16_2ROWS
+.w20:
+%define AVG2_VZU
+    AVG2_ROWS_LOOP AVG2_W20_2ROWS
+%undef AVG2_VZU
+%undef AVG2_RET_R7
+%endif
+
 ; Cacheline split code for processors with high latencies for loads
 ; split over cache lines.  See sad-a.asm for a more detailed explanation.
 ; This particular instance is complicated by the fact that src1 and src2

@@ -4606,6 +4606,107 @@ static void weight_plane_strips( pixel *dst, intptr_t i_dst, pixel *src, intptr_
 #include "common/x86/mc.h"
 #endif
 
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+/* get_ref / mc_luma's avg2 kernels (static tables in common/x86/mc-c.c), each at its level */
+typedef void (*avg2_fn_t)( pixel *, intptr_t, pixel *, intptr_t, pixel *, int );
+#define AVG2_DECL( w, cpu ) \
+    void x264_template(pixel_avg2_w##w##_##cpu)( pixel *, intptr_t, pixel *, intptr_t, pixel *, int );
+AVG2_DECL( 8, mmx2 )
+AVG2_DECL( 16, mmx2 )
+AVG2_DECL( 20, mmx2 )
+AVG2_DECL( 16, sse2 )
+AVG2_DECL( 20, sse2 )
+AVG2_DECL( 8, avx )
+AVG2_DECL( 16, avx )
+AVG2_DECL( 16, avx2 )
+AVG2_DECL( 20, avx2 )
+#if ARCH_X86_64
+AVG2_DECL( 16, avx512icl )
+#endif
+static void avg2_c( pixel *dst, intptr_t i_dst, pixel *src1, intptr_t i_src, pixel *src2, int h, int w )
+{
+    for( int y = 0; y < h; y++, dst += i_dst, src1 += i_src, src2 += i_src )
+        for( int x = 0; x < w; x++ )
+            dst[x] = (src1[x] + src2[x] + 1) >> 1;
+}
+#define AVG2_C( w ) \
+static void avg2_w##w##_c( pixel *dst, intptr_t i_dst, pixel *src1, intptr_t i_src, pixel *src2, int h ) \
+{ avg2_c( dst, i_dst, src1, i_src, src2, h, w ); }
+AVG2_C( 8 )
+AVG2_C( 16 )
+AVG2_C( 20 )
+
+/* every kernel against C at the heights get_ref and mc_luma pass (bh, bh+1, the lowres
+ * 9, 4), src2 at src1's hpel neighbours, dst at 16/32/64 strides; rows < h exact, rows
+ * past (h+1)&~1 untouched; bench at 16 and 8 rows, dst stride 16 */
+static int check_avg2( int cpu_ref, int cpu_new )
+{
+    static const struct { avg2_fn_t f; int w, cpu; } k[] =
+    {
+        { x264_template(pixel_avg2_w8_mmx2),  8,  X264_CPU_MMX2 },
+        { x264_template(pixel_avg2_w16_mmx2), 16, X264_CPU_MMX2 },
+        { x264_template(pixel_avg2_w20_mmx2), 20, X264_CPU_MMX2 },
+        { x264_template(pixel_avg2_w16_sse2), 16, X264_CPU_SSE2 },
+        { x264_template(pixel_avg2_w20_sse2), 20, X264_CPU_SSE2 },
+        { x264_template(pixel_avg2_w8_avx),   8,  X264_CPU_AVX },
+        { x264_template(pixel_avg2_w16_avx),  16, X264_CPU_AVX },
+        { x264_template(pixel_avg2_w16_avx2), 16, X264_CPU_AVX2 },
+        { x264_template(pixel_avg2_w20_avx2), 20, X264_CPU_AVX2 },
+#if ARCH_X86_64
+        { x264_template(pixel_avg2_w16_avx512icl), 16, X264_CPU_AVX512ICL },
+#endif
+    };
+    static const int heights[] = { 1, 2, 3, 4, 5, 8, 9, 16, 17, 18 };
+    static const int dstrides[] = { 16, 32, 64 };
+    static const int src2_off[] = { 1, 64, 65, 3*64*24 };
+    ALIGNED_ARRAY_64( pixel, dc, [64*24] );
+    ALIGNED_ARRAY_64( pixel, da, [64*24] );
+    int ret = 0, ok = 1, used_asm = 0;
+    for( int i = 0; i < ARRAY_ELEMS(k); i++ )
+    {
+        if( !(cpu_new & k[i].cpu) || (cpu_ref & k[i].cpu) )
+            continue;
+        int w = k[i].w;
+        avg2_fn_t fc = w == 8 ? avg2_w8_c : w == 16 ? avg2_w16_c : avg2_w20_c;
+        used_asm = 1;
+        for( int hi = 0; hi < ARRAY_ELEMS(heights); hi++ )
+            for( int si = 0; si < ARRAY_ELEMS(dstrides); si++ )
+                for( int oi = 0; oi < ARRAY_ELEMS(src2_off); oi++ )
+                {
+                    int h = heights[hi];
+                    intptr_t ds = dstrides[si];
+                    if( ds < (w > 16 ? 32 : 16) )
+                        continue;
+                    int x = rand() & 15;
+                    pixel *s1 = pbuf1 + 64*2 + x, *s2 = s1 + src2_off[oi];
+                    for( int j = 0; j < 64*24; j++ )
+                        dc[j] = da[j] = 0xCD;
+                    fc( dc, ds, s1, 64, s2, h );
+                    call_a1( k[i].f, da, ds, s1, (intptr_t)64, s2, h );
+                    int bad = 0;
+                    for( int y = 0; y < h; y++ )
+                        bad |= memcmp( dc+y*ds, da+y*ds, w*sizeof(pixel) );
+                    for( int j = ((h+1)&~1)*ds; j < 64*24; j++ )
+                        bad |= da[j] != 0xCD;
+                    if( bad )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "avg2_w%d [cpu %d] h%d dst stride %d src2 +%d [FAILED]\n",
+                                 w, i, h, (int)ds, src2_off[oi] );
+                    }
+                }
+        for( int h = 16; h >= 8; h -= 8 )
+        {
+            set_func_name( "avg2_w%d_h%d", w, h );
+            call_c2( fc, dc, (intptr_t)(w > 16 ? 32 : 16), pbuf1+2, (intptr_t)64, pbuf1+64*24+3, h );
+            call_a2( k[i].f, da, (intptr_t)(w > 16 ? 32 : 16), pbuf1+2, (intptr_t)64, pbuf1+64*24+3, h );
+        }
+    }
+    report( "avg2 :" );
+    return ret;
+}
+#endif
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -4632,7 +4733,7 @@ static int check_mc( int cpu_ref, int cpu_new )
     x264_pixel_init( 0, &pixf );
 
 #define MC_TEST_LUMA( w, h ) \
-        if( mc_a.mc_luma != mc_ref.mc_luma && !(w&(w-1)) && h<=16 ) \
+        if( mc_a.mc_luma != mc_ref.mc_luma && !(w&(w-1)) && h<=16 && !(h&1) ) \
         { \
             const x264_weight_t *weight = x264_weight_none; \
             set_func_name( "mc_luma_%dx%d", w, h ); \
@@ -4699,6 +4800,11 @@ static int check_mc( int cpu_ref, int cpu_new )
             MC_TEST_LUMA( 16, 16 );
             MC_TEST_LUMA( 16, 8 );
             MC_TEST_LUMA( 12, 10 );
+            MC_TEST_LUMA( 20, 16 );
+            MC_TEST_LUMA( 16, 17 );
+            MC_TEST_LUMA( 16, 9 );
+            MC_TEST_LUMA( 12, 8 );
+            MC_TEST_LUMA( 8, 9 );
             MC_TEST_LUMA( 8, 16 );
             MC_TEST_LUMA( 8, 8 );
             MC_TEST_LUMA( 8, 4 );
@@ -5740,16 +5846,16 @@ static int check_mc( int cpu_ref, int cpu_new )
                     srcb[i] = rand();
                 for( int i = 0; i < 8*sz; i++ )
                     bb[i] = 0xCD;
-                pixel *src = srcb + 4*st + 64 - 8;
+                pixel *srcp = srcb + 4*st + 64 - 8;
                 pixel *d[2][4];
                 for( int s = 0; s < 2; s++ )
                     for( int j = 0; j < 4; j++ )
                         d[s][j] = bb + (s*4+j)*sz + 4*st + 64 - 8;
                 if( mode == 0 )
-                    mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp );
+                    mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp );
                 else
                     (mode == 1 ? mc_a.hpel_filter_copy : mode == 2 ? mc_a.hpel_filter_copy_vc : mc_a.hpel_filter_dual)
-                        ( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp, d[0][3] );
+                        ( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp, d[0][3] );
                 for( int j = 0; j < 4; j++ )
                 {
                     if( (j == 0 && mode == 2) || (j == 3 && mode != 3) )
@@ -5763,7 +5869,7 @@ static int check_mc( int cpu_ref, int cpu_new )
                             row[x] = row[w+3];
                     }
                 }
-                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], src, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
+                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], srcp, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
                 if( memcmp( bb, bb + 4*sz, 4*sz * sizeof(pixel) ) )
                 {
                     ok = 0;
@@ -9601,6 +9707,9 @@ static int check_all_funcs( int cpu_ref, int cpu_new )
          + check_me_fpel( cpu_ref, cpu_new )
          + check_dct( cpu_ref, cpu_new )
          + check_mc( cpu_ref, cpu_new )
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+         + check_avg2( cpu_ref, cpu_new )
+#endif
          + check_intra( cpu_ref, cpu_new )
          + check_deblock( cpu_ref, cpu_new )
          + check_quant( cpu_ref, cpu_new )
