@@ -60,6 +60,12 @@ filt_mul20: times 32 db 20
 filt_mul15: times 16 db 1, -5
 filt_mul51: times 16 db -5, 1
 hpel_shuf: times 2 db 0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15
+hpel_pb_3: times 32 db 3
+hpel_pb_4: times 32 db 4
+hpel_padl_mask: times 28 db 0
+                times 4 db -1
+hpel_padr_mask: times 4 db -1
+                times 28 db 0
 deinterleave_shuf: times 2 db 0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15
 
 mbtree_prop_list_avx512_shuf: dw 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7
@@ -1043,7 +1049,23 @@ cglobal hpel_filter_h, 3,3,8
 %endif
 
 %if ARCH_X86_64
-%macro DO_FILT_V 5
+; side pads in-kernel (x264_frame_expand_border_filtered's): chunk 0 is row columns
+; -32..-1, whose 0-27 take column -4; the last chunk is columns w..w+31, whose 4-31
+; take column w+3. x: the stored chunk, t0/t1 clobbered.
+%macro HPEL_PADL 3
+    vpermq    %2, %1, q3333
+    pshufb    %2, [hpel_pb_4]
+    movu      %3, [hpel_padl_mask]
+    vpblendvb %1, %2, %1, %3
+%endmacro
+%macro HPEL_PADR 3
+    vpermq    %2, %1, q0000
+    pshufb    %2, [hpel_pb_3]
+    movu      %3, [hpel_padr_mask]
+    vpblendvb %1, %2, %1, %3
+%endmacro
+
+%macro DO_FILT_V 5-6 0 ; ..., pad: 1 left, 2 right on the last chunk
     ;The optimum prefetch distance is difficult to determine in checkasm:
     ;any prefetch seems slower than not prefetching.
     ;In real use, the prefetch seems to be a slight win.
@@ -1054,7 +1076,7 @@ cglobal hpel_filter_h, 3,3,8
     mova m1, [r3]
     mova m2, [r3+r2]
     mova %3, [r3+r2*2]
-%if hpel_copy
+%if hpel_mode == 1 || hpel_mode == 2
     movntps [r9+r4+%5], %3
 %endif
     mova m3, [r1]
@@ -1083,7 +1105,7 @@ cglobal hpel_filter_h, 3,3,8
     LOAD_ADD_2 m2, m5, [r3+r2  ], [r1+r2  ], m3, m6            ; b0 / b1
     LOAD_ADD_2 m3, m6, [r3+r2*2], [r1     ], %3, %4            ; c0 / c1
     packuswb %3, %4
-%if hpel_copy
+%if hpel_mode == 1 || hpel_mode == 2
     movntps [r9+r4+%5], %3
 %endif
     FILT_V2 m1, m2, m3, m4, m5, m6
@@ -1098,6 +1120,14 @@ cglobal hpel_filter_h, 3,3,8
     mova      %2, m4
 %endif
     FILT_PACK m1, m4, m15, 5
+%if %6 == 1
+    HPEL_PADL m1, m2, m3
+%elif %6 == 2
+    cmp       r4, -mmsize
+    jl %%nopad
+    HPEL_PADR m1, m2, m3
+%%nopad:
+%endif
     movntps  [r8+r4+%5], m1
 %endmacro
 
@@ -1123,12 +1153,17 @@ cglobal hpel_filter_h, 3,3,8
     FILT_H    %3, m3, m4
 %endmacro
 
-%macro DO_FILT_C 4
+%macro DO_FILT_C 4-5 0 ; ..., pad: 1 left, 2 right
     FILT_C %1, %2, %3
     FILT_C %2, %1, %4
     FILT_PACK %3, %4, m15, 6
 %if mmsize==32
     vpermq %3, %3, q3120
+%endif
+%if %5 == 1
+    HPEL_PADL %3, m1, m2
+%elif %5 == 2
+    HPEL_PADR %3, m1, m2
 %endif
     movntps   [r5+r4], %3
 %endmacro
@@ -1142,7 +1177,7 @@ cglobal hpel_filter_h, 3,3,8
     paddw     %1, %4
 %endmacro
 
-%macro DO_FILT_H 3
+%macro DO_FILT_H 3-4 0 ; ..., pad: 1 left, 2 right
 %if mmsize==32
     vperm2i128 m3, %2, %1, q0003
 %endif
@@ -1175,11 +1210,19 @@ cglobal hpel_filter_h, 3,3,8
     FILT_V2   m1, m2, %2, m6, m5, m4
     FILT_PACK m1, m6, m15, 5
 %endif
+%if %4 == 1
+    HPEL_PADL m1, m2, m3
+%elif %4 == 2
+    HPEL_PADR m1, m2, m3
+%endif
     movntps [r0+r4], m1
+%if hpel_mode == 3
+    movntps [r9+r4], m1
+%endif
     mova      %2, %3
 %endmacro
 
-%macro HPEL 0-1 0 ; copy
+%macro HPEL 0-2 0, 0 ; mode, pad
 ;-----------------------------------------------------------------------------
 ; void hpel_filter( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
 ;                   uint8_t *src, intptr_t stride, int width, int height )
@@ -1187,13 +1230,39 @@ cglobal hpel_filter_h, 3,3,8
 ;                        uint8_t *src, intptr_t stride, int width, int height,
 ;                        int16_t *buf, uint8_t *dst )
 ; copy also stores src to dst, at the columns of dstv
+; void hpel_filter_copy_vc( same ): copy without h, dsth unused
+; void hpel_filter_dual( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+;                        uint8_t *src, intptr_t stride, int width, int height,
+;                        int16_t *buf, uint8_t *dsth2 )
+; dual also stores h to dsth2, at the same offsets (dsth2 = dsth mod mmsize)
+; _pad: also the side pads (avx2 only); needs src and the rows 32-aligned at column
+; 0 (src = row - 8) and width = w + 16 with w % 32 == 0, w >= 32
 ;-----------------------------------------------------------------------------
-%assign hpel_copy %1
-%if hpel_copy
+%assign hpel_mode %1 ; 0 plain, 1 copy, 2 copy_vc, 3 dual
+%assign hpel_pad %2
+%if hpel_pad
+%if hpel_mode == 1
+cglobal hpel_filter_copy_pad, 7,10,16
+%elif hpel_mode == 2
+cglobal hpel_filter_copy_vc_pad, 7,10,16
+%elif hpel_mode == 3
+cglobal hpel_filter_dual_pad, 7,10,16
+%else
+cglobal hpel_filter_pad, 7,9,16
+%endif
+%else
+%if hpel_mode == 1
 cglobal hpel_filter_copy, 7,10,16
-    mov       r9, r8mp
+%elif hpel_mode == 2
+cglobal hpel_filter_copy_vc, 7,10,16
+%elif hpel_mode == 3
+cglobal hpel_filter_dual, 7,10,16
 %else
 cglobal hpel_filter, 7,9,16
+%endif
+%endif
+%if hpel_mode
+    mov       r9, r8mp
 %endif
     mov       r7, r3
     sub      r5d, mmsize
@@ -1202,7 +1271,7 @@ cglobal hpel_filter, 7,9,16
     sub       r3, r7
     add       r0, r5
     add       r8, r5
-%if hpel_copy
+%if hpel_mode != 0
     add       r9, r5
 %endif
     add       r7, r5
@@ -1225,10 +1294,26 @@ cglobal hpel_filter, 7,9,16
 ;ALIGN 16
 .loopy:
 ; first filter_v
-    DO_FILT_V m8, m7, m13, m12, 0
+    DO_FILT_V m8, m7, m13, m12, 0, hpel_pad
+%if hpel_pad
+; chunk 0 (never the last: w >= 32)
+    DO_FILT_V m6, m5, m11, m12, mmsize
+    psrlw   m15, 1
+    DO_FILT_C m9, m8, m7, m6, 1
+    paddw   m15, m15
+    mova     m7, m5
+%if hpel_mode != 2
+    DO_FILT_H m10, m13, m11, 1
+%endif
+    add      r4, mmsize
+    jl .loopx
+    cmp      r4, mmsize
+    jl .lastx_pad
+    jmp .rowend
+%endif
 ;ALIGN 16
 .loopx:
-    DO_FILT_V m6, m5, m11, m12, mmsize
+    DO_FILT_V m6, m5, m11, m12, mmsize, hpel_pad*2
 .lastx:
 %if cpuflag(ssse3)
     psrlw   m15, 1   ; pw_512
@@ -1242,11 +1327,29 @@ cglobal hpel_filter, 7,9,16
     psrlw   m15, 1   ; pw_16
 %endif
     mova     m7, m5
+%if hpel_mode != 2
     DO_FILT_H m10, m13, m11
+%endif
     add      r4, mmsize
     jl .loopx
     cmp      r4, mmsize
+%if hpel_pad
+    jl .lastx_pad
+    jmp .rowend
+; the last chunk (no v: the previous iteration stored it)
+.lastx_pad:
+    psrlw   m15, 1
+    DO_FILT_C m9, m8, m7, m6, 2
+    paddw   m15, m15
+    mova     m7, m5
+%if hpel_mode != 2
+    DO_FILT_H m10, m13, m11, 2
+%endif
+    add      r4, mmsize
+%else
     jl .lastx
+%endif
+.rowend:
 ; setup regs for next y
     sub      r4, r7
     sub      r4, r2
@@ -1254,7 +1357,7 @@ cglobal hpel_filter, 7,9,16
     sub      r3, r4
     add      r0, r2
     add      r8, r2
-%if hpel_copy
+%if hpel_mode != 0
     add      r9, r2
 %endif
     add      r5, r2
@@ -1277,6 +1380,12 @@ HPEL 1
 INIT_YMM avx2
 HPEL
 HPEL 1
+HPEL 2
+HPEL 3
+HPEL 0, 1
+HPEL 1, 1
+HPEL 2, 1
+HPEL 3, 1
 %endif ; ARCH_X86_64
 
 %undef movntq
@@ -2962,14 +3071,43 @@ cglobal integral_init4v, 3,5,6
 %endif
 %endmacro
 
-%macro FRAME_INIT_LOWRES 0
+;-----------------------------------------------------------------------------
+; void frame_init_lowres_core_pad( same ): 8-bit ymm, also the PADH side padding
+; of each row of the four planes, written after the row: dst[0] from the last
+; chunk's registers, dst[width-1] (width before rounding) from memory
+;-----------------------------------------------------------------------------
+%macro LOWRES_PAD 4 ; the row's first 32 bytes of the four planes
+    vpbroadcastb m8, %1
+    vpbroadcastb m9, %2
+    mova [r1-mmsize], m8
+    mova [r2-mmsize], m9
+    vpbroadcastb m8, %3
+    vpbroadcastb m9, %4
+    mova [r3-mmsize], m8
+    mova [r4-mmsize], m9
+    vpbroadcastb m8, [r1+r7-1]
+    vpbroadcastb m9, [r2+r7-1]
+    movu [r1+r7], m8
+    movu [r2+r7], m9
+    vpbroadcastb m8, [r3+r7-1]
+    vpbroadcastb m9, [r4+r7-1]
+    movu [r3+r7], m8
+    movu [r4+r7], m9
+%endmacro
+
+%macro FRAME_INIT_LOWRES 0-1 0 ; pad
 ; nasm < 2.15 can't take comparisons in the register count
 %if HIGH_BIT_DEPTH && mmsize < 32
     %assign lowres_xmm_regs 8
 %else
     %assign lowres_xmm_regs 12
 %endif
+%if %1
+cglobal frame_init_lowres_core_pad, 6,8,lowres_xmm_regs
+    mov      r7d, r7m
+%else
 cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
+%endif
 %if HIGH_BIT_DEPTH
     shl   dword r6m, 1
     FIX_STRIDES r5
@@ -3102,6 +3240,13 @@ cglobal frame_init_lowres_core, 6,7,lowres_xmm_regs
 %endif
     sub      r6d, mmsize
     jg .hloop
+%if %1
+%if cpuflag(avx512icl)
+    LOWRES_PAD xm4, xm0, xm5, xm1
+%else
+    LOWRES_PAD xm2, xm4, xm3, xm5
+%endif
+%endif
 %endif ; HIGH_BIT_DEPTH
 .skip:
     mov       r6, dst_gap
@@ -3136,7 +3281,62 @@ FRAME_INIT_LOWRES
 %if ARCH_X86_64
 INIT_YMM avx512icl
 FRAME_INIT_LOWRES
+%if HIGH_BIT_DEPTH == 0
+INIT_YMM avx2
+FRAME_INIT_LOWRES 1
+INIT_YMM avx512icl
+FRAME_INIT_LOWRES 1
 %endif
+%endif
+
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void expand_border_sides( uint8_t *pix, uint8_t *pix2, intptr_t stride, int width,
+;                           int height, int b_chroma )
+; the PADH (32) bytes left and right of rows [0, height): pixel 0 / width-1, or the
+; pairs 0-1 / width-2..width-1 with b_chroma; the same bytes at the same offsets
+; from pix2 too, unless it is NULL (adaptive MBAFF: the field planes)
+;-----------------------------------------------------------------------------
+%macro SIDES_LOOP 2 ; b/w, pix2
+.loop%1%2:
+    vpbroadcast%1 m0, [r0]
+%ifidn %1, b
+    vpbroadcastb  m1, [r0+r3-1]
+%else
+    vpbroadcastw  m1, [r0+r3-2]
+%endif
+    movu   [r0-32], m0
+    movu   [r0+r3], m1
+%if %2
+    movu   [r1-32], m0
+    movu   [r1+r3], m1
+    add       r1, r2
+%endif
+    add       r0, r2
+    dec      r4d
+    jg .loop%1%2
+    RET
+%endmacro
+
+INIT_YMM avx2
+cglobal expand_border_sides, 6,6
+    movsxdifnidn r3, r3d
+    test     r4d, r4d
+    jle .end
+    test      r1, r1
+    jz .single
+    test     r5d, r5d
+    jnz .loopw1
+    SIDES_LOOP b, 1
+    SIDES_LOOP w, 1
+.single:
+    test     r5d, r5d
+    jnz .loopw0
+    SIDES_LOOP b, 0
+    SIDES_LOOP w, 0
+.end:
+    RET
+%endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
 ; void mbtree_propagate_cost( int *dst, uint16_t *propagate_in, uint16_t *intra_costs,

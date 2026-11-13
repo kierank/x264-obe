@@ -116,6 +116,23 @@ typedef struct
      * there is no asm. */
     void (*hpel_filter_copy)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                               intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* adaptive MBAFF, set together or NULL. hpel_filter_copy without dsth,
+     * which is not written: for field rows whose h the frame pass stored. */
+    void (*hpel_filter_copy_vc)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                                 intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+    /* hpel_filter that also stores h to dsth2, at the same offsets (dsth2 and
+     * dsth have the same alignment) */
+    void (*hpel_filter_dual)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                              intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dsth2 );
+    /* hpel_filter, _copy, _copy_vc, _dual that also write x264_frame_expand_border_filtered's
+     * side pads: see x264_frame_filter_pads. dst unused by [0]. NULL if there is no asm. */
+    void (*hpel_filter_pad[4])( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                                intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
+
+    /* the PADH side padding of rows [0, height) of a plane: pixel 0 and width-1,
+     * or the pairs at 0 and width-2 with b_chroma (NV12/NV16); also to pix2 at
+     * the same offsets unless it is NULL. NULL if there is no asm. */
+    void (*expand_border_sides)( pixel *pix, pixel *pix2, intptr_t stride, int width, int height, int b_chroma );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );
@@ -135,6 +152,10 @@ typedef struct
 
     void (*frame_init_lowres_core)( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                     intptr_t src_stride, intptr_t dst_stride, int width, int height );
+    /* frame_init_lowres_core that also writes the PADH side padding of each row
+     * of the four planes (from dst[0] and dst[width-1]); NULL if there is no asm */
+    void (*frame_init_lowres_core_pad)( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
+                                        intptr_t src_stride, intptr_t dst_stride, int width, int height );
     /* rc.b_lookahead_8bit, high bit depth only: frame_init_lowres_core with each
      * output min( (x + 2) >> 2, 255 ) */
     void (*frame_init_lowres_core8)( pixel *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,

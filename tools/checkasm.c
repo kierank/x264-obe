@@ -5614,6 +5614,174 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "hpel filter copy :" );
     }
 
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched adaptive MBAFF pair, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.hpel_filter_dual )
+    {
+        mc_a.hpel_filter_dual = x264_hpel_filter_dual_avx2;
+        mc_a.hpel_filter_copy_vc = x264_hpel_filter_copy_vc_avx2;
+    }
+#endif
+    if( mc_a.hpel_filter_dual && mc_a.hpel_filter_dual != mc_ref.hpel_filter_dual )
+    {
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        pixel *dsth2 = pbuf4+8+52*64;
+        void *tmp = pbuf3+49*64;
+        set_func_name( "hpel_filter_dual" );
+        ok = 1; used_asm = 1;
+        /* as hpel_filter, and dsth2 gets the same bytes as dsth */
+        for( int i_off = 0; i_off < 3 && ok; i_off++ )
+        {
+            int o = (int[]){ 0, 8, 24 }[i_off];
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, srchpel+o, 64, 48, 10, tmp );
+            call_a( mc_a.hpel_filter_dual, dsta[0]+o, dsta[1]+o, dsta[2]+o, srchpel+o, (intptr_t)64, 48, 10, tmp, dsth2+o );
+            for( int i = 0; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter dual differs at plane %c line %d offset %d\n", "hvc"[i], j, o );
+                        break;
+                    }
+            if( memcmp( dsta[0]-8, dsth2-8, 12*64 * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "hpel filter dual: dsth2 != dsth offset %d\n", o );
+            }
+        }
+        report( "hpel filter dual :" );
+    }
+
+    if( mc_a.hpel_filter_copy_vc && mc_a.hpel_filter_copy_vc != mc_ref.hpel_filter_copy_vc )
+    {
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        pixel *cpyc = pbuf3+8+52*64;
+        pixel *cpya = pbuf4+8+52*64;
+        void *tmp = pbuf3+49*64;
+        set_func_name( "hpel_filter_copy_vc" );
+        ok = 1; used_asm = 1;
+        /* hpel_filter_copy without h: dsth untouched */
+        for( int i_off = 0; i_off < 3 && ok; i_off++ )
+        {
+            int o = (int[]){ 0, 8, 24 }[i_off];
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, srchpel+o, 64, 48, 10, tmp );
+            for( int j = 0; j < 10; j++ )
+                memcpy( cpyc+o+j*64, srchpel+o+j*64, 48 * sizeof(pixel) );
+            call_a( mc_a.hpel_filter_copy_vc, dsta[0]+o, dsta[1]+o, dsta[2]+o, srchpel+o, (intptr_t)64, 48, 10, tmp, cpya+o );
+            for( int i = 1; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter copy_vc differs at plane %c line %d offset %d\n", "hvc"[i], j, o );
+                        break;
+                    }
+            for( int k = 0; k < 16*64; k++ )
+                if( pbuf4[k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter copy_vc: h written at %d offset %d\n", k, o );
+                    break;
+                }
+            for( int j = 0; j < 10; j++ )
+                if( memcmp( cpyc+o+j*64, cpya+o+j*64, 48 * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter copy_vc: copy differs at line %d offset %d\n", j, o );
+                    break;
+                }
+            for( int k = -64; k < 11*64; k++ )
+                if( cpya[o+k] && cpya[o+k] != srchpel[o+k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter copy_vc: stray write at %d offset %d\n", k, o );
+                    break;
+                }
+        }
+        report( "hpel filter copy_vc :" );
+    }
+
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched in-kernel side pads, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.hpel_filter_pad[0] )
+    {
+        mc_a.hpel_filter_pad[0] = x264_hpel_filter_pad_avx2;
+        mc_a.hpel_filter_pad[1] = x264_hpel_filter_copy_pad_avx2;
+        mc_a.hpel_filter_pad[2] = x264_hpel_filter_copy_vc_pad_avx2;
+        mc_a.hpel_filter_pad[3] = x264_hpel_filter_dual_pad_avx2;
+    }
+#endif
+    if( mc_a.hpel_filter_pad[0] && mc_a.hpel_filter_pad[0] != mc_ref.hpel_filter_pad[0] &&
+        mc_a.hpel_filter_copy && mc_a.hpel_filter_copy_vc && mc_a.hpel_filter_dual )
+    {
+        /* each mode's _pad against the mode's own kernel then x264_frame_expand_border_filtered's
+         * side pads (columns -32..-5 from -4, w+4..w+31 from w+3) on h/v/c/dsth2; every byte of
+         * the planes. Rows 32-aligned at column 0, w % 32 == 0. */
+        set_func_name( "hpel_filter_pad" );
+        ok = 1; used_asm = 1;
+        intptr_t st = 192;
+        int hh = 6, sz = 16*st;
+        pixel *srcb = x264_malloc( sz * sizeof(pixel) );
+        pixel *bb = x264_malloc( 8*sz * sizeof(pixel) );
+        int16_t *tmp = x264_malloc( (st+48+32) * sizeof(int16_t) );
+        ok = srcb && bb && tmp;
+        for( int w = 32; w <= 128 && ok; w += 32 )
+            for( int mode = 0; mode < 4 && ok; mode++ )
+            {
+                for( int i = 0; i < sz; i++ )
+                    srcb[i] = rand();
+                for( int i = 0; i < 8*sz; i++ )
+                    bb[i] = 0xCD;
+                pixel *src = srcb + 4*st + 64 - 8;
+                pixel *d[2][4];
+                for( int s = 0; s < 2; s++ )
+                    for( int j = 0; j < 4; j++ )
+                        d[s][j] = bb + (s*4+j)*sz + 4*st + 64 - 8;
+                if( mode == 0 )
+                    mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp );
+                else
+                    (mode == 1 ? mc_a.hpel_filter_copy : mode == 2 ? mc_a.hpel_filter_copy_vc : mc_a.hpel_filter_dual)
+                        ( d[0][0], d[0][1], d[0][2], src, st, w+16, hh, tmp, d[0][3] );
+                for( int j = 0; j < 4; j++ )
+                {
+                    if( (j == 0 && mode == 2) || (j == 3 && mode != 3) )
+                        continue;
+                    for( int y = 0; y < hh; y++ )
+                    {
+                        pixel *row = d[0][j] + 8 + y*st;
+                        for( int x = -32; x < -4; x++ )
+                            row[x] = row[-4];
+                        for( int x = w+4; x < w+32; x++ )
+                            row[x] = row[w+3];
+                    }
+                }
+                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], src, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
+                if( memcmp( bb, bb + 4*sz, 4*sz * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    for( int i = 0; i < 4*sz; i++ )
+                        if( bb[i] != bb[4*sz+i] )
+                        {
+                            fprintf( stderr, "hpel_filter_pad mode %d w %d: plane %d row %d col %d: %d != %d\n", mode, w,
+                                     i/sz, i%sz/(int)st - 4, i%sz%(int)st - 64, bb[i], bb[4*sz+i] );
+                            break;
+                        }
+                }
+            }
+        x264_free( srcb );
+        x264_free( bb );
+        x264_free( tmp );
+        report( "hpel filter pad :" );
+    }
+
     if( mc_a.frame_init_lowres_core != mc_ref.frame_init_lowres_core )
     {
         pixel *dstc[4] = { pbuf3, pbuf3+1024, pbuf3+2048, pbuf3+3072 };
@@ -5644,6 +5812,113 @@ static int check_mc( int cpu_ref, int cpu_new )
             }
         }
         report( "lowres init :" );
+    }
+
+#if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched padding lowres, at its first levels */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.frame_init_lowres_core_pad )
+        mc_a.frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx2;
+    if( (cpu_new&X264_CPU_AVX512ICL) && !(cpu_ref&X264_CPU_AVX512ICL) )
+        mc_a.frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx512icl;
+#endif
+    if( mc_a.frame_init_lowres_core_pad && mc_a.frame_init_lowres_core_pad != mc_ref.frame_init_lowres_core_pad )
+    {
+        set_func_name( "lowres_init_pad" );
+        ok = 1; used_asm = 1;
+        /* frame_init_lowres_core then the PADH side pads of every row of the four
+         * planes; anything else in the buffer untouched */
+        intptr_t sl = (120+64+31)&~31;
+        int size = 4*10*sl + 64;
+        pixel *bc = x264_malloc( size * sizeof(pixel) );
+        pixel *ba = x264_malloc( size * sizeof(pixel) );
+        ok = bc && ba;
+        for( int w = 96; w <= 96+24 && ok; w += 8 )
+            for( int h = 1; h <= 8 && ok; h += 7 )
+            {
+                intptr_t stride = (w*2+31)&~31;
+                pixel *dc[4], *da[4];
+                for( int j = 0; j < 4; j++ )
+                {
+                    dc[j] = bc + 32 + j*10*sl;
+                    da[j] = ba + 32 + j*10*sl;
+                }
+                for( int i = 0; i < size; i++ )
+                    bc[i] = ba[i] = 0xAA ^ (i&7);
+                mc_c.frame_init_lowres_core( pbuf1, dc[0], dc[1], dc[2], dc[3], stride, sl, w, h );
+                for( int j = 0; j < 4; j++ )
+                    for( int y = 0; y < h; y++ )
+                        for( int x = 0; x < 32; x++ )
+                        {
+                            dc[j][y*sl-32+x] = dc[j][y*sl];
+                            dc[j][y*sl+w+x] = dc[j][y*sl+w-1];
+                        }
+                call_a( mc_a.frame_init_lowres_core_pad, pbuf1, da[0], da[1], da[2], da[3], stride, sl, w, h );
+                if( memcmp( bc, ba, size * sizeof(pixel) ) )
+                {
+                    ok = 0;
+                    for( int i = 0; i < size; i++ )
+                        if( bc[i] != ba[i] )
+                        {
+                            fprintf( stderr, "lowres_init_pad differs: w %d h %d at %d: %d != %d\n", w, h, i, bc[i], ba[i] );
+                            break;
+                        }
+                }
+            }
+        x264_free( bc );
+        x264_free( ba );
+        report( "lowres init pad :" );
+    }
+
+#if HAVE_MMX && !HIGH_BIT_DEPTH
+    /* the undispatched side padding, at the AVX2 level */
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.expand_border_sides )
+        mc_a.expand_border_sides = x264_expand_border_sides_avx2;
+#endif
+    if( mc_a.expand_border_sides && mc_a.expand_border_sides != mc_ref.expand_border_sides )
+    {
+        set_func_name( "expand_border_sides" );
+        ok = 1; used_asm = 1;
+        /* PADH bytes left and right of each row, of pix and the same offsets of
+         * pix2: from pixel 0 / width-1, or the pairs with b_chroma */
+        intptr_t stride = 256;
+        int size = 2*8*stride;
+        pixel *bc = x264_malloc( size * sizeof(pixel) );
+        pixel *ba = x264_malloc( size * sizeof(pixel) );
+        ok = bc && ba;
+        for( int k = 0; k < 4*6 && ok; k++ )
+        {
+            int b_chroma = k&1;
+            int b_pix2 = (k>>1)&1;
+            int w = (int[]){ 16, 48, 64, 112, 160, 176 }[k>>2];
+            int h = 1 + (k%7);
+            for( int i = 0; i < size; i++ )
+                bc[i] = ba[i] = rand();
+            pixel *pc = bc + 32, *pa = ba + 32;
+            pixel *pc2 = b_pix2 ? bc + 8*stride + 32 : NULL;
+            pixel *pa2 = b_pix2 ? ba + 8*stride + 32 : NULL;
+            for( int y = 0; y < h; y++ )
+                for( int x = 0; x < 32; x++ )
+                {
+                    pixel l = pc[y*stride + (x&b_chroma)];
+                    pixel r = pc[y*stride + w-1-b_chroma + (x&b_chroma)];
+                    pc[y*stride-32+x] = l;
+                    pc[y*stride+w+x] = r;
+                    if( pc2 )
+                    {
+                        pc2[y*stride-32+x] = l;
+                        pc2[y*stride+w+x] = r;
+                    }
+                }
+            call_a( mc_a.expand_border_sides, pa, pa2, stride, w, h, b_chroma );
+            if( memcmp( bc, ba, size * sizeof(pixel) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "expand_border_sides differs: w %d h %d chroma %d pix2 %d\n", w, h, b_chroma, b_pix2 );
+            }
+        }
+        x264_free( bc );
+        x264_free( ba );
+        report( "expand border sides :" );
     }
 
 #if HIGH_BIT_DEPTH

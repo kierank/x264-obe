@@ -1946,9 +1946,12 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                     output_inter[i+1] = output_inter[i] + thread_output_size + PAD_SIZE;
                     output_intra[i+1] = output_intra[i] + thread_output_size + PAD_SIZE;
 
-                    x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
+                    /* slice 0 runs here, on lookahead_thread[0] as in the pool */
+                    if( i )
+                        x264_threadpool_run( h->lookaheadpool, (void*)x264_slicetype_slice_cost, &s[i] );
                 }
-                for( int i = 0; i < h->param.i_lookahead_threads; i++ )
+                x264_stack_align( x264_slicetype_slice_cost, &s[0] );
+                for( int i = 1; i < h->param.i_lookahead_threads; i++ )
                     x264_threadpool_wait( h->lookaheadpool, &s[i] );
             }
             else
@@ -2511,12 +2514,14 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
     x264_frame_t *frames[X264_LOOKAHEAD_MAX+3] = { NULL, };
     int num_frames, orig_num_frames, keyint_limit, framecnt;
     int i_mb_count = NUM_MBS;
-    int i_max_search = X264_MIN( h->lookahead->next.i_size, X264_LOOKAHEAD_MAX );
+    /* an I-frame call (intra_minigop != 0) runs before the decided minigop,
+     * intra_minigop frames, leaves next: the window starts after it */
+    int i_max_search = X264_MIN( h->lookahead->next.i_size - intra_minigop, X264_LOOKAHEAD_MAX );
     int vbv_lookahead = h->param.rc.i_vbv_buffer_size && h->param.rc.i_lookahead;
     /* For determinism we should limit the search to the number of frames lookahead has for sure
      * in h->lookahead->next.list buffer, except at the end of stream.
      * For normal calls with (intra_minigop == 0) that is h->lookahead->i_slicetype_length + 1 frames.
-     * And for I-frame calls (intra_minigop != 0) we already removed intra_minigop frames from there. */
+     * And for I-frame calls (intra_minigop != 0) the window starts intra_minigop frames in. */
     if( h->param.b_deterministic )
         i_max_search = X264_MIN( i_max_search, h->lookahead->i_slicetype_length + 1 - intra_minigop );
     int keyframe = !!intra_minigop;
@@ -2527,7 +2532,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
         return;
     frames[0] = h->lookahead->last_nonb;
     for( framecnt = 0; framecnt < i_max_search; framecnt++ )
-        frames[framecnt+1] = h->lookahead->next.list[framecnt];
+        frames[framecnt+1] = h->lookahead->next.list[intra_minigop + framecnt];
 
     x264_lowres_context_init( h, &a );
 

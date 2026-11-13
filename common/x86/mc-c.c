@@ -1680,6 +1680,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->hpel_filter = x264_hpel_filter_avx2;
 #if ARCH_X86_64
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
+        pf->hpel_filter_copy_vc = x264_hpel_filter_copy_vc_avx2;
+        pf->hpel_filter_dual = x264_hpel_filter_dual_avx2;
+        pf->hpel_filter_pad[0] = x264_hpel_filter_pad_avx2;
+        pf->hpel_filter_pad[1] = x264_hpel_filter_copy_pad_avx2;
+        pf->hpel_filter_pad[2] = x264_hpel_filter_copy_vc_pad_avx2;
+        pf->hpel_filter_pad[3] = x264_hpel_filter_dual_pad_avx2;
 #endif
         pf->mc_chroma = x264_mc_chroma_avx2;
         pf->weight = x264_mc_weight_wtab_avx2;
@@ -1697,8 +1703,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->integral_init8h = x264_integral_init8h_avx2;
         pf->integral_init4h = x264_integral_init4h_avx2;
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
+#if ARCH_X86_64
+        pf->frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx2;
+#endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
+        pf->expand_border_sides = x264_expand_border_sides_avx2;
     }
 
     if( cpu&X264_CPU_AVX512 )
@@ -1715,6 +1725,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
     {
 #if ARCH_X86_64
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
+        pf->frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx512icl;
         pf->plane_copy_interleave = plane_copy_interleave_icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->integral_init4h = x264_integral_init4h_avx512icl;

@@ -634,6 +634,23 @@ static void ALWAYS_INLINE pixel_memset( pixel *dst, pixel *src, int len, int siz
     }
 }
 
+/* the upper and lower bands only: the rows they copy are already padded at the sides */
+static void ALWAYS_INLINE plane_expand_border_bands( pixel *pix, pixel *src, int i_stride, int i_width, int i_height, int i_padh, int i_padv, int b_pad_top, int b_pad_bottom )
+{
+#define PPIXEL(x, y) ( pix + (x) + (y)*i_stride )
+#define SPIXEL(x, y) ( src + (x) + (y)*i_stride )
+    /* upper band */
+    if( b_pad_top )
+        for( int y = 0; y < i_padv; y++ )
+            memcpy( PPIXEL(-i_padh, -y-1), SPIXEL(-i_padh, 0), (i_width+2*i_padh) * sizeof(pixel) );
+    /* lower band */
+    if( b_pad_bottom )
+        for( int y = 0; y < i_padv; y++ )
+            memcpy( PPIXEL(-i_padh, i_height+y), SPIXEL(-i_padh, i_height-1), (i_width+2*i_padh) * sizeof(pixel) );
+#undef SPIXEL
+#undef PPIXEL
+}
+
 /* src: same layout as pix, already expanded wherever its padded rows are copied */
 static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i_stride, int i_width, int i_height, int i_padh, int i_padv, int b_pad_top, int b_pad_bottom, int b_chroma )
 {
@@ -646,14 +663,7 @@ static void ALWAYS_INLINE plane_expand_border_src( pixel *pix, pixel *src, int i
         /* right band */
         pixel_memset( PPIXEL(i_width, y), SPIXEL(i_width-1-b_chroma, y), i_padh>>b_chroma, sizeof(pixel)<<b_chroma );
     }
-    /* upper band */
-    if( b_pad_top )
-        for( int y = 0; y < i_padv; y++ )
-            memcpy( PPIXEL(-i_padh, -y-1), SPIXEL(-i_padh, 0), (i_width+2*i_padh) * sizeof(pixel) );
-    /* lower band */
-    if( b_pad_bottom )
-        for( int y = 0; y < i_padv; y++ )
-            memcpy( PPIXEL(-i_padh, i_height+y), SPIXEL(-i_padh, i_height-1), (i_width+2*i_padh) * sizeof(pixel) );
+    plane_expand_border_bands( pix, src, i_stride, i_width, i_height, i_padh, i_padv, b_pad_top, b_pad_bottom );
 #undef SPIXEL
 #undef PPIXEL
 }
@@ -691,18 +701,35 @@ void x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y )
             if( b_end && !b_start )
                 height_frm += 4 >> v_shift;
             pixel *pix_frm = frame->plane[i] + (starty*stride >> v_shift);
-            plane_expand_border( pix_frm, stride, width, height_frm, padh, padv, pad_top, pad_bot, h_shift );
-
             /* border samples for each field are extended separately, from the
              * frame plane: plane_fld rows may not have been copied yet */
             pix = frame->plane_fld[i] + (starty*stride >> v_shift);
-            plane_expand_border_src( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
-            plane_expand_border_src( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            if( h->mc.expand_border_sides )
+            {
+                /* a field row is the frame row at the same offset, so its side
+                 * padding is the frame's: one pass writes both */
+                h->mc.expand_border_sides( pix_frm, pix, stride, width, height_frm, h_shift );
+                plane_expand_border_bands( pix_frm, pix_frm, stride, width, height_frm, padh, padv, pad_top, pad_bot );
+                plane_expand_border_bands( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot );
+                plane_expand_border_bands( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot );
+            }
+            else
+            {
+                plane_expand_border( pix_frm, stride, width, height_frm, padh, padv, pad_top, pad_bot, h_shift );
+                plane_expand_border_src( pix, pix_frm, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+                plane_expand_border_src( pix+stride, pix_frm+stride, stride*2, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            }
         }
         else
         {
             pix = frame->plane[i] + (starty*stride >> v_shift);
-            plane_expand_border( pix, stride, width, height, padh, padv, pad_top, pad_bot, h_shift );
+            if( h->mc.expand_border_sides )
+            {
+                h->mc.expand_border_sides( pix, NULL, stride, width, height, h_shift );
+                plane_expand_border_bands( pix, pix, stride, width, height, padh, padv, pad_top, pad_bot );
+            }
+            else
+                plane_expand_border( pix, stride, width, height, padh, padv, pad_top, pad_bot, h_shift );
         }
     }
 }
@@ -718,6 +745,14 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
     int padh = PADH - 4;
     int padv = PADV - 8;
     for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
+    {
+        /* hpel_filter_pad wrote the side pads, from the same pixels */
+        int b_sides = !x264_frame_filter_pads( h, frame, p );
+#define EXPAND( pix, stride, height )\
+        if( b_sides )\
+            plane_expand_border( pix, stride, width, height, padh, padv, b_start, b_end, 0 );\
+        else\
+            plane_expand_border_bands( pix, pix, stride, width, height, padh, padv, b_start, b_end );
         for( int i = 1; i < 4; i++ )
         {
             int stride = frame->i_stride[p];
@@ -726,28 +761,32 @@ void x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y
             if( SLICE_MBAFF )
             {
                 pix = frame->filtered_fld[p][i] + (16*mb_y - 16) * stride - 4;
-                plane_expand_border( pix, stride*2, width, height, padh, padv, b_start, b_end, 0 );
-                plane_expand_border( pix+stride, stride*2, width, height, padh, padv, b_start, b_end, 0 );
+                EXPAND( pix, stride*2, height )
+                EXPAND( pix+stride, stride*2, height )
             }
 
             pix = frame->filtered[p][i] + (16*mb_y - 8) * stride - 4;
-            plane_expand_border( pix, stride, width, height << SLICE_MBAFF, padh, padv, b_start, b_end, 0 );
+            EXPAND( pix, stride, height << SLICE_MBAFF )
         }
+#undef EXPAND
+    }
 }
 
-void x264_frame_expand_border_lowres( x264_frame_t *frame )
-{
-    for( int i = 0; i < 4; i++ )
-        plane_expand_border( frame->lowres[i], frame->i_stride_lowres, frame->i_width_lowres, frame->i_lines_lowres, PADH, PADV, 1, 1, 0 );
-}
 
-/* Lowres rows [y0,y1): side padding, and the padding above or below when the
- * band is the first or last. */
-void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 )
+/* Lowres rows [y0,y1): side padding (unless frame_init_lowres_core_pad wrote
+ * it), and the padding above or below when the band is the first or last. */
+void x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1, int b_sides )
 {
     for( int i = 0; i < 4; i++ )
-        plane_expand_border( frame->lowres[i] + y0 * frame->i_stride_lowres, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
-                             PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+    {
+        pixel *pix = frame->lowres[i] + y0 * frame->i_stride_lowres;
+        if( b_sides )
+            plane_expand_border( pix, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                                 PADH, PADV, !y0, y1 == frame->i_lines_lowres, 0 );
+        else
+            plane_expand_border_bands( pix, pix, frame->i_stride_lowres, frame->i_width_lowres, y1 - y0,
+                                       PADH, PADV, !y0, y1 == frame->i_lines_lowres );
+    }
 }
 
 #if HIGH_BIT_DEPTH

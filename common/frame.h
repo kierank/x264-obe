@@ -260,10 +260,8 @@ void          x264_frame_ext_release( x264_frame_t *frame );
 void          x264_frame_expand_border( x264_t *h, x264_frame_t *frame, int mb_y );
 #define x264_frame_expand_border_filtered x264_template(frame_expand_border_filtered)
 void          x264_frame_expand_border_filtered( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
-#define x264_frame_expand_border_lowres x264_template(frame_expand_border_lowres)
-void          x264_frame_expand_border_lowres( x264_frame_t *frame );
 #define x264_frame_expand_border_lowres_rows x264_template(frame_expand_border_lowres_rows)
-void          x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1 );
+void          x264_frame_expand_border_lowres_rows( x264_frame_t *frame, int y0, int y1, int b_sides );
 #if HIGH_BIT_DEPTH
 #define x264_frame_expand_border_lowres8_rows x264_template(frame_expand_border_lowres8_rows)
 void          x264_frame_expand_border_lowres8_rows( x264_frame_t *frame, int y0, int y1 );
@@ -286,6 +284,8 @@ void          x264_macroblock_deblock( x264_t *h );
 
 #define x264_frame_filter x264_template(frame_filter)
 void          x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end );
+#define x264_frame_filter_pads x264_template(frame_filter_pads)
+int           x264_frame_filter_pads( x264_t *h, x264_frame_t *frame, int p );
 #define x264_frame_init_lowres x264_template(frame_init_lowres)
 void          x264_frame_init_lowres( x264_t *h, x264_frame_t *frame );
 #define x264_frame_init_lowres_edge x264_template(frame_init_lowres_edge)

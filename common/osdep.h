@@ -207,6 +207,7 @@ static inline int x264_pthread_create( x264_pthread_t *t, void *a, void *(*f)(vo
 #define x264_pthread_cond_init       pthread_cond_init
 #define x264_pthread_cond_destroy    pthread_cond_destroy
 #define x264_pthread_cond_broadcast  pthread_cond_broadcast
+#define x264_pthread_cond_signal     pthread_cond_signal
 #define x264_pthread_cond_wait       pthread_cond_wait
 #define x264_pthread_attr_t          pthread_attr_t
 #define x264_pthread_attr_init       pthread_attr_init
@@ -233,6 +234,7 @@ static inline int x264_pthread_create( x264_pthread_t *t, void *a, void *(*f)(vo
 #define x264_pthread_cond_init(c,f)  0
 #define x264_pthread_cond_destroy(c)
 #define x264_pthread_cond_broadcast(c)
+#define x264_pthread_cond_signal(c)
 #define x264_pthread_cond_wait(c,m)
 #define x264_pthread_attr_t          int
 #define x264_pthread_attr_init(a)    0
