@@ -22,8 +22,8 @@ LIVE_SHOW='hpel_filter|frame_filter|plane_copy|memcpy|frame_expand|cache_load_in
 LIVE_ASSERT=${LIVE_ASSERT:-}
 pkg_mode() { # mode bitrate
     case $1 in
-    normal_t4) echo "$(nmopts $2) --threads 4 --frames 120";;
-    lowlat_t4) echo "$(llopts $2) --threads 4 --frames 120";;
+    normal_t4) echo "$(nmopts $2) --threads 4 --frames 120 --qp 23";;
+    lowlat_t4) echo "$(llopts $2) --threads 4 --frames 120 --qp 23";;
     sub1)      echo "--preset superfast --subme 1 --bframes 2 --vbv-bufsize $2 --frames 120";;
     *) return 1;;
     esac
