@@ -27,6 +27,101 @@
 
 #include "common.h"
 
+#if HAVE_THP
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+#if HAVE_THP && defined(SYS_memfd_create)
+#define HAVE_FLD_MAP 1
+#else
+#define HAVE_FLD_MAP 0
+#endif
+
+#if HAVE_FLD_MAP
+/* MBAFF: field row r of parity i is frame row 2r+i at the same offset, so
+ * plane_fld[p] and filtered_fld[p][1] (h is horizontal only) hold the picture
+ * rows of plane[p] and filtered[p][1] byte for byte. Only the vertical pads
+ * differ, and both are read (mvs reach 24 rows and more outside the picture),
+ * so a stride*2 view of the frame plane can't replace plane_fld.
+ * Map buffer[p] and buffer_fld[p] (size bytes each, planes of plane_size bytes,
+ * pixel 0 of plane 0 at plane_off) from one memfd, the field buffer's pages
+ * that hold only picture rows of its first n_alias planes being the frame
+ * buffer's. Those pages are 4K, not THP. */
+static int frame_fld_map( x264_frame_t *frame, int p, size_t size, size_t plane_size, size_t plane_off, int n_alias )
+{
+    long page_size = sysconf( _SC_PAGESIZE );
+    if( page_size <= 0 )
+        return -1;
+    size_t page = page_size;
+    size_t huge = 2*1024*1024;
+    size_t row = frame->i_stride[p] * sizeof(pixel);
+    /* plane 0 starts a page: its first shared page starts at pixel 0 of row 0 */
+    size_t phase = (page - plane_off % page) % page;
+    size_t k = (size + page - 1) & ~(page - 1);
+    size_t span = phase + k + size;
+    size_t map_size = ((span + page - 1) & ~(page - 1)) + huge;
+    size_t file_size = (phase + n_alias * plane_size + page - 1) & ~(page - 1);
+    uint8_t *map = mmap( NULL, map_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0 );
+    if( map == MAP_FAILED )
+        return -1;
+    uint8_t *base = (uint8_t*)(((uintptr_t)map + huge - 1) & ~(uintptr_t)(huge - 1));
+    uint8_t *frm = base + phase;
+    uint8_t *fld = frm + k;
+    int fd = syscall( SYS_memfd_create, "x264-fld", 1 /* MFD_CLOEXEC */ );
+    if( fd < 0 )
+        goto fail;
+    if( ftruncate( fd, file_size ) ||
+        mmap( base, file_size, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, 0 ) == MAP_FAILED )
+        goto fail_fd;
+    for( int j = 0; j < n_alias; j++ )
+    {
+        uint8_t *plane = fld + j * plane_size + plane_off;
+        uint8_t *i0 = plane - PADH * sizeof(pixel);
+        uint8_t *i1 = i0 + frame->i_lines[p] * row;
+        uint8_t *s0 = (uint8_t*)(((uintptr_t)i0 + page - 1) & ~(uintptr_t)(page - 1));
+        uint8_t *s1 = (uint8_t*)((uintptr_t)i1 & ~(uintptr_t)(page - 1));
+        if( s1 <= s0 )
+            goto fail_fd;
+        int top = ((size_t)(s0 - i0) + row - 1) / row;
+        int bot = ((size_t)(i1 - s1) + row - 1) / row;
+        /* the field passes copy and rewrite at most 16 rows at each edge */
+        if( top > 16 || bot > 16 ||
+            mmap( s0, s1 - s0, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, s0 - k - base ) == MAP_FAILED )
+            goto fail_fd;
+        frame->i_fld_priv[p][j][0] = top;
+        frame->i_fld_priv[p][j][1] = bot;
+        if( !j )
+        {
+            frame->fld_shared[p][0] = (s0 - plane) / (intptr_t)sizeof(pixel);
+            frame->fld_shared[p][1] = (s1 - plane) / (intptr_t)sizeof(pixel);
+        }
+    }
+    close( fd );
+    madvise( base, span, MADV_HUGEPAGE );
+    frame->fld_map[p] = map;
+    frame->fld_map_size[p] = map_size;
+    frame->i_fld_alias[p] = n_alias;
+    frame->buffer[p] = (pixel*)frm;
+    frame->buffer_fld[p] = (pixel*)fld;
+    return 0;
+fail_fd:
+    close( fd );
+fail:
+    munmap( map, map_size );
+    return -1;
+}
+#endif
+
+static void frame_fld_unmap( x264_frame_t *frame )
+{
+#if HAVE_FLD_MAP
+    for( int p = 0; p < 3; p++ )
+        if( frame->fld_map[p] )
+            munmap( frame->fld_map[p], frame->fld_map_size[p] );
+#endif
+}
+
 static int align_plane_size( int x, int disalign )
 {
     if( !(x&(disalign-1)) )
@@ -147,6 +242,18 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     for( int p = 0; p < luma_plane_count; p++ )
     {
         int luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
+#if HAVE_FLD_MAP
+        /* Not 4:4:4: x264_frame_filter's field pass clobbers start, so the frame
+         * hpel of planes 1 and 2 redoes bordered rows and leaves pads that depend
+         * on the kernels run before it (a vc pass would change them). */
+        if( PARAM_INTERLACED && b_fdec && !CHROMA444 )
+        {
+            int n = h->param.analyse.i_subpel_refine ? 4 : 1;
+            if( !frame_fld_map( frame, p, (n*luma_plane_size + padh_align) * sizeof(pixel), luma_plane_size * sizeof(pixel),
+                                (frame->i_stride[p] * i_padv + PADH + padh_align) * sizeof(pixel), n > 1 ? 2 : 1 ) )
+                continue;
+        }
+#endif
         if( h->param.analyse.i_subpel_refine && b_fdec )
         {
             /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
@@ -267,7 +374,17 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     if( b_touch )
     {
         if( b_fdec )
+        {
             memset( frame->base, 0, prealloc_size );
+            for( int p = 0; p < luma_plane_count; p++ )
+                if( frame->fld_map[p] )
+                {
+                    int n = h->param.analyse.i_subpel_refine ? 4 : 1;
+                    size_t size = (n * align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign ) + padh_align) * sizeof(pixel);
+                    memset( frame->buffer[p], 0, size );
+                    memset( frame->buffer_fld[p], 0, size );
+                }
+        }
         else
         {
             if( h->frames.b_have_lowres )
@@ -324,6 +441,8 @@ static x264_frame_t *x264_frame_new( x264_t *h, int b_fdec, int b_touch )
     return frame;
 
 fail:
+    if( frame )
+        frame_fld_unmap( frame );
     x264_free( frame );
     return NULL;
 }
@@ -336,6 +455,7 @@ void x264_frame_delete( x264_frame_t *frame )
     {
         x264_frame_ext_release( frame );
         x264_free( frame->base );
+        frame_fld_unmap( frame );
 
         if( frame->param && frame->param->param_free )
             frame->param->param_free( frame->param );

@@ -815,7 +815,9 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 }
 
 /* Field hpel of field rows [y0, y1) of parity i. With b_copy, read the frame
- * plane and copy it to plane_fld as we go. */
+ * plane and copy it to plane_fld as we go. If plane_fld is aliased onto the
+ * frame plane (i_fld_alias) there is nothing to copy, and if filtered_fld[p][1]
+ * is too, its rows are the frame h rows already. */
 static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int y0, int y1, int b_copy )
 {
     intptr_t stride = frame->i_stride[p] << 1;
@@ -826,6 +828,14 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     pixel *dstc = frame->filtered_fld[p][3] + offs;
     if( y1 <= y0 )
         return;
+    if( b_copy && frame->i_fld_alias[p] )
+    {
+        if( frame->i_fld_alias[p] > 1 && h->mc.hpel_filter_vc )
+            h->mc.hpel_filter_vc( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
+        else
+            h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
+        return;
+    }
     if( !b_copy )
         h->mc.hpel_filter( dsth, dstv, dstc, frame->plane_fld[p] + offs, stride, width, y1 - y0, h->scratch_hpel );
     else if( h->mc.hpel_filter_copy )
@@ -871,9 +881,18 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
             /* Rows whose 6-tap window (rows -2..3) is inside the picture see
              * the same pixels in the frame plane, and copy them to plane_fld.
              * The others read plane_fld's field borders, and the fullpel rows
-             * near them, which the encoder copies (top and bottom 16 rows). */
-            int y0 = x264_clip3( 2, start, height_fld );
-            int y1 = x264_clip3( (frame->i_lines[p] >> 1) - 3, y0, height_fld );
+             * near them, which the encoder copies (top and bottom 16 rows).
+             * With plane_fld aliased (i_fld_alias) there is no copy, and with
+             * filtered_fld[p][1] aliased too the middle rows skip h. */
+            int e0 = 2, e1 = (frame->i_lines[p] >> 1) - 3;
+            if( frame->i_fld_alias[p] > 1 )
+            {
+                /* field h rows with bytes outside the shared pages are written here */
+                e0 = X264_MAX( e0, (frame->i_fld_priv[p][1][0] + 1) >> 1 );
+                e1 = X264_MIN( e1, (frame->i_lines[p] - frame->i_fld_priv[p][1][1]) >> 1 );
+            }
+            int y0 = x264_clip3( e0, start, height_fld );
+            int y1 = x264_clip3( e1, y0, height_fld );
             for( int i = 0; i < 2; i++ )
             {
                 frame_filter_fld( h, frame, p, i, start, y0, 0 );
