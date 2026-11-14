@@ -864,12 +864,13 @@ static void frame_filter_fld( x264_t *h, x264_frame_t *frame, int p, int i, int 
     if( b_copy && frame->i_fld_alias[p] )
     {
         /* the field rows are the frame rows already: read plane_fld, copy nothing */
-        if( frame->i_fld_alias[p] > 1 && b_pad && h->mc.hpel_filter_vc_pad )
+        /* b_pad: a _pad kernel, which also writes the side pads (expand_border_filtered skips them) */
+        if( b_pad && frame->i_fld_alias[p] > 1 && h->mc.hpel_filter_vc_pad )
             h->mc.hpel_filter_vc_pad( dsth, dstv, dstc, dstf, stride, width, y1 - y0, h->scratch_hpel, dstf );
-        else if( frame->i_fld_alias[p] > 1 && h->mc.hpel_filter_vc )
-            h->mc.hpel_filter_vc( dsth, dstv, dstc, dstf, stride, width, y1 - y0, h->scratch_hpel );
         else if( b_pad )
             h->mc.hpel_filter_pad[0]( dsth, dstv, dstc, dstf, stride, width, y1 - y0, h->scratch_hpel, dstf );
+        else if( frame->i_fld_alias[p] > 1 && h->mc.hpel_filter_vc )
+            h->mc.hpel_filter_vc( dsth, dstv, dstc, dstf, stride, width, y1 - y0, h->scratch_hpel );
         else
             h->mc.hpel_filter( dsth, dstv, dstc, dstf, stride, width, y1 - y0, h->scratch_hpel );
         return;
