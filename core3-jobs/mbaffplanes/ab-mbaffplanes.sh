@@ -34,8 +34,10 @@ for a in base arm; do s=$BASE; [ $a = arm ] && s=$ARM; for f in t m s; do build 
 LOW="--preset veryfast --tune zerolatency --intra-refresh --keyint 30 --bitrate 20000 --vbv-maxrate 20000 --vbv-bufsize 667 --nal-hrd fakevbr --aud --pic-struct --open-gop --profile high --threads 1"
 NOR="--subme 6 --me hex --ref 2 --no-mixed-refs --no-chroma-me --trellis 1 --partitions i8x8,i4x4 --psy-rd 1.0:0 --bframes 3 --rc-lookahead 24 --keyint 30 --bitrate 20000 --vbv-maxrate 20000 --vbv-bufsize 20000 --nal-hrd fakevbr --aud --pic-struct --open-gop --profile high --threads 1"
 # md5-only cells: frame threads, sliced threads, all-field (subme 0: non-adaptive MBAFF, x264's PAFF-like mode)
-NOR_T4="${NOR/--threads 1/--threads 4}"
-LOW_T4="${LOW/--threads 1/--threads 4}"
+# threaded cells at CQP: threaded VBV is nondeterministic run to run even in one binary (Core 3 AA: base 8/8 distinct)
+cqp() { echo "$1" | sed -E "s/--bitrate [0-9]+ //; s/--vbv-maxrate [0-9]+ //; s/--vbv-bufsize [0-9]+ //; s/--nal-hrd fakevbr //; s/$/ --qp 23/"; }
+NOR_T4=$(cqp "${NOR/--threads 1/--threads 4}")
+LOW_T4=$(cqp "${LOW/--threads 1/--threads 4}")
 FLD0="${NOR/--subme 6/--subme 0}"
 CLIPLIST="field-frame-mix-i credits-i sgfades-i"
 frames() { case $1 in sgfades*) echo 60;; *) echo 30;; esac; }
@@ -73,7 +75,7 @@ for a in base arm; do for cell in LOW NOR; do eval o=\$$cell
   sym=$(nm $W/b-$a-t/x264 | grep -o 'x264_8_hpel_filter_vc_avx2' | head -1)
   [ -z "$sym" ] && { echo "$a $cell: no hpel_filter_vc_avx2 symbol"; continue; }
   n=$(gdb -batch -ex "break $sym" -ex 'ignore 1 1000000000' -ex run -ex 'info breakpoints' \
-      --args $W/b-$a-t/x264 $o --tff --frames 5 -o /dev/null $CLIPS/$c.y4m 2>/dev/null | grep -o 'already hit [0-9]* time' || echo "0 (not hit)")
+      --args $W/b-$a-t/x264 $o --tff --frames 5 -o /dev/null $CLIPS/$c.y4m 2>&1); case "$n" in *"already hit"*) n=$(echo "$n" | grep -o "already hit [0-9]* time");; *"breakpoint     keep y"*) n="0 (breakpoint set, never hit)";; *) n="NO COUNT (gdb missing or failed: not a zero; use perf samples)";; esac
   echo "$a $cell $sym: $n"
 done; done
 

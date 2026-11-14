@@ -79,7 +79,7 @@ for c in tile-chaos-p field-frame-mix-i; do for cell in LOW NOR; do eval o=\$$ce
   for a in base arm; do for sym in x264_8_me_search_fpel_avx2 x264_8_me_search_fpel_avx512 x264_8_pixel_satd_subpel_search_16x16_avx2; do
     nm $W/b-$a-t/x264 | grep -q " $sym\$" || continue
     n=$(gdb -batch -ex "break $sym" -ex 'ignore 1 1000000000' -ex run -ex 'info breakpoints' \
-        --args $W/b-$a-t/x264 $o $(tff $c) --frames 5 -o /dev/null $CLIPS/$c.y4m 2>/dev/null | grep -o 'already hit [0-9]* time' || echo "0 (not hit)")
+        --args $W/b-$a-t/x264 $o $(tff $c) --frames 5 -o /dev/null $CLIPS/$c.y4m 2>&1); case "$n" in *"already hit"*) n=$(echo "$n" | grep -o "already hit [0-9]* time");; *"breakpoint     keep y"*) n="0 (breakpoint set, never hit)";; *) n="NO COUNT (gdb missing or failed: not a zero; use perf samples)";; esac
     echo "$c $cell $a $sym: $n"
   done; done
 done; done
