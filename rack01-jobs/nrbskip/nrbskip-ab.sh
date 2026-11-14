@@ -16,7 +16,8 @@ BASE=4e292d6ac921cde88c587352e1833137ee074ec7
 ARM=cb5b86c2d53b58b6778907b2925a4c6154119477
 ARMDESC="cb5b86c2 (phase 1 + phase 2)"
 NODUMP_GATE=1
-EXTRA_MD5="tile-chaos-p:normal_t4 field-frame-mix-i:normal_t4 tile-chaos-p:normal_sliced4 field-frame-mix-i:normal_slices4 tile-chaos-p:normal_slicemax tile-chaos-p:normal_pyrnone field-frame-mix-i:normal_pyrstrict tile-chaos-p:normal_psnr field-frame-mix-i:normal_cavlc field-frame-mix-i:lowlat_t4"
+# no CAVLC / slice-max-size cells: both are configure-off in x264-obe (an encode would fail)
+EXTRA_MD5="tile-chaos-p:normal_t4 field-frame-mix-i:normal_t4 tile-chaos-p:normal_sliced4 field-frame-mix-i:normal_slices4 tile-chaos-p:normal_pyrnone field-frame-mix-i:normal_pyrstrict tile-chaos-p:normal_psnr field-frame-mix-i:lowlat_t4"
 LIVE_CELLS=${LIVE_CELLS:-"tile-chaos-p:normal field-frame-mix-i:normal"}
 LIVE_SHOW='macroblock_(ring|store|cache_save|deblock)|memcpy|memset'
 LIVE_ASSERT=${LIVE_ASSERT:-}
@@ -26,11 +27,9 @@ pkg_mode() { # mode bitrate
     normal_t4)        echo "$nm --threads 4 --frames 120 --qp 23";;
     normal_sliced4)   echo "$nm --threads 4 --sliced-threads --frames 120 --qp 23";;
     normal_slices4)   echo "$nm --slices 4 --frames 120";;
-    normal_slicemax)  echo "$nm --slice-max-size 1500 --frames 60";;
     normal_pyrnone)   echo "$nm --b-pyramid none --frames 120";;
     normal_pyrstrict) echo "$nm --b-pyramid strict --frames 120";;
     normal_psnr)      echo "$nm --psnr --frames 120";;
-    normal_cavlc)     echo "$nm --no-cabac --frames 120";;
     lowlat_t4)        echo "$(llopts $2) --threads 4 --frames 120 --qp 23";;
     *) return 1;;
     esac
