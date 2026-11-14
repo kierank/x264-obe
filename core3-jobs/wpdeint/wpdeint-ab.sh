@@ -43,11 +43,17 @@ P422="--profile high422 --output-csp i422"
 
 tree() { # name sha
     local d=$W/$1
-    [ -x $d/x264 ] && return 0
+    if [ -x $d/x264 ]; then # an existing tree is reused only after the same sha check
+        test "$(git -C $d rev-parse --short=8 HEAD)" = "$2" && return 0
+        echo "stale tree $1 (not $2): rebuilding"
+    fi
     rm -rf $d && git clone -q $REPO $d && cd $d && git fetch -q origin $BRANCH && git checkout -q $2 || exit 1
     test "$(git rev-parse --short=8 HEAD)" = "$2" || { echo "WRONG TREE $1"; exit 1; }
     case "$1" in *cnt) sh $W/wpcnt.sh $d || exit 1 ;; esac
     ./configure --bit-depth=8 --enable-static --disable-opencl --extra-cflags="-fno-fast-math -ffp-contract=off -fno-pie" --extra-ldflags="-no-pie" > cfg.log 2>&1 || exit 1
+    # pin the version string: the SEI carries it, and a different length moves tight-VBV rate control and recon
+    sed -i -e "s|^#define X264_VERSION .*|#define X264_VERSION \" rpinned\"|" -e "s|^#define X264_POINTVER .*|#define X264_POINTVER \"0.0.pinned\"|" x264_config.h
+    grep -q "0.0.pinned" x264_config.h || { echo "version pin failed $1"; exit 1; }
     make -j"$(nproc)" x264 checkasm8 > make.log 2>&1 || { tail make.log; exit 1; }
 }
 
@@ -86,7 +92,10 @@ live)
 md5)
     mkdir -p $W/out
     cells | while read c m; do
+        rm -f $W/out/rec_*.yuv $W/out/md5_*_${c}_$m.264
         for a in base base2 arm arm2; do DUMP="--dump-yuv $W/out/rec_$a.yuv" bash $0 enc $a $c $m md5_${a}_${c}_$m > /dev/null; done
+        e=""; for f in $W/out/rec_{base,base2,arm,arm2}.yuv $W/out/md5_{base,base2,arm,arm2}_${c}_$m.264; do [ -s $f ] || e="$e $(basename $f)"; done
+        [ -n "$e" ] && { echo "$c $m: FAIL: EMPTY or missing output:$e"; continue; }
         r=$(md5sum $W/out/rec_{base,base2,arm,arm2}.yuv | awk '{print $1}' | sort -u | wc -l)
         bb=$(md5sum $W/out/md5_{base,base2}_${c}_$m.264 | awk '{print $1}' | sort -u | wc -l)
         ba=$(md5sum $W/out/md5_{arm,arm2}_${c}_$m.264 | awk '{print $1}' | sort -u | wc -l)
