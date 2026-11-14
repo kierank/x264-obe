@@ -24,24 +24,25 @@ else CLIPLIST=${CLIPLIST:-"fades-p tile-chaos-p pan-fast-p fades-i field-frame-m
 NORMAL="--subme 6 --me hex --ref 2 --no-mixed-refs --no-chroma-me --trellis 1 --partitions i8x8,i4x4 --psy-rd 1.0:0 --bframes 3 --rc-lookahead 24 --keyint 30 --bitrate 20000 --vbv-maxrate 20000 --vbv-bufsize 20000 --nal-hrd fakevbr --aud --pic-struct --open-gop --profile high --threads 1"
 LOWLAT="--preset veryfast --tune zerolatency --intra-refresh --keyint 30 --bitrate 20000 --vbv-maxrate 20000 --vbv-bufsize 667 --nal-hrd fakevbr --aud --pic-struct --open-gop --profile high --threads 1"
 # md5 cells: name|mode|extra options|build depth|clip suffix ("" or -422)
+# --qp cells drop the VBV / HRD options (enc): threaded VBV is nondeterministic run to run even in base (Core 3
+# Job Y: base t4 20 repeats -> 3 bitstreams; CQP 6/6 identical). No CAVLC / slice-max-size cells: both are
+# configure-off in x264-obe (production builds have neither).
 CELLS="n|normal||8|
 n_pyrnone|normal|--b-pyramid none|8|
 n_pyrstrict|normal|--b-pyramid strict|8|
-n_t4|normal|--threads 4|8|
-n_sliced4|normal|--threads 4 --sliced-threads|8|
+n_t4|normal|--threads 4 --qp 23|8|
+n_sliced4|normal|--threads 4 --sliced-threads --qp 23|8|
 n_slices4|normal|--slices 4|8|
 n_vbvtight|normal|--vbv-bufsize 1500|8|
-n_cavlc|normal|--no-cabac|8|
 n_psnr|normal|--psnr|8|
 n_ssim|normal|--ssim|8|
-n_slicemax|normal|--slice-max-size 1500|8|
 n_fake|normal|--fake-interlaced|8|
 n_subme0|normal|--subme 0|8|
 n_422|normal||8|-422
 n_10|normal||10|
 n_10_422|normal||10|-422
 l|lowlat||8|
-l_t4|lowlat|--threads 4|8|
+l_t4|lowlat|--threads 4 --qp 23|8|
 l_422|lowlat||8|-422
 l_10|lowlat||10|"
 
@@ -87,6 +88,9 @@ enc() { # arm clip mode extra tag: one encode, perf stat -x to $W/out/<tag>.perf
     case $c in *-i|*-i-422) il="--tff";; esac
     case $c in sgfades*) fr=$WFRAMES;; esac
     opt=$LOWLAT; [ $m = normal ] && opt=$NORMAL
+    case " $x " in *" --qp "*) opt=$(echo "$opt" | sed -E "s/--bitrate [0-9]+ //; s/--vbv-maxrate [0-9]+ //; s/--vbv-bufsize [0-9]+ //; s/--nal-hrd fakevbr //");; esac
+    local bd=8; case $a in *10) bd=10;; esac
+    case $c:$bd in *-422:*) opt="$opt --output-csp i422 --profile high422";; *:10) opt="$opt --profile high10";; esac   # the last --profile wins
     local FR=""; [ "$fr" != 0 ] && FR="--frames $fr"
     taskset -c ${CPUS:-$CORE} perf stat -x, -e cycles:u,instructions:u,task-clock -o $W/out/$t.perf \
         $W/$a/x264 $opt $x $il $FR ${DUMP:-} -o $W/out/$t.264 $W/clips/$c.y4m 2> $W/out/$t.log < /dev/null
@@ -99,7 +103,9 @@ clips() { # links to the clips, 4:2:2 copies of the md5 clips
         ffmpeg -nostdin -v error -i $CLIPS/$c.y4m $n -pix_fmt yuv422p -strict -1 -f yuv4mpegpipe $W/clips/$c-422.y4m || exit 1
     done
 }
-md5of() { md5sum "$@" | awk '{print $1}' | sort -u | wc -l; }
+md5of() { # distinct md5s; a missing or empty file is a hard error (prints EMPTY, never a pass)
+    local f; for f in "$@"; do [ -s "$f" ] || { echo "EMPTY($(basename $f))"; return 1; }; done
+    md5sum "$@" | awk '{print $1}' | sort -u | wc -l; }
 
 case "$1" in
 build)
@@ -129,10 +135,10 @@ md5) # bitstream md5 across arms, every cell; recon (dump-yuv: b_nrb off, the ph
         echo "w$m $c (base p1 p2): bitstream distinct $(md5of $f)  (1 = pass)"
     done; done
     ;;
-rep) # frame threads, 20 repeats per arm: distinct md5 within and across arms
+rep) # frame threads (CQP: threaded VBV is nondeterministic), 20 repeats per arm: distinct md5 within and across arms
     R=${2:-20}; mkdir -p $W/out
     for c in $CLIPLIST; do all=""; for a in base p1 p2; do f=""
-        for r in $(seq 1 $R); do enc $a $c normal "--threads 4" rep_${a}_${r}_$c; f="$f $W/out/rep_${a}_${r}_$c.264"; done
+        for r in $(seq 1 $R); do enc $a $c normal "--threads 4 --qp 23" rep_${a}_${r}_$c; f="$f $W/out/rep_${a}_${r}_$c.264"; done
         echo "threads 4 $c $a: $R repeats, distinct $(md5of $f)"; all="$all $f"
         done; echo "threads 4 $c all arms: distinct $(md5of $all)  (1 = pass)"; rm -f $W/out/rep_*_$c.264
     done
