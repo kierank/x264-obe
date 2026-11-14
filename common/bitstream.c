@@ -149,7 +149,13 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf )
 #else
             pf->cabac_block_residual_rd_internal = x264_cabac_block_residual_rd_internal_avx512icl;
 #endif
+#if HIGH_BIT_DEPTH
             pf->cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd_internal_avx512icl;
+#else
+            /* rack01 Zen 4, 12 rounds normal: -0.05..-0.46 % on 5 of 6 clips (ffm-i, pan-fast 12/12); tile-chaos-p +0.21 %
+             * (its zero-call lowlat null drifts +0.15 %: mostly layout) */
+            pf->cabac_block_residual_8x8_rd_internal = x264_cabac_block_residual_8x8_rd2_internal_avx512icl;
+#endif
         }
     }
 #endif
