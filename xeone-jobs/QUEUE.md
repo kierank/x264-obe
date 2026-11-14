@@ -293,3 +293,13 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
 ```
 - Interlaced cells decide; tile-chaos-p normal / pan-fast-p lowlat (no field planes) are nulls. A loss with fewer
   instructions: AB=lay.
+
+### 16. MBP2: mbaffplanes ported onto speed-next (47cbfa2e -> 7ddc425f; added 11-14)
+- The merge with R (nwinfra) is not a plain stack: R's dual h store and _pad kernels overlap MBP's savings.
+  Gated on .44 (G16) before timing.
+```
+  for p in build live md5; do for ab in sn snlay; do AB=$ab bash mbaffplanes/mbaffplanes-ab.sh $p; done; done   # build window
+  FRAMES=120 AB=sn bash mbaffplanes/mbaffplanes-ab.sh time 9; FRAMES=120 AB=snlay bash mbaffplanes/mbaffplanes-ab.sh time 5
+  FRAMES=120 AB=sn bash mbaffplanes/mbaffplanes-ab.sh report; FRAMES=120 AB=snlay bash mbaffplanes/mbaffplanes-ab.sh report
+```
+- 4:2:2 uses ffm422long-i (120 frames, md5 d1c07add); the 30-frame ffm422-i under-amortises the init mapping cost.

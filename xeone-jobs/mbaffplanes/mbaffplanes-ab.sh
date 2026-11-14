@@ -8,22 +8,25 @@
 #
 #   AB=full bash mbaffplanes/mbaffplanes-ab.sh build | live | md5 | time 9 | report
 #   AB=lay  as full, both trees -falign-functions=64 (code-placement control, diagnostic only)
+#   AB=sn / snlay: the port onto speed-next (47cbfa2e vs 7ddc425f, integration wip/x264-sn-int-1114b), default / aligned.
+#   R already skips the field h compute (dual store) and pads in the filter, so the gain on top of R is re-measured.
 # Interlaced cells decide. Progressive cells allocate no field planes: they are the null control.
 # FRAMES=120 is recommended for time (page-fault costs are per allocation; 30 frames over-weights start-up).
 set -u
-JOB=mbaffplanes; AB=${AB:-full}; BRANCHES=wip/x264-nw-mbaffplanes
+JOB=mbaffplanes; AB=${AB:-full}; BRANCHES="wip/x264-nw-mbaffplanes speed-next wip/x264-sn-int-1114b"
 case $AB in
 full|lay) BASE=c664d151; ARM=2d0dbfac ;;
+sn|snlay) BASE=47cbfa2e; ARM=7ddc425f ;;   # the port onto R (nwinfra): speed-next vs the merge
 *) echo "unknown AB $AB"; exit 1 ;;
 esac
 EVENTS=${EVENTS:-cycles:u,instructions:u}
-CELLS="field-frame-mix-i:normal field-frame-mix-i:lowlat credits-i:normal credits-i:lowlat ffm422-i:normal tile-chaos-p:normal pan-fast-p:lowlat"
+CELLS="field-frame-mix-i:normal field-frame-mix-i:lowlat credits-i:normal credits-i:lowlat ffm422long-i:normal tile-chaos-p:normal pan-fast-p:lowlat"
 NULLCELLS="tile-chaos-p_normal pan-fast-p_lowlat"
 MD5CELLS="fades-i:normal:60 fades-i:lowlat:60 ffm422-i:lowlat"
 LIVE_RE='hpel_filter|frame_filter|plane_copy|memcpy|frame_expand|cache_load_interlaced'
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/../lib.sh"
-xe_cflags() { [ $AB = lay ] && echo "-falign-functions=64"; }
+xe_cflags() { case $AB in lay|snlay) echo "-falign-functions=64";; esac; }
 xe_phase_faults() { # page-faults, major faults and cycles:k per arm, field-frame-mix-i normal + lowlat (3 reps)
     local c a r b
     for c in field-frame-mix-i:normal field-frame-mix-i:lowlat; do for a in base arm; do for r in 1 2 3; do
