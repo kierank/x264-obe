@@ -25,7 +25,9 @@
  * the primitives; checkasm holds those composites bit-exact to the C paths, and
  * the jobs compare recon md5 against the base build. One thunk per original
  * function, so pointer comparisons between slots (analyse.c, me.c, slicetype.c)
- * see the same relations as without the ledger. */
+ * see the same relations as without the ledger. Kept: intra_mbcmp_x9_4x4 / _8x8,
+ * which select the fused x9 search (asm-only, no C path; NULL = --cpu-independent,
+ * a different search). */
 
 #define BWL_REP64(M) \
     M(0)  M(1)  M(2)  M(3)  M(4)  M(5)  M(6)  M(7)  M(8)  M(9)  M(10) M(11) M(12) M(13) M(14) M(15) \
@@ -170,6 +172,10 @@ static void bwl_wrap( x264_t *h )
         void *c, *a;
         memcpy( &c, (char*)&t->pixf + i, sizeof(void*) );
         memcpy( &a, (char*)&h->pixf + i, sizeof(void*) );
+        /* intra_mbcmp_x9_*: derived path selectors (analyse.c picks the fused x9 search when set), asm-only by
+         * design with no C path; NULLing them is --cpu-independent and changes decisions (Core 3 Job V bisect) */
+        if( i == offsetof( x264_pixel_function_t, intra_mbcmp_x9_4x4 ) || i == offsetof( x264_pixel_function_t, intra_mbcmp_x9_8x8 ) )
+            continue;
         if( !c && a )
         {
             memset( (char*)&h->pixf + i, 0, sizeof(void*) );
