@@ -282,3 +282,14 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
 ```
 - Lowlat has no B frames (phase 1 inert) but phase 2 runs there, so it is a decision cell for AB=full.
 - If full loses or is mixed: AB=p1 and AB=p2 to split the phases. If a loss comes with FEWER instructions: AB=fulllay.
+
+### 15. MBP: mbaffplanes (wip/x264-nw-mbaffplanes, c664d151 -> 2d0dbfac; added 11-14, after NRB)
+- Core 3 Job AA: bit-exact (15/15 single-thread, threaded at CQP), aliasing live; costs 2.8-4.5x page faults
+  (5900 major / 30 frames), cycles:k +12-17 % lowlat, F/H lose THP. Intel cycles verdict for the E-2400 1080i goal.
+```
+  for p in build live md5 faults; do AB=full bash mbaffplanes/mbaffplanes-ab.sh $p; done   # build window (faults: quiet box)
+  FRAMES=120 AB=full bash mbaffplanes/mbaffplanes-ab.sh time 9                            # timing block
+  FRAMES=120 AB=full bash mbaffplanes/mbaffplanes-ab.sh report
+```
+- Interlaced cells decide; tile-chaos-p normal / pan-fast-p lowlat (no field planes) are nulls. A loss with fewer
+  instructions: AB=lay.
