@@ -105,7 +105,7 @@ names it in "The verdict decides".
 | 6b | mbtree-avx512 | `bash rack01-jobs/mbtree/mbtree-avx512.sh all` | -0.1 to -0.3 % normal over the merge: the avx512 strip for both P and B rows | merge 608a1c9c (wip/x264-mbtree-avx512-arm) after the mbtree merge; ZEN5 on a verdict against AVX-512: zen5/x264-mbtree-avx512 = 608a1c9c |
 | 7 | nrbskip-ab | `bash rack01-jobs/nrbskip/nrbskip-ab.sh all` | -0.2 to -0.5 % normal (fewer stores), lowlat small | merge nrbskip (both phases) or phase 1 only |
 | 8 | nrbskip-mbm | `bash rack01-jobs/nrbskip/nrbskip-mbm.sh all` (**needs Kieran root**) | traffic only: ~4.8 MB/f analytic | the traffic half of the nrbskip case |
-| 9 | mbaffplanes-ab | `bash rack01-jobs/mbaffplanes/mbaffplanes-ab.sh all` | -0.2 to -0.5 % on interlaced, or a loss if the lost THP on F/H costs dTLB. Progressive cells are the null control | merge mbaffplanes |
+| 9 | mbaffplanes-ab | `bash rack01-jobs/mbaffplanes/mbaffplanes-ab.sh all` | the port on R (47cbfa2e vs 7ddc425f): Intel aligned -0.14..+0.36 %, dTLB walks x10-x32; Zen 4 decides. Progressive cells are the null control | merge the port (wip/x264-sn-int-1114b) or park it |
 | 10 | mbaffplanes-mbm | `bash rack01-jobs/mbaffplanes/mbaffplanes-mbm.sh all` (**needs Kieran root**) | traffic only: ~2.1 MB/f normal, ~4.2 MB/f lowlat | the traffic half of the mbaffplanes case |
 | 11 | 10b-cabac-rd8 | `bash rack01-jobs/10b-cabac/10b-cabac-rd8.sh all` | ±0.3 % of 10-bit 4:2:2 normal (8x8 rd2 vs icl was mixed on the laptop) | dispatch the 10-bit 8x8 rd2 at AVX512ICL; ZEN5 on a verdict against AVX-512: zen5/x264-10b-cabac-rd8 = 75947ac3 + this job's patch_arm, committed as "zen5: dispatch cabac_block_residual_8x8_rd2_internal_avx512icl (10-bit)" |
 | 12 | trellis-z1 | `bash rack01-jobs/trellis/trellis-z1.sh all` | ±0.3 % normal: the trellis 4x4/dc slot is ~2 %, and the icl version was pruned on a bench, never in situ | undo the bench prune of icl trellis 4x4 / dc; ZEN5 on a verdict against AVX-512: zen5/x264-trellis-icl4x4 = 939df094 + this job's patch_arm, committed as "zen5: dispatch trellis_cabac_4x4 / 4x4_psy / dc / chroma_422_dc avx512icl" |
@@ -149,7 +149,8 @@ names it in "The verdict decides".
 | mbtree-zen4 | 33754121 | b401b2e4 |
 | mbtree-avx512 | b401b2e4 | 608a1c9c |
 | nrbskip-ab / -mbm | 4e292d6a | cb5b86c2 |
-| mbaffplanes-ab / -mbm | c664d151 | 2d0dbfac |
+| mbaffplanes-ab | 47cbfa2e | 7ddc425f |
+| mbaffplanes-mbm | c664d151 | 2d0dbfac |
 | trellis-z1 | 939df094 | 939df094 + icl 4x4 / 4x4_psy / dc / 422_dc |
 | trellis-z0 | 42c3f783 | 939df094 |
 | intrax9-icl | 76142791 | 76142791 + icl x9 (8-bit blocks) |
