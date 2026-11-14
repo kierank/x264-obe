@@ -271,3 +271,14 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
   that `build` prints decides it.
 - Expected: oc 2.4-3x C per call; il's caller is 2.13 % self; cl8 ~1.5x on latency; pcd is rarely reached.
 - Decides: keep each Intel AVX2 dispatch commit (D1-D4) or drop it.
+
+### 14. NRB: nrbskip (wip/x264-nw-nrbskip, tip cb5b86c2; added 11-14)
+- Core 3 Job Y proved it bitstream-identical in 39/39 cells (4:2:2 both depths, 10-bit, threads, slices, psnr/ssim),
+  phase 1 on 100 % of non-ref-B MBs, plane bytes -47 %, mv/ref -58..-65 %. This is the Intel cycles verdict.
+```
+  for p in build live md5; do AB=full bash nrbskip/nrbskip-ab.sh $p; done   # build window
+  AB=full bash nrbskip/nrbskip-ab.sh time 9                                  # timing block
+  AB=full bash nrbskip/nrbskip-ab.sh report
+```
+- Lowlat has no B frames (phase 1 inert) but phase 2 runs there, so it is a decision cell for AB=full.
+- If full loses or is mixed: AB=p1 and AB=p2 to split the phases. If a loss comes with FEWER instructions: AB=fulllay.
