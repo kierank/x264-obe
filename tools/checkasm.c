@@ -5981,6 +5981,41 @@ static int check_mc( int cpu_ref, int cpu_new )
         report( "hpel filter copy_vc :" );
     }
 
+    if( mc_a.hpel_filter_vc && mc_a.hpel_filter_vc != mc_ref.hpel_filter_vc )
+    {
+        pixel *srchpel = pbuf1+8+2*64;
+        pixel *dstc[3] = { pbuf3+8, pbuf3+8+16*64, pbuf3+8+32*64 };
+        pixel *dsta[3] = { pbuf4+8, pbuf4+8+16*64, pbuf4+8+32*64 };
+        void *tmp = pbuf3+49*64;
+        set_func_name( "hpel_filter_vc" );
+        ok = 1; used_asm = 1;
+        /* as hpel_filter's v and c; nothing written to dsth */
+        for( int i_off = 0; i_off < 3 && ok; i_off++ )
+        {
+            int o = (int[]){ 0, 8, 24 }[i_off];
+            memset( pbuf3, 0, 4096 * sizeof(pixel) );
+            memset( pbuf4, 0, 4096 * sizeof(pixel) );
+            mc_c.hpel_filter( dstc[0]+o, dstc[1]+o, dstc[2]+o, srchpel+o, 64, 48, 10, tmp );
+            call_a( mc_a.hpel_filter_vc, dsta[0]+o, dsta[1]+o, dsta[2]+o, srchpel+o, (intptr_t)64, 48, 10, tmp );
+            for( int i = 1; i < 3; i++ )
+                for( int j = 0; j < 10; j++ )
+                    if( memcmp( dstc[i]+o+j*64+2, dsta[i]+o+j*64+2, 43 * sizeof(pixel) ) )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "hpel filter vc differs at plane %c line %d offset %d\n", "hvc"[i], j, o );
+                        break;
+                    }
+            for( int k = -8; k < 16*64-8; k++ )
+                if( dsta[0][k] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "hpel filter vc: write to dsth at %d offset %d\n", k, o );
+                    break;
+                }
+        }
+        report( "hpel filter vc :" );
+    }
+
 #if ARCH_X86_64 && HAVE_MMX && !HIGH_BIT_DEPTH
     /* the undispatched in-kernel side pads, at the AVX2 level */
     if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) && !mc_a.hpel_filter_pad[0] )
@@ -5989,6 +6024,7 @@ static int check_mc( int cpu_ref, int cpu_new )
         mc_a.hpel_filter_pad[1] = x264_hpel_filter_copy_pad_avx2;
         mc_a.hpel_filter_pad[2] = x264_hpel_filter_copy_vc_pad_avx2;
         mc_a.hpel_filter_pad[3] = x264_hpel_filter_dual_pad_avx2;
+        mc_a.hpel_filter_vc_pad = x264_hpel_filter_vc_pad_avx2;
     }
 #endif
     if( mc_a.hpel_filter_pad[0] && mc_a.hpel_filter_pad[0] != mc_ref.hpel_filter_pad[0] &&
@@ -5996,7 +6032,9 @@ static int check_mc( int cpu_ref, int cpu_new )
     {
         /* each mode's _pad against the mode's own kernel then x264_frame_expand_border_filtered's
          * side pads (columns -32..-5 from -4, w+4..w+31 from w+3) on h/v/c/dsth2; every byte of
-         * the planes. Rows 32-aligned at column 0, w % 32 == 0. */
+         * the planes. Rows 32-aligned at column 0, w % 32 == 0. Mode 4: hpel_filter_vc_pad
+         * against hpel_filter_vc (no h). */
+        int n_modes = mc_a.hpel_filter_vc_pad && mc_a.hpel_filter_vc ? 5 : 4;
         set_func_name( "hpel_filter_pad" );
         ok = 1; used_asm = 1;
         intptr_t st = 192;
@@ -6006,7 +6044,7 @@ static int check_mc( int cpu_ref, int cpu_new )
         int16_t *tmp = x264_malloc( (st+48+32) * sizeof(int16_t) );
         ok = srcb && bb && tmp;
         for( int w = 32; w <= 128 && ok; w += 32 )
-            for( int mode = 0; mode < 4 && ok; mode++ )
+            for( int mode = 0; mode < n_modes && ok; mode++ )
             {
                 for( int i = 0; i < sz; i++ )
                     srcb[i] = rand();
@@ -6019,12 +6057,14 @@ static int check_mc( int cpu_ref, int cpu_new )
                         d[s][j] = bb + (s*4+j)*sz + 4*st + 64 - 8;
                 if( mode == 0 )
                     mc_a.hpel_filter( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp );
+                else if( mode == 4 )
+                    mc_a.hpel_filter_vc( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp );
                 else
                     (mode == 1 ? mc_a.hpel_filter_copy : mode == 2 ? mc_a.hpel_filter_copy_vc : mc_a.hpel_filter_dual)
                         ( d[0][0], d[0][1], d[0][2], srcp, st, w+16, hh, tmp, d[0][3] );
                 for( int j = 0; j < 4; j++ )
                 {
-                    if( (j == 0 && mode == 2) || (j == 3 && mode != 3) )
+                    if( (j == 0 && (mode == 2 || mode == 4)) || (j == 3 && mode != 3) )
                         continue;
                     for( int y = 0; y < hh; y++ )
                     {
@@ -6035,7 +6075,9 @@ static int check_mc( int cpu_ref, int cpu_new )
                             row[x] = row[w+3];
                     }
                 }
-                call_a( mc_a.hpel_filter_pad[mode], d[1][0], d[1][1], d[1][2], srcp, st, w+16, hh, tmp, mode ? d[1][3] : NULL );
+                void (*fpad)( pixel *, pixel *, pixel *, pixel *, intptr_t, int, int, int16_t *, pixel * ) =
+                    mode == 4 ? mc_a.hpel_filter_vc_pad : mc_a.hpel_filter_pad[mode];
+                call_a( fpad, d[1][0], d[1][1], d[1][2], srcp, st, w+16, hh, tmp, mode && mode != 4 ? d[1][3] : NULL );
                 if( memcmp( bb, bb + 4*sz, 4*sz * sizeof(pixel) ) )
                 {
                     ok = 0;

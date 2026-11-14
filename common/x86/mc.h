@@ -53,6 +53,8 @@ void x264_hpel_filter_copy_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc
 void x264_hpel_filter_copy_vc_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
 #define x264_hpel_filter_dual_pad_avx2 x264_template(hpel_filter_dual_pad_avx2)
 void x264_hpel_filter_dual_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
+#define x264_hpel_filter_vc_pad_avx2 x264_template(hpel_filter_vc_pad_avx2)
+void x264_hpel_filter_vc_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
 #define x264_expand_border_sides_avx2 x264_template(expand_border_sides_avx2)
 void x264_expand_border_sides_avx2( uint8_t *pix, uint8_t *pix2, intptr_t stride, int width, int height, int b_chroma );
 #endif

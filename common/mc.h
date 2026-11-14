@@ -140,6 +140,14 @@ typedef struct
      * or the pairs at 0 and width-2 with b_chroma (NV12/NV16); also to pix2 at
      * the same offsets unless it is NULL. NULL if there is no asm. */
     void (*expand_border_sides)( pixel *pix, pixel *pix2, intptr_t stride, int width, int height, int b_chroma );
+    /* hpel_filter without the h plane: dsth is not written. NULL if there is
+     * no asm. */
+    void (*hpel_filter_vc)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                            intptr_t i_stride, int i_width, int i_height, int16_t *buf );
+    /* hpel_filter_vc that also writes the side pads (as hpel_filter_pad: see
+     * x264_frame_filter_pads). NULL if there is no asm. */
+    void (*hpel_filter_vc_pad)( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
+                                intptr_t i_stride, int i_width, int i_height, int16_t *buf, pixel *dst );
 
     /* prefetch the next few macroblocks of fenc or fdec */
     void (*prefetch_fenc)    ( pixel *pix_y, intptr_t stride_y, pixel *pix_uv, intptr_t stride_uv, int mb_x );
