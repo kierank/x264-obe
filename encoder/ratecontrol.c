@@ -318,13 +318,23 @@ static ALWAYS_INLINE uint32_t ac_energy_plane( x264_t *h, int mb_x, int mb_y, x2
     stride <<= b_field;
     if( b_chroma )
     {
-        ALIGNED_ARRAY_64( pixel, pix,[FENC_STRIDE*16] );
-        int chromapix = h->luma2chroma_pixel[PIXEL_16x16];
         int shift = 7 - CHROMA_V_SHIFT;
-
-        h->mc.load_deinterleave_chroma_fenc( pix, frame->plane[1] + offset, stride, height );
-        uint64_t u = h->pixf.var[chromapix]( pix,               FENC_STRIDE );
-        uint64_t v = h->pixf.var[chromapix]( pix+FENC_STRIDE/2, FENC_STRIDE );
+        uint64_t u, v;
+        if( h->pixf.var_uv )
+        {
+            ALIGNED_ARRAY_16( uint64_t, uv,[2] );
+            h->pixf.var_uv( frame->plane[1] + offset, stride, height, uv );
+            u = uv[0];
+            v = uv[1];
+        }
+        else
+        {
+            ALIGNED_ARRAY_64( pixel, pix,[FENC_STRIDE*16] );
+            int chromapix = h->luma2chroma_pixel[PIXEL_16x16];
+            h->mc.load_deinterleave_chroma_fenc( pix, frame->plane[1] + offset, stride, height );
+            u = h->pixf.var[chromapix]( pix,               FENC_STRIDE );
+            v = h->pixf.var[chromapix]( pix+FENC_STRIDE/2, FENC_STRIDE );
+        }
         if( csum )
         {
             csum[0] = (uint32_t)u;

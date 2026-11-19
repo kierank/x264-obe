@@ -3862,6 +3862,123 @@ QUANT_4x4x4_SCAN field,    1, 0
 QUANT_4x4x4_SCAN frame_ac, 0, 1
 QUANT_4x4x4_SCAN field_ac, 1, 1
 
+%if HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+;                            udctcoef mf[16], udctcoef bias[16] )
+;-----------------------------------------------------------------------------
+; orig = dct, quant_4x4x4, zigzag every block into level. Returns the nonzero mask
+; | the scan position of the last nonzero level of block i (0 if none) << (8+4*i).
+; block, mask of its nonzero levels (clobbered): eax |= last << (8+4*block)
+%macro QUANT_SCAN_LAST_POS 2
+    or        %2d, 1
+    bsr       %2d, %2d
+    shl       %2d, 8+4*%1
+    or        eax, %2d
+%endmacro
+
+%macro QUANT_4x4x4_SCAN_LAST 2 ; name, field
+cglobal quant_4x4x4_scan_last_%1, 5,8,14
+    mova      m12, [r3]
+    mova      m13, [r4]
+    mova      m0, [r0+ 0]
+    mova      m1, [r0+32]
+    mova      m2, [r0+64]
+    mova      m3, [r0+96]
+    mova [r1+ 0], m0
+    mova [r1+32], m1
+    mova [r1+64], m2
+    mova [r1+96], m3
+    pabsw     m4, m0
+    pabsw     m5, m1
+    pabsw     m6, m2
+    pabsw     m7, m3
+    paddusw   m4, m13
+    paddusw   m5, m13
+    paddusw   m6, m13
+    paddusw   m7, m13
+    pmulhuw   m4, m12
+    pmulhuw   m5, m12
+    pmulhuw   m6, m12
+    pmulhuw   m7, m12
+    psignw    m0, m4, m0
+    psignw    m1, m5, m1
+    psignw    m2, m6, m2
+    psignw    m3, m7, m3
+    mova [r0+ 0], m0
+    mova [r0+32], m1
+    mova [r0+64], m2
+    mova [r0+96], m3
+%if %2
+    mova      m8, [qscan4_field]
+    pshufb    m4, m0, m8
+    pshufb    m5, m1, m8
+    pshufb    m6, m2, m8
+    pshufb    m7, m3, m8
+%else
+    mova      m10, [qscan4_frame_a]
+    mova      m11, [qscan4_frame_b]
+    vperm2i128 m8, m0, m0, 0x01
+    vperm2i128 m9, m1, m1, 0x01
+    pshufb    m4, m0, m10
+    pshufb    m5, m1, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m4, m8
+    por       m5, m9
+    vperm2i128 m8, m2, m2, 0x01
+    vperm2i128 m9, m3, m3, 0x01
+    pshufb    m6, m2, m10
+    pshufb    m7, m3, m10
+    pshufb    m8, m11
+    pshufb    m9, m11
+    por       m6, m8
+    por       m7, m9
+%endif
+    mova [r2+ 0], m4
+    mova [r2+32], m5
+    mova [r2+64], m6
+    mova [r2+96], m7
+    ; levels as bytes in scan order: blocks 0 | 1, 2 | 3
+    pxor      m10, m10
+    packsswb  m8, m4, m5
+    packsswb  m9, m6, m7
+    vpermq    m8, m8, q3120
+    vpermq    m9, m9, q3120
+    pcmpeqb   m8, m10
+    pcmpeqb   m9, m10
+    pmovmskb  r5d, m8
+    pmovmskb  r7d, m9
+    not       r5d
+    not       r7d
+    mov       r3d, r5d
+    mov       r4d, r7d
+    shr       r3d, 16
+    shr       r4d, 16
+    movzx     r5d, r5w
+    movzx     r7d, r7w
+    ; nonzero mask: a carry per zero block, block 3 first
+    xor       eax, eax
+    cmp       r4d, 1
+    adc       eax, eax
+    cmp       r7d, 1
+    adc       eax, eax
+    cmp       r3d, 1
+    adc       eax, eax
+    cmp       r5d, 1
+    adc       eax, eax
+    xor       eax, 0xf
+    QUANT_SCAN_LAST_POS 0, r5
+    QUANT_SCAN_LAST_POS 1, r3
+    QUANT_SCAN_LAST_POS 2, r7
+    QUANT_SCAN_LAST_POS 3, r4
+    RET
+%endmacro
+
+QUANT_4x4x4_SCAN_LAST frame, 0
+QUANT_4x4x4_SCAN_LAST field, 1
+%endif ; !HIGH_BIT_DEPTH
+
 INIT_ZMM avx512icl
 QUANT_4x4x4_SCAN_AVX512 frame,    0, 0
 QUANT_4x4x4_SCAN_AVX512 field,    1, 0

@@ -229,6 +229,12 @@ sub4x4_dct_shuf: times 2 db 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15
 pb_swapw_pairs:  db 2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13
 ; sub8x8_dct_dc avx2: words 0 4 2 6
 pb_dct2x2_dc_shuf: db 0,1,8,9,4,5,12,13,0,1,8,9,4,5,12,13
+ALIGN 32
+; add8x8_idct_dc avx2: +dc0 x4 +dc1 x4, -dc0 -dc1, +dc2 +dc3, -dc2 -dc3; 0 in bytes 8-15
+idct_dc8_shuf: db 0,0,0,0,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1
+               db 8,8,8,8,9,9,9,9,-1,-1,-1,-1,-1,-1,-1,-1
+               db 2,2,2,2,3,3,3,3,-1,-1,-1,-1,-1,-1,-1,-1
+               db 10,10,10,10,11,11,11,11,-1,-1,-1,-1,-1,-1,-1,-1
 %endif
 SECTION .text
 
@@ -1858,6 +1864,43 @@ cglobal add16x16_idct_dc, 2,3,6
     ADD_DC_AVX2 m0, m1, FDEC_STRIDE* 0
     ADD_DC_AVX2 m0, m1, FDEC_STRIDE* 2
     RET
+
+; row, +dc, -dc: whole 16-byte FDEC_STRIDE rows, 0 in bytes 8-15 of the dc (no movhps)
+%macro ADD_DC8_ROWS 3
+    movu       m5, [r0+FDEC_STRIDE*(%1+0)]
+    movu       m1, [r0+FDEC_STRIDE*(%1+1)]
+    movu       m6, [r0+FDEC_STRIDE*(%1+2)]
+    movu       m7, [r0+FDEC_STRIDE*(%1+3)]
+    paddusb    m5, %2
+    paddusb    m1, %2
+    paddusb    m6, %2
+    paddusb    m7, %2
+    psubusb    m5, %3
+    psubusb    m1, %3
+    psubusb    m6, %3
+    psubusb    m7, %3
+    movu [r0+FDEC_STRIDE*(%1+0)], m5
+    movu [r0+FDEC_STRIDE*(%1+1)], m1
+    movu [r0+FDEC_STRIDE*(%1+2)], m6
+    movu [r0+FDEC_STRIDE*(%1+3)], m7
+%endmacro
+
+; bytes 8-15 of each row are read and written back unchanged
+INIT_XMM avx2
+cglobal add8x8_idct_dc, 2,2,8
+    movq       m0, [r1]
+    pmulhrsw   m0, [pw_512]
+    pxor       m1, m1
+    psubw      m1, m0
+    packuswb   m0, m1          ; +dc0-3, 0, -dc0-3, 0
+    pshufb     m2, m0, [idct_dc8_shuf+0*16]
+    pshufb     m3, m0, [idct_dc8_shuf+1*16]
+    pshufb     m4, m0, [idct_dc8_shuf+2*16]
+    pshufb     m0, [idct_dc8_shuf+3*16]
+    ADD_DC8_ROWS 0, m2, m3
+    ADD_DC8_ROWS 4, m4, m0
+    RET
+INIT_YMM avx2
 
 %endif ; HIGH_BIT_DEPTH
 

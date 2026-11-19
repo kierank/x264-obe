@@ -131,6 +131,8 @@ void x264_add8x8_idct_dc_ssse3  ( uint8_t *p_dst, int16_t dct    [ 4] );
 void x264_add16x16_idct_dc_ssse3( uint8_t *p_dst, int16_t dct    [16] );
 #define x264_add8x8_idct_dc_avx x264_template(add8x8_idct_dc_avx)
 void x264_add8x8_idct_dc_avx    ( pixel   *p_dst, dctcoef dct    [ 4] );
+#define x264_add8x8_idct_dc_avx2 x264_template(add8x8_idct_dc_avx2)
+void x264_add8x8_idct_dc_avx2   ( uint8_t *p_dst, int16_t dct    [ 4] );
 #define x264_add16x16_idct_dc_avx x264_template(add16x16_idct_dc_avx)
 void x264_add16x16_idct_dc_avx  ( pixel   *p_dst, dctcoef dct    [16] );
 #define x264_add16x16_idct_dc_avx2 x264_template(add16x16_idct_dc_avx2)
