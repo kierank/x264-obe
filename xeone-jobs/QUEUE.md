@@ -311,3 +311,10 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
   for p in build live md5; do bash pfenc/pfenc-ab.sh $p; done   # build window (BITDEPTH=10)
   FRAMES=120 bash pfenc/pfenc-ab.sh time 9; FRAMES=120 bash pfenc/pfenc-ab.sh report
 ```
+
+### 18. HP10: R's hpel / pad passes at 10-bit (b3490174 -> 5f6c927c; added 11-19, after PF; time only after .44 G18 PASS)
+```
+  for p in build live md5; do AB=full bash hp10/hp10-ab.sh $p; done
+  FRAMES=120 AB=full bash hp10/hp10-ab.sh time 9; FRAMES=120 AB=full bash hp10/hp10-ab.sh report
+```
+- Interlaced cells decide. tc422p10-p (30 frames) is the progressive check. A loss with fewer instructions: AB=lay.
