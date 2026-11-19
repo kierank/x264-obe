@@ -303,3 +303,11 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
   FRAMES=120 AB=sn bash mbaffplanes/mbaffplanes-ab.sh report; FRAMES=120 AB=snlay bash mbaffplanes/mbaffplanes-ab.sh report
 ```
 - 4:2:2 uses ffm422long-i (120 frames, md5 d1c07add); the 30-frame ffm422-i under-amortises the init mapping cost.
+
+### 17. PF: prefetch_fenc_422 at 10-bit (speed-next b3490174 vs the same with the 4:2:2 prefetch off; added 11-19)
+- Profile: x264_10_prefetch_fenc_422_mmx2 2.23 % of 10-bit 4:2:2 1080i normal (16 prefetcht0 per MB at 10-bit).
+  Is it fenc DRAM latency landing on the prefetches, and does the prefetch help, hurt or do nothing?
+```
+  for p in build live md5; do bash pfenc/pfenc-ab.sh $p; done   # build window (BITDEPTH=10)
+  FRAMES=120 bash pfenc/pfenc-ab.sh time 9; FRAMES=120 bash pfenc/pfenc-ab.sh report
+```
