@@ -2034,6 +2034,57 @@ cglobal load_deinterleave_chroma_fdec, 4,5
     sub           r3d, 4
     jg .loop
     RET
+
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; void plane_copy_interleave_core( uint8_t *dst,  intptr_t i_dst,
+;                                  uint8_t *srcu, intptr_t i_srcu,
+;                                  uint8_t *srcv, intptr_t i_srcv, int w, int h )
+;-----------------------------------------------------------------------------
+; as the sse2 version (its prefetches, non-temporal stores and pad bytes), but
+; dst and i_dst must also be multiples of 32: 16 u and 16 v are one ymm store
+cglobal plane_copy_interleave_core, 6,9
+    mov   r6d, r6m
+    lea    r0, [r0+r6*2]
+    add    r2, r6
+    add    r4, r6
+    DECLARE_REG_TMP 7,8
+    mov    t1, r1
+    shr    t1, 1
+    sub    t1, r6
+    mov   t0d, r7m
+.loopy:
+    mov   r6d, r6m
+    neg    r6
+.prefetch:
+    prefetchnta [r2+r6]
+    prefetchnta [r4+r6]
+    add    r6, 64
+    jl .prefetch
+    mov   r6d, r6m
+    neg    r6
+.loopx:
+    pmovzxbw  m0, [r2+r6]
+    pmovzxbw  m1, [r4+r6]
+    psllw     m1, 8
+    por       m0, m1
+    movntdq [r0+r6*2], m0
+    add    r6, 16
+    jl .loopx
+    vpermq    m0, m0, q3232 ; the sse2 pad: its last 16 bytes, twice
+.pad:
+    movntdq [r0+r6*2], m0
+    add    r6, 16
+    cmp    r6, t1
+    jl .pad
+    add    r0, r1
+    add    r2, r3
+    add    r4, r5
+    dec   t0d
+    jg .loopy
+    sfence
+    RET
+%endif ; ARCH_X86_64
 %endif ; !HIGH_BIT_DEPTH
 
 ;-----------------------------------------------------------------------------
