@@ -770,6 +770,7 @@
 #define x264_pixel_ssd_psy_mb_420_avxvnni x264_template(pixel_ssd_psy_mb_420_avxvnni)
 #define x264_pixel_ssd_psy_mb_422_avxvnni x264_template(pixel_ssd_psy_mb_422_avxvnni)
 #define x264_pixel_vsad_avx2 x264_template(pixel_vsad_avx2)
+#define x264_pixel_vsad_field_avx2 x264_template(pixel_vsad_field_avx2)
 #define x264_pixel_vsad_mmx2 x264_template(pixel_vsad_mmx2)
 #define x264_pixel_vsad_sse2 x264_template(pixel_vsad_sse2)
 #define x264_pixel_vsad_ssse3 x264_template(pixel_vsad_ssse3)
@@ -1284,6 +1285,7 @@ int  x264_pixel_vsad_sse2 ( pixel *src, intptr_t stride, int height );
 int  x264_pixel_vsad_ssse3( pixel *src, intptr_t stride, int height );
 int  x264_pixel_vsad_xop  ( pixel *src, intptr_t stride, int height );
 int  x264_pixel_vsad_avx2 ( uint16_t *src, intptr_t stride, int height );
+uint64_t x264_pixel_vsad_field_avx2( pixel *src, intptr_t stride, int height );
 int x264_pixel_asd8_sse2 ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 int x264_pixel_asd8_ssse3( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );
 int x264_pixel_asd8_xop  ( pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, int height );

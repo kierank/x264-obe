@@ -1167,6 +1167,13 @@ static int pixel_vsad( pixel *src, intptr_t stride, int height )
     return score;
 }
 
+uint64_t x264_pixel_vsad_field_c( pixel *src, intptr_t stride, int height )
+{
+    uint32_t frame = pixel_vsad( src, stride, height );
+    uint32_t field = pixel_vsad( src, stride*2, height>>1 ) + pixel_vsad( src+stride, stride*2, height>>1 );
+    return frame | (uint64_t)field << 32;
+}
+
 /* Lookahead vertical motion of an mb pair against a previous frame, in lowres
  * qpel (half pixels) per frame; 0 where unsearched or the two mbs disagree */
 static int field_lowres_mvy( x264_t *h, int mb_x, int mb_y )
@@ -1221,9 +1228,19 @@ int x264_field_vsad( x264_t *h, int mb_x, int mb_y )
 
     /* We don't want to analyze pixels outside the frame, as it gives inaccurate results. */
     int mbpair_height = X264_MIN( h->param.i_height - mb_y * 16, 32 );
-    score_frame  = h->pixf.vsad( fenc,          stride, mbpair_height );
-    score_field  = h->pixf.vsad( fenc,        stride*2, mbpair_height >> 1 );
-    score_field += h->pixf.vsad( fenc+stride, stride*2, mbpair_height >> 1 );
+    /* vsad_field: no odd field heights, where the asm vsads count a row more than C */
+    if( h->pixf.vsad_field && !(mbpair_height&3) )
+    {
+        uint64_t scores = h->pixf.vsad_field( fenc, stride, mbpair_height );
+        score_frame = (uint32_t)scores;
+        score_field = scores >> 32;
+    }
+    else
+    {
+        score_frame  = h->pixf.vsad( fenc,          stride, mbpair_height );
+        score_field  = h->pixf.vsad( fenc,        stride*2, mbpair_height >> 1 );
+        score_field += h->pixf.vsad( fenc+stride, stride*2, mbpair_height >> 1 );
+    }
 
     /* vsad underrates field coding of interlaced content: weight the field
      * score by 14/16. The neighbour bias scales with the pixel range like the
@@ -2069,6 +2086,9 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->var[PIXEL_16x16] = x264_pixel_var_16x16_avx2;
         pixf->var[PIXEL_8x16]  = x264_pixel_var_8x16_avx2;
         pixf->var[PIXEL_8x8]   = x264_pixel_var_8x8_avx2;
+#if ARCH_X86_64
+        pixf->vsad_field = x264_pixel_vsad_field_avx2;
+#endif
         pixf->var2[PIXEL_8x16]  = x264_pixel_var2_8x16_avx2;
         pixf->var2[PIXEL_8x8]   = x264_pixel_var2_8x8_avx2;
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx2;

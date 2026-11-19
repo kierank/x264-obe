@@ -730,6 +730,51 @@ cglobal pixel_vsad_sse2, 3,3
     movd     eax, m0
     RET
 
+%if ARCH_X86_64
+;-----------------------------------------------------------------------------
+; uint64_t pixel_vsad_field( pixel *src, intptr_t stride, int height )
+;-----------------------------------------------------------------------------
+; pixel_vsad of the frame | the sum of those of its two fields << 32, height a
+; multiple of 4. m1: rows 2k,2k+1; m2: rows 2k+2,2k+3; m3: rows 2k+1,2k+2.
+; frame: m1 vs m3, fields: m1 vs m2; the last frame row pair is m1's lanes.
+INIT_YMM avx2
+cglobal pixel_vsad_field, 3,3
+    movu       xm1, [r0]
+    vinserti128 m1, m1, [r0+r1], 1
+    pxor       xm0, xm0
+    pxor       xm4, xm4
+    shr        r2d, 1
+    dec        r2d
+.loop:
+    movu       xm3, [r0+r1]
+    vinserti128 m3, m3, [r0+r1*2], 1
+    lea         r0, [r0+r1*2]
+    movu       xm2, [r0]
+    vinserti128 m2, m2, [r0+r1], 1
+    psadbw      m3, m1
+    psadbw      m5, m1, m2
+    paddd       m0, m3
+    paddd       m4, m5
+    mova        m1, m2
+    dec        r2d
+    jg .loop
+    vextracti128 xm2, m1, 1
+    vextracti128 xm3, m0, 1
+    vextracti128 xm5, m4, 1
+    psadbw     xm1, xm2
+    paddd      xm0, xm3
+    paddd      xm4, xm5
+    paddd      xm0, xm1
+    ; max sums: frame 31*16*255, fields 30*16*255: dword 0 of each qword
+    punpcklqdq xm1, xm0, xm4
+    punpckhqdq xm0, xm4
+    paddd      xm0, xm1
+    pshufd     xm0, xm0, q0020
+    movq       rax, xm0
+    RET
+INIT_XMM
+%endif
+
 ;-----------------------------------------------------------------------------
 ; void intra_sad_x3_4x4( uint8_t *fenc, uint8_t *fdec, int res[3] );
 ;-----------------------------------------------------------------------------

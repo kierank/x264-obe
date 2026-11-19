@@ -357,6 +357,9 @@ typedef struct
      * (encoder/me.h); me_fpel_fn by partition size, from x264_me_fpel_init */
     int (*me_search_fpel)( x264_me_fpel_t *c );
     x264_me_fpel_fn_t me_fpel_fn[4];
+    /* asm only, NULL otherwise; reference x264_pixel_vsad_field_c: vsad of the frame | the
+     * sum of those of its two fields << 32, height a multiple of 4 */
+    uint64_t (*vsad_field)( pixel *src, intptr_t stride, int height );
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)
@@ -412,6 +415,8 @@ uint64_t x264_pixel_ssd_wxh( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_
 #define x264_pixel_ssim_wxh x264_template(pixel_ssim_wxh)
 float x264_pixel_ssim_wxh  ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2,
                              int i_width, int i_height, void *buf, int *cnt );
+#define x264_pixel_vsad_field_c x264_template(pixel_vsad_field_c)
+uint64_t x264_pixel_vsad_field_c( pixel *src, intptr_t stride, int height );
 #define x264_field_vsad x264_template(field_vsad)
 int x264_field_vsad( x264_t *h, int mb_x, int mb_y );
 

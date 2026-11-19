@@ -693,6 +693,15 @@ static void weightp_satd8_search_ref( x264_pixel_function_t *pf, uint32_t (*cost
 #include "common/x86/pixel.h"
 #endif
 
+/* x264_field_vsad without pixf.vsad_field */
+static x264_pixel_function_t *vsad_3x_pf;
+static uint64_t vsad_3x( pixel *src, intptr_t stride, int height )
+{
+    uint32_t frame = vsad_3x_pf->vsad( src, stride, height );
+    uint32_t field = vsad_3x_pf->vsad( src, stride*2, height>>1 ) + vsad_3x_pf->vsad( src+stride, stride*2, height>>1 );
+    return frame | (uint64_t)field << 32;
+}
+
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -2562,6 +2571,34 @@ static int check_pixel( int cpu_ref, int cpu_new )
         }
     }
     report( "pixel vsad :" );
+
+    ok = 1; used_asm = 0;
+    if( pixel_asm.vsad_field && pixel_asm.vsad_field != pixel_ref.vsad_field )
+    {
+        set_func_name( "vsad_field" );
+        used_asm = 1;
+        for( int h = 4; h <= 32 && ok; h += 4 )
+            for( int j = 0; j < 3 && ok; j++ )
+            {
+                pixel *p = j == 1 ? pbuf4 : pbuf1;
+                intptr_t stride = j == 2 ? 48 : 16;
+                uint64_t res_c = call_c1( x264_pixel_vsad_field_c, p, stride, h );
+                uint64_t res_asm = call_a1( pixel_asm.vsad_field, p, stride, h );
+                if( res_c != res_asm )
+                {
+                    ok = 0;
+                    fprintf( stderr, "vsad_field: height=%d stride=%d, %d/%d != %d/%d\n", h, (int)stride,
+                             (int)(uint32_t)res_c, (int)(res_c >> 32), (int)(uint32_t)res_asm, (int)(res_asm >> 32) );
+                }
+            }
+        /* a 32-row mb pair; _3x: the three pixel vsad calls it replaces */
+        call_c2( x264_pixel_vsad_field_c, pbuf1, (intptr_t)32, 32 );
+        call_a2( pixel_asm.vsad_field, pbuf1, (intptr_t)32, 32 );
+        vsad_3x_pf = &pixel_asm;
+        set_func_name( "vsad_field_3x" );
+        call_a2( vsad_3x, pbuf1, (intptr_t)32, 32 );
+    }
+    report( "pixel vsad_field :" );
 
     ok = 1; used_asm = 0;
     if( pixel_asm.asd8 != pixel_ref.asd8 )
