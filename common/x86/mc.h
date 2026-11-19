@@ -34,28 +34,26 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf );
 void x264_mb_fref_load_avx2( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 );
 #define x264_mb_fref_load_avx512 x264_template(mb_fref_load_avx512)
 void x264_mb_fref_load_avx512( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 );
-#if !HIGH_BIT_DEPTH
 #define x264_hpel_filter_copy_vc_avx2 x264_template(hpel_filter_copy_vc_avx2)
-void x264_hpel_filter_copy_vc_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dstf );
+void x264_hpel_filter_copy_vc_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dstf );
 #define x264_hpel_filter_dual_avx2 x264_template(hpel_filter_dual_avx2)
-void x264_hpel_filter_dual_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dsth2 );
+void x264_hpel_filter_dual_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dsth2 );
 #define x264_frame_init_lowres_core_pad_avx2 x264_template(frame_init_lowres_core_pad_avx2)
-void x264_frame_init_lowres_core_pad_avx2( uint8_t *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+void x264_frame_init_lowres_core_pad_avx2( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                            intptr_t src_stride, intptr_t dst_stride, int width, int height );
 #define x264_frame_init_lowres_core_pad_avx512icl x264_template(frame_init_lowres_core_pad_avx512icl)
-void x264_frame_init_lowres_core_pad_avx512icl( uint8_t *src0, uint8_t *dst0, uint8_t *dsth, uint8_t *dstv, uint8_t *dstc,
+void x264_frame_init_lowres_core_pad_avx512icl( pixel *src0, pixel *dst0, pixel *dsth, pixel *dstv, pixel *dstc,
                                                 intptr_t src_stride, intptr_t dst_stride, int width, int height );
 #define x264_hpel_filter_pad_avx2 x264_template(hpel_filter_pad_avx2)
-void x264_hpel_filter_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
+void x264_hpel_filter_pad_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dst );
 #define x264_hpel_filter_copy_pad_avx2 x264_template(hpel_filter_copy_pad_avx2)
-void x264_hpel_filter_copy_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
+void x264_hpel_filter_copy_pad_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dst );
 #define x264_hpel_filter_copy_vc_pad_avx2 x264_template(hpel_filter_copy_vc_pad_avx2)
-void x264_hpel_filter_copy_vc_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
+void x264_hpel_filter_copy_vc_pad_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dst );
 #define x264_hpel_filter_dual_pad_avx2 x264_template(hpel_filter_dual_pad_avx2)
-void x264_hpel_filter_dual_pad_avx2( uint8_t *dsth, uint8_t *dstv, uint8_t *dstc, uint8_t *src, intptr_t stride, int width, int height, int16_t *buf, uint8_t *dst );
+void x264_hpel_filter_dual_pad_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dst );
 #define x264_expand_border_sides_avx2 x264_template(expand_border_sides_avx2)
-void x264_expand_border_sides_avx2( uint8_t *pix, uint8_t *pix2, intptr_t stride, int width, int height, int b_chroma );
-#endif
+void x264_expand_border_sides_avx2( pixel *pix, pixel *pix2, intptr_t stride, int width, int height, int b_chroma );
 /* mbtree_propagate_list wrappers: the original (internal kernel + clipped adds), strip (the same
  * kernel + int32 strip in C), strip_asm (the strip kernels); list2: both lists of a B row */
 #define PROPAGATE_LIST_DECL( name )\
