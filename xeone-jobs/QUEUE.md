@@ -318,3 +318,11 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
   FRAMES=120 AB=full bash hp10/hp10-ab.sh time 9; FRAMES=120 AB=full bash hp10/hp10-ab.sh report
 ```
 - Interlaced cells decide. tc422p10-p (30 frames) is the progressive check. A loss with fewer instructions: AB=lay.
+
+### 19. SK: AVX2 small-kernel bundle (b3490174 -> 3e88a2f9; added 11-19, after HP10; time only after .44 G19 PASS)
+```
+  for p in build live md5; do AB=full bash smallk/smallk-ab.sh $p; done
+  FRAMES=120 AB=full bash smallk/smallk-ab.sh time 9; FRAMES=120 AB=full bash smallk/smallk-ab.sh report
+```
+- vsad_field only runs in 1080i (adaptive MBAFF). The kernels are small, so expect -0.1..-0.4 %. Struct layout shifts: a
+  loss with fewer instructions gets AB=lay.
