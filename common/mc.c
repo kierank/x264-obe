@@ -895,11 +895,14 @@ static void frame_filter_frm( x264_t *h, x264_frame_t *frame, int p, int y0, int
 }
 
 /* hpel_filter_pad writes x264_frame_expand_border_filtered's side pads of plane p:
- * needs the rows 32-aligned and a width that is a multiple of 32 */
+ * needs the rows 32 byte aligned and a width that is a multiple of 32 (8-bit, pads
+ * blended into the end chunks) or 16 (10-bit, pads stored after each row) */
 int x264_frame_filter_pads( x264_t *h, x264_frame_t *frame, int p )
 {
-    return h->mc.hpel_filter_pad[0] && !((intptr_t)frame->plane[p] & 31) && !(frame->i_stride[p] & 31) &&
-           !(frame->i_width[p] & 31) && frame->i_width[p] >= 32;
+    const int pad_width = HIGH_BIT_DEPTH ? 16 : 32;
+    return h->mc.hpel_filter_pad[0] && !((intptr_t)frame->plane[p] & 31) &&
+           !((frame->i_stride[p] * (int)sizeof(pixel)) & 31) &&
+           !(frame->i_width[p] & (pad_width-1)) && frame->i_width[p] >= pad_width;
 }
 
 void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )

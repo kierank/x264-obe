@@ -5996,7 +5996,7 @@ static int check_mc( int cpu_ref, int cpu_new )
     {
         /* each mode's _pad against the mode's own kernel then x264_frame_expand_border_filtered's
          * side pads (columns -32..-5 from -4, w+4..w+31 from w+3) on h/v/c/dsth2; every byte of
-         * the planes. Rows 32-aligned at column 0, w % 32 == 0. */
+         * the planes. Rows 32 byte aligned at column 0, w % 32 == 0 (8-bit) or w % 16 == 0 (10-bit). */
         set_func_name( "hpel_filter_pad" );
         ok = 1; used_asm = 1;
         intptr_t st = 192;
@@ -6005,11 +6005,12 @@ static int check_mc( int cpu_ref, int cpu_new )
         pixel *bb = x264_malloc( 8*sz * sizeof(pixel) );
         int16_t *tmp = x264_malloc( (st+48+32) * sizeof(int16_t) );
         ok = srcb && bb && tmp;
-        for( int w = 32; w <= 128 && ok; w += 32 )
+        const int wstep = HIGH_BIT_DEPTH ? 16 : 32;
+        for( int w = wstep; w <= 128 && ok; w += wstep )
             for( int mode = 0; mode < 4 && ok; mode++ )
             {
                 for( int i = 0; i < sz; i++ )
-                    srcb[i] = rand();
+                    srcb[i] = rand() & PIXEL_MAX;
                 for( int i = 0; i < 8*sz; i++ )
                     bb[i] = 0xCD;
                 pixel *srcp = srcb + 4*st + 64 - 8;

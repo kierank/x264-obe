@@ -1155,13 +1155,12 @@ HPEL(8, mmx2, mmx2, mmx2, mmx2)
 HPEL(16, sse2, sse2, sse2, sse2)
 #if ARCH_X86_64
 void x264_hpel_filter_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf );
-/* the field pass copy still uses the 3-pass kernels */
-void x264_hpel_filter_v_avx2( pixel *dst, pixel *src, int16_t *buf, intptr_t stride, intptr_t width );
-void x264_hpel_filter_c_avx2( pixel *dst, int16_t *buf, intptr_t width );
+/* the field pass copy: the one-pass kernel, as hpel_filter */
+void x264_hpel_filter_copy_avx2( uint16_t *dsth, uint16_t *dstv, uint16_t *dstc, uint16_t *src, intptr_t stride, int width, int height, int16_t *buf, uint16_t *dstf );
 #else
 HPEL(32, avx2, avx2, avx2, avx2)
-#endif
 HPEL_COPY(32, avx2, avx2, avx2, avx2)
+#endif
 #else // !HIGH_BIT_DEPTH
 HPEL(16, sse2_amd, mmx2, mmx2, sse2)
 #if ARCH_X86_64
@@ -1755,12 +1754,22 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
         pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_avx2;
         pf->hpel_filter = x264_hpel_filter_avx2;
         pf->hpel_filter_copy = x264_hpel_filter_copy_avx2;
+#if ARCH_X86_64
+        pf->hpel_filter_copy_vc = x264_hpel_filter_copy_vc_avx2;
+        pf->hpel_filter_dual = x264_hpel_filter_dual_avx2;
+        pf->hpel_filter_pad[0] = x264_hpel_filter_pad_avx2;
+        pf->hpel_filter_pad[1] = x264_hpel_filter_copy_pad_avx2;
+        pf->hpel_filter_pad[2] = x264_hpel_filter_copy_vc_pad_avx2;
+        pf->hpel_filter_pad[3] = x264_hpel_filter_dual_pad_avx2;
+#endif
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx2;
 #if ARCH_X86_64
+        pf->frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx2;
         pf->frame_init_lowres_core8 = x264_frame_init_lowres_core8_avx2;
 #endif
         pf->load_deinterleave_chroma_fenc = x264_load_deinterleave_chroma_fenc_avx2;
         pf->load_deinterleave_chroma_fdec = x264_load_deinterleave_chroma_fdec_avx2;
+        pf->expand_border_sides = x264_expand_border_sides_avx2;
         if( !(cpu&X264_CPU_STACK_MOD4) )
             pf->mc_chroma = x264_mc_chroma_avx2;
         pf->avg[PIXEL_16x16] = x264_pixel_avg_16x16_avx2;
@@ -1792,6 +1801,7 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf )
 #if ARCH_X86_64
         /* zen4 prune, neutral (>= 1.000): frame_init_lowres_core8, plane_copy_interleave; kept assembled */
         pf->frame_init_lowres_core = x264_frame_init_lowres_core_avx512icl;
+        pf->frame_init_lowres_core_pad = x264_frame_init_lowres_core_pad_avx512icl;
         pf->plane_copy_deinterleave = x264_plane_copy_deinterleave_avx512icl;
         pf->store_interleave_chroma = x264_store_interleave_chroma_avx512icl;
         pf->integral_init4v = x264_integral_init4v_avx512icl;
