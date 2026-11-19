@@ -2336,6 +2336,52 @@ cglobal pixel_var_16x16, 2,4,7
     movd   edx, xm6
 %endif
     RET
+
+;-----------------------------------------------------------------------------
+; void pixel_var_uv( pixel *pix, intptr_t stride, int height, uint64_t res[2] )
+;-----------------------------------------------------------------------------
+; pixel_var_8x8 / 8x16 (height 8 or 16) of the u and of the v of an interleaved
+; chroma plane: two rows per ymm, u = the low bytes of the words, v = the high
+cglobal pixel_var_uv, 4,5,8
+    mova      m7, [pw_00ff]
+    pxor      m0, m0
+    pxor      m1, m1
+    pxor      m2, m2
+    pxor      m3, m3
+    lea       r4, [r1*3]
+.loop:
+    movu     xm4, [r0]
+    vinserti128 m4, m4, [r0+r1], 1
+    movu     xm5, [r0+r1*2]
+    vinserti128 m5, m5, [r0+r4], 1
+    lea       r0, [r0+r1*4]
+    psrlw     m6, m4, 8
+    pand      m4, m7
+    paddw     m0, m4
+    paddw     m1, m6
+    pmaddwd   m4, m4
+    pmaddwd   m6, m6
+    paddd     m2, m4
+    paddd     m3, m6
+    psrlw     m6, m5, 8
+    pand      m5, m7
+    paddw     m0, m5
+    paddw     m1, m6
+    pmaddwd   m5, m5
+    pmaddwd   m6, m6
+    paddd     m2, m5
+    paddd     m3, m6
+    sub      r2d, 4
+    jg .loop
+    pmaddwd   m0, [pw_1]
+    pmaddwd   m1, [pw_1]
+    phaddd    m0, m2
+    phaddd    m1, m3
+    phaddd    m0, m1          ; per lane: sum u, ssd u, sum v, ssd v
+    vextracti128 xm1, m0, 1
+    paddd    xm0, xm1
+    movu    [r3], xm0
+    RET
 %endif ; !HIGH_BIT_DEPTH
 
 %macro VAR_AVX512_CORE 1 ; accum

@@ -702,6 +702,17 @@ static uint64_t vsad_3x( pixel *src, intptr_t stride, int height )
     return frame | (uint64_t)field << 32;
 }
 
+/* x264_ac_energy_mb chroma without pixf.var_uv */
+static x264_mc_functions_t *var_uv_split_mc;
+static x264_pixel_function_t *var_uv_split_pf;
+static void var_uv_split( pixel *pix, intptr_t i_stride, int height, uint64_t res[2] )
+{
+    ALIGNED_ARRAY_64( pixel, buf,[FENC_STRIDE*16] );
+    var_uv_split_mc->load_deinterleave_chroma_fenc( buf, pix, i_stride, height );
+    res[0] = var_uv_split_pf->var[height == 16 ? PIXEL_8x16 : PIXEL_8x8]( buf, FENC_STRIDE );
+    res[1] = var_uv_split_pf->var[height == 16 ? PIXEL_8x16 : PIXEL_8x8]( buf+FENC_STRIDE/2, FENC_STRIDE );
+}
+
 static int check_pixel( int cpu_ref, int cpu_new )
 {
     x264_pixel_function_t pixel_c;
@@ -2415,6 +2426,48 @@ static int check_pixel( int cpu_ref, int cpu_new )
     TEST_PIXEL_VAR( PIXEL_8x16 );
     TEST_PIXEL_VAR( PIXEL_8x8 );
     report( "pixel var :" );
+
+    ok = 1; used_asm = 0;
+    if( pixel_asm.var_uv && pixel_asm.var_uv != pixel_ref.var_uv )
+    {
+        ALIGNED_ARRAY_64( pixel, uvmax,[16*16] );
+        ALIGNED_16( uint64_t res_c[2] );
+        ALIGNED_16( uint64_t res_a[2] );
+        for( int k = 0; k < 16*16; k++ )
+            uvmax[k] = PIXEL_MAX;
+        set_func_name( "var_uv" );
+        used_asm = 1;
+        for( int hgt = 8; hgt <= 16; hgt += 8 )
+            for( int j = 0; j < 7; j++ )
+            {
+                /* FENC_STRIDE, frame strides and doubled (field) ones, the largest sums */
+                intptr_t stride = j == 6 ? 16 : j>>1 == 0 ? 16 : j>>1 == 1 ? 48 : 224;
+                pixel *pix = j == 6 ? uvmax : j&1 ? pbuf3 : pbuf1;
+                x264_pixel_var_uv_c( pix, stride, hgt, res_c );
+                call_a1( pixel_asm.var_uv, pix, stride, hgt, res_a );
+                if( res_c[0] != res_a[0] || res_c[1] != res_a[1] )
+                {
+                    ok = 0;
+                    fprintf( stderr, "var_uv h %d stride %d: %d %d %d %d != %d %d %d %d [FAILED]\n", hgt, (int)stride,
+                             (int)res_c[0], (int)(res_c[0]>>32), (int)res_c[1], (int)(res_c[1]>>32),
+                             (int)res_a[0], (int)(res_a[0]>>32), (int)res_a[1], (int)(res_a[1]>>32) );
+                }
+            }
+        /* 4:2:0 and 4:2:2; _split: load_deinterleave_chroma_fenc and the two var calls it replaces */
+        x264_mc_functions_t mc_uv;
+        x264_mc_init( cpu_new, &mc_uv, 0 );
+        var_uv_split_mc = &mc_uv;
+        var_uv_split_pf = &pixel_asm;
+        for( int hgt = 8; hgt <= 16; hgt += 8 )
+        {
+            set_func_name( "var_uv_%d", hgt );
+            call_c2( x264_pixel_var_uv_c, pbuf1, (intptr_t)64, hgt, res_c );
+            call_a2( pixel_asm.var_uv, pbuf1, (intptr_t)64, hgt, res_a );
+            set_func_name( "var_uv_%d_split", hgt );
+            call_a2( var_uv_split, pbuf1, (intptr_t)64, hgt, res_a );
+        }
+    }
+    report( "pixel var_uv :" );
 
 #define TEST_PIXEL_VAR2( i ) \
     if( pixel_asm.var2[i] != pixel_ref.var2[i] ) \

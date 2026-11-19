@@ -360,6 +360,9 @@ typedef struct
     /* asm only, NULL otherwise; reference x264_pixel_vsad_field_c: vsad of the frame | the
      * sum of those of its two fields << 32, height a multiple of 4 */
     uint64_t (*vsad_field)( pixel *src, intptr_t stride, int height );
+    /* asm only, NULL otherwise; reference x264_pixel_var_uv_c: var[PIXEL_8x8 or 8x16] (height 8 or
+     * 16) of the u and of the v of an interleaved chroma plane, without deinterleaving it */
+    void (*var_uv)( pixel *pix, intptr_t i_stride, int height, uint64_t res[2] );
 } x264_pixel_function_t;
 
 #define x264_pixel_init x264_template(pixel_init)
@@ -415,6 +418,8 @@ uint64_t x264_pixel_ssd_wxh( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_
 #define x264_pixel_ssim_wxh x264_template(pixel_ssim_wxh)
 float x264_pixel_ssim_wxh  ( x264_pixel_function_t *pf, pixel *pix1, intptr_t i_pix1, pixel *pix2, intptr_t i_pix2,
                              int i_width, int i_height, void *buf, int *cnt );
+#define x264_pixel_var_uv_c x264_template(pixel_var_uv_c)
+void x264_pixel_var_uv_c( pixel *pix, intptr_t i_stride, int height, uint64_t res[2] );
 #define x264_pixel_vsad_field_c x264_template(pixel_vsad_field_c)
 uint64_t x264_pixel_vsad_field_c( pixel *src, intptr_t stride, int height );
 #define x264_field_vsad x264_template(field_vsad)

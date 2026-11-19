@@ -436,6 +436,22 @@ PIXEL_VAR_C( x264_pixel_var_16x16, 16, 16 )
 PIXEL_VAR_C( x264_pixel_var_8x16,   8, 16 )
 PIXEL_VAR_C( x264_pixel_var_8x8,    8,  8 )
 
+void x264_pixel_var_uv_c( pixel *pix, intptr_t i_stride, int height, uint64_t res[2] )
+{
+    for( int c = 0; c < 2; c++ )
+    {
+        uint32_t sum = 0, sqr = 0;
+        for( int y = 0; y < height; y++ )
+            for( int x = 0; x < 8; x++ )
+            {
+                int p = pix[y*i_stride + 2*x + c];
+                sum += p;
+                sqr += p * p;
+            }
+        res[c] = sum + ((uint64_t)sqr << 32);
+    }
+}
+
 /****************************************************************************
  * pixel_var2_wxh
  ****************************************************************************/
@@ -2089,6 +2105,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
 #if ARCH_X86_64
         pixf->vsad_field = x264_pixel_vsad_field_avx2;
 #endif
+        pixf->var_uv = x264_pixel_var_uv_avx2;
         pixf->var2[PIXEL_8x16]  = x264_pixel_var2_8x16_avx2;
         pixf->var2[PIXEL_8x8]   = x264_pixel_var2_8x8_avx2;
         pixf->intra_sad_x3_16x16 = x264_intra_sad_x3_16x16_avx2;
