@@ -98,6 +98,11 @@ typedef struct
      * read (8-bit; NULL: emulate them in fdec and call intra_satd_x9_4x4_recon) */
     int  (*intra_satd_x9_4x4_recon_notr)( pixel *fenc, pixel *fdec, uint16_t *bitcosts, dctcoef level[16],
                                           x264_quant4_recon_t *q, int limit );
+    /* x264_quant_4x4x4_trellis: orig = dct, quant_4x4x4, zigzag every block into level. Returns the nonzero
+     * mask | the scan position of the last nonzero level of block i (0 if none) << (8+4*i). asm only, NULL
+     * otherwise; references x264_quant_4x4x4_scan_last_{frame,field} */
+    int  (*quant_4x4x4_scan_last)( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+                                   udctcoef mf[16], udctcoef bias[16] );
 
 } x264_zigzag_function_t;
 

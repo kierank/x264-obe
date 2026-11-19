@@ -7215,6 +7215,23 @@ static x264_zigzag_function_t *q8s_zz;
 /* asm only in zigzagf (NULL in C), so the C reference is called directly */
 static int (* const q8s_c[2])( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp ) =
     { x264_quant_8x8_scan_frame, x264_quant_8x8_scan_field };
+static int (* const qsl_c[2])( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] ) =
+    { x264_quant_4x4x4_scan_last_frame, x264_quant_4x4x4_scan_last_field };
+/* the calls quant_4x4x4_scan_last replaces in x264_quant_4x4x4_trellis (coeff_last of the nonzero blocks) */
+static int quant_4x4x4_scan_last_split( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+                                        udctcoef mf[16], udctcoef bias[16] )
+{
+    memcpy( orig, dct, 64*sizeof(dctcoef) );
+    int nz = q8s_qf->quant_4x4x4( dct, mf, bias );
+    int ret = nz;
+    for( int i = 0; i < 4; i++ )
+    {
+        q8s_zz->scan_4x4( level[i], dct[i] );
+        if( nz & (1 << i) )
+            ret |= q8s_qf->coeff_last[DCT_LUMA_4x4]( level[i] ) << (8+4*i);
+    }
+    return ret;
+}
 /* the calls quant_8x8_scan replaces */
 static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
                                  int dequant_mf[6][64], int i_qp )
@@ -7736,6 +7753,69 @@ static int check_quant( int cpu_ref, int cpu_new )
         TEST_QUANT_SCAN( quant_4x4x4_scan, CQM_4PC, 0 );
         TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IY, 1 );
         TEST_QUANT_SCAN( quant_4x4x4_scan_ac, CQM_4IC, 1 );
+
+        /* quant_4x4x4_scan_last, inputs as TEST_QUANT_SCAN (bit 6 unused), with x264_quant_4x4x4_trellis's
+         * bias0; against C and against the quant_4x4x4, scan_4x4 and coeff_last calls it replaces */
+#define TEST_QUANT_SCAN_LAST( block, ac ) \
+        for( int fld = 0; fld < 2; fld++ ) \
+            if( zz_a[fld].quant_4x4x4_scan_last && zz_a[fld].quant_4x4x4_scan_last != zz_ref[fld].quant_4x4x4_scan_last ) \
+            { \
+                set_func_name( "quant_4x4x4_scan_last_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                used_asms[3] = 1; \
+                for( int qp = h->param.rc.i_qp_max; qp >= h->param.rc.i_qp_min && oks[3]; qp-- ) \
+                { \
+                    udctcoef *mf = h->quant4_mf[block][qp], *bias = h->quant4_bias0[block][qp]; \
+                    dctcoef (*dct5b)[16] = (dctcoef(*)[16])dct5, (*lvl3b)[16] = (dctcoef(*)[16])lvl3; \
+                    for( int j = 0; j < 256; j++ ) \
+                    { \
+                        static const int scale1d[4] = {4,6,4,6}; \
+                        for( int k = 0; k < 64; k++ ) \
+                        { \
+                            int big = PIXEL_MAX*scale1d[(k>>2)&3]*scale1d[k&3]; \
+                            int small = X264_MIN( big, ((j>>4)&3) == 1 ? (3<<15)/mf[k&15] : (3<<16)/mf[k&15] ); \
+                            int x = ((j>>4)&3) == 0 ? rand()%(2*big+1) - big \
+                                  : ((j>>4)&3) == 3 ? (rand()&15 ? 0 : rand()&1 ? big : -big) \
+                                  : (rand()&3 ? 0 : rand()%(2*small+1) - small); \
+                            dct3[k>>4][k&15] = dct4[k>>4][k&15] = dct5b[k>>4][k&15] = (j>>(k>>4))&1 && (j&7) != 7 ? x : 0; \
+                        } \
+                        if( (ac) && (j&128) ) \
+                            for( int k = 0; k < 4; k++ ) \
+                                dct3[k][0] = dct4[k][0] = dct5b[k][0] = 0; \
+                        for( int k = 0; k < 64; k++ ) \
+                        { \
+                            lvl1[k>>4][k&15] = lvl2[k>>4][k&15] = lvl3[k] = 0x5a5a + k; \
+                            dct3[4+(k>>4)][k&15] = dct4[4+(k>>4)][k&15] = 0x3c3c + k; \
+                        } \
+                        q8s_qf = &qf_c; \
+                        q8s_zz = &zz_c[fld]; \
+                        dctcoef orig5[4][16]; \
+                        int res_s = quant_4x4x4_scan_last_split( dct5b, orig5, lvl3b, mf, bias ); \
+                        int res_c = call_c1( qsl_c[fld], dct3, dct3+4, lvl1, mf, bias ); \
+                        int res_a = call_a1( zz_a[fld].quant_4x4x4_scan_last, dct4, dct4+4, lvl2, mf, bias ); \
+                        if( res_c != res_a || res_c != res_s || memcmp( dct3, dct4, 128*sizeof(dctcoef) ) || \
+                            memcmp( dct3, dct5, 64*sizeof(dctcoef) ) || memcmp( dct3+4, orig5, 64*sizeof(dctcoef) ) || \
+                            memcmp( lvl1, lvl2, 64*sizeof(dctcoef) ) || memcmp( lvl1, lvl3, 64*sizeof(dctcoef) ) ) \
+                        { \
+                            oks[3] = 0; \
+                            fprintf( stderr, "quant_4x4x4_scan_last_%s (qp=%d, cqm=%d, block="#block", j=%d, res_c=%x, res_asm=%x, res_split=%x): [FAILED]\n", \
+                                     fld?"field":"frame", qp, i_cqm, j, res_c, res_a, res_s ); \
+                            break; \
+                        } \
+                        call_c2( qsl_c[fld], dct3, dct3+4, lvl1, mf, bias ); \
+                        call_a2( zz_a[fld].quant_4x4x4_scan_last, dct4, dct4+4, lvl2, mf, bias ); \
+                    } \
+                    /* bench: the asm calls it replaces */ \
+                    q8s_qf = &qf_a; \
+                    q8s_zz = &zz_a[fld]; \
+                    set_func_name( "quant_4x4x4_scan_last_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                    call_a2( quant_4x4x4_scan_last_split, dct4, dct4+4, lvl2, mf, bias ); \
+                    set_func_name( "quant_4x4x4_scan_last_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" ); \
+                } \
+            }
+
+        TEST_QUANT_SCAN_LAST( CQM_4PY, 0 );
+        TEST_QUANT_SCAN_LAST( CQM_4IY, 1 );
+        TEST_QUANT_SCAN_LAST( CQM_4IC, 1 );
 
         /* j: bits 0-1 level size (full range, about +-1, about +-3, extremes), bits 2-3 nonzero rate 1, 1/4, 1/16,
          * 1/64, bit 4 no dequant, bit 5 all zero. Checked against C and the C calls it replaces. */

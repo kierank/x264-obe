@@ -394,6 +394,40 @@ int x264_quant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], ud
     return quant_4x4x4_scan( dct, level, mf, bias, dequant_mf, i_qp, 1, 1 );
 }
 
+/* orig = dct, quant_4x4x4, then zigzag every block into level. Returns the nonzero mask
+ * | the scan position of the last nonzero level of block i (0 if none) << (8+4*i). */
+static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+                                                udctcoef mf[16], udctcoef bias[16], int b_field )
+{
+    int ret = 0;
+    for( int j = 0; j < 4; j++ )
+    {
+        int nz = 0, last = 0;
+        for( int i = 0; i < 16; i++ )
+        {
+            orig[j][i] = dct[j][i];
+            QUANT_ONE( dct[j][i], mf[i], bias[i] );
+        }
+        for( int i = 0; i < 16; i++ )
+        {
+            level[j][i] = dct[j][x264_zigzag_scan4[b_field][i]];
+            if( level[j][i] )
+                last = i;
+        }
+        ret |= (!!nz) << j | last << (8+4*j);
+    }
+    return ret;
+}
+
+int x264_quant_4x4x4_scan_last_frame( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
+{
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 0 );
+}
+int x264_quant_4x4x4_scan_last_field( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
+{
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 1 );
+}
+
 /* quant_8x8, then if nonzero: zigzag into level, decimate score, dequant in place
  * (unless dequant_mf is NULL). Returns 0, or 1 | min(score, 9) << 4. */
 static ALWAYS_INLINE int quant_8x8_scan( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
