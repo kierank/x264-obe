@@ -2148,10 +2148,15 @@ static NOINLINE void x264_macroblock_cache_load_mbaff_422_b( x264_t *h, int mb_x
 
 void x264_mbaff_init( uint32_t cpu, x264_mbaff_function_t *pf, int chroma_format )
 {
-    /* avx2 (8-bit, x86-64): x264_mbaff_load_luma_avx2, x264_mbaff_load_chroma_8/16_avx2;
-     * not dispatched yet */
     pf->load_luma = NULL;
     pf->load_chroma = NULL;
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+    if( (cpu&X264_CPU_AVX2) && (chroma_format == CHROMA_420 || chroma_format == CHROMA_422) )
+    {
+        pf->load_luma = x264_mbaff_load_luma_avx2;
+        pf->load_chroma = chroma_format == CHROMA_420 ? x264_mbaff_load_chroma_8_avx2 : x264_mbaff_load_chroma_16_avx2;
+    }
+#endif
 }
 
 static NOINLINE void x264_macroblock_cache_load_mbaff_any( x264_t *h, int mb_x, int mb_y )

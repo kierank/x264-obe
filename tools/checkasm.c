@@ -5010,14 +5010,6 @@ static int check_mbaff_load( int cpu_ref, int cpu_new )
         x264_mbaff_function_t mbf_r, mbf_a;
         x264_mbaff_init( cpu_ref, &mbf_r, cf );
         x264_mbaff_init( cpu_new, &mbf_a, cf );
-#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
-        /* undispatched: the avx2 at the first AVX2 level */
-        if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
-        {
-            mbf_a.load_luma = x264_mbaff_load_luma_avx2;
-            mbf_a.load_chroma = cf == CHROMA_420 ? x264_mbaff_load_chroma_8_avx2 : x264_mbaff_load_chroma_16_avx2;
-        }
-#endif
         if( mbf_a.load_luma == mbf_r.load_luma && mbf_a.load_chroma == mbf_r.load_chroma )
             continue;
         used_asm = 1;
