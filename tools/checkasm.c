@@ -4964,7 +4964,7 @@ static int check_propagate_list_strip( int cpu_new, const char *name, const char
 #endif
 
 /* x264_mbaff_function_t references, as the C path of x264_macroblock_cache_load_mbaff */
-static void mbaff_load_luma_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
+static NOINLINE void mbaff_load_luma_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
 {
     for( int j = 0; j < 16; j++ )
         memcpy( fenc + j*FENC_STRIDE, src_fenc + j*stride, 16*sizeof(pixel) );
@@ -4991,11 +4991,11 @@ static void mbaff_load_chroma_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixe
         fdec[15+j*FDEC_STRIDE] = src_fdec[-1+j*stride];
     }
 }
-static void mbaff_load_chroma_420_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
+static NOINLINE void mbaff_load_chroma_420_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
 {
     mbaff_load_chroma_c( fenc, fdec, src_fenc, src_fdec, stride, intra, 8 );
 }
-static void mbaff_load_chroma_422_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
+static NOINLINE void mbaff_load_chroma_422_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
 {
     mbaff_load_chroma_c( fenc, fdec, src_fenc, src_fdec, stride, intra, 16 );
 }
@@ -5014,7 +5014,6 @@ static int check_mbaff_load( int cpu_ref, int cpu_new )
             continue;
         used_asm = 1;
         void (*chroma_c)( pixel*, pixel*, pixel*, pixel*, intptr_t, pixel* ) = cf == CHROMA_420 ? mbaff_load_chroma_420_c : mbaff_load_chroma_422_c;
-        int height_c = cf == CHROMA_420 ? 8 : 16;
         int maxstride = 2*(1920+128);
         pixel *plane = x264_malloc( (32 + 4) * maxstride * sizeof(pixel) );
         pixel *intra = x264_malloc( (1920+64) * sizeof(pixel) );
