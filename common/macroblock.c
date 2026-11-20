@@ -2115,7 +2115,28 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_mbaff( x264_t *h, int mb_x,
     memcpy( h->mb.i_neighbour4, mbaff_neighbour_rows[neighbour].n4, sizeof(h->mb.i_neighbour4) );
 }
 
+static NOINLINE void x264_macroblock_cache_load_mbaff_420_p( x264_t *h, int mb_x, int mb_y )
+{
+    x264_macroblock_cache_load_mbaff( h, mb_x, mb_y, 1, 0 );
+}
+static NOINLINE void x264_macroblock_cache_load_mbaff_420_b( x264_t *h, int mb_x, int mb_y )
+{
+    x264_macroblock_cache_load_mbaff( h, mb_x, mb_y, 1, 1 );
+}
+static NOINLINE void x264_macroblock_cache_load_mbaff_422_p( x264_t *h, int mb_x, int mb_y )
+{
+    x264_macroblock_cache_load_mbaff( h, mb_x, mb_y, 0, 0 );
+}
+static NOINLINE void x264_macroblock_cache_load_mbaff_422_b( x264_t *h, int mb_x, int mb_y )
+{
+    x264_macroblock_cache_load_mbaff( h, mb_x, mb_y, 0, 1 );
+}
 #endif
+
+static NOINLINE void x264_macroblock_cache_load_mbaff_any( x264_t *h, int mb_x, int mb_y )
+{
+    x264_macroblock_cache_load( h, mb_x, mb_y, 1 );
+}
 
 void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y )
 {
@@ -2124,7 +2145,28 @@ void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y )
 
 void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y )
 {
-    x264_macroblock_cache_load( h, mb_x, mb_y, 1 );
+#if HAVE_INTERLACED
+    if( PARAM_CABAC && !h->param.b_constrained_intra && !h->fdec->integral && h->sh.i_type != SLICE_TYPE_I )
+    {
+        if( CHROMA_FORMAT == CHROMA_420 )
+        {
+            if( h->sh.i_type == SLICE_TYPE_P )
+                x264_macroblock_cache_load_mbaff_420_p( h, mb_x, mb_y );
+            else
+                x264_macroblock_cache_load_mbaff_420_b( h, mb_x, mb_y );
+            return;
+        }
+        if( CHROMA_FORMAT == CHROMA_422 )
+        {
+            if( h->sh.i_type == SLICE_TYPE_P )
+                x264_macroblock_cache_load_mbaff_422_p( h, mb_x, mb_y );
+            else
+                x264_macroblock_cache_load_mbaff_422_b( h, mb_x, mb_y );
+            return;
+        }
+    }
+#endif
+    x264_macroblock_cache_load_mbaff_any( h, mb_x, mb_y );
 }
 
 static void x264_macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][4] )
