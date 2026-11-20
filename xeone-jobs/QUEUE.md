@@ -326,3 +326,8 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
 ```
 - vsad_field only runs in 1080i (adaptive MBAFF). The kernels are small, so expect -0.1..-0.4 %. Struct layout shifts: a
   loss with fewer instructions gets AB=lay.
+
+## CL2 cacheload2 (11-20): cache_load_interlaced round 2, wip/x264-nw-cacheload2 9557360a vs speed-next 6a312bce
+`FRAMES=120 AB=full bash cacheload2/cacheload2-ab.sh build | live | md5 | time 9 | report`, then AB=lay; AB=c / AB=k split
+the C loaders from the avx2 kernels; AB=10 is the 10-bit 4:2:2 interlaced check (md5 + timing). Timing only after the
+.44 gate passes. Expected: interlaced LOWLAT -250..-280 instructions per MB (8-bit 4:2:0), NORMAL -215..-255.
