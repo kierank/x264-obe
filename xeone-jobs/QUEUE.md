@@ -331,3 +331,8 @@ Protocol (xeone-jobs/lib.sh, the same for every job):
 `FRAMES=120 AB=full bash cacheload2/cacheload2-ab.sh build | live | md5 | time 9 | report`, then AB=lay; AB=c / AB=k split
 the C loaders from the avx2 kernels; AB=10 is the 10-bit 4:2:2 interlaced check (md5 + timing). Timing only after the
 .44 gate passes. Expected: interlaced LOWLAT -250..-280 instructions per MB (8-bit 4:2:0), NORMAL -215..-255.
+
+## S3CNT: survey 3 counters (untimed), wip/test-x264-survey3-cnt 2b8b706d
+FRAMES=120 bash xeone-jobs/s3cnt/s3cnt.sh cbuild   # build window
+FRAMES=120 bash xeone-jobs/s3cnt/s3cnt.sh cnt      # untimed, cpu 12; off vs cnt md5 per cell + C1-C6 lines
+Return: PASS/FAIL per cell plus every out/s3_<cell>.txt (files: path + md5 + size).
