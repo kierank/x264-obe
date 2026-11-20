@@ -1161,7 +1161,7 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
     {
         h->mb.i_type = I_16x16;
         x264_analyse_update_cache( h, a );
-        a->i_satd_i16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_I16, x264_s3_intra_bound( S4_I16, COST_MAX, COST_MAX ) ); a->i_satd_i16x16 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
     else
         a->i_satd_i16x16 = COST_MAX;
@@ -1170,7 +1170,7 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
     {
         h->mb.i_type = I_4x4;
         x264_analyse_update_cache( h, a );
-        a->i_satd_i4x4 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_I4, x264_s3_intra_bound( S4_I4, a->i_satd_i16x16, COST_MAX ) ); a->i_satd_i4x4 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
     else
         a->i_satd_i4x4 = COST_MAX;
@@ -1179,7 +1179,7 @@ static void x264_intra_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd_thresh )
     {
         h->mb.i_type = I_8x8;
         x264_analyse_update_cache( h, a );
-        a->i_satd_i8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_I8, x264_s3_intra_bound( S4_I8, a->i_satd_i16x16, a->i_satd_i4x4 ) ); a->i_satd_i8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
         a->i_cbp_i8x8_luma = h->mb.i_cbp_luma;
     }
     else
@@ -1277,7 +1277,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
             for( ; *predict_mode >= 0; predict_mode++ )
             {
                 int i_mode = *predict_mode;
-                i_satd = x264_rd_cost_i4x4( h, a->i_lambda2, idx, i_mode );
+                S3_RD_SET( S4_OTHER, i_best ); i_satd = x264_rd_cost_i4x4( h, a->i_lambda2, idx, i_mode );
 
                 if( i_best > i_satd )
                 {
@@ -1336,7 +1336,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
                     continue;
 
                 h->mb.i_cbp_luma = a->i_cbp_i8x8_luma;
-                i_satd = x264_rd_cost_i8x8( h, a->i_lambda2, idx, i_mode, edge );
+                S3_RD_SET( S4_OTHER, i_best ); i_satd = x264_rd_cost_i8x8( h, a->i_lambda2, idx, i_mode, edge );
 
                 if( i_best > i_satd )
                 {
@@ -1375,7 +1375,7 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 
 #define LOAD_FENC(m, src, xoff, yoff) \
 { \
-    (m)->p_cost_mv = a->p_cost_mv; \
+    (m)->p_cost_mv = a->p_cost_mv; S3_ME_INVAL( m ); \
     (m)->i_stride[0] = h->mb.pic.i_stride[0]; \
     (m)->i_stride[1] = h->mb.pic.i_stride[1]; \
     (m)->i_stride[2] = h->mb.pic.i_stride[2]; \
@@ -2939,7 +2939,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_16x8;
         x264_analyse_update_cache( h, a );
-        a->l0.i_cost16x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_PRD, x264_s3_minb( h->param.analyse.inter & X264_ANALYSE_PSUB8x8 ? COST_MAX : a->l0.i_rd16x16, COST_MAX, COST_MAX ) ); a->l0.i_cost16x8 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
     else
         a->l0.i_cost16x8 = COST_MAX;
@@ -2948,7 +2948,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
     {
         h->mb.i_partition = D_8x16;
         x264_analyse_update_cache( h, a );
-        a->l0.i_cost8x16 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_PRD, x264_s3_minb( h->param.analyse.inter & X264_ANALYSE_PSUB8x8 ? COST_MAX : a->l0.i_rd16x16, a->l0.i_cost16x8, COST_MAX ) ); a->l0.i_cost8x16 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
     else
         a->l0.i_cost8x16 = COST_MAX;
@@ -2992,7 +2992,7 @@ static void x264_mb_analyse_p_rd( x264_t *h, x264_mb_analysis_t *a, int i_satd )
         }
         else
             x264_analyse_update_cache( h, a );
-        a->l0.i_cost8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_PRD, x264_s3_minb( h->param.analyse.inter & X264_ANALYSE_PSUB8x8 ? COST_MAX : a->l0.i_rd16x16, a->l0.i_cost16x8, a->l0.i_cost8x16 ) ); a->l0.i_cost8x8 = x264_rd_cost_mb( h, a->i_lambda2 );
     }
     else
         a->l0.i_cost8x8 = COST_MAX;
@@ -3163,7 +3163,7 @@ static inline void x264_mb_analyse_transform_rd( x264_t *h, x264_mb_analysis_t *
         x264_analyse_update_cache( h, a );
         h->mb.b_transform_8x8 ^= 1;
         /* FIXME only luma is needed for 4:2:0, but the score for comparison already includes chroma */
-        int i_rd8 = x264_rd_cost_mb( h, a->i_lambda2 );
+        S3_RD_SET( S4_TRD, *i_rd < COST_MAX ? (uint64_t)*i_rd + 1 : UINT64_MAX ); int i_rd8 = x264_rd_cost_mb( h, a->i_lambda2 );
 
         if( *i_rd >= i_rd8 )
         {
@@ -3520,7 +3520,7 @@ static ALWAYS_INLINE void x264_mb_analyse_p_sub16x16( x264_t *h, x264_mb_analysi
  *****************************************************************************/
 void x264_macroblock_analyse( x264_t *h )
 {
-    x264_mb_analysis_t analysis;
+    x264_mb_analysis_t analysis; S3_SET_A( &analysis );
     int i_cost = COST_MAX;
 
     h->mb.i_qp = x264_ratecontrol_mb_qp( h );
@@ -3546,7 +3546,7 @@ intra_analysis:
             x264_mb_init_fenc_cache( h, analysis.i_mbrd >= 2 );
         x264_mb_analyse_intra( h, &analysis, COST_MAX );
         if( analysis.i_mbrd )
-            x264_intra_rd( h, &analysis, COST_MAX );
+            { S3_INTRA_CTX( COST_MAX, 0 ); x264_intra_rd( h, &analysis, COST_MAX ); }
 
         i_cost = analysis.i_satd_i16x16;
         h->mb.i_type = I_16x16;
@@ -3819,7 +3819,7 @@ skip_analysis:
                 h->mb.i_partition = i_partition;
                 if( i_cost < COST_MAX )
                     x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
-                x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1 );
+                S3_INTRA_CTX( i_cost, 1 ); x264_intra_rd( h, &analysis, i_satd_inter * 5/4 + 1 );
             }
 
             COPY2_IF_LT( i_cost, analysis.i_satd_i16x16, i_type, I_16x16 );
@@ -4229,7 +4229,7 @@ skip_analysis:
             if( analysis.i_mbrd )
             {
                 x264_mb_analyse_transform_rd( h, &analysis, &i_satd_inter, &i_cost );
-                x264_intra_rd( h, &analysis, i_satd_inter * 17/16 + 1 );
+                S3_INTRA_CTX( i_cost, 1 ); x264_intra_rd( h, &analysis, i_satd_inter * 17/16 + 1 );
             }
 
             COPY2_IF_LT( i_cost, analysis.i_satd_i16x16, i_type, I_16x16 );
@@ -4513,3 +4513,72 @@ static void x264_analyse_update_cache( x264_t *h, x264_mb_analysis_t *a  )
 
 #include "slicetype.c"
 
+
+#if X264_S3CNT
+/****************************************************************************
+ * survey 3 counters (encoder/s3cnt.h), measurement builds only
+ ****************************************************************************/
+
+/* C1: the list of a refined x264_me_t of the current MB's analysis */
+int x264_s3_me_list( x264_t *h, x264_me_t *m )
+{
+    x264_mb_analysis_t *a = x264_s3_ctx.cur_a;
+    if( h->sh.i_type != SLICE_TYPE_B || !a )
+        return S3_P;
+    if( m == &a->l0.bi16x16 || m == &a->l1.bi16x16 )
+        return S3_BI;
+    if( (char*)m >= (char*)&a->l1 && (char*)m < (char*)(&a->l1 + 1) )
+        return S3_L1;
+    return S3_L0;
+}
+
+/* C4: the bound of an intra_rd type, as wip/x264-hipreset-rd 8e346f81: the caller's inter cost,
+ * the types before it with strict < (16x16 first; 8x8 wins a tie with 4x4 when compared first) */
+uint64_t x264_s3_intra_bound( int type, int c16, int c4 )
+{
+    uint64_t b = x264_s3_ctx.intra_inter < COST_MAX ? (uint64_t)x264_s3_ctx.intra_inter : UINT64_MAX;
+    if( type != S4_I16 && c16 < COST_MAX )
+        b = X264_MIN( b, (uint64_t)c16 );
+    if( type == S4_I8 && c4 < COST_MAX )
+        b = X264_MIN( b, (uint64_t)c4 + x264_s3_ctx.intra_b8first );
+    return b;
+}
+
+/* C4: the smallest of the costs below COST_MAX, UINT64_MAX for none (P partition RD, 0de31392) */
+uint64_t x264_s3_minb( int a, int b, int c )
+{
+    uint64_t r = UINT64_MAX;
+    if( a < COST_MAX ) r = X264_MIN( r, (uint64_t)a );
+    if( b < COST_MAX ) r = X264_MIN( r, (uint64_t)b );
+    if( c < COST_MAX ) r = X264_MIN( r, (uint64_t)c );
+    return r;
+}
+
+/* C6: x264_slicetype_frame_cost, cached (hit) or computed. A computed intra-only cost
+ * (p0 == p1 == b) is a lowres_i_mbs pass; any computed cost with !b_intra_calculated
+ * computes the intra cost too */
+void x264_s3_f6_cost( x264_frame_t *fenc, int p0, int p1, int b, int hit )
+{
+    int t = x264_clip3( fenc->i_type, 0, 6 );
+    S3_INC( f6_cost_calls );
+    if( hit )
+    {
+        S3_INC( f6_cost_hits );
+        if( p0 == p1 )
+            S3_INC( f6_ihit );
+        return;
+    }
+    if( p0 == p1 )
+    {
+        S3_INC( f6_i_run[t][!!fenc->b_intra_calculated] );
+        fenc->s3_irun++;
+    }
+    if( p0 == p1 || !fenc->b_intra_calculated )
+    {
+        S3_INC( f6_intra_pass[t][p0 == p1 ? 0 : b == p1 ? 1 : 2] );
+        fenc->s3_intra++;
+        if( fenc->s3_done )
+            S3_INC( f6_late[t] );
+    }
+}
+#endif

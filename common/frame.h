@@ -193,7 +193,17 @@ typedef struct x264_frame
 #if HAVE_OPENCL
     x264_frame_opencl_t opencl;
 #endif
+#if X264_S3CNT
+    int s3_irun;        /* lowres intra-only frame costs computed (lowres_i_mbs passes) */
+    int s3_intra;       /* frame costs that computed the intra cost */
+    int s3_done;        /* tallied at frame end */
+#endif
 } x264_frame_t;
+#if X264_S3CNT
+#define S3_FRAME_RESET( f ) ( (f)->s3_irun = (f)->s3_intra = (f)->s3_done = 0 )
+#else
+#define S3_FRAME_RESET( f )
+#endif
 
 /* synchronized frame list */
 typedef struct

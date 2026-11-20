@@ -1008,7 +1008,7 @@ x264_frame_t *x264_frame_pop_unused( x264_t *h, int b_fdec )
         return NULL;
     frame->b_last_minigop_bframe = 0;
     frame->i_reference_count = 1;
-    frame->b_intra_calculated = 0;
+    frame->b_intra_calculated = 0; S3_FRAME_RESET( frame );
     frame->b_unweighted_cut = 0;
     frame->b_weight_csum = 0;
     frame->b_scenecut = 1;

@@ -350,4 +350,9 @@ do {\
         *preallocs[prealloc_idx] += (intptr_t)ptr;\
 } while( 0 )
 
+/* survey 3 measurement counters (encoder/s3cnt.h): -DX264_S3CNT=1 test builds only */
+#ifndef X264_S3CNT
+#define X264_S3CNT 0
+#endif
+
 #endif

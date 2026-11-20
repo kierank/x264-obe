@@ -77,6 +77,116 @@ static uint16_t cabac_size_5ones[128];
         sizeof(int) + (CHROMA444 ? 1024+12 : 460) )
 #define COPY_CABAC_PART( pos, size ) memcpy( &cb->state[pos], &h->cabac.state[pos], size )
 
+#if X264_S3CNT
+/* survey 3 C4 (encoder/s3cnt.h): where the partial cost ssd + bits( f8 so far ) of a losing
+ * x264_rd_cost_mb first reaches the bound its caller compares it against */
+static ALWAYS_INLINE uint64_t s3_rd_cost( int ssd, int f8, int i_lambda2 )
+{
+    return (uint64_t)ssd + (((uint64_t)f8 * i_lambda2 + 32768) >> 16);
+}
+
+static ALWAYS_INLINE int s3_bin( int64_t part, int64_t total )
+{
+    if( total <= 0 )
+        return 0;
+    int b = part * 10 / total;
+    return X264_MIN( b, 9 );
+}
+
+static void s3_rd_end( int ssd, int f0, int f8, int i_lambda2 )
+{
+    int s = x264_s3_ctx.rd_site ? x264_s3_ctx.rd_site - 1 : S4_OTHER;
+    uint64_t bound = x264_s3_ctx.rd_site ? x264_s3_ctx.rd_bound : UINT64_MAX;
+    S3_INC( r4_calls[s] );
+    S3_ADD( r4_f8_all[s], f8 - f0 );
+    if( bound == UINT64_MAX )
+        return;
+    S3_INC( r4_bounded[s] );
+    if( X264_MIN( s3_rd_cost( ssd, f8, i_lambda2 ), COST_MAX ) < bound )
+        return;
+    S3_INC( r4_lose[s] );
+    S3_ADD( r4_f8_lose[s], f8 - f0 );
+    x264_s3_rdtr_t *t = &x264_s3_rdtr;
+    int nblk = 0;
+    for( int i = 0; i < t->n; i++ )
+        nblk += t->coarse[i] != 1;
+    /* the test before any bin (hipreset-rd's distortion-only bound) */
+    if( s3_rd_cost( ssd, f0, i_lambda2 ) >= bound )
+    {
+        S3_INC( r4_ssd_cross[s] );
+        S3_INC( r4_hist_fine[s][0] );
+        S3_INC( r4_hist_coarse[s][0] );
+        S3_INC( r4_hist_blk[s][0] );
+        S3_ADD( r4_f8_save_fine[s], f8 - f0 );
+        S3_ADD( r4_f8_save_coarse[s], f8 - f0 );
+        return;
+    }
+    int cf = f8, blk = nblk, cc = f8, bdone = 0;
+    for( int i = 0; i < t->n; i++ )
+    {
+        bdone += t->coarse[i] != 1;
+        if( s3_rd_cost( ssd, t->f8[i], i_lambda2 ) >= bound )
+        {
+            cf = t->f8[i];
+            blk = bdone;
+            break;
+        }
+    }
+    for( int i = 0; i < t->n; i++ )
+        if( t->coarse[i] && s3_rd_cost( ssd, t->f8[i], i_lambda2 ) >= bound )
+        {
+            cc = t->f8[i];
+            break;
+        }
+    S3_INC( r4_hist_fine[s][cf >= f8 ? 10 : s3_bin( cf - f0, f8 - f0 )] );
+    S3_INC( r4_hist_coarse[s][cc >= f8 ? 10 : s3_bin( cc - f0, f8 - f0 )] );
+    S3_INC( r4_hist_blk[s][blk >= nblk ? 10 : s3_bin( blk, nblk )] );
+    S3_ADD( r4_f8_save_fine[s], f8 - cf );
+    S3_ADD( r4_f8_save_coarse[s], f8 - cc );
+}
+
+/* rd_cost_i4x4 / i8x8 (subme >= 8): losers against the caller's best, and those whose
+ * distortion alone reaches it */
+static void s3_rd_part( int b8, uint64_t i_ssd, uint64_t i_bits )
+{
+    uint64_t bound = x264_s3_ctx.rd_site ? x264_s3_ctx.rd_bound : UINT64_MAX;
+    x264_s3_ctx.rd_site = 0;
+    S3_INC( r4_part_calls[b8] );
+    if( (i_ssd<<8) + i_bits >= bound )
+        S3_INC( r4_part_lose[b8] );
+    if( (i_ssd<<8) >= bound )
+        S3_INC( r4_part_ssd_cross[b8] );
+}
+
+/* C5: the round-to-nearest (bias0) quant the trellis starts from, its decimate score per block */
+static void s3_tr_rtn( x264_t *h, dctcoef q[4][16], int nz, int b_ac, int b_scanned )
+{
+    int site = x264_s3_ctx.tr_site ? x264_s3_ctx.tr_site - 1 : S5T_OTHER;
+    x264_s3_ctx.tr_site = 0;
+    int dps = 0;
+    for( int i = 0; i < 4; i++ )
+    {
+        x264_s3_ctx.rtn_score[i] = 0;
+        if( !(nz & (1 << i)) )
+            continue;
+        dps++;
+        ALIGNED_ARRAY_64( dctcoef, scan,[16] );
+        dctcoef *l = q[i];
+        if( !b_scanned )
+        {
+            h->zigzagf.scan_4x4( scan, q[i] );
+            l = scan;
+        }
+        x264_s3_ctx.rtn_score[i] = b_ac ? h->quantf.decimate_score15( l ) : h->quantf.decimate_score16( l );
+    }
+    x264_s3_ctx.rtn_nz = nz & 15;
+    x264_s3_ctx.rtn_dps = dps;
+    x264_s3_ctx.rtn_valid = 1;
+    S3_INC( t5_calls[site] );
+    S3_ADD( t5_dps[site], dps );
+}
+#endif
+
 static ALWAYS_INLINE uint64_t cached_hadamard( x264_t *h, int size, int x, int y )
 {
     static const uint8_t hadamard_shift_x[4] = {4,   4,   3,   3};
@@ -194,12 +304,24 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
     if( IS_SKIP( h->mb.i_type ) )
     {
         i_bits = (1 * i_lambda2 + 128) >> 8;
+#if X264_S3CNT
+        S3_INC( r4_skip[x264_s3_ctx.rd_site ? x264_s3_ctx.rd_site - 1 : S4_OTHER] );
+#endif
     }
     else if( PARAM_CABAC )
     {
         x264_cabac_t cabac_tmp;
         COPY_CABAC;
+#if X264_S3CNT
+        int s3f0 = cabac_tmp.f8_bits_encoded;
+        x264_s3_rdtr.on = 1;
+        x264_s3_rdtr.n = 0;
+#endif
         x264_macroblock_size_cabac( h, &cabac_tmp );
+#if X264_S3CNT
+        x264_s3_rdtr.on = 0;
+        s3_rd_end( i_ssd, s3f0, cabac_tmp.f8_bits_encoded, i_lambda2 );
+#endif
         i_bits = ( (uint64_t)cabac_tmp.f8_bits_encoded * i_lambda2 + 32768 ) >> 16;
     }
 #if HAS_CAVLC
@@ -208,6 +330,9 @@ static int x264_rd_cost_mb( x264_t *h, int i_lambda2 )
         x264_macroblock_size_cavlc( h );
         i_bits = ( h->out.bs.i_bits_encoded * i_lambda2 + 128 ) >> 8;
     }
+#endif
+#if X264_S3CNT
+    x264_s3_ctx.rd_site = 0;
 #endif
 
     h->mb.b_transform_8x8 = b_transform_bak;
@@ -331,6 +456,9 @@ static uint64_t x264_rd_cost_i8x8( x264_t *h, int i_lambda2, int i8, int i_mode,
     else
         i_bits = x264_partition_i8x8_size_cavlc( h, i8, i_mode ) * i_lambda2;
 #endif
+#if X264_S3CNT
+    s3_rd_part( 1, i_ssd, i_bits );
+#endif
 
     return (i_ssd<<8) + i_bits;
 }
@@ -366,6 +494,9 @@ static uint64_t x264_rd_cost_i4x4( x264_t *h, int i_lambda2, int i4, int i_mode 
 #if HAS_CAVLC
     else
         i_bits = x264_partition_i4x4_size_cavlc( h, i4, i_mode ) * i_lambda2;
+#endif
+#if X264_S3CNT
+    s3_rd_part( 0, i_ssd, i_bits );
 #endif
 
     return (i_ssd<<8) + i_bits;
@@ -1145,6 +1276,9 @@ zeroblock:
 
 int x264_quant_luma_dc_trellis( x264_t *h, dctcoef *dct, int i_quant_cat, int i_qp, int ctx_block_cat, int b_intra, int idx )
 {
+#if X264_S3CNT
+    S3_INC( t5_calls[S5T_LUMADC] );
+#endif
     if( PARAM_CABAC )
         return quant_trellis_cabac( h, dct,
             h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias0[i_quant_cat][i_qp],
@@ -1163,6 +1297,9 @@ static const uint8_t x264_zigzag_scan2x4[8] = { 0, 2, 1, 4, 6, 3, 5, 7 };
 
 int x264_quant_chroma_dc_trellis( x264_t *h, dctcoef *dct, int i_qp, int b_intra, int idx )
 {
+#if X264_S3CNT
+    S3_INC( t5_calls[S5T_CHROMADC] );
+#endif
     const uint8_t *zigzag;
     int num_coefs;
     int quant_cat = CQM_4IC+1 - b_intra;
@@ -1196,6 +1333,9 @@ static const uint8_t trellis_ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};
 int x264_quant_4x4_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
                             int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx )
 {
+#if X264_S3CNT
+    S3_INC( t5_calls[S5T_4x4] );
+#endif
     int b_ac = trellis_ctx_ac[ctx_block_cat];
     if( PARAM_CABAC )
         return quant_trellis_cabac( h, dct,
@@ -1226,6 +1366,9 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
         ALIGNED_ARRAY_64( dctcoef, quant_coefs,[4],[16] );
         int nz = h->zigzagf.quant_4x4x4_scan_last( dct, orig_coefs, quant_coefs, h->quant4_mf[i_quant_cat][i_qp],
                                                    h->quant4_bias0[i_quant_cat][i_qp] );
+#if X264_S3CNT
+        s3_tr_rtn( h, quant_coefs, nz, b_ac, 1 );
+#endif
         for( int i = 0; i < 4; i++ )
             if( nz & (1 << i) )
                 nza |= trellis_cabac_scanned( h, dct[i], orig_coefs[i], quant_coefs[i], (nz >> (8+4*i)) & 15,
@@ -1236,6 +1379,9 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
     }
     h->mc.memcpy_aligned( orig_coefs, dct, sizeof(dctcoef)*4*16 );
     int nz = h->quantf.quant_4x4x4( dct, h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias0[i_quant_cat][i_qp] );
+#if X264_S3CNT
+    s3_tr_rtn( h, dct, nz, b_ac, 0 );
+#endif
     for( int i = 0; i < 4; i++ )
         if( nz & (1 << i) )
             nza |= trellis_cabac_quantised( h, dct[i], orig_coefs[i], h->unquant4_mf[i_quant_cat][i_qp],
@@ -1247,6 +1393,9 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
 int x264_quant_8x8_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
                             int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx )
 {
+#if X264_S3CNT
+    S3_INC( t5_calls[S5T_8x8] );
+#endif
     if( PARAM_CABAC )
     {
         return quant_trellis_cabac( h, dct,

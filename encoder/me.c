@@ -57,6 +57,24 @@ static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 
+#if X264_S3CNT
+/* survey 3 counters (encoder/s3cnt.h): fpel position log of the shadow searches */
+#define S3_POS_HEX6( cx, cy ) do { for( int s3j = 0; s3j < 6; s3j++ ) S3_POS( (cx)+hex2[s3j+1][0], (cy)+hex2[s3j+1][1] ); } while( 0 )
+#define S3_POS_SQ8( cx, cy ) do { for( int s3j = 1; s3j < 9; s3j++ ) S3_POS( (cx)+square1[s3j][0], (cy)+square1[s3j][1] ); } while( 0 )
+#define S3_WALK_START( x, y ) do { if( x264_s3_fl.on ) { x264_s3_fl.sx = (x); x264_s3_fl.sy = (y); x264_s3_fl.npred = x264_s3_fl.n; x264_s3_fl.walked = 1; } } while( 0 )
+#define S3_FPEL_DONE( x, y, c ) do { if( x264_s3_fl.on ) { x264_s3_fl.fx = (x); x264_s3_fl.fy = (y); x264_s3_fl.fcost = (c); x264_s3_fl.done = 1;\
+                                     if( x264_s3_fl.on == 2 ) return; } } while( 0 )
+static void s3_me_search_ref_real( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh );
+static void s3_rq_pre( x264_t *h, x264_me_t *m, int hpel, int *st );
+static void s3_rq_post( x264_t *h, x264_me_t *m, int *st );
+static void s3_bidir_pass( int pass, int mc0, int mc1, int m0x, int m0y, int m1x, int m1y, int mv[2][2], int b_small );
+#else
+#define S3_POS_HEX6( cx, cy )
+#define S3_POS_SQ8( cx, cy )
+#define S3_WALK_START( x, y )
+#define S3_FPEL_DONE( x, y, c )
+#endif
+
 #define BITS_MVD( mx, my )\
     (p_cost_mvx[(mx)<<2] + p_cost_mvy[(my)<<2])
 
@@ -66,7 +84,7 @@ do\
     int cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE,\
                    &p_fref_w[(my)*stride+(mx)], stride )\
              + BITS_MVD(mx,my);\
-    COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my );\
+    COPY3_IF_LT( bcost, cost, bmx, mx, bmy, my ); S3_POS( mx, my );\
 } while(0)
 
 /* cmp of the luma prediction at a qpel mv. Where get_ref would average two
@@ -96,7 +114,7 @@ static ALWAYS_INLINE int subpel_cmp( x264_t *h, x264_me_t *m, pixel *pix, int bw
 do\
 {\
     cost = subpel_cmp( h, m, pix, bw, bh, mx, my, h->pixf.fpelcmp_avg2[i_pixel], h->pixf.fpelcmp[i_pixel] )\
-         + p_cost_mvx[ mx ] + p_cost_mvy[ my ];\
+         + p_cost_mvx[ mx ] + p_cost_mvy[ my ]; S3_POS_FPEL( mx, my );\
 } while(0)
 
 /* best and the candidates are (cost << 6) + idx, idx 0 for the incumbent, so the
@@ -134,6 +152,7 @@ do\
 /* bcost = min( bcost, candidates bmv + m*, idx i, i+1, ... ) */
 #define COST_MV_X3_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, i )\
 {\
+    S3_POS( bmx+(m0x), bmy+(m0y) ); S3_POS( bmx+(m1x), bmy+(m1y) ); S3_POS( bmx+(m2x), bmy+(m2y) );\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
     COST_MIN_X3( bcost,\
         pix_base + (m0x) + (m0y)*stride,\
@@ -146,6 +165,7 @@ do\
 
 #define COST_MV_X4_DIR_MIN( m0x, m0y, m1x, m1y, m2x, m2y, m3x, m3y, i )\
 {\
+    S3_POS( bmx+(m0x), bmy+(m0y) ); S3_POS( bmx+(m1x), bmy+(m1y) ); S3_POS( bmx+(m2x), bmy+(m2y) ); S3_POS( bmx+(m3x), bmy+(m3y) );\
     pixel *pix_base = p_fref_w + bmx + bmy*stride;\
     COST_MIN_X4( bcost,\
         pix_base + (m0x) + (m0y)*stride,\
@@ -411,7 +431,7 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
          * the predicted motion vector.
          *
          * Disclaimer: this is a post-hoc rationalization for why this hack works. */
-        bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride );
+        bcost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[bmy*stride+bmx], stride ); S3_POS( bmx, bmy );
 
         /* pred == fenc at the mvp, which has no mv cost here: every other mv costs more */
         if( !bcost )
@@ -430,7 +450,7 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
                 {
                     int mx = mvc_temp[i+1][0];
                     int my = mvc_temp[i+1][1];
-                    cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my );
+                    cost = h->pixf.fpelcmp[i_pixel]( p_fenc, FENC_STRIDE, &p_fref_w[my*stride+mx], stride ) + BITS_MVD( mx, my ); S3_POS( mx, my );
                     COPY1_IF_LT( bcost, (cost << 4) + i );
                 } while( ++i <= valid_mvcs );
                 bmx = mvc_temp[(bcost&15)+1][0];
@@ -444,12 +464,13 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
             COST_MV( 0, 0 );
     }
 
+    S3_WALK_START( bmx, bmy );
     switch( h->mb.i_me_method )
     {
         case X264_ME_DIA:
         {
             /* diamond search, radius 1 */
-            x264_pixel_fpel_search_t dia_search = h->pixf.fpelcmp_dia_search[i_pixel];
+            x264_pixel_fpel_search_t dia_search = S3_NOWALK ? h->pixf.fpelcmp_dia_search[i_pixel] : NULL;
             if( dia_search )
             {
                 /* the loop below in one call */
@@ -495,7 +516,7 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
         {
     me_hex2:
             /* hexagon search, radius 2 */
-            if( h->pixf.fpelcmp_hex_search[i_pixel] )
+            if( h->pixf.fpelcmp_hex_search[i_pixel] && S3_NOWALK )
             {
                 /* the hexagon, half hexagons and square refine below in one call */
                 uint64_t res = h->pixf.fpelcmp_hex_search[i_pixel]( p_fenc, p_fref_w, stride, p_cost_mvx, p_cost_mvy,
@@ -531,7 +552,7 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
                 /* hex2[1..6], idx 2..7, as below */
                 for( int j = 0; j < 6; j++ )
                     pt_bias[j] = (BITS_MVD( bmx+hex2[j+1][0], bmy+hex2[j+1][1] ) << 6) + j+2;
-                bcost = cmp_hex_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
+                S3_POS_HEX6( bmx, bmy ); bcost = cmp_hex_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, pt_bias, bcost );
             }
             else
             {
@@ -582,7 +603,7 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
                 sq_bias[ 9] = 1 << 30;
                 sq_bias[10] = ((cx2 + cy1) << 6) + 4;
                 sq_bias[11] = 1 << 30;
-                bcost = cmp_sq_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, sq_bias, bcost );
+                bcost = cmp_sq_min( p_fenc, p_fref_w + bmx + bmy*stride, stride, sq_bias, bcost ); S3_POS_SQ8( bmx, bmy );
             }
             else
             {
@@ -958,6 +979,7 @@ static NOINLINE void me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], 
     }
 
 fpel_done:;
+    S3_FPEL_DONE( bmx, bmy, bcost );
     /* -> qpel mv */
     uint32_t bmv = pack16to32_mask(bmx,bmy);
     uint32_t bmv_spel = SPELx2(bmv);
@@ -998,7 +1020,11 @@ typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offset
                                  sizeof(x264_me_t) == 256 && sizeof(x264_me_fpel_t) == 72 ? 1 : -1];
 #endif
 
+#if X264_S3CNT
+static void s3_me_search_ref_real( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+#else
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+#endif
 {
     int i_pixel = m->i_pixel;
     int subme = h->mb.i_subpel_refine;
@@ -1045,12 +1071,30 @@ void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
     if( m->i_pixel <= PIXEL_8x8 )
         m->cost -= m->i_ref_cost;
 
+#if X264_S3CNT
+    int s3st[8];
+    s3_rq_pre( h, m, hpel, s3st );
+#endif
     refine_subpel( h, m, hpel, qpel, NULL, 1 );
+#if X264_S3CNT
+    s3_rq_post( h, m, s3st );
+#endif
 }
 
 void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh )
 {
+#if X264_S3CNT
+    void *s3m = x264_s3_ctx.cur_m;
+    int s3qo = x264_s3_ctx.qo;
+    m->s3_qconv_valid = 0;
+    x264_s3_ctx.cur_m = m;
+    x264_s3_ctx.qo = S3_QO_REFDUPE;
+#endif
     refine_subpel( h, m, 0, X264_MIN( 2, subpel_iterations[h->mb.i_subpel_refine][3] ), p_halfpel_thresh, 0 );
+#if X264_S3CNT
+    x264_s3_ctx.cur_m = s3m;
+    x264_s3_ctx.qo = s3qo;
+#endif
 }
 
 #define COST_MV_SAD( mx, my ) \
@@ -1540,7 +1584,13 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
         bm0y > h->mb.mv_max_spel[1] - 8 || bm1y > h->mb.mv_max_spel[1] - 8 ||
         bm0x < h->mb.mv_min_spel[0] + 8 || bm1x < h->mb.mv_min_spel[0] + 8 ||
         bm0x > h->mb.mv_max_spel[0] - 8 || bm1x > h->mb.mv_max_spel[0] - 8 )
+    {
+#if X264_S3CNT
+        if( !rd )
+            S3_INC( s3_edge[i_pixel != PIXEL_16x16] );
+#endif
         return;
+    }
 
     if( rd && m0->i_pixel != PIXEL_16x16 && i8 != 0 )
     {
@@ -1558,9 +1608,17 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
     /* satd only: the candidates' average isn't stored (rd needs it in fdec) */
     x264_bi_fenc_t *bi_fenc = rd ? NULL : x264_me_bi_fenc( h, i_pixel, m0->p_fenc[0] );
 
+#if X264_S3CNT
+    int s3mv[2][2] = {{0}}, s3np = 0;
+#endif
     for( int pass = 0; pass < 8; pass++ )
     {
         int bestj = 0;
+#if X264_S3CNT
+        if( !rd )
+            s3_bidir_pass( pass, mc_list0, mc_list1, bm0x, bm0y, bm1x, bm1y, s3mv, i_pixel != PIXEL_16x16 );
+        s3np++;
+#endif
         /* check all mv pairs that differ in at most 2 components from the current mvs. */
         /* doesn't do chroma ME. this probably doesn't matter, as the gains
          * from bidir ME are the same with and without chroma ME. */
@@ -1630,7 +1688,21 @@ static void ALWAYS_INLINE x264_me_refine_bidir( x264_t *h, x264_me_t *m0, x264_m
 
         mc_list0 = M16( &dia4d[bestj][0] );
         mc_list1 = M16( &dia4d[bestj][2] );
+#if X264_S3CNT
+        s3mv[0][0] = dia4d[bestj][0]; s3mv[0][1] = dia4d[bestj][1];
+        s3mv[1][0] = dia4d[bestj][2]; s3mv[1][1] = dia4d[bestj][3];
+        if( !rd )
+            S3_INC( s3_lists_moved[i_pixel != PIXEL_16x16][mc_list0 && mc_list1 ? 2 : !mc_list0] );
+#endif
     }
+#if X264_S3CNT
+    if( !rd )
+    {
+        S3_INC( s3_calls[i_pixel != PIXEL_16x16] );
+        S3_ADD( s3_passes[i_pixel != PIXEL_16x16], s3np );
+        S3_INC( s3_pass_hist[i_pixel != PIXEL_16x16][s3np] );
+    }
+#endif
 
     if( rd )
     {
@@ -2119,5 +2191,375 @@ store:
             c->costs[mb_xy] = X264_MIN( bcost, LOWRES_COST_MASK ) + (list_used << LOWRES_COST_SHIFT);
         }
     }
+}
+#endif
+
+#if X264_S3CNT
+/****************************************************************************
+ * survey 3 counters (encoder/s3cnt.h), measurement builds only
+ ****************************************************************************/
+
+/* C1: the qpel_search kernels behind C wrappers, which classify the exit and
+ * leave the convergence record in the searched x264_me_t */
+static x264_pixel_qpel_search_t s3_qpel_real[4];
+
+static ALWAYS_INLINE int s3_mv_out( uint32_t mv, uint64_t range )
+{
+    int mx = (int16_t)mv, my = (int16_t)(mv >> 16);
+    return mx <= (int16_t)range || my <= (int16_t)(range >> 16) || mx >= (int16_t)(range >> 32) || my >= (int16_t)(range >> 48);
+}
+
+static uint64_t s3_qpel_do( int i, x264_bi_fenc_t *fenc, pixel **fref, intptr_t stride, const uint16_t *cost_mvx,
+                            const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range )
+{
+    uint64_t res = s3_qpel_real[i]( fenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range );
+    if( x264_s3_ctx.shadow )
+    {
+        S3_INC( q_shadow );
+        return res;
+    }
+    x264_s3_ctx.qcalls++;
+    int qo = x264_s3_ctx.qo;
+    S3_INC( q_calls[qo][i] );
+    int n = (iters >> 8) & 0xff;
+    uint32_t mv = res >> 32;
+    int ex;
+    if( !n )
+        ex = S3_QX_ITERS0;
+    else
+    {
+        /* moves made: each strictly lowers the cost, so no position repeats, and up to 2
+         * moves are the manhattan distance; past that, rerun with fewer iterations */
+        int k;
+        if( n <= 2 )
+            k = abs( (int16_t)mv - (int16_t)bmv ) + abs( (int16_t)(mv >> 16) - (int16_t)(bmv >> 16) );
+        else
+        {
+            uint32_t prev = bmv;
+            k = n;
+            for( int j = 1; j <= n; j++ )
+            {
+                uint32_t mj = j == n ? mv : (uint32_t)(s3_qpel_real[i]( fenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost,
+                                                                        (iters & ~0xff00) | j << 8, range ) >> 32);
+                if( mj == prev )
+                {
+                    k = j - 1;
+                    break;
+                }
+                prev = mj;
+            }
+        }
+        if( k > n )
+            S3_INC( q_err );
+        if( k >= n )
+            ex = S3_QX_EXHAUST;
+        else
+            ex = s3_mv_out( mv, range ) ? S3_QX_RANGE : S3_QX_NOMOVE;
+    }
+    S3_INC( q_exit[qo][ex] );
+    if( ex == S3_QX_NOMOVE && (qo == S3_QO_SEARCH || qo == S3_QO_REFDUPE) && x264_s3_ctx.cur_m )
+    {
+        x264_me_t *m = x264_s3_ctx.cur_m;
+        m->s3_qconv_valid = 1;
+        m->s3_qconv_cost = (uint32_t)res;
+        m->s3_qconv_mv = mv;
+        S3_INC( q_rec_set );
+    }
+    return res;
+}
+
+#define S3_QPEL_WRAP( i ) \
+static uint64_t s3_qpel_##i( x264_bi_fenc_t *fenc, pixel **fref, intptr_t stride, const uint16_t *cost_mvx, \
+                             const uint16_t *cost_mvy, uint32_t bmv, int bcost, int iters, uint64_t range ) \
+{ \
+    return s3_qpel_do( i, fenc, fref, stride, cost_mvx, cost_mvy, bmv, bcost, iters, range ); \
+}
+S3_QPEL_WRAP( 0 )
+S3_QPEL_WRAP( 1 )
+S3_QPEL_WRAP( 2 )
+S3_QPEL_WRAP( 3 )
+
+void x264_s3_qpel_wrap( x264_pixel_function_t *pf )
+{
+    static const x264_pixel_qpel_search_t wrap[4] = { s3_qpel_0, s3_qpel_1, s3_qpel_2, s3_qpel_3 };
+    for( int i = 0; i < 4; i++ )
+        if( pf->mbcmp_qpel_search[i] && pf->mbcmp_qpel_search[i] != wrap[i] )
+        {
+            s3_qpel_real[i] = pf->mbcmp_qpel_search[i];
+            pf->mbcmp_qpel_search[i] = wrap[i];
+        }
+}
+
+/* C1: refine_qpel. st: list, pixel, mv, cost, would skip, qcalls, qo */
+static void s3_rq_pre( x264_t *h, x264_me_t *m, int hpel, int *st )
+{
+    int l = x264_s3_me_list( h, m );
+    int p = m->i_pixel;
+    int skip = m->s3_qconv_valid && !m->weight[0].weightfn && !hpel
+            && m->s3_qconv_mv == M32( m->mv ) && m->s3_qconv_cost == m->cost;
+    st[0] = l;
+    st[1] = p;
+    st[2] = M32( m->mv );
+    st[3] = m->cost;
+    st[4] = skip;
+    st[5] = x264_s3_ctx.qcalls;
+    st[6] = x264_s3_ctx.qo;
+    x264_s3_ctx.qo = S3_QO_REFINE;
+    S3_INC( rq_calls[l][p] );
+    if( m->weight[0].weightfn )
+        S3_INC( rq_weighted[l][p] );
+    if( hpel )
+        S3_INC( rq_hpel[l][p] );
+    if( m->s3_qconv_valid )
+        S3_INC( rq_rec[l][p] );
+}
+
+static void s3_rq_post( x264_t *h, x264_me_t *m, int *st )
+{
+    int l = st[0], p = st[1];
+    int nochange = (int)M32( m->mv ) == st[2] && m->cost == st[3];
+    int dq = (int)x264_s3_ctx.qcalls - st[5];
+    x264_s3_ctx.qo = st[6];
+    if( nochange )
+        S3_INC( rq_nochange[l][p] );
+    S3_ADD( rq_qcalls[l][p], dq );
+    if( st[4] )
+    {
+        S3_INC( rq_skip[l][p] );
+        S3_ADD( rq_qcalls_skip[l][p], dq );
+        if( !nochange )
+            S3_INC( rq_viol[l][p] );
+    }
+}
+
+/* C3: get_ref calls of one refine_bidir pass and their overlap with the window of the
+ * pass before (centre minus the list's last move) */
+static void s3_bidir_pass( int pass, int mc0, int mc1, int m0x, int m0y, int m1x, int m1y, int mv[2][2], int b_small )
+{
+    int mc[2] = { mc0, mc1 };
+    int cx[2] = { m0x, m1x }, cy[2] = { m0y, m1y };
+    for( int l = 0; l < 2; l++ )
+    {
+        if( !mc[l] )
+            continue;
+        for( int dx = -1; dx <= 1; dx++ )
+            for( int dy = -1; dy <= 1; dy++ )
+            {
+                int x = cx[l] + dx, y = cy[l] + dy;
+                int avg = (x | y) & 1;
+                S3_INC( s3_gr[b_small] );
+                if( avg )
+                    S3_INC( s3_gr_avg[b_small] );
+                if( pass && abs( dx + mv[l][0] ) <= 1 && abs( dy + mv[l][1] ) <= 1 )
+                {
+                    S3_INC( s3_gr_ovl[b_small] );
+                    if( avg )
+                        S3_INC( s3_gr_ovl_avg[b_small] );
+                }
+            }
+    }
+}
+
+/* C2: per-MB table of the 16x16 searches, by reference plane */
+#define S3_MBT_N 8
+typedef struct
+{
+    pixel *key;
+    int ok;
+    int wx, wy;
+    uint32_t mv;
+    int n;
+    int16_t pos[S3_FL_MAX][2];
+} s3_w16_t;
+static __thread struct
+{
+    int mb_xy, frame, n;
+    s3_w16_t e[S3_MBT_N];
+} s3_mbt = { -1, -1, 0 };
+
+static int s3_in( int16_t (*pos)[2], int n, int x, int y )
+{
+    for( int i = 0; i < n; i++ )
+        if( pos[i][0] == x && pos[i][1] == y )
+            return 1;
+    return 0;
+}
+
+/* unique positions of the shadow log; *npred of them are logged before the walk */
+static int s3_unique( int16_t (*dst)[2], int *npred )
+{
+    int n = 0, np = 0;
+    for( int i = 0; i < x264_s3_fl.n; i++ )
+        if( !s3_in( dst, n, x264_s3_fl.pos[i][0], x264_s3_fl.pos[i][1] ) )
+        {
+            dst[n][0] = x264_s3_fl.pos[i][0];
+            dst[n][1] = x264_s3_fl.pos[i][1];
+            n++;
+            if( i < x264_s3_fl.npred )
+                np = n;
+        }
+    *npred = np;
+    return n;
+}
+
+static int s3_hexsq_in( s3_w16_t *w, int cx, int cy )
+{
+    int r = 1;
+    for( int j = 0; j < 6 && r; j++ )
+        r &= s3_in( w->pos, w->n, cx + hex2[j+1][0], cy + hex2[j+1][1] );
+    for( int j = 1; j < 9 && r; j++ )
+        r &= s3_in( w->pos, w->n, cx + square1[j][0], cy + square1[j][1] );
+    return r;
+}
+
+static void s3_c2( x264_t *h, x264_me_t *m, x264_me_t *pre, int16_t (*mvc)[2], int i_mvc, int *thr0 )
+{
+    int p = m->i_pixel;
+    int b = h->sh.i_type == SLICE_TYPE_B;
+    if( p > PIXEL_8x8 )
+        return;
+
+    /* shadow A: the C search with its kernels: its fpel result, and its result against the real one */
+    ALIGNED_64( x264_me_t ma );
+    int thra = thr0 ? *thr0 : 0;
+    memcpy( &ma, pre, sizeof(ma) );
+    x264_s3_ctx.shadow = 1;
+    x264_s3_fl.on = 1; x264_s3_fl.n = 0; x264_s3_fl.npred = S3_FL_MAX; x264_s3_fl.done = 0; x264_s3_fl.walked = 0;
+    me_search_ref( h, &ma, mvc, i_mvc, thr0 ? &thra : NULL );
+    int a_done = x264_s3_fl.done, a_fx = x264_s3_fl.fx, a_fy = x264_s3_fl.fy;
+    /* shadow B: the C search with no whole-walk kernel and the positions logged, to fpel_done */
+    ALIGNED_64( x264_me_t mb );
+    int thrb = thr0 ? *thr0 : 0;
+    memcpy( &mb, pre, sizeof(mb) );
+    x264_s3_fl.on = 2; x264_s3_fl.n = 0; x264_s3_fl.npred = S3_FL_MAX; x264_s3_fl.done = 0; x264_s3_fl.walked = 0;
+    me_search_ref( h, &mb, mvc, i_mvc, thr0 ? &thrb : NULL );
+    x264_s3_fl.on = 0;
+    x264_s3_ctx.shadow = 0;
+
+    S3_INC( s2_shadow_n[b][p] );
+    if( M32( ma.mv ) != M32( m->mv ) || ma.cost != m->cost )
+        S3_INC( s2_mis_a[b][p] );
+    if( x264_s3_fl.done != a_done || (a_done && (x264_s3_fl.fx != a_fx || x264_s3_fl.fy != a_fy)) )
+        S3_INC( s2_mis_b[b][p] );
+
+    int off = m->p_fenc[0] - h->mb.pic.p_fenc[0];
+    pixel *key = pre->p_fref[0] - (off % FENC_STRIDE) - (off / FENC_STRIDE) * pre->i_stride[0];
+    if( s3_mbt.mb_xy != h->mb.i_mb_xy || s3_mbt.frame != h->fenc->i_frame )
+    {
+        s3_mbt.mb_xy = h->mb.i_mb_xy;
+        s3_mbt.frame = h->fenc->i_frame;
+        s3_mbt.n = 0;
+    }
+    int ok = x264_s3_fl.done && x264_s3_fl.walked;
+    int fx = x264_s3_fl.fx, fy = x264_s3_fl.fy;
+    int sx = ok ? x264_s3_fl.sx : fx, sy = ok ? x264_s3_fl.sy : fy;
+    if( !ok )
+        S3_INC( s2_zexit[b][p] );
+
+    if( p == PIXEL_16x16 )
+    {
+        int e;
+        for( e = 0; e < s3_mbt.n && s3_mbt.e[e].key != key; e++ );
+        if( e == s3_mbt.n )
+        {
+            if( e == S3_MBT_N )
+                return;
+            s3_mbt.n++;
+        }
+        s3_w16_t *w = &s3_mbt.e[e];
+        int np;
+        w->key = key;
+        w->ok = x264_s3_fl.done;
+        w->wx = fx;
+        w->wy = fy;
+        w->mv = M32( m->mv );
+        w->n = s3_unique( w->pos, &np );
+        if( w->ok )
+        {
+            int h6 = 1, s8 = 1;
+            for( int j = 0; j < 6; j++ )
+                h6 &= s3_in( w->pos, w->n, fx + hex2[j+1][0], fy + hex2[j+1][1] );
+            for( int j = 1; j < 9; j++ )
+                s8 &= s3_in( w->pos, w->n, fx + square1[j][0], fy + square1[j][1] );
+            S3_INC( s2_w16_n[b] );
+            S3_ADD( s2_w16_hex6[b], h6 );
+            S3_ADD( s2_w16_sq8[b], s8 );
+            S3_ADD( s2_w16_pos[b], w->n );
+        }
+        return;
+    }
+
+    int e;
+    for( e = 0; e < s3_mbt.n && s3_mbt.e[e].key != key; e++ );
+    if( e == s3_mbt.n || !s3_mbt.e[e].ok || !x264_s3_fl.done )
+    {
+        S3_INC( s2_nof[b][p] );
+        return;
+    }
+    s3_w16_t *w = &s3_mbt.e[e];
+    int16_t pos[S3_FL_MAX][2];
+    int np;
+    int n = s3_unique( pos, &np );
+    int serv = 0, pserv = 0;
+    for( int i = 0; i < n; i++ )
+        if( s3_in( w->pos, w->n, pos[i][0], pos[i][1] ) )
+        {
+            serv++;
+            pserv += i < np;
+        }
+    int wx = w->wx, wy = w->wy;
+    int feqw = fx == wx && fy == wy;
+    int fhs = feqw;
+    for( int j = 0; j < 6; j++ )
+        fhs |= fx == wx + hex2[j+1][0] && fy == wy + hex2[j+1][1];
+    for( int j = 1; j < 9; j++ )
+        fhs |= fx == wx + square1[j][0] && fy == wy + square1[j][1];
+    int still = fx == sx && fy == sy;
+    int startw = sx == wx && sy == wy;
+
+    S3_INC( s2_n[b][p] );
+    S3_ADD( s2_moved[b][p], !still );
+    S3_ADD( s2_feqw[b][p], feqw );
+    S3_ADD( s2_fhexsq[b][p], fhs );
+    S3_ADD( s2_fins[b][p], s3_in( w->pos, w->n, fx, fy ) );
+    S3_ADD( s2_startw_still[b][p], startw && still );
+    S3_ADD( s2_hpeleq[b][p], M32( m->mv ) == w->mv );
+    S3_ADD( s2_served[b][p], serv == n );
+    S3_ADD( s2_postot[b][p], n );
+    S3_ADD( s2_posserv[b][p], serv );
+    S3_ADD( s2_predtot[b][p], np );
+    S3_ADD( s2_predserv[b][p], pserv );
+    S3_ADD( s2_survb[b][p], startw && still && s3_hexsq_in( w, wx, wy ) );
+}
+
+/* the search entry: the record and the C2 shadows around the real search */
+void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
+{
+    /* only the MB analysis: the lowres searches (x264_slicetype_slice_cost clears cur_a, and
+     * lookahead threads never set it) count as "other" and get no record or shadows */
+    if( !x264_s3_ctx.cur_a || x264_s3_ctx.shadow )
+    {
+        int old_qo = x264_s3_ctx.qo;
+        void *old_m = x264_s3_ctx.cur_m;
+        x264_s3_ctx.qo = S3_QO_OTHER;
+        x264_s3_ctx.cur_m = NULL;
+        s3_me_search_ref_real( h, m, mvc, i_mvc, p_halfpel_thresh );
+        x264_s3_ctx.qo = old_qo;
+        x264_s3_ctx.cur_m = old_m;
+        return;
+    }
+    ALIGNED_64( x264_me_t pre );
+    memcpy( &pre, m, sizeof(pre) );
+    int thr0 = p_halfpel_thresh ? *p_halfpel_thresh : 0;
+    void *old_m = x264_s3_ctx.cur_m;
+    int old_qo = x264_s3_ctx.qo;
+    m->s3_qconv_valid = 0;
+    x264_s3_ctx.cur_m = m;
+    x264_s3_ctx.qo = S3_QO_SEARCH;
+    s3_me_search_ref_real( h, m, mvc, i_mvc, p_halfpel_thresh );
+    x264_s3_ctx.cur_m = old_m;
+    x264_s3_ctx.qo = old_qo;
+    if( !x264_s3_ctx.shadow )
+        s3_c2( h, m, &pre, mvc, i_mvc, p_halfpel_thresh ? &thr0 : NULL );
 }
 #endif

@@ -29,6 +29,109 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#if X264_S3CNT
+/* survey 3 C5 (encoder/s3cnt.h): does the round-to-nearest (bias0) decimate score the trellis
+ * starts from prove decimation before the trellis runs? Groups of 4 4x4 blocks (one
+ * quant_4x4x4_trellis call each); S: the decimate score of the trellis output */
+typedef struct
+{
+    int ok[4];          /* the trellis ran on the group */
+    int B[4];           /* round-to-nearest score */
+    int rs[4][4];
+    int rnz[4];
+    int dps[4];         /* trellis DPs (blocks with a nonzero quant) */
+    int S[4];           /* trellis output score, unsaturated */
+} s3_g5_t;
+
+static void s3_g5_cap( s3_g5_t *g, int k )
+{
+    g->ok[k] = x264_s3_ctx.rtn_valid;
+    g->B[k] = g->dps[k] = g->S[k] = g->rnz[k] = 0;
+    if( !g->ok[k] )
+        return;
+    for( int i = 0; i < 4; i++ )
+    {
+        g->rs[k][i] = x264_s3_ctx.rtn_score[i];
+        g->B[k] += g->rs[k][i];
+    }
+    g->rnz[k] = x264_s3_ctx.rtn_nz;
+    g->dps[k] = x264_s3_ctx.rtn_dps;
+    x264_s3_ctx.rtn_valid = 0;
+}
+
+/* per block: the trellis output's score must not exceed the round-to-nearest one */
+static void s3_g5_blk( x264_t *h, s3_g5_t *g, int k, int nz4, dctcoef (*l)[16], int b_ac )
+{
+    if( !g->ok[k] )
+        return;
+    for( int i = 0; i < 4; i++ )
+    {
+        int t = 0;
+        if( nz4 & (1 << i) )
+            t = b_ac ? h->quantf.decimate_score15( l[i] ) : h->quantf.decimate_score16( l[i] );
+        g->S[k] += t;
+        if( g->rnz[k] & (1 << i) )
+            S3_INC( g5_blk );
+        if( t > g->rs[k][i] || ((nz4 & ~g->rnz[k]) & (1 << i)) )
+            S3_INC( g5_blk_viol );
+    }
+}
+
+/* a decimation unit of groups [k0, k1): proven if the round-to-nearest sum is below thresh;
+ * dec: the encode decimated it */
+static void s3_g5_unit( s3_g5_t *g, int cat, int k0, int k1, int thresh, int dec )
+{
+    int sb = 0, sd = 0, any = 0;
+    for( int k = k0; k < k1; k++ )
+        if( g->ok[k] )
+        {
+            any = 1;
+            sb += g->B[k];
+            sd += g->dps[k];
+        }
+    if( !any )
+        return;
+    int proven = sb < thresh;
+    S3_INC( g5_n[cat] );
+    S3_ADD( g5_proven[cat], proven );
+    S3_ADD( g5_dec[cat], dec );
+    S3_ADD( g5_viol[cat], proven && !dec );
+    S3_ADD( g5_dps[cat], sd );
+    S3_ADD( g5_dps_skip[cat], proven ? sd : 0 );
+}
+
+/* inter luma 4x4: the MB test (< 6) over the 4 groups, and the DPs a group-first order skips:
+ * groups with B >= 4 run first (S), a group with B < 4 is zeroed anyway and is needed only
+ * for the MB test, so it is skipped if S >= 6 or S + its B's < 6 */
+static void s3_g5_luma_mb( s3_g5_t *g, int dec )
+{
+    int sb = 0, sd = 0, any = 0, S = 0, bsmall = 0, dsmall = 0;
+    for( int k = 0; k < 4; k++ )
+        if( g->ok[k] )
+        {
+            any = 1;
+            sb += g->B[k];
+            sd += g->dps[k];
+            if( g->B[k] >= 4 )
+                S += g->S[k];
+            else
+            {
+                bsmall += g->B[k];
+                dsmall += g->dps[k];
+            }
+        }
+    if( !any )
+        return;
+    int proven = sb < 6;
+    S3_INC( g5_mb_n );
+    S3_ADD( g5_mb_proven, proven );
+    S3_ADD( g5_mb_dec, dec );
+    S3_ADD( g5_mb_viol, proven && !dec );
+    S3_ADD( g5_dps_skip_refined, proven ? sd : (S >= 6 || S + bsmall < 6) ? dsmall : 0 );
+}
+#define S3_G5_SITE( s ) ( x264_s3_ctx.tr_site = PARAM_CABAC ? (s) + 1 : 0, x264_s3_ctx.rtn_valid = 0 )
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -173,9 +276,18 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
 
     if( h->mb.b_trellis )
     {
+#if X264_S3CNT
+        s3_g5_t s3g;
+#endif
         for( int i8x8 = 0; i8x8 < 4; i8x8++ )
         {
+#if X264_S3CNT
+            S3_G5_SITE( S5T_I16AC );
+#endif
             int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], i_quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_AC][p], 1, !!p, i8x8*4 ) : 0xf;
+#if X264_S3CNT
+            s3_g5_cap( &s3g, i8x8 );
+#endif
             FOREACH_BIT( i4x4, 0, nz4 )
             {
                 int idx = i8x8*4+i4x4;
@@ -188,7 +300,14 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
                     h->mb.cache.non_zero_count[x264_scan8[16*p+idx]] = 1;
                 }
             }
+#if X264_S3CNT
+            s3_g5_blk( h, &s3g, i8x8, nz4, &h->dct.luma4x4[16*p+i8x8*4], 1 );
+#endif
         }
+#if X264_S3CNT
+        if( h->mb.b_dct_decimate )
+            s3_g5_unit( &s3g, S5_I16AC, 0, 4, 6, decimate_score < 6 );
+#endif
     }
     else
     {
@@ -385,11 +504,21 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             dct2x2dc( dct_dc, dct4x4 );
 
         /* calculate dct coeffs */
+#if X264_S3CNT
+        s3_g5_t s3g;
+        s3g.ok[0] = s3g.ok[1] = 0;
+#endif
         for( int i8x8 = 0; i8x8 < (chroma422?2:1); i8x8++ )
         {
             if( h->mb.b_trellis )
             {
+#if X264_S3CNT
+                S3_G5_SITE( S5T_CHROMAAC );
+#endif
                 int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 ) : 0xf;
+#if X264_S3CNT
+                s3_g5_cap( &s3g, i8x8 );
+#endif
                 FOREACH_BIT( i4x4, 0, nz4 )
                 {
                     if( PARAM_CABAC || x264_quant_4x4_trellis( h, dct4x4[i8x8*4+i4x4], CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 ) )
@@ -403,6 +532,9 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
                         nz_ac = 1;
                     }
                 }
+#if X264_S3CNT
+                s3_g5_blk( h, &s3g, i8x8, nz4, &h->dct.luma4x4[16+ch*16+i8x8*8], 1 );
+#endif
             }
             else
             {
@@ -430,6 +562,10 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
 
         h->mb.cache.non_zero_count[x264_scan8[CHROMA_DC+ch]] = nz_dc;
 
+#if X264_S3CNT
+        if( b_decimate )
+            s3_g5_unit( &s3g, S5_CHROMAAC, 0, chroma422 ? 2 : 1, 7, i_decimate_score < 7 || !nz_ac );
+#endif
         if( i_decimate_score < 7 || !nz_ac )
         {
             /* Decimate the block */
@@ -843,13 +979,24 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
 
                 int plane_cbp = 0;
+#if X264_S3CNT
+                s3_g5_t s3g;
+                for( int k = 0; k < 4; k++ )
+                    s3g.ok[k] = 0;
+#endif
                 for( int i8x8 = 0; i8x8 < 4; i8x8++ )
                 {
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
                     int nnz8x8 = 0;
                     if( h->mb.b_trellis )
                     {
+#if X264_S3CNT
+                        S3_G5_SITE( S5T_LUMA4 );
+#endif
                         int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+i8x8*4 ) : 0xf;
+#if X264_S3CNT
+                        s3_g5_cap( &s3g, i8x8 );
+#endif
                         FOREACH_BIT( i4x4, 0, nz4 )
                         {
                             int idx = i8x8*4+i4x4;
@@ -863,6 +1010,9 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                                 nnz8x8 = 1;
                             }
                         }
+#if X264_S3CNT
+                        s3_g5_blk( h, &s3g, i8x8, nz4, &h->dct.luma4x4[p*16+i8x8*4], 0 );
+#endif
                     }
                     else
                     {
@@ -883,7 +1033,15 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                         else
                             plane_cbp |= 1<<i8x8;
                     }
+#if X264_S3CNT
+                    if( b_decimate )
+                        s3_g5_unit( &s3g, S5_LUMA4, i8x8, i8x8+1, 4, !(nnz8x8 && i_decimate_8x8 >= 4) );
+#endif
                 }
+#if X264_S3CNT
+                if( b_decimate )
+                    s3_g5_luma_mb( &s3g, i_decimate_mb < 6 );
+#endif
 
                 if( i_decimate_mb < 6 )
                 {

@@ -1644,7 +1644,7 @@ static void mbcmp_init( x264_t *h )
     memcpy( h->pixf.fpelcmp_avg2, satd ? h->pixf.satd_avg2 : h->pixf.sad_avg2, sizeof(h->pixf.fpelcmp_avg2) );
     /* P6 kept on C: rack01 2026-10-30 APA 8p.prog +0.43 %, lowlat -0.9..-1.55 % */
     h->pixf.analyse_p16x16_ll = h->param.analyse.i_subpel_refine < 3 && !CHROMA444 ? h->pixf.analyse_p16x16 : NULL;
-    x264_me_fpel_init( &h->pixf );
+    S3_WRAP_PF( &h->pixf ); x264_me_fpel_init( &h->pixf );
 }
 
 static void chroma_dsp_init( x264_t *h )
@@ -4494,7 +4494,7 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
         pic_out->img.plane[i] = (uint8_t*)h->fdec->plane[i];
     }
 
-    x264_frame_push_unused( thread_current, h->fenc );
+    S3_F6_TALLY( h->fenc ); x264_frame_push_unused( thread_current, h->fenc );
 
     /* ---------------------- Update encoder state ------------------------- */
 
@@ -4751,7 +4751,7 @@ void    x264_encoder_close  ( x264_t *h )
         x264_thread_sync_ratecontrol( thread_prev, thread_prev, h );
         h->i_frame = thread_prev->i_frame + 1 - h->i_thread_frames;
     }
-    h->i_frame++;
+    h->i_frame++; S3_PRINT();
 
     /* Slices used and PSNR */
     for( int i = 0; i < 3; i++ )
@@ -5121,3 +5121,196 @@ int x264_encoder_maximum_delayed_frames( x264_t *h )
 {
     return h->frames.i_delay;
 }
+
+#if X264_S3CNT
+/****************************************************************************
+ * survey 3 counters (encoder/s3cnt.h), measurement builds only
+ ****************************************************************************/
+x264_s3cnt_t x264_s3;
+__thread x264_s3_ctx_t x264_s3_ctx;
+__thread x264_s3_rdtr_t x264_s3_rdtr;
+__thread x264_s3_fl_t x264_s3_fl;
+
+/* C6: a frame's lookahead intra costs, by its final type, when it is encoded */
+void x264_s3_f6_tally( x264_frame_t *f )
+{
+    int t = x264_clip3( f->i_type, 0, 6 );
+    S3_INC( f6_frames[t] );
+    S3_ADD( f6_frames_irun[t], f->s3_irun > 0 );
+    S3_ADD( f6_frames_irun2[t], f->s3_irun > 1 );
+    S3_ADD( f6_irun_sum[t], f->s3_irun );
+    S3_ADD( f6_intra_sum[t], f->s3_intra );
+    S3_ADD( f6_frames_intra2[t], f->s3_intra > 1 );
+    f->s3_done = 1;
+}
+
+static double s3_pc( uint64_t a, uint64_t b )
+{
+    return b ? 100.0 * a / b : 0.0;
+}
+
+#define S3_U( x ) ((unsigned long long)(x))
+
+void x264_s3_print( void )
+{
+    x264_s3cnt_t *c = &x264_s3;
+    static const char *lname[S3_NLIST] = { "P", "L0", "L1", "BI" };
+    static const char *pname[7] = { "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4" };
+    static const char *qoname[S3_QO_N] = { "other", "search", "refdupe", "refine" };
+    static const char *s4name[S4_N] = { "intra16", "intra4", "intra8", "trd", "prd", "analyse", "other" };
+    static const char *s5name[S5_G] = { "i16ac(<6)", "luma4-8x8(<4)", "chromaac(<7)" };
+    static const char *s5tname[S5T_N] = { "i16ac", "luma4", "chromaac", "4x4", "8x8", "lumadc", "chromadc", "other" };
+    static const char *tname[7] = { "auto", "IDR", "I", "P", "BREF", "B", "KEY" };
+    FILE *o = stderr;
+    fprintf( o, "s3cnt begin bitdepth %d\n", BIT_DEPTH );
+
+    /* C1 */
+    uint64_t rq = 0, rq_skip_q = 0, rq_q = 0, rq_viol = 0, rq_skip = 0, rq_noch = 0, qall = 0;
+    for( int l = 0; l < S3_NLIST; l++ )
+        for( int p = 0; p < 7; p++ )
+        {
+            if( !c->rq_calls[l][p] )
+                continue;
+            fprintf( o, "s3cnt C1 refine %s %s calls %llu weighted %llu hpel %llu nochange %llu (%.1f%%) rec %llu wouldskip %llu (%.1f%%) VIOL %llu qpel %llu qpel_in_skips %llu\n",
+                     lname[l], pname[p], S3_U(c->rq_calls[l][p]), S3_U(c->rq_weighted[l][p]), S3_U(c->rq_hpel[l][p]),
+                     S3_U(c->rq_nochange[l][p]), s3_pc( c->rq_nochange[l][p], c->rq_calls[l][p] ), S3_U(c->rq_rec[l][p]),
+                     S3_U(c->rq_skip[l][p]), s3_pc( c->rq_skip[l][p], c->rq_calls[l][p] ), S3_U(c->rq_viol[l][p]),
+                     S3_U(c->rq_qcalls[l][p]), S3_U(c->rq_qcalls_skip[l][p]) );
+            rq += c->rq_calls[l][p]; rq_skip += c->rq_skip[l][p]; rq_viol += c->rq_viol[l][p]; rq_noch += c->rq_nochange[l][p];
+            rq_q += c->rq_qcalls[l][p]; rq_skip_q += c->rq_qcalls_skip[l][p];
+        }
+    for( int q = 0; q < S3_QO_N; q++ )
+    {
+        uint64_t n = c->q_calls[q][0] + c->q_calls[q][1] + c->q_calls[q][2] + c->q_calls[q][3];
+        qall += n;
+        if( !n )
+            continue;
+        fprintf( o, "s3cnt C1 qpel_search from %s calls %llu (16x16 %llu 16x8 %llu 8x16 %llu 8x8 %llu) exit iters0 %llu range %llu nomove %llu exhausted %llu\n",
+                 qoname[q], S3_U(n), S3_U(c->q_calls[q][0]), S3_U(c->q_calls[q][1]), S3_U(c->q_calls[q][2]), S3_U(c->q_calls[q][3]),
+                 S3_U(c->q_exit[q][S3_QX_ITERS0]), S3_U(c->q_exit[q][S3_QX_RANGE]), S3_U(c->q_exit[q][S3_QX_NOMOVE]), S3_U(c->q_exit[q][S3_QX_EXHAUST]) );
+    }
+    fprintf( o, "s3cnt C1 summary refines %llu nochange %llu (%.1f%%) wouldskip %llu (%.1f%% of refines, subset of nochange: VIOL %llu) "
+                "qpel_search calls %llu, from refine %llu (%.1f%%), skipped by the record %llu = %.1f%% of all qpel_search calls; records set %llu, shadow calls %llu, err %llu\n",
+             S3_U(rq), S3_U(rq_noch), s3_pc( rq_noch, rq ), S3_U(rq_skip), s3_pc( rq_skip, rq ), S3_U(rq_viol),
+             S3_U(qall), S3_U(rq_q), s3_pc( rq_q, qall ), S3_U(rq_skip_q), s3_pc( rq_skip_q, qall ),
+             S3_U(c->q_rec_set), S3_U(c->q_shadow), S3_U(c->q_err) );
+
+    /* C2 */
+    for( int b = 0; b < 2; b++ )
+    {
+        if( c->s2_shadow_n[b][0] )
+            fprintf( o, "s3cnt C2 %s 16x16 searches %llu (shadow mismatch A %llu B %llu) zexit %llu with W: %llu, hex6(W) scored %llu (%.1f%%), square8(W) scored %llu (%.1f%%), positions/search %.2f\n",
+                     b ? "B" : "P", S3_U(c->s2_shadow_n[b][0]), S3_U(c->s2_mis_a[b][0]), S3_U(c->s2_mis_b[b][0]), S3_U(c->s2_zexit[b][0]),
+                     S3_U(c->s2_w16_n[b]), S3_U(c->s2_w16_hex6[b]), s3_pc( c->s2_w16_hex6[b], c->s2_w16_n[b] ),
+                     S3_U(c->s2_w16_sq8[b]), s3_pc( c->s2_w16_sq8[b], c->s2_w16_n[b] ),
+                     c->s2_w16_n[b] ? (double)c->s2_w16_pos[b] / c->s2_w16_n[b] : 0 );
+        for( int p = 1; p < 4; p++ )
+        {
+            uint64_t n = c->s2_n[b][p];
+            if( !c->s2_shadow_n[b][p] )
+                continue;
+            fprintf( o, "s3cnt C2 %s %s searches %llu (shadow mismatch A %llu B %llu) no16x16 %llu zexit %llu; of %llu: final==W %.1f%%, final in W+hex6+sq8 %.1f%%, "
+                        "final scored by 16x16 %.1f%%, start==W and still %.1f%%, moved %.1f%%, hpel mv == 16x16's %.1f%%; FULLY SERVED %.1f%%, "
+                        "positions served %llu/%llu (%.1f%%), predictors served %llu/%llu (%.1f%%), survey (b) start==W+still+15 cached %.1f%%\n",
+                     b ? "B" : "P", pname[p], S3_U(c->s2_shadow_n[b][p]), S3_U(c->s2_mis_a[b][p]), S3_U(c->s2_mis_b[b][p]),
+                     S3_U(c->s2_nof[b][p]), S3_U(c->s2_zexit[b][p]), S3_U(n),
+                     s3_pc( c->s2_feqw[b][p], n ), s3_pc( c->s2_fhexsq[b][p], n ), s3_pc( c->s2_fins[b][p], n ),
+                     s3_pc( c->s2_startw_still[b][p], n ), s3_pc( c->s2_moved[b][p], n ), s3_pc( c->s2_hpeleq[b][p], n ),
+                     s3_pc( c->s2_served[b][p], n ), S3_U(c->s2_posserv[b][p]), S3_U(c->s2_postot[b][p]), s3_pc( c->s2_posserv[b][p], c->s2_postot[b][p] ),
+                     S3_U(c->s2_predserv[b][p]), S3_U(c->s2_predtot[b][p]), s3_pc( c->s2_predserv[b][p], c->s2_predtot[b][p] ),
+                     s3_pc( c->s2_survb[b][p], n ) );
+        }
+    }
+    if( c->s2_logovf )
+        fprintf( o, "s3cnt C2 log overflow %llu\n", S3_U(c->s2_logovf) );
+
+    /* C3 */
+    for( int s = 0; s < 2; s++ )
+    {
+        if( !c->s3_calls[s] && !c->s3_edge[s] )
+            continue;
+        fprintf( o, "s3cnt C3 refine_bidir %s calls %llu edge-return %llu passes %llu (%.2f/call) get_ref %llu (%.1f/call, averaging %llu) "
+                    "in the previous window %llu (%.1f%%; averaging %llu = %.1f%% of averaging) passes hist",
+                 s ? "<16x16" : "16x16", S3_U(c->s3_calls[s]), S3_U(c->s3_edge[s]), S3_U(c->s3_passes[s]),
+                 c->s3_calls[s] ? (double)c->s3_passes[s] / c->s3_calls[s] : 0, S3_U(c->s3_gr[s]),
+                 c->s3_calls[s] ? (double)c->s3_gr[s] / c->s3_calls[s] : 0, S3_U(c->s3_gr_avg[s]),
+                 S3_U(c->s3_gr_ovl[s]), s3_pc( c->s3_gr_ovl[s], c->s3_gr[s] ), S3_U(c->s3_gr_ovl_avg[s]), s3_pc( c->s3_gr_ovl_avg[s], c->s3_gr_avg[s] ) );
+        for( int i = 1; i < 9; i++ )
+            fprintf( o, " %d:%llu", i, S3_U(c->s3_pass_hist[s][i]) );
+        fprintf( o, "; moves l0 %llu l1 %llu both %llu\n", S3_U(c->s3_lists_moved[s][0]), S3_U(c->s3_lists_moved[s][1]), S3_U(c->s3_lists_moved[s][2]) );
+    }
+
+    /* C4 */
+    uint64_t f8a = 0, f8sc = 0, f8sf = 0, f8ia = 0, f8isc = 0;
+    for( int s = 0; s < S4_N; s++ )
+    {
+        if( !c->r4_calls[s] && !c->r4_skip[s] )
+            continue;
+        f8a += c->r4_f8_all[s]; f8sc += c->r4_f8_save_coarse[s]; f8sf += c->r4_f8_save_fine[s];
+        if( s <= S4_I8 )
+        {
+            f8ia += c->r4_f8_all[s];
+            f8isc += c->r4_f8_save_coarse[s];
+        }
+        fprintf( o, "s3cnt C4 rd_cost_mb %s calls %llu (skip %llu) bounded %llu LOSERS %llu (%.1f%% of bounded) ssd-alone %llu (%.1f%% of losers) "
+                    "f8 all %llu losers %llu; skippable f8 fine %llu (%.1f%% of the site's sizing) coarse %llu (%.1f%%)\n",
+                 s4name[s], S3_U(c->r4_calls[s]), S3_U(c->r4_skip[s]), S3_U(c->r4_bounded[s]), S3_U(c->r4_lose[s]), s3_pc( c->r4_lose[s], c->r4_bounded[s] ),
+                 S3_U(c->r4_ssd_cross[s]), s3_pc( c->r4_ssd_cross[s], c->r4_lose[s] ), S3_U(c->r4_f8_all[s]), S3_U(c->r4_f8_lose[s]),
+                 S3_U(c->r4_f8_save_fine[s]), s3_pc( c->r4_f8_save_fine[s], c->r4_f8_all[s] ),
+                 S3_U(c->r4_f8_save_coarse[s]), s3_pc( c->r4_f8_save_coarse[s], c->r4_f8_all[s] ) );
+        if( !c->r4_lose[s] )
+            continue;
+        const char *hn[3] = { "bits fine", "bits coarse", "blocks" };
+        uint64_t (*hh[3])[S3_HIST] = { c->r4_hist_fine, c->r4_hist_coarse, c->r4_hist_blk };
+        for( int k = 0; k < 3; k++ )
+        {
+            fprintf( o, "s3cnt C4 rd_cost_mb %s crossing (%s, 10%% bins, last = only at the end):", s4name[s], hn[k] );
+            for( int i = 0; i < S3_HIST; i++ )
+                fprintf( o, " %llu", S3_U(hh[k][s][i]) );
+            fprintf( o, "\n" );
+        }
+    }
+    fprintf( o, "s3cnt C4 summary skippable sizing f8: all sites fine %.1f%% coarse %.1f%% of %llu; intra_rd coarse %.1f%% of %llu; trace overflow %llu\n",
+             s3_pc( f8sf, f8a ), s3_pc( f8sc, f8a ), S3_U(f8a), s3_pc( f8isc, f8ia ), S3_U(f8ia), S3_U(c->r4_trovf) );
+    for( int k = 0; k < 2; k++ )
+        if( c->r4_part_calls[k] )
+            fprintf( o, "s3cnt C4 rd_cost_%s calls %llu losers %llu ssd-alone %llu\n", k ? "i8x8" : "i4x4",
+                     S3_U(c->r4_part_calls[k]), S3_U(c->r4_part_lose[k]), S3_U(c->r4_part_ssd_cross[k]) );
+
+    /* C5 */
+    fprintf( o, "s3cnt C5 trellis calls" );
+    for( int s = 0; s < S5T_N; s++ )
+        fprintf( o, " %s %llu", s5tname[s], S3_U(c->t5_calls[s]) );
+    fprintf( o, "; 4x4x4 DPs" );
+    for( int s = 0; s < S5T_N; s++ )
+        if( c->t5_dps[s] )
+            fprintf( o, " %s %llu", s5tname[s], S3_U(c->t5_dps[s]) );
+    fprintf( o, "\n" );
+    for( int g = 0; g < S5_G; g++ )
+        fprintf( o, "s3cnt C5 %s units %llu proven %llu (%.1f%%) decimated %llu (%.1f%%) VIOLATIONS %llu DPs %llu in proven %llu (%.1f%%)\n",
+                 s5name[g], S3_U(c->g5_n[g]), S3_U(c->g5_proven[g]), s3_pc( c->g5_proven[g], c->g5_n[g] ), S3_U(c->g5_dec[g]), s3_pc( c->g5_dec[g], c->g5_n[g] ),
+                 S3_U(c->g5_viol[g]), S3_U(c->g5_dps[g]), S3_U(c->g5_dps_skip[g]), s3_pc( c->g5_dps_skip[g], c->g5_dps[g] ) );
+    fprintf( o, "s3cnt C5 luma4 MB(<6) units %llu proven %llu (%.1f%%) decimated %llu (%.1f%%) VIOLATIONS %llu; DPs skippable (MB proven or group-first rule) %llu (%.1f%% of luma4 DPs)\n",
+             S3_U(c->g5_mb_n), S3_U(c->g5_mb_proven), s3_pc( c->g5_mb_proven, c->g5_mb_n ), S3_U(c->g5_mb_dec), s3_pc( c->g5_mb_dec, c->g5_mb_n ),
+             S3_U(c->g5_mb_viol), S3_U(c->g5_dps_skip_refined), s3_pc( c->g5_dps_skip_refined, c->g5_dps[S5_LUMA4] ) );
+    fprintf( o, "s3cnt C5 block dominance (trellis score <= round-to-nearest score): blocks %llu VIOLATIONS %llu\n",
+             S3_U(c->g5_blk), S3_U(c->g5_blk_viol) );
+
+    /* C6 */
+    fprintf( o, "s3cnt C6 frame_cost calls %llu cached %llu (intra-only cached %llu)\n",
+             S3_U(c->f6_cost_calls), S3_U(c->f6_cost_hits), S3_U(c->f6_ihit) );
+    for( int t = 0; t < 7; t++ )
+    {
+        uint64_t ev = c->f6_i_run[t][0] + c->f6_i_run[t][1] + c->f6_intra_pass[t][0] + c->f6_intra_pass[t][1] + c->f6_intra_pass[t][2];
+        if( ev )
+            fprintf( o, "s3cnt C6 at lookahead type %s: lowres_i_mbs passes %llu (intra already known %llu); intra computed by I %llu P %llu B passes %llu; after encode %llu\n",
+                     tname[t], S3_U(c->f6_i_run[t][0] + c->f6_i_run[t][1]), S3_U(c->f6_i_run[t][1]),
+                     S3_U(c->f6_intra_pass[t][0]), S3_U(c->f6_intra_pass[t][1]), S3_U(c->f6_intra_pass[t][2]), S3_U(c->f6_late[t]) );
+        if( c->f6_frames[t] )
+            fprintf( o, "s3cnt C6 final type %s: frames %llu, with a lowres_i_mbs pass %llu (>1: %llu), passes %llu; intra computations %llu, frames with >1 %llu\n",
+                     tname[t], S3_U(c->f6_frames[t]), S3_U(c->f6_frames_irun[t]), S3_U(c->f6_frames_irun2[t]), S3_U(c->f6_irun_sum[t]),
+                     S3_U(c->f6_intra_sum[t]), S3_U(c->f6_frames_intra2[t]) );
+    }
+    fprintf( o, "s3cnt end\n" );
+}
+#endif

@@ -249,5 +249,7 @@ static ALWAYS_INLINE void x264_mb_encode_i8x8( x264_t *h, int p, int idx, int i_
         STORE_8x8_NNZ( p, idx, 0 );
 }
 
+#include "s3cnt.h"
+
 #endif
 

@@ -1711,7 +1711,7 @@ typedef struct
 
 static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 {
-    x264_t *h = s->h;
+    x264_t *h = s->h; S3_SET_A( NULL );
 #if HIGH_BIT_DEPTH && HAVE_BITDEPTH8
     if( h->lowres8 )
     {
@@ -1866,10 +1866,10 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
      * the preceding frames as B. (is this still true?) */
     /* Also check that we already calculated the row SATDs for the current frame. */
     if( fenc->i_cost_est[b-p0][p1-b] >= 0 && (!h->param.rc.i_vbv_buffer_size || fenc->i_row_satds[b-p0][p1-b][0] != -1) )
-        i_score = fenc->i_cost_est[b-p0][p1-b];
+        { i_score = fenc->i_cost_est[b-p0][p1-b]; S3_F6_COST( h, fenc, p0, p1, b, 1 ); }
     else
     {
-        int dist_scale_factor = 128;
+        int dist_scale_factor = 128; S3_F6_COST( h, fenc, p0, p1, b, 0 );
 
         /* For each list, check to see whether we have lowres motion-searched this reference frame before. */
         do_search[0] = b != p0 && fenc->lowres_mvs[0][b-p0-1][0][0] == 0x7FFF;

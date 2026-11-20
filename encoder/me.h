@@ -54,6 +54,12 @@ typedef struct
     int cost_mv;        /* lambda * nbits for the chosen mv */
     int cost;           /* satd + lambda * nbits */
     ALIGNED_4( int16_t mv[2] );
+#if X264_S3CNT
+    /* the search's qpel stage stopped without a move at this mv and cost (survey 3 C1) */
+    int s3_qconv_valid;
+    int s3_qconv_cost;
+    uint32_t s3_qconv_mv;
+#endif
 } ALIGNED_64( x264_me_t );
 
 typedef struct
@@ -331,5 +337,18 @@ if((y)>(x))\
     (x)=(y);\
     (a)=(b);\
 }
+
+#if X264_S3CNT
+/* survey 3 counters (encoder/s3cnt.h) */
+#define x264_s3_qpel_wrap x264_template(s3_qpel_wrap)
+void x264_s3_qpel_wrap( x264_pixel_function_t *pf );
+#define x264_s3_me_list x264_template(s3_me_list)
+int x264_s3_me_list( x264_t *h, x264_me_t *m );
+#define S3_WRAP_PF( pf ) x264_s3_qpel_wrap( pf )
+#define S3_ME_INVAL( m ) ( (m)->s3_qconv_valid = 0 )
+#else
+#define S3_WRAP_PF( pf )
+#define S3_ME_INVAL( m )
+#endif
 
 #endif

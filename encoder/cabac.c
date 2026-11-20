@@ -926,6 +926,15 @@ static void x264_cabac_block_residual_422_dc( x264_t *h, x264_cabac_t *cb, int c
 }
 #endif
 
+/* survey 3 C4 (encoder/s3cnt.h): RD sizing checkpoints, 0 after a block, 1 at a coarse point, 2 both */
+#if RDO_SKIP_BS && X264_S3CNT
+#define S3_RD_CKR( cb, c ) S3_RD_CK( cb, c )
+#define S3_RD_CKR4( cb, i ) do { if( ((i)&3) == 3 ) S3_RD_CK( cb, 1 ); } while( 0 )
+#else
+#define S3_RD_CKR( cb, c )
+#define S3_RD_CKR4( cb, i )
+#endif
+
 #define x264_cabac_block_residual_cbf_internal( h, cb, ctx_block_cat, i_idx, l, b_intra, b_dc, name )\
 do\
 {\
@@ -937,6 +946,7 @@ do\
     }\
     else\
         x264_cabac_encode_decision( cb, ctxidxinc, 0 );\
+    S3_RD_CKR( cb, 0 );\
 } while(0)
 
 #define x264_cabac_block_residual_dc_cbf( h, cb, ctx_block_cat, i_idx, l, b_intra )\
@@ -1016,6 +1026,7 @@ static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_
     {
         const int b_intra = IS_INTRA( i_mb_type );
         x264_cabac_qp_delta( h, cb );
+        S3_RD_CKR( cb, 1 );
 
         /* write residual */
         if( i_mb_type == I_16x16 )
@@ -1024,11 +1035,15 @@ static ALWAYS_INLINE void x264_macroblock_write_cabac_internal( x264_t *h, x264_
             for( int p = 0; p < plane_count; p++ )
             {
                 x264_cabac_block_residual_dc_cbf( h, cb, ctx_cat_plane[DCT_LUMA_DC][p], LUMA_DC+p, h->dct.luma16x16_dc[p], 1 );
+                S3_RD_CKR( cb, 1 );
 
                 /* AC Luma */
                 if( h->mb.i_cbp_luma )
                     for( int i = p*16; i < p*16+16; i++ )
+                    {
                         x264_cabac_block_residual_cbf( h, cb, ctx_cat_plane[DCT_LUMA_AC][p], i, h->dct.luma4x4[i]+1, 1 );
+                        S3_RD_CKR4( cb, i );
+                    }
             }
         }
         else if( h->mb.b_transform_8x8 )
@@ -1083,15 +1098,21 @@ if( (h->mb.i_neighbour & MB_TOP) && !h->mb.mb_transform_size[h->mb.i_mb_top_xy] 
             else
             {
                 FOREACH_BIT( i, 0, h->mb.i_cbp_luma )
+                {
                     x264_cabac_block_residual_8x8( h, cb, DCT_LUMA_8x8, h->dct.luma8x8[i] );
+                    S3_RD_CKR( cb, 2 );
+                }
             }
         }
         else
         {
             for( int p = 0; p < plane_count; p++ )
                 FOREACH_BIT( i8x8, 0, h->mb.i_cbp_luma )
+                {
                     for( int i = 0; i < 4; i++ )
                         x264_cabac_block_residual_cbf( h, cb, ctx_cat_plane[DCT_LUMA_4x4][p], i+i8x8*4+p*16, h->dct.luma4x4[i+i8x8*4+p*16], b_intra );
+                    S3_RD_CKR( cb, 1 );
+                }
         }
 
         if( chroma && h->mb.i_cbp_chroma ) /* Chroma DC residual present */
@@ -1106,6 +1127,7 @@ if( (h->mb.i_neighbour & MB_TOP) && !h->mb.mb_transform_size[h->mb.i_mb_top_xy] 
                 x264_cabac_block_residual_dc_cbf( h, cb, DCT_CHROMA_DC, CHROMA_DC+0, h->dct.chroma_dc[0], b_intra );
                 x264_cabac_block_residual_dc_cbf( h, cb, DCT_CHROMA_DC, CHROMA_DC+1, h->dct.chroma_dc[1], b_intra );
             }
+            S3_RD_CKR( cb, 1 );
 
             if( h->mb.i_cbp_chroma == 2 ) /* Chroma AC residual present */
             {
