@@ -258,6 +258,14 @@ typedef struct
     pixel *pad2[4];
 } x264_fref_base_t;
 
+/* x264_macroblock_cache_load_mbaff, 8-bit: the mb's fenc lines and fdec top and left borders,
+ * see x264_mbaff_init. NULL: the mc functions and C loops. */
+typedef struct
+{
+    void (*load_luma)( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra );
+    void (*load_chroma)( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra );
+} x264_mbaff_function_t;
+
 /* Current frame stats */
 typedef struct
 {
@@ -836,6 +844,8 @@ struct x264_t
 #if HAVE_OPENCL
     x264_opencl_t opencl;
 #endif
+
+    x264_mbaff_function_t mbaffpf;
 };
 
 // included at the end because it needs x264_t

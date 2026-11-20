@@ -26,6 +26,10 @@
 %define FREF_LIST (32*FREF_ROW)
 %define FREF_W    (2*FREF_LIST)
 
+SECTION_RODATA 32
+
+mbaff_deint_shuf: db 0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15
+
 SECTION .text
 
 ;-----------------------------------------------------------------------------
@@ -178,3 +182,112 @@ cglobal mb_fref_load, 6,7,6
     FREF_ROWS  r0, r1, r4
     FREF_ROWS  r2, r3, r5
     RET
+
+%if ARCH_X86_64 && HIGH_BIT_DEPTH == 0
+;-----------------------------------------------------------------------------
+; void mbaff_load_luma( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec,
+;                       intptr_t stride, pixel *intra )
+; MBAFF cache_load, luma: fenc lines 0-15 = src_fenc lines; fdec line -1,
+; x -1..23 = intra[-1..23]; fdec column -1 of lines 0-15 = src_fdec[-1] lines.
+;-----------------------------------------------------------------------------
+INIT_YMM avx2
+cglobal mbaff_load_luma, 6,7,2
+    movu      xm0, [r5-1]
+    movu      xm1, [r5+8]
+    movu [r1-FDEC_STRIDE-1], xm0
+    movu [r1-FDEC_STRIDE+8], xm1
+    lea        r6, [r4*3]
+%assign mbl_i 0
+%rep 4
+    movu      xm0, [r2]
+    vinserti128 m0, m0, [r2+r4], 1
+    movu      xm1, [r2+r4*2]
+    vinserti128 m1, m1, [r2+r6], 1
+    mova [r0+mbl_i*64], m0
+    mova [r0+mbl_i*64+32], m1
+%if mbl_i < 3
+    lea        r2, [r2+r4*4]
+%endif
+%assign mbl_i mbl_i+1
+%endrep
+%assign mbl_i 0
+%rep 4
+    movzx     r2d, byte [r3-1]
+    mov [r1-1+(4*mbl_i+0)*FDEC_STRIDE], r2b
+    movzx     r2d, byte [r3+r4-1]
+    mov [r1-1+(4*mbl_i+1)*FDEC_STRIDE], r2b
+    movzx     r2d, byte [r3+r4*2-1]
+    mov [r1-1+(4*mbl_i+2)*FDEC_STRIDE], r2b
+    movzx     r2d, byte [r3+r6-1]
+    mov [r1-1+(4*mbl_i+3)*FDEC_STRIDE], r2b
+%if mbl_i < 3
+    lea        r3, [r3+r4*4]
+%endif
+%assign mbl_i mbl_i+1
+%endrep
+    RET
+%undef mbl_i
+
+;-----------------------------------------------------------------------------
+; void mbaff_load_chroma_420/422( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec,
+;                                 intptr_t stride, pixel *intra )
+; MBAFF cache_load, nv12 chroma of 8 or 16 lines: fenc line j = u (8) then v (8) of
+; src_fenc line j; fdec u at fdec, v at fdec+16: line -1 u = intra[0..7], v =
+; intra[8..15], x -1 = intra[-9] and intra[-1]; column -1 of line j = src_fdec
+; line j [-2] and [-1].
+;-----------------------------------------------------------------------------
+%macro MBAFF_LOAD_CHROMA 1 ; lines
+cglobal mbaff_load_chroma_%1, 6,7,3
+    movq      xm0, [r5]
+    movq      xm1, [r5+8]
+    movq [r1-FDEC_STRIDE], xm0
+    movq [r1-FDEC_STRIDE+16], xm1
+    movzx     r6d, byte [r5-9]
+    mov [r1-FDEC_STRIDE-1], r6b
+    movzx     r6d, byte [r5-1]
+    mov [r1-FDEC_STRIDE+15], r6b
+    vbroadcasti128 m2, [mbaff_deint_shuf]
+    lea        r6, [r4*3]
+%assign %%i 0
+%rep %1/4
+    movu      xm0, [r2]
+    vinserti128 m0, m0, [r2+r4], 1
+    movu      xm1, [r2+r4*2]
+    vinserti128 m1, m1, [r2+r6], 1
+    pshufb     m0, m2
+    pshufb     m1, m2
+    mova [r0+%%i*64], m0
+    mova [r0+%%i*64+32], m1
+%if %%i < %1/4-1
+    lea        r2, [r2+r4*4]
+%endif
+%assign %%i %%i+1
+%endrep
+    ; u and v of a line in one word load; r6 is rax in both x86-64 ABIs, so ah is its byte 1
+    lea        r2, [r4*3]
+%assign %%i 0
+%rep %1/4
+%assign %%j 0
+%rep 4
+%if %%j == 0
+    movzx     r6d, word [r3-2]
+%elif %%j == 3
+    movzx     r6d, word [r3+r2-2]
+%else
+    movzx     r6d, word [r3+r4*%%j-2]
+%endif
+    mov [r1-1+(4*%%i+%%j)*FDEC_STRIDE], r6b
+    mov [r1+15+(4*%%i+%%j)*FDEC_STRIDE], ah
+%assign %%j %%j+1
+%endrep
+%if %%i < %1/4-1
+    lea        r3, [r3+r4*4]
+%endif
+%assign %%i %%i+1
+%endrep
+    RET
+%endmacro
+
+MBAFF_LOAD_CHROMA 8
+MBAFF_LOAD_CHROMA 16
+%endif

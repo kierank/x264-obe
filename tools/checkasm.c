@@ -4963,6 +4963,123 @@ static int check_propagate_list_strip( int cpu_new, const char *name, const char
 }
 #endif
 
+/* x264_mbaff_function_t references, as the C path of x264_macroblock_cache_load_mbaff */
+static void mbaff_load_luma_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
+{
+    for( int j = 0; j < 16; j++ )
+        memcpy( fenc + j*FENC_STRIDE, src_fenc + j*stride, 16*sizeof(pixel) );
+    memcpy( fdec - FDEC_STRIDE, intra, 24*sizeof(pixel) );
+    fdec[-FDEC_STRIDE-1] = intra[-1];
+    for( int j = 0; j < 16; j++ )
+        fdec[-1+j*FDEC_STRIDE] = src_fdec[-1+j*stride];
+}
+static void mbaff_load_chroma_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra, int height )
+{
+    for( int j = 0; j < height; j++ )
+        for( int i = 0; i < 8; i++ )
+        {
+            fenc[j*FENC_STRIDE+i]   = src_fenc[j*stride+2*i];
+            fenc[j*FENC_STRIDE+8+i] = src_fenc[j*stride+2*i+1];
+        }
+    memcpy( fdec - FDEC_STRIDE, intra, 8*sizeof(pixel) );
+    memcpy( fdec + 16 - FDEC_STRIDE, intra+8, 8*sizeof(pixel) );
+    fdec[-FDEC_STRIDE-1] = intra[-1-8];
+    fdec[16-FDEC_STRIDE-1] = intra[-1];
+    for( int j = 0; j < height; j++ )
+    {
+        fdec[-1+j*FDEC_STRIDE] = src_fdec[-2+j*stride];
+        fdec[15+j*FDEC_STRIDE] = src_fdec[-1+j*stride];
+    }
+}
+static void mbaff_load_chroma_420_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
+{
+    mbaff_load_chroma_c( fenc, fdec, src_fenc, src_fdec, stride, intra, 8 );
+}
+static void mbaff_load_chroma_422_c( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra )
+{
+    mbaff_load_chroma_c( fenc, fdec, src_fenc, src_fdec, stride, intra, 16 );
+}
+
+/* fenc_buf and fdec_buf of mb.pic and the frame lines of an MBAFF mb: field (2*stride) and
+ * frame mbs, any mb_x, sources at any 16-pixel column; compares both buffers whole */
+static int check_mbaff_load( int cpu_ref, int cpu_new )
+{
+    int ret = 0, ok = 1, used_asm = 0;
+    for( int cf = CHROMA_420; cf <= CHROMA_422; cf++ )
+    {
+        x264_mbaff_function_t mbf_r, mbf_a;
+        x264_mbaff_init( cpu_ref, &mbf_r, cf );
+        x264_mbaff_init( cpu_new, &mbf_a, cf );
+#if HAVE_MMX && ARCH_X86_64 && !HIGH_BIT_DEPTH
+        /* undispatched: the avx2 at the first AVX2 level */
+        if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+        {
+            mbf_a.load_luma = x264_mbaff_load_luma_avx2;
+            mbf_a.load_chroma = cf == CHROMA_420 ? x264_mbaff_load_chroma_8_avx2 : x264_mbaff_load_chroma_16_avx2;
+        }
+#endif
+        if( mbf_a.load_luma == mbf_r.load_luma && mbf_a.load_chroma == mbf_r.load_chroma )
+            continue;
+        used_asm = 1;
+        void (*chroma_c)( pixel*, pixel*, pixel*, pixel*, intptr_t, pixel* ) = cf == CHROMA_420 ? mbaff_load_chroma_420_c : mbaff_load_chroma_422_c;
+        int height_c = cf == CHROMA_420 ? 8 : 16;
+        int maxstride = 2*(1920+128);
+        pixel *plane = x264_malloc( (32 + 4) * maxstride * sizeof(pixel) );
+        pixel *intra = x264_malloc( (1920+64) * sizeof(pixel) );
+        ALIGNED_64( pixel fenc_c[48*FENC_STRIDE] );
+        ALIGNED_64( pixel fenc_a[48*FENC_STRIDE] );
+        ALIGNED_64( pixel fdec_c[54*FDEC_STRIDE] );
+        ALIGNED_64( pixel fdec_a[54*FDEC_STRIDE] );
+        if( !plane || !intra )
+            return -1;
+        set_func_name( "mbaff_load_%s", cf == CHROMA_420 ? "420" : "422" );
+        for( int i = 0; i < 200 && ok; i++ )
+        {
+            int field = i&1;
+            intptr_t stride = (64 + 64*(rand()%30)) << field;
+            int mb_x = rand()%120;
+            if( i < 8 )
+                mb_x = i < 4 ? 0 : 119;
+            for( int j = 0; j < (32+4)*maxstride; j++ )
+                plane[j] = rand() & PIXEL_MAX;
+            for( int j = 0; j < 1920+64; j++ )
+                intra[j] = rand() & PIXEL_MAX;
+            for( int j = 0; j < 48*FENC_STRIDE; j++ )
+                fenc_c[j] = rand() & PIXEL_MAX;
+            for( int j = 0; j < 54*FDEC_STRIDE; j++ )
+                fdec_c[j] = rand() & PIXEL_MAX;
+            memcpy( fenc_a, fenc_c, sizeof(fenc_c) );
+            memcpy( fdec_a, fdec_c, sizeof(fdec_c) );
+            /* sources: column mb_x*16 of line 2 of the plane (16-pixel aligned, -2 readable) */
+            pixel *src = plane + 2*maxstride + 32 + (mb_x&7)*16;
+            pixel *pintra = intra + 32 + mb_x*16;
+            call_c1( mbaff_load_luma_c, fenc_c, fdec_c+2*FDEC_STRIDE, src + maxstride/2, src, stride, pintra );
+            call_a1( mbf_a.load_luma, fenc_a, fdec_a+2*FDEC_STRIDE, src + maxstride/2, src, stride, pintra );
+            call_c1( chroma_c, fenc_c+16*FENC_STRIDE, fdec_c+20*FDEC_STRIDE, src + 16, src + maxstride/2 + 16, stride, pintra );
+            call_a1( mbf_a.load_chroma, fenc_a+16*FENC_STRIDE, fdec_a+20*FDEC_STRIDE, src + 16, src + maxstride/2 + 16, stride, pintra );
+            if( memcmp( fenc_c, fenc_a, sizeof(fenc_c) ) || memcmp( fdec_c, fdec_a, sizeof(fdec_c) ) )
+            {
+                ok = 0;
+                fprintf( stderr, "mbaff_load [FAILED]: cf %d stride %d mb_x %d\n", cf, (int)stride, mb_x );
+            }
+        }
+        if( do_bench )
+        {
+            pixel *src = plane + 2*maxstride + 32;
+            set_func_name( "mbaff_load_luma" );
+            call_c2( mbaff_load_luma_c, fenc_c, fdec_c+2*FDEC_STRIDE, src + maxstride/2, src, (intptr_t)(2*1984), intra+32 );
+            call_a2( mbf_a.load_luma, fenc_a, fdec_a+2*FDEC_STRIDE, src + maxstride/2, src, (intptr_t)(2*1984), intra+32 );
+            set_func_name( "mbaff_load_chroma_%s", cf == CHROMA_420 ? "420" : "422" );
+            call_c2( chroma_c, fenc_c+16*FENC_STRIDE, fdec_c+20*FDEC_STRIDE, src + 16, src + maxstride/2 + 16, (intptr_t)(2*1984), intra+32 );
+            call_a2( mbf_a.load_chroma, fenc_a+16*FENC_STRIDE, fdec_a+20*FDEC_STRIDE, src + 16, src + maxstride/2 + 16, (intptr_t)(2*1984), intra+32 );
+        }
+        x264_free( plane );
+        x264_free( intra );
+    }
+    report( "mbaff load :" );
+    return ret;
+}
+
 static int check_mc( int cpu_ref, int cpu_new )
 {
     x264_mc_functions_t mc_c;
@@ -10081,6 +10198,7 @@ static int check_all_funcs( int cpu_ref, int cpu_new )
          + check_me_fpel( cpu_ref, cpu_new )
          + check_dct( cpu_ref, cpu_new )
          + check_mc( cpu_ref, cpu_new )
+         + check_mbaff_load( cpu_ref, cpu_new )
 #if HAVE_MMX && !HIGH_BIT_DEPTH
          + check_avg2( cpu_ref, cpu_new )
 #endif

@@ -28,6 +28,9 @@
 
 #include "common.h"
 #include "encoder/me.h"
+#if HAVE_MMX
+#include "x86/mc.h"
+#endif
 
 #define MC_LUMA(list,p,w) \
     h->mc.mc_luma( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
@@ -1788,26 +1791,35 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_mbaff( x264_t *h, int mb_x,
         h->mb.pic.i_fld_uv_y = height_c * (mb_y >> 1);
         h->mb.pic.i_fld_uv_lines = height_c * h->mb.i_mb_height >> 1;
 
-        h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, fenc_y, stride2_y, 16 );
-        h->mc.load_deinterleave_chroma_fenc( h->mb.pic.p_fenc[1], fenc_c, stride2_c, height_c );
-
-        memcpy( fdec_y-FDEC_STRIDE, intra_y, 24*sizeof(pixel) );
-        fdec_y[-FDEC_STRIDE-1] = intra_y[-1];
-        memcpy( fdec_u-FDEC_STRIDE, intra_c, 8*sizeof(pixel) );
-        memcpy( fdec_v-FDEC_STRIDE, intra_c+8, 8*sizeof(pixel) );
-        fdec_u[-FDEC_STRIDE-1] = intra_c[-1-8];
-        fdec_v[-FDEC_STRIDE-1] = intra_c[-1];
-
-        /* left column from the frame, four lines per base pointer */
-        pixel *src = &fdec->plane[0][off_y - 1];
-        for( int j = 0; j < 16; j += 4, src += 4*stride2_y )
+#if !HIGH_BIT_DEPTH
+        if( h->mbaffpf.load_luma )
         {
-            fdec_y[-1+(j+0)*FDEC_STRIDE] = src[0];
-            fdec_y[-1+(j+1)*FDEC_STRIDE] = src[stride2_y];
-            fdec_y[-1+(j+2)*FDEC_STRIDE] = src[2*stride2_y];
-            fdec_y[-1+(j+3)*FDEC_STRIDE] = src[3*stride2_y];
+            h->mbaffpf.load_luma( h->mb.pic.p_fenc[0], fdec_y, fenc_y, &fdec->plane[0][off_y], stride2_y, intra_y );
+            h->mbaffpf.load_chroma( h->mb.pic.p_fenc[1], fdec_u, fenc_c, &fdec->plane[1][off_c], stride2_c, intra_c );
         }
-        /* nv12: u and v of a line in one load */
+        else
+#endif
+        {
+            h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[0], FENC_STRIDE, fenc_y, stride2_y, 16 );
+            h->mc.load_deinterleave_chroma_fenc( h->mb.pic.p_fenc[1], fenc_c, stride2_c, height_c );
+
+            memcpy( fdec_y-FDEC_STRIDE, intra_y, 24*sizeof(pixel) );
+            fdec_y[-FDEC_STRIDE-1] = intra_y[-1];
+            memcpy( fdec_u-FDEC_STRIDE, intra_c, 8*sizeof(pixel) );
+            memcpy( fdec_v-FDEC_STRIDE, intra_c+8, 8*sizeof(pixel) );
+            fdec_u[-FDEC_STRIDE-1] = intra_c[-1-8];
+            fdec_v[-FDEC_STRIDE-1] = intra_c[-1];
+
+            /* left column from the frame, four lines per base pointer */
+            pixel *src = &fdec->plane[0][off_y - 1];
+            for( int j = 0; j < 16; j += 4, src += 4*stride2_y )
+            {
+                fdec_y[-1+(j+0)*FDEC_STRIDE] = src[0];
+                fdec_y[-1+(j+1)*FDEC_STRIDE] = src[stride2_y];
+                fdec_y[-1+(j+2)*FDEC_STRIDE] = src[2*stride2_y];
+                fdec_y[-1+(j+3)*FDEC_STRIDE] = src[3*stride2_y];
+            }
+            /* nv12: u and v of a line in one load */
 #if HIGH_BIT_DEPTH
 #define LOAD_UV(p) M32( p )
 #define UV_SHIFT 16
@@ -1815,16 +1827,17 @@ static void ALWAYS_INLINE x264_macroblock_cache_load_mbaff( x264_t *h, int mb_x,
 #define LOAD_UV(p) M16( p )
 #define UV_SHIFT 8
 #endif
-        src = &fdec->plane[1][off_c - 2];
-        for( int j = 0; j < height_c; j += 4, src += 4*stride2_c )
-            for( int k = 0; k < 4; k++ )
-            {
-                uint32_t uv = LOAD_UV( src + k*stride2_c );
-                fdec_u[-1+(j+k)*FDEC_STRIDE] = (pixel)uv;
-                fdec_v[-1+(j+k)*FDEC_STRIDE] = (pixel)(uv >> UV_SHIFT);
-            }
+            src = &fdec->plane[1][off_c - 2];
+            for( int j = 0; j < height_c; j += 4, src += 4*stride2_c )
+                for( int k = 0; k < 4; k++ )
+                {
+                    uint32_t uv = LOAD_UV( src + k*stride2_c );
+                    fdec_u[-1+(j+k)*FDEC_STRIDE] = (pixel)uv;
+                    fdec_v[-1+(j+k)*FDEC_STRIDE] = (pixel)(uv >> UV_SHIFT);
+                }
 #undef LOAD_UV
 #undef UV_SHIFT
+        }
 
         x264_fref_base_t *b = &h->fref_base[mb_interlaced ? 1 + bot : 0];
         h->mc.mb_fref_load( &h->mb.pic.p_fref[0][0][0], &b->p_fref[0][0][0], off_y, off_c,
@@ -2132,6 +2145,14 @@ static NOINLINE void x264_macroblock_cache_load_mbaff_422_b( x264_t *h, int mb_x
     x264_macroblock_cache_load_mbaff( h, mb_x, mb_y, 0, 1 );
 }
 #endif
+
+void x264_mbaff_init( uint32_t cpu, x264_mbaff_function_t *pf, int chroma_format )
+{
+    /* avx2 (8-bit, x86-64): x264_mbaff_load_luma_avx2, x264_mbaff_load_chroma_8/16_avx2;
+     * not dispatched yet */
+    pf->load_luma = NULL;
+    pf->load_chroma = NULL;
+}
 
 static NOINLINE void x264_macroblock_cache_load_mbaff_any( x264_t *h, int mb_x, int mb_y )
 {
