@@ -34,6 +34,12 @@ void x264_mc_init_mmx( int cpu, x264_mc_functions_t *pf );
 void x264_mb_fref_load_avx2( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 );
 #define x264_mb_fref_load_avx512 x264_template(mb_fref_load_avx512)
 void x264_mb_fref_load_avx512( pixel **dst, pixel **src, intptr_t off_y, intptr_t off_c, int n0, int n1 );
+#define x264_mbaff_load_luma_avx2 x264_template(mbaff_load_luma_avx2)
+void x264_mbaff_load_luma_avx2( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra );
+#define x264_mbaff_load_chroma_8_avx2 x264_template(mbaff_load_chroma_8_avx2)
+void x264_mbaff_load_chroma_8_avx2( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra );
+#define x264_mbaff_load_chroma_16_avx2 x264_template(mbaff_load_chroma_16_avx2)
+void x264_mbaff_load_chroma_16_avx2( pixel *fenc, pixel *fdec, pixel *src_fenc, pixel *src_fdec, intptr_t stride, pixel *intra );
 #define x264_hpel_filter_copy_vc_avx2 x264_template(hpel_filter_copy_vc_avx2)
 void x264_hpel_filter_copy_vc_avx2( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src, intptr_t stride, int width, int height, int16_t *buf, pixel *dstf );
 #define x264_hpel_filter_dual_avx2 x264_template(hpel_filter_dual_avx2)

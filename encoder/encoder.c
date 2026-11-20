@@ -1855,6 +1855,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     x264_zigzag_init( h->param.cpu, &h->zigzagf_progressive, &h->zigzagf_interlaced, h->param.i_cqm_preset == X264_CQM_FLAT );
     memcpy( &h->zigzagf, PARAM_INTERLACED ? &h->zigzagf_interlaced : &h->zigzagf_progressive, sizeof(h->zigzagf) );
     x264_mc_init( h->param.cpu, &h->mc, h->param.b_cpu_independent );
+    x264_mbaff_init( h->param.cpu, &h->mbaffpf, CHROMA_FORMAT );
     x264_quant_init( h, h->param.cpu, &h->quantf );
     x264_deblock_init( h->param.cpu, &h->loopf, PARAM_INTERLACED );
     x264_bitstream_init( h->param.cpu, &h->bsf );
