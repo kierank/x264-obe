@@ -14,6 +14,7 @@
 #   c     base 6a312bce, arm 440f31b3 (the C loaders alone)
 #   k     base e051e2a5 (kernels assembled, undispatched: layout control), arm 9557360a (kernels on)
 #   10    BITDEPTH=10, base 6a312bce, arm 9557360a: 10-bit 4:2:2 interlaced (C loader only)
+#   10lay AB=10 with -falign-functions=64 on every tree
 # Null cell: tile-chaos-p LOWLAT (progressive: zero calls of the interlaced loader).
 # Expected instructions:u per 120-frame 1080i run (8160 MBs x 120): LOWLAT (all P) about -250..-280 per MB;
 # NORMAL about -215..-255 (I frames keep the old body); AB=c P -190..-220, B -155..-200; AB=k about -45 per MB.
@@ -24,10 +25,10 @@ case $AB in
 full|lay) ;;
 c)  ARM=440f31b3 ;;
 k)  BASE=e051e2a5 ;;
-10) BITDEPTH=10 ;;
+10|10lay) BITDEPTH=10 ;;
 *) echo "unknown AB $AB"; exit 1 ;;
 esac
-if [ $AB = 10 ]; then
+if [ "${BITDEPTH:-8}" = 10 ]; then
     CELLS="ffm422p10long-i:lowlat ffm422p10long-i:normal tc422p10-p:lowlat"
     NULLCELLS="tc422p10-p_lowlat"
     MD5CELLS="ffm422p10long-i:thrll ffm422p10long-i:thrnor"
@@ -54,6 +55,6 @@ MODE_tesa="${NORMAL/--me hex/--me tesa}"
 MODE_i444="${NORMAL/--profile high /} --output-csp i444"
 MODE_noasm="$NORMAL --no-asm"
 MODE_sse42="$NORMAL --asm SSE4.2"
-xe_cflags() { [ $AB = lay ] && echo "-falign-functions=64"; }
+xe_cflags() { case $AB in lay|10lay) echo "-falign-functions=64" ;; esac; }
 xe_bench() { [ $BITDEPTH = 8 ] && (cd $(xe_dir arm t) && taskset -c $CORE ./checkasm8 --bench=mbaff 1001 | grep -E '^mbaff|^nop'); }
 [ -n "${XE_TEST:-}" ] || xe_main "$@"
