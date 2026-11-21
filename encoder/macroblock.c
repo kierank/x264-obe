@@ -173,9 +173,17 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
 
     if( h->mb.b_trellis )
     {
+        ALIGNED_ARRAY_64( dctcoef, tr_orig,[16],[16] );
+        ALIGNED_ARRAY_64( dctcoef, tr_level,[16],[16] );
+        int tr_rtn[4];
+        if( PARAM_CABAC )
+            for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+                tr_rtn[i8x8] = x264_quant_4x4x4_trellis_rtn( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4],
+                                                             i_quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_AC][p] );
         for( int i8x8 = 0; i8x8 < 4; i8x8++ )
         {
-            int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], i_quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_AC][p], 1, !!p, i8x8*4 ) : 0xf;
+            int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis_dp( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4], tr_rtn[i8x8],
+                                                                 i_quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_AC][p], 1, !!p, i8x8*4 ) : 0xf;
             FOREACH_BIT( i4x4, 0, nz4 )
             {
                 int idx = i8x8*4+i4x4;
@@ -354,6 +362,9 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
         int nz_ac = 0;
 
         ALIGNED_ARRAY_64( dctcoef, dct4x4,[8],[16] );
+        ALIGNED_ARRAY_64( dctcoef, tr_orig,[8],[16] );
+        ALIGNED_ARRAY_64( dctcoef, tr_level,[8],[16] );
+        int tr_rtn[2];
 
         if( h->mb.b_lossless )
         {
@@ -385,11 +396,16 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             dct2x2dc( dct_dc, dct4x4 );
 
         /* calculate dct coeffs */
+        if( h->mb.b_trellis && PARAM_CABAC )
+            for( int i8x8 = 0; i8x8 < (chroma422?2:1); i8x8++ )
+                tr_rtn[i8x8] = x264_quant_4x4x4_trellis_rtn( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4],
+                                                             CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC );
         for( int i8x8 = 0; i8x8 < (chroma422?2:1); i8x8++ )
         {
             if( h->mb.b_trellis )
             {
-                int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 ) : 0xf;
+                int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis_dp( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4], tr_rtn[i8x8],
+                                                                     CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 ) : 0xf;
                 FOREACH_BIT( i4x4, 0, nz4 )
                 {
                     if( PARAM_CABAC || x264_quant_4x4_trellis( h, dct4x4[i8x8*4+i4x4], CQM_4IC+b_inter, i_qp, DCT_CHROMA_AC, !b_inter, 1, 0 ) )
@@ -830,6 +846,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         else
         {
             ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
+            ALIGNED_ARRAY_64( dctcoef, tr_orig,[16],[16] );
+            ALIGNED_ARRAY_64( dctcoef, tr_level,[16],[16] );
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
                 CLEAR_16x16_NNZ( p );
@@ -843,13 +861,19 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
 
                 int plane_cbp = 0;
+                int tr_rtn[4];
+                if( h->mb.b_trellis && PARAM_CABAC )
+                    for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+                        tr_rtn[i8x8] = x264_quant_4x4x4_trellis_rtn( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4],
+                                                                     CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p] );
                 for( int i8x8 = 0; i8x8 < 4; i8x8++ )
                 {
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
                     int nnz8x8 = 0;
                     if( h->mb.b_trellis )
                     {
-                        int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, &dct4x4[i8x8*4], CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+i8x8*4 ) : 0xf;
+                        int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis_dp( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4], tr_rtn[i8x8],
+                                                                             CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+i8x8*4 ) : 0xf;
                         FOREACH_BIT( i4x4, 0, nz4 )
                         {
                             int idx = i8x8*4+i4x4;
@@ -1293,7 +1317,16 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
 
                 if( h->mb.b_trellis )
                 {
-                    int nz4 = PARAM_CABAC ? x264_quant_4x4x4_trellis( h, dct4x4, quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+p*16 ) : 0xf;
+                    ALIGNED_ARRAY_64( dctcoef, tr_orig,[4],[16] );
+                    ALIGNED_ARRAY_64( dctcoef, tr_level,[4],[16] );
+                    int nz4 = 0xf;
+                    if( PARAM_CABAC )
+                    {
+                        int tr_rtn = x264_quant_4x4x4_trellis_rtn( h, dct4x4, tr_orig, tr_level, quant_cat, i_qp,
+                                                                   ctx_cat_plane[DCT_LUMA_4x4][p] );
+                        nz4 = x264_quant_4x4x4_trellis_dp( h, dct4x4, tr_orig, tr_level, tr_rtn, quant_cat, i_qp,
+                                                           ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+p*16 );
+                    }
                     FOREACH_BIT( i4x4, 0, nz4 )
                     {
                         if( PARAM_CABAC || x264_quant_4x4_trellis( h, dct4x4[i4x4], quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+i4x4+p*16 ) )

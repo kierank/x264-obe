@@ -1211,36 +1211,47 @@ int x264_quant_4x4_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
 #endif
 }
 
-/* CABAC only: x264_quant_4x4_trellis on the 4 blocks in order, with one quant_4x4x4.
- * Block i gets idx+i. Returns the nonzero mask. */
-int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
-                              int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx )
+/* CABAC only: x264_quant_4x4_trellis on the 4 blocks, in two steps so the callers can skip the
+ * second where decimation is certain.
+ * _rtn: orig = dct, the round-to-nearest (bias0) quant the trellis starts from in place in dct,
+ * levels in scan order. Returns the nonzero mask | min(sum of the decimate scores of the levels
+ * (decimate_score15 for the ac cats), 9) << 4 | block i's last nonzero scan position << (8+4*i).
+ * Decimation: the trellis gives each coef 0, q-1 or q (q = |round-to-nearest level|; 0 only if
+ * q <= 1) and keeps 0s, so its nonzero set is a subset with |level| <= q. The decimate score is
+ * 9 if a |level| > 1, else a sum over nonzero levels of a nonincreasing function of the zero run
+ * below; dropping a level removes its term and lengthens the run of the next, so a score below 9
+ * can only fall. The trellis output's score is at most the one returned here, unless that is 9,
+ * which is at or above every decimation threshold (4, 6, 7). The callers' running sums stop
+ * adding at the threshold, so they decide as the plain sums do.
+ * _dp: the trellis of the nonzero blocks, block i gets idx+i. Returns the nonzero mask. */
+int x264_quant_4x4x4_trellis_rtn( x264_t *h, dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
+                                  int i_quant_cat, int i_qp, int ctx_block_cat )
 {
-    ALIGNED_ARRAY_64( dctcoef, orig_coefs,[4],[16] );
+    int b_ac = trellis_ctx_ac[ctx_block_cat];
+    udctcoef *mf = h->quant4_mf[i_quant_cat][i_qp], *bias = h->quant4_bias0[i_quant_cat][i_qp];
+    /* its last position counts the dc, which the callers have zeroed in the b_ac blocks, so it is
+     * coeff_last's */
+    if( h->zigzagf.quant_4x4x4_scan_last )
+        return h->zigzagf.quant_4x4x4_scan_last( dct, orig, level, mf, bias, b_ac );
+    h->mc.memcpy_aligned( orig, dct, sizeof(dctcoef)*4*16 );
+    int ret = (b_ac ? h->zigzagf.quant_4x4x4_scan_ac : h->zigzagf.quant_4x4x4_scan)( dct, level, mf, bias, NULL, 0 );
+    for( int i = 0; i < 4; i++ )
+        if( ret & (1 << i) )
+            ret |= (h->quantf.coeff_last[ctx_block_cat]( level[i]+b_ac )+b_ac) << (8+4*i);
+    return ret;
+}
+
+int x264_quant_4x4x4_trellis_dp( x264_t *h, dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], int rtn,
+                                 int i_quant_cat, int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx )
+{
     int b_ac = trellis_ctx_ac[ctx_block_cat];
     int nza = 0;
-    if( h->zigzagf.quant_4x4x4_scan_last )
-    {
-        /* quant_4x4x4, scan_4x4 and coeff_last in one call. Its last position counts the dc,
-         * which the callers have zeroed in the b_ac blocks, so it is coeff_last's */
-        ALIGNED_ARRAY_64( dctcoef, quant_coefs,[4],[16] );
-        int nz = h->zigzagf.quant_4x4x4_scan_last( dct, orig_coefs, quant_coefs, h->quant4_mf[i_quant_cat][i_qp],
-                                                   h->quant4_bias0[i_quant_cat][i_qp], b_ac );
-        for( int i = 0; i < 4; i++ )
-            if( nz & (1 << i) )
-                nza |= trellis_cabac_scanned( h, dct[i], orig_coefs[i], quant_coefs[i], (nz >> (8+4*i)) & 15,
-                                              h->unquant4_mf[i_quant_cat][i_qp], x264_zigzag_scan4[MB_INTERLACED],
-                                              ctx_block_cat, h->mb.i_trellis_lambda2[b_chroma][b_intra], b_ac,
-                                              b_chroma, 0, 16, idx+i ) << i;
-        return nza;
-    }
-    h->mc.memcpy_aligned( orig_coefs, dct, sizeof(dctcoef)*4*16 );
-    int nz = h->quantf.quant_4x4x4( dct, h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias0[i_quant_cat][i_qp] );
     for( int i = 0; i < 4; i++ )
-        if( nz & (1 << i) )
-            nza |= trellis_cabac_quantised( h, dct[i], orig_coefs[i], h->unquant4_mf[i_quant_cat][i_qp],
-                                            x264_zigzag_scan4[MB_INTERLACED], ctx_block_cat,
-                                            h->mb.i_trellis_lambda2[b_chroma][b_intra], b_ac, b_chroma, 0, 16, idx+i ) << i;
+        if( rtn & (1 << i) )
+            nza |= trellis_cabac_scanned( h, dct[i], orig[i], level[i], (rtn >> (8+4*i)) & 15,
+                                          h->unquant4_mf[i_quant_cat][i_qp], x264_zigzag_scan4[MB_INTERLACED],
+                                          ctx_block_cat, h->mb.i_trellis_lambda2[b_chroma][b_intra], b_ac,
+                                          b_chroma, 0, 16, idx+i ) << i;
     return nza;
 }
 
