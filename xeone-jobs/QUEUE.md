@@ -345,3 +345,7 @@ Return: PASS/FAIL per cell plus every out/s3_<cell>.txt (files: path + md5 + siz
 ## LAI: lookahead (round 4 C), wip/x264-nw-lalintra 19eb3158 (S1 c32cda73, K ba3748de) vs 322af72b
 Now: FRAMES=120 AB=full bash xeone-jobs/lalintra/lalintra-ab.sh build | live | md5 | count
 After .44 G23: time 9 for AB=full and lay, then s1 / k / klay / 10 as needed
+
+## CBR: CABAC residual writer mispredicts (round 4 D), wip/x264-nw-cabacbr (K 3edda89c, D 50e59b9e, R 760b0ca2) on 322af72b
+Now: FRAMES=120 AB=k bash xeone-jobs/cabacbr/cabacbr-ab.sh build | live | md5
+After .44 G24: time 9 for AB=k (primary), full; then r / lay / 10 as needed. EVENTS include branches + branch-misses.
