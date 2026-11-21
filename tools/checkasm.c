@@ -9246,12 +9246,11 @@ name##fail:
 
     CABAC_RESIDUAL( cabac_block_residual, (1<<(DCT_LUMA_8x8+1))-1, 0 )
 #if HAVE_MMX && ARCH_X86_64
-    /* br_avx2_bmi2 (branch-free sig map) while not dispatched: at the first level that
-     * has AVX2+BMI2: categories 0-5 (benched next to the dispatched writer), then the
+    /* br_avx2_bmi2 (branch-free sig map) at the first level that has AVX2+BMI2:
+     * categories 0-5 (dispatched there, so this repeats the test above), then the
      * 4:4:4 Cb/Cr ones in HAS_444 builds (the only ones that set the contexts past 460) */
     if( (cpu_new & (X264_CPU_AVX2|X264_CPU_BMI2)) == (X264_CPU_AVX2|X264_CPU_BMI2) &&
-        (cpu_ref & (X264_CPU_AVX2|X264_CPU_BMI2)) != (X264_CPU_AVX2|X264_CPU_BMI2) &&
-        bs_a.cabac_block_residual_internal != x264_cabac_block_residual_br_internal_avx2_bmi2 )
+        (cpu_ref & (X264_CPU_AVX2|X264_CPU_BMI2)) != (X264_CPU_AVX2|X264_CPU_BMI2) )
     {
         struct { void (*cabac_block_residual_br_internal)( dctcoef *, int, intptr_t, x264_cabac_t * ); }
             bs_a2 = { x264_cabac_block_residual_br_internal_avx2_bmi2 },
