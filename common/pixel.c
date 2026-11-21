@@ -2193,7 +2193,8 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
         pixf->predictor_clip = x264_predictor_clip_avx2;
         pixf->predictor_roundclip = x264_predictor_roundclip_avx2;
 #if !defined(_WIN32)
-        pixf->lowres_p_mbs = x264_lowres_p_mbs_avx2;
+        /* the search in registers; weighted refs run x264_lowres_p_mbs_avx2 */
+        pixf->lowres_p_mbs = x264_lowres_p_mbs_regs_avx2;
         /* lowres-a.asm: the intra and B frame cost loops, intra_satd_lowres with V/DC in the transform */
         pixf->lowres_i_mbs = x264_lowres_i_mbs_avx2;
         pixf->lowres_b_mbs = x264_lowres_b_mbs_avx2;
