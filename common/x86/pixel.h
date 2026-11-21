@@ -909,6 +909,8 @@ int x264_intra_sa8d_x9_8x8_fdec_avx2( pixel *, pixel *, int, uint16_t *, uint16_
 int x264_intra_satd_lowres_avx2( void *, pixel *, intptr_t );
 #define x264_lowres_p_mbs_avx2 x264_template(lowres_p_mbs_avx2)
 void x264_lowres_p_mbs_avx2( x264_lowres_p_t *c );
+#define x264_lowres_p_mbs_regs_avx2 x264_template(lowres_p_mbs_regs_avx2)
+void x264_lowres_p_mbs_regs_avx2( x264_lowres_p_t *c );
 #define x264_lowres_i_mbs_avx2 x264_template(lowres_i_mbs_avx2)
 void x264_lowres_i_mbs_avx2( x264_lowres_i_t *c );
 #define x264_lowres_i_mbs_avx512icl x264_template(lowres_i_mbs_avx512icl)
