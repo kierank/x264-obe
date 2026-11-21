@@ -146,6 +146,13 @@ struct x264_analyse_p
     int i_type;                         /* out of analyse_p_sub16x16 */
     int i_partition;
     int i_cost;
+    /* x264_me_search_ref's me_search_fpel call made by the asm on fpel, or NULL (the C me_search): */
+    int (*me_fpel)( x264_me_fpel_t *c );
+    void (*me_refine)( x264_t *h, x264_me_t *m, int *p_halfpel_thresh ); /* its refine_subpel on a 1 return */
+    void (*fenc_pre16)( int16_t *fenc_pre, pixel *fenc ); /* x264_me_fenc_pre's satd_fenc_pre[0], [1] */
+    void (*fenc_pre8)( int16_t *fenc_pre, pixel *fenc );
+    const x264_me_fpel_fn_t *fpel_fn;   /* pixf.me_fpel_fn */
+    x264_me_fpel_t fpel;                /* the fields of the mb; the asm sets the others per search */
 };
 
 #if ARCH_X86_64
@@ -159,8 +166,11 @@ struct x264_analyse_p
 #define AP_CACHE 15296
 #define AP_DUPE  17804
 #endif
-typedef char x264_analyse_p_layout[sizeof(x264_analyse_p_t) == 96 && offsetof( x264_analyse_p_t, cabac ) == 64 &&
-                                   offsetof( x264_analyse_p_t, i_cost ) == 92 && sizeof(x264_weight_t) == 64 &&
+typedef char x264_analyse_p_layout[sizeof(x264_analyse_p_t) == 136 + sizeof(x264_me_fpel_t) && offsetof( x264_analyse_p_t, cabac ) == 64 &&
+                                   offsetof( x264_analyse_p_t, i_cost ) == 92 && offsetof( x264_analyse_p_t, fpel ) == 136 &&
+                                   offsetof( x264_me_fpel_t, flags ) == 68 && sizeof(x264_me_fpel_fn_t) == 80 &&
+                                   AP_MB(pic.p_fenc) - AP_MB(pic.i_fenc_pre) == 16 &&
+                                   AP_MB(pic.i_fenc_pre) - AP_MB(pic.fenc_pre) == 1024*(2-HIGH_BIT_DEPTH) && sizeof(x264_weight_t) == 64 &&
                                    sizeof(x264_me_t) == 256 && offsetof( x264_me_t, p_fref ) == 32 &&
                                    offsetof( x264_me_t, i_stride ) == 168 && offsetof( x264_me_t, mv ) == 196 &&
                                    sizeof(x264_mb_analysis_list_t) == 11456 && offsetof( x264_mb_analysis_list_t, me16x8 ) == 9728 &&
@@ -1446,6 +1456,21 @@ static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_a
     c->v_shift = CHROMA_V_SHIFT;
     c->mbaff = SLICE_MBAFF;
     c->interlaced = MB_INTERLACED;
+    /* lowlat: the me_search_fpel calls straight from the asm, x264_me_search_ref's fields of the mb */
+    c->me_fpel = h->me_fpel_ll;
+    if( c->me_fpel )
+    {
+        c->me_refine = x264_me_refine_fpel;
+        c->fenc_pre16 = h->pixf.satd_fenc_pre[0];
+        c->fenc_pre8 = h->pixf.satd_fenc_pre[1];
+        c->fpel_fn = h->pixf.me_fpel_fn;
+        c->fpel.mv_limit = h->mb.mv_limit_fpel;
+        c->fpel.range = pack16to32_mask( h->mb.mv_min_spel[0], h->mb.mv_min_spel[1] )
+                      | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
+        c->fpel.me_range = h->param.analyse.i_me_range;
+        c->fpel.iters = 1 << 16 | 1 << 5;          /* subme 2: hpel 1, qpel 0, the mvp */
+        c->fpel.flags = ME_FPEL_ZEXIT | ME_FPEL_REFINE;
+    }
     return c;
 }
 
