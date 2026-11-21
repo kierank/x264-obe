@@ -1121,6 +1121,28 @@ cabac_lps_trans_ml:
     db 128,158,187,216,120,124,0,0, 128,158,187,216,121,125,0,0
     db 128,167,197,227,122,126,0,0, 128,167,197,227,123,127,0,0
     db 128,176,208,240,124,127,0,0, 128,176,208,240,125,126,0,0
+; k = 1-13 bins of 1 on a context saturated at state 3 (the top state, mps 1, which
+; an mps leaves as it is): [k-1][range-256] = range after them | renorm bits << 12
+; (range_lps 6, 7, 8, 9 by (range>>6)&3; at most one renorm bit per bin)
+cabac_run3:
+%assign run_k 1
+%rep 13
+%assign run_r 256
+%rep 256
+%assign run_x run_r
+%assign run_s 0
+%rep run_k
+%assign run_x run_x-6-((run_x>>6)&3)
+%if run_x < 256
+%assign run_x run_x*2
+%assign run_s run_s+1
+%endif
+%endrep
+    dw run_x|(run_s<<12)
+%assign run_r run_r+1
+%endrep
+%assign run_k run_k+1
+%endrep
 
 
 SECTION .text
@@ -4429,16 +4451,31 @@ CABAC_RESIDUAL_RD_422DC_ICL2
     cmovl   r0d, r11d
     sub     r0d, 2
     jz %%level_eq2
+    cmp     r2d, 3
+    je %%run_sat
 %%level_gt1_loop:
     CABAC_BIN 1
     dec     r0d
     jg %%level_gt1_loop
+%%run_done:
     cmp    r11d, 15
     jge %%level_bypass
 %%level_eq2:
     CABAC_BIN 0
     mov [r3+r14], r2b
     jmp %%level_gt1_end
+%%run_sat:
+; the run on the saturated state: one table step, the state stays 3
+    shl     r0d, 8
+    add     r0d, ranged
+    movzx   r4d, word [cabac_run3-2*512+r0*2 GLOBAL]
+    mov  ranged, r4d
+    and  ranged, 0x1ff
+    shr     r4d, 12
+    shlx   lowq, lowq, r4
+    add  queued, r4d
+    PUTBYTE
+    jmp %%run_done
 %%level_bypass:
     mov [r3+r14], r2b
 ; x264_cabac_encode_ue_bypass( cb, 0, abs_coeff - 15 )
