@@ -1871,6 +1871,16 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
     {
         int dist_scale_factor = 128;
 
+        /* b_intra_calculated 2 + (subme > 1): the intra cost of a B pass, final (1) once a P
+         * pass or the intra pass has run. The intra cost depends on the frame, the lookahead
+         * lambda and the subme > 1 choice (modes, satd/sad) of the contexts that cost it, which
+         * a reconfig (speedcontrol) can change on h: a B pass's cost counts as known only
+         * under the same choice, as the pass would compute the same values */
+        x264_t *tc = h->param.i_lookahead_threads > 1 ? h->lookahead_thread[0] : h;
+        int intra_tag = 2 + (tc->param.analyse.i_subpel_refine > 1);
+        if( fenc->b_intra_calculated > 1 && fenc->b_intra_calculated != intra_tag )
+            fenc->b_intra_calculated = 0;
+
         /* For each list, check to see whether we have lowres motion-searched this reference frame before. */
         do_search[0] = b != p0 && fenc->lowres_mvs[0][b-p0-1][0][0] == 0x7FFF;
         do_search[1] = b != p1 && fenc->lowres_mvs[1][p1-b-1][0][0] == 0x7FFF;
@@ -2018,7 +2028,11 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
 
             i_score = fenc->i_cost_est[b-p0][p1-b];
             if( b != p1 )
+            {
                 i_score = (uint64_t)i_score * 100 / (120 + h->param.i_bframe_bias);
+                if( !fenc->b_intra_calculated )
+                    fenc->b_intra_calculated = intra_tag;
+            }
             else
                 fenc->b_intra_calculated = 1;
 
