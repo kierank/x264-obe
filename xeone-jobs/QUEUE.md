@@ -336,3 +336,8 @@ the C loaders from the avx2 kernels; AB=10 is the 10-bit 4:2:2 interlaced check 
 FRAMES=120 bash xeone-jobs/s3cnt/s3cnt.sh cbuild   # build window
 FRAMES=120 bash xeone-jobs/s3cnt/s3cnt.sh cnt      # untimed, cpu 12; off vs cnt md5 per cell + C1-C6 lines
 Return: PASS/FAIL per cell plus every out/s3_<cell>.txt (files: path + md5 + size).
+
+## TRS: trellis decimation skip (round 4 B), wip/x264-nw-trskip 1e7584d3 vs 322af72b
+1. Counters (untimed): FRAMES=120 bash xeone-jobs/trskip/trscnt.sh cbuild ; ... cnt
+   (shadow patch = wip/test-x264-trskip-shadow d82790cb; shadow_fail must be 0, C5 rtn<9 violations must be 0, off==cnt md5)
+2. Timing after .44 gate: FRAMES=120 AB=tip|lay bash xeone-jobs/trskip/trskip-ab.sh build | live | md5 | time 9 | report  (ovh optional)
