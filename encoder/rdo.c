@@ -1252,6 +1252,27 @@ int x264_quant_4x4x4_trellis_dp( x264_t *h, dctcoef dct[4][16], dctcoef orig[4][
                                           h->unquant4_mf[i_quant_cat][i_qp], x264_zigzag_scan4[MB_INTERLACED],
                                           ctx_block_cat, h->mb.i_trellis_lambda2[b_chroma][b_intra], b_ac,
                                           b_chroma, 0, 16, idx+i ) << i;
+#if X264_TRSKIP_SHADOW
+    /* per block: the trellis output's decimate score vs the round-to-nearest one */
+    TRS_ADD( dp_calls, 1 );
+    for( int i = 0; i < 4; i++ )
+        if( rtn & (1 << i) )
+        {
+            ALIGNED_ARRAY_64( dctcoef, lv,[16] );
+            int rs = b_ac ? h->quantf.decimate_score15( level[i] ) : h->quantf.decimate_score16( level[i] );
+            int t = 0;
+            if( nza & (1 << i) )
+            {
+                h->zigzagf.scan_4x4( lv, dct[i] );
+                t = b_ac ? h->quantf.decimate_score15( lv ) : h->quantf.decimate_score16( lv );
+            }
+            TRS_ADD( blk[MB_INTERLACED], 1 );
+            if( t > rs && rs == 9 )
+                TRS_ADD( gt9[MB_INTERLACED], 1 );
+            if( t > rs && rs < 9 )
+                TRS_ADD( gtlt9[MB_INTERLACED], 1 );
+        }
+#endif
     return nza;
 }
 

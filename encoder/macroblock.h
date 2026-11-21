@@ -81,6 +81,27 @@ int x264_quant_4x4x4_trellis_rtn( x264_t *h, dctcoef dct[4][16], dctcoef orig[4]
 #define x264_quant_4x4x4_trellis_dp x264_template(quant_4x4x4_trellis_dp)
 int x264_quant_4x4x4_trellis_dp( x264_t *h, dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], int rtn,
                                  int i_quant_cat, int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx );
+/* TEST ONLY (wip/test-x264-trskip-shadow): trellis decimation skip counters and shadow check */
+#ifndef X264_TRSKIP_SHADOW
+#define X264_TRSKIP_SHADOW 0
+#endif
+#if X264_TRSKIP_SHADOW
+enum { TRS_LUMA_MB, TRS_LUMA_8x8, TRS_CHROMA, TRS_I16, TRS_P8x8, TRS_CATS };
+typedef struct
+{
+    int64_t units[TRS_CATS], skip_units[TRS_CATS], dps[TRS_CATS], dps_skip[TRS_CATS], fail[TRS_CATS];
+    int64_t dp_calls, blk[2], gt9[2], gtlt9[2];
+} x264_trs_cnt_t;
+#define x264_trs_cnt x264_template(trs_cnt)
+extern x264_trs_cnt_t x264_trs_cnt;
+#define x264_trs_print x264_template(trs_print)
+void x264_trs_print( void );
+#define x264_trs_shadow x264_template(trs_shadow)
+int x264_trs_shadow( x264_t *h, dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], int rtn,
+                     int i_quant_cat, int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx, int b_ac );
+#define TRS_ADD( f, v ) __atomic_fetch_add( &x264_trs_cnt.f, (v), __ATOMIC_RELAXED )
+#endif
+
 #define x264_quant_8x8_trellis x264_template(quant_8x8_trellis)
 int x264_quant_8x8_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
                              int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx );

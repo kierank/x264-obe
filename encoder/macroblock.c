@@ -29,6 +29,44 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#if X264_TRSKIP_SHADOW
+x264_trs_cnt_t x264_trs_cnt;
+
+/* the trellis output score (unsaturated sum) of a skipped group, run on a copy */
+int x264_trs_shadow( x264_t *h, dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], int rtn,
+                     int i_quant_cat, int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx, int b_ac )
+{
+    ALIGNED_ARRAY_64( dctcoef, tmp,[4],[16] );
+    ALIGNED_ARRAY_64( dctcoef, lv,[16] );
+    memcpy( tmp, dct, sizeof(dctcoef)*64 );
+    int nz = x264_quant_4x4x4_trellis_dp( h, tmp, orig, level, rtn, i_quant_cat, i_qp, ctx_block_cat, b_intra, b_chroma, idx );
+    int s = 0;
+    for( int i = 0; i < 4; i++ )
+        if( nz & (1 << i) )
+        {
+            h->zigzagf.scan_4x4( lv, tmp[i] );
+            s += b_ac ? h->quantf.decimate_score15( lv ) : h->quantf.decimate_score16( lv );
+        }
+    return s;
+}
+
+void x264_trs_print( void )
+{
+    static const char *names[TRS_CATS] = { "luma-mb", "luma-8x8-deferred", "chroma-ac", "i16-ac", "p8x8" };
+    x264_trs_cnt_t *c = &x264_trs_cnt;
+    for( int i = 0; i < TRS_CATS; i++ )
+        fprintf( stderr, "trs %d %s: units %"PRId64" skipped %"PRId64" dps %"PRId64" dps_skipped %"PRId64" shadow_fail %"PRId64"\n",
+                 BIT_DEPTH, names[i], c->units[i], c->skip_units[i], c->dps[i], c->dps_skip[i], c->fail[i] );
+    fprintf( stderr, "trs %d dp_calls %"PRId64" dominance: blocks frame %"PRId64" field %"PRId64"; trellis > rtn with rtn 9: frame %"PRId64" field %"PRId64"; with rtn < 9: frame %"PRId64" field %"PRId64"\n",
+             BIT_DEPTH, c->dp_calls, c->blk[0], c->blk[1], c->gt9[0], c->gt9[1], c->gtlt9[0], c->gtlt9[1] );
+}
+
+static int trs_dps( int rtn )
+{
+    return __builtin_popcount( rtn & 0xf );
+}
+#endif
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -187,6 +225,26 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
             }
             /* the trellis output is decimated below (see x264_quant_4x4x4_trellis_rtn) */
             tr_skip = score < 6;
+#if X264_TRSKIP_SHADOW
+            if( h->mb.b_dct_decimate )
+            {
+                int dps = 0;
+                for( int k = 0; k < 4; k++ )
+                    dps += trs_dps( tr_rtn[k] );
+                TRS_ADD( units[TRS_I16], 1 );
+                TRS_ADD( dps[TRS_I16], dps );
+                if( tr_skip )
+                {
+                    int s = 0;
+                    for( int k = 0; k < 4; k++ )
+                        s += x264_trs_shadow( h, &dct4x4[k*4], &tr_orig[k*4], &tr_level[k*4], tr_rtn[k], i_quant_cat, i_qp,
+                                              ctx_cat_plane[DCT_LUMA_AC][p], 1, !!p, k*4, 1 );
+                    TRS_ADD( skip_units[TRS_I16], 1 );
+                    TRS_ADD( dps_skip[TRS_I16], dps );
+                    TRS_ADD( fail[TRS_I16], s >= 6 );
+                }
+            }
+#endif
         }
         for( int i8x8 = 0; i8x8 < 4 && !tr_skip; i8x8++ )
         {
@@ -415,6 +473,26 @@ static ALWAYS_INLINE void x264_mb_encode_chroma_internal( x264_t *h, int b_inter
             }
             /* the trellis output's ac is decimated below (see x264_quant_4x4x4_trellis_rtn) */
             tr_skip = score < 7;
+#if X264_TRSKIP_SHADOW
+            if( b_decimate )
+            {
+                int dps = 0;
+                for( int k = 0; k < (chroma422?2:1); k++ )
+                    dps += trs_dps( tr_rtn[k] );
+                TRS_ADD( units[TRS_CHROMA], 1 );
+                TRS_ADD( dps[TRS_CHROMA], dps );
+                if( tr_skip )
+                {
+                    int s = 0;
+                    for( int k = 0; k < (chroma422?2:1); k++ )
+                        s += x264_trs_shadow( h, &dct4x4[k*4], &tr_orig[k*4], &tr_level[k*4], tr_rtn[k], CQM_4IC+b_inter, i_qp,
+                                              DCT_CHROMA_AC, !b_inter, 1, 0, 1 );
+                    TRS_ADD( skip_units[TRS_CHROMA], 1 );
+                    TRS_ADD( dps_skip[TRS_CHROMA], dps );
+                    TRS_ADD( fail[TRS_CHROMA], s >= 7 );
+                }
+            }
+#endif
         }
         for( int i8x8 = 0; i8x8 < (chroma422?2:1) && !tr_skip; i8x8++ )
         {
@@ -908,6 +986,35 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     }
                     else
                         tr_later = 0;
+#if X264_TRSKIP_SHADOW
+                    if( b_decimate && p == plane_count-1 )
+                    {
+                        int dps = 0, dl = 0;
+                        for( int k = 0; k < 4; k++ )
+                        {
+                            dps += trs_dps( tr_rtn[k] );
+                            if( tr_later & (1 << k) )
+                                dl += trs_dps( tr_rtn[k] );
+                        }
+                        TRS_ADD( units[TRS_LUMA_MB], 1 );
+                        TRS_ADD( dps[TRS_LUMA_MB], dps );
+                        if( score < 6 )
+                        {
+                            int s = i_decimate_mb;
+                            for( int k = 0; k < 4; k++ )
+                                s += x264_trs_shadow( h, &dct4x4[k*4], &tr_orig[k*4], &tr_level[k*4], tr_rtn[k], CQM_4PY, i_qp,
+                                                      ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+k*4, 0 );
+                            TRS_ADD( skip_units[TRS_LUMA_MB], 1 );
+                            TRS_ADD( dps_skip[TRS_LUMA_MB], dps );
+                            TRS_ADD( fail[TRS_LUMA_MB], s >= 6 );
+                        }
+                        else if( tr_later )
+                        {
+                            TRS_ADD( units[TRS_LUMA_8x8], 1 );
+                            TRS_ADD( dps[TRS_LUMA_8x8], dl );
+                        }
+                    }
+#endif
                 }
                 for( int j = 0; j < 8; j++ )
                 {
@@ -915,7 +1022,28 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     if( j == 4 )
                     {
                         if( !tr_later || i_decimate_mb >= 6 || i_decimate_mb + tr_small < 6 )
+                        {
+#if X264_TRSKIP_SHADOW
+                            if( tr_later )
+                            {
+                                int s = 0, dl = 0, bad = 0;
+                                for( int k = 0; k < 4; k++ )
+                                    if( tr_later & (1 << k) )
+                                    {
+                                        int sk = x264_trs_shadow( h, &dct4x4[k*4], &tr_orig[k*4], &tr_level[k*4], tr_rtn[k], CQM_4PY, i_qp,
+                                                                  ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, p*16+k*4, 0 );
+                                        bad |= sk >= 4;
+                                        s += X264_MIN( sk, 6 );
+                                        dl += trs_dps( tr_rtn[k] );
+                                    }
+                                bad |= (i_decimate_mb + s < 6) != (i_decimate_mb < 6);
+                                TRS_ADD( skip_units[TRS_LUMA_8x8], 1 );
+                                TRS_ADD( dps_skip[TRS_LUMA_8x8], dl );
+                                TRS_ADD( fail[TRS_LUMA_8x8], bad );
+                            }
+#endif
                             break;
+                        }
                         tr_todo = tr_later;
                     }
                     int i8x8 = j & 3;
@@ -1381,6 +1509,22 @@ static ALWAYS_INLINE void x264_macroblock_encode_p8x8_internal( x264_t *h, int i
                         nz4 = i_decimate_8x8 + (tr_rtn >> 4 & 15) < 4 ? 0 :
                               x264_quant_4x4x4_trellis_dp( h, dct4x4, tr_orig, tr_level, tr_rtn, quant_cat, i_qp,
                                                            ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+p*16 );
+#if X264_TRSKIP_SHADOW
+                        if( b_decimate )
+                        {
+                            int skip = i_decimate_8x8 + (tr_rtn >> 4 & 15) < 4;
+                            TRS_ADD( units[TRS_P8x8], 1 );
+                            TRS_ADD( dps[TRS_P8x8], trs_dps( tr_rtn ) );
+                            if( skip )
+                            {
+                                int s = x264_trs_shadow( h, dct4x4, tr_orig, tr_level, tr_rtn, quant_cat, i_qp,
+                                                         ctx_cat_plane[DCT_LUMA_4x4][p], 0, !!p, i8*4+p*16, 0 );
+                                TRS_ADD( skip_units[TRS_P8x8], 1 );
+                                TRS_ADD( dps_skip[TRS_P8x8], trs_dps( tr_rtn ) );
+                                TRS_ADD( fail[TRS_P8x8], s >= 4 );
+                            }
+                        }
+#endif
                     }
                     FOREACH_BIT( i4x4, 0, nz4 )
                     {

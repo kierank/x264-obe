@@ -4721,6 +4721,9 @@ void    x264_encoder_close  ( x264_t *h )
                    || h->stat.i_mb_count[SLICE_TYPE_B][I_PCM];
 
     x264_lookahead_delete( h );
+#if X264_TRSKIP_SHADOW
+    x264_trs_print();
+#endif
 
 #if HAVE_OPENCL
     x264_opencl_lookahead_delete( h );
