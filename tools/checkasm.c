@@ -3535,10 +3535,10 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
     if( !hw || !planes || !wplane || !cost_tab )
         return -1;
     hw->mc = mc;
-    int16_t (*mvs[2])[2]; int *mvc[2]; uint16_t *costs[2], *icost[2]; int *out[2][2];
+    int16_t (*mvs[4])[2]; int *mvc[4]; uint16_t *costs[4], *icost[4]; int *out[4][2];
     uint16_t invq[NMB];
     static uint8_t corr[2][2048];
-    for( int k = 0; k < 2; k++ )
+    for( int k = 0; k < 4; k++ )
     {
         mvs[k] = x264_malloc( NMB * 4 );
         mvc[k] = x264_malloc( NMB * 4 );
@@ -3550,6 +3550,19 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
             return -1;
     }
     int st[8] = {0};
+    /* the undispatched entries of the level, on the input of the C run (copies 2 -> 3) */
+    void (*extra[2])( x264_lowres_p_t * ) = { NULL, NULL };
+    const char *extra_name[2] = { NULL, NULL };
+#if HAVE_MMX && ARCH_X86_64 && !defined(_WIN32)
+    if( (cpu_new&X264_CPU_AVX2) && !(cpu_ref&X264_CPU_AVX2) )
+    {
+        int n = 0;
+        if( pf.lowres_p_mbs != x264_lowres_p_mbs_avx2 )
+            extra[n] = x264_lowres_p_mbs_avx2, extra_name[n++] = "lowres_p_mbs_v1";
+        if( pf.lowres_p_mbs != x264_lowres_p_mbs_regs_avx2 )
+            extra[n] = x264_lowres_p_mbs_regs_avx2, extra_name[n++] = "lowres_p_mbs_regs";
+    }
+#endif
     set_func_name( "lowres_p_mbs" );
     used_asm = 1;
     for( int j = 0; j < 3000 && ok; j++ )
@@ -3701,6 +3714,12 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
         memcpy( icost[1], icost[0], NMB*2 );
         memcpy( out[1][0], out[0][0], (MAXH+4)*4 );
         memcpy( out[1][1], out[0][1], (MAXH+4)*4 );
+        memcpy( mvs[2], mvs[0], NMB*4 );
+        memcpy( mvc[2], mvc[0], NMB*4 );
+        memcpy( costs[2], costs[0], NMB*2 );
+        memcpy( icost[2], icost[0], NMB*2 );
+        memcpy( out[2][0], out[0][0], (MAXH+4)*4 );
+        memcpy( out[2][1], out[0][1], (MAXH+4)*4 );
         c.inv_qscale = aq ? invq : NULL;
 
         x264_lowres_p_t ca = c;
@@ -3724,6 +3743,41 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
                              mvs[0][k][0], mvs[0][k][1], mvc[0][k], costs[0][k], mvs[1][k][0], mvs[1][k][1], mvc[1][k], costs[1][k] );
                     break;
                 }
+        }
+        for( int e = 0; e < 2 && extra[e] && ok; e++ )
+        {
+            x264_lowres_p_t cx = ca;
+            memcpy( mvs[3], mvs[2], NMB*4 );
+            memcpy( mvc[3], mvc[2], NMB*4 );
+            memcpy( costs[3], costs[2], NMB*2 );
+            memcpy( icost[3], icost[2], NMB*2 );
+            memcpy( out[3][0], out[2][0], (MAXH+4)*4 );
+            memcpy( out[3][1], out[2][1], (MAXH+4)*4 );
+            cx.mvs = mvs[3]; cx.mv_costs = mvc[3]; cx.costs = costs[3]; cx.intra_cost = icost[3];
+            cx.output_inter = out[3][0]; cx.output_intra = intra ? out[3][1] : NULL;
+            call_a1( extra[e], &cx );
+            if( memcmp( mvs[0], mvs[3], NMB*4 ) || memcmp( mvc[0], mvc[3], NMB*4 ) || memcmp( costs[0], costs[3], NMB*2 ) ||
+                memcmp( icost[0], icost[3], NMB*2 ) || memcmp( out[0][0], out[3][0], (MAXH+4)*4 ) ||
+                memcmp( out[0][1], out[3][1], (MAXH+4)*4 ) )
+            {
+                ok = 0;
+                fprintf( stderr, "%s: mode %d %dx%d rows %d-%d edges %d search %d intra %d aq %d weighted %d [FAILED]\n",
+                         extra_name[e], mode, w, h, s0, s1, do_edges, c.do_search, intra, aq, weighted );
+                for( int k = 0; k < w*h; k++ )
+                    if( M32( mvs[0][k] ) != M32( mvs[3][k] ) || mvc[0][k] != mvc[3][k] || costs[0][k] != costs[3][k] )
+                    {
+                        fprintf( stderr, "  mb %d,%d: mv %d,%d cost %d lowres %x | asm mv %d,%d cost %d lowres %x\n", k%w, k/w,
+                                 mvs[0][k][0], mvs[0][k][1], mvc[0][k], costs[0][k], mvs[3][k][0], mvs[3][k][1], mvc[3][k], costs[3][k] );
+                        break;
+                    }
+            }
+            /* bench on the slice of the dispatched entry's bench, after the check */
+            if( j == 8 )
+            {
+                set_func_name( "%s", extra_name[e] );
+                call_a2( extra[e], &cx );
+                set_func_name( "lowres_p_mbs" );
+            }
         }
         /* outcomes over the searched MBs */
         if( c.do_search )
@@ -3754,7 +3808,7 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
             fprintf( stderr, "lowres_p_mbs: case %d never occurred [FAILED]\n", k );
         }
     report( "lowres_p_mbs :" );
-    for( int k = 0; k < 2; k++ )
+    for( int k = 0; k < 4; k++ )
     {
         x264_free( mvs[k] ); x264_free( mvc[k] ); x264_free( costs[k] ); x264_free( icost[k] );
         x264_free( out[k][0] ); x264_free( out[k][1] );
