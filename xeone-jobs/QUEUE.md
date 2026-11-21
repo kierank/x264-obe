@@ -341,3 +341,7 @@ Return: PASS/FAIL per cell plus every out/s3_<cell>.txt (files: path + md5 + siz
 1. Counters (untimed): FRAMES=120 bash xeone-jobs/trskip/trscnt.sh cbuild ; ... cnt
    (shadow patch = wip/test-x264-trskip-shadow d82790cb; shadow_fail must be 0, C5 rtn<9 violations must be 0, off==cnt md5)
 2. Timing after .44 gate: FRAMES=120 AB=tip|lay bash xeone-jobs/trskip/trskip-ab.sh build | live | md5 | time 9 | report  (ovh optional)
+
+## LAI: lookahead (round 4 C), wip/x264-nw-lalintra 19eb3158 (S1 c32cda73, K ba3748de) vs 322af72b
+Now: FRAMES=120 AB=full bash xeone-jobs/lalintra/lalintra-ab.sh build | live | md5 | count
+After .44 G23: time 9 for AB=full and lay, then s1 / k / klay / 10 as needed
