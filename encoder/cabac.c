@@ -771,8 +771,47 @@ void x264_cabac_block_residual_422_dc_c( x264_t *h, x264_cabac_t *cb, int ctx_bl
     x264_cabac_block_residual_internal( h, cb, DCT_CHROMA_DC, l, 1 );
 }
 
+#ifndef X264_CABDUMP
+#define X264_CABDUMP 0
+#endif
+#if X264_CABDUMP && !HIGH_BIT_DEPTH
+/* test only: residual writer inputs to ./x264-cabdump.bin, --threads 1.
+ * block: u8 cat|interlaced<<4, u8 n, n x int16 (n = last+1);
+ * slice: u8 0xff, u8 slice type, u8 qp, u8 cabac_init_idc */
+static FILE *cabdump_f;
+static long cabdump_n;
+static void cabdump_open( void )
+{
+    if( !cabdump_f )
+        cabdump_f = fopen( "x264-cabdump.bin", "wb" );
+}
+void x264_cabdump_slice( int type, int qp, int idc )
+{
+    cabdump_open();
+    if( !cabdump_f || cabdump_n >= 4000000 )
+        return;
+    uint8_t r[4] = { 0xff, type, qp, idc };
+    fwrite( r, 1, 4, cabdump_f );
+}
+static void cabdump_block( x264_t *h, int ctx_block_cat, dctcoef *l )
+{
+    cabdump_open();
+    if( !cabdump_f || cabdump_n >= 4000000 )
+        return;
+    cabdump_n++;
+    int n = x264_count_cat_m1[ctx_block_cat] + 1;
+    while( n > 0 && !l[n-1] )
+        n--;
+    uint8_t r[2] = { ctx_block_cat | (MB_INTERLACED<<4), n };
+    fwrite( r, 1, 2, cabdump_f );
+    fwrite( l, sizeof(dctcoef), n, cabdump_f );
+}
+#endif
 static void ALWAYS_INLINE x264_cabac_block_residual( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l )
 {
+#if X264_CABDUMP && !HIGH_BIT_DEPTH
+    cabdump_block( h, ctx_block_cat, l );
+#endif
 #if ARCH_X86_64 && HAVE_MMX
     h->bsf.cabac_block_residual_internal( l, MB_INTERLACED, ctx_block_cat, cb );
 #else
