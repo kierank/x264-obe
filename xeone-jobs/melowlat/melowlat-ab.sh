@@ -20,13 +20,15 @@
 # frames): step 1 -21..-239, step 2 a further -600..-900 (direct -715..-796 alone); refine_qpel -59 a call.
 # Step 3 (subme 5 searches): refine_qpel 858..869 -> 115..459 per call.
 set -u
-JOB=melowlat; AB=${AB:-tip}; BRANCHES="speed-next wip/x264-nw-melowlat"
+JOB=melowlat; AB=${AB:-tip}; BRANCHES="speed-next wip/x264-nw-melowlat wip/x264-nw-melowlat-nq"
 case $AB in
 s1|s1lay)   BASE=322af72b; ARM=0b33bfc9 ;;
 s2|s2lay)   BASE=0b33bfc9; ARM=770257f1 ;;
 s3|s3lay)   BASE=770257f1; ARM=ac46d9f1 ;;
 tip|tiplay) BASE=322af72b; ARM=ac46d9f1 ;;
 10|10lay)   BASE=322af72b; ARM=ac46d9f1; BITDEPTH=10 ;;
+nq|nqlay)   BASE=9d22b5d5; ARM=48e15b2e ;;
+nq10|nq10lay) BASE=9d22b5d5; ARM=48e15b2e; BITDEPTH=10 ;;
 *) echo "unknown AB $AB"; exit 1 ;;
 esac
 if [ "${BITDEPTH:-8}" = 10 ]; then

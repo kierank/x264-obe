@@ -353,3 +353,5 @@ After .44 G24: time 9 for AB=p (PK 1d6651d6 vs P 66b18d20, PRIMARY), then pfull 
 ## MLL: lowlat ME (round 4 A), wip/x264-nw-melowlat ac46d9f1 (s1 0b33bfc9 ME_QTAB, s2 f4efd189+770257f1 direct call + refine hop, s3 ac46d9f1 refine_qpel record) on 322af72b
 Now: FRAMES=120 AB=tip bash xeone-jobs/melowlat/melowlat-ab.sh build | live | md5
 After .44 G25: time 9 for AB=tip and tiplay, then s1 / s2 / s3 (+lay) to split steps, then 10.
+MLL-NQ (no ME_QTAB, on speed-next 9d22b5d5): wip/x264-nw-melowlat-nq 48e15b2e (adb1fab0 direct call, 538b28dc refine hop, 48e15b2e refine_qpel record)
+  AB=nq / nqlay / nq10 (BASE 9d22b5d5, ARM 48e15b2e): build | live | md5 | time 9 | report, after .44 G26
