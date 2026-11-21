@@ -992,6 +992,7 @@ typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offset
                                  offsetof( x264_me_t, p_fenc ) == 136 && offsetof( x264_me_t, i_stride ) == 168 &&
                                  offsetof( x264_me_t, mvp ) == 184 && offsetof( x264_me_t, cost_mv ) == 188 &&
                                  offsetof( x264_me_t, cost ) == 192 && offsetof( x264_me_t, mv ) == 196 &&
+                                 offsetof( x264_me_t, qconv_cost ) == 200 && offsetof( x264_me_t, qconv_mv ) == 204 &&
                                  offsetof( x264_me_fpel_t, fn ) == 24 && offsetof( x264_me_fpel_t, range ) == 48 &&
                                  offsetof( x264_me_fpel_t, flags ) == 68 && sizeof(x264_me_fpel_fn_t) == 80 &&
                                  offsetof( x264_me_fpel_fn_t, hex_search ) == 48 && offsetof( x264_me_fpel_fn_t, qpel ) == 72 &&
@@ -1000,6 +1001,7 @@ typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offset
 
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
+    m->qconv_cost = -1;
     int i_pixel = m->i_pixel;
     int subme = h->mb.i_subpel_refine;
     if( h->pixf.me_search_fpel && i_pixel <= PIXEL_8x8 && h->mb.i_me_method == X264_ME_HEX
@@ -1052,11 +1054,19 @@ void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
     if( m->i_pixel <= PIXEL_8x8 )
         m->cost -= m->i_ref_cost;
 
+    /* the search's qpel_search stopped at no better point from this mv and cost: so does this one, with
+     * the incumbent winning ties and no way back skipped */
+    if( !hpel && m->qconv_cost == m->cost && M32( m->mv ) == m->qconv_mv )
+    {
+        m->cost_mv = m->p_cost_mv[m->mv[0] - m->mvp[0]] + m->p_cost_mv[m->mv[1] - m->mvp[1]];
+        return;
+    }
     refine_subpel( h, m, hpel, qpel, NULL, 1 );
 }
 
 void x264_me_refine_qpel_refdupe( x264_t *h, x264_me_t *m, int *p_halfpel_thresh )
 {
+    m->qconv_cost = -1;
     refine_subpel( h, m, 0, X264_MIN( 2, subpel_iterations[h->mb.i_subpel_refine][3] ), p_halfpel_thresh, 0 );
 }
 
@@ -1232,9 +1242,15 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                                                                pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
                                                                qfenc, h->pixf.mbcmp_qpel_search[m->i_pixel], p_halfpel_thresh,
                                                                pack16to32_mask( m->mvp[0], m->mvp[1] ) );
-            m->cost = (uint32_t)res & 0x7fffffff;
+            m->cost = (uint32_t)res & 0x3fffffff;
             m->mv[0] = res >> 32;
             m->mv[1] = res >> 48;
+            /* a search's qpel_search stopped at no better point: the record for refine_qpel */
+            if( !b_refine_qpel && ((uint32_t)res & (1 << 30)) )
+            {
+                m->qconv_cost = m->cost;
+                m->qconv_mv = M32( m->mv );
+            }
             /* the halfpel threshold stop leaves cost_mv */
             if( !((uint32_t)res >> 31) )
                 m->cost_mv = p_cost_mvx[m->mv[0]] + p_cost_mvy[m->mv[1]];
@@ -1387,7 +1403,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                            | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
             uint64_t res = qpel_search( qpel_fenc, m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
                                         pack16to32_mask( bmx, bmy ), bcost, (qpel_iters << 8) | (b_refine_qpel << 4), range );
-            bcost = (uint32_t)res;
+            bcost = (uint32_t)res & 0x3fffffff;
             bmx = (int16_t)(res >> 32);
             bmy = (int16_t)(res >> 48);
         }
