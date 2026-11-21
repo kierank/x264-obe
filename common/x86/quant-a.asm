@@ -111,6 +111,14 @@ qscan4_acmask:  db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
                 db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 
 %if HIGH_BIT_DEPTH==0
+; quant_4x4x4_scan_last decimate score, per b_ac: the level byte mask, the nonzero mask, the block
+; starts of the run < 1, < 3, < 6 masks
+qsl_score_tab:  times 32 db -1
+                dq -1, 0x0001000100010001, 0x0007000700070007, 0x003f003f003f003f
+                db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+                db 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+                dq 0xfffefffefffefffe, 0x0003000300030003, 0x000f000f000f000f, 0x007f007f007f007f
+
 dct_coef_shuffle:
 %macro DCT_COEF_SHUFFLE 8
     %assign y x
@@ -3865,9 +3873,10 @@ QUANT_4x4x4_SCAN field_ac, 1, 1
 %if HIGH_BIT_DEPTH == 0
 ;-----------------------------------------------------------------------------
 ; int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
-;                            udctcoef mf[16], udctcoef bias[16] )
+;                            udctcoef mf[16], udctcoef bias[16], int b_ac )
 ;-----------------------------------------------------------------------------
 ; orig = dct, quant_4x4x4, zigzag every block into level. Returns the nonzero mask
+; | min(sum of decimate_score16 (15 if b_ac), 9) << 4
 ; | the scan position of the last nonzero level of block i (0 if none) << (8+4*i).
 ; block, mask of its nonzero levels (clobbered): eax |= last << (8+4*block)
 %macro QUANT_SCAN_LAST_POS 2
@@ -3878,7 +3887,7 @@ QUANT_4x4x4_SCAN field_ac, 1, 1
 %endmacro
 
 %macro QUANT_4x4x4_SCAN_LAST 2 ; name, field
-cglobal quant_4x4x4_scan_last_%1, 5,8,14
+cglobal quant_4x4x4_scan_last_%1, 6,10,14
     mova      m12, [r3]
     mova      m13, [r4]
     mova      m0, [r0+ 0]
@@ -3945,12 +3954,51 @@ cglobal quant_4x4x4_scan_last_%1, 5,8,14
     packsswb  m9, m6, m7
     vpermq    m8, m8, q3120
     vpermq    m9, m9, q3120
+    shl       r5d, 6
+    lea       r6, [qsl_score_tab]
+    add       r6, r5
+    ; m11: a level is > 1
+    pand      m11, m8, [r6]
+    pand      m12, m9, [r6]
+    pabsb     m11, m11
+    pabsb     m12, m12
+    por       m11, m12
+    psubusb   m11, [pb_1]
     pcmpeqb   m8, m10
     pcmpeqb   m9, m10
     pmovmskb  r5d, m8
     pmovmskb  r7d, m9
     not       r5d
     not       r7d
+    ; score = sum over nonzero levels of [run<1] + [run<3] + [run<6], run = zeros below
+    mov       r8d, r7d
+    shl       r8, 32
+    or        r8, r5
+    and       r8, [r6+32]
+    lea       r1, [r8+r8]
+    lea       r2, [r8*4]
+    lea       r9, [r8*8]
+    or        r2, r1
+    or        r2, r9
+    lea       r9, [r2*8]
+    or        r9, r2
+    or        r1, [r6+40]
+    or        r2, [r6+48]
+    or        r9, [r6+56]
+    and       r1, r8
+    and       r2, r8
+    and       r9, r8
+    popcnt    r1, r1
+    popcnt    r2, r2
+    popcnt    r9, r9
+    add       r1d, r2d
+    add       r1d, r9d
+    mov       r2d, 9
+    cmp       r1d, r2d
+    cmova     r1d, r2d
+    ptest     m11, m11
+    cmovnz    r1d, r2d
+    shl       r1d, 4
     mov       r3d, r5d
     mov       r4d, r7d
     shr       r3d, 16
@@ -3968,6 +4016,7 @@ cglobal quant_4x4x4_scan_last_%1, 5,8,14
     cmp       r5d, 1
     adc       eax, eax
     xor       eax, 0xf
+    or        eax, r1d
     QUANT_SCAN_LAST_POS 0, r5
     QUANT_SCAN_LAST_POS 1, r3
     QUANT_SCAN_LAST_POS 2, r7

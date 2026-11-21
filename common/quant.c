@@ -395,11 +395,12 @@ int x264_quant_4x4x4_scan_field_ac( dctcoef dct[4][16], dctcoef level[4][16], ud
 }
 
 /* orig = dct, quant_4x4x4, then zigzag every block into level. Returns the nonzero mask
+ * | min(sum of decimate_score16 (15 if b_ac), 9) << 4
  * | the scan position of the last nonzero level of block i (0 if none) << (8+4*i). */
 static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
-                                                udctcoef mf[16], udctcoef bias[16], int b_field )
+                                                udctcoef mf[16], udctcoef bias[16], int b_field, int b_ac )
 {
-    int ret = 0;
+    int ret = 0, score = 0;
     for( int j = 0; j < 4; j++ )
     {
         int nz = 0, last = 0;
@@ -414,18 +415,19 @@ static ALWAYS_INLINE int quant_4x4x4_scan_last( dctcoef dct[4][16], dctcoef orig
             if( level[j][i] )
                 last = i;
         }
+        score += x264_decimate_score_internal( level[j]+b_ac, 16-b_ac );
         ret |= (!!nz) << j | last << (8+4*j);
     }
-    return ret;
+    return ret | X264_MIN( score, 9 ) << 4;
 }
 
-int x264_quant_4x4x4_scan_last_frame( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
+int x264_quant_4x4x4_scan_last_frame( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int b_ac )
 {
-    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 0 );
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 0, b_ac );
 }
-int x264_quant_4x4x4_scan_last_field( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] )
+int x264_quant_4x4x4_scan_last_field( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int b_ac )
 {
-    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 1 );
+    return quant_4x4x4_scan_last( dct, orig, level, mf, bias, 1, b_ac );
 }
 
 /* quant_8x8, then if nonzero: zigzag into level, decimate score, dequant in place

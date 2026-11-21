@@ -7377,22 +7377,26 @@ static x264_zigzag_function_t *q8s_zz;
 /* asm only in zigzagf (NULL in C), so the C reference is called directly */
 static int (* const q8s_c[2])( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64], int dequant_mf[6][64], int i_qp ) =
     { x264_quant_8x8_scan_frame, x264_quant_8x8_scan_field };
-static int (* const qsl_c[2])( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16] ) =
+static int (* const qsl_c[2])( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16], udctcoef mf[16], udctcoef bias[16], int b_ac ) =
     { x264_quant_4x4x4_scan_last_frame, x264_quant_4x4x4_scan_last_field };
-/* the calls quant_4x4x4_scan_last replaces in x264_quant_4x4x4_trellis (coeff_last of the nonzero blocks) */
+/* the calls quant_4x4x4_scan_last replaces in x264_quant_4x4x4_trellis_rtn (coeff_last and decimate
+ * score of the nonzero blocks) */
 static int quant_4x4x4_scan_last_split( dctcoef dct[4][16], dctcoef orig[4][16], dctcoef level[4][16],
-                                        udctcoef mf[16], udctcoef bias[16] )
+                                        udctcoef mf[16], udctcoef bias[16], int b_ac )
 {
     memcpy( orig, dct, 64*sizeof(dctcoef) );
     int nz = q8s_qf->quant_4x4x4( dct, mf, bias );
-    int ret = nz;
+    int ret = nz, score = 0;
     for( int i = 0; i < 4; i++ )
     {
         q8s_zz->scan_4x4( level[i], dct[i] );
         if( nz & (1 << i) )
+        {
             ret |= q8s_qf->coeff_last[DCT_LUMA_4x4]( level[i] ) << (8+4*i);
+            score += b_ac ? q8s_qf->decimate_score15( level[i] ) : q8s_qf->decimate_score16( level[i] );
+        }
     }
-    return ret;
+    return ret | X264_MIN( score, 9 ) << 4;
 }
 /* the calls quant_8x8_scan replaces */
 static int quant_8x8_scan_split( dctcoef dct[64], dctcoef level[64], udctcoef mf[64], udctcoef bias[64],
@@ -7951,9 +7955,9 @@ static int check_quant( int cpu_ref, int cpu_new )
                         q8s_qf = &qf_c; \
                         q8s_zz = &zz_c[fld]; \
                         dctcoef orig5[4][16]; \
-                        int res_s = quant_4x4x4_scan_last_split( dct5b, orig5, lvl3b, mf, bias ); \
-                        int res_c = call_c1( qsl_c[fld], dct3, dct3+4, lvl1, mf, bias ); \
-                        int res_a = call_a1( zz_a[fld].quant_4x4x4_scan_last, dct4, dct4+4, lvl2, mf, bias ); \
+                        int res_s = quant_4x4x4_scan_last_split( dct5b, orig5, lvl3b, mf, bias, ac ); \
+                        int res_c = call_c1( qsl_c[fld], dct3, dct3+4, lvl1, mf, bias, ac ); \
+                        int res_a = call_a1( zz_a[fld].quant_4x4x4_scan_last, dct4, dct4+4, lvl2, mf, bias, ac ); \
                         if( res_c != res_a || res_c != res_s || memcmp( dct3, dct4, 128*sizeof(dctcoef) ) || \
                             memcmp( dct3, dct5, 64*sizeof(dctcoef) ) || memcmp( dct3+4, orig5, 64*sizeof(dctcoef) ) || \
                             memcmp( lvl1, lvl2, 64*sizeof(dctcoef) ) || memcmp( lvl1, lvl3, 64*sizeof(dctcoef) ) ) \
@@ -7963,14 +7967,14 @@ static int check_quant( int cpu_ref, int cpu_new )
                                      fld?"field":"frame", qp, i_cqm, j, res_c, res_a, res_s ); \
                             break; \
                         } \
-                        call_c2( qsl_c[fld], dct3, dct3+4, lvl1, mf, bias ); \
-                        call_a2( zz_a[fld].quant_4x4x4_scan_last, dct4, dct4+4, lvl2, mf, bias ); \
+                        call_c2( qsl_c[fld], dct3, dct3+4, lvl1, mf, bias, ac ); \
+                        call_a2( zz_a[fld].quant_4x4x4_scan_last, dct4, dct4+4, lvl2, mf, bias, ac ); \
                     } \
                     /* bench: the asm calls it replaces */ \
                     q8s_qf = &qf_a; \
                     q8s_zz = &zz_a[fld]; \
                     set_func_name( "quant_4x4x4_scan_last_split_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" ); \
-                    call_a2( quant_4x4x4_scan_last_split, dct4, dct4+4, lvl2, mf, bias ); \
+                    call_a2( quant_4x4x4_scan_last_split, dct4, dct4+4, lvl2, mf, bias, ac ); \
                     set_func_name( "quant_4x4x4_scan_last_%s_%s", fld?"field":"frame", i_cqm?"cqm":"flat" ); \
                 } \
             }

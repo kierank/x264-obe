@@ -1225,7 +1225,7 @@ int x264_quant_4x4x4_trellis( x264_t *h, dctcoef dct[4][16], int i_quant_cat,
          * which the callers have zeroed in the b_ac blocks, so it is coeff_last's */
         ALIGNED_ARRAY_64( dctcoef, quant_coefs,[4],[16] );
         int nz = h->zigzagf.quant_4x4x4_scan_last( dct, orig_coefs, quant_coefs, h->quant4_mf[i_quant_cat][i_qp],
-                                                   h->quant4_bias0[i_quant_cat][i_qp] );
+                                                   h->quant4_bias0[i_quant_cat][i_qp], b_ac );
         for( int i = 0; i < 4; i++ )
             if( nz & (1 << i) )
                 nza |= trellis_cabac_scanned( h, dct[i], orig_coefs[i], quant_coefs[i], (nz >> (8+4*i)) & 15,
