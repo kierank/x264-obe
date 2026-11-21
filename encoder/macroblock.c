@@ -877,13 +877,50 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
 
                 int plane_cbp = 0;
-                int tr_rtn[4];
+                int tr_rtn[4], tr_todo = 0xf, tr_later = 0, tr_small = 0;
                 if( h->mb.b_trellis && PARAM_CABAC )
+                {
+                    int score = i_decimate_mb;
+                    tr_todo = 0;
                     for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+                    {
                         tr_rtn[i8x8] = x264_quant_4x4x4_trellis_rtn( h, &dct4x4[i8x8*4], &tr_orig[i8x8*4], &tr_level[i8x8*4],
                                                                      CQM_4PY, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p] );
-                for( int i8x8 = 0; i8x8 < 4; i8x8++ )
+                        int s = tr_rtn[i8x8] >> 4 & 15;
+                        tr_todo |= !!(tr_rtn[i8x8] & 0xf) << i8x8;
+                        score += s;
+                        if( s < 4 )
+                        {
+                            tr_later |= 1 << i8x8;
+                            tr_small += s;
+                        }
+                    }
+                    /* Decimation of the trellis output is certain (see x264_quant_4x4x4_trellis_rtn): the
+                     * plane's if the MB sum is under 6, and an 8x8's if its sum is under 4. Such an 8x8's
+                     * trellis then only feeds the MB sum: run it after the others, and only if the MB is
+                     * still undecided. Not before the last plane, whose MB sum the next one continues. */
+                    if( b_decimate && p == plane_count-1 )
+                    {
+                        if( score < 6 )
+                            tr_todo = 0;
+                        tr_later &= tr_todo;
+                        tr_todo &= ~tr_later;
+                    }
+                    else
+                        tr_later = 0;
+                }
+                for( int j = 0; j < 8; j++ )
                 {
+                    /* then the deferred 8x8s, unless the MB is decided without them */
+                    if( j == 4 )
+                    {
+                        if( !tr_later || i_decimate_mb >= 6 || i_decimate_mb + tr_small < 6 )
+                            break;
+                        tr_todo = tr_later;
+                    }
+                    int i8x8 = j & 3;
+                    if( !(tr_todo & (1 << i8x8)) )
+                        continue;
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
                     int nnz8x8 = 0;
                     if( h->mb.b_trellis )
