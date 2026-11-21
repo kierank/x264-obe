@@ -1056,6 +1056,13 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     me_search_ref( h, m, mvc, i_mvc, p_halfpel_thresh );
 }
 
+/* x264_me_search_ref's refine_subpel after a 1 return of me_search_fpel */
+void x264_me_refine_fpel( x264_t *h, x264_me_t *m, int *p_halfpel_thresh )
+{
+    int subme = h->mb.i_subpel_refine;
+    refine_subpel( h, m, subpel_iterations[subme][2], subpel_iterations[subme][3], p_halfpel_thresh, 0 );
+}
+
 void x264_me_refine_qpel( x264_t *h, x264_me_t *m )
 {
     int hpel = subpel_iterations[h->mb.i_subpel_refine][0];

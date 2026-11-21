@@ -1648,6 +1648,18 @@ static void mbcmp_init( x264_t *h )
     /* P6 kept on C: rack01 2026-10-30 APA 8p.prog +0.43 %, lowlat -0.9..-1.55 % */
     h->pixf.analyse_p16x16_ll = h->param.analyse.i_subpel_refine < 3 && !CHROMA444 ? h->pixf.analyse_p16x16 : NULL;
     x264_me_fpel_init( &h->pixf );
+    /* lowlat (subme 2, HEX): the analyse_p asm makes x264_me_search_ref's me_search_fpel call itself, where
+     * it takes that call for every partition */
+    h->me_fpel_ll = NULL;
+    if( h->pixf.analyse_p16x16_ll && h->pixf.me_search_fpel && h->param.analyse.i_subpel_refine == 2 &&
+        h->param.analyse.i_me_method == X264_ME_HEX && (HIGH_BIT_DEPTH || h->pixf.mbcmp_pre[0]) )
+    {
+        int ok = 1;
+        for( int i = 0; i < 4; i++ )
+            ok &= h->pixf.me_fpel_fn[i].x3_min && h->pixf.me_fpel_fn[i].x4_min && h->pixf.me_fpel_fn[i].subpel;
+        if( ok )
+            h->me_fpel_ll = h->pixf.me_search_fpel;
+    }
 #if !HIGH_BIT_DEPTH
     /* the lowlat partition searches on the 16x16's quadrant sads, at the avx2 entry's levels */
     h->me_search_fpel_qt = NULL;

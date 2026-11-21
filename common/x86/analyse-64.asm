@@ -358,6 +358,28 @@ struc an
     alignb 64
 endstruc
 
+; x264_me_fpel_t (encoder/me.h)
+struc me_fpel
+    .m:              resq 1
+    .mvc:            resq 1
+    .halfpel_thresh: resq 1
+    .fn:             resq 1
+    .qfenc:          resq 1
+    .mv_limit:       resq 1
+    .range:          resq 1
+    .i_mvc:          resd 1
+    .me_range:       resd 1
+    .iters:          resd 1
+    .flags:          resd 1
+%if HIGH_BIT_DEPTH == 0
+    .qtab:           resq 1
+    .qtag:           resq 1
+    .qoff:           resd 1
+    alignb 8
+%endif
+endstruc
+%define FPEL_FN_SIZE 80     ; sizeof(x264_me_fpel_fn_t)
+
 ; x264_analyse_p_t (encoder/analyse.c)
 struc ap
     .h:           resq 1
@@ -376,6 +398,13 @@ struc ap
     .i_type:      resd 1
     .i_partition: resd 1
     .i_cost:      resd 1
+    .me_fpel:     resq 1
+    .me_refine:   resq 1
+    .fenc_pre16:  resq 1
+    .fenc_pre8:   resq 1
+    .fpel_fn:     resq 1
+    .qtag0:       resq 1
+    .fpel:        resb me_fpel_size
 endstruc
 
 %define PIC   (mb.pic)
@@ -533,8 +562,90 @@ AP_STACK_FIELD PART,    4
 %endrep
 %endmacro
 
-; the ME call: %1 mvc, %2 i_mvc, %3 p_fullpel_thresh (0 for NULL), into rbp
-%macro ME_SEARCH 3
+; the fenc_pre of 8x8 block %1, if not yet in the mb
+%macro QFENC8 2 ; b, label
+    test   byte [R12+PIC+mb_pic.i_fenc_pre], 1<<(%1)
+    jnz %2
+    lea    rdi, [R12+PIC+mb_pic.fenc_pre+2*(256+64*(%1))]
+    mov    rsi, [R12+PIC+mb_pic.p_fenc]
+    add    rsi, (8*((%1)>>1) + 8*FENC_STRIDE*((%1)&1))*SIZEOF_PIXEL
+    call   [rbx+ap.fenc_pre8]
+    or     dword [R12+PIC+mb_pic.i_fenc_pre], 1<<(%1)
+%2:
+%endmacro
+
+; rcx = x264_me_fenc_pre( h, %1, the fenc of the partition at %2, %3 ): the mb's fenc_pre, filled
+; on first use (8-bit), or p_fenc[0] (high bit depth); calls clobber the caller-saved registers
+%macro QFENC 3 ; i_pixel, x, y
+%if HIGH_BIT_DEPTH
+    mov    rcx, [rbp+me.p_fenc]
+%elif %1 <= PIXEL_16x8
+    test   byte [R12+PIC+mb_pic.i_fenc_pre], 16
+    jnz %%have
+    lea    rdi, [R12+PIC+mb_pic.fenc_pre]
+    mov    rsi, [R12+PIC+mb_pic.p_fenc]
+    call   [rbx+ap.fenc_pre16]
+    or     dword [R12+PIC+mb_pic.i_fenc_pre], 16
+%%have:
+    lea    rcx, [R12+PIC+mb_pic.fenc_pre+2*(%2+16*%3)]
+%else
+    ; 8x8 b = 2*(x/8) + y/8, an 8x16 the two of its column
+    %assign %%b0 2*(%2>>3) + (%3>>3)
+    QFENC8 %%b0, %%h0
+  %if %1 == PIXEL_8x16
+    QFENC8 %%b0+1, %%h1
+  %endif
+    lea    rcx, [R12+PIC+mb_pic.fenc_pre+2*(256+64*%%b0)]
+%endif
+%endmacro
+
+; the ME call: %1 mvc, %2 i_mvc, %3 p_fullpel_thresh (0 for NULL), into rbp; %4 i_pixel, %5, %6
+; the partition's x, y in the mb. c->me_fpel: x264_me_search_ref's me_search_fpel call here, on
+; c->fpel (its per-mb fields set by x264_analyse_p_init), then its refine_subpel through
+; c->me_refine on a 1 return; else the C x264_me_search_ref
+%macro ME_SEARCH 6
+    cmp    qword [rbx+ap.me_fpel], 0
+    je %%c
+    mov    [rbx+ap.fpel+me_fpel.m], rbp
+    lea    rax, %1
+    mov    [rbx+ap.fpel+me_fpel.mvc], rax
+    mov    eax, %2
+    mov    [rbx+ap.fpel+me_fpel.i_mvc], eax
+%ifidn %3, 0
+    mov    qword [rbx+ap.fpel+me_fpel.halfpel_thresh], 0
+%else
+    mov    rax, %3
+    mov    [rbx+ap.fpel+me_fpel.halfpel_thresh], rax
+%endif
+    mov    rax, [rbx+ap.fpel_fn]
+    add    rax, %4*FPEL_FN_SIZE
+    mov    [rbx+ap.fpel+me_fpel.fn], rax
+    ; refine_subpel's subpel_search fenc, but on a weighted ref
+    xor    ecx, ecx
+    mov    rax, [rbp+me.weight]
+    cmp    qword [rax+wt.weightfn], 0
+    jne %%w
+    QFENC  %4, %5, %6
+%%w:
+    mov    [rbx+ap.fpel+me_fpel.qfenc], rcx
+%if HIGH_BIT_DEPTH == 0
+    ; ME_QTAB: the tag of the ref, the partition's first sad word
+    mov    eax, [rbp+me.i_ref]
+    shl    rax, 40
+    add    rax, [rbx+ap.qtag0]
+    mov    [rbx+ap.fpel+me_fpel.qtag], rax
+    mov    dword [rbx+ap.fpel+me_fpel.qoff], 8+2*((%5>>3)+2*(%6>>3))
+%endif
+    lea    rdi, [rbx+ap.fpel]
+    call   [rbx+ap.me_fpel]
+    test   eax, eax
+    jz %%done
+    mov    rdi, [rbx+ap.h]
+    mov    rsi, rbp
+    mov    rdx, [rbx+ap.fpel+me_fpel.halfpel_thresh]
+    call   [rbx+ap.me_refine]
+    jmp %%done
+%%c:
     mov    rdi, [rbx+ap.h]
     mov    rsi, rbp
     lea    rdx, %1
@@ -545,6 +656,7 @@ AP_STACK_FIELD PART,    4
     mov    R8, %3
 %endif
     call   [rbx+ap.me_search]
+%%done:
 %endmacro
 
 INIT_XMM avx2
@@ -611,7 +723,7 @@ cglobal analyse_p16x16, 1,15,0, AP_STACK
     lea    rcx, [rsp+S_MVC]
     lea    R8, [rsp+S_NMVC]
     call   [rbx+ap.predict_ref]
-    ME_SEARCH [rsp+S_MVC], [rsp+S_NMVC], [rsp+S_PTHR]
+    ME_SEARCH [rsp+S_MVC], [rsp+S_NMVC], [rsp+S_PTHR], PIXEL_16x16, 0, 0
 .searched:
     ; mvr and mvc for the neighbours and the 8x8
     mov    eax, [rbp+me.mv]
@@ -696,7 +808,7 @@ cglobal analyse_p16x16, 1,15,0, AP_STACK
     PREDMV ap_i8, 2, 0, -1
 %endif
     mov    [rbp+me.mvp], eax
-    ME_SEARCH [R14], %1+1, 0
+    ME_SEARCH [R14], %1+1, 0, PIXEL_8x8, 8*(%1&1), 8*(%1>>1)
     ; x264_macroblock_cache_mv_ptr( h, 2*x8, 2*y8, 2, 2, 0, m->mv )
     mov    eax, [rbp+me.mv]
     mov    ecx, eax
@@ -777,7 +889,7 @@ cglobal analyse_p16x16, 1,15,0, AP_STACK
 %endif
     PREDMV ap_i8, ap_w, ap_sel, ap_k
     mov    [rbp+me.mvp], eax
-    ME_SEARCH [rsp+S_MVC], 3, 0
+    ME_SEARCH [rsp+S_MVC], 3, 0, ap_pix, ap_x, ap_y
     mov    eax, [rbp+me.i_ref_cost]
     add    [rbp+me.cost], eax
 %if %2 == 0

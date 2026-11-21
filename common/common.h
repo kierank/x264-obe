@@ -855,6 +855,8 @@ struct x264_t
     int b_me_qtab;              /* on in the partition analysis of a mb */
     int (*me_search_fpel_qt)( x264_me_fpel_t *c ); /* pixf.me_search_fpel on me_qtab, or NULL */
 #endif
+    /* pixf.me_search_fpel where the analyse_p asm calls it for x264_me_search_ref (lowlat), or NULL */
+    int (*me_fpel_ll)( x264_me_fpel_t *c );
 };
 
 // included at the end because it needs x264_t
