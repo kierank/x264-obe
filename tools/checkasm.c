@@ -460,6 +460,7 @@ static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **f
 {
     int odir, bdir = -1;
     int i;
+    int conv = 0;
     for( i = iters; i > 0; i-- )
     {
         if( bmy <= lim[1] || bmy >= lim[3] || bmx <= lim[0] || bmx >= lim[2] )
@@ -490,13 +491,14 @@ static uint64_t qpel_search_model( x264_pixel_cmp_t satd, pixel *fenc, pixel **f
         if( bmx == omx && bmy == omy )
         {
             st[5]++;
+            conv = !w;
             break;
         }
         st[bdir]++;
     }
     if( !i && iters )
         st[6]++;
-    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+    return (uint32_t)bcost | conv << 30 | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
 }
 
 /* refine_subpel up to its qpel stage in x264's form (get_ref predictions, a compare and branch
@@ -9866,11 +9868,19 @@ fpel_done:
     (void)subpel_iterations;
     uint64_t res = x264_pixel_satd_subpel_search_c( i_pixel, p_fenc, m->p_fref, stride, p_cost_mvx, p_cost_mvy, M32( m->mv ),
                                                     m->cost, c->iters, c->range, c->halfpel_thresh, M32( m->mvp ) );
-    m->cost = (uint32_t)res & 0x7fffffff;
+    m->cost = (uint32_t)res & 0x3fffffff;
     m->mv[0] = res >> 32;
     m->mv[1] = res >> 48;
     if( !((uint32_t)res >> 31) )
+    {
         m->cost_mv = p_cost_mvx[m->mv[0]] + p_cost_mvy[m->mv[1]];
+        /* qpel_search stopped at no better point: refine_qpel's record */
+        if( (uint32_t)res & (1 << 30) )
+        {
+            m->qconv_cost = m->cost;
+            m->qconv_mv = M32( m->mv );
+        }
+    }
     else
         st[22]++;
     return 0;

@@ -97,7 +97,8 @@ typedef int  (*x264_pixel_satd_bi4_t) ( x264_bi_fenc_t *fenc, pixel *src0a, pixe
  * iters >> 8 steps over (0,-1) (0,1) (-1,0) (1,0), the incumbent winning ties, then the
  * lower dir; a step skips the way back unless iters & 16; stops at an mv on or past
  * range = mv_min_spel | mv_max_spel << 32 (x | y << 16 each). fenc as satd_bi's.
- * Returns bcost | pack16to32_mask( bmx, bmy ) << 32 */
+ * Returns bcost | pack16to32_mask( bmx, bmy ) << 32, and (unweighted) 1 << 30 where a step
+ * found no candidate better (bcost < 1 << 28) */
 typedef uint64_t (*x264_pixel_qpel_search_t) ( x264_bi_fenc_t *fenc, pixel **fref, intptr_t stride,
                                                const uint16_t *cost_mvx, const uint16_t *cost_mvy,
                                                uint32_t bmv, int bcost, int iters, uint64_t range );

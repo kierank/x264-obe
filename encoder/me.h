@@ -54,6 +54,11 @@ typedef struct
     int cost_mv;        /* lambda * nbits for the chosen mv */
     int cost;           /* satd + lambda * nbits */
     ALIGNED_4( int16_t mv[2] );
+
+    /* the search's qpel_search stopped at no better point at qconv_mv (packed) with satd + mv cost
+     * qconv_cost (-1: none); x264_me_refine_qpel from that mv and cost changes nothing */
+    int qconv_cost;
+    uint32_t qconv_mv;
 } ALIGNED_64( x264_me_t );
 
 typedef struct

@@ -617,7 +617,11 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     QPEL_CAND 3,  1,  0, 12,  4
     mov      r1d, r12d
     and      r1d, 15
+%if %3
     jz .end
+%else
+    jz .conv
+%endif
     and      r12, ~15
     and      r14d, ~15
     or       r14d, r1d
@@ -633,6 +637,7 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     jnz .loop
 .end:
     shr      r12, 4
+.endc:
     mov      r12d, r12d
     movzx    r10d, r10w
     shl      r11d, 16
@@ -645,6 +650,11 @@ cglobal pixel_satd_qpel_search_%1x%2, 9,15,8
     SUBPEL_WCALLS %1, %2, 0
 %else
     RET
+.conv:
+    ; no candidate better: bit 30 of the cost (x264_pixel_qpel_search_t)
+    shr      r12, 4
+    or       r12d, 1<<30
+    jmp .endc
 .satd:
     QPEL_SATD %1, %2
     ret

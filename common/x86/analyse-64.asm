@@ -74,6 +74,8 @@ struc me
     .cost_mv:     resd 1
     .cost:        resd 1
     .mv:          resw 2
+    .qconv_cost:  resd 1
+    .qconv_mv:    resd 1
     alignb 64
 endstruc
 
@@ -607,6 +609,7 @@ AP_STACK_FIELD PART,    4
     cmp    qword [rbx+ap.me_fpel], 0
     je %%c
     mov    [rbx+ap.fpel+me_fpel.m], rbp
+    mov    dword [rbp+me.qconv_cost], -1  ; x264_me_search_ref's: no qpel record
     lea    rax, %1
     mov    [rbx+ap.fpel+me_fpel.mvc], rax
     mov    eax, %2

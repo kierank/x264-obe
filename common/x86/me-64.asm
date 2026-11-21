@@ -121,6 +121,8 @@ struc me_t
     .cost_mv:     resd 1
     .cost:        resd 1
     .mv:          resw 2
+    .qconv_cost:  resd 1
+    .qconv_mv:    resd 1
     alignb 64
 endstruc
 
@@ -1072,7 +1074,7 @@ cglobal %1, 1,15,0, ME_STACK
     mov    [rsp+S_OUT+48], R10
     call   [rax+me_fpel_fn.subpel]
     mov    ecx, eax
-    and    ecx, 0x7fffffff
+    and    ecx, 0x3fffffff
     mov    [R15+me_t.cost], ecx
     mov    rdx, rax
     shr    rdx, 32
@@ -1080,6 +1082,12 @@ cglobal %1, 1,15,0, ME_STACK
     ; the halfpel threshold stop leaves cost_mv
     test   eax, eax
     js .ret0
+    ; qpel_search stopped at no better point (1 << 30): refine_qpel's record (me.h)
+    test   eax, 1<<30
+    jz .qnorec
+    mov    [R15+me_t.qconv_cost], ecx
+    mov    [R15+me_t.qconv_mv], edx
+.qnorec:
     movsx  rcx, dx
     sar    edx, 16
     movsxd rdx, edx
@@ -3081,7 +3089,7 @@ cglobal me_search_fpel, 1,1
     mov    [rsp+F_OUT+48], R10
     call   [rax+me_fpel_fn.subpel]
     mov            ecx, eax
-    and            ecx, 0x7fffffff
+    and            ecx, 0x3fffffff
     mov    [R15+me_t.cost], ecx
     mov            rdx, rax
     shr            rdx, 32
@@ -3089,6 +3097,12 @@ cglobal me_search_fpel, 1,1
     ; the halfpel threshold stop leaves cost_mv
     test           eax, eax
     js .ret0
+    ; qpel_search stopped at no better point (1 << 30): refine_qpel's record (me.h)
+    test           eax, 1<<30
+    jz .qnorec
+    mov    [R15+me_t.qconv_cost], ecx
+    mov    [R15+me_t.qconv_mv], edx
+.qnorec:
     movsx          rcx, dx
     sar            edx, 16
     movsxd         rdx, edx
@@ -4174,7 +4188,7 @@ cglobal %1, 1,1
     mov    [rsp+H_OUT+48], R10
     call   [rax+me_fpel_fn.subpel]
     mov            ecx, eax
-    and            ecx, 0x7fffffff
+    and            ecx, 0x3fffffff
     mov    [R15+me_t.cost], ecx
     mov            rdx, rax
     shr            rdx, 32
@@ -4182,6 +4196,12 @@ cglobal %1, 1,1
     ; the halfpel threshold stop leaves cost_mv
     test           eax, eax
     js .ret0
+    ; qpel_search stopped at no better point (1 << 30): refine_qpel's record (me.h)
+    test           eax, 1<<30
+    jz .qnorec
+    mov    [R15+me_t.qconv_cost], ecx
+    mov    [R15+me_t.qconv_mv], edx
+.qnorec:
     movsx          rcx, dx
     sar            edx, 16
     movsxd         rdx, edx
