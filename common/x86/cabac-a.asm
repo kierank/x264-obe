@@ -997,6 +997,131 @@ rd422_w15:          times 8 dw 15
 ; avx512icl: the unary row cap, 63<<8; code 2 (not coded)
 rd422_ki:           dd 15, 16128
 rd422_b2:           times 16 db 2
+; ctx offset from ctx_sig per slot s = 2*i+t (writer br, avx2): t=0 the sig flag of
+; coef i, t=1 its last flag (ctx_last-ctx_sig + last_off)
+res_slot_base:
+res_slot_4x4_61:
+    db 0,61,1,62,2,63,3,64,4,65,5,66,6,67,7,68
+    db 8,69,9,70,10,71,11,72,12,73,13,74,14,75,15,76
+res_slot_4x4_88:
+    db 0,88,1,89,2,90,3,91,4,92,5,93,6,94,7,95
+    db 8,96,9,97,10,98,11,99,12,100,13,101,14,102,15,103
+res_slot_8x8_f15:
+    db 0,15,1,16,2,16,3,16,4,16,5,16,5,16,4,16
+    db 4,16,3,16,3,16,4,16,4,16,4,16,5,16,5,16
+    db 4,17,4,17,4,17,4,17,3,17,3,17,6,17,7,17
+    db 7,17,7,17,8,17,9,17,10,17,9,17,8,17,7,17
+    db 7,18,6,18,11,18,12,18,13,18,11,18,6,18,7,18
+    db 8,19,9,19,14,19,10,19,9,19,8,19,6,19,11,19
+    db 12,20,13,20,11,20,6,20,9,21,14,21,10,21,9,21
+    db 11,22,12,22,13,22,11,22,14,23,10,23,12,23,0,15
+res_slot_8x8_i15:
+    db 0,15,1,16,1,16,2,16,2,16,3,16,3,16,4,16
+    db 5,16,6,16,7,16,7,16,7,16,8,16,4,16,5,16
+    db 6,17,9,17,10,17,10,17,8,17,11,17,12,17,11,17
+    db 9,17,9,17,10,17,10,17,8,17,11,17,12,17,11,17
+    db 9,18,9,18,10,18,10,18,8,18,11,18,12,18,11,18
+    db 9,19,9,19,10,19,10,19,8,19,13,19,13,19,9,19
+    db 9,20,10,20,10,20,8,20,13,21,13,21,9,21,9,21
+    db 10,22,10,22,14,22,14,22,14,23,14,23,14,23,0,15
+res_slot_8x8_f30:
+    db 0,30,1,31,2,31,3,31,4,31,5,31,5,31,4,31
+    db 4,31,3,31,3,31,4,31,4,31,4,31,5,31,5,31
+    db 4,32,4,32,4,32,4,32,3,32,3,32,6,32,7,32
+    db 7,32,7,32,8,32,9,32,10,32,9,32,8,32,7,32
+    db 7,33,6,33,11,33,12,33,13,33,11,33,6,33,7,33
+    db 8,34,9,34,14,34,10,34,9,34,8,34,6,34,11,34
+    db 12,35,13,35,11,35,6,35,9,36,14,36,10,36,9,36
+    db 11,37,12,37,13,37,11,37,14,38,10,38,12,38,0,30
+res_slot_8x8_i24:
+    db 0,24,1,25,1,25,2,25,2,25,3,25,3,25,4,25
+    db 5,25,6,25,7,25,7,25,7,25,8,25,4,25,5,25
+    db 6,26,9,26,10,26,10,26,8,26,11,26,12,26,11,26
+    db 9,26,9,26,10,26,10,26,8,26,11,26,12,26,11,26
+    db 9,27,9,27,10,27,10,27,8,27,11,27,12,27,11,27
+    db 9,28,9,28,10,28,10,28,8,28,13,28,13,28,9,28
+    db 9,29,10,29,10,29,8,29,13,30,13,30,9,30,9,30
+    db 10,31,10,31,14,31,14,31,14,32,14,32,14,32,0,24
+; per b_interlaced*16 + ctx_block_cat: offset of the slot table from res_slot_base
+%define S61 res_slot_4x4_61-res_slot_base
+%define S88 res_slot_4x4_88-res_slot_base
+res_slot_ofs:       dw S61, S61, S61, S61, S61, res_slot_8x8_f15-res_slot_base, S88, S88
+                    dw S88, res_slot_8x8_f30-res_slot_base, S88, S88, S88, res_slot_8x8_f30-res_slot_base, S61, S61
+                    dw S61, S61, S61, S61, S61, res_slot_8x8_i15-res_slot_base, S88, S88
+                    dw S88, res_slot_8x8_i24-res_slot_base, S88, S88, S88, res_slot_8x8_i24-res_slot_base, S61, S61
+%undef S61
+%undef S88
+; ctx_block_cat: the bit pairs of its count coefs (4x4 cats)
+res_pairs:          dd -1, 0x3fffffff, -1, 0xff, 0x3fffffff, 0, -1, 0x3fffffff
+                    dd -1, 0, -1, 0x3fffffff, -1, 0, 0, 0
+; cabac_lps_trans with bytes 4-5 = transition[state][mps], transition[state][lps]
+align 8
+cabac_lps_trans_ml:
+    db 2,2,2,2,0,0,0,0, 2,2,2,2,1,1,0,0
+    db 6,7,8,9,2,50,0,0, 6,7,8,9,3,51,0,0
+    db 6,7,9,10,2,50,0,0, 6,7,9,10,3,51,0,0
+    db 6,8,9,11,4,52,0,0, 6,8,9,11,5,53,0,0
+    db 7,8,10,11,6,52,0,0, 7,8,10,11,7,53,0,0
+    db 7,9,10,12,8,52,0,0, 7,9,10,12,9,53,0,0
+    db 7,9,11,12,10,54,0,0, 7,9,11,12,11,55,0,0
+    db 8,9,11,13,12,54,0,0, 8,9,11,13,13,55,0,0
+    db 8,10,12,14,14,54,0,0, 8,10,12,14,15,55,0,0
+    db 9,11,12,14,16,56,0,0, 9,11,12,14,17,57,0,0
+    db 9,11,13,15,18,56,0,0, 9,11,13,15,19,57,0,0
+    db 10,12,14,16,20,56,0,0, 10,12,14,16,21,57,0,0
+    db 10,12,15,17,22,58,0,0, 10,12,15,17,23,59,0,0
+    db 11,13,15,18,24,58,0,0, 11,13,15,18,25,59,0,0
+    db 11,14,16,19,26,60,0,0, 11,14,16,19,27,61,0,0
+    db 12,14,17,20,28,60,0,0, 12,14,17,20,29,61,0,0
+    db 12,15,18,21,30,60,0,0, 12,15,18,21,31,61,0,0
+    db 13,16,19,22,32,62,0,0, 13,16,19,22,33,63,0,0
+    db 14,17,20,23,34,62,0,0, 14,17,20,23,35,63,0,0
+    db 14,18,21,24,36,64,0,0, 14,18,21,24,37,65,0,0
+    db 15,19,22,25,38,66,0,0, 15,19,22,25,39,67,0,0
+    db 16,20,23,27,40,66,0,0, 16,20,23,27,41,67,0,0
+    db 17,21,25,28,42,66,0,0, 17,21,25,28,43,67,0,0
+    db 18,22,26,30,44,68,0,0, 18,22,26,30,45,69,0,0
+    db 19,23,27,31,46,68,0,0, 19,23,27,31,47,69,0,0
+    db 20,24,29,33,48,70,0,0, 20,24,29,33,49,71,0,0
+    db 21,26,30,35,50,72,0,0, 21,26,30,35,51,73,0,0
+    db 22,27,32,37,52,72,0,0, 22,27,32,37,53,73,0,0
+    db 23,28,33,39,54,74,0,0, 23,28,33,39,55,75,0,0
+    db 24,30,35,41,56,74,0,0, 24,30,35,41,57,75,0,0
+    db 26,31,37,43,58,76,0,0, 26,31,37,43,59,77,0,0
+    db 27,33,39,45,60,78,0,0, 27,33,39,45,61,79,0,0
+    db 29,35,41,48,62,78,0,0, 29,35,41,48,63,79,0,0
+    db 30,37,43,50,64,80,0,0, 30,37,43,50,65,81,0,0
+    db 32,39,46,53,66,82,0,0, 32,39,46,53,67,83,0,0
+    db 33,41,48,56,68,82,0,0, 33,41,48,56,69,83,0,0
+    db 35,43,51,59,70,84,0,0, 35,43,51,59,71,85,0,0
+    db 37,45,54,62,72,84,0,0, 37,45,54,62,73,85,0,0
+    db 39,48,56,65,74,88,0,0, 39,48,56,65,75,89,0,0
+    db 41,50,59,69,76,88,0,0, 41,50,59,69,77,89,0,0
+    db 43,53,63,72,78,90,0,0, 43,53,63,72,79,91,0,0
+    db 46,56,66,76,80,90,0,0, 46,56,66,76,81,91,0,0
+    db 48,59,69,80,82,94,0,0, 48,59,69,80,83,95,0,0
+    db 51,62,73,85,84,94,0,0, 51,62,73,85,85,95,0,0
+    db 53,65,77,89,86,96,0,0, 53,65,77,89,87,97,0,0
+    db 56,69,81,94,88,96,0,0, 56,69,81,94,89,97,0,0
+    db 59,72,86,99,90,100,0,0, 59,72,86,99,91,101,0,0
+    db 62,76,90,104,92,100,0,0, 62,76,90,104,93,101,0,0
+    db 66,80,95,110,94,102,0,0, 66,80,95,110,95,103,0,0
+    db 69,85,100,116,96,104,0,0, 69,85,100,116,97,105,0,0
+    db 73,89,105,122,98,104,0,0, 73,89,105,122,99,105,0,0
+    db 77,94,111,128,100,108,0,0, 77,94,111,128,101,109,0,0
+    db 81,99,117,135,102,108,0,0, 81,99,117,135,103,109,0,0
+    db 85,104,123,142,104,110,0,0, 85,104,123,142,105,111,0,0
+    db 90,110,130,150,106,112,0,0, 90,110,130,150,107,113,0,0
+    db 95,116,137,158,108,114,0,0, 95,116,137,158,109,115,0,0
+    db 100,122,144,166,110,116,0,0, 100,122,144,166,111,117,0,0
+    db 105,128,152,175,112,118,0,0, 105,128,152,175,113,119,0,0
+    db 111,135,160,185,114,118,0,0, 111,135,160,185,115,119,0,0
+    db 116,142,169,195,116,122,0,0, 116,142,169,195,117,123,0,0
+    db 123,150,178,205,118,122,0,0, 123,150,178,205,119,123,0,0
+    db 128,158,187,216,120,124,0,0, 128,158,187,216,121,125,0,0
+    db 128,167,197,227,122,126,0,0, 128,167,197,227,123,127,0,0
+    db 128,176,208,240,124,127,0,0, 128,176,208,240,125,126,0,0
+
 
 SECTION .text
 
@@ -4204,4 +4329,387 @@ INIT_YMM avx2,bmi2
 CABAC_RESIDUAL_RD_422DC_AVX2
 INIT_YMM avx512icl
 CABAC_RESIDUAL_RD_422DC_ICL2
+%endif
+
+;-----------------------------------------------------------------------------
+; writer, branch-free significance map (avx2): the nonzero mask of the block as
+; bit pairs per coef, slot s = 2*i+t over it: t=0 the sig flag of coef i, t=1 its
+; last flag. The coded slots (the sig flag of every coef up to last, the last flags
+; of the nonzero ones, the final 1 included) are walked by tzcnt/blsr with the bin
+; from a mask, so the map's only data-dependent branch is its loop exit. The levels
+; then take the coefs top-down from a mask.
+;-----------------------------------------------------------------------------
+
+; %1 = state address; in: r14d = -bin; out: r2d = next state; clobbers r4-r6, r14
+%macro CABAC_BIN_ML 1
+    movzx   r2d, byte [%1]
+    mov      r5, [cabac_lps_trans_ml+r2*8 GLOBAL]
+    mov     r4d, ranged
+    and     r4d, 0xc0
+    shr     r4d, 3
+    shrx    r4d, r5d, r4d
+    movzx   r4d, r4b                ; range_lps
+    sub  ranged, r4d
+    lea      r6, [lowq+rangeq]
+    xor    r14d, r2d
+    and    r14d, 1                  ; lps
+    cmovnz ranged, r4d
+    cmovnz   lowq, r6
+%ifdef PIC
+    lea     r2d, [r14+r2*8]
+    movzx   r2d, byte [cabac_lps_trans_ml+4+r2 GLOBAL]
+%else
+    movzx   r2d, byte [cabac_lps_trans_ml+4+r14+r2*8]
+%endif
+    mov    [%1], r2b
+    lzcnt   r5d, ranged
+    sub     r5d, 23
+    shlx ranged, ranged, r5d
+    shlx   lowq, lowq, r5
+    add  queued, r5d
+    PUTBYTE
+%endmacro
+
+; %1 = dst m, %2 = first coef: words == 0 of 16 coefs at %3 (dwords saturated to
+; words at 10-bit); in: m1 = 0
+%macro ZERO_WORDS16 3
+    movu     %1, [%3+%2*SIZEOF_DCTCOEF]
+%if HIGH_BIT_DEPTH
+    packssdw %1, [%3+%2*SIZEOF_DCTCOEF+32]
+    vpermq   %1, %1, q3120
+%endif
+    pcmpeqw  %1, m1
+%endmacro
+
+; slots in r13, bins in r11, slot table r0
+%macro SIG_WALK 0
+%%loop:
+    tzcnt   r12, r13
+    movzx   r1d, byte [r0+r12]
+    bt      r11, r12
+    sbb    r14d, r14d               ; -bin
+    CABAC_BIN_ML r3+r1
+    blsr    r13, r13
+    jnz %%loop
+%endmacro
+
+; levels, coefs top-down from the mask in r13: coef at lb + bit*%1
+%macro LEVELS 1
+%%level_loop:
+    bsr      r1, r13
+    btr     r13, r1
+%ifdef PIC
+    mov      r4, lbasem
+    %define lb r4
+%else
+    %define lb r7
+%endif
+%if HIGH_BIT_DEPTH
+    mov    r11d, [lb+r1*%1]
+%else
+    movsx  r11d, word [lb+r1*%1]
+%endif
+    mov     r1d, r11d
+    sar     r1d, 31
+    mov   signm, r1d
+    add    r11d, r1d
+    xor    r11d, r1d                ; abs_coeff
+    movzx   r1d, byte [coeff_abs_level1_ctx+r12 GLOBAL]
+    cmp    r11d, 1
+    jg %%level_gt1
+    CABAC_BIN 0, r3+r1
+    movzx  r12d, byte [coeff_abs_level_transition+r12 GLOBAL]
+    jmp %%level_sign
+%%level_gt1:
+    CABAC_BIN 1, r3+r1
+    movzx  r14d, byte [coeff_abs_levelgt1_ctx+r12 GLOBAL]
+    movzx   r2d, byte [r3+r14]      ; state stays in r2d for the run
+    mov     r0d, 15
+    cmp    r11d, r0d
+    cmovl   r0d, r11d
+    sub     r0d, 2
+    jz %%level_eq2
+%%level_gt1_loop:
+    CABAC_BIN 1
+    dec     r0d
+    jg %%level_gt1_loop
+    cmp    r11d, 15
+    jge %%level_bypass
+%%level_eq2:
+    CABAC_BIN 0
+    mov [r3+r14], r2b
+    jmp %%level_gt1_end
+%%level_bypass:
+    mov [r3+r14], r2b
+; x264_cabac_encode_ue_bypass( cb, 0, abs_coeff - 15 )
+    lea     r0d, [r11-14]           ; v
+    lzcnt  r11d, r0d
+    xor    r11d, 31                 ; k
+    lea    r14d, [r11*2+1]          ; bits left
+    mov     r2d, 3
+    shlx    r2d, r2d, r11d
+    sub     r0d, r2d
+    mov     r2d, 1
+    shlx    r2d, r2d, r14d
+    add     r2d, r0d                ; x = v + bypass_lut[k]
+    lea    r11d, [r14-1]
+    and    r11d, 7
+    inc    r11d                     ; i
+%%ue_loop:
+    sub    r14d, r11d
+    shrx    r1d, r2d, r14d
+    movzx   r1d, r1b
+    imul    r1d, ranged
+    shlx   lowq, lowq, r11
+    add    lowq, r1
+    add  queued, r11d
+    PUTBYTE
+    mov    r11d, 8
+    test   r14d, r14d
+    jg %%ue_loop
+%%level_gt1_end:
+    movzx  r12d, byte [coeff_abs_level_transition+8+r12 GLOBAL]
+%%level_sign:
+; x264_cabac_encode_bypass( cb, coeff_sign )
+    mov     r1d, signm
+    and     r1d, ranged
+    lea     lowq, [lowq*2+r1]
+    inc  queued
+    PUTBYTE
+    test    r13, r13
+    jnz %%level_loop
+    %undef lb
+%endmacro
+
+%macro CABAC_RESIDUAL_BR 0
+cglobal cabac_block_residual_br_internal, 4,15,4,-8*6
+%ifdef PIC
+    lea      r7, [$$]
+    %define GLOBAL +r7-$$
+%else
+    %define GLOBAL
+%endif
+    %define cbm     [rsp+0*8]
+    %define levelm  [rsp+1*8]
+    %define signm   [rsp+2*8]
+    %define lbasem  [rsp+3*8]       ; PIC: the coefs
+    %define vhim    [rsp+4*8]       ; 8x8: slots of the high half
+    %define m2him   [rsp+5*8]       ; 8x8: bins of the high half
+    %define lowd   r8d
+    %define lowq   r8
+    %define ranged r9d
+    %define rangeq r9
+    %define queued r10d
+    %define queueq r10
+    %assign pb_count 0
+
+    shl     r1d, 4
+    add     r1d, r2d
+    movzx   r8d, word [significant_coeff_flag_offset+r1*2 GLOBAL]
+    movzx  r10d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]
+    movzx  r13d, byte [count_cat_m1+r2 GLOBAL]
+    movzx  r12d, word [res_slot_ofs+r1*2 GLOBAL]
+    mov     cbm, r3
+    add      r3, cb.state
+    add     r10, r3
+    mov  levelm, r10                ; ctx_level state
+    add      r3, r8                 ; ctx_sig state
+    lea     r12, [res_slot_base+r12 GLOBAL]
+    pxor    xm1, xm1
+%ifdef PIC
+    mov  lbasem, r0
+%else
+    mov      r7, r0
+%endif
+    cmp    r13d, 63
+    je .mask_8x8
+; 4x4 / ac / chroma dc: 16 coefs at l, for ac and chroma dc past the block (in the
+; same array or struct): only the pairs of the count coefs are kept
+    ZERO_WORDS16 m0, 0, r0
+    pmovmskb r4d, m0
+    mov     r6d, [res_pairs+r2*4 GLOBAL]
+    andn    r4d, r4d, r6d           ; pairs: bits 2i, 2i+1 = (l[i] != 0)
+    lzcnt   r5d, r4d
+    xor     r5d, 31                 ; t = 2*last+1, the slot of the final 1
+    lea     r1d, [r5+1]
+    mov    r11d, 0x55555555
+    and    r11d, r4d
+    bts    r11d, r5d                ; bins: the sig flags, the final 1
+    or      r4d, 0x55555555         ; every sig slot, the last slots of the nonzero coefs
+    bzhi   r13d, r4d, r1d
+    shr     r6d, 2
+    and    r13d, r6d                ; slots below 2*count_m1: last == count_m1 codes no flag at last
+    mov      r0, r12
+    mov      r6, cbm
+    mov    lowd, [r6+cb.low]
+    mov  ranged, [r6+cb.range]
+    mov  queued, [r6+cb.queue]
+    sub  queued, 24
+    SIG_WALK
+    mov     r3, levelm
+    mov    r13d, r11d
+    and    r13d, 0x55555555         ; the nonzero coefs at the even slots
+    xor    r12d, r12d               ; node_ctx
+    %assign lvscale SIZEOF_DCTCOEF/2
+    LEVELS lvscale
+    jmp .flush
+
+.mask_8x8:
+    ZERO_WORDS16 m0, 0, r0
+    ZERO_WORDS16 m2, 16, r0
+    pmovmskb r4d, m0
+    pmovmskb r5d, m2
+    packsswb m0, m2
+    ZERO_WORDS16 m2, 32, r0
+    ZERO_WORDS16 m3, 48, r0
+    pmovmskb r6d, m2
+    pmovmskb r11d, m3
+    packsswb m2, m3
+    vpermq   m0, m0, q3120
+    vpermq   m2, m2, q3120
+    pmovmskb r1d, m0
+    pmovmskb r2d, m2
+    shl      r2, 32
+    or       r1, r2
+    not      r1
+    mov      r14, r1                ; nonzero coefs, 1 bit each
+    shl      r5, 32
+    or       r4, r5
+    not      r4                     ; pairs, coefs 0-31
+    shl     r11, 32
+    or       r6, r11
+    not      r6                     ; pairs, coefs 32-63
+    lzcnt    r5, r4
+    xor     r5d, 63
+    lzcnt   r11, r6
+    xor    r11d, 127
+    test     r6, r6
+    cmovnz  r5d, r11d               ; t = 2*last+1
+    lea     r1d, [r5+1]
+    lea     r2d, [r5-1]
+    cmp     r5d, 127
+    cmovae  r1d, r2d                ; slots
+    mov     r11, 0x5555555555555555
+    mov      r2, r6
+    and      r2, r11                ; bins, high half
+    or       r6, r11
+    mov     r13, r4
+    and     r13, r11                ; bins, low half
+    or       r4, r11
+    mov     r10d, 1
+    shlx    r10, r10, r5            ; the final 1, bit t&63 of its half
+    xor      r0d, r0d
+    mov     r11, r10
+    cmp     r5d, 64
+    cmovae  r11, r0
+    cmovb   r10, r0
+    or      r11, r13                ; low bins
+    or       r2, r10                ; high bins
+    mov   m2him, r2
+    lea    r10d, [r1-64]
+    test   r10d, r10d
+    cmovs  r10d, r0d
+    bzhi     r6, r6, r10            ; slots, high half
+    mov    vhim, r6
+    bzhi    r13, r4, r1             ; slots, low half
+    mov      r0, r12
+    mov      r6, cbm
+    mov    lowd, [r6+cb.low]
+    mov  ranged, [r6+cb.range]
+    mov  queued, [r6+cb.queue]
+    sub  queued, 24
+    mov  signm, r14                 ; (the nonzero mask, until the levels)
+    SIG_WALK
+    mov     r13, vhim
+    test    r13, r13
+    jz .sig8_done
+    mov     r11, m2him
+    add      r0, 64
+    SIG_WALK
+.sig8_done:
+    mov     r3, levelm
+    mov    r13, signm
+    xor    r12d, r12d               ; node_ctx
+    LEVELS SIZEOF_DCTCOEF
+
+.flush:
+; emit the 0-3 whole bytes left, store the state unbiased
+    mov      r6, cbm
+    lea     r0d, [queueq+32]        ; pending bits
+    mov     r4d, r0d
+    and     r0d, 7
+    add     r0d, 10                 ; lowest bit of the whole bytes
+    shr     r4d, 3                  ; n
+    shrx     r1, lowq, r0           ; carry, n bytes
+    cmp     r1b, 0xff
+    je .flush_slow
+    cmp dword [r6+cb.bytes_outstanding], 0
+    jne .flush_slow
+    bzhi   lowq, lowq, r0
+    lea     r2d, [r4*8]
+    sub  queued, r2d
+    neg     r2d
+    add     r2d, 32
+    shlx     r1, r1, r2             ; carry in bit 32, bytes from bit 31 down
+    mov      r5, [r6+cb.p]
+    rorx     r2, r1, 32
+    add  [r5-1], r2b
+    bswap   r1d
+    mov    [r5], r1d                ; 4-n bytes past p are rewritten later
+    add      r5, r4
+    mov [r6+cb.p], r5
+.flush_end:
+    add  queued, 24
+    mov [r6+cb.low], lowd
+    mov [r6+cb.range], ranged
+    mov [r6+cb.queue], queued
+    RET
+.flush_slow:
+    call .putbytes_slow
+    mov      r6, cbm
+    jmp .flush_end
+
+; x264_cabac_putbyte while queue >= 0; in: r6 = cb; clobbers r1, r4-r6
+.putbytes_slow:
+    mov     r4d, [r6+cb.bytes_outstanding]
+    mov      r5, [r6+cb.p]
+    jmp .slow_next
+.slow_loop:
+    lea     r6d, [queueq+34]
+    shrx     r1, lowq, r6           ; out
+    bzhi   lowq, lowq, r6
+    sub  queued, 8
+    cmp     r1b, 0xff
+    je .postpone
+    mov     r6d, r1d
+    shr     r6d, 8                  ; carry
+    add  [r5-1], r6b
+    dec     r6d
+    test    r4d, r4d
+    jz .write
+.loop_outstanding:
+    mov    [r5], r6b
+    inc      r5
+    dec     r4d
+    jg .loop_outstanding
+.write:
+    mov    [r5], r1b
+    inc      r5
+    jmp .slow_next
+.postpone:
+    inc     r4d
+.slow_next:
+    cmp  queued, -24
+    jge .slow_loop
+    mov      r6, [rsp+gprsize]
+    mov [r6+cb.p], r5
+    mov [r6+cb.bytes_outstanding], r4d
+    ret
+
+    PUTBYTE_STUBS
+%endmacro
+
+%if ARCH_X86_64
+INIT_YMM avx2,bmi2
+CABAC_RESIDUAL_BR
 %endif
