@@ -4403,12 +4403,31 @@ CABAC_RESIDUAL_RD_422DC_ICL2
     pcmpeqw  %1, m1
 %endmacro
 
-; slots in r13, bins in r11, slot table r0
-%macro SIG_WALK 0
+; slots in r13, bins in r11, slot table r12; %1: slot 0 (the sig flag of coef 0, ctx
+; offset 0 in every table) first, its bin from l[0] rather than the mask, off the
+; mask's latency
+%macro SIG_WALK 0-1 0
+%if %1
+%ifdef PIC
+    mov      r1, lbasem
+    %define l0 r1
+%else
+    %define l0 r7
+%endif
+%if HIGH_BIT_DEPTH
+    cmp dword [l0], 0
+%else
+    cmp  word [l0], 0
+%endif
+    %undef l0
+    setne  r14b                     ; bin in bit 0
+    blsr    r13, r13
+    CABAC_BIN_ML r3
+%endif
 %%loop:
-    tzcnt   r12, r13
-    movzx   r1d, byte [r0+r12]
-    bt      r11, r12
+    tzcnt    r0, r13
+    movzx   r1d, byte [r12+r0]
+    bt      r11, r0
     sbb    r14d, r14d               ; -bin
     CABAC_BIN_ML r3+r1
     blsr    r13, r13
@@ -4542,15 +4561,19 @@ cglobal cabac_block_residual_br_internal, 4,15,4,-8*6
 
     shl     r1d, 4
     add     r1d, r2d
-    movzx   r8d, word [significant_coeff_flag_offset+r1*2 GLOBAL]
-    movzx  r10d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]
+    mov    lowd, [r3+cb.low]
+    mov  ranged, [r3+cb.range]
+    mov  queued, [r3+cb.queue]
+    movzx   r4d, word [significant_coeff_flag_offset+r1*2 GLOBAL]
+    movzx   r5d, word [coeff_abs_level_m1_offset+r2*2 GLOBAL]
     movzx  r13d, byte [count_cat_m1+r2 GLOBAL]
     movzx  r12d, word [res_slot_ofs+r1*2 GLOBAL]
     mov     cbm, r3
+    sub  queued, 24
     add      r3, cb.state
-    add     r10, r3
-    mov  levelm, r10                ; ctx_level state
-    add      r3, r8                 ; ctx_sig state
+    add      r5, r3
+    mov  levelm, r5                 ; ctx_level state
+    add      r3, r4                 ; ctx_sig state
     lea     r12, [res_slot_base+r12 GLOBAL]
     pxor    xm1, xm1
 %ifdef PIC
@@ -4576,13 +4599,7 @@ cglobal cabac_block_residual_br_internal, 4,15,4,-8*6
     bzhi   r13d, r4d, r1d
     shr     r6d, 2
     and    r13d, r6d                ; slots below 2*count_m1: last == count_m1 codes no flag at last
-    mov      r0, r12
-    mov      r6, cbm
-    mov    lowd, [r6+cb.low]
-    mov  ranged, [r6+cb.range]
-    mov  queued, [r6+cb.queue]
-    sub  queued, 24
-    SIG_WALK
+    SIG_WALK 1
     mov     r3, levelm
     mov    r13d, r11d
     and    r13d, 0x55555555         ; the nonzero coefs at the even slots
@@ -4633,35 +4650,28 @@ cglobal cabac_block_residual_br_internal, 4,15,4,-8*6
     mov     r13, r4
     and     r13, r11                ; bins, low half
     or       r4, r11
-    mov     r10d, 1
-    shlx    r10, r10, r5            ; the final 1, bit t&63 of its half
-    xor      r0d, r0d
-    mov     r11, r10
+    mov     r11, r13
+    bts     r11, r5
+    mov      r0, r2
+    bts      r0, r5                 ; the final 1, bit t&63 of its half
     cmp     r5d, 64
-    cmovae  r11, r0
-    cmovb   r10, r0
-    or      r11, r13                ; low bins
-    or       r2, r10                ; high bins
-    mov   m2him, r2
-    lea    r10d, [r1-64]
-    test   r10d, r10d
-    cmovs  r10d, r0d
-    bzhi     r6, r6, r10            ; slots, high half
+    cmovae  r11, r13                ; low bins
+    cmovb    r0, r2                 ; high bins
+    mov   m2him, r0
+    lea     r0d, [r1-64]
+    xor     r2d, r2d
+    test    r0d, r0d
+    cmovs   r0d, r2d
+    bzhi     r6, r6, r0             ; slots, high half
     mov    vhim, r6
     bzhi    r13, r4, r1             ; slots, low half
-    mov      r0, r12
-    mov      r6, cbm
-    mov    lowd, [r6+cb.low]
-    mov  ranged, [r6+cb.range]
-    mov  queued, [r6+cb.queue]
-    sub  queued, 24
-    mov  signm, r14                 ; (the nonzero mask, until the levels)
-    SIG_WALK
+    mov   signm, r14                ; (the nonzero mask, until the levels)
+    SIG_WALK 1
     mov     r13, vhim
     test    r13, r13
     jz .sig8_done
     mov     r11, m2him
-    add      r0, 64
+    add     r12, 64
     SIG_WALK
 .sig8_done:
     mov     r3, levelm
