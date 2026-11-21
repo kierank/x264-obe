@@ -3774,7 +3774,7 @@ static int check_lowres_p( int cpu_ref, int cpu_new )
             /* bench on the slice of the dispatched entry's bench, after the check */
             if( j == 8 )
             {
-                set_func_name( extra_name[e] );
+                set_func_name( "%s", extra_name[e] );
                 call_a2( extra[e], &cx );
                 set_func_name( "lowres_p_mbs" );
             }
