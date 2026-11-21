@@ -1232,11 +1232,20 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
                            | (uint64_t)pack16to32_mask( h->mb.mv_max_spel[0], h->mb.mv_max_spel[1] ) << 32;
             int iters = hpel_iters << 16 | qpel_iters << 8 | (hpel_iters && h->mb.i_subpel_refine < 3) << 5 | b_refine_qpel << 4;
             uint64_t res;
-            if( m->weight[0].weightfn )
+            /* refine_qpel: subpel_search with no hpel step, re-cost or threshold returns its qpel call */
+            int b_qpel_only = !hpel_iters && qpel_iters && b_refine_qpel && !p_halfpel_thresh;
+            if( m->weight[0].weightfn && b_qpel_only )
+                res = h->pixf.satd_qpel_search_weight[m->i_pixel]( qfenc, m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
+                                                                   pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
+                                                                   &m->weight[0] );
+            else if( m->weight[0].weightfn )
                 res = h->pixf.mbcmp_subpel_search_weight[m->i_pixel]( m->p_fenc[0], m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
                                                                       pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
                                                                       qfenc, h->pixf.satd_qpel_search_weight[m->i_pixel], p_halfpel_thresh,
                                                                       pack16to32_mask( m->mvp[0], m->mvp[1] ), &m->weight[0] );
+            else if( b_qpel_only )
+                res = h->pixf.mbcmp_qpel_search[m->i_pixel]( qfenc, m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
+                                                             pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range );
             else
                 res = h->pixf.mbcmp_subpel_search[m->i_pixel]( m->p_fenc[0], m->p_fref, m->i_stride[0], p_cost_mvx, p_cost_mvy,
                                                                pack16to32_mask( m->mv[0], m->mv[1] ), m->cost, iters, range,
