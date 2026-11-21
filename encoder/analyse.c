@@ -3685,11 +3685,24 @@ skip_analysis:
                 b_intra_skip_me = (int64_t)i_intra * 8 < (int64_t)analysis.l0.me16x16.cost * INTRA_HEAVY_THRESH;
             }
 
+#if !HIGH_BIT_DEPTH
+            /* the sub16x16 asm's searches read the 16x16's sads: a new tag generation for the mb */
+            h->b_me_qtab = !b_intra_skip_me && ap && (flags & X264_ANALYSE_PSUB16x16) && !(flags & X264_ANALYSE_PSUB8x8) &&
+                           !h->param.analyse.b_mixed_references && h->me_qtab && h->me_search_fpel_qt;
+            if( h->b_me_qtab && (h->me_qgen += 32) >= 1U << 24 )
+            {
+                memset( h->me_qtab, 0, ME_QTAB_SIZE );
+                h->me_qgen = 32;
+            }
+#endif
             if( !b_intra_skip_me )
                 x264_mb_analyse_inter_p16x16( h, &analysis, ap );
 
             if( h->mb.i_type == P_SKIP )
             {
+#if !HIGH_BIT_DEPTH
+                h->b_me_qtab = 0;
+#endif
                 for( int i = 1; i < h->mb.pic.i_fref[0]; i++ )
                     M32( h->mb.mvr[0][i][h->mb.i_mb_xy] ) = 0;
                 return;
@@ -3727,6 +3740,9 @@ skip_analysis:
             }
             else
                 x264_mb_analyse_p_sub16x16( h, &analysis, b_gate, &i_type, &i_partition, &i_cost );
+#if !HIGH_BIT_DEPTH
+            h->b_me_qtab = 0;
+#endif
 
             h->mb.i_partition = i_partition;
 

@@ -995,7 +995,13 @@ typedef char x264_me_fpel_layout[offsetof( x264_me_t, p_cost_mv ) == 8 && offset
                                  offsetof( x264_me_fpel_t, fn ) == 24 && offsetof( x264_me_fpel_t, range ) == 48 &&
                                  offsetof( x264_me_fpel_t, flags ) == 68 && sizeof(x264_me_fpel_fn_t) == 80 &&
                                  offsetof( x264_me_fpel_fn_t, hex_search ) == 48 && offsetof( x264_me_fpel_fn_t, qpel ) == 72 &&
-                                 sizeof(x264_me_t) == 256 && sizeof(x264_me_fpel_t) == 72 ? 1 : -1];
+                                 sizeof(x264_me_t) == 256 &&
+#if HIGH_BIT_DEPTH
+                                 sizeof(x264_me_fpel_t) == 72 ? 1 : -1];
+#else
+                                 offsetof( x264_me_fpel_t, qtab ) == 72 && offsetof( x264_me_fpel_t, qoff ) == 88 &&
+                                 sizeof(x264_me_fpel_t) == 96 ? 1 : -1];
+#endif
 #endif
 
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
@@ -1030,6 +1036,19 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             c.qfenc = x264_me_fenc_pre( h, i_pixel, m->p_fenc[0] );
 #endif
         }
+#if !HIGH_BIT_DEPTH
+        if( h->b_me_qtab )
+        {
+            /* the 16x16's quadrant sads (ME_QTAB): q = 2*(y/8) + x/8 of the partition */
+            int off = m->p_fenc[0] - h->mb.pic.p_fenc[0];
+            c.qtab = h->me_qtab;
+            c.qtag = ((uint64_t)(h->me_qgen + m->i_ref) << 40) + ME_QTAB_BIAS;
+            c.qoff = 8 + 2*(((off >> 3) & 1) + ((off >> 6) & 2));
+            if( h->me_search_fpel_qt( &c ) )
+                refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
+            return;
+        }
+#endif
         if( h->pixf.me_search_fpel( &c ) )
             refine_subpel( h, m, hpel, qpel, p_halfpel_thresh, 0 );
         return;

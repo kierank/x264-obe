@@ -10168,6 +10168,219 @@ static int check_me_fpel( int cpu_ref, int cpu_new )
             call_a2( me_fpel, &c_a );
         }
     }
+#if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32) && !HIGH_BIT_DEPTH
+    /* me_search_fpel_qt (ME_QTAB) at the avx2 entry's levels: the subme < 3 searches of a mb in
+     * analyse-64.asm's order and predictors (16x16, the 8x8s, the 16x8s and the 8x16s), the 16x16
+     * writing c->qtab and the others reading it, each against the model; the written entries
+     * against the C quadrant sads; entries poisoned (quadrant 0 zeroed) must change some result */
+    if( ok && (cpu_new&X264_CPU_AVX2) && (cpu_new&X264_CPU_BMI2) )
+    {
+        uint8_t *qtab = x264_malloc( ME_QTAB_SIZE );
+        if( !qtab )
+            return -1;
+        memset( qtab, 0, ME_QTAB_SIZE );
+        uint32_t qgen = 0;
+        int qents = 0, qpoison = 0, qpdiff = 0, qmb = 0;
+        static const uint8_t qparts[9][3] = { {0,0,0}, {3,0,0}, {3,8,0}, {3,0,8}, {3,8,8}, {1,0,0}, {1,0,8}, {2,0,0}, {2,8,0} };
+        for( int j = 0; j < 6000 && ok; j++ )
+        {
+            int set = j%5 == 4 ? 2 : j&1;
+            int field = (j>>1)&1;
+            intptr_t stride = PST << field;
+            pixel *fref[4];
+            for( int p = 0; p < 4; p++ )
+                fref[p] = planes + set*4*NPL + p*NPL + 160 + (field ? 80 : 160)*stride;
+            int lim = rand()&7 ? 40 : 1 + rand()%6;
+            int xmin = -(rand()%(lim+1)), xmax = rand()%(lim+1), ymin = -(rand()%(lim+1)), ymax = rand()%(lim+1);
+            int16_t mv_limit[2][2] = { { xmin, ymin }, { xmax, ymax } };
+            int tx = x264_clip3( xmin + rand()%(xmax-xmin+1) + rand()%5 - 2, -44, 44 );
+            int ty = x264_clip3( ymin + rand()%(ymax-ymin+1) + rand()%5 - 2, -44, 44 );
+            int fmode = rand()&7;
+            int noise = fmode < 4 ? rand()%9 : 0;
+            for( int y = 0; y < 16; y++ )
+                for( int x = 0; x < 16; x++ )
+                    fenc[y*FENC_STRIDE+x] = fmode < 6 ? x264_clip_pixel( fref[0][tx+x + (ty+y)*stride] + (noise ? rand()%(2*noise+1) - noise : 0) )
+                                          : fmode == 6 ? PIXEL_MAX/2 : rand() & PIXEL_MAX;
+            int has_pre = !!pf.satd_fenc_pre[0];
+            if( has_pre )
+            {
+                pf.satd_fenc_pre[0]( fenc_pre, fenc );
+                for( int b = 0; b < 4; b++ )
+                    pf.satd_fenc_pre[1]( fenc_pre+256+64*b, fenc+8*(b>>1)+8*FENC_STRIDE*(b&1) );
+            }
+            if( !(j&63) )
+            {
+                int lambda = 1 + rand()%40;
+                for( int k = -CT; k <= CT; k++ )
+                    cost_tab[k+CT] = X264_MIN( (int)(lambda * (2*log2f( abs(k)+1 ) + 1) + .5f), 65535 );
+            }
+            int subme = 1 + (rand()&1);
+            int me_range = rand()&3 ? 16 : 4 + rand()%13;
+            int iref = rand()&3 ? 0 : rand()&31;
+            int poison = (j%7) == 3;
+            /* mvp and predictors near the true mv (qpel) */
+            int16_t mvp16[2] = { 4*tx + rand()%25 - 12, 4*ty + rand()%25 - 12 };
+            int16_t mvc16[8][2];
+            int i_mvc16 = rand()%7;
+            for( int k = 0; k < i_mvc16; k++ )
+            {
+                int t = rand()&7;
+                mvc16[k][0] = t == 0 ? 0 : t == 1 ? mvp16[0] : 4*tx + rand()%41 - 20;
+                mvc16[k][1] = t == 0 ? 0 : t == 1 ? mvp16[1] : 4*ty + rand()%41 - 20;
+            }
+            {
+                int is_avx2 = 1;
+                qgen += 32;
+                uint64_t qtag = ((uint64_t)(qgen + iref) << 40) + ME_QTAB_BIAS;
+                int16_t mv8[4][2], mvc[8][2];
+                int16_t mv16[2] = { 0, 0 };
+                int pdiff = 0;
+                for( int pi = 0; pi < 9 && ok; pi++ )
+                {
+                    int i_pixel = qparts[pi][0], px = qparts[pi][1], py = qparts[pi][2];
+                    int i_mvc;
+                    if( pi == 0 )
+                    {
+                        memcpy( mvc, mvc16, sizeof(mvc16) );
+                        i_mvc = i_mvc16;
+                    }
+                    else if( i_pixel == PIXEL_8x8 )
+                    {
+                        int b = pi - 1;
+                        CP32( mvc[0], mv16 );
+                        for( int i = 0; i < b; i++ )
+                            CP32( mvc[i+1], mv8[i] );
+                        i_mvc = b + 1;
+                    }
+                    else
+                    {
+                        /* 16x8: mv16, 8x8 2p, 2p+1; 8x16: mv16, p, p+2 */
+                        int p = i_pixel == PIXEL_16x8 ? py>>3 : px>>3;
+                        CP32( mvc[0], mv16 );
+                        CP32( mvc[1], mv8[i_pixel == PIXEL_16x8 ? 2*p : p] );
+                        CP32( mvc[2], mv8[i_pixel == PIXEL_16x8 ? 2*p+1 : p+2] );
+                        i_mvc = 3;
+                    }
+                    x264_me_fpel_fn_t fn;
+                    fn.sad = pf.sad[i_pixel];
+                    fn.sad_avg2 = pf.sad_avg2[i_pixel];
+                    fn.x3_min = pf.sad_x3_min[i_pixel];
+                    fn.x4_min = pf.sad_x4_min[i_pixel];
+                    fn.sq_min = pf.sad_sq_min[i_pixel];
+                    fn.hex_min = pf.sad_hex_min[i_pixel];
+                    fn.hex_search = pf.sad_hex_search[i_pixel];
+                    fn.predictor_clip = pf.predictor_clip;
+                    fn.subpel = pf.satd_subpel_search[i_pixel];
+                    fn.qpel = pf.satd_qpel_search[i_pixel];
+                    if( !fn.x3_min || !fn.x4_min )
+                        break;
+                    x264_me_t m_m, m_a;
+                    memset( &m_m, 0, sizeof(m_m) );
+                    m_m.i_pixel = i_pixel;
+                    m_m.p_cost_mv = cost_tab + CT;
+                    m_m.weight = x264_weight_none;
+                    for( int p = 0; p < 4; p++ )
+                        m_m.p_fref[p] = fref[p] + px + py*stride;
+                    m_m.p_fref_w = m_m.p_fref[0];
+                    m_m.p_fenc[0] = fenc + px + py*FENC_STRIDE;
+                    m_m.i_stride[0] = stride;
+                    m_m.i_ref = iref;
+                    m_m.mvp[0] = pi ? mvc[0][0] + rand()%9 - 4 : mvp16[0];
+                    m_m.mvp[1] = pi ? mvc[0][1] + rand()%9 - 4 : mvp16[1];
+                    if( pi && !(rand()&3) && i_mvc > 1 )
+                        CP32( m_m.mvp, mvc[i_mvc-1] );
+                    x264_me_fpel_t c_m;
+                    c_m.m = &m_m;
+                    c_m.mvc = mvc;
+                    c_m.fn = &fn;
+                    c_m.mv_limit = mv_limit;
+                    c_m.i_mvc = i_mvc;
+                    c_m.me_range = me_range;
+                    c_m.flags = ME_FPEL_ZEXIT | (subme >= 2) * ME_FPEL_REFINE;
+                    c_m.qfenc = NULL;
+                    c_m.iters = 0;
+                    c_m.range = 0;
+                    if( subme >= 2 && fn.subpel && fn.qpel && has_pre )
+                    {
+                        c_m.range = pack16to32_mask( 4*xmin - 24, 4*ymin - 24 ) | (uint64_t)pack16to32_mask( 4*xmax + 24, 4*ymax + 24 ) << 32;
+                        c_m.iters = 1 << 16 | 1 << 5;
+                        c_m.qfenc = i_pixel <= PIXEL_16x8 ? fenc_pre+16*py : fenc_pre+256+64*(2*(px>>3)+(py>>3));
+                    }
+                    c_m.halfpel_thresh = NULL;
+                    c_m.qtab = qtab;
+                    c_m.qtag = qtag;
+                    c_m.qoff = 8 + 2*((px>>3) + 2*(py>>3));
+                    m_a = m_m;
+                    x264_me_fpel_t c_a = c_m;
+                    c_a.m = &m_a;
+                    int r_m = me_fpel_model( &pfc, &mc, &c_m, st );
+                    int r_a = call_a1( x264_me_search_fpel_qt_avx2, &c_a );
+                    int diff = r_m != r_a || memcmp( &m_m, &m_a, sizeof(x264_me_t) );
+                    if( pi && poison && is_avx2 )
+                        pdiff |= diff;
+                    else if( diff )
+                    {
+                        ok = 0;
+                        fprintf( stderr, "me_search_fpel_qt [%d %d,%d]: j %d subme %d set %d field %d lim %d,%d %d,%d i_mvc %d range %d: "
+                                 "ret %d mv %d,%d cost %d cost_mv %d | asm %d mv %d,%d cost %d cost_mv %d [FAILED]\n", i_pixel, px, py,
+                                 j, subme, set, field, xmin, ymin, xmax, ymax, i_mvc, me_range, r_m, m_m.mv[0], m_m.mv[1], m_m.cost, m_m.cost_mv,
+                                 r_a, m_a.mv[0], m_a.mv[1], m_a.cost, m_a.cost_mv );
+                    }
+                    /* the partitions' predictors take the model's mvs */
+                    if( !pi )
+                    {
+                        CP32( mv16, m_m.mv );
+                        if( is_avx2 )
+                        {
+                            /* every entry of the generation: its slot, and the C sads of the quadrants */
+                            int n = 0;
+                            for( int e = 0; e < 256 && ok; e++ )
+                            {
+                                uint64_t tag = M64( qtab + 16*e );
+                                if( (tag >> 40) != qgen + iref )
+                                    continue;
+                                int x = (int)(tag & 0xfffff) - (1 << 19), y = (int)((tag >> 20) & 0xfffff) - (1 << 19);
+                                n++;
+                                int bad = ((x + 16*y) & 255) != e;
+                                for( int q = 0; q < 4; q++ )
+                                    bad |= ((uint16_t*)(qtab + 16*e + 8))[q] !=
+                                           pfc.sad[PIXEL_8x8]( fenc + 8*(q&1) + 8*(q>>1)*FENC_STRIDE, FENC_STRIDE,
+                                                               fref[0] + 8*(q&1) + 8*(q>>1)*stride + x + y*stride, stride );
+                                if( bad )
+                                {
+                                    ok = 0;
+                                    fprintf( stderr, "me_search_fpel qtab: j %d entry %d mv %d,%d wrong [FAILED]\n", j, e, x, y );
+                                }
+                            }
+                            qents += n;
+                            qmb++;
+                            if( poison && n )
+                            {
+                                qpoison++;
+                                for( int e = 0; e < 256; e++ )
+                                    if( (M64( qtab + 16*e ) >> 40) == qgen + iref )
+                                        M16( qtab + 16*e + 8 ) = 0;
+                            }
+                        }
+                    }
+                    else if( i_pixel == PIXEL_8x8 )
+                        CP32( mv8[pi-1], m_m.mv );
+                }
+                qpdiff += pdiff;
+            }
+        }
+        /* the avx2 entry writes entries, and reads them */
+        if( ok && qmb && (qents < 5*qmb || !qpdiff) )
+        {
+            ok = 0;
+            fprintf( stderr, "me_search_fpel qtab: %d mbs, %d entries, %d of %d poisoned mbs changed [FAILED]\n", qmb, qents, qpdiff, qpoison );
+        }
+        else if( qmb )
+            fprintf( stderr, "me_search_fpel qtab: %d mbs, %.1f entries per mb, %d of %d poisoned mbs changed\n",
+                     qmb, (double)qents/qmb, qpdiff, qpoison );
+        x264_free( qtab );
+    }
+#endif
     for( int k = 0; k < 24 && ok; k++ )
         if( !st[k] && (k != 17 || pf.predictor_clip) )
         {

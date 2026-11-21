@@ -438,6 +438,15 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
         CHECKED_MALLOCZERO( h->mbtree_strip, MBTREE_STRIP_SIZE( h->mb.i_mb_width ) );
     else
         h->mbtree_strip = NULL;
+#if !HIGH_BIT_DEPTH
+    h->me_qtab = NULL;
+    h->b_me_qtab = 0;
+    if( !b_lookahead && h->param.analyse.i_subpel_refine < 3 && h->me_search_fpel_qt )
+    {
+        CHECKED_MALLOCZERO( h->me_qtab, ME_QTAB_SIZE );
+        h->me_qgen = 0;
+    }
+#endif
 
     return 0;
 fail:
@@ -461,6 +470,9 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead )
     x264_free( h->scratch_buffer2 );
     x264_free( h->mbtree_strip );
     x264_free( h->scratch_hpel );
+#if !HIGH_BIT_DEPTH
+    x264_free( h->me_qtab );
+#endif
 }
 
 void x264_macroblock_slice_init( x264_t *h )

@@ -70,6 +70,26 @@ mf_pd_ffff:  times 8 dd 0xffff
 mf_sq16_xidx: dd 2,4,2,2, 6,4,6,6
 mf_sq16_yidx: dd 2,2,6,4, 2,6,6,4
 mf_sq16_rank: dd 5,1,6,3, 7,2,8,4
+; ME_QTAB (encoder/me.h) steps of hex2[0..7]: the entry offset 16*(dx + 16*dy), 0, the tag dy << 20 + dx
+%if HIGH_BIT_DEPTH == 0
+ALIGN 16
+qt_hex_st:   dd -528,0
+             dq -2097153
+             dd  -32,0
+             dq -2
+             dd  496,0
+             dq  2097151
+             dd  528,0
+             dq  2097153
+             dd   32,0
+             dq  2
+             dd -496,0
+             dq -2097151
+             dd -528,0
+             dq -2097153
+             dd  -32,0
+             dq -2
+%endif
 
 SECTION .text
 
@@ -117,6 +137,9 @@ struc me_fpel
     .me_range:       resd 1
     .iters:          resd 1
     .flags:          resd 1
+    .qtab:           pointer 1
+    .qtag:           resq 1
+    .qoff:           resd 1
 endstruc
 
 ; x264_me_fpel_fn_t (common/pixel.h)
@@ -1255,7 +1278,13 @@ cglobal %1, 1,15,0, ME_STACK
 %define F_BPY   100
 %define F_MVCT  104     ; mvc_temp[18][2]
 %define F_FENC  192     ; !FENC_RES 8 wide: the packed fenc, 128 bytes
+%define F_QTAB  320     ; ME_QTAB: c->qtab, + c->qoff, c->qtag
+%define F_QW    328
+%define F_QTAG  336
+%define F_QREC  344     ; qtab + 4096 + 8*ref: the 16x16's clean end
+%define F_QSAV  352     ; 8x8: R14d at the walk
 %define F_SIZE  328     ; rsp + 8 is 64-aligned at entry: 6 pushes + F_SIZE keep it so
+%define FQ_SIZE 392     ; me_search_fpel_qt's, as F_SIZE
 
 ; m%1 = V of cost_mv %2 about b %3; m%4 temp (avx2); avx512: k7 = 2 (MF_FENC_LOAD)
 %macro MF_COSTV 4
@@ -2084,6 +2113,842 @@ cglobal %1, 1,15,0, ME_STACK
 %endmacro
 
 ;-----------------------------------------------------------------------------
+; ME_QTAB (encoder/me.h), c->qtab: the subme < 3 searches of a P mb. The 16x16 one writes the
+; quadrant sads of every fpel mv it scores, and the ref's record where its walk ends at no better
+; point (its hexagon and square all scored). The 8x8, 16x8 and 8x16 ones take a predictor's sad
+; from the entry where its tag matches (the same integers, so every compare and tie is
+; unchanged), else from the kernel; at the record's mv, the hexagon and the square too. 8x8: no
+; move there, else at a miss or a move the hexagon from the start on sad_hex_search's register
+; entry.
+;-----------------------------------------------------------------------------
+; ecx = the entry offset of (R12, R13) before the mask, rdx = its tag; rsi = qtab, rdi = qtab +
+; qoff (%1 the stack offset)
+%macro QT_CENTRE 1
+    imul           ecx, R13d, 16
+    add            ecx, R12d
+    shl            ecx, 4
+    mov            rdx, R13
+    shl            rdx, 20
+    add            rdx, R12
+    add            rdx, [rsp+%1+F_QTAG]
+    mov            rsi, [rsp+%1+F_QTAB]
+    mov            rdi, [rsp+%1+F_QW]
+%endmacro
+
+; R8d = the sad of the point (%1, %2) about QT_CENTRE's, to dword %4 of xmm %3 (as R8d alone:
+; -1), or to %5 on a miss; clobbers rax, R8
+%macro QT_PT 5 ; dx, dy, xmm, dword, miss
+    lea            eax, [rcx+((%1)+16*(%2))*16]
+    and            eax, 0xff0
+    lea             R8, [rdx+(%2)*0x100000+(%1)]
+    cmp      [rsi+rax], R8
+    jne             %5
+    movzx          R8d, word [rdi+rax]
+%if mfq_w2
+    movzx          eax, word [rdi+rax+mfq_w2]
+    add            R8d, eax
+%endif
+%if %4 == 0
+    vmovd           %3, R8d
+%elif %4 > 0
+    vpinsrd         %3, %3, R8d, %4
+%endif
+%endmacro
+
+; the writer's entry of the point (%1, %2) about QT_CENTRE's (rsi = qtab): qword %4 of xmm %3;
+; clobbers rax, rdi
+%macro QT_WR 4 ; dx, dy, xmm, qword
+    lea            eax, [rcx+((%1)+16*(%2))*16]
+    and            eax, 0xff0
+    lea            rdi, [rdx+(%2)*0x100000+(%1)]
+    mov      [rsi+rax], rdi
+%if %4
+    vmovhps  [rsi+rax+8], %3
+%else
+    vmovq    [rsi+rax+8], %3
+%endif
+%endmacro
+
+; m%1 (top, rows 0-7) / m%2 (bottom) accumulators of one 16 wide candidate -> xm%1 = its quadrant
+; sads as words (twice); m%3 temp
+%macro QT_QUAD1 3
+    vextracti128  xm%3, m%1, 1
+    paddd         xm%1, xm%3
+    vextracti128  xm%3, m%2, 1
+    paddd         xm%2, xm%3
+    packusdw      xm%1, xm%2
+    packusdw      xm%1, xm%1
+%endmacro
+
+; 6 16 wide accumulators m0-m5 (qwords L, R; lane 0 even rows, lane 1 odd) -> m%1 = the 4 row
+; sums of each as dwords L | R << 16: { 0 1 2 3 | 4 5 4 5 }; clobbers m0-m5, m%2
+%macro QT_PACK6 2
+    packssdw        m0, m1
+    packssdw        m2, m3
+    packssdw        m0, m2
+    packssdw        m4, m5
+    packssdw        m4, m4
+    vperm2i128     m%2, m0, m4, 0x31
+    vinserti128     m0, m0, xm4, 1
+    paddw          m%1, m0, m%2
+%endmacro
+
+; 3 of them, m0-m2 -> xm%1 = { 0 1 2 2 }; clobbers m0-m2, m%2
+%macro QT_PACK3 2
+    packssdw        m0, m1
+    packssdw        m2, m2
+    packssdw        m0, m2
+    vextracti128  xm%2, m0, 1
+    paddw         xm%1, xm0, xm%2
+%endmacro
+
+; the subme < 3 search of one size on the table, from .q%1x%2, as MF_BODY's: R12, R13 bmx, bmy,
+; R14d bcost; to .fpel_done
+%macro MFQ_BODY 2 ; w, h
+%if %1 == 16
+    %assign MF_F0 16-%2/2
+%else
+    %assign MF_F0 16-%2/4
+%endif
+%assign mfq_w %1 == 16 && %2 == 16
+%if %1 == 16 && %2 == 8
+    %assign mfq_w2 2
+%elif %1 == 8 && %2 == 16
+    %assign mfq_w2 4
+%else
+    %assign mfq_w2 0
+%endif
+.q%1x%2:
+    MF_FENC_LOAD    %1, %2
+    ; the fullpel mvp, its sad alone
+    mov            rsi, [rbx+me_fpel.mv_limit]
+    movsx          eax, word [R15+me_t.mvp]
+    add            eax, 2
+    sar            eax, 2
+    movsx          ecx, word [rsi]
+    movsx          edx, word [rsi+4]
+    CLIP3          eax, ecx, edx, edi
+    movsxd         R12, eax
+    movsx          eax, word [R15+me_t.mvp+2]
+    add            eax, 2
+    sar            eax, 2
+    movsx          ecx, word [rsi+2]
+    movsx          edx, word [rsi+6]
+    CLIP3          eax, ecx, edx, edi
+    movsxd         R13, eax
+    PACKMV         eax, R12d, R13d, ecx
+    mov    [rsp+F_PMV], eax
+    mov            rcx, R12
+    mov            rdx, R13
+    call .qs1_%1x%2
+    mov           R14d, eax
+    test           eax, eax
+    jz .fpel_done
+    cmp    dword [rbx+me_fpel.i_mvc], 0
+    jle .q%1x%2_zero2
+    MF_PRED_CLIP    1
+    test           eax, eax
+    jle .q%1x%2_zero2
+    shl           R14d, 4
+    mov            ecx, [rsp+F_PMV]
+    mov    [rsp+F_MVCT+4], ecx
+    mov            R8d, eax
+    mov            ebp, 1
+.q%1x%2_pred2:
+    movsx          rcx, word [rsp+F_MVCT+4+rbp*4]
+    movsx          rdx, word [rsp+F_MVCT+6+rbp*4]
+    call .qcf_%1x%2
+    shl            eax, 4
+    add            eax, ebp
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    inc            ebp
+    cmp            ebp, R8d
+    jle .q%1x%2_pred2
+    mov            eax, R14d
+    and            eax, 15
+    movsx          R12, word [rsp+F_MVCT+4+rax*4]
+    movsx          R13, word [rsp+F_MVCT+6+rax*4]
+    sar           R14d, 4
+.q%1x%2_zero2:
+    cmp    dword [rsp+F_PMV], 0
+    je .q%1x%2_hex
+    xor            ecx, ecx
+    xor            edx, edx
+    call .qcf_%1x%2
+    cmp            eax, R14d
+    jge .q%1x%2_hex
+    mov           R14d, eax
+    xor           R12d, R12d
+    xor           R13d, R13d
+
+.q%1x%2_hex:
+%if %1 == 8 && %2 == 8
+    ; at the 16x16's clean end (its record): the hexagon from the table, no move, the square; else
+    ; and at a miss or a move, sad_hex_search's register entry from here
+    QT_CENTRE        0
+    mov            rax, [rsp+F_QREC]
+    cmp          [rax], rdx
+    jne .s8x8_hex
+    mov  [rsp+F_QSAV], R14d
+    shl           R14d, 6
+    QT_PT           -2, 0, xm0, 0, .q8x8_hexk
+    QT_PT           -1, 2, xm0, 1, .q8x8_hexk
+    QT_PT            1, 2, xm0, 2, .q8x8_hexk
+    QT_PT            2, 0, xm0, 3, .q8x8_hexk
+    QT_PT            1,-2, xm1, 0, .q8x8_hexk
+    QT_PT           -1,-2, xm1, 1, .q8x8_hexk
+    vpunpcklqdq    xm1, xm1, xm1
+    vinserti128     m0, m0, xm1, 1
+    mova            m6, m0
+    MF_COSTS        0, [mf_hex_xidx], [mf_hex_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mf_hex_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    MF_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    test          R14d, 63
+    jnz .q8x8_hexk
+    ; square1[1..4] | square1[5..8]
+    mov            rdi, [rsp+F_QW]
+    QT_PT            0,-1, xm6, 0, .q8x8_hexk
+    QT_PT            0, 1, xm6, 1, .q8x8_hexk
+    QT_PT           -1, 0, xm6, 2, .q8x8_hexk
+    QT_PT            1, 0, xm6, 3, .q8x8_hexk
+    QT_PT           -1,-1, xm7, 0, .q8x8_hexk
+    QT_PT           -1, 1, xm7, 1, .q8x8_hexk
+    QT_PT            1,-1, xm7, 2, .q8x8_hexk
+    QT_PT            1, 1, xm7, 3, .q8x8_hexk
+    vinserti128     m6, m6, xm7, 1
+    MF_COSTS        0, [mf_sq_xidx], [mf_sq_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mf_sq_rank]
+%else
+    ; hexagon: hex2[1..6], idx 2-7; the readers from the table at the 16x16's clean end
+    shl           R14d, 6
+  %if mfq_w == 0
+    QT_CENTRE        0
+    mov            rax, [rsp+F_QREC]
+    cmp          [rax], rdx
+    jne .q%1x%2_hexk
+    QT_PT           -2, 0, xm0, 0, .q%1x%2_hexk
+    QT_PT           -1, 2, xm0, 1, .q%1x%2_hexk
+    QT_PT            1, 2, xm0, 2, .q%1x%2_hexk
+    QT_PT            2, 0, xm0, 3, .q%1x%2_hexk
+    QT_PT            1,-2, xm1, 0, .q%1x%2_hexk
+    QT_PT           -1,-2, xm1, 1, .q%1x%2_hexk
+    vpunpcklqdq    xm1, xm1, xm1
+    vinserti128     m0, m0, xm1, 1
+    jmp .q%1x%2_hexs
+.q%1x%2_hexk:
+  %endif
+    MF_PTR          R8, R12, R13
+    lea            rdi, [R8-2]
+    lea            rsi, [R8+R11*2-1]
+    lea            rdx, [R8+R11*2+1]
+    lea            rcx, [R8+2]
+    mov            rbp, R8
+    sub            rbp, R11
+    sub            rbp, R11
+    lea            rax, [rbp+1]
+    dec            rbp
+  %if mfq_w
+    call .qx6_16x16
+  %else
+    call .x6_%1x%2
+  %endif
+.q%1x%2_hexs:
+    mova            m6, m0
+    MF_COSTS        0, [mf_hex_xidx], [mf_hex_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mf_hex_rank]
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    MF_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    test          R14d, 63
+    jz .q%1x%2_hexc
+    mov            eax, R14d
+    and            eax, 63
+    sub            eax, 2
+    mov            ebp, eax
+    HEX_MOVE
+    ; half hexagons, not overlapping the previous iteration: ebp = dir | i << 8
+    mov            eax, [rbx+me_fpel.me_range]
+    sar            eax, 1
+    dec            eax
+    shl            eax, 8
+    or             ebp, eax
+    cmp            ebp, 1<<8
+    jl .q%1x%2_hex_end
+    MF_MVRANGE_INIT
+.q%1x%2_walk:
+    MF_CHECK_MVRANGE .q%1x%2_hex_end
+    and           R14d, ~63
+    MF_PTR          R8, R12, R13
+    movzx          eax, bpl
+    lea            rcx, [me_hex2]
+    lea            rcx, [rcx+rax*2]
+    MF_HH_PTR      rdi, 0
+    MF_HH_PTR      rsi, 1
+    MF_HH_PTR      rdx, 2
+  %if mfq_w
+    call .qx3_16x16
+  %else
+    call .x3_%1x%2
+  %endif
+    movzx          eax, bpl
+    shl            eax, 4
+    lea            rcx, [mf_hh_xidx]
+    MF_COSTS        2, [rcx+rax], [rcx+rax+mf_hh_yidx-mf_hh_xidx]
+    paddd          xm0, xm2
+    pslld          xm0, 6
+    paddd          xm0, [mf_hh_rank]
+    MF_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    test          R14d, 63
+    jz .q%1x%2_hexc
+    mov            eax, R14d
+    and            eax, 63
+    sub            eax, 2
+    movzx          ecx, bpl
+    add            eax, ecx
+    cdqe                                ; -1 .. 6
+    lea            rcx, [me_mod6m1]
+    movzx          eax, byte [rcx+rax+1]
+    sub            ebp, 1<<8
+    and            ebp, ~255
+    or             ebp, eax
+    HEX_MOVE
+    cmp            ebp, 1<<8
+    jge .q%1x%2_walk
+  %if mfq_w
+    jmp .q%1x%2_hex_end
+.q%1x%2_hexc:
+    ; the walk ended at no better point: all of the hexagon and (next) the square of (R12, R13)
+    ; are in the table; the record of the ref
+    mov            rax, R13
+    shl            rax, 20
+    add            rax, R12
+    add            rax, [rsp+F_QTAG]
+    mov            rcx, [rsp+F_QREC]
+    mov          [rcx], rax
+  %else
+.q%1x%2_hexc:
+  %endif
+.q%1x%2_hex_end:
+    and           R14d, ~63
+
+  %if mfq_w == 0
+    QT_CENTRE        0
+    mov            rax, [rsp+F_QREC]
+    cmp          [rax], rdx
+    jne .q%1x%2_sqk
+    %if %1 == 16
+    ; (-1,-1) (0,-1) (-1,1) (-1,0) | (1,-1) (0,1) (1,1) (1,0), as MF_SQ16's
+    QT_PT           -1,-1, xm6, 0, .q%1x%2_sqk
+    QT_PT            0,-1, xm6, 1, .q%1x%2_sqk
+    QT_PT           -1, 1, xm6, 2, .q%1x%2_sqk
+    QT_PT           -1, 0, xm6, 3, .q%1x%2_sqk
+    QT_PT            1,-1, xm7, 0, .q%1x%2_sqk
+    QT_PT            0, 1, xm7, 1, .q%1x%2_sqk
+    QT_PT            1, 1, xm7, 2, .q%1x%2_sqk
+    QT_PT            1, 0, xm7, 3, .q%1x%2_sqk
+    %else
+    ; square1[1..4] | square1[5..8]
+    QT_PT            0,-1, xm6, 0, .q%1x%2_sqk
+    QT_PT            0, 1, xm6, 1, .q%1x%2_sqk
+    QT_PT           -1, 0, xm6, 2, .q%1x%2_sqk
+    QT_PT            1, 0, xm6, 3, .q%1x%2_sqk
+    QT_PT           -1,-1, xm7, 0, .q%1x%2_sqk
+    QT_PT           -1, 1, xm7, 1, .q%1x%2_sqk
+    QT_PT            1,-1, xm7, 2, .q%1x%2_sqk
+    QT_PT            1, 1, xm7, 3, .q%1x%2_sqk
+    %endif
+    vinserti128     m6, m6, xm7, 1
+    jmp .q%1x%2_sqs
+.q%1x%2_sqk:
+  %endif
+  %if %1 == 16
+    ; square refine in windows, as MF_BODY's
+    MF_PTR         rdi, R12, R13
+    sub            rdi, R11
+    dec            rdi
+    %if mfq_w
+    MFQ_SQ16
+    %else
+    MF_SQ16         %2
+    packusdw        m1, m3
+    packusdw        m2, m0
+    packusdw        m1, m2
+    pmaddwd         m6, m1, [pw_1]
+    %endif
+.q%1x%2_sqs:
+    MF_COSTS        0, [mf_sq16_xidx], [mf_sq16_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mf_sq16_rank]
+  %else
+    MF_PTR          R8, R12, R13
+    mov            rdi, R8
+    sub            rdi, R11
+    lea            rsi, [R8+R11]
+    lea            rdx, [R8-1]
+    lea            rcx, [R8+1]
+    call .x4_%1x%2
+    mova           xm7, xm0
+    lea            rdi, [R8-1]
+    sub            rdi, R11
+    lea            rsi, [R8+R11-1]
+    lea            rdx, [rdi+2]
+    lea            rcx, [R8+R11+1]
+    call .x4_%1x%2
+    vinserti128     m6, m7, xm0, 1
+.q%1x%2_sqs:
+    MF_COSTS        0, [mf_sq_xidx], [mf_sq_yidx]
+    paddd           m0, m6
+    pslld           m0, 6
+    paddd           m0, [mf_sq_rank]
+  %endif
+%endif
+    vextracti128   xm1, m0, 1
+    pminsd         xm0, xm1
+    MF_MIN4        eax
+    cmp            eax, R14d
+    cmovl         R14d, eax
+    mov            eax, R14d
+    and            eax, 63
+    lea            rcx, [me_square1]
+    movsx          rdx, byte [rcx+rax*2]
+    add            R12, rdx
+    movsx          rdx, byte [rcx+rax*2+1]
+    add            R13, rdx
+    sar           R14d, 6
+    jmp .fpel_done
+
+%if %1 == 8 && %2 == 8
+.q8x8_hexk:
+    mov           R14d, [rsp+F_QSAV]
+    jmp .s8x8_hex
+%endif
+%if %1 == 8 && %2 == 8
+.s8x8_hex:
+    ; sad_hex_search_8x8's register entry (bcost, iters, range in rax, R10, R11): the
+    ; hexagon, half hexagons and square in shared windows
+    MF_MVRANGE_INIT
+    mov            rdx, R11
+    mov            R11, rax
+    mov            rdi, [R15+me_t.p_fenc]
+    mov            rsi, [R15+me_t.p_fref_w]
+    mov            rcx, [rsp+F_CMX]
+    mov             R8, [rsp+F_CMY]
+    PACKMV         R9d, R12d, R13d, eax
+    mov            eax, R14d
+    mov           R10d, [rbx+me_fpel.me_range]
+    call pixel_sad_hex_search_reg_8x8_avx2
+.s8x8_hex_ret:
+    mov           R14d, eax
+    shr            rax, 32
+    movsx          R12, ax
+    sar            eax, 16
+    movsxd         R13, eax
+    movsxd         R11, dword [R15+me_t.i_stride]
+    jmp .fpel_done
+%endif
+
+%if mfq_w
+; .qs1_16x16: eax = sad( fpel rcx, rdx ), its entry written; clobbers rax, rsi, rdi, m0, m1, m4, m5
+; .qcf_16x16: eax = its cost, as .cf
+%assign %%c 0
+%rep 2
+  %if %%c
+.qcf_16x16:
+  %else
+.qs1_16x16:
+  %endif
+    MF_PTR         rdi, rcx, rdx
+  %assign %%k 0
+  %rep 8
+    %if %%k < 4
+    MF_ROW          16, 0, 4, 5, rdi, %%k, %%k == 0
+    %else
+    MF_ROW          16, 1, 4, 5, rdi, %%k, %%k == 4
+    %endif
+    %if %%k < 7
+    lea            rdi, [rdi+R11*2]
+    %endif
+    %assign %%k %%k+1
+  %endrep
+    QT_QUAD1         0, 1, 4
+    imul           esi, edx, 16
+    add            esi, ecx
+    shl            esi, 4
+    and            esi, 0xff0
+    add            rsi, [rsp+8+F_QTAB]
+    mov            rdi, rdx
+    shl            rdi, 20
+    add            rdi, rcx
+    add            rdi, [rsp+8+F_QTAG]
+    mov          [rsi], rdi
+    vmovq      [rsi+8], xm0
+    pmaddwd        xm0, [pw_1]
+    phaddd         xm0, xm0
+    movd           eax, xm0
+  %if %%c
+    mov            rsi, [rsp+8+F_CMX]
+    movzx          esi, word [rsi+rcx*8]
+    add            eax, esi
+    mov            rsi, [rsp+8+F_CMY]
+    movzx          esi, word [rsi+rdx*8]
+    add            eax, esi
+  %endif
+    ret
+  %assign %%c %%c+1
+%endrep
+
+; .qx6_16x16: .x6_16x16 at the hexagon of (R12, R13), the 6 entries written; clobbers the
+; pointers, R8, m1-m7
+.qx6_16x16:
+%assign %%k 0
+%rep 8
+    MF_ROW          16, 0, 6, 7, rdi, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 1, 6, 7, rsi, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 2, 6, 7, rdx, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 3, 6, 7, rcx, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 4, 6, 7, rax, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 5, 6, 7, rbp, %%k, %%k == 0 || %%k == 4
+  %if %%k == 3
+    QT_PACK6         7, 6               ; the top halves
+  %endif
+  %if %%k < 7
+    lea            rdi, [rdi+R11*2]
+    lea            rsi, [rsi+R11*2]
+    lea            rdx, [rdx+R11*2]
+    lea            rcx, [rcx+R11*2]
+    lea            rax, [rax+R11*2]
+    lea            rbp, [rbp+R11*2]
+  %endif
+  %assign %%k %%k+1
+%endrep
+    QT_PACK6         6, 1
+    punpckldq       m0, m7, m6          ; the quadrants of 0, 1 | 4, 5
+    punpckhdq       m1, m7, m6          ; 2, 3 | 4, 5
+    QT_CENTRE        8
+    QT_WR           -2, 0, xm0, 0
+    QT_WR           -1, 2, xm0, 1
+    QT_WR            1, 2, xm1, 0
+    QT_WR            2, 0, xm1, 1
+    vextracti128   xm2, m0, 1
+    QT_WR            1,-2, xm2, 0
+    QT_WR           -1,-2, xm2, 1
+    pmaddwd         m0, [pw_1]
+    pmaddwd         m1, [pw_1]
+    phaddd          m0, m1              ; { 0 1 2 3 | 4 5 4 5 }
+    ret
+
+; .qx3_16x16: .x3_16x16 at hex2[dir..dir+2] (bpl) of (R12, R13), the entries written; clobbers
+; the pointers, R8, m1-m7
+.qx3_16x16:
+%assign %%k 0
+%rep 8
+    MF_ROW          16, 0, 4, 5, rdi, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 1, 4, 5, rsi, %%k, %%k == 0 || %%k == 4
+    MF_ROW          16, 2, 4, 5, rdx, %%k, %%k == 0 || %%k == 4
+  %if %%k == 3
+    QT_PACK3         7, 6
+  %endif
+  %if %%k < 7
+    lea            rdi, [rdi+R11*2]
+    lea            rsi, [rsi+R11*2]
+    lea            rdx, [rdx+R11*2]
+  %endif
+  %assign %%k %%k+1
+%endrep
+    QT_PACK3         6, 3
+    punpckldq      xm0, xm7, xm6        ; the quadrants of 0, 1
+    punpckhdq      xm1, xm7, xm6        ; 2, 2
+    imul           edx, R13d, 16
+    add            edx, R12d
+    shl            edx, 4
+    mov             R8, R13
+    shl             R8, 20
+    add             R8, R12
+    add             R8, [rsp+8+F_QTAG]
+    mov            rsi, [rsp+8+F_QTAB]
+    movzx          eax, bpl
+    shl            eax, 4
+    lea            rcx, [qt_hex_st]
+    add            rcx, rax
+%assign %%j 0
+%rep 3
+    mov            eax, [rcx+16*%%j]
+    add            eax, edx
+    and            eax, 0xff0
+    mov            rdi, [rcx+16*%%j+8]
+    add            rdi, R8
+    mov      [rsi+rax], rdi
+  %if %%j == 0
+    vmovq    [rsi+rax+8], xm0
+  %elif %%j == 1
+    vmovhps  [rsi+rax+8], xm0
+  %else
+    vmovq    [rsi+rax+8], xm1
+  %endif
+  %assign %%j %%j+1
+%endrep
+    pmaddwd        xm0, [pw_1]
+    pmaddwd        xm1, [pw_1]
+    phaddd         xm0, xm1             ; { 0 1 2 2 }
+    ret
+%else
+; .qs1: eax = sad( fpel rcx, rdx ), from the table or .s1; .qcf: its cost, as .cf; clobbers
+; rax, rsi, rdi, as .s1
+.qs1_%1x%2:
+    imul           eax, edx, 16
+    add            eax, ecx
+    shl            eax, 4
+    and            eax, 0xff0
+    mov            rsi, rdx
+    shl            rsi, 20
+    add            rsi, rcx
+    add            rsi, [rsp+8+F_QTAG]
+    mov            rdi, [rsp+8+F_QTAB]
+    cmp      [rdi+rax], rsi
+    jne .qs1k_%1x%2
+    mov            rdi, [rsp+8+F_QW]
+  %if mfq_w2
+    movzx          esi, word [rdi+rax+mfq_w2]
+    movzx          eax, word [rdi+rax]
+    add            eax, esi
+  %else
+    movzx          eax, word [rdi+rax]
+  %endif
+    ret
+.qs1k_%1x%2:
+    MF_PTR         rdi, rcx, rdx
+    jmp .s1_%1x%2
+
+.qcf_%1x%2:
+    imul           eax, edx, 16
+    add            eax, ecx
+    shl            eax, 4
+    and            eax, 0xff0
+    mov            rsi, rdx
+    shl            rsi, 20
+    add            rsi, rcx
+    add            rsi, [rsp+8+F_QTAG]
+    mov            rdi, [rsp+8+F_QTAB]
+    cmp      [rdi+rax], rsi
+    jne .cf_%1x%2
+    mov            rdi, [rsp+8+F_QW]
+    movzx          esi, word [rdi+rax]
+  %if mfq_w2
+    movzx          eax, word [rdi+rax+mfq_w2]
+    add            esi, eax
+  %endif
+    mov            rax, [rsp+8+F_CMX]
+    movzx          eax, word [rax+rcx*8]
+    add            esi, eax
+    mov            rax, [rsp+8+F_CMY]
+    movzx          eax, word [rax+rdx*8]
+    add            eax, esi
+    ret
+%endif
+    MF_KERNELS      %1, %2
+%endmacro
+
+; the writer's square (MF_SQ16 16 at rdi): rows 0-7 into m0-m3, 8-15 into m10-m13, the 8 entries
+; of (R12, R13), m6 the sads as MF_BODY's; clobbers m0-m13, rax, rcx, rdx, rsi, rdi
+%macro MFQ_SQ16 0
+    MF_WIN          4, rdi, rdi+2
+    MF_WIN          5, rdi+R11, rdi+R11+2
+%assign %%r 0
+%rep 16
+    %assign %%ro 4+(%%r % 3)
+    %assign %%rc 4+((%%r+1) % 3)
+    %assign %%rn 4+((%%r+2) % 3)
+    %assign %%a0 (%%r >= 8)*10
+    %assign %%a1 %%a0+1
+    %assign %%a2 %%a0+2
+    %assign %%a3 %%a0+3
+    vbroadcasti128  m8, [R9+%%r*16]
+    MF_WIN   %%rn, rdi+R11*2, rdi+R11*2+2
+    MF_WIN          9, rdi+1, rdi+R11*2+1
+    MF_ACC   %%a1, %%ro, 8, 7, %%r == 0 || %%r == 8
+    MF_ACC   %%a0, %%rc, 8, 7, %%r == 0 || %%r == 8
+    MF_ACC   %%a2, %%rn, 8, 7, %%r == 0 || %%r == 8
+    MF_ACC   %%a3, 9, 8, 7, %%r == 0 || %%r == 8
+  %if %%r < 15
+    add            rdi, R11
+  %endif
+  %assign %%r %%r+1
+%endrep
+    ; per lane dwords L | R << 16 of (-1,-1) (0,-1) (-1,1) (-1,0) | (1,-1) (0,1) (1,1) (1,0)
+    packssdw        m1, m3
+    packssdw        m2, m0
+    packssdw        m1, m2
+    packssdw       m11, m13
+    packssdw       m12, m10
+    packssdw       m11, m12
+    punpckldq       m0, m1, m11         ; quadrants (-1,-1) (0,-1) | (1,-1) (0,1)
+    punpckhdq       m2, m1, m11         ; (-1,1) (-1,0) | (1,1) (1,0)
+    pmaddwd         m3, m0, [pw_1]
+    pmaddwd         m4, m2, [pw_1]
+    phaddd          m6, m3, m4
+    QT_CENTRE        0
+    QT_WR           -1,-1, xm0, 0
+    QT_WR            0,-1, xm0, 1
+    QT_WR           -1, 1, xm2, 0
+    QT_WR           -1, 0, xm2, 1
+    vextracti128   xm0, m0, 1
+    vextracti128   xm2, m2, 1
+    QT_WR            1,-1, xm0, 0
+    QT_WR            0, 1, xm0, 1
+    QT_WR            1, 1, xm2, 0
+    QT_WR            1, 0, xm2, 1
+%endmacro
+
+;-----------------------------------------------------------------------------
+; int me_search_fpel_qt( x264_me_fpel_t *c ): me_search_fpel at subme < 3 with c->qtab (ME_QTAB)
+;-----------------------------------------------------------------------------
+%macro MFQ_SEARCH 0
+cglobal me_search_fpel_qt, 1,1
+    push           rbx
+    push           rbp
+    push           R12
+    push           R13
+    push           R14
+    push           R15
+    sub            rsp, FQ_SIZE
+    mov            rbx, rdi
+    mov            R15, [rdi+me_fpel.m]
+    movsxd         R11, dword [R15+me_t.i_stride]
+    lea            R10, [R11*3]
+    mov            rcx, [R15+me_t.p_cost_mv]
+    movsx          rax, word [R15+me_t.mvp]
+    add            rax, rax
+    mov            rdx, rcx
+    sub            rdx, rax
+    mov    [rsp+F_CMX], rdx
+    movsx          rax, word [R15+me_t.mvp+2]
+    add            rax, rax
+    sub            rcx, rax
+    mov    [rsp+F_CMY], rcx
+    mov            rcx, [rbx+me_fpel.qtab]
+    mov    [rsp+F_QTAB], rcx
+    movsxd         rdx, dword [rbx+me_fpel.qoff]
+    add            rdx, rcx
+    mov    [rsp+F_QW], rdx
+    mov            rdx, [rbx+me_fpel.qtag]
+    mov    [rsp+F_QTAG], rdx
+    shr            rdx, 40
+    and            edx, 31
+    lea            rdx, [rcx+rdx*8+4096]
+    mov    [rsp+F_QREC], rdx
+    mov            eax, [R15+me_t.i_pixel]
+    test           eax, eax
+    jz .q16x16
+    cmp            eax, 3               ; PIXEL_8x8
+    je .q8x8
+    cmp            eax, 1               ; PIXEL_16x8
+    je .q16x8
+    jmp .q8x16
+
+.fpel_done:
+    ; cost_mv, the real cost (+ cost_mv at the pmv), mv
+    PACKMV         eax, R12d, R13d, ecx
+    mov            edx, eax
+    shl            edx, 2
+    and            edx, 0xFFFCFFFC
+    mov            rsi, [rsp+F_CMX]
+    movzx          ecx, word [rsi+R12*8]
+    mov            rsi, [rsp+F_CMY]
+    movzx          esi, word [rsi+R13*8]
+    add            ecx, esi
+    mov    [R15+me_t.cost_mv], ecx
+    xor            esi, esi
+    cmp            eax, [rsp+F_PMV]
+    cmove          esi, ecx
+    add            esi, R14d
+    mov    [R15+me_t.cost], esi
+    mov    [R15+me_t.mv], edx
+.subpel:
+    test   byte [rbx+me_fpel.flags], ME_FPEL_REFINE
+    jz .ret0
+    mov            rax, [rbx+me_fpel.qfenc]
+    test           rax, rax
+    jnz .subpel_call
+    mov            eax, 1
+    jmp .ret
+.subpel_call:
+    ; subpel( fenc, fref, stride, cost_mvx, cost_mvy, mv, cost, iters, range, qfenc, qpel,
+    ; halfpel_thresh, mvp ), the int stack arguments as qwords (x86inc loads qwords)
+    mov    [rsp+F_OUT+24], rax
+    mov            rdi, [R15+me_t.p_fenc]
+    lea            rsi, [R15+me_t.p_fref]
+    mov            rdx, R11
+    mov            rcx, [rsp+F_CMX]
+    mov             R8, [rsp+F_CMY]
+    mov            R9d, [R15+me_t.mv]
+    mov            eax, [R15+me_t.cost]
+    mov    [rsp+F_OUT], rax
+    mov            eax, [rbx+me_fpel.iters]
+    mov    [rsp+F_OUT+8], rax
+    mov            rax, [rbx+me_fpel.range]
+    mov    [rsp+F_OUT+16], rax
+    mov            rax, [rbx+me_fpel.fn]
+    mov            R10, [rax+me_fpel_fn.qpel]
+    mov    [rsp+F_OUT+32], R10
+    mov            R10, [rbx+me_fpel.halfpel_thresh]
+    mov    [rsp+F_OUT+40], R10
+    mov           R10d, [R15+me_t.mvp]
+    mov    [rsp+F_OUT+48], R10
+    call   [rax+me_fpel_fn.subpel]
+    mov            ecx, eax
+    and            ecx, 0x7fffffff
+    mov    [R15+me_t.cost], ecx
+    mov            rdx, rax
+    shr            rdx, 32
+    mov    [R15+me_t.mv], edx
+    ; the halfpel threshold stop leaves cost_mv
+    test           eax, eax
+    js .ret0
+    movsx          rcx, dx
+    sar            edx, 16
+    movsxd         rdx, edx
+    mov            rsi, [rsp+F_CMX]
+    movzx          ecx, word [rsi+rcx*2]
+    mov            rsi, [rsp+F_CMY]
+    movzx          edx, word [rsi+rdx*2]
+    add            ecx, edx
+    mov    [R15+me_t.cost_mv], ecx
+.ret0:
+    xor            eax, eax
+.ret:
+    add            rsp, FQ_SIZE
+    pop            R15
+    pop            R14
+    pop            R13
+    pop            R12
+    pop            rbp
+    pop            rbx
+    vzeroupper
+    ret
+
+    MFQ_BODY        16, 16
+    MFQ_BODY         8,  8
+    MFQ_BODY        16,  8
+    MFQ_BODY         8, 16
+%endmacro
+
+;-----------------------------------------------------------------------------
 ; int me_search_fpel( x264_me_fpel_t *c ), see encoder/me.h
 ;-----------------------------------------------------------------------------
 ; rbx c, R15 m, R11 stride, R10 3*stride, R9 fenc (MF_FENC_LOAD), R12/R13 bmx/bmy, R14d bcost
@@ -2260,6 +3125,9 @@ MF_SEARCH
 INIT_YMM avx512
 %assign mf_fres FENC_RES512
 MF_SEARCH
+INIT_YMM avx2
+%assign mf_fres FENC_RES
+MFQ_SEARCH
 %endif ; HIGH_BIT_DEPTH == 0
 
 %if HIGH_BIT_DEPTH

@@ -927,6 +927,8 @@ int x264_analyse_p16x16_avx2( x264_analyse_p_t *c );
 void x264_analyse_p_sub16x16_avx2( x264_analyse_p_t *c );
 #define x264_me_search_fpel_avx2 x264_template(me_search_fpel_avx2)
 int x264_me_search_fpel_avx2( x264_me_fpel_t *c );
+#define x264_me_search_fpel_qt_avx2 x264_template(me_search_fpel_qt_avx2)
+int x264_me_search_fpel_qt_avx2( x264_me_fpel_t *c );
 #define x264_me_search_fpel_avx512 x264_template(me_search_fpel_avx512)
 int x264_me_search_fpel_avx512( x264_me_fpel_t *c );
 #define x264_me_search_fpel_zmm_avx512 x264_template(me_search_fpel_zmm_avx512)

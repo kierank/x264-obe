@@ -108,10 +108,23 @@ struct x264_me_fpel
     int me_range;
     int iters;                  /* subpel_search's iters */
     int flags;
+#if !HIGH_BIT_DEPTH
+    uint8_t *qtab;              /* subme < 3, 8-bit: NULL or the mb's ME_QTAB (16x16 writes it) */
+    uint64_t qtag;              /* the tag of mv 0, 0 */
+    int qoff;                   /* the partition's first sad word in an entry */
+#endif
 };
 #define ME_FPEL_SUBME3 1        /* subme >= 3: the subpel predictors */
 #define ME_FPEL_ZEXIT  2        /* no chroma ME: the zero sad exit returns */
 #define ME_FPEL_REFINE 4        /* subme >= 2 */
+
+/* ME_QTAB: 256 entries of 16 bytes, mv x, y at ((x + 16*y) & 255): the tag (qtag + y << 20 + x,
+ * qtag = gen << 40 | 1 << 39 | 1 << 19, gen the mb's me_qgen + i_ref) and the sads of the 8x8
+ * quadrants (raster) at the mv as words, the 16x16 search's at every fpel mv it scored; then a
+ * qword per ref, the tag of the mv where that search's walk ended at no better point. The other
+ * searches of the mb on the ref plane take a sad from the entry where the tag matches. */
+#define ME_QTAB_SIZE (4096 + 32*8)
+#define ME_QTAB_BIAS ((1ULL << 39) | (1 << 19))
 
 /* me_fpel_fn from pf's fpelcmp, mbcmp and predictor functions */
 static inline void x264_me_fpel_init( x264_pixel_function_t *pf )

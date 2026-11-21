@@ -846,6 +846,15 @@ struct x264_t
 #endif
 
     x264_mbaff_function_t mbaffpf;
+
+#if !HIGH_BIT_DEPTH
+    /* the lowlat P partition searches of a mb (encoder/me.h ME_QTAB): the 16x16 searches'
+     * quadrant sads by fpel mv, read by the 8x8, 16x8 and 8x16 ones */
+    uint8_t *me_qtab;
+    uint32_t me_qgen;           /* the tag generation of the mb, a multiple of 32 */
+    int b_me_qtab;              /* on in the partition analysis of a mb */
+    int (*me_search_fpel_qt)( x264_me_fpel_t *c ); /* pixf.me_search_fpel on me_qtab, or NULL */
+#endif
 };
 
 // included at the end because it needs x264_t

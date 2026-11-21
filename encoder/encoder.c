@@ -33,6 +33,9 @@
 #include "macroblock.h"
 #include "me.h"
 #include "lookahead8.h"
+#if HAVE_MMX
+#include "common/x86/pixel.h"
+#endif
 
 //#define DEBUG_MB_TYPE
 
@@ -1645,6 +1648,14 @@ static void mbcmp_init( x264_t *h )
     /* P6 kept on C: rack01 2026-10-30 APA 8p.prog +0.43 %, lowlat -0.9..-1.55 % */
     h->pixf.analyse_p16x16_ll = h->param.analyse.i_subpel_refine < 3 && !CHROMA444 ? h->pixf.analyse_p16x16 : NULL;
     x264_me_fpel_init( &h->pixf );
+#if !HIGH_BIT_DEPTH
+    /* the lowlat partition searches on the 16x16's quadrant sads, at the avx2 entry's levels */
+    h->me_search_fpel_qt = NULL;
+#if ARCH_X86_64 && HAVE_MMX && !defined(_WIN32)
+    if( h->pixf.me_search_fpel && (h->param.cpu&X264_CPU_AVX2) && (h->param.cpu&X264_CPU_BMI2) )
+        h->me_search_fpel_qt = x264_me_search_fpel_qt_avx2;
+#endif
+#endif
 }
 
 static void chroma_dsp_init( x264_t *h )
