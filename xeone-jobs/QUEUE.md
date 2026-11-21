@@ -349,3 +349,7 @@ After .44 G23: time 9 for AB=full and lay, then s1 / k / klay / 10 as needed
 ## CBR: CABAC residual writer mispredicts (round 4 D), wip/x264-nw-cabacbr (K 3edda89c, D 50e59b9e, R 760b0ca2) on 322af72b
 Now: FRAMES=120 AB=k bash xeone-jobs/cabacbr/cabacbr-ab.sh build | live | md5
 After .44 G24: time 9 for AB=p (PK 1d6651d6 vs P 66b18d20, PRIMARY), then pfull (322af72b vs P); k / rp / play / 10p as needed. EVENTS include branches + branch-misses.
+
+## MLL: lowlat ME (round 4 A), wip/x264-nw-melowlat ac46d9f1 (s1 0b33bfc9 ME_QTAB, s2 f4efd189+770257f1 direct call + refine hop, s3 ac46d9f1 refine_qpel record) on 322af72b
+Now: FRAMES=120 AB=tip bash xeone-jobs/melowlat/melowlat-ab.sh build | live | md5
+After .44 G25: time 9 for AB=tip and tiplay, then s1 / s2 / s3 (+lay) to split steps, then 10.
