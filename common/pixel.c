@@ -621,6 +621,7 @@ static uint64_t qpel_search( int i_pixel, pixel *fenc, pixel **fref, intptr_t st
     int max_x = (int16_t)(range >> 32), max_y = (int16_t)(range >> 48);
     int bmx = (int16_t)bmv, bmy = (int16_t)(bmv >> 16);
     int bdir = -1;
+    int conv = 0;
     for( int i = iters >> 8; i > 0; i-- )
     {
         if( bmy <= min_y || bmy >= max_y || bmx <= min_x || bmx >= max_x )
@@ -640,13 +641,16 @@ static uint64_t qpel_search( int i_pixel, pixel *fenc, pixel **fref, intptr_t st
         }
         int bidx = bkey & 15;
         if( !bidx )
+        {
+            conv = !w;
             break;
+        }
         bcost = bkey >> 4;
         bdir = bidx - 1;
         bmx = omx + dir_dx[bdir];
         bmy = omy + dir_dy[bdir];
     }
-    return (uint32_t)bcost | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
+    return (uint32_t)bcost | conv << 30 | (uint64_t)pack16to32_mask( bmx, bmy ) << 32;
 }
 
 /* reference for satd_qpel_search */

@@ -846,6 +846,9 @@ struct x264_t
 #endif
 
     x264_mbaff_function_t mbaffpf;
+
+    /* pixf.me_search_fpel where the analyse_p asm calls it for x264_me_search_ref (lowlat), or NULL */
+    int (*me_fpel_ll)( x264_me_fpel_t *c );
 };
 
 // included at the end because it needs x264_t
