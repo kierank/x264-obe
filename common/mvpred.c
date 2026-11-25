@@ -553,9 +553,10 @@ void x264_mb_predict_mv_ref16x16( x264_t *h, int i_list, int i_ref, int16_t mvc[
             int16_t (*lowres_mv)[2] = h->fenc->lowres_mvs[i_list][idx];
             if( lowres_mv[0][0] != 0x7fff )
             {
-                if( MB_INTERLACED )
+                if( MB_MBAFF_FIELD )
                 {
-                    /* lowres qpel is 2 frame qpel, 1 field qpel vertically */
+                    /* lowres qpel is 2 frame qpel, 1 field qpel vertically; a field
+                     * picture's lowres is of the field */
                     mvc[i][0] = lowres_mv[h->mb.i_mb_xy][0] * 2;
                     mvc[i][1] = lowres_mv[h->mb.i_mb_xy][1];
                 }

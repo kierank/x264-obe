@@ -44,7 +44,7 @@ static NOINLINE void x264_mb_mc_0xywh( x264_t *h, int x, int y, int width, int h
     int mvx   = x264_clip3( h->mb.cache.mv[0][i8][0], h->mb.mv_min[0], h->mb.mv_max[0] ) + 4*4*x;
     int mvy   = x264_clip3( h->mb.cache.mv[0][i8][1], h->mb.mv_min[1], h->mb.mv_max[1] ) + 4*4*y;
     /* H.264 8.4.3: a field mb's explicit weights are those of refIdxL0 >> 1 */
-    x264_weight_t *weight = h->sh.weight[i_ref >> MB_INTERLACED];
+    x264_weight_t *weight = h->sh.weight[i_ref >> MB_MBAFF_FIELD];
 
     MC_LUMA( 0, 0, &weight[0] );
 

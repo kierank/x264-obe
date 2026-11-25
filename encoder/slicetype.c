@@ -2587,7 +2587,6 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
         return;
     }
 
-
     /* Replace forced keyframes with I/IDR-frames */
     for( int j = 1; j <= num_frames; j++ )
         if( frames[j]->i_type == X264_TYPE_KEYFRAME )

@@ -1425,17 +1425,18 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 
 #define LOAD_WPELS(m, src, list, ref, xoff, yoff) \
     (m)->p_fref_w = &(src)[(xoff)+(yoff)*(m)->i_stride[0]]; \
-    (m)->weight = h->sh.weight[(ref) >> MB_INTERLACED];
+    (m)->weight = h->sh.weight[(ref) >> MB_MBAFF_FIELD];
 
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
 
-/* The ref that list0 ref i_ref is a blind duplicate of, else -1. In a field mb
- * the duplicate frame gives two refs, copies of field refs 0 and 1. */
+/* The ref that list0 ref i_ref is a blind duplicate of, else -1. In an MBAFF field
+ * mb the duplicate frame gives two refs, copies of field refs 0 and 1; a field
+ * picture's list is not field-doubled. */
 static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
 {
     int dupe = h->mb.ref_blind_dupe;
-    if( MB_INTERLACED )
+    if( MB_MBAFF_FIELD )
         return dupe >= 0 && (i_ref >> 1) == dupe ? i_ref & 1 : -1;
     return i_ref == dupe ? 0 : -1;
 }
@@ -1443,7 +1444,9 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
 /* The asm P partition analysis of this mb, or NULL */
 static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *c )
 {
-    if( !h->pixf.analyse_p16x16_ll )
+    /* Field pictures: the asm takes MB_INTERLACED as an MBAFF field mb (refs in
+     * pairs, sh.weight[ref>>1]) and leaves x264_me_t.i_list unset. */
+    if( !h->pixf.analyse_p16x16_ll || PARAM_FIELD_ENCODE )
         return NULL;
     c->h = h;
     c->mb = &h->mb;
@@ -1642,7 +1645,7 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
     x264_me_t m;
     pixel **p_fenc = h->mb.pic.p_fenc;
     int i_maxref = h->mb.pic.i_fref[0]-1;
-    int b_field = MB_INTERLACED;
+    int b_field = MB_MBAFF_FIELD;
 
     h->mb.i_partition = D_8x8;
 
@@ -2556,7 +2559,7 @@ static void x264_mb_analyse_inter_b8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
             i_maxref[l] = ref;\
     }
 
-    int b_field = MB_INTERLACED;
+    int b_field = MB_MBAFF_FIELD;
     for( int l = 0; l < 2; l++ )
     {
         x264_mb_analysis_list_t *lX = l ? &a->l1 : &a->l0;

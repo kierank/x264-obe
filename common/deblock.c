@@ -441,9 +441,9 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         if( luma_mb && (h->mb.i_neighbour & MB_TOP) )
         {
             int top_xy = h->mb.i_mb_top_xy;
-            if( b_interlaced && !(mb_y&1) && !MB_INTERLACED && h->mb.field[top_xy] )
+            if( b_mbaff && !(mb_y&1) && !MB_INTERLACED && h->mb.field[top_xy] )
                 luma_mb = 0;
-            else if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[top_xy])) && IS_INTRA( h->mb.type[top_xy] ) )
+            else if( (!b_mbaff || (!MB_INTERLACED && !h->mb.field[top_xy])) && IS_INTRA( h->mb.type[top_xy] ) )
                 luma_mb = 0;
         }
 
