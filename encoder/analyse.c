@@ -141,7 +141,7 @@ struct x264_analyse_p
     int cabac;                          /* PARAM_CABAC */
     int v_shift;                        /* CHROMA_V_SHIFT */
     int mbaff;                          /* SLICE_MBAFF */
-    int interlaced;                     /* MB_INTERLACED */
+    int interlaced;                     /* MB_MBAFF_FIELD */
     int gate;                           /* in: no 8x8, 16x8 or 8x16 */
     int i_type;                         /* out of analyse_p_sub16x16 */
     int i_partition;
@@ -1444,9 +1444,7 @@ static ALWAYS_INLINE int x264_mb_blind_dupe_src( x264_t *h, int i_ref )
 /* The asm P partition analysis of this mb, or NULL */
 static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_analysis_t *a, x264_analyse_p_t *c )
 {
-    /* Field pictures: the asm takes MB_INTERLACED as an MBAFF field mb (refs in
-     * pairs, sh.weight[ref>>1]) and leaves x264_me_t.i_list unset. */
-    if( !h->pixf.analyse_p16x16_ll || PARAM_FIELD_ENCODE )
+    if( !h->pixf.analyse_p16x16_ll )
         return NULL;
     c->h = h;
     c->mb = &h->mb;
@@ -1459,7 +1457,7 @@ static ALWAYS_INLINE x264_analyse_p_t *x264_analyse_p_init( x264_t *h, x264_mb_a
     c->cabac = PARAM_CABAC;
     c->v_shift = CHROMA_V_SHIFT;
     c->mbaff = SLICE_MBAFF;
-    c->interlaced = MB_INTERLACED;
+    c->interlaced = MB_MBAFF_FIELD;     /* the asm's "interlaced" is an MBAFF field mb: refs in pairs */
     /* lowlat: the me_search_fpel calls straight from the asm, x264_me_search_ref's fields of the mb */
     c->me_fpel = h->me_fpel_ll;
     if( c->me_fpel )

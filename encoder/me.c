@@ -1272,7 +1272,10 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     int b_chroma_me = b_chroma_full && !b_chroma_late && !b_chroma_cut;
     int chromapix = h->luma2chroma_pixel[i_pixel];
     int chroma_v_shift = CHROMA_V_SHIFT;
-    int mvy_offset = b_chroma_full && (chroma_v_shift & MB_INTERLACED) ? x264_mb_chroma_mvy_offset( h, m->i_list, m->i_ref ) : 0;
+    /* i_list is set by LOAD_HPELS only (not by the asm P analysis or the lookahead),
+     * and a P slice has list 0 alone */
+    int mvy_offset = b_chroma_full && (chroma_v_shift & MB_INTERLACED)
+                   ? x264_mb_chroma_mvy_offset( h, h->sh.i_type == SLICE_TYPE_B ? m->i_list : 0, m->i_ref ) : 0;
     /* chroma cost without storing the prediction: mbcmp_mcc takes every
      * chroma ME size, u and v widths 8 and 4, heights 4 to 16 */
     const int b_chroma_mcc = b_chroma_full && !CHROMA444 && h->pixf.mbcmp_mcc
